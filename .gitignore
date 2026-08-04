@@ -1,0 +1,28 @@
+# Copyrighted game data (the XBLA package + everything unpacked out of it) — not
+# distributable. `assets/package/` holds the STFS container as delivered;
+# `assets/game/` is what tools/extract_stfs.py produced from it.
+/assets/
+/private/
+*.xex
+*.xexp
+
+# Regeneratable recompiler output (run XenonRecomp on config/CaseZero.toml)
+/ppc/
+
+# Build artifacts (any build/ dir)
+build/
+build-asan/
+
+# Locally built analysis binary (rebuild with tools/build_xex_image_dump.sh)
+/tools/xex_image_dump
+tools/__pycache__/
+
+# Xenia ground-truth captures (huge, game-derived, local reference only) — but DO
+# track the run index, which is documentation and contains no game data.
+# Note the `/*` form: a trailing-slash ignore stops git descending, so the negation
+# below would never be evaluated.
+/Xenia logs/*
+!/Xenia logs/Xenia_Run_Content.md
+
+# Claude Code session scratch
+.claude/
