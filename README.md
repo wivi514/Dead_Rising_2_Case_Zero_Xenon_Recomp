@@ -40,14 +40,21 @@ retail key and returns an **empty image with no diagnostic** when it is wrong. S
 - [x] Save/restore helper ladders located and cross-checked (`tools/find_save_restore.py`).
 - [x] **232 jump tables recovered** (105 absolute, 85 offset8, 42 offset16, 6,114 case
       labels) — XenonAnalyse finds **zero** on this binary.
-- [x] **Recompilation succeeds: 57,837 functions → 154 MB of C++ in `ppc/`**, zero
-      switch-boundary errors, zero `// ERROR:` comments in the generated code.
+- [x] **Recompilation succeeds and the recompiler log is completely silent:
+      57,822 functions → 156 MB of C++ in `ppc/`** — zero unrecognized instructions, zero
+      undecodable instructions, zero switch-boundary errors, zero dropped branches.
 - [x] **Xenia ground truth round 1 complete** — A1–A5, B1/B1b/B2, C1/C2, D, E, all as the
       full game. Analysis: `docs/xenia-capture-analysis.md`.
 - [x] **Forwards coverage oracle applied** — 110 entry points hardware executed that
       static analysis never found.
 - [x] **`.big` container format cracked** — `docs/big-archive-format.md`.
-- [ ] 42 unrecognized-instruction sites (6 mnemonics) to implement in XenonRecomp.
+- [x] **42 unrecognized-instruction sites (6 mnemonics) implemented in XenonRecomp** —
+      plus a 7th, `vadduws`, which was already "implemented" against a simde intrinsic
+      that does not exist and could never have compiled.
+- [x] **Dropped direct branches driven to zero** — a defect class nothing here was
+      measuring, because the check for it grepped a pattern the recompiler never emits.
+      `tools/find_dropped_branches.py`, findings 13 and 5d.
+- [ ] First compile of `ppc/` — 227 TUs never yet fed to a C++ compiler.
 - [ ] An `.xtr` GPU-stream decoder — nothing here reads one yet, and two findings block on it.
 - [ ] Runtime (kernel HLE, GPU command processor, renderer, audio) — `docs/runtime-plan.md`.
 
@@ -60,9 +67,17 @@ an in-house "CrowdEngine" for the zombie crowds, XMA audio — and, unlike both 
 ports, **no Bink**.
 244 kernel/XAM imports.
 
-Notably, **the shaders ship as loose banks on disc** (`data/shaders/deadrisingprologue-{vs,ps,vd,pd,sc,sd,ss}.big`)
-rather than embedded in packages, which should shorten the path to XenosRecomp
-considerably compared with Fable 2's `.sbk` extraction work.
+~~Notably, **the shaders ship as loose banks on disc**
+(`data/shaders/deadrisingprologue-{vs,ps,vd,pd,sc,sd,ss}.big`) rather than embedded in
+packages, which should shorten the path to XenosRecomp considerably compared with
+Fable 2's `.sbk` extraction work.~~
+
+**Retracted** (analysis finding 6): those banks are `.big` archives of `<hash>.vo` shader
+*objects* carrying build metadata (including `.updb` debug paths), not the microcode the
+guest submits — their payloads share only background-noise n-gram overlap with the real
+thing. Middleware or asset names in an image tell you a name exists, not that a format is
+in use. The renderer's input comes instead from Xenia's `dump_shaders`: **455 raw Xenos
+microcode blobs**, already captured, which is what XenosRecomp consumes.
 
 ## Regenerate the C++
 

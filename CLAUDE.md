@@ -135,13 +135,46 @@ From round 1's captures (details in the findings ledger):
     `d>`-only filter reports `VdSwap = 0` — a clean, small, wrong number that reads as
     "this title never swaps" (finding 4).
 
+From round 2 (closing phase 0.1):
+
+25. **A grep that cannot match is not a clean result.** The bootstrap claimed "zero
+    `// ERROR:` comments in the generated code". The recompiler emits `// ERROR {:X}` —
+    **no colon** — so the pattern never had a chance to match and the check was never
+    run. The true count was 31. Before believing a zero, confirm the pattern can match
+    *something*; the cheapest version is to grep the emitter, not the output.
+26. **A dropped direct branch is an unimplemented instruction wearing a different hat.**
+    When a branch target is not the exact start of a known function, XenonRecomp emits a
+    bare `// ERROR <addr>` comment and nothing else. No stdout diagnostic, exit 0, and
+    the C++ compiles — the control transfer just never happens. Measure it with
+    `tools/find_dropped_branches.py` (finding 13).
+27. **The direction of a dropped branch names the defect and the repair, and they are
+    opposites.** Backward → a loop header was declared a function and split a real one;
+    remove the start. Forward → the function was truncated before its outlined cold
+    block; widen it. Applying either repair to the other class makes things worse.
+28. **The coverage oracle's mid-body trap is not limited to switch labels.** A loop
+    header is a branch target too, appears in no switch table, and passes every
+    case-label filter. Nine got through here. No pre-hoc heuristic separates them from
+    genuine indirect-call targets — two of the nine looked completely ordinary — so the
+    coverage tool *proposes* and the dropped-branch check *disposes*. Run them in that
+    order, always (finding 5d).
+29. **An "implemented" instruction can still be impossible.** `VADDUWS` emitted
+    `simde_mm_adds_epu32`, which does not exist in simde and has no SSE equivalent at any
+    level. It had presumably never been exercised. A recompiler case is only proven by a
+    title that uses it *and* a compile that consumes it (finding 14).
+30. **A vector test that has never failed has not been shown capable of failing.** Vector
+    lowering hides two invisible conventions — the whole-vector byte reversal (which
+    swaps pack operand order) and saturation edges. Both are silent wrong *values*, not
+    crashes. Write the differential test against scalar PPC semantics, then break the
+    implementation on purpose and confirm the test screams.
+
 ## Layout
 
-- `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 138 function
-  overrides from two sources that **merge, never replace** each other — switch-tail
-  repairs (`tools/fix_switch_function_bounds.py`) and coverage-recovered entry points
-  (`tools/coverage_to_function_overrides.py`). Regenerating either from a stale `ppc/`
-  silently under-reports; always rebuild `ppc/` from the committed config first.
+- `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
+  overrides from three sources that **merge, never replace** each other — switch-tail
+  repairs (`tools/fix_switch_function_bounds.py`), coverage-recovered entry points
+  (`tools/coverage_to_function_overrides.py`), and truncated-function widenings
+  (`tools/find_dropped_branches.py --widen`). Regenerating any of them from a stale
+  `ppc/` silently under-reports; always rebuild `ppc/` from the committed config first.
 - `config/CaseZero_switch_tables.toml` — 232 jump tables (105 absolute, 85 offset8,
   42 offset16, 6,114 labels) from `tools/find_jumptables.py`. **XenonAnalyse finds zero
   here** — see gotcha 3.
@@ -192,6 +225,15 @@ Repair function bounds after any switch-table change, then re-run the recompiler
 confirm the log has zero `jump outside function` lines:
 ```
 python3 tools/fix_switch_function_bounds.py --apply
+```
+
+Check for silently dropped direct branches — **this is not optional after any change to
+the function list**, and it is the only thing that catches the coverage oracle's
+loop-header splits (gotcha 28). Regenerate `ppc/` between each step:
+```
+python3 tools/find_dropped_branches.py            # report both classes
+python3 tools/find_dropped_branches.py --prune    # backward: remove spurious starts
+python3 tools/find_dropped_branches.py --widen    # forward: widen truncated functions
 ```
 
 Re-derive the save/restore helper addresses:
@@ -277,25 +319,34 @@ Highlights that change how we work:
 identity established, ladders cross-checked, 232 jump tables recovered, round-1 captures
 delivered and analysed, forwards coverage oracle applied.
 
-**Current image: 57,837 functions, 227 TUs, 154 MB, zero switch-boundary errors, zero
-`// ERROR:` comments in the generated code.** Reasoning behind the bootstrap numbers:
+**Phase 0.1 complete (2026-08-04, session 2).** All 42 unrecognized-instruction sites
+closed, plus a seventh mnemonic (`vadduws`) that was "implemented" against a nonexistent
+simde intrinsic and could never have compiled. A previously unmeasured defect class —
+**dropped direct branches** — was found and driven to zero (finding 13).
+
+**Current image: 57,822 functions, 227 TUs, 156 MB — zero unrecognized instructions, zero
+undecodable instructions, zero switch-boundary errors, zero dropped branches.** The
+recompiler log is completely silent. Reasoning behind the bootstrap numbers:
 `docs/bootstrap-2026-08-04.md`. Behind the capture-derived ones:
 `docs/xenia-capture-analysis.md`.
 
+The pipeline is now four tools that **must run in this order**, each re-running the
+recompiler in between, because each one's evidence is only valid against a current `ppc/`:
+
+```
+find_jumptables.py  ->  coverage_to_function_overrides.py  ->
+    fix_switch_function_bounds.py --apply  ->  find_dropped_branches.py --prune / --widen
+```
+
 Next, in order:
 
-1. **Implement the 6 missing mnemonics** in `~/GithubRepo/XenonRecomp` — `lhbrx` (30
-   sites), `stfsux` (5), `vsubuws` (4), `vspltish`, `vpkuwum`, `vadduhs` — regenerate,
-   confirm zero. An unimplemented instruction is a silent wrong-execution trap, not a
-   build failure. (For scale: Asura's Wrath's first pass had 3,192 sites across 32
-   mnemonics.) `lhbrx`'s 30 sites are worth reading while implementing — a byte-reversed
-   halfword load that frequent smells like the `.big` reader's endianness helper.
-2. **Compile `ppc/`** — 227 TUs that have never been fed to a C++ compiler. Phase 0.2 of
-   `docs/runtime-plan.md`.
-3. **Write an `.xtr` decoder.** Findings 9 and 10 both end at "needs the decoder": the
+1. **Compile `ppc/`** — 227 TUs that have never been fed to a C++ compiler. Phase 0.2 of
+   `docs/runtime-plan.md`. This is now the only thing standing between the image and the
+   runtime, and the `vadduws` fix removed the one known blocker in it.
+2. **Write an `.xtr` decoder.** Findings 9 and 10 both end at "needs the decoder": the
    determinism baseline is unmeasured and no GPU gate can be built without one. Nothing
    in this repo reads a GPU stream yet.
-4. **Start the runtime** (phase 1), written against A1's call order.
+3. **Start the runtime** (phase 1), written against A1's call order.
 
 ## Conventions (same as the two template ports)
 

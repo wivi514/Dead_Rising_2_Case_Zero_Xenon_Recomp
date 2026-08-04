@@ -74,6 +74,63 @@ the recompiler rather than as a missing directory. `mkdir -p ppc` is the workaro
 
 ---
 
+## 3. `VADDUWS` emits `simde_mm_adds_epu32`, which does not exist
+
+**Severity:** breaks the build of any title that uses `vadduws`. **Status:** fixed
+locally, commit `981afe9`.
+
+The `PPC_INST_VADDUWS` case emitted `simde_mm_adds_epu32(...)`. There is no such
+intrinsic: no SSE level provides a 32-bit unsigned saturating add, and simde does not
+synthesise one (it has `adds_epu8` and `adds_epu16` only). The recompiler runs perfectly
+happily and produces C++ that fails to compile with an error naming simde, so the
+evidence points at the wrong component.
+
+This case had presumably never been exercised — which is the transferable point: **a
+recompiler case is only proven by a title that uses it *and* a compile that consumes its
+output.** Anything not yet compiled is unverified regardless of how long it has been in
+the tree. Worth auditing the rest of the vector cases against simde's actual surface
+before the first compile of a new port, not after.
+
+Fixed with an algebraic identity that needs only SSE4.1 `min_epu32` (already relied on by
+`VPKUWUS`):
+
+    vadduws:  a + min_epu32(b, ~a)      overflow iff b > ~a, and then a + ~a = 0xFFFFFFFF
+
+The same gap exists on the subtract side, so `VSUBUWS` (added for Case Zero) uses:
+
+    vsubuws:  max_epu32(a, b) - b       a - b when a >= b, 0 otherwise
+
+## 4. An unrecognized instruction emits nothing, silently
+
+**Severity:** silent wrong execution. **Status:** upstream behaviour; not changed.
+
+When `Recompile()` returns false the recompiler prints `Unrecognized instruction at ...`
+to stdout, sets `allRecompiled = false`, **and emits no code for that instruction at
+all**. The generated C++ still compiles; the guest operation simply does not happen.
+
+The exit code does not reflect it and the message is easily lost in the progress spam, so
+treat the count of `Unrecognized`/`Unable to decode` lines as a build gate. Same for
+dropped branches (bug 5), which are not reported to stdout at all.
+
+## 5. A branch to a non-function address is dropped with only a comment
+
+**Severity:** silent wrong execution, invisible. **Status:** upstream behaviour; worked
+around in the config by `tools/find_dropped_branches.py`.
+
+`printFunctionCall` resolves a branch target through `image.symbols.find(address)`, which
+is an **exact-start** lookup — `SymbolTable::find` runs `equal_range` on the address, so a
+symbol that merely *contains* the target never matches. When it misses, the emitter does:
+
+    println("\t// ERROR {:X}", address);
+
+Nothing is printed to stdout, the run exits 0, and the C++ compiles. Case Zero had 31 of
+these. See analysis finding 13 for the two signatures (backward = split function, forward
+= truncated function) and their opposite repairs. Both are repairable from the config, so
+no recompiler change was needed — but the *absence of any diagnostic* is the bug, and any
+port that does not go looking will never learn it has them.
+
+---
+
 ## Inherited patches (from the Fable 2 / Asura's Wrath ports)
 
 The shared XenonRecomp checkout already carries these; they are listed so that a Case
@@ -85,4 +142,18 @@ Zero-only rebuild is not mistaken for stock upstream:
   finding 38 — the one that let a bad dispatch jump into an unrelated function's body).
 - Stale `ppc_recomp.N.cpp` files past the last emitted index are deleted.
 - `PPC_FUNC_PROLOGUE` guarded with `#ifndef`.
+
+## Added for Case Zero (commit `981afe9`)
+
+Six mnemonics this title needs that stock XenonRecomp does not implement, plus the
+`VADDUWS` repair above. `lhbrx` mirrors `LWBRX` one size down; `stfsux` follows `LFSUX`'s
+operand shape (frS, rA, rB) rather than `STFSU`'s (frS, displacement, rA); `vpkuwum`
+takes vB as the first `packus` argument for the same whole-vector-reversal reason as the
+existing `VPKSHUS`/`VPKUWUS` cases.
+
+All verified by differential test against scalar references written from the PPC
+definitions — 200,153 cases, zero failures across `-O2`/`-msse4.1`/`-mavx2`/`-O0`, with
+negative controls confirming the test discriminates. Vector lowering hides two conventions
+that are invisible to inspection (the byte reversal, and saturation edges) and both fail
+as silent wrong *values*, so an untested vector case is an unverified one.
 - `vpkd3d128` float16_2 pack (type 3).

@@ -28,11 +28,26 @@
 # Regenerate after any change to the switch tables:
 #   python3 tools/fix_switch_function_bounds.py --apply
 # then re-run XenonRecomp and confirm the log has zero "jump outside function" lines.
+#
+# THIS LIST HAS THREE SOURCES THAT MERGE, NEVER REPLACE (139 entries, address-sorted):
+#   1. tools/fix_switch_function_bounds.py --apply   switch-tail repairs
+#   2. tools/coverage_to_function_overrides.py       entry points recovered from the
+#                                                    C1/C2 Xenia coverage traces
+#   3. tools/find_dropped_branches.py --widen        truncated functions widened over
+#                                                    their outlined cold blocks
+# Where two sources name the same address the LARGER size wins, so they compose in any
+# order. Run them against a `ppc/` regenerated from THIS file — every one of them reads
+# the emitted code to decide what is missing, so a stale ppc/ makes all three
+# under-report silently.
+#
+# (2) also *removes* entries: `find_dropped_branches.py --prune` deleted 9 addresses the
+# coverage pass had added, which were loop headers rather than functions and had split
+# 9 real functions in half. See docs/xenia-capture-analysis.md findings 5d and 13 —
+# nothing detects that except the dropped-branch check, so run it after any change here.
 functions = [
     { address = 0x82157F08, size = 0xA4 },
     { address = 0x821600AC, size = 0x74 },
     { address = 0x821600C8, size = 0x58 },
-    { address = 0x821672A0, size = 0xC },
     { address = 0x8216E648, size = 0x9C },
     { address = 0x82173D90, size = 0xD8 },
     { address = 0x82173E2C, size = 0x38 },
@@ -71,8 +86,11 @@ functions = [
     { address = 0x825D3D6C, size = 0x714 },
     { address = 0x825D4560, size = 0x1E8 },
     { address = 0x825D9F30, size = 0x1D8 },
+    { address = 0x825DD888, size = 0x5C4 },
     { address = 0x825DE998, size = 0x8 },
-    { address = 0x825E243C, size = 0x8 },
+    { address = 0x825DEA18, size = 0x850 },
+    { address = 0x825DF0CC, size = 0x19C },
+    { address = 0x825DF104, size = 0x164 },
     { address = 0x826145F0, size = 0xF0 },
     { address = 0x826495C0, size = 0x11C },
     { address = 0x8265F540, size = 0x3F8 },
@@ -81,8 +99,6 @@ functions = [
     { address = 0x82670038, size = 0x1C04 },
     { address = 0x82671C20, size = 0x1C },
     { address = 0x82671E38, size = 0x2174 },
-    { address = 0x82671E70, size = 0x213C },
-    { address = 0x82673A6C, size = 0x540 },
     { address = 0x82674098, size = 0x1C20 },
     { address = 0x82675C98, size = 0x20 },
     { address = 0x82679A48, size = 0x206C },
@@ -124,7 +140,6 @@ functions = [
     { address = 0x827D0BF0, size = 0x684 },
     { address = 0x827D0CF0, size = 0x584 },
     { address = 0x827D5BF4, size = 0x12BC },
-    { address = 0x827EBABC, size = 0x10 },
     { address = 0x827EE0D0, size = 0x40 },
     { address = 0x827EE108, size = 0x8 },
     { address = 0x827EED10, size = 0x18 },
@@ -135,13 +150,15 @@ functions = [
     { address = 0x82810280, size = 0x8C },
     { address = 0x8281028C, size = 0x80 },
     { address = 0x82818EE8, size = 0x898 },
-    { address = 0x8281927C, size = 0x5C },
-    { address = 0x828192A4, size = 0x34 },
-    { address = 0x82819B80, size = 0x9C0 },
-    { address = 0x8281D940, size = 0x9D8 },
+    { address = 0x8281D480, size = 0x78 },
     { address = 0x8284399C, size = 0x1C },
+    { address = 0x82857350, size = 0x7C },
+    { address = 0x82857398, size = 0x34 },
     { address = 0x82862B94, size = 0xC8 },
     { address = 0x82862BBC, size = 0x10 },
+    { address = 0x8287D250, size = 0x68 },
+    { address = 0x82883A40, size = 0x15C },
+    { address = 0x82883A88, size = 0x114 },
     { address = 0x828AD820, size = 0x1D4 },
     { address = 0x828DC408, size = 0x19C },
     { address = 0x829140F4, size = 0x134 },

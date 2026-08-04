@@ -63,6 +63,28 @@ specific address), whereas the alternative is silent wrong execution in the
 parent. If a runtime miss ever lands on one of these, that is the signal to
 special-case it, not to drop the filter.
 
+CASE LABELS ARE NOT THE ONLY MID-BODY TRAP -- ALWAYS RUN THE DROPPED-BRANCH CHECK
+---------------------------------------------------------------------------------
+The case-label filter below only knows about addresses that appear in the switch
+TOML. A **loop header** is also a branch target, is also recorded by Xenia as a
+"function", and is in no switch table -- so it sails straight through. On Case
+Zero nine such addresses were added here and split nine real functions, which
+turned their loop-back edges into silently dropped branches.
+
+No heuristic available at this point reliably separates a loop header from a
+genuine indirect-call target: of those nine, two pairs shared an end address
+(the signature this tool's notes already describe), three were absurdly small,
+and two looked entirely ordinary. What does separate them is a *measurement*
+taken after the fact -- did adding this address cause a branch to be dropped?
+
+So this tool proposes and `tools/find_dropped_branches.py` disposes. After
+applying overrides from here, ALWAYS regenerate and run:
+
+    python3 tools/find_dropped_branches.py --prune     # then regenerate again
+
+Treat a nonzero backward/split count there as this tool's error, not as a
+separate problem.
+
 USAGE
     coverage_to_function_overrides.py --trace <trace.0> [--trace <trace.0> ...] \
         --ppc-dir ppc/ --image assets/game/default_image.bin \

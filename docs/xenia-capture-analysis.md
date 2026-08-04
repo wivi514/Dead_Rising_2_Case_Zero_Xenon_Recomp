@@ -121,6 +121,13 @@ from one number to the other are each a way to be confidently wrong:
 Result: **57,728 → 57,837 functions, zero switch-boundary errors, zero `// ERROR:`
 comments in the generated code.**
 
+> **RETRACTED, 2026-08-04 (see 5d and finding 13).** The last clause was worthless. The
+> recompiler emits `// ERROR {:X}` — no colon — so the pattern `// ERROR:` could never
+> match anything and the check was never actually run. The real count at that commit was
+> **31 dropped branches, 13 of which this coverage pass had just introduced.** A grep that
+> cannot match is not a clean result. The function count is also superseded: after
+> repairing both classes the image is **57,822** functions.
+
 ### 5a. A case label is not an entry point, and adding it is destructive
 
 Xenia's analysis calls any executed branch target a "function", and a `switch` case body
@@ -180,6 +187,28 @@ Fixed by computing the end from the original start, and by extending down to the
 label (`min(start, min_label)`) rather than to `func_containing(min_label)`, which
 needlessly swallowed the preceding function. A tool that reports convergence is making a
 claim; check it against the thing it claims to have fixed.
+
+### 5d. A loop header is not an entry point either — and the label filter cannot see it
+
+5a excluded case labels and switch-parent interiors. That is not the whole trap. A **loop
+header** is also a branch target, is also recorded by Xenia as a "function", and is in no
+switch table, so it passes every filter in 5a untouched.
+
+Nine did. Each split a real function; the tail half's loop-back edge then pointed into the
+head half — a *different* function — and XenonRecomp silently dropped it (finding 13).
+All 9 of the dropped backward branches in the image traced to a coverage-added address,
+and none of the 18 pre-existing ones did.
+
+The uncomfortable part is that no heuristic available *before* applying them separates a
+loop header from a genuine indirect-call target. Of the nine: two pairs shared an end
+address (`82671E70`/`82673A6C` both ending `82673FAC`; `8281927C`/`828192A4` both ending
+`828192D8`) — the signature 5a already names. Three were implausibly small: `821672A0`
+spans 12 bytes, `825E243C` 8, `827EBABC` 16. But two, `82819B80` and `8281D940`, span
+0x9C0 and 0x9D8 bytes and look like perfectly ordinary functions.
+
+So the coverage tool cannot be made right on its own. What *is* decisive is a measurement
+taken afterwards — did adding this address cause a branch to be dropped? That is finding
+13's check, and it is now a required stage of the pipeline rather than an optional audit.
 
 ## 6. The shader shortcut: the disc banks are NOT usable microcode — but it doesn't matter
 
@@ -293,6 +322,104 @@ through `XamContentCreateEnumerator` → re-mount → re-open.
 The whole save is one write, which makes this phase much simpler than Asura's Wrath's.
 The physical save file was delivered (`cz_A3_save_DR2P000.zip`) so the `.DSF` format can
 be reverse-engineered offline without re-running anything.
+
+## 13. Dropped direct branches — a defect class nothing here was measuring
+
+Found while closing the unrecognized-instruction sites (finding 14), by noticing that the
+"zero `// ERROR:` comments" claim in finding 5 was grepping for a colon the recompiler
+never emits.
+
+When a direct branch (`b`, `bl`, `beq`, …) leaves the current function, XenonRecomp looks
+the target up in the symbol table. The lookup is **exact-start** — `SymbolTable::find`
+runs `equal_range` on the address, so it matches only symbols beginning at exactly that
+address, never a symbol that merely *contains* it. If the target is not the start of a
+known function, there is nothing to call, and the recompiler emits:
+
+    println("\t// ERROR {:X}", address);
+
+and moves on. Nothing is printed to stdout, the run exits 0, and the generated C++
+compiles fine — the control transfer simply never happens, and execution falls through
+into whatever follows. This is the same shape of defect as an unimplemented mnemonic:
+**wrong execution, no build failure.** `tools/find_dropped_branches.py` measures it.
+
+Every dropped branch means a function boundary is wrong, and the branch *direction* says
+which boundary and which repair — the two are opposites:
+
+| direction | meaning | repair | count found |
+|---|---|---|---|
+| backward (target < function start) | a loop header was declared a function, splitting a real one; the tail's loop-back edge now leaves the function | remove the spurious start | 13, **all** coverage-added |
+| forward (target > function start) | the branching function was truncated; the target is its own outlined cold block | widen the branching function until the target is inside it | 18, **none** coverage-added |
+
+The forward set came from the XEX's `.pdata` table, not from linear sweep: the compiler
+outlined cold blocks and `.pdata` describes each outlined region as its own entry, so a
+`beq` into a cold block is a forward branch to a non-entry address. Widening works
+because XenonRecomp only consults the symbol table when the target is outside the current
+function, so growing the function turns the dropped branch into a plain local `goto`. It
+does *not* remove the `.pdata` entries in between — the exact-start lookup means a
+spanning entry cannot hide a nested one — so those addresses end up emitted both inside
+the widened function and as their own `sub_`. That duplication costs code size, not
+correctness, and is already the accepted outcome of `fix_switch_function_bounds.py`
+widening a switch parent over its case labels.
+
+Widening cascades: covering one target extends the function past further truncations, so
+it needs a fixpoint loop. Here it converged after 3 rounds (18 → 3 → 0).
+
+**Verification that nothing was lost.** Widening absorbed 6 functions
+(`825DD928`, `825DF244`, `8281D4C4`, `828573A8`, `8287D298`, `82883A9C`) — the linear
+sweep stops inventing separate functions inside a range an earlier function now claims.
+All 6 are inside a widened parent, and **none appears in the C1/C2 coverage traces**, so
+no address hardware ever entered as a function stopped existing. The 9 pruned addresses
+*do* all appear in the traces, but that is not evidence they are functions — they came
+*from* those traces, and their recorded extents are what convict them (5d).
+
+Net: **57,837 → 57,822 functions** (−9 spurious splits, −6 absorbed), and the image now
+has zero dropped branches.
+
+**The order matters.** `coverage_to_function_overrides.py` proposes and
+`find_dropped_branches.py` disposes; run the latter after the former, every time, and
+treat a nonzero backward count as the coverage pass's error rather than a new problem.
+
+## 14. The six unrecognized mnemonics — and a seventh that could not have compiled
+
+An unrecognized instruction is not a TODO. `Recompile()` returns false, one line is
+printed, and **nothing at all is emitted for that instruction** — the guest operation
+silently becomes a no-op. 42 sites across six mnemonics: `lhbrx` (30), `stfsux` (5),
+`vsubuws` (4), `vspltish`, `vpkuwum`, `vadduhs`. All implemented upstream in
+`~/GithubRepo/XenonRecomp` (commit `981afe9`); the image now recompiles with zero.
+
+`lhbrx`'s 30 sites do cluster, which is worth knowing before the VFS work. They fall in
+**7 functions inside a single ~18 KB region**, `0x82764CF8`–`0x82769338`:
+
+    sub_82768C78  8      sub_82764CF8  1
+    sub_82769338  7      sub_827669D8  1
+    sub_827691E8  6      sub_82766FC8  1
+    sub_82769270  6
+
+27 of the 30 are in the four adjacent functions `82768C78`–`82769338`. A byte-reversed
+halfword load appearing that densely in one contiguous module is the signature of
+little-endian structure parsing in a big-endian title — which is exactly what
+`docs/big-archive-format.md` says the `.big` index is. Treat that region as the prime
+candidate for the archive reader when phase 2 starts; it is a hypothesis from an
+instruction histogram, not a confirmed identification.
+
+The seventh was already "implemented" and could never have worked: **`VADDUWS` emitted
+`simde_mm_adds_epu32`, which does not exist.** No SSE level has a 32-bit unsigned
+saturating add and simde does not synthesise one, so any title using `vadduws` produced
+C++ that fails to compile. Case Zero has exactly one such site, which would have blocked
+its first compile (phase 0.2) with an error pointing at simde rather than at the
+recompiler. Both 32-bit saturating cases now use algebraic identities instead of
+nonexistent intrinsics:
+
+    vadduws:  a + min_epu32(b, ~a)      overflow iff b > ~a, and then a + ~a = 0xFFFFFFFF
+    vsubuws:  max_epu32(a, b) - b       a - b when a >= b, 0 otherwise
+
+Verified by differential test against scalar references written from the PPC definitions,
+modelling XenonRecomp's fully-reversed host vector layout: 200,153 cases (exhaustive over
+saturation-boundary word pairs, plus 200k random and mixed-edge vectors), zero failures
+under `-O2`, `-msse4.1`, `-mavx2` and `-O0`. Negative controls confirm the test can fail —
+unswapping `vpkuwum`'s operands fails 199,957 cases, dropping `vsubuws`'s clamp fails
+184,854. **A vector test that has never failed has not been shown capable of failing**;
+the operand-order convention in particular is invisible to inspection.
 
 ---
 

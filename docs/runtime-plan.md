@@ -21,30 +21,47 @@ No phase starts on guesswork; each has a ground-truth gate that says "done".
 
 ## Phase 0 — make the image compilable and honest *(prerequisite)*
 
-> **Status 2026-08-04: 0.1 still open; the coverage half of 0.2's prerequisite is done.**
-> The C1/C2 forwards oracle recovered 110 missing entry points and the image now sits at
-> **57,837 functions with zero switch-boundary errors and zero `// ERROR:` comments**
-> (finding 5). What remains here is the instruction work and the first compile.
+> **Status 2026-08-04: 0.1 is DONE. Only the first compile (0.2) remains.**
+> The image sits at **57,822 functions and the recompiler log is completely silent** —
+> zero unrecognized, zero undecodable, zero switch-boundary errors, zero dropped
+> branches. Findings 13 and 14.
 
-**0.1 Close the 42 unrecognized-instruction sites.** Six mnemonics — `lhbrx` (30),
-`stfsux` (5), `vsubuws` (4), `vspltish`, `vpkuwum`, `vadduhs` — implemented in
-`~/GithubRepo/XenonRecomp`. Implement all six, not just the ones a capture proves are
+**0.1 Close the 42 unrecognized-instruction sites.** *(done — XenonRecomp `981afe9`)*
+Six mnemonics — `lhbrx` (30), `stfsux` (5), `vsubuws` (4), `vspltish`, `vpkuwum`,
+`vadduhs`. All six were implemented rather than only the ones a capture proves are
 executed: the marginal cost is minutes each, and "never executed" only ever means "never
 executed on the paths captured so far".
 
-`lhbrx`'s 30 sites are worth a second look while implementing it — a byte-reversed
-halfword load that frequent smells like an endianness helper in the `.big` archive
-reader, i.e. on every asset load path.
+A seventh came out of the same work. `vadduws` was already implemented, but emitted
+`simde_mm_adds_epu32` — an intrinsic that does not exist at any SSE level and that simde
+does not synthesise. Case Zero has one `vadduws` site, so this would have failed 0.2 with
+an error pointing at simde rather than the recompiler. **An "implemented" recompiler case
+is only proven by a title that uses it and a compile that consumes it.**
+
+`lhbrx`'s 30 sites did cluster, as hoped, though the shape is worth knowing: 7 functions
+inside a single ~18 KB region (`0x82764CF8`–`0x82769338`), with 27 of the 30 in four
+adjacent functions at `82768C78`–`82769338`. Dense byte-reversed halfword loads in one
+contiguous module is the signature of little-endian structure parsing in a big-endian
+title, which is what `docs/big-archive-format.md` says the `.big` index is. **Prime
+candidate for the archive reader in phase 2** — a hypothesis from an instruction
+histogram, not a confirmed identification.
+
+**0.1b Dropped direct branches — a class nothing was measuring.** *(done)* Found because
+the "zero `// ERROR:` comments" gate grepped for a colon the recompiler never emits, so
+it could never match. The real count was 31. See finding 13 for the mechanism and the
+two opposite repairs; `tools/find_dropped_branches.py` is now a required stage of the
+function-list pipeline, not an audit.
 
 **0.2 First real compile.** The 227 TUs (154 MB) have never been fed to a C++ compiler.
 Stand up the CMake skeleton, build `ppc/` as a static library, and burn down what falls
 out. Both earlier ports hit link-scale problems at this step and both solved them; at
 57,837 functions this image is smaller than either, so expect less.
 
-**Gate:** recompiler log is completely clean (zero unrecognized, zero switch errors —
-switch errors are already zero), and a smoke `main` that walks the whole
+**Gate:** the recompiler log is completely clean — zero unrecognized, zero undecodable,
+zero switch errors, **and zero dropped branches** (that last one is not in the log at
+all; run `tools/find_dropped_branches.py`) — *and* a smoke `main` that walks the whole
 `PPCFuncMappings` table links and runs, forcing the linker to resolve every generated
-symbol.
+symbol. The log half of this gate is now met; the link half is 0.2.
 
 ## Phase 1 — kernel HLE and guest bootstrap
 
@@ -76,6 +93,12 @@ index, then seeks to individual entries, so we need **random access within an ar
 not sequential streaming**. Paths are constructed at runtime (`anm_%s.big`), so the VFS
 handles arbitrary paths rather than a fixed manifest. Gameplay opens 433 distinct
 archives across 23,965 file opens (A2).
+
+**Where the reader probably lives:** `0x82764CF8`–`0x82769338`, which holds all 30
+`lhbrx` sites in the image — 27 of them in the four adjacent functions at
+`82768C78`–`82769338` (finding 14). Byte-reversed halfword loads that dense in one module
+is what little-endian structure parsing looks like in a big-endian title, and the `.big`
+index is little-endian. Start there rather than from the file-open call sites.
 
 **Gate:** the file-open sequence in our log matches A1's, in order, out to the title
 screen.
