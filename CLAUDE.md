@@ -222,6 +222,34 @@ From phase 0.3 (the `.xtr` decoder, closing finding 10):
     known-benign alarm is to encode the knowledge (`xtr.PM4_SHORT_RECORDED`), never to
     widen the tolerance — widening it also silences the unknown cases it was built for.
 
+From phase 1 (the runtime; details in `docs/phase1-notes.md`):
+
+42. **A generated stub cannot obey the out-parameter rule, and the fix is to say so.**
+    "A stub must fill its out-parameter or not exist" is right, and a generator working
+    from a list of *names* has no signature to obey it with. Guessing by name prefix
+    would be wrong silently. State the limit in the generator, name the failure modes,
+    and keep the escalation short — a real signature in `imports.cpp`. Two recognisable
+    symptoms: a guest trusting an untouched out-buffer (corruption far from the call),
+    and **a segfault on or near `0xC0000002`, which always means an unimplemented import
+    was asked for a pointer** rather than an NTSTATUS.
+43. **A ported diagnostic can carry an assumption about the memory map it came from.**
+    Both template ports bound their guest-stack scans with `addr < 0x80000000`. Our
+    guest thread blocks come from the o1heap arena at `0x88000000`, so the bound failed
+    on the first word and every stall trace printed `callers:` with nothing after it —
+    an instrument that looks like it ran and found nothing. Gotcha 25 in a new place.
+    Every inherited constant that is a *range* deserves the question every inherited
+    *address* gets.
+44. **When the safe value is a property of the generated function list, compute it from
+    the function list.** Minted export thunks must land inside the dispatch table's
+    CODE range. Asura's Wrath hardcoded an address that was 4.7 MB outside it and the
+    stub never ran (its finding 54); Case Zero has no free constant at all — 16 bytes
+    between its last mapped function and the end of the range. Scanning for the longest
+    unmapped run costs one pass per process and cannot go stale.
+45. **Two captures of "the same drive" need not be nested.** A5 is A1's drive with
+    high-frequency logging on, and it is *nearly* a superset — but 11 names appear only
+    in A1, the whole storage-device-selector path that drive did not enter. Treating the
+    richer capture as authoritative everywhere manufactures divergences.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -247,15 +275,31 @@ From phase 0.3 (the `.xtr` decoder, closing finding 10):
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
-  `runtime-plan.md` the phase plan.
+  `runtime-plan.md` the phase plan, `phase1-notes.md` the phase 1 record (what the
+  runtime work found that neither the plan nor the kickoff predicted).
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
-- `runtime/` — the host runtime. Currently phase 0.2 only: `CMakeLists.txt` (builds
-  `ppc/` into `libppc_image.a`; **selects clang++ before `project()` — gotcha 31**),
-  `main.cpp` (the `cz_smoke` link gate), `cpu/timebase.{h,cpp}` (the 49.875 MHz guest
-  timebase force-included over `ppc/` — gotchas 1 and 32), and
-  `kernel/import_stubs.cpp` (generated; 244 abort stubs — phase 1 converts these to
-  honest-failure returns).
+- `runtime/` — the host runtime, phase 1 in progress. Target is `cz_runtime`; the
+  phase 0.2 link gate survives as `cz_runtime --smoke`.
+  - `CMakeLists.txt` — **selects clang++ before `project()` (gotcha 31)**, and
+    enables C for exactly one file (o1heap) so the .c source is not silently ignored.
+  - `main.cpp` — image load → header publish → data-import resolution → guest entry,
+    plus the `--smoke` gate.
+  - `cpu/timebase.{h,cpp}` — the 49.875 MHz guest timebase, force-included over
+    `ppc/` only (gotchas 1 and 32). `kernel/imports.cpp` shares `CZ_TIMEBASE_HZ` so
+    `KeQueryPerformanceFrequency` and `mftb` cannot drift apart.
+  - `cpu/guest_thread.{h,cpp}` — PCR/TLS/TEB block + guest stack. Both constants are
+    from this XEX's header as A1 prints it: 64 TLS slots, 0x40000 stack.
+  - `kernel/{memory,heap}.*` — the flat 4 GB map and the four arenas; the layout is
+    checked against A1's own allocations, not inherited (`docs/phase1-notes.md` §3).
+  - `kernel/{kobject,guestcall,klog}.*` — handles, the import marshalling seam, and
+    the `[kcall]` trace the gate diffs.
+  - `kernel/xex_imports.*` — publishes the XEX headers into guest memory and resolves
+    the 244 IAT slots + 13 kernel variables.
+  - `kernel/imports.cpp` — the kernel HLE, written in A1's call order.
+  - `kernel/{vfs,file_imports}.*` — the file layer. In phase 1 rather than phase 2
+    because A1's 22nd distinct kernel call is already an `NtCreateFile` (finding 16).
+  - `kernel/import_stubs.cpp` — generated; honest-failure returns, not aborts.
 - Recompiler TOOL at `~/GithubRepo/XenonRecomp` (built at `build/`; carries local
   patches — see `docs/xenonrecomp-upstream-bugs.md`). Shader translator at
   `~/GithubRepo/XenosRecomp` (also patched; Case Zero inherits those fixes for free).
@@ -297,12 +341,35 @@ python3 tools/find_dropped_branches.py --prune    # backward: remove spurious st
 python3 tools/find_dropped_branches.py --widen    # forward: widen truncated functions
 ```
 
-Build the image and run the phase 0 gate (needs `clang++`; ~90 s on 16 cores):
+Build the runtime (needs `clang++`; ~90 s on 16 cores for a cold image build):
 ```
 python3 tools/gen_import_stubs.py                 # after any change to the import set
 cmake -S runtime -B runtime/build -G Ninja
 cmake --build runtime/build -j$(nproc)
-./runtime/build/cz_smoke
+./runtime/build/cz_runtime --smoke                # the phase 0.2 link gate, still live
+```
+
+Run the guest and gate it against hardware. **Both captures, always** — A1 is the
+authority for the boot sequence, A5 for the synchronisation surface, and A5 is *not* a
+superset of A1 (gotcha 45):
+```
+(cd runtime/build && ./cz_runtime > /tmp/run.log 2>&1)      # ^C or timeout; it parks
+python3 tools/kernel_call_diff.py \
+    --xenia "Xenia logs/A1_boot_title_fullgame/cz_run1.log" --ours /tmp/run.log
+python3 tools/kernel_call_diff.py \
+    --xenia "Xenia logs/A5_highfreq_boot/cz_run5.log" --ours /tmp/run.log \
+    --include-high-frequency
+```
+
+Runtime instruments, all off by default and free when off:
+```
+CZ_MEM_TRACE=1     every virtual-memory call with its arguments AND its answer
+CZ_FILE_TRACE=1    every open/read, including the not-founds
+CZ_WAIT_TRACE=1    name any infinite wait that outlasts 5 s, with guest callers
+CZ_CS_TRACE=1      name the owner of a critical section a thread cannot get
+CZ_STALL_TRACE=N   every N-th sleep, dump the sleeping thread's guest call sites
+CZ_PEEK=addr[,n]   dump guest memory as the XEX shipped it, before any guest code runs
+CZ_NULL_PAGE_READABLE=1|rw   null reads succeed (as on console) / page 0 fully mapped
 ```
 
 Re-derive the save/restore helper addresses:
@@ -436,13 +503,39 @@ index (gotcha 38). Both captures are intact: clean heads, zero desyncs. The cens
 self-check found `INDIRECT_BUFFER` is recorded one dword short (gotcha 39), which is a
 trap phase 4 would otherwise have hit at replay time.
 
-**PHASE 0 IS COMPLETE.** Next:
+**PHASE 0 IS COMPLETE.**
 
-1. **Start the runtime** (phase 1) — kernel HLE and guest bootstrap, written against
-   A1's call order. First job is converting `runtime/kernel/import_stubs.cpp` from
-   abort-stubs to honest-failure returns, because phase 1's gate is the *call sequence*
-   and an abort on the first unimplemented name makes the ordering unobservable.
-   `docs/phase1-kickoff.md` is the hand-off prompt.
+**Phase 1 in progress (2026-08-04, session 4): the guest boots and runs.**
+`docs/phase1-notes.md` is the record; read it before continuing.
+
+The recompiled image runs under our runtime, brings up TLS, threads and the loader
+seam, spawns its `cAsyncFileSystem` worker, and reads its first real file off the
+package. Measured by the gate:
+
+- **`--xenia A1` (masked): PREFIX MATCH, 23 of 93** — an exact prefix of hardware's
+  first-occurrence order, stopping before `NtClose`.
+- **`--xenia A5 --include-high-frequency`**: 2 real mismatch windows, both listed in
+  `docs/phase1-notes.md` §5.
+- 97 of 244 imports real, 147 generated honest-failure stubs.
+- `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
+
+**Where it stops, and it is localised rather than mysterious.** The main thread reads
+`game:\layout.bin` and then parks in a poll loop inside the `.big`-reader module
+(callers `0x8276xxxx`–`0x8278xxxx`), while the `cAsyncFileSystem` worker sits on an
+event nobody signals — an async-I/O completion handshake that is not completing. Both
+ends have addresses; `docs/phase1-notes.md` §5 has them.
+
+Next, in order:
+
+1. **The async-file completion handshake** above. It is the only thing between here
+   and a much longer prefix.
+2. **The `Vd*` block** — 20 of A1's next 25 first-occurrences. Nominally phase 3/4,
+   arriving early because the boot goes through it. `XGetVideoMode` currently lives in
+   `kernel/imports.cpp` and MUST move to `gpu/vd.cpp` alongside `VdQueryVideoMode`
+   when that lands: the driver's letterbox arithmetic straddles the two and two
+   independent copies is how they drift.
+3. Chase the early `RtlNtStatusToDosError` the A5 gate reports (§5) — something is
+   failing that does not fail on hardware.
 
 ## Conventions (same as the two template ports)
 

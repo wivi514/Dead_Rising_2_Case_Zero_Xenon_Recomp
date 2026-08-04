@@ -396,6 +396,26 @@ GUEST_FUNCTION_HOOK(__imp__XamFree, XamFree_x)
 // Critical sections & spinlocks (guest-side state, host atomics)
 // ---------------------------------------------------------------------------
 
+// Is `addr` plausibly part of a guest stack we can read?
+//
+// This exists because the obvious bound is wrong here, and wrong SILENTLY. Both
+// template ports scan a stalled thread's stack for return addresses and bound the
+// scan with `addr < 0x80000000`, which is true of a console guest stack and true of
+// their runtimes' stacks. It is NOT true of ours: guest thread blocks come from the
+// o1heap user arena, which kernel/heap.cpp places at 0x88000000. The bound is
+// therefore false on the very first word, the scan breaks immediately, and every
+// stall and wait trace prints "callers:" with nothing after it — a diagnostic that
+// looks like it ran and found nothing, rather than one that never ran. (Gotcha 25's
+// shape exactly: before believing an empty result, confirm the thing could have
+// produced a non-empty one.)
+//
+// The honest bound is the one that is actually true of our map: inside the 4 GB
+// space, past the null page, and 4-byte aligned.
+static bool GuestStackAddressLooksSane(uint32_t addr)
+{
+    return addr >= 0x1000 && (addr & 3) == 0 && uint64_t(addr) + 4 <= PPC_MEMORY_SIZE;
+}
+
 static uint32_t CurrentGuestThreadId()
 {
     // r13 (the PCR address) is unique per guest thread and never 0 once
@@ -658,6 +678,20 @@ static uint32_t NtSetEvent_x(uint32_t handle, be<uint32_t>* previousState)
     return STATUS_SUCCESS;
 }
 
+// Declared in file_imports.cpp, defined here because the Event type lives here.
+// NtReadFile/NtWriteFile take an optional event handle that NT signals on
+// completion; ours complete synchronously but still owe the signal, or an IO thread
+// parked on that event never wakes and the file it wanted looks like a hang rather
+// than a missing feature. dynamic_cast rather than ResolveEvent's static one: the
+// handle comes straight from a guest argument and need not be an event at all.
+void SignalGuestEvent(uint32_t handle)
+{
+    if (!handle || !IsKernelObject(handle) || !IsLiveKernelHandle(handle))
+        return;
+    if (auto* event = dynamic_cast<Event*>(GetKernelObject(handle)))
+        event->Set();
+}
+
 static uint32_t NtClearEvent_x(uint32_t handle, be<uint32_t>* previousState)
 {
     Event* event = ResolveEvent(handle, "NtClearEvent");
@@ -795,7 +829,7 @@ static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32
                 for (uint32_t w = 0; w < 512 && found < 8; w++)
                 {
                     const uint32_t a = sp + w * 4;
-                    if (a < 0x1000 || a >= 0x80000000u)
+                    if (!GuestStackAddressLooksSane(a))
                         break;
                     const uint32_t v = PPC_LOAD_U32(a);
                     if (v >= uint32_t(PPC_CODE_BASE) &&
@@ -1175,9 +1209,59 @@ static bool DrainThreadApcs()
     return true;
 }
 
+// CZ_STALL_TRACE=<n>: every n-th sleep on a thread, print that thread's identity and
+// a scan of its guest stack for image return addresses.
+//
+// A boot that has stopped making progress spins here, and this is the instrument
+// that says WHICH GUEST FUNCTION is waiting. No host backtrace can: recompiled
+// frames are inlined and tail-called under -O2, and Asura's Wrath measured its
+// addr2line output naming a function that was never called. The frame back-chain is
+// also unreliable on these paths (leaf frames), so this scans rather than walks.
+// Off by default and free when off: one thread-local increment and a compare.
+static uint32_t StallTraceInterval()
+{
+    static const uint32_t interval = [] {
+        const char* v = getenv("CZ_STALL_TRACE");
+        return v ? uint32_t(strtoul(v, nullptr, 0)) : 0u;
+    }();
+    return interval;
+}
+
+static void DumpGuestStallSites(const char* where)
+{
+    if (!g_ppcContext)
+        return;
+    uint8_t* base = g_memory.base;
+    const uint32_t sp = g_ppcContext->r1.u32 & ~3u;
+    char chain[256] = { 0 };
+    int found = 0, off = 0;
+    for (uint32_t w = 0; w < 512 && found < 10; w++)
+    {
+        const uint32_t a = sp + w * 4;
+        if (!GuestStackAddressLooksSane(a))
+            break;
+        const uint32_t v = PPC_LOAD_U32(a);
+        if (v >= uint32_t(PPC_CODE_BASE) && v < uint32_t(PPC_CODE_BASE + PPC_CODE_SIZE))
+        {
+            off += snprintf(chain + off, sizeof(chain) - off, " %08X", v);
+            ++found;
+        }
+    }
+    fprintf(stderr, "[stall] %s tid=%08X r13=%08X entry=%08X lr=%08X callers:%s\n", where,
+            GuestThread::GetCurrentThreadId(), g_ppcContext->r13.u32,
+            LookupThreadEntry(GuestThread::GetCurrentThreadId()),
+            uint32_t(g_ppcContext->lr), chain);
+}
+
 static uint32_t KeDelayExecutionThread_x(uint32_t mode, uint32_t alertable,
                                          be<int64_t>* interval)
 {
+    if (const uint32_t every = StallTraceInterval())
+    {
+        static thread_local uint32_t sleeps = 0;
+        if (++sleeps % every == 0)
+            DumpGuestStallSites("KeDelayExecutionThread");
+    }
     if (alertable && (DrainThreadApcs() | (int)FireDueTimerApcs()))
         return STATUS_USER_APC;
 

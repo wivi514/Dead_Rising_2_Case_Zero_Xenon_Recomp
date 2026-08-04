@@ -33,6 +33,7 @@
 #include "cpu/timebase.h"
 #include "kernel/heap.h"
 #include "kernel/memory.h"
+#include "kernel/vfs.h"
 #include "kernel/xex_imports.h"
 #include "ppc_recomp_shared.h"
 
@@ -161,6 +162,17 @@ int main(int argc, char** argv)
     g_memory.Init();
     g_heap.Init();
     fprintf(stderr, "runtime: guest memory at %p, heaps ready\n", (void*)g_memory.base);
+
+    // The package is the directory holding default.xex, and the guest reaches it as
+    // both `game:` and `d:` — Xenia registers both symlinks before the title runs
+    // (A1 logs them), so neither is something the guest asks for. Mounting before
+    // any guest code runs is required: A1's 22nd distinct kernel call is already an
+    // NtCreateFile on `game:\layout.bin`.
+    {
+        std::string root = xexPath;
+        const size_t slash = root.find_last_of('/');
+        VfsSetGameRoot(slash == std::string::npos ? std::string(".") : root.substr(0, slash));
+    }
 
     // Load the XEX image into guest memory at its link base.
     //
