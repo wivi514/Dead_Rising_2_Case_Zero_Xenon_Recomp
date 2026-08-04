@@ -50,11 +50,15 @@
 
 namespace fs = std::filesystem;
 
-// Signalled by imports.cpp; NtReadFile/NtWriteFile take an optional event handle
-// that NT signals on completion. Ours complete synchronously but still owe the
-// signal, or an IO thread parked on that event never wakes and the file it wanted
+// Both defined in imports.cpp, because the Event type and the alertable wait sites
+// live there.
+//
+// NtReadFile/NtWriteFile signal completion through EITHER an event handle OR an APC
+// routine, and this title uses the APC. Ours complete synchronously but still owe
+// the notification, or the thread waiting on it never wakes and the file it wanted
 // looks like a hang rather than a missing feature.
 void SignalGuestEvent(uint32_t handle);
+void QueueThreadApc(uint32_t routine, uint32_t context, uint32_t ioStatusBlock);
 
 namespace {
 
@@ -249,6 +253,32 @@ uint32_t NtQueryFullAttributesFile_x(XOBJECT_ATTRIBUTES* attrs, be<uint32_t>* in
 
 // (handle, event, apcRoutine, apcContext, iosb, buffer, length, byteOffset).
 // kHighFrequency in Xenia — invisible in A1, visible in A5 (finding 2).
+//
+// THE COMPLETION IS AN APC, NOT AN EVENT, AND THAT IS THE WHOLE HANDSHAKE
+// -----------------------------------------------------------------------
+// A5's first read, on the cAsyncFileSystem thread (F8000018):
+//
+//   NtReadFile(F8000020, event=00000000, apc=82831B21, apcCtx=82789670,
+//              iosb=E418D208, buffer=FFCA0000, length=00009000, offset=0)
+//
+// `event` is ZERO. Every boot-era read here is like that: this title's async file
+// system delivers completion through the APC routine, and the routine's low bit is
+// the kernel's own flag rather than part of the address (DrainThreadApcs masks it).
+// The issuing thread then parks in an ALERTABLE wait so the APC can run —
+//
+//   NtSetEvent(F8000014, 0)                          <- its own queue event
+//   NtWaitForSingleObjectEx(F8000014, 1, alertable=1, NULL)
+//
+// which is the idiom for "enter an alertable wait now".
+//
+// A read that fills the buffer and the IO_STATUS_BLOCK but drops the APC therefore
+// looks like it worked and hangs the title anyway: the requesting thread polls a
+// completion flag only the APC ever sets. That is exactly where this port's boot
+// stopped, and it is the same shape as the out-parameter rule one level up — the
+// contract of an async call includes its notification, not just its data.
+//
+// The APC belongs to the CALLING thread (t_apcQueue is thread-local) and runs at
+// that thread's next alertable wait, which is NT's rule and not a convenience.
 uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
                       uint32_t apcContext, XIO_STATUS_BLOCK* iosb, uint8_t* buffer,
                       uint32_t length, be<uint64_t>* byteOffset)
@@ -274,18 +304,24 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     }
 
     const size_t got = fread(buffer, 1, length, file->fp);
+    const uint32_t status = got == 0 && length != 0 ? STATUS_END_OF_FILE : STATUS_SUCCESS;
     if (iosb)
     {
-        iosb->Status = got == 0 && length != 0 ? STATUS_END_OF_FILE : STATUS_SUCCESS;
+        iosb->Status = status;
         iosb->Information = uint32_t(got);
     }
     if (FileTrace())
-        KLOG("NtReadFile('%s', %u bytes @ %lld) -> %zu\n", file->guestPath.c_str(), length,
-             byteOffset ? (long long)byteOffset->get() : -1LL, got);
+        KLOG("NtReadFile('%s', %u bytes @ %lld) -> %zu (apc=%08X event=%08X)\n",
+             file->guestPath.c_str(), length,
+             byteOffset ? (long long)byteOffset->get() : -1LL, got, apcRoutine, event);
 
-    // Owed even though the read completed synchronously.
+    // Both notifications are owed even though the read completed synchronously.
+    // Whichever the caller supplied is the one it is waiting on; this title uses the
+    // APC and passes event = 0.
     SignalGuestEvent(event);
-    return got == 0 && length != 0 ? STATUS_END_OF_FILE : STATUS_SUCCESS;
+    if (apcRoutine)
+        QueueThreadApc(apcRoutine, apcContext, iosb ? g_memory.MapVirtual(iosb) : 0);
+    return status;
 }
 
 // A1: NtQueryInformationFile(F80000E0, iosb, buffer, 0x38, 0x22) and

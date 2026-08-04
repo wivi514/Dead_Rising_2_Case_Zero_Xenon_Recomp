@@ -250,6 +250,18 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
     in A1, the whole storage-device-selector path that drive did not enter. Treating the
     richer capture as authoritative everywhere manufactures divergences.
 
+46. **The contract of an async call includes its notification, not just its data.**
+    Our `NtReadFile` filled the buffer, filled the `IO_STATUS_BLOCK` and returned
+    success — and hung the boot, because this engine signals completion through the
+    **APC routine** and passes `event = 0`. Dropping the APC left every observable
+    looking correct, which makes it *harder* to find than an outright failure. Two
+    sub-traps: the APC routine's low bit is a kernel flag, not part of the address,
+    and its `IO_STATUS_BLOCK` argument is a **guest** address, not the host pointer
+    the marshalling layer hands you.
+47. **A `kHighFrequency` export can be the one that matters.** The read above is
+    invisible in A1 and in every other level-3 capture; only A5 shows it. A capture
+    set needs at least one high-frequency arm or its quietest exports are unfalsifiable.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -505,37 +517,47 @@ trap phase 4 would otherwise have hit at replay time.
 
 **PHASE 0 IS COMPLETE.**
 
-**Phase 1 in progress (2026-08-04, session 4): the guest boots and runs.**
+**Phase 1 in progress (2026-08-04, session 4): the guest boots and runs to the GPU.**
 `docs/phase1-notes.md` is the record; read it before continuing.
 
 The recompiled image runs under our runtime, brings up TLS, threads and the loader
-seam, spawns its `cAsyncFileSystem` worker, and reads its first real file off the
-package. Measured by the gate:
+seam, spawns its worker threads, reads real files off the package, and walks the
+entire GPU bring-up sequence in hardware's order. Measured by the gate:
 
-- **`--xenia A1` (masked): PREFIX MATCH, 23 of 93** — an exact prefix of hardware's
-  first-occurrence order, stopping before `NtClose`.
-- **`--xenia A5 --include-high-frequency`**: 2 real mismatch windows, both listed in
-  `docs/phase1-notes.md` §5.
-- 97 of 244 imports real, 147 generated honest-failure stubs.
+- **`--xenia A1` (masked): PREFIX MATCH, 43 of 93** — an exact prefix of hardware's
+  first-occurrence order, stopping before `VdIsHSIOTrainingSucceeded`.
+- 97 of 244 imports real, 147 generated honest-failure stubs. **The last 16 positions
+  of that 43 were walked entirely on stubs** — the clearest evidence available that
+  honest failure beats aborting.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 
-**Where it stops, and it is localised rather than mysterious.** The main thread reads
-`game:\layout.bin` and then parks in a poll loop inside the `.big`-reader module
-(callers `0x8276xxxx`–`0x8278xxxx`), while the `cAsyncFileSystem` worker sits on an
-event nobody signals — an async-I/O completion handshake that is not completing. Both
-ends have addresses; `docs/phase1-notes.md` §5 has them.
+**Where it stops is a wall, not a bug.** The D3D driver spins in `sub_82845160`
+polling the ring buffer's read-pointer write-back slot for free space. A1 shows it
+being armed by `VdInitializeRingBuffer(03D72000, 14)` and
+`VdEnableRingBufferRPtrWriteBack(03D7103C, 8)`; both are honest-failure stubs here, so
+nothing can ever advance it. This is verbatim the phase 4 trap `runtime-plan.md`
+flagged — *a command stream carrying the answers to its own waits*. Faking the
+write-back pointer would violate gotcha 5 outright.
+
+**The APC finding is the one to carry to Case West** (finding 20). Our `NtReadFile`
+filled the buffer, filled the `IO_STATUS_BLOCK`, returned success — and hung the
+title, because this engine's async file system signals completion through the **APC
+routine** and passes `event = 0`. Dropping the APC left every observable looking
+correct. **The contract of an async call includes its notification, not just its
+data.** Only A5 could find it: `NtReadFile` is `kHighFrequency` and does not appear in
+A1 at all.
 
 Next, in order:
 
-1. **The async-file completion handshake** above. It is the only thing between here
-   and a much longer prefix.
-2. **The `Vd*` block** — 20 of A1's next 25 first-occurrences. Nominally phase 3/4,
-   arriving early because the boot goes through it. `XGetVideoMode` currently lives in
-   `kernel/imports.cpp` and MUST move to `gpu/vd.cpp` alongside `VdQueryVideoMode`
-   when that lands: the driver's letterbox arithmetic straddles the two and two
-   independent copies is how they drift.
-3. Chase the early `RtlNtStatusToDosError` the A5 gate reports (§5) — something is
-   failing that does not fail on hardware.
+1. **`gpu/vd.cpp` and the command processor** (phases 3/4, arriving early because the
+   boot goes through them). Two things are already prepared: `kernel/heap.cpp`
+   withholds the GPU register aperture at `0x7FC80000` from the virtual arena, and
+   finding 10d established the processor can be built and gated against **B1 alone**.
+   **Debt to clear when it lands:** `XGetVideoMode` currently lives in
+   `kernel/imports.cpp` and must move beside `VdQueryVideoMode` with both calling one
+   filler — the driver's letterbox arithmetic straddles the two.
+2. Chase the early `RtlNtStatusToDosError` the A5 gate reports at position 19 —
+   something fails that does not fail on hardware.
 
 ## Conventions (same as the two template ports)
 

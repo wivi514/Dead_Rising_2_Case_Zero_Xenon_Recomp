@@ -207,50 +207,122 @@ and it cannot go stale, because there is no constant to go stale. That is the ge
 lesson — *when the safe value is a property of the generated function list, compute it
 from the function list.*
 
-## 5. Where the boot currently stops
+### Finding 20 — the async completion is an APC, and a read that drops it looks like it worked
 
-Reproducible, and localised to named guest addresses.
+This is the one that unblocked the boot, and it took the prefix from **23 to 43**.
 
-The main thread reads `game:\layout.bin` (36,176 bytes) and then parks in a poll loop:
+Our first `NtReadFile` filled the caller's buffer and its `IO_STATUS_BLOCK`,
+returned `STATUS_SUCCESS`, and hung the title. The main thread polled a completion
+flag forever while the `cAsyncFileSystem` worker sat in a wait, and nothing in our
+log said anything was wrong — the read had *worked*.
 
-```
-[stall] KeDelayExecutionThread tid=00000F00 r13=88004D60 lr=82829FCC
-        callers: 82776760 8277196C 82776760 828223F4 82776760 8276D5CC
-                 82784938 8277EC4C 8277E424 82786260
-```
-
-`0x82829FCC` is inside `sub_82829F78`, which is XAPI's `Sleep()` — the loop that
-retries `KeDelayExecutionThread` while it returns `STATUS_ALERTED` (257). Ours never
-returns 257, so `Sleep` itself is not the loop; the caller chain is, and it sits in
-`0x8276xxxx`–`0x8278xxxx`, the same module as the `.big` reader cluster identified by
-finding 14 (`0x82764CF8`–`0x82769338`).
-
-Meanwhile the `cAsyncFileSystem` worker is parked on an event nobody signals:
+A5 is the read oracle (finding 2 — `NtReadFile` is `kHighFrequency` and invisible in
+A1), and one line settles it:
 
 ```
-[wait] tid=00000F04 r13=88084D60 (entry=82769D58) handle=BBF16000 lr=825DA5F0
-       stuck 5s EVENT callers: 82769D58 82787404 82769D58 82769D84 82769D58 82829BEC
+d> F8000018 NtReadFile(F8000020, event=00000000, apc=82831B21, apcCtx=82789670,
+                       iosb=E418D208, buffer=FFCA0000, length=00009000, offset=0)
 ```
 
-i.e. **a producer/consumer completion handshake that is not completing.** That is the
-next thing to work on, and both ends of it now have addresses.
+`event` is **zero**. This title's async file system delivers completion through the
+**APC routine**, and the issuing thread then parks in an alertable wait so the APC
+can run — A5 shows the idiom plainly on the same thread:
 
-Also worth chasing, from the A5 strong gate: our first `RtlNtStatusToDosError` arrives
-around position 19, earlier than Xenia's. Something is failing and being translated
-that does not fail on hardware; whatever it is, it is upstream of the stall.
+```
+d> F8000018 NtSetEvent(F8000014, 00000000)                       <- its own queue event
+d> F8000018 NtWaitForSingleObjectEx(F8000014, 1, alertable=1, NULL)
+```
+
+Our implementation signalled the event and ignored `apcRoutine` entirely. Signalling
+a handle of 0 is a no-op, so the notification was simply dropped.
+
+The general rule, and it is the out-parameter rule one level up: **the contract of an
+async call includes its notification, not just its data.** A stub that gets the data
+right and the notification wrong is *harder* to find than one that fails outright,
+because every observable it touches looks correct.
+
+Two supporting details that would each have cost time on their own: the APC routine's
+low bit is the kernel's own flag rather than part of the address (`0x82831B21` →
+`0x82831B20`), and the APC's `IO_STATUS_BLOCK` argument must be passed as a **guest**
+address, not the host pointer the marshalling layer handed us.
+
+A1 alone could not have found this. Its `NtReadFile` lines do not exist.
+
+## 5. Where the boot currently stops — the GPU ring buffer
+
+Reproducible, and it is exactly where `docs/runtime-plan.md` said phase 4 would be
+needed. Not a bug: a wall.
+
+The main thread runs the whole GPU bring-up in hardware's order — `VdInitializeEngines`,
+`VdSetGraphicsInterruptCallback`, `VdInitializeRingBuffer`, `VdEnableRingBufferRPtrWriteBack`,
+`VdQueryVideoMode`, `VdRetrainEDRAM` — with **every one of those still a generated
+honest-failure stub**, and then stops making kernel calls at all. It is spinning in
+guest code, in the D3D driver:
+
+```
+sub_82845160  <-  sub_82846210  <-  sub_828519A0  <-  sub_8284CF88  <-  sub_8283CCE8
+```
+
+and the loop in `sub_82845160` is unmistakable:
+
+```
+lwz  r11, 10896(r31)     ; the read-pointer WRITE-BACK slot's address
+lwz  r10, 10908(r31)     ; the write pointer
+lwz  r11, 0(r11)         ; *write-back = how far the GPU has consumed
+subf r9,  r30, r10
+subf r11, r11, r10
+cmplw cr6, r9, r11
+bge  cr6, <exit>         ; enough ring space? no -> spin
+```
+
+That is a **ring-buffer free-space wait**. A1 shows the driver setting it up:
+
+```
+VdInitializeRingBuffer(03D72000, 14)            <- 1 MB ring at physical 0x03D72000
+VdEnableRingBufferRPtrWriteBack(03D7103C, 8)    <- write-back slot at 0x03D7103C
+```
+
+Both of those are honest-failure stubs here, so the slot was never armed and nothing
+can ever advance it. The driver is waiting for a GPU that does not exist yet.
+
+This is verbatim the trap the plan flagged for phase 4:
+
+> a command stream carrying the answers to its own waits — the D3D driver's GPU waits
+> poll a retired-fence counter and a consumed-to pointer that no runtime could
+> honestly invent
+
+so reaching it is the expected end of the kernel-only road. Faking the write-back
+pointer would be exactly the "never fake success" violation gotcha 5 forbids: the
+driver would march on and submit commands into a ring nobody reads.
+
+**Also still open** (from the A5 strong gate, and cheaper than the GPU): our first
+`RtlNtStatusToDosError` arrives at position 19, ahead of hardware's. Something is
+failing and being translated that does not fail on the console. It has not blocked
+anything, but it is an unexplained difference and those do not stay harmless.
 
 ## 6. Status
 
-**Not complete.** Phase 1's gate is a prefix-match out to the *title screen*; we reach
-the first file read.
+Phase 1's stated gate is a prefix-match out to the *title screen*. We reach the GPU
+ring-buffer wait, which is as far as a kernel-only runtime can go.
 
 - `tools/kernel_call_diff.py --xenia A1 --ours <log>`
-  → **PREFIX MATCH, 23 of 93**, stopping before `NtClose`.
+  → **PREFIX MATCH, 43 of 93**, stopping before `VdIsHSIOTrainingSucceeded`.
 - `... --xenia A5 --ours <log> --include-high-frequency`
-  → 2 real mismatch windows (see §5).
-- 97 of 244 imports are real; 147 are generated honest-failure stubs.
+  → mismatch windows only in the scheduling-sensitive region; see §5's open item.
+- 97 of 244 imports are real; 147 are generated honest-failure stubs — and note that
+  the last 16 positions of that 43 were walked entirely on **stubs**, which is the
+  clearest evidence available that honest failure beats aborting.
 - `cz_runtime --smoke` still passes, so the phase 0.2 link gate is intact.
 
-The next milestones, in order: the async-file completion handshake above; then the
-`Vd*` block, which is 20 of A1's next 25 first-occurrences and is phase 3/4 work
-arriving early because the boot goes through it.
+**The next milestone is `gpu/vd.cpp` and the command processor** — nominally phases 3
+and 4, arriving now because the boot goes through them. Two things are already
+prepared for it: `kernel/heap.cpp` withholds the GPU register aperture at
+`0x7FC80000` from the virtual arena, and phase 0.3 established that the command
+processor can be built and gated against **B1 alone** (finding 10d — 21 type-3
+opcodes, identical across all three captures).
+
+One piece of debt to clear when that lands: `XGetVideoMode` currently lives in
+`kernel/imports.cpp`. It **must** move to `gpu/vd.cpp` beside `VdQueryVideoMode` and
+both must call one filler — A1 calls `XGetVideoMode` twice and `VdQueryVideoMode`
+three times during the same display bring-up, and the driver's letterbox arithmetic
+straddles the two. Two independent copies is how they drift.
