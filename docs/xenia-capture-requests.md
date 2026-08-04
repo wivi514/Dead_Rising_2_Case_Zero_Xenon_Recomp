@@ -1,5 +1,25 @@
 # Xenia ground-truth captures needed for Case Zero — request list (round 1)
 
+> **STATUS 2026-08-04: ROUND 1 DELIVERED COMPLETE.** A1–A5, B1/B1b/B2, C1/C2, D and E,
+> all as the full game. What each file is: `Xenia logs/Xenia_Run_Content.md`. What they
+> taught us: **`docs/xenia-capture-analysis.md`** (the numbered findings ledger — read
+> that, not this).
+>
+> **Two things in this document were wrong, and are corrected in place below:**
+> 1. **§A2's premise.** `NtReadFile` is `kHighFrequency`, so it is suppressed at plain
+>    `log_level=3` and A2 contains **zero** reads. A5 is the `.big` seek oracle. See the
+>    strikethrough in A2 and finding 2.
+> 2. **§D's caveat was right to exist but the pessimism was misplaced** — `dump_shaders`
+>    works and produced raw Xenos microcode. The *conclusion* drawn from it was the wrong
+>    one though: the disc shader banks turned out not to match that microcode at all.
+>    Finding 6.
+>
+> One thing this document got right and it mattered more than everything else: the
+> **★ trial-mode check**. The first A1 take booted the trial. Finding 1.
+>
+> **THERE IS NO OUTSTANDING CAPTURE REQUEST.** The only candidate is an optional A2b
+> (gameplay-era `.big` seek order), and finding 8 explains why it is probably unnecessary.
+
 Written 2026-08-04, before any runtime work. Revised the same day, after reading what the
 Fable 2 and Asura's Wrath ports needed in their *later* rounds — several items below
 exist purely so this title does not repeat a round trip those ports paid for. Each such
@@ -112,10 +132,19 @@ Boot → new game → play the opening ~5 minutes of Still Creek (get outside, f
 zombies, pick up a weapon) → quit. Adds the gameplay kernel surface: streaming loads,
 physics/audio thread creation, XMA context allocation.
 
-> **This is also our only oracle for the `.big` archive format right now.** At level 3
+> ~~**This is also our only oracle for the `.big` archive format right now.** At level 3
 > Xenia logs `NtReadFile` with offsets and sizes, so the *seek pattern* into each `.big`
-> tells us where its header, index and payload live before anyone reverse-engineers the
-> container. Do not trim file-IO lines out of the log to save space.
+> tells us where its header, index and payload live.~~
+>
+> **RETRACTED — this premise is false.** `NtReadFile` is tagged `kHighFrequency` and is
+> suppressed at plain `log_level=3` no matter what the drive is. A2 has 23,965
+> `NtCreateFile` and **zero** `NtReadFile`; the canonical A1 likewise has zero (its two
+> hits are import-table declaration lines). **A5 is the read oracle** — with
+> `log_high_frequency_kernel_calls=true` there are 408 reads, and they cracked the format
+> (`docs/big-archive-format.md`). Finding 2.
+>
+> A2 is still worth what it gave: 24k streaming opens, 433 distinct `.big` archives, the
+> XMA context lifecycle, 86 guest threads, and the gameplay shader set.
 
 ### A3 — Save / content
 Boot → new game → reach the first save point → save → back to the menu → load that save →

@@ -205,8 +205,16 @@ instruction is a silent wrong-execution trap, not a build failure.
   `boss_battle_*`) although Case Zero ships only the Still Creek content. Expect the Case
   West port to reuse nearly all of this.
 - **Middleware**: Havok (physics; the image contains `hkp*`/`hkx*` RTTI strings and an
-  assert naming a developer to send `havok_assert_dump.txt` to), Bink video,
+  assert naming a developer to send `havok_assert_dump.txt` to),
   XMA audio (`XMACreateContext`), an in-house "CrowdEngine" for zombie crowds.
+
+  > **Retracted 2026-08-04 (capture finding 7): this list said "Bink video".** It was
+  > inferred from the strings `Bink_1` and `Bink_2` in the image. The round-1 captures
+  > show **no Bink decoder in use and no `.bik` file in the package** — cinematics stream
+  > through an in-house "Movie Player Object" reading `.big` archives. The strings are a
+  > dead or renamed path. The lesson generalises: a middleware name in an image proves
+  > the *name* exists, not that the *codec runs*. Both template ports linked Bink, which
+  > made the inference feel safe.
 - **Archives**: `.big` containers throughout (`data/**/*.big`), plus `.bct` textures and
   `.bcf` fonts. `anm_%s.big` shows runtime name construction, so the VFS must handle
   arbitrary paths, not a fixed manifest.

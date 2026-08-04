@@ -40,18 +40,24 @@ retail key and returns an **empty image with no diagnostic** when it is wrong. S
 - [x] Save/restore helper ladders located and cross-checked (`tools/find_save_restore.py`).
 - [x] **232 jump tables recovered** (105 absolute, 85 offset8, 42 offset16, 6,114 case
       labels) — XenonAnalyse finds **zero** on this binary.
-- [x] **Recompilation succeeds: 57,728 functions → 154 MB of C++ in `ppc/`**, with
-      zero switch-boundary errors after one repair round.
+- [x] **Recompilation succeeds: 57,837 functions → 154 MB of C++ in `ppc/`**, zero
+      switch-boundary errors, zero `// ERROR:` comments in the generated code.
+- [x] **Xenia ground truth round 1 complete** — A1–A5, B1/B1b/B2, C1/C2, D, E, all as the
+      full game. Analysis: `docs/xenia-capture-analysis.md`.
+- [x] **Forwards coverage oracle applied** — 110 entry points hardware executed that
+      static analysis never found.
+- [x] **`.big` container format cracked** — `docs/big-archive-format.md`.
 - [ ] 42 unrecognized-instruction sites (6 mnemonics) to implement in XenonRecomp.
-- [ ] Xenia ground-truth captures — `docs/xenia-capture-requests.md` (nothing captured yet).
+- [ ] An `.xtr` GPU-stream decoder — nothing here reads one yet, and two findings block on it.
 - [ ] Runtime (kernel HLE, GPU command processor, renderer, audio) — `docs/runtime-plan.md`.
 
 ## Game intel
 
 Blue Castle Games' in-house engine, shared with the full Dead Rising 2 (the image still
 carries DR2's zone names — americana, atlantica, arena_stadium — though Case Zero ships
-only the Still Creek content). Middleware: **Havok** physics, **Bink** video, `.big`
-archive containers, an in-house "CrowdEngine" for the zombie crowds, XMA audio.
+only the Still Creek content). Middleware: **Havok** physics, `.big` archive containers,
+an in-house "CrowdEngine" for the zombie crowds, XMA audio — and, unlike both template
+ports, **no Bink**.
 244 kernel/XAM imports.
 
 Notably, **the shaders ship as loose banks on disc** (`data/shaders/deadrisingprologue-{vs,ps,vd,pd,sc,sd,ss}.big`)
