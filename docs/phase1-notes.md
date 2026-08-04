@@ -668,6 +668,157 @@ where hardware calls neither. `XamUserReadProfileSettings` is still a stub and i
 obvious next domino: a title that cannot read its profile settings cancelling an XMsg
 IO request is a coherent story, but it is a story, not a measurement.
 
+### Finding 30 — the profile-settings layout, derived from the guest and checked against two sizes
+
+`XamUserReadProfileSettings` was the domino past the user block. Until it worked, the
+title's frontend tore itself down and called `XMsgCancelIORequest`, which A1 never
+does there — a call we make and hardware does not, which gotcha-wise is the most
+informative kind of gate divergence there is.
+
+The problem is that **the capture contains no return value and no post-call buffer for
+any of this**. Xenia logs an import's arguments on entry, pointer arguments as
+`ADDR(value-before-the-call)`, and prints no `= result` line for any XAM export. So
+the layout of a structure the kernel is supposed to *fill* is exactly the thing the
+ground truth cannot show. Two other witnesses can.
+
+**The first witness is arithmetic the title does in public.** A1's calls come in
+pairs: a query with a null buffer, then a real read using the size the kernel wrote
+back.
+
+```
+ReadProfileSettings(FFFE07D1, FF, 0,0, 3, 829E05C8, 4017B400(00000000), 00000000, 00000000)
+ReadProfileSettings(FFFE07D1, 00, 0,0, 3, 829E05C8, 4017B400(00000080), 4017B530, 4017B3E0)
+ReadProfileSettings(00000000, 00, 0,0, 2, 7018F068, 7018F060(00000058), E7367A00, 00000000)
+```
+
+3 settings → 0x80 and 2 settings → 0x58. In integers that has one solution: an 8-byte
+header plus 40 bytes per setting. Two independent points, and — worth saying, because
+it is what makes the flat arithmetic safe — neither leaves room for a variable-length
+payload, so this title only asks for fixed-size settings at boot.
+
+**The second witness is the guest's own walk of the result.** `sub_825E4E88` reads the
+buffer back and names every offset that matters:
+
+```
+count = [results + 0]                   header +0  = setting count
+for i in 0..count:
+    p  = [results + 4] + i*40           header +4  = pointer to the array
+    id = [p + 16]                       setting    +16 = setting id
+    switch (id - 0x1004000C) ...        VOICE_MUTED / _THRU_SPEAKERS / _VOLUME
+    case 2: v = [p + 32]                setting    +32 = the value
+            if (v > 100) v = 100        ... and it is a 0..100 volume
+```
+
+`+16` and `+32` with a stride of 40 pin the whole record: `from` at +0, the
+xuid/user-index union at +8 (8-aligned, hence a pad at +4), the id at +16, and an
+`X_USER_DATA` at +24 whose type byte is at +24 and whose 8-byte value union is at +32.
+That is the same layout Xenia uses. The point is not that we agree with Xenia — it is
+that **the title stated it**, so the agreement is a check rather than an assumption.
+
+Three smaller things the guest decided for us:
+
+- **The return values are not free.** `sub_825E5D28` tests `cmplwi cr6,r3,122` and
+  *requires* `ERROR_INSUFFICIENT_BUFFER` from the query call; a success there sends it
+  to the error path. `sub_825E4E88` accepts `0` or `997` from the read. So a query
+  must fail and a read may report itself pending.
+- **`userIndex == 0xFF` is not an error.** All four query calls pass it, meaning "no
+  particular user". Answering `NO_SUCH_USER` fails the size query and the read never
+  happens.
+- **The value type is in the id.** The top nibble of a setting id is its
+  `X_USER_DATA_TYPE` (`0x1004000C` → INT32). Deriving it means a setting we have never
+  seen still gets a well-formed record, instead of a hand-maintained table silently
+  returning the wrong shape for id number twelve.
+
+**The overlapped structure came out of the title's own `XGetOverlappedResult`.**
+`sub_825D83A8` reads `[ovl+0]`, compares it against 997, waits on `[ovl+12]` when it
+is still pending, and returns `[ovl+4]` as the transferred length — so +0 is the
+result, +4 the length and +12 the completion event, stated by the consumer. Our
+`CompleteOverlapped()` fills all three and signals the event even though this
+particular consumer will never wait on it, because gotcha 46 is precisely about the
+notification half of an async contract being the half that gets dropped. What it does
+NOT do is dispatch a completion routine at +16; no Case Zero boot path sets one, and
+the code says so with a warning rather than by staying silent.
+
+**Effect on the gate:** `XamUserReadProfileSettings`, `NtCreateTimer`, `NtSetTimerEx`
+and `XamUserCheckPrivilege` all now appear where hardware has them, and both
+`XMsgCancelIORequest` and the early `KeQueryBasePriorityThread` disappeared from the
+window.
+
+**One difference left in this block, recorded rather than papered over.** A1 calls
+`XamUserCheckPrivilege` exactly once, for `0xFC` (COMMUNICATIONS). The guest only
+stops there if the call *failed* or the privilege was *granted*; ours returns success
+with "not granted", so we go on to ask about `0xFB` (COMMUNICATIONS_FRIENDS_ONLY),
+which hardware does not. That is a consequence of our no-Live policy being stricter
+than the capture environment's, it is invisible to a first-occurrence gate, and
+inventing a granted communications privilege to hide it would be claiming an online
+identity we do not have.
+
+### Finding 31 — the kernel version was a free constant until the title branched on it
+
+`xex_imports.cpp` published `XboxKrnlVersion` as 2.0.14448.0, inherited from both
+template ports, with a comment saying that if Case Zero ever branched on it that would
+be a finding rather than a constant to quietly tune. It does.
+
+`sub_825D7AC8` — the rumble path — loads the version struct and takes a legacy branch
+only when `major == 2 && minor == 0 && build < 5611`. Inside that branch it calls
+`XamInputGetCapabilities`, and if the device reports sub-type 2 with capability flags
+`0b11` it passes the two motor speeds to `XamInputSetState` **swapped** (`lhz r11,2(r31)`
+stored at +0, `lhz r10,0(r31)` at +2) — a workaround for one accessory whose motors are
+reversed. A1's Xenia config line is `kernel_build_version = 1888`, so the capture takes
+that branch and 14448 does not.
+
+The value is now 1888, and the reason is faithfulness, not performance — **measured, so
+the claim is not oversold**: three 25 s runs at each value reach 82/85/82 and 85/82/85
+visible kernel calls. Same distribution; the 82-vs-85 spread is boot timing. Gotcha 50
+again, in its cheapest form — had we run one arm each we would have "shown" a 3-call
+improvement that does not exist.
+
+It is also the conservative direction. A version number is a claim about which XAM
+entry points exist, ours is a minimal XAM, and gotcha 58 says raise a version gate only
+together with the exports it unlocks.
+
+### Finding 32 — a predicate stub was answering "yes" ten thousand times a boot
+
+`XNotifyGetNext(listener, matchId, &id, &param)` is a BOOL. All five call sites test it
+with `cmpwi r3,0; beq skip`. As a generated honest-failure stub it returned
+`STATUS_NOT_IMPLEMENTED` — `0xC0000002`, which is not zero — so **every poll told the
+title a notification had arrived**, and the title then read the id and param out of two
+stack slots the stub had never touched. A5 shows the real thing polling a single
+listener 10,480 times in one boot; ours was manufacturing that many phantom events out
+of stale stack, silently, with no fault and no log line.
+
+This is gotcha 59 a second time and it is worth stating as a rule rather than an
+anecdote: **the "fail honestly" doctrine has a blind spot wherever the return value is
+a predicate**, because there is no bit pattern in a boolean that means "I could not
+answer". `RtlCompareStringN` (finding 28) was the first; this is the second; a third
+will exist. The escalation is not a better stub, it is a real implementation.
+
+It is also gotcha 42 from the other side: the out-parameters have to be written on the
+FALSE path too, since that is the path taken thousands of times a boot and the caller
+reads them regardless of the return.
+
+**What we post: nothing.** An empty queue is the truthful statement that nothing has
+happened since boot, and it is the only one we can currently support — there is no
+input layer, no storage layer and no system UI to generate an event.
+`PostGuestNotification()` is the seam those layers will use, and it is written now
+rather than deferred because a queue nothing can fill is a queue nothing can test. The
+ids to raise when a source appears are readable in `sub_825E4380`, which compares the
+delivered id against 10 and 14 — `XN_SYS_SIGNINCHANGED` and
+`XN_SYS_PROFILESETTINGCHANGED`.
+
+**The controller, in the same session and under the same policy as the single local
+user:** player 1 holds a standard wired gamepad, players 2-4 hold nothing and say so.
+A1 polls `XamInputGetCapabilities` 1,108 times for user 0 *and* 1,108 times for user 1,
+so "not connected" is an answer this title is built to receive constantly rather than
+an error path. The pad reports neutral because there is no host input source yet — that
+is a missing feature, not a claim that no buttons are pressed, and the difference is
+worth being explicit about. It costs nothing today: the title sits at its press-start
+screen either way, and this is the shape SDL plugs into.
+
+One deliberate non-match, from finding 31's branch: we report sub-type 1, not the 2
+that `sub_825D7AC8` tests for. Reporting 2 would claim to be the accessory with
+reversed motors and get our rumble inverted for the sake of matching a comparison.
+
 ## 5. Where the boot currently stops
 
 
@@ -685,15 +836,21 @@ delivered to the guest ISR — and **zero unknown opcodes, zero parser stalls, z
 out-of-arena stores**. The read pointer chases the write pointer rather than sitting
 frozen, which is the health check that says the parser is keeping up.
 
-**The gate.** `--xenia A1` (masked): **PREFIX MATCH, 56 of 93**, up from 43. The entire
-Vd block — positions 28 through 56, `VdInitializeEngines` through
-`XAudioRegisterRenderDriverClient` — matches hardware element for element, and it got
-there partly on stubs.
+**The gate.** `--xenia A1` (masked): **PREFIX MATCH, 56 of 93**, and — after findings
+28 to 32 — every position from 58 to 84 on our side reproduces hardware's 57 to 83
+*element for element*, offset by exactly one. The offset is a single spurious call, and
+it is the whole remaining divergence in this range.
 
-**The divergence at 57** is `RtlCompareStringN`, a generated stub, arriving where
-hardware calls `XamGetSystemVersion`. Everything past it is the XAM/frontend and
-network surface, where our sequence holds mostly the same names in a different order.
-That is the next subsystem, not the next bug.
+`--xenia A5 --include-high-frequency` reaches further still: our sequence tracks A5's
+through position 118 (`XMACreateContext`), and the window analysis reports only five
+real mismatches in the whole boot, each a single name.
+
+**The divergence at 57** is `RtlCompareStringN`, arriving where hardware calls
+`XamGetSystemVersion`. It is no longer a stub — finding 28 implemented it — and it is
+no longer about the XAM surface either: our boot enters the title's DVD-cache
+subsystem and hardware does not. The deciding branch is `sub_82829098`'s result tested
+at `0x827890B4`. Everything downstream of position 57 is shifted by that one insertion
+rather than genuinely out of order.
 
 **An intermittent crash, and a retraction of the first reading of it.**
 
@@ -717,26 +874,43 @@ per arm will confidently name whichever arm happened not to fire.
 ## 6. Status
 
 - `tools/kernel_call_diff.py --xenia A1 --ours <log>` → **PREFIX MATCH, 56 of 93**,
-  diverging at `XamGetSystemVersion` vs our `RtlCompareStringN`.
-- 118 of 244 imports real; 126 generated honest-failure stubs.
+  and positions 58-84 reproduce hardware's 57-83 element for element behind a
+  single-call offset. Six 25 s runs reach 85 or 82 visible kernel calls (4 and 2
+  respectively) — the spread is boot timing, not a defect.
+- `--xenia A5 --include-high-frequency` tracks A5 to position 118; five real
+  mismatch windows in the whole boot, each one name.
+- **138 of 244 imports real; 106 generated honest-failure stubs.**
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 0 crashes in 20 runs at 25 s** on the current binary; 1 in 20 measured
-  on the binary immediately after finding 27. The dominant fault (6-7 in 10, the
-  "null-pointer walk on the main thread") was the unlowered `bctr` of finding 27 and
-  is fixed; the poison indirect call on the pump thread is declined. **Do not read the
-  0/20 as finding 28 having fixed anything** — a 1-in-20 event is entirely consistent
-  with zero hits in twenty runs, and the one fault seen (guest thread `00000F2C`,
-  faulting outside the 4 GB space) is on a different thread from anything either
-  finding touched. It is unexplained, not gone.
+- **Stability: 0 crashes in 6 runs at 25 s** on the current binary, after 0 in 20 on
+  the binary at finding 28. The dominant fault (6-7 in 10, the "null-pointer walk on
+  the main thread") was the unlowered `bctr` of finding 27 and is fixed. **None of
+  these zeros is evidence the remaining fault is gone** — a 1-in-20 event is entirely
+  consistent with zero hits in twenty runs, let alone six, and the one report that
+  exists (guest thread `00000F2C`, faulting outside the 4 GB space) is on a different
+  thread from anything findings 27-32 touched. Unexplained, not fixed.
 
 Next, in order:
 
-1. **The surviving crash, 1 in 20** — a different fault from finding 27's: guest
-   thread `00000F2C` (not the main thread), faulting on an address outside the 4 GB
-   guest space, `lr=8284B708` / `82829BEC`, `0xC0000102` in the object at r3. One
-   report exists and nothing else about it is established.
-2. **The XAM/frontend surface** — everything past gate position 57, unchanged by the
-   finding 27 work (still `xenia=XamGetSystemVersion ours=RtlCompareStringN`).
-3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
+1. **The storage-device block, gate positions 85-93** — `XamShowDeviceSelectorUI`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamTaskSchedule`, `XamGetOverlappedResult`,
+   `XMsgInProcessCall`, `XMsgCompleteIORequest`, `XamContentGetDeviceData`. We now
+   reach `XMsgStartIORequest`, which is the generic XAM app-message dispatcher and the
+   entry point to all of them: A1 shows `XMsgStartIORequest(FB, 000B0006, ...)` — app
+   0xFB (XGI), message 0x000B0006 — immediately followed by `XGIUserSetContext`, so
+   the dispatcher's job is to route a message id to a handler. Note this whole block
+   happens *after the title screen is already rendering* in A1 (log line 44272, deep
+   into texture uploads), so it is gated on the title getting further as much as on
+   the imports themselves.
+2. **The DVD-cache fallback at position 57** — our boot enters the title's DVD-cache
+   subsystem and hardware does not; the deciding branch is `sub_82829098`'s result
+   tested at `0x827890B4`. This is now the *only* thing shifting positions 58-84.
+3. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`.
+   Since finding 27 it has been localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in
+   `sub_8284B568` at guest `8284B704` where `ctr = [r31+16] = 0`, i.e. a null indirect
+   call through a vtable slot. The crash reporter's "LIKELY null indirect call"
+   heuristic did **not** fire, because it requires `si_addr == nullptr` *and* `ctr`
+   inside the image; widening it to `ctr == 0` would have named this on the first
+   report.
+4. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.

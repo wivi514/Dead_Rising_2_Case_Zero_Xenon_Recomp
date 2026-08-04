@@ -304,6 +304,28 @@ From finding 28 (the XAM surface):
     "different". When a return value is a comparison or a boolean, "fail honestly" is
     not available and implementing it is the only correct option.
 
+From findings 30-32 (the profile, the version gate and the notification queue):
+
+60. **When the capture cannot show a structure, the guest's own walk of it can.** No
+    Xenia log records what an import *wrote*; it prints pointer arguments as they were
+    before the call. But the code that reads the buffer back names every offset —
+    `sub_825E4E88` gave us `+16` = setting id, `+32` = value, stride 40 — and the sizes
+    the title itself computes (3 settings -> 0x80, 2 -> 0x58) pin the header at 8
+    bytes. Two witnesses, neither of them a guess about the SDK.
+61. **A predicate stub is loudest where it is quietest.** `XNotifyGetNext` returning
+    `0xC0000002` reads as TRUE, so the title believed a notification had arrived on
+    every one of ~10,000 polls a boot and read the id and param out of stack slots the
+    stub never touched. Gotcha 59's rule again — and the corollary is that a
+    predicate's out-parameters must be filled on the FALSE path, which is the path
+    taken thousands of times.
+62. **An inherited constant stops being free the moment the image branches on it.**
+    `XboxKrnlVersion` was 2.0.14448.0 in both template ports; Case Zero's rumble path
+    tests `build < 5611` and Xenia's config says 1888, so the capture takes a legacy
+    branch our value skipped. Matching the capture is what a gate means. And the
+    change was A/B'd rather than asserted: 82/85/82 vs 85/82/85 over three runs each,
+    i.e. no measurable difference — one arm per value would have "proved" a win that
+    is not there (gotcha 50).
+
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -636,16 +658,20 @@ command-processor interrupts delivered to the guest ISR — with **zero unknown 
 zero parser stalls and zero out-of-arena stores**, and the read pointer chasing the
 write pointer rather than frozen.
 
-- **`--xenia A1` (masked): PREFIX MATCH, 56 of 93**, diverging at `XamGetSystemVersion`
-  vs our `RtlCompareStringN` (a stub). Positions 28-56 — the whole Vd block — match
-  hardware element for element.
-- 131 of 244 imports real, 113 generated honest-failure stubs.
+- **`--xenia A1` (masked): PREFIX MATCH, 56 of 93** — and past the break, our
+  positions 58-84 reproduce hardware's 57-83 **element for element**, offset by the one
+  spurious `RtlCompareStringN`. That single insertion is now the entire divergence in
+  the range, and it is the DVD-cache question, not a XAM one.
+- **`--xenia A5 --include-high-frequency`: tracks A5 to position 118**
+  (`XMACreateContext`), with five real mismatch windows in the whole boot, each one
+  name.
+- 138 of 244 imports real, 106 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 0 crashes in 20 runs at 25 s** (session 5; 1 in 20 on the binary
-  immediately after finding 27). The dominant fault — the "null-pointer walk on the
-  main thread", 6-7 in 10 — was the unlowered `bctr` of finding 27 and is gone; the
-  poison indirect call on the pump thread is declined. The 0/20 is NOT evidence the
-  remaining fault is fixed — a 1-in-20 event is consistent with 0 in 20 (gotcha 51).
+- **Stability: 0 crashes in 6 runs at 25 s** on the current binary (0 in 20 on the
+  session-5 binary). The dominant fault — the "null-pointer walk on the main thread",
+  6-7 in 10 — was the unlowered `bctr` of finding 27 and is gone; the poison indirect
+  call on the pump thread is declined. Neither zero is evidence the remaining fault is
+  fixed — a 1-in-20 event is consistent with 0 in 20 (gotcha 51).
   `runtime/cpu/crash_report.cpp` prints the guest state on any fault.
 
 Three things from this session worth carrying to Case West, all in
@@ -677,22 +703,25 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **The surviving crash, seen once in 40 runs** — a *different* fault from finding
-   27's: guest thread `00000F2C` (not the main thread), faulting outside the 4 GB
-   guest space, `lr=8284B708` / `82829BEC`, with `0xC0000102` visible in the object at
-   r3. One report exists; it did not recur in the next 20 runs, which bounds its rate
-   but explains nothing.
-2. **The XAM/frontend surface**, everything past gate position 57. In progress:
-   finding 28 fixed `XamGetSystemVersion` and `RtlCompareStringN`; finding 29 did the
-   network init and the profile block (11 imports), and **gate positions 72-79 now
-   match hardware exactly**. 113 stubs left. `XamUserReadProfileSettings` is the next
-   domino — we call `XMsgCancelIORequest` where hardware calls neither it nor
-   `NtCreateTimer`/`NtSetTimerEx`/`XamUserCheckPrivilege`.
+1. **The storage-device block, gate positions 85-93** — `XamShowDeviceSelectorUI`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamTaskSchedule`, `XamGetOverlappedResult`,
+   `XMsgInProcessCall`, `XMsgCompleteIORequest`, `XamContentGetDeviceData`. We now
+   reach `XMsgStartIORequest`, the generic XAM app-message dispatcher that is the entry
+   point to all of them (A1: `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB (XGI),
+   message 0x000B0006 — immediately followed by `XGIUserSetContext`). Note this block
+   happens in A1 *after the title screen is already rendering*, so it is gated on the
+   boot getting further as much as on the imports.
    Method, since Xenia logs no return values for any of these: `tools/import_call_sites.py`
    prints the guest code that consumes an import's result, and that code IS the spec.
-3. The remaining position-57 divergence is understood and is NOT the XAM surface: our
-   boot enters the title's DVD-cache subsystem and hardware does not. The deciding
-   branch is `sub_82829098`'s result at `0x827890B4`. Details in finding 28.
+2. **The DVD-cache fallback at position 57** — our boot enters the title's DVD-cache
+   subsystem and hardware does not; the deciding branch is `sub_82829098`'s result
+   tested at `0x827890B4` (finding 28). This is the only thing shifting 58-84.
+3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
+   localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
+   `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
+   The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
+   `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
+   name this instantly.
 4. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
 
 ## Conventions (same as the two template ports)

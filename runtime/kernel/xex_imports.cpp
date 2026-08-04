@@ -87,14 +87,29 @@ uint32_t AllocateVariable(uint32_t ordinal, const char* libName)
     case 0x156: // XboxHardwareInfo: {flags, cpu count, ...} — 3 cores x 2 threads
         host[4] = 6;
         break;
-    case 0x158: // XboxKrnlVersion. A1's header dump says this title was built
-                // against SDK 2.0.9328, and Xenia reports kernel_build_version 1888;
-                // 2.0.14448.0 is a late retail kernel and is what both template
-                // ports report. If Case Zero ever branches on this, that is a
-                // finding, not a constant to quietly tune.
+    case 0x158: // XboxKrnlVersion — and Case Zero DOES branch on it, so this stopped
+                // being a free constant (the note that used to sit here said that
+                // would be a finding; it is finding 31).
+                //
+                // sub_825D7AC8, the rumble path, reads this struct and takes a
+                // legacy code path only when major == 2, minor == 0 and build <
+                // 5611. The capture's config line is `kernel_build_version = 1888`,
+                // so A1 takes it; the 2.0.14448.0 both template ports report does
+                // not. Matching the capture is the whole basis of the phase gate, so
+                // 1888 it is — and it is also the conservative direction, because a
+                // version is a claim about which XAM entry points exist and ours is
+                // a minimal XAM (gotcha 58: raise a version gate only together with
+                // the exports it unlocks).
+                //
+                // MEASURED, so the claim is not oversold: three 25 s runs at each
+                // value reach 82/85/82 and 85/82/85 visible kernel calls — the same
+                // distribution, and the 82-vs-85 spread is boot timing, not the
+                // version (gotcha 50: one arm is not a measurement). So this is
+                // chosen for faithfulness to the capture's control flow, NOT because
+                // it was observed to get the boot further.
         *reinterpret_cast<be<uint16_t>*>(host + 0) = 2;
         *reinterpret_cast<be<uint16_t>*>(host + 2) = 0;
-        *reinterpret_cast<be<uint16_t>*>(host + 4) = 14448;
+        *reinterpret_cast<be<uint16_t>*>(host + 4) = 1888;
         break;
     case 0x193: // XexExecutableModuleHandle: the guest-resident XEX header block
         *reinterpret_cast<be<uint32_t>*>(host) = g_xexHeaderBase.load();

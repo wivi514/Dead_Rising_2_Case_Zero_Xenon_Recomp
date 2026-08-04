@@ -45,6 +45,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <string>
@@ -2511,3 +2512,535 @@ GUEST_FUNCTION_HOOK(__imp__XamUserGetName, XamUserGetName_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserGetSigninInfo, XamUserGetSigninInfo_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserGetXUID, XamUserGetXUID_x)
 GUEST_FUNCTION_HOOK(__imp__XamUserCheckPrivilege, XamUserCheckPrivilege_x)
+
+// ---------------------------------------------------------------------------
+// The profile settings block — a layout read off the guest, not off the SDK
+// ---------------------------------------------------------------------------
+//
+// XamUserReadProfileSettings is the domino past the user block: A1 calls it five
+// times during boot, and until it works the title tears its frontend down and calls
+// XMsgCancelIORequest, which hardware never does there (docs/phase1-notes.md
+// finding 30).
+//
+// The capture contains no return value and no post-call buffer for ANY of this, so
+// every number below is derived from one of two things that cannot lie: the sizes
+// A1 shows the title itself computing, and the guest code that walks the result.
+//
+// THE SIZE IS THE FIRST WITNESS. A1's calls come in pairs. The query call passes a
+// null buffer and a zero size and the title then re-calls with the size the kernel
+// wrote back:
+//
+//     ReadProfileSettings(FFFE07D1, FF, 0,0, 3, 829E05C8, 4017B400(00000000), 0, 0)
+//     ReadProfileSettings(FFFE07D1, 00, 0,0, 3, 829E05C8, 4017B400(00000080), 4017B530, 4017B3E0)
+//     ReadProfileSettings(00000000, 00, 0,0, 2, 7018F068, 7018F060(00000058), E7367A00, 0)
+//
+// 3 settings -> 0x80 and 2 settings -> 0x58 have exactly one solution in integers:
+// an 8-byte header plus 40 bytes per setting. Two independent points, and neither
+// leaves room for variable-length payload — this title only ever asks for
+// fixed-size settings at boot, which is what makes the flat arithmetic safe.
+//
+// THE GUEST'S OWN WALK IS THE SECOND. sub_825E4E88 (ppc_recomp.110.cpp) reads the
+// buffer back, and its loop names every offset that matters:
+//
+//     count = [results + 0]                   header +0  = setting count
+//     for i in 0..count:
+//         p  = [results + 4] + i*40           header +4  = pointer to the array
+//         id = [p + 16]                       setting    +16 = setting id
+//         switch (id - 0x1004000C) ...        VOICE_MUTED / _THRU_SPEAKERS / _VOLUME
+//         case 2: v = [p + 32]                setting    +32 = the value
+//                 if (v > 100) v = 100        ... and it is a 0..100 volume
+//
+// +16 and +32 with a stride of 40 pin the whole struct: `from` at +0, the
+// xuid/user-index union at +8 (8-aligned, hence the pad at +4), the id at +16, and
+// an X_USER_DATA at +24 whose type byte is at +24 and whose 8-byte value union is at
+// +32. That is the same layout Xenia uses, but it is written here because the guest
+// confirmed it, not because Xenia asserts it.
+struct GuestProfileSetting
+{
+    be<uint32_t> from;        // +0   0 = unset, 1 = a global setting, 2 = title-specific
+    be<uint32_t> pad0;        // +4   the union below is 8-aligned
+    be<uint64_t> xuid;        // +8   or the user index, when the call passed no xuids
+    be<uint32_t> settingId;   // +16
+    be<uint32_t> pad1;        // +20  X_USER_DATA is 8-aligned too
+    uint8_t      type;        // +24
+    uint8_t      pad2[7];
+    // The value union, written as two explicit halves rather than a C++ union: a
+    // be<uint64_t> here would put a 32-bit setting's bytes at +36..39, where the
+    // guest's `lwz r10,32(r11)` reads zero. Big-endian unions are exactly the place
+    // a silent wrong value comes from, so the halves are named.
+    be<uint32_t> value0;      // +32  s32/u32/float, the high half of s64/double
+    be<uint32_t> value1;      // +36  the low half of s64/double
+};
+static_assert(sizeof(GuestProfileSetting) == 40, "the 0x80/0x58 sizes A1 shows require 40");
+
+struct GuestProfileResults
+{
+    be<uint32_t> settingCount;  // +0
+    be<uint32_t> settingsPtr;   // +4  guest address of the array, i.e. results + 8
+};
+static_assert(sizeof(GuestProfileResults) == 8, "8 + 40n must reproduce 0x80 and 0x58");
+
+// XOVERLAPPED, as read by sub_825D83A8 — which is the title's own hand-rolled
+// XGetOverlappedResult and therefore an authoritative statement of the layout:
+//   `lwz r11,0(r3)` / `cmplwi r11,997`  -> +0  is the result, 997 = still pending
+//   `lwz r3,12(r3)` then wait on it     -> +12 is the completion event handle
+//   `lwz r11,4(r31); stw r11,0(r30)`    -> +4  is the transferred length
+struct GuestOverlapped
+{
+    be<uint32_t> result;             // +0
+    be<uint32_t> length;             // +4
+    be<uint32_t> context;            // +8
+    be<uint32_t> event;              // +12
+    be<uint32_t> completionRoutine;  // +16
+    be<uint32_t> completionContext;  // +20
+    be<uint32_t> extendedError;      // +24
+};
+
+constexpr uint32_t ERROR_INSUFFICIENT_BUFFER = 122;
+constexpr uint32_t ERROR_IO_PENDING          = 997;
+
+// The data type lives in the top nibble of the setting id — 0x1004000C is an INT32,
+// 0x5004000B a FLOAT, 0x4… a UNICODE string. Deriving it means a setting this title
+// asks for and we have never seen still gets a well-formed record, instead of a
+// hand-maintained table silently returning the wrong shape for id number twelve.
+enum : uint8_t
+{
+    XUSER_DATA_TYPE_CONTEXT  = 0,
+    XUSER_DATA_TYPE_INT32    = 1,
+    XUSER_DATA_TYPE_INT64    = 2,
+    XUSER_DATA_TYPE_DOUBLE   = 3,
+    XUSER_DATA_TYPE_UNICODE  = 4,
+    XUSER_DATA_TYPE_FLOAT    = 5,
+    XUSER_DATA_TYPE_BINARY   = 6,
+    XUSER_DATA_TYPE_DATETIME = 7,
+};
+
+// The settings this runtime has a defensible answer for. Everything else is
+// reported as present-but-zero, which is a value the title can act on; the
+// alternative — from = 0, "not set" — is also honest but sends the voice subsystem
+// down a path A1 never took, and there is nothing to check that path against.
+//
+// The voice trio is what boot asks for, and only the volume has a non-obvious
+// answer: the guest clamps anything above 100 down to 100, so 100 is the top of the
+// range it will accept, and it is the console default.
+struct ProfileDefault { uint32_t id; uint32_t value; };
+static const ProfileDefault kProfileDefaults[] = {
+    { 0x1004000C, 0   },  // XPROFILE_OPTION_VOICE_MUTED         — not muted
+    { 0x1004000D, 0   },  // XPROFILE_OPTION_VOICE_THRU_SPEAKERS — headset, not TV
+    { 0x1004000E, 100 },  // XPROFILE_OPTION_VOICE_VOLUME        — 0..100, full
+};
+
+static uint32_t ProfileDefaultValue(uint32_t settingId)
+{
+    for (const auto& d : kProfileDefaults)
+        if (d.id == settingId)
+            return d.value;
+    return 0;
+}
+
+// Finish an async XAM request in place. The title's own XGetOverlappedResult only
+// waits when +0 still reads 997, so completing here means it never blocks — but the
+// event is signalled anyway, because a *different* caller may wait on the handle
+// directly and gotcha 46 is precisely about the notification half of an async
+// contract being the half that gets dropped.
+static void CompleteOverlapped(GuestOverlapped* ovl, uint32_t result, uint32_t length)
+{
+    if (!ovl)
+        return;
+    ovl->result = result;
+    ovl->length = length;
+    ovl->extendedError = 0;
+
+    // NOT dispatched: the completion routine at +16. No boot path in Case Zero sets
+    // one (this warns if that ever stops being true), and calling back into guest
+    // code from inside an import needs the APC machinery NtReadFile uses, not a
+    // direct call. If this line ever prints, that is the work it is asking for.
+    if (ovl->completionRoutine != 0)
+    {
+        static std::atomic<int> warned{ 0 };
+        if (warned.fetch_add(1, std::memory_order_relaxed) < 8)
+            fprintf(stderr, "[xam] overlapped completion routine %08X NOT dispatched\n",
+                    ovl->completionRoutine.get());
+    }
+
+    SignalGuestEvent(ovl->event);
+}
+
+// XamUserReadProfileSettings(titleId, userIndex, numXuids, xuids, numSettingIds,
+//                            settingIds, sizePtr, buffer, overlapped) -> status
+//
+// NINE arguments, so the last one arrives from the caller's parameter save area at
+// r1+0x54 rather than a register — which guestcall.h already handles, and which the
+// image confirms: sub_825E4E88 does `addi r7,r31,160; stw r7,84(r1)` before loading
+// r3..r10, and 0x54 is 84.
+//
+// RETURN VALUES, from the two call sites that test them:
+//   sub_825E5D28 (the size query): `cmplwi cr6,r3,122; beq` — it REQUIRES
+//       ERROR_INSUFFICIENT_BUFFER. Any other answer, including a success, sends it
+//       to the error path that sets 0x80004005 and cancels the request.
+//   sub_825E4E88 (the real read): `r3 == 0` or `r3 == 997` both proceed; anything
+//       else stores the error code 0x00026404 and gives up.
+// So a query call must fail with 122 and a read call may report itself pending. We
+// do the work synchronously and return ERROR_IO_PENDING only when the caller
+// supplied an overlapped, which is the XAM contract and is inside what both sites
+// accept.
+//
+// userIndex 0xFF appears in all four query calls and means "no particular user" —
+// answering NO_SUCH_USER to it would fail the size query and stall the boot before
+// the read ever happens.
+static uint32_t XamUserReadProfileSettings_x(uint32_t titleId, uint32_t userIndex,
+                                             uint32_t numXuids, be<uint64_t>* xuids,
+                                             uint32_t numSettingIds,
+                                             be<uint32_t>* settingIds,
+                                             be<uint32_t>* sizePtr, void* buffer,
+                                             uint32_t overlapped)
+{
+    (void)titleId;   // FFFE07D1 = the dashboard's global settings, 0 = this title's
+    (void)numXuids;  // always 0 here; the results are addressed by user index
+    (void)xuids;
+
+    auto* ovl = overlapped ? reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped))
+                           : nullptr;
+
+    if (!settingIds || !sizePtr)
+    {
+        if (sizePtr)
+            *sizePtr = 0;
+        CompleteOverlapped(ovl, STATUS_INVALID_PARAMETER, 0);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    const uint32_t required =
+        uint32_t(sizeof(GuestProfileResults) + numSettingIds * sizeof(GuestProfileSetting));
+
+    // The query call, and the same answer if the caller's buffer is too small.
+    if (!buffer || sizePtr->get() < required)
+    {
+        *sizePtr = required;
+        CompleteOverlapped(ovl, ERROR_INSUFFICIENT_BUFFER, 0);
+        return ERROR_INSUFFICIENT_BUFFER;
+    }
+
+    if (userIndex != 0xFF && userIndex != kLocalUserIndex)
+    {
+        *sizePtr = required;
+        CompleteOverlapped(ovl, ERROR_NO_SUCH_USER, 0);
+        return ERROR_NO_SUCH_USER;
+    }
+
+    auto* results = reinterpret_cast<GuestProfileResults*>(buffer);
+    auto* array = reinterpret_cast<GuestProfileSetting*>(results + 1);
+
+    results->settingCount = numSettingIds;
+    results->settingsPtr = g_memory.MapVirtual(array);
+
+    for (uint32_t i = 0; i < numSettingIds; i++)
+    {
+        const uint32_t id = settingIds[i].get();
+        const uint8_t type = uint8_t((id >> 28) & 0xF);
+
+        memset(&array[i], 0, sizeof(GuestProfileSetting));
+        array[i].from = 1;                 // present, and not title-specific
+        array[i].xuid = 0;                 // no xuids were passed; user index 0
+        array[i].settingId = id;
+        array[i].type = type;
+
+        switch (type)
+        {
+            case XUSER_DATA_TYPE_INT32:
+            case XUSER_DATA_TYPE_CONTEXT:
+            case XUSER_DATA_TYPE_FLOAT:
+                array[i].value0 = ProfileDefaultValue(id);
+                break;
+
+            case XUSER_DATA_TYPE_INT64:
+            case XUSER_DATA_TYPE_DOUBLE:
+            case XUSER_DATA_TYPE_DATETIME:
+                array[i].value0 = 0;       // high half
+                array[i].value1 = ProfileDefaultValue(id);
+                break;
+
+            // A string or a blob would need its payload appended after the array,
+            // and the required size computed above says there is none. Reporting a
+            // zero-length, null-pointer blob is the shape a caller can survive; the
+            // warning is there because the size arithmetic would silently be wrong
+            // (gotcha 5's corollary — say so rather than quietly hand back garbage).
+            case XUSER_DATA_TYPE_UNICODE:
+            case XUSER_DATA_TYPE_BINARY:
+            default:
+                array[i].value0 = 0;       // size
+                array[i].value1 = 0;       // pointer
+                fprintf(stderr, "[xam] profile setting %08X is type %u (string/blob) — "
+                                "returned empty; the size arithmetic does not cover it\n",
+                        id, type);
+                break;
+        }
+    }
+
+    *sizePtr = required;
+    CompleteOverlapped(ovl, 0, required);
+    KLOG("XamUserReadProfileSettings(title=%08X, user=%02X, %u settings) -> %u bytes\n",
+         titleId, userIndex, numSettingIds, required);
+    return ovl ? ERROR_IO_PENDING : 0u;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamUserReadProfileSettings, XamUserReadProfileSettings_x)
+
+// ---------------------------------------------------------------------------
+// Notifications — and a predicate that was answering "yes" 3,000 times a boot
+// ---------------------------------------------------------------------------
+//
+// XNotifyGetNext(listener, matchId, &id, &param) is a BOOL: `cmpwi r3,0; beq skip`
+// at all five of its call sites. As a generated honest-failure stub it returned
+// STATUS_NOT_IMPLEMENTED (0xC0000002), which is not zero — so every poll told the
+// title a notification HAD arrived, and it then read the id and param out of stack
+// slots the stub never touched. A5 shows the real title polling one listener 10,480
+// times in a boot; ours was manufacturing that many phantom events out of stale
+// stack.
+//
+// This is gotcha 59 exactly, a second time: an import whose return value is a
+// predicate has no honest failure value, so implementing it is the only correct
+// option. It is also gotcha 42's other half — the out-parameters must be written on
+// the FALSE path too, because the caller reads them regardless.
+//
+// WHAT WE POST: nothing, yet. An empty queue is the truthful statement that nothing
+// has happened since boot, and it is the only statement we can currently support —
+// there is no input layer, no storage layer and no system UI to generate an event.
+// PostGuestNotification below is the seam those layers will use. Inventing a
+// sign-in or storage event here to "look more alive" would be faking success at the
+// one place the title is asking us a direct question.
+//
+// The ids the title cares about are readable in sub_825E4380, which compares the id
+// against 10 and 14 — XN_SYS_SIGNINCHANGED and XN_SYS_PROFILESETTINGCHANGED. So
+// when a real event source appears, those two are what it should raise.
+struct NotifyListener final : KernelObject
+{
+    uint64_t mask;
+    std::mutex m;
+    std::deque<std::pair<uint32_t, uint32_t>> queue;   // (id, param), oldest first
+
+    explicit NotifyListener(uint64_t areaMask) : mask(areaMask) {}
+};
+
+// The notification area is the id's high halfword; the listener mask has one bit per
+// area. Every id this title tests for is in area 0 (the system area), so in practice
+// this only ever asks "did you subscribe to bit 0" — but the shift is written out
+// because a listener created with mask 0x20 (A1 shows one) is subscribing to
+// something else entirely, and silently delivering system events to it would be
+// wrong in a way nothing would report.
+static bool ListenerWants(const NotifyListener* l, uint32_t id)
+{
+    return (l->mask & (1ull << (id >> 16))) != 0;
+}
+
+static std::vector<NotifyListener*> g_notifyListeners;
+
+// The seam for a future input/storage/UI layer: post an event to every listener
+// subscribed to its area. Unused today, and deliberately kept rather than deferred —
+// the queue is only testable if something can fill it.
+void PostGuestNotification(uint32_t id, uint32_t param)
+{
+    std::lock_guard guard(g_kernelLock);
+    for (NotifyListener* l : g_notifyListeners)
+    {
+        if (!ListenerWants(l, id))
+            continue;
+        std::lock_guard q(l->m);
+        l->queue.emplace_back(id, param);
+    }
+}
+
+// A1: XamNotifyCreateListener(0000000000000001, 00000005) and four more with masks
+// 3, 4, 5 and 0x20. The first argument is a 64-bit area mask in ONE register (the
+// Xenon ABI passes a doubleword in a single GPR); the second is 5 in every call this
+// title makes, and nothing here depends on it.
+static uint32_t XamNotifyCreateListener_x(uint64_t mask, uint32_t flags)
+{
+    (void)flags;
+    NotifyListener* listener = CreateKernelObject<NotifyListener>(mask);
+    if (!listener)
+        return 0;   // a handle-returning call fails by returning 0, not an NTSTATUS
+    {
+        std::lock_guard guard(g_kernelLock);
+        g_notifyListeners.push_back(listener);
+    }
+    return GetKernelHandle(listener);
+}
+
+// matchId 0 means "any notification" — A5 shows this title only ever passing 0.
+static uint32_t XNotifyGetNext_x(uint32_t handle, uint32_t matchId, be<uint32_t>* idOut,
+                                 be<uint32_t>* paramOut)
+{
+    // Written first and unconditionally: the FALSE path is the common one, taken
+    // thousands of times a boot, and it is the path whose out-parameters the stub
+    // left as stack garbage.
+    if (idOut)
+        *idOut = 0;
+    if (paramOut)
+        *paramOut = 0;
+
+    if (!handle || !IsKernelObject(handle) || !IsLiveKernelHandle(handle))
+        return 0;
+    auto* listener = dynamic_cast<NotifyListener*>(GetKernelObject(handle));
+    if (!listener)
+        return 0;
+
+    std::lock_guard q(listener->m);
+    for (auto it = listener->queue.begin(); it != listener->queue.end(); ++it)
+    {
+        if (matchId != 0 && it->first != matchId)
+            continue;
+        if (idOut)
+            *idOut = it->first;
+        if (paramOut)
+            *paramOut = it->second;
+        listener->queue.erase(it);
+        return 1;
+    }
+    return 0;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamNotifyCreateListener, XamNotifyCreateListener_x)
+GUEST_FUNCTION_HOOK(__imp__XNotifyGetNext, XNotifyGetNext_x)
+
+// ---------------------------------------------------------------------------
+// The controller — one connected pad, and no host input source behind it yet
+// ---------------------------------------------------------------------------
+//
+// POLICY, STATED ONCE, same shape as the single local user: player 1 holds a
+// standard wired gamepad; players 2-4 hold nothing and say so. A1 polls
+// XamInputGetCapabilities 1,108 times for user 0 AND 1,108 times for user 1 in a
+// single boot, so "not connected" is an answer the title is built to receive
+// constantly and is not an error path.
+//
+// The pad reports neutral because there is no host input layer yet — SDL is a later
+// phase. That is a *missing feature*, not a claim that no buttons are pressed, and
+// it is worth being explicit about the difference: the title will sit at its
+// press-start screen. It would also sit there if we reported no controller at all,
+// so this costs nothing today and is the shape the input layer plugs into.
+constexpr uint32_t ERROR_DEVICE_NOT_CONNECTED = 0x0000048F;
+constexpr uint32_t ERROR_EMPTY                = 0x00000490;
+
+struct GuestInputGamepad      // 12 bytes
+{
+    be<uint16_t> buttons;
+    uint8_t leftTrigger;
+    uint8_t rightTrigger;
+    be<int16_t> thumbLX, thumbLY, thumbRX, thumbRY;
+};
+
+struct GuestInputState        // 16 bytes
+{
+    be<uint32_t> packetNumber;
+    GuestInputGamepad gamepad;
+};
+
+struct GuestInputVibration    // 4 bytes
+{
+    be<uint16_t> leftMotor;
+    be<uint16_t> rightMotor;
+};
+
+// Confirmed against the guest: sub_825D7AC8 passes a buffer at r1+96 and then reads
+// `lbz r11,97(r1)` (sub-type at +1) and `lhz r11,98(r1)` (flags at +2).
+struct GuestInputCapabilities // 20 bytes
+{
+    uint8_t type;             // +0  XINPUT_DEVTYPE_GAMEPAD = 1
+    uint8_t subType;          // +1
+    be<uint16_t> flags;       // +2
+    GuestInputGamepad gamepad;
+    GuestInputVibration vibration;
+};
+static_assert(sizeof(GuestInputCapabilities) == 20, "XINPUT_CAPABILITIES is 20 bytes");
+
+constexpr uint32_t kLocalPadIndex = 0;
+
+// WHY subType 1 AND NOT 2, which is what one call site tests for. sub_825D7AC8 is
+// the rumble path, and on an old kernel it looks for a device with subType == 2 and
+// capability flags 0b11 — and when it finds one it passes the two motor speeds to
+// XamInputSetState *swapped* (`lhz r11,2(r31)` stored at +0, `lhz r10,0(r31)` at
+// +2). That is a workaround for one accessory whose motors are reversed. Reporting
+// subType 2 would claim to be that accessory and get our rumble inverted, so a plain
+// gamepad it is; the title then takes the ordinary path, which is correct for us.
+static uint32_t XamInputGetCapabilities_x(uint32_t userIndex, uint32_t flags,
+                                          GuestInputCapabilities* caps)
+{
+    (void)flags;   // 0 = any device, 1 = XINPUT_FLAG_GAMEPAD; A1 passes both
+    if (!caps)
+        return STATUS_INVALID_PARAMETER;
+    memset(caps, 0, sizeof(*caps));
+    if (userIndex != kLocalPadIndex)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    caps->type = 1;      // XINPUT_DEVTYPE_GAMEPAD
+    caps->subType = 1;   // XINPUT_DEVSUBTYPE_GAMEPAD
+    caps->flags = 0;     // no headset, no voice
+    // A capabilities record reports which bits the device *can* produce, so the
+    // gamepad and vibration members are all-ones on a real pad rather than zero.
+    caps->gamepad.buttons = 0xFFFF;
+    caps->gamepad.leftTrigger = 0xFF;
+    caps->gamepad.rightTrigger = 0xFF;
+    caps->gamepad.thumbLX = caps->gamepad.thumbLY = int16_t(0xFFC0);
+    caps->gamepad.thumbRX = caps->gamepad.thumbRY = int16_t(0xFFC0);
+    caps->vibration.leftMotor = 0xFF;
+    caps->vibration.rightMotor = 0xFF;
+    return 0;
+}
+
+// The packet number must only change when the state changes, and ours never does —
+// so it is a constant, not a counter. A counter here would tell the title the pad is
+// producing input every poll and invite it to re-read state it does not need to.
+static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
+                                   GuestInputState* state)
+{
+    (void)flags;
+    if (!state)
+        return STATUS_INVALID_PARAMETER;
+    memset(state, 0, sizeof(*state));
+    if (userIndex != kLocalPadIndex)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    state->packetNumber = 1;
+    return 0;
+}
+
+// Rumble. Accepted and discarded: there is no motor, and reporting failure would
+// send sub_825D7AC8's callers down an error path over an effect that does not
+// matter. The values are logged so the eventual input layer has a witness that the
+// title does drive them.
+static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
+                                   GuestInputVibration* vibration)
+{
+    (void)unk;
+    if (userIndex != kLocalPadIndex)
+        return ERROR_DEVICE_NOT_CONNECTED;
+    if (vibration)
+        KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex,
+             vibration->leftMotor.get(), vibration->rightMotor.get());
+    return 0;
+}
+
+// No keyboard is attached, and ERROR_EMPTY is the defined way to say "no keystroke
+// is queued" — not a failure, the normal answer on a console with no chatpad.
+struct GuestInputKeystroke    // 8 bytes
+{
+    be<uint16_t> virtualKey;
+    be<uint16_t> unicode;
+    be<uint16_t> flags;
+    uint8_t userIndex;
+    uint8_t hidCode;
+};
+
+static uint32_t XamInputGetKeystrokeEx_x(be<uint32_t>* userIndex, uint32_t flags,
+                                         GuestInputKeystroke* keystroke)
+{
+    (void)flags;
+    if (keystroke)
+        memset(keystroke, 0, sizeof(*keystroke));
+    if (userIndex)
+        *userIndex = kLocalPadIndex;
+    return ERROR_EMPTY;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamInputGetCapabilities, XamInputGetCapabilities_x)
+GUEST_FUNCTION_HOOK(__imp__XamInputGetState, XamInputGetState_x)
+GUEST_FUNCTION_HOOK(__imp__XamInputSetState, XamInputSetState_x)
+GUEST_FUNCTION_HOOK(__imp__XamInputGetKeystrokeEx, XamInputGetKeystrokeEx_x)
