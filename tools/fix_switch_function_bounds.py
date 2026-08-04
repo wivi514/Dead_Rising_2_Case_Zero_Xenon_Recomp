@@ -135,11 +135,32 @@ def main():
         if max_label == 0:
             skipped.append(start) # only bogus labels: data-as-code, leave untouched
             continue
-        # Labels may point backward: the analyzer split one original function into
-        # fragments. Extend the start down to the function containing the lowest label.
+        # Labels may point backward, in two different ways, and the fix differs.
+        #
+        #  (a) The analyzer split one original function into fragments and a label
+        #      points into an earlier fragment. That fragment IS a function start,
+        #      so extending down to it is right.
+        #  (b) The analyzer simply began the function a few instructions late, and
+        #      the label lands in the gap. On Case Zero all three residual errors
+        #      were this: the case target sat EXACTLY 4 bytes before the function
+        #      start (0x82670080 vs 0x82670084 — a loop-back to the `addi` that
+        #      advances the cursor, with the analyzer starting at the `lbz` after
+        #      it). Here `func_containing(min_label)` returns the *preceding*
+        #      function, needlessly swallowing it.
+        #
+        # `min(start, min_label)` handles both: in case (a) min_label is itself a
+        # function start so the two agree, and in case (b) it extends down exactly
+        # as far as needed and no further.
+        orig_start = start
         if min_label is not None and min_label < start:
-            start = func_containing(min_label)
-        end = next_func_after(max(start, max_label))
+            start = min(start, min_label)
+        # NB: compute the end from the ORIGINAL function start, not the widened one.
+        # `next_func_after(start)` after widening returns orig_start itself, so the
+        # entry would end exactly where the real function begins — an entry that
+        # covers neither the `bctr` nor its cases, is silently useless, and merges
+        # to a no-op so the tool reports "0 new this round" while the errors remain.
+        # That is why Case Zero's last 3 errors survived a fixpoint loop.
+        end = next_func_after(max(orig_start, max_label))
         # Fixpoint: cover the labels of every switch whose bctr is inside the range.
         while True:
             new_end = end

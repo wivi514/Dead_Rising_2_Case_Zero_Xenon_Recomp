@@ -1,33 +1,220 @@
-# Xenia capture index — Dead Rising 2: Case Zero
+# Dead Rising 2: Case Zero — Xenia capture run index
 
-One entry per run. **This file is tracked in git; everything else in `Xenia logs/` is
-not** (the captures are huge and game-derived).
-
-A log is only as useful as knowing what the player was doing. Record the drive in order,
-including anything unusual — crashes, graphics missing *in Xenia itself*, cutscenes
-skipped, a menu entered by accident. On both earlier ports, a single wrong sentence in a
-drive note sent a whole round of analysis down the wrong path, so: write what you did,
-not what you meant to do.
-
-Requests these are answering: `docs/xenia-capture-requests.md`.
-
-## Template for an entry
-
-```
-### <id> — <one-line description>
-- file(s):       cz_runN.log (NNN MB), cz_runN.xtr
-- Xenia build:   <the `Build: ...` line from the log header>
-- launched:      package | extracted default.xex
-- flags:         --log_level=3 --trace_function_data=true ...
-- config changes: none | (copy xenia.config.toml next to the log)
-- drive:
-  1. boot
-  2. ...
-- anomalies:     <crashes, missing graphics in Xenia, anything skipped>
-```
+One entry per run. Requests: `xenia-capture-requests.md` (round 1).
+All captures on the user's Windows PC, on the instrumented **xenia-canary fork**
+(`canary_experimental@a635ac64f on Jul 22 2026`, Release), custom instruments OFF,
+vanilla settings unless noted. STFS **package** launched directly
+(`Assets/package/58410A8D/000D0000/3A98C69EE94FD53A3D592BBAC2236F2247A2957158`),
+**not** the extracted `default.xex`. Title ID **58410A8D**.
 
 ---
 
-## Runs
+## Round 1
 
-*(none yet — nothing has been captured for this title)*
+### A1 — SHORT boot at max verbosity (+ D shader dump)  → `A1_boot_title_fullgame/`
+**Delivered 2026-08-04.** Boot → every logo/intro movie played **in full (skipped
+nothing)** → main menu → sat ~60 s → clean quit (`taskkill` no `/F` / window-close;
+log ends with `Cheap-skate exit!`). `log_level=3`, `flush_log=false`, `apu="any"`,
+`gpu="any"`, 1×1, `dump_shaders` on.
+
+- **★ LICENSE / TRIAL — this bit us exactly as the request predicted.** First take
+  booted the **TRIAL** (Xenia `license_mask=0` → `XamContentGetLicenseMask` returns
+  unlicensed; main menu showed an **"unlock full game"** option). Fixed with
+  **`license_mask = 1`** → unlock option gone → **full game**. The canonical A1 is the
+  full-game run. **All future Case Zero captures must keep `license_mask = 1`.**
+  `XamContentGetLicenseMask` is imported (82000410/ord 266) but not logged per-call at
+  L3 — license state is proven behaviourally + by the config-dump header.
+- **Trial path is measurably different** (don't diff against it): identical `.big`
+  bank set both runs, except `chuckwalkietalkie.big` **trial 1164× vs full 2×** — that
+  reload storm is the whole gap (file opens 1476 vs 314; log 45.8 MB vs 13.9 MB).
+- **D — shader dump WORKS.** `dump_shaders` exists and filled: 120 distinct guest
+  shaders (91 ps + 29 vs) as **raw Xenos microcode** (`.ucode.bin`) + disassembly
+  (`.ucode`) + translated `.d3d12` DXBC. Xenia gives ground-truth microcode to compare
+  the loose disc banks against — no runtime SHADER_DUMP hook needed for this. Frontend/
+  menu set only (boot→title); capture again in A2/B2 for the gameplay set.
+- **Movies:** no Bink; cinematics stream via an in-house Movie Player Object loading
+  `.big` archives (`ratinglogos.big`, `700_prologue_intro.big`, `cinematics.big`). File-
+  I/O lines preserved for the `.big`-format oracle.
+- **Gotcha:** `log_file="C:/xenia_logs/…"` was ignored (this fork always writes
+  `<cwd>\xenia.log`); log copied out after clean exit. `dump_shaders` forward-slash path
+  worked, so it's log_file-specific, not path-escaping.
+
+Files: `cz_run1.log` (13.9 MB, canonical A1) · `cz_shaders_A1.zip` (5.1 MB, 381 files)
+· `cz_run1_TRIAL_license0.log.gz` (trial evidence only) · `A1_NOTES.txt`.
+
+**A1 handed over alone, as requested.**
+
+### A2 — into gameplay (Still Creek) (+ gameplay shader dump)  → `A2_gameplay_stillcreek/`
+**Delivered 2026-08-04.** Boot → New Game → skipped in-game cutscenes → fought
+zombies through Still Creek → continued to the cinematic right before the military
+encampment (grab Katie's Zombrex). Full game, `log_level=3`, `flush_log=false`,
+`apu="any"`, `dump_shaders` on. No crash.
+
+- **★ FINDING — A2 does NOT contain the `.big` READ seek patterns; the request's
+  premise is wrong.** `NtReadFile` is **`kHighFrequency`** → suppressed at plain L3.
+  Runtime calls: `NtCreateFile` **23,965** vs `NtReadFile` **0** (the 2 hits are
+  import-table decls). The game opens 433 `.big` archives but every read is invisible
+  without `log_high_frequency_kernel_calls=true`. **To get the `.big` container
+  format:** (a) A5 (boot + high-freq) already covers boot-era `.big` reads and the
+  container format is uniform, so A5 likely suffices; or (b) authorize an **A2b** =
+  this gameplay drive with `high_freq=true` + `flush_log=false` for gameplay-era seek
+  order. Decide (a)/(b) before re-driving.
+- **What A2 does give:** 24k streaming opens; 433 `.big` incl. gameplay-only
+  (`701_chuck_arrives_in_town`, `702_in_the_garage`, `703_roadblock_discovered`,
+  `anm_*` banks); full **XMA** context lifecycle (~5.33M lines, contexts 0–17+ — hence
+  606 MB); **86 guest threads** (physics/audio/streaming bring-up); **1109 gameplay
+  shaders** (vs A1's 381).
+- **Integrity:** 606 MB, no crash/assert. Missing `Cheap-skate exit!` — Xenia was
+  force-closed before my graceful taskkill, so the final KB-scale buffer batch didn't
+  flush (`flush_log=false`); gameplay content complete. Future long runs: let me
+  taskkill the live process so the exit flush lands.
+
+Files: `cz_run2.log.gz` (606 MB → 57.6 MB) · `cz_shaders_A2.zip` (1109 files) · `A2_NOTES.txt`.
+
+### A5 — high-frequency kernel calls (A1 drive)  → `A5_highfreq_boot/`
+**Delivered 2026-08-04.** A1's drive (all movies in full → title → ~60 s) with
+`log_high_frequency_kernel_calls=true`. Full game, `log_level=3`, **`flush_log=false`**.
+
+- **Did NOT hang** (request warned it might). `flush_log=false` is the mitigation —
+  the AW-D1b livelock was high-freq **+ flush=true**. Keep flush off for high-freq.
+- **★ Closes the A2 `.big`-read gap — A5 IS the seek oracle.** High-freq makes
+  `NtReadFile` visible (408 calls, 0 at plain L3). Reads are **handle-keyed**, not
+  filename-keyed, so grepping `.big` on a read line finds nothing — but the log has
+  the full chain: `NtCreateFile(name)` → `Added handle:H` (same thread) →
+  `NtReadFile(H, …, Length, ByteOffsetPtr(value))` → `NtClose(H)`/`Removed handle:H
+  for XFile`. Decoded example (handle F8000148, a datafile `.big`): `0x800@0`,
+  `0x800@0`, `0x6C000@0`, `0xB000…` = header/index probes then payload — exactly
+  "where header/index/payload live." Full reconstruction recipe + field map in
+  `A5_NOTES.txt`. Scope = boot→title `.big` set; container format is uniform so this
+  should suffice to RE the format (only do an A2b if gameplay streaming *order* is
+  wanted).
+- **Bonus surfaces (all high-freq, invisible before):** `VdSwap` 3131 (logs the
+  `0x500`×`0x2D0`=1280×720 swap params → boot→title flip/vsync cadence, which AW
+  could NOT get from any kernel-log level); `XamInputGetState` 12365; 178,629 sync
+  primitives.
+- **Integrity:** 231 MB, no crash. No `Cheap-skate exit!` (same as A2 — `flush_log=false`
+  drops the final KB-scale buffer on close for large logs); content complete.
+
+Files: `cz_run5.log.gz` (231 MB → 11.3 MB) · `A5_NOTES.txt`.
+
+### B1 + B1b — GPU `.xtr` streams, boot→title (+ determinism control)  → `gpu_B1_boot/`, `gpu_B1b_boot_repeat/`
+**Delivered 2026-08-04.** `trace_gpu_stream=true` from process start, A1 drive (movies
+in full → title → graceful exit, no idle). Full game. Each run also emitted its
+**same-run L3 correlation log** (fork emits both in one run). Frame 0 present.
+
+- **B1** `58410A8D_stream.xtr` **1.61 GiB** · **B1b** (identical repeat) **1.12 GiB**.
+  Both: header `01 00 00 00`+GUID, finalized (real-data tail), under the 2 GiB cliff,
+  `license_mask=1`, reached title.
+- **★ Determinism: size is NOT the metric.** B1 1.61 vs B1b 1.12 GiB (0.70) is idle/
+  load length + per-run ASLR host fields, NOT non-determinism; a raw `cmp` is also
+  meaningless (streams diverge immediately on host fields). Judge per-frame with the
+  decoder over the fixed boot+movie prefix (AW E1b: content-deterministic, ±2-frame
+  phase jitter). Both correlation logs lack `Cheap-skate exit!` (GPU-trace shutdown
+  preempts the final log flush; boot→title content complete).
+- **★ 2 GiB cliff is a hard constraint here.** Boot→title alone = 1.61 GiB. So B2's
+  A2-style "New Game → ~5 min Still Creek" CANNOT fit — a brief save-load gameplay
+  test already hit **1.92 GiB (96%)**. B2 must be a bounded, monitored slice.
+
+Files per folder: `58410A8D_stream.xtr` · `cz_B1{,b}_correlation.log.gz` · `B1_B1b_NOTES.txt`.
+
+### B2 — GPU `.xtr` stream, gameplay  → `gpu_B2_gameplay/`
+**Delivered 2026-08-04.** Boot → New Game → **skipped cutscenes** (matches A2) →
+outside in Still Creek → killed 12 zombies + grabbed weapon → graceful exit. Full
+game, same-run L3 correlation log. Gameplay draw profile (order-of-magnitude more
+draws than B1's title) + gameplay shader set + EDRAM under load.
+
+- **★★ THE 2 GiB `.xtr` CLIFF IS FIXED (source patch + rebuild).** Root cause:
+  `trace_writer.cc`'s compressed-write path used 32-bit `long`/`std::ftell`/`std::fseek`
+  to seek back and patch each command's length header → past 2 GiB the offset wrapped
+  and patched the wrong place. Fixed by swapping all 4 sites to Xenia's portable 64-bit
+  `xe::filesystem::Tell`/`Seek` and rebuilding Release ([23/23], exit 0). **Proof: this
+  B2 `.xtr` = 7.95 GiB (8,541,373,182 B), ~4× past the old cliff, valid header,
+  finalized, no corruption.** The `.xtr` FORMAT never had the limit (per-command
+  `uint32` lengths, not absolute offsets) → a 64-bit sequential decoder (Python) reads
+  it unchanged. **All future GPU captures on this rebuilt fork are cliff-free.** Full
+  detail + decoder note in `B2_NOTES.txt`.
+
+Files: `58410A8D_stream.xtr` (7.95 GiB) · `cz_B2_correlation.log.gz` (258 MB→21 MB) · `B2_NOTES.txt`.
+Bonus held locally: `cz_B2test/` — a 1.92 GiB save-load gameplay variant (undelivered
+unless a New-Game-vs-save contrast is wanted).
+
+### A3 — save / content round-trip  → `A3_save_content/`
+**Delivered 2026-08-04.** Boot → New Game → first save point → save → menu → load
+save back → exit. Full game, plain L3 (no GPU trace).
+
+- **★ Save shape captured.** `XamContentCreateEx(…,"save",…,flags=0x1012)` →
+  `XamContentCreateInternal("save")` → **`Registered symbolic link: save: =>
+  \Device\Content\1\`** → `NtCreateFile(save:\DR2P000.DSF)` → **`NtWriteFile` of
+  `0x4A000` = 303,104 B** (the whole save is ONE write) → `XamContentClose` →
+  unregister. Load-back: `XamContentCreateEnumerator`/`Aggregate…` → re-mount →
+  re-open `save:\DR2P000.DSF`. Root name `"save"`, mount `\Device\Content\1\`, file
+  `DR2P000.DSF` (DR2 Prologue).
+- **Physical save delivered** (`cz_A3_save_DR2P000.zip`): on-disk under the fork's
+  profile GUID `E030000072C80CEF` → `58410A8D\00000001(=SAVEDGAME)\DR2P000.DSF\` (303,104 B,
+  matches the write exactly) + `Headers\…\DR2P000.DSF.header` (328 B). Lets the analyst RE
+  the `.DSF` format directly. (Profile-GUID caveat: reusing this save on the stock build
+  needs copying into its `E0300000442B6B2E` content dir, same as AW.)
+- Log lacks `Cheap-skate exit!` (window-closed before graceful taskkill); save+load
+  content complete.
+
+Files: `cz_run3.log.gz` (129 MB→9.1 MB) · `cz_A3_save_DR2P000.zip` · `A3_NOTES.txt`.
+
+### C1 — function coverage, boot→title  → `C_coverage/`
+**Delivered 2026-08-04.** `trace_function_data=true` (from-boot, NOT deferred — did
+not crash the boot, like AW) over the A1 drive. Full game, same-run L3 correlation log.
+
+- **12,278 functions executed** boot→title (guest range `0x80050030`–`0x829C3554`).
+  The "forwards" oracle: executed addresses we have no function for = missing entry
+  points for `config/CaseZero.toml` (AW recovered 215 this way).
+- **Format:** 32 MiB preallocated, 48-byte `FunctionTraceData::Header` records packed
+  from offset 0 (12,278 used, rest zero-fill → gzips to 114 KB). Fields: `start_address`
+  +4, `end_address` +8, `function_call_count` +24. **`call_count` is BOOLEAN here (all
+  =1)** = coverage flag, not a rate — correct for the SET-based forwards oracle (use
+  `fcount` for rates). Treat boundaries as ranges; classify by size before believing
+  divergences (4-byte fns aren't comparable). Full field map in `C1_NOTES.txt`.
+- **C2 (gameplay) is the pair:** C2−C1 delta = gameplay-only function set.
+
+### C2 — function coverage, gameplay  → `C_coverage/`
+**Delivered 2026-08-04.** Same config as C1 over the A2 gameplay drive (New Game →
+Still Creek → zombies → weapon). Full game, same-run L3 log (young_chuck assets).
+
+- **C1 12,278 · C2 17,118 · C2−C1 = 4,840 NEW gameplay-only functions** (world/combat/
+  zombie/weapon). C2 is a strict superset of C1 (0 boot-only funcs missing — C2 re-runs
+  boot before gameplay). Matches AW's shape (there C1 +17,217 → C2 +5,370). The 17,118
+  executed addresses are the forwards oracle for `config/CaseZero.toml`. Field map +
+  delta detail in `C1_NOTES.txt`/`C2_NOTES.txt`.
+
+Files (C1+C2): `cz_C{1,2}_trace.0.gz` (32 MiB→114/150 KB) · `cz_C{1,2}_correlation.log.gz` · `C{1,2}_NOTES.txt`.
+
+### A4 — long title-screen idle  → `A4_title_idle/`
+**Delivered 2026-08-04.** Boot → title → ~5 min idle (graceful timed shutdown) → quit.
+Full game, plain L3. The title isn't static — steady state is ~69% `G>` GPU (per-frame
+title render), ~17% `A>` XMA (title music, 320k lines), ~14% `d>` kernel; that repeating
+per-frame cycle is the legible idle cadence (why it's 171 MB despite "idle"; gzip 42:1).
+Files: `cz_run4.log.gz` (171 MB→4 MB) · `A4_NOTES.txt`.
+
+### E — screenshots (visual target)  → `E_screenshots/`
+**Delivered 2026-08-04.** Five full-screen PNGs (Win+PrtScn, fork Release, 1280×720
+vanilla, game letterboxed): `E1` ESRB MATURE 17+ first logo · `E2` DR2 Case Zero title
+(PRESS START) · `E3` title's animated 3D Still Creek background (why A4 idle is GPU-heavy)
+· `E4` first gameplay frame (HUD, 0 KILLED) · `E5` zombie crowd at the gas station. No
+frame index (OS grabs); correlate against B1/B2 streams if an exact frame is needed. Labels
+in `E_NOTES.txt`.
+
+---
+
+## Round 1 — COMPLETE (all items delivered 2026-08-04)
+
+A1 (boot flow + shader dump D) · A2 (gameplay) · A3 (save) · A4 (title idle) · A5 (high-freq
+`.big`-read oracle) · B1/B1b (GPU title + determinism) · B2 (GPU gameplay) · C1/C2 (coverage,
++4,840 gameplay funcs) · E (screenshots). **All as the FULL game (`license_mask=1`).**
+
+Cross-cutting wins this round:
+- **Trial trap caught** (`license_mask=0` → trial; fixed to 1 for every run).
+- **Section D answered**: `dump_shaders` yields raw Xenos microcode (`.ucode.bin`).
+- **`.big` read oracle** is A5 (high-freq, handle-keyed), not A2 (`NtReadFile` is kHighFreq).
+- **2 GiB `.xtr` cliff FIXED** in the fork (64-bit `trace_writer` seek + rebuild) — B2 = 7.95 GiB clean.
+
+Held local (undelivered): `cz_B2test/` (1.92 GiB save-load GPU variant). Possible next: A2b
+(gameplay high-freq `.big` order) only if the analyst wants gameplay-era seek order.
+(A2b = gameplay high-freq only if the analyst wants gameplay-era `.big` seek order.)
