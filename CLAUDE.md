@@ -288,6 +288,22 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
     walked `00000000` -> `00000002` -> off the end of the guest space, which rules out
     the benign console-tolerated null read and names a bad base pointer instead.
 
+From finding 28 (the XAM surface):
+
+58. **A stubbed *query* can steer the whole boot, and one value can be worth dozens
+    of implementations.** `XamGetSystemVersion` is a feature gate in seven places;
+    as an honest-failure stub it returned `0xC0000002`, which compares ABOVE every
+    threshold, so the title took the dynamic-import branch at all seven and asked for
+    XAM ordinals we do not have. Returning 0 — "this system does not have those newer
+    entry points" — is the truthful answer AND the one the capture shows. Raise a
+    version gate only together with the exports it unlocks.
+59. **A predicate-shaped import has no honest failure value — gotcha 5's blind spot.**
+    `RtlCompareStringN` returned `STATUS_NOT_IMPLEMENTED` and the guest tested it with
+    `cmpwi r3,0`, so `0xC0000002` was not an error it could notice: it was a valid
+    answer meaning "not equal". Every string comparison in the title silently returned
+    "different". When a return value is a comparison or a boolean, "fail honestly" is
+    not available and implementing it is the only correct option.
+
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -461,7 +477,12 @@ CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purp
 CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
+CZ_KCALL_WHO=A,B   dump the guest call stack the first time these imports are called
 ```
+
+`CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
+first-occurrence order diverges, and the most informative divergences are imports we
+call which hardware never calls at all. Only the call site explains those.
 
 Re-derive the save/restore helper addresses:
 ```
@@ -618,9 +639,11 @@ write pointer rather than frozen.
   hardware element for element.
 - 118 of 244 imports real, 126 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 1 crash in 20 runs at 25 s** (session 5). The dominant fault — the
-  "null-pointer walk on the main thread", 6-7 in 10 — was the unlowered `bctr` of
-  finding 27 and is gone; the poison indirect call on the pump thread is declined.
+- **Stability: 0 crashes in 20 runs at 25 s** (session 5; 1 in 20 on the binary
+  immediately after finding 27). The dominant fault — the "null-pointer walk on the
+  main thread", 6-7 in 10 — was the unlowered `bctr` of finding 27 and is gone; the
+  poison indirect call on the pump thread is declined. The 0/20 is NOT evidence the
+  remaining fault is fixed — a 1-in-20 event is consistent with 0 in 20 (gotcha 51).
   `runtime/cpu/crash_report.cpp` prints the guest state on any fault.
 
 Three things from this session worth carrying to Case West, all in
@@ -652,13 +675,21 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **The surviving crash, 1 in 20** — a *different* fault from the one just fixed:
-   guest thread `00000F2C` (not the main thread), faulting outside the 4 GB guest
-   space, `lr=8284B708` / `82829BEC`, with `0xC0000102` visible in the object at r3.
-   Nothing about it is established yet beyond that one report.
-2. **The XAM/frontend surface**, everything past gate position 57 (unchanged by this
-   session: still `xenia=XamGetSystemVersion ours=RtlCompareStringN`).
-3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
+1. **The surviving crash, seen once in 40 runs** — a *different* fault from finding
+   27's: guest thread `00000F2C` (not the main thread), faulting outside the 4 GB
+   guest space, `lr=8284B708` / `82829BEC`, with `0xC0000102` visible in the object at
+   r3. One report exists; it did not recur in the next 20 runs, which bounds its rate
+   but explains nothing.
+2. **The XAM/frontend surface**, everything past gate position 57. Started: finding 28
+   fixed `XamGetSystemVersion` (a feature gate in seven places whose stub value sent
+   the title down a dynamic-import path at every one) and `RtlCompareStringN`. Still
+   126 honest-failure stubs, and the whole `NetDll_*` / `XamUser*` / `XMsg*` block is
+   among them — each needs its return value derived from the guest code, because
+   Xenia does not log return values for any of them.
+3. The remaining position-57 divergence is understood and is NOT the XAM surface: our
+   boot enters the title's DVD-cache subsystem and hardware does not. The deciding
+   branch is `sub_82829098`'s result at `0x827890B4`. Details in finding 28.
+4. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
 
 ## Conventions (same as the two template ports)
 

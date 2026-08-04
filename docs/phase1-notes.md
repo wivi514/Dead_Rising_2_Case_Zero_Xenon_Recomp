@@ -508,6 +508,83 @@ main thread, faulting on an address outside the 4 GB guest space with
 `lr=8284B708 / 82829BEC` and `0xC0000102` visible in the object at `r3`. That is the
 next lead, and it is not this one.
 
+### Finding 28 — one stubbed *query* was steering the whole frontend boot
+
+Gate position 57 had been "the XAM/frontend surface, a big pile of unimplemented
+imports" since the gate existed. Most of it was one value.
+
+`XamGetSystemVersion` returns the dashboard version as a packed dword, and Case Zero
+uses it as a **feature gate** in seven places. Every site is the same shape — an
+unsigned `cmplw` against a constant, taking the older-system branch below it:
+
+| call site | threshold | call site | threshold |
+|---|---|---|---|
+| `825D7E68` | `0x20096B00` | `825F209C` | `0x200CE900` |
+| `825DFB34` | `0x200A3200` | `825F2218` | `0x200CE900` |
+| `825DFD28` | `0x200A3200` | `828A0F2C` | `0x0008A100` |
+| | | `828A1004` | `0x0008A100` |
+
+Above the threshold the title resolves newer XAM entry points **dynamically** —
+`XexGetModuleHandle` then `XexGetProcedureAddress(handle, ordinal)` — and calls
+whatever comes back. Below it, it calls the statically imported function.
+
+As a generated stub this returned `STATUS_NOT_IMPLEMENTED` = `0xC0000002`, which
+compares **above every one of the seven thresholds**. So we took the dynamic path at
+all seven sites, asked for ordinal 80 out of an export table we do not have, got
+nothing, and silently lost the feature. `sub_825DFB10` is the `XNetStartup` wrapper
+and `sub_825DFD28` the `WSAStartup` one; both were affected, which is why our boot had
+no `NetDll_WSAStartup` at all.
+
+Returning **0** is not a guess. It is the truthful statement "this system does not have
+those newer XAM entry points" — claiming a higher version would be exactly the faking
+success gotcha 5 forbids, since the title would then ask us for entry points we cannot
+supply. It also matches the ground truth: in A1 the title takes the static branch and
+calls `NetDll_WSAStartup(1, 0002, ...)` directly, with no `XexGetModuleHandle` within
+a hundred lines. **Raise this only together with a real XAM export table, never before.**
+
+Effect on the gate: `XexGetModuleHandle` moved from our position 59 to 70 (hardware
+has it at 72), the bogus `XexGetProcedureAddress(ordinal 80)` is gone, and positions
+58-61 now align with hardware.
+
+#### A predicate-shaped import has no honest failure value
+
+`RtlCompareStringN` was also a generated stub returning `0xC0000002` — and that is a
+case "fail honestly" does not cover. The guest tests the result with `cmpwi r3,0`, so
+`0xC0000002` is not an error it can notice; it is a perfectly valid **answer** meaning
+"not equal". Every string comparison in the title silently returned "different", with
+total confidence and no diagnostic anywhere.
+
+This is gotcha 5's blind spot: the rule assumes the caller can distinguish a status
+from a result. For an import whose return value is a *predicate* or a *comparison*,
+there is no value that means "I don't know", so the only correct option is to implement
+it. It is now implemented, with the argument shape read off the guest
+(`s1, len1, s2, len2, caseInsensitive`) rather than assumed.
+
+#### What is still at position 57, and what it is not
+
+The gate still diverges at 57, and it is now a well-understood *extra* call rather than
+a mystery. Our boot enters the title's **DVD-cache subsystem** and hardware does not:
+
+    NtCreateFile('\Device\Image')                 -> not found
+    NtCreateFile('\Device\Harddisk0\partition0')  -> not found
+    RtlCompareStringN            <- gate position 57
+
+`sub_82822638` is the predicate behind it: given a counted string it compares the
+prefix against `"d:"`, a 5-character literal and `"cdrom0:"` (0x820BC4C0) — i.e.
+"is this path on the disc?". The string table it lives in is unambiguous about the
+subsystem: `\Device\Image`, `default.xex`, `cdrom0:`, `cache:\$cache$\spc`,
+`DvdCache`, `\Device\Harddisk0\Cache%u`, `xbdm.xex`.
+
+The branch that decides it is at **0x827890B4** in `sub_82788F48`: when
+`sub_82829098(...)` returns non-zero the whole block — including the `sub_82827318`
+call that reaches the comparison — is skipped. Hardware skips it; we do not.
+
+Worth noting for whoever picks this up: Xenia's own config registers `cache:`,
+`cache0:` and `cache1:` symlinks (`mount_cache = true`), and our VFS has no cache
+device at all. That is a real difference in the environment the two runs see, and it
+is the first thing to test — but it is a hypothesis, not a finding: A1 contains no
+`NtCreateFile` on any `cache:` path, so hardware never actually opens one.
+
 ## 5. Where the boot currently stops
 
 
@@ -562,10 +639,14 @@ per arm will confidently name whichever arm happened not to fire.
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 1 crash in 20 runs at 25 s.** The dominant fault (6-7 in 10, the
+- **Stability: 0 crashes in 20 runs at 25 s** on the current binary; 1 in 20 measured
+  on the binary immediately after finding 27. The dominant fault (6-7 in 10, the
   "null-pointer walk on the main thread") was the unlowered `bctr` of finding 27 and
-  is fixed; the poison indirect call on the pump thread is declined. What survives is
-  a third, barely-characterised fault on guest thread `00000F2C`.
+  is fixed; the poison indirect call on the pump thread is declined. **Do not read the
+  0/20 as finding 28 having fixed anything** — a 1-in-20 event is entirely consistent
+  with zero hits in twenty runs, and the one fault seen (guest thread `00000F2C`,
+  faulting outside the 4 GB space) is on a different thread from anything either
+  finding touched. It is unexplained, not gone.
 
 Next, in order:
 

@@ -2184,3 +2184,78 @@ GUEST_FUNCTION_HOOK(__imp__ExRegisterTitleTerminateNotification,
 GUEST_FUNCTION_HOOK(__imp__XexGetModuleSection, XexGetModuleSection_x)
 // Unloading a module we never really loaded is a genuine no-op in this runtime.
 GUEST_FUNCTION_STUB(__imp__XexUnloadImage)
+
+// ---------------------------------------------------------------------------
+// System version — the value that decides which code paths the title takes
+// ---------------------------------------------------------------------------
+
+// XamGetSystemVersion returns the dashboard version as a packed dword, and Case
+// Zero uses it as a **feature gate** in seven places. Each one is
+// `cmplw` (unsigned) against a constant, taking the older-system branch below it:
+//
+//     825D7E68 -> 0x20096B00      825F209C -> 0x200CE900
+//     825DFB34 -> 0x200A3200      825F2218 -> 0x200CE900
+//     825DFD28 -> 0x200A3200      828A0F2C -> 0x0008A100
+//                                 828A1004 -> 0x0008A100
+//
+// Above the threshold the title resolves newer XAM entry points **dynamically**:
+// `XexGetModuleHandle("xam.xex")` then `XexGetProcedureAddress(handle, <ordinal>)`,
+// and it calls whatever comes back. We do not have those exports, so claiming a
+// version at or above any threshold is exactly the "faking success" gotcha 5
+// forbids — the title would ask us for an entry point we cannot supply, and (with
+// our honest-failure XexGetProcedureAddress) silently lose the feature instead.
+//
+// Returning **0** is the truthful statement "this system does not have those newer
+// XAM entry points", and it is also what the ground truth shows: in A1 the title
+// takes the static branch at 825DFB34 and calls `NetDll_WSAStartup` directly, with
+// no XexGetModuleHandle anywhere near it. As an unimplemented stub this returned
+// STATUS_NOT_IMPLEMENTED (0xC0000002), which compares ABOVE every threshold, so we
+// took the dynamic path at every one of the seven sites — the whole gate-position-57
+// divergence, and the first-order reason our boot lost NetDll_WSAStartup,
+// XamUserGetSigninInfo and XamUserCheckPrivilege.
+//
+// If a later phase implements a real XAM export table, raising this is the right
+// move — but it must be raised WITH those exports, never before them.
+static uint32_t XamGetSystemVersion_x()
+{
+    return 0;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamGetSystemVersion, XamGetSystemVersion_x)
+
+// RtlCompareStringN(s1, len1, s2, len2, caseInsensitive) — memcmp semantics over the
+// shorter length, then by length; 0 means equal.
+//
+// The argument shape is read off the guest, not assumed: at 0x82822670 Case Zero
+// calls it with r3 = a counted string's buffer, r4 = 2, r5 = a literal, r6 = 2,
+// r7 = 1, and tests the result with `cmpwi r3,0`. That is five arguments with the
+// lengths interleaved, which is the xboxkrnl form.
+//
+// This was an honest-failure stub returning STATUS_NOT_IMPLEMENTED, and that is a
+// case the "fail honestly" rule does not cover: 0xC0000002 is a perfectly valid
+// *answer* to a comparison — it means "not equal" — so the guest never saw an error,
+// it saw a confident wrong result. Every comparison silently answered "different".
+// A predicate-shaped import has no honest failure value, which makes implementing it
+// the only correct option (gotcha 5's blind spot).
+static uint32_t RtlCompareStringN_x(const char* s1, uint32_t len1, const char* s2,
+                                    uint32_t len2, uint32_t caseInsensitive)
+{
+    if (!s1 || !s2)
+        return s1 == s2 ? 0 : (s1 ? 1 : uint32_t(-1));
+
+    const uint32_t len = len1 < len2 ? len1 : len2;
+    for (uint32_t i = 0; i < len; i++)
+    {
+        unsigned char a = uint8_t(s1[i]), b = uint8_t(s2[i]);
+        if (caseInsensitive)
+        {
+            if (a >= 'a' && a <= 'z') a -= 32;
+            if (b >= 'a' && b <= 'z') b -= 32;
+        }
+        if (a != b)
+            return uint32_t(int32_t(a) - int32_t(b));
+    }
+    return uint32_t(int32_t(len1) - int32_t(len2));
+}
+
+GUEST_FUNCTION_HOOK(__imp__RtlCompareStringN, RtlCompareStringN_x)
