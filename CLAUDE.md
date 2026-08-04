@@ -355,7 +355,9 @@ From finding 27 (the null base pointer, resolved — and it was none of the abov
   analysis, from `tools/xex_image_dump`.
 - `ppc/` — generated C++ (gitignored; 156 MB, 57,822 functions, regeneratable).
 - `tools/` — analysis scripts. Several copied from the earlier ports; provenance in
-  their headers.
+  their headers. `import_call_sites.py` is the one to reach for when implementing a
+  kernel import: the capture has no return values, so the guest code that consumes the
+  result is the specification (finding 29).
 - `docs/` — **`xenia-capture-analysis.md` is the numbered findings ledger and the first
   thing to read**; `big-archive-format.md` is the cracked container format;
   `xtr-decoder.md` is the GPU stream format + the determinism method;
@@ -637,7 +639,7 @@ write pointer rather than frozen.
 - **`--xenia A1` (masked): PREFIX MATCH, 56 of 93**, diverging at `XamGetSystemVersion`
   vs our `RtlCompareStringN` (a stub). Positions 28-56 — the whole Vd block — match
   hardware element for element.
-- 118 of 244 imports real, 126 generated honest-failure stubs.
+- 131 of 244 imports real, 113 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - **Stability: 0 crashes in 20 runs at 25 s** (session 5; 1 in 20 on the binary
   immediately after finding 27). The dominant fault — the "null-pointer walk on the
@@ -680,12 +682,14 @@ Next, in order:
    guest space, `lr=8284B708` / `82829BEC`, with `0xC0000102` visible in the object at
    r3. One report exists; it did not recur in the next 20 runs, which bounds its rate
    but explains nothing.
-2. **The XAM/frontend surface**, everything past gate position 57. Started: finding 28
-   fixed `XamGetSystemVersion` (a feature gate in seven places whose stub value sent
-   the title down a dynamic-import path at every one) and `RtlCompareStringN`. Still
-   126 honest-failure stubs, and the whole `NetDll_*` / `XamUser*` / `XMsg*` block is
-   among them — each needs its return value derived from the guest code, because
-   Xenia does not log return values for any of them.
+2. **The XAM/frontend surface**, everything past gate position 57. In progress:
+   finding 28 fixed `XamGetSystemVersion` and `RtlCompareStringN`; finding 29 did the
+   network init and the profile block (11 imports), and **gate positions 72-79 now
+   match hardware exactly**. 113 stubs left. `XamUserReadProfileSettings` is the next
+   domino — we call `XMsgCancelIORequest` where hardware calls neither it nor
+   `NtCreateTimer`/`NtSetTimerEx`/`XamUserCheckPrivilege`.
+   Method, since Xenia logs no return values for any of these: `tools/import_call_sites.py`
+   prints the guest code that consumes an import's result, and that code IS the spec.
 3. The remaining position-57 divergence is understood and is NOT the XAM surface: our
    boot enters the title's DVD-cache subsystem and hardware does not. The deciding
    branch is `sub_82829098`'s result at `0x827890B4`. Details in finding 28.

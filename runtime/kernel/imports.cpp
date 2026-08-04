@@ -2259,3 +2259,255 @@ static uint32_t RtlCompareStringN_x(const char* s1, uint32_t len1, const char* s
 }
 
 GUEST_FUNCTION_HOOK(__imp__RtlCompareStringN, RtlCompareStringN_x)
+
+// ---------------------------------------------------------------------------
+// Networking — enough of it to keep the boot on hardware's path
+// ---------------------------------------------------------------------------
+//
+// There is no network here and there will not be one. The question these answer is
+// not "can we connect" but "does the title's network init run to completion", because
+// on hardware it does, and the code after it is not optional — A1 goes straight from
+// this block into XamUserGetName and the profile reads at gate positions 61-68.
+//
+// Every arity below is taken from A1, not assumed (gotcha 48). All NetDll_* exports
+// carry Xenia's leading `caller` argument, which A1 logs as 00000001 everywhere:
+//
+//     NetDll_XNetStartup(00000001, 7018F810)
+//     NetDll_WSAStartup(00000001, 0002, 7018F620)   and (00000001, 0202, 7018F820)
+//     NetDll_XNetGetTitleXnAddr(00000001, 7018F5D0)
+//     NetDll_XNetRandom(00000001, 7018F740, 00000002)
+//
+// The guest thunks agree: sub_825DFBD0 is `mr r4,r3; li r3,1; b sub_825DFB10`, i.e.
+// it inserts the caller argument itself.
+
+// XNetStartup returns 0 on success, and sub_8280D748 tests exactly that:
+//
+//     bl sub_825DFBD0            ; XNetStartup(1, params)
+//     cmpwi r3,0
+//     beq  loc_8280D7B0          ; 0 -> carry on to WSAStartup(0x202, &wsadata)
+//     bl   sub_825DFBE0          ; non-zero -> tear down and skip the whole block
+//
+// As an honest-failure stub this returned 0xC0000002, so the title tore the stack
+// down every boot and never called WSAStartup at all. Returning 0 is not claiming a
+// network exists — it is claiming the socket layer initialised, which is true in the
+// only sense the title can observe here.
+static uint32_t NetDll_XNetStartup_x(uint32_t caller, uint32_t params)
+{
+    (void)caller;
+    (void)params;
+    return 0;
+}
+
+static uint32_t NetDll_XNetCleanup_x(uint32_t caller, uint32_t params)
+{
+    (void)caller;
+    (void)params;
+    return 0;
+}
+
+// WSAStartup(caller, wVersionRequested, lpWSAData). The out parameter is a 398-byte
+// WSADATA, and the guest's own code proves the size: at 0x8280D7C8 it stores one
+// halfword at r1+96 and memsets 398 bytes at r1+98 before passing r1+96. So
+// 2 + 2 + 257 + 129 + 2 + 2 + 4 = 398, the classic Winsock layout.
+//
+// The guest zeroes it first, so only the fields it can act on are written. Filling it
+// matters anyway: a caller that trusts an untouched out-buffer is finding 15's first
+// failure mode, and this one IS read — sub_828C1BD8 compares the result against -1.
+struct GuestWsaData
+{
+    be<uint16_t> wVersion;
+    be<uint16_t> wHighVersion;
+    char szDescription[257];
+    char szSystemStatus[129];
+    be<uint16_t> iMaxSockets;
+    be<uint16_t> iMaxUdpDg;
+    be<uint32_t> lpVendorInfo;
+};
+static_assert(sizeof(GuestWsaData) == 398 + 2, "WSADATA is 398 bytes plus tail padding");
+
+static uint32_t NetDll_WSAStartup_x(uint32_t caller, uint32_t version, GuestWsaData* data)
+{
+    (void)caller;
+    if (data)
+    {
+        // Echo the requested version back, as a real stack does when it can satisfy
+        // it. A1 shows both 0x0002 and 0x0202 requested, and both succeed there.
+        data->wVersion = uint16_t(version);
+        data->wHighVersion = 0x0202;
+        data->iMaxSockets = 64;
+        data->iMaxUdpDg = 1024;
+        data->lpVendorInfo = 0;
+    }
+    return 0;
+}
+
+static uint32_t NetDll_WSACleanup_x(uint32_t caller)
+{
+    (void)caller;
+    return 0;
+}
+
+// XNetGetTitleXnAddr(caller, XNADDR*) returns a BITMASK of what the adapter has, and
+// the title reads it bit by bit. sub_825C6DA0 and sub_8280D970 both test, in order,
+// bits for DHCP (0x08), PPPoE (0x10), STATIC (0x04) and ETHERNET (0x02), and return 0
+// when none are set.
+//
+// The value that must NOT be returned is 0: XNET_GET_XNADDR_PENDING is zero, and
+// `mr. r31,r3; beq ...` at 0x8280D7FC sends the title back to ask again — a poll with
+// no exit. XNET_GET_XNADDR_NONE (0x0001) says "the answer is final, and there is no
+// address", which is both true here and terminating.
+constexpr uint32_t XNET_GET_XNADDR_NONE = 0x00000001;
+
+static uint32_t NetDll_XNetGetTitleXnAddr_x(uint32_t caller, be<uint32_t>* xnaddr)
+{
+    (void)caller;
+    // XNADDR is 36 bytes: ina, inaOnline, wPortOnline, abEnet[6], abOnline[20]. With
+    // no address to report every field is genuinely zero, but it has to be WRITTEN —
+    // the title reads abEnet out of it regardless of the status bits.
+    if (xnaddr)
+        memset(xnaddr, 0, 36);
+    return XNET_GET_XNADDR_NONE;
+}
+
+// XNetRandom(caller, buffer, length) fills a buffer with random bytes; A1 asks for 2.
+//
+// Deliberately a fixed-seed PRNG rather than the host's entropy. Everything in this
+// project is measured by re-running the same binary and diffing (the phase gate, the
+// crash reports, the A/B arms), and an import that injects real entropy makes two runs
+// legitimately different for reasons nobody can see in a log. If a later phase needs
+// unpredictability it can seed this from somewhere and say so.
+static uint32_t NetDll_XNetRandom_x(uint32_t caller, uint8_t* buffer, uint32_t length)
+{
+    (void)caller;
+    if (!buffer)
+        return 0;
+    static uint32_t state = 0x9E3779B9;
+    for (uint32_t i = 0; i < length; i++)
+    {
+        state = state * 1664525u + 1013904223u;   // Numerical Recipes LCG
+        buffer[i] = uint8_t(state >> 24);
+    }
+    return 0;
+}
+
+GUEST_FUNCTION_HOOK(__imp__NetDll_XNetStartup, NetDll_XNetStartup_x)
+GUEST_FUNCTION_HOOK(__imp__NetDll_XNetCleanup, NetDll_XNetCleanup_x)
+GUEST_FUNCTION_HOOK(__imp__NetDll_WSAStartup, NetDll_WSAStartup_x)
+GUEST_FUNCTION_HOOK(__imp__NetDll_WSACleanup, NetDll_WSACleanup_x)
+GUEST_FUNCTION_HOOK(__imp__NetDll_XNetGetTitleXnAddr, NetDll_XNetGetTitleXnAddr_x)
+GUEST_FUNCTION_HOOK(__imp__NetDll_XNetRandom, NetDll_XNetRandom_x)
+
+// ---------------------------------------------------------------------------
+// The signed-in user — one local profile, no Live
+// ---------------------------------------------------------------------------
+//
+// THE POLICY, STATED ONCE. This runtime presents exactly one user: index 0, signed
+// in **locally**, with no online identity. That is a choice, and it is the choice A1
+// documents — the capture goes XamUserGetName, XamUserGetSigninInfo, XamUserGetName,
+// then XamUserReadProfileSettings and XamUserCheckPrivilege, which is the flow of a
+// title that found a profile. Reporting "nobody is signed in" instead is defensible
+// on its own but is NOT what the ground truth shows, and the frontend past this point
+// would take a different path with nothing to check it against.
+//
+// Users 1..3 are absent, and say so honestly.
+constexpr uint32_t kLocalUserIndex = 0;
+constexpr uint32_t ERROR_NO_SUCH_USER = 0x00000525;
+
+// Offline XUIDs have the top nibble 0xE; online ones do not. Using an offline-shaped
+// value is the part of this that is not arbitrary — it is how the title can tell,
+// without asking, that this profile has no Live identity.
+constexpr uint64_t kLocalOfflineXuid = 0xE000000000000001ull;
+
+// The gamertag is NOT observable in any capture — Xenia logs the buffer's contents
+// before the call, never after — and nothing in the image branches on it: every
+// consumer of XamUserGetName just copies the string out (sub_824BEA50, sub_82589C50,
+// sub_825C7B18, sub_825C9608). So this is a free choice, and it is flagged as one.
+constexpr const char* kLocalUserName = "Player";
+
+// XamUserGetSigninState returns the state itself, not a status: 0 = not signed in,
+// 1 = signed in locally, 2 = signed in to Live.
+static uint32_t XamUserGetSigninState_x(uint32_t userIndex)
+{
+    return userIndex == kLocalUserIndex ? 1u : 0u;
+}
+
+// XamUserGetName(userIndex, buffer, bufferLen) -> 0 on success. A1 always asks for
+// 0x10 bytes, which is XUSER_NAME_SIZE. Consumers test `cmplwi r3,0`.
+static uint32_t XamUserGetName_x(uint32_t userIndex, char* buffer, uint32_t bufferLen)
+{
+    if (!buffer || bufferLen == 0)
+        return ERROR_NO_SUCH_USER;
+    if (userIndex != kLocalUserIndex)
+    {
+        buffer[0] = '\0';       // an absent user still gets a defined buffer
+        return ERROR_NO_SUCH_USER;
+    }
+    memset(buffer, 0, bufferLen);
+    const size_t n = strlen(kLocalUserName);
+    memcpy(buffer, kLocalUserName, n < bufferLen ? n : bufferLen - 1);
+    return 0;
+}
+
+// XamUserGetSigninInfo(userIndex, flags, out) -> 0 on success.
+//
+// THE OUT PARAMETER IS EIGHT BYTES, and that is read off the guest rather than taken
+// from the SDK's XUSER_SIGNIN_INFO. sub_825C2F88 is the only consumer in the image: it
+// zeroes an 8-byte slot with `std r11,80(r1)`, passes `r1+80`, and reads the result
+// back with `ld r3,80(r1)`. Writing a larger struct there would be writing past what
+// the caller reserved, on the strength of a layout nothing here confirms (gotcha 48).
+//
+// WHICH XUID: A1 calls it twice, `(0, 00000001, ...)` then `(0, 00000000, ...)`, and
+// the guest only makes the second call when the first returned a ZERO xuid
+// (`cmpldi cr6,r3,0; bne cr6,<done>`). So on hardware flags=1 asks for the ONLINE xuid
+// and there is none. Reproducing that is what makes our call sequence match A1's,
+// and it is also true of us.
+static uint32_t XamUserGetSigninInfo_x(uint32_t userIndex, uint32_t flags, be<uint64_t>* out)
+{
+    if (!out)
+        return ERROR_NO_SUCH_USER;
+    if (userIndex != kLocalUserIndex)
+    {
+        *out = 0;
+        return ERROR_NO_SUCH_USER;
+    }
+    *out = (flags & 1) ? 0ull : kLocalOfflineXuid;
+    return 0;
+}
+
+// XamUserGetXUID(userIndex, type, out) -> 0 on success; the out is 8 bytes (A1 logs a
+// 16-hex-digit pre-call value). This profile has one XUID whatever the type asked for.
+static uint32_t XamUserGetXUID_x(uint32_t userIndex, uint32_t type, be<uint64_t>* out)
+{
+    (void)type;
+    if (!out)
+        return ERROR_NO_SUCH_USER;
+    if (userIndex != kLocalUserIndex)
+    {
+        *out = 0;
+        return ERROR_NO_SUCH_USER;
+    }
+    *out = kLocalOfflineXuid;
+    return 0;
+}
+
+// XamUserCheckPrivilege(userIndex, privilege, out) -> 0 on success, with a 4-byte
+// BOOL out: sub_825E4E88 does `lwz r11,96(r1); cmpwi cr6,r11,1`.
+//
+// A1 asks for privilege 0x000000FC = XPRIVILEGE_COMMUNICATIONS. With no Live identity
+// (see the XUID above) the truthful answer is "not granted", and saying otherwise
+// would invite the title into an online path this runtime cannot follow.
+static uint32_t XamUserCheckPrivilege_x(uint32_t userIndex, uint32_t privilege,
+                                        be<uint32_t>* result)
+{
+    (void)privilege;
+    if (!result)
+        return ERROR_NO_SUCH_USER;
+    *result = 0;
+    return userIndex == kLocalUserIndex ? 0u : ERROR_NO_SUCH_USER;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamUserGetSigninState, XamUserGetSigninState_x)
+GUEST_FUNCTION_HOOK(__imp__XamUserGetName, XamUserGetName_x)
+GUEST_FUNCTION_HOOK(__imp__XamUserGetSigninInfo, XamUserGetSigninInfo_x)
+GUEST_FUNCTION_HOOK(__imp__XamUserGetXUID, XamUserGetXUID_x)
+GUEST_FUNCTION_HOOK(__imp__XamUserCheckPrivilege, XamUserCheckPrivilege_x)

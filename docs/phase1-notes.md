@@ -585,6 +585,89 @@ device at all. That is a real difference in the environment the two runs see, an
 is the first thing to test — but it is a hypothesis, not a finding: A1 contains no
 `NtCreateFile` on any `cache:` path, so hardware never actually opens one.
 
+### Finding 29 — the network and profile block, and where its answers came from
+
+Eleven imports implemented; gate positions 72-79 now match hardware exactly and the
+boot reaches six kernel surfaces it had never touched (`NetDll_WSAStartup`,
+`XamUserGetSigninInfo`, `XMsgStartIORequest`, `KeResetEvent`, `NtSetInformationFile`,
+`XMACreateContext`).
+
+The point of this entry is not the list, it is **where each return value came from**,
+because the capture does not contain any of them. Xenia logs an import's arguments on
+entry — pointer arguments as `ADDR(value)`, showing what was there BEFORE the call —
+and prints no `= result` line for a single XAM or NetDll export. So A1 gives arity,
+argument shapes and call order; the image gives the answers. `tools/import_call_sites.py`
+exists to make that lookup cheap.
+
+#### The network init is gated on one comparison
+
+`sub_8280D748` is the whole story:
+
+    bl   sub_825DFBD0          ; XNetStartup(1, params)
+    cmpwi r3,0
+    beq  loc_8280D7B0          ; 0 -> on to WSAStartup(0x202, &wsadata)
+    bl   sub_825DFBE0          ; anything else -> tear down, skip the block
+
+As an honest-failure stub `XNetStartup` returned `0xC0000002`, so the title dismantled
+its network stack on every boot and never called `WSAStartup` at all. Returning 0 does
+not claim a network exists; it claims the socket layer initialised, which is the only
+thing the title can observe at that point.
+
+Two out-parameter sizes worth recording, both read off the guest rather than the SDK:
+
+* **WSADATA is 398 bytes.** The guest proves it — at `0x8280D7C8` it stores one
+  halfword at `r1+96` and memsets **398** bytes at `r1+98` before passing `r1+96`.
+  That is `2 + 2 + 257 + 129 + 2 + 2 + 4`, the classic Winsock layout.
+* **`XNetGetTitleXnAddr` must not return 0.** `XNET_GET_XNADDR_PENDING` *is* zero, and
+  `mr. r31,r3; beq` at `0x8280D7FC` sends the title back to ask again — a poll with no
+  exit. `XNET_GET_XNADDR_NONE` (1) says "the answer is final and there is no address",
+  which is both true here and terminating. `sub_825C6DA0` and `sub_8280D970` then test
+  the DHCP/PPPoE/STATIC/ETHERNET bits individually and take the no-link path.
+
+`XNetRandom` uses a **fixed-seed** LCG on purpose. Everything in this project is
+measured by re-running the same binary and diffing; an import injecting host entropy
+makes two runs legitimately different for reasons invisible in a log.
+
+#### One local user, and the capture chose it
+
+The runtime presents exactly one user: index 0, signed in **locally**, no online
+identity. That is a policy decision and it is A1's: the capture runs
+`XamUserGetName -> XamUserGetSigninInfo -> XamUserGetName -> XamUserReadProfileSettings
+-> XamUserCheckPrivilege`, which is the flow of a title that found a profile. Reporting
+"nobody is signed in" is defensible in isolation but is not what the ground truth shows,
+and everything past it would be unfalsifiable.
+
+The sharpest piece of evidence in the whole block is the signin-info XUID:
+
+* **The out parameter is EIGHT bytes.** `sub_825C2F88` is the only consumer in the
+  image; it zeroes an 8-byte slot with `std r11,80(r1)`, passes `r1+80`, and reads it
+  back with `ld r3,80(r1)`. Writing the SDK's larger `XUSER_SIGNIN_INFO` there would be
+  writing past what the caller reserved, on a layout nothing here confirms — exactly
+  the failure gotcha 48 was written for.
+* **Which XUID, decided by A1's sequence.** A1 calls it twice: `(0, 00000001, ...)`
+  then `(0, 00000000, ...)`. The guest only makes the second call when the first
+  returned a *zero* XUID (`cmpldi cr6,r3,0; bne cr6,<done>`). So on hardware `flags=1`
+  asks for the ONLINE xuid and there is none. We reproduce that, which is both true of
+  us and what makes our call sequence match.
+
+`XamUserCheckPrivilege`'s out is a 4-byte BOOL (`lwz r11,96(r1); cmpwi cr6,r11,1`), and
+A1 asks for privilege `0xFC` = `XPRIVILEGE_COMMUNICATIONS`. With no Live identity the
+truthful answer is "not granted".
+
+The gamertag is a **free choice** and is flagged as one in the source: it is not
+observable in any capture, and every consumer of `XamUserGetName` just copies the
+string out without branching on it.
+
+#### What is still wrong in this window
+
+Position 57 is unchanged — the DVD-cache fallback of finding 28, which shifts
+everything after it by one. Beyond that, three real differences remain in the block:
+we do not reach `NtCreateTimer` / `NtSetTimerEx` / `XamUserCheckPrivilege` (hardware
+positions 69-71), and we call `XMsgCancelIORequest` and `KeQueryBasePriorityThread`
+where hardware calls neither. `XamUserReadProfileSettings` is still a stub and is the
+obvious next domino: a title that cannot read its profile settings cancelling an XMsg
+IO request is a coherent story, but it is a story, not a measurement.
+
 ## 5. Where the boot currently stops
 
 
