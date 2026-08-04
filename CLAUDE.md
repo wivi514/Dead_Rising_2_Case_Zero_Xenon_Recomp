@@ -183,7 +183,7 @@ From round 2 (closing phase 0.1):
   `data/` (gitignored).
 - `assets/game/default_image.bin` (+ `.sections`) — the loaded image for offline
   analysis, from `tools/xex_image_dump`.
-- `ppc/` — generated C++ (gitignored; 154 MB, 57,728 functions, regeneratable).
+- `ppc/` — generated C++ (gitignored; 156 MB, 57,822 functions, regeneratable).
 - `tools/` — analysis scripts. Several copied from the earlier ports; provenance in
   their headers.
 - `docs/` — **`xenia-capture-analysis.md` is the numbered findings ledger and the first

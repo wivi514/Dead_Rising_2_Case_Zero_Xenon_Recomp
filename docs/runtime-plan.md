@@ -52,10 +52,10 @@ it could never match. The real count was 31. See finding 13 for the mechanism an
 two opposite repairs; `tools/find_dropped_branches.py` is now a required stage of the
 function-list pipeline, not an audit.
 
-**0.2 First real compile.** The 227 TUs (154 MB) have never been fed to a C++ compiler.
+**0.2 First real compile.** The 227 TUs (156 MB) have never been fed to a C++ compiler.
 Stand up the CMake skeleton, build `ppc/` as a static library, and burn down what falls
 out. Both earlier ports hit link-scale problems at this step and both solved them; at
-57,837 functions this image is smaller than either, so expect less.
+57,822 functions this image is smaller than either, so expect less.
 
 **Gate:** the recompiler log is completely clean — zero unrecognized, zero undecodable,
 zero switch errors, **and zero dropped branches** (that last one is not in the log at

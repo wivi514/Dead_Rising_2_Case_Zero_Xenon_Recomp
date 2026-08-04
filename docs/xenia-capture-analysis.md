@@ -301,8 +301,8 @@ B1-vs-ours difference as a defect without first establishing the noise floor.
 | functions executed, gameplay | 17,118 | C2 |
 | gameplay-only functions | 4,840 | C2−C1 |
 | executed within our image | 17,115 | C1∪C2 filtered |
-| recompiled functions (now) | 57,837 | after finding 5 |
-| coverage of the image | ~30% | 17,115 / 57,837 |
+| recompiled functions (now) | 57,822 | after findings 5, 13 |
+| coverage of the image | ~30% | 17,115 / 57,822 |
 | `.big` archives opened, gameplay | 433 | A2 |
 | file opens, gameplay | 23,965 | A2 |
 | guest threads, gameplay | 86 | A2 |
