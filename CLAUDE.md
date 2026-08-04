@@ -167,6 +167,30 @@ From round 2 (closing phase 0.1):
     crashes. Write the differential test against scalar PPC semantics, then break the
     implementation on purpose and confirm the test screams.
 
+From phase 0.2 (the first compile):
+
+31. **The recompiled image needs Clang, not a preference but a requirement.**
+    `ppc_context.h` builds `PPC_FUNC_PROLOGUE()` on `__builtin_assume`, which GCC has no
+    spelling for — so GCC fails in *every one* of the 57,822 function bodies. Select the
+    compiler **before** `project()`; after it, CMake has already locked one in.
+32. **A force-included `#define __rdtsc()` breaks the system headers, not the guest.**
+    The `mftb` shadow must not be in scope when `<immintrin.h>` declares its own
+    `__rdtsc(void)`, or the build dies inside a system header with an error naming
+    neither this project nor the guest. Include `<x86intrin.h>` first to set the guard,
+    then `#undef`/`#define`.
+33. **`PPC_FUNC` vs `PPC_FUNC_IMPL` is a linkage difference that only surfaces at link
+    time.** `PPC_FUNC_IMPL` is `extern "C"`; the image's references are C++-mangled,
+    because `ppc_recomp_shared.h` declares imports with a plain `extern PPC_FUNC(x)`.
+    Define kernel-import stubs with **`PPC_FUNC`**. Guest functions escape this only via
+    their `__attribute__((alias(...)))` weak alias — the same seam every hook uses.
+34. **The save/restore ladders are not missing symbols.** All 236 are declared in the
+    shared header and called everywhere, and XenonRecomp defines them itself as
+    `__imp____savegprlr_14` with a weak alias. Stubbing them gives 236 duplicate symbols.
+    Only `__imp__`-prefixed names are genuinely undefined.
+35. **Link the image with `--whole-archive` for the phase 0 gate.** A normal
+    static-library link pulls in only referenced objects, so an unreferenced TU carrying
+    an undefined symbol links cleanly — and the gate passes while proving nothing.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -194,7 +218,12 @@ From round 2 (closing phase 0.1):
   `runtime-plan.md` the phase plan.
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
-- `runtime/` — does not exist yet; phase 0 of `docs/runtime-plan.md` creates it.
+- `runtime/` — the host runtime. Currently phase 0.2 only: `CMakeLists.txt` (builds
+  `ppc/` into `libppc_image.a`; **selects clang++ before `project()` — gotcha 31**),
+  `main.cpp` (the `cz_smoke` link gate), `cpu/timebase.{h,cpp}` (the 49.875 MHz guest
+  timebase force-included over `ppc/` — gotchas 1 and 32), and
+  `kernel/import_stubs.cpp` (generated; 244 abort stubs — phase 1 converts these to
+  honest-failure returns).
 - Recompiler TOOL at `~/GithubRepo/XenonRecomp` (built at `build/`; carries local
   patches — see `docs/xenonrecomp-upstream-bugs.md`). Shader translator at
   `~/GithubRepo/XenosRecomp` (also patched; Case Zero inherits those fixes for free).
@@ -234,6 +263,14 @@ loop-header splits (gotcha 28). Regenerate `ppc/` between each step:
 python3 tools/find_dropped_branches.py            # report both classes
 python3 tools/find_dropped_branches.py --prune    # backward: remove spurious starts
 python3 tools/find_dropped_branches.py --widen    # forward: widen truncated functions
+```
+
+Build the image and run the phase 0 gate (needs `clang++`; ~90 s on 16 cores):
+```
+python3 tools/gen_import_stubs.py                 # after any change to the import set
+cmake -S runtime -B runtime/build -G Ninja
+cmake --build runtime/build -j$(nproc)
+./runtime/build/cz_smoke
 ```
 
 Re-derive the save/restore helper addresses:
@@ -338,15 +375,21 @@ find_jumptables.py  ->  coverage_to_function_overrides.py  ->
     fix_switch_function_bounds.py --apply  ->  find_dropped_branches.py --prune / --widen
 ```
 
-Next, in order:
+**Phase 0.2 complete (2026-08-04, session 2).** `runtime/` exists. All 228 TUs compile
+and link — **0 errors, 0 warnings, 89 s on 16 cores** → 155 MB `libppc_image.a`, 109 MB
+`cz_smoke`. The gate binary walks all 58,303 `PPCFuncMappings` entries and validates
+them; the binary contains all 57,822 guest functions and all 244 imports with zero
+undefined symbols.
 
-1. **Compile `ppc/`** — 227 TUs that have never been fed to a C++ compiler. Phase 0.2 of
-   `docs/runtime-plan.md`. This is now the only thing standing between the image and the
-   runtime, and the `vadduws` fix removed the one known blocker in it.
+**PHASE 0 IS COMPLETE.** Next, in order:
+
+1. **Start the runtime** (phase 1) — kernel HLE and guest bootstrap, written against
+   A1's call order. First job is converting `runtime/kernel/import_stubs.cpp` from
+   abort-stubs to honest-failure returns, because phase 1's gate is the *call sequence*
+   and an abort on the first unimplemented name makes the ordering unobservable.
 2. **Write an `.xtr` decoder.** Findings 9 and 10 both end at "needs the decoder": the
    determinism baseline is unmeasured and no GPU gate can be built without one. Nothing
    in this repo reads a GPU stream yet.
-3. **Start the runtime** (phase 1), written against A1's call order.
 
 ## Conventions (same as the two template ports)
 

@@ -21,10 +21,10 @@ No phase starts on guesswork; each has a ground-truth gate that says "done".
 
 ## Phase 0 — make the image compilable and honest *(prerequisite)*
 
-> **Status 2026-08-04: 0.1 is DONE. Only the first compile (0.2) remains.**
-> The image sits at **57,822 functions and the recompiler log is completely silent** —
-> zero unrecognized, zero undecodable, zero switch-boundary errors, zero dropped
-> branches. Findings 13 and 14.
+> **Status 2026-08-04: PHASE 0 IS COMPLETE.** The image sits at **57,822 functions, the
+> recompiler log is completely silent** (zero unrecognized, zero undecodable, zero
+> switch-boundary errors, zero dropped branches — findings 13 and 14), **and all 228 TUs
+> compile and link with zero warnings**. Phase 1 is next.
 
 **0.1 Close the 42 unrecognized-instruction sites.** *(done — XenonRecomp `981afe9`)*
 Six mnemonics — `lhbrx` (30), `stfsux` (5), `vsubuws` (4), `vspltish`, `vpkuwum`,
@@ -52,10 +52,52 @@ it could never match. The real count was 31. See finding 13 for the mechanism an
 two opposite repairs; `tools/find_dropped_branches.py` is now a required stage of the
 function-list pipeline, not an audit.
 
-**0.2 First real compile.** The 227 TUs (156 MB) have never been fed to a C++ compiler.
-Stand up the CMake skeleton, build `ppc/` as a static library, and burn down what falls
-out. Both earlier ports hit link-scale problems at this step and both solved them; at
-57,822 functions this image is smaller than either, so expect less.
+**0.2 First real compile.** *(done — `runtime/`, 2026-08-04)* The 228 TUs (156 MB) had
+never been fed to a C++ compiler. They now build clean: **0 errors, 0 warnings, 89 s on
+16 cores**, into a 155 MB `libppc_image.a` and a 109 MB `cz_smoke`.
+
+Both earlier ports hit link-scale problems here. This one did not, and the reason is
+just size: 57,822 functions against Asura's Wrath's 78,825 and Fable 2's 91k.
+
+Three things had to be right, none of which is discoverable by reading the generated
+code:
+
+- **Clang is not optional.** `ppc_context.h` defines `PPC_FUNC_PROLOGUE()` as
+  `__builtin_assume(...)`, which is Clang-only. GCC 16 fails in *every one* of the
+  57,822 function bodies. `runtime/CMakeLists.txt` selects `clang++` before `project()`
+  — after it, CMake has already locked the compiler in — and warns if overridden.
+- **The `mftb` shadow must not be in scope when the system intrinsics headers are
+  read.** `cpu/timebase.h` is force-included ahead of everything, and a function-like
+  `#define __rdtsc()` rewrites `<immintrin.h>`'s own `__rdtsc(void)` *declaration*. The
+  build then dies inside a system header with an error naming neither this project nor
+  the guest. Fix: include `<x86intrin.h>` at the top of `timebase.h` so the guard is
+  already set, then `#undef`/`#define`.
+- **Import stubs need `PPC_FUNC`, not `PPC_FUNC_IMPL`.** `PPC_FUNC_IMPL` is
+  `extern "C"`; the image's references are C++-mangled because
+  `ppc_recomp_shared.h` declares imports with a plain `extern PPC_FUNC(x)`. Getting
+  this wrong links 244 undefined references to names that are visibly present in the
+  stub file. The guest functions escape the same trap only because each carries an
+  `__attribute__((alias(...)))` weak alias re-exporting the unmangled definition under
+  the mangled name — which is exactly the seam every hook is built on.
+
+**What did NOT need doing:** the 236 save/restore ladder helpers look like they need
+stubs — declared in the shared header, called throughout the image, defined nowhere
+obvious. XenonRecomp synthesises them from the `*_address` config keys and emits them as
+`__imp____savegprlr_14` with a weak alias to `__savegprlr_14`. They resolve on their own;
+stubbing them yields 236 duplicate symbols. Only the 244 kernel imports are genuinely
+undefined (`tools/gen_import_stubs.py`).
+
+**Gate met.** `runtime/build/cz_smoke` walks the whole `PPCFuncMappings` table — 58,303
+entries — and validates every one. The link uses `--whole-archive` deliberately: a normal
+static-library link pulls in only referenced objects, so an unreferenced TU with an
+undefined symbol would link cleanly and the gate would pass while proving nothing.
+Verified after the fact from the binary: 57,822 guest function symbols and all 244
+imports defined, **zero** undefined. And the gate is known to be capable of failing — it
+did, on the `PPC_FUNC_IMPL` linkage bug above.
+
+The table is 58,303 entries against 57,822 functions because it also maps the import
+thunks and ladders: 57,822 + 244 + 236 + `_xstart` = 58,303. The harness says "entries"
+rather than "functions" for that reason.
 
 **Gate:** the recompiler log is completely clean — zero unrecognized, zero undecodable,
 zero switch errors, **and zero dropped branches** (that last one is not in the log at

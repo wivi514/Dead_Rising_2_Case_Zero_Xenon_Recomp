@@ -54,7 +54,10 @@ retail key and returns an **empty image with no diagnostic** when it is wrong. S
 - [x] **Dropped direct branches driven to zero** — a defect class nothing here was
       measuring, because the check for it grepped a pattern the recompiler never emits.
       `tools/find_dropped_branches.py`, findings 13 and 5d.
-- [ ] First compile of `ppc/` — 227 TUs never yet fed to a C++ compiler.
+- [x] **The image compiles and links — phase 0 complete.** All 228 TUs build with
+      **0 errors and 0 warnings** (89 s on 16 cores) into a 155 MB `libppc_image.a`;
+      `runtime/build/cz_smoke` links every generated symbol (`--whole-archive`) and
+      validates all 58,303 `PPCFuncMappings` entries. Zero undefined symbols.
 - [ ] An `.xtr` GPU-stream decoder — nothing here reads one yet, and two findings block on it.
 - [ ] Runtime (kernel HLE, GPU command processor, renderer, audio) — `docs/runtime-plan.md`.
 
@@ -84,6 +87,18 @@ microcode blobs**, already captured, which is what XenosRecomp consumes.
 ```
 cd config && ~/GithubRepo/XenonRecomp/build/XenonRecomp/XenonRecomp CaseZero.toml \
     ~/GithubRepo/XenonRecomp/XenonUtils/ppc_context.h
+```
+
+## Build it
+
+**Clang is required** — `ppc_context.h` uses `__builtin_assume`, which GCC has no
+spelling for, so GCC fails in every one of the 57,822 generated function bodies.
+
+```
+python3 tools/gen_import_stubs.py
+cmake -S runtime -B runtime/build -G Ninja
+cmake --build runtime/build -j$(nproc)
+./runtime/build/cz_smoke
 ```
 
 `assets/` is not committed (copyrighted game data). Recreate it with:
