@@ -152,11 +152,23 @@ Cheap, and it makes every later phase observable.
 
 ## Phase 4 — GPU command processor
 
-> **Prerequisite that does not exist yet: an `.xtr` decoder.** Findings 9 and 10 both end
-> at "needs the decoder" — the determinism baseline is unmeasured and no gate can be
-> built without one. Write it first. The good news is the operator fixed Xenia's 2 GiB
-> `.xtr` cliff at source (finding 9), so gameplay captures are unbounded and the B2
-> stream is 7.95 GiB of real data.
+> **Prerequisite MET (2026-08-04, phase 0.3).** The `.xtr` decoder exists —
+> `tools/xtr.py` plus three CLIs, documented in `docs/xtr-decoder.md`. Finding 10 is
+> closed. Two results change how this phase must be gated:
+>
+> - **Gate on per-era aggregates, NOT on absolute frame index.** Two *hardware* runs of
+>   one drive agree to 0.42% on aggregates but only **80.0% frame-exact**, with phase
+>   drift concentrated at lag +3. A frame-indexed gate would report ~20% divergence
+>   against a correct renderer. The noise floor for any later comparison is **0.42%
+>   worst aggregate, 0.19% on draws**.
+> - **`INDIRECT_BUFFER` is recorded one dword short** — the size dword lives in the
+>   following `IndirectBufferStart`, and the IB body follows inline. A replay tool that
+>   trusts either the recorded length or the header length feeds the command processor a
+>   malformed packet (finding 10b). Also: start/end nesting is *not* balanced at the tail
+>   of these captures, so a parser requiring balance rejects all of them.
+>
+> Known packet inventory, from `xtr_pm4_census.py --verify`: **21 distinct type-3 opcodes
+> in B1, every one of them named** — no unknown packets in the frontend stream.
 
 Execute the real PM4 stream: register file, fences, waits, indirect buffers, CP
 interrupts. Gate it offline first with a `pm4_replay` target that walks the B1 `.xtr`
@@ -176,6 +188,16 @@ calls the poison.
 
 **Gate:** `pm4_replay` over every `.xtr` capture: zero unknown opcodes, zero desyncs,
 swap count matching the capture's frame count.
+
+**The inventory is already known and it is small: 21 type-3 opcodes, identical in B1, B1b
+and B2** (finding 10d). Gameplay introduces none the frontend does not already use, so the
+command processor can be developed and gated against **B1 alone** — 1.61 GiB rather than
+B2's 7.95 GiB — which is a large saving on iteration time. The opcode list is in finding
+10d; `xtr_pm4_census.py --verify` is what reports an exception to it.
+
+`XE_SWAP` count equals frame count exactly in all three captures (1,089 / 881 / 4,082),
+which is the cheapest cross-check that a replay walk has not lost frames. `ME_INIT` = 1
+and `COND_WRITE` = 256 in every capture regardless of length — both init-only.
 
 ## Phase 5 — renderer  *(input settled)*
 

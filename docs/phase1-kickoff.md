@@ -75,15 +75,18 @@ runtime's log format and A1's line shapes. Run it early and often — the diverg
 always the next thing to implement. Measurement discipline: same-binary A/B arms, no
 silent caps, every probe needs its own control.
 
-## Second track (independent, can interleave): the `.xtr` decoder
+## The `.xtr` decoder track is DONE — do not re-derive it
 
-Findings 9 and 10 both end at "needs the decoder" — the B1/B1b determinism baseline is
-unmeasured and no phase 4 gate exists without one. **This is a port, not a from-scratch
-write**: Asura's Wrath has the full tool family (`xenia_xtr_walk.py`,
-`xenia_xtr_frame_decode.py`, `xtr_pm4_census.py`, `xtr_wait_writers.py`,
-`xenia_xtr_draw_census.py`, `xtr_frame_profile.py`). Port the walker first, run it over
-B1 and B1b, and close finding 9 by measuring the determinism baseline. Note B2 is
-7.95 GiB — stream it, never load it.
+Completed 2026-08-04 (phase 0.3), before this hand-off. `tools/xtr.py` is the format in
+one module; `xtr_walk.py`, `xtr_pm4_census.py` and `xtr_determinism.py` are thin CLIs over
+it. Read `docs/xtr-decoder.md` when phase 4 starts, not before. What it settled:
+
+- Finding 10 is closed. B1/B1b are content-deterministic to **0.42%** over the boot+movie
+  prefix, but only **80.0% frame-exact** — so **phase 4 gates on per-era aggregates, never
+  on frame index**.
+- `INDIRECT_BUFFER` is recorded one dword short, and start/end nesting is unbalanced at
+  the tail of every capture. Both are replay traps, written up in finding 10b/10c.
+- All three GPU captures are intact; all 21 type-3 opcodes in B1 are named.
 
 ## Standing constraints
 

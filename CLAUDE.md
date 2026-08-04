@@ -191,6 +191,37 @@ From phase 0.2 (the first compile):
     static-library link pulls in only referenced objects, so an unreferenced TU carrying
     an undefined symbol links cleanly — and the gate passes while proving nothing.
 
+From phase 0.3 (the `.xtr` decoder, closing finding 10):
+
+36. **A capture's notes prescribe a *method*, and skipping it manufactures a finding
+    about the title.** Gotcha 13 says to re-read a capture's notes before believing
+    their *conclusions*; this is the other half. B1/B1b's notes said to align over the
+    fixed boot+movie prefix and ignore the idle tail. Comparing whole runs instead
+    produced "16% of frames agree — NOT content-deterministic", a confident claim about
+    the game that was purely an artifact of including 619-vs-409 frames of *a human
+    deciding when to press exit*. Same data, correct window: 0.42%.
+37. **An emulator-side bookkeeping field can be deterministic in aggregate and
+    non-deterministic per frame.** `MemoryRead` counts agree to 0.37% in total and align
+    on only 17.7% of frames, because Xenia's dirty-tracking decides *when* to record, not
+    *whether*. Folding them into a content fingerprint dropped frame agreement from 42.7%
+    to 16.0%. A field's total being stable is not evidence that its distribution is.
+38. **Gate on per-era aggregates, never on absolute frame index.** Even over the correct
+    window, frame-exact agreement between two *hardware* runs is only 80.0% — phase drift
+    concentrated at lag +3. A frame-indexed GPU gate would report ~20% divergence against
+    a correct renderer.
+39. **One opcode can be recorded differently from all the others, and the shape of the
+    disagreement names the cause.** Spread across many opcodes → the bit layout is wrong.
+    All of one and none of any other → that opcode is special. `INDIRECT_BUFFER` is stored
+    one dword short (the size lives in the following `IndirectBufferStart`), so a replay
+    tool that trusts either length feeds the command processor a malformed packet.
+40. **An unexercised bounds check is not a working one.** The ported `.xtr` `step()`
+    computed a next-offset past EOF without checking it. B1 never triggered it; B1b did,
+    on the first run, because these captures stop mid-command. "It has always worked" was
+    a statement about the inputs.
+41. **A check that always fires is a check people learn to ignore.** The response to a
+    known-benign alarm is to encode the knowledge (`xtr.PM4_SHORT_RECORDED`), never to
+    widen the tolerance — widening it also silences the unknown cases it was built for.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -212,6 +243,7 @@ From phase 0.2 (the first compile):
   their headers.
 - `docs/` — **`xenia-capture-analysis.md` is the numbered findings ledger and the first
   thing to read**; `big-archive-format.md` is the cracked container format;
+  `xtr-decoder.md` is the GPU stream format + the determinism method;
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
@@ -277,6 +309,18 @@ Re-derive the save/restore helper addresses:
 ```
 python3 tools/find_save_restore.py assets/game/default_image.bin
 ```
+
+Read a GPU capture (`tools/xtr.py` is the format; the rest are thin CLIs over it —
+see `docs/xtr-decoder.md`):
+```
+python3 tools/xtr_walk.py stats  "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+python3 tools/xtr_walk.py limits "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+python3 tools/xtr_pm4_census.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr" --verify
+python3 tools/xtr_determinism.py \
+    "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr" \
+    "Xenia logs/gpu_B1b_boot_repeat/58410A8D_stream.xtr" --labels B1 B1b
+```
+`--verify` is the only check in the census that *can* fail — always pass it.
 
 ## The recompilation contract (identical to Fable 2 and Asura's Wrath)
 
@@ -381,15 +425,24 @@ and link — **0 errors, 0 warnings, 89 s on 16 cores** → 155 MB `libppc_image
 them; the binary contains all 57,822 guest functions and all 244 imports with zero
 undefined symbols.
 
-**PHASE 0 IS COMPLETE.** Next, in order:
+**Phase 0.3 complete (2026-08-04, session 3): the `.xtr` decoder exists and finding 10 is
+closed.** `tools/xtr.py` (the format, in one module) plus `xtr_walk.py`,
+`xtr_pm4_census.py` and `xtr_determinism.py`. Format and method: `docs/xtr-decoder.md`.
+
+Measured: B1 and B1b are **content-deterministic to 0.42%** over the boot+movie prefix
+(0.19% on draws), with four eras agreeing to the individual draw — but **frame-exact
+agreement is only 80.0%**, so phase 4 must gate on per-era aggregates, never on frame
+index (gotcha 38). Both captures are intact: clean heads, zero desyncs. The census
+self-check found `INDIRECT_BUFFER` is recorded one dword short (gotcha 39), which is a
+trap phase 4 would otherwise have hit at replay time.
+
+**PHASE 0 IS COMPLETE.** Next:
 
 1. **Start the runtime** (phase 1) — kernel HLE and guest bootstrap, written against
    A1's call order. First job is converting `runtime/kernel/import_stubs.cpp` from
    abort-stubs to honest-failure returns, because phase 1's gate is the *call sequence*
    and an abort on the first unimplemented name makes the ordering unobservable.
-2. **Write an `.xtr` decoder.** Findings 9 and 10 both end at "needs the decoder": the
-   determinism baseline is unmeasured and no GPU gate can be built without one. Nothing
-   in this repo reads a GPU stream yet.
+   `docs/phase1-kickoff.md` is the hand-off prompt.
 
 ## Conventions (same as the two template ports)
 

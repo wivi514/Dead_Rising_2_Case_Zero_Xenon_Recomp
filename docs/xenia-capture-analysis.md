@@ -278,7 +278,79 @@ All future GPU captures on that fork are cliff-free. **This is the single most v
 thing in round 1 for the renderer phase**, because it removes the constraint that would
 otherwise have forced every gameplay GPU capture to be a bounded, monitored slice.
 
-## 10. Determinism: size is not the metric
+## 10. Determinism: MEASURED. Content-deterministic to 0.42%, and frame index is unusable
+
+> **Status: closed 2026-08-04 (session 3).** The decoder now exists
+> (`tools/xtr.py` + `tools/xtr_determinism.py`, written up in
+> `docs/xtr-decoder.md`). The original text below the rule was written when this
+> was unmeasured; its *method* prescription was right and its warning was right.
+
+**The answer.** Over the fixed boot+movie prefix (B1 frames 0–469, B1b 0–471), every
+aggregate agrees to within **0.42%**, and draws to **0.19%**. Six opcodes match exactly.
+The 0.42% worst case is `XE_SWAP`/`COND_WRITE` at 470 vs 472 — i.e. it *is* the two-frame
+prefix-length difference, not an independent error. This is the same shape Asura's Wrath
+measured (~0.38%), so the property looks like one of the emulator and the method rather
+than of either title.
+
+| | B1 | B1b | delta |
+|---|---|---|---|
+| draws over prefix | 66,213 | 66,084 | 0.19% |
+| type-3 packets | 238,295 | 238,049 | 0.10% |
+| type-0 register runs | 902,572 | 901,395 | 0.13% |
+| frames in prefix | 470 | 472 | 0.42% |
+
+**The era structure is the proof, and it is stronger than the aggregate.** Both runs pass
+through the same eleven draw-count regimes, and four of them agree to the *draw*:
+
+| era | B1 frames / draws | B1b frames / draws |
+|---|---|---|
+| ~80 draws (logos) | 141 / 11,280 | 142 / 11,360 |
+| ~194 draws (movie) | 227 / **44,170** | 227 / **44,169** |
+| ~194 draws (movie, 2nd) | 31 / **5,888** | 31 / **5,888** |
+| ~2540 draws (title) | 619 / 1,574,459 | 409 / 1,047,533 |
+
+**But frame-exact comparison does not work, even over the prefix — only 80.0% of frames
+align.** The phase drift is real and one-directional: 55.9% of matched frames sit at lag
++3, 15.7% at +2, 7.7% at +1. A naive frame-*i*-vs-frame-*i* comparison scores 65.1%.
+
+**Consequence for phase 4, and it is a design constraint, not a caveat: gate on per-era
+aggregates, never on absolute frame index.** Aggregates are robust to drift; frame indices
+are not, and a frame-indexed gate would report ~20% divergence against a *correct*
+renderer.
+
+**Baseline for every later GPU comparison: 0.42% worst aggregate, 0.19% on draws.** Our
+runtime landing inside that band is not evidence of correctness. Landing outside it is
+evidence of a defect.
+
+### 10a. Three ways this measurement went wrong first
+
+All three produced confident, plausible, wrong answers. They are recorded because the
+next person will reach for all three, and two of them are not specific to this title.
+
+**Comparing whole runs instead of the prefix — the expensive one.** The first run of the
+comparison reported **16%** frame agreement and the verdict "NOT content-deterministic".
+B1 sat on the title screen for 619 frames and B1b for 409; that difference is *a human
+deciding when to press exit*, and averaged over the run it swamps everything real. The
+same comparison reads 42.7% whole-run and 80.0% over the prefix. The B1/B1b capture notes
+**explicitly prescribed** aligning over the fixed boot+movie prefix and ignoring the idle
+tail — the instruction was there and was not followed. Gotcha 13 says to re-read a
+capture's notes against the ledger before believing their *conclusions*; the same applies
+to their *methods*, and skipping one manufactured a false finding about the title.
+
+**Putting `MemoryRead` counts in a content fingerprint.** Those commands are Xenia
+recording guest memory so the trace can replay standalone, and whether a block needs
+recording depends on the emulator's dirty-tracking, not on the guest. Per-frame they align
+on only 17.7%, and folding them into an otherwise-agreeing fingerprint dragged it from
+42.7% to 16.0%. Note the trap is specifically *per-frame*: the same counts agree to 0.37%
+in aggregate. **An emulator-side bookkeeping field distributes differently across frames
+even when its total is deterministic**, so it fails exactly the comparison it is most
+tempting to include it in.
+
+**Believing the size ratio.** Retained from the original text below because it was right.
+
+---
+
+*Original text, written before the measurement existed:*
 
 B1 is 1.61 GiB, B1b — an identical repeat — is 1.12 GiB, a ratio of 0.70. That is **not**
 evidence of non-determinism: it is idle/load length plus per-run host fields (ASLR
@@ -287,11 +359,116 @@ diverge on host fields almost immediately.
 
 The determinism question has to be asked per-frame, with a decoder, over the fixed
 boot+movie prefix. Asura's Wrath's equivalent pair came out content-deterministic with
-±2-frame phase jitter. **Not yet measured here** — it needs the `.xtr` decoder, which
-does not exist in this repo yet.
+±2-frame phase jitter.
 
 Until it is measured, do not gate anything on absolute frame index, and do not treat a
 B1-vs-ours difference as a defect without first establishing the noise floor.
+
+## 10b. `INDIRECT_BUFFER` is recorded one dword short, and phase 4 must know
+
+Found by a self-check that cost nothing to write: the trace's `PacketStart.count` and the
+PM4 type-3 header's own count-1 field describe the same packet, so comparing them is the
+only check in a census that *can* fail. Everything else a census prints would look
+entirely plausible with a wrong bit shift, because a wrong opcode is still some other real
+opcode.
+
+On B1 it fired on 28,726 of 8,283,322 type-3 packets (0.35%). **The shape of the
+disagreement is what identifies it, and the two possible shapes mean opposite things:**
+
+- spread across many opcodes → the bit layout is wrong, every count is suspect;
+- all of one opcode and none of any other → that opcode is recorded differently.
+
+Here it was perfectly categorical: **100% of `INDIRECT_BUFFER` (0x3F), 0% of everything
+else.** Mechanism, measured across all 28,726 with no exceptions:
+
+- the packet is stored with `count = 2` while its header says 3 (header + address + size);
+- the next trace command is *always* `IndirectBufferStart`;
+- that command's `base_ptr` always equals the packet's word[1], the IB address;
+- the IB's contents then follow inline until `IndirectBufferEnd`.
+
+The trace never needs the size dword: a reader walks *into* the buffer rather than
+dereferencing guest memory. The information is relocated, not lost.
+
+**The phase 4 trap:** feed a command processor the recorded 2 dwords as a whole packet and
+it gets a malformed `INDIRECT_BUFFER`; trust the header's 3 and read a third dword out of
+the trace and you read *the next command's type field* as an IB size. Both produce a
+plausible-looking stream that is wrong.
+
+Encoded as `xtr.PM4_SHORT_RECORDED` so `--verify` stays silent on the known case and still
+screams about anything else. **A check that always fires is a check people learn to
+ignore**, so the response to a known-benign alarm is to encode the knowledge, never to
+widen the tolerance.
+
+## 10c. An unexercised bounds check is not a working one
+
+`step()` in Asura's Wrath's `.xtr` tools computes the next command offset as
+`off + 12 + count*4` and returns it without checking it against the file size. Ported
+here, it **crashed on B1b's first run**: these captures stop mid-command, because
+GPU-trace shutdown preempts the final log flush. B1b's last `PacketStart` header sits 12
+bytes from EOF with its payload missing — a header-only bounds check accepts it, the
+walker yields it, and the caller reads the first PM4 word off the end of the mmap and dies
+with a `struct.error` naming an offset and no cause.
+
+B1 never triggered it, and neither did any Asura's Wrath capture. "It has always worked"
+was a statement about the inputs. Every branch now bounds-checks the command's full
+extent, payload included, and a truncated tail is reported as its own outcome rather than
+as corruption.
+
+Related, and worth knowing before writing a replay parser: **the start/end nesting is not
+balanced at the tail.** B1 has 24,527,474 `PacketStart` against 24,527,472 `PacketEnd`,
+and 2,333 `PrimaryBufferStart` against 2,332 ends. The stream simply stops while two
+levels deep — an `INDIRECT_BUFFER` packet stays open while the IB's own packets are
+emitted inside it. A strict parser that requires balanced nesting will reject every one of
+these captures.
+
+## 10d. The whole PM4 inventory is 21 opcodes, and the *frontend* exercises every one
+
+Measured across all three GPU captures — B1 (boot→title, movies played in full), B1b (the
+repeat), and B2 (gameplay: New Game → Still Creek → a 12-zombie fight, movies skipped):
+
+| capture | stream | packets | frames | draws | distinct type-3 opcodes |
+|---|---|---|---|---|---|
+| B1 | 1.61 GiB | 24,527,474 | 1,089 | 1,640,672 | 21 |
+| B1b | 1.12 GiB | 16,783,022 | 881 | 1,113,617 | 21 |
+| B2 | 7.95 GiB | 109,577,362 | 4,082 | 7,878,469 | 21 |
+
+**The three opcode sets are identical.** Not merely the same size — the same set. There
+are zero gameplay-only opcodes and zero frontend-only opcodes:
+
+```
+0x21 REG_RMW           0x3B INVALIDATE_STATE   0x54 INTERRUPT
+0x22 DRAW_INDX         0x3C WAIT_REG_MEM       0x58 EVENT_WRITE_SHD
+0x27 IM_LOAD           0x3F INDIRECT_BUFFER    0x5A EVENT_WRITE_EXT
+0x2B IM_LOAD_IMMEDIATE 0x45 COND_WRITE         0x60 SET_BIN_MASK_LO
+0x2D SET_CONSTANT      0x46 EVENT_WRITE        0x61 SET_BIN_MASK_HI
+0x2F LOAD_ALU_CONSTANT 0x48 ME_INIT            0x62 SET_BIN_SELECT_LO
+0x36 DRAW_INDX_2                               0x63 SET_BIN_SELECT_HI
+                                               0x64 XE_SWAP
+```
+
+Every one is named — **no unknown packets in any capture**. That is worth stating
+explicitly because the census reports unknown opcodes by number rather than bucketing
+them, so a zero here is a real zero rather than a category that swallowed them.
+
+**What this buys phase 4: the command processor can be developed and gated against B1
+alone** — 1.61 GiB rather than 7.95 GiB — and gameplay will not introduce a packet it has
+never seen. That is a large practical saving on iteration time.
+
+**How far to trust it.** This is strong evidence, not proof: it covers the drives that
+were captured. Its strength comes from B1 and B2 being quite *different* content mixes —
+B1 plays every movie in full and never enters gameplay, B2 skips every movie and is all
+gameplay — and still agreeing exactly. A zone Case Zero does not ship, or the pause
+menu/inventory, could in principle differ. Treat "21 opcodes" as the working inventory and
+keep `--verify` on, which is what would report the exception.
+
+Two opcodes are init-only and their counts are *identical across all three captures*
+regardless of length: `ME_INIT` = 1 and `COND_WRITE` = 256. A per-frame packet is equally
+identifiable: `XE_SWAP` equals the frame count exactly in every capture (1,089 / 881 /
+4,082), which is the cheapest available cross-check that a walk did not lose frames.
+
+Gameplay is roughly an order of magnitude heavier per frame than the title screen, as the
+B2 notes predicted: median 1,695 draws/frame and a peak of 8,563, against the title
+screen's steady ~2,540 and the movie eras' ~194.
 
 ## 11. Numbers worth having in one place
 
@@ -311,6 +488,15 @@ B1-vs-ours difference as a defect without first establishing the noise floor.
 | XMA contexts in use | 0–17+ | A2 |
 | swap resolution | 1280×720 | A5 `VdSwap` params |
 | save file | `save:\DR2P000.DSF`, 303,104 B, one write | A3 |
+| distinct PM4 type-3 opcodes | 21 (identical in B1/B1b/B2) | finding 10d |
+| unknown PM4 opcodes | 0 | finding 10d |
+| GPU frames, boot→title | 1,089 (B1) / 881 (B1b) | finding 10 |
+| GPU frames, gameplay | 4,082 | B2 |
+| draws/frame, movie era | ~194 | finding 10 |
+| draws/frame, title screen | ~2,540 | finding 10 |
+| draws/frame, gameplay | 1,695 median, 8,563 peak | B2 |
+| determinism noise floor | 0.42% aggregate, 0.19% draws | finding 10 |
+| frame-exact agreement, hardware repeat | 80.0% | finding 10 |
 
 ## 12. Save shape
 

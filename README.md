@@ -58,7 +58,12 @@ retail key and returns an **empty image with no diagnostic** when it is wrong. S
       **0 errors and 0 warnings** (89 s on 16 cores) into a 155 MB `libppc_image.a`;
       `runtime/build/cz_smoke` links every generated symbol (`--whole-archive`) and
       validates all 58,303 `PPCFuncMappings` entries. Zero undefined symbols.
-- [ ] An `.xtr` GPU-stream decoder — nothing here reads one yet, and two findings block on it.
+- [x] **`.xtr` GPU-stream decoder written, and the determinism baseline measured.**
+      B1 and B1b are content-deterministic to **0.42%** over the boot+movie prefix
+      (0.19% on draws), with four eras agreeing to the individual draw — but only
+      **80.0% frame-exact**, so phase 4 must gate on per-era aggregates rather than on
+      frame index. Both captures intact, zero desyncs, all 21 type-3 opcodes named.
+      `docs/xtr-decoder.md`, finding 10.
 - [ ] Runtime (kernel HLE, GPU command processor, renderer, audio) — `docs/runtime-plan.md`.
 
 ## Game intel
