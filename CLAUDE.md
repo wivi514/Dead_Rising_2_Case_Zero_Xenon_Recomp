@@ -277,6 +277,17 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
     happened not to fire, and produced a clean, decisive, wrong conclusion. Re-run at
     a longer duration, every arm survived. Gotcha 7's other half.
 
+51. **A rate measured once is a fact about that afternoon.** The same binary and drive
+    measured ~2 crashes in 10 one session and 6-7 in 10 the next. Re-establish the rate
+    whenever anything around an intermittent fault changes — including the instrument
+    you added to watch it.
+52. **Three page-0 policies turn a null fault into a diagnosis.** Trap-everything says
+    only "something touched null". Allowing null *reads* (the console's behaviour) and
+    re-running says whether it was a read or a write, and mapping page 0 fully says
+    whether the pointer was merely null or genuinely wild. Here the faulting address
+    walked `00000000` -> `00000002` -> off the end of the guest space, which rules out
+    the benign console-tolerated null read and names a bad base pointer instead.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -401,6 +412,8 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
+CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does
+CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 ```
 
 Re-derive the save/restore helper addresses:
@@ -551,8 +564,10 @@ write pointer rather than frozen.
   hardware element for element.
 - 118 of 244 imports real, 126 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Not stable: ~2 runs in 10 segfault within 20 s.** A race, and the new pump thread
-  (guest ISR + command processor) is the prime suspect.
+- **Not stable: 6-7 runs in 10 segfault within 20 s** (the earlier "~2 in 10" is
+  retracted — finding 26). `runtime/cpu/crash_report.cpp` now prints the guest state
+  on any fault and separates them: a **null-pointer walk on the main thread**, which
+  dominates, and a poison indirect call on the pump thread, now declined.
 
 Three things from this session worth carrying to Case West, all in
 `docs/phase1-notes.md`:
@@ -571,10 +586,10 @@ Three things from this session worth carrying to Case West, all in
 
 Next, in order:
 
-1. **The intermittent crash.** Measure it as a rate, never with single runs
-   (gotcha 50). The runtime has no SIGSEGV handler yet; the previous port's
-   `cpu/crash_report.cpp` — faulting guest address plus guest backtrace — is the
-   instrument this needs.
+1. **The null-pointer walk on the main thread** — the dominant crash, with a 17-frame
+   guest back-chain already in hand (`docs/phase1-notes.md` finding 26). Under
+   `CZ_NULL_PAGE_READABLE=1` it faults at guest `00000002` rather than `00000000`, so
+   it is a genuine bad base pointer, NOT a benign console-tolerated null read.
 2. **The XAM/frontend surface**, everything past gate position 57.
 3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
 

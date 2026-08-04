@@ -29,6 +29,7 @@
 
 #include <image.h> // XenonUtils: Image::ParseImage (devkit-key + LZX; see gotchas 15/16)
 
+#include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
 #include "kernel/heap.h"
@@ -150,6 +151,12 @@ int main(int argc, char** argv)
     const char* xexPath = argc > 1             ? argv[1]
                           : getenv("CZ_XEX")   ? getenv("CZ_XEX")
                                                : "../../assets/game/default.xex";
+
+    // Before anything can fault. A SIGSEGV in recompiled code otherwise reports only
+    // a host backtrace, which names the guest function but not the address, object or
+    // vtable slot involved — and the crash this was written for happens in ~2 runs in
+    // 10, which is the worst case for attaching a debugger after the fact.
+    CzInstallCrashReporter();
 
     // Before any guest code runs: `mftb` is lowered to __rdtsc() scaled by this
     // calibration, and an uncalibrated timebase divides by zero (gotcha 1).

@@ -85,6 +85,10 @@ uint32_t g_ringBase = 0;   // guest virtual address of the ring
 uint32_t g_ringDwords = 0; // ring size in dwords
 uint32_t g_cursor = 0;     // our read pointer, ring-relative, in dwords
 
+// CZ_PM4_STOP_ON_WAIT — see the WAIT_REG_MEM case. Read once; an env lookup per
+// packet would be measurable at 1.27 M packets per 25 s.
+const bool g_stopOnWait = getenv("CZ_PM4_STOP_ON_WAIT") != nullptr;
+
 // The register file, covering the real registers plus the SET_CONSTANT windows
 // (ALU constants at 0x4000, fetch at 0x4800, bools at 0x4900, loops at 0x4908).
 constexpr uint32_t kRegCount = 0x8000;
@@ -455,10 +459,30 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 const uint64_t n = unmet.fetch_add(1) + 1;
                 if (n <= 8 || (n & 0xFFFF) == 0)
                     fprintf(stderr,
-                            "[pm4] WAIT_REG_MEM #%llu not satisfied, continuing: %s %08X "
+                            "[pm4] WAIT_REG_MEM #%llu not satisfied, %s: %s %08X "
                             "value=%08X mask=%08X ref=%08X func=%u\n",
-                            (unsigned long long)n, isMemory ? "mem" : "reg", poll, value,
-                            mask, ref, info & 7);
+                            (unsigned long long)n, g_stopOnWait ? "STOPPING" : "continuing",
+                            isMemory ? "mem" : "reg", poll, value, mask, ref, info & 7);
+
+                // CZ_PM4_STOP_ON_WAIT=1 — the more faithful behaviour, offered as an
+                // experiment rather than the default because it can regress.
+                //
+                // Real hardware STALLS the command processor here until the condition
+                // holds; we evaluate once and carry on, which is how our CP gets
+                // ahead of the CPU and finds the scratch mirror poisoned at a later
+                // INTERRUPT (see MirrorIsPoisoned in gpu/vd.cpp). Stopping the ring
+                // walk at this packet — not spinning inside it, which would deadlock
+                // against the very guest thread that has to satisfy the wait, but
+                // returning and retrying next tick — is what the console does.
+                //
+                // The risk, and the reason it is not the default: if the condition is
+                // only ever satisfied by work that appears LATER in the same stream,
+                // the ring stalls permanently. That failure is at least loud —
+                // Pm4_Execute reports a frozen cursor after 60 ticks — but it would
+                // regress a gate that currently reaches 56 of 93. Measure both arms
+                // before promoting it.
+                if (g_stopOnWait && depth == 0)
+                    return 0;
             }
             break;
         }

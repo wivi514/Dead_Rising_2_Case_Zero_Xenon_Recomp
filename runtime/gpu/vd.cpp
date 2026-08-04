@@ -74,10 +74,89 @@ struct PumpIsr
 };
 PumpIsr g_pumpIsr;
 
+// What the guest's graphics ISR will read the instant we call it, for source 1.
+//
+// `sub_82844D38` is that ISR, and its source-1 path is four instructions long:
+//
+//     lwz  r11,10900(r4)    ; the scratch-register mirror's base
+//     lwz  r10,16(r11)      ; SCRATCH_REG4 = a callback pointer
+//     cmplwi cr6,r10,0
+//     beq  <skip>           ; ZERO means nothing armed
+//     lwz  r3,20(r11)       ; SCRATCH_REG5 = its argument
+//     mtctr r10 ; bctrl
+//
+// Note what it does NOT check: anything but zero. The stream poisons REG4 with
+// 0x0BADF00D once the callback has been consumed, and the ISR will happily call
+// that. So "is the mirror armed or poisoned at the moment we deliver" is the whole
+// question, and this is the instrument that answers it rather than reasoning about
+// packet order.
+void TraceIsrMirror(const char* when)
+{
+    if (!getenv("CZ_ISR_TRACE") || !g_pumpIsr.userData)
+        return;
+    static std::atomic<int> n{ 0 };
+    const int i = n.fetch_add(1);
+    if (i >= 24)
+        return;
+    uint8_t* base = g_memory.base;
+    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + 10900);
+    if (mirror < 0x1000)
+        return;
+    const uint32_t reg4 = PPC_LOAD_U32(mirror + 16);
+    const uint32_t reg5 = PPC_LOAD_U32(mirror + 20);
+    KLOG("isr[%d] %s mirror=%08X SCRATCH_REG4=%08X SCRATCH_REG5=%08X%s\n", i, when, mirror,
+         reg4, reg5,
+         reg4 == 0x0BADF00D ? "   <-- POISONED, the ISR will call 0x0BADF00D"
+         : reg4 == 0        ? "   (unarmed, the ISR will skip)"
+                            : "   (armed)");
+}
+
+// Would the guest's ISR call the poison if we delivered right now?
+//
+// It reads SCRATCH_REG4 out of the mirror and calls it if it is non-zero. The stream
+// writes 0x0BADF00D there once a callback has been consumed. On hardware the ISR can
+// never see that value, because the command processor stalls at the WAIT_REG_MEM
+// that follows until the CPU has serviced the interrupt — our executor evaluates
+// that wait once and carries on (gpu/pm4.cpp says why), so our CP can run ahead of
+// the CPU-side handshake and reach a later INTERRUPT before the mirror is re-armed.
+//
+// Delivering then hands the guest a state hardware never produces, and it crashes:
+// `ctr=0BADF00D r3=00000200`, an indirect call through the poison. That was ~2 runs
+// in 10 and it is what cpu/crash_report.cpp was written to catch — it named it on
+// the first crashing run.
+//
+// Declining THAT delivery is not faking anything. The stream has explicitly marked
+// the callback dead; the interrupt we would be delivering is one the console would
+// not have delivered at this point in the stream. Counted and reported, never
+// silent, because the frequency is the measure of how far ahead we run.
+bool MirrorIsPoisoned()
+{
+    if (!g_pumpIsr.userData)
+        return false;
+    uint8_t* base = g_memory.base;
+    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + 10900);
+    if (mirror < 0x1000 || mirror >= PPC_MEMORY_SIZE - 24)
+        return false;
+    return PPC_LOAD_U32(mirror + 16) == 0x0BADF00D;
+}
+
+std::atomic<uint64_t> g_poisonedSkips{ 0 };
+
 void DeliverCommandProcessorInterrupt()
 {
     if (!g_pumpIsr.func)
         return;
+    TraceIsrMirror("at INTERRUPT packet");
+    if (MirrorIsPoisoned())
+    {
+        const uint64_t n = g_poisonedSkips.fetch_add(1) + 1;
+        if (n <= 8 || (n & 0x3FF) == 0)
+            KLOG("source-1 interrupt #%llu SKIPPED: SCRATCH_REG4 holds the poison "
+                 "0x0BADF00D, so the guest ISR would call it. We reached this INTERRUPT "
+                 "before the CPU re-armed the mirror — see MirrorIsPoisoned().\n",
+                 (unsigned long long)n);
+        return;
+    }
     if (g_pumpIsr.delivered++ == 0)
         KLOG("delivering first command-processor interrupt to %08X(1, %08X) — the ring "
              "is being consumed\n",

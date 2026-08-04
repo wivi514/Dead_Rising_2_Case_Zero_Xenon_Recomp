@@ -343,7 +343,97 @@ wrong. This is a sharper version of the claim in `kernel/heap.h` that matching t
 console's map makes our addresses "directly comparable to a capture's": true for
 virtual addresses, false for physical ones.
 
+### Finding 25 — the crash reporter, and what it found on its first crashing run
+
+`runtime/cpu/crash_report.{h,cpp}`: SIGSEGV/SIGBUS/SIGILL/SIGTRAP handlers that print
+the **guest** state — faulting guest address and which arena it lands in, guest thread
+id, the full GPR file, an exact LR back-chain backtrace, and the host pc to
+`addr2line`. It exists because the fault it was written for happens in a minority of
+runs, which is the worst case for attaching a debugger after the fact, and because
+gdb on this 109 MB binary takes minutes just to load symbols.
+
+It named a bug on the first run that crashed:
+
+```
+=== guest fault: signal 11 at host address 0x7f0cce45e01a ===
+the faulting address is OUTSIDE the 4 GB guest space
+guest thread id 00000F28
+lr=82844D6C ctr=0BADF00D r1(sp)=88155B80 r13(pcr)=88114D60
+r3  00000200   r10 0BADF00D   r11 BBF39340
+[r11] BBF39340: 00000000 00000001 00000000 00000000 0BADF00D 00000200 ...
+```
+
+`ctr = 0x0BADF00D` is a poison value, and `[r11+16]` shows where it came from. The
+guest's graphics ISR (`sub_82844D38`) has a four-instruction source-1 path:
+
+```
+lwz  r11,10900(r4)    ; the scratch-register mirror
+lwz  r10,16(r11)      ; SCRATCH_REG4 = a callback pointer
+cmplwi cr6,r10,0
+beq  <skip>           ; ZERO means nothing armed
+lwz  r3,20(r11)       ; SCRATCH_REG5 = its argument
+mtctr r10 ; bctrl
+```
+
+It checks the callback against **zero and nothing else**. The stream writes
+`0x0BADF00D` there once a callback has been consumed, and on hardware the ISR can
+never see that, because the command processor stalls at the `WAIT_REG_MEM` that
+follows until the CPU has serviced the interrupt. Our executor evaluates that wait
+once and carries on (`gpu/pm4.cpp` explains why blocking would deadlock against the
+very thread that has to satisfy it), so our CP can run ahead of the CPU-side handshake
+and reach a later INTERRUPT with the mirror still poisoned.
+
+`docs/runtime-plan.md` predicted this shape before any of it was written — *"a packet's
+contract can include when it runs relative to its neighbours"* — and it is worth noting
+that delivering **in-position** (from inside the walk, at the INTERRUPT packet) was
+already done and is not sufficient on its own.
+
+The response is `MirrorIsPoisoned()` in `gpu/vd.cpp`: decline that one delivery,
+counted and logged. That is not faking anything — the stream has explicitly marked the
+callback dead, and the interrupt we would deliver is one the console would not have
+delivered at that point. **It has not fired since**, which is recorded here so nobody
+mistakes it for load-bearing; it guards a state observed once.
+
+`CZ_PM4_STOP_ON_WAIT=1` is the more faithful alternative — stop the ring walk at an
+unsatisfied wait and resume next tick, which is what hardware does — offered as an
+off-by-default arm because a wait satisfied only by later work in the same stream
+would stall the ring permanently. Measured: **no difference in crash rate**, so it is
+unproven either way and stays off.
+
+### Finding 26 — RETRACTION: "~2 runs in 10" was wrong, and there are two crashes, not one
+
+The previous session recorded the intermittent fault as ~2 runs in 10 and blamed the
+new pump thread. Both halves need correcting.
+
+**The rate is 6-7 in 10 at 20 s**, not 2. The earlier figure came from one batch of ten
+runs and did not survive re-measurement. An intermittent failure needs its rate
+re-established whenever anything around it changes; a number measured once is a
+number about that afternoon.
+
+**There are at least two distinct faults.** The poison one above is on the pump thread
+(`tid 00000F28`). The dominant one is on the **main thread** (`tid 00000F00`) and is a
+null-pointer walk, which the crash reporter separates cleanly by re-running the same
+binary under the three page-0 policies `kernel/memory.cpp` already provides:
+
+| page 0 policy | crashes | faulting guest address |
+|---|---|---|
+| `PROT_NONE` (bring-up default) | 6/10 | `00000000` |
+| `PROT_READ` (null reads succeed, as on console) | 6/10 | `00000002` |
+| read/write (console behaviour) | 7/10 | outside the 4 GB space |
+
+That progression is the diagnosis. It is **not** a benign console-tolerated null read
+(Fable 2's finding 63): under `PROT_READ` the read at 0 succeeds and it faults two
+bytes further on, and with page 0 fully mapped it runs off into a wild host address.
+The guest is walking a base pointer that should not be null — so something we return
+is null where an object is expected, which is finding 15's first failure mode
+(a guest trusting an out-parameter, or a zero-returning stub).
+
+The 17-frame back-chain is in hand and rooted at the boot path
+(`825DA0C0 -> 825D7564 -> 825D2648 -> ... -> 82956678`), which is where the next
+session starts.
+
 ## 5. Where the boot currently stops
+
 
 **What runs.** The ring buffer is initialised, consumed and reported on. Over a ~25 s
 run with `CZ_RING_TRACE=1`:
@@ -396,13 +486,16 @@ per arm will confidently name whichever arm happened not to fire.
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Not stable:** ~2 runs in 10 crash within 20 s.
+- **Not stable: 6-7 runs in 10 crash within 20 s** (re-measured; the earlier "~2 in
+  10" is retracted — finding 26). Two distinct faults: a null-pointer walk on the main
+  thread, which dominates, and the poison indirect call on the pump thread, now
+  declined.
 
 Next, in order:
 
-1. **The intermittent crash.** Characterise it as a rate, not with single runs. A
-   SIGSEGV handler that reports the faulting guest address and a guest backtrace (the
-   previous port's `cpu/crash_report.cpp`) is the instrument this needs and the
-   runtime does not have.
+1. **The null-pointer walk on the main thread** — the dominant crash. The reporter
+   gives its 17-frame back-chain rooted at the boot path; work down it for the frame
+   that produces the null, then find which import handed it over. Finding 15's first
+   failure mode is the prior.
 2. **The XAM/frontend surface** — everything past gate position 57.
 3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.

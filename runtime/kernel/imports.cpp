@@ -51,6 +51,7 @@
 #include <thread>
 #include <vector>
 
+#include "../cpu/crash_report.h"
 #include "../cpu/guest_thread.h"
 // For CZ_TIMEBASE_HZ, so KeQueryPerformanceFrequency and the guest's own `mftb`
 // cannot drift apart — the header says they must agree, and sharing the constant is
@@ -830,36 +831,14 @@ static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32
             const char* kind = dynamic_cast<Event*>(obj)       ? " EVENT"
                                : dynamic_cast<Semaphore*>(obj) ? " SEMAPHORE"
                                                                : "";
-            // Scan the guest stack for plausible return addresses, so the log names
-            // the OPERATION that is stuck rather than only the wait wrapper's own
-            // return site.
-            char chain[256] = { 0 };
-            if (g_ppcContext)
-            {
-                uint8_t* base = g_memory.base;
-                const uint32_t sp = g_ppcContext->r1.u32;
-                int found = 0, off = 0;
-                for (uint32_t w = 0; w < 512 && found < 8; w++)
-                {
-                    const uint32_t a = sp + w * 4;
-                    if (!GuestStackAddressLooksSane(a))
-                        break;
-                    const uint32_t v = PPC_LOAD_U32(a);
-                    if (v >= uint32_t(PPC_CODE_BASE) &&
-                        v < uint32_t(PPC_CODE_BASE + PPC_CODE_SIZE))
-                    {
-                        off += snprintf(chain + off, sizeof(chain) - off, " %08X", v);
-                        ++found;
-                    }
-                }
-            }
             fprintf(stderr,
-                    "[wait] tid=%08X r13=%08X (entry=%08X) handle=%08X lr=%08X stuck %ds%s "
-                    "callers:%s\n",
+                    "[wait] tid=%08X r13=%08X (entry=%08X) handle=%08X lr=%08X stuck %ds%s\n",
                     GuestThread::GetCurrentThreadId(),
                     g_ppcContext ? uint32_t(g_ppcContext->r13.u32) : 0,
                     LookupThreadEntry(GuestThread::GetCurrentThreadId()), handle,
-                    g_ppcContext ? uint32_t(g_ppcContext->lr) : 0, (spins + 1) * 5, kind, chain);
+                    g_ppcContext ? uint32_t(g_ppcContext->lr) : 0, (spins + 1) * 5, kind);
+            // The exact LR back-chain, not a scan — see cpu/crash_report.cpp.
+            CzDumpGuestBacktrace("blocked wait");
         }
     }
     return GetKernelObject(handle)->Wait(timeoutMs);
@@ -1240,32 +1219,6 @@ static uint32_t StallTraceInterval()
     return interval;
 }
 
-static void DumpGuestStallSites(const char* where)
-{
-    if (!g_ppcContext)
-        return;
-    uint8_t* base = g_memory.base;
-    const uint32_t sp = g_ppcContext->r1.u32 & ~3u;
-    char chain[256] = { 0 };
-    int found = 0, off = 0;
-    for (uint32_t w = 0; w < 512 && found < 10; w++)
-    {
-        const uint32_t a = sp + w * 4;
-        if (!GuestStackAddressLooksSane(a))
-            break;
-        const uint32_t v = PPC_LOAD_U32(a);
-        if (v >= uint32_t(PPC_CODE_BASE) && v < uint32_t(PPC_CODE_BASE + PPC_CODE_SIZE))
-        {
-            off += snprintf(chain + off, sizeof(chain) - off, " %08X", v);
-            ++found;
-        }
-    }
-    fprintf(stderr, "[stall] %s tid=%08X r13=%08X entry=%08X lr=%08X callers:%s\n", where,
-            GuestThread::GetCurrentThreadId(), g_ppcContext->r13.u32,
-            LookupThreadEntry(GuestThread::GetCurrentThreadId()),
-            uint32_t(g_ppcContext->lr), chain);
-}
-
 static uint32_t KeDelayExecutionThread_x(uint32_t mode, uint32_t alertable,
                                          be<int64_t>* interval)
 {
@@ -1273,7 +1226,7 @@ static uint32_t KeDelayExecutionThread_x(uint32_t mode, uint32_t alertable,
     {
         static thread_local uint32_t sleeps = 0;
         if (++sleeps % every == 0)
-            DumpGuestStallSites("KeDelayExecutionThread");
+            CzDumpGuestBacktrace("KeDelayExecutionThread");
     }
     if (alertable && (DrainThreadApcs() | (int)FireDueTimerApcs()))
         return STATUS_USER_APC;

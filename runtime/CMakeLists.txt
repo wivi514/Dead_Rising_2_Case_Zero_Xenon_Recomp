@@ -36,8 +36,8 @@ if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         "compile error in every generated function.")
 endif()
 
-# Phase 1: kernel HLE and guest bootstrap. There is no window and no GPU here yet —
-# those are phases 3 and 4. See docs/runtime-plan.md.
+# Phase 1 + the GPU. There is no window and no renderer here yet — those are phases
+# 3 and 5. See docs/runtime-plan.md.
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -116,6 +116,7 @@ add_executable(cz_runtime
     main.cpp
     cpu/timebase.cpp
     cpu/guest_thread.cpp
+    cpu/crash_report.cpp
     kernel/klog.cpp
     kernel/memory.cpp
     kernel/heap.cpp
