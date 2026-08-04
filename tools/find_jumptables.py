@@ -284,14 +284,74 @@ def scan(image, code_lo, code_hi, window=24):
             addr += 4
             continue
 
-        tbl = analyse_bctr(image, addr, window) or \
-            analyse_bctr_offset_table(image, addr, window)
+        tbl = analyse_bctr(image, addr, window, code_lo, code_hi) or \
+            analyse_bctr_offset_table(image, addr, window, code_lo, code_hi)
         if tbl:
             yield tbl
         addr += 4
 
 
-def analyse_bctr(image, bctr_addr, window):
+# How far a case body may be from its dispatch before we stop believing the two
+# belong to the same function. Used only by the count INFERENCE below, to tell a
+# switch (bodies a few hundred bytes away) from a table of unrelated function
+# pointers. The largest real distance measured on Case Zero is 0x678.
+NEAR_DISPATCH = 0x10000
+
+
+def infer_count_absolute(image, tbl_base, bctr_addr, code_lo, code_hi):
+    """Recover a case count from the table's own contents. Returns (count, labels).
+
+    WHY THIS IS NEEDED — the count normally comes from the `cmplwi` bounds check,
+    but the compiler is free to hoist that check anywhere, including out of the
+    window we look at and out of the loop entirely. When that happens the whole
+    table is REJECTED, silently, and the cost is severe and remote: XenonRecomp
+    lowers the unrecognised `bctr` to `PPC_CALL_INDIRECT_FUNC(ctr); return;`, so
+    the case body runs as a *call* and the function then returns without its
+    epilogue, leaking the callee's r14..r31 to the caller. On Case Zero that was
+    one site (0x82955A94) and it presented as a null-pointer crash three frames
+    away — see docs/xenia-capture-analysis.md section 15, and
+    tools/find_unlowered_switches.py, which is the check that catches it.
+
+    THE SELF-VALIDATING RULE — greedy reading alone cannot find the end, because
+    a PPC instruction word very often looks like a code address (anything
+    starting 0x82.. decodes as `lwz`). What bounds it exactly is a structural
+    fact: **a case body cannot lie inside its own jump table.** So read greedily
+    with cheap plausibility tests, then truncate the table at the first case body
+    that would otherwise fall inside it. On the Case Zero site the greedy pass
+    stops at 25 entries and the containment rule independently also says 25 — two
+    different arguments agreeing, which is what makes this safe to act on.
+
+    Only tables embedded IN THE CODE SECTION get this treatment. A table in
+    .data/.rdata has no following code to bound it and no containment rule to
+    apply, so inferring there would be a guess; those sites are reported by
+    tools/find_unlowered_switches.py for a human instead.
+    """
+    if not (code_lo <= tbl_base < code_hi):
+        return None, None
+
+    labels = []
+    for n in range(4096):
+        v = image.word(tbl_base + 4 * n)
+        if v is None or v & 3 or not (code_lo <= v < code_hi):
+            break
+        if abs(v - bctr_addr) > NEAR_DISPATCH:
+            break        # too far to be a case body of this switch
+        labels.append(v)
+
+    # A case body at address x that lies after the table start puts a hard ceiling
+    # on the table's length: the table cannot reach x.
+    for x in labels:
+        if x > tbl_base:
+            limit = (x - tbl_base) // 4
+            if limit < len(labels):
+                labels = labels[:limit]
+
+    if len(labels) < 2:
+        return None, None
+    return len(labels), labels
+
+
+def analyse_bctr(image, bctr_addr, window, code_lo=0x82150000, code_hi=0x829C3564):
     """Try to recover a jump table whose dispatch is the `bctr` at bctr_addr."""
     # The two instructions directly before a table dispatch are fixed:
     #   <load from table>; mtctr rX; bctr
@@ -366,7 +426,19 @@ def analyse_bctr(image, bctr_addr, window):
             elif idx_reg is None:
                 idx_reg = ra(i)
 
-    if tbl_base is None or count is None or not (1 <= count <= 4096):
+    if tbl_base is None:
+        return None
+
+    # No bounds check in the window — the compiler hoisted it. Recover the count
+    # from the table's own contents rather than dropping the table on the floor,
+    # which is what this scanner used to do (and the dropped table cost a crash
+    # three frames away; see infer_count_absolute).
+    inferred = False
+    if count is None and kind == "absolute":
+        count, _labels = infer_count_absolute(image, tbl_base, bctr_addr, code_lo, code_hi)
+        inferred = count is not None
+
+    if count is None or not (1 <= count <= 4096):
         return None
 
     labels = []
@@ -392,6 +464,7 @@ def analyse_bctr(image, bctr_addr, window):
         "labels": labels,
         "table_at": tbl_base,
         "kind": kind,
+        "inferred": inferred,
     }
     if scaled_in_place:
         out["values"] = [n * elem for n in range(count)]
@@ -417,7 +490,8 @@ def rlwinm_shift_left(i):
     return sh if mb == 0 and me == 31 - sh else None
 
 
-def analyse_bctr_offset_table(image, bctr_addr, window):
+def analyse_bctr_offset_table(image, bctr_addr, window, code_lo=0x82150000,
+                              code_hi=0x829C3564):
     """Recover the SWITCH_OFFSET idiom (see the module docstring).
 
     Shape:  add rT, rCodeBase, rOffset ; mtctr rT ; bctr
@@ -456,6 +530,7 @@ def analyse_bctr_offset_table(image, bctr_addr, window):
     values = {}
     lis_val = {}   # reg -> pending high half of a constant
     count = None
+    inferred = False
     default = None
     cr_of_check = None
 
@@ -509,7 +584,7 @@ def analyse_bctr_offset_table(image, bctr_addr, window):
             if cr_of_check is None or (rt(i) >> 2) == cr_of_check:
                 count = (i & 0xFFFF) + 1
 
-    if count is None or not (1 <= count <= 4096):
+    if count is not None and not (1 <= count <= 4096):
         return None
 
     # One `add` operand is the code base, the other the (possibly scaled) offset.
@@ -528,6 +603,32 @@ def analyse_bctr_offset_table(image, bctr_addr, window):
 
         code_base = code[1]
         reader = {1: image.byte, 2: image.half, 4: image.word}[elem]
+
+        # No bounds check in the window (the compiler hoisted it) — walk the table
+        # until an entry stops being a plausible case body. The same defect and the
+        # same reasoning as infer_count_absolute, but the termination test is
+        # different and, here, stronger: a case body is `code_base + offset`, so a
+        # wrong entry usually produces an address that is not 4-byte aligned, which
+        # no PPC instruction ever is. On Case Zero's one site (0x82990350) that test
+        # alone ends the table, and a mis-read entry would have to be aligned AND
+        # land inside the same function to slip through.
+        n_inferred = count
+        if n_inferred is None:
+            n_inferred = 0
+            while n_inferred < 4096:
+                v = reader(tbl_base + n_inferred * elem)
+                if v is None:
+                    break
+                target = (code_base + (v << shift)) & 0xFFFFFFFF
+                if target & 3 or not (code_lo <= target < code_hi):
+                    break
+                if abs(target - code_base) > NEAR_DISPATCH:
+                    break
+                n_inferred += 1
+            if n_inferred < 2:
+                continue
+            inferred = True
+        count = n_inferred
 
         # THE KEYING (finding 38). This idiom does not dispatch on the case number: it
         # dispatches on the BYTE OFFSET the guest just loaded out of the table, in the
@@ -570,6 +671,7 @@ def analyse_bctr_offset_table(image, bctr_addr, window):
             "values": [v for v, _t in pairs],
             "table_at": tbl_base,
             "kind": "offset%d" % (elem * 8),
+            "inferred": inferred,
         }
     return None
 

@@ -117,6 +117,7 @@ add_executable(cz_runtime
     cpu/timebase.cpp
     cpu/guest_thread.cpp
     cpu/crash_report.cpp
+    cpu/guest_probe.cpp
     kernel/klog.cpp
     kernel/memory.cpp
     kernel/heap.cpp

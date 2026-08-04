@@ -1,0 +1,256 @@
+// Argument probes on named guest functions, for hunting a bad pointer to its source.
+//
+// WHY THIS EXISTS
+// ---------------
+// The crash reporter (cpu/crash_report.cpp) answers "which guest instruction faulted
+// and on what address". It cannot answer the next question, which is always "where
+// did that pointer come from" — by the time the fault happens the producing frame has
+// usually returned, and the register dump for the innermost frame is partly stale
+// because the compiler keeps PPCContext fields in host registers between calls.
+//
+// So the follow-up instrument is a probe at the *producing* site, printing its
+// arguments and the objects they point at, on entry, before anything can go wrong.
+// This is the alias/weak-link seam CLAUDE.md gotcha 6 describes: XenonRecomp emits
+// every guest function as `__imp__sub_X` plus a WEAK alias `sub_X`, so a strong
+// `PPC_FUNC(sub_X)` here silently takes over every call site in the image.
+//
+// WHAT IS IN HERE IS A SOLVED CASE, KEPT AS THE WORKED EXAMPLE
+// ------------------------------------------------------------
+// The hooks below found docs/phase1-notes.md finding 27 and are left in place because
+// the *shape* of that hunt is the reusable part, and Case West will want it:
+//
+//   1. the crash reporter gives the faulting instruction, via addr2line on the raw
+//      host pc — the only field in that report that cannot be stale;
+//   2. read the generated C++ to see which register the instruction dereferences and
+//      which function produced it;
+//   3. probe the producer on entry — is the value already bad, or does it go bad
+//      later? Here it was GOOD, which eliminated the entire "one of our imports
+//      handed the guest a null" family of hypotheses in a single run;
+//   4. if it goes bad later, watch the value AND the register across every call in
+//      between. Whichever call changes one of them is the answer.
+//
+// Step 4 named it. `sub_82955780` went in with r31 = the descriptor and came out with
+// r31 = its own local value, while the descriptor's memory was untouched — so this was
+// never a bad pointer at all. It was a callee returning without its epilogue, because
+// a `bctr` had not been lowered to a switch. See docs/xenia-capture-analysis.md
+// section 15 and tools/find_unlowered_switches.py.
+//
+// HOW TO ADD ONE
+// --------------
+// Copy a block below, change the address, and change what it dumps. The address must
+// be a real function start — a mid-function address has no `sub_` symbol and the link
+// fails, which is the good failure.
+//
+// Everything is behind CZ_ARG_PROBE, read once. When it is off each probe costs one
+// predictable branch, which is the standard this project holds its instruments to
+// (gotcha 7: a probe expensive enough to change the timing manufactures the
+// behaviour it reports, and this code runs inside the per-frame render path).
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+#include "../kernel/memory.h"
+#include "ppc_recomp_shared.h"
+
+// `ppc_recomp_shared.h` declares only the WEAK alias `sub_X`, never the real body
+// `__imp__sub_X`, so every hook has to declare the one it wraps. The `extern "C"` is
+// not optional: the recompiler defines the body with PPC_FUNC_IMPL, which is
+// `extern "C" PPC_FUNC`, while a plain PPC_FUNC declaration here would be
+// C++-mangled and fail to link (gotcha 33, from the other direction).
+extern "C" PPC_FUNC(__imp__sub_82959360);
+extern "C" PPC_FUNC(__imp__sub_829565B8);
+extern "C" PPC_FUNC(__imp__sub_82955780);
+extern "C" PPC_FUNC(__imp__sub_82689A70);
+
+namespace {
+
+bool ProbeEnabled()
+{
+    static const bool on = getenv("CZ_ARG_PROBE") != nullptr;
+    return on;
+}
+
+// Print a 32-bit guest pointer and the first few words it points at. A pointer that
+// is null or outside the guest space is said so rather than dereferenced — this runs
+// on data we already believe is corrupt.
+void Dump(const char* label, uint32_t p, int words = 4)
+{
+    uint8_t* base = g_memory.base;
+    if (p == 0)
+    {
+        fprintf(stderr, "    %-6s = NULL\n", label);
+        return;
+    }
+    if (uint64_t(p) + words * 4 > PPC_MEMORY_SIZE)
+    {
+        fprintf(stderr, "    %-6s = %08X  <outside the guest space>\n", label, p);
+        return;
+    }
+    fprintf(stderr, "    %-6s = %08X ->", label, p);
+    for (int i = 0; i < words; i++)
+        fprintf(stderr, " %08X", PPC_LOAD_U32(p + 4 * i));
+    fprintf(stderr, "\n");
+}
+
+// The descriptor address sub_829565B8 is currently working on, published so the
+// probes on ITS callees can report the one word that matters. Deliberately a plain
+// non-atomic uint32_t: only the main guest thread runs this path, and making it
+// atomic would imply a synchronisation this instrument does not have.
+uint32_t g_watchDesc = 0;
+
+// Print r31 and the watched descriptor word around a callee. Which of the two moves
+// is the whole question:
+//   the WORD changes  -> something wrote through a stale/aliasing pointer
+//   r31 changes       -> the callee returned without restoring non-volatiles, which
+//                        is the truncated-function / bad-bounds signature (gotcha 3)
+void Watch(const char* who, const char* when, PPCContext& ctx, uint8_t* base)
+{
+    // Say so when there is no descriptor yet rather than printing a zero: a zero here
+    // reads exactly like the corruption being hunted, and the first version of this
+    // line duly reported "*** ZEROED ***" for every call that happened before the
+    // first sub_829565B8 entry.
+    if (!g_watchDesc)
+    {
+        fprintf(stderr, "[watch] %-14s %-5s r31=%08X  [desc+4]=(no descriptor yet)\n", who,
+                when, ctx.r31.u32);
+        return;
+    }
+    const uint32_t word = PPC_LOAD_U32(g_watchDesc + 4);
+    fprintf(stderr, "[watch] %-14s %-5s r31=%08X  [desc+4]=%08X%s\n", who, when,
+            ctx.r31.u32, word, word == 0 ? "   *** ZEROED ***" : "");
+}
+
+} // namespace
+
+// sub_82959360 — builds, in its own stack frame at r1+112, the five-word descriptor
+// that sub_829565B8 consumes:
+//
+//     desc+0  = arg0 + 32
+//     desc+4  = [[arg0+0] + 8]      <- the matrix pointer the crash dereferenced
+//     desc+8  = [[arg0+0] + 0]
+//     desc+12 = [[arg0+4] + 0]
+//     desc+16 = float [[arg0+12] + 8]
+//
+// sub_829565B8 loads three vectors from desc+4 (`lvx128 v8,r0,r8` and +16/+32, i.e. a
+// 48-byte matrix) with no null check, so a null there faults on guest address 0.
+// This probe existed to answer whether desc+4 was ALREADY null when written. It was
+// not — it held a valid A434E9F0 on the one call before the crash, and that is what
+// ruled out every "our kernel returned null" hypothesis and forced the search
+// downstream into sub_829565B8's own callees.
+PPC_FUNC(sub_82959360)
+{
+    if (ProbeEnabled())
+    {
+        static std::atomic<uint64_t> calls{ 0 };
+        static std::atomic<int> shown{ 0 };
+
+        uint8_t* base = g_memory.base;
+        const uint32_t n = uint32_t(calls.fetch_add(1, std::memory_order_relaxed));
+        const uint32_t arg0 = ctx.r3.u32;
+        const uint32_t owner = arg0 ? PPC_LOAD_U32(arg0 + 0) : 0;
+        const uint32_t matrix = owner ? PPC_LOAD_U32(owner + 8) : 0;
+
+        // The first few calls are the control: without them a report that only fires
+        // on the bad call cannot say whether the slot is EVER non-null (gotcha 30 —
+        // a test that has never passed has not been shown capable of passing).
+        const bool bad = matrix == 0;
+        if ((n < 6 || bad) && shown.fetch_add(1, std::memory_order_relaxed) < 40)
+        {
+            fprintf(stderr, "[probe] sub_82959360 call #%u%s\n", n,
+                    bad ? "   *** desc+4 (the matrix) is NULL ***" : "");
+            Dump("arg0", arg0, 6);
+            Dump("owner", owner, 6);   // = [arg0+0]
+            Dump("o+0", owner ? PPC_LOAD_U32(owner + 0) : 0, 4);
+            Dump("o+8", matrix, 4);    // the matrix that must be 48 bytes of floats
+            Dump("arg1", ctx.r4.u32, 4);
+            Dump("arg2", ctx.r5.u32, 4);
+        }
+    }
+    __imp__sub_82959360(ctx, base);
+}
+
+// sub_829565B8 — the consumer, and the function that faults.
+//
+// It takes the descriptor sub_82959360 just built as arg0, keeps it in the
+// non-volatile r31, then makes TWO indirect calls through vtable slot +60 and one
+// direct call to sub_82955780 before finally doing `lwz r8,4(r31)` and loading a
+// matrix from r8. The probe above proved the descriptor's +4 slot is a valid
+// pointer when it is written, so between the write and the load either the memory
+// or r31 itself is destroyed.
+//
+// That narrows the suspects to the three calls, and the interesting one is a callee
+// that returns WITHOUT restoring non-volatiles — the classic signature of a function
+// whose bounds are wrong (CLAUDE.md gotcha 3: a mis-detected jump table makes the
+// recompiler emit a bare `return;` for a case body, with no epilogue, so the caller
+// resumes with the callee's registers). So this dumps the two indirect targets and
+// says whether each is a known function start, which is the cheapest way to see a
+// bounds problem from the outside.
+PPC_FUNC(sub_829565B8)
+{
+    if (!ProbeEnabled())
+    {
+        __imp__sub_829565B8(ctx, base);
+        return;
+    }
+
+    static std::atomic<int> shown{ 0 };
+    const uint32_t desc = ctx.r3.u32;
+    g_watchDesc = desc;
+    const int n = shown.fetch_add(1, std::memory_order_relaxed);
+
+    // An indirect target is `[[obj] + 60]`. Resolving it here, before the call, is
+    // the only chance to see it: by the time anything goes wrong ctr has moved on.
+    auto slot60 = [&](uint32_t obj) -> uint32_t {
+        if (!obj || uint64_t(obj) + 4 > PPC_MEMORY_SIZE) return 0;
+        const uint32_t vt = PPC_LOAD_U32(obj + 0);
+        if (!vt || uint64_t(vt) + 64 > PPC_MEMORY_SIZE) return 0;
+        return PPC_LOAD_U32(vt + 60);
+    };
+
+    if (n < 4)
+    {
+        const uint32_t o8 = PPC_LOAD_U32(desc + 8);
+        const uint32_t o12 = PPC_LOAD_U32(desc + 12);
+        const uint32_t t1 = slot60(o8), t2 = slot60(o12);
+        fprintf(stderr, "[probe] sub_829565B8 entry #%d\n", n);
+        Dump("desc", desc, 5);
+        fprintf(stderr, "    bctrl#1 target %08X %s\n", t1,
+                g_memory.FindFunction(t1) ? "(known function start)" : "(NOT a function start)");
+        fprintf(stderr, "    bctrl#2 target %08X %s\n", t2,
+                g_memory.FindFunction(t2) ? "(known function start)" : "(NOT a function start)");
+    }
+
+    __imp__sub_829565B8(ctx, base);
+
+    // After the call the descriptor should be untouched — it belongs to the caller.
+    // Printing it on the way out turns "something corrupts it" into a yes/no, and
+    // this line only ever runs when the function did NOT fault.
+    if (n < 4)
+    {
+        fprintf(stderr, "[probe] sub_829565B8 exit  #%d (returned without faulting)\n", n);
+        Dump("desc", desc, 5);
+    }
+}
+
+// The calls sub_829565B8 makes between writing the descriptor and reading it. Each
+// prints r31 and the descriptor word on the way in and on the way out, so the
+// corrupting call names itself rather than being deduced. This is the pair of lines
+// that closed finding 27:
+//
+//     [watch] sub_82955780   in    r31=88040DE0  [desc+4]=A434E9F0
+//     [watch] sub_82955780   out   r31=88040BC0  [desc+4]=A434E9F0
+//
+// Memory intact, r31 destroyed — so not a bad pointer, a missing epilogue.
+#define CZ_WATCH_CALLEE(name)                                                        \
+    PPC_FUNC(name)                                                                   \
+    {                                                                                \
+        static std::atomic<int> seen{ 0 };                                           \
+        const bool show = ProbeEnabled() && seen.fetch_add(1, std::memory_order_relaxed) < 3; \
+        if (show) Watch(#name, "in", ctx, base);                                     \
+        __imp__##name(ctx, base);                                                    \
+        if (show) Watch(#name, "out", ctx, base);                                    \
+    }
+
+CZ_WATCH_CALLEE(sub_82955780)
+CZ_WATCH_CALLEE(sub_82689A70)

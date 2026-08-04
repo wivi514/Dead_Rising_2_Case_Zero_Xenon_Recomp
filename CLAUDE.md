@@ -288,6 +288,39 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
     walked `00000000` -> `00000002` -> off the end of the guest space, which rules out
     the benign console-tolerated null read and names a bad base pointer instead.
 
+From finding 27 (the null base pointer, resolved — and it was none of the above):
+
+53. **A scanner's own count is not a measurement of the thing it scans for.**
+    `find_jumptables.py` reported 232 tables through all of phase 0; the true number
+    was 234. A scanner reports what it found and is structurally incapable of
+    reporting what it silently rejected — here, two tables whose `cmplwi` bounds check
+    the compiler had hoisted outside the search window, leaving no case count. The
+    check has to be an independent question asked against the image, which is
+    `tools/find_unlowered_switches.py`. Gotcha 3's rule ("a zero is a detection
+    failure, not a fact") applies to *every* number a detector prints, not just zero.
+54. **An unlowered `bctr` is the third silent defect class, after unrecognized
+    mnemonics and dropped branches — and the quietest.** XenonRecomp emits
+    `PPC_CALL_INDIRECT_FUNC(ctr); return;`, which calls the case body and then returns
+    with no epilogue. Nothing is printed, it compiles, and the case body even computes
+    the right answer because it gets the same `PPCContext`. The only symptom is that
+    the caller resumes with the callee's r14..r31 — and the crash lands frames away,
+    on a value that looks like a null pointer from our kernel and is not.
+55. **A tool that recovers missing entry points can turn a loud failure into a silent
+    one.** The missed table above should have crashed *at the dispatch*, because
+    `PPC_CALL_INDIRECT_FUNC` on a case-label address normally finds nothing and jumps
+    to null. It did not, because the coverage oracle had already added those labels as
+    functions (gotcha 21), so the dispatch resolved and the damage became invisible.
+    Gotcha 21 said adding a case label splits its parent; this is the other half.
+56. **An "intermittent" crash can be perfectly deterministic.** Six crashing runs here
+    were **byte-identical** — same registers, same host pc, same stack pointers. Only
+    *whether the boot reached the site within the timeout* varied. Diff the crash
+    reports before theorising about races; it costs nothing and it reframes the hunt.
+57. **In a recompiled frame the register dump is stale and the host pc is not.** The
+    compiler keeps `PPCContext` fields in host registers between calls, so `r3`/`r4`
+    at the fault named the wrong objects entirely. `addr2line` on the RAW host pc gave
+    the exact `ppc_recomp.NNN.cpp` line. The same staleness in `ctx.r1` puts one extra,
+    already-returned frame on top of the guest back-chain — read frame #0 as advisory.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -338,6 +371,11 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
   - `kernel/{vfs,file_imports}.*` — the file layer. In phase 1 rather than phase 2
     because A1's 22nd distinct kernel call is already an `NtCreateFile` (finding 16).
   - `kernel/import_stubs.cpp` — generated; honest-failure returns, not aborts.
+  - `cpu/crash_report.cpp` — the guest state on any fault. Its host pc is the one
+    field that is never stale (gotcha 57); `addr2line` it.
+  - `cpu/guest_probe.cpp` — argument probes on named guest functions via the alias
+    seam, behind `CZ_ARG_PROBE`. Kept as the worked example of tracing a bad value
+    back to its producer; it is what closed finding 27.
 - Recompiler TOOL at `~/GithubRepo/XenonRecomp` (built at `build/`; carries local
   patches — see `docs/xenonrecomp-upstream-bugs.md`). Shader translator at
   `~/GithubRepo/XenosRecomp` (also patched; Case Zero inherits those fixes for free).
@@ -379,6 +417,14 @@ python3 tools/find_dropped_branches.py --prune    # backward: remove spurious st
 python3 tools/find_dropped_branches.py --widen    # forward: widen truncated functions
 ```
 
+Then check that every switch-shaped `bctr` was actually lowered — the gate for the
+defect class that leaks a callee's non-volatiles into its caller (gotchas 53-55).
+**Exit 1 = a real defect; run it last, and after any config change:**
+```
+python3 tools/find_unlowered_switches.py          # 0 defects expected
+python3 tools/find_unlowered_switches.py --all    # also list the benign tail-call thunks
+```
+
 Build the runtime (needs `clang++`; ~90 s on 16 cores for a cold image build):
 ```
 python3 tools/gen_import_stubs.py                 # after any change to the import set
@@ -414,6 +460,7 @@ CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR co
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
 CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
+CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
 ```
 
 Re-derive the save/restore helper addresses:
@@ -516,19 +563,26 @@ closed, plus a seventh mnemonic (`vadduws`) that was "implemented" against a non
 simde intrinsic and could never have compiled. A previously unmeasured defect class —
 **dropped direct branches** — was found and driven to zero (finding 13).
 
-**Current image: 57,822 functions, 227 TUs, 156 MB — zero unrecognized instructions, zero
-undecodable instructions, zero switch-boundary errors, zero dropped branches.** The
-recompiler log is completely silent. Reasoning behind the bootstrap numbers:
+**Current image: 57,808 functions, 228 TUs, 155 MB — zero unrecognized instructions, zero
+undecodable instructions, zero switch-boundary errors, zero dropped branches, zero
+unlowered switch dispatches.** The recompiler log is completely silent. (Was 57,822
+before session 5: recovering the two missed jump tables let 14 coverage-injected case
+labels and mid-body fragments be removed, which is a correction, not a loss.) Reasoning behind the bootstrap numbers:
 `docs/bootstrap-2026-08-04.md`. Behind the capture-derived ones:
 `docs/xenia-capture-analysis.md`.
 
-The pipeline is now four tools that **must run in this order**, each re-running the
+The pipeline is now five tools that **must run in this order**, each re-running the
 recompiler in between, because each one's evidence is only valid against a current `ppc/`:
 
 ```
 find_jumptables.py  ->  coverage_to_function_overrides.py  ->
     fix_switch_function_bounds.py --apply  ->  find_dropped_branches.py --prune / --widen
+    ->  find_unlowered_switches.py
 ```
+
+The last one is a **gate, not a repair**: it asks the image which `bctr` sites look like
+a table dispatch and are missing from the switch TOML, which is the only question
+`find_jumptables.py`'s own output cannot answer (gotcha 53). Exit 1 means a real defect.
 
 **Phase 0.2 complete (2026-08-04, session 2).** `runtime/` exists. All 228 TUs compile
 and link — **0 errors, 0 warnings, 89 s on 16 cores** → 155 MB `libppc_image.a`, 109 MB
@@ -564,10 +618,10 @@ write pointer rather than frozen.
   hardware element for element.
 - 118 of 244 imports real, 126 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Not stable: 6-7 runs in 10 segfault within 20 s** (the earlier "~2 in 10" is
-  retracted — finding 26). `runtime/cpu/crash_report.cpp` now prints the guest state
-  on any fault and separates them: a **null-pointer walk on the main thread**, which
-  dominates, and a poison indirect call on the pump thread, now declined.
+- **Stability: 1 crash in 20 runs at 25 s** (session 5). The dominant fault — the
+  "null-pointer walk on the main thread", 6-7 in 10 — was the unlowered `bctr` of
+  finding 27 and is gone; the poison indirect call on the pump thread is declined.
+  `runtime/cpu/crash_report.cpp` prints the guest state on any fault.
 
 Three things from this session worth carrying to Case West, all in
 `docs/phase1-notes.md`:
@@ -584,13 +638,26 @@ Three things from this session worth carrying to Case West, all in
   argument mixing the two conventions is wrong — this one briefly manufactured a
   ring-buffer overrun that did not exist.
 
+**The dominant crash is fixed (2026-08-04, session 5): it was not a null pointer.**
+`docs/phase1-notes.md` finding 27 and `docs/xenia-capture-analysis.md` §15. A `bctr`
+inside `sub_82955780` had never been lowered to a `switch`, so the function returned
+without its epilogue and its caller resumed with the callee's `r31`. Finding 26's
+diagnosis ("something we return is null where an object is expected") is retracted —
+no kernel call was involved. Two such sites existed image-wide; both are fixed, the
+image now carries **234 switch tables (was 232)**, and `find_unlowered_switches.py`
+reports **0 defects, 2 benign tail-call thunks**.
+
+Measured: **6-7 crashes in 10 runs -> 1 in 20.** The pipeline is clean end to end —
+silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
+
 Next, in order:
 
-1. **The null-pointer walk on the main thread** — the dominant crash, with a 17-frame
-   guest back-chain already in hand (`docs/phase1-notes.md` finding 26). Under
-   `CZ_NULL_PAGE_READABLE=1` it faults at guest `00000002` rather than `00000000`, so
-   it is a genuine bad base pointer, NOT a benign console-tolerated null read.
-2. **The XAM/frontend surface**, everything past gate position 57.
+1. **The surviving crash, 1 in 20** — a *different* fault from the one just fixed:
+   guest thread `00000F2C` (not the main thread), faulting outside the 4 GB guest
+   space, `lr=8284B708` / `82829BEC`, with `0xC0000102` visible in the object at r3.
+   Nothing about it is established yet beyond that one report.
+2. **The XAM/frontend surface**, everything past gate position 57 (unchanged by this
+   session: still `xenia=XamGetSystemVersion ours=RtlCompareStringN`).
 3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
 
 ## Conventions (same as the two template ports)

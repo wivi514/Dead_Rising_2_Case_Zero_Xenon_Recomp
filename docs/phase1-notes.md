@@ -432,6 +432,82 @@ The 17-frame back-chain is in hand and rooted at the boot path
 (`825DA0C0 -> 825D7564 -> 825D2648 -> ... -> 82956678`), which is where the next
 session starts.
 
+### Finding 27 — the null base pointer was not a null pointer: an unlowered `bctr`
+
+RESOLVED. And the diagnosis in finding 26 was wrong in an instructive way.
+
+Finding 26 concluded the guest was "walking a base pointer that should not be null —
+so something we return is null where an object is expected", and named finding 15's
+failure mode (a zero-returning stub, or an out-parameter we never filled) as the prior.
+That prior was wrong. **No kernel call was involved at all.** The null came from the
+recompiler.
+
+#### What the crash actually was
+
+Six crashing runs turned out to be **byte-identical** — same registers, same host pc,
+same stack pointers. That single observation reframed everything: the fault is fully
+deterministic in content, and only *whether the boot reaches it within 25 s* varies. An
+intermittent-looking crash need not be an intermittent bug.
+
+`addr2line` on the host pc named the faulting instruction exactly:
+`ppc_recomp.206.cpp` line 6218, `lvx128 v8,r0,r8` in `sub_829565B8`, where
+`r8 = [r31+4]`. Note that neither `r3` nor `r4` in the crash dump was null — the
+register file for the innermost frame is partly stale, because the compiler keeps
+`PPCContext` fields in host registers between calls. **The host pc is the only
+authoritative register in the report.** The same staleness put one extra
+already-returned frame at the top of the guest back-chain (`ctx.r1` still held
+`sub_82955780`'s frame), which is worth knowing before reading any future one.
+
+#### Finding the producer
+
+`sub_829565B8`'s arg0 is a five-word descriptor its caller `sub_82959360` builds in
+its own stack frame, and the faulting load reads `desc+4`. A probe on the alias seam
+(`runtime/cpu/guest_probe.cpp`, `CZ_ARG_PROBE=1`) showed `desc+4` was a **valid**
+pointer when written. So it was destroyed between the write and the read, by one of
+the three calls in between — and watching `r31` and the memory word across each call
+named the culprit in one run:
+
+    [watch] sub_82955780   in    r31=88040DE0  [desc+4]=A434E9F0
+    [watch] sub_82955780   out   r31=88040BC0  [desc+4]=A434E9F0
+
+The memory was untouched. **`r31` was not restored.** `sub_82955780` contains a `bctr`
+that XenonRecomp had not lowered to a `switch`, so it emitted
+`PPC_CALL_INDIRECT_FUNC(ctr); return;` — a call to the case body followed by a return
+with no epilogue. `sub_829565B8` resumed with `sub_82955780`'s `r31`, read `[r31+4]`
+out of an unrelated object, got zero, and loaded a matrix through it.
+
+The defect class, the scanner gap that caused it and the detector that now measures it
+are written up in `docs/xenia-capture-analysis.md` §15.
+
+#### The second layer: the coverage oracle hid it
+
+The missed table should have crashed *at the dispatch*. `PPC_CALL_INDIRECT_FUNC` on a
+case-label address normally finds nothing and jumps to null, which the crash reporter
+recognises by name. It did not, because the coverage oracle had already added those
+case labels as function starts (gotcha 21) — so `sub_82955EF8` existed, a 10-instruction
+fragment with no prologue and no epilogue. The dispatch resolved, the body computed the
+right answer using the caller's context, and the only trace left was the corrupted
+register file.
+
+**A tool that recovers missing entry points can convert a loud failure into a silent
+one.** Gotcha 21 already said adding a case label splits its parent; this is the other
+half — it can also make a *missed table* appear to work.
+
+#### Result
+
+Both defect sites are fixed, the pipeline is clean, and the effect is measured:
+
+| | before | after |
+|---|---|---|
+| crashes in 10 runs at 25 s | 6-7 | 1 in 20 |
+| switch tables | 232 | 234 |
+| unlowered switch defects | 2 (unmeasured) | 0 |
+
+The one surviving crash in 20 is a **different** fault: guest thread `00000F2C`, not the
+main thread, faulting on an address outside the 4 GB guest space with
+`lr=8284B708 / 82829BEC` and `0xC0000102` visible in the object at `r3`. That is the
+next lead, and it is not this one.
+
 ## 5. Where the boot currently stops
 
 
@@ -486,16 +562,17 @@ per arm will confidently name whichever arm happened not to fire.
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Not stable: 6-7 runs in 10 crash within 20 s** (re-measured; the earlier "~2 in
-  10" is retracted — finding 26). Two distinct faults: a null-pointer walk on the main
-  thread, which dominates, and the poison indirect call on the pump thread, now
-  declined.
+- **Stability: 1 crash in 20 runs at 25 s.** The dominant fault (6-7 in 10, the
+  "null-pointer walk on the main thread") was the unlowered `bctr` of finding 27 and
+  is fixed; the poison indirect call on the pump thread is declined. What survives is
+  a third, barely-characterised fault on guest thread `00000F2C`.
 
 Next, in order:
 
-1. **The null-pointer walk on the main thread** — the dominant crash. The reporter
-   gives its 17-frame back-chain rooted at the boot path; work down it for the frame
-   that produces the null, then find which import handed it over. Finding 15's first
-   failure mode is the prior.
-2. **The XAM/frontend surface** — everything past gate position 57.
+1. **The surviving crash, 1 in 20** — a different fault from finding 27's: guest
+   thread `00000F2C` (not the main thread), faulting on an address outside the 4 GB
+   guest space, `lr=8284B708` / `82829BEC`, `0xC0000102` in the object at r3. One
+   report exists and nothing else about it is established.
+2. **The XAM/frontend surface** — everything past gate position 57, unchanged by the
+   finding 27 work (still `xenia=XamGetSystemVersion ours=RtlCompareStringN`).
 3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.

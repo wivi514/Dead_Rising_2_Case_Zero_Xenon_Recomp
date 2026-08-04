@@ -607,6 +607,108 @@ unswapping `vpkuwum`'s operands fails 199,957 cases, dropping `vsubuws`'s clamp 
 184,854. **A vector test that has never failed has not been shown capable of failing**;
 the operand-order convention in particular is invisible to inspection.
 
+## 15. Unlowered `bctr` dispatches — the third silent defect class
+
+Found in phase 1, from the opposite end: a segfault on guest address `00000000` that had
+nothing to do with null pointers. Narrative and method in `docs/phase1-notes.md`
+finding 27; this section is the defect class itself.
+
+When XenonRecomp meets a `bctr` it cannot resolve to a jump table, it emits
+
+    PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+    return;
+
+which is a **call** to the case body followed by a return that skips the function's
+epilogue. Like findings 13 and 14, this is *wrong execution with no build failure* — and
+it is the quietest of the three. Nothing is printed. The C++ compiles. The case body even
+computes the right answer, because the recompiler hands it the same `PPCContext`. The only
+consequence is that `__restgprlr_14` never runs, so **the caller resumes with the callee's
+r14..r31**.
+
+### Why the scanner missed the table
+
+`tools/find_jumptables.py` recovered the table base, the index register and the element
+size at `0x82955A94` without trouble. What it could not find was the **case count**, which
+it took from the `cmplwi` bounds check — and the compiler had hoisted that check out of
+the loop, far outside the 24-instruction search window. With no count, the whole table was
+rejected, silently.
+
+That is gotcha 3 from a new angle. "232 tables found" reads exactly the same whether the
+true number is 232 or 234; a scanner reports what it found and is structurally incapable of
+reporting what it rejected. So the check cannot be the scanner's own output — it has to be
+an independent question asked against the image, which is `tools/find_unlowered_switches.py`:
+
+> which `bctr` sites *look like* a table dispatch (`<load or add>; mtctr rX; bctr`, with
+> the load's destination being the register that reaches CTR) and are **absent** from the
+> emitted TOML?
+
+### Not every unlowered `bctr` is a bug
+
+The same shape is how a compiler writes a computed **tail call**: a small frameless thunk
+that loads a function pointer from a table and jumps to it. There `call; return;` is
+behaviourally identical to the jump — no frame to pop, no non-volatiles to lose. The
+discriminator is whether the *containing generated function* uses a save ladder.
+
+Image-wide, out of **1,048** `bctr` sites in `.text`, 232 were lowered and **4** were
+switch-shaped but not:
+
+| site | containing function | verdict |
+|---|---|---|
+| `82955A94` | `sub_82955780` (saves `__savegprlr_14`, `__savefpr_26`) | **DEFECT** — absolute table of 25 entries at `0x82955A98` |
+| `82990350` | `sub_82990190` (saves `__savegprlr_14`) | **DEFECT** — offset16 table of 29 targets at `0x82106938` |
+| `8296CB48` | `sub_8296CB28` (frameless) | benign tail-call thunk into a table of real function starts |
+| `8296CBB8` | `sub_8296CBA0` (frameless) | benign, same shape |
+
+Only one of the two defects was on the crashing path. The second was found solely because
+the tool asks about the whole image rather than about the crash.
+
+### "Containing", not "nearest preceding start"
+
+The detector's first version reported the real defect as **benign**, and the reason is
+worth keeping. Generated functions **overlap**: the coverage oracle had injected
+`sub_82955A78` — the 0x1C-byte dispatch stub itself — as a function start (gotcha 21), so
+the nearest preceding start to the `bctr` was a fragment with no save ladder. The function
+that actually loses its registers is `sub_82955780`, which emits that same `bctr` 0x314
+bytes into its body.
+
+So containment is computed by reconstructing each emitted instruction's guest address —
+walk the body, anchor on the `loc_XXXXXXXX:` labels, advance 4 bytes per instruction
+comment — and **every** function whose stream includes the dispatch is reported. The walk
+carries its own falsifier: every address it produces must hold a `bctr` in the image, and
+a drift is printed loudly rather than quietly finding nothing (gotcha 25 again — the first
+version's literal string match missed a leading tab and printed a confident `0 defects`).
+
+### Recovering a count with no bounds check
+
+For a table embedded **in the code section**, the count is recoverable from the table's own
+contents, because greedy reading is bounded by a structural fact: **a case body cannot lie
+inside its own jump table.** Read entries while each is a word-aligned `.text` address
+within 64 KB of the dispatch, then truncate at the first accepted label that would
+otherwise fall inside the table's span. At `0x82955A98` the greedy pass stops at 25 entries
+and the containment rule independently also says 25 — two different arguments agreeing,
+which is what made it safe to act on.
+
+For the offset idiom the termination test is different and stronger: a case body is
+`code_base + offset`, so a mis-read entry almost always yields an address that is not
+4-byte aligned, which no PPC instruction ever is. That test alone ends the `82990350`
+table.
+
+Tables in `.data`/`.rdata` get **no** inference — there is no following code to bound them
+and no containment rule to apply, so a count there would be a guess. Those sites are
+reported for a human instead, which is the whole point of having the detector separate
+from the scanner.
+
+### Result
+
+**234 tables (was 232), 6,168 case labels (was 6,114); 0 defects, 2 benign thunks.** The
+11 case labels and 3 mid-body fragments the coverage oracle had contributed inside the
+newly recovered tables were removed from the config first — a label that is *also* a
+declared function start is precisely the destructive combination in finding 5a — and the
+full four-tool pipeline was then re-run to a clean state: silent recompiler, zero dropped
+branches, zero `// ERROR`, `--smoke` passing.
+
+Measured effect on stability: **6-7 crashes in 10 runs → 1 in 20.**
+
 ---
 
 ## Open questions round 1 did *not* answer
