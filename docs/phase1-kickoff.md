@@ -1,7 +1,7 @@
 # Phase 1 kickoff — paste this into a fresh conversation
 
 This is the hand-off prompt for the next session. `CLAUDE.md` loads automatically and is
-current (phase 0 complete, 2026-08-04); this file adds only the ordering, the gates, and
+current (phase 0 complete incl. the 0.3 `.xtr` decoder, 2026-08-04); this file adds only the ordering, the gates, and
 the pointers a fresh context needs to start phase 1 without re-deriving anything.
 
 ---
@@ -86,7 +86,10 @@ it. Read `docs/xtr-decoder.md` when phase 4 starts, not before. What it settled:
   on frame index**.
 - `INDIRECT_BUFFER` is recorded one dword short, and start/end nesting is unbalanced at
   the tail of every capture. Both are replay traps, written up in finding 10b/10c.
-- All three GPU captures are intact; all 21 type-3 opcodes in B1 are named.
+- All three GPU captures decode intact (clean heads, zero desyncs, including B2 at
+  7.95 GiB), and the type-3 opcode **set is identical** in B1, B1b and B2 — 21 opcodes,
+  all named, none gameplay-only. Phase 4's command processor can therefore be built and
+  gated against B1 alone, 1.61 GiB instead of 7.95 (finding 10d).
 
 ## Standing constraints
 
