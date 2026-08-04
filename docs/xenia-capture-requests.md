@@ -55,6 +55,18 @@ Asura's Wrath's B2 GPU trace overshot 2 GiB by ~15 KB and had to be **discarded 
 (an `ftell` limit in the writer). Stop a GPU capture promptly at the end of its drive
 rather than idling, and confirm the header is valid and the file finalized before sharing.
 
+### Where captures come from
+
+**All Xenia work happens on the user's Windows PC.** Xenia is unstable on the Linux box
+this repo lives on, so nothing in this document can be run here — no capture can be
+self-served, no cvar can be checked by grepping a local source tree, and no "let me just
+try it" shortcut exists. Every item below is a request to a human at another machine, and
+should be written to be executed without a follow-up question.
+
+That machine has the **instrumented Canary fork** built for the Asura's Wrath port
+(confirmed 2026-08-04), which forces the `.xtr` GPU stream writer on in Release. Section B
+is therefore viable immediately.
+
 ### General
 
 - Keep the **config dump header** Xenia prints at the top of its log — never trim it.
@@ -129,9 +141,9 @@ Even a boot-only prefix is valuable: it is the only view of the synchronisation 
 xenia.exe --trace_gpu_stream=true --trace_gpu_prefix=C:\xenia_logs\cz_B1\ ... "path\to\package"
 ```
 
-**Stock Canary strips the `.xtr` writer in Release.** Asura's Wrath used a locally
-instrumented Canary fork that forces it on. If you still have that fork, use it — and see
-the Debug-build note at the end of this section before you rebuild anything.
+**Stock Canary strips the `.xtr` writer in Release.** Use the instrumented Canary fork
+built for the Asura's Wrath port, which forces it on — confirmed still available
+2026-08-04. All custom instruments in the fork **off**; vanilla settings otherwise.
 
 The trace must be running **from process start**, not attached later. Frame 0 matters more
 than any other frame.
@@ -221,13 +233,25 @@ rasterizer.
 A dump of the shaders Xenia sees the guest submit gives us the ground-truth microcode to
 compare those banks against, which settles it.
 
-Xenia has a shader-dump cvar, but **I am not certain of its exact name or whether Canary
-gates it** — the earlier ports never used it (neither title had loose shader banks, so the
-question never came up). Please check `xenia.exe --help` / `xenia.config.toml` for
-something along the lines of `dump_shaders` and report what you find. If it exists, run it
-over A1's drive; if it does not, say so and we will get the same information from a
-runtime `SHADER_DUMP` hook later instead. **This is a five-minute check, not a capture —
-do it while A1 is running.**
+The cvar to use is **`dump_shaders`**, in Xenia's `GPU` cvar group — a *path*, not a
+boolean: it names a directory that Xenia writes each shader into as it is compiled.
+
+```
+xenia.exe --dump_shaders=C:\xenia_logs\cz_shaders\ ... "path\to\package"
+```
+
+**Verify before relying on it.** This cannot be checked from here (see "Where captures
+come from"), neither earlier port used it — neither title had loose shader banks, so the
+question never arose — and the fork is several commits from upstream. Confirm it appears
+in `xenia.exe --help` or `xenia.config.toml`'s `[GPU]` section, and confirm the directory
+actually fills up. If the cvar is absent or writes nothing, say so and we will get the
+same information from a runtime `SHADER_DUMP` hook later instead; it is not worth
+debugging Xenia over.
+
+**This is a five-minute check bolted onto A1's drive, not a separate capture.** Run it
+alongside A1 and report what the directory contains — file count, extensions, and the
+first few bytes of one file is enough to tell whether we are looking at raw Xenos
+microcode or Xenia's translated output.
 
 ---
 
