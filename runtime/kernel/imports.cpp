@@ -692,11 +692,24 @@ void SignalGuestEvent(uint32_t handle)
         event->Set();
 }
 
-static uint32_t NtClearEvent_x(uint32_t handle, be<uint32_t>* previousState)
+// ONE argument, and that is not a detail — see below.
+//
+// NtSetEvent takes (handle, previousState); NtClearEvent takes (handle) alone. This
+// was written with NtSetEvent's signature and an out-parameter fill added for
+// finding 14 compliance, which meant it read r4 — a register the caller had left
+// holding something else entirely — and stored through it. The result was a SIGSEGV
+// inside our own kernel, on a write the guest never asked for.
+//
+// The lesson generalises past this call and belongs next to finding 14 rather than
+// buried here: **"fill your out-parameters" is only safe on top of a correct
+// signature.** Filling an out-parameter that does not exist converts a harmless
+// leftover register into a wild store, and it fails in the one place the rule was
+// supposed to protect. A5 settles the arity in one grep — `NtClearEvent(F8000020)`
+// against `NtSetEvent(F8000014, 00000000)` — because both are kHighFrequency and
+// appear nowhere else.
+static uint32_t NtClearEvent_x(uint32_t handle)
 {
     Event* event = ResolveEvent(handle, "NtClearEvent");
-    if (previousState)
-        *previousState = event && event->signaled ? 1 : 0;
     if (!event)
         return STATUS_INVALID_HANDLE;
     event->Reset();
@@ -1864,27 +1877,6 @@ static uint32_t XGetLanguage_x() { return 1; }        // English
 static uint32_t XGetAVPack_x() { return 0; }
 static uint32_t XGetGameRegion_x() { return 0x03FF; } // region-free
 
-// XGetVideoMode and VdQueryVideoMode must return the same thing — A1 calls
-// XGetVideoMode twice in the display bring-up and VdQueryVideoMode three times right
-// after — and the driver's letterbox arithmetic straddles the two. When phase 3
-// introduces gpu/vd.cpp this definition MOVES there and both exports call one
-// filler; keeping two independent copies is how they drift.
-static void XGetVideoMode_x(XVIDEO_MODE* mode)
-{
-    if (!mode)
-        return;
-    memset(mode, 0, sizeof(*mode));
-    mode->DisplayWidth = 1280;
-    mode->DisplayHeight = 720;
-    mode->IsInterlaced = 0;
-    mode->IsWidescreen = 1;
-    mode->IsHighDefinition = 1;
-    mode->RefreshRate = 0x42700000; // 60.0f
-    mode->VideoStandard = 1;        // NTSC-M
-    mode->Unknown4A = 0x4A;
-    mode->Unknown01 = 0x01;
-}
-
 // A1: XexGetModuleHandle(00000000, out) then XexGetModuleHandle(8209123C("xam.xex"),
 // out). A null name means "this module", which is the XEX header block main.cpp
 // published; the xam form is answered with the same handle XexLoadImage minted.
@@ -2200,12 +2192,35 @@ static uint32_t XexGetModuleSection_x(uint32_t module, const char* name, be<uint
 // faithful; the return is the previous element count.
 static uint32_t FscSetCacheElementCount_x(uint32_t flags, uint32_t count) { return 0; }
 
+// KeInitializeDpc(dpc, routine, context) — initialise a guest KDPC object.
+//
+// Case Zero imports this and A1 calls it twice, but it imports NEITHER
+// KeInsertQueueDpc nor KeRemoveQueueDpc, so nothing in this title can ever queue one
+// of these objects through the kernel. That makes the whole DPC dispatch machinery
+// the previous port carries unnecessary here — a good example of gotcha 10 paying
+// off in the other direction: the import list says what NOT to build.
+//
+// The struct still has to be initialised, because the guest reads it back. XDPC is
+// {Type/Importance/Number (4), ListEntry (8), Routine, Context, Arg1, Arg2}.
+static void KeInitializeDpc_x(be<uint32_t>* dpc, uint32_t routine, uint32_t context)
+{
+    if (!dpc)
+        return;
+    dpc[0] = 19 << 24; // DpcObject
+    dpc[1] = 0;        // ListEntry.Flink — an empty list, i.e. not queued
+    dpc[2] = 0;        // ListEntry.Blink
+    dpc[3] = routine;
+    dpc[4] = context;
+    dpc[5] = 0;
+    dpc[6] = 0;
+}
+
 GUEST_FUNCTION_HOOK(__imp__ExGetXConfigSetting, ExGetXConfigSetting_x)
+GUEST_FUNCTION_HOOK(__imp__KeInitializeDpc, KeInitializeDpc_x)
 GUEST_FUNCTION_HOOK(__imp__XexCheckExecutablePrivilege, XexCheckExecutablePrivilege_x)
 GUEST_FUNCTION_HOOK(__imp__XGetLanguage, XGetLanguage_x)
 GUEST_FUNCTION_HOOK(__imp__XGetAVPack, XGetAVPack_x)
 GUEST_FUNCTION_HOOK(__imp__XGetGameRegion, XGetGameRegion_x)
-GUEST_FUNCTION_HOOK(__imp__XGetVideoMode, XGetVideoMode_x)
 GUEST_FUNCTION_HOOK(__imp__XexGetModuleHandle, XexGetModuleHandle_x)
 GUEST_FUNCTION_HOOK(__imp__RtlImageXexHeaderField, RtlImageXexHeaderField_x)
 GUEST_FUNCTION_HOOK(__imp__XexLoadImage, XexLoadImage_x)

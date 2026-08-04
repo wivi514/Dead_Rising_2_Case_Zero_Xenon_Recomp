@@ -262,6 +262,21 @@ From phase 1 (the runtime; details in `docs/phase1-notes.md`):
     invisible in A1 and in every other level-3 capture; only A5 shows it. A capture
     set needs at least one high-frequency arm or its quietest exports are unfalsifiable.
 
+48. **"Fill your out-parameters" is only safe on top of a correct signature.** Writing
+    an out-parameter a call does not have turns a harmless leftover register into a
+    wild store — and it fails inside your own kernel, in the very place the rule
+    exists to protect. `NtClearEvent` takes one argument; `NtSetEvent` takes two.
+    Check arity against a capture before adding the write.
+49. **Device-struct offsets are per-title; the image states its own.** The previous
+    port reads the GPU ring's kicked-write-pointer mirror at `dev+11088`; Case Zero's
+    is at `dev+10956`. Both are recoverable from the single store to `CP_RB_WPTR`
+    (`0x7FC80714`) in the image. Copying the other port's number reads an arbitrary
+    field as a ring position.
+50. **Against an intermittent failure, an arm is not a measurement — a rate is.** A
+    single-run A/B over a nondeterministic crash confidently named the arm that
+    happened not to fire, and produced a clean, decisive, wrong conclusion. Re-run at
+    a longer duration, every arm survived. Gotcha 7's other half.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -382,6 +397,10 @@ CZ_CS_TRACE=1      name the owner of a critical section a thread cannot get
 CZ_STALL_TRACE=N   every N-th sleep, dump the sleeping thread's guest call sites
 CZ_PEEK=addr[,n]   dump guest memory as the XEX shipped it, before any guest code runs
 CZ_NULL_PAGE_READABLE=1|rw   null reads succeed (as on console) / page 0 fully mapped
+CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT use
+CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
+CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
+CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
 ```
 
 Re-derive the save/restore helper addresses:
@@ -517,47 +536,47 @@ trap phase 4 would otherwise have hit at replay time.
 
 **PHASE 0 IS COMPLETE.**
 
-**Phase 1 in progress (2026-08-04, session 4): the guest boots and runs to the GPU.**
+**Phase 1 in progress (2026-08-04, session 4): the guest boots, and the GPU is real.**
 `docs/phase1-notes.md` is the record; read it before continuing.
 
 The recompiled image runs under our runtime, brings up TLS, threads and the loader
-seam, spawns its worker threads, reads real files off the package, and walks the
-entire GPU bring-up sequence in hardware's order. Measured by the gate:
+seam, reads files off the package, and **drives a live PM4 command processor**. Over a
+25 s run: 1.27 M packets parsed, 563 XE_SWAP frames, 68,588 draws, 1,235
+command-processor interrupts delivered to the guest ISR — with **zero unknown opcodes,
+zero parser stalls and zero out-of-arena stores**, and the read pointer chasing the
+write pointer rather than frozen.
 
-- **`--xenia A1` (masked): PREFIX MATCH, 43 of 93** — an exact prefix of hardware's
-  first-occurrence order, stopping before `VdIsHSIOTrainingSucceeded`.
-- 97 of 244 imports real, 147 generated honest-failure stubs. **The last 16 positions
-  of that 43 were walked entirely on stubs** — the clearest evidence available that
-  honest failure beats aborting.
+- **`--xenia A1` (masked): PREFIX MATCH, 56 of 93**, diverging at `XamGetSystemVersion`
+  vs our `RtlCompareStringN` (a stub). Positions 28-56 — the whole Vd block — match
+  hardware element for element.
+- 118 of 244 imports real, 126 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
+- **Not stable: ~2 runs in 10 segfault within 20 s.** A race, and the new pump thread
+  (guest ISR + command processor) is the prime suspect.
 
-**Where it stops is a wall, not a bug.** The D3D driver spins in `sub_82845160`
-polling the ring buffer's read-pointer write-back slot for free space. A1 shows it
-being armed by `VdInitializeRingBuffer(03D72000, 14)` and
-`VdEnableRingBufferRPtrWriteBack(03D7103C, 8)`; both are honest-failure stubs here, so
-nothing can ever advance it. This is verbatim the phase 4 trap `runtime-plan.md`
-flagged — *a command stream carrying the answers to its own waits*. Faking the
-write-back pointer would violate gotcha 5 outright.
+Three things from this session worth carrying to Case West, all in
+`docs/phase1-notes.md`:
 
-**The APC finding is the one to carry to Case West** (finding 20). Our `NtReadFile`
-filled the buffer, filled the `IO_STATUS_BLOCK`, returned success — and hung the
-title, because this engine's async file system signals completion through the **APC
-routine** and passes `event = 0`. Dropping the APC left every observable looking
-correct. **The contract of an async call includes its notification, not just its
-data.** Only A5 could find it: `NtReadFile` is `kHighFrequency` and does not appear in
-A1 at all.
+- **The async completion is an APC, not an event** (finding 20). Our `NtReadFile`
+  filled the buffer, filled the `IO_STATUS_BLOCK`, returned success — and hung the
+  boot, because the engine passes `event = 0` and signals through `apcRoutine`.
+  Every observable looked correct. Only A5 shows it; `NtReadFile` is `kHighFrequency`.
+- **The ring geometry is derivable from the guest's own arithmetic** (findings 22-23).
+  `28 - clz(size)` in front of the call proves `size = 1 << (arg + 3)`, and the single
+  `CP_RB_WPTR` store gives the device-struct offsets. No constant needed inheriting.
+- **Xenia's physical addresses carry a +0x1000 skew** (finding 24), so a physical
+  address in our log is 0x1000 below the same object's in a capture. Any geometry
+  argument mixing the two conventions is wrong — this one briefly manufactured a
+  ring-buffer overrun that did not exist.
 
 Next, in order:
 
-1. **`gpu/vd.cpp` and the command processor** (phases 3/4, arriving early because the
-   boot goes through them). Two things are already prepared: `kernel/heap.cpp`
-   withholds the GPU register aperture at `0x7FC80000` from the virtual arena, and
-   finding 10d established the processor can be built and gated against **B1 alone**.
-   **Debt to clear when it lands:** `XGetVideoMode` currently lives in
-   `kernel/imports.cpp` and must move beside `VdQueryVideoMode` with both calling one
-   filler — the driver's letterbox arithmetic straddles the two.
-2. Chase the early `RtlNtStatusToDosError` the A5 gate reports at position 19 —
-   something fails that does not fail on hardware.
+1. **The intermittent crash.** Measure it as a rate, never with single runs
+   (gotcha 50). The runtime has no SIGSEGV handler yet; the previous port's
+   `cpu/crash_report.cpp` — faulting guest address plus guest backtrace — is the
+   instrument this needs.
+2. **The XAM/frontend surface**, everything past gate position 57.
+3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
 
 ## Conventions (same as the two template ports)
 

@@ -248,81 +248,161 @@ address, not the host pointer the marshalling layer handed us.
 
 A1 alone could not have found this. Its `NtReadFile` lines do not exist.
 
-## 5. Where the boot currently stops — the GPU ring buffer
+### Finding 21 — "fill your out-parameters" is only safe on top of a correct signature
 
-Reproducible, and it is exactly where `docs/runtime-plan.md` said phase 4 would be
-needed. Not a bug: a wall.
+`NtClearEvent` was written with `NtSetEvent`'s signature — `(handle, previousState)` —
+and given an out-parameter fill for finding 15 compliance. It takes **one** argument.
+So the fill read `r4`, a register the caller had left holding something else, and
+stored through it: a SIGSEGV inside our own kernel, on a write the guest never asked
+for.
 
-The main thread runs the whole GPU bring-up in hardware's order — `VdInitializeEngines`,
-`VdSetGraphicsInterruptCallback`, `VdInitializeRingBuffer`, `VdEnableRingBufferRPtrWriteBack`,
-`VdQueryVideoMode`, `VdRetrainEDRAM` — with **every one of those still a generated
-honest-failure stub**, and then stops making kernel calls at all. It is spinning in
-guest code, in the D3D driver:
+The rule that produced the bug is a good rule. The lesson is that it composes badly
+with a wrong signature, and in the worst way — it converts a harmless leftover
+register into a wild store, in exactly the place the rule exists to protect. **Check
+arity before adding an out-parameter write.**
 
-```
-sub_82845160  <-  sub_82846210  <-  sub_828519A0  <-  sub_8284CF88  <-  sub_8283CCE8
-```
-
-and the loop in `sub_82845160` is unmistakable:
-
-```
-lwz  r11, 10896(r31)     ; the read-pointer WRITE-BACK slot's address
-lwz  r10, 10908(r31)     ; the write pointer
-lwz  r11, 0(r11)         ; *write-back = how far the GPU has consumed
-subf r9,  r30, r10
-subf r11, r11, r10
-cmplw cr6, r9, r11
-bge  cr6, <exit>         ; enough ring space? no -> spin
-```
-
-That is a **ring-buffer free-space wait**. A1 shows the driver setting it up:
+A5 settles arity in one grep, because both calls are `kHighFrequency` and appear
+nowhere else:
 
 ```
-VdInitializeRingBuffer(03D72000, 14)            <- 1 MB ring at physical 0x03D72000
-VdEnableRingBufferRPtrWriteBack(03D7103C, 8)    <- write-back slot at 0x03D7103C
+NtClearEvent(F8000020)              <- one argument
+NtSetEvent(F8000014, 00000000)      <- two
 ```
 
-Both of those are honest-failure stubs here, so the slot was never armed and nothing
-can ever advance it. The driver is waiting for a GPU that does not exist yet.
+The other seven out-parameter hooks were audited against the captures the same way and
+all were already right.
 
-This is verbatim the trap the plan flagged for phase 4:
+### Finding 22 — the GPU device-struct offsets are per-title, and this image states its own
 
-> a command stream carrying the answers to its own waits — the D3D driver's GPU waits
-> poll a retired-fence counter and a consumed-to pointer that no runtime could
-> honestly invent
+The pump needs two words out of the driver's device struct: the mirror of the kicked
+write pointer, and the pointer to the read-pointer write-back slot. Asura's Wrath
+reads them at `+11088` and `+11024`. **Case Zero's are at `+10956` and `+10896`** —
+copying the previous port's numbers would have read arbitrary struct fields as a ring
+position.
 
-so reaching it is the expected end of the kernel-only road. Faking the write-back
-pointer would be exactly the "never fake success" violation gotcha 5 forbids: the
-driver would march on and submit commands into a ring nobody reads.
+The image states both. There is exactly ONE store to `CP_RB_WPTR` in the whole image
+(the only `PPC_MM_STORE_U32` to `0x7FC80714`), in `sub_82845698`:
 
-**Also still open** (from the A5 strong gate, and cheaper than the GPU): our first
-`RtlNtStatusToDosError` arrives at position 19, ahead of hardware's. Something is
-failing and being translated that does not fail on the console. It has not blocked
-anything, but it is an unexplained difference and those do not stay harmless.
+```
+stw  r11,10956(r29)     ; the mirror
+sync
+lis  r10,32712          ; 0x7FC8
+stw  r11,1812(r10)      ; CP_RB_WPTR
+eieio ; sync
+```
+
+and the free-space wait that blocked the boot dereferences the other:
+
+```
+lwz  r11,10896(r31)     ; the write-back slot's address
+lwz  r11,0(r11)         ; how far the GPU has consumed
+```
+
+Both are now confirmed live: with `CZ_RING_TRACE=1` the mirror and the MMIO register
+read back **identical** (`kickedWptr=000031E4`, `mmio CP_RB_WPTR=000031E4`), which
+turns the "use the mirror, not the register" advice inherited from Fable 2's finding
+48 into something checked here rather than believed.
+
+### Finding 23 — the ring-buffer size argument, derived from the guest's own arithmetic
+
+`VdInitializeRingBuffer(03D72000, 14)`. The second argument is not a byte count and not
+a plain log2. The guest computes it immediately before the call:
+
+```
+cntlzw r11,r25        ; clz(ring size in BYTES)
+subfic r23,r11,28     ; 28 - clz(size)
+```
+
+For a power-of-two size S, `clz(S) = 31 - log2(S)`, so the argument is
+`log2(S) - 3 = log2(S/8)` — the log2 of the ring size in **quadwords**, and
+`size = 1 << (arg + 3)`. Case Zero passes 14, so the ring is 0x20000 = 128 KB, which A1
+confirms independently: the `MmAllocatePhysicalMemoryEx` immediately before it is for
+exactly 0x20000 bytes. A factor-of-8 error here is silent until the ring wraps.
+
+### Finding 24 — Xenia's physical addresses carry a +0x1000 skew, and it invalidates a naive geometry check
+
+Chasing the ring size produced an apparent contradiction: with
+`physical = virtual & 0x1FFFFFFF`, the ring starts 0x1000 inside its own allocation and
+overruns the end by the same 0x1000. That is not a guest bug and not a formula error.
+**Xenia's `MmGetPhysicalAddress` does not simply mask.** A1:
+
+```
+MmAllocatePhysicalMemoryEx = E3D71000 Size: 00020000
+MmGetPhysicalAddress(E3D71000)
+VdInitializeRingBuffer(03D72000, 14)      <- the answer, on the very next line
+```
+
+`(0xE3D71000 & 0x1FFFFFFF) + 0x1000 = 0x03D72000`. The same +0x1000 reproduces the
+write-back slot exactly: `(0xE3D70000 & 0x1FFFFFFF) + 0x1000 + 0x3C = 0x03D7103C`. With
+the skew the ring starts at its allocation base and fits exactly.
+
+Our own convention needs no skew — `MmGetPhysicalAddress` masks and `PhysicalToVirtual`
+ORs back, which round-trips — but **a physical address in our log is 0x1000 below the
+same object's address in a capture**, and any geometry argument that mixes the two is
+wrong. This is a sharper version of the claim in `kernel/heap.h` that matching the
+console's map makes our addresses "directly comparable to a capture's": true for
+virtual addresses, false for physical ones.
+
+## 5. Where the boot currently stops
+
+**What runs.** The ring buffer is initialised, consumed and reported on. Over a ~25 s
+run with `CZ_RING_TRACE=1`:
+
+```
+ring: kickedWptr=000031E4 (dev+10956)  writebackPtr=BC739380 (dev+10896,
+      registered BC7393BC)  [wb+0]=00000C35  mmio CP_RB_WPTR=000031E4
+ring: pm4 packets=1271801 frames(XE_SWAP)=563 draws=68588 interrupts=1235
+```
+
+1.27 M packets parsed, 563 frames, 68,588 draws, 1,235 command-processor interrupts
+delivered to the guest ISR — and **zero unknown opcodes, zero parser stalls, zero
+out-of-arena stores**. The read pointer chases the write pointer rather than sitting
+frozen, which is the health check that says the parser is keeping up.
+
+**The gate.** `--xenia A1` (masked): **PREFIX MATCH, 56 of 93**, up from 43. The entire
+Vd block — positions 28 through 56, `VdInitializeEngines` through
+`XAudioRegisterRenderDriverClient` — matches hardware element for element, and it got
+there partly on stubs.
+
+**The divergence at 57** is `RtlCompareStringN`, a generated stub, arriving where
+hardware calls `XamGetSystemVersion`. Everything past it is the XAM/frontend and
+network surface, where our sequence holds mostly the same names in a different order.
+That is the next subsystem, not the next bug.
+
+**An intermittent crash, and a retraction of the first reading of it.**
+
+Roughly **2 runs in 10 segfault within 20 seconds**; the rest reach the timeout having
+delivered between 372 and 1,178 vblanks. The variance across surviving runs is itself
+the signal: this is a race, and the pump thread — new, running guest ISR code, and now
+also running the command processor — is the obvious suspect.
+
+The retraction matters more than the finding. A first A/B at 25 s per arm showed the
+baseline crashing, `CZ_NULL_PAGE_READABLE=1` (null reads allowed, writes trapped) still
+crashing, and both `CZ_NULL_PAGE_READABLE=rw` and `CZ_PM4_NO_CP_INTERRUPT=1` surviving
+— which reads as clean and decisive: *the guest performs a null write on the source-1
+ISR path, and the console tolerates it.* It was wrong. Re-run at 50 s per arm, **all
+four arms survive**, including the baseline that had just crashed three times
+consecutively.
+
+Gotcha 7 says every instrument needs its own control. This is the other half:
+**against an intermittent failure, an arm is not a measurement — a rate is.** One run
+per arm will confidently name whichever arm happened not to fire.
 
 ## 6. Status
 
-Phase 1's stated gate is a prefix-match out to the *title screen*. We reach the GPU
-ring-buffer wait, which is as far as a kernel-only runtime can go.
+- `tools/kernel_call_diff.py --xenia A1 --ours <log>` → **PREFIX MATCH, 56 of 93**,
+  diverging at `XamGetSystemVersion` vs our `RtlCompareStringN`.
+- 118 of 244 imports real; 126 generated honest-failure stubs.
+- PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
+  chasing the write pointer.
+- `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
+- **Not stable:** ~2 runs in 10 crash within 20 s.
 
-- `tools/kernel_call_diff.py --xenia A1 --ours <log>`
-  → **PREFIX MATCH, 43 of 93**, stopping before `VdIsHSIOTrainingSucceeded`.
-- `... --xenia A5 --ours <log> --include-high-frequency`
-  → mismatch windows only in the scheduling-sensitive region; see §5's open item.
-- 97 of 244 imports are real; 147 are generated honest-failure stubs — and note that
-  the last 16 positions of that 43 were walked entirely on **stubs**, which is the
-  clearest evidence available that honest failure beats aborting.
-- `cz_runtime --smoke` still passes, so the phase 0.2 link gate is intact.
+Next, in order:
 
-**The next milestone is `gpu/vd.cpp` and the command processor** — nominally phases 3
-and 4, arriving now because the boot goes through them. Two things are already
-prepared for it: `kernel/heap.cpp` withholds the GPU register aperture at
-`0x7FC80000` from the virtual arena, and phase 0.3 established that the command
-processor can be built and gated against **B1 alone** (finding 10d — 21 type-3
-opcodes, identical across all three captures).
-
-One piece of debt to clear when that lands: `XGetVideoMode` currently lives in
-`kernel/imports.cpp`. It **must** move to `gpu/vd.cpp` beside `VdQueryVideoMode` and
-both must call one filler — A1 calls `XGetVideoMode` twice and `VdQueryVideoMode`
-three times during the same display bring-up, and the driver's letterbox arithmetic
-straddles the two. Two independent copies is how they drift.
+1. **The intermittent crash.** Characterise it as a rate, not with single runs. A
+   SIGSEGV handler that reports the faulting guest address and a guest backtrace (the
+   previous port's `cpu/crash_report.cpp`) is the instrument this needs and the
+   runtime does not have.
+2. **The XAM/frontend surface** — everything past gate position 57.
+3. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
