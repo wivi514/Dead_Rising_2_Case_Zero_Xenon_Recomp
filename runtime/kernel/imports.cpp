@@ -3125,3 +3125,322 @@ static uint32_t XamContentGetLicenseMask_x(be<uint32_t>* mask, uint32_t overlapp
 }
 
 GUEST_FUNCTION_HOOK(__imp__XamContentGetLicenseMask, XamContentGetLicenseMask_x)
+
+// ---------------------------------------------------------------------------
+// XAM app messages, tasks, and the storage device
+// ---------------------------------------------------------------------------
+//
+// This is the block at gate positions 82-93, and it hangs together as one mechanism
+// rather than as a list of imports, which is why it is written in one place:
+//
+//   XMsgStartIORequest(app, message, overlapped, buffer, len)  routes a message to
+//       an XAM "application" (0xFA media player, 0xFB game invite/context, 0xFC Live
+//       base). It is a DISPATCHER, so a blanket error from it fails every XAM
+//       message the title will ever send — which is what a generated stub did.
+//   XamTaskSchedule(callback, context, 0, handleOut)           runs a GUEST function
+//       on a XAM worker thread. Not bookkeeping: `XamTaskSchedule(825D9358, ...)` in
+//       A1 schedules `sub_825D9358`, and that function is the only caller of
+//       XMsgCompleteIORequest in the image. Stub the scheduler and the title's async
+//       operations are started and never finished — gotcha 46's shape exactly.
+//   XMsgCompleteIORequest / XamGetOverlappedResult              the two ends of the
+//       overlapped that the scheduled callback completes.
+//
+// The title pre-arms the overlapped itself before scheduling — `[r29+0] = 997` and
+// `[r29+8] = task block` in sub_825D91E0 — so our side owes only the completion.
+
+constexpr uint32_t ERROR_FUNCTION_FAILED = 1627;      // what the guest reports upward
+constexpr uint32_t E_FAIL                = 0x80004005;
+
+// Every call site tests the result with a SIGNED compare (`cmpwi r3,0; bge ok`), so a
+// failure has to be negative. 0x80004005 is; a positive Win32 code like 1627 would be
+// read as success and the title would go on to use an overlapped nobody filled.
+constexpr uint32_t kAppXmp       = 0xFA;   // media player
+constexpr uint32_t kAppXgi       = 0xFB;   // game invite / user context & properties
+constexpr uint32_t kAppXLiveBase = 0xFC;   // Live base services
+constexpr uint32_t kAppUser      = 0xFE;   // A1 shows XMsgInProcessCall(FE, 0002000E)
+
+// XGI 0x000B0006 — XamUserSetContext. The layout is read off `sub_825D7D20`, which
+// builds the 24-byte buffer field by field before the call:
+//     [r1+80]  = r3   user index      -> buffer +0
+//     [r1+88]  = 0    (std, 8 bytes)  -> buffer +8
+//     [r1+96]  = r4   context id      -> buffer +16
+//     [r1+100] = r5   context value   -> buffer +20
+// and the buffer it passes is r1+80 with length 24.
+struct GuestXgiUserContext
+{
+    be<uint32_t> userIndex;   // +0
+    be<uint32_t> unused;      // +4  never written by the guest
+    be<uint64_t> reserved;    // +8  written as a zero doubleword
+    be<uint32_t> contextId;   // +16
+    be<uint32_t> contextValue;// +20
+};
+static_assert(sizeof(GuestXgiUserContext) == 24, "sub_825D7D20 passes length 24");
+
+// Presence contexts are per-user key/value bookkeeping — the system remembers what
+// the title last said it was doing. Storing them is a real implementation, not a
+// faked success: nothing here is being sent anywhere, and nothing needs to be.
+static std::map<uint64_t, uint32_t> g_userContexts;
+
+// Route one (app, message) pair. Anything not handled returns E_FAIL and says so
+// ONCE, naming the pair — because the useful output of a dispatcher we have not
+// finished is a list of exactly what to write next.
+//
+// Recovered statically from the image (replaying the r3/r4 setup at all 18 call
+// sites), the full surface this title can send is:
+//   XGI  0xFB: 000B0006 0007 0008 0010 0011 0012 0013 0014 0015 001B 001C 001D 001E
+//              0021 0025 0026
+//   XLB  0xFC: 00000000 00058004 00058006 0005800E 00058020 00058023
+//   XMP  0xFA: 00070009 0007001B
+// Every one of those past 000B0008 is Xbox Live session, matchmaking, presence or
+// media-player work that this runtime has no way to perform, so failing them is the
+// honest answer rather than a gap. A1 only ever sends 000B0006 during boot.
+static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
+                                   uint32_t bufferLength)
+{
+    if (app == kAppXgi && message == 0x000B0006)
+    {
+        if (!buffer || bufferLength < sizeof(GuestXgiUserContext))
+            return E_FAIL;
+        auto* msg = static_cast<GuestXgiUserContext*>(buffer);
+        const uint32_t user = msg->userIndex.get();
+        const uint32_t id = msg->contextId.get();
+        g_userContexts[(uint64_t(user) << 32) | id] = msg->contextValue.get();
+        KLOG("XGI user %u context %04X = %u\n", user, id, msg->contextValue.get());
+        return 0;
+    }
+
+    static std::map<uint64_t, int> seen;
+    const uint64_t key = (uint64_t(app) << 32) | message;
+    if (seen.find(key) == seen.end())
+    {
+        seen[key] = 1;
+        fprintf(stderr, "[xam] no handler for app %02X message %08X (%u-byte buffer) — "
+                        "returning E_FAIL\n", app, message, bufferLength);
+    }
+    return E_FAIL;
+}
+
+// The async form. When the caller supplies an overlapped the status travels in the
+// overlapped and the return says only "the request was accepted" — which is why a
+// failed message still returns 0 here. The guest's own wrapper then reports
+// ERROR_IO_PENDING (997) upward and reads the real answer later.
+static uint32_t XMsgStartIORequest_x(uint32_t app, uint32_t message, uint32_t overlapped,
+                                     void* buffer, uint32_t bufferLength)
+{
+    const uint32_t result = DispatchAppMessage(app, message, buffer, bufferLength);
+    if (!overlapped)
+        return result;
+    CompleteOverlapped(reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped)),
+                       result, bufferLength);
+    return 0;
+}
+
+// The synchronous form: no overlapped, the status is the return value.
+static uint32_t XMsgInProcessCall_x(uint32_t app, uint32_t message, void* buffer,
+                                    uint32_t unused)
+{
+    (void)unused;
+    return DispatchAppMessage(app, message, buffer, 0);
+}
+
+// XMsgCompleteIORequest(overlapped, result, extendedError, length) — the title
+// finishing its OWN overlapped from inside a scheduled task. A1:
+//   XMsgCompleteIORequest(7018F3C0, 0000065B, 80070012, 00000000)
+// i.e. result 1627 (ERROR_FUNCTION_FAILED) with the HRESULT for ERROR_NO_MORE_FILES
+// in the extended slot — so the extended error is meaningful here and must be written
+// through rather than zeroed the way CompleteOverlapped() does it.
+static void XMsgCompleteIORequest_x(uint32_t overlapped, uint32_t result,
+                                    uint32_t extendedError, uint32_t length)
+{
+    if (!overlapped)
+        return;
+    auto* ovl = reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped));
+    ovl->result = result;
+    ovl->length = length;
+    ovl->extendedError = extendedError;
+    SignalGuestEvent(ovl->event);
+}
+
+// XamGetOverlappedResult(overlapped, lengthOut, wait) -> the stored result.
+//
+// The wait is real, because the work is on another thread now (see XamTaskSchedule).
+// It is bounded and complains rather than hanging silently: an overlapped that never
+// completes is a bug in whatever was supposed to complete it, and a runtime that
+// blocks forever hides which one.
+static uint32_t XamGetOverlappedResult_x(uint32_t overlapped, be<uint32_t>* lengthOut,
+                                         uint32_t wait)
+{
+    if (!overlapped)
+        return STATUS_INVALID_PARAMETER;
+    auto* ovl = reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped));
+
+    if (wait && ovl->result.get() == ERROR_IO_PENDING)
+    {
+        constexpr int kMaxWaitMs = 10000;
+        int waited = 0;
+        while (ovl->result.get() == ERROR_IO_PENDING && waited < kMaxWaitMs)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            waited++;
+        }
+        if (ovl->result.get() == ERROR_IO_PENDING)
+            fprintf(stderr, "[xam] overlapped %08X still pending after %d ms — nothing "
+                            "completed it\n", overlapped, kMaxWaitMs);
+    }
+
+    if (lengthOut)
+        *lengthOut = ovl->length;
+    return ovl->result;
+}
+
+// XamTaskSchedule(callback, context, 0, handleOut) — run a guest function on a XAM
+// worker thread.
+//
+// The argument shape is off the guest, not the SDK: sub_825D91E0 sets r3 = the
+// callback, r4 = the task block, r5 = 0, r6 = block+24 for the handle, and A1 agrees
+// — XamTaskSchedule(825D9358, 300E9000, 00000000, 300E9018), where 300E9018 is
+// 300E9000+0x18. The callback then reads its context straight out of r3
+// (`lwz r30,12(r3)` is sub_825D9358's first real instruction), which is what settles
+// that argument 2 is the callback's context and not a task-parameters struct.
+//
+// The stack is 0x8000, matching what this title gives its own worker threads through
+// ExCreateThread, rather than the XEX's 0x40000 default — the callbacks here are
+// leaf-ish work items and fifteen of them at a quarter-megabyte each would be a
+// meaningful slice of the address space.
+static uint32_t XamTaskSchedule_x(uint32_t callback, uint32_t context, uint32_t unused,
+                                  be<uint32_t>* handleOut)
+{
+    (void)unused;   // 0 at both call sites in the image
+    if (!callback)
+    {
+        if (handleOut)
+            *handleOut = 0;
+        return E_FAIL;
+    }
+
+    GuestThreadParams params{};
+    params.function = callback;
+    params.arg0 = context;
+    params.stackSize = 0x8000;
+
+    uint32_t threadId = 0;
+    GuestThreadHandle* handle = GuestThread::Start(params, &threadId);
+    if (!handle)
+    {
+        if (handleOut)
+            *handleOut = 0;
+        return E_FAIL;
+    }
+    KLOG("XamTaskSchedule callback=%08X context=%08X -> tid=0x%X\n", callback, context,
+         threadId);
+    if (handleOut)
+        *handleOut = GetKernelHandle(handle);
+    return 0;
+}
+
+// Closing a task handle does not stop the task — GuestThreadHandle's destructor
+// detaches rather than joining, which is the NT thread-handle semantic the rest of
+// this kernel already follows.
+static uint32_t XamTaskCloseHandle_x(uint32_t handle)
+{
+    if (handle && IsKernelObject(handle))
+        DestroyKernelObject(handle);
+    return 0;
+}
+
+// --- the storage device -----------------------------------------------------
+//
+// POLICY, and it is the same shape as the single local user and the single pad:
+// exactly one storage device, always present, and the selector picks it without
+// showing UI. The device id is not invented — A1 shows the selector's answer being
+// used immediately afterwards as `XamContentGetDeviceData(00000001, ...)`.
+constexpr uint32_t kStorageDeviceId = 1;
+
+// XDEVICE_DATA. The size is stated by the guest: sub_825D3648 zeroes `[r1+80]` and
+// then memsets `r1+84` for 76 bytes, i.e. an 80-byte structure at r1+80. The one
+// field it reads is the doubleword at `[r1+96]` = offset +16, which it compares
+// against a required byte count — so +16 is free space, and total therefore sits at
+// +8 where an 8-aligned pair puts it.
+struct GuestDeviceData
+{
+    be<uint32_t> deviceId;      // +0
+    be<uint32_t> deviceType;    // +4   1 = hard disk
+    be<uint64_t> totalBytes;    // +8
+    be<uint64_t> freeBytes;     // +16  the only field this title reads
+    char16_t name[28];          // +24
+};
+static_assert(sizeof(GuestDeviceData) == 80, "the guest memsets 4 + 76 bytes");
+
+// NOT MEASURED, and flagged as such. Nothing checks these against the host
+// filesystem, and the honest fix once saves are actually written is to report the
+// real free space of whatever directory the VFS maps. Until then the numbers only
+// have to be large enough that the title's "is there room" test passes, and small
+// enough to be a plausible console hard disk.
+constexpr uint64_t kDeviceTotalBytes = 16ull * 1024 * 1024 * 1024;
+constexpr uint64_t kDeviceFreeBytes  = 8ull * 1024 * 1024 * 1024;
+
+static uint32_t XamContentGetDeviceData_x(uint32_t deviceId, GuestDeviceData* data)
+{
+    if (!data)
+        return STATUS_INVALID_PARAMETER;
+    memset(data, 0, sizeof(*data));
+    if (deviceId != kStorageDeviceId)
+        return ERROR_DEVICE_NOT_CONNECTED;   // 1167, which sub_825D3648 tests for by name
+    data->deviceId = kStorageDeviceId;
+    data->deviceType = 1;                    // hard disk
+    data->totalBytes = kDeviceTotalBytes;
+    data->freeBytes = kDeviceFreeBytes;
+    const char16_t* name = u"HDD";
+    for (int i = 0; name[i] && i < 27; i++)
+        data->name[i] = be<uint16_t>(uint16_t(name[i])).get();
+    return 0;
+}
+
+static uint32_t XamContentGetDeviceState_x(uint32_t deviceId, uint32_t overlapped)
+{
+    const uint32_t result = deviceId == kStorageDeviceId ? 0u : ERROR_DEVICE_NOT_CONNECTED;
+    if (overlapped)
+    {
+        CompleteOverlapped(
+            reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped)), result, 0);
+        return ERROR_IO_PENDING;
+    }
+    return result;
+}
+
+// XamShowDeviceSelectorUI(user, contentType, contentFlags, totalRequested, deviceIdOut,
+//                         overlapped). A1: (0, 1, 0, 0, 82A5C348, ...) — content type 1
+// is SAVEDGAME, and 82A5C348 is a global the title reads back later as the device id
+// it hands to XamContentGetDeviceData.
+//
+// There is one device and no UI to show, so this answers immediately. Showing nothing
+// is the truthful behaviour of a system with a single storage device; it is not a
+// stand-in for a dialog we have not built.
+static uint32_t XamShowDeviceSelectorUI_x(uint32_t userIndex, uint32_t contentType,
+                                          uint32_t contentFlags, uint64_t totalRequested,
+                                          be<uint32_t>* deviceIdOut, uint32_t overlapped)
+{
+    (void)userIndex;
+    (void)contentType;
+    (void)contentFlags;
+    (void)totalRequested;
+    if (deviceIdOut)
+        *deviceIdOut = kStorageDeviceId;
+    if (overlapped)
+    {
+        CompleteOverlapped(
+            reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped)), 0, 0);
+        return ERROR_IO_PENDING;
+    }
+    return 0;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XMsgStartIORequest, XMsgStartIORequest_x)
+GUEST_FUNCTION_HOOK(__imp__XMsgInProcessCall, XMsgInProcessCall_x)
+GUEST_FUNCTION_HOOK(__imp__XMsgCompleteIORequest, XMsgCompleteIORequest_x)
+GUEST_FUNCTION_HOOK(__imp__XamGetOverlappedResult, XamGetOverlappedResult_x)
+GUEST_FUNCTION_HOOK(__imp__XamTaskSchedule, XamTaskSchedule_x)
+GUEST_FUNCTION_HOOK(__imp__XamTaskCloseHandle, XamTaskCloseHandle_x)
+GUEST_FUNCTION_HOOK(__imp__XamContentGetDeviceData, XamContentGetDeviceData_x)
+GUEST_FUNCTION_HOOK(__imp__XamContentGetDeviceState, XamContentGetDeviceState_x)
+GUEST_FUNCTION_HOOK(__imp__XamShowDeviceSelectorUI, XamShowDeviceSelectorUI_x)

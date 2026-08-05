@@ -909,6 +909,85 @@ found the cause was walking **outward** — to the first caller whose behaviour 
 from the capture — and the cheapest form of that question is not "why did this fail"
 but "does hardware even get here". A1 answered it in one grep.
 
+### Finding 34 — the XAM message/task block, and the domino that is not storage
+
+Nine imports, written as one mechanism rather than nine entries, because they are one:
+
+- **`XMsgStartIORequest(app, message, overlapped, buffer, len)`** is a *dispatcher*,
+  not a leaf. A blanket error from it fails every XAM message the title will ever
+  send, which is what the generated stub did.
+- **`XamTaskSchedule(callback, context, 0, handleOut)`** runs a **guest** function on
+  a worker thread. This is the load-bearing one and it is easy to mistake for
+  bookkeeping: A1's `XamTaskSchedule(825D9358, 300E9000, ...)` schedules
+  `sub_825D9358`, and that function is the *only* caller of `XMsgCompleteIORequest`
+  in the entire image. Stub the scheduler and the title's async operations are
+  started and never finished — gotcha 46's shape, one level up.
+- **`XMsgCompleteIORequest` / `XamGetOverlappedResult`** are the two ends of the
+  overlapped that the scheduled callback completes. The title pre-arms it itself
+  (`[r29+0] = 997`, `[r29+8] = task block` in `sub_825D91E0`), so our side owes only
+  the completion.
+- **`XamShowDeviceSelectorUI` / `XamContentGetDeviceData` / `XamContentGetDeviceState`**
+  are the storage device, under the same policy as the single local user and the
+  single pad: exactly one device, always present, selected without UI.
+
+**Recovering the message surface statically, instead of one run at a time.** A
+dispatcher's real interface is the set of `(app, message)` pairs its caller can send,
+and that set is in the image. Replaying the `r3`/`r4` assignments in the basic block
+before each of the 18 `XMsgStartIORequest` / `XMsgInProcessCall` call sites recovers
+all 25 of them in one pass:
+
+    XGI  0xFB : 000B0006 0007 0008 0010 0011 0012 0013 0014 0015 001B 001C 001D 001E
+                0021 0025 0026
+    XLB  0xFC : 00000000 00058004 00058006 0005800E 00058020 00058023
+    XMP  0xFA : 00070009 0007001B
+
+Everything past `000B0008` is Live session, matchmaking, presence or media-player
+work this runtime has no way to perform, so failing it is the honest answer rather
+than a gap. Only `000B0006` (XamUserSetContext) is local bookkeeping, and its 24-byte
+buffer layout is stated by `sub_825D7D20`, which fills it field by field before the
+call: user index at +0, a zero doubleword at +8, context id at +16, value at +20.
+
+That scan then got checked against a run, which is the part that makes it a
+measurement: the boot produces **zero** "no handler" lines and exactly two handled
+messages — contexts `0x0000` (presence) and `0x8001` (game mode), both for user 0.
+The static surface and the dynamic one agree.
+
+**Two more layouts off the guest rather than the SDK.** `XamTaskSchedule`'s second
+argument is the *callback's context*, not a task-parameters struct — `sub_825D9358`'s
+first real instruction is `lwz r30,12(r3)`, and `sub_825D91E0` passes `r4 = r31` with
+the handle slot at `r31+24`, which A1 confirms as `(825D9358, 300E9000, 0, 300E9018)`.
+And `XDEVICE_DATA` is 80 bytes with free space at +16: `sub_825D3648` zeroes `[r1+80]`
+then memsets `r1+84` for 76 bytes, and the single field it reads back is the
+doubleword at `[r1+96]`, which it compares against a required byte count.
+
+**What this is worth, stated honestly: one of the nine ran.** Gate positions 82 and 83
+(`KeResetEvent`, `XMsgStartIORequest`) now match hardware, and the router is exercised
+and correct. The other eight — `XMsgInProcessCall`, `XMsgCompleteIORequest`,
+`XamGetOverlappedResult`, `XamTaskSchedule`, `XamTaskCloseHandle`,
+`XamContentGetDeviceData`, `XamContentGetDeviceState`, `XamShowDeviceSelectorUI` — are
+**implemented but never reached**. Their layouts are all guest-derived and none of
+them is a guess, but gotcha 30 applies without mercy: code that has never run has not
+been shown capable of running. They are a prediction, not a result.
+
+**And the reason they did not run is the useful finding.** The gate's next position
+after `XMsgStartIORequest` is *not* the storage block. Hardware's 84 is `MmMapIoSpace`,
+and A1 shows exactly where it comes from:
+
+    d> F800010C MmGetPhysicalAddress(FFCA9000)
+    d> F800010C MmMapIoSpace(00000002, 1FCAA000, 00000040, 00000404)
+    A> F800010C XmaContext: reset context 0
+
+That is the **XMA audio driver** mapping its register window, on the audio thread, and
+everything at positions 85-92 is downstream of it. Our `XMACreateContext` is still a
+generated stub, so the audio driver never gets that far. The storage block was never
+blocked on the storage imports.
+
+This one needs care rather than speed. `XMACreateContext` takes an out-pointer and its
+caller tests the result with a signed compare, so a stub that returns a positive value
+would read as success — and CLAUDE.md gotcha 5 exists *because* Fable 2 lost weeks to
+exactly this import faking success. It is the next task, and it is an audio-subsystem
+task, not a two-line one.
+
 ## 5. Where the boot currently stops
 
 
@@ -960,42 +1039,42 @@ per arm will confidently name whichever arm happened not to fire.
 ## 6. Status
 
 - `tools/kernel_call_diff.py --xenia A1 --ours <log>` → clean prefix match through
-  position 70; one run in four is an exact 81-deep prefix of Xenia's 93 with no
-  divergence. Positions 71-76 are a permutation of one set, not a divergence.
-- `--xenia A5 --include-high-frequency` tracks A5 to position 118; four real mismatch
-  windows in the whole boot, each one displaced name.
-- **139 of 244 imports real; 105 generated honest-failure stubs.**
+  position 83; runs reach 81-84 visible calls and two in five are an exact prefix of
+  Xenia's 93 with no divergence at all. Positions 71-76, when they mismatch, are a
+  permutation of one six-name set, not a divergence.
+- `--xenia A5 --include-high-frequency` tracks A5 to position 118; **three** real
+  mismatch windows left in the whole boot, each one displaced name.
+- **148 of 244 imports real; 96 generated honest-failure stubs.**
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 0 crashes in 6 runs at 25 s** on the binary at finding 32, after 0 in
-  20 at finding 28. The dominant fault (6-7 in 10, the "null-pointer walk on the main
-  thread") was the unlowered `bctr` of finding 27 and is fixed. **None of these zeros
-  is evidence the remaining fault is gone** — a 1-in-20 event is entirely consistent
-  with zero hits in twenty runs, and the one report that exists (guest thread
-  `00000F2C`, faulting outside the 4 GB space) is on a different thread from anything
-  findings 27-33 touched. Unexplained, not fixed.
+- **Stability: 0 crashes in 5 runs at 30 s.** The dominant fault (6-7 in 10) was the
+  unlowered `bctr` of finding 27 and is fixed. This zero is not evidence about the
+  remaining 1-in-20 fault (guest thread `00000F2C`), which is unexplained, not gone.
 
 Next, in order:
 
-1. **The storage-device block, gate positions 82-93** — `KeResetEvent`,
-   `XMsgStartIORequest`, `MmMapIoSpace`, `XamShowDeviceSelectorUI`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamAlloc`, `XamTaskSchedule`,
-   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`,
-   `XamContentGetDeviceData`. The entry point is `XMsgStartIORequest`, the generic XAM
-   app-message dispatcher: A1 shows `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB
-   (XGI), message 0x000B0006 — immediately followed by `XGIUserSetContext`, so its job
-   is to route a message id to a handler and complete the overlapped. Note this block
-   first appears in A1 *after the title screen is already rendering* (log line 44272),
-   so it is gated on the boot getting further as much as on the imports.
-2. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
+1. **XMA audio** — the actual next domino, established by finding 34 rather than
+   assumed. Hardware's gate position 84 is `MmMapIoSpace(2, 1FCAA000, 0x40, 0x404)`
+   from the XMA driver on thread `F800010C`, immediately after `XmaContext: reset
+   context 0`; positions 85-92 are all downstream of it. `XMACreateContext` takes an
+   out-pointer and its caller tests the result with a **signed** compare, so a
+   positive stub return reads as success — and gotcha 5 exists because Fable 2 lost
+   weeks to this exact import faking success. Treat it as an audio-subsystem task.
+2. **Prove the eight unexercised imports from finding 34** once the boot reaches
+   them: `XamTaskSchedule` in particular runs guest code on a new thread and has
+   never done so.
+3. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
    localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0`, a null indirect call through a vtable slot.
    The crash reporter's "LIKELY null indirect call" heuristic did **not** fire — it
    requires `si_addr == nullptr` *and* `ctr` inside the image; widening it to
    `ctr == 0` would have named this on the first report.
-3. **The early `RtlNtStatusToDosError`** at A5 gate position 19, now the earliest real
+4. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — the earliest real
    divergence anywhere in the boot.
-4. `XAudioSubmitRenderDriverFrame` — absent from our run because there is no audio
-   backend. Not a bug, but it is one of A5's four remaining real differences and
-   should be recorded as expected rather than re-investigated.
+5. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose`.
+   Deliberately left out of finding 34: they are the phase 2 file layer, not the
+   message/device mechanism.
+6. `XAudioSubmitRenderDriverFrame` is absent from our run because there is no audio
+   backend. Expected, not a bug — and it will stop being expected once item 1 lands.

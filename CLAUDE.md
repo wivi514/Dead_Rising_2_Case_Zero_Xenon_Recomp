@@ -345,6 +345,22 @@ From finding 33 (the position-57 divergence, closed — and it was not the DVD c
     gave three answers. One instrumented run gave the right one. Printing costs less
     than reading it twice and cannot be wrong.
 
+From finding 34 (the XAM message/task block):
+
+66. **A dispatcher's real interface is the set of messages its callers can send, and
+    that set is in the image.** Replaying the `r3`/`r4` setup before all 18
+    `XMsgStartIORequest`/`XMsgInProcessCall` call sites recovered all 25 `(app,
+    message)` pairs in one pass — far better than discovering one per run. Then check
+    the static surface against a run: the boot sends exactly two, both handled, zero
+    unknown. Static scan and dynamic check agree, which neither proves alone.
+67. **An implemented import that has never been reached is a prediction, not a
+    result.** Eight of finding 34's nine are guest-derived, none is a guess, and none
+    has executed. Gotcha 30 applies to code as much as to tests — say which ones ran.
+68. **The next gate position is not necessarily in the subsystem you just wrote.**
+    Positions 85-92 look like a storage block; the thing actually blocking them is
+    `MmMapIoSpace` at 84, called by the **XMA audio driver** (A1 shows it on the audio
+    thread right after `XmaContext: reset context 0`). Read the capture's *context
+    lines* around a gate position, not just the name.
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -677,15 +693,15 @@ command-processor interrupts delivered to the guest ISR — with **zero unknown 
 zero parser stalls and zero out-of-arena stores**, and the read pointer chasing the
 write pointer rather than frozen.
 
-- **`--xenia A1` (masked): clean prefix match through position 70**, and one run in
-  four is an **exact 81-deep prefix of Xenia's 93 with no divergence at all** — the
-  first this port has produced. Positions 71-76 are a permutation of one six-name set
+- **`--xenia A1` (masked): clean prefix match through position 83**; runs reach 81-84
+  visible calls and two in five are an **exact prefix of Xenia's 93 with no divergence
+  at all**. Positions 71-76, when they mismatch, are a permutation of one six-name set
   (`XamUserCheckPrivilege` first on hardware, last for us), unstable across our own
   runs, so a thread race rather than a defect.
 - **`--xenia A5 --include-high-frequency`: tracks A5 to position 118**
-  (`XMACreateContext`), with four real mismatch windows in the whole boot, each one
-  displaced name.
-- 139 of 244 imports real, 105 generated honest-failure stubs.
+  (`XMACreateContext`), with **three** real mismatch windows in the whole boot, each
+  one displaced name.
+- 148 of 244 imports real, 96 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - **Stability: 0 crashes in 6 runs at 25 s** on the current binary (0 in 20 on the
   session-5 binary). The dominant fault — the "null-pointer walk on the main thread",
@@ -723,29 +739,26 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **The storage-device block, gate positions 82-93** — `KeResetEvent`,
-   `XMsgStartIORequest`, `MmMapIoSpace`, `XamShowDeviceSelectorUI`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamAlloc`, `XamTaskSchedule`,
-   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`,
-   `XamContentGetDeviceData`. The entry point is `XMsgStartIORequest`, the generic XAM
-   app-message dispatcher (A1: `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB
-   (XGI), message 0x000B0006 — then `XGIUserSetContext`). This block first appears in
-   A1 *after the title screen is already rendering*, so it is gated on the boot getting
-   further as much as on the imports.
-   Method, since Xenia logs no return values for any of these: `tools/import_call_sites.py`
-   prints the guest code that consumes an import's result, and that code IS the spec.
-   And check A5 as well as A1 — the import that closed finding 33 was `kHighFrequency`
-   and appears nowhere in A1.
-2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
+1. **XMA audio** — the real next domino, established by finding 34 rather than
+   assumed. Hardware's gate position 84 is `MmMapIoSpace(2, 1FCAA000, 0x40, 0x404)`
+   from the XMA driver on thread `F800010C`, right after `XmaContext: reset context
+   0`, and positions 85-92 are all downstream of it. `XMACreateContext` takes an
+   out-pointer and its caller tests the result with a **signed** compare, so a
+   positive stub return reads as success — gotcha 5 exists because Fable 2 lost weeks
+   to this exact import faking success. An audio-subsystem task, not a two-line one.
+2. **Prove finding 34's eight unexercised imports** once the boot reaches them.
+   `XamTaskSchedule` runs guest code on a new thread and has never done so.
+3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
    The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
    `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
    name this instantly.
-3. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — now the earliest
-   real divergence anywhere in the boot.
-4. `XAudioSubmitRenderDriverFrame` is absent from our run because there is no audio
-   backend. Expected, not a bug — recorded so it is not re-investigated.
+4. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — the earliest real
+   divergence anywhere in the boot.
+5. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
+   deliberately left out of finding 34 as the phase 2 file layer.
 
 ## Conventions (same as the two template ports)
 
