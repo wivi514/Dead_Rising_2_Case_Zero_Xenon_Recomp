@@ -78,8 +78,29 @@ constexpr uint32_t kSharedBoolFile = 512;
 constexpr uint32_t kSharedVfetchTable = 544;
 constexpr uint32_t kSharedSize = 544 + 96 * 16; // one entry per vertex fetch slot
 
+// BOTH stages get 256 float4 registers, and the pixel shader's 256 is load-bearing.
+//
+// XenosRecomp's README documents the pixel shader window as 224 float4 (3584 bytes) and
+// this file believed it. The generated shaders do not: the macro they emit is
+// `pc(INDEX) = select(INDEX < 256, RawBufferLoad(PixelShaderConstants + min(INDEX,255)*16), 0)`,
+// so a shader reading c255 loads from offset 4080 — 512 bytes past a 224-register
+// buffer, i.e. into whatever this arena allocated next.
+//
+// Case Zero's scene pixel shaders read c255 in their FINAL instructions, as the
+// tone-map's scale and bias:
+//     mul  r0.xyz, r0.xyz, c255.wwww
+//     mad  r0.xyz, r0.xyz, c14.wwww, c255.xxxx
+//     max  r0.xyz, r0.xyz, c255.zzzz
+//     mul  r0.xyz, r0.xyz, c255.yyyy
+// so a wrong c255 does not tint the scene — it collapses every pixel to a constant.
+// That is what "930 draws producing three distinct colours" was.
+//
+// The guest states the true size itself and it is not 224: SQ_PS_CONST reads
+// base=256 size=255, i.e. ALU float4 registers 256..511, which is 256 registers.
+// Sizing a constant buffer from a tool's documentation rather than from the guest's
+// own register is the whole mistake.
 constexpr uint32_t kVsConstBytes = 256 * 16;
-constexpr uint32_t kPsConstBytes = 224 * 16;
+constexpr uint32_t kPsConstBytes = 256 * 16;
 
 constexpr uint32_t kMaxDescriptors = 4096; // per heap; the frontend uses a few dozen
 
@@ -1980,6 +2001,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     key.modeControl = regs[0x2208] & 7;
     key.primRestart = 0;
 
+    // CZ_VK_SHADER_CENSUS=1 — draws per (vs, ps) pair, in the stats block. Which
+    // shader pair does the work of a pass is the question that turns "the scene is
+    // flat" into "THIS pixel shader is flat", and from there Xenia's disassembly of
+    // that exact shader says what it was supposed to compute. Off by default because
+    // it makes one counter per pair.
+    if (EnvOn("CZ_VK_SHADER_CENSUS"))
+    {
+        char name[64];
+        snprintf(name, sizeof name, "pair vs=%016llx ps=%016llx",
+                 (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash);
+        Count(name);
+    }
+
     // Two classes of draw that execute and produce nothing, counted because both are
     // invisible in a log and indistinguishable in a picture from a draw that never
     // happened: one whose colour write mask is empty, and one whose depth test can
@@ -2014,7 +2048,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + i];
         dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
-        for (uint32_t i = 0; i < 224 * 4; i++)
+        for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + 256 * 4 + i];
     }
 
