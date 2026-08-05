@@ -2117,6 +2117,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24,
                        pushConstants);
 
+    // CZ_VK_STATE_PROBE=1 — the distinct values of the state registers this renderer
+    // ASSUMES rather than reads. Each of these is a place where a wrong assumption
+    // produces a plausible wrong picture instead of an error, so the cheap version of
+    // checking them is to print what the guest actually writes.
+    if (EnvOn("CZ_VK_STATE_PROBE"))
+    {
+        static std::vector<uint64_t> seen;
+        const uint64_t k = (uint64_t(regs[0x2307]) << 32) ^ regs[0x2308];
+        if (std::find(seen.begin(), seen.end(), k) == seen.end() && seen.size() < 32)
+        {
+            seen.push_back(k);
+            fprintf(stderr,
+                    "[vkstate] SQ_VS_CONST=%08X (base=%u size=%u) "
+                    "SQ_PS_CONST=%08X (base=%u size=%u)  RB_COLOR_INFO=%08X (fmt=%u) "
+                    "RB_MODECONTROL=%08X RB_COLORCONTROL=%08X PA_SU_SC=%08X\n",
+                    regs[0x2307], regs[0x2307] & 0x1FF, (regs[0x2307] >> 12) & 0x1FF,
+                    regs[0x2308], regs[0x2308] & 0x1FF, (regs[0x2308] >> 12) & 0x1FF,
+                    regs[xenos::kRbColorInfo], (regs[xenos::kRbColorInfo] >> 16) & 0xF,
+                    regs[0x2208], regs[xenos::kRbColorControl], regs[0x2280]);
+        }
+    }
+
     // CZ_VK_FETCH_PROBE=1 — which vertex fetch slots does the guest actually populate?
     //
     // The question this exists to answer: a vfetch instruction's constant index is
@@ -2147,6 +2169,46 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
                 fprintf(stderr, " %u", a.fetchSlot);
             fprintf(stderr, "\n");
         }
+    }
+
+    // --- dependent vertex fetches ----------------------------------------------------
+    // A Xenos vfetch addresses its stream with a REGISTER. Only while that register
+    // still holds the auto-loaded vertex index is the fetch expressible as a Vulkan
+    // vertex attribute; a shader that computes an address — a bone palette, a
+    // per-instance record index, particle state — is fetching from somewhere no vertex
+    // input can describe. XenosRecomp emits those as in-shader raw loads (XeVfetchDep)
+    // and reads the stream's address and size out of a table the RUNTIME publishes at
+    // SharedConstants + 544, sixteen bytes per fetch slot.
+    //
+    // Not publishing it is not a partial result. The shader's own bounds check sees
+    // size 0, returns float4(0,0,0,0), and every vertex of that mesh collapses to the
+    // origin — so the draw executes, the pipeline is fine, no counter fires, and the
+    // mesh is simply absent. 22 of this title's 67 vertex shaders take that path.
+    for (const VertexAttribute& a : vs.attributes)
+    {
+        if (!a.indirect || a.fetchSlot >= 96)
+            continue;
+        const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, a.fetchSlot);
+        const uint32_t sva = PhysToVa(vf.address);
+        const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
+        if (!GuestRangeOk(sva, bytes))
+        {
+            Count("draw: dependent fetch stream outside the physical arena");
+            continue;
+        }
+        const VkDeviceSize at = UploadStream(base, sva, bytes, vf.endian);
+        if (at == VkDeviceSize(-1))
+            continue;
+        // {deviceAddress.lo, deviceAddress.hi, sizeDwords, 0} — the layout the
+        // generated XeVfetchDep reads, transcribed from shader_common.h.
+        const uint64_t addr = uint64_t(R->arena.address) + at;
+        uint32_t* entry =
+            reinterpret_cast<uint32_t*>(shared + kSharedVfetchTable + a.fetchSlot * 16);
+        entry[0] = uint32_t(addr);
+        entry[1] = uint32_t(addr >> 32);
+        entry[2] = vf.sizeDwords;
+        entry[3] = 0;
+        Count("draw: dependent fetch stream published");
     }
 
     // --- vertex streams -------------------------------------------------------------
@@ -2214,7 +2276,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
             Count("draw: index buffer outside the physical arena");
             return;
         }
-        const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, draw.indexEndian);
+        // CZ_VK_INDEX_ENDIAN=N overrides the packet's own swizzle code. Scrambled
+        // triangles are the classic symptom of an index buffer read with the wrong
+        // swizzle — a 16-bit stream under an 8-in-32 code has its PAIRS transposed as
+        // well as its bytes — and an arm settles in one run what staring at the
+        // geometry cannot.
+        static const char* endianOverride = Env("CZ_VK_INDEX_ENDIAN");
+        const uint32_t endian =
+            endianOverride ? uint32_t(atoi(endianOverride)) : draw.indexEndian;
+        {
+            static char names[4][32];
+            static bool built = false;
+            if (!built)
+            {
+                built = true;
+                for (uint32_t i = 0; i < 4; i++)
+                    snprintf(names[i], sizeof names[i], "index endian code %u", i);
+            }
+            Count(names[draw.indexEndian & 3]);
+        }
+        const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian);
         if (at == VkDeviceSize(-1))
             return;
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at,

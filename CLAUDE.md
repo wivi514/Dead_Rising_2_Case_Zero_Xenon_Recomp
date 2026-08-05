@@ -1027,6 +1027,13 @@ CZ_VK_RESOLVE_TRACE=1  each resolve's destination, extent and clear bits, agains
                    front buffer VdSwap named. The trace that found finding 5 below
 CZ_VK_VIEWPORT_TRACE=1 every DISTINCT viewport setup, once each
 CZ_VK_FETCH_PROBE=1    which vertex fetch slots the guest has actually populated
+CZ_VK_STATE_PROBE=1    the distinct values of the state registers the renderer ASSUMES
+                   rather than reads: the two constant-window bases, the render-target
+                   format and the cull mode. Four assumptions checked in one run, and
+                   it retired "no culling is a simplification" — this title does not cull
+CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw. The arm that
+                   retired index endianness: the packet's own code beats both overrides
+                   by two orders of magnitude
 CZ_VK_FORCE_COLORMASK=1  treat every draw as writing all four channels — the arm that
                    retired "38.6% of draws have an empty colour mask, so the register
                    index must be wrong" (it is a real depth-only pass; frame identical)

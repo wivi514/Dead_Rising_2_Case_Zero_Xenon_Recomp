@@ -193,6 +193,61 @@ consistent with both.
 
 ---
 
+## 6b. The dependent vertex fetch table, and what it turned on
+
+A Xenos `vfetch` addresses its stream with a **register**. Only while that register still
+holds the auto-loaded vertex index is the fetch expressible as a Vulkan vertex
+attribute; a shader that *computes* an address — a bone palette, a per-instance record
+index, particle state — is fetching from somewhere no vertex input can describe.
+XenosRecomp emits those as in-shader raw loads (`XeVfetchDep`) and reads the stream's
+address and size out of a table **the runtime publishes** at `SharedConstants + 544`,
+sixteen bytes per fetch slot.
+
+The runtime was not publishing it. **22 of this title's 67 vertex shaders take that
+path**, and the failure mode is the quiet one: the shader's own bounds check sees size
+0, returns `float4(0,0,0,0)`, and every vertex of the mesh collapses to the origin. The
+draw executes, the pipeline is fine, no counter fires, and the mesh is simply absent.
+
+Publishing it (55,702 streams a run) took two 1280x720 surfaces from **0.0% to 69.8%
+non-black**. What they now contain is *scrambled* geometry — large clean triangles
+radiating from a vanishing point — so the table is being read and its contents are
+still wrong somewhere. That is a much better position than absent: it is a live wire.
+
+## 6c. Four assumptions checked against the guest, and one retired by an arm
+
+`CZ_VK_STATE_PROBE=1` prints the distinct values of the state registers the renderer
+*assumes* rather than reads. Every one of these is a place where a wrong assumption
+gives a plausible wrong picture instead of an error, so they are worth the one run:
+
+| register | what the guest writes | verdict |
+|---|---|---|
+| `SQ_VS_CONST` (0x2307) | base 0, size 255 | our VS window (ALU 0..255) is right |
+| `SQ_PS_CONST` (0x2308) | base **256**, size 255 | our PS window (ALU 256..479) is right |
+| `RB_COLOR_INFO` format | 0 = `k_8_8_8_8` | our `R8G8B8A8_UNORM` target matches |
+| `PA_SU_SC_MODE_CNTL` (0x2280) | `00080008` — both cull bits **clear** | disabling culling is FAITHFUL here, not a shortcut |
+
+That last one is worth stating loudly, because "no culling" was written into the
+renderer as a deliberate simplification to be revisited. It turns out not to be a
+simplification at all for this era: the title does not cull. It comes off the candidate
+list rather than staying on it as an unknown.
+
+**Index endianness is retired.** Scrambled triangles are the classic symptom of an
+index buffer read with the wrong swizzle, and the stream carries two codes (0 on
+229,449 draws, 2 on 150,614). `CZ_VK_INDEX_ENDIAN=N` forces one for all draws; the
+faithful reading gives the 69.8% surface above, while forcing 1 gives **0.3%** and
+forcing 2 gives **0.2%**. Applying the packet's own code beats both overrides by two
+orders of magnitude, so the decode is right and the scrambling is upstream of it.
+
+## 6d. `RB_MODECONTROL` 5 is depth-only, and we resolve the wrong buffer for it
+
+The state probe also showed `RB_MODECONTROL` taking the value **5** — `kDepth`, a
+depth-only pass — alongside 4 (`kColorDepth`) and 6 (`kCopy`, the resolve). That
+explains the 38.6% of draws with an empty colour mask (§6), and it names a real gap:
+those passes resolve a **depth** surface, and our resolve unconditionally snapshots the
+**colour** target. Four of the black 1280x720 surfaces in §7's table are depth resolves
+being served an empty colour buffer, so their blackness is our bug rather than evidence
+about the scene.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
@@ -201,7 +256,7 @@ says about where the rest went:
 
 | surface | extent | non-black | reading |
 |---|---|---|---|
-| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | the glyph atlases render correctly |
+| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | **a 32³ colour-grading LUT unrolled into a strip** — rendering correctly, and not a glyph atlas as first assumed |
 | `00E48000` (the frame) | 1280x720 | 3.1%, 144 colours | what we present |
 | `0684B000`, `06BE4000` | 1280x720 | 8.4%, **3 colours** | the flat bars — a pass whose texture resolved to the dummy |
 | the whole 640x360 → 32x1 pyramid | various | **0.0%** | the scene passes are producing nothing |
@@ -212,13 +267,21 @@ downsample pyramid, and it is not any of: a missing shader (no draw is skipped f
 cache miss), a refused pipeline (none), an unmapped vertex or texture format (none
 remain), an unsupported primitive (none remain), or the colour mask (arm above).
 
+**The sharpest lead is now §6b's scrambled surface**, because it is the only place a
+wrong *value* is visible rather than an absence. Two 1280x720 dependent-fetch passes
+draw large clean triangles from a vanishing point: the table is read, the index decode
+is proven right (§6c), and the constants windows are proven right (§6c) — so what
+remains is what the dependent fetch itself computes, i.e. the address register's value
+and therefore the ALU work feeding it.
+
 Known simplifications in the renderer that are candidates, each stated at its site:
 
+* **A depth-only pass resolves the colour target.** §6d — this is a bug with a known
+  location, not a simplification, and it accounts for four of the black surfaces above.
 * **One global sampler.** The fetch constant's per-texture filter and address modes are
   decoded and ignored.
-* **No culling.** `PA_SU_SC_MODE_CNTL` is not applied at all, on purpose: the
-  front-face bit interacts with the viewport's Y sign, and getting the combination
-  wrong culls exactly the geometry that should be visible.
+* ~~**No culling.**~~ **Retired by §6c: the title does not cull in this era**
+  (`PA_SU_SC_MODE_CNTL` has both cull bits clear), so drawing both faces is faithful.
 * **One EDRAM format.** The colour target is always `R8G8B8A8_UNORM`; a pass rendering
   to an HDR surface (`16_16_16_16`, `2_10_10_10`) is clamped.
 * **No mip levels.** Only level 0 of each texture is uploaded.
@@ -286,6 +349,10 @@ CZ_VK_RESOLVE_TRACE=1    each resolve's destination, extent and clear bits, agai
 CZ_VK_VIEWPORT_TRACE=1   every DISTINCT viewport setup, once each
 CZ_VK_FETCH_PROBE=1      which vertex fetch slots the guest has actually populated
 CZ_VK_FORCE_COLORMASK=1  treat every draw as writing all four channels (the arm in §6)
+CZ_VK_STATE_PROBE=1      the distinct values of the state registers this renderer
+                         ASSUMES rather than reads (§6c)
+CZ_VK_INDEX_ENDIAN=N     force one index swizzle code for every draw — the arm that
+                         retired index endianness as the cause of scrambled geometry
 CZ_VK_VALIDATION=1       the Khronos validation layer
 ```
 
