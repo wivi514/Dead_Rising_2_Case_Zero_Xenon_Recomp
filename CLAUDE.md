@@ -778,6 +778,29 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
     `floor()`s it to index something reads element 0 every time. Vulkan's
     USCALED/SSCALED are exactly the missing concept — an integer delivered as its own
     value into a FLOAT input, which a `*_UINT` format would not be.
+123. **Size a constant buffer from the register the guest writes, not from a tool's
+    documentation.** XenosRecomp's README says the pixel-shader constant window is 224
+    float4; the shaders it GENERATES read up to `c255`. Our 224-register buffer meant
+    `c255` loaded 512 bytes past its end. Case Zero's scene shaders use c255 as the
+    tone map's scale and bias in their FINAL instructions, so a wrong c255 does not
+    tint the scene — it collapses every pixel to a constant. The guest says the true
+    size in `SQ_PS_CONST`: base 256, size 255, i.e. 256 registers.
+124. **A per-(vs, ps) draw census plus the capture's disassembly is the pair that
+    localises a shading bug.** The census says which shader does the pass's work; the
+    disassembly beside every blob in the capture says what that shader was supposed to
+    compute. Neither is useful alone, and together they took "the scene is flat" to a
+    named constant register in one run.
+125. **`g_SwappedTexcoords` corrects something the RUNTIME does, not the guest.**
+    Dword-swapping a vertex stream is right for 32-bit components and transposes the
+    halves of every 16-bit pair, so a `16_16` attribute arrives YX. The shaders un-swap
+    it when the runtime sets the matching bit — and a mask left at zero silently swaps
+    the components of every 16-bit vertex attribute in the title.
+126. **An experiment consistent with BOTH hypotheses has tested neither.** The first
+    fetch-slot probe (gotcha 111) caught a shader that asked for slot 0 twice while
+    both slot 0 and slot 95 were populated — so it was consistent with either reading,
+    and it still produced a confident answer. The unambiguous version is an arm that
+    inverts the convention and looks at the result: inverted, the scene renders 0.0%.
+    The conclusion was right; the evidence for it was not what it appeared to be.
 117. **The picture is the one claim that needs an image, so make it self-servable.**
     Every other gate in this project is a log diff. Dumping frames AND every resolve
     snapshot from a headless run is what turns "does it look right" from an operator

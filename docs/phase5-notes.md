@@ -321,6 +321,91 @@ was recorded as "the most frequent type-3 opcode" in phase 1 and treated as a
 predication detail to get right; it was in fact telling us the title tiles its main
 render target, which is the single most structurally important fact about how it draws.
 
+## 6g. The pixel-shader constant buffer was 32 registers short
+
+The single biggest fix of the phase, and it was a buffer size.
+
+XenosRecomp's README documents the pixel shader constant window as **224 float4**
+(3584 bytes) and this renderer believed it. The shaders it GENERATES do not:
+
+```
+#define pc(INDEX) select((INDEX) < 256,
+    vk::RawBufferLoad<float4>(PixelShaderConstants + min(INDEX,255)*16, 0x10), 0.0)
+```
+
+So a shader reading `c255` loads from offset 4080 — 512 bytes past a 224-register
+buffer, into whatever the frame arena allocated next.
+
+Case Zero's scene pixel shaders read `c255` in their **final** instructions, as the
+tone map's scale and bias (`shader_8C094EA15720629A`, 106,256 draws a run):
+
+```
+mul  r0.xyz, r0.xyz, c255.wwww
+mad  r0.xyz, r0.xyz, c14.wwww, c255.xxxx
+max  r0.xyz, r0.xyz, c255.zzzz
+mul  r0.xyz, r0.xyz, c255.yyyy
+```
+
+A wrong `c255` there does not tint the scene. It **collapses every pixel to a
+constant** — which is exactly what "930 draws producing three distinct colours" was.
+
+And the guest states the true size itself, so this never needed the README at all:
+`SQ_PS_CONST` reads base=256 size=255, i.e. ALU float4 registers 256..511 — **256
+registers**. Sizing a constant buffer from a tool's documentation rather than from the
+register the guest writes is the whole mistake, and it is the general lesson.
+
+Measured, one run either side:
+
+| surface | before | after |
+|---|---|---|
+| the scene `06BE4000` | 50.0% non-black, **3** colours | 63.8%, **848** colours |
+| the 640x360 -> 32x1 pyramid | every level 0.0% | 12.5% – 64.6% |
+| the 64x64 luminance chain | every level 0.0% | 53.2% – 100% |
+
+**What found it** was a per-(vs, ps) draw census (`CZ_VK_SHADER_CENSUS=1`) naming the
+shader doing the work, plus Xenia's disassembly of that exact shader — free, beside
+every blob in the capture. Neither half is useful alone: the census says which shader
+matters, the disassembly says what it was supposed to compute.
+
+## 6h. g_SwappedTexcoords is a correction for something WE do
+
+`g_SwappedTexcoords` is a bit per TEXCOORD semantic that the generated
+`tfetchTexcoord` reads, and we were leaving it at zero.
+
+It is not a guest concept. Vertex data is copied out of guest memory by dword-swapping
+the whole stream, which for 32-bit components is exactly right and for **16-bit**
+components also transposes the two halves of every dword — so a `16_16` attribute
+arrives as YX and a `16_16_16_16` as YXWZ. The mask is how the shader un-transposes it.
+Every 16-bit vertex attribute in the title had its components swapped, silently.
+
+The semantic index comes from the Vulkan location, because that is what the container
+synthesizer keyed both sides on (TEXCOORD0..3 are locations 4..7, TEXCOORD4..23 are
+12..31). Measured: the scene went **63.8% -> 81.3% non-black, 848 -> 1,089 colours**.
+`CZ_VK_NO_TEXCOORD_SWAP=1` is the same-binary arm.
+
+## 6i. The fetch-slot convention, settled properly this time
+
+§4 concluded that our fetch-slot reading is the hardware's and Xenia's disassembler
+displays `95 - index`. That conclusion was right and the evidence for it was **weaker
+than it looked**: the shader the probe happened to catch asked for slot 0 twice, and
+both slot 0 and slot 95 were populated, so the observation was consistent with either
+reading.
+
+`CZ_VK_FETCH_SLOT_INVERT=1` is the version that cannot be ambiguous — read every fetch
+constant at `95 - slot` and look at the geometry. Inverted, the scene surface is
+**0.0% non-black**; upright it is 81.3%. Settled.
+
+The method note is the one worth keeping: an experiment that is consistent with both
+hypotheses has not tested either, and it is easy to mistake for a result because it
+does produce a confident-sounding answer.
+
+## 6j. An instrument that silently disables the thing it instruments
+
+`CZ_VK_VALIDATION=1` on a machine without the Khronos layer made `vkCreateInstance`
+return `VK_ERROR_LAYER_NOT_PRESENT`, which `VkRenderer_Init` treated as fatal — so the
+run had **no renderer at all**, while the log said "validation layer requested". It now
+retries without the layer and says so by name. Gotcha 7 in our own tooling again.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
@@ -329,19 +414,29 @@ says about where the rest went:
 
 | surface | extent | non-black | reading |
 |---|---|---|---|
-| `06BE4000` (the scene) | 1280x720 | **50.0%, 3 colours** | recognisable Still Creek geometry, FLAT-SHADED — see below |
-| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | a 32-cubed colour-grading LUT unrolled into a strip, rendering correctly |
-| `00E48000` (the frame) | 1280x720 | 3.1%, 144 colours | what we present |
-| `1439B000` .. `143FB000` | 4096x1024 | 0.0% | the shadow cascades — 111/90/224/38 draws each, and DEPTH resolves being served our colour buffer (§6d) |
-| the 640x360 -> 32x1 pyramid | various | 0.0% | the post chain, fed from the scene |
+| `06BE4000` (the scene) | 1280x720 | **81.3%, 1,089 colours** | Still Creek in its own colours, with a class of triangles exploded from a vanishing point |
+| the 640x360 -> 32x1 pyramid | various | 12.5% – 64.6% | the post chain, fed from the scene — working |
+| the 64x64 luminance chain | 64x64 | 53.2% – 100% | working |
+| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | a 32-cubed colour-grading LUT unrolled into a strip |
+| `00E48000` (the frame) | 1280x720 | 3.1%, 144 colours | what we present — the logo era, and still missing the logo |
+| `1439B000` .. `143FB000` | 4096x1024 | 0.0% | the shadow cascades: DEPTH resolves being served our colour buffer (§6d), and clipped by a 1280x720 EDRAM image |
 
-**The scene now renders and is flat-shaded.** Three distinct colours across 930 draws
-and 494,667 vertices means the geometry is right and the pixel shader's output does not
-vary — so the next thread is shading, not geometry, and it is a fresh one. What is
-already eliminated for it: the pixel-shader constant window (§6c), the texture slot
-range (no shader uses a `tfetch` constant above 9, and our shared-constants layout
-holds 16), and texture upload itself (925 textures untiled and uploaded per run, zero
-failures counted).
+**THE ONE REMAINING GEOMETRY DEFECT** is a class of triangles exploding from a vanishing
+point. It is well bounded now. Reading the dominant vertex shader's generated HLSL,
+`oPos` depends on exactly two things:
+
+```
+r4.xyz = iPosition0.xyz;                       // fetch slot 95, format 57 = 32_32_32_FLOAT
+r1.xyz = dot(vc(8..10), r4);                   // world matrix
+oPos   = dot(vc(0..3), r1);                    // view-projection
+```
+
+and nothing else — the format-16 attribute that looked suspicious feeds `r0.yzw`, the
+NORMAL, so it is eliminated. Individually verified already: the position format
+(`32_32_32_FLOAT` needs no conversion), the fetch slot (§6i), the vertex-shader constant
+window (§6c), and the index decode (§6c). So the next step is not another hypothesis —
+it is to instrument ONE draw: print `vc(0..10)` and the first few `iPosition0` values it
+actually reads, and compare them against a matrix and a mesh that make sense.
 
 Known simplifications in the renderer that are candidates, each stated at its site:
 

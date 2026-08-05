@@ -260,6 +260,22 @@ uint32_t VertexFormatDwords(uint32_t fmt)
     }
 }
 
+// CZ_VK_FETCH_SLOT_INVERT=1 — read vertex fetch constants at `95 - slot`.
+//
+// The arm for the one convention this renderer cannot derive. A vfetch's constant index
+// is `const_index * 3 + const_index_sel`, and Xenia's disassembly prints the same
+// shaders' fetches as vf0/vf1/vf2 where that formula gives 95/94/93 — so one of the two
+// is a display convention. The first attempt to settle it (dumping the populated slots)
+// was WEAKER than it looked: the shader it happened to catch asked for slot 0 twice,
+// and both slot 0 and slot 95 were populated, so the observation was consistent with
+// either reading. This is the version that cannot be ambiguous — invert it and look at
+// the geometry.
+uint32_t FetchSlot(uint32_t slot)
+{
+    static const bool invert = getenv("CZ_VK_FETCH_SLOT_INVERT") != nullptr;
+    return invert ? (slot <= 95 ? 95 - slot : slot) : slot;
+}
+
 // ===================================================================================
 // The shader cache
 // ===================================================================================
@@ -706,13 +722,28 @@ bool CreateDevice()
     // very slow at ~2,000 draws a frame, and on when a picture is wrong: this project
     // has twice had a "renderer bug" that was an API misuse the layer names in one line.
     const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
-    if (EnvOn("CZ_VK_VALIDATION"))
+    const bool wantValidation = EnvOn("CZ_VK_VALIDATION");
+    if (wantValidation)
     {
         ici.enabledLayerCount = 1;
         ici.ppEnabledLayerNames = layers;
         fprintf(stderr, "[vk] validation layer requested\n");
     }
-    VK_CHECK(vkCreateInstance(&ici, nullptr, &R->instance), "vkCreateInstance");
+    VkResult ir = vkCreateInstance(&ici, nullptr, &R->instance);
+    if (ir == VK_ERROR_LAYER_NOT_PRESENT && wantValidation)
+    {
+        // Asking for an absent layer must not cost the renderer. It did: the instance
+        // failed, Init returned false, and the run had no renderer at all — while the
+        // log said "validation layer requested", which reads as though it was ON. An
+        // instrument that silently disables the thing it instruments is worse than no
+        // instrument (gotcha 7), so this retries and says exactly what happened.
+        fprintf(stderr,
+                "[vk] VK_LAYER_KHRONOS_validation is NOT INSTALLED — continuing "
+                "WITHOUT it (Fedora: sudo dnf install vulkan-validation-layers)\n");
+        ici.enabledLayerCount = 0;
+        ir = vkCreateInstance(&ici, nullptr, &R->instance);
+    }
+    VK_CHECK(ir, "vkCreateInstance");
 
     uint32_t count = 0;
     vkEnumeratePhysicalDevices(R->instance, &count, nullptr);
@@ -2077,6 +2108,44 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
     }
 
+    // g_SwappedTexcoords — one bit per TEXCOORD semantic, and it is a correction for
+    // something THIS RUNTIME does rather than something the guest does.
+    //
+    // Vertex data is copied out of guest memory by dword-swapping the whole stream
+    // (CopySwapped with the fetch constant's endian code, which is 8-in-32 here). For
+    // 32-bit components that is exactly right. For SIXTEEN-bit components it also
+    // transposes the two halves of every dword, so a 16_16 attribute arrives as YX and
+    // a 16_16_16_16 as YXWZ. XenosRecomp's generated `tfetchTexcoord` un-transposes it
+    // when the matching bit is set here, and we were leaving the mask at zero — so
+    // every 16-bit vertex attribute in the title had its components swapped, silently.
+    //
+    // The semantic index comes from the Vulkan location, because that is what the
+    // container synthesizer keyed both sides on: TEXCOORD0..3 are locations 4..7 and
+    // TEXCOORD4..23 are locations 12..31 (its USAGE_LOCATION table).
+    {
+        uint32_t swapped = 0;
+        for (const VertexAttribute& a : vs.attributes)
+        {
+            if (a.location < 4 || a.indirect)
+                continue;
+            const bool sixteenBit = a.format == 25 || a.format == 26 || a.format == 31 ||
+                                    a.format == 32;
+            if (!sixteenBit)
+                continue;
+            const uint32_t texcoord =
+                a.location < 12 ? uint32_t(a.location - 4) : uint32_t(a.location - 8);
+            if (texcoord < 32)
+                swapped |= 1u << texcoord;
+        }
+        // CZ_VK_NO_TEXCOORD_SWAP=1 restores the old always-zero mask, so the change is
+        // measurable in the same binary rather than asserted.
+        static const bool disable = EnvOn("CZ_VK_NO_TEXCOORD_SWAP");
+        reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] =
+            disable ? 0u : swapped;
+        if (swapped)
+            Count("draw: 16-bit texcoord unswizzle published");
+    }
+
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)
         reinterpret_cast<uint32_t*>(shared + kSharedBoolFile)[i] =
@@ -2292,7 +2361,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     {
         if (!a.indirect || a.fetchSlot >= 96)
             continue;
-        const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, a.fetchSlot);
+        const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
         const uint32_t sva = PhysToVa(vf.address);
         const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
         if (!GuestRangeOk(sva, bytes))
@@ -2322,7 +2391,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     {
         if (a.location < 0 || a.indirect)
             continue;
-        const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, a.fetchSlot);
+        const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
         const uint32_t va = PhysToVa(vf.address);
         const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
         if (!GuestRangeOk(va, bytes) || !bytes)
