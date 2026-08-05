@@ -1,0 +1,79 @@
+// The host seam: one SDL window, one event loop, one present, one pad.
+//
+// WHY THIS IS ONE MODULE AND NOT THREE
+// ------------------------------------
+// A window, a present and an input device look like three separate features, and in
+// SDL they are one thread. SDL's video subsystem must be initialised, pumped and
+// presented from a single thread — the one that created the window — and the input
+// events arrive on that same pump. Splitting them across files would mean either
+// three thread-affinity comments that have to agree, or a cross-thread call that
+// works on X11 and stops working the day someone runs it elsewhere. So the rule
+// lives in one place: **everything here except Host_Present and Host_PadState runs on
+// the thread that called Host_WindowInit, which is the process's main thread.**
+//
+// The two exceptions are the seams to the rest of the runtime, and both are
+// deliberately trivial:
+//   * Host_Present is called from the PM4 executor (the vblank pump thread) and only
+//     publishes a frame descriptor. It never touches SDL.
+//   * Host_PadState is called from whatever guest thread polls XamInputGetState and
+//     only reads the snapshot the event loop published. It never touches SDL either.
+//
+// WHAT PHASE 3 IS AND IS NOT
+// --------------------------
+// A blank window is the CORRECT result of this phase. There is no renderer yet
+// (phase 5): the command processor parses draws and never rasterises one, so the
+// front buffer this module is handed contains whatever the guest's allocator left
+// there. Presenting it as a texture would show noise and invite someone to debug a
+// renderer that does not exist. So the window clears to a flat colour and puts the
+// live frame count and rate in its title bar, which is the honest signal that the
+// present seam is running at the guest's own swap rate.
+#pragma once
+
+#include <cstdint>
+
+// Bring up the window, the renderer and the game-controller subsystem.
+//
+// Returns false when the runtime is deliberately headless (CZ_NO_WINDOW=1) or when
+// SDL cannot open a display. Both are LOUD: the caller keeps running without a
+// window, because every gate this port owns is a log diff and none of them needs
+// pixels, but a run that quietly lost its window would look like a run whose input
+// stopped working.
+bool Host_WindowInit();
+
+// True once Host_WindowInit has succeeded. The input path asks this rather than
+// assuming, because "no window" and "window with nothing pressed" are different
+// claims to make to the guest.
+bool Host_WindowActive();
+
+// The present seam. Called from the PM4 executor when it reaches an XE_SWAP packet
+// — i.e. exactly once per guest frame — with the front buffer's guest address and
+// dimensions as VdSwap wrote them.
+//
+// NON-BLOCKING BY CONSTRUCTION. On console VdSwap does not wait for the scanout; the
+// ring's own flow control paces the title, and this runtime already reproduces that
+// (findings 38-39). Blocking here would insert a frame pacer the guest never asked
+// for and would silently become the thing that limits the frame rate.
+void Host_Present(uint32_t frontBuffer, uint32_t width, uint32_t height);
+
+// The window's event loop. Runs on the calling (main) thread until the window is
+// closed, then terminates the process. Returns immediately if there is no window.
+void Host_WindowRun();
+
+// Ask the loop to shut the process down. Called when the guest entry point returns —
+// without it, a title that exits leaves a live window in front of a process with no
+// guest in it, which is indistinguishable from a hang.
+void Host_RequestQuit(const char* why);
+
+// One XInput-shaped pad state, in XInput's units and sign conventions (NOT SDL's —
+// see the axis note in window.cpp).
+struct HostPadState
+{
+    uint32_t packet;  // changes only when the state below changes
+    uint16_t buttons; // XINPUT_GAMEPAD_* bits
+    uint8_t leftTrigger, rightTrigger;
+    int16_t thumbLX, thumbLY, thumbRX, thumbRY;
+};
+
+// The pad state the guest should see. False when there is no window, in which case
+// the caller must NOT invent one — it answers with its own documented neutral pad.
+bool Host_PadState(HostPadState& out);

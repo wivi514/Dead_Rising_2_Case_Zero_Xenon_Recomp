@@ -622,6 +622,46 @@ From finding 41 (the critical-section yield spin):
     branch, which read as "no contention" — gotcha 25 in our own tooling for the second
     time in three sessions.
 
+From phase 3 (the window, the present seam and real input):
+
+99. **A window is a thread, and it is *the* thread — so move the guest, not the
+    window.** SDL's video subsystem must be initialised, pumped and presented from
+    the thread that created the window, and until phase 3 that thread was busy
+    running the guest entry point. The guest is the side that moves, because a
+    recompiled title's threads are already an abstraction you own (every other guest
+    thread here has always run on a spawned `std::thread`) while the windowing
+    system's are not. What the main guest thread must keep is its **order** — still
+    the first guest thread created, still the first thread id — because that is the
+    property a first-occurrence gate can see.
+100. **Route the present through the command stream, not around it.** Presenting from
+    inside `VdSwap` would have worked and would have been wrong: findings 38-39 were
+    entirely about the gap between "the kernel wrote a packet" and "the command
+    processor executed it", and a present seam fed from the kernel export keeps
+    counting frames straight through a GPU desync. Driving it from `pm4.cpp` case
+    `0x64` means a present can only happen at a stream position the parser actually
+    reached, and the window's frame count is the same number the ring trace prints
+    rather than a second counter that can disagree.
+101. **A packet number is a contract, and both obvious implementations are wrong.**
+    XInput changes `dwPacketNumber` only when the state changes, and a title may skip
+    re-reading the pad when it has not. Ticking it every poll defeats the field's
+    purpose; holding it constant while the buttons change hands the guest a press it
+    is *correct* to ignore — and that failure presents as "input does not work" when
+    it is really "input works and was properly filtered". Move the number in exactly
+    one place, on an actual state change.
+102. **Between SDL and XInput only two things are conversions, and no filtering is.**
+    The buttons are a rename (`SDL_GameController` is the 360 pad generalised). The
+    stick **Y axis is inverted** — get it wrong and the game works perfectly except
+    that up is down, which reads as a guest bug — and the **triggers are scaled**
+    0..32767 to 0..255. A deadzone is NOT the runtime's to apply: the console hands a
+    title raw axes and every title has its own, so filtering here invents an input
+    characteristic hardware does not have.
+103. **A gate that needs a human is a capture request in disguise.** Phase 3's gate is
+    "the boot advances on a *real* press", which by construction cannot be
+    self-served: there is no synthetic press that is not the arm the gate exists to
+    retire. That makes it the same class of work item as a Xenia capture — it has to
+    be scheduled with the operator, and everything that does not depend on it should
+    be finished and committed first so the only thing waiting is the press.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -651,18 +691,19 @@ From finding 41 (the critical-section yield spin):
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
-  `runtime-plan.md` the phase plan, `phase1-notes.md` the phase 1 record (what the
-  runtime work found that neither the plan nor the kickoff predicted),
-  `phase1-kickoff.md` / **`phase3-kickoff.md`** the per-phase hand-off prompts. Read
-  the phase 3 one before starting phase 3: it lists the three parts of that phase that
-  **already exist** and would otherwise be rewritten from the plan text.
+  `runtime-plan.md` the phase plan, `phase1-notes.md` and `phase3-notes.md` the
+  per-phase records (what the runtime work found that neither the plan nor the
+  kickoff predicted), `phase1-kickoff.md` / `phase3-kickoff.md` the per-phase hand-off
+  prompts. The phase 3 kickoff's most valuable section is its list of the parts of
+  that phase that **already existed** and would otherwise have been rewritten from
+  the plan text — write that section for every future phase.
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
-- `runtime/` — the host runtime. Phase 1 complete; **phase 4's command processor is
-  live too, ahead of the plan's ordering** — do not read the plan's phase numbers as
-  the state of the code. There is no window, no present and no renderer yet (phase 3,
-  then 5). Target is `cz_runtime`; the phase 0.2 link gate survives as
-  `cz_runtime --smoke`.
+- `runtime/` — the host runtime. Phases 1 and 3 complete; **phase 4's command
+  processor is live too, ahead of the plan's ordering** — do not read the plan's phase
+  numbers as the state of the code. There is a window, a present seam and real input;
+  there is **no renderer** (phase 5), so the window is blank on purpose. Target is
+  `cz_runtime`; the phase 0.2 link gate survives as `cz_runtime --smoke`.
   - `CMakeLists.txt` — **selects clang++ before `project()` (gotcha 31)**, and
     enables C for exactly one file (o1heap) so the .c source is not silently ignored.
   - `main.cpp` — image load → header publish → data-import resolution → guest entry,
@@ -691,6 +732,13 @@ From finding 41 (the critical-section yield spin):
   - `cpu/guest_probe.cpp` — argument probes on named guest functions via the alias
     seam, behind `CZ_ARG_PROBE`. Kept as the worked example of tracing a bad value
     back to its producer; it is what closed finding 27.
+  - `host/window.{h,cpp}` — phase 3: the SDL window, the event loop, the present
+    seam and the pad, deliberately in **one** module because in SDL they are one
+    thread. Everything except `Host_Present` (called from the PM4 executor) and
+    `Host_PadState` (called from whichever guest thread polls `XamInputGetState`)
+    runs on the thread that created the window, which is the process's main thread —
+    which is why `main.cpp` now runs the guest entry on a spawned thread
+    (gotcha 99). Compiles to honest stubs without `CZ_HAVE_SDL`.
 - Recompiler TOOL at `~/GithubRepo/XenonRecomp` (built at `build/`; carries local
   patches — see `docs/xenonrecomp-upstream-bugs.md`). Shader translator at
   `~/GithubRepo/XenosRecomp` (also patched; Case Zero inherits those fixes for free).
@@ -740,7 +788,10 @@ python3 tools/find_unlowered_switches.py          # 0 defects expected
 python3 tools/find_unlowered_switches.py --all    # also list the benign tail-call thunks
 ```
 
-Build the runtime (needs `clang++`; ~90 s on 16 cores for a cold image build):
+Build the runtime (needs `clang++` **and SDL2**; ~90 s on 16 cores for a cold image
+build). SDL2 is required rather than optional-with-a-fallback, because a build that
+silently lost its window would look exactly like a run whose input stopped working;
+`-DCZ_WINDOW=OFF` is how you say "headless on purpose" out loud:
 ```
 python3 tools/gen_import_stubs.py                 # after any change to the import set
 cmake -S runtime -B runtime/build -G Ninja
@@ -818,7 +869,19 @@ CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the con
                    arm for every claim about driving the audio callback
 CZ_FAKE_START_MS=N synthetic START press every N ms. A MEASUREMENT ARM, NOT A
                    FEATURE — it manufactures progress, so it announces itself on
-                   every press and must NEVER be on for a gate run (gotcha 78)
+                   every press and must NEVER be on for a gate run (gotcha 78).
+                   Kept now that real input exists: it is the control for "was it
+                   really my press that moved the boot"
+CZ_NO_WINDOW=1     no window, no present seam, no pad — XamInputGetState answers with
+                   its documented neutral pad. The same-binary control arm for every
+                   phase 3 claim. (`cmake -DCZ_WINDOW=OFF` is the build-time form,
+                   for a machine with no SDL.)
+CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
+                   An instrument, not an arm: it fabricates nothing, and it is the
+                   witness that a real press reached XamInputGetState. Silent on a
+                   keyboard-only run until a key is actually pressed; noisy with a
+                   physical stick attached, because XInput's packet number moves on
+                   raw jitter too and we do not filter (gotcha 102)
 ```
 
 `CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
@@ -1174,19 +1237,41 @@ acquisitions in 60 s, 0.26% are contended at all, 417 outlive the pause phase, a
 **2 ever reach the park phase**. Gates unchanged — A5 exit 0, A1's full 84-deep prefix,
 `truncated=0`, and position 71 permutes 1-of-3 on *both* arms.
 
-Next, in order — **phase 3 is next, and `docs/phase3-kickoff.md` is the hand-off**:
+**Phase 3 is built (2026-08-05, session 10): there is a window, a present seam and a
+real pad.** `docs/phase3-notes.md` is the record.
 
-1. **Phase 3 — window, present seam, input.** The boot reaches the title screen and
-   waits for a human (finding 37), so this is what lets it move, and its gate is
-   exactly that: **the A1 gate advances 84 → 85 on a real press with
-   `CZ_FAKE_START_MS` unset**, retiring the synthetic-input arm as the only way
-   forward. Three parts already exist and must not be rewritten — all four input
-   imports are implemented (the job is feeding them a device, not writing them),
-   `VdSwap` already emits the front buffer's address/dimensions/fetch constant through
-   `XE_SWAP`, and `pm4.cpp` case `0x64` is where a present hooks in. A blank window is
-   the expected outcome; there is no renderer yet. **Trap: `XamInputGetState` is
-   `kHighFrequency` — 1 occurrence in A1, 12,365 in A5** (gotcha 47 again), and A4 is
-   the capture for menu-idle polling.
+`runtime/host/window.{h,cpp}` — one module, because in SDL a window, a present and an
+input device are one thread. The guest entry moved to a spawned thread so the main
+thread can own SDL (gotcha 99); the present is driven from `pm4.cpp` case `0x64`, i.e.
+from where the command processor *reaches* the swap packet, not from `VdSwap` (gotcha
+100); and `XamInputGetState` now answers out of a real keyboard and, when one is
+attached, a real SDL game controller.
+
+**A blank window is the correct result of this phase** — there is no renderer until
+phase 5. The title bar carries the live frame count, which is what says the present
+seam is running.
+
+Measured with the arms alternated over six 100 s runs, old binary rebuilt and run
+*now* (gotcha 86): both arms reach A1's full 84-deep prefix, A5 exit 0, `truncated=0`,
+title screen 3 of 3. The window costs ~1% of the frame rate — 3151 vs 3183 frames —
+and `CZ_NO_WINDOW=1` on the *phase 3* binary returns exactly 3183, so the cost is the
+window rather than the wiring. **Position 71 permutes on BOTH binaries** (3 of 3 on
+the old one), which is the same scheduling-sensitive window findings 41 and gotcha 86
+already recorded — not a regression, and 1-of-3 vs 3-of-3 is not an improvement
+either.
+
+**The phase 3 gate is still open, and it is the one thing here that cannot be
+self-served:** *the A1 gate advances 84 → 85 (`XamShowDeviceSelectorUI`) on a real key
+or button press, with `CZ_FAKE_START_MS` unset.* Any press this machine could
+synthesise is the arm the gate exists to retire, so it is scheduled with the operator
+like a capture (gotcha 103). One 420 s attempt ran with the window up and the title
+screen reached and logged **zero** pad packets — nobody was at the keyboard — which is
+the correct negative result and shows the witness (`CZ_INPUT_TRACE=1`) works.
+
+Next, in order:
+
+1. **Close the phase 3 gate with one real press** — see above and
+   `docs/phase3-notes.md` §8 for the exact commands and the four arms.
 2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
    runs guest code on a new thread and never has. Of finding 36's seven, **five run

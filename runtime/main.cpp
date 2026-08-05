@@ -25,6 +25,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <image.h> // XenonUtils: Image::ParseImage (devkit-key + LZX; see gotchas 15/16)
@@ -32,6 +33,7 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "host/window.h"
 #include "kernel/audio.h"
 #include "kernel/heap.h"
 #include "kernel/memory.h"
@@ -257,13 +259,59 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // The window, before any guest code runs.
+    //
+    // Order matters in one direction only: the first XE_SWAP can arrive within a
+    // second of the guest starting, and a present seam that is not up yet would drop
+    // frames that nobody would ever look for. Nothing here touches guest memory, so
+    // there is no risk in the other direction.
+    const bool haveWindow = Host_WindowInit();
+
     // Run the entry point as the main guest thread. Stack size is the XEX header's
     // own XEX_HEADER_DEFAULT_STACK_SIZE (0x40000 = 256 KB), which is also exactly
     // what Xenia gives its main XThread in A1 (70150000-70190000).
     GuestThreadParams params{};
     params.function = uint32_t(image.entry_point);
     params.stackSize = kDefaultGuestStackSize;
-    const uint32_t exitCode = GuestThread::Run(params);
-    fprintf(stderr, "runtime: guest entry returned (r3=0x%X)\n", exitCode);
+
+    // WHY THE GUEST ENTRY MOVED OFF THE PROCESS'S MAIN THREAD (phase 3).
+    //
+    // SDL's video subsystem has to be pumped from the thread that created the window,
+    // and until phase 3 that thread was busy: main() called GuestThread::Run directly
+    // and did not return for the life of the process. So one of the two had to move,
+    // and it is the guest that moves, for two reasons.
+    //
+    // First, SDL's main-thread requirement is a hard platform rule elsewhere (macOS
+    // will not deliver events off the main thread at all) and merely a
+    // works-until-it-does-not on X11/Wayland. Putting the guest on a spawned thread
+    // costs nothing and keeps that rule satisfied everywhere.
+    //
+    // Second, the guest side is already thread-agnostic and proven so: every one of
+    // Case Zero's ~19 other guest threads has always run through this exact path
+    // (GuestThreadHandle spawns a std::thread and calls GuestThread::Run on it). The
+    // main guest thread is not special to the runtime — it is special to the TITLE,
+    // which identifies threads by its own ids and never asks which host thread it is
+    // on. What it must keep is its ORDER: it is still the first guest thread created,
+    // so it still takes the first thread id.
+    std::thread guest([params]() {
+        const uint32_t exitCode = GuestThread::Run(params);
+        fprintf(stderr, "runtime: guest entry returned (r3=0x%X)\n", exitCode);
+        // Otherwise a title that exits leaves a live window in front of a process
+        // with no guest in it, which from outside is indistinguishable from a hang —
+        // and "finished" and "stuck" looking identical is the exact confusion finding
+        // 37 was written about.
+        Host_RequestQuit("the guest entry point returned");
+    });
+
+    if (haveWindow)
+    {
+        // Does not return: the window loop owns the process from here, and closing
+        // the window exits it. The guest thread is deliberately not joined first —
+        // this title never returns from its entry point (it parks at the title screen
+        // waiting for input), so a join would be a wait for something that does not
+        // happen.
+        Host_WindowRun();
+    }
+    guest.join();
     return 0;
 }

@@ -61,6 +61,7 @@
 // intrinsics headers are read) because timebase.h pulls <x86intrin.h> in itself
 // before shadowing, which sets the guard; nothing below re-declares __rdtsc.
 #include "../cpu/timebase.h"
+#include "../host/window.h"   // XamInputGetState's device (phase 3)
 #include "guestcall.h"
 #include "heap.h"
 #include "klog.h"
@@ -3344,7 +3345,7 @@ GUEST_FUNCTION_HOOK(__imp__XamNotifyCreateListener, XamNotifyCreateListener_x)
 GUEST_FUNCTION_HOOK(__imp__XNotifyGetNext, XNotifyGetNext_x)
 
 // ---------------------------------------------------------------------------
-// The controller — one connected pad, and no host input source behind it yet
+// The controller — one connected pad, fed by the host window (phase 3)
 // ---------------------------------------------------------------------------
 //
 // POLICY, STATED ONCE, same shape as the single local user: player 1 holds a
@@ -3353,11 +3354,17 @@ GUEST_FUNCTION_HOOK(__imp__XNotifyGetNext, XNotifyGetNext_x)
 // single boot, so "not connected" is an answer the title is built to receive
 // constantly and is not an error path.
 //
-// The pad reports neutral because there is no host input layer yet — SDL is a later
-// phase. That is a *missing feature*, not a claim that no buttons are pressed, and
-// it is worth being explicit about the difference: the title will sit at its
-// press-start screen. It would also sit there if we reported no controller at all,
-// so this costs nothing today and is the shape the input layer plugs into.
+// Player 1's buttons come from `runtime/host/window.cpp` — a real keyboard and, when
+// one is attached, a real SDL game controller. Before phase 3 this reported neutral
+// forever, which was a *missing feature* rather than a claim that no buttons were
+// pressed, and it is what parked the boot at the press-start screen (finding 37).
+//
+// The pad is still reported connected when the runtime is headless (CZ_NO_WINDOW=1
+// or -DCZ_WINDOW=OFF). That is deliberate and it is the honest reading of the
+// hardware: a console with a pad plugged in and nobody touching it is precisely a
+// connected device reporting nothing pressed. Reporting NOT_CONNECTED instead would
+// send the title down its "please reconnect the controller" path, which is a
+// different boot, and the headless arm exists to be the SAME boot minus input.
 constexpr uint32_t ERROR_DEVICE_NOT_CONNECTED = 0x0000048F;
 constexpr uint32_t ERROR_EMPTY                = 0x00000490;
 
@@ -3467,8 +3474,28 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         return ms;
     }();
 
-    // No synthetic input: a connected pad reporting nothing pressed, forever. The
-    // packet number is then a constant because the state genuinely never changes.
+    // The real device, and it takes precedence over nothing: the synthetic arm below
+    // is checked FIRST only when it is switched on, so an ordinary run cannot have
+    // its input quietly overridden by a leftover environment variable. When both are
+    // on the arm wins and says so on every press, which is the loudness gotcha 78 is
+    // about.
+    HostPadState pad{};
+    if (fakeStartMs <= 0 && Host_PadState(pad))
+    {
+        state->packetNumber = pad.packet;
+        state->gamepad.buttons = pad.buttons;
+        state->gamepad.leftTrigger = pad.leftTrigger;
+        state->gamepad.rightTrigger = pad.rightTrigger;
+        state->gamepad.thumbLX = pad.thumbLX;
+        state->gamepad.thumbLY = pad.thumbLY;
+        state->gamepad.thumbRX = pad.thumbRX;
+        state->gamepad.thumbRY = pad.thumbRY;
+        return 0;
+    }
+
+    // Headless, and no synthetic input: a connected pad reporting nothing pressed,
+    // forever. The packet number is then a constant because the state genuinely never
+    // changes — which is the contract, not a shortcut.
     if (fakeStartMs <= 0)
     {
         state->packetNumber = 1;

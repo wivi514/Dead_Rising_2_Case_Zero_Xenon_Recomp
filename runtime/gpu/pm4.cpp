@@ -7,6 +7,12 @@
 #include <cstring>
 #include <vector>
 
+// The only cross-module include here, and it is one function: the present seam.
+// Deliberately not the renderer's or the window's internals — this file's isolation
+// (see the guest-memory note below: it must stay reusable by an offline replay
+// harness) survives exactly as long as that stays true.
+#include "../host/window.h"
+
 namespace {
 
 // --- guest memory ---------------------------------------------------------------
@@ -553,8 +559,23 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x64: // XE_SWAP: the frame boundary, exactly one per frame in B1
                    // (1,089 swaps over 1,089 frames), and the runtime's only frame
                    // clock — VdSwap is kHighFrequency and appears in no kernel log.
+        {
             g_frames.fetch_add(1, std::memory_order_relaxed);
+
+            // The present seam (phase 3). The body is what gpu/vd.cpp's VdSwap wrote:
+            // 'SWAP', front buffer, width, height — so the descriptor the host window
+            // presents comes from the GUEST's own swap call, routed through the
+            // command stream exactly as hardware would receive it, rather than from a
+            // side channel out of VdSwap.
+            //
+            // That routing is not ceremony. It is what makes the frame count in the
+            // window title the same number the ring trace prints, and it means a
+            // present can only happen at a point the command processor actually
+            // reached — which is the property findings 38-39 were about.
+            if (bodyCount >= 4 && body(0) == 0x53574150 /* 'SWAP' */)
+                Host_Present(body(1), body(2), body(3));
             break;
+        }
 
         case 0x2D: // SET_CONSTANT: offset_type, then data
         {
