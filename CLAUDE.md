@@ -1260,33 +1260,47 @@ the old one), which is the same scheduling-sensitive window findings 41 and gotc
 already recorded — not a regression, and 1-of-3 vs 3-of-3 is not an improvement
 either.
 
-**The phase 3 gate is still open, and it is the one thing here that cannot be
-self-served:** *the A1 gate advances 84 → 85 (`XamShowDeviceSelectorUI`) on a real key
-or button press, with `CZ_FAKE_START_MS` unset.* Any press this machine could
-synthesise is the arm the gate exists to retire, so it is scheduled with the operator
-like a capture (gotcha 103). One 420 s attempt ran with the window up and the title
-screen reached and logged **zero** pad packets — nobody was at the keyboard — which is
-the correct negative result and shows the witness (`CZ_INPUT_TRACE=1`) works.
+**THE PHASE 3 GATE PASSED, on one real press.** The operator focused the window and
+pressed Enter; `[host] pad packet 2: buttons=0010` (START), and **five log lines later
+`XamShowDeviceSelectorUI` — position 85** — before the key was even released.
+`CZ_FAKE_START_MS` appears zero times in that log. Every run before it stopped at 84.
+The gate could not be self-served — any press this machine could synthesise is the arm
+the gate exists to retire — so it was scheduled with the operator like a capture
+(gotcha 103), with everything not depending on it committed first. Three of the four
+arms are now observed: real press → 85; no press over 420 s → 84, zero pad packets;
+`CZ_NO_WINDOW=1` → 84. Two packets for one press over ~600 polls, which is gotcha 101's
+contract holding.
+
+The press also showed where the boot goes next, and it is exactly where the plan said:
+after `XamShowDeviceSelectorUI` the title resolves a XAM export dynamically
+(`XexGetProcedureAddress(xam, ord=0x279)` — **A1 makes the same call four lines after
+its own**, so this is the sequence, not a divergence) and then runs
+`XamContentAggregateCreateEnumerator` → `XamGetPrivateEnumStructureFromHandle` →
+`XamAlloc` → `XamTaskSchedule` → `XamGetOverlappedResult` → `XMsgInProcessCall` →
+`XMsgCompleteIORequest`. That is positions 86-92 and **precisely the save-data layer
+deferred out of finding 34** — and it includes `XamTaskSchedule`, one of the eight
+implemented-but-never-executed imports, so that debt starts being paid by the next
+phase rather than needing its own.
 
 Next, in order:
 
-1. **Close the phase 3 gate with one real press** — see above and
-   `docs/phase3-notes.md` §8 for the exact commands and the four arms.
+1. **The save-data layer** — `XamContentAggregateCreateEnumerator`, `XamEnumerate`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose`,
+   plus xam ordinal `0x279`. This is now the live blocker: it is where the boot goes
+   the instant a press gets past the device selector, and A1 positions 86-92 name the
+   whole call chain. Deliberately left out of finding 34 as the phase 2/8 file layer.
 2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
-   runs guest code on a new thread and never has. Of finding 36's seven, **five run
-   and two do not** — both teardown paths (`XAudioUnregisterRenderDriverClient`,
-   `XMAReleaseContext`), because the boot never shuts audio down. Several of these
-   should get exercised for free once input carries the boot further, which is a
-   reason to do phase 3 first rather than to merge the two.
-3. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
-   deliberately left out of finding 34 as the phase 2 file layer. A1 position 86.
-4. **Phase 5 — the renderer**, the actual milestone. Inputs are already in hand: 455
+   runs guest code on a new thread and never has — and it is *on* the save-data chain
+   above, so this debt starts being paid by item 1 rather than needing its own pass.
+   Of finding 36's seven, **five run and two do not** — both teardown paths
+   (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext`), because the boot never
+   shuts audio down.
+3. **Phase 5 — the renderer**, the actual milestone. Inputs are already in hand: 455
    raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader banks are a
    dead end — finding 6). Gate on **per-era aggregates, never frame index**: two
    hardware runs agree frame-exactly only 80.0% of the time (gotcha 38).
-5. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+4. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 

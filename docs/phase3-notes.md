@@ -199,52 +199,91 @@ run, and every run of both arms reached the title screen.
   those and not from our default.
 - ~31.5 presented frames/second over a 100 s run, which is the guest's own rate.
 
-## 8. The gate this phase is not allowed to pass on its own
+## 8. The gate — PASSED, on one real press
 
 > **The A1 gate advances from position 84 to 85 (`XamShowDeviceSelectorUI`) on a real
 > key or button press, with `CZ_FAKE_START_MS` unset.**
 
-**Still open at the time of writing, and it cannot be closed from inside the machine.**
-That is a property of the gate, not an obstacle to it: the whole point is to retire the
-synthetic-input arm, so any press this session could manufacture is the very thing
-being retired. There is no `xdotool`/`ydotool` on this host, and installing one would
-only move the fabrication one layer down — a synthesised X11 key event is still not a
-human.
+This gate could not be closed from inside the machine, and that is a property of the
+gate rather than an obstacle to it: the whole point is to retire the synthetic-input
+arm, so any press the session could manufacture is the very thing being retired. There
+is no `xdotool`/`ydotool` on this host, and installing one would only move the
+fabrication one layer down — a synthesised X11 key event is still not a human. So it
+was scheduled like a Xenia capture (gotcha 103), with everything that did *not* depend
+on it finished and committed first.
 
-So it is scheduled like a Xenia capture (gotcha 103): the operator focuses the window
-and presses Enter while a run is up, and `CZ_INPUT_TRACE=1` is the witness —
+**The operator focused the window and pressed Enter. The log:**
 
 ```
-(cd runtime/build && CZ_INPUT_TRACE=1 timeout 420 ./cz_runtime > /tmp/press.log 2>&1)
-# ... focus the window, press Enter ...
-grep "pad packet" /tmp/press.log                       # the press reached the guest
-python3 tools/kernel_call_diff.py \
-    --xenia "Xenia logs/A1_boot_title_fullgame/cz_run1.log" --ours /tmp/press.log
+[kernel] XamInputSetState(user=0, motors 0/0)
+[host] pad packet 2: buttons=0010 triggers=0/0 L=(0,0) R=(0,0)     <- START down
+[kernel] XamInputSetState(user=0, motors 0/0)
+[kernel] XMACreateContext -> context 1 at BFFEB040 (phys 1FFEB040)
+[kernel] MmMapIoSpace(bus=2, phys=1FFEB040, 64 bytes, protect=404) -> BFFEB040
+[kernel] XamInputSetState(user=0, motors 0/0)
+[kcall] XamShowDeviceSelectorUI                                     <- position 85
+[kernel] XexGetProcedureAddress module=30002000 ord=0x279 -> 824A52E0
+[host] pad packet 3: buttons=0000 triggers=0/0 L=(0,0) R=(0,0)     <- START up
 ```
 
-A first attempt this session ran the full 420 s with the window up and the title screen
-reached, and recorded **zero** pad packets — nobody was at the keyboard. Recorded
-because it is the correct negative result and it demonstrates the witness works in the
-direction that matters: no press, no packet, no advance, and no ambiguity about which.
+Five lines from press to advance, and the release had not even happened yet. The A1
+gate reads **85 `XamShowDeviceSelectorUI` ↔ `XamShowDeviceSelectorUI`** where every
+run before it stopped at 84. `CZ_FAKE_START_MS` appears zero times in the log; the run
+had no synthetic input of any kind.
 
-What the arms will say once it runs:
+The `[host]` lines are worth reading as their own confirmation of §4: **two** packets
+for one press, not two hundred, over the ~600 polls that happened while the key was
+down. The packet number moved on the edges and nowhere else, which is the contract.
 
-| run | expectation |
+The four arms, three of them now observed:
+
+| run | result |
 |---|---|
-| real press | pad packet logged, A1 advances 84 → 85 |
-| no press (this session) | no pad packet, A1 stays at 84 — **observed** |
-| `CZ_NO_WINDOW=1` + press | no pad packet, A1 stays at 84 (the control) |
+| real press | pad packet logged, A1 advances 84 → 85 — **observed, gate PASSED** |
+| no press | no pad packet, A1 stays at 84 — **observed** (a 420 s run with nobody at the keyboard) |
+| `CZ_NO_WINDOW=1` | no pad packet, A1 stays at 84 — **observed** (the control arm) |
 | `CZ_FAKE_START_MS` | advances, and says on every press that it fabricated it |
+
+The negative arm is worth keeping in the record. It is the correct negative result, and
+it shows the witness works in the direction that matters: no press, no packet, no
+advance, and no ambiguity about which.
+
+### What the press revealed about the next blocker
+
+Immediately after `XamShowDeviceSelectorUI`, the title resolves a XAM export
+**dynamically by ordinal** — `XexGetProcedureAddress(module=30002000, ord=0x279)` —
+and our runtime answers with a minted thunk that fails honestly.
+
+That is not a divergence. **A1 line 111,986 makes exactly the same call**, four lines
+after its own `XamShowDeviceSelectorUI`, so we are in the right place in the sequence.
+What A1 does next settles where the boot goes from here:
+
+```
+XamUserGetXUID  ->  KeResetEvent  ->  XamContentAggregateCreateEnumerator
+  ->  XamGetPrivateEnumStructureFromHandle  ->  XamAlloc  ->  NtCreateEvent
+  ->  ObReferenceObjectByHandle  ->  XamTaskSchedule  ->  XamGetOverlappedResult
+  ->  XMsgInProcessCall  ->  XMsgCompleteIORequest  ->  NtClose  ->  NtClose
+```
+
+which is positions 86-92 and is **precisely the save-data layer that was deliberately
+deferred** out of finding 34 as the phase 2/8 file work. Phase 3 hands off exactly
+where the plan said it would, and it hands off to a list of imports that are already
+named. Note also that `XamTaskSchedule` is on it — one of finding 34's eight
+implemented-but-never-executed imports (gotcha 67), so that debt starts getting paid
+by the next phase rather than needing its own.
 
 ## 9. Status
 
-Phase 3's code is complete and every gate that does **not** require a human passes:
+Phase 3 is **complete** and every gate passes:
 
+- **The phase 3 gate: A1 84 → 85 on a real press, `CZ_FAKE_START_MS` unset.** Passed.
 - `cz_runtime --smoke` — the phase 0.2 link gate, still passing.
 - A5 `--include-high-frequency` — **exit 0**, all three mismatch windows permutations.
-- A1 — the full 84-deep prefix, on both arms.
+- A1 — the full 84-deep prefix on both arms, 85 with a press.
 - `ring: indirect buffers truncated=0` on every run.
 - The window opens, presents at the guest's swap rate, and reports a live frame count.
 - Real keyboard and SDL game-controller state reaches `XamInputGetState`.
+- No crash in any run of this session.
 
-Outstanding: the one press.
+The synthetic-input arm is retired as the *only* way to move the boot, and kept as the
+control for "was it really my press that did that".
