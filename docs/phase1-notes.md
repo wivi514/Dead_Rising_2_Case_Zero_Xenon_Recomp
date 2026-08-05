@@ -1006,6 +1006,80 @@ out-pointer and its caller tests the result with a signed compare, so a stub ret
 a positive value would read as success — and CLAUDE.md gotcha 5 exists *because* Fable
 2 lost weeks to exactly this import faking success.
 
+### Finding 35 — a pseudo-handle is a constant, not an address
+
+The A5 gate had `RtlNtStatusToDosError` at position 19 where hardware has it at 84 —
+65 positions early, and the displacement pushed `NtWaitForSingleObjectEx` and
+`KeWaitForSingleObject` late enough to account for two of the three remaining mismatch
+windows. One import, three windows.
+
+**Found in one run, with an instrument that already existed.**
+`CZ_KCALL_WHO=RtlNtStatusToDosError` printed the guest stack at the first call:
+
+    lr=825DA1F8  r3=C0000008        <- STATUS_INVALID_HANDLE
+    #1 82821E80  #2 82789E88  #3 82496E78  #4 825D7488
+
+`sub_825DA1E8` is `RtlSetLastNTError` — it converts the status and stores it in the
+TEB at `[[r13+256]+352]`. Its caller `sub_82821E50` is `DuplicateHandle`:
+
+    NtDuplicateObject(sourceHandle, targetOut, options)
+    if (r3 < 0) { RtlSetLastNTError(r3); return FALSE; }
+    return TRUE;
+
+and the capture says what it was asked to duplicate:
+
+    NtDuplicateObject(FFFFFFFE, 82AC3FE8(00000000), ...)
+
+**`0xFFFFFFFE` is not a handle.** `GetCurrentThread()` on Win32 and the Xbox 360 kernel
+returns a *pseudo-handle* — a reserved constant meaning "whoever is asking" — and code
+passes it straight to `DuplicateHandle` or `ObReferenceObjectByHandle` to turn it into
+something real. Our handle scheme is "a handle IS the object's guest address, with bit
+31 set", which makes the two indistinguishable by construction: `0xFFFFFFFE` has bit 31
+set, so it passed `IsKernelObject()` and was then rejected by the liveness check as a
+dead handle.
+
+The scheme already knew about the *other* reserved constant — `GUEST_INVALID_HANDLE_VALUE`
+is `0xFFFFFFFF` and `IsKernelObject()` excludes it explicitly. It knew about -1 and not
+about -2, which is the whole bug.
+
+**The backtrace named the smaller half.** `NtDuplicateObject(FFFFFFFE)` appears twice
+across A1 and A5. `ObReferenceObjectByHandle(FFFFFFFE)` appears **eleven** times, and
+our implementation of that one is the identity — "a handle IS the object's address, so
+referencing it is a no-op" — so it was handing the guest `0xFFFFFFFE` *as an object
+pointer*, to be passed on to `Ke*` functions. Fixing only the site the crash-free
+backtrace pointed at would have left the more frequent and more dangerous one wrong,
+and silent. Grepping the captures for the constant, rather than for the import, is what
+found it.
+
+**The failure was silent by design.** Nothing crashed. `DuplicateHandle` returned FALSE
+and the title took an error-reporting path — `sub_82789CF8` falls through to a `bctrl`
+with a message id — that hardware never enters. A boot that "works" was calling its own
+error logger before it finished starting up.
+
+**The fix is a real per-thread object,** `GuestThreadSelf`, minted on first use and
+cached in a `thread_local` with an extra reference so a guest closing its duplicate
+cannot dangle it. It deliberately does *not* reuse `GuestThreadHandle`: that type owns
+the `std::thread` it spawned and answers `Wait()` by joining it, and a thread asking
+about *itself* is not the thread that spawned it — the main guest thread was never
+spawned by us at all. `GuestThreadSelf` carries an exit flag that the thread bootstrap
+sets when the guest entry point returns, and polls it.
+
+**Result — the A5 boot now has one real difference left.**
+
+    before: 3 mismatch windows, 0 permutation, 3 real
+    after:  3 mismatch windows, 2 permutation, 1 real
+
+The two windows that became permutations were never independent; they were the wake of
+this one displacement. The survivor is `XAudioSubmitRenderDriverFrame`, absent because
+there is no audio backend. Our `RtlNtStatusToDosError` now sits at position 83 against
+hardware's 84.
+
+**Transferable.** Any runtime that encodes handles as addresses inherits this the
+moment the guest uses a reserved constant. The platform defines two — `-1`
+(current process, and also `INVALID_HANDLE_VALUE`) and `-2` (current thread) — and a
+scheme that special-cases one of them looks correct right up until the title asks for
+the other.
+
 ## 5. Where the boot currently stops
 
 
@@ -1060,8 +1134,10 @@ per arm will confidently name whichever arm happened not to fire.
   position 83; runs reach 81-84 visible calls and two in five are an exact prefix of
   Xenia's 93 with no divergence at all. Positions 71-76, when they mismatch, are a
   permutation of one six-name set, not a divergence.
-- `--xenia A5 --include-high-frequency` tracks A5 to position 118; **three** real
-  mismatch windows left in the whole boot, each one displaced name.
+- `--xenia A5 --include-high-frequency` tracks A5 to position 118 with **one** real
+  mismatch window left in the whole boot — `XAudioSubmitRenderDriverFrame`, absent
+  because there is no audio backend. The other two windows are permutations of one
+  name set, i.e. thread scheduling (finding 35).
 - **148 of 244 imports real; 96 generated honest-failure stubs.**
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
@@ -1072,15 +1148,10 @@ per arm will confidently name whichever arm happened not to fire.
 
 Next, in order:
 
-1. **The early `RtlNtStatusToDosError`** at A5 gate position 19. After finding 34's
-   retraction this is the best-value item left, because A5's three remaining windows
-   are really only **two** differences: `RtlNtStatusToDosError` displaced early (which
-   pushes `NtWaitForSingleObjectEx` late and accounts for two of the three windows),
-   and `XAudioSubmitRenderDriverFrame` absent because there is no audio backend. So
-   this is one of the two real differences in the entire A5 boot, and
-   `CZ_KCALL_WHO=RtlNtStatusToDosError` answers it directly.
-2. **The surviving crash** (below) — a real defect, already localised.
-3. **XMA audio** — gates gate position 84 and, per the retraction above, nothing else.
+1. **The surviving crash** (below) — a real defect, already localised, and now the
+   only known correctness bug in the boot.
+2. **XMA audio** — gates gate position 84 and, per the retraction above, nothing
+   else, but it is now the *only* real difference left in the A5 boot.
    Still needed for audio and still the honest reading of one A5 window, but it is not
    an unblocker. `XMACreateContext` takes an out-pointer and its caller tests the
    result with a **signed** compare, so a positive stub return reads as success.

@@ -364,6 +364,24 @@ From finding 34 (the XAM message/task block):
     (`XamShowDeviceSelectorUI`, frontend thread, A1 line 111,694) are 57,500 lines and
     two threads apart; calling the first a blocker for the second was wrong. One grep
     for the line number and thread id settles it before any work is planned on top.
+
+From finding 35 (the early `RtlNtStatusToDosError`, closed):
+
+69. **A pseudo-handle is a constant, not an address, and a handle scheme built on
+    addresses cannot tell the difference.** `GetCurrentThread()` returns `0xFFFFFFFE`,
+    which has bit 31 set and therefore sailed through our "a handle IS the object's
+    guest address" check before being rejected as dead. The scheme already excluded
+    `0xFFFFFFFF` explicitly — it knew about -1 and not -2, which was the entire bug.
+    Any runtime encoding handles as addresses inherits this.
+70. **Grep the captures for the offending *constant*, not just the import the
+    backtrace named.** `NtDuplicateObject(FFFFFFFE)` occurs twice; the same constant
+    reaches `ObReferenceObjectByHandle` **eleven** times, where our identity mapping
+    was handing `0xFFFFFFFE` back as an object pointer. Fixing only the site the
+    backtrace pointed at would have left the more frequent and more dangerous one
+    wrong, and silent.
+71. **One displaced import can manufacture several gate windows.** A5 showed three
+    real mismatch windows; two of them were the wake of this single early call, and
+    fixing it turned them into recognised permutations. Count causes, not windows.
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -701,9 +719,10 @@ write pointer rather than frozen.
   at all**. Positions 71-76, when they mismatch, are a permutation of one six-name set
   (`XamUserCheckPrivilege` first on hardware, last for us), unstable across our own
   runs, so a thread race rather than a defect.
-- **`--xenia A5 --include-high-frequency`: tracks A5 to position 118**
-  (`XMACreateContext`), with **three** real mismatch windows in the whole boot, each
-  one displaced name.
+- **`--xenia A5 --include-high-frequency`: tracks A5 to position 118** with **one**
+  real mismatch window left in the entire boot — `XAudioSubmitRenderDriverFrame`,
+  absent for want of an audio backend. The other two are permutations of one name set,
+  i.e. thread scheduling (finding 35).
 - 148 of 244 imports real, 96 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - **Stability: 0 crashes in 6 runs at 25 s** on the current binary (0 in 20 on the
@@ -742,16 +761,14 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — the best-value item
-   left. A5's three remaining windows are really only **two** differences:
-   `RtlNtStatusToDosError` displaced early (which pushes `NtWaitForSingleObjectEx`
-   late and accounts for two windows) and `XAudioSubmitRenderDriverFrame` absent for
-   want of an audio backend. `CZ_KCALL_WHO=RtlNtStatusToDosError` answers it directly.
-2. **XMA audio** — gates gate position 84 and, per finding 34's retraction, nothing
-   else. Still needed, still not an unblocker. `XMACreateContext` takes an out-pointer
-   and its caller tests the result with a **signed** compare, so a positive stub
-   return reads as success — gotcha 5 exists because Fable 2 lost weeks to this exact
-   import faking success.
+1. **XMA audio** — now the *only* real difference left in the A5 boot, though per
+   finding 34's retraction it gates gate position 84 and nothing else.
+   `XMACreateContext` takes an out-pointer and its caller tests the result with a
+   **signed** compare, so a positive stub return reads as success — gotcha 5 exists
+   because Fable 2 lost weeks to this exact import faking success.
+2. **Whether the frontend is waiting for input** — positions 85-92 are on the frontend
+   thread at A1 line ~111,694; our run reaches `frontend/mainmenu.tex` and then has
+   nothing to press START with. Establish this before writing more frontend imports.
 3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.

@@ -912,11 +912,26 @@ static uint32_t NtClose_x(uint32_t handle)
 //   ObDereferenceObject(...)
 // — the thread handles the guest goes on to use (0x30058018 etc.) are the object
 // addresses Xenia handed back, not the 0xF80000xx handles it was given.
+// GetCurrentThread() does not return a handle — it returns this constant, meaning
+// "whoever is asking". Nothing in a handle-validity check can spot it: our handles ARE
+// guest addresses with bit 31 set, and 0xFFFFFFFE has bit 31 set, so it sails through
+// IsKernelObject() and is then rejected as a dead handle. See finding 35.
+constexpr uint32_t kCurrentThreadPseudoHandle = 0xFFFFFFFEu;
+
+// Turn the pseudo-handle into this thread's real object; leave anything else alone.
+static uint32_t ResolveThreadPseudoHandle(uint32_t handle)
+{
+    if (handle != kCurrentThreadPseudoHandle)
+        return handle;
+    GuestThreadSelf* self = GuestThread::Self();
+    return self ? GetKernelHandle(self) : handle;
+}
+
 static uint32_t ObReferenceObjectByHandle_x(uint32_t handle, uint32_t objectType,
                                             be<uint32_t>* object)
 {
     if (object)
-        *object = handle;
+        *object = ResolveThreadPseudoHandle(handle);
     return STATUS_SUCCESS;
 }
 
@@ -924,6 +939,7 @@ static uint32_t NtDuplicateObject_x(uint32_t handle, be<uint32_t>* newHandle, ui
 {
     if (!newHandle)
         return STATUS_INVALID_PARAMETER;
+    handle = ResolveThreadPseudoHandle(handle);
     if (!IsKernelObject(handle) || !IsLiveKernelHandle(handle))
     {
         *newHandle = 0;

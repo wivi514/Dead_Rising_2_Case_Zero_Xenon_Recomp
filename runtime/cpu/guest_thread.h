@@ -63,6 +63,24 @@ struct GuestThreadExit
     uint32_t code;
 };
 
+// The kernel object standing for the CALLING guest thread.
+//
+// Win32's GetCurrentThread() does not return a handle — it returns the pseudo-handle
+// 0xFFFFFFFE, a constant meaning "whoever is asking". Code then passes it straight to
+// DuplicateHandle or ObReferenceObjectByHandle to turn it into something real, and
+// Case Zero does both (docs/phase1-notes.md finding 35).
+//
+// It needs its own type rather than reusing GuestThreadHandle, because that type owns
+// the std::thread it spawned and answers Wait() by joining it. A thread asking about
+// *itself* is not the thread that spawned it — the main guest thread was never spawned
+// by us at all — so this one carries an exit flag instead and polls it.
+struct GuestThreadSelf final : KernelObject
+{
+    std::atomic<bool> exited{ false };
+
+    uint32_t Wait(uint32_t timeoutMs) override;
+};
+
 struct GuestThread
 {
     // Runs the guest function on the calling host thread; returns its r3.
@@ -72,4 +90,11 @@ struct GuestThread
     static GuestThreadHandle* Start(const GuestThreadParams& params, uint32_t* threadId);
 
     static uint32_t GetCurrentThreadId();
+
+    // The calling thread's own kernel object, minted on first use and cached for the
+    // life of the thread. Null only if the guest heap cannot satisfy it.
+    static GuestThreadSelf* Self();
+    // Called from the thread bootstrap once the guest entry point returns, so anyone
+    // holding a handle to this thread stops waiting.
+    static void MarkSelfExited();
 };

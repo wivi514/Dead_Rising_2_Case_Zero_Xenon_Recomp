@@ -1,6 +1,7 @@
 #include "guest_thread.h"
 
 #include <bit>
+#include <chrono>
 #include <cstring>
 
 #include "../kernel/guestcall.h"
@@ -91,6 +92,10 @@ static void GuestThreadFunc(GuestThreadHandle* handle)
     t_guestThreadId = handle->threadId;
     handle->suspended.wait(true);
     GuestThread::Run(handle->params);
+    // Anyone holding a handle to *this* thread (see GuestThreadSelf) is waiting on
+    // this flag. Setting it here rather than in a destructor matters: the object
+    // outlives the thread whenever the guest kept the handle.
+    GuestThread::MarkSelfExited();
 }
 
 GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
@@ -128,4 +133,47 @@ uint32_t GuestThread::GetCurrentThreadId()
     if (t_guestThreadId == 0)
         t_guestThreadId = g_nextThreadId.fetch_add(4); // main/host-created threads
     return t_guestThreadId;
+}
+
+// The calling thread's own object, for the GetCurrentThread() pseudo-handle. One
+// extra reference is taken on behalf of this cache, so a guest that closes its
+// duplicated handle cannot leave the thread_local dangling.
+static thread_local GuestThreadSelf* t_self = nullptr;
+
+GuestThreadSelf* GuestThread::Self()
+{
+    if (!t_self)
+    {
+        t_self = CreateKernelObject<GuestThreadSelf>();
+        if (t_self)
+            t_self->refCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    return t_self;
+}
+
+void GuestThread::MarkSelfExited()
+{
+    if (t_self)
+        t_self->exited.store(true, std::memory_order_release);
+}
+
+// Polled rather than joined, because this object can outlive its thread and because
+// the waiter is usually not the thread that created it. A 1 ms tick is far below any
+// timeout a guest sets on a thread and costs nothing while nobody is waiting.
+uint32_t GuestThreadSelf::Wait(uint32_t timeoutMs)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (!exited.load(std::memory_order_acquire))
+    {
+        if (timeoutMs != WAIT_TIMEOUT_INFINITE)
+        {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+            if (elapsed >= timeoutMs)
+                return STATUS_TIMEOUT;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return STATUS_WAIT_0;
 }
