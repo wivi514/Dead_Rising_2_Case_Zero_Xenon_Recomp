@@ -392,6 +392,89 @@ all execute on this path, and the overlapped they hand around completes correctl
   statically-linked wrapper on the path we can see; this is the other door into the
   same object.
 
+## 10. Finding 49 — position 93 is not an import, and it is hardware's ERROR path
+
+A1's last call, `KeQueryBasePriorityThread`, looks like the obvious next thing to
+implement. It is not implementable, because **it has been implemented since phase 1**.
+Reaching it is the whole problem, and four cheap steps established what it actually
+takes — none of which could be guessed from the name.
+
+**1. One call site, and it is the XAPI.** `KeQueryBasePriorityThread` is called from
+exactly one place in the image: `sub_825DBA20`, which is `GetThreadPriority` (it maps
+16 → 15 and −16 → −15, the Win32 priority mapping, and brackets the call with
+`ObReferenceObjectByHandle(0xFFFFFFFE)` / `ObDereferenceObject` — matching A1 line for
+line).
+
+**2. One game-side caller, and it is a work-queue drain.** `sub_828576D8`:
+
+```
+r28 = this + 0x3EA0                  ; the queue
+if (!pop(r28, &item)) return         ; nothing to do — the common case
+old = GetThreadPriority(-2)          ; <-- position 93 is here
+SetThreadPriority(-2, 15)            ; boost while draining
+... dispatch each item through two vtables ...
+SetThreadPriority(-2, old)
+```
+
+So position 93 is reached only when that queue is **non-empty**, and A1 reaches it
+**exactly once in an entire boot** — on the audio thread (Xenia's `F800010C`, the one
+that does the XMA `MmMapIoSpace` at gate position 84), at log line 122,563, *after* the
+save enumeration.
+
+**3. Our run never enters the drain at all.** `CZ_QUEUE_PROBE=1` over a 200 s run: zero
+entries. That distinction matters and no amount of reading gives it — "entered
+thousands of times with an empty queue" and "never entered" are different problems.
+Probing the drain's seven call sites then showed **three of seven callers do run**
+(`sub_828587B0`, `sub_828589D0`, `sub_82859888`, all on guest thread 0xF00) and none of
+them reaches it.
+
+**4. Why not — and this is the part that reframes the goal.** The guard at the site
+inside a caller that does run:
+
+```
+82858C30  cmpwi cr6, r30, 0
+82858C34  bge   cr6, 0x82858c40     ; r30 >= 0 -> SKIP the drain
+82858C3C  bl    0x828576d8          ; runs ONLY when r30 < 0
+```
+
+`r30` is that function's HRESULT, set to `0x88960001` by its own validation checks. **The
+drain is the failure/cleanup path.** Across all seven sites: three are guarded on
+`r30 < 0`, one runs on a loop completing, and three — in a different subsystem
+(`sub_82874BD0`, `sub_82875588`, `sub_82876080`, which pass `[this+0x30]`) — are
+unguarded. Our run executes callers only from the *guarded* group.
+
+So matching position 93 means **reproducing a failure hardware had**, in an audio path
+we do not drive yet, or reaching the unguarded subsystem, which needs the game to get
+further than the frontend. Either is phase 6 territory (audio output and XMA decoding),
+not an import.
+
+A related detail from the same thread, worth recording because it looks like a bug and
+is not: A1's audio thread opens fifteen `data\audio\fx_*.big` and `zombiance*.big`
+banks at line 20,376 and **every one fails** (`C000003A`). Those files are not in the
+package — hardware probes for optional banks that were never shipped. Our run does not
+attempt them at all, which is a real divergence, but "hardware opened 15 files we
+don't" would be exactly the wrong reading of it: hardware opened nothing.
+
+Two method notes:
+
+- **The adjacency trap fired again and was caught by the thread id** (gotcha 68). A1
+  puts `KeQueryBasePriorityThread` in the middle of `NetDll_select` traffic, which
+  suggests networking. It is not: `select` runs on thread `F8000008` 1,108 times, the
+  priority query on `F800010C` once. One `grep` on the thread id killed a whole
+  afternoon's worth of plausible socket work before it started.
+- **`CZ_QUEUE_PROBE` cost one build and two runs and retired the entire question.**
+  Reading the call graph said "this could be reached"; the probe said "it is not, and
+  neither is anything that would call it". Kept in `guest_probe.cpp` as the second
+  worked example, alongside finding 27's.
+
+### A defect found on the way
+
+The file-open logger prints successful opens only for the first 64 (`n < 64 ||
+FileTrace()`), and failures unconditionally. So "our boot opens 64 files" — a number
+this project has quoted since finding 37 — is a **logging cap, not a count**. Failures
+are complete; successes are truncated. Nothing depends on it today, but the next person
+to count files off a default-configuration log would have been wrong.
+
 ## 9a. Status
 
 Phase 3 is **complete** and every gate passes:

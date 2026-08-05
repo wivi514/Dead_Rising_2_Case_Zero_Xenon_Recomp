@@ -52,6 +52,7 @@
 #include <cstring>
 
 #include "../kernel/memory.h"
+#include "guest_thread.h"
 #include "ppc_recomp_shared.h"
 
 // `ppc_recomp_shared.h` declares only the WEAK alias `sub_X`, never the real body
@@ -448,4 +449,165 @@ extern "C" void CzMaybeCrashTest(PPCContext& ctx, uint8_t* base)
     fflush(stderr);
     ctx.ctr.u64 = 0;
     PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+}
+
+// ---------------------------------------------------------------------------
+// The audio work queue — A1 gate position 93
+// ---------------------------------------------------------------------------
+//
+// Position 93 is `KeQueryBasePriorityThread`, and it has exactly one call site in the
+// image: `sub_825DBA20`, which is the XAPI `GetThreadPriority`. Its only game-side
+// caller is `sub_828576D8`, a work-queue drain:
+//
+//     r28 = this + 0x3EA0                     ; the queue
+//     if (!pop(r28, &item)) return            ; NOTHING TO DO — the common case
+//     old = GetThreadPriority(-2)             ; <-- position 93 lives here
+//     SetThreadPriority(-2, 15)               ; boost while draining
+//     ... dispatch the item through two vtables ...
+//     while (pop(r28, &item)) ...
+//     SetThreadPriority(-2, old)
+//
+// So position 93 is not a missing import — `KeQueryBasePriorityThread` has been
+// implemented since phase 1. It is reached only when this queue is NON-EMPTY, and A1
+// reaches it exactly ONCE in a whole boot, on the audio thread (Xenia's F800010C, the
+// one that does the XMA `MmMapIoSpace`), at log line 122,563 — long after the title
+// screen.
+//
+// This probe answers the only question worth asking before writing any code: does our
+// run enter the drain at all, and does its queue ever hold anything? "Never entered"
+// and "entered thousands of times with an empty queue" are completely different
+// problems, and no amount of reading tells them apart.
+//
+// It reports the FIRST entry and the first non-empty drain, then goes quiet, because
+// this sits on a worker loop and gotcha 7 applies.
+extern "C" PPC_FUNC(__imp__sub_828576D8);
+
+static bool QueueProbeEnabled()
+{
+    static const bool on = getenv("CZ_QUEUE_PROBE") != nullptr;
+    return on;
+}
+
+PPC_FUNC(sub_828576D8)
+{
+    if (!QueueProbeEnabled())
+    {
+        __imp__sub_828576D8(ctx, base);
+        return;
+    }
+
+    static std::atomic<uint64_t> entries{ 0 };
+    const uint64_t n = entries.fetch_add(1);
+    const uint32_t self = ctx.r3.u32;
+    if (n == 0)
+        fprintf(stderr,
+                "[queue] sub_828576D8 first entry: this=%08X queue=%08X (guest thread "
+                "%08X)\n",
+                self, self + 0x3EA0, GuestThread::GetCurrentThreadId());
+
+    __imp__sub_828576D8(ctx, base);
+
+    // Whether it did any work is not visible in the return value, so infer it the
+    // same way the function does: the priority-boost path is the work path, and
+    // KeQueryBasePriorityThread is on it. Counting entries against that import's own
+    // call count in the log is what separates "never entered" from "always empty".
+    if ((n & 0xFFFFu) == 0)
+        fprintf(stderr, "[queue] sub_828576D8 entered %llu times\n",
+                (unsigned long long)(n + 1));
+}
+
+// The seven callers of the drain, so that "the drain never runs" can be turned into
+// "and neither does anything that would have called it" — or into the much more
+// interesting "a caller runs and the queue is always empty". Those are different
+// problems and no amount of reading separates them.
+extern "C" PPC_FUNC(__imp__sub_828587B0);
+extern "C" PPC_FUNC(__imp__sub_828589D0);
+extern "C" PPC_FUNC(__imp__sub_828595F8);
+extern "C" PPC_FUNC(__imp__sub_82859888);
+extern "C" PPC_FUNC(__imp__sub_82874BD0);
+extern "C" PPC_FUNC(__imp__sub_82875588);
+extern "C" PPC_FUNC(__imp__sub_82876080);
+
+PPC_FUNC(sub_828587B0)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_828587B0 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_828587B0(ctx, base);
+}
+
+PPC_FUNC(sub_828589D0)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_828589D0 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_828589D0(ctx, base);
+}
+
+PPC_FUNC(sub_828595F8)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_828595F8 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_828595F8(ctx, base);
+}
+
+PPC_FUNC(sub_82859888)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_82859888 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_82859888(ctx, base);
+}
+
+PPC_FUNC(sub_82874BD0)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_82874BD0 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_82874BD0(ctx, base);
+}
+
+PPC_FUNC(sub_82875588)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_82875588 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_82875588(ctx, base);
+}
+
+PPC_FUNC(sub_82876080)
+{
+    if (QueueProbeEnabled())
+    {
+        static std::atomic<bool> seen{ false };
+        if (!seen.exchange(true))
+            fprintf(stderr, "[queue] caller sub_82876080 entered (guest thread %08X)\n",
+                    GuestThread::GetCurrentThreadId());
+    }
+    __imp__sub_82876080(ctx, base);
 }

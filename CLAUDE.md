@@ -689,6 +689,24 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
     (`license_mask` defaulting to the trial): run the A1 gate with an EMPTY save root,
     and read a leftover save as a configuration difference, not a regression.
 
+107. **"The capture's next call" is not automatically the next thing to implement.**
+    A1's position 93, `KeQueryBasePriorityThread`, has been implemented since phase 1.
+    Its only game-side caller is a work-queue drain that runs **only on the failure
+    path** (`cmpwi r30,0; bge <skip>`), reached once in an entire hardware boot. So
+    matching it means reproducing a failure hardware had, not building a feature.
+    Before planning work against a gate position, find its call site and ask what
+    CONDITION reaches it — the name says nothing about that.
+108. **"Never entered" and "entered constantly with nothing to do" need a probe, not a
+    reading.** One `PPC_FUNC` hook on the suspect function and one on each of its
+    callers answered in two runs what the call graph could only make plausible: the
+    drain is never entered, and three of its seven callers are. `CZ_QUEUE_PROBE` in
+    `runtime/cpu/guest_probe.cpp` is the worked example.
+109. **A log line that is capped is not a count.** `NtCreateFile` successes are printed
+    only for the first 64 (`n < 64 || FileTrace()`) while failures are printed always,
+    so "the boot opens 64 files" — quoted in this project since finding 37 — is the
+    cap, not the number. Check the emitter before quoting a number off a log, the same
+    way gotcha 25 says to check it before believing a zero.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -886,6 +904,10 @@ CZ_THREAD_TRACE=1  one line per guest thread with its HOST thread id, so gdb's s
                    can be joined to our logs (also implied by CZ_WAIT_TRACE/CZ_CS_TRACE)
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
+CZ_QUEUE_PROBE=1   the audio work-queue drain (sub_828576D8) and its seven call
+                   sites — the instrument that showed A1's position 93 is behind a
+                   failure path we never take (finding 49). Reports the first entry
+                   of each, then goes quiet
 CZ_JOBQ_PROBE=1    the graphics command-stream interpreter (sub_8284B568) on entry:
                    its shared object's callback/cursor state and the token buffer it
                    is about to walk. The last line before a crash IS the fatal call
@@ -1336,9 +1358,11 @@ phase rather than needing its own.
 
 Next, in order:
 
-1. **Position 93, `KeQueryBasePriorityThread`** — A1's last, and all that is left of
-   that capture's sequence. Then the gate needs a capture that goes further than A1
-   does, i.e. gameplay (A2), which is a different comparison to build.
+1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+   `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
+   means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
+   path we do not drive (finding 49, gotcha 107). The gate now needs a capture that
+   goes further than A1: gameplay (A2), which is a different comparison to build.
 2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
