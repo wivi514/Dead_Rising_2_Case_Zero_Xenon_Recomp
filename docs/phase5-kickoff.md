@@ -62,11 +62,13 @@ nothing else. **The renderer replaces the `SDL_RenderClear` in
 itself from the guest's own stated dimensions (1280x720) on the first present.
 
 **5. The inputs are in hand and the tool is built.**
-- **455 distinct raw Xenos microcode blobs**, which is exactly what XenosRecomp
-  consumes: `Xenia logs/A1_boot_title_fullgame/shaders/*.ucode.bin.{vert,frag}` (120 —
-  frontend/menu) and `Xenia logs/A2_gameplay_stillcreek/shaders/*` (335 — gameplay).
-  Each has Xenia's disassembly and its own D3D12 translation alongside, which are
-  reference material, not input.
+- **455 raw Xenos microcode blob FILES** — corrected in phase 5 to **335 distinct
+  shaders**, because A1's 120 are a strict subset of A2's 335.
+  `Xenia logs/A1_boot_title_fullgame/shaders/*.ucode.bin.{vert,frag}` and
+  `Xenia logs/A2_gameplay_stillcreek/shaders/*`. Each has Xenia's disassembly and its
+  own D3D12 translation alongside, which are reference material, not input — though the
+  disassembly earned its keep by exposing a fetch-slot display convention
+  (`docs/phase5-notes.md` §4).
 - XenosRecomp is built at `~/GithubRepo/XenosRecomp/build/XenosRecomp/XenosRecomp` and
   carries local patches Case Zero inherits for free.
 - **The disc shader banks are a dead end** — `data/shaders/*.big` are `.vo` shader-object

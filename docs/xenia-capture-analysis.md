@@ -240,9 +240,16 @@ whole extraction pipeline.
 **The renderer is unblocked anyway, by a different route.** Section D of the request —
 which I flagged as unverified, having no way to check Xenia's cvar name from this
 machine — works: `dump_shaders` is a path cvar in the `[GPU]` group, and it produced
-**455 distinct raw Xenos microcode blobs** (120 frontend/menu from A1, 335 gameplay from
-A2) as `*.ucode.bin.{vert,frag}`, each with a disassembly alongside and Xenia's own D3D12
+**455 raw Xenos microcode blobs** (120 frontend/menu from A1, 335 gameplay from A2) as
+`*.ucode.bin.{vert,frag}`, each with a disassembly alongside and Xenia's own D3D12
 translation. Raw guest microcode is exactly XenosRecomp's input.
+
+> **CORRECTION (phase 5).** 455 is the FILE count, not the shader count. A1's 120 are a
+> strict subset of A2's 335 — zero A1-only — so the captures hold **335 distinct**
+> shaders. Our own boot dump adds exactly one more that neither capture saw, for **336
+> in the cache**. See `docs/phase5-notes.md` §1. The disassembly beside each blob stays
+> valuable for a different reason than expected: it is what caught that Xenia PRINTS a
+> vertex fetch slot as `95 - index` (§4 there).
 
 So the outcome is the good one, reached the other way: **no runtime `SHADER_DUMP` hook is
 needed**, and the renderer plan does not depend on cracking `.vo`.

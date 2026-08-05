@@ -26,3 +26,10 @@ tools/__pycache__/
 
 # Claude Code session scratch
 .claude/
+
+# Generated SPIR-V shader cache (8.9 MB, game-derived). Rebuild it:
+#   python3 tools/xenia_ucode_to_cache.py "Xenia logs/A1_.../shaders" \
+#       "Xenia logs/A2_.../shaders" /tmp/ucode
+#   (cd runtime/build && CZ_NO_WINDOW=1 CZ_SHADER_DUMP=/tmp/ucode ./cz_runtime)
+#   tools/build_shader_spv.sh /tmp/ucode assets/shader_spv
+# (already covered by /assets/ above; named here so it is not a mystery)

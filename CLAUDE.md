@@ -707,6 +707,56 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
     cap, not the number. Check the emitter before quoting a number off a log, the same
     way gotcha 25 says to check it before believing a zero.
 
+From phase 5 (the renderer; details in `docs/phase5-notes.md`):
+
+110. **A field's width is part of the field, and the symptom lands in another
+    subsystem.** A vertex fetch constant's dword1 is `endian:2, size:24, unused:6`, and
+    reading the size as `d1 >> 2` with no 24-bit mask turned an 85-dword stream into
+    67,108,885 dwords. What that produced was not a wrong picture: it was 2,225,992
+    draws reported as "vertex stream outside the physical arena", which reads as an
+    addressing or memory-map bug three layers from the actual mistake.
+111. **When two tools disagree about an index, the authority is neither of them — it is
+    the data structure being indexed.** A vfetch's constant index is
+    `const_index * 3 + const_index_sel`, which gives 95/94/93 for the exact shaders
+    Xenia's disassembly prints as vf0/vf1/vf2. Reading either tool harder cannot settle
+    it. Dumping the POPULATED fetch slots at a draw settles it in one run: the guest
+    writes slot 0, the shader that asks for slot 0 by our reading finds it, and Xenia's
+    disassembler is displaying `95 - index`.
+112. **The frame is a resolve DESTINATION, not the render target.** One title-screen
+    frame issues ~20 resolves into the same EDRAM — a 1280x720 main pass, a
+    640x360→32x1 downsample pyramid, glyph atlases — and exactly one whose destination
+    is the address `VdSwap` named. Presenting the render target instead shows every pass
+    overlaid in the top-left at its own size, which looks EXACTLY like a viewport
+    scaling bug and is not one: every viewport in the stream is correct. The register
+    that supplies the missing identity is `RB_COPY_DEST_BASE`.
+113. **Passes communicate through guest memory, so a resolve has to become a
+    texture.** Every intermediate resolve here sets `RB_COPY_CONTROL`'s two clear bits
+    and the front-buffer one does not — i.e. each pass wipes the EDRAM behind itself.
+    A consumer therefore reads its input from the resolve's destination ADDRESS, and a
+    renderer that never wrote those pixels anywhere serves it whatever the guest's
+    allocator left there. Keying a host image on the destination address and serving
+    fetches from it is the whole mechanism; writing the pixels back to guest memory
+    would mean tiling them so the consumer could untile them again.
+114. **A snapshot must not be cached on the fetch constant.** Its contents change every
+    frame while its fetch constant does not, so the ordinary texture cache would freeze
+    the first frame's version of that surface forever.
+115. **Build the shader cache from YOUR OWN dump, not the emulator's.** The cache key is
+    a hash of the microcode, and the emulator dumps it with the emulator's idea of where
+    the shader ends. Any disagreement about the length is not a slightly wrong picture —
+    it is a total, silent cache miss. Dumping from our own `IM_LOAD` handler makes the
+    key agree by construction, AND turns the emulator's dump into a free oracle: 120 of
+    our 121 boot-era blobs are byte-identical to A1's, which is the first check this
+    port has ever run on that packet's size field.
+116. **A capture's blob count is a FILE count.** "455 raw microcode blobs" is 455 files;
+    A1's 120 are a strict subset of A2's 335, so there are 335 distinct shaders. Two
+    documents quoted the file count as a shader count for a whole phase.
+117. **The picture is the one claim that needs an image, so make it self-servable.**
+    Every other gate in this project is a log diff. Dumping frames AND every resolve
+    snapshot from a headless run is what turns "does it look right" from an operator
+    task into something checkable in the session that caused it — and the per-snapshot
+    dump is the only instrument that can tell an early wrong pass from a late one,
+    because the frame is the last link and a wrong frame is consistent with both.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -736,7 +786,8 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
-  `runtime-plan.md` the phase plan, `phase1-notes.md` and `phase3-notes.md` the
+  `runtime-plan.md` the phase plan, `phase1-notes.md`, `phase3-notes.md` and
+  **`phase5-notes.md`** the
   per-phase records (what the runtime work found that neither the plan nor the
   kickoff predicted), `phase1-kickoff.md` / `phase3-kickoff.md` /
   **`phase5-kickoff.md`** the per-phase hand-off prompts. **Read
@@ -784,6 +835,13 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
   - `cpu/guest_probe.cpp` — argument probes on named guest functions via the alias
     seam, behind `CZ_ARG_PROBE`. Kept as the worked example of tracing a bad value
     back to its producer; it is what closed finding 27.
+  - `gpu/vk_renderer.{h,cpp}` + `gpu/xenos.h` — **phase 5: the renderer.** Inert
+    unless `CZ_VKDRAW=1`. `xenos.h` holds the register indices and format codes with
+    each field layout written next to it, because every one of them is a magic number
+    whose wrong value is silent. The header comment of `vk_renderer.cpp` transcribes
+    the interface the translated shaders present (push constants, the five descriptor
+    spaces, the shared-constants offsets) out of the generated HLSL — read that, not
+    this, if the two ever disagree.
   - `host/window.{h,cpp}` — phase 3: the SDL window, the event loop, the present
     seam and the pad, deliberately in **one** module because in SDL they are one
     thread. Everything except `Host_Present` (called from the PM4 executor) and
@@ -840,10 +898,25 @@ python3 tools/find_unlowered_switches.py          # 0 defects expected
 python3 tools/find_unlowered_switches.py --all    # also list the benign tail-call thunks
 ```
 
-Build the runtime (needs `clang++` **and SDL2**; ~90 s on 16 cores for a cold image
+Build the SPIR-V shader cache. **`assets/shader_spv/` is gitignored, so a fresh clone
+needs this before `CZ_VKDRAW=1` does anything.** Two sources, and they merge: the
+captures' shaders (which reach gameplay, where our runtime cannot yet go) and our own
+boot dump (which is the authority on the byte range, because the cache key is a hash of
+it — gotcha 115):
+```
+python3 tools/xenia_ucode_to_cache.py \
+    "Xenia logs/A1_boot_title_fullgame/shaders" \
+    "Xenia logs/A2_gameplay_stillcreek/shaders" /tmp/ucode      # 335 distinct
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_SHADER_DUMP=/tmp/ucode ./cz_runtime)  # +1 of ours
+tools/build_shader_spv.sh /tmp/ucode assets/shader_spv          # 336, zero failures
+```
+
+Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
 build). SDL2 is required rather than optional-with-a-fallback, because a build that
 silently lost its window would look exactly like a run whose input stopped working;
-`-DCZ_WINDOW=OFF` is how you say "headless on purpose" out loud:
+`-DCZ_WINDOW=OFF` is how you say "headless on purpose" out loud. Vulkan is required for
+the same reason and is safe to require, because the renderer is off at RUN time unless
+`CZ_VKDRAW=1`:
 ```
 python3 tools/gen_import_stubs.py                 # after any change to the import set
 cmake -S runtime -B runtime/build -G Ninja
@@ -936,6 +1009,29 @@ CZ_NO_WINDOW=1     no window, no present seam, no pad — XamInputGetState answe
                    its documented neutral pad. The same-binary control arm for every
                    phase 3 claim. (`cmake -DCZ_WINDOW=OFF` is the build-time form,
                    for a machine with no SDL.)
+CZ_VKDRAW=1        phase 5's renderer. OFF by default, so the same binary is also the
+                   phase 3 binary — the control arm for every renderer claim
+CZ_SHADER_DUMP=dir one file per distinct microcode blob at IM_LOAD, named by the hash
+                   the renderer looks up. The input to tools/build_shader_spv.sh
+CZ_SHADER_SPV=dir  override the shader cache location
+CZ_VK_STATS=N      the renderer's named-counter block every N frames. Every path that
+                   declines to draw something has a counter, because a renderer that
+                   draws 80% of a frame looks exactly like one that draws all of it
+CZ_VK_FRAME_DUMP=dir   every 64th presented frame as a PPM — the renderer checked
+                   WITHOUT a window, which is what makes the E-screenshot comparison
+                   self-servable instead of an operator task
+CZ_VK_SNAP_DUMP=dir    EVERY resolve snapshot of one frame. The frame is the last link
+                   in the chain, so a wrong frame is consistent with any pass being
+                   wrong; this is the only instrument that says which
+CZ_VK_RESOLVE_TRACE=1  each resolve's destination, extent and clear bits, against the
+                   front buffer VdSwap named. The trace that found finding 5 below
+CZ_VK_VIEWPORT_TRACE=1 every DISTINCT viewport setup, once each
+CZ_VK_FETCH_PROBE=1    which vertex fetch slots the guest has actually populated
+CZ_VK_FORCE_COLORMASK=1  treat every draw as writing all four channels — the arm that
+                   retired "38.6% of draws have an empty colour mask, so the register
+                   index must be wrong" (it is a real depth-only pass; frame identical)
+CZ_VK_VALIDATION=1 the Khronos validation layer. Slow at ~900 draws a frame, and it has
+                   twice named an API misuse that was being investigated as a renderer bug
 CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
                    An instrument, not an arm: it fabricates nothing, and it is the
                    witness that a real press reached XamInputGetState. Silent on a
@@ -1028,7 +1124,8 @@ which must be **0**.
   `.big` archives of `<hash>.vo` shader *objects* carrying build metadata (including
   `.updb` debug paths), and their payloads share only background-noise n-gram overlap
   with the microcode the guest actually submits. The renderer input instead comes from
-  Xenia's `dump_shaders`: 455 raw Xenos microcode blobs, already in hand.
+  Xenia's `dump_shaders`: 455 microcode blob files = **335 distinct shaders** (A1's
+  120 are a strict subset of A2's 335), all translated in phase 5.
 - **No Bink** (finding 7). Movies stream through an in-house "Movie Player Object"
   reading `.big` cinematic archives. Grep `.big`, never `.bik`.
 
@@ -1063,8 +1160,9 @@ Highlights that change how we work:
 - **There is no Bink in this game.** Movies stream through an in-house player reading
   `.big` cinematic archives. Finding 7; the Bink phase is deleted from the runtime plan.
 - **The disc shader banks are NOT usable microcode** (retraction, finding 6) — but
-  Xenia's `dump_shaders` gave us 455 raw Xenos microcode blobs, which is XenosRecomp's
-  input, so the renderer is unblocked anyway.
+  Xenia's `dump_shaders` gave us 455 microcode blob files — **335 distinct** shaders,
+  A1's 120 being a strict subset of A2's — which is XenosRecomp's input, so the
+  renderer was unblocked anyway.
 
 ## Current status & next steps
 
@@ -1358,6 +1456,33 @@ deferred out of finding 34** — and it includes `XamTaskSchedule`, one of the e
 implemented-but-never-executed imports, so that debt starts being paid by the next
 phase rather than needing its own.
 
+**PHASE 5 IS BUILT: there is a renderer, and it draws real game content
+(2026-08-05, session 11).** `docs/phase5-notes.md` is the record — read it before
+touching `runtime/gpu/vk_renderer.cpp`.
+
+`runtime/gpu/vk_renderer.cpp` translates the PM4 draw stream onto a host Vulkan device
+with the XenosRecomp shaders. **Off unless `CZ_VKDRAW=1`**, which makes the phase 3
+binary available in the same build as the control arm for every claim below.
+
+- **The shader pipeline is complete: 336 of 336 distinct shaders translate, zero
+  failures**, and not one recompiler change was needed — XenosRecomp's Fable 2 patches
+  carry over whole. `tools/build_shader_spv.sh` is the pipeline.
+- **Our `IM_LOAD` arithmetic is now validated against hardware.** A boot dumps 121
+  distinct microcode blobs and **120 are byte-identical to A1's**, modulo dword order.
+  Nothing had ever checked that packet's size field.
+- Measured over a 120 s headless boot: **1,087,826 indexed draws**, 125 pipelines, 958
+  textures untiled and uploaded, 67 resolve snapshots, **450,488 texture fetches served
+  from a snapshot**, and **1,187 of 1,195 frames presented from the front-buffer
+  resolve**. The picture is the blood streak from the DEAD RISING 2 wordmark plus UI
+  text — recognisably E2's logo, and not yet all of it.
+- **All pre-existing gates hold with the renderer on**: `--smoke` OK, A1's full 84-deep
+  prefix, A5 exit 0 (2 windows, both permutations), both PM4 capture oracles clean,
+  `truncated=0`, zero parser stalls. Position 71 permuted on the renderer-**off** arm
+  this time, which is gotcha 86's lesson arriving from the other direction.
+- **Cost: 1,488 frames per 100 s with the renderer on against 3,090 with it off** —
+  roughly half the frame rate, from a synchronous submit and a full readback per frame.
+  A number to re-measure once the picture is right, not a defect to fix before it.
+
 Next, in order:
 
 1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
@@ -1372,14 +1497,12 @@ Next, in order:
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), and the save layer's own `XamContentCreateEx`/`XamContentClose`,
    which need gameplay to reach a save point.
-3. **Phase 5 — the renderer**, the actual milestone, and the next thing to start.
-   **`docs/phase5-kickoff.md` is the hand-off — read it first.** Inputs are already in
-   hand: 455 raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader
-   banks are a dead end — finding 6), XenosRecomp built, the command processor live,
-   the register file populated, and the present seam wired to the guest's own frame
-   clock. Gate on **per-era aggregates, never frame index**: two hardware runs agree
-   frame-exactly only 80.0% of the time (gotcha 38), so the plan's "per-pixel diff at
-   the same frame" is the one line of it to correct.
+3. **Phase 5 — finish the renderer.** It exists and draws (below); what it does not yet
+   do is produce a correct title screen. `docs/phase5-notes.md` §7 is the enumerated
+   gap, with a measurement for each part of it. Gate on **per-era aggregates, never
+   frame index**: two hardware runs agree frame-exactly only 80.0% of the time (gotcha
+   38), so the plan's "per-pixel diff at the same frame" is the one line of it to
+   correct.
 4. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.

@@ -412,6 +412,29 @@ struct TextureEntry
     uint64_t key = 0;
 };
 
+// A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
+// guest address the pass copied it to.
+//
+// This is the mechanism that makes a post-processing chain work, and it exists because
+// of what the resolve trace showed about this title. A title-screen frame issues about
+// twenty resolves: a 1280x720 main pass, a 640x360 / 320x180 / ... / 1x1 downsample
+// pyramid, some 1024x32 and 1024x1024 surfaces, and finally one resolve to the address
+// VdSwap named. Every one of them renders into the SAME EDRAM and clears it afterwards
+// (their RB_COPY_CONTROL has both clear bits set; the front-buffer one does not) — so
+// the EDRAM at the end of a frame holds only the last pass, and the passes communicate
+// exclusively through guest memory.
+//
+// We do not write resolved pixels back into guest memory: that would mean tiling them,
+// and the consumer would then untile them again, for a round trip whose only purpose is
+// to lose precision. Instead the destination address becomes the key, and a texture
+// fetch that names it is served the host image directly.
+struct Snapshot
+{
+    Image image;
+    uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
+    uint64_t frameSeen = 0;
+};
+
 struct Renderer
 {
     VkInstance instance = VK_NULL_HANDLE;
@@ -454,6 +477,7 @@ struct Renderer
     std::map<uint64_t, ShaderMeta> shaders;
     std::map<PipelineKey, VkPipeline> pipelines;
     std::unordered_map<uint64_t, TextureEntry> textures;
+    std::unordered_map<uint32_t, Snapshot> snapshots; // by resolve destination
     uint32_t nextTextureSlot = 1; // slot 0 is the dummy
 
     // Per-frame vertex/index stream cache: one guest buffer copied once per frame
@@ -465,7 +489,8 @@ struct Renderer
     uint32_t targetWidth = 1280, targetHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
-    bool haveResolvedThisFrame = false;
+    uint32_t frontWidth = 0, frontHeight = 0;
+    bool haveFrontSnapshot = false;
 
     std::vector<uint8_t> presentPixels;
 };
@@ -1054,6 +1079,47 @@ VkFormat XenosTextureFormat(uint32_t fmt, uint32_t& bytesPerUnit, uint32_t& bloc
             bytesPerUnit = 8;
             blockDim = 4;
             return VK_FORMAT_BC4_UNORM_BLOCK;
+        case xenos::kFmt_DXT3A:
+            // DXT3A is a BC2 block with only its explicit-alpha half meaningful.
+            // Presented as BC2 so the bytes land where the sampler expects them; the
+            // colour half is whatever the asset stored, which for an alpha-only
+            // texture the shader does not read.
+            bytesPerUnit = 16;
+            blockDim = 4;
+            return VK_FORMAT_BC2_UNORM_BLOCK;
+        case xenos::kFmt_DXN:
+            // Two-channel compressed normals. BC5 is the same block layout.
+            bytesPerUnit = 16;
+            blockDim = 4;
+            return VK_FORMAT_BC5_UNORM_BLOCK;
+        case xenos::kFmt_16_EXPAND:
+            bytesPerUnit = 2;
+            return VK_FORMAT_R16_UNORM;
+        case xenos::kFmt_16_16_EXPAND:
+            bytesPerUnit = 4;
+            return VK_FORMAT_R16G16_UNORM;
+        case xenos::kFmt_16_16_16_16_EXPAND:
+            bytesPerUnit = 8;
+            return VK_FORMAT_R16G16B16A16_UNORM;
+        case xenos::kFmt_8_8_8_8_A:
+        case xenos::kFmt_8_8_8_8_AS_16_16_16_16:
+            bytesPerUnit = 4;
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        case xenos::kFmt_2_10_10_10_AS_16_16_16_16:
+            bytesPerUnit = 4;
+            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        case xenos::kFmt_DXT1_AS_16_16_16_16:
+            bytesPerUnit = 8;
+            blockDim = 4;
+            return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case xenos::kFmt_DXT2_3_AS_16_16_16_16:
+            bytesPerUnit = 16;
+            blockDim = 4;
+            return VK_FORMAT_BC2_UNORM_BLOCK;
+        case xenos::kFmt_DXT4_5_AS_16_16_16_16:
+            bytesPerUnit = 16;
+            blockDim = 4;
+            return VK_FORMAT_BC3_UNORM_BLOCK;
         case xenos::kFmt_24_8:
             // A depth surface sampled as a texture. Read the depth half only; the
             // stencil byte has no sampled meaning here.
@@ -1135,6 +1201,27 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     {
         Count("texture: fetch constant is not a texture");
         return 0;
+    }
+
+    // SERVED FROM A RESOLVE SNAPSHOT, when this fetch names a surface another pass in
+    // this frame resolved to. This is not an optimisation — it is the only way the
+    // fetch can succeed at all, because the resolved pixels were never written into
+    // guest memory. Without it a post-processing chain samples whatever the guest's
+    // allocator left at that address, which is usually zero, and the compose draws
+    // black over the frame it was supposed to combine.
+    //
+    // Deliberately NOT cached in R->textures: a snapshot's contents change every
+    // frame while its fetch constant does not, so caching it on the fetch constant
+    // would freeze the first frame's version of the surface forever.
+    {
+        auto snap = R->snapshots.find(t.address & 0x1FFFFFFF);
+        if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
+        {
+            Count("texture: served from a resolve snapshot");
+            return snap->second.slot;
+        }
+        if (snap != R->snapshots.end())
+            Count("texture: resolve snapshot too old, falling back to guest memory");
     }
 
     uint32_t bytesPerUnit = 0, blockDim = 1;
@@ -1282,9 +1369,27 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
 // ===================================================================================
 // Per-draw state decode
 // ===================================================================================
-VkPrimitiveTopology XenosTopology(uint32_t prim, bool& supported)
+// The Xenos primitive type to a Vulkan topology, plus whether the indices have to be
+// rewritten to express it.
+//
+// Xenos has two topologies Vulkan does not: the QUAD LIST (four corners per quad) and
+// the RECTANGLE LIST (three corners, hardware synthesises the fourth). Both are
+// expressible as a triangle list with a rewritten index buffer, which is what
+// ExpandIndices below does — and expressing them as a plain triangle list WITHOUT the
+// rewrite is the trap, because it silently renders a fraction of every primitive: a
+// quad list drawn as triangles produces one wrong triangle per quad rather than
+// nothing, which looks like corrupt geometry instead of a missing feature.
+enum class Expansion
+{
+    None,
+    QuadList,      // 4 corners -> 2 triangles
+    RectangleList, // 3 corners -> 2 triangles, the fourth corner reflected
+};
+
+VkPrimitiveTopology XenosTopology(uint32_t prim, bool& supported, Expansion& expand)
 {
     supported = true;
+    expand = Expansion::None;
     switch (prim)
     {
         case xenos::kPointList: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
@@ -1293,12 +1398,12 @@ VkPrimitiveTopology XenosTopology(uint32_t prim, bool& supported)
         case xenos::kTriangleList: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         case xenos::kTriangleFan: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
         case xenos::kTriangleStrip: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-        // A Xenos rectangle list is three corners per rect and hardware synthesises
-        // the fourth. Vulkan has no such topology; drawing it as a triangle list gives
-        // the correct upper-left triangle of every rect and loses the other half. That
-        // is visibly wrong for full-screen quads, so it is counted separately and
-        // fixed by an index rewrite below rather than left as a lie.
-        case xenos::kRectangleList: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        case xenos::kQuadList:
+            expand = Expansion::QuadList;
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        case xenos::kRectangleList:
+            expand = Expansion::RectangleList;
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         default:
             supported = false;
             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1651,6 +1756,93 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
     return at;
 }
 
+// Read one index from a guest index buffer, honouring the buffer's endian code, or
+// return the vertex number itself for an auto-index draw.
+inline uint32_t ReadIndex(const uint8_t* p, uint32_t i, bool index32, uint32_t endian,
+                          bool haveBuffer)
+{
+    if (!haveBuffer)
+        return i;
+    if (index32)
+    {
+        uint32_t v;
+        memcpy(&v, p + i * 4, 4);
+        uint8_t tmp[4];
+        memcpy(tmp, &v, 4);
+        CopySwapped(reinterpret_cast<uint8_t*>(&v), tmp, 4, endian);
+        return v;
+    }
+    uint16_t v;
+    memcpy(&v, p + i * 2, 2);
+    // A 16-bit index stream under an 8-in-32 code has its PAIRS swapped as well as
+    // its bytes, because the code describes a dword-wide swizzle and the hardware
+    // applies it to the dword. Reading the pair back at the same dword offset is what
+    // reproduces that; treating the code as if it were per-index would silently
+    // transpose every pair of triangles' vertices.
+    if ((endian & 3) == 2)
+    {
+        uint32_t d;
+        memcpy(&d, p + (i & ~1u) * 2, 4);
+        d = __builtin_bswap32(d);
+        return (i & 1) ? (d >> 16) : (d & 0xFFFF);
+    }
+    if ((endian & 3) == 1 || (endian & 3) == 3)
+        v = uint16_t((v >> 8) | (v << 8));
+    return v;
+}
+
+// Rewrite a quad or rectangle list as a triangle list. Returns the arena offset of a
+// 32-bit index buffer and its count, or -1.
+//
+// The rectangle list's fourth corner is the reflection of the second through the
+// midpoint of the first and third — that is what the hardware synthesises, and it is
+// why a rect list only stores three vertices. We cannot synthesise a VERTEX on the CPU
+// (the attributes are whatever the shader declared), so the second triangle reuses the
+// three real corners: (0, 2, 1) wound the other way covers the same area as the
+// missing half ONLY for an axis-aligned screen rect, which is what this title uses
+// them for. Stated rather than hidden, and counted, so the day a rotated rect appears
+// there is a number for it rather than a puzzle.
+VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
+                           uint32_t& outCount)
+{
+    const bool haveBuffer = draw.indexed;
+    const uint8_t* src = haveBuffer ? base + draw.indexVa : nullptr;
+    const uint32_t perPrim = expand == Expansion::QuadList ? 4u : 3u;
+    const uint32_t prims = draw.indexCount / perPrim;
+    if (!prims)
+    {
+        Count("draw: expansion with no complete primitive");
+        return VkDeviceSize(-1);
+    }
+
+    outCount = prims * 6;
+    const VkDeviceSize at = ArenaAlloc(uint64_t(outCount) * 4, 16);
+    if (at == VkDeviceSize(-1))
+        return at;
+    uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + at);
+
+    for (uint32_t p = 0; p < prims; p++)
+    {
+        uint32_t v[4];
+        for (uint32_t k = 0; k < perPrim; k++)
+            v[k] = ReadIndex(src, p * perPrim + k, draw.index32, draw.indexEndian,
+                             haveBuffer);
+        if (expand == Expansion::QuadList)
+        {
+            dst[p * 6 + 0] = v[0]; dst[p * 6 + 1] = v[1]; dst[p * 6 + 2] = v[2];
+            dst[p * 6 + 3] = v[0]; dst[p * 6 + 4] = v[2]; dst[p * 6 + 5] = v[3];
+        }
+        else
+        {
+            dst[p * 6 + 0] = v[0]; dst[p * 6 + 1] = v[1]; dst[p * 6 + 2] = v[2];
+            dst[p * 6 + 3] = v[0]; dst[p * 6 + 4] = v[2]; dst[p * 6 + 5] = v[1];
+        }
+    }
+    Count(expand == Expansion::QuadList ? "draw: quad list expanded"
+                                        : "draw: rectangle list expanded");
+    return at;
+}
+
 void DoDraw(uint8_t* base, const Pm4Draw& draw)
 {
     const uint32_t* regs = Pm4_Registers();
@@ -1685,8 +1877,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     const ShaderMeta& vs = vsIt->second;
     const ShaderMeta& ps = psIt->second;
 
+    // A per-primitive-type census, always on. Which topologies a title actually issues
+    // is a fact about the title, and it is the difference between "quad lists are
+    // unsupported" and "quad lists are 0.2% of the stream" — the second is a decision
+    // and the first is only an alarm.
+    {
+        static char names[64][32];
+        static bool built = false;
+        if (!built)
+        {
+            built = true;
+            for (uint32_t i = 0; i < 64; i++)
+                snprintf(names[i], sizeof names[i], "prim %02u", i);
+        }
+        Count(names[draw.primType & 63]);
+    }
+
     bool topologySupported = false;
-    const VkPrimitiveTopology topology = XenosTopology(draw.primType, topologySupported);
+    Expansion expand = Expansion::None;
+    const VkPrimitiveTopology topology =
+        XenosTopology(draw.primType, topologySupported, expand);
     if (!topologySupported)
     {
         static std::vector<uint32_t> seen;
@@ -1710,10 +1920,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     key.psHash = psBind.hash;
     key.topology = uint32_t(topology);
     key.blendControl = regs[xenos::kRbBlendControl0];
-    key.colorMask = regs[xenos::kRbColorMask] & 0xF;
+    // CZ_VK_FORCE_COLORMASK=1 — treat every draw as writing all four channels.
+    //
+    // The arm for "is RB_COLOR_MASK really at 0x2104, and is an empty mask really what
+    // the guest meant?". 38.6% of this title's draws come through with an empty mask,
+    // which is either a legitimate depth-only pass or a register read at the wrong
+    // index, and those two are indistinguishable from the picture. A same-binary arm
+    // separates them in one run each; reading the register table harder cannot.
+    static const bool forceColorMask = EnvOn("CZ_VK_FORCE_COLORMASK");
+    key.colorMask = forceColorMask ? 0xF : (regs[xenos::kRbColorMask] & 0xF);
     key.depthControl = regs[xenos::kRbDepthControl] & 0xFF;
     key.modeControl = regs[0x2208] & 7;
     key.primRestart = 0;
+
+    // Two classes of draw that execute and produce nothing, counted because both are
+    // invisible in a log and indistinguishable in a picture from a draw that never
+    // happened: one whose colour write mask is empty, and one whose depth test can
+    // never pass. If a whole pass is black, this says whether the geometry was
+    // rejected by state we decoded or was never there.
+    if (key.colorMask == 0)
+        Count("draw: colour write mask is empty");
+    if (((key.depthControl >> 1) & 1) && ((key.depthControl >> 4) & 7) == 0)
+        Count("draw: depth compare is NEVER");
 
     VkPipeline pipeline = GetPipeline(key, vs, ps);
     if (pipeline == VK_NULL_HANDLE)
@@ -1845,6 +2073,32 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     scissor.offset = { 0, 0 };
     scissor.extent = { R->color.width, R->color.height };
 
+    // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
+    // trace of 1.1 M draws is unreadable and a per-frame one hides the outlier that
+    // matters; the set of distinct states is small (a title screen uses a handful) and
+    // it is what says whether the geometry is being placed by a viewport we computed
+    // or by a transform the shader applied.
+    if (EnvOn("CZ_VK_VIEWPORT_TRACE"))
+    {
+        static std::vector<uint64_t> seen;
+        const uint64_t k = (uint64_t(vte & 0x3F) << 58) ^
+                           (uint64_t(uint32_t(viewport.x)) << 40) ^
+                           (uint64_t(uint32_t(viewport.y)) << 26) ^
+                           (uint64_t(uint32_t(viewport.width)) << 13) ^
+                           uint64_t(uint32_t(viewport.height));
+        if (std::find(seen.begin(), seen.end(), k) == seen.end() && seen.size() < 64)
+        {
+            seen.push_back(k);
+            fprintf(stderr,
+                    "[vkvp] vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
+                    "%.1f,%.1f %.1fx%.1f  posScale=%.5f,%.5f posOffset=%.2f,%.2f "
+                    "surfacePitch=%u\n",
+                    vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
+                    viewport.height, posScale[0], posScale[1], posOffset[0], posOffset[1],
+                    regs[xenos::kRbSurfaceInfo] & 0x3FFF);
+        }
+    }
+
     vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdSetViewport(R->cmd, 0, 1, &viewport);
     vkCmdSetScissor(R->cmd, 0, 1, &scissor);
@@ -1931,7 +2185,27 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         return;
 
     // --- indices ---------------------------------------------------------------------
-    if (draw.indexed)
+    if (expand != Expansion::None)
+    {
+        // Both expansions need the source indices, so an indexed one has to have a
+        // readable buffer; an auto-index one synthesises them from the vertex number.
+        if (draw.indexed)
+        {
+            const uint64_t bytes = uint64_t(draw.indexCount) * (draw.index32 ? 4 : 2);
+            if (!GuestRangeOk(draw.indexVa, bytes))
+            {
+                Count("draw: index buffer outside the physical arena");
+                return;
+            }
+        }
+        uint32_t expandedCount = 0;
+        const VkDeviceSize at = ExpandIndices(base, draw, expand, expandedCount);
+        if (at == VkDeviceSize(-1))
+            return;
+        vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, 0, 0);
+    }
+    else if (draw.indexed)
     {
         const uint32_t indexBytes = draw.index32 ? 4 : 2;
         const uint64_t bytes = uint64_t(draw.indexCount) * indexBytes;
@@ -1977,14 +2251,128 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     const uint32_t control = regs[xenos::kRbCopyControl];
     const uint32_t dest = regs[xenos::kRbCopyDestBase] & 0xFFFFFFFCu;
     R->lastResolveDest = dest;
-    R->haveResolvedThisFrame = true;
     Count("resolve");
 
     // RB_COPY_CONTROL bits 8/9: clear colour / clear depth after the copy. This is the
     // title's own clear, and honouring it is what makes a persistent EDRAM target
     // correct rather than an accumulating smear.
+    // CZ_VK_RESOLVE_TRACE=1 — one line per resolve for a few frames, with the surface
+    // the EDRAM is configured as, the region being copied out and where it lands.
+    //
+    // This is the instrument for the question "which of these is the frame?". A title
+    // composes through several intermediate surfaces at several sizes and resolves each
+    // one; presenting the EDRAM target wholesale shows all of them overlaid at
+    // whatever size each pass happened to use, which is a picture that looks like a
+    // scaling bug and is really a missing surface identity.
+    if (EnvOn("CZ_VK_RESOLVE_TRACE"))
+    {
+        static int left = 60;
+        if (left-- > 0)
+            fprintf(stderr,
+                    "[vkresolve] frame=%llu dest=%08X destPitch=%u destHeight=%u "
+                    "surfacePitch=%u scissor=%u,%u..%u,%u ctl=%08X info=%08X "
+                    "front=%08X\n",
+                    (unsigned long long)R->frame, dest,
+                    regs[xenos::kRbCopyDestPitch] & 0x3FFF,
+                    (regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF,
+                    regs[xenos::kRbSurfaceInfo] & 0x3FFF,
+                    regs[xenos::kPaScScreenScissorTl] & 0x7FFF,
+                    (regs[xenos::kPaScScreenScissorTl] >> 16) & 0x7FFF,
+                    regs[xenos::kPaScScreenScissorBr] & 0x7FFF,
+                    (regs[xenos::kPaScScreenScissorBr] >> 16) & 0x7FFF, control,
+                    regs[xenos::kRbCopyDestInfo], R->frontBuffer);
+    }
+
     const bool clearColor = ((control >> 8) & 1) != 0;
     const bool clearDepth = ((control >> 9) & 1) != 0;
+
+    // SNAPSHOT THE EDRAM UNDER THE DESTINATION ADDRESS. See the Snapshot comment for
+    // why the destination address is the right identity and why the pixels do not go
+    // back to guest memory.
+    const uint32_t w = std::min(regs[xenos::kRbCopyDestPitch] & 0x3FFF, R->color.width);
+    const uint32_t h =
+        std::min((regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF, R->color.height);
+    if (w && h)
+    {
+        const uint32_t key = dest & 0x1FFFFFFF;
+        auto it = R->snapshots.find(key);
+        // A destination whose extent changed is a different surface reusing an
+        // address, so the image is rebuilt rather than partially overwritten — a
+        // partial overwrite leaves the previous surface's pixels around the edge of
+        // the new one, which reads as a ghosting artefact with no obvious source.
+        if (it != R->snapshots.end() &&
+            (it->second.image.width != w || it->second.image.height != h))
+        {
+            vkDeviceWaitIdle(R->device);
+            vkDestroyImageView(R->device, it->second.image.view, nullptr);
+            vkDestroyImage(R->device, it->second.image.image, nullptr);
+            vkFreeMemory(R->device, it->second.image.memory, nullptr);
+            R->snapshots.erase(it);
+            it = R->snapshots.end();
+            Count("resolve: snapshot resized");
+        }
+        if (it == R->snapshots.end() && R->nextTextureSlot < kMaxDescriptors)
+        {
+            Snapshot s;
+            s.slot = R->nextTextureSlot++;
+            if (CreateImage(s.image, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                VK_IMAGE_USAGE_SAMPLED_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT))
+            {
+                VkDescriptorImageInfo ii{};
+                ii.imageView = s.image.view;
+                ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+                wr.dstSet = R->sets[0];
+                wr.dstBinding = 0;
+                wr.dstArrayElement = s.slot;
+                wr.descriptorCount = 1;
+                wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                wr.pImageInfo = &ii;
+                vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+                it = R->snapshots.emplace(key, std::move(s)).first;
+                Count("resolve: snapshot created");
+            }
+            else
+            {
+                --R->nextTextureSlot;
+                Count("resolve: snapshot image creation failed");
+            }
+        }
+        if (it != R->snapshots.end())
+        {
+            BeginFrame();
+            EndRendering();
+            Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            VkImageCopy copy{};
+            copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.extent = { w, h, 1 };
+            vkCmdCopyImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &copy);
+            // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
+            // samples this surface, and the layout it expects is the one the
+            // descriptor was written with.
+            Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            it->second.frameSeen = R->frame;
+
+            if (R->frontBuffer && key == (R->frontBuffer & 0x1FFFFFFF))
+            {
+                R->frontWidth = w;
+                R->frontHeight = h;
+                R->haveFrontSnapshot = true;
+                Count("resolve: this is the frame");
+            }
+        }
+    }
+
     if (!clearColor && !clearDepth)
         return;
 
@@ -2199,6 +2587,11 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
     (void)base;
     if (!g_active)
         return;
+    // Recorded BEFORE the early returns: the resolve that produces the frame happens
+    // before the swap that announces it, so on frame N the comparison in DoResolve is
+    // made against the address frame N-1 published. That is fine because the address
+    // does not change, and it is the reason the first frame has no snapshot rather
+    // than the wrong one.
     R->frontBuffer = frontBuffer;
     ++R->frame;
 
@@ -2217,20 +2610,35 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
     // renderer to the windowing system that phase 3 deliberately kept at arm's length.
     // At the guest's own ~30 frames a second, 3.5 MB a frame is not what limits this.
     EndRendering();
-    Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+
+    // Read back the front-buffer snapshot when there is one, and the raw EDRAM when
+    // there is not. The fallback is deliberate and is announced by its own counter:
+    // it is what a frame looks like before the surface identity is known, and seeing
+    // it in the stats is how "the resolve match stopped working" stays visible
+    // instead of turning into a picture that is subtly the wrong pass.
+    auto frontSnap = R->snapshots.find(R->frontBuffer & 0x1FFFFFFF);
+    if (frontSnap == R->snapshots.end())
+        R->haveFrontSnapshot = false;
+    Image& source = R->haveFrontSnapshot ? frontSnap->second.image : R->color;
+    const uint32_t width0 = R->haveFrontSnapshot ? R->frontWidth : R->color.width;
+    const uint32_t height0 = R->haveFrontSnapshot ? R->frontHeight : R->color.height;
+    Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
+                               : "swap: presented raw EDRAM (no resolve matched)");
+
+    Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
     VkBufferImageCopy copy{};
     copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    copy.imageExtent = { R->color.width, R->color.height, 1 };
-    vkCmdCopyImageToBuffer(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    copy.imageExtent = { width0, height0, 1 };
+    vkCmdCopyImageToBuffer(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            R->readback.buffer, 1, &copy);
     SubmitAndWait();
 
-    const size_t bytes = size_t(R->color.width) * R->color.height * 4;
+    const size_t bytes = size_t(width0) * height0 * 4;
     if (R->presentPixels.size() < bytes)
         R->presentPixels.resize(bytes);
     memcpy(R->presentPixels.data(), R->readback.mapped, bytes);
-    Host_PresentPixels(R->presentPixels.data(), R->color.width, R->color.height);
+    Host_PresentPixels(R->presentPixels.data(), width0, height0);
 
     // CZ_VK_FRAME_DUMP=<dir> writes every 64th frame as a PPM. This is the instrument
     // that makes the renderer checkable WITHOUT a window, which matters more than it
@@ -2245,7 +2653,7 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
                  (unsigned long long)R->frame);
         if (FILE* f = fopen(path, "wb"))
         {
-            fprintf(f, "P6\n%u %u\n255\n", R->color.width, R->color.height);
+            fprintf(f, "P6\n%u %u\n255\n", width0, height0);
             for (size_t i = 0; i < bytes; i += 4)
                 fwrite(&R->presentPixels[i], 1, 3, f);
             fclose(f);
@@ -2269,13 +2677,55 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
             Count("frame: has content");
     }
 
+    // CZ_VK_SNAP_DUMP=<dir> — write EVERY resolve snapshot of one frame as a PPM.
+    //
+    // The question this answers is "where in the chain did the picture go?", and it is
+    // the only instrument that can: the frame is the last link, so a wrong frame is
+    // consistent with every pass being wrong and with exactly one being wrong. Dumping
+    // all of them turns that into a directory you can look at.
+    static const char* snapDir = Env("CZ_VK_SNAP_DUMP");
+    if (snapDir && R->frame == 600)
+    {
+        for (const auto& [dest, snap] : R->snapshots)
+        {
+            const size_t n = size_t(snap.image.width) * snap.image.height * 4;
+            if (n > R->readback.size)
+                continue;
+            RunImmediate([&](VkCommandBuffer cb) {
+                Image& img = const_cast<Image&>(snap.image);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                VkBufferImageCopy c{};
+                c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                c.imageExtent = { img.width, img.height, 1 };
+                vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       R->readback.buffer, 1, &c);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+            });
+            char path[512];
+            snprintf(path, sizeof path, "%s/snap_%08X_%ux%u.ppm", snapDir, dest,
+                     snap.image.width, snap.image.height);
+            if (FILE* f = fopen(path, "wb"))
+            {
+                fprintf(f, "P6\n%u %u\n255\n", snap.image.width, snap.image.height);
+                for (size_t i = 0; i < n; i += 4)
+                    fwrite(R->readback.mapped + i, 1, 3, f);
+                fclose(f);
+            }
+        }
+        fprintf(stderr, "[vk] dumped %zu resolve snapshots to %s\n", R->snapshots.size(),
+                snapDir);
+    }
+
     static const uint64_t statsEvery =
         Env("CZ_VK_STATS") ? std::max(1L, strtol(Env("CZ_VK_STATS"), nullptr, 10)) : 0;
     if (statsEvery && (R->frame % statsEvery) == 0)
         VkRenderer_DumpStats();
 
-    Count("swap: presented");
-    R->haveResolvedThisFrame = false;
+    // The snapshot is per frame: a frame whose resolve chain never reaches the front
+    // buffer must not present the previous frame's picture as if it were this one.
+    R->haveFrontSnapshot = false;
     (void)width;
     (void)height;
 }

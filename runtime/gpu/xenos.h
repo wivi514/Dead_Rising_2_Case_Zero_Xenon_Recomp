@@ -147,12 +147,20 @@ struct TextureFetch
 
 TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot);
 
-// --- texture formats we can present to Vulkan ---------------------------------------
-// The codes are the Xenos `k_*` enumeration. Only the ones this title uses are
-// mapped; everything else is reported once by name rather than guessed at, because a
-// wrong format decodes to a plausible-looking wrong image and nobody notices.
+// --- texture formats ------------------------------------------------------------------
+// The Xenos `k_*` enumeration, in full and in order rather than as the subset this
+// title happens to use. Writing out the whole table is what makes a code checkable
+// against its neighbours — the first version of this header listed DXT3A/DXT5A/CTX1 at
+// 43/44/45, which are actually the INTERLACED formats, and nothing about the shorter
+// list made that visible. The wrong code does not fail: it decodes a normal map as an
+// 8-bit interlaced surface and produces a plausible wrong image.
+//
+// "EXPAND" means the channel is a signed value biased into the unsigned range; "AS_"
+// forms are the same bits reinterpreted at a wider size by the sampler.
 enum TexFormat : uint32_t
 {
+    kFmt_1_REVERSE = 0,
+    kFmt_1 = 1,
     kFmt_8 = 2,
     kFmt_1_5_5_5 = 3,
     kFmt_5_6_5 = 4,
@@ -162,26 +170,57 @@ enum TexFormat : uint32_t
     kFmt_8_A = 8,
     kFmt_8_B = 9,
     kFmt_8_8 = 10,
+    kFmt_Cr_Y1_Cb_Y0_REP = 11,
+    kFmt_Y1_Cr_Y0_Cb_REP = 12,
+    kFmt_16_16_EDRAM = 13,
+    kFmt_8_8_8_8_A = 14,
     kFmt_4_4_4_4 = 15,
     kFmt_10_11_11 = 16,
     kFmt_11_11_10 = 17,
     kFmt_DXT1 = 18,
     kFmt_DXT2_3 = 19,
     kFmt_DXT4_5 = 20,
+    kFmt_16_16_16_16_EDRAM = 21,
     kFmt_24_8 = 22,
     kFmt_24_8_FLOAT = 23,
     kFmt_16 = 24,
     kFmt_16_16 = 25,
     kFmt_16_16_16_16 = 26,
+    kFmt_16_EXPAND = 27,
+    kFmt_16_16_EXPAND = 28,
+    kFmt_16_16_16_16_EXPAND = 29,
     kFmt_16_FLOAT = 30,
     kFmt_16_16_FLOAT = 31,
     kFmt_16_16_16_16_FLOAT = 32,
+    kFmt_32 = 33,
+    kFmt_32_32 = 34,
+    kFmt_32_32_32_32 = 35,
     kFmt_32_FLOAT = 36,
     kFmt_32_32_FLOAT = 37,
     kFmt_32_32_32_32_FLOAT = 38,
-    kFmt_DXT3A = 43,
-    kFmt_DXT5A = 44,
-    kFmt_CTX1 = 45,
+    kFmt_32_AS_8 = 39,
+    kFmt_32_AS_8_8 = 40,
+    kFmt_16_MPEG = 41,
+    kFmt_16_16_MPEG = 42,
+    kFmt_8_INTERLACED = 43,
+    kFmt_32_AS_8_INTERLACED = 44,
+    kFmt_32_AS_8_8_INTERLACED = 45,
+    kFmt_16_INTERLACED = 46,
+    kFmt_16_MPEG_INTERLACED = 47,
+    kFmt_16_16_MPEG_INTERLACED = 48,
+    kFmt_DXN = 49, // two-channel compressed, i.e. BC5 — normal maps
+    kFmt_8_8_8_8_AS_16_16_16_16 = 50,
+    kFmt_DXT1_AS_16_16_16_16 = 51,
+    kFmt_DXT2_3_AS_16_16_16_16 = 52,
+    kFmt_DXT4_5_AS_16_16_16_16 = 53,
+    kFmt_2_10_10_10_AS_16_16_16_16 = 54,
+    kFmt_10_11_11_AS_16_16_16_16 = 55,
+    kFmt_11_11_10_AS_16_16_16_16 = 56,
+    kFmt_32_32_32_FLOAT = 57,
+    kFmt_DXT3A = 58,
+    kFmt_DXT5A = 59, // single-channel compressed, i.e. BC4
+    kFmt_CTX1 = 60,
+    kFmt_DXT3A_AS_1_1_1_1 = 61,
 };
 
 } // namespace xenos
