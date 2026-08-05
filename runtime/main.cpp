@@ -32,6 +32,7 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "kernel/audio.h"
 #include "kernel/heap.h"
 #include "kernel/memory.h"
 #include "kernel/vfs.h"
@@ -169,6 +170,11 @@ int main(int argc, char** argv)
     g_memory.Init();
     g_heap.Init();
     fprintf(stderr, "runtime: guest memory at %p, heaps ready\n", (void*)g_memory.base);
+
+    // Before any guest code: the title reads the XMA context-array base out of the
+    // decoder's register aperture exactly once (sub_8285EDF8) and caches it, so a
+    // register published later than that is never seen.
+    Audio_Init();
 
     // The package is the directory holding default.xex, and the guest reaches it as
     // both `game:` and `d:` — Xenia registers both symlinks before the title runs

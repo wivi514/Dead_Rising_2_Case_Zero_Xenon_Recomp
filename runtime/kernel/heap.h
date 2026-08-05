@@ -77,7 +77,12 @@ struct GuestHeap
     void Init();
 
     void* Alloc(size_t size);
-    void* AllocPhysical(size_t size, size_t alignment = 0);
+    // topDown places the block as high in the arena as it fits. Reserved for
+    // allocations the RUNTIME owns rather than the guest: the title asks for 447 MB
+    // of the 512 MB arena up front, so anything we take from the low end first moves
+    // the address it gets back, and gotcha 9 says the guest builds its own map out
+    // of those numbers.
+    void* AllocPhysical(size_t size, size_t alignment = 0, bool topDown = false);
     // largePages mirrors the guest's MEM_LARGE_PAGES request bit; it picks the
     // arena, which is observable to the guest as the address range it gets back.
     void* AllocVirtual(size_t size, bool largePages);

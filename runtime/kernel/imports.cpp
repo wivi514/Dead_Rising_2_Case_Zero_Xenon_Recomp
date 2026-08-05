@@ -764,9 +764,34 @@ static uint32_t NtReleaseSemaphore_x(Semaphore* sem, uint32_t releaseCount,
     return STATUS_SUCCESS;
 }
 
+// A wait on an object the guest handed us that we cannot use — currently only a
+// null pointer. Distinct from STATUS_TIMEOUT so a caller can tell "not signalled
+// yet" from "there was nothing here to wait on".
+constexpr uint32_t kWaitObjectUnusable = 0xFFFFFFFEu;
+
 // Dispatcher-header waits (Ke level): resolve by the header's Type field.
+//
+// The null check is not defensive padding. Until it existed, ANY guest that passed
+// a null dispatcher object to a Ke wait took the host down with a SIGSEGV at
+// address 0 — a fault the crash reporter correctly labels "outside the 4 GB guest
+// space, a host-side bug", which is a true statement that names our kernel rather
+// than the guest that provoked it. Case Zero does exactly this during audio
+// bring-up: the render-driver callback reads its wait objects out of an object the
+// mixer thread has not finished constructing (kernel/audio.cpp), and gets two
+// zeros. On hardware that would bugcheck, so there is no faithful answer to copy;
+// what there is instead is a rule — a guest-supplied pointer must never be
+// dereferenced without a check, however impossible the null looks.
 static uint32_t WaitDispatcher(XDISPATCHER_HEADER* header, uint32_t timeoutMs)
 {
+    if (!header)
+    {
+        static std::atomic<uint32_t> complained{ 0 };
+        if (complained.fetch_add(1) < 4)
+            KLOG("Ke wait on a NULL dispatcher object (lr=%08X) — reporting it as "
+                 "unusable rather than faulting\n",
+                 uint32_t(g_ppcContext ? g_ppcContext->lr : 0));
+        return kWaitObjectUnusable;
+    }
     switch (header->Type)
     {
         case 0: // NotificationEvent
@@ -783,7 +808,8 @@ static uint32_t WaitDispatcher(XDISPATCHER_HEADER* header, uint32_t timeoutMs)
 static uint32_t KeWaitForSingleObject_x(XDISPATCHER_HEADER* object, uint32_t reason,
                                         uint32_t mode, uint32_t alertable, be<int64_t>* timeout)
 {
-    return WaitDispatcher(object, GuestTimeoutToMs(timeout));
+    const uint32_t status = WaitDispatcher(object, GuestTimeoutToMs(timeout));
+    return status == kWaitObjectUnusable ? STATUS_INVALID_PARAMETER : status;
 }
 
 static bool DrainThreadApcs();
@@ -850,6 +876,34 @@ static uint32_t KeWaitForMultipleObjects_x(uint32_t count, xpointer<XDISPATCHER_
                                            uint32_t alertable, be<int64_t>* timeout)
 {
     const uint32_t timeoutMs = GuestTimeoutToMs(timeout);
+
+    // Validate the whole array up front. An unusable object cannot become usable
+    // while we hold the caller's stack copy of it, so polling one forever would
+    // wedge the calling thread for the life of the process — and this call site is
+    // usually an infinite wait, which is exactly where that is unrecoverable.
+    // Failing immediately hands control back to the guest, which is what lets the
+    // audio callback retry on the next frame instead of hanging on the first.
+    for (uint32_t i = 0; i < count; i++)
+    {
+        XDISPATCHER_HEADER* object = objects[i];
+        if (!object)
+        {
+            // Rate-limited on purpose. A caller that retries every frame — which is
+            // exactly what the audio pump does by design — turns an unbounded alarm
+            // into thousands of identical lines a second, and an alarm that always
+            // fires is one people learn to ignore (gotcha 41). Keep the alarm, bound
+            // the noise: the first few, then one every 4096th.
+            static std::atomic<uint64_t> seen{ 0 };
+            const uint64_t n = seen.fetch_add(1);
+            if (n < 4 || (n & 0xFFFu) == 0)
+                KLOG("KeWaitForMultipleObjects: object %u of %u is NULL (lr=%08X, "
+                     "occurrence %llu) — returning STATUS_INVALID_PARAMETER\n",
+                     i, count, uint32_t(g_ppcContext ? g_ppcContext->lr : 0),
+                     static_cast<unsigned long long>(n));
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
     if (waitType == 0) // wait-all
     {
         for (uint32_t i = 0; i < count; i++)

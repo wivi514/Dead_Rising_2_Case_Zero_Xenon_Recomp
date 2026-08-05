@@ -495,6 +495,8 @@ screen's steady ~2,540 and the movie eras' ~194.
 | distinct shaders, frontend | 120 (91 ps + 29 vs) | A1 / D |
 | distinct shaders, gameplay | 335 raw microcode | A2 / D |
 | XMA contexts in use | 0–17+ | A2 |
+| XMA context size / register base | 64 B / `0x7FEA0000` (little-endian) | finding 36 |
+| audio driver frame | 256 samples × 6 ch × f32 planar, 5.333 ms | finding 36 |
 | swap resolution | 1280×720 | A5 `VdSwap` params |
 | save file | `save:\DR2P000.DSF`, 303,104 B, one write | A3 |
 | distinct PM4 type-3 opcodes | 21 (identical in B1/B1b/B2) | finding 10d |

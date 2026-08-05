@@ -125,6 +125,7 @@ add_executable(cz_runtime
     kernel/imports.cpp
     kernel/file_imports.cpp
     kernel/vfs.cpp
+    kernel/audio.cpp
     kernel/xex_imports.cpp
     gpu/vd.cpp
     gpu/pm4.cpp

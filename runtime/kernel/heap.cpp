@@ -73,16 +73,35 @@ void GuestHeap::Init()
 }
 
 // Shared first-fit range allocation with alignment. Returns 0 on exhaustion.
+//
+// `topDown` walks the free map backwards and places the block at the END of the
+// first block that fits, which is how a runtime-owned allocation gets out of the
+// guest's way. It matters because the addresses this arena hands out are observable
+// to the title: it asks for 447 MB of the console's 512 MB up front, and anything we
+// take from the low end first moves that block. Xenia puts its own XMA context array
+// immediately ABOVE the title's reservation for the same reason (A1: the title gets
+// physical 0x03D93000 + 0x1BF16000, and the context array sits at 0x1FCAA000, one
+// page past its end).
 static uint32_t RangeAlloc(std::map<uint32_t, uint32_t>& freeMap,
                            std::unordered_map<uint32_t, uint32_t>& usedMap,
-                           uint32_t need, uint32_t align)
+                           uint32_t need, uint32_t align, bool topDown = false)
 {
-    for (auto it = freeMap.begin(); it != freeMap.end(); ++it)
-    {
+    // Carve `need` bytes out of one free block, or return 0 if it does not fit.
+    // Erases `it` on success, so every caller returns immediately afterwards.
+    auto carve = [&](std::map<uint32_t, uint32_t>::iterator it) -> uint32_t {
         const uint32_t blockAddr = it->first, blockSize = it->second;
-        const uint32_t aligned = (blockAddr + align - 1) & ~(align - 1);
+        uint32_t aligned = (blockAddr + align - 1) & ~(align - 1);
+        if (topDown && blockSize >= need)
+        {
+            // The highest aligned start that still leaves `need` bytes inside the
+            // block. Guarded by `high >= aligned` because rounding an already
+            // tight fit downward can land below the block.
+            const uint32_t high = (blockAddr + blockSize - need) & ~(align - 1);
+            if (high >= aligned)
+                aligned = high;
+        }
         if (uint64_t(aligned) + need > uint64_t(blockAddr) + blockSize)
-            continue;
+            return 0;
         freeMap.erase(it);
         if (aligned > blockAddr)
             freeMap.emplace(blockAddr, aligned - blockAddr);
@@ -90,6 +109,21 @@ static uint32_t RangeAlloc(std::map<uint32_t, uint32_t>& freeMap,
             freeMap.emplace(aligned + need, blockAddr + blockSize - aligned - need);
         usedMap.emplace(aligned, need);
         return aligned;
+    };
+
+    if (topDown)
+    {
+        // rit.base() is one PAST rit's element in forward order, so the element
+        // itself is std::prev(rit.base()).
+        for (auto rit = freeMap.rbegin(); rit != freeMap.rend(); ++rit)
+            if (const uint32_t addr = carve(std::prev(rit.base())))
+                return addr;
+    }
+    else
+    {
+        for (auto it = freeMap.begin(); it != freeMap.end(); ++it)
+            if (const uint32_t addr = carve(it))
+                return addr;
     }
     return 0;
 }
@@ -226,7 +260,7 @@ void* GuestHeap::Alloc(size_t size)
 // from the host-side range allocator (see the finding-65 note in heap.h). Large
 // requests round to a page so multi-MB pools stay page-exact; small ones round to
 // 16 bytes so a kernel object does not burn a whole page.
-void* GuestHeap::AllocPhysical(size_t size, size_t alignment)
+void* GuestHeap::AllocPhysical(size_t size, size_t alignment, bool topDown)
 {
     size = std::max<size_t>(1, size);
     alignment = alignment == 0 ? 0x1000 : std::max<size_t>(16, alignment);
@@ -237,7 +271,7 @@ void* GuestHeap::AllocPhysical(size_t size, size_t alignment)
 
     std::lock_guard lock(rangeMutex);
     const uint32_t addr =
-        RangeAlloc(physFree, physUsed, need, static_cast<uint32_t>(alignment));
+        RangeAlloc(physFree, physUsed, need, static_cast<uint32_t>(alignment), topDown);
     if (!addr)
     {
         static bool dumped = false;

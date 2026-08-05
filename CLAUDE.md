@@ -415,6 +415,49 @@ From finding 27 (the null base pointer, resolved — and it was none of the abov
     the exact `ppc_recomp.NNN.cpp` line. The same staleness in `ctx.r1` puts one extra,
     already-returned frame on top of the guest back-chain — read frame #0 as advisory.
 
+From finding 36 (the audio driver, and the first fully clean A5 gate):
+
+72. **A callback's argument can be a pointer to the context, not the context.**
+    Case Zero's registered render-driver callback is `lwz r3,0(r3); b <body>` — it
+    dereferences before doing anything, so a driver that passes the registered
+    context straight through hands the body a pointer one indirection too shallow.
+    The body then reads its wait objects and its ring buffer out of whatever sits
+    there. What proves it is deliberate is the object's own constructor: the
+    registration is slot 3 of a SECOND vtable, so its `this` is `obj+4` and the
+    `addi r9,r31,-4` that builds the context recovers `obj+0` — while the body
+    measures every field from `obj+0`. Body wants obj, registration supplies obj,
+    thunk does one load.
+73. **A guest-supplied pointer must never be dereferenced without a check, however
+    impossible the null looks.** `WaitDispatcher` read `header->Type` unguarded, so
+    ANY guest passing a null dispatcher object to ANY `Ke` wait took the host down
+    at address 0 — and the crash reporter labels that "outside the guest space, a
+    host-side bug", a true statement that names our kernel rather than the guest
+    that provoked it. On hardware it would bugcheck, so there is no faithful
+    behaviour to copy; there is only the rule. Corollary: do not *poll* an unusable
+    object either — this call site is an infinite wait, so polling wedges the thread
+    for the life of the process.
+74. **An allocation the runtime owns must get out of the guest's way.** Taking the
+    XMA context array from the bottom of the physical arena moved the title's own
+    447 MB reservation by 20 KB — a change to an unrelated subsystem bought for
+    nothing (gotcha 9). A1 shows Xenia doing the opposite: the title gets physical
+    0x03D93000 and the context array sits one page past the END of that reservation.
+    `AllocPhysical` grew a `topDown` flag.
+75. **A duration is part of a gate's configuration, and "not reached" is not "not
+    reachable".** At 30 s the A5 gate stopped at position 114 and the XMA path
+    looked blocked. The same binary reaches 119 at 90 s. Before theorising about
+    what is blocking a gate position, run it longer — and then run it again:
+    gotchas 50-51 are usually quoted about crashes, but they are really about single
+    runs of anything. How far a multi-threaded boot gets in a fixed wall time is a
+    distribution. One 90 s run reached position 84 and the next did not; the rate is
+    5 of 7.
+76. **The XMA decoder's register file is console knowledge, and this title drives it
+    directly.** `0x7FEA0000`, LITTLE-endian (`lwbrx`/`stwbrx` on a big-endian
+    machine): `+0x1800` holds the context array's PHYSICAL address, `+0x1A80` is a
+    one-bit-per-context kick bitmap indexed `>> 5`. Contexts are 64 bytes and the
+    index is `(MmGetPhysicalAddress(ctx) - base) >> 6`, so they must come from one
+    contiguous array at the address you published. Publish it big-endian and every
+    index is nonsense, silently — the index only ever picks a hardware bit.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -464,6 +507,10 @@ From finding 27 (the null base pointer, resolved — and it was none of the abov
   - `kernel/xex_imports.*` — publishes the XEX headers into guest memory and resolves
     the 244 IAT slots + 13 kernel variables.
   - `kernel/imports.cpp` — the kernel HLE, written in A1's call order.
+  - `kernel/audio.{h,cpp}` — the XAudio render-driver client (a guest-thread pump
+    calling the title's callback at 5.333 ms/frame) and the XMA context array +
+    its MMIO register file. Finding 36; every structural claim is quoted from the
+    guest function that states it.
   - `kernel/{vfs,file_imports}.*` — the file layer. In phase 1 rather than phase 2
     because A1's 22nd distinct kernel call is already an `NtCreateFile` (finding 16).
   - `kernel/import_stubs.cpp` — generated; honest-failure returns, not aborts.
@@ -558,6 +605,12 @@ CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware do
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
 CZ_KCALL_WHO=A,B   dump the guest call stack the first time these imports are called
+CZ_AUDIO_TRACE=1   XMA context allocation + every 512th driver frame WITH its peak
+                   amplitude, so "the pump runs" and "the game makes sound" stay
+                   separable
+CZ_AUDIO_FRAME_US=N  the driver frame period (default 5333 = 256 samples @ 48 kHz)
+CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the control
+                   arm for every claim about driving the audio callback
 ```
 
 `CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
@@ -714,23 +767,26 @@ command-processor interrupts delivered to the guest ISR — with **zero unknown 
 zero parser stalls and zero out-of-arena stores**, and the read pointer chasing the
 write pointer rather than frozen.
 
-- **`--xenia A1` (masked): clean prefix match through position 83**; runs reach 81-84
-  visible calls and two in five are an **exact prefix of Xenia's 93 with no divergence
-  at all**. Positions 71-76, when they mismatch, are a permutation of one six-name set
-  (`XamUserCheckPrivilege` first on hardware, last for us), unstable across our own
-  runs, so a thread race rather than a defect.
-- **`--xenia A5 --include-high-frequency`: tracks A5 to position 118** with **one**
-  real mismatch window left in the entire boot — `XAudioSubmitRenderDriverFrame`,
-  absent for want of an audio backend. The other two are permutations of one name set,
-  i.e. thread scheduling (finding 35).
-- 148 of 244 imports real, 96 generated honest-failure stubs.
+- **`--xenia A1` (masked): an exact 84-deep prefix of Xenia's 93**, stopping before
+  `XamShowDeviceSelectorUI`. Position 84 is `MmMapIoSpace`, the XMA context mapping.
+- **`--xenia A5 --include-high-frequency`: tracks A5 to position 119, its last, with
+  ZERO real mismatch windows** — `SET MATCH: every mismatch is a permutation. Exit 0.`
+  The two surviving windows are permutations of one name set each, i.e. thread
+  scheduling (findings 35-36). First fully clean A5 gate this port has produced.
+  **Gate at 90 s, not 30 s**: at 30 s the run stops around 114 and the XMA path looks
+  blocked when it is merely slow (gotcha 75). Even at 90-150 s reaching position 84 is
+  usual, not guaranteed — 5 of 7 runs this session — because how far a multi-threaded
+  boot gets in fixed wall time is a distribution, not a fact.
+- 155 of 244 imports real, 89 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 0 crashes in 6 runs at 25 s** on the current binary (0 in 20 on the
-  session-5 binary). The dominant fault — the "null-pointer walk on the main thread",
-  6-7 in 10 — was the unlowered `bctr` of finding 27 and is gone; the poison indirect
-  call on the pump thread is declined. Neither zero is evidence the remaining fault is
-  fixed — a 1-in-20 event is consistent with 0 in 20 (gotcha 51).
-  `runtime/cpu/crash_report.cpp` prints the guest state on any fault.
+- **Stability: 0 crashes in 8 runs at 25 s, and 0 in 8 with `CZ_NO_AUDIO_PUMP=1`** —
+  the audio pump's own control arm, same binary, same session. Read it as "no
+  measurable difference", **not** "the pump is safe": 8 runs cannot see a 1-in-20
+  fault, and the known surviving crash is around that rate (gotchas 50-51). The
+  dominant fault — the "null-pointer walk on the main thread", 6-7 in 10 — was the
+  unlowered `bctr` of finding 27 and is gone; the poison indirect call on the
+  *graphics* pump thread is declined. `runtime/cpu/crash_report.cpp` prints the guest
+  state on any fault.
 
 Three things from this session worth carrying to Case West, all in
 `docs/phase1-notes.md`:
@@ -759,27 +815,45 @@ reports **0 defects, 2 benign tail-call thunks**.
 Measured: **6-7 crashes in 10 runs -> 1 in 20.** The pipeline is clean end to end —
 silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
+**The audio driver is real and the A5 gate is clean (2026-08-04, session 6).**
+`docs/phase1-notes.md` finding 36. All seven audio imports implemented: an XAudio
+render-driver client with a guest-thread pump at 5.333 ms/frame (256 samples x 6
+channels, planar f32 — read out of the title's own de-interleave loop), and the XMA
+context array published into the decoder's little-endian MMIO register file at
+`0x7FEA1800`. The deciding detail was that the registered callback is
+`lwz r3,0(r3); b <body>` — **the driver passes a POINTER to the context, not the
+context** (gotcha 72). Our `MmMapIoSpace(bus=2, phys=..., 64 bytes, protect=404)`
+now matches A1's field for field.
+
+Two general defects fell out of it, neither audio-specific: `WaitDispatcher`
+dereferenced a guest pointer unguarded, so any null dispatcher object crashed the
+host inside our own kernel (gotcha 73); and a runtime-owned physical allocation was
+displacing the title's own 447 MB reservation (gotcha 74).
+
 Next, in order:
 
-1. **XMA audio** — now the *only* real difference left in the A5 boot, though per
-   finding 34's retraction it gates gate position 84 and nothing else.
-   `XMACreateContext` takes an out-pointer and its caller tests the result with a
-   **signed** compare, so a positive stub return reads as success — gotcha 5 exists
-   because Fable 2 lost weeks to this exact import faking success.
-2. **Whether the frontend is waiting for input** — positions 85-92 are on the frontend
-   thread at A1 line ~111,694; our run reaches `frontend/mainmenu.tex` and then has
-   nothing to press START with. Establish this before writing more frontend imports.
-3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
+1. **Whether the frontend is waiting for input** — the boot now stops at A1 position
+   85, `XamShowDeviceSelectorUI`, on the frontend thread, and finding 34 already
+   implemented that whole block, so this is no longer "an import is missing". Our run
+   reaches `frontend/mainmenu.tex` and has nothing to press START with. Establish
+   this before writing more frontend imports.
+2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
    The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
    `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
    name this instantly.
-4. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — the earliest real
-   divergence anywhere in the boot.
-5. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+3. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+   not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
+   runs guest code on a new thread and never has. Of finding 36's seven, **five run
+   and two do not** — both teardown paths (`XAudioUnregisterRenderDriverClient`,
+   `XMAReleaseContext`), because the boot never shuts audio down.
+4. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
    `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
    deliberately left out of finding 34 as the phase 2 file layer.
+5. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
+   lands in ordinary flat memory and is inert; a real decoder needs that aperture
+   trapped as MMIO or the kick is written and never noticed.
 
 ## Conventions (same as the two template ports)
 
