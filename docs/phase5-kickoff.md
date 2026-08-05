@@ -2,51 +2,49 @@
 
 ---
 
-> ## STATUS, 2026-08-05: THE RENDERER IS BUILT. DO NOT START IT AGAIN.
+> ## STATUS, 2026-08-05: THE RENDERER IS BUILT AND DRAWS THE SCENE. DO NOT RESTART IT.
 >
-> Session 11 built it. **`docs/phase5-notes.md` is the record and supersedes the "What
-> is ALREADY DONE" list below** — read it first, then come back here for the method
-> sections (the gate, the traps, the standing constraints), which are all still current.
+> **`docs/phase5-notes.md` is the record and supersedes the "What is ALREADY DONE" list
+> below.** Read it first; then come back here for the method sections (the gate, the
+> traps, the standing constraints), which are all still current.
 >
-> **What exists now, on top of everything the list below already described:**
+> **What exists:** the shader pipeline (336 of 336 translate, zero failures, no
+> recompiler change), `runtime/gpu/vk_renderer.{h,cpp}` + `xenos.h` behind `CZ_VKDRAW=1`,
+> a draw seam in `pm4.cpp`, and eighteen instruments listed in `phase5-notes.md` §9.
+> The shader cache is gitignored — `CLAUDE.md`'s Commands section rebuilds it in three
+> lines.
 >
-> * `tools/build_shader_spv.sh` + `tools/synth_shader_container.py` +
->   `tools/xenia_ucode_to_cache.py` — the shader pipeline. **336 of 336 distinct
->   shaders translate, zero failures, no recompiler change needed.** The cache is
->   gitignored; `CLAUDE.md`'s Commands section has the three lines that rebuild it.
-> * `runtime/gpu/vk_renderer.{h,cpp}` and `runtime/gpu/xenos.h` — a working Vulkan
->   renderer behind `CZ_VKDRAW=1`: device, shader cache, pipeline cache, per-draw
->   constants, vertex streams from the guest's fetch constants, the tiled-texture
->   untiler, resolve snapshots served as textures, and a readback into phase 3's
->   present seam via the new `Host_PresentPixels`.
-> * A draw seam in `pm4.cpp` (`Pm4_SetDrawSink`, `Pm4_BoundShader`, `Pm4_Registers`)
->   and `IM_LOAD`/`IM_LOAD_IMMEDIATE` shader-load recording with `CZ_SHADER_DUMP`.
-> * Eleven instruments, listed in `phase5-notes.md` §9 and in `CLAUDE.md`.
+> **Where the picture is:** the Still Creek scene renders in its own colours, and the
+> whole post-processing chain (the 640x360 -> 32x1 pyramid, the 64x64 luminance chain,
+> the colour-grading LUT) is alive. A class of triangles is still wrong. The frame we
+> present is the logo era and still lacks the logo.
 >
-> **What is left is the picture, and it is enumerated rather than open-ended:**
-> `phase5-notes.md` §7 is a table of every surface in a frame with its non-black
-> percentage, plus the list of stated simplifications that are the candidates. The
-> short version: the glyph atlases render at 99.9% non-black and the entire
-> 640x360→32x1 scene pyramid renders at 0.0%, so **the loss is upstream of the
-> compose**, and it is none of a missing shader, a refused pipeline, an unmapped
-> format, an unsupported primitive, or the colour mask — each of which is measured.
+> ### START HERE, AND IT IS NOT A HYPOTHESIS
 >
-> **Start by reproducing the two dumps**, which cost one headless run each and are what
-> make this checkable without an operator:
-> `CZ_VK_FRAME_DUMP=<dir>` and `CZ_VK_SNAP_DUMP=<dir>`.
+> **Build a metric that can tell whether a change worked.** The title screen renders an
+> ANIMATED 3D background, so "the scene surface is N% non-black at frame 600" is a
+> different camera angle every run — measured spread 58.8% to 100.0% on ONE binary
+> (§6k). A single-run A/B on it produced a confident, wrong result this session. Every
+> cheap hypothesis has been spent against that metric; the next one needs an instrument.
 >
-> All gates in the "Secondary gates" section below hold with the renderer ON. Re-run
-> them, do not assume them (gotcha 86); and run the A1 gate with an empty save root
-> (gotcha 106).
-
----
-
-`CLAUDE.md` loads automatically and is current (phases 0, 1 and 3 complete, plus the
-save-data layer; 2026-08-05). This file adds only what a fresh context needs to start
-**phase 5 — the renderer** without re-deriving anything.
-
-Phase 5 is the actual milestone. Everything before it was making the title *run*; this
-is what makes it *look like the game*.
+> What the kickoff already prescribes and the phase has not built: **B1's own per-era
+> draw aggregates**. A pinned camera would also do.
+>
+> Only then chase the remaining geometry defect. What is already ELIMINATED, each with
+> a measurement in `phase5-notes.md`: the fetch-slot convention (§6i, by an inverting
+> arm), the vertex- and pixel-shader constant windows (§6c, §6g), the index endian
+> decode (§6c), the colour mask (§6), culling (§6c — the title does not cull),
+> `VGT_INDX_OFFSET` (0), the `sges` "set w = 1" idiom (§6l, by a hand-patched shader
+> cache), the zero-attribute shader that draws 100k degenerate points, and primitive
+> restart (`VGT_MAX_VTX_INDX` is 65535, so 0xFFFF is a legal index — restart must stay
+> off).
+>
+> Known gaps with a location, from §7: a depth-only pass resolves the colour target;
+> the 4096x1024 shadow cascades are clipped by a 1280x720 EDRAM image; one global
+> sampler; no mip levels; one EDRAM format; rectangle lists reuse three corners.
+>
+> All gates hold with the renderer ON — re-run them, do not assume them (gotcha 86), and
+> use an empty save root (gotcha 106).
 
 ---
 
