@@ -326,6 +326,25 @@ From findings 30-32 (the profile, the version gate and the notification queue):
     i.e. no measurable difference — one arm per value would have "proved" a win that
     is not there (gotcha 50).
 
+From finding 33 (the position-57 divergence, closed — and it was not the DVD cache):
+
+63. **A probe answers the question you point it at, and pointing it downward
+    confirms the symptom.** Our boot probed `\Device\Image`, then
+    `\Device\Harddisk0\partition0`, then compared a path against `"cdrom0:"` — a
+    coherent DVD-cache trail, every reading accurate, and the whole subsystem
+    innocent. What found the cause was walking OUTWARD to the first caller whose
+    behaviour differs from the capture. The cheapest form of that question is not
+    "why did this fail" but **"does hardware even get here"**, and one grep of A1
+    answered it: hardware never opens `\Device\Image` at all.
+64. **A one-instruction tail-call thunk hides an import from its caller's
+    disassembly.** `sub_825D7A50` is literally `b XamContentGetLicenseMask`, so the
+    deciding branch reads as `sub_825D7A50()` and the import name appears nowhere near
+    it. When a call site's callee is a 4-byte function, look through it.
+65. **When a predicate's polarity will not hold still, print it.** `sub_82829098` has
+    four routes to a zero return and two of them are failure paths; three static reads
+    gave three answers. One instrumented run gave the right one. Printing costs less
+    than reading it twice and cannot be wrong.
+
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -658,14 +677,15 @@ command-processor interrupts delivered to the guest ISR — with **zero unknown 
 zero parser stalls and zero out-of-arena stores**, and the read pointer chasing the
 write pointer rather than frozen.
 
-- **`--xenia A1` (masked): PREFIX MATCH, 56 of 93** — and past the break, our
-  positions 58-84 reproduce hardware's 57-83 **element for element**, offset by the one
-  spurious `RtlCompareStringN`. That single insertion is now the entire divergence in
-  the range, and it is the DVD-cache question, not a XAM one.
+- **`--xenia A1` (masked): clean prefix match through position 70**, and one run in
+  four is an **exact 81-deep prefix of Xenia's 93 with no divergence at all** — the
+  first this port has produced. Positions 71-76 are a permutation of one six-name set
+  (`XamUserCheckPrivilege` first on hardware, last for us), unstable across our own
+  runs, so a thread race rather than a defect.
 - **`--xenia A5 --include-high-frequency`: tracks A5 to position 118**
-  (`XMACreateContext`), with five real mismatch windows in the whole boot, each one
-  name.
-- 138 of 244 imports real, 106 generated honest-failure stubs.
+  (`XMACreateContext`), with four real mismatch windows in the whole boot, each one
+  displaced name.
+- 139 of 244 imports real, 105 generated honest-failure stubs.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - **Stability: 0 crashes in 6 runs at 25 s** on the current binary (0 in 20 on the
   session-5 binary). The dominant fault — the "null-pointer walk on the main thread",
@@ -703,26 +723,29 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **The storage-device block, gate positions 85-93** — `XamShowDeviceSelectorUI`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamTaskSchedule`, `XamGetOverlappedResult`,
-   `XMsgInProcessCall`, `XMsgCompleteIORequest`, `XamContentGetDeviceData`. We now
-   reach `XMsgStartIORequest`, the generic XAM app-message dispatcher that is the entry
-   point to all of them (A1: `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB (XGI),
-   message 0x000B0006 — immediately followed by `XGIUserSetContext`). Note this block
-   happens in A1 *after the title screen is already rendering*, so it is gated on the
-   boot getting further as much as on the imports.
+1. **The storage-device block, gate positions 82-93** — `KeResetEvent`,
+   `XMsgStartIORequest`, `MmMapIoSpace`, `XamShowDeviceSelectorUI`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamAlloc`, `XamTaskSchedule`,
+   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`,
+   `XamContentGetDeviceData`. The entry point is `XMsgStartIORequest`, the generic XAM
+   app-message dispatcher (A1: `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB
+   (XGI), message 0x000B0006 — then `XGIUserSetContext`). This block first appears in
+   A1 *after the title screen is already rendering*, so it is gated on the boot getting
+   further as much as on the imports.
    Method, since Xenia logs no return values for any of these: `tools/import_call_sites.py`
    prints the guest code that consumes an import's result, and that code IS the spec.
-2. **The DVD-cache fallback at position 57** — our boot enters the title's DVD-cache
-   subsystem and hardware does not; the deciding branch is `sub_82829098`'s result
-   tested at `0x827890B4` (finding 28). This is the only thing shifting 58-84.
-3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
+   And check A5 as well as A1 — the import that closed finding 33 was `kHighFrequency`
+   and appears nowhere in A1.
+2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
    The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
    `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
    name this instantly.
-4. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
+3. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — now the earliest
+   real divergence anywhere in the boot.
+4. `XAudioSubmitRenderDriverFrame` is absent from our run because there is no audio
+   backend. Expected, not a bug — recorded so it is not re-investigated.
 
 ## Conventions (same as the two template ports)
 

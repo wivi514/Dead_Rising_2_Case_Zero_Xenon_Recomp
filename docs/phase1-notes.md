@@ -579,6 +579,13 @@ The branch that decides it is at **0x827890B4** in `sub_82788F48`: when
 `sub_82829098(...)` returns non-zero the whole block — including the `sub_82827318`
 call that reaches the comparison — is skipped. Hardware skips it; we do not.
 
+> **RETRACTED — see finding 33.** Everything above is accurate and none of it is the
+> cause. 0x827890B4 is a symptom two levels down: the real branch is 0x82789080, one
+> call earlier in the same function, testing a stubbed **`XamContentGetLicenseMask`**.
+> Naming 0x827890B4 "the branch that decides it" sent the next session looking at a
+> DVD-cache subsystem that was behaving correctly throughout. The `cache:` symlink
+> hypothesis below is also dead — it was never tested because it never needed to be.
+
 Worth noting for whoever picks this up: Xenia's own config registers `cache:`,
 `cache0:` and `cache1:` symlinks (`mount_cache = true`), and our VFS has no cache
 device at all. That is a real difference in the environment the two runs see, and it
@@ -819,6 +826,89 @@ One deliberate non-match, from finding 31's branch: we report sub-type 1, not th
 that `sub_825D7AC8` tests for. Reporting 2 would claim to be the accessory with
 reversed motors and get our rumble inverted for the sake of matching a comparison.
 
+### Finding 33 — the position-57 divergence was a licence query, not a disc
+
+Gate position 57 had been open since the runtime first booted. It is closed, and the
+way it closed is worth more than the fix, which is four lines.
+
+**The visible trail was entirely real and entirely innocent.** Our boot did this:
+
+    NtCreateFile('\Device\Image')                 -> not found
+    NtCreateFile('\Device\Harddisk0\partition0')  -> not found
+    RtlCompareStringN                             <- gate position 57
+
+and the string table around the comparison is unambiguous about the subsystem —
+`\Device\Image`, `cdrom0:`, `cache:\$cache$\spc`, `DvdCache`,
+`\Device\Harddisk0\Cache%u`. Finding 28 read that correctly, identified
+`sub_82829098` as the DVD-cache initialiser, found the branch at `0x827890B4` that
+consumes its result, and named that as the deciding branch. All true. None of it the
+cause.
+
+**Printing the predicates beat reading them.** `sub_82829098` has four separate routes
+to a zero return and two of them are *failure* paths, so a static read of the polarity
+kept flipping. Probing the returns settled it in one run:
+
+    [ret] sub_82823A58   -> 1    '\Device\Image' is absent — correct, this is not a disc title
+    [ret] sub_82831528   -> 2    ERROR_FILE_NOT_FOUND on \Device\Harddisk0\partition0
+    [ret] sub_82829098   -> 0    ... and 0 is what makes the caller run the cache block
+
+**Then the capture said the whole trail was unreachable.** A1's first `NtCreateFile`
+is `game:\layout.bin`. Hardware never opens `\Device\Image` at all — so it never
+enters `sub_82829098`, and the deciding branch could not be the one that consumes its
+result. It had to be earlier.
+
+One call earlier, at `0x82789080`:
+
+    sub_825D7A50()            // literally `b XamContentGetLicenseMask` — a tail-call thunk
+    cmplwi r3,0
+    beq    loc_82789134       // SUCCESS -> skip everything below
+    ... sub_82829098 ...      // FAILURE -> go looking for a disc
+
+`XamContentGetLicenseMask` was a generated honest-failure stub returning
+`0xC0000002`. The title asked "am I licensed?", could not get an answer, and did the
+reasonable thing: went to check whether it was running from a disc.
+
+**Why it was invisible.** `XamContentGetLicenseMask` is `kHighFrequency`. It appears
+**nowhere in A1** and three times in A5, which is where the argument shape and the
+null overlapped came from. Gotcha 47, paid in full: a capture set needs a
+high-frequency arm or its quietest exports are unfalsifiable. And a one-instruction
+tail-call thunk means the import does not appear in the calling function's own
+disassembly under its own name — `sub_825D7A50` is what you see.
+
+**The mask value is finding 1 arriving in the runtime.** A second call site, at
+`0x8250191C`, decides trial-versus-full with the value rather than the status:
+
+    r11 = [r1+80]            // the mask we wrote
+    r9  = (mask == 0)
+    [0x82505FFE] &= r9       // a global byte, cleared when the mask is non-zero
+
+Zero mask leaves the flag standing; non-zero clears it. That is the ledger's finding 1
+from the inside — Xenia's `license_mask` defaults to 0 and boots the **trial**, and
+both A1 and A5 were captured with `license_mask = 1`. Our package is the full game, so
+bit 0 is set. This is the one place in the runtime where a wrong value would silently
+boot a different game rather than fail.
+
+**Also fixed while here:** `XexCheckExecutablePrivilege` was `return 0` for every
+privilege — a constant standing in for a question the image answers. It was right by
+luck (Case Zero's `XEX_HEADER_SYSTEM_FLAGS` is `0x00000200`, bit 9
+`TITLE_USES_GAME_VOICE_CHANNEL` and nothing else, and the three privileges this title
+asks about are all clear), which is not a reason to keep it. It now reads the header.
+Case West's flags will differ and the failure mode is a silently wrong branch.
+
+**Result.** Position 57 is gone. The A1 gate is now a clean prefix match through
+position 70, and one run in four is an **exact 81-deep prefix of Xenia's 93** with no
+divergence at all — the first time this port has produced one. The remaining mismatch
+in 71-76 is a pure permutation: both sides hold the same six names, `XamUserCheckPrivilege`
+lands first on hardware and last for us, and it is not stable across our own runs, so
+it is a thread race rather than a defect.
+
+**The transferable lesson, and it is about instruments rather than licences.** A probe
+answers the question you point it at. Every reading in that trail was accurate, and
+following it downward produced ever more detailed confirmation of a symptom. What
+found the cause was walking **outward** — to the first caller whose behaviour differs
+from the capture — and the cheapest form of that question is not "why did this fail"
+but "does hardware even get here". A1 answered it in one grep.
+
 ## 5. Where the boot currently stops
 
 
@@ -836,21 +926,17 @@ delivered to the guest ISR — and **zero unknown opcodes, zero parser stalls, z
 out-of-arena stores**. The read pointer chases the write pointer rather than sitting
 frozen, which is the health check that says the parser is keeping up.
 
-**The gate.** `--xenia A1` (masked): **PREFIX MATCH, 56 of 93**, and — after findings
-28 to 32 — every position from 58 to 84 on our side reproduces hardware's 57 to 83
-*element for element*, offset by exactly one. The offset is a single spurious call, and
-it is the whole remaining divergence in this range.
+**The gate.** `--xenia A1` (masked): a clean **prefix match through position 70**, and
+one run in four is an exact **81-deep prefix of Xenia's 93 with no divergence at all**
+— the first this port has produced. The only mismatch in 71-76 is a permutation of the
+same six names (`XamUserCheckPrivilege` lands first on hardware, last for us) and it
+is not stable across our own runs, so it is a thread race rather than a defect.
 
-`--xenia A5 --include-high-frequency` reaches further still: our sequence tracks A5's
-through position 118 (`XMACreateContext`), and the window analysis reports only five
-real mismatches in the whole boot, each a single name.
-
-**The divergence at 57** is `RtlCompareStringN`, arriving where hardware calls
-`XamGetSystemVersion`. It is no longer a stub — finding 28 implemented it — and it is
-no longer about the XAM surface either: our boot enters the title's DVD-cache
-subsystem and hardware does not. The deciding branch is `sub_82829098`'s result tested
-at `0x827890B4`. Everything downstream of position 57 is shifted by that one insertion
-rather than genuinely out of order.
+`--xenia A5 --include-high-frequency` tracks A5 through position 118
+(`XMACreateContext`). Four real mismatch windows remain in the whole boot, each a
+single displaced name: `RtlNtStatusToDosError` arriving early, `NtWaitForSingleObjectEx`
+and `KeWaitForSingleObject` displaced, `XAudioSubmitRenderDriverFrame` absent (we have
+no audio backend), and `KeQueryBasePriorityThread` early.
 
 **An intermittent crash, and a retraction of the first reading of it.**
 
@@ -873,44 +959,43 @@ per arm will confidently name whichever arm happened not to fire.
 
 ## 6. Status
 
-- `tools/kernel_call_diff.py --xenia A1 --ours <log>` → **PREFIX MATCH, 56 of 93**,
-  and positions 58-84 reproduce hardware's 57-83 element for element behind a
-  single-call offset. Six 25 s runs reach 85 or 82 visible kernel calls (4 and 2
-  respectively) — the spread is boot timing, not a defect.
-- `--xenia A5 --include-high-frequency` tracks A5 to position 118; five real
-  mismatch windows in the whole boot, each one name.
-- **138 of 244 imports real; 106 generated honest-failure stubs.**
+- `tools/kernel_call_diff.py --xenia A1 --ours <log>` → clean prefix match through
+  position 70; one run in four is an exact 81-deep prefix of Xenia's 93 with no
+  divergence. Positions 71-76 are a permutation of one set, not a divergence.
+- `--xenia A5 --include-high-frequency` tracks A5 to position 118; four real mismatch
+  windows in the whole boot, each one displaced name.
+- **139 of 244 imports real; 105 generated honest-failure stubs.**
 - PM4: zero unknown opcodes, zero stalls, zero out-of-arena stores, read pointer
   chasing the write pointer.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
-- **Stability: 0 crashes in 6 runs at 25 s** on the current binary, after 0 in 20 on
-  the binary at finding 28. The dominant fault (6-7 in 10, the "null-pointer walk on
-  the main thread") was the unlowered `bctr` of finding 27 and is fixed. **None of
-  these zeros is evidence the remaining fault is gone** — a 1-in-20 event is entirely
-  consistent with zero hits in twenty runs, let alone six, and the one report that
-  exists (guest thread `00000F2C`, faulting outside the 4 GB space) is on a different
-  thread from anything findings 27-32 touched. Unexplained, not fixed.
+- **Stability: 0 crashes in 6 runs at 25 s** on the binary at finding 32, after 0 in
+  20 at finding 28. The dominant fault (6-7 in 10, the "null-pointer walk on the main
+  thread") was the unlowered `bctr` of finding 27 and is fixed. **None of these zeros
+  is evidence the remaining fault is gone** — a 1-in-20 event is entirely consistent
+  with zero hits in twenty runs, and the one report that exists (guest thread
+  `00000F2C`, faulting outside the 4 GB space) is on a different thread from anything
+  findings 27-33 touched. Unexplained, not fixed.
 
 Next, in order:
 
-1. **The storage-device block, gate positions 85-93** — `XamShowDeviceSelectorUI`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamTaskSchedule`, `XamGetOverlappedResult`,
-   `XMsgInProcessCall`, `XMsgCompleteIORequest`, `XamContentGetDeviceData`. We now
-   reach `XMsgStartIORequest`, which is the generic XAM app-message dispatcher and the
-   entry point to all of them: A1 shows `XMsgStartIORequest(FB, 000B0006, ...)` — app
-   0xFB (XGI), message 0x000B0006 — immediately followed by `XGIUserSetContext`, so
-   the dispatcher's job is to route a message id to a handler. Note this whole block
-   happens *after the title screen is already rendering* in A1 (log line 44272, deep
-   into texture uploads), so it is gated on the title getting further as much as on
-   the imports themselves.
-2. **The DVD-cache fallback at position 57** — our boot enters the title's DVD-cache
-   subsystem and hardware does not; the deciding branch is `sub_82829098`'s result
-   tested at `0x827890B4`. This is now the *only* thing shifting positions 58-84.
-3. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`.
-   Since finding 27 it has been localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in
-   `sub_8284B568` at guest `8284B704` where `ctr = [r31+16] = 0`, i.e. a null indirect
-   call through a vtable slot. The crash reporter's "LIKELY null indirect call"
-   heuristic did **not** fire, because it requires `si_addr == nullptr` *and* `ctr`
-   inside the image; widening it to `ctr == 0` would have named this on the first
-   report.
-4. The early `RtlNtStatusToDosError` the A5 gate reports at position 19.
+1. **The storage-device block, gate positions 82-93** — `KeResetEvent`,
+   `XMsgStartIORequest`, `MmMapIoSpace`, `XamShowDeviceSelectorUI`,
+   `XamGetPrivateEnumStructureFromHandle`, `XamAlloc`, `XamTaskSchedule`,
+   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`,
+   `XamContentGetDeviceData`. The entry point is `XMsgStartIORequest`, the generic XAM
+   app-message dispatcher: A1 shows `XMsgStartIORequest(FB, 000B0006, ...)` — app 0xFB
+   (XGI), message 0x000B0006 — immediately followed by `XGIUserSetContext`, so its job
+   is to route a message id to a handler and complete the overlapped. Note this block
+   first appears in A1 *after the title screen is already rendering* (log line 44272),
+   so it is gated on the boot getting further as much as on the imports.
+2. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
+   localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in `sub_8284B568` at guest
+   `8284B704` where `ctr = [r31+16] = 0`, a null indirect call through a vtable slot.
+   The crash reporter's "LIKELY null indirect call" heuristic did **not** fire — it
+   requires `si_addr == nullptr` *and* `ctr` inside the image; widening it to
+   `ctr == 0` would have named this on the first report.
+3. **The early `RtlNtStatusToDosError`** at A5 gate position 19, now the earliest real
+   divergence anywhere in the boot.
+4. `XAudioSubmitRenderDriverFrame` — absent from our run because there is no audio
+   backend. Not a bug, but it is one of A5's four remaining real differences and
+   should be recorded as expected rather than re-investigated.

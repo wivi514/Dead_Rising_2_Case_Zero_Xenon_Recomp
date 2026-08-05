@@ -1825,7 +1825,8 @@ static uint32_t ExGetXConfigSetting_x(uint16_t category, uint16_t setting, void*
 // A1: XexCheckExecutablePrivilege(0000000A) — privilege 10, asked once. Xenia grants
 // nothing and the title proceeds, so 0 (not held) is the measured answer, not a
 // guess.
-static uint32_t XexCheckExecutablePrivilege_x(uint32_t) { return 0; }
+// XexCheckExecutablePrivilege is defined below, after RtlImageXexHeaderField_x,
+// because it answers out of the XEX's own optional headers rather than a constant.
 
 static uint32_t XGetLanguage_x() { return 1; }        // English
 static uint32_t XGetAVPack_x() { return 0; }
@@ -1895,6 +1896,32 @@ static uint32_t RtlImageXexHeaderField_x(uint32_t headerBase, uint32_t key)
         return headerBase + PPC_LOAD_U32(entry + 4);
     }
     return 0;
+}
+
+// XexCheckExecutablePrivilege(n) — is bit n set in this XEX's system flags?
+//
+// This used to `return 0` for every privilege, which is a constant standing in for a
+// question the image can answer (gotcha 10). It happened to be right: Case Zero's
+// XEX_HEADER_SYSTEM_FLAGS is 0x00000200 — bit 9, XEX_SYSTEM_TITLE_USES_GAME_VOICE_
+// CHANNEL, and nothing else — and the three privileges this title asks about (10 in
+// A1, then 11 and 23 from inside the DVD-cache init) are all clear. Being right by
+// luck is not a reason to keep it: Case West's flags will differ, and the failure
+// mode is a silently wrong branch, not an error.
+//
+// The privileges that matter here, for the record: 11 = TITLE_INSECURE_UTILITY_DRIVE,
+// 23 = TITLE_BOTH_UTILITY_PARTITIONS. Both control whether sub_82829098 will try to
+// build a DVD cache on the utility partition.
+static uint32_t XexCheckExecutablePrivilege_x(uint32_t privilege)
+{
+    if (privilege > 31)
+        return 0;
+    constexpr uint32_t XEX_HEADER_SYSTEM_FLAGS = 0x00030000;
+    const uint32_t field = RtlImageXexHeaderField_x(0, XEX_HEADER_SYSTEM_FLAGS);
+    if (!field)
+        return 0;   // no such header — no privileges, which is the truthful answer
+    uint8_t* base = g_memory.base;
+    const uint32_t flags = PPC_LOAD_U32(field);
+    return (flags & (1u << privilege)) != 0 ? 1u : 0u;
 }
 
 // The loader seam. A1 shows Case Zero doing this at boot, in this order:
@@ -3044,3 +3071,57 @@ GUEST_FUNCTION_HOOK(__imp__XamInputGetCapabilities, XamInputGetCapabilities_x)
 GUEST_FUNCTION_HOOK(__imp__XamInputGetState, XamInputGetState_x)
 GUEST_FUNCTION_HOOK(__imp__XamInputSetState, XamInputSetState_x)
 GUEST_FUNCTION_HOOK(__imp__XamInputGetKeystrokeEx, XamInputGetKeystrokeEx_x)
+
+// ---------------------------------------------------------------------------
+// The content licence — finding 1, arriving in the runtime
+// ---------------------------------------------------------------------------
+//
+// XamContentGetLicenseMask(maskPtr, overlapped) is the import behind the phase gate's
+// oldest open divergence, and it took three wrong guesses to find because nothing
+// about it looks like a licence question from the outside.
+//
+// WHAT IT DECIDED. `sub_82788F48` calls it through a ONE-INSTRUCTION tail-call thunk
+// (`sub_825D7A50` is literally `b XamContentGetLicenseMask`), then branches on the
+// STATUS, not the mask:
+//
+//     sub_825D7A50()            // = XamContentGetLicenseMask(r1+112, 0)
+//     cmplwi r3,0
+//     beq    loc_82789134       // success -> skip everything below
+//     ... sub_82829098 ...      // failure -> go build a DVD cache
+//
+// As a generated honest-failure stub it returned 0xC0000002, so we took the failure
+// branch and went looking for a disc: `\Device\Image`, then
+// `\Device\Harddisk0\partition0`, then a string comparison against "cdrom0:" that
+// showed up in the gate as `RtlCompareStringN` at position 57. Every one of those was
+// a *symptom*. The subsystem the trail pointed at had nothing to do with the cause.
+//
+// WHY IT WAS INVISIBLE. `XamContentGetLicenseMask` is `kHighFrequency`, so it appears
+// **nowhere in A1** — it is only in A5, three calls, which is how the argument shape
+// and the null overlapped were confirmed. Gotcha 47 again: a capture set needs a
+// high-frequency arm or its quietest exports are unfalsifiable.
+//
+// WHY THE MASK IS 1. A second call site decides the trial-versus-full question with
+// the mask's *value*, at 0x8250191C:
+//
+//     r11 = [r1+80]                    // the mask we wrote
+//     r9  = (mask == 0)                // cntlzw/rlwinm
+//     [0x82505FFE] &= r9               // a global byte, cleared when the mask is set
+//
+// so a zero mask leaves that flag standing and a non-zero mask clears it. That is
+// findings-ledger finding 1 from the other side: Xenia's `license_mask` defaults to 0
+// and boots the **trial**, and both A1 and A5 were captured with `license_mask = 1`.
+// Our package is the full game, so bit 0 — "this content is purchased" — is set. This
+// is the one place in the runtime where getting the value wrong would silently boot a
+// different game.
+static uint32_t XamContentGetLicenseMask_x(be<uint32_t>* mask, uint32_t overlapped)
+{
+    if (!mask)
+        return STATUS_INVALID_PARAMETER;
+    *mask = 1;
+    if (overlapped)
+        CompleteOverlapped(
+            reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlapped)), 0, 4);
+    return 0;
+}
+
+GUEST_FUNCTION_HOOK(__imp__XamContentGetLicenseMask, XamContentGetLicenseMask_x)

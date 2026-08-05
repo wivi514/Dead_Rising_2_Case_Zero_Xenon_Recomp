@@ -38,6 +38,15 @@ methodology would have caught it.
 Verified independently here: `license_mask = 1` is present in the canonical A1's config
 dump header.
 
+**Where this lands in the runtime (phase 1, finding 33).** `license_mask` is not just a
+capture setting — it is our `XamContentGetLicenseMask`, and the guest reads it two ways.
+`sub_82788F48` branches on the **status** (a failure sends the title looking for a disc,
+which is what held gate position 57 open for three sessions), and `sub_82501918` branches
+on the **value**: it computes `mask == 0` and ANDs that into a global byte at
+`0x82505FFE`, so a zero mask leaves the trial flag standing. Our runtime returns success
+with mask = 1, matching the captures. Getting that value wrong would not fail — it would
+quietly boot the trial, which is exactly the failure this section is about.
+
 ## 2. `NtReadFile` is `kHighFrequency` — A5 is the read oracle, not A1 or A2
 
 The round-1 request said A2 would give us the `.big` seek patterns because "at level 3

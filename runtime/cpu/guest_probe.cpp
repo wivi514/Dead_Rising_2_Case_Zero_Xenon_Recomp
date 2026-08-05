@@ -254,3 +254,64 @@ PPC_FUNC(sub_829565B8)
 
 CZ_WATCH_CALLEE(sub_82955780)
 CZ_WATCH_CALLEE(sub_82689A70)
+
+// ---------------------------------------------------------------------------
+// The DVD-cache trail (phase1-notes finding 33) — the worked example of a
+// correct instrument pointing at an innocent subsystem
+// ---------------------------------------------------------------------------
+//
+// These three probes no longer print anything, and that is the result rather than a
+// bug: the code they watch is not reached any more. They are kept because the shape
+// of what they did is the reusable part, and it is not the shape anyone expects.
+//
+// The question was "why does our boot enter the title's DVD-cache subsystem when
+// hardware does not". Reading the tree statically kept flipping — sub_82829098 has
+// four separate routes to a zero return and two of them are *failure* paths — so the
+// return values got printed instead:
+//
+//     [ret] sub_82823A58   -> 1    '\Device\Image' is absent (correct: no disc)
+//     [ret] sub_82831528   -> 2    ERROR_FILE_NOT_FOUND on \Device\Harddisk0\partition0
+//     [ret] sub_82829098   -> 0    ... which makes the caller run the cache block
+//
+// Every one of those readings was accurate, and the chain they described was real.
+// It was also entirely beside the point. The branch that actually differed was one
+// level further up and in a different subsystem: a stubbed XamContentGetLicenseMask,
+// whose failure status sent the title looking for a disc in the first place. The
+// device-not-found results were downstream symptoms faithfully reported.
+//
+// TWO LESSONS, and the second is the expensive one:
+//   1. When a predicate's polarity is not obvious on one reading, print it. That
+//      costs less than reading it three times and, unlike the reading, it cannot be
+//      wrong.
+//   2. A probe answers the question you point it at. Pointing it at the deepest
+//      frame you can see confirms the symptom in detail and says nothing about the
+//      cause — the useful move was walking OUTWARD to the first caller whose
+//      behaviour differs from the capture, which here was five frames up.
+extern "C" PPC_FUNC(__imp__sub_82829098);
+extern "C" PPC_FUNC(__imp__sub_82823A58);
+extern "C" PPC_FUNC(__imp__sub_82831528);
+
+namespace {
+
+// Print a guest function's return value the first few times it is called. `note`
+// says what a zero MEANS at that site, because "returns 0" is not a finding on its
+// own — the branch that consumes it is.
+void ShowRet(const char* who, const char* note, PPCContext& ctx, std::atomic<int>& seen)
+{
+    if (seen.fetch_add(1, std::memory_order_relaxed) < 4)
+        fprintf(stderr, "[ret] %-14s -> %u (0x%X)   %s\n", who, ctx.r3.u32, ctx.r3.u32, note);
+}
+
+} // namespace
+
+#define CZ_SHOW_RET(name, note)                                                      \
+    PPC_FUNC(name)                                                                   \
+    {                                                                                \
+        static std::atomic<int> seen{ 0 };                                           \
+        __imp__##name(ctx, base);                                                    \
+        if (ProbeEnabled()) ShowRet(#name, note, ctx, seen);                          \
+    }
+
+CZ_SHOW_RET(sub_82829098, "0 here makes sub_82788F48 run the cache block")
+CZ_SHOW_RET(sub_82823A58, "1 = '\\Device\\Image' is absent (not a disc)")
+CZ_SHOW_RET(sub_82831528, "nonzero makes sub_82829098 return 0")
