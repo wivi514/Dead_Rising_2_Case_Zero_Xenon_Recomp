@@ -93,6 +93,16 @@ uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();
 
+// Indirect-buffer health, in the ring trace so it is a number rather than a hunt
+// through scattered reports. `truncated` is always live and is the count of buffers
+// whose walk ended early — each one drops every packet after the stop, and in this
+// title the last packet of a buffer is the driver's own ring-progress fence, so a
+// nonzero value here is a hang waiting to happen (finding 38). `clean`/`dirty` count
+// only under CZ_PM4_IB_VERIFY.
+uint64_t Pm4_IbTruncatedCount();
+uint64_t Pm4_IbVerifyCleanCount();
+uint64_t Pm4_IbVerifyDirtyCount();
+
 uint64_t Pm4_PacketCount();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F

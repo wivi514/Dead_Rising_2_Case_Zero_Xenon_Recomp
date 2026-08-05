@@ -299,6 +299,15 @@ void GraphicsInterruptPump()
                  (unsigned long long)Pm4_PacketCount(), (unsigned long long)Pm4_FrameCount(),
                  (unsigned long long)Pm4_DrawCount(),
                  (unsigned long long)Pm4_InterruptCount());
+            // Truncated indirect buffers, on the same line as the healthy counters
+            // because that is the pairing that matters: three green numbers and a
+            // silent fourth is what let finding 38's dropped fences run for a whole
+            // port unnoticed. Any nonzero value is a hang waiting for a thread to
+            // wait on it.
+            KLOG("ring: indirect buffers truncated=%llu | verify clean=%llu dirty=%llu\n",
+                 (unsigned long long)Pm4_IbTruncatedCount(),
+                 (unsigned long long)Pm4_IbVerifyCleanCount(),
+                 (unsigned long long)Pm4_IbVerifyDirtyCount());
         }
 
         // Log the first delivery BEFORE the call, not after. A guest ISR that never
@@ -635,13 +644,52 @@ PPC_FUNC(__imp__VdSwap)
     emit(width);
     emit(height);
 
+    // ...and then NO-OP THE REST OF THE RESERVATION. This is not tidiness; it is the
+    // whole export (finding 39).
+    //
+    // The caller reserves a fixed 64 dwords and advances its write pointer by the full
+    // reservation whether or not we fill it — its very next instructions after the
+    // call are `addi r11,r29,256` / `stw r11,48(r31)`, 256 bytes, r3 never read. So
+    // every dword between our last packet and the end of that block is submitted to
+    // the command processor as if the kernel had put it there. Command buffers are
+    // recycled, so what is actually there is the previous frame's packets, and the
+    // parser walks into them and desyncs: it reads real headers at wrong offsets,
+    // invents a length that runs past the end of the buffer, and stops — dropping
+    // every remaining packet including the driver's own ring-progress fence, which is
+    // the LAST packet in these buffers. One unfilled tail, one thread waiting forever
+    // (findings 37-38).
+    //
+    // 0x80000000 is a type-2 PM4 packet: a one-dword no-op, the only encoding that
+    // lets the parser cross an arbitrary run of dwords without interpreting any of
+    // them. The title already knows this idiom — it prefills its scaler buffer with
+    // exactly this value via RtlFillMemoryUlong (see
+    // VdInitializeScalerCommandBuffer below).
+    //
+    // Two independent witnesses agree on 64, which is why it is written as a constant
+    // rather than derived from an argument: the guest's own `addi r11,r29,256` above,
+    // and B1, where every one of the 43 indirect buffers containing an XE_SWAP has
+    // exactly **52** consecutive 0x80000000 packets immediately after it — 12 dwords
+    // of real content plus 52 of padding.
+    //
+    // CZ_NO_SWAP_PAD=1 leaves the tail unfilled — the behaviour before finding 39, kept
+    // as a same-binary control arm so "the padding is what fixed the stall" stays a
+    // measurement (gotchas 7 and 50). It is an arm, not an option: with it on, the
+    // command processor walks the previous frame's packets.
+    static const bool noPad = getenv("CZ_NO_SWAP_PAD") != nullptr;
+    constexpr uint32_t kSwapReservationDwords = 64;
+    const uint32_t written = (at - buffer) / 4;
+    if (!noPad)
+        for (uint32_t i = written; i < kSwapReservationDwords; i++)
+            emit(0x80000000);
+
     static std::atomic<uint64_t> swaps{ 0 };
     if (swaps.fetch_add(1) == 0)
         KLOG("VdSwap: first swap packet written to %08X (front buffer %08X, %ux%u, %u "
-             "dwords)\n",
-             buffer, frontBuffer, width, height, (at - buffer) / 4);
+             "dwords + %u no-op dwords = %u reserved)\n",
+             buffer, frontBuffer, width, height, written,
+             kSwapReservationDwords - written, kSwapReservationDwords);
 
-    ctx.r3.u64 = (at - buffer) / 4; // dwords written
+    ctx.r3.u64 = kSwapReservationDwords; // dwords written
 }
 
 // VdInitializeScalerCommandBuffer takes TWELVE arguments, four past the r3..r10

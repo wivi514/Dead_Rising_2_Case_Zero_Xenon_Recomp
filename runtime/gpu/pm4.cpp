@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -213,7 +214,20 @@ struct Source
     }
 };
 
-void ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth);
+// Returns the dword position the walk stopped at — `sizeDwords` if it consumed the
+// whole buffer, less than that if a packet claimed more dwords than remained. Callers
+// mostly ignore it; ExecuteLinearVerified below needs it to correlate a truncation
+// with a concurrent write.
+uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth);
+void ExecuteLinearVerified(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth);
+
+// CZ_PM4_IB_VERIFY=1 — snapshot every indirect buffer before walking it and compare
+// afterwards. See ExecuteLinearVerified for what question this answers and why it is
+// not on by default.
+const bool g_ibVerify = getenv("CZ_PM4_IB_VERIFY") != nullptr;
+std::atomic<uint64_t> g_ibVerifyClean{ 0 };
+std::atomic<uint64_t> g_ibVerifyDirty{ 0 };
+std::atomic<uint64_t> g_ibTruncated{ 0 };
 
 // --- memory-writing helpers -------------------------------------------------------
 // Refuse anything that does not land in the physical arena rather than storing
@@ -612,7 +626,10 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 }
                 if (size && (addr & 0x1FFFFFFFu) + uint64_t(size) * 4 <= 0x20000000ull)
                 {
-                    ExecuteLinear(base, PhysToVa(addr), size, depth + 1);
+                    if (g_ibVerify)
+                        ExecuteLinearVerified(base, PhysToVa(addr), size, depth + 1);
+                    else
+                        ExecuteLinear(base, PhysToVa(addr), size, depth + 1);
                 }
                 else
                 {
@@ -636,7 +653,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     return bodyCount + 1;
 }
 
-void ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
+uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
 {
     Source fetch{ base, va, 0 };
     uint32_t pos = 0;
@@ -669,8 +686,7 @@ void ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
             // itself fully caught up, and the next thread that waits on that fence
             // waits for the rest of the process's life. A truncation here is therefore
             // not a cosmetic parse issue; it is a hang, and it deserves to say so.
-            static std::atomic<uint64_t> truncated{ 0 };
-            const uint64_t n = truncated.fetch_add(1);
+            const uint64_t n = g_ibTruncated.fetch_add(1);
             if (n < 16 || (n & 0xFFFu) == 0)
             {
                 fprintf(stderr,
@@ -728,6 +744,85 @@ void ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
         }
         pos += consumed;
     }
+    return pos;
+}
+
+// The instrument that decides finding 38's last open question.
+//
+// By the end of task #16 everything about our PARSER had been checked against the B1
+// capture and cleared: each packet's length against the boundary hardware used on all
+// 24,527,474 of them (tools/pm4_packet_lengths.py), and — the check that actually
+// covers a walk rather than a packet — every indirect buffer's start address and every
+// internal packet boundary, chained from the buffer's first dword, on all 28,726 of
+// them (tools/pm4_indirect_walks.py). Both clean. Yet our walks of those same buffers
+// still ended early at run time, on dwords that are plainly data (one header we tripped
+// over was 3F800000, the float 1.0).
+//
+// If the arithmetic is right and the result is wrong, the input is wrong: the bytes we
+// walk are not the bytes the driver wrote. This asks that directly — copy the buffer,
+// walk it exactly as we normally would, then compare the copy against guest memory
+// afterwards and report the first dword that moved. A difference means the guest is
+// rewriting a command buffer we are still reading, and the fix is about WHEN we consume
+// the ring, not how we parse it.
+//
+// Off by default and deliberately expensive-when-on: it doubles the reads over every
+// buffer. Gotcha 7 says a probe that slows the game manufactures its own result, and
+// the asymmetry here is worth stating, because it decides how each outcome may be read:
+// slowing the parser down makes a concurrent write MORE likely, so "differences found"
+// is suggestive while "no differences found" — the parser dawdling and still never
+// being overtaken — is the strong result.
+void ExecuteLinearVerified(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
+{
+    // One reusable buffer per depth. The pump is the only thread that walks, so these
+    // need no locking; allocating per buffer would add malloc traffic to a measurement
+    // whose whole subject is timing.
+    static std::vector<uint32_t> snapshots[8];
+    std::vector<uint32_t>& snapshot = snapshots[depth & 7];
+    snapshot.resize(sizeDwords);
+    memcpy(snapshot.data(), base + va, size_t(sizeDwords) * 4);
+
+    const uint32_t stopped = ExecuteLinear(base, va, sizeDwords, depth);
+
+    if (memcmp(snapshot.data(), base + va, size_t(sizeDwords) * 4) == 0)
+    {
+        g_ibVerifyClean.fetch_add(1);
+        return;
+    }
+
+    const uint64_t n = g_ibVerifyDirty.fetch_add(1);
+    if (n >= 16 && (n & 0xFFu) != 0)
+        return;
+
+    uint32_t first = 0, changed = 0;
+    bool haveFirst = false;
+    for (uint32_t i = 0; i < sizeDwords; i++)
+    {
+        uint32_t live;
+        memcpy(&live, base + va + i * 4, 4);
+        if (live == snapshot[i])
+            continue;
+        changed++;
+        if (!haveFirst)
+        {
+            first = i;
+            haveFirst = true;
+        }
+    }
+
+    // The relationship between the two positions is the whole point of printing both.
+    // A write BEFORE the truncation is a candidate cause of it; a write only after it
+    // is the guest legitimately reusing memory we had already stopped reading.
+    fprintf(stderr,
+            "[pm4] indirect buffer CHANGED UNDER US (va=%08X size=%u depth=%d): %u dwords "
+            "differ, first at %u; our walk stopped at %u (%s) — occurrence %llu\n",
+            va, sizeDwords, depth, changed, first, stopped,
+            stopped < sizeDwords
+                ? (first <= stopped ? "TRUNCATED, write is at or before the stop"
+                                    : "TRUNCATED, write is after the stop")
+                : "walk completed",
+            static_cast<unsigned long long>(n));
+    fprintf(stderr, "[pm4]   dword %u: was %08X now %08X\n", first,
+            __builtin_bswap32(snapshot[first]), GuestLoad32(base, va + first * 4));
 }
 
 } // namespace
@@ -827,6 +922,10 @@ void Pm4_SetInterruptSink(void (*sink)()) { g_interruptSink = sink; }
 uint32_t Pm4_Cursor() { return g_cursor; }
 uint32_t Pm4_ScratchAddr() { return g_regs[kRegScratchAddr]; }
 uint32_t Pm4_ScratchUmsk() { return g_regs[kRegScratchUmsk]; }
+
+uint64_t Pm4_IbTruncatedCount() { return g_ibTruncated.load(); }
+uint64_t Pm4_IbVerifyCleanCount() { return g_ibVerifyClean.load(); }
+uint64_t Pm4_IbVerifyDirtyCount() { return g_ibVerifyDirty.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }

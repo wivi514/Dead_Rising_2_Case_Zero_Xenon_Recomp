@@ -266,16 +266,47 @@ sizes a packet wrongly desyncs, reads data as headers, and stops somewhere downs
 looking like a corrupt stream rather than like a bug in itself.
 
 `tools/pm4_packet_lengths.py` does that comparison. On B1: **24,527,474 packets
-checked, one disagreement** — and that one retired a fix that had already been made,
-written up, and shipped as the explanation for a boot-stalling bug (phase 1 finding
-38). Run it after any change to `gpu/pm4.cpp`'s packet decode. Exit 1 means our walk
-would desync on a real stream.
+checked, zero disagreements.** Run it after any change to `gpu/pm4.cpp`'s packet decode.
+Exit 1 means our walk would desync on a real stream.
 
 Two caveats it has to encode, both from this file's own traps:
 
 - `INDIRECT_BUFFER` is recorded one dword short (trap 2), so the comparison adds it
   back via `xtr.PM4_SHORT_RECORDED` rather than widening a tolerance.
 - a zero-length `PacketStart` has no header to check and is skipped, not counted.
+
+...and one it learned the hard way. B1 contains a single `PacketStart` whose header
+records as `00000000`. Read as a type-0 register write it is a two-dword packet, and
+phase 1 finding 38 used exactly that reading to settle how a command processor should
+treat a zero dword. It is not one: its `count` is 2, its word[1] is a command-buffer
+address, and the next trace command is an `IndirectBufferStart` with that base — every
+marker of an `INDIRECT_BUFFER`, whose header the trace simply failed to record. (It
+sits at `03D71FFC`, the last dword of a 4 KB block; the mechanism is not established.)
+The tool now classifies packets by that mechanism rather than by header bits, so its
+clean result stops being an artifact that agrees by luck — and the honest statement
+about the capture is that **it contains no genuine zero-header packet and has no
+opinion on the question.** One anomalous record deserves identifying before anything is
+concluded from it.
+
+### The walk is a separate question from the lengths
+
+Every packet's length being right does not make a *walk* right: it says nothing about
+the address the walk starts at, nor about whether the packets tile the buffer. Both
+gates passed while our command processor desynced dozens of times a minute.
+
+`tools/pm4_indirect_walks.py` closes the reachable half of that gap, and it works
+because Xenia walks *into* each indirect buffer rather than dereferencing guest memory
+— so every packet inside one is recorded with its own `base_ptr`, the address hardware
+read it from. Chaining `base_ptr(i) + 4 * our_length(header(i)) == base_ptr(i+1)`
+replays our cursor against every boundary hardware landed on, starting from the
+`INDIRECT_BUFFER` packet's own address dword. On B1: **28,726 buffers, 0 disagreements.**
+
+What it cannot check is the declared size: `IndirectBufferStart.count` is recorded as 0
+for every buffer, and the size dword is the one the short recording drops. It prints
+the size hardware *consumed* instead, so an implausible declared size would stand out.
+
+And what neither tool can check is whether the bytes in guest memory are the bytes
+hardware saw. That is where finding 39's defect actually lived.
 
 ## The tools
 
@@ -288,6 +319,7 @@ Two caveats it has to encode, both from this file's own traps:
 | `tools/xtr_pm4_census.py` | what the guest told the GPU to do; `--verify` self-checks |
 | `tools/xtr_determinism.py` | how much two captures of one drive differ |
 | `tools/pm4_packet_lengths.py` | does OUR command processor size packets the way hardware did |
+| `tools/pm4_indirect_walks.py` | does our WALK of an indirect buffer land where hardware's did |
 
 The format lives in **one** module on purpose. Asura's Wrath grew six `.xtr` tools each
 carrying a copy-pasted `step()` — six copies of one belief about the file format. When the

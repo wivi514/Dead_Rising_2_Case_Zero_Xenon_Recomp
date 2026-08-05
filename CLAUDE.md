@@ -525,6 +525,45 @@ From finding 38 (the load stall — traced end to end, not yet fixed):
     scheduling-sensitive. Gotcha 51's corollary — and acting on the remembered number
     would have reverted a correct change to fix a defect that did not exist.
 
+From finding 39 (the stall was our own `VdSwap`, and it presented as a parser bug):
+
+87. **A kernel export that writes into a guest-supplied buffer owns the whole
+    reservation, not just the part it has content for.** Our `VdSwap` wrote 12 dwords
+    of a 64-dword block and returned; the caller advances its write pointer by the
+    full 64 whether or not the kernel fills it (`addi r11,r29,256`, `r3` never read),
+    so the 52 dwords we left alone were submitted as packets. Command buffers are
+    recycled, so those dwords were the *previous frame's* command stream — real
+    headers at wrong offsets. Hardware fills them with 52 × `0x80000000`, a type-2
+    one-dword no-op, the only encoding that crosses arbitrary dwords uninterpreted.
+    Gotcha 5's other edge: a stub that does *part* of a job leaves a hole shaped like
+    real data, and it surfaces in a subsystem it was never near.
+88. **An oracle for your arithmetic does not clear your inputs, and a clean parser
+    gate is not a clean parser.** Two capture-derived gates said our command
+    processor was right — every packet length against hardware's own boundaries on
+    24,527,474 packets, and every indirect buffer's start address and internal
+    boundaries chained on all 28,726 — while it desynced dozens of times a minute.
+    Both were true. The bytes were wrong. When every check of a computation passes
+    and the result is wrong, stop checking the computation.
+89. **A capture is a vocabulary, not just a transcript.** B1 uses only **225 distinct
+    packet headers** across 24.5 M packets. Walking a suspect buffer and flagging the
+    first header that is not in that set put the desync at one place — immediately
+    after `XE_SWAP`, in all six dumped buffers — after six truncation reports had each
+    named a different innocent position. A tight vocabulary is a cheap, extremely
+    strong classifier, and any format with a capture has one.
+90. **Check what a distinctive record *is* before reasoning from it.** B1's single
+    zero-header packet, which finding 38 used to reject the zero-as-no-op reading, is
+    an `INDIRECT_BUFFER` whose header the trace records as zero — count 2 (the short
+    recording 0x3F always gets), an address in word[1], and `IndirectBufferStart` with
+    that base as the next command. So the capture contains **no** genuine zero header
+    and is silent on the question, which two sessions treated as settled in opposite
+    directions. One anomalous record deserves its own identification, not a conclusion.
+91. **A change that measurably helps can still be the wrong change.** Reading zeros as
+    no-ops walked two of six broken buffers to completion — a real, reproducible,
+    partial improvement — because our unwritten tails were zeros wherever the heap
+    happened to be fresh. It addressed the *shape* of the corruption, not its source,
+    and the A/B over stalls duly showed nothing (3 of 10 vs 4 of 10). Partial
+    improvement with no effect on the symptom is a signature worth recognising.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -672,9 +711,17 @@ CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware do
 CZ_PM4_IB_TRACE=1  the first 64 INDIRECT_BUFFER packets with their raw address/size
 CZ_PM4_DUMP_TRUNCATED=path dump the first 6 indirect buffers whose walk stopped short,
                    for offline re-walking (finding 38)
-CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. The REJECTED reading —
-                   B1 says hardware consumed its one zero header as two dwords — kept
-                   as an arm so the question needs no rebuild
+CZ_PM4_IB_VERIFY=1 snapshot every indirect buffer before walking it and compare after,
+                   naming the first dword that moved. The instrument that killed the
+                   "the guest is writing under us" theory: 84,808 buffers, 0 dirty.
+                   Doubles the reads, so read a CLEAN result as the strong one
+CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. Kept as an arm, and no
+                   longer interesting: the zeros were our own unwritten VdSwap padding
+                   (finding 39), and B1 turns out to contain no genuine zero header at
+                   all, so the capture never had an opinion either way
+CZ_NO_SWAP_PAD=1   leave VdSwap's 52-dword tail unwritten — the pre-finding-39 defect,
+                   kept as the same-binary control arm for the load stall. With it on
+                   the command processor walks the previous frame's packets
 CZ_MULTIWAIT_APC=1 run pending APCs at the multi-object waits and report
                    STATUS_USER_APC. Correct NT semantics, off by default because
                    nothing has yet shown this title needs it
@@ -715,12 +762,19 @@ python3 tools/xtr_determinism.py \
 ```
 `--verify` is the only check in the census that *can* fail — always pass it.
 
-Check the command processor's packet-length arithmetic against the boundaries hardware
-itself used — 24.5 M packets of ground truth, and the check that retired three theories
-about finding 38's stall. **Exit 1 = our parser would desync on a real stream:**
+Check the command processor against the boundaries hardware itself used. The first
+covers each packet's LENGTH (24.5 M packets); the second covers a WALK — every indirect
+buffer's start address and every internal boundary, chained from its first dword (28,726
+buffers), which is the half a per-packet check structurally cannot see. **Exit 1 = our
+parser would desync on a real stream:**
 ```
 python3 tools/pm4_packet_lengths.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+python3 tools/pm4_indirect_walks.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
 ```
+Both passing means our *arithmetic* is right. It says nothing about whether the bytes
+we walk are the bytes hardware walked — that was finding 39's whole lesson (gotcha 88),
+and the live counter for it is `ring: indirect buffers truncated=` in `CZ_RING_TRACE`,
+which must be **0**.
 
 ## The recompilation contract (identical to Fable 2 and Asura's Wrath)
 
@@ -919,28 +973,49 @@ stale and would have sent someone hunting a file-loading bug that no longer exis
 all, stalling with the main thread parked in the renderer's frame fence — a real
 defect, traced end to end in finding 38 below.
 
-**The load stall is traced end to end and is NOT fixed (2026-08-05, session 7).**
-`docs/phase1-notes.md` finding 38, and it is worth reading for the method as much as
-the result. The chain: the main thread waits on the render fence; the **Draw Thread**
-is in no kernel wait at all, spinning in guest code (`sub_8283C6C8` under
-`sub_82845160`) on a ring-progress counter; that counter is advanced only by
+**The load stall is traced end to end (session 7) and FIXED (session 8) — and it was
+our own kernel, not the parser.** `docs/phase1-notes.md` findings 38 and 39.
+
+The chain finding 38 established: the main thread waits on the render fence; the
+**Draw Thread** is in no kernel wait at all, spinning in guest code (`sub_8283C6C8`
+under `sub_82845160`) on a ring-progress counter; that counter is advanced only by
 `EVENT_WRITE_SHD` fence packets in the title's own command stream; and our walk of the
 indirect buffers those fences close **stops early**, silently, on data it reads as a
 packet header. Drop the last packet and a thread waits for the life of the process.
 
-The cause of the desync is still open, and the reason that is worth saying out loud is
-that a plausible one was found, fixed, documented — and then **retired by a check that
-should have existed first**. `tools/pm4_packet_lengths.py` compares our packet-length
-rule against the length hardware itself used for every one of B1's **24,527,474**
-packets; our arithmetic already matched all of them, including the zero-header case
-the "fix" had just changed. Same-binary A/B over 10 runs a side: no effect, as the
-capture predicts. Retracted in place, arm kept as `CZ_PM4_ZERO_IS_NOP`.
+Finding 39 is why the walk desynced, and it is nowhere near `gpu/pm4.cpp`. **`VdSwap`
+wrote 12 dwords of a 64-dword reservation and left the other 52 alone.** The caller
+advances its write pointer by the whole reservation regardless (`addi r11,r29,256`,
+`r3` never read), so those 52 dwords were submitted to the command processor as
+packets — and since command buffers are recycled, what was in them was the *previous
+frame's command stream*. Hardware fills them with 52 × `0x80000000`, a type-2 one-dword
+no-op; the count is confirmed by two independent witnesses, the guest's own `addi` and
+B1's 43 swap-carrying indirect buffers (52 every time).
 
-What is left is that the bytes we walk are not the bytes hardware walked. The leading
-suspect is timing — our command processor consumes the ring on the 16 ms vblank tick
-rather than continuously, so it reads each indirect buffer up to a frame after
-submission — but that is a suspicion, not a finding. The next experiment is written
-down in finding 38: snapshot each buffer before walking it and compare afterwards.
+Measured, same binary, arms alternated, `CZ_NO_SWAP_PAD=1` as the control:
+**truncated indirect buffers per 120 s run went from up to 2,945 to ZERO**, and the
+stall with them.
+
+Three method notes worth more than the fix:
+- Two capture-derived gates said the parser was correct — packet lengths against
+  hardware's boundaries on 24,527,474 packets, and every indirect buffer's start
+  address and internal boundaries chained on all 28,726
+  (`tools/pm4_indirect_walks.py`, written this session). Both were right. An oracle
+  for your arithmetic does not clear your inputs (gotcha 88).
+- The timing theory — "our vblank-driven command processor reads buffers a frame late,
+  so the guest is writing under us" — was plausible, explained the symptom, and would
+  have meant rewriting the command processor. `CZ_PM4_IB_VERIFY=1` killed it for the
+  cost of a memcpy: **84,808 buffers walked, 0 modified.**
+- The desync was located by building a vocabulary from the capture — B1 uses only
+  **225 distinct packet headers** in 24.5 M packets — and flagging the first header in
+  a dumped buffer that is not in it. All six pointed at the same place, immediately
+  after `XE_SWAP`, after six truncation reports had each named a different innocent
+  dword (gotchas 85, 89).
+
+Finding 38's zero-header story is retracted a second time: B1's single zero-header
+packet is a mis-recorded `INDIRECT_BUFFER`, so the capture contains **no** genuine one
+and never had an opinion. `CZ_PM4_ZERO_IS_NOP` stays as an arm and is no longer
+interesting.
 
 **The audio driver is real and the A5 gate is clean (2026-08-04, session 6).**
 `docs/phase1-notes.md` finding 36. All seven audio imports implemented: an XAudio
@@ -959,27 +1034,21 @@ displacing the title's own 447 MB reservation (gotcha 74).
 
 Next, in order:
 
-1. **The intermittent load stall** (findings 37-38) — mechanism fully traced, cause
-   not yet found. Rate 2 in 8 at 120 s on the committed binary. The open question is
-   narrow and stated in finding 38: our indirect-buffer walks desync although our
-   packet lengths match hardware on 24.5 M packets, so the next step is to snapshot
-   each buffer before walking it and compare afterwards — if it changed under us, the
-   fix is about WHEN we consume the ring, not how we parse it.
-2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
+1. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
    The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
    `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
    name this instantly.
-3. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
    runs guest code on a new thread and never has. Of finding 36's seven, **five run
    and two do not** — both teardown paths (`XAudioUnregisterRenderDriverClient`,
    `XMAReleaseContext`), because the boot never shuts audio down.
-4. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+3. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
    `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
    deliberately left out of finding 34 as the phase 2 file layer.
-5. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
+4. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
