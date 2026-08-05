@@ -248,6 +248,79 @@ those passes resolve a **depth** surface, and our resolve unconditionally snapsh
 being served an empty colour buffer, so their blackness is our bug rather than evidence
 about the scene.
 
+## 6e. `numFormat=integer` is not a shader-side detail
+
+`XenosVertexFormat` mapped Xenos format 6 (`8_8_8_8`) to `R8G8B8A8_UNORM` regardless of
+the fetch's `numFormat` flag. **Normalized divides by the type's range**, so an integer
+32 arrives in the shader as `32/255 = 0.125`, and a shader that `floor()`s it to index
+something reads element 0 every time. Case Zero has **15 such attributes**.
+
+Vulkan's `USCALED`/`SSCALED` are exactly the missing concept — an integer in memory
+delivered as its own value into a *float* input, which a `*_UINT` format would not be —
+so the shader needs no change. The scrambled geometry of §6b collapsed from
+exploded-to-a-vanishing-point to compact on this change alone.
+
+`GetPipeline` now also asks the device whether it can use each vertex format at all and
+names any it cannot, because a pipeline built with an unsupported vertex format is
+undefined behaviour that presents as wrong geometry rather than as an error. This
+device supports all of them.
+
+## 6f. THE SCENE IS RENDERED IN TWO TILES, AND THAT IS WHAT `SET_BIN_MASK_LO` MEANT
+
+The single most valuable finding of the phase so far, and every earlier symptom was
+downstream of it.
+
+Counting draws per pass (`drawsThisPass` in the resolve trace) reframed the whole
+investigation. It is the number that separates *"the pass rendered nothing because it
+had no draws"* from *"the pass had 900 draws and they produced black"* — two completely
+different investigations that look identical in a snapshot. At the title screen:
+
+```
+dest=1439B000 destPitch=4096 destHeight=1024 win=0,0..1024,1024      draws=111 verts=63801
+dest=143DB000 destPitch=4096 destHeight=1024 win=0,0..1024,1024      draws=224 verts=156206
+dest=06BE4000 destPitch=1280 destHeight=720  win=0,0..640,720        draws=930 verts=494667
+dest=06BF8000 destPitch=1280 destHeight=720  win=640,0..1280,720     draws=108 verts=49061
+                                             winoff=00007D80 (= -640)
+```
+
+The scene was never missing. **930 draws and 494,667 vertices were being rendered every
+frame and thrown away**, because:
+
+* **The Xbox 360's EDRAM is 10 MB and a 1280x720 colour+depth target does not fit.** The
+  title splits the screen into two 640-wide tiles, renders each into a **640-pitch**
+  EDRAM surface (`surfacePitch=640` against `destPitch=1280`), and resolves each into
+  its half of one 1280x720 destination. That is what makes `SET_BIN_MASK_LO` the most
+  frequent opcode in the entire stream — 2,353,460 of B1's 8,283,322 type-3 packets —
+  a number this project has been quoting since phase 1 without knowing what it meant.
+* **`PA_SC_WINDOW_SCISSOR` is the tile, in screen coordinates**, and
+  `PA_SC_WINDOW_OFFSET` is the −640 hardware adds to bring the second tile's geometry
+  down into the 640-wide surface. Our EDRAM image is full-screen-sized, so the offset is
+  deliberately NOT applied — the geometry is already where we want it — but the scissor
+  must be, or every tile paints the whole screen and the last one wins.
+* **`RB_COPY_DEST_PITCH` is the SURFACE; the window scissor is the REGION.** Conflating
+  them copied a 640x720 tile as if it were a full 1280x720 destination, which is what
+  put every pass's content in the top-left corner at assorted sizes — the symptom §5
+  originally diagnosed as a missing surface identity. §5's finding was right and
+  incomplete: the destination address identifies the surface, and the window scissor
+  identifies the part of it.
+* **The two tiles of one surface share a key.** The second tile's `RB_COPY_DEST_BASE` is
+  pre-offset *into the same allocation*: `06BF8000 − 06BE4000 = 0x14000`, and 0x14000 is
+  exactly the 20 macro-tiles that 640 pixels of a 4-byte **tiled** surface occupy
+  (20 × 4096). Keying on the raw base makes one surface look like two, so a consumer
+  fetching the surface's real base gets a snapshot holding only the left half.
+  Subtracting the macro-tile offset puts both halves in one image, which is what the
+  guest's own memory layout does.
+
+Measured: surface `06BE4000` went **4.8% non-black → exactly 50.0%**, the separate
+`06BF8000` snapshot disappeared into it, and the surface now contains **recognisable
+Still Creek 3D geometry** — buildings and structures — where it held three flat colours.
+
+The lesson generalises past this title, and it is the one to carry to Case West: **an
+opcode's frequency is a statement about the renderer's architecture.** `SET_BIN_MASK_LO`
+was recorded as "the most frequent type-3 opcode" in phase 1 and treated as a
+predication detail to get right; it was in fact telling us the title tiles its main
+render target, which is the single most structurally important fact about how it draws.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
@@ -256,28 +329,27 @@ says about where the rest went:
 
 | surface | extent | non-black | reading |
 |---|---|---|---|
-| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | **a 32³ colour-grading LUT unrolled into a strip** — rendering correctly, and not a glyph atlas as first assumed |
+| `06BE4000` (the scene) | 1280x720 | **50.0%, 3 colours** | recognisable Still Creek geometry, FLAT-SHADED — see below |
+| `14338000`, `14359000`, `1437A000` | 1024x32 | 99.9%, ~19k colours | a 32-cubed colour-grading LUT unrolled into a strip, rendering correctly |
 | `00E48000` (the frame) | 1280x720 | 3.1%, 144 colours | what we present |
-| `0684B000`, `06BE4000` | 1280x720 | 8.4%, **3 colours** | the flat bars — a pass whose texture resolved to the dummy |
-| the whole 640x360 → 32x1 pyramid | various | **0.0%** | the scene passes are producing nothing |
-| the 64x64 set (28 of them) | 64x64 | **0.0%** | likewise |
+| `1439B000` .. `143FB000` | 4096x1024 | 0.0% | the shadow cascades — 111/90/224/38 draws each, and DEPTH resolves being served our colour buffer (§6d) |
+| the 640x360 -> 32x1 pyramid | various | 0.0% | the post chain, fed from the scene |
 
-So the loss is **upstream of the compose**, in the passes that should fill the
-downsample pyramid, and it is not any of: a missing shader (no draw is skipped for a
-cache miss), a refused pipeline (none), an unmapped vertex or texture format (none
-remain), an unsupported primitive (none remain), or the colour mask (arm above).
-
-**The sharpest lead is now §6b's scrambled surface**, because it is the only place a
-wrong *value* is visible rather than an absence. Two 1280x720 dependent-fetch passes
-draw large clean triangles from a vanishing point: the table is read, the index decode
-is proven right (§6c), and the constants windows are proven right (§6c) — so what
-remains is what the dependent fetch itself computes, i.e. the address register's value
-and therefore the ALU work feeding it.
+**The scene now renders and is flat-shaded.** Three distinct colours across 930 draws
+and 494,667 vertices means the geometry is right and the pixel shader's output does not
+vary — so the next thread is shading, not geometry, and it is a fresh one. What is
+already eliminated for it: the pixel-shader constant window (§6c), the texture slot
+range (no shader uses a `tfetch` constant above 9, and our shared-constants layout
+holds 16), and texture upload itself (925 textures untiled and uploaded per run, zero
+failures counted).
 
 Known simplifications in the renderer that are candidates, each stated at its site:
 
-* **A depth-only pass resolves the colour target.** §6d — this is a bug with a known
-  location, not a simplification, and it accounts for four of the black surfaces above.
+* **A depth-only pass resolves the colour target.** §6d — a bug with a known location,
+  not a simplification, and it accounts for the four black shadow cascades above.
+* **The shadow cascades are 4096x1024** and our EDRAM image is 1280x720, so their
+  window (1024x1024) is clipped to the target. They need a target sized from the
+  surface, not a fixed one.
 * **One global sampler.** The fetch constant's per-texture filter and address modes are
   decoded and ignored.
 * ~~**No culling.**~~ **Retired by §6c: the title does not cull in this era**

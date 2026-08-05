@@ -174,12 +174,33 @@ inline float F32(uint32_t bits)
 // names the format once, which turns "some geometry is missing" into a line of log.
 VkFormat XenosVertexFormat(uint32_t fmt, bool isSigned, bool isInteger)
 {
+    // `numFormat` 1 — "integer kept as a float value" — is NOT a shader-side detail,
+    // and treating it as one is a silent, total corruption of whatever the attribute
+    // carries. A normalized format divides by the type's range, so an integer 32
+    // arrives as 32/255 = 0.125, and a shader that does `floor()` on it to index
+    // something reads element 0 every time. Case Zero has 15 such attributes; the
+    // meshes that use them collapse to a vanishing point, which reads as scrambled
+    // geometry rather than as a vertex-format bug.
+    //
+    // USCALED/SSCALED are exactly this concept in Vulkan — an integer in memory
+    // delivered as its own value in a float input — so the shader needs no change and
+    // the input stays float-typed, which a *_UINT format would not.
     switch (fmt)
     {
-        case 6:  return isSigned ? VK_FORMAT_R8G8B8A8_SNORM : VK_FORMAT_R8G8B8A8_UNORM;
-        case 25: return isSigned ? VK_FORMAT_R16G16_SNORM : VK_FORMAT_R16G16_UNORM;
-        case 26: return isSigned ? VK_FORMAT_R16G16B16A16_SNORM
-                                 : VK_FORMAT_R16G16B16A16_UNORM;
+        case 6:
+            if (isInteger)
+                return isSigned ? VK_FORMAT_R8G8B8A8_SSCALED : VK_FORMAT_R8G8B8A8_USCALED;
+            return isSigned ? VK_FORMAT_R8G8B8A8_SNORM : VK_FORMAT_R8G8B8A8_UNORM;
+        case 25:
+            if (isInteger)
+                return isSigned ? VK_FORMAT_R16G16_SSCALED : VK_FORMAT_R16G16_USCALED;
+            return isSigned ? VK_FORMAT_R16G16_SNORM : VK_FORMAT_R16G16_UNORM;
+        case 26:
+            if (isInteger)
+                return isSigned ? VK_FORMAT_R16G16B16A16_SSCALED
+                                : VK_FORMAT_R16G16B16A16_USCALED;
+            return isSigned ? VK_FORMAT_R16G16B16A16_SNORM
+                            : VK_FORMAT_R16G16B16A16_UNORM;
         case 31: return VK_FORMAT_R16G16_SFLOAT;
         case 32: return VK_FORMAT_R16G16B16A16_SFLOAT;
         // There is no 32-bit-normalized Vulkan vertex format, so both flavours of
@@ -486,6 +507,12 @@ struct Renderer
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
+    // Draws recorded since the last resolve, i.e. the size of the pass that resolve is
+    // closing. This is the number that separates "the pass rendered nothing because it
+    // had no draws" from "the pass had 900 draws and they produced black" — two
+    // completely different investigations that look identical in a snapshot.
+    uint64_t drawsThisPass = 0;
+    uint64_t verticesThisPass = 0;
     uint32_t targetWidth = 1280, targetHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
@@ -1498,6 +1525,26 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
             R->pipelines.emplace(key, VK_NULL_HANDLE);
             return VK_NULL_HANDLE;
         }
+        // A mapped format the DEVICE cannot use as a vertex buffer is a different
+        // failure from an unmapped one and has to say so by name. The SCALED formats
+        // in particular are the ones drivers most often omit, and a pipeline created
+        // with an unsupported vertex format is undefined behaviour that presents as
+        // wrong geometry rather than as an error.
+        {
+            static std::vector<uint32_t> checked;
+            if (std::find(checked.begin(), checked.end(), uint32_t(f)) == checked.end())
+            {
+                checked.push_back(uint32_t(f));
+                VkFormatProperties fp{};
+                vkGetPhysicalDeviceFormatProperties(R->physical, f, &fp);
+                if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT))
+                    fprintf(stderr,
+                            "[vk] DEVICE CANNOT USE VkFormat %u as a vertex buffer "
+                            "(Xenos format %u, signed=%u integer=%u) — geometry using "
+                            "it will be wrong\n",
+                            uint32_t(f), a.format, a.isSigned, a.isInteger);
+            }
+        }
         const uint32_t binding = uint32_t(bindings.size());
         VkVertexInputBindingDescription b{};
         b.binding = binding;
@@ -2069,9 +2116,32 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         return;
     }
 
+    // THE SCISSOR IS THE TILE. Case Zero does not render its 1280x720 scene in one
+    // pass: the EDRAM is 10 MB and a 1280x720 colour+depth target does not fit, so the
+    // title splits the screen into two 640-wide tiles and renders each into a 640-pitch
+    // EDRAM surface — which is what makes SET_BIN_MASK_LO the single most frequent
+    // opcode in the whole stream (2,353,460 of B1's 8,283,322 type-3 packets).
+    //
+    // PA_SC_WINDOW_SCISSOR carries the tile in SCREEN coordinates (0..640 then
+    // 640..1280), and PA_SC_WINDOW_OFFSET carries the -640 that hardware adds to move
+    // the second tile's geometry down into the 640-wide surface. Our EDRAM image is
+    // full size, so we deliberately do NOT apply the offset — the geometry is already
+    // where we want it — but we must honour the scissor, or every tile paints the whole
+    // screen and the last one wins.
+    const uint32_t winX = regs[xenos::kPaScWindowScissorTl] & 0x7FFF;
+    const uint32_t winY = (regs[xenos::kPaScWindowScissorTl] >> 16) & 0x7FFF;
+    const uint32_t winX1 = regs[xenos::kPaScWindowScissorBr] & 0x7FFF;
+    const uint32_t winY1 = (regs[xenos::kPaScWindowScissorBr] >> 16) & 0x7FFF;
+
     VkRect2D scissor{};
     scissor.offset = { 0, 0 };
     scissor.extent = { R->color.width, R->color.height };
+    if (winX1 > winX && winY1 > winY && winX < R->color.width && winY < R->color.height)
+    {
+        scissor.offset = { int32_t(winX), int32_t(winY) };
+        scissor.extent = { std::min(winX1, R->color.width) - winX,
+                           std::min(winY1, R->color.height) - winY };
+    }
 
     // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
     // trace of 1.1 M draws is unreadable and a per-frame one hides the outlier that
@@ -2309,6 +2379,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         Count("draw: auto-index");
     }
     ++R->drawsThisFrame;
+    ++R->drawsThisPass;
+    R->verticesThisPass += draw.indexCount;
 }
 
 // ===================================================================================
@@ -2345,14 +2417,19 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // one; presenting the EDRAM target wholesale shows all of them overlaid at
     // whatever size each pass happened to use, which is a picture that looks like a
     // scaling bug and is really a missing surface identity.
-    if (EnvOn("CZ_VK_RESOLVE_TRACE"))
+    // CZ_VK_RESOLVE_TRACE=N starts at frame N (1 = from the beginning). The boot's
+    // first frames are not the frame anyone is investigating, and 60 lines of them is
+    // all a from-the-start trace ever shows.
+    if (EnvOn("CZ_VK_RESOLVE_TRACE") &&
+        R->frame >= uint64_t(strtoul(Env("CZ_VK_RESOLVE_TRACE"), nullptr, 10)))
     {
         static int left = 60;
         if (left-- > 0)
             fprintf(stderr,
                     "[vkresolve] frame=%llu dest=%08X destPitch=%u destHeight=%u "
-                    "surfacePitch=%u scissor=%u,%u..%u,%u ctl=%08X info=%08X "
-                    "front=%08X\n",
+                    "surfacePitch=%u scissor=%u,%u..%u,%u win=%u,%u..%u,%u "
+                    "winoff=%08X ctl=%08X info=%08X "
+                    "front=%08X draws=%llu verts=%llu\n",
                     (unsigned long long)R->frame, dest,
                     regs[xenos::kRbCopyDestPitch] & 0x3FFF,
                     (regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF,
@@ -2360,9 +2437,18 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     regs[xenos::kPaScScreenScissorTl] & 0x7FFF,
                     (regs[xenos::kPaScScreenScissorTl] >> 16) & 0x7FFF,
                     regs[xenos::kPaScScreenScissorBr] & 0x7FFF,
-                    (regs[xenos::kPaScScreenScissorBr] >> 16) & 0x7FFF, control,
-                    regs[xenos::kRbCopyDestInfo], R->frontBuffer);
+                    (regs[xenos::kPaScScreenScissorBr] >> 16) & 0x7FFF,
+                    regs[xenos::kPaScWindowScissorTl] & 0x7FFF,
+                    (regs[xenos::kPaScWindowScissorTl] >> 16) & 0x7FFF,
+                    regs[xenos::kPaScWindowScissorBr] & 0x7FFF,
+                    (regs[xenos::kPaScWindowScissorBr] >> 16) & 0x7FFF,
+                    regs[xenos::kPaScWindowOffset], control,
+                    regs[xenos::kRbCopyDestInfo], R->frontBuffer,
+                    (unsigned long long)R->drawsThisPass,
+                    (unsigned long long)R->verticesThisPass);
     }
+    R->drawsThisPass = 0;
+    R->verticesThisPass = 0;
 
     const bool clearColor = ((control >> 8) & 1) != 0;
     const bool clearDepth = ((control >> 9) & 1) != 0;
@@ -2370,12 +2456,39 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // SNAPSHOT THE EDRAM UNDER THE DESTINATION ADDRESS. See the Snapshot comment for
     // why the destination address is the right identity and why the pixels do not go
     // back to guest memory.
-    const uint32_t w = std::min(regs[xenos::kRbCopyDestPitch] & 0x3FFF, R->color.width);
-    const uint32_t h =
-        std::min((regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF, R->color.height);
-    if (w && h)
+    // The SURFACE is RB_COPY_DEST_PITCH; the REGION being copied out of the EDRAM is
+    // the window scissor. Those are different things and conflating them is what put
+    // the whole picture in the top-left corner: a 640x720 tile copied as if it were the
+    // full 1280x720 destination.
+    const uint32_t surfW = regs[xenos::kRbCopyDestPitch] & 0x3FFF;
+    const uint32_t surfH = (regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF;
+    const uint32_t wx = regs[xenos::kPaScWindowScissorTl] & 0x7FFF;
+    const uint32_t wy = (regs[xenos::kPaScWindowScissorTl] >> 16) & 0x7FFF;
+    const uint32_t wx1 = regs[xenos::kPaScWindowScissorBr] & 0x7FFF;
+    const uint32_t wy1 = (regs[xenos::kPaScWindowScissorBr] >> 16) & 0x7FFF;
+
+    // AND THE TILES OF ONE SURFACE SHARE A KEY. The second tile's RB_COPY_DEST_BASE is
+    // pre-offset into the SAME allocation — 06BF8000 is 06BE4000 + 0x14000, and 0x14000
+    // is exactly the 20 macro-tiles that 640 pixels of a 4-byte tiled surface occupy
+    // (20 x 4096). Keying on the raw base makes one surface look like two, so a
+    // consumer fetching the surface's real base gets a snapshot holding only the left
+    // half. Subtracting the tile offset puts both halves in one image, which is what
+    // the guest's own memory layout does.
+    auto macroTileOffset = [](uint32_t x, uint32_t y, uint32_t pitch) -> uint32_t {
+        return ((x >> 5) + (y >> 5) * (std::max(pitch, 32u) >> 5)) * 4096u;
+    };
+    const uint32_t baseKey =
+        (dest - macroTileOffset(wx, wy, surfW)) & 0x1FFFFFFF;
+
+    const uint32_t w = std::min(surfW, R->color.width);
+    const uint32_t h = std::min(surfH, R->color.height);
+    const uint32_t copyX = std::min(wx, w);
+    const uint32_t copyY = std::min(wy, h);
+    const uint32_t copyW = wx1 > wx ? std::min(wx1, w) - copyX : w - copyX;
+    const uint32_t copyH = wy1 > wy ? std::min(wy1, h) - copyY : h - copyY;
+    if (w && h && copyW && copyH)
     {
-        const uint32_t key = dest & 0x1FFFFFFF;
+        const uint32_t key = baseKey;
         auto it = R->snapshots.find(key);
         // A destination whose extent changed is a different surface reusing an
         // address, so the image is rebuilt rather than partially overwritten — a
@@ -2430,10 +2543,17 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     VK_IMAGE_ASPECT_COLOR_BIT);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_ASPECT_COLOR_BIT);
+            // Copy the TILE, at its own position in both images. Source and destination
+            // offsets are the same because our EDRAM is full-screen-sized and the
+            // window offset is deliberately not applied to the geometry (see the
+            // scissor note in DoDraw), so a tile sits at its true screen position in
+            // both.
             VkImageCopy copy{};
             copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.srcOffset = { int32_t(copyX), int32_t(copyY), 0 };
             copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-            copy.extent = { w, h, 1 };
+            copy.dstOffset = { int32_t(copyX), int32_t(copyY), 0 };
+            copy.extent = { copyW, copyH, 1 };
             vkCmdCopyImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);

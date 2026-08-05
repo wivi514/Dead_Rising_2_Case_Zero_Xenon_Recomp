@@ -750,6 +750,34 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 116. **A capture's blob count is a FILE count.** "455 raw microcode blobs" is 455 files;
     A1's 120 are a strict subset of A2's 335, so there are 335 distinct shaders. Two
     documents quoted the file count as a shader count for a whole phase.
+118. **An opcode's FREQUENCY is a statement about the renderer's architecture.**
+    `SET_BIN_MASK_LO` has been recorded since phase 1 as this title's most frequent
+    type-3 opcode — 2,353,460 of B1's 8,283,322 — and treated as a predication detail
+    to get right. It was telling us the thing that mattered most: the Xbox 360's EDRAM
+    is 10 MB and a 1280x720 colour+depth target does not fit, so Case Zero renders its
+    scene in **two 640-wide tiles** into a 640-pitch EDRAM surface and resolves each
+    into its half of one 1280x720 destination. 930 draws and 494,667 vertices a frame
+    were being rendered and thrown away for want of that fact.
+119. **A copy's SURFACE and its REGION are different registers.** `RB_COPY_DEST_PITCH`
+    is the destination surface; `PA_SC_WINDOW_SCISSOR` is the part of it this pass
+    covers, in screen coordinates. Copying the surface's extent when the region is a
+    tile puts every pass's content in the top-left corner at assorted sizes — which
+    reads as a viewport scaling bug, and survived one whole correct-but-incomplete
+    diagnosis (gotcha 112) before the draw-count-per-pass trace exposed it.
+120. **Count the draws PER PASS, not per frame.** It is the number that separates "this
+    pass rendered nothing because it had no draws" from "this pass had 930 draws and
+    produced black" — two completely different investigations that look identical in a
+    snapshot. Adding it reframed the entire hunt in one run.
+121. **Tiles of one surface must share a key.** The second tile's `RB_COPY_DEST_BASE` is
+    pre-offset into the SAME allocation: `06BF8000 - 06BE4000 = 0x14000`, exactly the 20
+    macro-tiles that 640 pixels of a 4-byte tiled surface occupy. Keyed on the raw base,
+    one surface looks like two and a consumer fetching its real base gets only the left
+    half.
+122. **`numFormat=integer` is not a shader-side detail.** A normalized vertex format
+    divides by the type's range, so an integer 32 arrives as 0.125 and a shader that
+    `floor()`s it to index something reads element 0 every time. Vulkan's
+    USCALED/SSCALED are exactly the missing concept — an integer delivered as its own
+    value into a FLOAT input, which a `*_UINT` format would not be.
 117. **The picture is the one claim that needs an image, so make it self-servable.**
     Every other gate in this project is a log diff. Dumping frames AND every resolve
     snapshot from a headless run is what turns "does it look right" from an operator
