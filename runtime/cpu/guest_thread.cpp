@@ -3,6 +3,10 @@
 #include <bit>
 #include <chrono>
 #include <cstring>
+#include <map>
+#include <mutex>
+
+#include <unistd.h>
 
 #include "../kernel/guestcall.h"
 #include "../kernel/heap.h"
@@ -40,12 +44,37 @@ GuestThreadContext::GuestThreadContext(uint32_t cpuNumber, uint32_t stackSize)
     ppcContext.fpscr.loadFromHost();
 
     g_ppcContext = &ppcContext;
+    RegisterPcr(pcr, GuestThread::GetCurrentThreadId());
 }
 
 GuestThreadContext::~GuestThreadContext()
 {
+    RegisterPcr(g_memory.MapVirtual(block), 0);
     g_ppcContext = nullptr;
     g_heap.Free(block);
+}
+
+// PCR -> thread id, for the diagnostics that only ever see r13. Thread blocks are
+// recycled through the same heap, so the entry is dropped when the block is freed:
+// a stale mapping would name a thread that no longer exists, which is worse than
+// naming none.
+static std::mutex g_pcrMutex;
+static std::map<uint32_t, uint32_t> g_pcrToThreadId;
+
+void GuestThreadContext::RegisterPcr(uint32_t pcr, uint32_t threadId)
+{
+    std::lock_guard lk(g_pcrMutex);
+    if (threadId)
+        g_pcrToThreadId[pcr] = threadId;
+    else
+        g_pcrToThreadId.erase(pcr);
+}
+
+uint32_t GuestThread::ThreadIdForPcr(uint32_t pcr)
+{
+    std::lock_guard lk(g_pcrMutex);
+    auto it = g_pcrToThreadId.find(pcr);
+    return it != g_pcrToThreadId.end() ? it->second : 0;
 }
 
 uint32_t GuestThread::Run(const GuestThreadParams& params)
@@ -70,6 +99,31 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
                 params.function);
         return 0;
     }
+
+    // The HOST thread id, printed once per guest thread. Our own traces all speak
+    // guest ids, but the instrument of last resort for a thread that is stuck without
+    // being in any wait — a guest-level spin — is an outside debugger, and gdb only
+    // knows host ids. Without this line the two views cannot be joined and every
+    // stack a debugger prints is anonymous (finding 38).
+    //
+    // Behind the trace flags because it is only useful when a debugger is attached,
+    // and because nineteen extra writes to stderr during the thread-creation storm
+    // are not free.
+    //
+    // It was gated during a false alarm that is worth recording. Unconditional, this
+    // build showed the A1 gate permuting positions 71-73 in about half its runs,
+    // against 6 of 6 clean on the committed binary — which reads as an obvious
+    // regression from the new logging. It is not: re-running the COMMITTED binary
+    // under the same conditions produced the same permutation. Those positions are
+    // scheduling-sensitive and always were; the 6-of-6 sample was smaller than it
+    // looked. Gotcha 51 — a rate measured once is a fact about that afternoon — and
+    // the correct control for "did my change do this" is the old binary run NOW, not
+    // the old binary's remembered numbers.
+    if (getenv("CZ_THREAD_TRACE") || getenv("CZ_WAIT_TRACE") || getenv("CZ_CS_TRACE"))
+        fprintf(stderr, "[kernel] guest thread tid=%08X entry=%08X host tid=%d cpu=%u\n",
+                GuestThread::GetCurrentThreadId(), params.function, int(gettid()),
+                cpuNumber);
+    bool terminated = false;
     try
     {
         func(ctx.ppcContext, g_memory.base);
@@ -77,7 +131,18 @@ uint32_t GuestThread::Run(const GuestThreadParams& params)
     catch (const GuestThreadExit&)
     {
         // ExTerminateThread unwinds to here.
+        terminated = true;
     }
+
+    // Always logged, never behind a flag. This title starts eleven guest threads and
+    // essentially none of them are supposed to end during a boot, so the volume is a
+    // dozen lines at most — and a thread that ends when it should not is otherwise
+    // completely silent. A dead producer and a producer that has simply not got round
+    // to signalling look identical from the consumer's side: the consumer is parked on
+    // an event either way. One line here tells the two apart at a glance.
+    fprintf(stderr, "[kernel] guest thread tid=%08X entry=%08X ENDED (%s, r3=%08X)\n",
+            GuestThread::GetCurrentThreadId(), params.function,
+            terminated ? "ExTerminateThread" : "returned", ctx.ppcContext.r3.u32);
 
     return ctx.ppcContext.r3.u32;
 }

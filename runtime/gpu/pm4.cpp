@@ -1,5 +1,6 @@
 #include "pm4.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -88,6 +89,10 @@ uint32_t g_cursor = 0;     // our read pointer, ring-relative, in dwords
 // CZ_PM4_STOP_ON_WAIT — see the WAIT_REG_MEM case. Read once; an env lookup per
 // packet would be measurable at 1.27 M packets per 25 s.
 const bool g_stopOnWait = getenv("CZ_PM4_STOP_ON_WAIT") != nullptr;
+
+// CZ_PM4_ZERO_IS_NOP — the rejected reading of a zero header, kept as a measurable
+// arm rather than deleted; see ExecutePacket.
+const bool g_zeroIsNop = getenv("CZ_PM4_ZERO_IS_NOP") != nullptr;
 
 // The register file, covering the real registers plus the SET_CONSTANT windows
 // (ALU constants at 0x4000, fetch at 0x4800, bools at 0x4900, loops at 0x4908).
@@ -305,14 +310,34 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
 
     // An all-zero dword at ring level is memory the driver has not written yet.
     // Parsing it as a type-0 "write one register at index 0" would silently consume
-    // two dwords of a packet still being written and desync the stream. Inside an
-    // indirect buffer zeros are legitimate tail padding and keep their meaning.
+    // two dwords of a packet still being written and desync the stream.
     if (header == 0 && depth == 0)
     {
         g_packets.fetch_sub(1, std::memory_order_relaxed);
         g_types[type].fetch_sub(1, std::memory_order_relaxed);
         return 0;
     }
+
+    // Below the ring, a zero dword falls through to the type-0 path and is read as
+    // "write one register at index 0", consuming the dword after it as data.
+    //
+    // That looks wrong, and finding 38 spent a while believing it was: it would mean
+    // every odd-length run of padding shifts the walk by one dword, which is exactly
+    // the symptom the indirect-buffer truncations show. It is not wrong. Xenia's B1
+    // capture records the true length of all 24,527,474 packets it executed, and
+    // `tools/pm4_packet_lengths.py` says our arithmetic matches every one of them —
+    // including its single zero-header packet, which hardware consumed as TWO dwords,
+    // not one. B1 containing exactly one such packet in 24.5 M is the other half of
+    // the story: a correctly aligned walk of this title's streams essentially never
+    // meets a zero header, so the zeros our truncated walks trip over are data being
+    // read by a walk that is already lost.
+    //
+    // CZ_PM4_ZERO_IS_NOP=1 selects the rejected reading, so the question can be
+    // re-measured without a rebuild (gotcha 50 — a rate needs two arms of the same
+    // binary). Measured at 10 runs a side: no difference in the stall rate, which is
+    // what the capture predicts for a rule that only fires after the walk is lost.
+    if (header == 0 && g_zeroIsNop)
+        return 1;
 
     if (type == 1) // two register writes, 11-bit indices
     {
@@ -576,8 +601,31 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             {
                 const uint32_t addr = body(0);
                 const uint32_t size = body(1) & 0xFFFFF;
+                if (getenv("CZ_PM4_IB_TRACE"))
+                {
+                    static std::atomic<uint64_t> n{ 0 };
+                    if (n.fetch_add(1) < 64)
+                        fprintf(stderr,
+                                "[pm4] INDIRECT_BUFFER header=%08X body0=%08X body1=%08X "
+                                "-> addr=%08X size=%u (bodyCount=%u)\n",
+                                header, body(0), body(1), addr, size, bodyCount);
+                }
                 if (size && (addr & 0x1FFFFFFFu) + uint64_t(size) * 4 <= 0x20000000ull)
+                {
                     ExecuteLinear(base, PhysToVa(addr), size, depth + 1);
+                }
+                else
+                {
+                    // Same reasoning as the truncation report above: a buffer we
+                    // decline to walk takes its trailing fence with it.
+                    static std::atomic<uint64_t> skipped{ 0 };
+                    const uint64_t n = skipped.fetch_add(1);
+                    if (n < 16 || (n & 0xFFFu) == 0)
+                        fprintf(stderr,
+                                "[pm4] indirect buffer SKIPPED (addr=%08X size=%u, "
+                                "occurrence %llu)\n",
+                                addr, size, static_cast<unsigned long long>(n));
+                }
             }
             break;
 
@@ -592,11 +640,92 @@ void ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int depth)
 {
     Source fetch{ base, va, 0 };
     uint32_t pos = 0;
+    // The last few packets walked, so a truncation can name the packet whose LENGTH
+    // was wrong rather than the innocent dword it eventually tripped over. A stopped
+    // walk always reports the position where the arithmetic ran out, which is data by
+    // then — one of the headers this caught was 3F800000, the float 1.0 — so without
+    // the trail every report points at the wrong packet.
+    struct Step
+    {
+        uint32_t pos, header, consumed;
+    };
+    Step trail[8] = {};
+    uint32_t steps = 0;
     while (pos < sizeDwords)
     {
+        const uint32_t header = fetch(pos);
         const uint32_t consumed = ExecutePacket(base, fetch, pos, sizeDwords - pos, depth);
+        trail[steps % 8] = { pos, header, consumed };
+        steps++;
         if (!consumed)
-            break; // a packet claiming more than the buffer holds: stop, do not guess
+        {
+            // A packet claiming more dwords than the buffer holds. Stopping is right —
+            // guessing would desync — but stopping SILENTLY is not, and that is what
+            // this did until finding 38.
+            //
+            // The driver's own progress fence is the LAST packet in these buffers, so
+            // anything that cuts a buffer short drops the fence with it. The read
+            // pointer the driver polls then stops advancing while our parser reports
+            // itself fully caught up, and the next thread that waits on that fence
+            // waits for the rest of the process's life. A truncation here is therefore
+            // not a cosmetic parse issue; it is a hang, and it deserves to say so.
+            static std::atomic<uint64_t> truncated{ 0 };
+            const uint64_t n = truncated.fetch_add(1);
+            if (n < 16 || (n & 0xFFFu) == 0)
+            {
+                fprintf(stderr,
+                        "[pm4] indirect buffer TRUNCATED at dword %u of %u (va=%08X, "
+                        "header=%08X, depth=%d, occurrence %llu) — every packet after "
+                        "this one is lost, including any trailing fence\n",
+                        pos, sizeDwords, va, fetch(pos), depth,
+                        static_cast<unsigned long long>(n));
+                const uint32_t shown = steps < 8 ? steps : 8;
+                for (uint32_t i = shown; i-- > 0;)
+                {
+                    const Step& s = trail[(steps - 1 - i) % 8];
+                    fprintf(stderr, "[pm4]   -%u: dword %u header %08X type %u op %02X "
+                                    "count %u -> consumed %u\n",
+                            i, s.pos, s.header, s.header >> 30, (s.header >> 8) & 0x7F,
+                            ((s.header >> 16) & 0x3FFF) + 1, s.consumed);
+                }
+                // And the raw tail, because the question a truncation raises is what
+                // the dwords we could not parse actually ARE. Capped: hardware's own
+                // indirect buffers reach 65,522 dwords, so an early truncation in a
+                // big one would otherwise dump 8,000 lines and bury the report it
+                // belongs to. Use CZ_PM4_DUMP_TRUNCATED for the whole thing.
+                const uint32_t tailEnd = std::min(sizeDwords, pos + 64);
+                for (uint32_t i = pos; i < tailEnd; i++)
+                    fprintf(stderr, "%s%08X", ((i - pos) % 8) ? " " : "\n[pm4]   tail ",
+                            fetch(i));
+                fprintf(stderr, "%s\n", tailEnd < sizeDwords ? " ..." : "");
+
+                // CZ_PM4_DUMP_TRUNCATED=<path>: the whole buffer, once. The trail above
+                // reaches a few packets back; the dword that was actually mis-sized can
+                // be thousands of packets earlier, and only a full re-walk offline can
+                // find it.
+                if (const char* path = getenv("CZ_PM4_DUMP_TRUNCATED"))
+                {
+                    static std::atomic<uint32_t> dumps{ 0 };
+                    const uint32_t index = dumps.fetch_add(1);
+                    if (index < 6)
+                    {
+                        char name[512];
+                        snprintf(name, sizeof(name), "%s.%u.%u.bin", path, index, sizeDwords);
+                        if (FILE* f = fopen(name, "wb"))
+                        {
+                            for (uint32_t i = 0; i < sizeDwords; i++)
+                            {
+                                const uint32_t w = __builtin_bswap32(fetch(i));
+                                fwrite(&w, 4, 1, f);
+                            }
+                            fclose(f);
+                            fprintf(stderr, "[pm4] dumped %u dwords to %s\n", sizeDwords, name);
+                        }
+                    }
+                }
+            }
+            break;
+        }
         pos += consumed;
     }
 }
@@ -694,6 +823,10 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
 }
 
 void Pm4_SetInterruptSink(void (*sink)()) { g_interruptSink = sink; }
+
+uint32_t Pm4_Cursor() { return g_cursor; }
+uint32_t Pm4_ScratchAddr() { return g_regs[kRegScratchAddr]; }
+uint32_t Pm4_ScratchUmsk() { return g_regs[kRegScratchUmsk]; }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }

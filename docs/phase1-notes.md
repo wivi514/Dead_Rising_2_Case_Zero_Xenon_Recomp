@@ -1365,6 +1365,274 @@ with each other, which is gotcha 51 exactly — a rate measured once is a fact a
 that afternoon — so treat "about a third to a half" as the current honest range and
 re-establish it before and after any change aimed at it.
 
+### Finding 38 — the load stall: the Draw Thread is waiting for a fence packet we never executed
+
+The symptom, from finding 37: a third to a half of long runs never reach the title
+screen. They stop at 47 or 57 files with the main thread parked in the renderer's
+frame fence, waiting for the Draw Thread to signal a frame it never signals.
+
+This finding traces that end to end and stops one step short of a fix. What it
+establishes: **the Draw Thread is spinning in guest code on a ring-progress counter
+that only the command stream advances, and our command processor stopped executing
+the packets that advance it** — because its walk of the title's indirect command
+buffers ends early, silently, on data it reads as a packet header. What it does not
+yet establish is why those bytes are not the bytes hardware saw; a 24.5-million-packet
+check against the B1 capture rules out the first three theories, including the one
+this finding first proposed and had already written up as the answer.
+
+**First, a retraction.** The task written from finding 37 recorded that the main
+thread blocks on the fence *while holding two critical sections two other threads are
+spinning on*, and read that as a possible deadlock cycle. Both halves are true and
+they are unrelated. With `CZ_CS_TRACE=1` a **healthy** run shows the same two
+`[csspin]` lines, on the same two sections, from early boot to the end of the run —
+they are `DnsLookupThread` and `session shutdown thread`, each blocked at its first
+`RtlEnterCriticalSection` on a section the main thread holds for the life of the
+process. That is the title's own design; on console those two threads simply sleep.
+Adjacency in a stall trace is not causation (gotcha 68), and the give-away was
+available for free: the same lines are in the healthy runs.
+
+#### The instrument that had to exist first
+
+The wait trace covered `NtWaitForSingleObjectEx` and nothing else. The Draw Thread
+waits in `WaitForMultipleObjectsEx` over four handles, so the single most important
+wait in the title was the one wait our tracing could not see, and its silence read as
+"that thread is fine". Three instruments came first:
+
+- `WaitObject`, one traced-wait helper shared by the handle-level and
+  dispatcher-header paths, plus a report from inside both wait-any polling loops.
+- a `[kernel] guest thread ... ENDED` line, always on. A dead producer and a producer
+  that has not got round to signalling look identical from the consumer's side.
+- the host thread id per guest thread, and a PCR→thread-id map so `[csspin]` names
+  both sides of a contention by entry point rather than by raw `r13`.
+
+With those, a caught stall reads: main parked on the fence, six JobThreads parked in
+their wait-any, the audio and file threads parked on semaphores — **and the Draw
+Thread in none of them, and not ended.** A thread that is stuck without being in any
+wait is running guest code, and nothing inside the runtime can say where, because it
+is not calling us.
+
+#### Outside the process
+
+`gdb -p` on a caught stall, joined to the log by the host-tid line:
+
+```
+Thread 9 (LWP 2505924):
+#0 __imp__sub_8283C6C8   ppc_recomp.173.cpp:34882
+#1 __imp__sub_82845160   ppc_recomp.175.cpp:16621
+#2 __imp__sub_82841F00
+#3 __imp__sub_827D3898        <- the Draw Thread body
+```
+
+`sub_8283C6C8` is a spin-with-backoff predicate (eight `mr r31,r31` pause hints in a
+`bdnz` loop, then a timeout check). `sub_82845160` is the loop that calls it, and it
+names the whole protocol:
+
+```
+82845200  lwz  r11,0x2a90(r31)   ; r11 = the progress-word POINTER
+82845204  lwz  r10,0x2a9c(r31)   ; W = what the driver has produced
+8284520C  lwz  r11,0(r11)        ; R = what the GPU has consumed
+82845210  subf r11,r11,r10
+82845214  cmplw cr6,r9,r11       ; (W - target) >= (W - R)  ->  R has reached target
+82845218  blt  cr6,0x828451f0    ; ...else spin again, forever
+```
+
+A gdb script that finds the thread whose frame 1 is `sub_82845160` and reads those
+three numbers out of guest memory gives, on two separate catches:
+
+```
+RINGWAIT dev=40001D80 target=00000509  R=00000507  W=0000050D
+RINGWAIT dev=40001D80 target=00000519  R=00000517  W=0000051D
+```
+
+Both times R is frozen exactly **two** short of the target. Meanwhile
+`CZ_RING_TRACE=1` says our command processor is completely caught up:
+
+```
+ring: kickedWptr=00000F31 [wb+0]=00000507 | registered=BC7394BC [reg+0]=00000F31
+      | cursor=3889 scratch=1BF39460 | mmio CP_RB_WPTR=00000F31
+ring: pm4 packets=446726 frames(XE_SWAP)=321 draws=25102 interrupts=433   (frozen)
+```
+
+`cursor` = `kickedWptr` = the MMIO write pointer, and the packet count does not move.
+There is nothing left to execute. The driver is waiting for a number only new packets
+can produce, and it will not produce new packets until the number moves.
+
+#### Two words, not one
+
+That trace also shows something worth keeping: `[wb+0]`, the word the driver polls,
+and `registered`, the slot `VdEnableRingBufferRPtrWriteBack` handed us, are
+**different addresses** — 0xBC739480 and 0xBC7394BC. The image says why:
+
+```
+82846484  li   r3,0x60          ; a 96-byte block
+82846488  bl   <alloc>
+8284648C  stw  r3,0x2a90(r31)   ; the driver polls [block + 0]
+...
+82846500  lwz  r11,0x2a90(r31)
+82846504  addi r11,r11,0x3c     ; and registers block + 0x3C with the kernel
+8284651C  bl   VdEnableRingBufferRPtrWriteBack
+```
+
+So the read pointer we publish — correctly, into the slot we were given — is not the
+word this wait reads. A `gdb` hardware watchpoint on the polled word in a **healthy**
+run names its real writer in one hit:
+
+```
+Thread 16 hit Hardware watchpoint: *(g_memory.base + 0xBC739480)
+#0 StoreGpu                gpu/pm4.cpp:239
+#1 ExecutePacket           gpu/pm4.cpp:396      <- the EVENT_WRITE family
+#2 ExecuteLinear           gpu/pm4.cpp:597      <- inside an INDIRECT_BUFFER
+#3 ExecutePacket ... #4 Pm4_Execute ... #5 GraphicsInterruptPump
+```
+
+The driver's progress counter is written by **its own fence packets, in its own
+command stream**. Which turns the question into: why did we stop executing them?
+
+#### The truncation
+
+`ExecuteLinear` stops when a packet claims more dwords than the buffer holds. That is
+the right thing to do and it was doing it **silently**. Made loud, a 60 s run reports:
+
+```
+[pm4] indirect buffer TRUNCATED at dword 7227 of 7244 (va=BC17D580, header=00E48000)
+[pm4] indirect buffer TRUNCATED at dword 73 of 135 (va=BC2BFA60, header=22000000)
+[pm4] indirect buffer TRUNCATED at dword 96 of 151 (va=BC27EC40, header=3F800000)
+```
+
+`3F800000` is the float 1.0. We are parsing *data* as a packet header, so the walk had
+already desynced; the reported position is where the invented length finally ran off
+the end, not where the mistake was. A trail of the last eight packets and a raw dump
+of the untrusted tail (both added here) show what is lost: the tail of one of these
+buffers decodes cleanly as `REG_RMW`, a register write, `INVALIDATE_STATE`, and two
+`EVENT_WRITE_SHD` — the last of which writes `0000051D` to physical `1C739482`, which
+is the polled word with endian code 2. **The packet we drop is the fence the Draw
+Thread is waiting for.** One dropped packet, one thread waiting for the rest of the
+process's life.
+
+That closes the mechanism. What remains is why the walk desyncs.
+
+#### A wrong answer, and the oracle that caught it
+
+The first answer looked excellent: a zero dword is padding, and we read it as a
+two-dword type-0 packet ("write one register at index 0", swallowing the dword after
+it as data), so every odd-length run of padding shifts the walk by one. Dumping
+offending buffers (`CZ_PM4_DUMP_TRUNCATED`) and re-walking them offline under both
+rules seemed to confirm it — a 135-dword buffer went from "stops at dword 73 on
+`22000000`" to "ends exactly at 135, on the fence packet".
+
+It is wrong, and the thing that says so is a check that should have existed from the
+start. Xenia's `.xtr` records a `PacketStart {base_ptr, count}` for **every packet it
+executed**, and `count` is that packet's true length in dwords — the boundary real
+hardware used, on this title, inside indirect buffers included. `tools/pm4_packet_lengths.py`
+compares that against the rule `gpu/pm4.cpp` uses:
+
+```
+  packets checked      : 24,527,474
+  lengths agreeing     : 24,527,473
+  lengths DISAGREEING  : 1
+      type 0 header 00000000: hardware used 2, we use 1
+```
+
+Our packet-length arithmetic was **already correct on 24.5 million real packets**, and
+the single disagreement is the zero rule I had just changed — recorded by hardware as
+two dwords, i.e. the behaviour I had removed. B1 contains exactly one zero-header
+packet in 24.5 M, which is the other half of the story: a correctly aligned walk of
+this title's streams essentially never meets one. The zeros we trip over are *data*,
+seen through a walk that is already lost. The change was reverted; it could only ever
+have altered where an already-desynced walk came to rest.
+
+With it reverted the same command prints what it should, and that is the state the
+tool is committed in — run it after any change to the packet decode:
+
+```
+  packets checked      : 24,527,474
+  lengths agreeing     : 24,527,474
+  lengths DISAGREEING  : 0
+
+OK: every packet's recorded length matches the rule in gpu/pm4.cpp.
+```
+
+The same oracle also kills two follow-up theories in one pass. Hardware never executes
+a packet with header `00E48000` (0 occurrences in 24.5 M), so that dword is data, not a
+packet we mis-size. And hardware's own indirect buffers run to 65,522 dwords and are
+executed whole, so "the big ones are a different path" is not it either.
+
+Measured rather than asserted, per gotcha 50 — `CZ_PM4_ZERO_IS_PACKET=1` gave a
+same-binary control arm, 10 runs each at 120 s:
+
+| arm | stalls |
+|---|---|
+| zero read as a 1-dword no-op (the "fix") | **3 of 10** |
+| zero read as a packet (the shipped rule) | **4 of 10** |
+
+against a **2 of 8** baseline on the committed binary. No effect, which is what the
+capture predicts for a rule that can only fire once the walk is already lost — and
+worth noticing that the arm with the "fix" is the one that stalled less by a margin
+that means nothing. Had this been run as a single pair of runs instead of ten, it
+would have produced a decisive-looking answer in either direction (gotcha 50).
+
+#### A false alarm, recorded because it nearly cost a good change
+
+Partway through, the A1 gate started reporting `DIVERGENCE at position 71` — a
+permutation of `XamUserCheckPrivilege` against the two `Xex` calls at 71-73 — in about
+half of the runs that reached the title screen, where the committed binary had given a
+clean 84-deep prefix in 6 of 6. That reads as an obvious regression from this
+session's changes, and the two suspects were both new: firing APCs at the multi-object
+waits, and a finite timeout that can now actually expire there.
+
+Both were exonerated by measurement rather than by reading. The finite-timeout path
+was instrumented and **never fires** — no caller in this boot passes one — so it
+cannot reorder anything. And the decisive control was the obvious one that is easy to
+skip: `git stash`, rebuild the **committed** binary, and run it again *today*. It
+produces the same permutation.
+
+Then, properly: both binaries built side by side, runs alternated so neither arm owns
+a stretch of wall-clock, six each.
+
+| binary | position-71 permutations |
+|---|---|
+| committed (`cz_base`) | 1 of 6 |
+| this session's | **0 of 6** |
+
+Positions 71-73 were always scheduling-sensitive; the 6-of-6-clean sample was smaller
+than it looked, and the 6-of-9-permuted sample that raised the alarm was equally an
+afternoon. Neither number was about the code.
+
+Gotcha 51 says a rate measured once is a fact about that afternoon. The corollary this
+adds: **the control for "did my change do this" is the old binary run now, not the old
+binary's remembered numbers.** Reverting on the remembered ones would have thrown away
+a correct change to fix a defect that did not exist.
+
+(The APC drain is still off by default, but for the honest reason rather than that
+one: it was written to chase this stall, the stall turned out to be elsewhere, and
+nothing has yet shown it is needed. `CZ_MULTIWAIT_APC=1` enables it.)
+
+#### What is actually left
+
+Our lengths match hardware; our start addresses come straight from the packet; the
+buffers still desync, at a position that varies from buffer to buffer (dword 73 of
+135, 7227 of 7244, 10056 of 10106). That leaves one class of explanation: **the bytes
+we walk are not the bytes hardware walked.** The leading suspect is timing — our
+command processor runs on the 16 ms vblank tick rather than continuously, so it reads
+each indirect buffer up to a frame after the driver submitted it.
+
+Stated as a suspicion, not as a finding, because the evidence for it is weak and it
+would be easy to overstate. Two different buffers carry the identical 7-dword run
+`00022204 00010000 00010000 00000300 00002312 00001844 00E48000` immediately before
+their closing packets, which reads as "stale bytes from a previous frame" and reads
+just as well as "a fixed preamble the driver emits before every epilogue" — the second
+being the likelier of the two. What is certain is only that our walk arrives at those
+dwords misaligned.
+
+The next experiment is written down rather than run: snapshot each indirect buffer
+before walking it, walk as usual, then compare the snapshot with live memory
+afterwards. If they differ, the guest is writing the buffer while we read it and the
+fix is about *when* we consume the ring, not how we parse it. That is a much larger
+change than a parser fix — it is the difference between a command processor driven by
+the vblank and one driven by the write pointer — which is why it is a separate task
+rather than a patch at the end of this finding.
+
+
 ## 5. Where the boot currently stops
 
 
@@ -1381,6 +1649,13 @@ ring: pm4 packets=1271801 frames(XE_SWAP)=563 draws=68588 interrupts=1235
 delivered to the guest ISR — and **zero unknown opcodes, zero parser stalls, zero
 out-of-arena stores**. The read pointer chases the write pointer rather than sitting
 frozen, which is the health check that says the parser is keeping up.
+
+Read that "zero parser stalls" narrowly: it is a statement about the RING walk, which
+reports a frozen cursor after 60 ticks. Finding 38 found the walk of the *indirect
+buffers* the ring points at ending early on a regular basis — dozens of times a
+minute — and reporting nothing at all, because that path had no diagnostic. Three
+green counters and a silent one is not a clean bill of health; it is three counters
+and a blind spot (gotcha 25's shape again).
 
 **The gate.** Superseded twice; see section 6 for the current numbers. As of finding
 36 the A1 run is an exact **84-deep prefix of Xenia's 93** and the A5 run tracks A5 to
@@ -1399,8 +1674,10 @@ position 85 (`XamShowDeviceSelectorUI`) and then stops at 86 on the phase 2 save
 enumerate stubs, which is a gap we chose.
 
 Separately, about a third to a half of long runs never reach the title screen at all,
-stalling at 47 or 57 files with the main thread parked in the renderer's frame fence
-while holding two critical sections (finding 37's last section).
+stalling at 47 or 57 files with the main thread parked in the renderer's frame fence.
+Finding 38 traces that all the way down to a single dropped fence packet in the
+command stream and stops one step short of a fix; the critical-section half of finding
+37's first reading of it is retracted there (the same contention is in healthy runs).
 
 **An intermittent crash, and a retraction of the first reading of it.**
 
@@ -1444,12 +1721,16 @@ per arm will confidently name whichever arm happened not to fire.
 
 Next, in order:
 
-1. **The intermittent load stall** (finding 37). About a third to a half of long runs
-   never reach the title screen, stopping at 47 or 57 files with the main thread
-   blocked in the render fence (`sub_827CC6A8`, waiting on `[obj+2480]`) while holding
-   two critical sections two other threads spin on. The other side of the fence is
-   `sub_827D3898`, the Draw Thread body. This is now the biggest thing between us and
-   a reliable boot, and it is a correctness bug rather than a missing feature.
+1. **The intermittent load stall** (findings 37 and 38). 2 stalls in 8 runs at 120 s
+   on the committed binary; still the biggest thing between us and a reliable boot.
+   Finding 38 has the whole mechanism — Draw Thread spinning on a ring-progress
+   counter, counter advanced only by fence packets, fence packets lost to an
+   indirect-buffer walk that ends early — and one open question: **why does the walk
+   desync when our packet lengths match hardware's own boundaries on 24,527,474
+   packets?** The next experiment is written down at the end of that finding: snapshot
+   each indirect buffer before walking it, compare with live memory afterwards. If it
+   changed under us, the fix is about when we consume the ring (a vblank-driven
+   command processor is 16 ms behind the driver), not about how we parse it.
 2. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
    localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0`, a null indirect call through a vtable slot.

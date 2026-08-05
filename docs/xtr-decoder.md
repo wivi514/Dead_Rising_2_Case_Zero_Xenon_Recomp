@@ -256,6 +256,27 @@ whole Xenos register file (0x5003 entries) rather than something that scales wit
 length — so it should not grow. Everything else has three orders of magnitude of room.
 This is the table to re-check on a title that reports a desync where none should exist.
 
+## The capture is an oracle for your own parser, not just a record of the run
+
+`PacketStart {base_ptr, count}` carries the packet's true length in dwords — the
+boundary the hardware command processor used, for this title, inside indirect buffers
+as well as the ring. That makes a capture the one independent check available on a
+runtime's packet-length arithmetic, which is otherwise self-referential: a parser that
+sizes a packet wrongly desyncs, reads data as headers, and stops somewhere downstream
+looking like a corrupt stream rather than like a bug in itself.
+
+`tools/pm4_packet_lengths.py` does that comparison. On B1: **24,527,474 packets
+checked, one disagreement** — and that one retired a fix that had already been made,
+written up, and shipped as the explanation for a boot-stalling bug (phase 1 finding
+38). Run it after any change to `gpu/pm4.cpp`'s packet decode. Exit 1 means our walk
+would desync on a real stream.
+
+Two caveats it has to encode, both from this file's own traps:
+
+- `INDIRECT_BUFFER` is recorded one dword short (trap 2), so the comparison adds it
+  back via `xtr.PM4_SHORT_RECORDED` rather than widening a tolerance.
+- a zero-length `PacketStart` has no header to check and is skipped, not counted.
+
 ## The tools
 
 | tool | what it answers |
@@ -266,6 +287,7 @@ This is the table to re-check on a title that reports a desync where none should
 | `tools/xtr_walk.py limits` | how much headroom the plausibility bounds have |
 | `tools/xtr_pm4_census.py` | what the guest told the GPU to do; `--verify` self-checks |
 | `tools/xtr_determinism.py` | how much two captures of one drive differ |
+| `tools/pm4_packet_lengths.py` | does OUR command processor size packets the way hardware did |
 
 The format lives in **one** module on purpose. Asura's Wrath grew six `.xtr` tools each
 carrying a copy-pasted `step()` — six copies of one belief about the file format. When the

@@ -328,6 +328,16 @@ def packet_header_word(data, off):
     return _BE_U32.unpack_from(data, off + 12)[0]
 
 
+def packet_word_count(data, off):
+    """PacketStart.count — the packet's true length in dwords, header included.
+
+    This is the boundary the recording says hardware used, which makes it the only
+    independent check we have on our own packet-length arithmetic (see
+    tools/pm4_packet_lengths.py). Note PM4_SHORT_RECORDED below.
+    """
+    return _U32.unpack_from(data, off + 8)[0]
+
+
 def memory_command(data, off):
     """(base_ptr, encoding, encoded_len, decoded_len, payload_offset)."""
     base_ptr, enc, elen, dlen = struct.unpack_from("<IIII", data, off + 4)

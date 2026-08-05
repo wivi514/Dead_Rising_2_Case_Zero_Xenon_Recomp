@@ -277,10 +277,20 @@ void GraphicsInterruptPump()
             const uint32_t writebackPtr = PPC_LOAD_U32(userData + kDeviceWritebackPtr);
             const uint32_t rptr =
                 writebackPtr >= 0x1000 ? PPC_LOAD_U32(writebackPtr) : 0xFFFFFFFFu;
-            KLOG("ring: kickedWptr=%08X (dev+%u)  writebackPtr=%08X (dev+%u, registered "
-                 "%08X)  [wb+0]=%08X  mmio CP_RB_WPTR=%08X\n",
-                 kickedWptr, kDeviceKickedWptr, writebackPtr, kDeviceWritebackPtr,
-                 g_rptrWriteback.load(), rptr, PPC_LOAD_U32(kCpRbWptrAddress));
+            // Both slots, and the parser's own cursor. The first version of this line
+            // printed only the address the DRIVER dereferences and the address the
+            // guest REGISTERED, never noticing they are not the same address — the
+            // driver reads [dev+10896], the registration hands us that block plus
+            // 0x3C, and a trace that shows one number for "the read pointer" cannot
+            // show a write landing in the wrong one.
+            const uint32_t registered = g_rptrWriteback.load();
+            KLOG("ring: kickedWptr=%08X (dev+%u)  writebackPtr=%08X (dev+%u) [wb+0]=%08X | "
+                 "registered=%08X [reg+0]=%08X | cursor=%u scratch=%08X umsk=%08X | "
+                 "mmio CP_RB_WPTR=%08X\n",
+                 kickedWptr, kDeviceKickedWptr, writebackPtr, kDeviceWritebackPtr, rptr,
+                 registered, registered >= 0x1000 ? PPC_LOAD_U32(registered) : 0xFFFFFFFFu,
+                 Pm4_Cursor(), Pm4_ScratchAddr(), Pm4_ScratchUmsk(),
+                 PPC_LOAD_U32(kCpRbWptrAddress));
             // What the command processor has made of it. "rptr chasing wptr" is the
             // health check: equal means caught up, frozen behind a rising wptr means
             // the parser is stuck — which gpu/pm4.cpp reports separately and loudly

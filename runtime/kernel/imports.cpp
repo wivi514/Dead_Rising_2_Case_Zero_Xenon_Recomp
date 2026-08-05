@@ -464,6 +464,9 @@ static bool LockCas(uint32_t* word, uint32_t expected, uint32_t desired, uint32_
 // unfaithful, it intermittently corrupted a handle, and the deadlock it worked
 // around turned out to have a real fix elsewhere. If Case Zero ever needs something
 // like it, that is a finding to write up — not a knob to inherit.
+static uint32_t LookupThreadEntry(uint32_t tid);
+static uint32_t LookupThreadEntryByPcr(uint32_t r13);
+
 static void RtlEnterCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
 {
     const uint32_t self = CurrentGuestThreadId();
@@ -480,17 +483,55 @@ static void RtlEnterCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
         // CZ_CS_TRACE=1: name the owner of a section this thread cannot get. A frozen
         // run is almost always one thread holding what another needs, and this is the
         // cheapest way to see the pair.
+        //
+        // Both threads are named by ENTRY POINT, not just by r13. The first version
+        // printed the PCR addresses alone, which says two threads are stuck without
+        // saying which two — and the whole question in finding 38 was whether the
+        // thread the fence is waiting FOR is one of the threads spinning here (a
+        // cycle) or an innocent bystander (a lost wakeup). A raw r13 cannot answer
+        // that; an entry point answers it on sight.
         if (csTrace && (++spins % 4000000) == 0)
+        {
             fprintf(stderr,
-                    "[csspin] self r13=%08X wants cs=%p ownedBy r13=%08X rec=%d lr=%08X\n",
-                    self, (void*)cs, previous, cs->RecursionCount,
-                    g_ppcContext ? uint32_t(g_ppcContext->lr) : 0);
+                    "[csspin] self r13=%08X (entry=%08X) wants cs=%08X ownedBy r13=%08X "
+                    "(entry=%08X) rec=%d lr=%08X\n",
+                    self, LookupThreadEntry(GuestThread::GetCurrentThreadId()),
+                    g_memory.MapVirtual(cs), previous, LookupThreadEntryByPcr(previous),
+                    cs->RecursionCount, g_ppcContext ? uint32_t(g_ppcContext->lr) : 0);
+            CzDumpGuestBacktrace("cs spin");
+        }
         std::this_thread::yield();
     }
 }
 
 static void RtlLeaveCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
 {
+    // ALARM ONLY — this deliberately does not change what the call does.
+    //
+    // A leave by a thread that does not own the section would be serious: the
+    // decrement below is what releases the lock, so an unmatched one drives the count
+    // negative and the real owner's own leave then never reaches zero. The section is
+    // never released again, silently, and every other thread spins on a lock whose
+    // owner has long since walked away — which is exactly what finding 38's stall
+    // looked like from the outside, and is why the check exists.
+    //
+    // It has never fired. Refusing to release on a condition we have never observed
+    // would be a behaviour change made on a hypothesis, and this session already
+    // retired one of those (see finding 38's zero-header rule). Print it; if it ever
+    // shows up, THEN decide what the right answer is, with the call site in hand.
+    const uint32_t self = CurrentGuestThreadId();
+    if (__atomic_load_n(&cs->OwningThread, __ATOMIC_ACQUIRE) != self)
+    {
+        static std::atomic<uint64_t> seen{ 0 };
+        const uint64_t n = seen.fetch_add(1);
+        if (n < 8 || (n & 0xFFFu) == 0)
+            KLOG("RtlLeaveCriticalSection on cs=%08X by r13=%08X, owned by r13=%08X rec=%d "
+                 "(lr=%08X, occurrence %llu)\n",
+                 g_memory.MapVirtual(cs), self,
+                 __atomic_load_n(&cs->OwningThread, __ATOMIC_RELAXED), cs->RecursionCount,
+                 uint32_t(g_ppcContext ? g_ppcContext->lr : 0),
+                 static_cast<unsigned long long>(n));
+    }
     if (--cs->RecursionCount != 0)
         return;
     __atomic_store_n(&cs->OwningThread, 0, __ATOMIC_RELEASE);
@@ -769,6 +810,65 @@ static uint32_t NtReleaseSemaphore_x(Semaphore* sem, uint32_t releaseCount,
 // yet" from "there was nothing here to wait on".
 constexpr uint32_t kWaitObjectUnusable = 0xFFFFFFFEu;
 
+// Wait on a kernel object, and under CZ_WAIT_TRACE=1 name it if it never returns.
+//
+// This exists in ONE place, shared by the handle-level (Nt) and header-level (Ke)
+// paths, because it used to exist in only one of them. The trace covered
+// NtWaitForSingleObjectEx and nothing else, so a frozen run printed the thread that
+// was waiting on a handle and stayed completely silent about every thread parked in
+// a Ke wait on a dispatcher header — including, it turned out, the one thread whose
+// state decided whether finding 38 was a deadlock cycle or a lost wakeup. A trace
+// that can only see half the wait surface answers "who else is stuck?" with silence
+// that looks like "nobody".
+static bool WaitTraceOn()
+{
+    static const bool on = getenv("CZ_WAIT_TRACE") != nullptr;
+    return on;
+}
+
+// The multi-object waits are polling loops rather than blocking calls, so they get
+// the same 5 s report from the inside of the poll. The Draw Thread's fence wait is
+// one of these — a WaitForMultipleObjectsEx over four handles — so without this the
+// single busiest wait in the title is the one the trace cannot see.
+static void ReportStuckMultiWait(uint32_t count, const uint32_t* ids, int seconds)
+{
+    char list[128] = {};
+    size_t used = 0;
+    for (uint32_t i = 0; i < count && used + 10 < sizeof(list); i++)
+        used += snprintf(list + used, sizeof(list) - used, "%s%08X", i ? "," : "", ids[i]);
+    fprintf(stderr, "[wait] tid=%08X r13=%08X (entry=%08X) any-of[%s] lr=%08X stuck %ds\n",
+            GuestThread::GetCurrentThreadId(),
+            g_ppcContext ? uint32_t(g_ppcContext->r13.u32) : 0,
+            LookupThreadEntry(GuestThread::GetCurrentThreadId()), list,
+            g_ppcContext ? uint32_t(g_ppcContext->lr) : 0, seconds);
+    CzDumpGuestBacktrace("blocked wait-any");
+}
+
+static uint32_t WaitObject(KernelObject* obj, uint32_t timeoutMs, uint32_t id)
+{
+    const bool waitTrace = WaitTraceOn();
+    if (!waitTrace || timeoutMs != WAIT_TIMEOUT_INFINITE)
+        return obj->Wait(timeoutMs);
+
+    for (int slice = 0;; slice++)
+    {
+        const uint32_t r = obj->Wait(5000);
+        if (r != STATUS_TIMEOUT)
+            return r;
+        const char* kind = dynamic_cast<Event*>(obj)       ? " EVENT"
+                           : dynamic_cast<Semaphore*>(obj) ? " SEMAPHORE"
+                                                           : "";
+        fprintf(stderr,
+                "[wait] tid=%08X r13=%08X (entry=%08X) obj=%08X lr=%08X stuck %ds%s\n",
+                GuestThread::GetCurrentThreadId(),
+                g_ppcContext ? uint32_t(g_ppcContext->r13.u32) : 0,
+                LookupThreadEntry(GuestThread::GetCurrentThreadId()), id,
+                g_ppcContext ? uint32_t(g_ppcContext->lr) : 0, (slice + 1) * 5, kind);
+        // The exact LR back-chain, not a scan — see cpu/crash_report.cpp.
+        CzDumpGuestBacktrace("blocked wait");
+    }
+}
+
 // Dispatcher-header waits (Ke level): resolve by the header's Type field.
 //
 // The null check is not defensive padding. Until it existed, ANY guest that passed
@@ -796,9 +896,11 @@ static uint32_t WaitDispatcher(XDISPATCHER_HEADER* header, uint32_t timeoutMs)
     {
         case 0: // NotificationEvent
         case 1: // SynchronizationEvent
-            return QueryKernelObject<Event>(*header)->Wait(timeoutMs);
+            return WaitObject(QueryKernelObject<Event>(*header), timeoutMs,
+                              g_memory.MapVirtual(header));
         case 5: // Semaphore
-            return QueryKernelObject<Semaphore>(*header)->Wait(timeoutMs);
+            return WaitObject(QueryKernelObject<Semaphore>(*header), timeoutMs,
+                              g_memory.MapVirtual(header));
         default:
             KLOG("KeWait on unhandled dispatcher type %u\n", header->Type);
             return STATUS_TIMEOUT;
@@ -830,6 +932,13 @@ static uint32_t LookupThreadEntry(uint32_t tid)
     return it != g_threadEntries.end() ? it->second : 0;
 }
 
+// r13 is what a lock word records as its owner; the thread registry is keyed by
+// thread id. Bridge the two so a stall trace can name both sides of a contention.
+static uint32_t LookupThreadEntryByPcr(uint32_t r13)
+{
+    return LookupThreadEntry(GuestThread::ThreadIdForPcr(r13));
+}
+
 static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32_t alertable,
                                           be<int64_t>* timeout)
 {
@@ -841,34 +950,78 @@ static uint32_t NtWaitForSingleObjectEx_x(uint32_t handle, uint32_t mode, uint32
         return STATUS_INVALID_HANDLE;
     }
     const uint32_t timeoutMs = GuestTimeoutToMs(timeout);
+    // CZ_WAIT_TRACE=1 names this if it never returns; see WaitObject.
+    return WaitObject(GetKernelObject(handle), timeoutMs, handle);
+}
 
-    // CZ_WAIT_TRACE=1: name infinite waits that outlast 5 s. A frozen run always has
-    // some thread parked on an object nobody signals; this prints which handle, which
-    // thread, and the guest callers above the wait wrapper — without it, a hang is
-    // indistinguishable from an infinite loop.
-    static const bool waitTrace = getenv("CZ_WAIT_TRACE") != nullptr;
-    if (waitTrace && timeoutMs == WAIT_TIMEOUT_INFINITE)
+// The polling loop behind both wait-any paths (guest handles and dispatcher
+// headers). It is one function because it was two, and the two had drifted.
+//
+// Three things it has to get right that the original pair did not:
+//
+//  - A FINITE timeout expires. Only `timeoutMs == 0` used to leave the loop, so a
+//    caller asking to wait 500 ms waited forever. That is the same defect shape as a
+//    missing signal and it would have been read as one. Infinite waits — which is
+//    what every caller in this title's boot actually passes — are unaffected.
+//  - CZ_WAIT_TRACE names it. See ReportStuckMultiWait.
+//
+// And one thing it deliberately does NOT do by default. An alertable wait should run
+// pending APCs and report STATUS_USER_APC; NT does, and the guest expects it (the
+// Draw Thread's wait loop opens with `cmplwi cr6, r3, 0xC0` and branches back to the
+// wait). We drain APCs at the single-object waits and at KeDelayExecutionThread but
+// not here, so an IO completion queued to a thread that then parks in a multi-object
+// wait never runs — the queue is thread-local, so nobody else drains it either.
+//
+// Draining them here is almost certainly right in principle. It is off because
+// nothing has yet shown it is needed: it was written to chase finding 38's stall, and
+// that stall turned out to be a dropped GPU fence packet with no APC anywhere near it.
+// An unmeasured change to when guest callbacks run is not something to enable by
+// default on the strength of "NT does this" alone, however true that is.
+//
+// (It was briefly blamed for moving the A1 gate. It was not: the same permutation of
+// positions 71-73 appears on the committed binary. See cpu/guest_thread.cpp.)
+//
+// Turn it on with CZ_MULTIWAIT_APC=1. If a real APC-starvation bug ever turns up,
+// promote it then — with the gate numbers taken from both binaries on the same day.
+template <typename Poll, typename Id>
+static uint32_t WaitAnyPoll(uint32_t count, uint32_t timeoutMs, uint32_t alertable, Poll poll,
+                            Id id)
+{
+    static const bool drainApcs = getenv("CZ_MULTIWAIT_APC") != nullptr;
+    const auto start = std::chrono::steady_clock::now();
+    for (uint64_t tick = 0;; tick++)
     {
-        auto* obj = GetKernelObject(handle);
-        for (int spins = 0;; spins++)
+        if (alertable && drainApcs && (DrainThreadApcs() | (int)FireDueTimerApcs()))
+            return STATUS_USER_APC;
+        for (uint32_t i = 0; i < count; i++)
+            if (poll(i))
+                return STATUS_WAIT_0 + i;
+        if (timeoutMs == 0)
+            return STATUS_TIMEOUT;
+        if (timeoutMs != WAIT_TIMEOUT_INFINITE &&
+            std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(timeoutMs))
         {
-            const uint32_t r = obj->Wait(5000);
-            if (r != STATUS_TIMEOUT)
-                return r;
-            const char* kind = dynamic_cast<Event*>(obj)       ? " EVENT"
-                               : dynamic_cast<Semaphore*>(obj) ? " SEMAPHORE"
-                                                               : "";
-            fprintf(stderr,
-                    "[wait] tid=%08X r13=%08X (entry=%08X) handle=%08X lr=%08X stuck %ds%s\n",
-                    GuestThread::GetCurrentThreadId(),
-                    g_ppcContext ? uint32_t(g_ppcContext->r13.u32) : 0,
-                    LookupThreadEntry(GuestThread::GetCurrentThreadId()), handle,
-                    g_ppcContext ? uint32_t(g_ppcContext->lr) : 0, (spins + 1) * 5, kind);
-            // The exact LR back-chain, not a scan — see cpu/crash_report.cpp.
-            CzDumpGuestBacktrace("blocked wait");
+            // Announced the first few times, because this return did not exist before
+            // and "a wait that now ends" is a behaviour change, not a bug fix, until
+            // it is shown to happen. If these lines never appear, the change is inert
+            // and cannot be behind any gate movement.
+            static std::atomic<uint64_t> n{ 0 };
+            if (n.fetch_add(1) < 4)
+                KLOG("wait-any timed out after %u ms (lr=%08X) — this path used to "
+                     "wait forever\n",
+                     timeoutMs, uint32_t(g_ppcContext ? g_ppcContext->lr : 0));
+            return STATUS_TIMEOUT;
         }
+        if (WaitTraceOn() && tick && tick % 5000 == 0 && timeoutMs == WAIT_TIMEOUT_INFINITE)
+        {
+            uint32_t ids[8];
+            const uint32_t n = std::min<uint32_t>(count, 8);
+            for (uint32_t i = 0; i < n; i++)
+                ids[i] = id(i);
+            ReportStuckMultiWait(n, ids, int(tick / 1000));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return GetKernelObject(handle)->Wait(timeoutMs);
 }
 
 static uint32_t KeWaitForMultipleObjects_x(uint32_t count, xpointer<XDISPATCHER_HEADER>* objects,
@@ -911,15 +1064,10 @@ static uint32_t KeWaitForMultipleObjects_x(uint32_t count, xpointer<XDISPATCHER_
         return STATUS_SUCCESS;
     }
     // wait-any: poll. Simple and safe; revisit if it shows up hot in a profile.
-    for (;;)
-    {
-        for (uint32_t i = 0; i < count; i++)
-            if (WaitDispatcher(objects[i], 0) == STATUS_SUCCESS)
-                return STATUS_WAIT_0 + i;
-        if (timeoutMs == 0)
-            return STATUS_TIMEOUT;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    return WaitAnyPoll(
+        count, timeoutMs, alertable,
+        [&](uint32_t i) { return WaitDispatcher(objects[i], 0) == STATUS_SUCCESS; },
+        [&](uint32_t i) { return g_memory.MapVirtual(static_cast<void*>(objects[i])); });
 }
 
 static uint32_t NtWaitForMultipleObjectsEx_x(uint32_t count, be<uint32_t>* handles,
@@ -934,16 +1082,13 @@ static uint32_t NtWaitForMultipleObjectsEx_x(uint32_t count, be<uint32_t>* handl
                 GetKernelObject(handles[i])->Wait(timeoutMs);
         return STATUS_SUCCESS;
     }
-    for (;;)
-    {
-        for (uint32_t i = 0; i < count; i++)
-            if (IsKernelObject(handles[i]) && IsLiveKernelHandle(handles[i]) &&
-                GetKernelObject(handles[i])->Wait(0) == STATUS_SUCCESS)
-                return STATUS_WAIT_0 + i;
-        if (timeoutMs == 0)
-            return STATUS_TIMEOUT;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    return WaitAnyPoll(
+        count, timeoutMs, alertable,
+        [&](uint32_t i) {
+            return IsKernelObject(handles[i]) && IsLiveKernelHandle(handles[i]) &&
+                   GetKernelObject(handles[i])->Wait(0) == STATUS_SUCCESS;
+        },
+        [&](uint32_t i) { return uint32_t(handles[i]); });
 }
 
 static uint32_t NtClose_x(uint32_t handle)

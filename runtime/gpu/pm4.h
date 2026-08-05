@@ -85,6 +85,14 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr);
 // Pass nullptr to leave interrupts undelivered and merely counted.
 void Pm4_SetInterruptSink(void (*sink)());
 
+// Where the parser has actually reached, ring-relative in dwords, and the scratch
+// writeback registers — for the ring trace. The read pointer the guest polls is a
+// number this module owns, so a trace that prints only what the DRIVER thinks the
+// read pointer is cannot say whether we are behind or writing it somewhere else.
+uint32_t Pm4_Cursor();
+uint32_t Pm4_ScratchAddr();
+uint32_t Pm4_ScratchUmsk();
+
 uint64_t Pm4_PacketCount();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F

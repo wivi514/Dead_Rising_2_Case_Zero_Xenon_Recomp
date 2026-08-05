@@ -480,6 +480,51 @@ From finding 37 (the frontend was waiting for input, and the arm that proved it)
     Acting on the stale version would have sent someone hunting a file-loading bug
     that no longer exists.
 
+From finding 38 (the load stall — traced end to end, not yet fixed):
+
+80. **A GPU capture records every packet's own length, which makes it an oracle for
+    your command processor's arithmetic.** Xenia's `.xtr` writes a
+    `PacketStart {base_ptr, count}` per packet, `count` being the boundary hardware
+    actually used — inside indirect buffers included. `tools/pm4_packet_lengths.py`
+    checks our rule against all 24,527,474 of B1's and prints the opcodes that
+    disagree. It cost an hour to write and it retired, in one run, a fix I had
+    already made, a buffer-dump analysis that appeared to confirm it, and two
+    follow-up theories. Write the oracle before the theory.
+81. **The instrument that is missing is the one whose silence you read as health.**
+    Our wait trace covered `NtWaitForSingleObjectEx` only. The Draw Thread waits on
+    four handles in `WaitForMultipleObjectsEx`, so the single most important wait in
+    the title was the one wait the trace could not see, and its absence from the
+    stall dump read as "that thread is fine". Half a wait surface answers "who else
+    is stuck?" with silence that looks like "nobody".
+82. **A thread stuck without being in any kernel wait is spinning in guest code, and
+    nothing inside the runtime can see it — it is not calling you.** An outside
+    debugger can, but only if its host thread ids can be joined to your guest ones.
+    One always-on line per thread (`guest thread tid=... host tid=...`) is what turns
+    `gdb -p` from anonymous stacks into named guest functions.
+83. **The address a driver REGISTERS with the kernel need not be the address it
+    POLLS.** Case Zero registers `block + 0x3C` with `VdEnableRingBufferRPtrWriteBack`
+    and dereferences `block + 0` in its free-space wait. Publishing the read pointer
+    honestly into the registered slot therefore satisfies nobody. A hardware
+    watchpoint on the polled word in a HEALTHY run names its real writer in one hit —
+    do that before reasoning about what "should" write it.
+84. **A parser that stops early must say so.** "A packet claiming more than the buffer
+    holds: stop, do not guess" is the right policy and it was silent, so the defect it
+    was detecting looked like nothing at all. What it was dropping was the last packet
+    of the buffer — which in this title is the driver's ring-progress fence, i.e. the
+    one packet whose loss parks a thread forever.
+85. **When a walk desyncs, the position it fails at is data, not the bad packet.** The
+    header in our first truncation report was `3F800000` — the float 1.0. Keep a trail
+    of the last few packets and dump the untrusted tail, or every report points at an
+    innocent dword.
+86. **The control for "did my change do this" is the old binary run NOW, not the old
+    binary's remembered numbers.** The A1 gate started permuting positions 71-73 in
+    half our runs where the committed binary had been 6-of-6 clean, which reads as an
+    unambiguous regression. `git stash`, rebuild, re-run: the committed binary does it
+    too, and with both binaries built side by side and runs ALTERNATED, the committed
+    one permuted 1 of 6 and the new one 0 of 6. Those positions were always
+    scheduling-sensitive. Gotcha 51's corollary — and acting on the remembered number
+    would have reverted a correct change to fix a defect that did not exist.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -624,6 +669,17 @@ CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing sympto
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
 CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does
+CZ_PM4_IB_TRACE=1  the first 64 INDIRECT_BUFFER packets with their raw address/size
+CZ_PM4_DUMP_TRUNCATED=path dump the first 6 indirect buffers whose walk stopped short,
+                   for offline re-walking (finding 38)
+CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. The REJECTED reading —
+                   B1 says hardware consumed its one zero header as two dwords — kept
+                   as an arm so the question needs no rebuild
+CZ_MULTIWAIT_APC=1 run pending APCs at the multi-object waits and report
+                   STATUS_USER_APC. Correct NT semantics, off by default because
+                   nothing has yet shown this title needs it
+CZ_THREAD_TRACE=1  one line per guest thread with its HOST thread id, so gdb's stacks
+                   can be joined to our logs (also implied by CZ_WAIT_TRACE/CZ_CS_TRACE)
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
 CZ_KCALL_WHO=A,B   dump the guest call stack the first time these imports are called
@@ -658,6 +714,13 @@ python3 tools/xtr_determinism.py \
     "Xenia logs/gpu_B1b_boot_repeat/58410A8D_stream.xtr" --labels B1 B1b
 ```
 `--verify` is the only check in the census that *can* fail — always pass it.
+
+Check the command processor's packet-length arithmetic against the boundaries hardware
+itself used — 24.5 M packets of ground truth, and the check that retired three theories
+about finding 38's stall. **Exit 1 = our parser would desync on a real stream:**
+```
+python3 tools/pm4_packet_lengths.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+```
 
 ## The recompilation contract (identical to Fable 2 and Asura's Wrath)
 
@@ -853,8 +916,31 @@ save-data enumerate stubs — a gap we chose.
 Two things fell out. The standing note ("reaches `mainmenu.tex` and stops") had gone
 stale and would have sent someone hunting a file-loading bug that no longer exists
 (gotcha 79). And about a third to a half of long runs never reach the title screen at
-all, stalling with the main thread parked in the renderer's frame fence while holding
-two critical sections — a real defect, now the top of the list.
+all, stalling with the main thread parked in the renderer's frame fence — a real
+defect, traced end to end in finding 38 below.
+
+**The load stall is traced end to end and is NOT fixed (2026-08-05, session 7).**
+`docs/phase1-notes.md` finding 38, and it is worth reading for the method as much as
+the result. The chain: the main thread waits on the render fence; the **Draw Thread**
+is in no kernel wait at all, spinning in guest code (`sub_8283C6C8` under
+`sub_82845160`) on a ring-progress counter; that counter is advanced only by
+`EVENT_WRITE_SHD` fence packets in the title's own command stream; and our walk of the
+indirect buffers those fences close **stops early**, silently, on data it reads as a
+packet header. Drop the last packet and a thread waits for the life of the process.
+
+The cause of the desync is still open, and the reason that is worth saying out loud is
+that a plausible one was found, fixed, documented — and then **retired by a check that
+should have existed first**. `tools/pm4_packet_lengths.py` compares our packet-length
+rule against the length hardware itself used for every one of B1's **24,527,474**
+packets; our arithmetic already matched all of them, including the zero-header case
+the "fix" had just changed. Same-binary A/B over 10 runs a side: no effect, as the
+capture predicts. Retracted in place, arm kept as `CZ_PM4_ZERO_IS_NOP`.
+
+What is left is that the bytes we walk are not the bytes hardware walked. The leading
+suspect is timing — our command processor consumes the ring on the 16 ms vblank tick
+rather than continuously, so it reads each indirect buffer up to a frame after
+submission — but that is a suspicion, not a finding. The next experiment is written
+down in finding 38: snapshot each buffer before walking it and compare afterwards.
 
 **The audio driver is real and the A5 gate is clean (2026-08-04, session 6).**
 `docs/phase1-notes.md` finding 36. All seven audio imports implemented: an XAudio
@@ -873,12 +959,12 @@ displacing the title's own 447 MB reservation (gotcha 74).
 
 Next, in order:
 
-1. **The intermittent load stall** (finding 37) — about a third to a half of long
-   runs never reach the title screen, stopping at 47 or 57 files with the main thread
-   blocked in the renderer's frame fence (`sub_827CC6A8` waiting on `[obj+2480]`)
-   while holding two critical sections two other threads spin on. The other side of
-   the fence is `sub_827D3898`, the Draw Thread body. Now the biggest thing between
-   us and a reliable boot.
+1. **The intermittent load stall** (findings 37-38) — mechanism fully traced, cause
+   not yet found. Rate 2 in 8 at 120 s on the committed binary. The open question is
+   narrow and stated in finding 38: our indirect-buffer walks desync although our
+   packet lengths match hardware on 24.5 M packets, so the next step is to snapshot
+   each buffer before walking it and compare afterwards — if it changed under us, the
+   fix is about WHEN we consume the ring, not how we parse it.
 2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.

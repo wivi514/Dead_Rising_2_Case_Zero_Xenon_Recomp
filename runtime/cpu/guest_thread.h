@@ -32,6 +32,9 @@ struct GuestThreadContext
 
     GuestThreadContext(uint32_t cpuNumber, uint32_t stackSize = kDefaultGuestStackSize);
     ~GuestThreadContext();
+
+    // threadId 0 removes the mapping (see GuestThread::ThreadIdForPcr).
+    static void RegisterPcr(uint32_t pcr, uint32_t threadId);
 };
 
 struct GuestThreadParams
@@ -90,6 +93,16 @@ struct GuestThread
     static GuestThreadHandle* Start(const GuestThreadParams& params, uint32_t* threadId);
 
     static uint32_t GetCurrentThreadId();
+
+    // Which thread owns a given PCR (r13)?
+    //
+    // Diagnostics see r13 and nothing else: it is what our critical sections record
+    // as an owner, because it is the one value that is unique per guest thread and
+    // visible to the guest itself. But every thread registry here is keyed by thread
+    // id, so a stall trace could say "thread A is spinning on a section held by
+    // thread B" without being able to say which threads those are — and that was
+    // precisely the open question in finding 38. Returns 0 for an unknown PCR.
+    static uint32_t ThreadIdForPcr(uint32_t pcr);
 
     // The calling thread's own kernel object, minted on first use and cached for the
     // life of the thread. Null only if the guest heap cannot satisfy it.
