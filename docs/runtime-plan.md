@@ -147,6 +147,30 @@ screen.
 
 ## Phase 3 — window, present seam, input
 
+> **PARTLY BUILT ALREADY (2026-08-05).** Read `docs/phase3-kickoff.md` before starting;
+> three pieces of this phase exist because earlier work needed them, and a session
+> working from this text alone will rebuild all three.
+>
+> - **All four input imports are implemented** — `XamInputGetState`, `XamInputSetState`,
+>   `XamInputGetCapabilities`, `XamInputGetKeystrokeEx`, which is every one the image
+>   declares. The job is feeding real device state into `XamInputGetState_x`, not
+>   writing the import.
+> - **The present seam's data already flows.** `VdSwap` emits the front-buffer texture
+>   fetch constant (type-0 register `0x4800`, six dwords, copied verbatim) and an
+>   `XE_SWAP` packet carrying frontBuffer/width/height. `gpu/pm4.cpp` case `0x64`
+>   receives it and only counts frames today — that case is where a present hooks in.
+> - **The frame clock is verified**: exactly one `XE_SWAP` per frame, against B1's
+>   1,089 swaps over 1,089 frames.
+>
+> **Gate:** the A1 kernel-call gate advances from position 84 to 85
+> (`XamShowDeviceSelectorUI`) on a REAL press with `CZ_FAKE_START_MS` unset — which
+> retires the synthetic-input arm as the only way to move the boot (finding 37).
+> A blank window is the expected outcome of this phase; there is no renderer yet.
+>
+> **Trap:** `XamInputGetState` is `kHighFrequency` — **1** occurrence in A1 and
+> **12,365** in A5. A1 alone says this title barely polls the pad, and that is wrong
+> (gotcha 47). A4, the five-minute title-screen idle, is the capture for menu polling.
+
 SDL window, the present seam every later stage goes through, keyboard + XInput gamepad.
 Cheap, and it makes every later phase observable.
 

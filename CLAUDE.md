@@ -652,11 +652,17 @@ From finding 41 (the critical-section yield spin):
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
   `runtime-plan.md` the phase plan, `phase1-notes.md` the phase 1 record (what the
-  runtime work found that neither the plan nor the kickoff predicted).
+  runtime work found that neither the plan nor the kickoff predicted),
+  `phase1-kickoff.md` / **`phase3-kickoff.md`** the per-phase hand-off prompts. Read
+  the phase 3 one before starting phase 3: it lists the three parts of that phase that
+  **already exist** and would otherwise be rewritten from the plan text.
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
-- `runtime/` — the host runtime, phase 1 in progress. Target is `cz_runtime`; the
-  phase 0.2 link gate survives as `cz_runtime --smoke`.
+- `runtime/` — the host runtime. Phase 1 complete; **phase 4's command processor is
+  live too, ahead of the plan's ordering** — do not read the plan's phase numbers as
+  the state of the code. There is no window, no present and no renderer yet (phase 3,
+  then 5). Target is `cz_runtime`; the phase 0.2 link gate survives as
+  `cz_runtime --smoke`.
   - `CMakeLists.txt` — **selects clang++ before `project()` (gotcha 31)**, and
     enables C for exactly one file (o1heap) so the .c source is not silently ignored.
   - `main.cpp` — image load → header publish → data-import resolution → guest entry,
@@ -1168,17 +1174,34 @@ acquisitions in 60 s, 0.26% are contended at all, 417 outlive the pause phase, a
 **2 ever reach the park phase**. Gates unchanged — A5 exit 0, A1's full 84-deep prefix,
 `truncated=0`, and position 71 permutes 1-of-3 on *both* arms.
 
-Next, in order:
+Next, in order — **phase 3 is next, and `docs/phase3-kickoff.md` is the hand-off**:
 
-1. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+1. **Phase 3 — window, present seam, input.** The boot reaches the title screen and
+   waits for a human (finding 37), so this is what lets it move, and its gate is
+   exactly that: **the A1 gate advances 84 → 85 on a real press with
+   `CZ_FAKE_START_MS` unset**, retiring the synthetic-input arm as the only way
+   forward. Three parts already exist and must not be rewritten — all four input
+   imports are implemented (the job is feeding them a device, not writing them),
+   `VdSwap` already emits the front buffer's address/dimensions/fetch constant through
+   `XE_SWAP`, and `pm4.cpp` case `0x64` is where a present hooks in. A blank window is
+   the expected outcome; there is no renderer yet. **Trap: `XamInputGetState` is
+   `kHighFrequency` — 1 occurrence in A1, 12,365 in A5** (gotcha 47 again), and A4 is
+   the capture for menu-idle polling.
+2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
    runs guest code on a new thread and never has. Of finding 36's seven, **five run
    and two do not** — both teardown paths (`XAudioUnregisterRenderDriverClient`,
-   `XMAReleaseContext`), because the boot never shuts audio down.
-2. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+   `XMAReleaseContext`), because the boot never shuts audio down. Several of these
+   should get exercised for free once input carries the boot further, which is a
+   reason to do phase 3 first rather than to merge the two.
+3. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
    `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
-   deliberately left out of finding 34 as the phase 2 file layer.
-3. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
+   deliberately left out of finding 34 as the phase 2 file layer. A1 position 86.
+4. **Phase 5 — the renderer**, the actual milestone. Inputs are already in hand: 455
+   raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader banks are a
+   dead end — finding 6). Gate on **per-era aggregates, never frame index**: two
+   hardware runs agree frame-exactly only 80.0% of the time (gotcha 38).
+5. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
