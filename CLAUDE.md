@@ -738,10 +738,12 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
   `runtime-plan.md` the phase plan, `phase1-notes.md` and `phase3-notes.md` the
   per-phase records (what the runtime work found that neither the plan nor the
-  kickoff predicted), `phase1-kickoff.md` / `phase3-kickoff.md` the per-phase hand-off
-  prompts. The phase 3 kickoff's most valuable section is its list of the parts of
-  that phase that **already existed** and would otherwise have been rewritten from
-  the plan text — write that section for every future phase.
+  kickoff predicted), `phase1-kickoff.md` / `phase3-kickoff.md` /
+  **`phase5-kickoff.md`** the per-phase hand-off prompts. **Read
+  `docs/phase5-kickoff.md` before starting phase 5.** Each kickoff's most valuable
+  section is its list of the parts of that phase that **already exist** and would
+  otherwise be rewritten from the plan text — write that section for every future
+  phase.
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
 - `runtime/` — the host runtime. Phases 1 and 3 complete; **phase 4's command
@@ -1370,10 +1372,14 @@ Next, in order:
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), and the save layer's own `XamContentCreateEx`/`XamContentClose`,
    which need gameplay to reach a save point.
-3. **Phase 5 — the renderer**, the actual milestone. Inputs are already in hand: 455
-   raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader banks are a
-   dead end — finding 6). Gate on **per-era aggregates, never frame index**: two
-   hardware runs agree frame-exactly only 80.0% of the time (gotcha 38).
+3. **Phase 5 — the renderer**, the actual milestone, and the next thing to start.
+   **`docs/phase5-kickoff.md` is the hand-off — read it first.** Inputs are already in
+   hand: 455 raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader
+   banks are a dead end — finding 6), XenosRecomp built, the command processor live,
+   the register file populated, and the present seam wired to the guest's own frame
+   clock. Gate on **per-era aggregates, never frame index**: two hardware runs agree
+   frame-exactly only 80.0% of the time (gotcha 38), so the plan's "per-pixel diff at
+   the same frame" is the one line of it to correct.
 4. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.

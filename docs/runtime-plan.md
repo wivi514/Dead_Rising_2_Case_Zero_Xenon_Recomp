@@ -236,7 +236,16 @@ It does not matter, because Xenia's `dump_shaders` delivered the real input:
 translation alongside. That is exactly what XenosRecomp consumes, so no runtime
 `SHADER_DUMP` hook is needed and this phase starts with its inputs in hand.
 
-**Gate:** per-pixel diff against the E-series screenshots at the same frame.
+**Gate:** per-era aggregates from the `.xtr` captures, with the E-series screenshots as
+the eyes-on visual target.
+
+**CORRECTED IN PLACE.** This line used to read "per-pixel diff against the E-series
+screenshots at the same frame". There is no frame-exact alignment to diff at: two
+*hardware* runs of the same drive agree frame-exactly only **80.0%** of the time, phase
+drift concentrated at lag +3, so a frame-indexed gate would report ~20% divergence
+against a correct renderer (finding 10, gotcha 38). Noise floor over the correct
+comparison window is 0.42% worst aggregate, 0.19% on draws. See
+`docs/phase5-kickoff.md`.
 
 ## Phase 6 — audio
 

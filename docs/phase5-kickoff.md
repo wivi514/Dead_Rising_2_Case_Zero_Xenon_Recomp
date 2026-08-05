@@ -1,0 +1,183 @@
+# Phase 5 kickoff — the renderer. Paste this into a fresh conversation.
+
+`CLAUDE.md` loads automatically and is current (phases 0, 1 and 3 complete, plus the
+save-data layer; 2026-08-05). This file adds only what a fresh context needs to start
+**phase 5 — the renderer** without re-deriving anything.
+
+Phase 5 is the actual milestone. Everything before it was making the title *run*; this
+is what makes it *look like the game*.
+
+---
+
+## The task
+
+Turn the PM4 stream our command processor already parses into pixels: translate the
+Xenos shader microcode with XenosRecomp, build a Vulkan renderer behind the present
+seam that already exists, and gate it against the GPU captures.
+
+## Read before writing code
+
+1. **`docs/xenia-capture-analysis.md`** — the numbered findings ledger, and the
+   authority wherever any other doc disagrees. Finding 10 (determinism) is this
+   phase's methodology.
+2. `docs/xtr-decoder.md` — the GPU capture format and the determinism method.
+3. `docs/phase1-notes.md` findings 38-39 — why the command processor is trustworthy
+   now, and the two capture-derived oracles that prove its arithmetic.
+4. `docs/phase3-notes.md` — the window and the present seam this phase draws into.
+5. `Xenia logs/Xenia_Run_Content.md` — what each capture is. For this phase: **B1/B1b**
+   (boot→title GPU stream + its determinism repeat), **B2** (7.95 GiB of gameplay), and
+   **E** (five screenshots, the visual target).
+
+## What is ALREADY DONE — do not rewrite these
+
+This is the important half of the document. Phase 3's kickoff had the same section and
+it was the thing that saved the most time.
+
+**1. The command processor is live and verified, and it is phase 4's work done early.**
+`runtime/gpu/pm4.cpp` parses the real stream: 21 distinct type-3 opcodes, all named,
+**zero unknown opcodes**, ~6.5 M draws and ~97 M packets in a 100 s run, and
+`ring: indirect buffers truncated=0`. Two capture-derived oracles prove its arithmetic
+against hardware's own packet boundaries (`tools/pm4_packet_lengths.py` over 24,527,474
+packets; `tools/pm4_indirect_walks.py` over all 28,726 indirect buffers). **Both must
+keep passing.**
+
+**2. There is a register file already, and the state you need is landing in it.**
+`g_regs[0x8000]` in `pm4.cpp`, fed by `SET_CONSTANT` (0x2D), `SET_CONSTANT2` (0x55/0x56)
+and `LOAD_ALU_CONSTANT` (0x2F), with the bank mapping already decoded — ALU constants at
+0x4000, **fetch constants at 0x4800**, booleans 0x4900, loops 0x4908, registers 0x2000.
+Draw packets (0x22 `DRAW_INDX`, 0x36 `DRAW_INDX_2`) are parsed and counted; what they do
+not yet do is draw.
+
+**3. The front buffer's fetch constant is already in the register file.** `VdSwap`
+(`runtime/gpu/vd.cpp`) copies the guest's own six-dword texture fetch constant through as
+a type-0 write to register 0x4800 — verbatim, because those dwords encode the front
+buffer's address, tiling and format and re-deriving them would be asserting a surface
+layout nobody has measured.
+
+**4. The present seam exists and is wired to the guest's frame clock.**
+`pm4.cpp` case `0x64` (`XE_SWAP`) decodes `'SWAP'`, front buffer, width, height out of
+the packet body and calls `Host_Present()`. The window presents on that signal and on
+nothing else. **The renderer replaces the `SDL_RenderClear` in
+`runtime/host/window.cpp`; it does not need a new seam.** The window currently sizes
+itself from the guest's own stated dimensions (1280x720) on the first present.
+
+**5. The inputs are in hand and the tool is built.**
+- **455 distinct raw Xenos microcode blobs**, which is exactly what XenosRecomp
+  consumes: `Xenia logs/A1_boot_title_fullgame/shaders/*.ucode.bin.{vert,frag}` (120 —
+  frontend/menu) and `Xenia logs/A2_gameplay_stillcreek/shaders/*` (335 — gameplay).
+  Each has Xenia's disassembly and its own D3D12 translation alongside, which are
+  reference material, not input.
+- XenosRecomp is built at `~/GithubRepo/XenosRecomp/build/XenosRecomp/XenosRecomp` and
+  carries local patches Case Zero inherits for free.
+- **The disc shader banks are a dead end** — `data/shaders/*.big` are `.vo` shader-object
+  containers with build metadata, not microcode (finding 6, retracted in place). Do not
+  spend a session rediscovering this.
+
+**6. The GPU capture decoder exists.** `tools/xtr.py` is the format; `xtr_walk.py`,
+`xtr_pm4_census.py` and `xtr_determinism.py` are thin CLIs over it. `--verify` on the
+census is the only check that can fail — always pass it.
+
+## The gate, and the one way to get it wrong
+
+**Gate on per-era aggregates. NEVER on absolute frame index.**
+
+This is measured, not cautious: two *hardware* runs of the same drive (B1 vs B1b) agree
+frame-exactly only **80.0%** of the time, with phase drift concentrated at lag +3. A
+frame-indexed GPU gate would report ~20% divergence against a *correct* renderer
+(finding 10, gotcha 38).
+
+The noise floor over the correct comparison window is **0.42% worst aggregate, 0.19% on
+draws**. Anything inside that is agreement.
+
+Two further method traps from the same finding, both of which cost a session before:
+
+- **Align over the fixed boot+movie prefix and ignore the idle tail.** Comparing whole
+  runs produced "16% of frames agree — NOT content-deterministic", a confident claim
+  about the game that was purely an artifact of including 619-vs-409 frames of a human
+  deciding when to quit. Same data, correct window: 0.42% (gotcha 36).
+- **Do not fold `MemoryRead` counts into a content fingerprint.** They agree to 0.37% in
+  total and align on only 17.7% of frames, because Xenia's dirty-tracking decides *when*
+  to record, not *whether*. Including them dropped frame agreement from 42.7% to 16.0%
+  (gotcha 37).
+
+**The E screenshots are the human visual target, not a numeric gate.** The plan text
+(`docs/runtime-plan.md` §"Phase 5") says "per-pixel diff against the E-series screenshots
+at the same frame" — **that is the one line of the plan to correct**: there is no
+frame-exact alignment to diff at. Use E1-E5 as the eyes-on check of whether the picture
+is right, and the `.xtr` aggregates as the falsifiable gate.
+
+Secondary gates, all of which must still hold:
+```
+./runtime/build/cz_runtime --smoke                            # the phase 0.2 link gate
+kernel_call_diff --xenia A5 --include-high-frequency          # exit 0, all permutations
+kernel_call_diff --xenia A1                                   # 92-deep prefix of 93
+ring: indirect buffers truncated=0
+python3 tools/pm4_packet_lengths.py  "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+python3 tools/pm4_indirect_walks.py  "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
+```
+Run the A1 gate with an **empty save root** (gotcha 106) and with `CZ_FAKE_START_MS`
+**unset** unless you are deliberately driving past the title screen.
+
+## Where the boot is when you start
+
+- Reaches the **title screen** and renders it: ~1,982 draws/frame against A1's
+  title-screen ~2,540, ~31 fps, one `XE_SWAP` per frame.
+- A blank window is up, presenting at the guest's swap rate. **That is phase 3's correct
+  result, not a bug** — say so in the write-up or the next reader hunts a renderer bug
+  that does not exist.
+- A real press (or `CZ_FAKE_START_MS`, the arm) advances it through the storage-device
+  selector and the save enumeration: A1 gate `PREFIX MATCH: our 92 calls are an exact
+  prefix of Xenia's 93`.
+- **A1 is exhausted as an oracle.** Its position 93 is not the next piece of work
+  (finding 49). The kernel gates stay as regression checks; the GPU captures are this
+  phase's oracle.
+- Stability: 0 crashes across this session's runs; host CPU ~121%.
+- 161 of 244 imports real, 83 generated honest-failure stubs.
+
+## Traps this phase will walk into
+
+1. **`INDIRECT_BUFFER` is recorded one dword short in the `.xtr`** — the size lives in
+   the following `IndirectBufferStart` record. A replay tool that trusts either length
+   feeds the command processor a malformed packet (gotcha 39). `tools/xtr.py` already
+   handles this; anything new that reads the format must too.
+2. **B1 uses only 225 distinct packet headers across 24.5 M packets.** That tight
+   vocabulary is an extremely strong classifier and it is what located finding 39's
+   desync after six truncation reports had each named an innocent dword (gotcha 89). Any
+   format with a capture has one — build it before theorising.
+3. **`EVENT_WRITE_ZPD` (0x5B) does not appear at all.** Asura's Wrath needed a whole
+   synthetic-occlusion mechanism for it; Case Zero issues no occlusion queries in the
+   captured eras, so that machinery is deliberately absent. If a `0x5B` ever shows up in
+   our own stream, the unknown-opcode census is what will say so.
+4. **Xenia's physical addresses carry a +0x1000 skew** (finding 24), so a physical
+   address in our log is 0x1000 below the same object's in a capture. Any geometry
+   argument mixing the two conventions is wrong — it manufactured a ring-buffer overrun
+   that did not exist once already.
+5. **An oracle for your arithmetic does not clear your inputs** (gotcha 88). Both parser
+   gates passed while the command processor desynced dozens of times a minute, because
+   the *bytes* were wrong, not the maths. When every check of a computation passes and
+   the result is wrong, stop checking the computation.
+6. **Textures are tiled.** A1's own log names the layouts it loaded, e.g. `Loaded tiled
+   1024x32x1 2D k_8_8_8_8 texture with 1 unpacked mip level, base at 0x180ED000 (pitch
+   1024, size 0x00020000)` — free ground truth for the untiler, and a good source of
+   test cases.
+
+## Standing constraints
+
+- Commit proactively; end messages with
+  `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
+- No copyright/license headers in new files (ask first).
+- Document in `docs/` for an outside reader — **Dead Rising 2: Case West is the next
+  port and will lift these documents.** Say what the idiom was, not just what changed.
+- Retract in place when a finding turns out to be an artifact.
+- **UnleashedRecomp is GPLv3 → structural reference only.** Guest structs come from
+  XenonRecomp's `XenonUtils/xbox.h` (MIT). This matters more in this phase than any
+  other, because UnleashedRecomp has a working Xenos renderer and it is the obvious
+  place to look. Look at *structure*; do not copy code.
+- Captures run on the operator's Windows machine and are **never self-servable**. There
+  is currently no outstanding capture request, and B1/B1b/B2/E should cover this phase.
+- Measurement discipline: same-binary A/B arms, a rate rather than a single run against
+  anything intermittent, and the control for "did my change do this" is the old binary
+  rebuilt and run **now** (gotchas 50, 51, 86, 95).
+- Rebuild: `cmake --build runtime/build -j$(nproc)`; `python3 tools/gen_import_stubs.py`
+  after any change to the import set. If the *function list* ever changes, the five-tool
+  pipeline order in `CLAUDE.md` applies in full.
