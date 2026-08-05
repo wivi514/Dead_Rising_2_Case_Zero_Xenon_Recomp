@@ -1,5 +1,46 @@
 # Phase 5 kickoff — the renderer. Paste this into a fresh conversation.
 
+---
+
+> ## STATUS, 2026-08-05: THE RENDERER IS BUILT. DO NOT START IT AGAIN.
+>
+> Session 11 built it. **`docs/phase5-notes.md` is the record and supersedes the "What
+> is ALREADY DONE" list below** — read it first, then come back here for the method
+> sections (the gate, the traps, the standing constraints), which are all still current.
+>
+> **What exists now, on top of everything the list below already described:**
+>
+> * `tools/build_shader_spv.sh` + `tools/synth_shader_container.py` +
+>   `tools/xenia_ucode_to_cache.py` — the shader pipeline. **336 of 336 distinct
+>   shaders translate, zero failures, no recompiler change needed.** The cache is
+>   gitignored; `CLAUDE.md`'s Commands section has the three lines that rebuild it.
+> * `runtime/gpu/vk_renderer.{h,cpp}` and `runtime/gpu/xenos.h` — a working Vulkan
+>   renderer behind `CZ_VKDRAW=1`: device, shader cache, pipeline cache, per-draw
+>   constants, vertex streams from the guest's fetch constants, the tiled-texture
+>   untiler, resolve snapshots served as textures, and a readback into phase 3's
+>   present seam via the new `Host_PresentPixels`.
+> * A draw seam in `pm4.cpp` (`Pm4_SetDrawSink`, `Pm4_BoundShader`, `Pm4_Registers`)
+>   and `IM_LOAD`/`IM_LOAD_IMMEDIATE` shader-load recording with `CZ_SHADER_DUMP`.
+> * Eleven instruments, listed in `phase5-notes.md` §9 and in `CLAUDE.md`.
+>
+> **What is left is the picture, and it is enumerated rather than open-ended:**
+> `phase5-notes.md` §7 is a table of every surface in a frame with its non-black
+> percentage, plus the list of stated simplifications that are the candidates. The
+> short version: the glyph atlases render at 99.9% non-black and the entire
+> 640x360→32x1 scene pyramid renders at 0.0%, so **the loss is upstream of the
+> compose**, and it is none of a missing shader, a refused pipeline, an unmapped
+> format, an unsupported primitive, or the colour mask — each of which is measured.
+>
+> **Start by reproducing the two dumps**, which cost one headless run each and are what
+> make this checkable without an operator:
+> `CZ_VK_FRAME_DUMP=<dir>` and `CZ_VK_SNAP_DUMP=<dir>`.
+>
+> All gates in the "Secondary gates" section below hold with the renderer ON. Re-run
+> them, do not assume them (gotcha 86); and run the A1 gate with an empty save root
+> (gotcha 106).
+
+---
+
 `CLAUDE.md` loads automatically and is current (phases 0, 1 and 3 complete, plus the
 save-data layer; 2026-08-05). This file adds only what a fresh context needs to start
 **phase 5 — the renderer** without re-deriving anything.
