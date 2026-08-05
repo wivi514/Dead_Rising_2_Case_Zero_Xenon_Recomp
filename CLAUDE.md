@@ -356,11 +356,14 @@ From finding 34 (the XAM message/task block):
 67. **An implemented import that has never been reached is a prediction, not a
     result.** Eight of finding 34's nine are guest-derived, none is a guess, and none
     has executed. Gotcha 30 applies to code as much as to tests — say which ones ran.
-68. **The next gate position is not necessarily in the subsystem you just wrote.**
-    Positions 85-92 look like a storage block; the thing actually blocking them is
-    `MmMapIoSpace` at 84, called by the **XMA audio driver** (A1 shows it on the audio
-    thread right after `XmaContext: reset context 0`). Read the capture's *context
-    lines* around a gate position, not just the name.
+68. **Adjacency in a first-occurrence gate is not causation — check the thread id and
+    the line number.** A first-occurrence gate flattens a multi-threaded timeline into
+    one sequence, so two positions sit next to each other whenever nothing *new*
+    happened in between, however far apart and however unrelated they are. Position 84
+    (`MmMapIoSpace`, audio thread, A1 line 54,145) and position 85
+    (`XamShowDeviceSelectorUI`, frontend thread, A1 line 111,694) are 57,500 lines and
+    two threads apart; calling the first a blocker for the second was wrong. One grep
+    for the line number and thread id settles it before any work is planned on top.
 From finding 27 (the null base pointer, resolved — and it was none of the above):
 
 53. **A scanner's own count is not a measurement of the thing it scans for.**
@@ -739,15 +742,16 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 Next, in order:
 
-1. **XMA audio** — the real next domino, established by finding 34 rather than
-   assumed. Hardware's gate position 84 is `MmMapIoSpace(2, 1FCAA000, 0x40, 0x404)`
-   from the XMA driver on thread `F800010C`, right after `XmaContext: reset context
-   0`, and positions 85-92 are all downstream of it. `XMACreateContext` takes an
-   out-pointer and its caller tests the result with a **signed** compare, so a
-   positive stub return reads as success — gotcha 5 exists because Fable 2 lost weeks
-   to this exact import faking success. An audio-subsystem task, not a two-line one.
-2. **Prove finding 34's eight unexercised imports** once the boot reaches them.
-   `XamTaskSchedule` runs guest code on a new thread and has never done so.
+1. **The early `RtlNtStatusToDosError`** at A5 gate position 19 — the best-value item
+   left. A5's three remaining windows are really only **two** differences:
+   `RtlNtStatusToDosError` displaced early (which pushes `NtWaitForSingleObjectEx`
+   late and accounts for two windows) and `XAudioSubmitRenderDriverFrame` absent for
+   want of an audio backend. `CZ_KCALL_WHO=RtlNtStatusToDosError` answers it directly.
+2. **XMA audio** — gates gate position 84 and, per finding 34's retraction, nothing
+   else. Still needed, still not an unblocker. `XMACreateContext` takes an out-pointer
+   and its caller tests the result with a **signed** compare, so a positive stub
+   return reads as success — gotcha 5 exists because Fable 2 lost weeks to this exact
+   import faking success.
 3. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.

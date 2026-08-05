@@ -977,16 +977,34 @@ and A1 shows exactly where it comes from:
     d> F800010C MmMapIoSpace(00000002, 1FCAA000, 00000040, 00000404)
     A> F800010C XmaContext: reset context 0
 
-That is the **XMA audio driver** mapping its register window, on the audio thread, and
-everything at positions 85-92 is downstream of it. Our `XMACreateContext` is still a
-generated stub, so the audio driver never gets that far. The storage block was never
-blocked on the storage imports.
+That is the **XMA audio driver** mapping its register window, on the audio thread. Our
+`XMACreateContext` is still a generated stub, so the driver never gets that far.
 
-This one needs care rather than speed. `XMACreateContext` takes an out-pointer and its
-caller tests the result with a signed compare, so a stub that returns a positive value
-would read as success — and CLAUDE.md gotcha 5 exists *because* Fable 2 lost weeks to
-exactly this import faking success. It is the next task, and it is an audio-subsystem
-task, not a two-line one.
+> **RETRACTED, same session.** The sentence that stood here — "everything at positions
+> 85-92 is downstream of it" — was wrong, and wrong in a way worth keeping on the page
+> because the gate invites it. A first-occurrence gate flattens a multi-threaded
+> timeline into one sequence, so two positions can be adjacent in it while being
+> causally unrelated. Checking the log lines and thread ids takes one grep and says so
+> plainly:
+>
+>     84  MmMapIoSpace              A1 line  54,145   thread F800010C  (audio)
+>     85  XamShowDeviceSelectorUI   A1 line 111,694   thread F8000008  (frontend)
+>     92  XamContentGetDeviceData   A1 line 112,084   thread F8000008
+>
+> **57,500 log lines apart, on different threads.** XMA gates position 84 and nothing
+> else. The storage block is gated on the *frontend thread* getting much further, and
+> our run is currently loading `frontend/mainmenu.big` and `mainmenu.tex` — close to
+> where A1 is, but A1 was driven by an operator holding a controller and our pad
+> reports neutral because there is no host input source yet (finding 32). Positions
+> 85-92 may well need input before they need any import.
+>
+> **Adjacency in a first-occurrence gate is not causation. Check the thread id and the
+> line number before calling anything a domino.**
+
+`XMACreateContext` still needs care rather than speed when its turn comes. It takes an
+out-pointer and its caller tests the result with a signed compare, so a stub returning
+a positive value would read as success — and CLAUDE.md gotcha 5 exists *because* Fable
+2 lost weeks to exactly this import faking success.
 
 ## 5. Where the boot currently stops
 
@@ -1054,14 +1072,23 @@ per arm will confidently name whichever arm happened not to fire.
 
 Next, in order:
 
-1. **XMA audio** — the actual next domino, established by finding 34 rather than
-   assumed. Hardware's gate position 84 is `MmMapIoSpace(2, 1FCAA000, 0x40, 0x404)`
-   from the XMA driver on thread `F800010C`, immediately after `XmaContext: reset
-   context 0`; positions 85-92 are all downstream of it. `XMACreateContext` takes an
-   out-pointer and its caller tests the result with a **signed** compare, so a
-   positive stub return reads as success — and gotcha 5 exists because Fable 2 lost
-   weeks to this exact import faking success. Treat it as an audio-subsystem task.
-2. **Prove the eight unexercised imports from finding 34** once the boot reaches
+1. **The early `RtlNtStatusToDosError`** at A5 gate position 19. After finding 34's
+   retraction this is the best-value item left, because A5's three remaining windows
+   are really only **two** differences: `RtlNtStatusToDosError` displaced early (which
+   pushes `NtWaitForSingleObjectEx` late and accounts for two of the three windows),
+   and `XAudioSubmitRenderDriverFrame` absent because there is no audio backend. So
+   this is one of the two real differences in the entire A5 boot, and
+   `CZ_KCALL_WHO=RtlNtStatusToDosError` answers it directly.
+2. **The surviving crash** (below) — a real defect, already localised.
+3. **XMA audio** — gates gate position 84 and, per the retraction above, nothing else.
+   Still needed for audio and still the honest reading of one A5 window, but it is not
+   an unblocker. `XMACreateContext` takes an out-pointer and its caller tests the
+   result with a **signed** compare, so a positive stub return reads as success.
+4. **Input, and whether the frontend is waiting for it.** Positions 85-92 are on the
+   frontend thread at A1 line ~111,694; our run reaches `frontend/mainmenu.tex` and
+   then has nothing to press START with. Worth establishing before writing more
+   frontend imports — it may be that none of them is what is missing.
+5. **Prove the eight unexercised imports from finding 34** once the boot reaches
    them: `XamTaskSchedule` in particular runs guest code on a new thread and has
    never done so.
 3. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
