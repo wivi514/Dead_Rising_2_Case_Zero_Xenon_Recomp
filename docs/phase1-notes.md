@@ -1261,6 +1261,110 @@ which is another instance of gotcha 56 (these crashes repeat byte for byte; only
 whether the boot reaches the site varies). Nothing in this finding's changes is
 implicated.
 
+### Finding 37 — the frontend IS waiting for input, and proving it needed an arm that can lie
+
+The question this answers is the one a gate cannot: our boot settles with the
+renderer running, the file count flat and the kernel-call profile steady, and **a
+title screen that is finished and waiting for a human looks exactly like one that is
+stuck**. Same frame rate, same file count, same polls. The only thing that
+distinguishes them is whether input makes it move — so the only way to find out is to
+supply some.
+
+**First, the premise had drifted and had to be re-measured.** The standing note said
+"our run reaches `frontend/mainmenu.tex` and then has nothing to press START with".
+That was true when written and is no longer the interesting part: the runtime has
+since moved on, and a healthy run now opens **64 files**, ending with
+`data\models\environment\prologue_menu\prologue_z01.big` — the title screen's 3D
+scene, not its texture. A1 loads the same thing in the same order right after
+`mainmenu.tex`. And the renderer is not idling behind it:
+
+```
+120 s run:  120,663,964 PM4 packets   4,118 XE_SWAP frames   8,160,035 draws
+            ~34 fps, ~1,982 draws/frame
+```
+
+against A1's title-screen era of ~2,540 draws/frame (finding 10) — different
+instruments, so indicative rather than identical, but the same order of magnitude and
+the same shape. **We are rendering the title screen**, not stalled before it. Gotcha
+13 says re-read a capture request against the current ledger before believing it; this
+is the same rule turned on our own notes.
+
+**The arm.** `CZ_FAKE_START_MS=N` in `XamInputGetState_x`: a synthetic START press
+every N ms, held 150 ms, with the packet number incremented on each transition
+(XInput's contract is that the packet number changes only when the state does, so a
+constant one hands the guest a press it is entitled to ignore).
+
+It is off by default and it announces itself on every press, and that loudness is the
+point rather than politeness. **A fake button press manufactures progress.** A run
+that quietly had this on would show the boot advancing past the title screen and
+invite the conclusion that some import we had just written unblocked it. Nothing may
+progress on the strength of a run whose input was invented — so it is named for what
+it is, it logs `SYNTHETIC INPUT IS ON ... do not gate on it`, and gate runs must not
+use it.
+
+**The measurement.** Three runs per arm, same binary, 120 s:
+
+| run | files | presses | reached pos. 85 | outcome |
+|---|---|---|---|---|
+| noinput_1 | 57 | 0 | no | stalled during load |
+| noinput_2 | **64** | 0 | **no** | title screen, no advance |
+| noinput_3 | 47 | 0 | no | stalled during load |
+| input_1 | **64** | 5 | **YES** | **advanced** |
+| input_2 | 57 | 0 | no | stalled during load |
+| input_3 | **64** | 5 | **YES** | **advanced** |
+
+Every run that reached the title screen **and** received a press advanced; the one
+that reached it without a press did not. The causality is tight enough to read
+directly out of the log — `XamShowDeviceSelectorUI` appears **five lines after** the
+first `synthetic START DOWN` and before its release:
+
+```
+[kernel] CZ_FAKE_START_MS: synthetic START DOWN at 20s (packet 2)
+[kcall] XamShowDeviceSelectorUI
+[kernel] CZ_FAKE_START_MS: synthetic START up at 20s (packet 3)
+```
+
+and the A1 gate moves from an 84-deep prefix to an **85-deep** one, position 85 being
+`XamShowDeviceSelectorUI` exactly.
+
+Note `input_2` in the table: it got **zero** presses because it stalled before the
+frontend began polling. That is the arm being honest — it presses only once the title
+asks for pad state — and it is why the pairing above is 2-of-2 rather than 3-of-3.
+
+**Where it stops next, and why that is not a mystery.** After the device selector the
+gate wants position 86, `XamGetPrivateEnumStructureFromHandle`, and then
+`XamContentCreateEnumerator` / `XamEnumerate` / `XamContentCreateEx` /
+`XamContentClose`. All five are still generated stubs, deliberately: they are the
+phase 2 save-data layer, explicitly carved out of finding 34. So the frontend is now
+blocked on a gap we chose, not one we have to find.
+
+**A separate defect found on the way: an intermittent load stall.** Three of the six
+A/B runs never reached the title screen at all, stopping at 47 files
+(`frontend\mainmenu.tex`) or 57 (`cinematics\cinematics.big`). In that state the wait
+trace finds the **main thread parked in the renderer's frame fence**:
+
+```
+[wait] tid=00000F00 (entry=00000000) handle=BBF171C0 lr=825DA5F0 stuck 110s EVENT
+  #1 827CC6D8   sub_827CC6A8  -- WaitForSingleObjectEx([obj+2480], INFINITE, alertable)
+  #2 827CC79C   sub_827CC770  -- frame: wait fence, do work, NtSetEvent([obj+2476])
+  #6 825DA0C0   sub_825D9F28  -- main()
+[csspin] r13=88304DA0 wants cs ownedBy r13=88004D60 (the main thread) rec=1
+[csspin] r13=88314DA0 wants cs ownedBy r13=88004D60 rec=1
+```
+
+i.e. the main thread blocks on the render fence **while holding two critical sections
+two other threads are spinning on**. The other side of that fence is
+`sub_827D3898`, which is the Draw Thread body (its `NtSetEvent([r31+2480])` is the
+signal, and the thread entry `0x827D3B40` sits at its end — A1 and our own
+`ExCreateThread` log agree). Not chased further here; it is a distinct fault from the
+question this finding answers, and it is now its own task.
+
+Rate, and the caveat that goes with it: **4 of 8** long runs on the current binary
+stalled, against **1 of 6** on the previous one. Those two numbers are not consistent
+with each other, which is gotcha 51 exactly — a rate measured once is a fact about
+that afternoon — so treat "about a third to a half" as the current honest range and
+re-establish it before and after any change aimed at it.
+
 ## 5. Where the boot currently stops
 
 
@@ -1288,10 +1392,15 @@ accurate when written; they are listed in findings 35 and 36 with what closed th
 One of the four was never independent: two windows were the wake of a single displaced
 `RtlNtStatusToDosError` (finding 35, gotcha 71 — count causes, not windows).
 
-**Where it stops.** At A1 position 85, `XamShowDeviceSelectorUI`, on the frontend
-thread. Finding 34 already implemented that whole block, so the boot is no longer
-waiting on a missing import — the open question is whether the frontend is waiting for
-input it will never receive.
+**Where it stops.** A healthy run reaches the **title screen** — 64 files through to
+`prologue_menu\prologue_z01.big`, rendering at ~34 fps — and waits there for a button
+press it never gets (finding 37, measured, not inferred). Given one, it advances to A1
+position 85 (`XamShowDeviceSelectorUI`) and then stops at 86 on the phase 2 save-data
+enumerate stubs, which is a gap we chose.
+
+Separately, about a third to a half of long runs never reach the title screen at all,
+stalling at 47 or 57 files with the main thread parked in the renderer's frame fence
+while holding two critical sections (finding 37's last section).
 
 **An intermittent crash, and a retraction of the first reading of it.**
 
@@ -1335,12 +1444,12 @@ per arm will confidently name whichever arm happened not to fire.
 
 Next, in order:
 
-1. **Whether the frontend is waiting for input.** The boot now stops at A1 position
-   85, `XamShowDeviceSelectorUI`, on the frontend thread — and finding 34 already
-   implemented that whole block, so this is no longer "an import is missing". Our run
-   reaches `frontend/mainmenu.tex` and has nothing to press START with. Establish
-   this before writing more frontend imports; the cheap version is a deliberately
-   temporary arm that fakes a START press, observed and then discarded.
+1. **The intermittent load stall** (finding 37). About a third to a half of long runs
+   never reach the title screen, stopping at 47 or 57 files with the main thread
+   blocked in the render fence (`sub_827CC6A8`, waiting on `[obj+2480]`) while holding
+   two critical sections two other threads spin on. The other side of the fence is
+   `sub_827D3898`, the Draw Thread body. This is now the biggest thing between us and
+   a reliable boot, and it is a correctness bug rather than a missing feature.
 2. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
    localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0`, a null indirect call through a vtable slot.

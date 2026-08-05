@@ -3083,9 +3083,27 @@ static uint32_t XamInputGetCapabilities_x(uint32_t userIndex, uint32_t flags,
     return 0;
 }
 
-// The packet number must only change when the state changes, and ours never does —
-// so it is a constant, not a counter. A counter here would tell the title the pad is
-// producing input every poll and invite it to re-read state it does not need to.
+constexpr uint16_t XINPUT_GAMEPAD_START = 0x0010;
+
+// CZ_FAKE_START_MS=N — a synthetic START press every N milliseconds, held for 150 ms.
+//
+// THIS IS A MEASUREMENT ARM, NOT A FEATURE, AND IT MUST NEVER BE ON FOR A GATE RUN.
+// Its whole purpose is to answer one question that nothing else can: when the boot
+// settles at the title screen with the renderer running and no new files being
+// opened, is it *finished and waiting for a human*, or is it stuck? Those two look
+// identical from outside — same steady frame rate, same file count, same kernel-call
+// profile — and the only difference is whether input makes it move.
+//
+// The danger is equally specific, which is why the injection logs every press: a
+// fake button press MANUFACTURES progress. A run that quietly had this on would show
+// the boot advancing past the title screen and invite the conclusion that some import
+// we just wrote unblocked it. Nothing in this project may progress on the strength of
+// a run whose input was invented, so it is loud, off by default, and named for what
+// it is.
+//
+// The packet number is the other half. XInput's contract is that it changes only when
+// the state changes, so a title can skip re-reading; a constant packet number with a
+// changing button field would hand the guest a press it is entitled to ignore.
 static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                                    GuestInputState* state)
 {
@@ -3095,7 +3113,43 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     memset(state, 0, sizeof(*state));
     if (userIndex != kLocalPadIndex)
         return ERROR_DEVICE_NOT_CONNECTED;
-    state->packetNumber = 1;
+
+    static const int fakeStartMs = []() {
+        const char* e = getenv("CZ_FAKE_START_MS");
+        const int ms = e ? atoi(e) : 0;
+        if (ms > 0)
+            KLOG("CZ_FAKE_START_MS=%d — SYNTHETIC INPUT IS ON. This run's progress is "
+                 "not evidence about any import; do not gate on it.\n",
+                 ms);
+        return ms;
+    }();
+
+    // No synthetic input: a connected pad reporting nothing pressed, forever. The
+    // packet number is then a constant because the state genuinely never changes.
+    if (fakeStartMs <= 0)
+    {
+        state->packetNumber = 1;
+        return 0;
+    }
+
+    static std::atomic<uint32_t> packet{ 1 };
+    static std::atomic<bool> pressedNow{ false };
+    // Measured from the first poll rather than from process start: the title only
+    // starts polling once its frontend is up, so this keeps the delay meaningful
+    // regardless of how long loading took.
+    static const auto firstPoll = std::chrono::steady_clock::now();
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - firstPoll)
+                               .count();
+    const bool press = elapsedMs > fakeStartMs && (elapsedMs % fakeStartMs) < 150;
+    if (press != pressedNow.exchange(press))
+    {
+        const uint32_t n = packet.fetch_add(1) + 1;
+        KLOG("CZ_FAKE_START_MS: synthetic START %s at %llds (packet %u)\n",
+             press ? "DOWN" : "up", static_cast<long long>(elapsedMs / 1000), n);
+    }
+    state->packetNumber = packet.load();
+    state->gamepad.buttons = press ? XINPUT_GAMEPAD_START : 0;
     return 0;
 }
 

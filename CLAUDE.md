@@ -458,6 +458,28 @@ From finding 36 (the audio driver, and the first fully clean A5 gate):
     contiguous array at the address you published. Publish it big-endian and every
     index is nonsense, silently — the index only ever picks a hardware bit.
 
+From finding 37 (the frontend was waiting for input, and the arm that proved it):
+
+77. **"Finished and waiting for a human" and "stuck" are the same picture from
+    outside.** A boot that has reached its title screen shows a steady frame rate, a
+    flat file count and an unchanging kernel-call profile — and so does one that has
+    deadlocked there. No passive instrument separates them, because the difference is
+    not in what the program is doing, it is in what it is waiting for. The only
+    discriminator is to supply input and see whether it moves.
+78. **An instrument that manufactures progress has to be loud.** `CZ_FAKE_START_MS`
+    presses START for the guest, and a run that quietly had it on would show the boot
+    advancing past the title screen and invite the conclusion that the import you just
+    wrote unblocked it. Off by default, announces itself on every press, and never on
+    for a gate run. Same discipline as `CZ_NO_AUDIO_PUMP`, higher stakes: this one
+    fabricates *evidence*, not just behaviour.
+79. **Re-measure your own premise before acting on it, not just the capture's.**
+    Gotcha 13 says a capture request is a hypothesis with a shelf life. So is a note
+    in your own status section. "Our run reaches `mainmenu.tex` and stops" was true
+    when written and had quietly stopped being the interesting fact: the runtime now
+    loads 64 files through to the title screen's 3D scene and renders it at ~34 fps.
+    Acting on the stale version would have sent someone hunting a file-loading bug
+    that no longer exists.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -611,6 +633,9 @@ CZ_AUDIO_TRACE=1   XMA context allocation + every 512th driver frame WITH its pe
 CZ_AUDIO_FRAME_US=N  the driver frame period (default 5333 = 256 samples @ 48 kHz)
 CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the control
                    arm for every claim about driving the audio callback
+CZ_FAKE_START_MS=N synthetic START press every N ms. A MEASUREMENT ARM, NOT A
+                   FEATURE — it manufactures progress, so it announces itself on
+                   every press and must NEVER be on for a gate run (gotcha 78)
 ```
 
 `CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
@@ -815,6 +840,22 @@ reports **0 defects, 2 benign tail-call thunks**.
 Measured: **6-7 crashes in 10 runs -> 1 in 20.** The pipeline is clean end to end —
 silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
+**The frontend was waiting for input, and that is now measured (session 6).**
+`docs/phase1-notes.md` finding 37. A healthy run reaches the **title screen** — 64
+files through to `prologue_menu\prologue_z01.big`, rendering at ~34 fps and ~1,982
+draws/frame against A1's title-screen ~2,540 — and sits there. Supplying one synthetic
+START press (`CZ_FAKE_START_MS`, a measurement arm, never on for a gate) advances the
+A1 gate from an 84-deep prefix to **85**, `XamShowDeviceSelectorUI`, five log lines
+after the press. 2 of 2 conclusive pairs; the runs that reached the title screen
+without a press did not advance. It then stops at position 86 on the phase 2
+save-data enumerate stubs — a gap we chose.
+
+Two things fell out. The standing note ("reaches `mainmenu.tex` and stops") had gone
+stale and would have sent someone hunting a file-loading bug that no longer exists
+(gotcha 79). And about a third to a half of long runs never reach the title screen at
+all, stalling with the main thread parked in the renderer's frame fence while holding
+two critical sections — a real defect, now the top of the list.
+
 **The audio driver is real and the A5 gate is clean (2026-08-04, session 6).**
 `docs/phase1-notes.md` finding 36. All seven audio imports implemented: an XAudio
 render-driver client with a guest-thread pump at 5.333 ms/frame (256 samples x 6
@@ -832,11 +873,12 @@ displacing the title's own 447 MB reservation (gotcha 74).
 
 Next, in order:
 
-1. **Whether the frontend is waiting for input** — the boot now stops at A1 position
-   85, `XamShowDeviceSelectorUI`, on the frontend thread, and finding 34 already
-   implemented that whole block, so this is no longer "an import is missing". Our run
-   reaches `frontend/mainmenu.tex` and has nothing to press START with. Establish
-   this before writing more frontend imports.
+1. **The intermittent load stall** (finding 37) — about a third to a half of long
+   runs never reach the title screen, stopping at 47 or 57 files with the main thread
+   blocked in the renderer's frame fence (`sub_827CC6A8` waiting on `[obj+2480]`)
+   while holding two critical sections two other threads spin on. The other side of
+   the fence is `sub_827D3898`, the Draw Thread body. Now the biggest thing between
+   us and a reliable boot.
 2. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
    localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
    `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
