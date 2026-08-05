@@ -103,6 +103,42 @@ uint64_t Pm4_IbTruncatedCount();
 uint64_t Pm4_IbVerifyCleanCount();
 uint64_t Pm4_IbVerifyDirtyCount();
 
+// The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
+// FNV-1a over the big-endian microcode and is the renderer's cache key; it is zero
+// until a stage has been bound. See the shader-load block in pm4.cpp for why the
+// identity is the content and not the address.
+struct Pm4ShaderBinding
+{
+    uint32_t ucodeVa = 0;    // 0 for IM_LOAD_IMMEDIATE, which has no guest buffer
+    uint32_t sizeDwords = 0;
+    uint64_t hash = 0;
+};
+const Pm4ShaderBinding& Pm4_BoundShader(uint32_t stage); // 0 = vertex, 1 = pixel
+
+// The register file. Handed to the renderer rather than copied because a draw reads a
+// few dozen of 0x8000 registers and which ones depend on the draw; snapshotting the
+// whole file per draw would cost more than the draw.
+const uint32_t* Pm4_Registers();
+
+// The draw seam. Set by the renderer at init; called from inside the packet walk for
+// every DRAW_INDX/DRAW_INDX_2 that survives ME predication, with the bound shaders and
+// the register file already current.
+//
+// Called from the walk rather than queued, for the same reason the interrupt sink is:
+// the stream's meaning is positional. A draw's state is whatever the packets before it
+// set, and a queue that defers the draw past the next SET_CONSTANT renders it with the
+// following draw's state — which looks like a shader bug and is not one.
+struct Pm4Draw
+{
+    uint32_t primType;    // VGT_DRAW_INITIATOR bits 5:0
+    uint32_t indexCount;  // bits 31:16
+    bool indexed;         // source select 0/1 = DMA (indexed), 2 = auto-index
+    uint32_t indexVa;     // guest VA of the index buffer, 0 when not indexed
+    bool index32;         // 32-bit indices rather than 16-bit
+    uint32_t indexEndian; // the index buffer's own endian swizzle code
+};
+void Pm4_SetDrawSink(void (*sink)(uint8_t* base, const Pm4Draw&));
+
 uint64_t Pm4_PacketCount();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F

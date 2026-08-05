@@ -133,6 +133,7 @@ std::atomic<uint64_t> g_draws{ 0 };
 std::atomic<uint64_t> g_frames{ 0 };
 std::atomic<uint64_t> g_interrupts{ 0 };
 void (*g_interruptSink)() = nullptr;
+void (*g_drawSink)(uint8_t*, const Pm4Draw&) = nullptr;
 
 // The full Xenos type-3 table. A name here means "this command processor has such an
 // opcode"; nullptr means it does not, which is load-bearing: the ring resync will
@@ -202,6 +203,148 @@ struct OpcodeNames
     }
 };
 const OpcodeNames kOpcodeNames;
+
+// --- shader loads -----------------------------------------------------------------
+// IM_LOAD (0x27) and IM_LOAD_IMMEDIATE (0x2B) are how the guest binds microcode, and
+// they are the renderer's entry point into the stream: everything the GPU does to a
+// draw is decided by the two shaders bound when the draw packet arrives.
+//
+// WHY THE IDENTITY IS A HASH OF THE BYTES, AND NOT THE ADDRESS
+// -----------------------------------------------------------
+// The obvious key is the microcode's guest address, and it is wrong twice over. The
+// driver recycles a small scratch region for uploads, so one address holds many
+// different shaders over a run; and the same shader is uploaded to different addresses
+// as buffers are cycled. A content hash is stable under both, and it is also the key
+// the offline translation pipeline can compute — `tools/build_shader_spv.sh` hashes the
+// same bytes with the same function, so a cache entry and a bound shader agree by
+// construction rather than by a naming convention anyone has to maintain.
+//
+// The hash is FNV-1a over the microcode as a BIG-ENDIAN byte string, i.e. exactly the
+// bytes as the guest holds them. That matters for IM_LOAD_IMMEDIATE, whose microcode
+// arrives as already-swapped dwords through our accessors: it has to be written back
+// out big-endian before hashing or the two load paths give different names to the same
+// shader, and half the cache silently misses.
+uint64_t Fnv1a(const uint8_t* p, size_t n)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (size_t i = 0; i < n; i++)
+    {
+        h ^= p[i];
+        h *= 0x100000001B3ull;
+    }
+    return h;
+}
+
+// A structural check that a buffer is microcode before adopting it as a shader.
+//
+// This exists because a load that is NOT microcode is worse than no load at all: it
+// replaces the bound shader with a hash that no cache entry can match, so every draw
+// until the next bind is dropped as "unknown shader" — a large, silent hole in the
+// frame that looks like a translation gap. Rejecting it keeps the previous shader,
+// which is at worst stale and which the guest is about to rebind anyway.
+//
+// The check is the microcode's own shape: the control-flow region is a sequence of
+// 3-dword groups packing two 48-bit CF instructions, and the first Exec-family
+// instruction names the address and count of an instruction block that must lie inside
+// the buffer. Random dwords fail that almost always.
+bool LooksLikeUcode(const uint8_t* p, uint32_t sizeDwords)
+{
+    if (sizeDwords < 3 || (sizeDwords % 3) != 0)
+        return false;
+    auto dw = [&](uint32_t i) {
+        return (uint32_t(p[i * 4]) << 24) | (uint32_t(p[i * 4 + 1]) << 16) |
+               (uint32_t(p[i * 4 + 2]) << 8) | uint32_t(p[i * 4 + 3]);
+    };
+    for (uint32_t i = 0; i + 2 < sizeDwords; i += 3)
+    {
+        const uint32_t cf[2][2] = {
+            { dw(i), dw(i + 1) & 0xFFFF },
+            { ((dw(i + 1) >> 16) | (dw(i + 2) << 16)), dw(i + 2) >> 16 }
+        };
+        for (const auto& c : cf)
+        {
+            const uint32_t op = (c[1] >> 12) & 0xF;
+            const uint32_t addr = c[0] & 0xFFF, cnt = (c[0] >> 12) & 7;
+            const bool isExec = op == 1 || op == 2 || op == 3 || op == 4 || op == 5 ||
+                                op == 6 || op == 13 || op == 14;
+            if (isExec && cnt)
+                return (addr + cnt) * 3 <= sizeDwords;
+        }
+    }
+    return false;
+}
+
+// The currently bound pair. Index 0 = vertex, 1 = pixel, matching the type field the
+// packet itself carries.
+Pm4ShaderBinding g_boundShaders[2];
+
+// CZ_SHADER_DUMP=<dir> — write one file per distinct microcode blob, named by the same
+// hash the renderer looks up. This is how the SPIR-V cache is built: the dump is taken
+// from OUR command processor, so the byte range and therefore the name are exactly what
+// the runtime will ask for at draw time. Building the cache from Xenia's dumps instead
+// would key it on Xenia's idea of where a shader ends, and any disagreement about the
+// length is a total, silent cache miss.
+const char* g_shaderDumpDir = getenv("CZ_SHADER_DUMP");
+std::vector<uint64_t> g_dumpedShaders;
+
+void DumpShader(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t sizeDwords)
+{
+    if (!g_shaderDumpDir)
+        return;
+    if (std::find(g_dumpedShaders.begin(), g_dumpedShaders.end(), hash) !=
+        g_dumpedShaders.end())
+        return;
+    g_dumpedShaders.push_back(hash);
+
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s_%016llx.ucode", g_shaderDumpDir,
+             type == 0 ? "vs" : "ps", static_cast<unsigned long long>(hash));
+    if (FILE* f = fopen(path, "wb"))
+    {
+        fwrite(code, 1, size_t(sizeDwords) * 4, f);
+        fclose(f);
+        fprintf(stderr, "[imload] dumped %s %016llx (%u dwords) -> %s\n",
+                type == 0 ? "VS" : "PS", static_cast<unsigned long long>(hash),
+                sizeDwords, path);
+    }
+}
+
+// The shared body of both load packets: validate, hash, bind, dump, announce once.
+void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t sizeDwords)
+{
+    if (type > 1 || !sizeDwords || sizeDwords > 0x10000)
+        return;
+
+    if (!LooksLikeUcode(code, sizeDwords))
+    {
+        static std::atomic<uint64_t> rejected{ 0 };
+        const uint64_t n = rejected.fetch_add(1);
+        if (n < 8)
+            fprintf(stderr,
+                    "[pm4] IM_LOAD target is not microcode, keeping the previous %s "
+                    "(va=%08X size=%u first=%02X%02X%02X%02X, occurrence %llu)\n",
+                    type == 0 ? "VS" : "PS", ucodeVa, sizeDwords, code[0], code[1],
+                    code[2], code[3], static_cast<unsigned long long>(n));
+        return;
+    }
+
+    const uint64_t hash = Fnv1a(code, size_t(sizeDwords) * 4);
+    g_boundShaders[type] = { ucodeVa, sizeDwords, hash };
+
+    // One line per distinct shader, always on. The renderer's own miss report says
+    // "hash X is not in the cache"; this is what says which stage it was and how big,
+    // and together they are enough to go and translate it without another run.
+    static std::vector<uint64_t> announced;
+    if (std::find(announced.begin(), announced.end(), hash) == announced.end())
+    {
+        announced.push_back(hash);
+        fprintf(stderr, "[imload] %s va=%08X hash=%016llx size=%u\n",
+                type == 0 ? "VS" : "PS", ucodeVa, static_cast<unsigned long long>(hash),
+                sizeDwords);
+    }
+
+    DumpShader(type, hash, code, sizeDwords);
+}
 
 // --- packet source ----------------------------------------------------------------
 // One indirection covering both ways a packet stream reaches us: the ring (a wrapping
@@ -419,10 +562,49 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x5E: // CONTEXT_UPDATE
             break;
 
-        // Draws are counted above and otherwise inert in this phase.
+        // THE DRAW. Counted above; here it is decoded and handed to the renderer.
+        //
+        // Both forms carry one VGT_DRAW_INITIATOR dword, at a different offset:
+        // DRAW_INDX puts a viz-query id in front of it, DRAW_INDX_2 does not. The
+        // initiator names the primitive type, the index count and where the indices
+        // come from — DMA (a guest buffer whose address follows), immediate (inline in
+        // the packet), or auto-index (no indices at all, the vertex shader indexes the
+        // streams itself off its vertex id).
         case 0x22: // DRAW_INDX:   dword0 = viz query info, dword1 = VGT_DRAW_INITIATOR
         case 0x36: // DRAW_INDX_2: dword0 = VGT_DRAW_INITIATOR
+        {
+            if (!g_drawSink)
+                break;
+            const uint32_t initiatorAt = (opcode == 0x22) ? 1 : 0;
+            if (bodyCount <= initiatorAt)
+                break;
+            const uint32_t init = body(initiatorAt);
+
+            Pm4Draw d{};
+            d.primType = init & 0x3F;
+            const uint32_t sourceSelect = (init >> 6) & 3;
+            d.index32 = ((init >> 11) & 1) != 0;
+            d.indexCount = init >> 16;
+            d.indexed = sourceSelect == 0; // 0 = DMA; 2 = auto-index; 1 = immediate
+
+            // The index buffer's address dword follows the initiator, and like every
+            // address in this stream it carries its endian swizzle in the low two
+            // bits. Dropping that swizzle is not a crash — it is a mesh whose indices
+            // are byte-reversed, which draws a dense triangle soup over the screen and
+            // reads as a vertex-format bug.
+            if (d.indexed && bodyCount > initiatorAt + 2)
+            {
+                const uint32_t addrDword = body(initiatorAt + 1);
+                d.indexEndian = addrDword & 3;
+                d.indexVa = PhysToVa(addrDword & ~3u);
+            }
+            else if (d.indexed)
+            {
+                d.indexed = false; // a DMA draw with no address is not one we can honour
+            }
+            g_drawSink(base, d);
             break;
+        }
 
         case 0x60: g_binMask = (g_binMask & 0xFFFFFFFF00000000ull) | body(0); break;
         case 0x61: g_binMask = (g_binMask & 0xFFFFFFFFull) | (uint64_t(body(0)) << 32); break;
@@ -621,13 +803,52 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             break;
         }
 
-        // Shader uploads. The renderer phase is where these become SPIR-V; here they
-        // only have to not be mis-parsed — and IM_LOAD_IMMEDIATE in particular
-        // carries its microcode inline, so getting its length wrong desyncs the whole
-        // stream. Case Zero issues 836,994 IM_LOAD and 204,151 IM_LOAD_IMMEDIATE in
-        // B1, so a length bug here would be immediate and total.
-        case 0x27: // IM_LOAD: addr_type, start_size
+        // Shader uploads. Case Zero issues 836,994 IM_LOAD and 204,151
+        // IM_LOAD_IMMEDIATE in B1, so a length bug here would be immediate and total —
+        // IM_LOAD_IMMEDIATE carries its microcode inline, and mis-reading its length
+        // desyncs the whole stream rather than just losing a shader.
+        case 0x27: // IM_LOAD: addr_type (low 2 bits = stage), start_size
+            if (bodyCount >= 2 && (body(0) & 3) < 2)
+            {
+                const uint32_t type = body(0) & 3;
+                const uint32_t va = PhysToVa(body(0) & ~3u);
+                const uint32_t size = body(1) & 0xFFFF;
+                // Snapshot before hashing. The driver keeps writing its upload
+                // staging area while our executor works through the ring, so reading
+                // the target twice — once to hash, once to translate — can see two
+                // different shaders and produce a name that matches neither.
+                if (size && size <= 0x10000)
+                {
+                    std::vector<uint8_t> code(size_t(size) * 4);
+                    memcpy(code.data(), base + va, code.size());
+                    BindShader(type, va, code.data(), size);
+                }
+            }
+            break;
+
         case 0x2B: // IM_LOAD_IMMEDIATE: type, start_size, then the code
+            if (bodyCount >= 2 && (body(0) & 3) < 2)
+            {
+                const uint32_t type = body(0) & 3;
+                const uint32_t size = body(1) & 0xFFFF;
+                if (size && size + 2 <= bodyCount)
+                {
+                    // Written back out big-endian on purpose: `body()` has already
+                    // swapped, and the hash must be over the bytes as the guest holds
+                    // them or this path names a shader differently from the pointer
+                    // path above (see Fnv1a's comment).
+                    std::vector<uint8_t> code(size_t(size) * 4);
+                    for (uint32_t k = 0; k < size; k++)
+                    {
+                        const uint32_t w = body(2 + k);
+                        code[k * 4 + 0] = uint8_t(w >> 24);
+                        code[k * 4 + 1] = uint8_t(w >> 16);
+                        code[k * 4 + 2] = uint8_t(w >> 8);
+                        code[k * 4 + 3] = uint8_t(w);
+                    }
+                    BindShader(type, 0, code.data(), size);
+                }
+            }
             break;
 
         case 0x37: // INDIRECT_BUFFER_PFD
@@ -939,6 +1160,15 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
 }
 
 void Pm4_SetInterruptSink(void (*sink)()) { g_interruptSink = sink; }
+void Pm4_SetDrawSink(void (*sink)(uint8_t*, const Pm4Draw&)) { g_drawSink = sink; }
+
+const Pm4ShaderBinding& Pm4_BoundShader(uint32_t stage)
+{
+    static const Pm4ShaderBinding kNone;
+    return stage < 2 ? g_boundShaders[stage] : kNone;
+}
+
+const uint32_t* Pm4_Registers() { return g_regs; }
 
 uint32_t Pm4_Cursor() { return g_cursor; }
 uint32_t Pm4_ScratchAddr() { return g_regs[kRegScratchAddr]; }
