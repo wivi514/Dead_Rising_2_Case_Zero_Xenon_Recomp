@@ -602,6 +602,26 @@ on the way):
     `llvm-mc` loses instruction alignment at the first unknown VMX128 encoding and
     keeps printing plausible garbage after it.
 
+From finding 41 (the critical-section yield spin):
+
+97. **A "yield loop" is a busy loop wearing a polite name, and it bills to the half of
+    the profile nobody reads.** `sched_yield()` on an otherwise-idle multicore host
+    returns immediately — there is nothing to yield to — so `while (!cas) yield();`
+    burns a full core. Case Zero blocks two threads forever by design (on console they
+    just sleep), and ours spun: **317% CPU, of which 85 of 106 seconds were SYSTEM
+    time.** User-time profiling shows those threads computing almost nothing, which is
+    true and is exactly why the waste survived a whole port. Parking them: 121%, 4.5 s
+    system. A guest thread the title parks needs somewhere in the runtime to park.
+98. **When a wait changes from spinning to blocking, every count-based instrument on it
+    goes silent.** The `[csspin]` trace fired every 4 M failed attempts, a fine proxy
+    for elapsed time while the loop spun and meaningless once it parks — a parked
+    waiter reaches 4 M attempts approximately never, so the trace would have gone quiet
+    precisely when a wait got long enough to be worth reporting. Re-express the gate in
+    a unit that survives the change: elapsed time. And the replacement stats counter
+    printed **nothing across six runs** because its report was gated inside a rare
+    branch, which read as "no contention" — gotcha 25 in our own tooling for the second
+    time in three sessions.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -739,7 +759,15 @@ Runtime instruments, all off by default and free when off:
 CZ_MEM_TRACE=1     every virtual-memory call with its arguments AND its answer
 CZ_FILE_TRACE=1    every open/read, including the not-founds
 CZ_WAIT_TRACE=1    name any infinite wait that outlasts 5 s, with guest callers
-CZ_CS_TRACE=1      name the owner of a critical section a thread cannot get
+CZ_CS_TRACE=1      name the owner of a critical section a thread cannot get, every 4 s
+                   of waiting. Gated on ELAPSED TIME, not on a spin count — the count
+                   version fell silent the moment contended waits started parking
+CZ_CS_STATS=1      every 100,000 critical-section enters, how many were contended and
+                   how many reached each backoff phase. The instrument for the only
+                   risk finding 41 carries (latency on ordinary locks): 2 of 1.6 M
+CZ_CS_NO_BACKOFF=1 restore the pure yield spin RtlEnterCriticalSection used to do —
+                   the same-binary control arm for every claim about the backoff. With
+                   it on, the two threads the title blocks forever burn a core each
 CZ_STALL_TRACE=N   every N-th sleep, dump the sleeping thread's guest call sites
 CZ_PEEK=addr[,n]   dump guest memory as the XEX shipped it, before any guest code runs
 CZ_NULL_PAGE_READABLE=1|rw   null reads succeed (as on console) / page 0 fully mapped
@@ -1118,6 +1146,27 @@ Two general defects fell out of it, neither audio-specific: `WaitDispatcher`
 dereferenced a guest pointer unguarded, so any null dispatcher object crashed the
 host inside our own kernel (gotcha 73); and a runtime-owned physical allocation was
 displacing the title's own 447 MB reservation (gotcha 74).
+
+**Two of sixteen cores were being burned by a polite-looking spin (session 9).**
+`docs/phase1-notes.md` finding 41. Case Zero blocks two threads forever by design —
+`DnsLookupThread` and the session shutdown thread each enter a critical section the
+main thread never releases — and on console they simply sleep. Our
+`RtlEnterCriticalSection` spun on `std::this_thread::yield()`, which on an idle
+multicore host returns immediately, so each of them burned a core for the whole run.
+
+Contended sections now `pause`-spin (64), then yield (256), then **park on a host
+condition variable** signalled by `RtlLeaveCriticalSection` — a park rather than the
+originally-proposed 1 ms sleep, because a fixed sleep would charge the quantum to every
+section held longer than the yield phase. The release path needs a `seq_cst` fence: it
+stores the lock word and then loads the waiter count, and store-then-load-elsewhere is
+the one ordering x86 does not give (gotcha 92 again, one session later).
+
+Measured, same binary, arms alternated, `CZ_CS_NO_BACKOFF=1` as the control:
+**317% → 121% CPU, system time 85 s → 4.5 s, frames unchanged at 1943 ± 1.** The
+latency question is settled by `CZ_CS_STATS=1` rather than argued: of 1.6 M
+acquisitions in 60 s, 0.26% are contended at all, 417 outlive the pause phase, and
+**2 ever reach the park phase**. Gates unchanged — A5 exit 0, A1's full 84-deep prefix,
+`truncated=0`, and position 71 permutes 1-of-3 on *both* arms.
 
 Next, in order:
 

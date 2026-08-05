@@ -1994,6 +1994,157 @@ about to walk on every entry, and the last line before a crash is the fatal call
 turns "characterise it" into a single reproduction rather than a session.
 
 
+### Finding 41 — a "yield loop" is a busy loop, and it billed to the invisible half of the profile
+
+Found while diagnosing the load stall (finding 38) and unrelated to it. Task #18.
+
+Case Zero starts two threads whose first act is to enter a critical section that the
+main thread takes during start-up and never releases: `DnsLookupThread` (entry
+`0x82554F28`) and the session shutdown thread (`0x825C8960`). That is the **title's**
+design, not a defect of ours. On console those two threads block in the kernel and cost
+nothing for the life of the process — they exist to be woken by an event that, in a
+single-session offline boot, never comes.
+
+Our `RtlEnterCriticalSection` spun on `std::this_thread::yield()` with no backoff. So
+those two threads each burned a core, from early boot to exit, in healthy runs and
+stalled ones alike.
+
+#### Why this hides
+
+`sched_yield()` on an otherwise-idle 16-core host returns immediately: there is nothing
+to yield *to*. A `while (!cas) yield();` loop is therefore a busy loop wearing a polite
+name, and the polite name is most of why it survived a whole port unnoticed. The other
+part is where the cost lands. Measured over 60 s on the committed binary:
+
+```
+Percent of CPU this job got: 317%
+User time (seconds): 106.36
+System time (seconds): 84.69
+```
+
+**Four fifths of the waste is system time**, because each iteration is a syscall. A
+profile that looks at user time — which is the one you reach for when asking "what is
+this program spending its time computing?" — sees the two threads contributing almost
+nothing, because they genuinely are computing almost nothing. They are asking the
+kernel, twenty million times a minute, whether they may stop.
+
+#### The shape of the fix, and why it is a park rather than a sleep
+
+Task #18 proposed "a short pure spin, then a yield phase, then a bounded sleep (1 ms)".
+The first two phases are kept. The third is a **park on a host condition variable**
+signalled by `RtlLeaveCriticalSection`, not a fixed sleep, because a fixed sleep trades
+one measurable cost for another: every section held longer than the yield phase would
+then pay the sleep quantum in latency on every single acquisition. Three phases,
+cheapest first:
+
+| Phase | Attempts | Covers |
+|---|---|---|
+| `pause`-spin | 0–63 | a section another core is about to release |
+| `sched_yield` | 64–319 | a section held by a runnable-but-not-running owner |
+| park on a condvar | 320+ | a section that is not coming back |
+
+Two details that are the whole correctness argument:
+
+- **The wait has a 1 ms timeout, and that timeout is a backstop, not the mechanism.**
+  Every wait is expected to end in a notify. The timeout bounds what a missed one can
+  cost, which turns the classic lost-wakeup race from a hang into a latency blip.
+- **The release path needs a `seq_cst` fence.** `RtlLeaveCriticalSection` stores zero
+  to the lock word and then loads a *different* location, the slot's waiter count.
+  Store-then-load-elsewhere is the one ordering x86-64's TSO does not give — the exact
+  case that made XenonRecomp's `sync` lowering a bug (finding 40, gotcha 92). Without
+  the fence the CPU may answer the load from before the store retires, so a waiter that
+  has just registered itself is not seen.
+
+The park slots are a fixed 64-entry **hash** keyed on the section's address, not a map.
+The collisions are deliberate: two sections sharing a slot costs a spurious wakeup, and
+the waiter re-tests the lock word — the only thing that ever decides ownership —
+immediately afterwards. A real map would need its own lock on the leave path, i.e. a
+lock to implement locking.
+
+#### Measurement
+
+Same binary, arms **alternated**, `CZ_CS_NO_BACKOFF=1` as the control arm reproducing
+the pure yield spin, three pairs at 60 s (gotchas 86, 95):
+
+| arm | CPU | user (s) | sys (s) | frames | draws | files | truncated |
+|---|---|---|---|---|---|---|---|
+| backoff | 121 / 121 / 121 % | 68.47 / 68.49 / 68.64 | 4.56 / 4.57 / 4.38 | 1944 / 1942 / 1943 | 3.479 / 3.505 / 3.487 M | 64 | 0 |
+| spin | 317 / 317 / 315 % | 106.51 / 106.26 / 104.11 | 84.56 / 84.71 / 85.48 | 1942 / 1943 / 1943 | 3.496 / 3.522 / 3.519 M | 64 | 0 |
+
+**317% → 121%: almost exactly two cores handed back**, which is the right number for
+two threads. System time drops 85 s → 4.5 s, i.e. the syscall storm is the waste, and
+it is gone.
+
+**Frames are unchanged** — 1943 ± 1 in both arms, three runs each. Draws are 0.6% lower
+in the backoff arm, with the two ranges overlapping and n = 3; I would not claim that as
+a signal, and the contention profile below rules out the only mechanism by which locking
+could cause it.
+
+#### The number that actually settles the latency question
+
+`CZ_CS_STATS=1` counts how many acquisitions reach each phase. Over one 60 s run:
+
+```
+cs stats: enters=1600000 contended=4189 (0.2618%) yielded=417 parked=2
+```
+
+1.6 M critical-section acquisitions — about 27,000 a second — of which **0.26% are
+contended at all, 417 outlive the pause phase, and 2 ever reach the park phase.** The
+phase this change adds is entered by two acquisitions in 1.6 million. There is no
+population of ordinary locks paying a latency cost, because there is no population.
+
+Read the counters carefully, though: they are counted **on success**, which is right for
+the latency question and makes the headline look wrong. The run above reports `parked=2`
+while two threads are parked for its entire duration — those two never acquire, so they
+never count. `parked` means "acquisitions that had to park and then got the lock", not
+"threads currently parked".
+
+#### Two instrument lessons, both about a check that stopped being able to fire
+
+**The `[csspin]` trace was count-based, and parking would have silenced it.** It printed
+every 4 M failed attempts, which is a fine proxy for elapsed time while the loop spins
+and meaningless once it parks — a parked waiter reaches 4 M attempts approximately
+never. The instrument would have gone quiet exactly when the wait got long enough to be
+worth reporting. It is now gated on elapsed time (4 s), sampled once every 256 attempts
+so the pause phase never reads the clock at all. **When a wait changes from spinning to
+blocking, re-express every instrument on it in a unit that survives the change.**
+
+**And the new stats counter printed nothing at all on its first six runs.** The report
+was gated *inside* the `attempt != 0` branch and tested a re-read total against
+`% 100000`, so firing needed a *contended* acquisition to land exactly on a multiple of
+100,000. Six 60 s runs produced not one line, and "no output" read as "no contention" —
+a clean, quiet, wrong answer. This is gotcha 25 in our own tooling for the second time
+in three sessions: before believing a zero, confirm the check could have produced a
+non-zero. The fix is to take the sequence number from the increment itself, so every
+100,000th value is owned by exactly one thread.
+
+#### Gates
+
+All clean on the new binary, over a 120 s run:
+
+```
+--smoke                                  OK (58,289 mappings)
+ring: pm4 packets=121942412 frames(XE_SWAP)=3771 draws=8199875 interrupts=13373
+truncated=0                              64 files -> the title screen
+A5 --include-high-frequency              SET MATCH: every mismatch is a permutation. Exit 0.
+A1                                       full 84-deep prefix, position 71 permuted
+```
+
+Position 71's permutation is the known scheduling-sensitive one (gotcha 95), and the
+free control says so: replaying the A1 gate over this session's six A/B logs gives
+**1 of 3 permuted on each arm, identically**. Same binary, same distribution — nothing
+here moved it.
+
+#### Deliberately not changed
+
+`SpinAcquire` (`KfAcquireSpinLock`, `KeAcquireSpinLockAtRaisedIrql`) still yield-spins
+with no backoff. That is the faithful behaviour: kernel spinlocks are taken at raised
+IRQL and must not block, and on hardware they are held for a handful of instructions.
+Nothing measured suggests they are contended here — the 317% → 121% drop accounts for
+both busy threads, leaving no third one to explain. If that ever changes it is a finding
+of its own, not a knob.
+
+
 ## 5. Where the boot currently stops
 
 
@@ -2100,6 +2251,10 @@ per arm will confidently name whichever arm happened not to fire.
   (finding 40). The 1-in-20-to-40 crash recorded before finding 39 does not reproduce.
 - Memory barriers are real now: `lwsync`/`eieio` are compiler barriers and `sync` is a
   fence, where all three previously emitted nothing (upstream bug 6, gotcha 92).
+- **Host CPU: 317% → 121%** (finding 41). Two threads the title blocks for the life of
+  the process were yield-spinning a core each; contended critical sections now park.
+  Frames unchanged at 1943 ± 1 over three alternated pairs, and only 2 acquisitions in
+  1.6 M ever reach the park phase. Control arm: `CZ_CS_NO_BACKOFF=1`.
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - Audio: the render-driver pump runs at 5.333 ms/frame (256 samples x 6 channels),
   the guest submits frames, and the peak amplitude through the boot is 0.0000 —

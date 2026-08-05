@@ -467,19 +467,147 @@ static bool LockCas(uint32_t* word, uint32_t expected, uint32_t desired, uint32_
 static uint32_t LookupThreadEntry(uint32_t tid);
 static uint32_t LookupThreadEntryByPcr(uint32_t r13);
 
+// --- Parking contended critical sections (finding 41) ----------------------
+//
+// WHY THIS MACHINERY EXISTS
+//
+// Case Zero starts two threads — `DnsLookupThread` (entry 0x82554F28) and the
+// session shutdown thread (0x825C8960) — whose first act is to enter a critical
+// section the main thread takes during start-up and never releases. That is the
+// TITLE's design, not a bug of ours: on console those two threads block in the
+// kernel and cost nothing for the life of the process.
+//
+// This function used to spin on `std::this_thread::yield()` with no backoff, so
+// those two threads each burned a core from early boot to exit. `sched_yield()` on
+// an otherwise-idle 16-core host returns immediately, which makes a "yield loop" a
+// busy loop wearing a polite name. It never broke anything, but it perturbed every
+// timing measurement in the port and it would be ruinous on a smaller host.
+//
+// The replacement is a three-phase wait, cheapest first:
+//
+//   1. `pause`-spin. No syscall, no scheduler. Covers a section another core is
+//      about to release, which is what nearly all real contention is.
+//   2. `sched_yield`. Covers a section held by a thread that is runnable but not
+//      running — lets the owner on so it can finish.
+//   3. Park on a host condition variable until the owner leaves. This is where the
+//      two permanently-blocked threads live, and it takes them from a core each to
+//      a 1 ms heartbeat.
+//
+// Phase 3 is a PARK, not a sleep, because a fixed sleep would trade one measurable
+// cost for another: any section held longer than the yield phase would pay the sleep
+// quantum in latency on every acquisition. The condition variable is signalled by
+// `RtlLeaveCriticalSection`, so a normally-contended section wakes in microseconds.
+namespace
+{
+// One slot per hash bucket, keyed by the section's address.
+//
+// It is a HASH, not a map, and the collisions are deliberate: two sections sharing a
+// slot costs a spurious wakeup, and the waiter re-tests the lock word — the only
+// thing that ever decides ownership — immediately afterwards. A real map would need
+// its own lock on the leave path, i.e. a lock to implement locking.
+struct CsParkSlot
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::atomic<uint32_t> waiters{ 0 };
+};
+
+constexpr size_t kCsParkSlots = 64;
+CsParkSlot g_csPark[kCsParkSlots];
+
+CsParkSlot& CsParkSlotFor(const void* cs)
+{
+    // Shift by 4 first: guest critical sections are 16-byte objects and the title
+    // embeds several in one struct, so hashing the low bits straight in would pile a
+    // whole object's worth of neighbouring sections onto neighbouring slots.
+    return g_csPark[(reinterpret_cast<uintptr_t>(cs) >> 4) % kCsParkSlots];
+}
+
+inline void CsCpuRelax()
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+
+// Phase boundaries, in failed acquisition attempts. Small on purpose: the point of
+// the spin phases is to cover a handoff already in flight, not to gamble that a
+// section will free up eventually. Anything that outlives them is better off parked.
+constexpr uint32_t kCsPauseSpins = 64;
+constexpr uint32_t kCsYieldSpins = 256;
+constexpr uint32_t kCsParkAfter = kCsPauseSpins + kCsYieldSpins;
+
+// CZ_CS_STATS=1: how many acquisitions actually reach each phase. This is the
+// instrument for the ONE risk the change carries — that parking adds latency to
+// ordinary, briefly-contended locks. "Almost every enter is uncontended" was the
+// assumption the design rests on, so it gets measured rather than asserted.
+//
+// All four are counted ON SUCCESS, which is the right choice for the latency
+// question and needs saying out loud, because it makes the headline number look
+// wrong: a 60 s run reports `parked=2` while two threads are parked for its entire
+// duration. Those two never acquire, so they never count. `parked` therefore reads
+// as "acquisitions that had to park and then got the lock" — the population that
+// pays a latency cost — and not as "threads currently parked".
+std::atomic<uint64_t> g_csEnters{ 0 };
+std::atomic<uint64_t> g_csContended{ 0 };   // needed at least one retry
+std::atomic<uint64_t> g_csYielded{ 0 };     // outlived the pause phase
+std::atomic<uint64_t> g_csParked{ 0 };      // outlived the yield phase too
+} // namespace
+
 static void RtlEnterCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
 {
     const uint32_t self = CurrentGuestThreadId();
     static const bool csTrace = getenv("CZ_CS_TRACE") != nullptr;
-    uint64_t spins = 0;
-    for (;;)
+    static const bool csStats = getenv("CZ_CS_STATS") != nullptr;
+    // CZ_CS_NO_BACKOFF=1 restores the pure yield spin. It is the same-binary control
+    // arm for every claim made about this change (gotcha 86): the honest comparison
+    // for "did the backoff cost throughput" is this binary with the knob on, not a
+    // remembered number from a binary that no longer exists.
+    static const bool noBackoff = getenv("CZ_CS_NO_BACKOFF") != nullptr;
+
+    auto reportedAt = std::chrono::steady_clock::now();
+    // Take the sequence number from the increment itself, not from a later load. The
+    // first version of this counter reported from inside the `attempt != 0` branch and
+    // tested a re-read total against `% 100000`, so a report needed a CONTENDED
+    // acquisition to land exactly on a multiple of 100,000 — it printed nothing across
+    // six 60 s runs, and "nothing printed" read as "no contention" rather than as an
+    // instrument that could not fire (gotcha 25, in our own tooling again). Every
+    // sequence number is owned by exactly one thread, so this reports exactly once per
+    // 100,000 enters, contended or not.
+    const uint64_t seq =
+        csStats ? g_csEnters.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+
+    for (uint32_t attempt = 0;; attempt++)
     {
         uint32_t previous = 0;
         if (LockCas(&cs->OwningThread, 0, self, &previous) || previous == self)
         {
             cs->RecursionCount++;
+            if (csStats)
+            {
+                if (attempt != 0)
+                    g_csContended.fetch_add(1, std::memory_order_relaxed);
+                if (attempt > kCsPauseSpins)
+                    g_csYielded.fetch_add(1, std::memory_order_relaxed);
+                if (attempt > kCsParkAfter)
+                    g_csParked.fetch_add(1, std::memory_order_relaxed);
+                if ((seq % 100000) == 0)
+                {
+                    const uint64_t contended =
+                        g_csContended.load(std::memory_order_relaxed);
+                    KLOG("cs stats: enters=%llu contended=%llu (%.4f%%) yielded=%llu "
+                         "parked=%llu\n",
+                         (unsigned long long)seq, (unsigned long long)contended,
+                         100.0 * double(contended) / double(seq),
+                         (unsigned long long)g_csYielded.load(std::memory_order_relaxed),
+                         (unsigned long long)g_csParked.load(std::memory_order_relaxed));
+                }
+            }
             return;
         }
+
         // CZ_CS_TRACE=1: name the owner of a section this thread cannot get. A frozen
         // run is almost always one thread holding what another needs, and this is the
         // cheapest way to see the pair.
@@ -490,17 +618,63 @@ static void RtlEnterCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
         // thread the fence is waiting FOR is one of the threads spinning here (a
         // cycle) or an innocent bystander (a lost wakeup). A raw r13 cannot answer
         // that; an entry point answers it on sight.
-        if (csTrace && (++spins % 4000000) == 0)
+        //
+        // Reported on ELAPSED TIME, not on a spin count. The original fired every 4 M
+        // failed attempts, which was a serviceable proxy while this function busy-
+        // waited and is meaningless now that it parks: a parked waiter reaches 4 M
+        // attempts approximately never, so a count-based trace would fall silent
+        // exactly when the wait got interesting. The clock is only read once every
+        // 256 attempts, so the pause phase (64) never reads it at all.
+        if (csTrace && (attempt & 255) == 255)
         {
-            fprintf(stderr,
-                    "[csspin] self r13=%08X (entry=%08X) wants cs=%08X ownedBy r13=%08X "
-                    "(entry=%08X) rec=%d lr=%08X\n",
-                    self, LookupThreadEntry(GuestThread::GetCurrentThreadId()),
-                    g_memory.MapVirtual(cs), previous, LookupThreadEntryByPcr(previous),
-                    cs->RecursionCount, g_ppcContext ? uint32_t(g_ppcContext->lr) : 0);
-            CzDumpGuestBacktrace("cs spin");
+            const auto now = std::chrono::steady_clock::now();
+            if (now - reportedAt >= std::chrono::seconds(4))
+            {
+                reportedAt = now;
+                fprintf(stderr,
+                        "[csspin] self r13=%08X (entry=%08X) wants cs=%08X ownedBy "
+                        "r13=%08X (entry=%08X) rec=%d lr=%08X\n",
+                        self, LookupThreadEntry(GuestThread::GetCurrentThreadId()),
+                        g_memory.MapVirtual(cs), previous,
+                        LookupThreadEntryByPcr(previous), cs->RecursionCount,
+                        g_ppcContext ? uint32_t(g_ppcContext->lr) : 0);
+                CzDumpGuestBacktrace("cs spin");
+            }
         }
-        std::this_thread::yield();
+
+        if (noBackoff)
+        {
+            std::this_thread::yield();
+            continue;
+        }
+        if (attempt < kCsPauseSpins)
+        {
+            CsCpuRelax();
+            continue;
+        }
+        if (attempt < kCsParkAfter)
+        {
+            std::this_thread::yield();
+            continue;
+        }
+
+        CsParkSlot& slot = CsParkSlotFor(cs);
+        slot.waiters.fetch_add(1, std::memory_order_seq_cst);
+        {
+            std::unique_lock<std::mutex> lock(slot.mutex);
+            // Re-test UNDER the slot mutex. Without this the section could be
+            // released between the failed CAS above and the waiter count going up,
+            // and the releaser — seeing no waiters — would not signal. The timeout
+            // makes that a latency bug rather than a hang; this makes it not happen.
+            //
+            // The timeout is the backstop, not the mechanism. Every wait here is
+            // expected to end in a notify from RtlLeaveCriticalSection; 1 ms bounds
+            // what a missed one can cost, and for the two permanently blocked threads
+            // it is the entire cost of the wait.
+            if (__atomic_load_n(&cs->OwningThread, __ATOMIC_ACQUIRE) != 0)
+                slot.cv.wait_for(lock, std::chrono::milliseconds(1));
+        }
+        slot.waiters.fetch_sub(1, std::memory_order_seq_cst);
     }
 }
 
@@ -535,6 +709,30 @@ static void RtlLeaveCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
     if (--cs->RecursionCount != 0)
         return;
     __atomic_store_n(&cs->OwningThread, 0, __ATOMIC_RELEASE);
+
+    // Wake anyone parked on this section (finding 41).
+    //
+    // The fence is not decoration. The release store above and the waiter-count load
+    // below are a store followed by a load of a DIFFERENT location, and store-load is
+    // the one ordering x86-64's TSO does not give — precisely the case that made
+    // XenonRecomp's `sync` lowering a bug (gotcha 92). Without it the CPU may answer
+    // the load from before the store retires, so a waiter that has just registered
+    // itself is not seen and sleeps out its timeout instead of being woken.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+
+    // The load is the entire cost on the uncontended path: one atomic read of a
+    // host-side counter, no syscall, no condvar touched, no mutex taken. That matters
+    // because this title enters and leaves critical sections tens of thousands of
+    // times a second and virtually none of them have a waiter.
+    CsParkSlot& slot = CsParkSlotFor(cs);
+    if (slot.waiters.load(std::memory_order_seq_cst) != 0)
+    {
+        // Taking the slot mutex around the notify is what closes the other half of
+        // the window: it cannot land between a waiter's re-test and its wait_for,
+        // because the waiter holds this mutex across both.
+        std::lock_guard<std::mutex> lock(slot.mutex);
+        slot.cv.notify_all();
+    }
 }
 
 static uint32_t RtlTryEnterCriticalSection_x(XRTL_CRITICAL_SECTION* cs)
