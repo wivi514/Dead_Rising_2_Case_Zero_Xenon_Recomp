@@ -801,6 +801,21 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
     and it still produced a confident answer. The unambiguous version is an arm that
     inverts the convention and looks at the result: inverted, the scene renders 0.0%.
     The conclusion was right; the evidence for it was not what it appeared to be.
+127. **A metric taken from an ANIMATED scene is not a metric.** Case Zero's title
+    screen renders a live 3D background (capture E says so outright), so "the scene
+    surface is N% non-black at frame 600" is a different camera angle every run. A
+    single-run A/B on it produced a confident "this change made it worse" that
+    alternating 3-against-3 showed was pure noise — 100.0/64.1/97.5 against
+    64.4/94.8/79.6. Gotchas 50, 51 and 86 in a new place, and quoting them all over
+    this project did not prevent it. Large structural changes (0% -> 70%, 3 colours ->
+    848) are still readable; anything smaller needs a pinned camera or B1's own
+    per-era aggregates.
+128. **A hand-patched shader cache is a five-minute experiment.** `CZ_SHADER_SPV=<dir>`
+    points the runtime at any cache, so "is this generated line doing what it looks
+    like?" can be answered by rebuilding one shader with the line changed and running
+    the same binary. It retired the `sges` idiom (`abs(x) >= 0.0`, the compiler's
+    "set w = 1") as the cause of exploded geometry: forcing it to a literal 1.0 changed
+    the picture by 0.1%.
 117. **The picture is the one claim that needs an image, so make it self-servable.**
     Every other gate in this project is a log diff. Dumping frames AND every resolve
     snapshot from a headless run is what turns "does it look right" from an operator

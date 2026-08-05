@@ -2030,7 +2030,31 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     key.colorMask = forceColorMask ? 0xF : (regs[xenos::kRbColorMask] & 0xF);
     key.depthControl = regs[xenos::kRbDepthControl] & 0xFF;
     key.modeControl = regs[0x2208] & 7;
-    key.primRestart = 0;
+
+    // PRIMITIVE RESTART — OFF, and that is a measurement rather than an omission.
+    //
+    // Xenos can pack many strips into one draw separated by a reset index
+    // (`VGT_MULTI_PRIM_IB_RESET_INDX`, 0x2103), and welded strips are an extremely good
+    // fit for this title's remaining defect: long thin triangles stretching between
+    // unrelated parts of a mesh look exactly like a broken vertex transform.
+    //
+    // So it was tried, with Vulkan's fixed reset index (0xFFFF / 0xFFFFFFFF). One run
+    // each said it made the scene worse (81.3% non-black -> 67.6%) and that conclusion
+    // was WRONG, because the metric it rests on is not stable: this title's title
+    // screen renders an ANIMATED 3D background, so a snapshot taken at frame 600 is a
+    // different camera angle every run. Alternated 3 against 3, the same binary gives
+    // 100.0 / 64.1 / 97.5% with restart off and 64.4 / 94.8 / 79.6% with it on — ranges
+    // that overlap completely. The A/B is INCONCLUSIVE, not negative.
+    //
+    // Off is therefore the conservative default (it is the pre-existing behaviour), and
+    // CZ_VK_PRIM_RESTART=1 is the arm. Deciding this needs a frame-aligned comparison
+    // rather than a coverage percentage — the same lesson gotcha 38 records for the GPU
+    // gate, arriving from the renderer's side.
+    const bool restartable = topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP ||
+                             topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
+                             topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+    static const bool wantRestart = EnvOn("CZ_VK_PRIM_RESTART");
+    key.primRestart = (wantRestart && restartable && draw.indexed) ? 1 : 0;
 
     // CZ_VK_SHADER_CENSUS=1 — draws per (vs, ps) pair, in the stats block. Which
     // shader pair does the work of a pass is the question that turns "the scene is
@@ -2418,6 +2442,56 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     }
     if (!streamsOk)
         return;
+
+    // CZ_VK_DRAW_PROBE=<vsHash> — for the first few draws with that vertex shader,
+    // print the constants and the vertex data it will actually read.
+    //
+    // This exists because the remaining geometry defect is bounded to two inputs and
+    // both have been verified in the abstract: `oPos = vc(0..3) * (vc(8..10) *
+    // iPosition0)`, the position format needs no conversion, and the fetch slot is
+    // settled. When every input checks out and the output is wrong, the next move is
+    // not another hypothesis — it is to look at the values.
+    if (const char* probe = Env("CZ_VK_DRAW_PROBE"))
+    {
+        static int left = 3;
+        if (vsBind.hash == strtoull(probe, nullptr, 16) && left-- > 0)
+        {
+            const uint32_t* c = regs + xenos::kAluConstantBase;
+            fprintf(stderr, "[vkprobe] vs=%016llx prim=%u indexCount=%u indexed=%d\n",
+                    (unsigned long long)vsBind.hash, draw.primType, draw.indexCount,
+                    draw.indexed ? 1 : 0);
+            for (uint32_t r : { 0u, 1u, 2u, 3u, 8u, 9u, 10u })
+                fprintf(stderr, "[vkprobe]   vc(%2u) = %12.4f %12.4f %12.4f %12.4f\n", r,
+                        F32(c[r * 4 + 0]), F32(c[r * 4 + 1]), F32(c[r * 4 + 2]),
+                        F32(c[r * 4 + 3]));
+            for (const VertexAttribute& a : vs.attributes)
+            {
+                if (a.location != 0 || a.indirect)
+                    continue;
+                const xenos::VertexFetch vf =
+                    xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
+                fprintf(stderr,
+                        "[vkprobe]   POSITION slot=%u addr=%08X size=%u dwords "
+                        "stride=%u offset=%u endian=%u\n",
+                        a.fetchSlot, vf.address, vf.sizeDwords, a.strideDwords,
+                        a.offsetDwords, vf.endian);
+                const uint32_t sva = PhysToVa(vf.address);
+                if (!GuestRangeOk(sva, uint64_t(vf.sizeDwords) * 4))
+                    continue;
+                for (uint32_t v = 0; v < 4; v++)
+                {
+                    const uint64_t dw = uint64_t(v) * a.strideDwords + a.offsetDwords;
+                    if (dw + 3 > vf.sizeDwords)
+                        break;
+                    uint32_t raw[3];
+                    CopySwapped(reinterpret_cast<uint8_t*>(raw),
+                                base + sva + dw * 4, 12, vf.endian);
+                    fprintf(stderr, "[vkprobe]     v%u = %12.4f %12.4f %12.4f\n", v,
+                            F32(raw[0]), F32(raw[1]), F32(raw[2]));
+                }
+            }
+        }
+    }
 
     // --- indices ---------------------------------------------------------------------
     if (expand != Expansion::None)

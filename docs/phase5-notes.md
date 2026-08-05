@@ -406,6 +406,58 @@ return `VK_ERROR_LAYER_NOT_PRESENT`, which `VkRenderer_Init` treated as fatal �
 run had **no renderer at all**, while the log said "validation layer requested". It now
 retries without the layer and says so by name. Gotcha 7 in our own tooling again.
 
+## 6k. RETRACTION: the scene-coverage percentage is not a stable metric
+
+Sections 6b, 6f, 6g and 6h all quote "the scene surface went from X% non-black to Y%",
+and those numbers are real **only where the change was large and structural** (0.0% to
+69.8%; 3 distinct colours to 848). For anything smaller they are not usable, and this
+was found the expensive way.
+
+**The title screen renders an ANIMATED 3D background** (capture E's notes say so
+outright: E3 is "the title's ANIMATED 3D BACKGROUND … this is why A4's idle log is ~69%
+GPU"). A snapshot taken at frame 600 is therefore a different camera angle every run.
+
+The primitive-restart experiment is the case in point. Xenos can pack many strips into
+one draw separated by a reset index, and welded strips are an excellent fit for the
+remaining defect — long thin triangles between unrelated parts of a mesh look exactly
+like a broken vertex transform. One run each said enabling it made the scene worse
+(81.3% → 67.6%) and I wrote that down as a result. Alternated three against three on the
+same binary:
+
+```
+restart OFF   100.0%   64.1%   97.5%
+restart ON     64.4%   94.8%   79.6%
+```
+
+Ranges that overlap completely. **The A/B is inconclusive, not negative**, and the
+single-run version of it was noise wearing the shape of a finding — gotchas 50, 51 and
+86 in a new place, and the fact that they are quoted all over this project did not stop
+it.
+
+Off stays the default because it is the pre-existing behaviour, and
+`CZ_VK_PRIM_RESTART=1` is the arm. Deciding it needs a frame-aligned comparison rather
+than a coverage percentage — which is the renderer's-side version of gotcha 38, the rule
+that the GPU gate must never be frame-indexed.
+
+**What a usable metric would be:** the same scene rendered from a pinned camera, or a
+comparison against B1's own per-era draw aggregates, which is what the kickoff prescribed
+for the GPU gate and which this phase has not yet built.
+
+## 6l. RETRACTION: `abs(x) >= 0.0` was not the problem, and the test that says so
+
+`oPos.w` comes from `r1.w`, which 21 of the boot era's 30 vertex shaders set with the
+Xenos `sges` idiom — `ps = abs(r0.x) >= 0.0`, the compiler's "set w = 1.0". With the
+draw probe's real numbers, that register decides between `w = +23.3` and `w = −108.2`:
+vertices behind the camera, radiating from a point, which is precisely the symptom.
+
+It was worth testing and it is not the cause. Rebuilding the whole boot-era cache with
+that line replaced by a literal `ps = 1.0` — semantically identical unless `r0.x` is NaN
+— gives **81.2% against 81.1%**: no change. The idiom evaluates to 1.0.
+
+Kept because the technique transfers: `CZ_SHADER_SPV=<dir>` lets a hand-patched shader
+cache be run against the same binary, which makes "is this generated line doing what it
+looks like?" a five-minute experiment instead of an argument.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
@@ -422,7 +474,8 @@ says about where the rest went:
 | `1439B000` .. `143FB000` | 4096x1024 | 0.0% | the shadow cascades: DEPTH resolves being served our colour buffer (§6d), and clipped by a 1280x720 EDRAM image |
 
 **THE ONE REMAINING GEOMETRY DEFECT** is a class of triangles exploding from a vanishing
-point. It is well bounded now. Reading the dominant vertex shader's generated HLSL,
+point. It is well bounded, and the bound is now made of retirements rather than
+speculation. Reading the dominant vertex shader's generated HLSL,
 `oPos` depends on exactly two things:
 
 ```
@@ -437,6 +490,19 @@ NORMAL, so it is eliminated. Individually verified already: the position format
 window (§6c), and the index decode (§6c). So the next step is not another hypothesis —
 it is to instrument ONE draw: print `vc(0..10)` and the first few `iPosition0` values it
 actually reads, and compare them against a matrix and a mesh that make sense.
+
+That probe now exists (`CZ_VK_DRAW_PROBE=<vsHash>`) and **everything it prints is
+healthy**: the world matrix is a clean translation, the view-projection is a plausible
+near-plane-at-w=0 projection, the positions are sensible local coordinates, and the
+stride matches the format. Working the numbers by hand gives `w = +23.3` for a real
+vertex — a point comfortably in front of the camera.
+
+So the inputs are right and the output is wrong, and the remaining candidates are
+narrow: the index buffer's *contents* (its decode is verified, but nothing has checked
+that the indices address the right vertices), the draw's vertex OFFSET (`VGT_INDX_OFFSET`
+at 0x2102, which this renderer ignores entirely), and the possibility that the exploding
+triangles belong to a different shader than the one probed — `8bb7e189d92e3def` runs
+100,392 draws a run with **zero** vertex attributes and has never been looked at.
 
 Known simplifications in the renderer that are candidates, each stated at its site:
 
