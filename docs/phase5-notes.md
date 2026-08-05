@@ -497,12 +497,36 @@ near-plane-at-w=0 projection, the positions are sensible local coordinates, and 
 stride matches the format. Working the numbers by hand gives `w = +23.3` for a real
 vertex — a point comfortably in front of the camera.
 
-So the inputs are right and the output is wrong, and the remaining candidates are
-narrow: the index buffer's *contents* (its decode is verified, but nothing has checked
-that the indices address the right vertices), the draw's vertex OFFSET (`VGT_INDX_OFFSET`
-at 0x2102, which this renderer ignores entirely), and the possibility that the exploding
-triangles belong to a different shader than the one probed — `8bb7e189d92e3def` runs
-100,392 draws a run with **zero** vertex attributes and has never been looked at.
+So the inputs are right and the output is wrong. Everything on the candidate list has
+since been checked, and two of the three are eliminated:
+
+* **`VGT_INDX_OFFSET` (0x2102) is 0** in every state the probe saw, so ignoring it costs
+  nothing. The same probe gave a much better result for free: **`VGT_MAX_VTX_INDX` is
+  65535**, i.e. the guest declares 0xFFFF a LEGAL vertex index. That settles §6k's
+  inconclusive primitive-restart question on principle rather than on a noisy metric —
+  Vulkan's fixed restart index would consume a legitimate vertex, so restart must stay
+  off.
+* **`8bb7e189d92e3def`, 100,392 draws a run with zero vertex attributes**, emits
+  `oPos = (0,0,0,1)` unconditionally — a degenerate point. It contributes nothing and
+  cannot be the exploding geometry.
+* **The vertex-stream cache key was a hash, not an identity**, and that is a genuine
+  defect found while looking: `(uint64_t(va) << 24) ^ (bytes << 2) ^ endian` puts the
+  address in bits 24..55 and the size in bits 2..31, so the fields OVERLAP and two
+  different (address, size) pairs can collide. A collision hands a draw **another
+  mesh's vertex stream**, which draws triangles between unrelated vertices — precisely
+  this symptom. Fixed by packing the fields into disjoint bits.
+
+  Honest about the evidence: this is a correctness fix, and §6k's variance means the
+  scene-coverage metric **cannot resolve whether it changed the picture**. The frames
+  after it look cleaner — large coherent surfaces instead of a dense radiating fan —
+  but that is an impression from one frame, not a measurement, and it is recorded as
+  such.
+
+What is left for the next session is therefore to build the metric before chasing the
+defect: a pinned-camera comparison, or B1's own per-era draw aggregates, which is what
+the kickoff prescribed for the GPU gate and which this phase still has not built. Every
+cheap hypothesis has been spent; the next one needs an instrument that can tell whether
+it worked.
 
 Known simplifications in the renderer that are candidates, each stated at its site:
 

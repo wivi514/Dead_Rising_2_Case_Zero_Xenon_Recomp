@@ -1842,7 +1842,15 @@ void SubmitAndWait()
 // dominant cost of the renderer.
 VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian)
 {
-    const uint64_t key = (uint64_t(va) << 24) ^ (bytes << 2) ^ endian;
+    // The key must be an IDENTITY, not a hash. The first version was
+    // `(uint64_t(va) << 24) ^ (bytes << 2) ^ endian`, and those fields OVERLAP: a
+    // 32-bit address shifted 24 occupies bits 24..55 and a byte count shifted 2
+    // occupies bits 2..31, so two different (address, size) pairs can collide. A
+    // collision here does not corrupt memory — it hands a draw ANOTHER MESH'S vertex
+    // stream, which draws triangles between unrelated vertices. Packing the fields into
+    // disjoint bits instead makes the key exact rather than probably-unique.
+    const uint64_t key = (uint64_t(va) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
+                         (endian & 3);
     auto it = R->streamCache.find(key);
     if (it != R->streamCache.end())
         return it->second;
@@ -2328,11 +2336,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
             fprintf(stderr,
                     "[vkstate] SQ_VS_CONST=%08X (base=%u size=%u) "
                     "SQ_PS_CONST=%08X (base=%u size=%u)  RB_COLOR_INFO=%08X (fmt=%u) "
-                    "RB_MODECONTROL=%08X RB_COLORCONTROL=%08X PA_SU_SC=%08X\n",
+                    "RB_MODECONTROL=%08X RB_COLORCONTROL=%08X PA_SU_SC=%08X "
+                    "VGT_INDX_OFFSET=%d VGT_MIN=%u VGT_MAX=%u\n",
                     regs[0x2307], regs[0x2307] & 0x1FF, (regs[0x2307] >> 12) & 0x1FF,
                     regs[0x2308], regs[0x2308] & 0x1FF, (regs[0x2308] >> 12) & 0x1FF,
                     regs[xenos::kRbColorInfo], (regs[xenos::kRbColorInfo] >> 16) & 0xF,
-                    regs[0x2208], regs[xenos::kRbColorControl], regs[0x2280]);
+                    regs[0x2208], regs[xenos::kRbColorControl], regs[0x2280],
+                    int32_t(regs[xenos::kVgtIndxOffset]), regs[xenos::kVgtMinVtxIndx],
+                    regs[xenos::kVgtMaxVtxIndx]);
         }
     }
 
