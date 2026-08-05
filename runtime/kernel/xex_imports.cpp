@@ -243,3 +243,58 @@ void ResolveXexDataImports(const uint8_t* xexFile)
                 "numbers) — got %u and %u\n",
                 functions, variables);
 }
+
+// The optional-header walker, shared.
+//
+// It lived inside RtlImageXexHeaderField's import hook until the content layer needed
+// the same answer: XamGetExecutionId hands the guest a pointer to
+// XEX_HEADER_EXECUTION_INFO, and the save enumerator has to know this title's own id
+// to fill an item's title-id field. Two callers reading a header block by two copies
+// of the same 8-byte walk is how they drift, so there is one.
+uint32_t XexHeaderField(uint32_t headerBase, uint32_t key)
+{
+    if (!headerBase)
+        headerBase = g_xexHeaderBase.load();
+    if (!headerBase)
+        return 0;
+
+    uint8_t* base = g_memory.base;
+    // Xex2Header: magic(0) moduleFlags(4) sizeOfHeaders(8) sizeOfDiscardable(0xC)
+    // securityInfo(0x10) headerCount(0x14); optional headers follow at 0x18 as
+    // {key, value} pairs.
+    const uint32_t headerCount = PPC_LOAD_U32(headerBase + 0x14);
+    if (headerCount > 256) // a wild pointer, not a header block
+    {
+        KLOG("XexHeaderField: %08X does not look like a XEX header (count=%u)\n", headerBase,
+             headerCount);
+        return 0;
+    }
+    for (uint32_t i = 0; i < headerCount; i++)
+    {
+        const uint32_t entry = headerBase + 0x18 + i * 8;
+        if (PPC_LOAD_U32(entry) != key)
+            continue;
+        // The key's low byte is the field size in dwords: 0 or 1 means the value is
+        // stored inline in the header entry, so the field's address IS the value
+        // word; anything else means the value is a module-relative offset.
+        const uint32_t lowByte = key & 0xFF;
+        if (lowByte == 0 || lowByte == 1)
+            return entry + 4;
+        return headerBase + PPC_LOAD_U32(entry + 4);
+    }
+    return 0;
+}
+
+uint32_t XexTitleId()
+{
+    // XEX_HEADER_EXECUTION_INFO. The struct is 24 bytes —
+    // mediaId(0) version(4) baseVersion(8) titleId(12) platform(16) executableTable(17)
+    // discNumber(18) discCount(19) savegameId(20) — and +12 is what the title itself
+    // reads: sub_825D8E60 does `lwz r11,12(r11)` on this pointer and compares it with an
+    // enumerated save's title id.
+    const uint32_t info = XexHeaderField(0, XEX_HEADER_EXECUTION_INFO);
+    if (!info)
+        return 0;
+    uint8_t* base = g_memory.base;
+    return PPC_LOAD_U32(info + 12);
+}

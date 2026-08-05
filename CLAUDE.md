@@ -662,6 +662,33 @@ From phase 3 (the window, the present seam and real input):
     be scheduled with the operator, and everything that does not depend on it should
     be finished and committed first so the only thing waiting is the press.
 
+From the save-data layer (A1 positions 86-92, built straight after phase 3):
+
+104. **When the capture cannot answer, the title's own SDK wrapper can.** Every
+    question about a content enumerator is about a RETURN value, and Xenia logs only
+    arguments (finding 29). But this title statically links the XDK's own
+    `XamEnumerate` (`sub_825D9460`) and its task body (`sub_825D9358`), and reading
+    those two functions gave the entire protocol with no guesses: item size 0x138,
+    app id at priv+0, message id at priv+4 (which the guest *checks*), the 32-byte
+    message, and the exact HRESULT that means "no more". The corollary is the good
+    news: whatever the guest only ever hands straight back to you — here priv's whole
+    layout — is YOURS to define.
+105. **A stubbed query can make a whole subsystem's data invisible with no error
+    anywhere.** `XamGetExecutionId` looks like bookkeeping; it is the save
+    enumeration's title-id FILTER. An item whose title id does not match is not
+    rejected loudly, it is SKIPPED — so an enumeration of nothing but wrong-id items
+    is byte-for-byte indistinguishable from an empty one. Both halves failed here at
+    once (the stub never wrote its out-parameter, and the enumerator wrote 0 for the
+    id). What separated "the title accepted our save" from "the title threw it away"
+    was one line printing `XMsgCompleteIORequest`'s arguments — which A1 supplies
+    verbatim to compare against.
+106. **The save directory is part of a gate's configuration.** A1 was captured with no
+    save present. With one, our boot calls `XamGetExecutionId` between positions 90
+    and 91 — a call hardware never made because it had no item to filter — and the
+    gate reports a divergence. Nothing is wrong in either run. Same shape as gotcha 20
+    (`license_mask` defaulting to the trial): run the A1 gate with an EMPTY save root,
+    and read a leftover save as a configuration difference, not a regression.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -724,6 +751,11 @@ From phase 3 (the window, the present seam and real input):
     calling the title's callback at 5.333 ms/frame) and the XMA context array +
     its MMIO register file. Finding 36; every structural claim is quoted from the
     guest function that states it.
+  - `kernel/content.{h,cpp}` — the save-data layer: the content enumerators, the
+    XAM enumerate message (app 0xFE, message 0x0002000E) and the mount that makes
+    `save:` a host directory. Its header comment is the derivation of the whole
+    protocol out of the title's own statically-linked `XamEnumerate` — read it before
+    changing anything here, and lift it for Case West (gotchas 104-106).
   - `kernel/{vfs,file_imports}.*` — the file layer. In phase 1 rather than phase 2
     because A1's 22nd distinct kernel call is already an `NtCreateFile` (finding 16).
   - `kernel/import_stubs.cpp` — generated; honest-failure returns, not aborts.
@@ -872,6 +904,10 @@ CZ_FAKE_START_MS=N synthetic START press every N ms. A MEASUREMENT ARM, NOT A
                    every press and must NEVER be on for a gate run (gotcha 78).
                    Kept now that real input exists: it is the control for "was it
                    really my press that moved the boot"
+CZ_SAVE_DIR=path   where saves live (default: a SIBLING of the package directory,
+                   assets/save/ — never inside assets/game/, which is extractor
+                   output). An EMPTY save root is part of the A1 gate's configuration
+                   (gotcha 106): A1 was captured with no save present
 CZ_NO_WINDOW=1     no window, no present seam, no pad — XamInputGetState answers with
                    its documented neutral pad. The same-binary control arm for every
                    phase 3 claim. (`cmake -DCZ_WINDOW=OFF` is the build-time form,
@@ -1271,6 +1307,22 @@ arms are now observed: real press → 85; no press over 420 s → 84, zero pad p
 `CZ_NO_WINDOW=1` → 84. Two packets for one press over ~600 polls, which is gotcha 101's
 contract holding.
 
+**The save-data layer is built, and the A1 gate now reaches 92 of 93 with no
+divergence at all** (2026-08-05, same session) — `docs/phase3-notes.md` §9.
+`runtime/kernel/content.cpp` implements the content enumerators, the XAM enumerate
+message and the `save:` mount, and the whole protocol was recovered from the title's
+own statically-linked `XamEnumerate` rather than from a capture, which cannot show a
+return value (gotcha 104). The chain lands in A1's exact order and our
+`XMsgCompleteIORequest(result=1627, extended=80070012, length=0)` matches A1's line
+field for field. Four of finding 34's never-executed imports executed for the first
+time, `XamTaskSchedule` among them.
+
+The defect worth remembering is gotcha 105: `XamGetExecutionId` was a stub, and it is
+the enumeration's **title-id filter** — so every save this runtime enumerated was
+silently skipped, producing a log identical to an empty save list. Measured, one save
+present: title-id field 0 → filtered (`result=1627`), title-id field `XexTitleId()` →
+**accepted (`result=0`)**.
+
 The press also showed where the boot goes next, and it is exactly where the plan said:
 after `XamShowDeviceSelectorUI` the title resolves a XAM export dynamically
 (`XexGetProcedureAddress(xam, ord=0x279)` — **A1 makes the same call four lines after
@@ -1284,18 +1336,16 @@ phase rather than needing its own.
 
 Next, in order:
 
-1. **The save-data layer** — `XamContentAggregateCreateEnumerator`, `XamEnumerate`,
-   `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose`,
-   plus xam ordinal `0x279`. This is now the live blocker: it is where the boot goes
-   the instant a press gets past the device selector, and A1 positions 86-92 name the
-   whole call chain. Deliberately left out of finding 34 as the phase 2/8 file layer.
+1. **Position 93, `KeQueryBasePriorityThread`** — A1's last, and all that is left of
+   that capture's sequence. Then the gate needs a capture that goes further than A1
+   does, i.e. gameplay (A2), which is a different comparison to build.
 2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
-   not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
-   runs guest code on a new thread and never has — and it is *on* the save-data chain
-   above, so this debt starts being paid by item 1 rather than needing its own pass.
-   Of finding 36's seven, **five run and two do not** — both teardown paths
-   (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext`), because the boot never
-   shuts audio down.
+   not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
+   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
+   save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
+   paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
+   shuts audio down), and the save layer's own `XamContentCreateEx`/`XamContentClose`,
+   which need gameplay to reach a save point.
 3. **Phase 5 — the renderer**, the actual milestone. Inputs are already in hand: 455
    raw Xenos microcode blobs from Xenia's `dump_shaders` (the disc shader banks are a
    dead end — finding 6). Gate on **per-era aggregates, never frame index**: two

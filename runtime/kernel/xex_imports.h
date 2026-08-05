@@ -32,3 +32,12 @@ void ResolveXexDataImports(const uint8_t* xexFile);
 // {interrupt time, system time, tick count} from this bundle instead of calling
 // KeQuerySystemTime; the vsync pump will refresh it from phase 3 onward.
 extern std::atomic<uint32_t> g_keTimeStampBundle;
+
+// One XEX optional header, by key: its guest address, or 0 if this XEX has no such
+// header. `headerBase` 0 means the block PublishXexHeaders installed.
+uint32_t XexHeaderField(uint32_t headerBase, uint32_t key);
+
+// This title's own id, out of XEX_HEADER_EXECUTION_INFO. Case Zero's is 0x58410A8D.
+// The content enumerator needs it because the title FILTERS enumerated saves by it
+// (sub_825D8E60), so a save carrying the wrong id is silently skipped.
+uint32_t XexTitleId();

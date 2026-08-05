@@ -35,6 +35,7 @@
 #include "cpu/timebase.h"
 #include "host/window.h"
 #include "kernel/audio.h"
+#include "kernel/content.h"
 #include "kernel/heap.h"
 #include "kernel/memory.h"
 #include "kernel/vfs.h"
@@ -186,7 +187,14 @@ int main(int argc, char** argv)
     {
         std::string root = xexPath;
         const size_t slash = root.find_last_of('/');
-        VfsSetGameRoot(slash == std::string::npos ? std::string(".") : root.substr(0, slash));
+        const std::string gameDir =
+            slash == std::string::npos ? std::string(".") : root.substr(0, slash);
+        VfsSetGameRoot(gameDir);
+        // Saves go in a SIBLING of the package directory, never inside it — see
+        // kernel/content.cpp. Set up here rather than lazily so that a run whose save
+        // directory cannot be created says so at startup instead of at the moment the
+        // player tries to save.
+        ContentSetRootFromGameDir(gameDir);
     }
 
     // Load the XEX image into guest memory at its link base.

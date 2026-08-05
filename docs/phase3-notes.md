@@ -272,7 +272,127 @@ named. Note also that `XamTaskSchedule` is on it — one of finding 34's eight
 implemented-but-never-executed imports (gotcha 67), so that debt starts getting paid
 by the next phase rather than needing its own.
 
-## 9. Status
+## 9. After phase 3: the save-data layer (A1 positions 86-92)
+
+The press opened the next blocker and it was implemented in the same session.
+`runtime/kernel/content.cpp` is the code and its header comment is the derivation; this
+section records what the work *found*, which is the part that transfers.
+
+### Finding 46 — when the capture cannot answer, the title's own SDK wrapper can
+
+Every question this layer raises is about a RETURN value: what shape is the "private
+enum structure", what does an enumeration step hand back, what does the title compare
+it against. Xenia's log prints arguments on entry and never returns (finding 29), so
+A1 and A3 answer none of them.
+
+The title answers all of them, because it contains the XDK's statically-linked
+`XamEnumerate` wrapper — `sub_825D9460` — and its task body `sub_825D9358`. Reading
+those two functions end to end produced the complete protocol without a single guess:
+
+- an enumerated item is **0x138 bytes** (the wrapper rejects any other buffer size, and
+  its caller writes 0x138 into its own item-size out-parameter — two independent
+  statements of the same number);
+- the private structure carries the **XAM app id at +0 and message id at +4**, and the
+  wrapper *checks* that +4 is `0x0002000E`;
+- the task builds a 32-byte message and calls `XMsgInProcessCall`, then copies
+  **0x134 bytes** from a scratch buffer into the caller's item and the dword at
+  **scratch+0x140** into item+0x134 (0x134 + 4 = 0x138, closing the circle);
+- on a NEGATIVE return it skips the copy and completes with
+  `XMsgCompleteIORequest(ovl, r11 & 0x65B, hresult, len)` — which is A1's
+  `(7018F3C0, 0000065B, 80070012, 00000000)` executing, with
+  `0x80070012 = HRESULT_FROM_WIN32(ERROR_NO_MORE_FILES)`.
+
+The pleasant consequence: because the guest only ever reads +0, +4, +0x0C, +0x10 and
+the *address* +0x18 and hands them straight back to us, **the private structure's
+layout is ours to choose.** It is defined so a memory dump is legible, not to match an
+SDK header we do not have.
+
+### Finding 47 — a stubbed query made every save invisible, with no error anywhere
+
+This is the session's most transferable defect, and it is gotcha 42's shape with the
+volume turned all the way down.
+
+`XamGetExecutionId` was a generated honest-failure stub. It looks like bookkeeping.
+It is not: `sub_825D8E60` calls it and compares `[execInfo+12]` — the **title id** —
+against the title id of the item just enumerated, and `sub_825D9358` uses that as the
+enumeration's FILTER. An item that fails it is not rejected loudly; the task consults a
+table of additional accepted ids (`sub_825D8EC0` — that is how the full Dead Rising 2
+and Case Zero share progress) and then **pulls the next item**. So:
+
+> a save with the wrong title id is skipped, and an enumeration of nothing but
+> wrong-id items is byte-for-byte indistinguishable from an empty one.
+
+Both halves of that were live here at once. The stub never wrote its out-parameter, so
+the comparison was against stack garbage; and the enumerator wrote **0** into the
+item's title-id field, because at the time that dword was the one part of the layout
+the derivation had not reached. Measured, same binary, one save present:
+
+| item title-id field | what happened |
+|---|---|
+| `0` (before) | one item enumerated, filtered out, run ends `result=1627 extended=80070012` — *looks exactly like an empty save list* |
+| `XexTitleId()` (after) | one item enumerated, **`result=0 extended=00000000`** — accepted |
+
+The instrument that separates them is one line: printing
+`XMsgCompleteIORequest`'s arguments, which A1 hands us verbatim to compare against.
+Without it, "the title accepted our save" and "the title threw it away" produce the
+same log — one enumerate step and one completion.
+
+### Finding 48 — the save directory is part of the gate's configuration
+
+A1 was captured with **no save present**, and Xenia says so in as many words:
+`XamContentAggregateCreateEnumerator: added 0 items to enumerator`. With one save
+present our boot calls `XamGetExecutionId` between positions 90 and 91 — a call A1
+never makes, because A1 never had an item to filter — and the gate duly reports a
+divergence.
+
+Nothing is wrong in either run. The gate is comparing against a capture taken under a
+condition, and the save directory is now one of those conditions, exactly as
+`license_mask` is (gotcha 20 — the trial trap). **Run the A1 gate with an empty save
+root**, and read a leftover save directory as a configuration difference rather than a
+regression.
+
+### Measured
+
+With no save present, which is A1's condition:
+
+```
+PREFIX MATCH: our 92 calls are an exact prefix of Xenia's 93.
+We stopped before 'KeQueryBasePriorityThread'.
+```
+
+**92 of 93, no divergence at all** — the best A1 result this port has produced, up from
+84 before phase 3 and 85 after the press. The whole chain lands in A1's order:
+`XamShowDeviceSelectorUI` → `XamGetPrivateEnumStructureFromHandle` → `XamAlloc` →
+`XamTaskSchedule` → `XamGetOverlappedResult` → `XMsgInProcessCall` →
+`XMsgCompleteIORequest` → `XamContentGetDeviceData`.
+
+- A5 `--include-high-frequency`: **exit 0**, every mismatch a permutation.
+- `ring: indirect buffers truncated=0`; no crash in any run.
+- `cz_runtime --smoke`: passes. 161 of 244 imports real, 83 stubs (was 155/89).
+- Position 71 still permutes on some runs. It did so 3 of 3 on the *pre-phase-3*
+  binary in this session's alternated A/B, so it is the scheduling-sensitive window
+  gotcha 86 already records, not anything this work introduced.
+
+### Four of finding 34's never-executed imports have now executed
+
+Gotcha 67 says an implemented import is a prediction until it runs. These are no longer
+predictions: `XamTaskSchedule` (which really does run guest code — `sub_825D9358` — on
+a new thread), `XamGetOverlappedResult`, `XMsgInProcessCall` and `XMsgCompleteIORequest`
+all execute on this path, and the overlapped they hand around completes correctly.
+
+### What is implemented but still unrun
+
+- `XamContentCreateEx` / `XamContentClose` — the mount that makes `save:` mean a host
+  directory. Derived from A3 (root name `save`, one file `DR2P000.DSF` of exactly
+  303,104 bytes in a single `NtWriteFile`) and not exercised, because reaching a save
+  point needs gameplay. Saves live in a **sibling** of the package directory
+  (`assets/save/`, or `CZ_SAVE_DIR`), never inside it: `assets/game/` is extractor
+  output and re-running the extractor must not be able to destroy player data.
+- The imported `XamEnumerate`. The title reaches the enumerator through its own
+  statically-linked wrapper on the path we can see; this is the other door into the
+  same object.
+
+## 9a. Status
 
 Phase 3 is **complete** and every gate passes:
 

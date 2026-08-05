@@ -62,6 +62,7 @@
 // before shadowing, which sets the guard; nothing below re-declares __rdtsc.
 #include "../cpu/timebase.h"
 #include "../host/window.h"   // XamInputGetState's device (phase 3)
+#include "content.h"          // the save-data layer: enumerators and their message
 #include "guestcall.h"
 #include "heap.h"
 #include "klog.h"
@@ -2278,38 +2279,38 @@ static uint32_t XexGetModuleHandle_x(char* name, be<uint32_t>* handle)
 //
 // The header block lives in guest memory because main.cpp copies it there
 // (PublishXexHeaders) and publishes its address as XexExecutableModuleHandle.
+// The walk itself now lives in xex_imports.cpp, because XamGetExecutionId and the
+// content enumerator need the same answer and two copies of an 8-byte walk over a
+// header block is how they drift.
 static uint32_t RtlImageXexHeaderField_x(uint32_t headerBase, uint32_t key)
 {
-    if (!headerBase)
-        headerBase = g_xexHeaderBase.load();
-    if (!headerBase)
-        return 0;
+    return XexHeaderField(headerBase, key);
+}
 
-    uint8_t* base = g_memory.base;
-    // Xex2Header: magic(0) moduleFlags(4) sizeOfHeaders(8) sizeOfDiscardable(0xC)
-    // securityInfo(0x10) headerCount(0x14); optional headers follow at 0x18 as
-    // {key, value} pairs.
-    const uint32_t headerCount = PPC_LOAD_U32(headerBase + 0x14);
-    if (headerCount > 256) // a wild pointer, not a header block
+// XamGetExecutionId(out) -> a POINTER to this module's XEX_HEADER_EXECUTION_INFO,
+// written through the out-parameter; the return is a status the guest tests with a
+// SIGNED compare (`cmpwi r3,0; blt <fail>`).
+//
+// Both call sites want exactly one field. sub_825D8E60:
+//     XamGetExecutionId(&p);  if (r3 < 0) return 0;
+//     if (p->titleId /* +12 */ == r30) return 1;
+// and that is the save enumerator's TITLE FILTER — r30 is the title id of the content
+// item just enumerated. So this export is not bookkeeping: leave it a stub and every
+// save this runtime enumerates is silently discarded by the title, with no error
+// anywhere, because the comparison is against an out-parameter the stub never wrote
+// (gotcha 42's exact shape).
+static uint32_t XamGetExecutionId_x(be<uint32_t>* out)
+{
+    if (!out)
+        return STATUS_INVALID_PARAMETER;
+    const uint32_t info = XexHeaderField(0, 0x00040006 /* XEX_HEADER_EXECUTION_INFO */);
+    *out = info; // written on the failure path too
+    if (!info)
     {
-        KLOG("RtlImageXexHeaderField: %08X does not look like a XEX header (count=%u)\n",
-             headerBase, headerCount);
-        return 0;
+        KLOG("XamGetExecutionId: this XEX has no EXECUTION_INFO header\n");
+        return STATUS_NOT_FOUND;
     }
-    for (uint32_t i = 0; i < headerCount; i++)
-    {
-        const uint32_t entry = headerBase + 0x18 + i * 8;
-        if (PPC_LOAD_U32(entry) != key)
-            continue;
-        // The key's low byte is the field size in dwords: 0 or 1 means the value is
-        // stored inline in the header entry, so the field's address IS the value
-        // word; anything else means the value is a module-relative offset.
-        const uint32_t lowByte = key & 0xFF;
-        if (lowByte == 0 || lowByte == 1)
-            return entry + 4;
-        return headerBase + PPC_LOAD_U32(entry + 4);
-    }
-    return 0;
+    return STATUS_SUCCESS;
 }
 
 // XexCheckExecutablePrivilege(n) — is bit n set in this XEX's system flags?
@@ -2505,9 +2506,15 @@ static uint32_t XexGetProcedureAddress_x(uint32_t module, uint32_t ordinal, be<u
                 *out = 0;
             return STATUS_NOT_FOUND;
         }
+        // An ordinal we have actually implemented binds to it; everything else gets
+        // the honest-failure stub. Ordinal 0x279 is the one that matters —
+        // XamContentAggregateCreateEnumerator, which this title does not import and
+        // resolves here instead (A1 line 111,986 names it), so this mint is the ONLY
+        // seam it has. There is no `__imp__` symbol to hook.
+        PPCFunc* impl = ContentMintedExportForOrdinal(ordinal);
         // Refuses (loudly) if the address is outside the dispatch table's range,
         // which is the failure Asura's Wrath hit silently.
-        if (!g_memory.InsertFunction(addr, MintedExportStub))
+        if (!g_memory.InsertFunction(addr, impl ? impl : MintedExportStub))
         {
             if (out)
                 *out = 0;
@@ -2620,6 +2627,7 @@ GUEST_FUNCTION_HOOK(__imp__XexGetModuleHandle, XexGetModuleHandle_x)
 GUEST_FUNCTION_HOOK(__imp__RtlImageXexHeaderField, RtlImageXexHeaderField_x)
 GUEST_FUNCTION_HOOK(__imp__XexLoadImage, XexLoadImage_x)
 GUEST_FUNCTION_HOOK(__imp__XexGetProcedureAddress, XexGetProcedureAddress_x)
+GUEST_FUNCTION_HOOK(__imp__XamGetExecutionId, XamGetExecutionId_x)
 GUEST_FUNCTION_HOOK(__imp__FscSetCacheElementCount, FscSetCacheElementCount_x)
 GUEST_FUNCTION_HOOK(__imp__ExRegisterTitleTerminateNotification,
                     ExRegisterTitleTerminateNotification_x)
@@ -3703,6 +3711,13 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
         return 0;
     }
 
+    // The content layer owns (0xFE, 0x0002000E), the enumeration step. It lives in
+    // content.cpp because the protocol behind it is a page of derivation from the
+    // guest's own XamEnumerate wrapper, not because it is a different kind of message.
+    uint32_t contentResult = 0;
+    if (ContentDispatchAppMessage(app, message, buffer, bufferLength, &contentResult))
+        return contentResult;
+
     static std::map<uint64_t, int> seen;
     const uint64_t key = (uint64_t(app) << 32) | message;
     if (seen.find(key) == seen.end())
@@ -3753,6 +3768,18 @@ static void XMsgCompleteIORequest_x(uint32_t overlapped, uint32_t result,
     ovl->length = length;
     ovl->extendedError = extendedError;
     SignalGuestEvent(ovl->event);
+
+    // The first few completions, printed, because this is the one line in the whole
+    // async surface that A1 gives us verbatim to compare against:
+    //     XMsgCompleteIORequest(7018F3C0, 0000065B, 80070012, 00000000)
+    // i.e. ERROR_FUNCTION_FAILED with ERROR_NO_MORE_FILES extended — the empty save
+    // enumeration. Without this the difference between "the title accepted our
+    // enumerated item" and "the title filtered it out and ran off the end" is
+    // invisible: both produce exactly one enumerate step and then a completion.
+    static std::atomic<int> completions{ 0 };
+    if (completions.fetch_add(1) < 8)
+        KLOG("XMsgCompleteIORequest(%08X, result=%u, extended=%08X, length=%u)\n", overlapped,
+             result, extendedError, length);
 }
 
 // XamGetOverlappedResult(overlapped, lengthOut, wait) -> the stored result.
