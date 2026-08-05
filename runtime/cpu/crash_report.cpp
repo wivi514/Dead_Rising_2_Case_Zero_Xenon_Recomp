@@ -134,6 +134,19 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
                                                       : "the write-combined/uncached views";
         n += snprintf(b + n, sizeof b - n, "faulting GUEST address %08X  (%s)\n", guest, where);
     }
+    else if (g_ppcContext && g_ppcContext->ctr.u32 == 0)
+    {
+        // Do NOT say "host-side bug" here. When ctr is zero the process jumps to host
+        // address 0 and the faulting address is whatever the dispatch lookup computed
+        // from a null base — an arbitrary number outside the guest space, every time.
+        // The old unconditional wording named our runtime for a fault that is a guest
+        // null function pointer, which is the most expensive kind of wrong a first
+        // line can be: it sends the reader into the wrong codebase. See the ctr test
+        // below for what it actually is.
+        n += snprintf(b + n, sizeof b - n,
+                      "the faulting address is outside the guest space, but ctr is 0 — "
+                      "read it as a null indirect call, not as a host bug\n");
+    }
     else
     {
         n += snprintf(b + n, sizeof b - n,
@@ -191,10 +204,31 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
     n += snprintf(b + n, sizeof b - n, "lr=%08X ctr=%08X r1(sp)=%08X r13(pcr)=%08X\n",
                   uint32_t(ctx->lr), ctr, ctx->r1.u32, ctx->r13.u32);
 
-    // A null si_addr with a plausible guest ctr means the `bctrl` target had no entry
-    // in the indirect-dispatch table — the jump went to 0, not to the guest.
-    if (info && info->si_addr == nullptr && ctr >= uint32_t(PPC_IMAGE_BASE) &&
-        ctr < uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE))
+    // An indirect call that could not go anywhere. Two distinct shapes, and the
+    // original version of this test only recognised the second:
+    //
+    //  * ctr == 0 — the guest loaded a function pointer that was never written. The
+    //    dispatch-table lookup is not even reached; the process jumps to host 0 and
+    //    si_addr is whatever the lookup happened to compute, NOT null. Missing this
+    //    case cost a session: the report read as an ordinary segfault at a strange
+    //    address and said nothing about the `bctrl` two instructions above it.
+    //  * ctr inside the image but absent from the dispatch table — the pointer is a
+    //    plausible guest address that was never recompiled, or a corrupt vtable slot.
+    //    Here PPC_LOOKUP_FUNC yields a null slot and si_addr IS null.
+    //
+    // Anything else in ctr (a small non-zero value, a heap address) is worth printing
+    // too: it means the pointer was overwritten rather than left unset.
+    if (ctr == 0)
+    {
+        n += snprintf(b + n, sizeof b - n,
+                      "LIKELY null indirect call: ctr is ZERO — the guest called "
+                      "through a function pointer that was never written (an object "
+                      "whose vtable/callback slot is still 0). The `bctrl` is at the "
+                      "guest address just before lr=%08X.\n",
+                      uint32_t(ctx->lr));
+    }
+    else if (info && info->si_addr == nullptr && ctr >= uint32_t(PPC_IMAGE_BASE) &&
+             ctr < uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE))
     {
         const bool present = g_memory.FindFunction(ctr) != nullptr;
         n += snprintf(b + n, sizeof b - n, "LIKELY null indirect call: bctrl target %08X %s\n",
@@ -202,6 +236,15 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
                       present ? "IS in the dispatch table (so this is not it)"
                               : "is NOT in the dispatch table — unrecompiled, or a bad "
                                 "vtable slot");
+    }
+    else if (info && info->si_addr == nullptr)
+    {
+        n += snprintf(b + n, sizeof b - n,
+                      "LIKELY indirect call through a CORRUPT pointer: ctr=%08X is "
+                      "outside the image (%08X..%08X), so it is not an unrecompiled "
+                      "function — it is not a code address at all.\n",
+                      ctr, uint32_t(PPC_IMAGE_BASE),
+                      uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE));
     }
 
     // A fault ON 0xC0000002 or just past it is the signature of an unimplemented

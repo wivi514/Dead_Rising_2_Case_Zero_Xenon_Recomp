@@ -564,6 +564,44 @@ From finding 39 (the stall was our own `VdSwap`, and it presented as a parser bu
     and the A/B over stalls duly showed nothing (3 of 10 vs 4 of 10). Partial
     improvement with no effect on the symptom is a signature worth recognising.
 
+From finding 40 (the 1-in-40 crash, re-measured to zero — and the barrier hole found
+on the way):
+
+92. **A barrier that compiles to nothing is a COMPILER bug, not a hardware one, and
+    x86's strong ordering is the trap.** XenonRecomp lowered `sync`, `lwsync` and
+    `eieio` to `// no op`. For the hardware half that is right on x86-64 — TSO already
+    gives every ordering `lwsync` promises — which is exactly why it looks safe. It is
+    not: every guest access is a plain C++ load/store through `base`, and a construct
+    that emits no code constrains clang not at all, so at `-O2` "fill the buffer,
+    lwsync, publish the index" may become "publish the index, fill the buffer". Fix
+    them differently or get it backwards: `lwsync`/`eieio` -> `atomic_signal_fence`
+    (compiler barrier, no instruction), `sync` -> `atomic_thread_fence` (a real fence,
+    because store-load is the one ordering x86 does NOT give).
+93. **An inherited crash rate is a hypothesis about a binary that no longer exists.**
+    Task #11 recorded 1 crash in 20-40 runs; the same test on the current binary is
+    **0 of 20**, because finding 39 changed what a run spends two minutes doing.
+    Gotcha 51 says a rate is a fact about an afternoon; this is the stronger form —
+    re-measure before you characterise, or you will spend a session hunting a fault
+    the code no longer has.
+94. **A diagnostic can be silent on precisely the case it was written for.** The crash
+    reporter's "LIKELY null indirect call" test required `si_addr == nullptr`, which is
+    never true when `ctr` is *zero*: the dispatch-table lookup is never reached, so the
+    fault address is whatever the lookup computed. The one shape it existed for was the
+    one shape it could not see. Widening it is one line; proving it needed
+    `CZ_CRASH_TEST=nullcall`, because gotcha 30 applies to diagnostics as much as tests.
+95. **A long rate run leaves behind a free control.** Twenty 120-second boots produce
+    twenty complete logs, and every log-based gate you own replays over them for
+    nothing. Four hand-run A1 gates said 3-of-4 permuted where the session had earlier
+    seen 2-of-2 clean — an obvious regression, and wrong. Gating the 20 saved logs per
+    arm gave **13 clean / 7 permuted on BOTH binaries, identically.** Gotcha 86 says
+    the control is the old binary run now; this is the cheap way to have run it.
+96. **If you have written a tool twice from scratch, keep it the first time.** A PPC
+    disassembler over the loaded image was hand-rolled and discarded in two consecutive
+    sessions. It is `tools/gdis.py` now. The host toolchain genuinely cannot do this —
+    `objdump` has no PowerPC target here, `llvm-objdump` has no `-b binary`, and
+    `llvm-mc` loses instruction alignment at the first unknown VMX128 encoding and
+    keeps printing plausible garbage after it.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -582,9 +620,11 @@ From finding 39 (the stall was our own `VdSwap`, and it presented as a parser bu
   analysis, from `tools/xex_image_dump`.
 - `ppc/` — generated C++ (gitignored; 156 MB, 57,822 functions, regeneratable).
 - `tools/` — analysis scripts. Several copied from the earlier ports; provenance in
-  their headers. `import_call_sites.py` is the one to reach for when implementing a
-  kernel import: the capture has no return values, so the guest code that consumes the
-  result is the specification (finding 29).
+  their headers. `gdis.py` is the guest disassembler and is usually the right first
+  stop for any question about what the title's own code does.
+  `import_call_sites.py` is the one to reach for when implementing a kernel import:
+  the capture has no return values, so the guest code that consumes the result is the
+  specification (finding 29).
 - `docs/` — **`xenia-capture-analysis.md` is the numbered findings ledger and the first
   thing to read**; `big-archive-format.md` is the cracked container format;
   `xtr-decoder.md` is the GPU stream format + the determinism method;
@@ -729,6 +769,12 @@ CZ_THREAD_TRACE=1  one line per guest thread with its HOST thread id, so gdb's s
                    can be joined to our logs (also implied by CZ_WAIT_TRACE/CZ_CS_TRACE)
 CZ_ISR_TRACE=1     the scratch mirror the guest ISR reads, at each interrupt
 CZ_ARG_PROBE=1     the guest-function argument probes in runtime/cpu/guest_probe.cpp
+CZ_JOBQ_PROBE=1    the graphics command-stream interpreter (sub_8284B568) on entry:
+                   its shared object's callback/cursor state and the token buffer it
+                   is about to walk. The last line before a crash IS the fatal call
+CZ_CRASH_TEST=nullcall  call through a zero ctr on purpose, to prove the crash
+                   reporter names it. A self-test, not an arm — it announces itself
+                   and the crash it causes is deliberate (finding 40)
 CZ_KCALL_WHO=A,B   dump the guest call stack the first time these imports are called
 CZ_AUDIO_TRACE=1   XMA context allocation + every 512th driver frame WITH its peak
                    amplitude, so "the pump runs" and "the game makes sound" stay
@@ -744,6 +790,21 @@ CZ_FAKE_START_MS=N synthetic START press every N ms. A MEASUREMENT ARM, NOT A
 `CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
 first-occurrence order diverges, and the most informative divergences are imports we
 call which hardware never calls at all. Only the call site explains those.
+
+Disassemble the guest image. **Reach for this before reading `ppc/`** — a recompiled
+function is a translation, and most questions ("what writes this field", "which branch
+does this predicate take", "how many arguments does this call site really pass") are
+about the original. The host toolchain cannot do it: no PowerPC target in `objdump`, no
+`-b binary` in `llvm-objdump`, and `llvm-mc` silently loses instruction alignment on
+the first VMX128 encoding it does not know:
+```
+python3 tools/gdis.py 8284B568 --count 120        # a function
+python3 tools/gdis.py 8284B6C0 --to 8284B710      # a window around a faulting insn
+python3 tools/gdis.py --find-uses 0x7FEA1800      # every lis/addi pair building a
+                                                  # constant, with context — a 32-bit
+                                                  # constant is never one instruction,
+                                                  # so grepping the image misses them
+```
 
 Re-derive the save/restore helper addresses:
 ```
@@ -1017,6 +1078,32 @@ packet is a mis-recorded `INDIRECT_BUFFER`, so the capture contains **no** genui
 and never had an opinion. `CZ_PM4_ZERO_IS_NOP` stays as an arm and is no longer
 interesting.
 
+**The 1-in-40 crash does not reproduce, and hunting it found a memory-barrier hole
+(session 8).** `docs/phase1-notes.md` finding 40. Re-measured first, as an inherited
+rate always must be: **0 crashes in 20 runs at 120 s**, all 20 reaching the title
+screen. The old figure predates finding 39, when a third to a half of runs stalled in
+the first minute. Not "improved" — unmeasurable at this sample size, and saying which
+would take hundreds of runs nobody needs yet.
+
+What the site means is now understood: thread `0xF2C` (and `0xF30` — there are two)
+runs the graphics driver's command-stream consumer, and the null is a callback slot
+that only a `0x8C000000` token in the guest's own token stream ever sets. A null there
+means the interpreter ran a "run" token before any token set a callback, i.e. it walked
+a stream that had not been published — a producer/consumer ordering question.
+
+Which is how **XenonRecomp bug 6** turned up: `sync`, `lwsync` and `eieio` all lowered
+to `// no op`. Right for the hardware half on x86-64 and wrong overall, because every
+guest access is a plain C++ load/store through `base` and a construct emitting no code
+constrains clang not at all (gotcha 92). Now `lwsync`/`eieio` -> `atomic_signal_fence`,
+`sync` -> `atomic_thread_fence`. **This is NOT credited with fixing the crash** — the
+baseline was already 0 of 20, so there was nothing to improve on; it is a correctness
+fix, measured only for absence of regression.
+
+Two instruments came out of it: the crash reporter now names `ctr == 0` (its old test
+required `si_addr == nullptr`, which is never true for that case — it was silent on the
+one shape it existed for), with `CZ_CRASH_TEST=nullcall` to prove it; and
+`tools/gdis.py`, the guest disassembler, kept on the third time of writing it.
+
 **The audio driver is real and the A5 gate is clean (2026-08-04, session 6).**
 `docs/phase1-notes.md` finding 36. All seven audio imports implemented: an XAudio
 render-driver client with a guest-thread pump at 5.333 ms/frame (256 samples x 6
@@ -1034,21 +1121,15 @@ displacing the title's own 447 MB reservation (gotcha 74).
 
 Next, in order:
 
-1. **The surviving crash**, guest thread `00000F2C`, `lr=8284B708` / `82829BEC`. Now
-   localised: `ppc_recomp.176.cpp:10244`, a `bctrl` in `sub_8284B568` at guest
-   `8284B704` where `ctr = [r31+16] = 0` — a null indirect call through a vtable slot.
-   The crash reporter's "LIKELY null indirect call" heuristic did NOT fire (it wants
-   `si_addr == nullptr` *and* `ctr` inside the image); widening it to `ctr == 0` would
-   name this instantly.
-2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+1. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Finding 34's eight remain unrun; `XamTaskSchedule` in particular
    runs guest code on a new thread and never has. Of finding 36's seven, **five run
    and two do not** — both teardown paths (`XAudioUnregisterRenderDriverClient`,
    `XMAReleaseContext`), because the boot never shuts audio down.
-3. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+2. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
    `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose` —
    deliberately left out of finding 34 as the phase 2 file layer.
-4. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
+3. Audio output and XMA decoding (phase 5). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 

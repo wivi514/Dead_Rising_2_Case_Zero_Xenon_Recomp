@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "../kernel/memory.h"
 #include "ppc_recomp_shared.h"
@@ -315,3 +316,136 @@ void ShowRet(const char* who, const char* note, PPCContext& ctx, std::atomic<int
 CZ_SHOW_RET(sub_82829098, "0 here makes sub_82788F48 run the cache block")
 CZ_SHOW_RET(sub_82823A58, "1 = '\\Device\\Image' is absent (not a disc)")
 CZ_SHOW_RET(sub_82831528, "nonzero makes sub_82829098 return 0")
+
+// ---------------------------------------------------------------------------------
+// sub_8284B568 — the graphics driver's command-stream interpreter, and the null
+// indirect call of task #11.
+//
+// WHAT THIS FUNCTION IS. It walks a token stream out of one of four buffers the job
+// object carries at +0x5C..+0x68, keeping its state in a SHARED object at [job+0],
+// which the guest reaches through r31:
+//
+//     [obj+0x00]  a lwarx/stwcx spin lock
+//     [obj+0x10]  the callback              <- set by a 0x8C000000 token
+//     [obj+0x14]  its user data                (from the same token)
+//     [obj+0x18]  iteration index           }  set by a "run" token, whose low 16
+//     [obj+0x1C]  iteration limit           }  bits are a repeat count and whose
+//     [obj+0x20]  base pointer              }  high 15 are an offset to the next
+//     [obj+0x24]  stream cursor             }  token
+//
+// The dispatch is `lwz r11,0x10(r31); mtctr r11; bctrl` at guest 8284B704, and it is
+// reached from the run-token path WITHOUT re-reading the stream — so the callback it
+// calls is whatever a PREVIOUS token left in the object. A null there means the
+// interpreter executed a run token before any 0x8C000000 token had set one.
+//
+// WHY A PROBE RATHER THAN MORE READING. The crash reporter names the instruction and
+// nothing else useful: by the time it fires, ctx's registers are stale (gotcha 57)
+// and the interpreter's own state lives in guest memory the report does not know to
+// dump. What decides between "the object was never initialised", "the stream we walked
+// is not a stream", and "something clobbered +0x10" is the object's state on entry to
+// the call that dies — and the last line this prints before a crash IS that call.
+//
+// CZ_JOBQ_PROBE=1, separate from CZ_ARG_PROBE because this path runs per frame and
+// the two hunts have no reason to share a switch.
+extern "C" PPC_FUNC(__imp__sub_8284B568);
+
+namespace {
+
+bool JobProbeEnabled()
+{
+    static const bool on = getenv("CZ_JOBQ_PROBE") != nullptr;
+    return on;
+}
+
+void DumpInterpreter(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t job = ctx.r3.u32;
+    if (!job || uint64_t(job) + 0x6C > PPC_MEMORY_SIZE)
+    {
+        fprintf(stderr, "[jobq] job pointer %08X is unusable\n", job);
+        return;
+    }
+    const uint32_t obj = PPC_LOAD_U32(job);
+    if (!obj || uint64_t(obj) + 0x40 > PPC_MEMORY_SIZE)
+    {
+        fprintf(stderr, "[jobq] job=%08X -> obj=%08X is unusable\n", job, obj);
+        return;
+    }
+
+    const uint32_t cb = PPC_LOAD_U32(obj + 0x10);
+
+    // The first few calls establish what healthy looks like; after that only the
+    // anomaly is worth a line, because this runs per frame. A cap on the anomaly too:
+    // if it starts firing every call, sixteen lines say so as well as a million.
+    static std::atomic<int> calls{ 0 };
+    static std::atomic<int> nulls{ 0 };
+    const int n = calls.fetch_add(1);
+    const bool anomaly = cb == 0;
+    if (n >= 4 && !(anomaly && nulls.fetch_add(1) < 16))
+        return;
+
+    fprintf(stderr,
+            "[jobq] call #%d job=%08X obj=%08X  cb=%08X%s user=%08X idx=%u lim=%u "
+            "base=%08X cursor=%08X depth=%u\n",
+            n, job, obj, cb, anomaly ? " *** NULL — this call will fault ***" : "",
+            PPC_LOAD_U32(obj + 0x14), PPC_LOAD_U32(obj + 0x18), PPC_LOAD_U32(obj + 0x1C),
+            PPC_LOAD_U32(obj + 0x20), PPC_LOAD_U32(obj + 0x24), PPC_LOAD_U32(obj + 0x3C));
+
+    // The stream the interpreter is about to walk: the buffer ring is four entries at
+    // job+0x5C selected by [job+0x58] & 3, and the guest starts reading at buffer+4.
+    const uint32_t tail = PPC_LOAD_U32(job + 0x58);
+    const uint32_t slot = job + 0x5C + (tail & 3) * 4;
+    const uint32_t buf = PPC_LOAD_U32(slot);
+    fprintf(stderr, "[jobq]   head=%u tail=%u buffer[%u]=%08X:", PPC_LOAD_U32(job + 0x54),
+            tail, tail & 3, buf);
+    if (buf && uint64_t(buf) + 64 <= PPC_MEMORY_SIZE)
+        for (int i = 0; i < 12; i++)
+            fprintf(stderr, " %08X", PPC_LOAD_U32(buf + 4 * i));
+    else
+        fprintf(stderr, " <unusable>");
+    fprintf(stderr, "\n");
+}
+
+} // namespace
+
+extern "C" void CzMaybeCrashTest(PPCContext& ctx, uint8_t* base);
+
+PPC_FUNC(sub_8284B568)
+{
+    if (JobProbeEnabled())
+        DumpInterpreter(ctx, base);
+    CzMaybeCrashTest(ctx, base);
+    __imp__sub_8284B568(ctx, base);
+}
+
+// A deliberate fault, to prove the crash reporter's null-indirect-call branch.
+//
+// Task #11's crash was a `bctrl` with ctr == 0, and the reporter's "LIKELY null
+// indirect call" test did NOT fire on it: the test required si_addr == nullptr AND
+// ctr inside the image, and neither holds when ctr is zero. Widening it to catch
+// ctr == 0 is a one-line change and would be worth nothing unproven — gotcha 30, a
+// check that has never failed has not been shown capable of failing, and a
+// diagnostic that stays silent on the case it was written for is worse than none.
+//
+// CZ_CRASH_TEST=nullcall makes the next call to the interpreter hook do exactly what
+// the guest did: set ctr to zero and call through it. Expect the report to name
+// "ctr is ZERO". Off by default, and it announces itself before faulting so a run
+// that has it on can never be mistaken for a real crash.
+extern "C" void CzMaybeCrashTest(PPCContext& ctx, uint8_t* base)
+{
+    // A static bool, not a getenv/strcmp per call: this hook is on the per-frame
+    // interpreter path, and gotcha 7's rule is that an instrument must be free when
+    // it is off, not merely cheap.
+    static const bool enabled = [] {
+        const char* m = getenv("CZ_CRASH_TEST");
+        return m && strcmp(m, "nullcall") == 0;
+    }();
+    if (!enabled)
+        return;
+    fprintf(stderr, "[crashtest] CZ_CRASH_TEST=nullcall — deliberately calling through "
+                    "a null ctr to prove the crash reporter names it. This crash is "
+                    "ON PURPOSE.\n");
+    fflush(stderr);
+    ctx.ctr.u64 = 0;
+    PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+}

@@ -1856,6 +1856,144 @@ that does *part* of a job leaves a hole shaped exactly like real data, and the f
 surfaces in a subsystem it was never near.
 
 
+### Finding 40 — the 1-in-40 crash does not reproduce, and looking for it found a memory-barrier hole
+
+Task #11 carried a crash recorded at roughly 1 run in 20-40: guest thread `0xF2C`,
+a `bctrl` in `sub_8284B568` at guest `8284B704` with `ctr = [r31+16] = 0`. It was
+localised to the instruction and left to be characterised.
+
+**The first thing to do with an inherited rate is to measure it again** (gotchas 50-51),
+and that is the headline: **0 crashes in 20 runs at 120 s** on the committed binary,
+with all 20 reaching the title screen. The old figure was taken before finding 39, when
+a third to a half of runs stalled in the renderer's frame fence within the first minute;
+whatever those runs were doing, the current ones do something else for two minutes and
+do not die. The rate is not "improved" — it is unmeasurable at this sample size, and
+saying which of those it is would need hundreds of runs nobody needs yet.
+
+So this finding is a characterisation, not a fix, and the useful parts are what the
+hunt turned up on the way.
+
+#### What that thread is, and what the null actually means
+
+`0xF2C`'s entry point is `0x8284B828` — and so is `0xF30`'s. **Two worker threads run
+the same function**, which is the graphics driver's command-stream consumer: wait up to
+30 ms on an event embedded in the job at `+0x3C`, `KeResetEvent`, then run the
+interpreter `sub_8284B568`.
+
+The interpreter walks a token stream out of a four-entry buffer ring at `job+0x5C`,
+keeping its state in a *shared* object at `[job+0]`:
+
+| offset | meaning |
+|---|---|
+| `+0x00` | `lwarx`/`stwcx.` spin lock |
+| `+0x10` | the callback — **set only by a `0x8C000000` token** |
+| `+0x14` | its user data (same token) |
+| `+0x18` / `+0x1C` | iteration index / limit |
+| `+0x20` / `+0x24` | base pointer / stream cursor |
+
+A "run" token (bit 31 clear) sets index/limit/base and then dispatches through `+0x10`
+`limit` times **without re-reading the stream**. So the callback it calls is whatever an
+*earlier* token left in the object, and nothing ever resets it.
+
+That makes the null precise: **the interpreter executed a run token before any token had
+set a callback.** Not a corrupt pointer, not a vtable we failed to fill — a consumer
+walking a stream that had not been published. Which is a producer/consumer ordering
+question, and that is what sent the search into the recompiler.
+
+#### The hole: `sync`, `lwsync` and `eieio` emitted nothing at all
+
+Stock XenonRecomp lowers all three memory barriers to `// no op`. For the *hardware*
+half that is correct on x86-64 and it is still the wrong answer, because the recompiled
+image's ordering is not decided by the host CPU alone: every guest access is a plain C++
+load or store through `base`, and a construct that generates no code constrains the host
+compiler not at all. At `-O2` clang may move stores across a barrier the guest put there
+to stop exactly that.
+
+The idiom it breaks is the one this crash sits on:
+
+```
+    ...fill the token stream...
+    lwsync                     ; publish those stores FIRST
+    stw   r11, 0x58(r30)       ; then the tail index the consumer polls
+```
+
+The fix has to distinguish the two barriers, and getting it backwards is easy:
+
+| instruction | orders | x86-64 TSO gives it? | lowering |
+|---|---|---|---|
+| `lwsync` | load-load, load-store, store-store | **yes, all three** | `atomic_signal_fence` — compiler barrier, no instruction |
+| `sync` | the above **plus store-load** | **no** — the one x86 reorders | `atomic_thread_fence` — a real fence |
+| `eieio` | stores to device memory | n/a | `atomic_signal_fence` |
+
+51 `lwsync`, 11 `sync`, 14 `eieio` in this image. Details and the two related lowerings
+that are *not* changed — `lwarx` is a plain load, which is only safe because `stwcx.` is
+a `__sync_bool_compare_and_swap` and therefore a full barrier — are in
+`docs/xenonrecomp-upstream-bugs.md` §6.
+
+**This is not credited with fixing the crash and must not be.** The baseline was already
+0 of 20, so there is nothing for it to improve on. It was applied because an unsound
+memory model is a defect on its own terms, and it was measured only for the absence of
+regression, 20 runs a side at 120 s:
+
+| | pre-barrier (`8807ed6`) | with barriers |
+|---|---|---|
+| crashes | 0 of 20 | 0 of 20 |
+| reached the title screen | 20 of 20 | 20 of 20 |
+| truncated indirect buffers | 0 | 0 |
+| A1 gate: clean 84-deep prefix | 13 of 20 | 13 of 20 |
+| A1 gate: position-71 permutation | 7 of 20 | 7 of 20 |
+
+That last row is the reason this table exists. Four hand-run gates on the new binary
+came out 3-permuted-of-4 against two clean runs earlier in the session, which reads as
+an obvious regression and is exactly the false alarm finding 38 recorded (gotcha 86:
+the control is the old binary run NOW). Here the control was **free** — the rate
+measurement had already saved 20 full logs per arm, and gating those is one loop. Both
+arms permute at 35%, identically. Positions 71-73 have been scheduling-sensitive since
+finding 38 and still are.
+
+Worth keeping as a habit: a long rate run leaves behind a pile of complete boot logs,
+and every log-based gate you own can be replayed over them for nothing. Twenty-versus-
+twenty beats four hand-run pairs and costs less.
+
+#### Two instruments that should have existed
+
+**The crash reporter never fired on its own signature.** Its "LIKELY null indirect call"
+test required `si_addr == nullptr` *and* `ctr` inside the image — and when `ctr` is
+literally zero the dispatch-table lookup is never reached, so the process jumps to host 0
+and `si_addr` is whatever the lookup computed, not null. The report read as an ordinary
+segfault at a strange address and said nothing about the `bctrl` two instructions above.
+It now names `ctr == 0` explicitly, and a third branch for `ctr` outside the image
+("a corrupt pointer, not an unrecompiled function").
+
+Widening it is one line and worth nothing unproven, so `CZ_CRASH_TEST=nullcall` makes a
+guest thread call through a zero `ctr` on purpose — gotcha 30 applied to a diagnostic
+rather than a test. A silent diagnostic is worse than none, and this one had been silent
+on the exact case it existed for.
+
+**There was no disassembler.** Every question here — what writes `+0x10`, what the token
+encoding is, how many threads share the object — is a question about the title's own
+code, and reading the recompiled C++ answers it in translation. The host toolchain
+cannot disassemble this image at all: no PowerPC target in `objdump`, no `-b binary` in
+`llvm-objdump`, and `llvm-mc` silently loses instruction alignment at the first VMX128
+encoding it does not know, which on this image is constantly and invisibly. A capstone
+wrapper had been written from scratch twice in two sessions and thrown away both times;
+it is now `tools/gdis.py`, and it is what made this finding cheap.
+
+Its `--find-uses` mode is the part worth stealing: a 32-bit constant is never one
+instruction on PowerPC, so grepping an image for its bytes finds data references and
+misses every code reference. Reconstructing the `lis`+`addi`/`ori` pair finds them all —
+including the `addi` spelling where the high half is one greater because the low half
+has bit 15 set, which is half of all addresses and is easy to miss.
+
+#### What is left of task #11
+
+The site is understood and the rate is unmeasurable, so there is nothing to chase until
+it reappears. If it does, the tooling is now in place to answer it in one run:
+`CZ_JOBQ_PROBE=1` prints the interpreter's shared-object state and the token buffer it is
+about to walk on every entry, and the last line before a crash is the fatal call. That
+turns "characterise it" into a single reproduction rather than a session.
+
+
 ## 5. Where the boot currently stops
 
 
@@ -1958,6 +2096,10 @@ per arm will confidently name whichever arm happened not to fire.
   `pm4_indirect_walks.py` on 28,727 buffers.
 - **The load stall is fixed** (finding 39). 6 of 6 runs at 120 s reach the title
   screen; the control arm `CZ_NO_SWAP_PAD=1` still stalls 2 in 6.
+- **Stability: 0 crashes in 20 runs at 120 s, all 20 reaching the title screen**
+  (finding 40). The 1-in-20-to-40 crash recorded before finding 39 does not reproduce.
+- Memory barriers are real now: `lwsync`/`eieio` are compiler barriers and `sync` is a
+  fence, where all three previously emitted nothing (upstream bug 6, gotcha 92).
 - `cz_runtime --smoke` still passes: the phase 0.2 link gate is intact.
 - Audio: the render-driver pump runs at 5.333 ms/frame (256 samples x 6 channels),
   the guest submits frames, and the peak amplitude through the boot is 0.0000 —
@@ -1966,21 +2108,15 @@ per arm will confidently name whichever arm happened not to fire.
 
 Next, in order:
 
-1. **The surviving crash** — guest thread `00000F2C`, `lr=8284B708` / `82829BEC`,
-   localised to `ppc_recomp.176.cpp:10244`: a `bctrl` in `sub_8284B568` at guest
-   `8284B704` where `ctr = [r31+16] = 0`, a null indirect call through a vtable slot.
-   The crash reporter's "LIKELY null indirect call" heuristic did **not** fire — it
-   requires `si_addr == nullptr` *and* `ctr` inside the image; widening it to
-   `ctr == 0` would have named this on the first report.
-2. **Prove the still-unexercised imports** (gotcha 67). Finding 34's eight remain
+1. **Prove the still-unexercised imports** (gotcha 67). Finding 34's eight remain
    predictions; `XamTaskSchedule` in particular runs guest code on a new thread and
    has never done so. Of finding 36's seven, **five run and two do not** — both
    teardown paths, `XAudioUnregisterRenderDriverClient` and `XMAReleaseContext`,
    because the boot never shuts the audio device or the stream table down.
-3. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
+2. The save-data layer proper — `XamContentCreateEnumerator`, `XamEnumerate`,
    `XamGetPrivateEnumStructureFromHandle`, `XamContentCreateEx`, `XamContentClose`.
    Deliberately left out of finding 34: they are the phase 2 file layer, not the
    message/device mechanism.
-4. Audio output and XMA decoding, when phase 5 arrives. The kick bitmap at
+3. Audio output and XMA decoding, when phase 5 arrives. The kick bitmap at
    `0x7FEA1A80` currently lands in ordinary flat memory and is inert; a real decoder
    needs that aperture trapped as MMIO or the kick is written and never noticed.

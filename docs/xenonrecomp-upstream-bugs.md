@@ -129,6 +129,67 @@ these. See analysis finding 13 for the two signatures (backward = split function
 no recompiler change was needed — but the *absence of any diagnostic* is the bug, and any
 port that does not go looking will never learn it has them.
 
+## 6. `sync`, `lwsync` and `eieio` emit nothing — not even a compiler barrier
+
+**Severity:** silent wrong execution, multi-threaded only, intermittent. **Status:**
+patched locally (commit `e7ac625`).
+
+All three memory barriers were `// no op`:
+
+```cpp
+case PPC_INST_LWSYNC:
+    // no op
+    break;
+```
+
+"No op" is the right answer for the *hardware* half on x86-64 and the wrong answer
+overall, because the recompiled image's memory ordering is not decided by the host CPU
+alone. Everything the guest does to memory becomes a plain C++ load or store through
+`base`, and a construct that generates no code constrains the host compiler not at all.
+At `-O2` clang is free to move those stores across a barrier the guest put there
+precisely to stop that.
+
+What breaks is every release-publish idiom in the title. The canonical one:
+
+```
+    ...fill a command buffer...
+    lwsync                     ; make those stores visible BEFORE the next one
+    stw   r11, 0x58(r30)       ; publish the new tail index
+```
+
+With the barrier emitting nothing, the publish may be reordered ahead of the fill, and
+the consumer thread walks a buffer that is not written yet. Nothing faults at the
+reordering; the damage lands later, in whatever the consumer does with the data, on a
+thread that has nothing to do with the producer.
+
+**The distinction between the two barriers is the whole fix**, and it is easy to get
+backwards:
+
+| instruction | orders | x86-64 TSO already gives it? | correct lowering |
+|---|---|---|---|
+| `lwsync` | load-load, load-store, store-store | **yes**, all three | `std::atomic_signal_fence` — compiler barrier, **no instruction emitted** |
+| `sync` (hwsync) | the above **plus store-load** | **no** — store-load is the one reordering x86 does | `std::atomic_thread_fence` — a real `mfence`/locked op |
+| `eieio` | stores to device memory | n/a (our MMIO is host memory) | `std::atomic_signal_fence` — the honest floor |
+
+Lowering `lwsync` to a full `atomic_thread_fence` would be correct but would put an
+`mfence` on hot guest paths for an ordering the hardware already provides; lowering
+`sync` to a signal fence only would be silently wrong on the one ordering that matters.
+
+Case Zero's image has 51 `lwsync`, 11 `sync` and 14 `eieio` — few enough that the cost
+is nil and concentrated enough (the graphics command-stream producer/consumer, the
+`lwarx`/`stwcx.` spin locks) that they are exactly the sites where it matters.
+
+Two related lowerings are *not* changed, and are worth knowing about:
+
+- `lwarx` is a plain non-atomic load, and that is fine here only because `stwcx.` is a
+  `__sync_bool_compare_and_swap` against the value it loaded — a correct CAS emulation
+  of the reservation pair for the uncontended and contended cases alike, and a full
+  barrier in its own right. So lock *acquire* was always ordered; lock *release*, a
+  plain `stw`, was not.
+- `isync` does not appear in this image at all.
+
+`ppc_context.h` gains `#include <atomic>`.
+
 ---
 
 ## Inherited patches (from the Fable 2 / Asura's Wrath ports)
