@@ -55,6 +55,19 @@ bool Host_WindowActive();
 // for and would silently become the thing that limits the frame rate.
 void Host_Present(uint32_t frontBuffer, uint32_t width, uint32_t height);
 
+// Phase 5's other half of the present seam: the rendered frame itself, as tightly
+// packed RGBA8 rows.
+//
+// Host_Present says WHEN a frame happened and what the guest called it; this says what
+// it looks like. They stay separate because the frame clock has to keep working with
+// no renderer — CZ_VKDRAW off is the control arm for every claim phase 5 makes, and in
+// that arm the window still counts frames at the guest's own swap rate.
+//
+// Copies the pixels. Called from the PM4 executor's thread, which must not be made to
+// wait on the window's, and the buffer it is handed belongs to the renderer's next
+// frame the moment this returns.
+void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height);
+
 // The window's event loop. Runs on the calling (main) thread until the window is
 // closed, then terminates the process. Returns immediately if there is no window.
 void Host_WindowRun();

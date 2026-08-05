@@ -12,6 +12,7 @@
 // (see the guest-memory note below: it must stay reusable by an offline replay
 // harness) survives exactly as long as that stays true.
 #include "../host/window.h"
+#include "vk_renderer.h"
 
 namespace {
 
@@ -755,7 +756,16 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             // present can only happen at a point the command processor actually
             // reached — which is the property findings 38-39 were about.
             if (bodyCount >= 4 && body(0) == 0x53574150 /* 'SWAP' */)
+            {
+                // The renderer first: it turns the frame it has recorded into pixels
+                // and publishes them, and Host_Present is the signal that a frame
+                // boundary happened. Reversing the two would present the PREVIOUS
+                // frame's pixels with this frame's descriptor once per swap — a
+                // one-frame lag that is invisible in a still and looks like input lag
+                // in motion.
+                VkRenderer_OnSwap(base, body(1), body(2), body(3));
                 Host_Present(body(1), body(2), body(3));
+            }
             break;
         }
 

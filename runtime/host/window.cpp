@@ -17,6 +17,7 @@ bool Host_WindowInit()
 }
 bool Host_WindowActive() { return false; }
 void Host_Present(uint32_t, uint32_t, uint32_t) {}
+void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
 void Host_RequestQuit(const char*) {}
 bool Host_PadState(HostPadState&) { return false; }
@@ -28,6 +29,7 @@ bool Host_PadState(HostPadState&) { return false; }
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 #include <SDL.h>
 
@@ -85,6 +87,17 @@ bool g_keyboardFocus = true;
 std::mutex   g_frameMutex;
 uint32_t     g_frontBuffer = 0, g_frameWidth = 1280, g_frameHeight = 720;
 std::atomic<uint64_t> g_swapSeq{ 0 };
+
+// Phase 5's rendered frame. Double-buffered under g_frameMutex: the renderer writes
+// `g_pixelsBack` and swaps, the loop reads `g_pixelsFront`. The copy is what keeps the
+// two threads independent — the renderer's buffer is its next frame's arena the moment
+// Host_PresentPixels returns, so holding a pointer to it would race with the next frame
+// rather than with the present.
+std::vector<uint8_t> g_pixelsBack, g_pixelsFront;
+uint32_t g_pixelsWidth = 0, g_pixelsHeight = 0;
+bool g_havePixels = false;
+SDL_Texture* g_frameTexture = nullptr;
+int g_frameTextureW = 0, g_frameTextureH = 0;
 
 // Set by Host_RequestQuit from the guest thread; read by the loop.
 std::atomic<const char*> g_quitReason{ nullptr };
@@ -394,6 +407,21 @@ void Host_Present(uint32_t frontBuffer, uint32_t width, uint32_t height)
     g_swapSeq.fetch_add(1, std::memory_order_release);
 }
 
+void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height)
+{
+    if (!g_active || !rgba || !width || !height || width > 4096 || height > 4096)
+        return;
+    const size_t bytes = size_t(width) * height * 4;
+    std::lock_guard<std::mutex> lock(g_frameMutex);
+    if (g_pixelsBack.size() < bytes)
+        g_pixelsBack.resize(bytes);
+    memcpy(g_pixelsBack.data(), rgba, bytes);
+    g_pixelsBack.swap(g_pixelsFront);
+    g_pixelsWidth = width;
+    g_pixelsHeight = height;
+    g_havePixels = true;
+}
+
 bool Host_PadState(HostPadState& out)
 {
     if (!g_active)
@@ -479,11 +507,46 @@ void Host_WindowRun()
                     SDL_SetWindowSize(g_window, int(width), int(height));
             }
 
-            // Nothing to blit: no renderer exists yet, and the front buffer holds
-            // whatever the guest's allocator left there — showing it would be noise
-            // presented as a frame. Clearing is the honest present.
-            SDL_SetRenderDrawColor(g_renderer, 0x14, 0x16, 0x1A, 0xFF);
-            SDL_RenderClear(g_renderer);
+            // Blit the rendered frame if there is one. With CZ_VKDRAW off there
+            // never is, and the flat clear below is the honest present: the guest's
+            // front buffer holds whatever its allocator left there, and showing it
+            // would be noise presented as a frame.
+            bool blitted = false;
+            {
+                std::lock_guard<std::mutex> lock(g_frameMutex);
+                if (g_havePixels && g_pixelsWidth && g_pixelsHeight)
+                {
+                    // Recreate the texture when the frame's size changes, which it
+                    // does exactly once (the guest states its own dimensions at the
+                    // first swap) unless the title switches resolution.
+                    if (!g_frameTexture || g_frameTextureW != int(g_pixelsWidth) ||
+                        g_frameTextureH != int(g_pixelsHeight))
+                    {
+                        if (g_frameTexture)
+                            SDL_DestroyTexture(g_frameTexture);
+                        g_frameTexture = SDL_CreateTexture(
+                            g_renderer, SDL_PIXELFORMAT_ABGR8888,
+                            SDL_TEXTUREACCESS_STREAMING, int(g_pixelsWidth),
+                            int(g_pixelsHeight));
+                        g_frameTextureW = int(g_pixelsWidth);
+                        g_frameTextureH = int(g_pixelsHeight);
+                        fprintf(stderr, "[host] present texture %dx%d\n",
+                                g_frameTextureW, g_frameTextureH);
+                    }
+                    if (g_frameTexture)
+                    {
+                        SDL_UpdateTexture(g_frameTexture, nullptr, g_pixelsFront.data(),
+                                          int(g_pixelsWidth) * 4);
+                        SDL_RenderCopy(g_renderer, g_frameTexture, nullptr, nullptr);
+                        blitted = true;
+                    }
+                }
+            }
+            if (!blitted)
+            {
+                SDL_SetRenderDrawColor(g_renderer, 0x14, 0x16, 0x1A, 0xFF);
+                SDL_RenderClear(g_renderer);
+            }
             SDL_RenderPresent(g_renderer);
         }
         else
@@ -503,10 +566,15 @@ void Host_WindowRun()
             framesAtLastTitle = presented;
             lastTitle = now;
 
+            bool rendering;
+            {
+                std::lock_guard<std::mutex> lock(g_frameMutex);
+                rendering = g_havePixels;
+            }
             char title[192];
             snprintf(title, sizeof(title),
-                     "Dead Rising 2: Case Zero — no renderer yet (phase 5) — %llu frames, "
-                     "%.1f fps",
+                     "Dead Rising 2: Case Zero — %s — %llu frames, %.1f fps",
+                     rendering ? "rendering" : "no renderer (CZ_VKDRAW=1 to enable)",
                      (unsigned long long)presented, fps);
             SDL_SetWindowTitle(g_window, title);
         }

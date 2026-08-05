@@ -25,6 +25,7 @@
 #include "../kernel/memory.h"
 #include "../kernel/xex_imports.h"
 #include "pm4.h"
+#include "vk_renderer.h"
 
 // kernel/imports.cpp — the clock sources the timestamp bundle is refreshed from.
 uint64_t KernelSystemTime();
@@ -205,6 +206,17 @@ void GraphicsInterruptPump()
         Pm4_SetInterruptSink(DeliverCommandProcessorInterrupt);
     else
         KLOG("CZ_PM4_NO_CP_INTERRUPT: ring will be consumed but source 1 stays down\n");
+
+    // Phase 5's renderer, brought up on the SAME thread that will drive it. Vulkan
+    // objects here are used from one thread only, and that is this one — the pump —
+    // so creating them anywhere else would work until the day it did not.
+    //
+    // Registering the draw sink only when Init succeeds is what keeps CZ_VKDRAW a true
+    // control arm: with the renderer off, DRAW packets take the same path they took in
+    // phase 4 (counted, otherwise inert), and nothing in the executor branches on a
+    // renderer that is not there.
+    if (VkRenderer_Init())
+        Pm4_SetDrawSink(VkRenderer_Draw);
 
     uint64_t ticks = 0;
     for (;;)
