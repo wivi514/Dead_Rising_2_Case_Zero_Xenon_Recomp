@@ -78,4 +78,14 @@ bool Vd_PumpRunning();
 // ISR takes locks the engine thread may hold at the emission site. Each pend is one
 // delivery on the pump's next tick, so the latency is at most one vblank — the same
 // bound hardware gives a level interrupt raised mid-frame.
-void Vd_PendCpInterrupt();
+//
+// The pend CARRIES THE MIRROR. The guest arms the scratch mirror (the callback
+// pointer the ISR reads) with stream writes immediately before its INTERRUPT packet
+// and POISONS it after handling — so a deferred delivery that reads the live mirror
+// arrives after the poison and gets skipped. Measured: every movie-era interrupt
+// (the ones carrying the token-worker callback, finding 40's machinery) was skipped
+// that way, and the boot deadlocked on fences the worker never submitted. The
+// walker therefore snapshots the armed scratch registers at the packet's own
+// position, and the delivery path replays the enabled words into the mirror before
+// calling the ISR — the same values, at the same protocol point, hardware gave it.
+void Vd_PendCpInterrupt(const uint32_t scratch[8], uint32_t umsk, uint32_t scratchAddrPhys);

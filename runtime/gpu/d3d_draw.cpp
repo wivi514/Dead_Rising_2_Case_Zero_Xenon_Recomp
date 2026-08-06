@@ -189,16 +189,19 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
         return;
     g_regs[index] = value;
 
-    // Scratch-register writeback, pm4.cpp's rule verbatim (bare physical base, no
-    // endian code): the guest ISR reads its callback out of this mirror, and the
-    // content stream arms it right before its INTERRUPT packets — so a walker that
-    // did not mirror would have the deferred interrupt call a stale or poisoned
-    // pointer.
+    // Scratch-register writeback, pm4.cpp's rule (bare physical base, no endian
+    // code): the guest ISR reads its callback out of this mirror, and the content
+    // stream arms it right before its INTERRUPT packets. The mirror CONFIG
+    // (UMSK/ADDR) was set once via the real ring at device init and our seed can
+    // predate it, so pm4's registers are the fallback authority — with our own
+    // stale zeros, none of the content's armings ever reached guest memory.
     if (index >= 0x0578 && index <= 0x057F)
     {
         const uint32_t reg = index - 0x0578;
-        if (g_regs[0x01DC] & (1u << reg))
-            StoreGpuRaw(base, g_regs[0x01DD] + reg * 4, value);
+        const uint32_t umsk = g_regs[0x01DC] ? g_regs[0x01DC] : Pm4_ScratchUmsk();
+        const uint32_t addr = g_regs[0x01DD] ? g_regs[0x01DD] : Pm4_ScratchAddr();
+        if (umsk & (1u << reg))
+            StoreGpuRaw(base, addr + reg * 4, value);
     }
 }
 
@@ -267,7 +270,10 @@ uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
 
     // ME predication, pm4.cpp's rule verbatim.
     if ((header & 1) && (g_binMask & g_binSelect) == 0)
+    {
+        Count("walker: type-3 predicated skip");
         return bodyCount + 1;
+    }
 
     switch (opcode)
     {
@@ -287,7 +293,22 @@ uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
                    // INTERRUPT packets, within one tick — the same latency bound a
                    // level interrupt raised mid-frame has on hardware.
             Count("walker: INTERRUPT pended to the pump");
-            Vd_PendCpInterrupt();
+            {
+                // The mirror's CONFIGURATION (writeback enable mask + base) was set
+                // once at device init through the REAL ring, so pm4's register file
+                // is its authority; only the armed VALUES come from this stream.
+                // Our seeded copy of the config predates the init packets and reads
+                // zero — using it replayed nothing and every delivery stayed
+                // poisoned (measured: scratch4 armed correctly, umsk=0, addr=0).
+                const uint32_t umsk = g_regs[0x01DC] ? g_regs[0x01DC] : Pm4_ScratchUmsk();
+                const uint32_t addr = g_regs[0x01DD] ? g_regs[0x01DD] : Pm4_ScratchAddr();
+                static std::atomic<uint64_t> n{ 0 };
+                if (n.fetch_add(1) < 6)
+                    fprintf(stderr, "[d3ddraw] INTERRUPT pend: scratch4=%08X umsk=%08X "
+                                    "addr=%08X\n",
+                            g_regs[0x057C], umsk, addr);
+                Vd_PendCpInterrupt(&g_regs[0x0578], umsk, addr);
+            }
             break;
 
         case 0x60: g_binMask = (g_binMask & 0xFFFFFFFF00000000ull) | body(0); break;
@@ -412,6 +433,7 @@ uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
         case 0x58: // EVENT_WRITE_SHD
         case 0x59: // EVENT_WRITE_CFL
         case 0x5A: // EVENT_WRITE_EXT
+            Count("walker: EVENT_WRITE executed");
             WriteRegister(base, 0x21F9 /* VGT_EVENT_INITIATOR */, body(0) & 0x3F);
             if (bodyCount >= 3)
                 StoreGpu(base, body(1), body(2));

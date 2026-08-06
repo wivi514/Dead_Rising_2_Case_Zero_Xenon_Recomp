@@ -14,7 +14,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include <xbox.h>
 
@@ -145,8 +147,18 @@ std::atomic<uint64_t> g_poisonedSkips{ 0 };
 
 // Interrupts pended from outside the pump (Vd_PendCpInterrupt) — drained once per
 // tick, after the ring walk, through the same delivery path as in-stream INTERRUPT
-// packets so the poison check and the trace apply to both.
-std::atomic<uint32_t> g_pendingCpInterrupts{ 0 };
+// packets. Each pend carries the scratch-mirror snapshot captured at its packet's
+// position (see vd.h); the drain replays it before delivering, so the poison check
+// sees what the ISR was meant to see rather than whatever the live mirror holds a
+// tick later.
+struct PendedCpInterrupt
+{
+    uint32_t scratch[8];
+    uint32_t umsk;
+    uint32_t scratchAddrPhys;
+};
+std::mutex g_pendedCpMutex;
+std::vector<PendedCpInterrupt> g_pendedCpInterrupts;
 
 void DeliverCommandProcessorInterrupt()
 {
@@ -284,11 +296,27 @@ void GraphicsInterruptPump()
                 PPC_STORE_U32(slot, cursor);
 
             // Interrupts the D3D draw service met in ITS stream this tick. Drained
-            // AFTER the ring walk on purpose: the walk is what re-arms the scratch
-            // mirror the ISR reads, and both delivery paths share the poison check.
-            if (uint32_t pending = g_pendingCpInterrupts.exchange(0))
-                while (pending--)
+            // AFTER the ring walk on purpose: any in-stream interrupt of this tick
+            // has already delivered in-position, so replaying each pend's own
+            // mirror snapshot here cannot displace an arming the walk still needs.
+            {
+                std::vector<PendedCpInterrupt> pending;
+                {
+                    std::lock_guard<std::mutex> lock(g_pendedCpMutex);
+                    pending.swap(g_pendedCpInterrupts);
+                }
+                for (const PendedCpInterrupt& p : pending)
+                {
+                    // Replay the armed mirror words exactly as the packet position
+                    // had them, then deliver through the common path (whose poison
+                    // check now sees the replayed arming).
+                    const uint32_t va = 0xA0000000u | (p.scratchAddrPhys & 0x1FFFFFFFu);
+                    for (uint32_t i = 0; i < 8; i++)
+                        if (p.umsk & (1u << i))
+                            PPC_STORE_U32(va + i * 4, p.scratch[i]);
                     DeliverCommandProcessorInterrupt();
+                }
+            }
         }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
@@ -776,4 +804,13 @@ VdGraphicsState Vd_GetState()
 
 bool Vd_PumpRunning() { return g_pumpRunning.load(); }
 
-void Vd_PendCpInterrupt() { g_pendingCpInterrupts.fetch_add(1); }
+void Vd_PendCpInterrupt(const uint32_t scratch[8], uint32_t umsk, uint32_t scratchAddrPhys)
+{
+    PendedCpInterrupt p;
+    memcpy(p.scratch, scratch, sizeof p.scratch);
+    p.umsk = umsk;
+    p.scratchAddrPhys = scratchAddrPhys;
+    std::lock_guard<std::mutex> lock(g_pendedCpMutex);
+    if (g_pendedCpInterrupts.size() < 64) // a runaway producer must not grow unbounded
+        g_pendedCpInterrupts.push_back(p);
+}

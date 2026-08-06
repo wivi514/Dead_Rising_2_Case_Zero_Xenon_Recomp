@@ -227,6 +227,10 @@ void SwapSummary()
 // ---------------------------------------------------------------------------------
 enum class ServiceResult { CallThrough, Serviced, Redirect };
 
+// The reserve's real body, used directly by the sync-wait service below. The X-macro
+// extern block further down declares the rest; this one is needed before it.
+extern "C" PPC_FUNC(__imp__sub_82845F68);
+
 ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
 {
     switch (id) {
@@ -247,20 +251,46 @@ ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
     case kH_InsertCallback_q:
         // The engine's per-frame GPU sync (retraction of the Phase A label: this is
         // a WAIT wrapper over sub_82845160, not an emitter — its r3 is the fence
-        // TARGET). Printed against the live fence pair while the frame pacing is
-        // under investigation.
+        // TARGET).
+        //
+        // In draw mode, CLOSE AND KICK the pending command segment first, with the
+        // guest's own reserve. The wait's own head does this only when the target is
+        // the NEWEST fence; on hardware that suffices because ordinary emission
+        // fills and closes segments continuously. Redirected emission changes that
+        // arithmetic: the content bytes never enter the real segments, so at
+        // content-heavy eras (the boot movie) the segment holding the last few
+        // fences' EVENT_WRITEs stays open forever and the wait deadlocks — measured
+        // as `target=1307 completed=1301`, twelve emitted-but-unkicked fences, with
+        // the CP fully caught up. Forcing the guest's own close/kick here preserves
+        // ordering (everything in the segment precedes the kick) and invents no
+        // values; it is the same call the wait head itself makes in its own case.
+        if (DrawMode() && D3dDraw_Enabled()) {
+            const uint32_t slot = PPC_LOAD_U32(0x82000758);
+            const uint32_t dev = slot ? PPC_LOAD_U32(slot) : 0;
+            if (dev) {
+                PPCContext saved = ctx;
+                ctx.r3.u64 = dev;
+                __imp__sub_82845F68(ctx, base);
+                ctx = saved;
+            }
+        }
         if (DrawMode()) {
             static std::atomic<uint64_t> n{0};
             const uint64_t k = n.fetch_add(1);
-            if (k < 24) {
-                const uint32_t slot = PPC_LOAD_U32(0x82000758);
-                const uint32_t dev = slot ? PPC_LOAD_U32(slot) : 0;
-                fprintf(stderr, "[d3d] sync-wait #%llu target=%u emitted=%u completed=%u\n",
-                        (unsigned long long)k, ctx.r3.u32,
-                        dev ? PPC_LOAD_U32(dev + 0x2A9C) : 0,
-                        dev && PPC_LOAD_U32(dev + 0x2A90)
-                            ? PPC_LOAD_U32(PPC_LOAD_U32(dev + 0x2A90)) : 0);
-            }
+            const uint32_t slot = PPC_LOAD_U32(0x82000758);
+            const uint32_t dev = slot ? PPC_LOAD_U32(slot) : 0;
+            const uint32_t emitted = dev ? PPC_LOAD_U32(dev + 0x2A9C) : 0;
+            const uint32_t completed = dev && PPC_LOAD_U32(dev + 0x2A90)
+                                           ? PPC_LOAD_U32(PPC_LOAD_U32(dev + 0x2A90)) : 0;
+            // First few for the cadence, plus every entry whose fence lag is
+            // anomalous — the entry that never returns is the one that matters.
+            // dev+0x3460 is the async-submission flag: nonzero makes the reserve
+            // SKIP its close/kick (segments queue for the worker instead).
+            if (k < 12 || emitted - completed > 8)
+                fprintf(stderr, "[d3d] sync-wait #%llu target=%u emitted=%u completed=%u "
+                                "async3460=%08X\n",
+                        (unsigned long long)k, ctx.r3.u32, emitted, completed,
+                        dev ? PPC_LOAD_U32(dev + 0x3460) : 0);
         }
         return ServiceResult::CallThrough;
     default:
