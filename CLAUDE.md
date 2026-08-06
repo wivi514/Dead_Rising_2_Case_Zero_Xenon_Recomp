@@ -1709,9 +1709,14 @@ binary available in the same build as the control arm for every claim below.
 
 **ARCHITECTURE PIVOT DECIDED (2026-08-06, operator's call): the renderer moves to a
 D3D TRANSLATION LAYER in UnleashedRecomp's architecture** — hook the title's
-statically-linked XDK D3D functions, never touch the ring. **`docs/d3d-translation-plan.md`
-is the plan, the day-one recon and the licensing record — read it before any renderer
-work.** The short form: every hard renderer defect this phase hit lived below the D3D
+statically-linked XDK D3D functions, never touch the ring. **THE NEXT SESSION STARTS
+FROM `docs/d3d-kickoff.md`** — it carries the hand-off, the measured recon tables
+(Present is identified: `sub_82841F00` is `D3DDevice_Swap`, the 7 ring-emit
+primitives are named, device init is two walks from CreateDevice, all 20 Vd-import
+anchors listed), the OBSERVE-then-REPLACE bring-up order, and the missed-hook
+detector (`Pm4_PacketCount()==0` on the hooked arm). `docs/d3d-translation-plan.md`
+is the decision and licensing record beneath it. **plume is license-VERIFIED MIT**;
+only video.cpp-derived code carries GPLv3. The short form: every hard renderer defect this phase hit lived below the D3D
 line, and UnleashedRecomp's runtime stubs VdSwap/VdInitializeRingBuffer EMPTY — the
 whole findings-38-41 layer is dead code in that architecture. Case Zero's D3D cluster
 is already bounded (0x8283xxxx-0x8284xxxx, TUs 159/160/175/176) via import call sites;
