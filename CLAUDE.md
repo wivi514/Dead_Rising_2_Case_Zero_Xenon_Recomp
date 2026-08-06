@@ -1724,6 +1724,19 @@ the PM4 executor stays as boot engine and control arm; the shader cache, texture
 decode, and every instrument transfer. UnleashedRecomp is GPLv3 and the operator has
 authorized taking code, not just structure — provenance headers on every adapted file.
 
+**PHASE A IS DELIVERED (2026-08-06, session 12): the hook table exists and OBSERVE
+mode validates it.** The table with evidence per row is in
+`docs/d3d-translation-plan.md`; the instrument is `runtime/gpu/d3d_hooks.cpp`
+(`CZ_D3D_OBSERVE=1`, 43 hooks, log + call through). The structural result that
+shrinks Phase B: of the cluster's 117 externally-called functions only **27 can
+reach the ring** — the rest are state setters writing the device struct's register
+shadow and can stay guest code even in replace mode. CreateDevice is
+`sub_8283CCE8`; the engine submits draws directly (finding 40's worker threads are
+idle at boot/title); a 360 Clear is a resolve-with-clear-bits, which reconciles the
+API stream's 20 Clears/frame with phase 5's ~20 resolves/frame.
+`tools/guest_callers.py` is the call-graph scanner Phase A was answered with —
+reach for it before disassembling anything's callers by hand.
+
 Next, in order:
 
 1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —

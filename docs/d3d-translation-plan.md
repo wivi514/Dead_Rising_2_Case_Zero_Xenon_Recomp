@@ -117,21 +117,92 @@ equivalent to look for — Case Zero will have its own engine-side additions ins
 | draws | DrawPrimitive, DrawIndexedPrimitive, DrawPrimitiveUP |
 | plus | render-state/sampler-state setters (hooked via SetRenderState in video.cpp), a GammaRamp-class stub set |
 
-### Phase A findings so far
+### Phase A: the hook table (delivered 2026-08-06, session 12)
 
-The swap internal `sub_82841F00` has exactly four callers:
-`sub_827D2FC0`, `sub_827D3898`, `sub_827CDE48` (all `0x827Cxxxx–0x827Dxxxx`) and
-`sub_8284B828` (inside the cluster). Three callers sitting BELOW the bounded range
-means one of two things — the D3D library is wider than `0x8283–0x8284`, or those
-three are engine-side and the D3D `Present` is `sub_8284B828`'s neighbourhood — and
-which one is the first disassembly question of Phase A, because Present is the first
-hook Phase B needs.
+Method: `tools/guest_callers.py` (written for this — a `bl`/tail-`b` call-graph
+scanner attributing every site to its enclosing function via the recompiler's own
+function map). Two structural results came first, and they bound the whole phase:
 
-**A — identify the hook set.** Produce the table `sub_XXXXXXXX ↔ hook name` for
-UnleashedRecomp's 42, each verified by disassembly (`gdis.py`), found via (a) import
-call sites as above, (b) PM4-building constants (`--find-uses` on draw/IM_LOAD header
-immediates), (c) the engine's calls into the cluster from above. Deliverable is the
-table in this document, with evidence per row.
+1. **The externally-called surface of the D3D cluster is 117 functions, and only 27
+   of them can reach the ring.** Computed mechanically: every function in
+   `[0x82834000, 0x82856000)` called from outside it, intersected with reverse
+   reachability from the ring-reserve `sub_82845160`. The other 90 are state
+   setters/getters that only write bitfields into the device struct's register
+   shadow (e.g. `dev+0x2934` is the RB_DEPTHCONTROL shadow) plus dirty flags at
+   `dev+0x10` — **they can stay guest code even in replace mode**, because the
+   replace-mode draw hook can read the accumulated shadow out of the device struct.
+   The caveat: the scan sees direct calls only; indirect entries (`sub_8284B828`,
+   `sub_828494A0`) and any engine vtable call are what `Pm4_PacketCount()==0` gates.
+2. **The Present ambiguity is resolved.** `sub_8284B828` loads the device from a
+   GLOBAL (`0x82000758`, or `0x8200075C` for a system-process caller — two device
+   slots) and conditionally swaps: it is the D3D-internal worker/ISR path, not the
+   API. The three `0x827D` callers pass the device in `r3` and are the engine's
+   present path. `sub_82841F00` stays the Swap hook. In a 100 s OBSERVE run the
+   worker fired twice (boot only) and the indirect draw path `sub_828494A0` never —
+   the engine submits directly, so finding 40's threads are idle at boot/title.
+
+The table. Every row verified by disassembly; rows marked `?` are tentative labels
+whose *firing pattern* OBSERVE has validated but whose exact XDK name has not been
+pinned. Per-frame rates are from the title screen of the OBSERVE run
+(`CZ_D3D_OBSERVE=1`, 2026-08-06).
+
+| hook | address | evidence | rate/frame |
+|---|---|---|---|
+| CreateDevice | `sub_8283CCE8` | allocates 0x5F00-byte device, E_OUTOFMEMORY on fail, behavior flags → `dev+0x5E80` (defaults in 0xC00), device out-param via r8; only caller is engine init `sub_827D3B68` | 1 total |
+| Swap | `sub_82841F00` | `VdSwap`'s only call site, finding 39's `addi r11,r29,256` | 1 |
+| PreSwapResolve | `sub_82841AD0` | `sub_82841EF8` = `li r4,0; b` here; called immediately before every Swap | 1 |
+| DrawIndexedVertices | `sub_82843A98` | decodes an index-buffer object (`+0x24/+0x28/+0x30`, 16- vs 32-bit via 0x400 flag); the IB is a direct argument — there is no separate SetIndices | ~60 |
+| DrawVerticesUP | `sub_82842A88` | stages user data through the 0x4000-byte scratch at `dev+0x780` | ~40 |
+| DrawIndexedVerticesUP | `sub_82842E78` | same scratch, one more argument | ~1,330 |
+| DrawUP variant | `sub_82842570`? | count*stride math, 16-bit index halving; called only from engine mesh path `827D5180` | 0 at title |
+| Resolve | `sub_82838858` | takes float ClearZ (Resolve's only float) and internally DRAWS via `sub_82843A98` — matches the PM4-side fact that a resolve is a rect draw + RB_COPY state | 1 |
+| Clear | `sub_82841630` | rects + float Z, wraps worker `sub_82841508` (ClearF); Clear's private shaders load via `sub_82840E58/sub_828408E0` under it | ~20 |
+| SetRenderTarget | `sub_8283FD28` | `stwx r5,(r4+0xC52)<<2,r3` → `dev+0x3148+index*4`; `sub_82840350` is a `b` thunk to it | ~290 |
+| SetDepthStencilSurface | `sub_82840078` | stores directly to `dev+0x3158` = slot 4 of the same array; draw internal reads it | ~70 |
+| SetViewport | `sub_8283FBF8` | converts int viewport struct (+0x10/+0x14 float minZ/maxZ) and tails into float worker `sub_8283F990` (SetViewportF) | ~215 |
+| SetTexture | `sub_82839830` | copies 16-byte fetch constants into `dev+(sampler+0x78)*16`, `dcbt`-prefetched | ~1,850 |
+| SetStreamSource | `sub_82836958` | VB pointer → `dev+0x31B0+stream*4`, builds vfetch constant in the 0x18-stride shadow | ~3,500 |
+| SetVertexShader | `sub_82839D38`? | stores `dev+0x3248` — the slot the draw flush `sub_8284F300` BAILS on if null (a draw without VS is impossible); retires the old shader with the current fence first | ~330 |
+| SetPixelShader | `sub_82839B78`? | stores `dev+0x3244` — nullable at the flush (depth-only); same fence-retire head | ~550 |
+| SetVertexDeclaration | `sub_82839F08`? | 5-instr passive setter of `dev+0x2ED8`, the third slot the flush reads (decl+VS combine at draw, D3D9-style) | ~410 |
+| SetShaderConstantF (pair) | `sub_8283E950` / `sub_8283EAF8`? | identical heads indexing the 0x18-stride constant shadow at `(reg+0x30)*0x18`; which is VS vs PS unpinned | ~600 each |
+| SetClipPlane | `sub_8283F848`? | float4 into a small dirty-masked 16-byte-stride table at `dev+(idx+0x282)*16` | — |
+| GetRenderTarget / GetDepthStencilSurface | `sub_8283F620` / `sub_8283F668` | read the same slots back, AddRef via `sub_82836DE0` | — |
+| DestructResource | `sub_82837CF0` | wraps `sub_82837788`: switch on resource-type nibble (obj dword0 low 4 bits, 1–9), frees physical pages, emits per-type fence | ~60 |
+| InsertFence | `sub_82846068`? | flush + returns `dev+0x2A9C` (monotonic fence value) | 1 |
+| InsertCallback | `sub_82845230`? | fixed 6-dword emit carrying its r3 argument — BUT observed args are small ints (r3=0xD), so the label is doubtful; revisit | 1 |
+| Fence/throttle | `sub_82846288`? | compares `dev+0x30` vs `dev+0x38`, conditional flush | ~3 |
+| SuspendNotify | `sub_8283C898`? | walks the notification-callback list at global `0x82000764`, then emits | 1 |
+| FlushGpuCache | `sub_8283A110`? | builds a type-3 header `oris 0xC001` from a mask ANDed with `dev+0x325C` | ~6 |
+| Flush-state | `sub_82838088`? | clears the `dev+0x325C` flush mask; on the pre-swap path every frame | ~20 |
+| GPU busy-track pair | `sub_82837D70` / `sub_82837DC0`? | wrap `sub_828379A8` (atomic +0x100 GPU refcount on obj dword0 + emit), addr/size from `res+0x18/+0x1C` | ~1 |
+| CreateResource family | `sub_82836630/640/648` → worker `sub_82836038`? | thunk family; `sub_82836668` allocates 0x34-byte objects | ~1–14 |
+| Unknowns | `sub_82838568`, `sub_82838D10`, `sub_82837E08` | called from `827A00B8` (movie player?) and `827CFxxx`; not yet decoded | 0 at title |
+| Worker/ISR swap path | `sub_8284B828` | indirect-only; takes lock, calls token interpreter `sub_8284B568` then Swap | 2 total |
+
+Key device-struct offsets recovered on the way (all per-title, gotcha 49):
+`+0x10` 64-bit dirty flags · `+0x780` UP-draw scratch (0x4000 bytes) · `+0x2934`
+RB_DEPTHCONTROL shadow · `+0x28FD..+0x2903` blend bytes · `+0x2948` cull-mode
+shadow · `+0x293C` stencil shadow · `+0x2A9C` current fence value · `+0x2ED8`
+vertex declaration · `+0x3148+i*4` render targets (slot 4 = `+0x3158` = depth) ·
+`+0x31B0+i*4` stream sources · `+0x3244`/`+0x3248` pixel/vertex shader ·
+`+0x325C` gpu-cache flush mask · `+0x5E80` behavior flags. Device globals:
+`0x82000758` (title), `0x8200075C` (system), notification list `0x82000764`.
+
+**OBSERVE mode is built and the gate PASSED** (`runtime/gpu/d3d_hooks.cpp`,
+`CZ_D3D_OBSERVE=1`, off = one predictable branch per hook). Title-screen stream:
+exactly 1 Swap/frame, ~1,450 draws across four draw entries, 20 Clears — which
+matches phase 5's ~20 resolves/frame, because a 360 Clear IS a resolve with clear
+bits — 1 API Resolve, and the full state traffic above. `pm4_packets` keeps
+counting on the observe arm (call-through verified). Gates on the hooked binary:
+`--smoke` OK, A5 exit 0 (3 windows, all permutations), A1 clean to its usual depth
+with only the documented position-71 jitter.
+
+Open before Phase C: pin VS/PS order of the constant-set pair (one instrumented
+run comparing against microcode hashes settles it); name `sub_82845230`'s real
+role (its 6-dword payload against B1's packet vocabulary will); decode the
+CreateResource family properly; decode `sub_82838568`/`sub_82838D10` (both
+called from the suspected movie-player module `sub_827A00B8`).
 
 **B — skeleton.** Vendor plume (license check first), port the video.cpp scaffold,
 hook `CreateDevice` + `Present` only. Gate: the boot reaches the title screen with the
