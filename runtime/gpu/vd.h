@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 
 // Where the Xbox 360 maps the GPU register file into the title's address space.
 // Not our choice and not a guess: Case Zero's driver kicks the ring by storing the
@@ -71,21 +72,24 @@ void Vd_FillVideoMode(_XVIDEO_MODE* mode);
 // True once the guest has registered an interrupt callback and the pump is live.
 bool Vd_PumpRunning();
 
-// Phase C: a source-1 (command processor) interrupt requested from OUTSIDE the pump.
-// The D3D draw service's walker meets INTERRUPT packets in the content stream it
-// executes synchronously on the engine thread, but the guest ISR must run on the
-// pump's thread and context — hardware delivers interrupts asynchronously, and the
-// ISR takes locks the engine thread may hold at the emission site. Each pend is one
-// delivery on the pump's next tick, so the latency is at most one vblank — the same
-// bound hardware gives a level interrupt raised mid-frame.
-//
-// The pend CARRIES THE MIRROR. The guest arms the scratch mirror (the callback
-// pointer the ISR reads) with stream writes immediately before its INTERRUPT packet
-// and POISONS it after handling — so a deferred delivery that reads the live mirror
-// arrives after the poison and gets skipped. Measured: every movie-era interrupt
-// (the ones carrying the token-worker callback, finding 40's machinery) was skipped
-// that way, and the boot deadlocked on fences the worker never submitted. The
-// walker therefore snapshots the armed scratch registers at the packet's own
-// position, and the delivery path replays the enabled words into the mirror before
-// calling the ISR — the same values, at the same protocol point, hardware gave it.
-void Vd_PendCpInterrupt(const uint32_t scratch[8], uint32_t umsk, uint32_t scratchAddrPhys);
+// Phase C: the registered graphics ISR, for the D3D walker's IN-POSITION source-1
+// delivery. Two deferred designs failed before this one and both are worth
+// remembering: pending a bare interrupt to the pump delivered it after the guest
+// re-poisoned the scratch mirror (every movie-era interrupt skipped, boot
+// deadlocked on fences the token worker never submitted); pending it WITH a mirror
+// snapshot replayed at delivery still raced the guest CPU's own poison stores,
+// which no host lock can intercept, and the ISR called 0x0BADF00D. The mirror
+// protocol is only coherent AT the packet's own position — where pm4 delivers its
+// interrupts, and where the walker now delivers too. The ISR's source-1 path
+// dispatches the armed callback BEFORE it takes its spinlock, so the synchronous
+// call from the engine thread does not re-enter a lock the emission site holds.
+uint32_t Vd_InterruptCallbackVa();
+uint32_t Vd_InterruptUserData();
+
+// The mirror lock. The pump's in-position deliveries never race the ring walk (one
+// thread), but the D3D walker writes the same mirror words from the ENGINE thread —
+// and a write landing between the pump's poison check and the guest ISR's own mirror
+// load hands the ISR the poison as a callback (measured: ctr=0BADF00D, lr inside the
+// ISR). The walker takes this around each mirror write; the pump holds it across
+// replay + delivery, ISR included.
+std::recursive_mutex& Vd_MirrorMutex();

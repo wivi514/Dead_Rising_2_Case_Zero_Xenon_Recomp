@@ -145,25 +145,19 @@ bool MirrorIsPoisoned()
 
 std::atomic<uint64_t> g_poisonedSkips{ 0 };
 
-// Interrupts pended from outside the pump (Vd_PendCpInterrupt) — drained once per
-// tick, after the ring walk, through the same delivery path as in-stream INTERRUPT
-// packets. Each pend carries the scratch-mirror snapshot captured at its packet's
-// position (see vd.h); the drain replays it before delivering, so the poison check
-// sees what the ISR was meant to see rather than whatever the live mirror holds a
-// tick later.
-struct PendedCpInterrupt
-{
-    uint32_t scratch[8];
-    uint32_t umsk;
-    uint32_t scratchAddrPhys;
-};
-std::mutex g_pendedCpMutex;
-std::vector<PendedCpInterrupt> g_pendedCpInterrupts;
+// See Vd_MirrorMutex in vd.h. Recursive: the walker's in-position delivery holds
+// it across the guest ISR, whose callback can re-enter the walker's mirror writes
+// on the same thread.
+std::recursive_mutex g_mirrorMutex;
 
 void DeliverCommandProcessorInterrupt()
 {
     if (!g_pumpIsr.func)
         return;
+    // Serialized against the D3D walker's mirror writes (engine thread): the ISR
+    // reads the mirror, and a concurrent arm/poison from the other stream landing
+    // mid-read is a race hardware's single stream never has.
+    std::lock_guard<std::recursive_mutex> mlock(g_mirrorMutex);
     TraceIsrMirror("at INTERRUPT packet");
     if (MirrorIsPoisoned())
     {
@@ -295,28 +289,6 @@ void GraphicsInterruptPump()
             if (const uint32_t slot = g_rptrWriteback.load())
                 PPC_STORE_U32(slot, cursor);
 
-            // Interrupts the D3D draw service met in ITS stream this tick. Drained
-            // AFTER the ring walk on purpose: any in-stream interrupt of this tick
-            // has already delivered in-position, so replaying each pend's own
-            // mirror snapshot here cannot displace an arming the walk still needs.
-            {
-                std::vector<PendedCpInterrupt> pending;
-                {
-                    std::lock_guard<std::mutex> lock(g_pendedCpMutex);
-                    pending.swap(g_pendedCpInterrupts);
-                }
-                for (const PendedCpInterrupt& p : pending)
-                {
-                    // Replay the armed mirror words exactly as the packet position
-                    // had them, then deliver through the common path (whose poison
-                    // check now sees the replayed arming).
-                    const uint32_t va = 0xA0000000u | (p.scratchAddrPhys & 0x1FFFFFFFu);
-                    for (uint32_t i = 0; i < 8; i++)
-                        if (p.umsk & (1u << i))
-                            PPC_STORE_U32(va + i * 4, p.scratch[i]);
-                    DeliverCommandProcessorInterrupt();
-                }
-            }
         }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
@@ -804,13 +776,7 @@ VdGraphicsState Vd_GetState()
 
 bool Vd_PumpRunning() { return g_pumpRunning.load(); }
 
-void Vd_PendCpInterrupt(const uint32_t scratch[8], uint32_t umsk, uint32_t scratchAddrPhys)
-{
-    PendedCpInterrupt p;
-    memcpy(p.scratch, scratch, sizeof p.scratch);
-    p.umsk = umsk;
-    p.scratchAddrPhys = scratchAddrPhys;
-    std::lock_guard<std::mutex> lock(g_pendedCpMutex);
-    if (g_pendedCpInterrupts.size() < 64) // a runaway producer must not grow unbounded
-        g_pendedCpInterrupts.push_back(p);
-}
+std::recursive_mutex& Vd_MirrorMutex() { return g_mirrorMutex; }
+
+uint32_t Vd_InterruptCallbackVa() { return g_interruptCallback.load(); }
+uint32_t Vd_InterruptUserData() { return g_interruptUserData.load(); }

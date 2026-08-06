@@ -201,7 +201,14 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
         const uint32_t umsk = g_regs[0x01DC] ? g_regs[0x01DC] : Pm4_ScratchUmsk();
         const uint32_t addr = g_regs[0x01DD] ? g_regs[0x01DD] : Pm4_ScratchAddr();
         if (umsk & (1u << reg))
+        {
+            // Serialized against the pump's replay+delivery (Vd_MirrorMutex): a
+            // write landing between its poison check and the guest ISR's mirror
+            // load hands the ISR the poison as a callback. Measured as a crash
+            // with ctr=0BADF00D and lr inside the ISR.
+            std::lock_guard<std::recursive_mutex> lock(Vd_MirrorMutex());
             StoreGpuRaw(base, addr + reg * 4, value);
+        }
     }
 }
 
@@ -226,7 +233,7 @@ uint32_t LoadGpu(const uint8_t* base, uint32_t addrDword)
 // own header count; a malformed header is not, and stopping there is safe because
 // every parse window ends at a call boundary, so the next window starts on a fresh
 // packet (gotcha 84: the stop is counted, never silent).
-uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
+uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t availDwords)
 {
     const uint32_t header = GuestLoad32(base, va);
     const uint32_t type = header >> 30;
@@ -283,33 +290,80 @@ uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
         case 0x3B: // INVALIDATE_STATE
             break;
 
-        case 0x54: // INTERRUPT. The content path emits ~1 per frame (the resolve
-                   // completion tick). NOT delivered synchronously: the guest ISR
-                   // takes the graphics spinlocks and is written for an asynchronous
-                   // interrupt, and this walk runs on the engine's own submit thread
-                   // — delivering here could deadlock against a lock the caller
-                   // already holds. PENDED to the vblank pump instead, which delivers
-                   // through the same path (and the same poison check) as in-stream
-                   // INTERRUPT packets, within one tick — the same latency bound a
-                   // level interrupt raised mid-frame has on hardware.
-            Count("walker: INTERRUPT pended to the pump");
+        case 0x54: // INTERRUPT: the content path emits ~1 per frame (the resolve
+                   // completion tick), and it is the token worker's kick.
+        {
+            const uint32_t user = Vd_InterruptUserData();
+            if (!user || !Vd_InterruptCallbackVa())
             {
-                // The mirror's CONFIGURATION (writeback enable mask + base) was set
-                // once at device init through the REAL ring, so pm4's register file
-                // is its authority; only the armed VALUES come from this stream.
-                // Our seeded copy of the config predates the init packets and reads
-                // zero — using it replayed nothing and every delivery stayed
-                // poisoned (measured: scratch4 armed correctly, umsk=0, addr=0).
-                const uint32_t umsk = g_regs[0x01DC] ? g_regs[0x01DC] : Pm4_ScratchUmsk();
-                const uint32_t addr = g_regs[0x01DD] ? g_regs[0x01DD] : Pm4_ScratchAddr();
-                static std::atomic<uint64_t> n{ 0 };
-                if (n.fetch_add(1) < 6)
-                    fprintf(stderr, "[d3ddraw] INTERRUPT pend: scratch4=%08X umsk=%08X "
-                                    "addr=%08X\n",
-                            g_regs[0x057C], umsk, addr);
-                Vd_PendCpInterrupt(&g_regs[0x0578], umsk, addr);
+                Count("walker: INTERRUPT with no registered ISR");
+                break;
+            }
+            // NOT delivered by calling the guest ISR. Three designs died on the
+            // same crash (ctr=0x0BADF00D inside the ISR): deferring to the pump
+            // arrived after the guest re-poisoned the mirror; deferring WITH a
+            // mirror snapshot replayed at delivery still raced the guest CPU's own
+            // poison stores; and calling the ISR in-position still let the ISR
+            // RE-READ the mirror word after our guard, which a concurrent guest
+            // store (the worker poisoning a consumed arming) can change. No host
+            // lock intercepts plain guest stores. So the walker performs the ISR's
+            // source-1 path ITSELF from ONE guarded read: if the mirror is armed
+            // at this position, call that callback with that argument, then
+            // replicate the ISR's tail (clear this CPU's pending bit under the ISR
+            // spinlock, sub_82844D38's own sequence). An unarmed or poisoned
+            // mirror at our position means the arm rode the other transport (an
+            // unredirected emitter -> the real ring): skip, counted — the pairing
+            // real-ring INTERRUPT still delivers on the pump.
+            {
+                std::lock_guard<std::recursive_mutex> mlock(Vd_MirrorMutex());
+                const uint32_t mirrorBlock = GuestLoad32(base, user + 0x2A94);
+                if (mirrorBlock < 0x1000)
+                {
+                    Count("walker: INTERRUPT with no mirror block");
+                    break;
+                }
+                const uint32_t armed = GuestLoad32(base, mirrorBlock + 0x10);
+                const uint32_t arg = GuestLoad32(base, mirrorBlock + 0x14);
+                static std::atomic<uint64_t> disp{ 0 };
+                const uint64_t dn = disp.fetch_add(1);
+                if (dn < 16)
+                    fprintf(stderr, "[d3ddraw] INTERRUPT #%llu at position: mirror=%08X "
+                                    "armed=%08X arg=%08X\n",
+                            (unsigned long long)dn, mirrorBlock, armed, arg);
+                if (armed == 0 || armed == 0x0BADF00D)
+                {
+                    Count("walker: INTERRUPT skipped (mirror unarmed/poisoned at position)");
+                    break;
+                }
+                PPCFunc* cb = g_memory.FindFunction(armed);
+                if (!cb)
+                {
+                    Count("walker: INTERRUPT callback not recompiled (SKIPPED)");
+                    break;
+                }
+                Count("walker: INTERRUPT callback delivered in-position");
+                PPCContext saved = ctx;
+                ctx.r3.u64 = arg;
+                cb(ctx, base);
+                ctx = saved;
+
+                PPCFunc* lk = g_memory.FindFunction(0x829C3354);
+                PPCFunc* ulk = g_memory.FindFunction(0x829C3344);
+                if (lk && ulk)
+                {
+                    const uint32_t cpuBit = 1u << (base[saved.r13.u32 + 0x10C] & 31);
+                    ctx.r3.u64 = user + 0x2A98;
+                    lk(ctx, base);
+                    const uint32_t mb = GuestLoad32(base, user + 0x2A94);
+                    if (mb >= 0x1000)
+                        GuestStore32(base, mb, (GuestLoad32(base, mb) & ~cpuBit) & 0x3F);
+                    ctx.r3.u64 = user + 0x2A98;
+                    ulk(ctx, base);
+                    ctx = saved;
+                }
             }
             break;
+        }
 
         case 0x60: g_binMask = (g_binMask & 0xFFFFFFFF00000000ull) | body(0); break;
         case 0x61: g_binMask = (g_binMask & 0xFFFFFFFFull) | (uint64_t(body(0)) << 32); break;
@@ -523,12 +577,12 @@ uint32_t ExecutePacket(uint8_t* base, uint32_t va, uint32_t availDwords)
 // Parse [g_parseVa, endVa). Called at every hook boundary inside a redirect, so
 // state staged by one inner call is consumed before the next inner call overwrites
 // its staging (the UP scratch at dev+0x780 is reused per draw).
-void ParseUpTo(uint8_t* base, uint32_t endVa)
+void ParseUpTo(PPCContext& ctx, uint8_t* base, uint32_t endVa)
 {
     while (g_parseVa < endVa)
     {
         const uint32_t avail = (endVa - g_parseVa) / 4;
-        const uint32_t used = ExecutePacket(base, g_parseVa, avail);
+        const uint32_t used = ExecutePacket(ctx, base, g_parseVa, avail);
         if (!used)
         {
             // Malformed or truncated: resync at the call boundary (see ExecutePacket).
@@ -633,14 +687,14 @@ bool D3dDraw_ServiceContent(PPCContext& ctx, uint8_t* base, CzGuestFunc through)
         // consume what the outer body emitted so far, then run the inner body in the
         // already-redirected stream.
         if (dev == g_dev)
-            ParseUpTo(base, GuestLoad32(base, dev + 0x30) + 4);
+            ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
         else
             Count("redirect: nested call on a DIFFERENT device");
         ++g_depth;
         through(ctx, base);
         --g_depth;
         if (dev == g_dev)
-            ParseUpTo(base, GuestLoad32(base, dev + 0x30) + 4);
+            ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
         return true;
     }
 
@@ -670,7 +724,7 @@ bool D3dDraw_ServiceContent(PPCContext& ctx, uint8_t* base, CzGuestFunc through)
     const uint32_t emittedEnd = GuestLoad32(base, dev + 0x30) + 4;
     if (emittedEnd > g_scratchVa + kScratchBytes - kScratchHeadroom)
         Count("redirect: emission entered the headroom (raise kScratchBytes)");
-    ParseUpTo(base, emittedEnd);
+    ParseUpTo(ctx, base, emittedEnd);
 
     GuestStore32(base, dev + 0x30, g_save30);
     GuestStore32(base, dev + 0x34, g_save34);
@@ -740,7 +794,7 @@ bool D3dDraw_ServiceReserve(PPCContext& ctx, uint8_t* base)
     // everything before the ask is complete packets.
     const uint32_t dev = ctx.r3.u32;
     if (dev == g_dev)
-        ParseUpTo(base, GuestLoad32(base, dev + 0x30) + 4);
+        ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
     else
         Count("redirect: reserve on a DIFFERENT device (serviced anyway)");
     ctx.r3.u64 = GuestLoad32(base, g_dev + 0x30);

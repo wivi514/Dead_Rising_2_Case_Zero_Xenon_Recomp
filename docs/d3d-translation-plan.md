@@ -311,8 +311,52 @@ What this buys, and what it costs:
 Arms: `CZ_D3D_DRAW=1` is phase C (implies the replace harness); `CZ_D3D=1` alone
 remains phase B's no-op skeleton; `CZ_VKDRAW=1` remains the PM4-fed renderer and is
 mutually exclusive with `CZ_D3D_DRAW` (enforced loudly at init — two feeds into one
-EDRAM image is a collision, not an arm). `pm4.cpp` is untouched, so the control arm is
-bit-identical to phase B's.
+EDRAM image is a collision, not an arm). `pm4.cpp`'s behavior is untouched (one
+passive env-gated instrument added, `CZ_PM4_MEM_WATCH`), so the control arm is
+behaviorally identical to phase B's.
+
+What the bring-up itself found (2026-08-06, session 13; each was measured, not
+predicted, and each is a comment in the code where it bit):
+
+1. **The reserve (`sub_82845F68`) is called unconditionally by emitters**, not only
+   when the cursor passes the end — and its body closes/kicks segments and can PARK
+   the thread in `sub_82845160`. Run 1 stalled the boot exactly there. Mid-redirect
+   it is serviced: return the scratch cursor, never run the segment machinery.
+2. **The cursor block is THREE fields**: `+0x30` cursor, `+0x34` hard segment end,
+   `+0x38` soft reserve threshold. The chunked bulk emitter (`sub_8284DAF8`) computes
+   per-chunk capacity from `+0x34`; redirecting only `+0x38` left it computing
+   negative capacity and looping on the reserve forever.
+3. **The content stream carries ~1 INTERRUPT packet per frame, and it is the token
+   worker's kick.** The movie player (boot cinematics) submits through the D3D
+   worker's token queue (finding 40's machinery); the worker is woken by the callback
+   the stream ARMS in the scratch mirror right before the INTERRUPT. Three failures
+   in sequence here: delivering synchronously from the engine thread risks deadlock
+   (so interrupts are PENDED to the vblank pump); a deferred delivery that reads the
+   LIVE mirror arrives after the guest re-poisons it and gets skipped (so each pend
+   carries the mirror SNAPSHOT from its packet position, replayed before delivery);
+   and the mirror CONFIG (SCRATCH_UMSK/ADDR) was set through the real ring at device
+   init, before our register-file seed, so the walker falls back to pm4's registers
+   for it. Without all three the boot deadlocks at `cinematics.big` with ~12 fences
+   emitted-but-unretired and the CP fully caught up.
+4. **The two-thread mirror is a race the one-stream world never had**: a walker
+   mirror-write landing between the pump's poison check and the guest ISR's own
+   mirror load hands the ISR the poison as its callback (measured: `ctr=0BADF00D`,
+   `lr` inside the ISR). `Vd_MirrorMutex` serializes walker mirror writes against
+   replay+delivery.
+5. **The engine's per-frame GPU sync starves without content in the segments.** The
+   wait's own head closes/kicks only when waiting for the NEWEST fence; redirected
+   emission removes the content bytes that used to fill segments, so the fences the
+   target names can sit in a never-closed segment. The sync-wait hook force-closes
+   with the guest's own reserve before the wait runs.
+6. `sub_828459D0` is the fence-block emitter: fence += 2 per block, an
+   EVENT_WRITE_SHD pair into a caller-supplied cursor, plus a CPU fast path that
+   writes the writeback word directly when the GPU is idle.
+
+Measured state at this point: the boot renders the legal screen and the CAPCOM logo
+pixel-correct from the D3D arm (frames dumped headless), clears the movie era, and
+loads through `prologue_z01.big` (file #63) — the title screen's own scene. Boot
+wall-time is ~4-5x the PM4 arm's (the load era paces on lifecycle round-trips); a
+number to re-measure after the picture gate, phase 5 precedent.
 
 **D — retire or keep.** Measure both arms; the PM4 path stays as the control until the
 D3D arm is strictly better on every gate.
