@@ -458,6 +458,103 @@ Kept because the technique transfers: `CZ_SHADER_SPV=<dir>` lets a hand-patched 
 cache be run against the same binary, which makes "is this generated line doing what it
 looks like?" a five-minute experiment instead of an argument.
 
+## 6m. THE METRIC — per-era aggregates, and the two designs that failed first
+
+`docs/phase5-kickoff.md` prescribed "gate on per-era aggregates, never on frame index"
+from the start. This section is what it took to actually build one, and the failures are
+the valuable part because both looked like they were working.
+
+### Design 1: compare the presented frame. Cannot see the defect.
+
+`CZ_VK_FRAME_STATS=<file>` writes one line per presented frame — draws, vertices, a
+draw-stream fingerprint, a camera fingerprint, and the output's coverage, mean luminance,
+distinct-colour count and pixel hash.
+
+Comparing that across arms is blind to the thing under investigation. At the title screen
+the presented front buffer is the **logo era**: mostly UI, 2–36% covered. Disabling the
+16-bit texcoord unswizzle — a change touching 476,858 draws a run — moved it by **0.1
+percentage points**. The defect lives on the SCENE surface and the presented frame is the
+overlay in front of it. Hence `CZ_VK_FRAME_STATS_SURFACE=<hex>`, which measures a named
+resolve surface as well.
+
+### Design 2: align frames by content. Passes perfectly, tests nothing.
+
+The project already aligns the capture pair by content rather than frame index
+(`tools/xtr_determinism.py`, finding 10). Applying the same idea — match frames on
+(draw fingerprint, camera fingerprint), then compare pixels — produced a beautiful
+result:
+
+```
+surface aligned       : 257
+surface identical     : 257/257 (100.0%)
+surface coverage delta: max 0.0000 pp, mean 0.0000 pp
+```
+
+**It is worthless.** All 257 aligned frames had coverage 0.00% and a single distinct
+pixel hash: 257 copies of a black image. The only frames whose exact camera constants
+recur across two runs are the ones where the scene is EMPTY — and the same 100.0% came
+back for arms that visibly change the picture.
+
+The general point, and it is the one to carry: **for a scene animated off wall-clock
+time, no post-hoc alignment can work.** Exact alignment selects for stasis, which is
+exactly the content least able to reveal a rendering difference. And a metric that looks
+authoritative while testing nothing is worse than a noisy one — the noisy version at
+least did not invite belief.
+
+### What works: the median over the era
+
+Aggregate instead of aligning. The **median** across every frame that has scene content
+is stable because several hundred frames sample the whole animation cycle; the mean is
+not, because it is pulled about by how long a run happened to spend in each part of the
+cycle. Five runs of one binary:
+
+| run | frames | median coverage | mean coverage |
+|---|---|---|---|
+| 1 | 620 | 64.44% | 70.81% |
+| 2 | 582 | 64.34% | 64.33% |
+| 3 | 617 | 65.70% | — |
+| 4 | 630 | 64.45% | — |
+| 5 | 564 | 64.56% | — |
+
+**Median band: 1.36 pp.** The means over the same runs spread 64.3–70.8.
+
+### And it has been shown capable of failing
+
+Gotcha 30 is the whole point of the exercise, so the metric was tested against arms with
+a known answer rather than declared working:
+
+| arm | median coverage | verdict |
+|---|---|---|
+| baseline × 5 | 64.34 – 65.70 | the band |
+| `CZ_VK_NO_TEXCOORD_SWAP=1` | 64.56 | inside the band — **no detectable effect** |
+| `CZ_VK_PRIM_RESTART=1` | 81.44 | 17 pp outside — **detected** |
+
+`tools/frame_compare.py` is the reader. It quotes the 1.5 pp threshold as a constant
+rather than deriving it from the runs being compared, because a band computed from its
+own inputs widens to accommodate whatever difference is present — which is exactly how a
+metric stops being able to fail.
+
+Median draws per frame is a second stable aggregate, and tighter: 1,612–1,632 across all
+five baselines.
+
+## 6n. RETRACTION: the texcoord unswizzle has no measurable effect on the picture
+
+§6h reports the 16-bit texcoord unswizzle taking the scene from 63.8% to 81.3%
+non-black. **That was the animated-background noise, exactly like the primitive-restart
+claim retracted in §6k.** The metric built above puts the arm at 64.56 against a
+64.34–65.70 baseline band: inside it, i.e. no detectable effect.
+
+The change stays, because it is correct on its own terms — it implements the contract
+XenosRecomp's generated `tfetchTexcoord` documents, and dword-swapping a vertex stream
+provably does transpose 16-bit pairs. What is retracted is the claim that it improved
+the picture, which was never measured.
+
+Two of this phase's three "measured improvement" claims turned out to be noise from the
+same source, and both were single runs of a metric nobody had validated. The structural
+numbers are unaffected — 0.0% → 69.8%, and 3 distinct colours → 848, are an order of
+magnitude outside the band — but they were lucky rather than rigorous, and the metric
+now exists so the next one does not have to be.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,

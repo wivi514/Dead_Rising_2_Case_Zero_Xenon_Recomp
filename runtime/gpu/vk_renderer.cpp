@@ -544,6 +544,21 @@ struct Renderer
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
+    // Per-frame content fingerprints, for the frame-alignment metric.
+    //
+    // `drawFingerprint` is FNV over every draw's (vs, ps, primitive, index count) —
+    // it identifies WHAT the guest asked for this frame. `cameraFingerprint` is FNV
+    // over the vertex shader's ALU constants at the frame's first draw, which is where
+    // the view-projection matrix lives — it identifies WHERE the camera was.
+    //
+    // Both exist because "frame 600" is not a point in this title's animation: the
+    // title screen renders a live 3D background driven by guest time, and our frame
+    // rate varies with host load, so two runs are looking at different camera angles at
+    // the same frame index. Comparing pictures across runs needs frames matched by
+    // CONTENT, which is exactly what tools/xtr_determinism.py does to the capture pair.
+    uint64_t drawFingerprint = 0;
+    uint64_t cameraFingerprint = 0;
+    uint64_t verticesThisFrame = 0;
     // Draws recorded since the last resolve, i.e. the size of the pass that resolve is
     // closing. This is the number that separates "the pass rendered nothing because it
     // had no draws" from "the pass had 900 draws and they produced black" — two
@@ -2566,6 +2581,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         vkCmdDraw(R->cmd, draw.indexCount, 1, 0, 0);
         Count("draw: auto-index");
     }
+    // Fingerprint the draw. Order matters and is included by construction, because the
+    // accumulator is sequential — two frames with the same draws in a different order
+    // are correctly different frames.
+    auto mix = [](uint64_t h, uint64_t v) {
+        h ^= v;
+        return h * 0x100000001B3ull;
+    };
+    R->drawFingerprint = mix(R->drawFingerprint, vsBind.hash);
+    R->drawFingerprint = mix(R->drawFingerprint, psBind.hash);
+    R->drawFingerprint = mix(R->drawFingerprint, (uint64_t(draw.primType) << 32) |
+                                                     draw.indexCount);
+    R->verticesThisFrame += draw.indexCount;
+    if (R->drawsThisFrame == 0)
+    {
+        // The camera, from the frame's FIRST draw: vc(0..15) covers the
+        // view-projection and the world matrices every scene shader reads.
+        uint64_t h = 0xCBF29CE484222325ull;
+        for (uint32_t i = 0; i < 16 * 4; i++)
+            h = mix(h, regs[xenos::kAluConstantBase + i]);
+        R->cameraFingerprint = h;
+    }
+
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
     R->verticesThisPass += draw.indexCount;
@@ -3048,6 +3085,156 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
             fclose(f);
         }
     }
+
+    // CZ_VK_FRAME_STATS=<file> — one line per frame: what the guest asked for, and what
+    // came out. This is the raw material for tools/frame_compare.py, which aligns two
+    // runs by CONTENT and only then compares their pictures.
+    //
+    // The output measurements are deliberately cheap and whole-image (coverage, mean
+    // luminance, distinct colours, a pixel hash) rather than a per-pixel dump: the
+    // question a renderer A/B asks is "did this frame change", and for that a small
+    // vector of aggregates over the same content is enough — while a per-pixel dump at
+    // 30 frames a second is 100 MB a run nobody reads.
+    static FILE* statsFile = nullptr;
+    static bool statsTried = false;
+    if (!statsTried)
+    {
+        statsTried = true;
+        if (const char* path = Env("CZ_VK_FRAME_STATS"))
+        {
+            statsFile = fopen(path, "w");
+            if (statsFile)
+                fprintf(statsFile,
+                        "# frame draws vertices drawFingerprint cameraFingerprint "
+                        "width height coveragePct meanLuma distinctColours pixelHash "
+                        "surfW surfH surfCoveragePct surfMeanLuma surfDistinct "
+                        "surfHash\n");
+            else
+                fprintf(stderr, "[vk] cannot write CZ_VK_FRAME_STATS=%s\n", path);
+        }
+    }
+    // CZ_VK_FRAME_STATS_SURFACE=<hex> — measure THAT resolve surface as well as the
+    // presented frame.
+    //
+    // This is not a refinement, it is the thing that makes the metric work at all. The
+    // first version measured only the presented front buffer, which at the title screen
+    // is the logo era: mostly UI, 2-36% covered. Disabling the 16-bit texcoord
+    // unswizzle — a change that touches 476,858 draws a run — moved it by 0.1
+    // percentage points, i.e. the metric could not see a defect it was built to catch,
+    // because the defect lives on the SCENE surface and the metric was looking at the
+    // overlay. Gotcha 30: a test that has never failed has not been shown capable of
+    // failing, and this one was shown incapable.
+    //
+    // Set it to the scene's resolve destination (06BE4000 at the title screen; the
+    // CZ_VK_RESOLVE_TRACE output names it for any era).
+    static const char* surfaceEnv = Env("CZ_VK_FRAME_STATS_SURFACE");
+    static const uint32_t statsSurface =
+        surfaceEnv ? uint32_t(strtoul(surfaceEnv, nullptr, 16)) & 0x1FFFFFFF : 0;
+    std::vector<uint8_t> surfacePixels;
+    uint32_t surfaceW = 0, surfaceH = 0;
+    if (statsFile && statsSurface)
+    {
+        auto sit = R->snapshots.find(statsSurface);
+        if (sit != R->snapshots.end())
+        {
+            const uint64_t n =
+                uint64_t(sit->second.image.width) * sit->second.image.height * 4;
+            if (n <= R->readback.size)
+            {
+                RunImmediate([&](VkCommandBuffer cb) {
+                    Barrier(cb, sit->second.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                    VkBufferImageCopy c{};
+                    c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                    c.imageExtent = { sit->second.image.width, sit->second.image.height,
+                                      1 };
+                    vkCmdCopyImageToBuffer(cb, sit->second.image.image,
+                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                           R->readback.buffer, 1, &c);
+                    Barrier(cb, sit->second.image,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                });
+                surfacePixels.assign(R->readback.mapped, R->readback.mapped + n);
+                surfaceW = sit->second.image.width;
+                surfaceH = sit->second.image.height;
+            }
+        }
+    }
+
+    if (statsFile)
+    {
+        uint64_t lit = 0, lumaSum = 0, ph = 0xCBF29CE484222325ull;
+        // Distinct colours exactly, without a hash set: the frame is RGBA8 and a
+        // 2^24-bit bitmap is 2 MB, which is cheaper than a hash table per frame and
+        // gives an exact count rather than an estimate.
+        static std::vector<uint64_t> seenBits;
+        seenBits.assign(1u << 18, 0); // 2^24 bits
+        uint64_t distinct = 0;
+        for (size_t i = 0; i < bytes; i += 4)
+        {
+            const uint32_t r = R->presentPixels[i], g = R->presentPixels[i + 1],
+                           b = R->presentPixels[i + 2];
+            const uint32_t rgb = (r << 16) | (g << 8) | b;
+            if (rgb)
+                ++lit;
+            lumaSum += (r * 54 + g * 183 + b * 19) >> 8;
+            const uint32_t word = rgb >> 6, bit = rgb & 63;
+            if (!(seenBits[word] & (1ull << bit)))
+            {
+                seenBits[word] |= 1ull << bit;
+                ++distinct;
+            }
+            ph ^= rgb;
+            ph *= 0x100000001B3ull;
+        }
+        const uint64_t pixels = bytes / 4;
+        // The named surface, measured the same way. Zeros when it was not requested or
+        // does not exist this frame, which frame_compare.py reads as "no surface data"
+        // rather than as an empty surface.
+        uint64_t slit = 0, slumaSum = 0, sph = 0xCBF29CE484222325ull, sdistinct = 0;
+        if (!surfacePixels.empty())
+        {
+            seenBits.assign(1u << 18, 0);
+            for (size_t i = 0; i < surfacePixels.size(); i += 4)
+            {
+                const uint32_t r = surfacePixels[i], g = surfacePixels[i + 1],
+                               b = surfacePixels[i + 2];
+                const uint32_t rgb = (r << 16) | (g << 8) | b;
+                if (rgb)
+                    ++slit;
+                slumaSum += (r * 54 + g * 183 + b * 19) >> 8;
+                const uint32_t word = rgb >> 6, bit = rgb & 63;
+                if (!(seenBits[word] & (1ull << bit)))
+                {
+                    seenBits[word] |= 1ull << bit;
+                    ++sdistinct;
+                }
+                sph ^= rgb;
+                sph *= 0x100000001B3ull;
+            }
+        }
+        const uint64_t spixels = surfacePixels.size() / 4;
+        fprintf(statsFile,
+                "%llu %llu %llu %016llx %016llx %u %u %.4f %.3f %llu %016llx "
+                "%u %u %.4f %.3f %llu %016llx\n",
+                (unsigned long long)R->frame, (unsigned long long)R->drawsThisFrame,
+                (unsigned long long)R->verticesThisFrame,
+                (unsigned long long)R->drawFingerprint,
+                (unsigned long long)R->cameraFingerprint, width0, height0,
+                pixels ? 100.0 * double(lit) / double(pixels) : 0.0,
+                pixels ? double(lumaSum) / double(pixels) : 0.0,
+                (unsigned long long)distinct, (unsigned long long)ph,
+                surfaceW, surfaceH,
+                spixels ? 100.0 * double(slit) / double(spixels) : 0.0,
+                spixels ? double(slumaSum) / double(spixels) : 0.0,
+                (unsigned long long)sdistinct,
+                spixels ? (unsigned long long)sph : 0ull);
+        fflush(statsFile);
+    }
+    R->drawFingerprint = 0;
+    R->cameraFingerprint = 0;
+    R->verticesThisFrame = 0;
 
     // A frame that is entirely one colour is the single most common wrong result a
     // renderer produces, and it is invisible in a log. Counting it makes "the picture

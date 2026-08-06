@@ -816,6 +816,24 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
     the same binary. It retired the `sges` idiom (`abs(x) >= 0.0`, the compiler's
     "set w = 1") as the cause of exploded geometry: forcing it to a literal 1.0 changed
     the picture by 0.1%.
+129. **A metric that passes perfectly and tests nothing is worse than a noisy one.**
+    Aligning rendered frames by content — the method that works on the capture pair —
+    gave 257 of 257 frames bit-identical with zero delta, and it was 257 copies of a
+    BLACK IMAGE. For a scene animated off wall-clock time, exact alignment selects for
+    stasis, which is precisely the content least able to reveal a difference. The same
+    100.0% came back for arms that visibly change the picture. The noisy version at
+    least did not invite belief.
+130. **Aggregate over the era; and use the MEDIAN, not the mean.** Several hundred
+    frames sample the whole animation cycle, so the median is stable (1.36 pp over five
+    runs of one binary) while the mean is not (64.3–70.8 over the same runs) — the mean
+    is pulled about by how long a run spent in each part of the cycle.
+131. **Measure the surface the defect lives on, not the one you present.** The first
+    version of the metric compared the presented frame, which at this title screen is
+    mostly UI: a change touching 476,858 draws a run moved it 0.1 pp. It could not see
+    the defect it was built for.
+132. **A threshold derived from the runs being compared cannot fail.** It widens to
+    accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
+    band as a constant measured once from five baseline runs.
 117. **The picture is the one claim that needs an image, so make it self-servable.**
     Every other gate in this project is a log diff. Dumping frames AND every resolve
     snapshot from a headless run is what turns "does it look right" from an operator
@@ -1103,6 +1121,26 @@ CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw. The arm that
 CZ_VK_FORCE_COLORMASK=1  treat every draw as writing all four channels — the arm that
                    retired "38.6% of draws have an empty colour mask, so the register
                    index must be wrong" (it is a real depth-only pass; frame identical)
+CZ_VK_FRAME_STATS=file  one line per presented frame: draws, vertices, a draw-stream
+                   fingerprint, a camera fingerprint, and the output's coverage, mean
+                   luminance, distinct colours and pixel hash. The input to
+                   tools/frame_compare.py
+CZ_VK_FRAME_STATS_SURFACE=hex  ALSO measure that resolve surface each frame. Not a
+                   refinement — the metric does not work without it, because the
+                   PRESENTED frame at the title screen is mostly UI and a change
+                   touching 476,858 draws moved it 0.1 pp. 06BE4000 is the scene
+CZ_VK_SHADER_CENSUS=1  draws per (vs, ps) pair. With the capture's disassembly beside
+                   every blob, this is the pair that localises a shading bug
+CZ_VK_DRAW_PROBE=hash  one draw's actual matrices and the vertex data it will read
+CZ_VK_STATE_PROBE=1    the state registers the renderer ASSUMES rather than reads
+CZ_VK_FETCH_SLOT_INVERT=1  read vertex fetch constants at 95-slot — the arm that
+                   settled the fetch-slot convention unambiguously (inverted: 0.0%)
+CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw
+CZ_VK_NO_TEXCOORD_SWAP=1   suppress the 16-bit texcoord unswizzle mask
+CZ_VK_PRIM_RESTART=1   honour 0xFFFF as a strip separator. OFF because the guest
+                   declares VGT_MAX_VTX_INDX=65535, i.e. 0xFFFF is a LEGAL index
+CZ_VK_RESOLVE_TRACE=N  from frame N: each resolve's destination, extent, copy window,
+                   clear bits and the DRAW COUNT of the pass it closes
 CZ_VK_VALIDATION=1 the Khronos validation layer. Slow at ~900 draws a frame, and it has
                    twice named an API misuse that was being investigated as a renderer bug
 CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
@@ -1116,6 +1154,22 @@ CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask
 `CZ_KCALL_WHO` is the companion to the phase gate: the gate says *that* our
 first-occurrence order diverges, and the most informative divergences are imports we
 call which hardware never calls at all. Only the call site explains those.
+
+A/B the renderer. **This is the only sound way to claim a renderer change helped** —
+two of this phase's three "measured improvement" claims turned out to be noise from the
+title screen's ANIMATED 3D background, because a single run of an unvalidated metric is
+not a measurement (gotchas 50/51/86). Aggregate over the era; never compare by frame
+index (gotcha 38):
+```
+for a in base arm; do
+  (cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_FRAME_STATS_SURFACE=06BE4000 \
+      CZ_VK_FRAME_STATS=/tmp/$a.txt timeout 85 ./cz_runtime >/dev/null 2>&1)
+done
+python3 tools/frame_compare.py /tmp/base.txt /tmp/arm.txt
+```
+Baseline band is **1.36 pp** of median surface coverage over five runs of one binary;
+the tool calls anything inside 1.5 pp "no detectable difference". It has been shown
+capable of failing (gotcha 30): `CZ_VK_PRIM_RESTART=1` reads 17 pp outside the band.
 
 Disassemble the guest image. **Reach for this before reading `ppc/`** — a recompiled
 function is a translation, and most questions ("what writes this field", "which branch
