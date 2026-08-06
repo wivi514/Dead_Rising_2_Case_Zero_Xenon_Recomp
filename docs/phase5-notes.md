@@ -711,6 +711,40 @@ the blood streak — recognisably capture E2. `CZ_VK_NO_FLIP_Y=1` is the arm.
 Still wrong on that screen: "PRESS START" and the copyright line render as solid blocks
 rather than glyphs, which is the next thread and is a *text* problem, not a geometry one.
 
+## 6r. Text rendered as solid blocks: the fetch constant's component SWIZZLE
+
+Reported the same way as §6q, by an operator looking at the screen: "anything written is
+weird squares".
+
+The Xenos texture fetch constant carries a 12-bit **component swizzle** in dword3
+(bits 1..12), four 3-bit fields saying which fetched component each of x, y, z, w takes
+(0..3 = XYZW, 4 = constant 0, 5 = constant 1). The renderer ignored it entirely.
+
+It is **runtime data**, which is why it has to be the runtime's job: a shader compiled
+without the fetch constant cannot bake it in, so XenosRecomp emits a plain `Sample()`
+and the mapping has to come from the image view.
+
+Where it shows first is TEXT. A font atlas is a single-channel image, and the guest
+routes that one channel to the component its shader reads — commonly alpha. Presented as
+`R8_UNORM` with an identity mapping, Vulkan reads alpha as a constant **1.0**, so every
+glyph samples fully opaque and the text renders as solid blocks of the right size in the
+right place. The quad is correct and the sample is not, which is exactly why it reads as
+a font problem rather than a texture-decode one.
+
+The fix is free: decode the swizzle into a `VkComponentMapping` on the image view. No
+data conversion, no shader change. `CZ_VK_NO_TEX_SWIZZLE=1` is the arm.
+
+**Result:** "© CAPCOM CO., LTD. 2010 ALL RIGHTS RESERVED" is legible, and with §6q's flip
+the title screen is now recognisably capture E2 — wordmark, CASE ZERO stamp, blood drips,
+the trademark mark and the 2.
+
+Same lesson as §6q, and worth stating once more because two consecutive defects shared
+it: **neither of these was visible to any number this project computes.** A swizzle
+changes which channel is sampled, so a solid white block and a correct glyph have
+different coverage — but the metric was never pointed at the presented frame's text, and
+no aggregate would have named the cause. Both were found in one minute of a human
+looking at the game.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,

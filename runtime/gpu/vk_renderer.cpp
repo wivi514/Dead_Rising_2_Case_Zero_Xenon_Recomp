@@ -641,7 +641,8 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
 bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                  VkImageUsageFlags usage, VkImageAspectFlags aspect,
                  VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, uint32_t layers = 1,
-                 uint32_t depthExtent = 1)
+                 uint32_t depthExtent = 1,
+                 VkComponentMapping components = VkComponentMapping{})
 {
     img.width = w;
     img.height = h;
@@ -677,6 +678,7 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     vi.image = img.image;
     vi.viewType = viewType;
     vi.format = format;
+    vi.components = components;
     vi.subresourceRange = { aspect, 0, 1, 0, layers };
     VK_CHECK(vkCreateImageView(R->device, &vi, nullptr, &img.view), "vkCreateImageView");
     return true;
@@ -1095,6 +1097,36 @@ inline uint32_t Tiled2DOffset(uint32_t x, uint32_t y, uint32_t widthUnits,
            log2bpu;
 }
 
+// The fetch constant's component swizzle, as a Vulkan image-view component mapping.
+//
+// WHY THE RUNTIME HAS TO DO THIS. The swizzle lives in the fetch CONSTANT, which is
+// runtime data, so a shader compiled without it cannot bake it in — XenosRecomp emits a
+// plain `Sample()` and the mapping has to come from the view.
+//
+// Where it shows first is TEXT. A font atlas is a single-channel image, and the guest
+// routes that one channel to the component its shader reads — commonly alpha. Presented
+// as `R8_UNORM` with an identity mapping, Vulkan reads alpha as a constant 1.0, so every
+// glyph samples fully opaque and the text renders as SOLID BLOCKS of the right size and
+// position. The quad is correct, the sample is not, which is why it looks like a font
+// problem rather than a texture-decode one.
+VkComponentMapping XenosSwizzle(uint32_t swz)
+{
+    auto one = [](uint32_t v) -> VkComponentSwizzle {
+        switch (v & 7)
+        {
+            case 0: return VK_COMPONENT_SWIZZLE_R;
+            case 1: return VK_COMPONENT_SWIZZLE_G;
+            case 2: return VK_COMPONENT_SWIZZLE_B;
+            case 3: return VK_COMPONENT_SWIZZLE_A;
+            case 4: return VK_COMPONENT_SWIZZLE_ZERO;
+            case 5: return VK_COMPONENT_SWIZZLE_ONE;
+            // 6 and 7 are "keep", i.e. the component is left as fetched.
+            default: return VK_COMPONENT_SWIZZLE_IDENTITY;
+        }
+    };
+    return { one(swz), one(swz >> 3), one(swz >> 6), one(swz >> 9) };
+}
+
 // The Xenos texture format to a Vulkan format that reads the same bytes after the
 // endian swap. `blockDim` is 4 for the compressed families and 1 otherwise;
 // `bytesPerUnit` is the size of one texel or one 4x4 block.
@@ -1258,6 +1290,7 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
     t.height = ((d2 >> 13) & 0x1FFF) + 1;
     t.depth = 1;
     // dword3: num_format:1, swizzle:12, exp_adjust:6, mag:2, min:2, mip:2, aniso:3
+    t.swizzle = (d3 >> 1) & 0xFFF;
     t.filterMag = (d3 >> 19) & 3;
     t.filterMin = (d3 >> 21) & 3;
     t.filterMip = (d3 >> 23) & 3;
@@ -1340,6 +1373,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         return 0;
     }
 
+    // CZ_VK_NO_TEX_SWIZZLE=1 restores the identity mapping, so the change is
+    // measurable in the same binary — and it is one of the few renderer changes a
+    // human can adjudicate instantly, because the symptom is readable text or not.
+    static const bool noSwizzle = EnvOn("CZ_VK_NO_TEX_SWIZZLE");
+
     const uint32_t unitW = (t.width + blockDim - 1) / blockDim;
     const uint32_t unitH = (t.height + blockDim - 1) / blockDim;
     // The stored pitch is in blocks of 32 units; a fetch constant with no pitch means
@@ -1413,7 +1451,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     entry.slot = R->nextTextureSlot++;
     if (!CreateImage(entry.image, t.width, t.height, format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_IMAGE_ASPECT_COLOR_BIT))
+                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                     noSwizzle ? VkComponentMapping{} : XenosSwizzle(t.swizzle)))
     {
         Count("texture: image creation failed");
         --R->nextTextureSlot;

@@ -137,6 +137,11 @@ struct TextureFetch
     uint32_t address;    // dword2-ish: base << 12, guest physical
     uint32_t width, height, depth;
     uint32_t format;     // dword3 bits 0:5
+    // dword3 bits 1..12: four 3-bit fields saying which fetched component each of
+    // x,y,z,w takes (0..3 = XYZW, 4 = constant 0, 5 = constant 1). This is RUNTIME
+    // data, so a shader compiled without the fetch constant cannot bake it in — the
+    // runtime has to apply it, and a font atlas is where forgetting shows first.
+    uint32_t swizzle;
     bool tiled;
     uint32_t dimension;  // 0 = 1D, 1 = 2D, 2 = 3D, 3 = cube
     uint32_t mipMin, mipMax;

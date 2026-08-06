@@ -834,6 +834,12 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 132. **A threshold derived from the runs being compared cannot fail.** It widens to
     accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
     band as a constant measured once from five baseline runs.
+136. **A texture's component SWIZZLE is runtime data, so the runtime must apply it.**
+    The Xenos fetch constant carries it in dword3; a shader compiled without the fetch
+    constant cannot bake it in. Ignoring it makes a single-channel font atlas sample
+    alpha as a constant 1.0, so every glyph is fully opaque and text renders as solid
+    blocks of the right size in the right place — which reads as a font bug rather than
+    a texture-decode one. Free to fix: a VkComponentMapping on the image view.
 135. **An aggregate over pixel VALUES is blind to a transform of the picture.** The
     whole frame was rendered vertically mirrored for the entire phase — a Xenos vertex
     shader emits D3D-convention clip coordinates (+y up) and Vulkan's NDC is +y down —
@@ -1171,6 +1177,9 @@ CZ_VK_STATE_PROBE=1    the state registers the renderer ASSUMES rather than read
 CZ_VK_FETCH_SLOT_INVERT=1  read vertex fetch constants at 95-slot — the arm that
                    settled the fetch-slot convention unambiguously (inverted: 0.0%)
 CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw
+CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
+                   pre-fix behaviour where a single-channel font atlas samples alpha
+                   as a constant 1.0 and all text renders as SOLID BLOCKS
 CZ_VK_NO_FLIP_Y=1  render with a positive-height viewport, i.e. the pre-fix vertically
                    MIRRORED frame. The arm for the flip that made the title screen
                    appear; note no numeric instrument in this project can tell the two
