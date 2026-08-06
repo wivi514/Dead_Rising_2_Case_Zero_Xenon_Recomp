@@ -945,6 +945,18 @@ bool D3dDraw_ServiceReserve(PPCContext& ctx, uint8_t* base)
     return true;
 }
 
+bool D3dDraw_RedirectActive()
+{
+    return g_mode == Mode::On && g_depth > 0 &&
+           g_redirectOwner.load(std::memory_order_acquire) == SelfThreadId();
+}
+
+void D3dDraw_ScratchRange(uint32_t& va, uint32_t& bytes)
+{
+    va = g_scratchVa;
+    bytes = kScratchBytes;
+}
+
 void D3dDraw_DumpStats()
 {
     if (g_stats.empty())

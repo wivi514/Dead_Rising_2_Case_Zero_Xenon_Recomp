@@ -123,3 +123,12 @@ bool D3dDraw_ServiceRealRing(PPCContext& ctx, uint8_t* base, CzGuestFunc through
 
 // The walker's counters, printed at exit alongside the renderer's.
 void D3dDraw_DumpStats();
+
+// Is a redirect installed on THIS thread right now, and where does the scratch live?
+// For instruments only: a cursor argument inside [scratchVa, scratchVa+bytes) came out
+// of the redirect, and one outside it came out of the real command buffer. That
+// distinction is the whole of phase C's "who reads what this emits" question (the rule
+// of part 2), and without it a probe printing a cursor prints a number nobody can
+// classify. Returns false when phase C is off or no redirect is active here.
+bool D3dDraw_RedirectActive();
+void D3dDraw_ScratchRange(uint32_t& va, uint32_t& bytes);

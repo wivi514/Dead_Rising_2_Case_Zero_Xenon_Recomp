@@ -51,6 +51,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "../gpu/d3d_draw.h"
 #include "../kernel/memory.h"
 #include "guest_thread.h"
 #include "ppc_recomp_shared.h"
@@ -378,11 +379,25 @@ void DumpInterpreter(PPCContext& ctx, uint8_t* base)
     // The first few calls establish what healthy looks like; after that only the
     // anomaly is worth a line, because this runs per frame. A cap on the anomaly too:
     // if it starts firing every call, sixteen lines say so as well as a million.
+    //
+    // BUT THE CAP IS NOT A COUNT (gotcha 109), and reading it as one cost a session:
+    // phase C part 2's hand-off recorded "every one of its 4 entries had a null
+    // callback" from this probe's four PRINTED lines and reasoned about the worker on
+    // that basis. Four was the cap. So the counters are reported separately, on their
+    // own cadence, and they are the numbers to quote.
     static std::atomic<int> calls{ 0 };
     static std::atomic<int> nulls{ 0 };
+    static std::atomic<int> empties{ 0 };
     const int n = calls.fetch_add(1);
     const bool anomaly = cb == 0;
-    if (n >= 4 && !(anomaly && nulls.fetch_add(1) < 16))
+    if (anomaly)
+        nulls.fetch_add(1);
+    if (PPC_LOAD_U32(job + 0x54) == PPC_LOAD_U32(job + 0x58))
+        empties.fetch_add(1);
+    if (((n + 1) % 2048) == 0)
+        fprintf(stderr, "[jobq] TOTALS entries=%d nullCallback=%d queueEmptyAtEntry=%d\n",
+                n + 1, nulls.load(), empties.load());
+    if (n >= 4 && !(anomaly && nulls.load() < 16))
         return;
 
     fprintf(stderr,
@@ -649,9 +664,31 @@ bool FenceProbeEnabled()
 // Shared across the three hooks so their lines interleave in call order and the cap
 // is a budget for the whole picture, not per function.
 std::atomic<uint64_t> g_fenceLines{ 0 };
+// CZ_FENCE_PROBE=1 keeps the 40,000-line default; CZ_FENCE_PROBE=<N> sets the budget.
+// It is adjustable because a saturated budget is a FLOOR, not a count (gotcha 109),
+// and a stall this probe exists to explain is at the END of a boot, not the start.
+uint64_t FenceBudget()
+{
+    static const uint64_t n = [] {
+        const char* v = getenv("CZ_FENCE_PROBE");
+        const long l = v ? strtol(v, nullptr, 10) : 0;
+        return l > 1 ? uint64_t(l) : uint64_t(40000);
+    }();
+    return n;
+}
 bool FenceLine()
 {
-    return g_fenceLines.fetch_add(1, std::memory_order_relaxed) < 40000;
+    return g_fenceLines.fetch_add(1, std::memory_order_relaxed) < FenceBudget();
+}
+
+// " SCRATCH" when a command-buffer cursor points into phase C's private redirect
+// buffer, "" when it points at the real ring-fed command buffer. On the PM4 control
+// arm it is always "" — which is what makes the two arms' logs directly diffable.
+const char* WhereCursor(uint32_t cursor)
+{
+    uint32_t va = 0, bytes = 0;
+    D3dDraw_ScratchRange(va, bytes);
+    return (va && cursor >= va && cursor < va + bytes) ? " SCRATCH" : "";
 }
 
 } // namespace
@@ -689,9 +726,16 @@ PPC_FUNC(sub_82845DE0)
         const uint32_t dev = ctx.r3.u32;
         const uint32_t cursor = PPC_LOAD_U32(dev + 0x30);
         const uint32_t segStart = PPC_LOAD_U32(dev + 0x3B20);
-        fprintf(stderr, "[fence] close t=%08X dev=%08X cursor=%08X seg=%08X dwords=%d "
+        // The cursor label is the important field. sub_82845DE0 measures the segment
+        // it is about to hand to the ring as [dev+0x3B20, [dev+0x30]+4) — so if it
+        // runs on ANY thread while a redirect has the private scratch installed in
+        // dev+0x30, the segment it publishes spans from the real command buffer to
+        // our scratch, and the command processor then executes our already-walked
+        // content as if it were a command stream.
+        fprintf(stderr, "[fence] close t=%08X dev=%08X cursor=%08X%s seg=%08X%s dwords=%d "
                         "2ABC=%02X 2ABD=%02X 3460=%08X 2B04=%08X\n",
-                GuestThread::GetCurrentThreadId(), dev, cursor, segStart,
+                GuestThread::GetCurrentThreadId(), dev, cursor, WhereCursor(cursor),
+                segStart, WhereCursor(segStart),
                 int(int32_t(cursor + 4 - segStart) >> 2), PPC_LOAD_U8(dev + 0x2ABC),
                 PPC_LOAD_U8(dev + 0x2ABD), PPC_LOAD_U32(dev + 0x3460),
                 PPC_LOAD_U32(dev + 0x2B04));
@@ -712,6 +756,21 @@ extern "C" PPC_FUNC(__imp__sub_82844D38);
 
 PPC_FUNC(sub_82844D38)
 {
+    // Source 0 is the vblank tick: it carries no callback, it arrives ~60 times a
+    // second on every arm, and printing it made 14,340 of one run's 16,245 ISR lines
+    // — a budget spent on the one interrupt that cannot be the answer, and enough
+    // fprintf to move where the boot got to in a fixed wall time. Counted, not
+    // printed; the count still says the pump is alive.
+    static std::atomic<uint64_t> vblanks{ 0 };
+    if (ctx.r3.u32 == 0)
+    {
+        const uint64_t n = vblanks.fetch_add(1) + 1;
+        if (FenceProbeEnabled() && (n % 4096) == 0 && FenceLine())
+            fprintf(stderr, "[fence] isr   (source 0 / vblank) x%llu so far\n",
+                    (unsigned long long)n);
+        __imp__sub_82844D38(ctx, base);
+        return;
+    }
     if (FenceProbeEnabled() && FenceLine())
     {
         const uint32_t mirror = ctx.r3.u32 == 1 ? PPC_LOAD_U32(ctx.r4.u32 + 0x2A94) : 0;
@@ -735,8 +794,132 @@ extern "C" PPC_FUNC(__imp__sub_82845BA0);
 PPC_FUNC(sub_82845BA0)
 {
     if (FenceProbeEnabled() && FenceLine())
-        fprintf(stderr, "[fence] arm   t=%08X cursor=%08X flags=%08X cb=%08X arg=%08X\n",
-                GuestThread::GetCurrentThreadId(), ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
-                ctx.r7.u32);
+        fprintf(stderr, "[fence] arm   t=%08X cursor=%08X%s flags=%08X cb=%08X arg=%08X\n",
+                GuestThread::GetCurrentThreadId(), ctx.r4.u32, WhereCursor(ctx.r4.u32),
+                ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
     __imp__sub_82845BA0(ctx, base);
+}
+
+// ---------------------------------------------------------------------------------
+// The CONSUMER half of the same protocol, under the same flag — because the producer
+// half alone cannot answer phase C part 3's question.
+//
+// dev+0x2B04 is the count of outstanding async command segments, and sub_82846210
+// SPINS on it reaching zero. Session 14 left it pinned nonzero on the draw arm with
+// the engine thread at 99% CPU, and the producer probe could only show that segments
+// were being submitted. What decides the count is on the other side:
+//
+//   the object       obj = dev + 0x2AC4. Proven, not assumed: sub_82845AC0 locks
+//                    dev+0x2B08 and sub_8284A960 locks obj+0x44, so obj+0x44 IS
+//                    dev+0x2B08. Hence obj+0x3C = dev+0x2B00 (the interpreter's
+//                    nesting depth) and obj+0x40 = dev+0x2B04 (THE COUNTER).
+//   sub_8284B568     the D3D worker's token interpreter. Pops one buffer off the
+//                    per-CPU ring (job+0x5C + (job+0x58 & 3)*4) and does
+//                    ++[obj+0x3C] before walking it.
+//   sub_8284A960     the 0xC0000000 end-of-stream sentinel handler. Does
+//                    --[obj+0x3C], and ONLY when that reaches zero (and [obj+0x48]
+//                    is clear) does it do --[obj+0x40]. So the counter drains once
+//                    per fully-walked stream, not once per segment.
+//   sub_8284B9C0     the frame-end async submit, and the ONLY site in the image that
+//                    arms sub_8284AAD0 (the worker kick — the 0x8284AAD0 constant is
+//                    built at 8284BAC4/8284BACC and passed to sub_82845BA0). It
+//                    allocates three command-buffer blocks through sub_82845078 and
+//                    then hands their addresses to sub_82845AC0 as segments, the
+//                    middle one with r7=1 — the only +1 the counter ever gets.
+//   sub_82846210     the spin itself.
+//
+// The cursor labels are the point: sub_8284B9C0 is reached from Resolve, which phase C
+// REDIRECTS, so every block it allocates can come out of the private scratch — and a
+// segment address inside the scratch is one the redirect has already consumed and the
+// worker will walk anyway. Printing SCRATCH vs ring next to each cursor is what makes
+// that visible instead of inferrable.
+extern "C" PPC_FUNC(__imp__sub_8284A960);
+extern "C" PPC_FUNC(__imp__sub_8284B9C0);
+extern "C" PPC_FUNC(__imp__sub_82846210);
+
+PPC_FUNC(sub_8284A960)
+{
+    if (FenceProbeEnabled() && FenceLine())
+    {
+        const uint32_t obj = ctx.r3.u32;
+        fprintf(stderr, "[fence] drain t=%08X obj=%08X depth=%u counter=%u 48=%08X "
+                        "token=%08X\n",
+                GuestThread::GetCurrentThreadId(), obj, PPC_LOAD_U32(obj + 0x3C),
+                PPC_LOAD_U32(obj + 0x40), PPC_LOAD_U32(obj + 0x48),
+                ctx.r5.u32 >= 0x1000 ? PPC_LOAD_U32(ctx.r5.u32) : 0);
+    }
+    __imp__sub_8284A960(ctx, base);
+}
+
+PPC_FUNC(sub_8284B9C0)
+{
+    if (FenceProbeEnabled() && FenceLine())
+    {
+        const uint32_t dev = ctx.r3.u32;
+        const uint32_t cursor = PPC_LOAD_U32(dev + 0x30);
+        fprintf(stderr, "[fence] fsubmit t=%08X dev=%08X tiles=%u cursor=%08X%s "
+                        "counter=%u 3460=%08X 2ABD=%02X\n",
+                GuestThread::GetCurrentThreadId(), dev, ctx.r4.u32, cursor,
+                WhereCursor(cursor), PPC_LOAD_U32(dev + 0x2B04),
+                PPC_LOAD_U32(dev + 0x3460), PPC_LOAD_U8(dev + 0x2ABD));
+    }
+    __imp__sub_8284B9C0(ctx, base);
+}
+
+// sub_828455C0 — the RING submitter, and the only thing that puts INDIRECT_BUFFER
+// packets in front of our command processor on the phase C arm.
+//
+// It takes an array of `count` 8-byte {tokenWord, sizeDwords} entries and writes one
+// 3-dword indirect-buffer packet per entry into the ring, calling sub_82844AB0 first
+// to wait for ring space. Its two callers are the reserve/close path and, on the D3D
+// worker, the token sub-dispatcher sub_8284B228.
+//
+// It is instrumented because of what a ring trace showed on the draw arm: through the
+// boot movie the ring carries ~390 packets and ~48 draws a frame, and then from around
+// frame 384 it goes to 1.25 MILLION packets and 135,000 draws per second with the
+// XE_SWAP count frozen — i.e. the command processor is faithfully executing a stream
+// that never ends, while every guest thread is parked. `truncated=0` and the IB verify
+// stays clean throughout, so this is not a parser fault (gotcha 88 again): the BYTES
+// are wrong, and this is the function that chooses them.
+extern "C" PPC_FUNC(__imp__sub_828455C0);
+
+PPC_FUNC(sub_828455C0)
+{
+    if (FenceProbeEnabled())
+    {
+        static std::atomic<uint64_t> calls{ 0 };
+        static std::atomic<uint64_t> entries{ 0 };
+        const uint64_t k = calls.fetch_add(1);
+        const uint64_t e = entries.fetch_add(ctx.r5.u32) + ctx.r5.u32;
+        // First few for the shape, then a periodic total — because the interesting
+        // claim is a RATE (entries per second), and a capped list of lines cannot
+        // carry one (gotcha 109).
+        if (k < 8 || (k % 20000) == 0)
+        {
+            const uint32_t arr = ctx.r4.u32;
+            fprintf(stderr, "[fence] ringsub t=%08X #%llu count=%u totalEntries=%llu "
+                            "arr=%08X%s [0]=%08X/%u [1]=%08X/%u\n",
+                    GuestThread::GetCurrentThreadId(), (unsigned long long)k, ctx.r5.u32,
+                    (unsigned long long)e, arr, WhereCursor(arr),
+                    arr >= 0x1000 ? PPC_LOAD_U32(arr) : 0,
+                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 4) : 0,
+                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 8) : 0,
+                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 12) : 0);
+        }
+    }
+    __imp__sub_828455C0(ctx, base);
+}
+
+PPC_FUNC(sub_82846210)
+{
+    const bool probe = FenceProbeEnabled();
+    const uint32_t dev = ctx.r3.u32;
+    if (probe && FenceLine())
+        fprintf(stderr, "[fence] spin- t=%08X dev=%08X counter=%u fence=%u\n",
+                GuestThread::GetCurrentThreadId(), dev, PPC_LOAD_U32(dev + 0x2B04),
+                PPC_LOAD_U32(dev + 0x2A9C));
+    __imp__sub_82846210(ctx, base);
+    if (probe && FenceLine())
+        fprintf(stderr, "[fence] spin+ t=%08X dev=%08X RETURNED counter=%u\n",
+                GuestThread::GetCurrentThreadId(), dev, PPC_LOAD_U32(dev + 0x2B04));
 }

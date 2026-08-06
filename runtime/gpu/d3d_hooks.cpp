@@ -251,6 +251,43 @@ ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
         if (DrawMode() && D3dDraw_ServiceReserve(ctx, base))
             return ServiceResult::Serviced;
         return ServiceResult::CallThrough;
+    case kH_PreSwapResolve:
+        // RETRACTION of the Phase A name and of phase C's routing. sub_82841AD0
+        // RESOLVES NOTHING. Read end to end it emits exactly four things, and every
+        // one of them is the GPU/CPU hand-off protocol of part 2's rule:
+        //     type-0 write reg 0x0579 = 1
+        //     WAIT_REG_MEM on [[dev+0x2A94]]+4          (the ISR mirror)
+        //     sub_82845BA0 — the callback ARM + INTERRUPT + re-poison block
+        //     a second WAIT_REG_MEM on the same mirror word
+        // There is no draw, no clear, no copy, no state. It was in the Redirect group
+        // because the Phase A table called it a resolve, and phase C grouped it with
+        // the content it was named after rather than with the packets it emits.
+        //
+        // The cost of that was measurable and was measured: with it redirected, every
+        // one of a boot's 405 callback armings landed at cursor BFBEB024 — inside the
+        // private scratch (`[fence] arm ... SCRATCH`) — so the walker had to deliver
+        // them, and every walker delivery was the frame tick, which is precisely the
+        // picture part 2 diagnosed and fixed for sub_82846288 alone. Four functions in
+        // this image emit that block; part 2 moved one of them.
+        //
+        // Same-binary control arm, same discipline as CZ_D3D_NO_RESERVE_KICK: with
+        // CZ_D3D_REDIRECT_PRESWAP=1 the call goes back into the Redirect group, so
+        // "does emitting this block where its reader lives matter" is one environment
+        // variable rather than one rebuild.
+        {
+            static const bool preFix = [] {
+                const char* v = getenv("CZ_D3D_REDIRECT_PRESWAP");
+                const bool on = v && *v && *v != '0';
+                if (on)
+                    fprintf(stderr, "[d3d] CZ_D3D_REDIRECT_PRESWAP=1 — sub_82841AD0's "
+                                    "callback-arm block goes into the private SCRATCH "
+                                    "again (the pre-fix arm)\n");
+                return on;
+            }();
+            if (DrawMode() && D3dDraw_Enabled() && !preFix)
+                return ServiceResult::RealRing;
+        }
+        break; // phase B keeps its no-op service, in the content switch below
     case kH_Fence_82846288_q:
         // The Phase A label was "fence/throttle-shaped"; the disassembly says it is the
         // CALLBACK ARMER — it forwards to sub_82845BA0, which lays down the
