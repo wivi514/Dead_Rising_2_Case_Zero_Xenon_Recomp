@@ -400,6 +400,26 @@ StallPlan g_stallPlan;     // carried from the previous tick
 StallPlan g_stallNext;     // being recorded this tick
 bool g_stallHit = false;   // an unsatisfied wait stopped this tick's walk
 
+// The three numbers the brake has to be judged on, as COUNTS rather than as the
+// running index of a capped print.
+//
+// Both stall sites print sparsely (the first 8, then every 65,536; the first 4, then
+// every 1,048,576), which is right for a log and useless as a measurement: a healthy
+// paced boot and a ring parked forever both report "#4" and stop talking. Worse, the
+// number that actually decides whether the brake is safe to make the default is the one
+// nothing tracked at all — whether a stall is ever RELEASED. A wait that is never
+// satisfied is the single failure mode promoting it risks, and `truncated=0` plus a
+// plausible frame count looks identical to a healthy run right up until you notice the
+// frames stopped climbing (gotcha 81: the missing instrument is the one whose silence
+// reads as health).
+//
+// Reported once a second on the ring trace, beside truncated=, because that is where
+// this project already keeps the counter whose nonzero value means a thread is waiting
+// forever.
+std::atomic<uint64_t> g_waitUnmet{ 0 };     // WAIT_REG_MEM evaluated and not satisfied
+std::atomic<uint64_t> g_ringHeld{ 0 };      // ticks that ended held at such a wait
+std::atomic<uint64_t> g_ringReleased{ 0 };  // held ticks whose wait later came true
+
 // Returns the dword position the walk stopped at — `sizeDwords` if it consumed the
 // whole buffer, less than that if a packet claimed more dwords than remained. Callers
 // mostly ignore it; ExecuteLinearVerified below needs it to correlate a truncation
@@ -764,8 +784,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             }
             if (!EvalWaitCondition(info, value, mask, ref))
             {
-                static std::atomic<uint64_t> unmet{ 0 };
-                const uint64_t n = unmet.fetch_add(1) + 1;
+                const uint64_t n = g_waitUnmet.fetch_add(1) + 1;
                 if (n <= 8 || (n & 0xFFFF) == 0)
                     fprintf(stderr,
                             "[pm4] WAIT_REG_MEM #%llu not satisfied, %s: %s %08X "
@@ -1241,6 +1260,12 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     // One tick = one attempt at the plan the previous tick left behind. Rebuilt from
     // scratch each tick so a stall that has cleared does not leave a stale resume
     // point behind for a recycled command buffer to land on.
+    // Snapshotted, not read at the end: the resume path CONSUMES its entry (it zeroes
+    // g_stallPlan.va[depth] once it has re-entered that buffer), so a comparison made
+    // after the walk sees a cleared slot and scores a release on every tick — including
+    // the parked ones, which is the one case this counter exists to name.
+    const StallPlan prevPlan = g_stallPlan;
+    const bool wasHeld = prevPlan.pending;
     g_stallHit = false;
     g_stallNext = StallPlan{};
 
@@ -1256,11 +1281,33 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     }
 
     g_stallNext.pending = g_stallHit;
-    g_stallPlan = g_stallNext;
+    // Held this tick, or released the wait the previous tick was held at. "Released" is
+    // the whole point: a brake whose stalls are all released is the title pacing
+    // itself, and a brake with stalls and no releases is a parked ring wearing exactly
+    // the same numbers everywhere else.
+    //
+    // The comparison is against the stall's IDENTITY (which buffer, which dword), not
+    // against "did this tick stall at all". A paced boot stalls on nearly every tick —
+    // it releases one hand-off wait and runs on to the next frame's — so counting only
+    // ticks that ended clean undercounts releases by a handful per second and makes the
+    // warning below fire on a perfectly healthy run.
+    if (wasHeld)
+    {
+        bool sameWait = g_stallHit;
+        if (sameWait)
+            for (int d = 1; d < 9; ++d)
+                if (g_stallNext.va[d] != prevPlan.va[d] || g_stallNext.pos[d] != prevPlan.pos[d])
+                {
+                    sameWait = false;
+                    break;
+                }
+        if (!sameWait)
+            g_ringReleased.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_stallPlan = g_stallNext; // AFTER the comparison above, which reads the old plan
     if (g_stallHit)
     {
-        static std::atomic<uint64_t> stalls{ 0 };
-        const uint64_t n = stalls.fetch_add(1) + 1;
+        const uint64_t n = g_ringHeld.fetch_add(1) + 1;
         if (n <= 4 || (n & 0xFFFFF) == 0)
             fprintf(stderr, "[pm4] CZ_PM4_STOP_ON_WAIT: ring held at an unsatisfied "
                             "WAIT_REG_MEM (#%llu), resuming next tick\n",
@@ -1339,6 +1386,10 @@ uint32_t Pm4_ScratchUmsk() { return g_regs[kRegScratchUmsk]; }
 uint64_t Pm4_IbTruncatedCount() { return g_ibTruncated.load(); }
 uint64_t Pm4_IbVerifyCleanCount() { return g_ibVerifyClean.load(); }
 uint64_t Pm4_IbVerifyDirtyCount() { return g_ibVerifyDirty.load(); }
+
+uint64_t Pm4_WaitUnmetCount() { return g_waitUnmet.load(); }
+uint64_t Pm4_RingHeldCount() { return g_ringHeld.load(); }
+uint64_t Pm4_RingReleasedCount() { return g_ringReleased.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }

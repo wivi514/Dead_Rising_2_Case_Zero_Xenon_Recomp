@@ -390,6 +390,18 @@ void GraphicsInterruptPump()
                  (unsigned long long)Pm4_IbTruncatedCount(),
                  (unsigned long long)Pm4_IbVerifyCleanCount(),
                  (unsigned long long)Pm4_IbVerifyDirtyCount());
+            // The brake's own health, and the reason it is three numbers rather than
+            // one: a ring HELD at a wait that is later RELEASED is this title pacing
+            // itself, which is what hardware does; a held count that climbs while
+            // released stays put is a ring parked forever, and every other counter on
+            // these three lines reads the same in both cases (gotcha 81).
+            KLOG("ring: waits unmet=%llu held=%llu released=%llu%s\n",
+                 (unsigned long long)Pm4_WaitUnmetCount(),
+                 (unsigned long long)Pm4_RingHeldCount(),
+                 (unsigned long long)Pm4_RingReleasedCount(),
+                 Pm4_RingHeldCount() > Pm4_RingReleasedCount() + 1
+                     ? "   <-- held stalls are NOT being released"
+                     : "");
         }
 
         // Log the first delivery BEFORE the call, not after. A guest ISR that never

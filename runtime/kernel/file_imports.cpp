@@ -194,8 +194,17 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
         iosb->Status = STATUS_SUCCESS;
         iosb->Information = 1; // FILE_OPENED
     }
+    // 512, then every 64th — not 64.
+    //
+    // The old cap was 64 and a boot-to-title opens 64, so this line printed indices
+    // 0..63 and fell silent EXACTLY at the depth every claim in this project quotes off
+    // it ("the boot reaches prologue_z01.big"). That number was the printer's limit, not
+    // the title's progress, and any change that made the boot go further would have been
+    // invisible in the one column used to score it. Gotcha 109 names the trap; this is
+    // the emitter it was written about. Past 512 the every-64th tail keeps depth
+    // observable at a cost that does not grow with a gameplay-length run.
     const uint32_t n = g_opens.fetch_add(1);
-    if (n < 64 || FileTrace())
+    if (n < 512 || (n & 63) == 0 || FileTrace())
         KLOG("NtCreateFile #%u '%s' -> handle %08X (%llu bytes%s)\n", n, guestPath.c_str(),
              handle, (unsigned long long)file->size, directory ? ", directory" : "");
     return STATUS_SUCCESS;
