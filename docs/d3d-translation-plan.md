@@ -99,6 +99,34 @@ was the map.
 
 ## Phases
 
+### The checklist: UnleashedRecomp's hook inventory
+
+42 hooks + 13 stubs in its `gpu/video.cpp`. The XDK-D3D subset is the checklist for
+Case Zero; the last three named ones (`MakePictureData`, `SetResolution`,
+`ScreenShaderInit`) are Sonic Unleashed *engine* functions and have no Case Zero
+equivalent to look for — Case Zero will have its own engine-side additions instead.
+
+| group | hooks to find in Case Zero's image |
+|---|---|
+| device | CreateDevice, Present, GetBackBuffer |
+| resources | CreateTexture, CreateVertexBuffer, CreateIndexBuffer, CreateSurface, DestructResource, GetSurfaceDesc, GetVertexBufferDesc, GetIndexBufferDesc |
+| CPU access | LockTextureRect/Unlock, LockVertexBuffer/Unlock, LockIndexBuffer/Unlock |
+| shaders | CreateVertexShader, SetVertexShader, CreatePixelShader, SetPixelShader |
+| declarations | CreateVertexDeclaration, SetVertexDeclaration, GetVertexDeclaration, HashVertexDeclaration |
+| state | SetRenderTarget, SetDepthStencilSurface, SetViewport, SetScissorRect, SetTexture, SetStreamSource, SetIndices, Clear, StretchRect |
+| draws | DrawPrimitive, DrawIndexedPrimitive, DrawPrimitiveUP |
+| plus | render-state/sampler-state setters (hooked via SetRenderState in video.cpp), a GammaRamp-class stub set |
+
+### Phase A findings so far
+
+The swap internal `sub_82841F00` has exactly four callers:
+`sub_827D2FC0`, `sub_827D3898`, `sub_827CDE48` (all `0x827Cxxxx–0x827Dxxxx`) and
+`sub_8284B828` (inside the cluster). Three callers sitting BELOW the bounded range
+means one of two things — the D3D library is wider than `0x8283–0x8284`, or those
+three are engine-side and the D3D `Present` is `sub_8284B828`'s neighbourhood — and
+which one is the first disassembly question of Phase A, because Present is the first
+hook Phase B needs.
+
 **A — identify the hook set.** Produce the table `sub_XXXXXXXX ↔ hook name` for
 UnleashedRecomp's 42, each verified by disassembly (`gdis.py`), found via (a) import
 call sites as above, (b) PM4-building constants (`--find-uses` on draw/IM_LOAD header
