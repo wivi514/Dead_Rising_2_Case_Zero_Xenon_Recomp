@@ -374,9 +374,19 @@ bool Host_WindowInit()
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
             kDefaultHeight, SDL_GetCurrentVideoDriver());
-    fprintf(stderr, "[host] THE WINDOW IS EXPECTED TO BE BLANK: there is no renderer "
-                    "until phase 5. The title bar carries the live frame count, which "
-                    "is what says the present seam is running.\n");
+    // The startup message states which of the two present modes this run is in,
+    // because a stale claim here is worse than none: this line said "THE WINDOW IS
+    // EXPECTED TO BE BLANK: there is no renderer until phase 5" for two sessions after
+    // the renderer existed, contradicting the picture on screen — and the operator was
+    // the one who had to ignore it.
+    if (getenv("CZ_VKDRAW"))
+        fprintf(stderr, "[host] renderer requested (CZ_VKDRAW): the window shows the "
+                        "rendered frame once VkRenderer_Init succeeds — see the [vk] "
+                        "lines for whether it did.\n");
+    else
+        fprintf(stderr, "[host] no renderer requested (CZ_VKDRAW unset): the window "
+                        "presents a flat clear on purpose. The title bar carries the "
+                        "live frame count, which is what says the present seam runs.\n");
     PrintKeyMap();
 
     for (int i = 0; i < SDL_NumJoysticks(); i++)
