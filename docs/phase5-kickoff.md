@@ -19,18 +19,28 @@
 > the colour-grading LUT) is alive. A class of triangles is still wrong. The frame we
 > present is the logo era and still lacks the logo.
 >
-> ### START HERE, AND IT IS NOT A HYPOTHESIS
+> ### THE METRIC EXISTS NOW — USE IT, DO NOT A/B WITHOUT IT
 >
-> **Build a metric that can tell whether a change worked.** The title screen renders an
-> ANIMATED 3D background, so "the scene surface is N% non-black at frame 600" is a
-> different camera angle every run — measured spread 58.8% to 100.0% on ONE binary
-> (§6k). A single-run A/B on it produced a confident, wrong result this session. Every
-> cheap hypothesis has been spent against that metric; the next one needs an instrument.
+> ```
+> for a in base arm; do
+>   (cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_FRAME_STATS_SURFACE=06BE4000 \
+>       CZ_VK_FRAME_STATS=/tmp/$a.txt timeout 85 ./cz_runtime >/dev/null 2>&1)
+> done
+> python3 tools/frame_compare.py /tmp/base.txt /tmp/arm.txt
+> ```
 >
-> What the kickoff already prescribes and the phase has not built: **B1's own per-era
-> draw aggregates**. A pinned camera would also do.
+> Median surface coverage over the era. Baseline band **1.36 pp** over five runs of one
+> binary; the tool calls anything inside 1.5 pp "no detectable difference", and it has
+> been shown capable of failing — `CZ_VK_PRIM_RESTART=1` reads 17 pp outside it.
 >
-> Only then chase the remaining geometry defect. What is already ELIMINATED, each with
+> **Two of this phase's three "measured improvement" claims were retracted** once it
+> existed: both were single runs of the coverage number at a fixed frame, and the title
+> screen's 3D background is animated, so that number spreads 58.8–100.0% on ONE binary.
+> Do not claim a renderer change helped without this tool. `phase5-notes.md` §6m records
+> the two metric designs that failed first, including one that reported 257 of 257
+> frames bit-identical while comparing 257 copies of a black image.
+>
+> **Now** chase the remaining geometry defect, with every change measured. What is already ELIMINATED, each with
 > a measurement in `phase5-notes.md`: the fetch-slot convention (§6i, by an inverting
 > arm), the vertex- and pixel-shader constant windows (§6c, §6g), the index endian
 > decode (§6c), the colour mask (§6), culling (§6c — the title does not cull),
