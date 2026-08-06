@@ -897,6 +897,8 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
+  `phase5-3d-plan.md` the plan for the title screen's 3D background (the scene renders
+  and is not composed; read it before touching the renderer again),
   `runtime-plan.md` the phase plan, `phase1-notes.md`, `phase3-notes.md` and
   **`phase5-notes.md`** the
   per-phase records (what the runtime work found that neither the plan nor the

@@ -14,10 +14,14 @@
 > The shader cache is gitignored — `CLAUDE.md`'s Commands section rebuilds it in three
 > lines.
 >
-> **Where the picture is:** the Still Creek scene renders in its own colours, and the
-> whole post-processing chain (the 640x360 -> 32x1 pyramid, the 64x64 luminance chain,
-> the colour-grading LUT) is alive. A class of triangles is still wrong. The frame we
-> present is the logo era and still lacks the logo.
+> **Where the picture is:** THE TITLE SCREEN RENDERS — the DEAD RISING 2 wordmark, the
+> CASE ZERO stamp, the blood drips, and legible text ("(c) CAPCOM CO., LTD. 2010 ALL
+> RIGHTS RESERVED"), recognisably capture E2. It took two operator observations to get
+> there, neither visible to any number this project computes (§6q, §6r).
+>
+> What is left is the 3D background: the scene IS rendered (26% coverage, 4,576 colours,
+> a recognisable lamp post and road) and is NOT composed into the frame (2.9%, 701
+> colours). **`docs/phase5-3d-plan.md` is the plan for it** — read that next.
 >
 > ### THE METRIC EXISTS NOW — USE IT, DO NOT A/B WITHOUT IT
 >
