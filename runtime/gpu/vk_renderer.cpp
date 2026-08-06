@@ -2230,21 +2230,89 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     // defined white texel rather than an unbound descriptor, because a shader that
     // samples an unbound descriptor is undefined behaviour even when the result is
     // discarded.
-    for (uint32_t constIdx : ps.tfetchConsts)
+    // CZ_VK_PSBIND=<pshash> — what each of this pixel shader's samplers is actually
+    // BOUND to, printed once per distinct binding.
+    //
+    // Ported from Fable 2's [psbind], whose comment states the reason better than a
+    // new one could: a post pass is `colour = f(constants, textures)`, so once the
+    // constants are known good the answer has to be in the textures — and `slot=0` is
+    // the 1x1 dummy, which stands in silently for whatever the pass meant to read.
+    static const char* psbindEnv = Env("CZ_VK_PSBIND");
+    char psbindWant[24];
+    snprintf(psbindWant, sizeof psbindWant, "%016llx", (unsigned long long)psBind.hash);
+    const bool psbind = psbindEnv && strstr(psbindEnv, psbindWant);
+    char psbindLine[512];
+    int psbindAt = psbind ? snprintf(psbindLine, sizeof psbindLine,
+                                     "[psbind] frame=%llu ps=%016llx",
+                                     (unsigned long long)R->frame,
+                                     (unsigned long long)psBind.hash)
+                          : 0;
+
+    auto bindTextures = [&](const std::vector<uint32_t>& consts) {
+        for (uint32_t constIdx : consts)
+        {
+            if (constIdx >= 16)
+                continue;
+            const size_t snapsBefore = R->snapshotsSampledThisPass.size();
+            const uint32_t slot = UploadTexture(base, regs, constIdx);
+            reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
+            reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
+            if (psbind && psbindAt < int(sizeof psbindLine) - 96)
+            {
+                const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
+                psbindAt += snprintf(
+                    psbindLine + psbindAt, sizeof psbindLine - psbindAt,
+                    "  s%u=%08X %ux%u fmt=%u swz=%03X slot=%u%s%s", constIdx, t.address,
+                    t.width, t.height, t.format, t.swizzle, slot,
+                    slot == 0 ? "(DUMMY)" : "",
+                    R->snapshotsSampledThisPass.size() > snapsBefore ? "(snap)" : "");
+            }
+        }
+    };
+    bindTextures(ps.tfetchConsts);
+    bindTextures(vs.tfetchConsts);
+    if (psbind)
     {
-        if (constIdx >= 16)
-            continue;
-        const uint32_t slot = UploadTexture(base, regs, constIdx);
-        reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
-        reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
-    }
-    for (uint32_t constIdx : vs.tfetchConsts)
-    {
-        if (constIdx >= 16)
-            continue;
-        const uint32_t slot = UploadTexture(base, regs, constIdx);
-        reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
-        reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
+        // Dedupe on the BINDINGS, never on the whole line — the line carries the frame
+        // number, so including it makes every frame distinct and the cap then shows
+        // only the boot. That is the same first-occurrence trap the draw probe hit, and
+        // it hit this instrument within a minute of it being written.
+        static std::vector<std::string> seenBind;
+        // The constants this pass's shader reads, alongside its bindings. A post pass
+        // is colour = f(constants, textures) and both halves have to be in ONE line, or
+        // they get measured on different draws — the VS-keyed probe reported c255 for
+        // whichever pass happened to come first and it was not this one.
+        if (psbindAt < int(sizeof psbindLine) - 128)
+        {
+            const char* list = Env("CZ_VK_PSBIND_PC");
+            std::string spec = list ? list : "255";
+            size_t at = 0;
+            while (at < spec.size() && psbindAt < int(sizeof psbindLine) - 64)
+            {
+                const size_t comma = spec.find(',', at);
+                const uint32_t r = uint32_t(strtoul(spec.c_str() + at, nullptr, 10));
+                if (r < 256)
+                {
+                    const uint32_t* pc =
+                        regs + xenos::kAluConstantBase + 256 * 4 + r * 4;
+                    psbindAt += snprintf(psbindLine + psbindAt,
+                                         sizeof psbindLine - psbindAt,
+                                         "  pc%u=(%.4f,%.4f,%.4f,%.4f)", r, F32(pc[0]),
+                                         F32(pc[1]), F32(pc[2]), F32(pc[3]));
+                }
+                if (comma == std::string::npos)
+                    break;
+                at = comma + 1;
+            }
+        }
+        const char* bindings = strstr(psbindLine, "  s");
+        std::string key(bindings ? bindings : psbindLine);
+        if (std::find(seenBind.begin(), seenBind.end(), key) == seenBind.end() &&
+            seenBind.size() < 64)
+        {
+            seenBind.push_back(key);
+            fprintf(stderr, "%s\n", psbindLine);
+        }
     }
 
     // g_SwappedTexcoords — one bit per TEXCOORD semantic, and it is a correction for
@@ -2963,7 +3031,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     "[vkresolve] frame=%llu dest=%08X destPitch=%u destHeight=%u "
                     "surfacePitch=%u scissor=%u,%u..%u,%u win=%u,%u..%u,%u "
                     "winoff=%08X ctl=%08X info=%08X "
-                    "front=%08X draws=%llu verts=%llu\n",
+                    "front=%08X rtFmt=%u draws=%llu verts=%llu\n",
                     (unsigned long long)R->frame, dest,
                     regs[xenos::kRbCopyDestPitch] & 0x3FFF,
                     (regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF,
@@ -2978,6 +3046,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     (regs[xenos::kPaScWindowScissorBr] >> 16) & 0x7FFF,
                     regs[xenos::kPaScWindowOffset], control,
                     regs[xenos::kRbCopyDestInfo], R->frontBuffer,
+                    (regs[xenos::kRbColorInfo] >> 16) & 0xF,
                     (unsigned long long)R->drawsThisPass,
                     (unsigned long long)R->verticesThisPass);
         // The pass's INPUTS, which is what says whether a compose is reading the scene.

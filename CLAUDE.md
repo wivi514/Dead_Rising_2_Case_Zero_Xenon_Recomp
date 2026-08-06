@@ -927,8 +927,10 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
-  `phase5-3d-plan.md` the plan for the title screen's 3D background (the scene renders
-  and is not composed; read it before touching the renderer again),
+  **`d3d-translation-plan.md` the renderer-architecture pivot (2026-08-06): plan,
+  recon, licensing — the first read before any renderer work**,
+  `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
+  instrument and Step 1 findings survive),
   `runtime-plan.md` the phase plan, `phase1-notes.md`, `phase3-notes.md` and
   **`phase5-notes.md`** the
   per-phase records (what the runtime work found that neither the plan nor the
@@ -1704,6 +1706,18 @@ binary available in the same build as the control arm for every claim below.
 - **Cost: 1,488 frames per 100 s with the renderer on against 3,090 with it off** —
   roughly half the frame rate, from a synchronous submit and a full readback per frame.
   A number to re-measure once the picture is right, not a defect to fix before it.
+
+**ARCHITECTURE PIVOT DECIDED (2026-08-06, operator's call): the renderer moves to a
+D3D TRANSLATION LAYER in UnleashedRecomp's architecture** — hook the title's
+statically-linked XDK D3D functions, never touch the ring. **`docs/d3d-translation-plan.md`
+is the plan, the day-one recon and the licensing record — read it before any renderer
+work.** The short form: every hard renderer defect this phase hit lived below the D3D
+line, and UnleashedRecomp's runtime stubs VdSwap/VdInitializeRingBuffer EMPTY — the
+whole findings-38-41 layer is dead code in that architecture. Case Zero's D3D cluster
+is already bounded (0x8283xxxx-0x8284xxxx, TUs 159/160/175/176) via import call sites;
+the PM4 executor stays as boot engine and control arm; the shader cache, texture
+decode, and every instrument transfer. UnleashedRecomp is GPLv3 and the operator has
+authorized taking code, not just structure — provenance headers on every adapted file.
 
 Next, in order:
 
