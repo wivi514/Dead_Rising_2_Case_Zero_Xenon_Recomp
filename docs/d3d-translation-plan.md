@@ -251,6 +251,69 @@ clean as before.
 our decode guts. Gate: `frame_signature.py` vs E2 says `identity`, and the kernel gates
 still hold.
 
+### Phase C: the strategy is REDIRECTED EMISSION, and it is neither of the kickoff's two
+
+Decided 2026-08-06 (session 13), from the recon this session ran. The kickoff offered
+"read the register shadow lazily at draw time" vs "hook every setter". Both require
+re-deriving what the XDK D3D library encodes, and the recon showed how much that is:
+
+* The draw flush (`sub_8284F300`, disassembled in full) emits **type-0 PM4 packets
+  whose register index names each shadow slot** — `dev+0x2884` = RB_COLOR_INFO,
+  `dev+0x2920/0x2924` = SQ_PROGRAM_CNTL/SQ_CONTEXT_MISC, `dev+0x2954` =
+  RB_MODECONTROL, `dev+0x3254/0x3258` = the current bin masks — but the blend state is
+  BYTES the flush packs, the constants live in a separate staging scheme, and the
+  flush also selects between **two vertex-shader variants under complementary bin
+  masks** (`0x15555555`/`0x2AAAAAAA`), which a re-implementation would have to get
+  right silently.
+* The texture-sampler shadow is real and was mislabelled: **the Phase A table's
+  "SetShaderConstantF pair" (`sub_8283E950`/`sub_8283EAF8`) is actually a pair of
+  sampler filter/anisotropy setters** packing bitfields into a fetch-constant shadow
+  at `dev + (group+0x30)*0x18` — one 6-dword entry per GPU fetch group, mirroring
+  registers `0x4800+group*6`. (Retraction recorded in the Phase A table's terms: the
+  row's firing pattern was right, its name and its VS/PS question were not — there was
+  never a VS/PS distinction to pin.)
+* Shader objects: VS microcode = `obj + [obj+(variant+0x70)*8]` inner struct
+  (`+0x368` offset, `+0x36C` size) rebased by `obj+0x20`; PS = `obj+[obj+0x40]` inner
+  (`+0x28`/`+0x2C`) rebased by `obj+0x18`.
+
+Rather than re-implement that encoder, phase C **runs it and reads its output**: each
+content API call (4 draws, Clear/ClearF, Resolve, PreSwapResolve) has the device's
+command-buffer cursor (`dev+0x30`, end `dev+0x38`) redirected into a private 4 MB
+guest scratch for the duration of the call-through. The guest body runs unmodified —
+flush, variant selection, UP staging and all — and a private walker
+(`runtime/gpu/d3d_draw.cpp`, a faithful subset of `gpu/pm4.cpp`'s decode over a
+private register file) folds the emitted packets into state + shader hashes and hands
+every draw/resolve to the phase-5 renderer's decode guts
+(`VkRenderer_D3DDraw`/`VkRenderer_D3DSwap`, the same `DoDraw`/`DoResolve`/swap body
+with the register file and shader bindings as parameters).
+
+What this buys, and what it costs:
+
+* **No shadow layout to reverse-engineer** — the title's own flush is the encoder, so
+  the state semantics are correct by construction, per-title forever.
+* **Return values are real** — every serviced entry still calls through, so phase B's
+  `GpuBusyTrack` trap class (OBSERVE cannot see a consumed return value) cannot recur.
+* **The ring still never carries draw content.** The lifecycle (Swap, fences, init)
+  calls through as in phase B; with content drawn, the title's Swap takes its
+  full-frame branch again, so the ring carries the swap/fence skeleton the PM4
+  executor has consumed since phase 1 (kickoff trap 3's blessed shape). The present
+  fires from the Swap hook, before the guest Swap runs — renderer first, then the
+  stream's frame descriptor, the same order as the PM4 arm.
+* Safety argument for the redirect: the reserve (`sub_82845F68`) fires only when
+  cursor > end; the published end sits 64 KB inside a 4 MB scratch, and the reserve is
+  hooked to count LOUDLY if it ever fires during a redirect. Nested content calls
+  (Resolve/Clear draw internally) parse the scratch up to the cursor at every hook
+  boundary, so state staged by one inner call is consumed before the next overwrites
+  it.
+* Cost: the guest flush runs per draw (it would on console too) plus one linear parse
+  of a few hundred dwords per call — noise next to the renderer's synchronous submit.
+
+Arms: `CZ_D3D_DRAW=1` is phase C (implies the replace harness); `CZ_D3D=1` alone
+remains phase B's no-op skeleton; `CZ_VKDRAW=1` remains the PM4-fed renderer and is
+mutually exclusive with `CZ_D3D_DRAW` (enforced loudly at init — two feeds into one
+EDRAM image is a collision, not an arm). `pm4.cpp` is untouched, so the control arm is
+bit-identical to phase B's.
+
 **D — retire or keep.** Measure both arms; the PM4 path stays as the control until the
 D3D arm is strictly better on every gate.
 

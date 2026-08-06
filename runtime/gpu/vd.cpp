@@ -143,6 +143,11 @@ bool MirrorIsPoisoned()
 
 std::atomic<uint64_t> g_poisonedSkips{ 0 };
 
+// Interrupts pended from outside the pump (Vd_PendCpInterrupt) — drained once per
+// tick, after the ring walk, through the same delivery path as in-stream INTERRUPT
+// packets so the poison check and the trace apply to both.
+std::atomic<uint32_t> g_pendingCpInterrupts{ 0 };
+
 void DeliverCommandProcessorInterrupt()
 {
     if (!g_pumpIsr.func)
@@ -277,6 +282,13 @@ void GraphicsInterruptPump()
             const uint32_t cursor = Pm4_Execute(base, kickedWptr);
             if (const uint32_t slot = g_rptrWriteback.load())
                 PPC_STORE_U32(slot, cursor);
+
+            // Interrupts the D3D draw service met in ITS stream this tick. Drained
+            // AFTER the ring walk on purpose: the walk is what re-arms the scratch
+            // mirror the ISR reads, and both delivery paths share the poison check.
+            if (uint32_t pending = g_pendingCpInterrupts.exchange(0))
+                while (pending--)
+                    DeliverCommandProcessorInterrupt();
         }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
@@ -763,3 +775,5 @@ VdGraphicsState Vd_GetState()
 }
 
 bool Vd_PumpRunning() { return g_pumpRunning.load(); }
+
+void Vd_PendCpInterrupt() { g_pendingCpInterrupts.fetch_add(1); }

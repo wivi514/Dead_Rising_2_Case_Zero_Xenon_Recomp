@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <vector>
 
 // The only cross-module include here, and it is one function: the present seam.
@@ -388,6 +389,21 @@ std::atomic<uint64_t> g_ibTruncated{ 0 };
 bool StoreGpuRaw(uint8_t* base, uint32_t physAddr, uint32_t value)
 {
     const uint32_t va = PhysToVa(physAddr & ~3u);
+    // CZ_PM4_MEM_WATCH=<hex guest VA>: print every GPU store landing on that word,
+    // with a monotonic timestamp. The memory sibling of CZ_PM4_CONST_WATCH, added
+    // for the phase C fence-pacing hunt: "who writes the fence writeback, and at
+    // what cadence" is a question only the store site can answer.
+    {
+        static const char* w = getenv("CZ_PM4_MEM_WATCH");
+        static const uint32_t watch = w ? uint32_t(strtoul(w, nullptr, 16)) : 0;
+        if (watch && (va & ~3u) == (watch & ~3u))
+        {
+            timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            fprintf(stderr, "[pm4] MEM_WATCH %08X <- %08X (t=%ld.%03ld)\n", va, value,
+                    (long)ts.tv_sec, ts.tv_nsec / 1000000);
+        }
+    }
     if (va < kPhysArenaBase || va + 4 > kPhysArenaEnd)
     {
         static std::atomic<uint64_t> dropped{ 0 };

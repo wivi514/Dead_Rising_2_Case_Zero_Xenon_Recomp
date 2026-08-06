@@ -70,3 +70,12 @@ void Vd_FillVideoMode(_XVIDEO_MODE* mode);
 
 // True once the guest has registered an interrupt callback and the pump is live.
 bool Vd_PumpRunning();
+
+// Phase C: a source-1 (command processor) interrupt requested from OUTSIDE the pump.
+// The D3D draw service's walker meets INTERRUPT packets in the content stream it
+// executes synchronously on the engine thread, but the guest ISR must run on the
+// pump's thread and context — hardware delivers interrupts asynchronously, and the
+// ISR takes locks the engine thread may hold at the emission site. Each pend is one
+// delivery on the pump's next tick, so the latency is at most one vblank — the same
+// bound hardware gives a level interrupt raised mid-frame.
+void Vd_PendCpInterrupt();

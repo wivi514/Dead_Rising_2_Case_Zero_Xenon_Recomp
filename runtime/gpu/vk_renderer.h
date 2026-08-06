@@ -60,3 +60,23 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
 // gap between "97 M packets parsed" and "the picture is missing something" is a number
 // instead of a hunt.
 void VkRenderer_DumpStats();
+
+// ===================================================================================
+// Phase C (the D3D pivot): the SAME renderer driven from the API line
+// ===================================================================================
+// gpu/d3d_draw.cpp walks the packets the title's own draw flush emits (into a private
+// scratch, never the ring) and hands each draw here with ITS register file and shader
+// hashes, instead of this module reading pm4.cpp's globals. Exactly one of the two
+// feeds can be live in a run: CZ_VKDRAW=1 activates the PM4 feed and makes these
+// no-ops; CZ_D3D_DRAW=1 activates these and makes VkRenderer_Draw/OnSwap no-ops. The
+// mutual exclusion is enforced at init, loudly — two feeds into one EDRAM image is a
+// collision, not an arm.
+struct Pm4ShaderBinding;
+
+bool VkRenderer_D3DInit();
+void VkRenderer_D3DDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                        const Pm4ShaderBinding& vs, const Pm4ShaderBinding& ps);
+// Present the accumulated frame. The front buffer is the last resolve's destination —
+// at the API line the PreSwapResolve immediately before every Swap names it, so no
+// side channel is needed.
+void VkRenderer_D3DSwap(uint8_t* base);

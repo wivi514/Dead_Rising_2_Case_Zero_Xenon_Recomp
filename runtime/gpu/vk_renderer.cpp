@@ -115,6 +115,12 @@ void Count(const char* name) { ++g_stats[name]; }
 bool g_active = false;
 bool g_initTried = false;
 
+// Which feed owns the renderer this run. False = the PM4 executor (CZ_VKDRAW,
+// phase 5); true = the D3D draw service (CZ_D3D_DRAW, phase C). Set once at init and
+// never changed: the entries belonging to the other feed check it and return, so a
+// run can never have both feeds drawing into one EDRAM image.
+bool g_d3dMode = false;
+
 const char* Env(const char* n) { return getenv(n); }
 bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 
@@ -2024,12 +2030,12 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
     return at;
 }
 
-void DoDraw(uint8_t* base, const Pm4Draw& draw)
+// The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
+// passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
+// from the title's own flush output. Everything below is feed-agnostic.
+void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+            const Pm4ShaderBinding& vsBind, const Pm4ShaderBinding& psBind)
 {
-    const uint32_t* regs = Pm4_Registers();
-
-    const Pm4ShaderBinding& vsBind = Pm4_BoundShader(0);
-    const Pm4ShaderBinding& psBind = Pm4_BoundShader(1);
     if (!vsBind.hash || !psBind.hash)
     {
         Count("draw: no shader bound");
@@ -3240,18 +3246,12 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
 // ===================================================================================
 bool VkRenderer_Active() { return g_active; }
 
-bool VkRenderer_Init()
+namespace {
+
+// Device bring-up, shared by both feeds. Sets g_active on success; which feed owns
+// the renderer is the CALLER's declaration (g_d3dMode), not decided here.
+bool InitCommon()
 {
-    if (g_initTried)
-        return g_active;
-    g_initTried = true;
-
-    if (!EnvOn("CZ_VKDRAW"))
-    {
-        fprintf(stderr, "[vk] renderer OFF (set CZ_VKDRAW=1 to enable it)\n");
-        return false;
-    }
-
     R = new Renderer();
     if (!CreateDevice() || !CreateDescriptorPlumbing())
     {
@@ -3386,9 +3386,26 @@ bool VkRenderer_Init()
     return true;
 }
 
+} // namespace
+
+bool VkRenderer_Init()
+{
+    if (g_initTried)
+        return g_active && !g_d3dMode;
+    g_initTried = true;
+
+    if (!EnvOn("CZ_VKDRAW"))
+    {
+        fprintf(stderr, "[vk] renderer OFF (set CZ_VKDRAW=1 to enable it)\n");
+        return false;
+    }
+    // InitCommon names its own failure on every path.
+    return InitCommon();
+}
+
 void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)
 {
-    if (!g_active)
+    if (!g_active || g_d3dMode)
         return;
     const uint32_t* regs = Pm4_Registers();
     // The resolve discriminator, and the only one: RB_MODECONTROL's edram_mode.
@@ -3397,15 +3414,17 @@ void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)
         DoResolve(base, regs);
         return;
     }
-    DoDraw(base, draw);
+    DoDraw(base, draw, regs, Pm4_BoundShader(0), Pm4_BoundShader(1));
 }
 
-void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
-                       uint32_t height)
+namespace {
+
+// The shared swap body — everything from "record the front buffer" to the frame
+// stats line. The PM4 feed calls it from the XE_SWAP packet, the D3D feed from the
+// Swap hook; the two callers gate on g_d3dMode so exactly one is live per run.
+void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t height)
 {
     (void)base;
-    if (!g_active)
-        return;
     // Recorded BEFORE the early returns: the resolve that produces the frame happens
     // before the swap that announces it, so on frame N the comparison in DoResolve is
     // made against the address frame N-1 published. That is fine because the address
@@ -3697,6 +3716,62 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
     R->haveFrontSnapshot = false;
     (void)width;
     (void)height;
+}
+
+} // namespace
+
+void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
+                       uint32_t height)
+{
+    if (!g_active || g_d3dMode)
+        return;
+    DoSwapImpl(base, frontBuffer, width, height);
+}
+
+// --- the phase C feed --------------------------------------------------------------
+bool VkRenderer_D3DInit()
+{
+    static bool tried = false, ok = false;
+    if (tried)
+        return ok;
+    tried = true;
+    if (g_active)
+    {
+        // The PM4 feed initialized first (CZ_VKDRAW). d3d_draw.cpp refuses the
+        // combination before calling here, so reaching this is a wiring bug.
+        fprintf(stderr, "[vk] D3D feed refused: the PM4 feed already owns the renderer\n");
+        return false;
+    }
+    if (!InitCommon())
+        return false;
+    g_d3dMode = true;
+    ok = true;
+    fprintf(stderr, "[vk] renderer feed: D3D draw service (phase C)\n");
+    return true;
+}
+
+void VkRenderer_D3DDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
+                        const Pm4ShaderBinding& vs, const Pm4ShaderBinding& ps)
+{
+    if (!g_active || !g_d3dMode)
+        return;
+    // The same resolve discriminator as the PM4 feed, over the PRIVATE register
+    // file: the copy-mode SET_CONSTANTs the Resolve body emits land there.
+    if ((regs[0x2208] & 7) == 6)
+    {
+        DoResolve(base, regs);
+        return;
+    }
+    DoDraw(base, draw, regs, vs, ps);
+}
+
+void VkRenderer_D3DSwap(uint8_t* base)
+{
+    if (!g_active || !g_d3dMode)
+        return;
+    // The front buffer is the destination of the resolve the title just performed
+    // (PreSwapResolve immediately precedes every Swap), so no side channel names it.
+    DoSwapImpl(base, R->lastResolveDest, R->targetWidth, R->targetHeight);
 }
 
 void VkRenderer_DumpStats()

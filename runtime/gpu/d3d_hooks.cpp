@@ -42,6 +42,7 @@
 
 #include "ppc_recomp_shared.h"
 #include "pm4.h"
+#include "d3d_draw.h"
 #include "../host/window.h"
 
 // ---------------------------------------------------------------------------------
@@ -101,7 +102,12 @@
     /* interpreter sub_8284B568 is NOT here: guest_probe.cpp already owns that     */\
     /* hook (CZ_JOBQ_PROBE), and two strong definitions cannot link.               */\
     X(8284B828, WorkerSwapPath)             /* indirect-only; may call Swap */       \
-    X(828494A0, IndirectDrawPath)           /* indirect-only; reaches draw internal */
+    X(828494A0, IndirectDrawPath)           /* indirect-only; reaches draw internal */\
+    /* phase C's safety net: the command-buffer reserve. Never serviced — hooked   */\
+    /* only so a reserve that fires while a draw-service redirect is active is a   */\
+    /* LOUD counter instead of silent segment bookkeeping against our scratch      */\
+    /* cursor (see d3d_draw.h's safety argument).                                  */\
+    X(82845F68, RingReserve)
 
 // ---------------------------------------------------------------------------------
 
@@ -137,14 +143,29 @@ bool Observe()
     return on;
 }
 
+bool DrawMode()
+{
+    static const bool on = [] {
+        const char* v = std::getenv("CZ_D3D_DRAW");
+        return v && *v && *v != '0';
+    }();
+    return on;
+}
+
 bool Replace()
 {
     static const bool on = [] {
         const char* v = std::getenv("CZ_D3D");
         bool en = v && *v && *v != '0';
+        if (DrawMode())
+            en = true; // phase C implies the replace harness
         if (en)
-            fprintf(stderr, "[d3d] REPLACE mode (phase B): draws/clears/resolves serviced (no-op) at the "
-                            "API line; frame lifecycle (Swap/fences/flushes) still passes through\n");
+            fprintf(stderr,
+                    DrawMode()
+                        ? "[d3d] REPLACE mode (phase C): content APIs serviced by REDIRECTED "
+                          "EMISSION into the host renderer; frame lifecycle still passes through\n"
+                        : "[d3d] REPLACE mode (phase B): draws/clears/resolves serviced (no-op) at the "
+                          "API line; frame lifecycle (Swap/fences/flushes) still passes through\n");
         return en;
     }();
     return on;
@@ -197,13 +218,54 @@ void SwapSummary()
 }
 
 // ---------------------------------------------------------------------------------
-// REPLACE-mode services. Return true = serviced, do not call through.
-// Guest device fields are read/written through the same endian-swapping macros the
-// recompiled code uses, so every value here is what the guest sees.
+// REPLACE-mode services.
+//   CallThrough — not serviced, run the guest body as usual.
+//   Serviced    — handled here, do not run the guest body.
+//   Redirect    — phase C: the wrapper hands the call to D3dDraw_ServiceContent,
+//                 which runs the guest body itself under a redirected command-buffer
+//                 cursor and renders what it emitted.
 // ---------------------------------------------------------------------------------
-bool Service(HookId id, PPCContext& ctx, uint8_t* base)
+enum class ServiceResult { CallThrough, Serviced, Redirect };
+
+ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
 {
-    (void)base;
+    switch (id) {
+    // Phase C's extra seams, live only in draw mode. The Swap present happens BEFORE
+    // the guest Swap runs — same order as the PM4 arm (renderer first, then the
+    // frame descriptor from the stream) — and Swap itself always calls through
+    // because the completion protocol is the guest's (kickoff trap 2).
+    case kH_Swap:
+        if (DrawMode() && D3dDraw_Enabled())
+            D3dDraw_OnSwap(base);
+        return ServiceResult::CallThrough;
+    case kH_RingReserve:
+        // Serviced ONLY while a draw-service redirect is active on this thread; the
+        // real reserve runs untouched everywhere else (see d3d_draw.h).
+        if (DrawMode() && D3dDraw_ServiceReserve(ctx, base))
+            return ServiceResult::Serviced;
+        return ServiceResult::CallThrough;
+    case kH_InsertCallback_q:
+        // The engine's per-frame GPU sync (retraction of the Phase A label: this is
+        // a WAIT wrapper over sub_82845160, not an emitter — its r3 is the fence
+        // TARGET). Printed against the live fence pair while the frame pacing is
+        // under investigation.
+        if (DrawMode()) {
+            static std::atomic<uint64_t> n{0};
+            const uint64_t k = n.fetch_add(1);
+            if (k < 24) {
+                const uint32_t slot = PPC_LOAD_U32(0x82000758);
+                const uint32_t dev = slot ? PPC_LOAD_U32(slot) : 0;
+                fprintf(stderr, "[d3d] sync-wait #%llu target=%u emitted=%u completed=%u\n",
+                        (unsigned long long)k, ctx.r3.u32,
+                        dev ? PPC_LOAD_U32(dev + 0x2A9C) : 0,
+                        dev && PPC_LOAD_U32(dev + 0x2A90)
+                            ? PPC_LOAD_U32(PPC_LOAD_U32(dev + 0x2A90)) : 0);
+            }
+        }
+        return ServiceResult::CallThrough;
+    default:
+        break;
+    }
     switch (id) {
     // Phase B services CONTENT only: the draws, clears and resolves become no-ops
     // (returning S_OK for callers that look). Everything belonging to the frame
@@ -229,10 +291,15 @@ bool Service(HookId id, PPCContext& ctx, uint8_t* base)
     case kH_DrawVerticesUP:
     case kH_DrawIndexedVerticesUP:
     case kH_DrawUP_82842570_q:
+        // Phase C: run the guest body under a redirected cursor and render its
+        // emission. Falls back to phase B's no-op when the draw service could not
+        // come up (it is loud about why).
+        if (DrawMode() && D3dDraw_Enabled())
+            return ServiceResult::Redirect;
         ctx.r3.u64 = 0;
-        return true;
+        return ServiceResult::Serviced;
     default:
-        return false;   // everything else calls through
+        return ServiceResult::CallThrough;   // everything else calls through
     }
 }
 
@@ -251,8 +318,18 @@ CZ_D3D_HOOKS(X)
             if (kH_##name == kH_Swap)                                                \
                 SwapSummary();                                                       \
         }                                                                            \
-        if (Replace() && Service(kH_##name, ctx, base))                              \
-            return;                                                                  \
+        if (Replace()) {                                                             \
+            switch (Service(kH_##name, ctx, base)) {                                 \
+            case ServiceResult::Serviced:                                            \
+                return;                                                              \
+            case ServiceResult::Redirect:                                            \
+                if (D3dDraw_ServiceContent(ctx, base, __imp__sub_##addr))            \
+                    return;                                                          \
+                break;                                                               \
+            case ServiceResult::CallThrough:                                         \
+                break;                                                               \
+            }                                                                        \
+        }                                                                            \
         __imp__sub_##addr(ctx, base);                                                \
     }
 CZ_D3D_HOOKS(X)
