@@ -693,6 +693,9 @@ const char* WhereCursor(uint32_t cursor)
 
 } // namespace
 
+// The budget, shared with gpu/d3d_hooks.cpp's sub_8284B9C0 hook (cpu/fence_probe.h).
+bool FenceProbe_Line() { return FenceProbeEnabled() && FenceLine(); }
+
 PPC_FUNC(sub_828459D0)
 {
     if (FenceProbeEnabled() && FenceLine())
@@ -833,8 +836,10 @@ PPC_FUNC(sub_82845BA0)
 // segment address inside the scratch is one the redirect has already consumed and the
 // worker will walk anyway. Printing SCRATCH vs ring next to each cursor is what makes
 // that visible instead of inferrable.
+// NB sub_8284B9C0 is NOT hooked here. gpu/d3d_hooks.cpp services it (it has to run on
+// the real ring under a redirect), and it prints this probe's `fsubmit` line from
+// there, through FenceProbe_Line() in cpu/fence_probe.h.
 extern "C" PPC_FUNC(__imp__sub_8284A960);
-extern "C" PPC_FUNC(__imp__sub_8284B9C0);
 extern "C" PPC_FUNC(__imp__sub_82846210);
 
 PPC_FUNC(sub_8284A960)
@@ -849,21 +854,6 @@ PPC_FUNC(sub_8284A960)
                 ctx.r5.u32 >= 0x1000 ? PPC_LOAD_U32(ctx.r5.u32) : 0);
     }
     __imp__sub_8284A960(ctx, base);
-}
-
-PPC_FUNC(sub_8284B9C0)
-{
-    if (FenceProbeEnabled() && FenceLine())
-    {
-        const uint32_t dev = ctx.r3.u32;
-        const uint32_t cursor = PPC_LOAD_U32(dev + 0x30);
-        fprintf(stderr, "[fence] fsubmit t=%08X dev=%08X tiles=%u cursor=%08X%s "
-                        "counter=%u 3460=%08X 2ABD=%02X\n",
-                GuestThread::GetCurrentThreadId(), dev, ctx.r4.u32, cursor,
-                WhereCursor(cursor), PPC_LOAD_U32(dev + 0x2B04),
-                PPC_LOAD_U32(dev + 0x3460), PPC_LOAD_U8(dev + 0x2ABD));
-    }
-    __imp__sub_8284B9C0(ctx, base);
 }
 
 // sub_828455C0 — the RING submitter, and the only thing that puts INDIRECT_BUFFER

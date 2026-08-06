@@ -43,6 +43,7 @@
 #include "ppc_recomp_shared.h"
 #include "pm4.h"
 #include "d3d_draw.h"
+#include "../cpu/fence_probe.h"
 #include "../host/window.h"
 
 // ---------------------------------------------------------------------------------
@@ -107,7 +108,13 @@
     /* only so a reserve that fires while a draw-service redirect is active is a   */\
     /* LOUD counter instead of silent segment bookkeeping against our scratch      */\
     /* cursor (see d3d_draw.h's safety argument).                                  */\
-    X(82845F68, RingReserve)
+    X(82845F68, RingReserve)                                                         \
+    /* the frame-end async submit, reached from Resolve (which IS redirected) and  */\
+    /* from EndTiling. It is the only site in the image that arms sub_8284AAD0 —   */\
+    /* the D3D worker's kick — and the only caller that ever passes r7=1 to        */\
+    /* sub_82845AC0, i.e. the only +1 dev+0x2B04 ever gets. Like sub_82846288 and  */\
+    /* sub_82841AD0 it emits protocol and no content, so it belongs on the ring.   */\
+    X(8284B9C0, FrameEndAsyncSubmit)
 
 // ---------------------------------------------------------------------------------
 
@@ -288,6 +295,32 @@ ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
                 return ServiceResult::RealRing;
         }
         break; // phase B keeps its no-op service, in the content switch below
+    case kH_FrameEndAsyncSubmit:
+        // Measured, and the reason this row exists: over one boot the fence probe
+        // caught all six of its calls running with cursor=BFBEB014 — the PRIVATE
+        // SCRATCH — because its only redirected caller is Resolve. Everything it does
+        // downstream measures against dev+0x30, including sub_82845DE0's segment
+        // extent ([dev+0x3B20], [dev+0x30]+4), so under a redirect it reasons about a
+        // buffer whose only consumer is our walker while handing the results to the
+        // title's own worker.
+        if (DrawMode() && D3dDraw_Enabled())
+        {
+            if (FenceProbe_Line())
+            {
+                const uint32_t dev = ctx.r3.u32;
+                const uint32_t cursor = PPC_LOAD_U32(dev + 0x30);
+                uint32_t sva = 0, sbytes = 0;
+                D3dDraw_ScratchRange(sva, sbytes);
+                fprintf(stderr, "[fence] fsubmit dev=%08X tiles=%u cursor=%08X%s "
+                                "counter=%d 3460=%08X 2ABD=%02X\n",
+                        dev, ctx.r4.u32, cursor,
+                        (sva && cursor >= sva && cursor < sva + sbytes) ? " SCRATCH" : "",
+                        int32_t(PPC_LOAD_U32(dev + 0x2B04)), PPC_LOAD_U32(dev + 0x3460),
+                        PPC_LOAD_U8(dev + 0x2ABD));
+            }
+            return ServiceResult::RealRing;
+        }
+        return ServiceResult::CallThrough;
     case kH_Fence_82846288_q:
         // The Phase A label was "fence/throttle-shaped"; the disassembly says it is the
         // CALLBACK ARMER — it forwards to sub_82845BA0, which lays down the

@@ -877,6 +877,40 @@ From phase C part 2 (the movie deadlock, and how it was finally named):
     passing it as an argument to this function. A 32-bit constant is never one
     instruction, so grepping the image for it misses every one.
 
+145. **A spin on a counter is a claim about a VALUE, so print the value.** Two
+    sessions described `sub_82846210` as "waiting for the async segment count to reach
+    zero" and planned work around who was failing to decrement it. The word held
+    **-552**, and the loop tests `!= 0`: it was not slow, it was unsatisfiable, and the
+    real imbalance ran the other way (6 increments against 18,900 decrements). One
+    `%d` in a probe line reframed the whole hunt. The corollary is that a counter
+    described as "never returns to 0" deserves the question "in which direction?"
+    before anything is built on it.
+146. **A fence word pinned to a CONSTANT while its emitted counter climbs is replay,
+    not latency.** `[wb+0]` froze at `0x00000795` at exactly the frame the ring went
+    runaway, and the obvious reading — the GPU has fallen behind — is wrong in a way
+    that sends you to the renderer. A stream being re-executed keeps rewriting the same
+    stale `EVENT_WRITE` value, so the word does not lag, it repeats. Lagging and
+    repeating look identical in a single sample and completely different in two.
+147. **Redirected emission moves BOUNDARIES, not just packets — and a boundary has a
+    reader too.** Part 2's rule ("emit where the reader lives") was stated about
+    packets. A segment's extent is `[dev+0x3B20] .. [dev+0x30]+4`, and the content that
+    would normally separate a hand-off block from the next segment boundary is exactly
+    what phase C redirects away. So the block can end up inside the segment its own
+    wake-up resubmits, which is a loop with gain one and no seed.
+148. **A retired hypothesis is retired against a binary, and moving code can hand it
+    back its premise.** `CZ_PM4_STOP_ON_WAIT=1` was measured and retired for the arm
+    block's trailing `WAIT_REG_MEM` — while that block was in the private scratch,
+    where the walker's own wait handler never stalls and the flag *could not apply to
+    it*. The measurement was honest and the conclusion was about nothing. Re-run it the
+    moment the thing it gates moves. Gotcha 13's shelf life, applied to our own notes.
+149. **The cheapest way to ask "who reads this?" is to label every address you print.**
+    Phase C's whole difficulty is that one dword can live in the ring (read by the
+    title) or in our private scratch (read only by us), and a bare `%08X` cannot tell
+    you which. Tagging every cursor in the probe with ` SCRATCH` turned three separate
+    mysteries into one glance — and it is what found that 405 of 405 callback armings
+    were in the wrong stream, and that the frame-end submit was reasoning about a
+    buffer the title never sees.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -966,7 +1000,8 @@ From phase C part 2 (the movie deadlock, and how it was finally named):
   **`d3d-translation-plan.md` the renderer-architecture pivot (2026-08-06): plan,
   recon, licensing, and the per-phase build-out records — the first read before any
   renderer work**, with `d3d-kickoff.md` / `d3d-phase-c-kickoff.md` /
-  `d3d-phase-c2-kickoff.md` / **`d3d-phase-c3-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c2-kickoff.md` / `d3d-phase-c3-kickoff.md` /
+  **`d3d-phase-c4-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1177,12 +1212,30 @@ CZ_FENCE_PROBE=1   the WHOLE producer side of the D3D fence/callback protocol, i
                    graphics ISR itself (82844D38). Capped at 40,000 lines shared.
                    Run it on the PM4 arm AND on CZ_D3D_DRAW and DIFF — that
                    comparison found the missing worker kick after three sessions of
-                   hypotheses about interrupt races
+                   hypotheses about interrupt races. Session 15 added the CONSUMER
+                   half, which is what the producer side alone could never show: the
+                   sentinel handler / only decrementer (8284A960), the frame-end async
+                   submit and only incrementer (8284B9C0), the counter spin itself
+                   (82846210) and the ring submitter (828455C0) — and every cursor
+                   argument is labelled SCRATCH or not, because "who reads what this
+                   emits" is unanswerable from a bare address
 CZ_D3D_NO_RESERVE_KICK=1  suppress the guest's segment close/kick when the reserve
                    fires mid-redirect — the pre-fix arm for phase C part 2. With it
                    on the boot deadlocks at cinematics.big again (measured: file #56
                    vs #60, 5 worker kicks vs 36,747), which is what makes the fix a
                    measurement rather than an assertion
+CZ_D3D_REDIRECT_PRESWAP=1  put sub_82841AD0's callback-arm block back in the
+                   private scratch — the pre-fix arm for phase C part 3. That function
+                   is named "PreSwapResolve" in the Phase A table and RESOLVES NOTHING;
+                   with this on, all 405 of a boot's armings land in the scratch again
+CZ_PM4_MEM_WATCH=hex  every write to one guest word, from BOTH streams (pm4.cpp and the
+                   phase C walker each print their own line, so the log says which
+                   stream wrote it). Pointed at the ISR mirror's callback slot it is
+                   what proved the command processor was replaying the hand-off block
+                   2.7 million times against the guest's 405 armings
+CZ_FENCE_PROBE=N   as CZ_FENCE_PROBE=1, but N sets the shared line budget. Set it high:
+                   a stall this probe exists to explain is at the END of a boot, and a
+                   saturated budget is a floor, not a count (gotcha 109)
 CZ_CRASH_TEST=nullcall  call through a zero ctr on purpose, to prove the crash
                    reporter names it. A self-test, not an arm — it announces itself
                    and the crash it causes is deliberate (finding 40)
@@ -1808,8 +1861,7 @@ and the walker's ISR replication described above is retracted with it.
 
 **PHASE C PART 2 (2026-08-06, session 14): the movie deadlock is fixed, and the rule
 the redirect was missing is "emit where the READER lives".** Details in
-`docs/d3d-translation-plan.md` §"Phase C part 2"; hand-off in
-**`docs/d3d-phase-c3-kickoff.md`, which is where the next session starts**.
+`docs/d3d-translation-plan.md` §"Phase C part 2".
 
 `sub_82846288` is the **callback armer** (the Phase A "fence/throttle" label is
 retracted): it lays down an arm of scratch registers `0x057C/0x057D`, three
@@ -1835,17 +1887,50 @@ Gates on this binary, both arms: `--smoke` OK; A1 = exact 84-prefix (control) / 
 82-prefix (draw); A5 = exit 0, 2 permutation windows, **0 real**, on both. Unchanged
 from the phase C best.
 
-**THE NEW BLOCKER, localised:** the boot parks at `models\zombies.big` with the engine
-thread at 99% CPU in `sub_82846210`'s `while ([dev+0x2B04] != 0)` spin — the count of
-outstanding async command segments. It is incremented only in `sub_82845AC0` and
-decremented by `sub_8284A960` under the D3D worker's token interpreter `sub_8284B568`
-(named by a hardware watchpoint, because no static scan can see a store through a
-register-held pointer). Control arm: oscillates 0-1-2-1-0. Draw arm: never returns to
-0. The draw arm ARMS that callback 4 times a boot and the ISR then delivers it
-thousands of times (the mirror stays armed, so every later interrupt re-enqueues the
-same job), and it submits 28 segments to the worker queue where the control arm submits
-13,498 - redirected emission is what empties them. The worker is woken constantly with
-nothing to drain; reconciling that is probably the fix.
+~~**THE NEW BLOCKER, localised:** the boot parks at `models\zombies.big` with the
+engine thread at 99% CPU in `sub_82846210`'s `while ([dev+0x2B04] != 0)` spin ... the
+worker is woken constantly with nothing to drain; reconciling that is probably the
+fix.~~ **Half retracted in session 15 — see phase C part 3 below. The spin is real; the
+reading of it was not.** The counter is **NEGATIVE**, so the `!= 0` test can never
+succeed, and the worker drains far MORE than the title submits (6 increments against
+18,900 decrements in one boot), not less.
+
+**PHASE C PART 3 (2026-08-06, session 15): the counter is negative because the command
+processor is REPLAYING the hand-off block.** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 3"; hand-off in
+**`docs/d3d-phase-c4-kickoff.md`, which is where the next session starts.**
+
+`CZ_PM4_MEM_WATCH` pointed at the ISR mirror's callback slot counts **8,152,069 writes
+in 200 s** — `8284AAD0` armed 2,717,263 times and poisoned 4,076,035 — while the guest
+calls the armer **405 times**. Corroborated three ways: the ring goes from ~390 packets
+and ~48 draws a frame to **1.25 M packets and 135,000 draws per second** with `XE_SWAP`
+frozen; `sub_828455C0` is called **106 M times**, always `count=1`, always cycling the
+same three segments (93/11/23 dwords, the 93 being the one that contains the arm); and
+the fence-completion word freezes at a constant while `emitted` climbs, which is the
+signature of replay rather than of a slow GPU. `truncated=0` and the IB verify stay
+clean throughout — the parser is right and the bytes are wrong (gotcha 88, third time).
+
+The loop needs no seed and has gain one: a segment containing an arm block reaches the
+worker's token stream -> the worker submits it -> the CP executes the arm and its
+INTERRUPT -> the ISR's `sub_8284AAD0` pushes the SAME token-buffer pointer back on the
+worker's ring -> the worker restarts that buffer at `buffer+4` -> resubmits the segment.
+
+Two more of the four arm-block emitters moved to the real ring this session, both on
+measured evidence and **neither of them the cure**: `sub_82841AD0` (the Phase A name
+"PreSwapResolve" is retracted — it RESOLVES NOTHING, it is a pure GPU/CPU hand-off
+emitter, and redirected it put all 405 of a boot's armings in the private scratch), and
+`sub_8284B9C0` (all six of its calls ran with the scratch cursor installed; it is also
+the only site that arms `sub_8284AAD0` and the only `+1` the counter gets).
+`CZ_D3D_REDIRECT_PRESWAP=1` is the same-binary pre-fix arm.
+
+`CZ_PM4_STOP_ON_WAIT=1` was re-tested rather than inherited as retired: part 2 retired
+it while the arm blocks were in the SCRATCH, where the flag could not apply to them at
+all. With them in the ring it genuinely gates them — and it is still runaway. It stays
+retired, now on a premise that survives the change (gotchas 13 and 79, in our own notes).
+
+Gates, this binary, both arms: `--smoke` OK; A1 = exact 84-prefix (control) / exact
+81-prefix (draw, when the run does not hit the long-known position-71 permutation);
+A5 = exit 0, **0 real windows**, on both. Unchanged from the phase C best.
 
 **PHASE B IS DELIVERED (2026-08-06, session 12): `CZ_D3D=1` services the content APIs
 (draws/clears/resolves → no-op) while the frame lifecycle calls through — and

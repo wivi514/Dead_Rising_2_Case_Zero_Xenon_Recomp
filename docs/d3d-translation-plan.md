@@ -462,6 +462,129 @@ those segments. So the worker is being woken constantly with almost nothing to d
 which is at least consistent with the counter never reaching zero.
 `docs/d3d-phase-c3-kickoff.md` carries the ranked follow-ups.
 
+### Phase C part 3: the counter is NEGATIVE, and the ring is replaying the hand-off
+
+Session 15 (2026-08-06). The blocker `docs/d3d-phase-c3-kickoff.md` handed over — the
+engine thread at 99% CPU in `sub_82846210`'s `while ([dev+0x2B04] != 0)` spin — is
+**localised precisely and not yet fixed**. What the hand-off did not have is the value
+in that word, and it changes the whole question.
+
+**The counter is negative.** `[fence] spin- counter=4294966744`, i.e. **-552**, and
+falling. The loop tests `!= 0`, so once the word goes below zero it can never exit —
+this is not a wait that is taking a long time, it is a wait that has been made
+impossible. Every earlier framing ("the worker is woken constantly with nothing to
+drain", "reconciling that is probably the fix") is retracted: the worker drains far
+MORE than was ever submitted.
+
+**The arithmetic, from the image and then from a run.** The shared object is
+`dev + 0x2AC4` — proven, not assumed, because `sub_82845AC0` locks `dev+0x2B08` and
+`sub_8284A960` locks `obj+0x44`. So `obj+0x3C` = `dev+0x2B00` (the token interpreter's
+nesting depth) and `obj+0x40` = `dev+0x2B04` (the counter). `sub_8284B568` does
+`++[obj+0x3C]` per queue pop; `sub_8284A960` does `--[obj+0x3C]` at each `0xC0000000`
+sentinel and, only when that reaches zero **and `[obj+0x48]` is clear**, `--[obj+0x40]`.
+The only `+1` in the image is `sub_8284B9C0`'s middle call to `sub_82845AC0`
+(`r7 = 1`); the reserve and close paths both pass `r7 = 0`.
+
+Over one 240 s boot: **6 increments, 18,900 decrements.**
+
+**Why the worker has so much to drain: the command processor is replaying the
+hand-off block.** `CZ_PM4_MEM_WATCH` pointed at the ISR mirror's callback slot
+(`BBF39470` = `[[dev+0x2A94]] + 0x10`) counts **8,152,069 writes in 200 s**:
+
+| value written to the callback mirror | count |
+|---|---|
+| `0BADF00D` (the re-poison) | 4,076,035 |
+| `8284AAD0` (the worker kick) | 2,717,263 |
+| `82841878` (the frame tick) | 1,358,673 |
+| `827CC628` / `827CC640` (job ticks) | 49 each |
+
+The guest calls the armer `sub_82845BA0` **405 times** in that run. Everything above
+405 is the ring executing the same packets again. Each replay re-arms the mirror,
+raises its `INTERRUPT`, the ISR pushes another job onto the D3D worker's ring and
+`KeSetEvent`s it, the worker walks the same token buffer from the start, resubmits the
+same segments — and the loop closes with gain one.
+
+Three independent measurements of the same runaway, all from the ring trace:
+
+* through the boot movie the ring carries ~390 packets and ~48 draws per frame; from
+  around frame 384 it goes to **1.25 million packets and 135,000 draws per second**
+  with the `XE_SWAP` count frozen and every guest thread parked;
+* `sub_828455C0`, the ring submitter, is called **106,160,000+ times** in one run,
+  always from the D3D worker thread, always with `count=1`, and always cycling the
+  **same three segment descriptors** — 93, 11 and 23 dwords. The 93-dword one is the
+  segment that contains the `sub_8284AAD0` arm block;
+* the fence-completion word freezes at a constant (`[wb+0]=00000795`) at exactly the
+  frame the runaway starts, because the replayed stream keeps writing one stale
+  `EVENT_WRITE` value. A fence word pinned to a constant while the emitted counter
+  climbs is the signature of replay, not of a slow GPU.
+
+`truncated=0` and the indirect-buffer verify stays clean throughout, so the parser is
+right and the bytes are wrong — gotcha 88 for the third time in this project.
+
+**What was fixed, and it is not enough.** `sub_82841AD0` — the Phase A table's
+"PreSwapResolve" — **resolves nothing**. Read end to end it emits a type-0 write of
+register `0x0579`, a `WAIT_REG_MEM` on the ISR mirror, the `sub_82845BA0`
+arm/`INTERRUPT`/re-poison block, and a second `WAIT_REG_MEM` on the same word. No draw,
+no clear, no copy, no state. It was in phase C's Redirect group because it was grouped
+with the content it was NAMED after rather than with the packets it emits, and the cost
+was measurable: with it redirected, **all 405 of a boot's callback armings landed at
+cursor `BFBEB024`, inside the private scratch**, so the walker had to deliver them and
+every walker delivery was the frame tick. That is the picture part 2 diagnosed and
+fixed for `sub_82846288` alone. Four functions in the image emit that block
+(`sub_82841AD0`, `sub_82846288`, `sub_82849F00`, `sub_8284B9C0`); part 2 moved one.
+`CZ_D3D_REDIRECT_PRESWAP=1` is the same-binary pre-fix arm.
+
+`sub_8284B9C0` is the second one moved this session, on the same evidence: the probe
+caught all six of its calls running with `cursor=BFBEB014`, the scratch, because its
+only redirected caller is Resolve. It is also the function that arms `sub_8284AAD0` and
+the only `+1` the counter ever gets, so it had every reason to be on the ring.
+
+Neither change stops the replay. Both arms — fixed and `CZ_D3D_REDIRECT_PRESWAP=1` —
+run away; the pre-fix arm simply runs away harder (3.5 billion ring packets against
+352 million in the same wall time).
+
+**A hypothesis retired for the second time, on a premise that had changed.**
+`CZ_PM4_STOP_ON_WAIT=1` — make the command processor stall at the arm block's trailing
+`WAIT_REG_MEM` as hardware does — was retired by part 2's hand-off. That measurement
+was taken while the arm blocks were in the SCRATCH, where the walker's own `0x3C`
+handler never stalls and the flag could not apply to them. With the blocks now in the
+ring the flag genuinely gates them, so it was re-run: **still runaway** (2.9 billion
+packets, 504 million draws). It stays retired, now for a reason that survives the
+change of premise. Gotcha 13 and gotcha 79, in our own notes.
+
+**`[obj+0x48]` is not the bug — it is the tile loop, and it is behaving.** The resume
+cursor `sub_8284B568` reads at depth 1 (`8284B650`) is written at `8284B544`, inside
+`sub_8284B228`, when a token's second dword ANDs nonzero against the current bin mask at
+`[obj+0x164]`: `[obj+0x48] = cursor` and the walk jumps to an inline stub at `obj+0x54`.
+That is gotcha 118's two-tile rendering — **the worker walks one token stream once per
+tile, resuming where the previous tile stopped** — and it is exactly why the counter's
+decrement is guarded by `[obj+0x48] == 0`: only the LAST tile's walk retires the
+segment. Our drains alternate nonzero/zero in pairs, one decrement per pair, which is
+the design working. The decrement RATE per walk is right; the number of walks is not.
+
+**Where the next session starts.** The loop has gain one and needs no seed: a segment
+that both contains an arm block and reaches the worker's token stream regenerates its
+own wake-up forever, because `sub_8284AAD0` pushes the same token-buffer pointer again
+and a walk with `[obj+0x48] == 0` RESTARTS at `buffer+4` instead of advancing. Hardware
+runs the same code and does not loop, so exactly one link differs. The two candidates,
+and both are cheap to measure:
+
+1. **The re-poison is landing but the mirror is being re-armed by the replay** — in
+   which case the first duplicate ISR delivery is the seed, and finding it is a matter
+   of counting `[fence] arm` against `[fence] isr` per callback through the movie era,
+   where the counts are still small and the log still readable.
+2. **The queued segment should not contain the arm block at all.** On hardware the arm
+   is what WAKES the worker; the segments the worker then submits should be the ones
+   AFTER it. If our reserve service's close/kick draws the segment boundary in the wrong
+   place — it restores the real cursor and runs the guest's own `sub_82845F68`, but the
+   content that would normally have separated the arm from the boundary was redirected
+   away — then the arm ends up inside the very segment its own wake-up resubmits. The
+   `[fence] close` line already prints `seg` and `cursor` with SCRATCH labels; what it
+   needs is the arm cursor compared against the segment extent, which is one more field.
+
+Hypothesis 2 is the one that fits phase C's own rule: redirected emission does not just
+move packets, it moves BOUNDARIES, and a boundary is read by the title too.
+
 **D — retire or keep.** Measure both arms; the PM4 path stays as the control until the
 D3D arm is strictly better on every gate.
 
