@@ -2079,6 +2079,39 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     static const bool wantRestart = EnvOn("CZ_VK_PRIM_RESTART");
     key.primRestart = (wantRestart && restartable && draw.indexed) ? 1 : 0;
 
+    // CZ_VK_ONLY_VS=<hex[,hex...]> / CZ_VK_SKIP_VS=<hex[,hex...]> — render only, or all
+    // but, the draws using those vertex shaders.
+    //
+    // The bisection arms. When every INPUT to a draw has been verified individually and
+    // the output is still wrong, the question stops being "which value is wrong" and
+    // becomes "which draws are wrong" — and that is answered by rendering them one
+    // shader at a time and looking, not by more reading.
+    {
+        static const char* only = Env("CZ_VK_ONLY_VS");
+        static const char* skip = Env("CZ_VK_SKIP_VS");
+        if (only || skip)
+        {
+            char hex[24];
+            snprintf(hex, sizeof hex, "%016llx", (unsigned long long)vsBind.hash);
+            if (only && !strstr(only, hex))
+            {
+                Count("draw: filtered out (CZ_VK_ONLY_VS)");
+                return;
+            }
+            if (skip && strstr(skip, hex))
+            {
+                Count("draw: filtered out (CZ_VK_SKIP_VS)");
+                return;
+            }
+        }
+    }
+
+    // Index width, counted: a draw whose 16-bit indices are read as 32-bit (or the
+    // reverse) addresses entirely wrong vertices, which is one of the few remaining
+    // shapes that produces triangles between unrelated points.
+    if (draw.indexed)
+        Count(draw.index32 ? "draw: 32-bit indices" : "draw: 16-bit indices");
+
     // CZ_VK_SHADER_CENSUS=1 — draws per (vs, ps) pair, in the stats block. Which
     // shader pair does the work of a pass is the question that turns "the scene is
     // flat" into "THIS pixel shader is flat", and from there Xenia's disassembly of
@@ -2479,19 +2512,125 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     // not another hypothesis — it is to look at the values.
     if (const char* probe = Env("CZ_VK_DRAW_PROBE"))
     {
+        // CZ_VK_DRAW_PROBE_MINVERTS bounds the probe to the big meshes. The first three
+        // draws of a shader are usually its smallest, and a defect that only shows on
+        // large geometry is invisible in them — which is how the first pass of this
+        // probe reported "everything is healthy" about a shader that visibly explodes.
+        static const uint32_t minVerts =
+            Env("CZ_VK_DRAW_PROBE_MINVERTS")
+                ? uint32_t(atoi(Env("CZ_VK_DRAW_PROBE_MINVERTS")))
+                : 0;
         static int left = 3;
-        if (vsBind.hash == strtoull(probe, nullptr, 16) && left-- > 0)
+        if (vsBind.hash == strtoull(probe, nullptr, 16) && draw.indexCount >= minVerts &&
+            left-- > 0)
         {
             const uint32_t* c = regs + xenos::kAluConstantBase;
             fprintf(stderr, "[vkprobe] vs=%016llx prim=%u indexCount=%u indexed=%d\n",
                     (unsigned long long)vsBind.hash, draw.primType, draw.indexCount,
                     draw.indexed ? 1 : 0);
-            for (uint32_t r : { 0u, 1u, 2u, 3u, 8u, 9u, 10u })
+            // vc(255) is not an ordinary constant. The D3D shader compiler reserves the
+            // last register as a source of known scalars, and several of this title's
+            // vertex shaders build `w = 1` with `sges r.w, abs(r0.x), c255.x` — an
+            // always-true comparison ONLY IF c255.x is zero. If it is not, w becomes 0,
+            // the translation column drops out of the view-projection dot, and the mesh
+            // explodes from a point.
+            for (uint32_t r : { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 8u, 9u, 10u, 255u })
                 fprintf(stderr, "[vkprobe]   vc(%2u) = %12.4f %12.4f %12.4f %12.4f\n", r,
                         F32(c[r * 4 + 0]), F32(c[r * 4 + 1]), F32(c[r * 4 + 2]),
                         F32(c[r * 4 + 3]));
+            // The constant window a skinned shader indexes dynamically. `vc(8 + a0)` is
+            // a bone matrix palette, and vc() CLAMPS above register 255 to zero — so a
+            // bone index that is too large silently produces a zero matrix and puts the
+            // vertex at the origin, which is what a mesh exploding from a point is.
+            // Printing the palette says whether it is populated at all.
+            {
+                // How much of the palette is actually DISTINCT. A skinned mesh blending
+                // bones 6 and 9 needs vc(8+6..) and vc(8+9..) to differ from vc(8..);
+                // if the whole window holds one repeated matrix the palette was never
+                // uploaded, and every vertex gets bone 0 regardless of its index.
+                uint32_t distinct = 0;
+                for (uint32_t r = 8; r < 128; r++)
+                {
+                    bool dup = false;
+                    for (uint32_t q = 8; q < r && !dup; q++)
+                        dup = memcmp(c + r * 4, c + q * 4, 16) == 0;
+                    if (!dup)
+                        ++distinct;
+                }
+                fprintf(stderr,
+                        "[vkprobe]   palette vc(8..127): %u distinct rows of 120\n",
+                        distinct);
+                for (uint32_t r = 8; r < 26; r += 3)
+                    fprintf(stderr, "[vkprobe]     vc(%2u) = %9.3f %9.3f %9.3f %9.3f\n",
+                            r, F32(c[r * 4 + 0]), F32(c[r * 4 + 1]), F32(c[r * 4 + 2]),
+                            F32(c[r * 4 + 3]));
+            }
+
             for (const VertexAttribute& a : vs.attributes)
             {
+                // Every attribute's raw bytes for the first few vertices. For a skinned
+                // mesh the interesting ones are the weights and the INDICES, and the
+                // question they answer is whether an 8-bit integer attribute is
+                // arriving as 0..255 (correct) or as a fraction (a normalized format
+                // reaching an input that wanted the integer).
+                if (a.location != 0 && !a.indirect)
+                {
+                    const xenos::VertexFetch vf =
+                        xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
+                    const uint32_t sva = PhysToVa(vf.address);
+                    if (!GuestRangeOk(sva, uint64_t(vf.sizeDwords) * 4))
+                        continue;
+                    fprintf(stderr, "[vkprobe]   loc%-3d fmt=%2u int=%u off=%u:",
+                            a.location, a.format, a.isInteger, a.offsetDwords);
+                    for (uint32_t v = 0; v < 3; v++)
+                    {
+                        const uint64_t dw =
+                            uint64_t(v) * a.strideDwords + a.offsetDwords;
+                        if (dw >= vf.sizeDwords)
+                            break;
+                        uint32_t raw;
+                        CopySwapped(reinterpret_cast<uint8_t*>(&raw),
+                                    base + sva + dw * 4, 4, vf.endian);
+                        fprintf(stderr, "  %08X[%u,%u,%u,%u]", raw, raw & 0xFF,
+                                (raw >> 8) & 0xFF, (raw >> 16) & 0xFF, raw >> 24);
+                    }
+                    // For an 8-bit INTEGER attribute, scan the whole stream and report
+                    // the range of each component. On a skinned mesh this is the bone
+                    // index, and the range decides whether `vc(8 + a0)` stays inside
+                    // the 256-register window the generated macro clamps at — an index
+                    // that leaves it does not error, it silently reads as a ZERO
+                    // matrix, and a zero matrix puts the vertex at the origin.
+                    if (a.format == 6 && a.isInteger)
+                    {
+                        uint32_t lo[4] = { 255, 255, 255, 255 }, hi[4] = { 0, 0, 0, 0 };
+                        const uint32_t verts =
+                            a.strideDwords ? vf.sizeDwords / a.strideDwords : 0;
+                        for (uint32_t v = 0; v < verts; v++)
+                        {
+                            const uint64_t dw =
+                                uint64_t(v) * a.strideDwords + a.offsetDwords;
+                            if (dw >= vf.sizeDwords)
+                                break;
+                            uint32_t raw;
+                            CopySwapped(reinterpret_cast<uint8_t*>(&raw),
+                                        base + sva + dw * 4, 4, vf.endian);
+                            for (uint32_t k = 0; k < 4; k++)
+                            {
+                                const uint32_t byte = (raw >> (k * 8)) & 0xFF;
+                                lo[k] = std::min(lo[k], byte);
+                                hi[k] = std::max(hi[k], byte);
+                            }
+                        }
+                        fprintf(stderr,
+                                "[vkprobe]   loc%-3d over %u vertices: x %u..%u  "
+                                "y %u..%u  z %u..%u  w %u..%u   (vc(8+max) = %u, "
+                                "the macro clamps at 255)\n",
+                                a.location, verts, lo[0], hi[0], lo[1], hi[1], lo[2],
+                                hi[2], lo[3], hi[3],
+                                8 + std::max(std::max(hi[0], hi[1]),
+                                             std::max(hi[2], hi[3])));
+                    }
+                }
                 if (a.location != 0 || a.indirect)
                     continue;
                 const xenos::VertexFetch vf =

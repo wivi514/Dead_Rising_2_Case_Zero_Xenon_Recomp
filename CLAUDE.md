@@ -834,6 +834,17 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 132. **A threshold derived from the runs being compared cannot fail.** It widens to
     accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
     band as a constant measured once from five baseline runs.
+133. **One frame of an animated scene is ONE SAMPLE — and that applies to LOOKING, not
+    just to measuring.** Three runs of an identical binary and an identical shader
+    filter produced three completely unrelated pictures of this title screen, one
+    nearly black. A per-shader bisection built on single snapshots duly localised the
+    exploded geometry to a shader whose control — the same shader recompiled unmodified,
+    byte-identical SPIR-V — renders just as cleanly. A picture feels like direct
+    evidence in a way a percentage does not, which makes this the easier trap of the
+    two, and it is the THIRD claim this phase had to retract to the same cause.
+134. **Before debugging an animated scene visually, make it deterministic.** A pinned
+    camera, or a guest clock advanced per frame rather than from the host TSC. Without
+    it a bisection cannot converge, because its evidence is resampled every run.
 117. **The picture is the one claim that needs an image, so make it self-servable.**
     Every other gate in this project is a log diff. Dumping frames AND every resolve
     snapshot from a headless run is what turns "does it look right" from an operator
@@ -1129,6 +1140,13 @@ CZ_VK_FRAME_STATS_SURFACE=hex  ALSO measure that resolve surface each frame. Not
                    refinement — the metric does not work without it, because the
                    PRESENTED frame at the title screen is mostly UI and a change
                    touching 476,858 draws moved it 0.1 pp. 06BE4000 is the scene
+CZ_VK_ONLY_VS=hex[,hex] / CZ_VK_SKIP_VS=hex[,hex]  render only, or all but, those
+                   vertex shaders' draws — the bisection arms. NB the picture they
+                   produce is a random sample of an animated scene: judge them with
+                   tools/frame_compare.py, never by eye (gotcha 133)
+CZ_VK_DRAW_PROBE_MINVERTS=N  bound the draw probe to meshes of at least N indices. A
+                   shader's first three draws are usually its smallest, and a defect
+                   that only shows on large geometry is invisible in them
 CZ_VK_SHADER_CENSUS=1  draws per (vs, ps) pair. With the capture's disassembly beside
                    every blob, this is the pair that localises a shading bug
 CZ_VK_DRAW_PROBE=hash  one draw's actual matrices and the vertex data it will read

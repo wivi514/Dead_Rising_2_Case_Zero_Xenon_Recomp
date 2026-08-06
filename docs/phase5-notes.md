@@ -555,6 +555,79 @@ numbers are unaffected — 0.0% → 69.8%, and 3 distinct colours → 848, are a
 magnitude outside the band — but they were lucky rather than rigorous, and the metric
 now exists so the next one does not have to be.
 
+## 6o. The exploded geometry: NOT FIXED, and the attempt is instructive
+
+I set out to fix it with the metric in hand and did not. What the session established is
+worth more than the attempt, because it invalidates the way the defect had been
+characterised all along.
+
+### The bisection, and why its result does not stand
+
+`CZ_VK_ONLY_VS=<hex>` / `CZ_VK_SKIP_VS=<hex>` render only, or all but, one vertex
+shader's draws. Rendering the top shaders one at a time appeared to localise the defect
+immediately: `fa161b0fde7aa4d5` (118k draws) drew a clean wall and floor,
+`70bb3e795f69d30c` (36k draws) drew the radiating spikes.
+
+`70bb3e795f69d30c` is a SKINNED mesh shader, and it looked like a perfect suspect —
+XenosRecomp's own README warns that "issues might happen when instructions perform
+dynamic constant indexing on multiple operands", and this shader does
+`vc(8 + a0)` / `vc(9 + a0)` / `vc(10 + a0)` nine times against a bone palette.
+
+Every input to it checks out, and each was measured rather than assumed:
+
+* bone indices `[0,0,9,6]`, **range 0..9 over all 479 vertices** of the mesh — nowhere
+  near the 255 at which the generated `vc()` macro clamps to zero
+* bone weights `[0,0,31,224]` → 0.122 / 0.878, summing to 1.0
+* the palette is real: **73 distinct rows** across `vc(8..127)`, each an orthonormal
+  rotation with a sane translation
+* `vc(255)` is all zeros, so this shader's `sge r4.w, abs(r0.x), c255.x` idiom does
+  evaluate to 1.0 and the translation column survives
+* the odd asymmetric swizzle in the third bone block (`c[9+a0].wxzy, r3.wxyz`, where the
+  other two blocks use `.xzyw`) is **in the guest's own microcode** — the translation is
+  faithful
+* the `maxas` co-issue ordering is right: the scalar that sets `a0` is emitted after the
+  vector op of the same instruction slot, so each `mul`/`mad` uses the previous slot's
+  `a0`, exactly as hardware pairs them
+* all indices in the title are 16-bit — there is no index-width mismatch anywhere
+
+Patching that one shader's cache entry to bypass the `vc()` macro (a direct
+`RawBufferLoad` at an index clamped into range) made the picture look clean. **So did the
+control** — recompiling the same shader UNMODIFIED, whose SPIR-V is byte-identical to the
+cache entry.
+
+### What was actually wrong: the observation, not the shader
+
+Three runs of the identical configuration, same binary, same filter, produce three
+completely unrelated pictures — one nearly black, two showing different large surfaces,
+none showing spikes. **A single snapshot of this scene is a random sample of the
+animation**, so every visual judgement in this investigation, including the bisection
+that started it, was drawn from noise.
+
+Run through the metric instead:
+
+| cache | median surface coverage | verdict |
+|---|---|---|
+| baseline × 3 | 64.44 / 64.45 / 64.56 | the band |
+| `vc()` macro bypassed in `70bb…` | 65.81 | **1.37 pp — at the band's edge, not a fix** |
+| skinning disabled (`a0 = 0`) in `70bb…` | 100.00 | a huge change, as expected of breaking skinning |
+
+So the macro-bypass "fix" is not supported, and the attribution of the defect to
+`70bb3e795f69d30c` is **retracted**.
+
+### The lesson, which is the third instance of one thing
+
+§6k retracted a numeric claim for being a single sample of an animated scene. §6n
+retracted a second. This retracts a *visual* one — and the visual case is worse, because
+a picture feels like direct evidence in a way a percentage does not. The discipline has
+to extend to looking at things: **for this title's title screen, one frame is one sample,
+and three of them disagree completely.**
+
+Which means the honest next step is not a better hypothesis but a better *scene*: make
+the animation deterministic (a pinned camera, or a guest clock advanced per frame rather
+than from the host TSC) so that a picture — and a bisection built on pictures — means
+something. Everything above stays true and is worth keeping; none of it could be acted on
+without that.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
