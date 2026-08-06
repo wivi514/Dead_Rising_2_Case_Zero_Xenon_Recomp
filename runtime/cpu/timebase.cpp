@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 #include "timebase.h"
@@ -52,9 +54,35 @@ uint64_t calibrate()
 
 }  // namespace
 
+bool deterministic = false;
+uint64_t virtual_ticks = 0;
+
+void AdvanceFrame()
+{
+    if (!deterministic)
+        return;
+    // One 60 Hz frame per presented frame. The RATE is arbitrary and the CONSTANCY is
+    // the point: the guest computes its animation from deltas, so what matters is that
+    // every run sees the same delta at the same frame, not that it matches a wall clock.
+    virtual_ticks += CZ_TIMEBASE_HZ / 60;
+}
+
 bool init()
 {
     host_hz = calibrate();
+    if (getenv("CZ_DETERMINISTIC_CLOCK"))
+    {
+        deterministic = true;
+        // Start a long way from zero. A guest that computes `now - startTime` on its
+        // first frame would otherwise get a delta measured from an epoch it never saw,
+        // and several engines treat a zero or tiny timestamp as "uninitialised".
+        virtual_ticks = CZ_TIMEBASE_HZ * 10;
+        fprintf(stderr,
+                "[timebase] CZ_DETERMINISTIC_CLOCK: the guest clock advances %llu ticks "
+                "per PRESENTED FRAME and does not track wall time. This MANUFACTURES a "
+                "condition — never use it for a gate run.\n",
+                (unsigned long long)(CZ_TIMEBASE_HZ / 60));
+    }
     return host_hz != 0;
 }
 

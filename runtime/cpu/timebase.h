@@ -54,12 +54,40 @@ extern uint64_t host_hz;
 uint64_t host_rdtsc();   // the real host counter, unshadowed
 bool init();             // calibrate host_hz; false means measurement failed
 
+// CZ_DETERMINISTIC_CLOCK — a guest clock that advances a fixed quantum per PRESENTED
+// FRAME instead of tracking the host TSC.
+//
+// WHY A RUNTIME NEEDS THIS AT ALL, and it is a measurement instrument rather than a
+// feature. Case Zero's title screen renders a live 3D scene whose camera is a function
+// of guest time. Our frame rate varies with host load, so two runs are looking at
+// different points in that animation at the same frame index — which makes a single
+// rendered frame a RANDOM SAMPLE. Phase 5 retracted three separate conclusions to that
+// one cause, the last of them a per-shader bisection whose evidence was resampled every
+// run (docs/phase5-notes.md §6k, §6n, §6o).
+//
+// With this on, frame N is the same moment of the animation in every run, so a picture
+// means something and a bisection can converge.
+//
+// It is OFF by default and must never be on for a gate run: it changes what the guest
+// observes about time, which is the one thing findings 38-41 were all about. Same class
+// of instrument as CZ_FAKE_START_MS — it manufactures a condition rather than reporting
+// one, so it announces itself at startup.
+extern bool deterministic;
+extern uint64_t virtual_ticks;  // guest ticks, advanced only by AdvanceFrame()
+
+// Advance the virtual clock by one frame. Called from the PM4 executor's XE_SWAP, i.e.
+// from the guest's own frame boundary — the same signal the present seam uses, so the
+// clock and the picture step together by construction.
+void AdvanceFrame();
+
 // Scaled into guest ticks. The multiply is done in 128-bit to keep full precision:
 // a 64-bit TSC times 49,875,000 overflows almost immediately, and doing the divide
 // first would quantise away everything below a microsecond — which is exactly the
 // range short spin-waits live in.
 inline uint64_t guest_ticks()
 {
+    if (deterministic)
+        return virtual_ticks;
     return uint64_t((__uint128_t(host_rdtsc()) * CZ_TIMEBASE_HZ) / host_hz);
 }
 

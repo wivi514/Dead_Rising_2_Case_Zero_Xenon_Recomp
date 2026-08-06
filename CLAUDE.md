@@ -1132,6 +1132,13 @@ CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw. The arm that
 CZ_VK_FORCE_COLORMASK=1  treat every draw as writing all four channels — the arm that
                    retired "38.6% of draws have an empty colour mask, so the register
                    index must be wrong" (it is a real depth-only pass; frame identical)
+CZ_DETERMINISTIC_CLOCK=1  the guest clock advances a fixed quantum per PRESENTED
+                   FRAME instead of tracking the host TSC, covering BOTH guest time
+                   sources (mftb and interrupt time). A MEASUREMENT ARM — it changes
+                   what the guest observes about time, announces itself, and must
+                   never be on for a gate run. PARTIAL: it halves the distinct camera
+                   count and takes one pair of runs from 0.2% to 49.6% identical
+                   cameras, but a third run still diverges (phase5-notes §6p)
 CZ_VK_FRAME_STATS=file  one line per presented frame: draws, vertices, a draw-stream
                    fingerprint, a camera fingerprint, and the output's coverage, mean
                    luminance, distinct colours and pixel hash. The input to

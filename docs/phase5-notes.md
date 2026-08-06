@@ -628,6 +628,53 @@ than from the host TSC) so that a picture — and a bisection built on pictures 
 something. Everything above stays true and is worth keeping; none of it could be acted on
 without that.
 
+## 6p. CZ_DETERMINISTIC_CLOCK — built, honest about what it does and does not do
+
+§6o's conclusion was that the next step is a deterministic SCENE rather than a better
+hypothesis. This is the attempt, and it is a partial result reported as one.
+
+`CZ_DETERMINISTIC_CLOCK=1` makes the guest clock advance a fixed quantum per PRESENTED
+FRAME instead of tracking the host TSC. It covers **both** of the guest's elapsed-time
+sources — `mftb` (via `cz_timebase::guest_ticks`) and `KeQueryPerformanceCounter`'s
+interrupt time — because two clocks that are meant to agree have to come from one
+source, and leaving the second on wall time would let the animation read it through the
+back door while every other symptom said the mode was working. It steps at the PM4
+executor's `XE_SWAP`, the same signal that drives the present seam, so the clock and the
+picture advance together by construction.
+
+It is off by default, announces itself loudly at startup, and must never be on for a
+gate run: it changes what the guest observes about time, which is the subject of
+findings 38-41. Same class of instrument as `CZ_FAKE_START_MS`.
+
+**What it measurably does.** The clock is genuinely driving the animation: distinct
+camera fingerprints per run drop from ~600 to ~270, i.e. the scene now advances in
+coarser, frame-locked steps.
+
+**What it does not do — yet.** It does not make the scene reproducible. Aligning each
+run's camera sequence from its first scene-content frame:
+
+| pair | identical cameras in sequence |
+|---|---|
+| deterministic, det1 vs det2 | **248 / 500 = 49.6%** |
+| deterministic, det1 vs det3 | 1 / 500 = 0.2% |
+| baseline, run A vs run B | 1 / 582 = 0.2% |
+
+So one pair of runs agrees half the time — an enormous improvement over the 0.2% floor —
+and the third run diverges completely. A second source of nondeterminism remains, and
+the most likely candidate is the boot itself: how many frames pass before the scene
+starts, and in what order the title's own load work completes, still vary with host
+scheduling.
+
+Three snapshots taken at frame 600 under the deterministic clock still differ
+(coverage 45.68% / 100.00% / 63.19%), so **visual debugging of this scene is still not
+sound** and §6o's retraction stands unchanged.
+
+The honest state: the instrument is correct as far as it goes, it is measured rather
+than assumed, and it is not yet sufficient. Finishing it means finding what else the
+animation phase depends on — the obvious next probe is to log the guest's own frame
+counter and the scene's start frame alongside the camera fingerprint, and see whether
+the divergent run simply started the scene at a different point in its own logic.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,

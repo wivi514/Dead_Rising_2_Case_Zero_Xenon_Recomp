@@ -11,6 +11,7 @@
 // Deliberately not the renderer's or the window's internals — this file's isolation
 // (see the guest-memory note below: it must stay reusable by an offline replay
 // harness) survives exactly as long as that stays true.
+#include "../cpu/timebase.h"
 #include "../host/window.h"
 #include "vk_renderer.h"
 
@@ -765,6 +766,11 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // in motion.
                 VkRenderer_OnSwap(base, body(1), body(2), body(3));
                 Host_Present(body(1), body(2), body(3));
+                // The deterministic-clock instrument steps here, at the guest's own
+                // frame boundary, so the clock and the picture advance together by
+                // construction rather than by two schedules that have to agree.
+                // A no-op unless CZ_DETERMINISTIC_CLOCK is set.
+                cz_timebase::AdvanceFrame();
             }
             break;
         }

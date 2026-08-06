@@ -1736,6 +1736,13 @@ uint64_t KernelSystemTime()
 // hour.
 uint64_t KernelInterruptTime()
 {
+    // Under CZ_DETERMINISTIC_CLOCK this must follow the SAME virtual clock as `mftb`,
+    // or the guest reads wall time through the back door and the animation is
+    // non-reproducible again — while every other symptom says the mode is working.
+    // Two clocks that are supposed to agree have to be derived from one source.
+    if (cz_timebase::deterministic)
+        return uint64_t((__uint128_t(cz_timebase::virtual_ticks) * 10'000'000ull) /
+                        CZ_TIMEBASE_HZ);
     static const auto start = std::chrono::steady_clock::now();
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10000000>>>(
