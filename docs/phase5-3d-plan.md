@@ -79,7 +79,7 @@ Also imported from Fable 2: `tools/frame_matched_diff.py`, which measures the wi
 noise floor from the same runs at the same time rather than quoting a constant band —
 strictly better than `frame_compare.py` whenever there are two or more runs per arm.
 
-## Step 1 — why the scene never reaches the front buffer
+## Step 1 — DONE: the compose exists; the POST CHAIN is what is black
 
 One question, and the instruments already exist.
 
@@ -90,17 +90,90 @@ One question, and the instruments already exist.
    (450,488 a run), but not by WHICH pass. Extend the resolve trace, or add a counter
    keyed on the fetched surface address, so the question is answered rather than inferred.
 
-Two outcomes, and they are different repairs:
+**ANSWER: outcome one. The compose exists and samples the scene.** The instrument is a
+per-pass record of which resolve snapshots the pass's draws sampled, printed in the
+resolve trace — the existing global counter proved snapshots are consumed but never by
+WHICH pass, and that was the whole question.
 
-* **The compose draw exists and samples the scene.** Then the composite is being drawn
-  and discarded — look at blend state, alpha, and the colour mask on that draw. The
-  scene's surface is `8_8_8_8` while several intermediates are HDR formats, and the
-  renderer has exactly one EDRAM format (§7), so a compose reading an HDR intermediate is
-  a live candidate.
-* **No draw in that pass samples it.** Then the compose reads an address our snapshot map
-  does not hold — most likely because the surface it wants is one of the ones we resolve
-  *from the wrong buffer* (§6d: a depth-only pass resolves our colour target), or because
-  the base needs the same macro-tile normalisation §6f applies to the scene's own tiles.
+That turns the frame into a dependency graph, which is the real deliverable of this step:
+
+```
+writes     extent        draws   reads
+1439B000   4096x1024       111   (none)          shadow cascades
+143BB000   4096x1024        90   (none)
+143DB000   4096x1024       224   (none)
+143FB000   4096x1024        38   (none)
+06BE4000   1280x720        919   1439B000        THE SCENE  (tile 0)
+06BF8000   1280x720        102   1439B000        THE SCENE  (tile 1)
+149DC000    640x360         25   0684B000        works
+14733000    320x180          1   0684B000        <- FIRST BROKEN LINK
+1476F000    320x180          1   14733000
+147AB000    160x90           1   1476F000
+147BA000     96x45           1   147AB000
+1439B000   1280x720          1   0684B000 1476F000 147AB000 147BA000   bloom composite
+147C0000    640x360          1   1439B000 06BE4000
+149A0000    640x360          1   06BE4000
+00E48000   1280x720         59   1439B000 06BE4000 147C0000 149A0000   THE FRAME
+```
+
+And the state of each, measured in the same run:
+
+| surface | coverage | reading |
+|---|---|---|
+| `06BE4000` / `0684B000` the scene | **73.74%** | fine |
+| `149DC000` (25 draws) | **73.44%** | fine |
+| `14733000`, `1476F000`, `147AB000`, `147BA000` | **0.00%** | the bloom chain, dead from its first link |
+| `1439B000` bloom composite | **0.00%** | dead because its inputs are |
+| `147C0000`, `149A0000` | **0.00%** | dead |
+| `00E48000` the frame | 2.31% | the 2D layer only |
+
+**The pattern is exact: every pass of ONE full-screen quad renders nothing; every
+multi-draw pass works.**
+
+### It is not the geometry — that was tested, not assumed
+
+Every state on those draws is permissive and correct: unit-quad vertex data
+`(0,0)(0,1)(1,0)(1,1)`, a matrix mapping `[0,1]` to clip, correct viewport and scissor,
+depth compare **ALWAYS**, blend ONE/ZERO, colour mask `F`, and a texture served from a
+populated snapshot.
+
+The decisive test was to hand-patch one blur pixel shader's cache entry to output solid
+red (`CZ_SHADER_SPV` makes that a five-minute experiment). Its targets went **0.00% ->
+100.00% red**. So the quad rasterises and writes; the pass is black because **the pixel
+shader outputs zero**.
+
+### Where it starts
+
+`1476F000` is correctly black: it is a 16-tap Gaussian blur of `14733000`, which is
+black. Walking back, the first link that is black from a good input is:
+
+    14733000 (0.00%)  <-  ps=279d45e49b6e68c3  <-  0684B000 (73.74%)
+
+`shader_693CE7FC3E81A471` in the capture: a 4-tap bright-pass that sums four
+`tfetch2D tf0` at offsets from `pc(118)`/`pc(119)`, then
+`max(sum * c255.w + c255.z, c255.x) * c255.y`.
+
+Its constants are populated and non-degenerate at steady state — `pc(255) =
+(0.0721, 0.2125, 0.7154, 0.5000)`, `pc(118)/pc(119)` small texel offsets — so the
+arithmetic **cannot** produce zero: the `max` floor alone forces at least
+`0.0721 * 0.2125` ≈ 4/255. The surface is exactly 0.
+
+So the remaining question is narrow: the shader's *sampled value* must be zero, which
+means `tf0` is not delivering the snapshot at draw time. The candidates are the
+bindless descriptor index we publish for that slot, the sampler slot (we write index 0
+unconditionally), and the interpolated texcoord the taps are offset from.
+
+### A measurement trap this step walked into
+
+An earlier pass of this investigation reported "every pixel-shader constant is zero" and
+was **wrong**. `CZ_VK_DRAW_PROBE` fires on a shader's first three draws *ever* — which
+happen during the BOOT, before the guest has uploaded the constants that shader will
+use. Watching the register itself (`CZ_PM4_CONST_WATCH`) showed it takes no zero writes
+at all after frame 400. `CZ_VK_DRAW_PROBE_MINFRAME` now bounds the probe to a
+steady-state frame; the same reading then shows a perfect symmetric Gaussian kernel.
+
+Same shape as the earlier `MINVERTS` trap: **a probe that samples the first occurrence
+samples the boot**, and the boot is not the state under investigation.
 
 ## Step 2 — the remaining geometry distortion
 

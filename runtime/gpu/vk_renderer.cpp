@@ -565,6 +565,20 @@ struct Renderer
     // completely different investigations that look identical in a snapshot.
     uint64_t drawsThisPass = 0;
     uint64_t verticesThisPass = 0;
+    // Which resolve snapshots the draws of the current pass SAMPLED, and how many
+    // textures they took from guest memory instead.
+    //
+    // This is the one question the existing counters cannot answer. "texture: served
+    // from a resolve snapshot" proves snapshots are consumed — 450,488 a run — but not
+    // by WHICH pass, and the whole of step 1 is "does the pass that writes the front
+    // buffer sample the scene?". A global counter can never say that; a per-pass set
+    // can, and it costs one insert per texture fetch.
+    std::vector<uint32_t> snapshotsSampledThisPass;
+    uint64_t guestTexturesThisPass = 0;
+    // The first few draws of the pass, as (prim, indexCount, vs). A pass of ONE draw is
+    // a post-processing blit, and when those are the passes producing nothing, the
+    // question is which shader draws them.
+    std::vector<std::string> firstDrawsThisPass;
     uint32_t targetWidth = 1280, targetHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
@@ -1345,6 +1359,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
         {
             Count("texture: served from a resolve snapshot");
+            const uint32_t key = t.address & 0x1FFFFFFF;
+            if (std::find(R->snapshotsSampledThisPass.begin(),
+                          R->snapshotsSampledThisPass.end(),
+                          key) == R->snapshotsSampledThisPass.end())
+                R->snapshotsSampledThisPass.push_back(key);
             return snap->second.slot;
         }
         if (snap != R->snapshots.end())
@@ -1467,6 +1486,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         --R->nextTextureSlot;
         return 0;
     }
+    ++R->guestTexturesThisPass;
     memcpy(R->staging.mapped, pixels.data(), dstBytes);
 
     RunImmediate([&](VkCommandBuffer cb) {
@@ -2590,14 +2610,86 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
             Env("CZ_VK_DRAW_PROBE_MINVERTS")
                 ? uint32_t(atoi(Env("CZ_VK_DRAW_PROBE_MINVERTS")))
                 : 0;
+        // CZ_VK_DRAW_PROBE_MINFRAME bounds the probe to a steady-state frame, and it is
+        // not optional for a state question. A shader's first three draws happen during
+        // the BOOT, where the guest has not yet uploaded the constants that shader will
+        // use — so probing them reports "every pixel-shader constant is zero" about a
+        // shader whose constants are perfectly good by the title screen. That reading
+        // cost an hour and was contradicted by watching the register itself, which
+        // takes no zero writes at all after frame 400.
+        static const uint64_t minFrame =
+            Env("CZ_VK_DRAW_PROBE_MINFRAME")
+                ? uint64_t(atoll(Env("CZ_VK_DRAW_PROBE_MINFRAME")))
+                : 0;
         static int left = 3;
         if (vsBind.hash == strtoull(probe, nullptr, 16) && draw.indexCount >= minVerts &&
-            left-- > 0)
+            R->frame >= minFrame && left-- > 0)
         {
             const uint32_t* c = regs + xenos::kAluConstantBase;
             fprintf(stderr, "[vkprobe] vs=%016llx prim=%u indexCount=%u indexed=%d\n",
                     (unsigned long long)vsBind.hash, draw.primType, draw.indexCount,
                     draw.indexed ? 1 : 0);
+            fprintf(stderr,
+                    "[vkprobe]   vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
+                    "%.1f,%.1f %.1fx%.1f  scissor %d,%d %ux%u  posScale=%.5f,%.5f "
+                    "posOffset=%.2f,%.2f\n",
+                    vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
+                    viewport.height, scissor.offset.x, scissor.offset.y,
+                    scissor.extent.width, scissor.extent.height, posScale[0],
+                    posScale[1], posOffset[0], posOffset[1]);
+            fprintf(stderr,
+                    "[vkprobe]   depthCtl=%02X (test=%u write=%u func=%u) blend=%08X "
+                    "colorMask=%X modeCtl=%u  RB_COLORCONTROL=%08X alphaRef=%.3f\n",
+                    key.depthControl, (key.depthControl >> 1) & 1,
+                    (key.depthControl >> 2) & 1, (key.depthControl >> 4) & 7,
+                    key.blendControl, key.colorMask, key.modeControl,
+                    regs[xenos::kRbColorControl], F32(regs[xenos::kRbAlphaRef]));
+            fprintf(stderr,
+                    "[vkprobe]   SQ_VS_CONST=%08X (base=%u size=%u)  "
+                    "SQ_PS_CONST=%08X (base=%u size=%u)\n",
+                    regs[0x2307], regs[0x2307] & 0x1FF, (regs[0x2307] >> 12) & 0x1FF,
+                    regs[0x2308], regs[0x2308] & 0x1FF, (regs[0x2308] >> 12) & 0x1FF);
+            // The same window the guest just named, in case it is not ours.
+            {
+                const uint32_t base = regs[0x2308] & 0x1FF;
+                for (uint32_t r : { 2u, 5u })
+                {
+                    const uint32_t* g =
+                        regs + xenos::kAluConstantBase + base * 4 + r * 4;
+                    fprintf(stderr,
+                            "[vkprobe]   guest-base pc(%2u) = %10.4f %10.4f %10.4f "
+                            "%10.4f\n",
+                            r, F32(g[0]), F32(g[1]), F32(g[2]), F32(g[3]));
+                }
+            }
+            // The PIXEL shader's constants, from its own window (ALU float4 256+n).
+            // A post-processing blit is a weighted sum of taps, so zero weights are a
+            // black output with every other piece of state looking perfect.
+            // CZ_VK_DRAW_PROBE_PC=a,b,c — which pixel-shader constants to print.
+            // Which ones matter is a property of the shader under investigation (read
+            // its disassembly: a post-process blit names its taps and its scale), so
+            // this cannot have a useful fixed default.
+            {
+                const char* list = Env("CZ_VK_DRAW_PROBE_PC");
+                std::string spec = list ? list : "0,1,2,3,255";
+                size_t at = 0;
+                while (at < spec.size())
+                {
+                    const size_t comma = spec.find(',', at);
+                    const uint32_t r = uint32_t(strtoul(spec.c_str() + at, nullptr, 10));
+                    if (r < 256)
+                    {
+                        const uint32_t* pc =
+                            regs + xenos::kAluConstantBase + 256 * 4 + r * 4;
+                        fprintf(stderr,
+                                "[vkprobe]   pc(%3u) = %10.4f %10.4f %10.4f %10.4f\n",
+                                r, F32(pc[0]), F32(pc[1]), F32(pc[2]), F32(pc[3]));
+                    }
+                    if (comma == std::string::npos)
+                        break;
+                    at = comma + 1;
+                }
+            }
             // vc(255) is not an ordinary constant. The D3D shader compiler reserves the
             // last register as a source of known scalars, and several of this title's
             // vertex shaders build `w = 1` with `sges r.w, abs(r0.x), c255.x` — an
@@ -2812,6 +2904,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
         R->cameraFingerprint = h;
     }
 
+    if (R->firstDrawsThisPass.size() < 4)
+    {
+        char buf[96];
+        snprintf(buf, sizeof buf, "prim%u/%uidx/vs=%016llx/ps=%016llx", draw.primType,
+                 draw.indexCount, (unsigned long long)vsBind.hash,
+                 (unsigned long long)psBind.hash);
+        R->firstDrawsThisPass.push_back(buf);
+    }
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
     R->verticesThisPass += draw.indexCount;
@@ -2880,9 +2980,24 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     regs[xenos::kRbCopyDestInfo], R->frontBuffer,
                     (unsigned long long)R->drawsThisPass,
                     (unsigned long long)R->verticesThisPass);
+        // The pass's INPUTS, which is what says whether a compose is reading the scene.
+        fprintf(stderr, "[vkresolve]     sampled snapshots:");
+        if (R->snapshotsSampledThisPass.empty())
+            fprintf(stderr, " (none)");
+        for (uint32_t a : R->snapshotsSampledThisPass)
+            fprintf(stderr, " %08X", a);
+        fprintf(stderr, "   guest textures uploaded: %llu\n",
+                (unsigned long long)R->guestTexturesThisPass);
+        fprintf(stderr, "[vkresolve]     first draws:");
+        for (const auto& d : R->firstDrawsThisPass)
+            fprintf(stderr, " %s", d.c_str());
+        fprintf(stderr, "\n");
     }
     R->drawsThisPass = 0;
     R->verticesThisPass = 0;
+    R->snapshotsSampledThisPass.clear();
+    R->guestTexturesThisPass = 0;
+    R->firstDrawsThisPass.clear();
 
     const bool clearColor = ((control >> 8) & 1) != 0;
     const bool clearDepth = ((control >> 9) & 1) != 0;

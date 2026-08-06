@@ -834,6 +834,19 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 132. **A threshold derived from the runs being compared cannot fail.** It widens to
     accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
     band as a constant measured once from five baseline runs.
+139. **A probe that fires on the first occurrence samples the BOOT.** `CZ_VK_DRAW_PROBE`
+    reported "every pixel-shader constant is zero" for a post-processing shader whose
+    constants are a perfect Gaussian kernel by the title screen — because a shader's
+    first three draws happen before the guest has uploaded the constants it will use.
+    Watching the register itself settled it in one run (no zero writes at all after
+    frame 400). Bound every state probe by FRAME as well as by count; this is the same
+    trap as bounding it by vertex count and finding only the small early meshes.
+140. **"Which pass consumed it" is not a question a global counter can answer.** The
+    renderer counted 450,488 texture fetches served from resolve snapshots and could
+    not say whether the pass that writes the front buffer was one of them — which was
+    the entire question. A per-pass record turns a frame into a DEPENDENCY GRAPH, and
+    that graph localised a dead post-processing chain to its first broken link in one
+    run.
 137. **A negative control is what stops a comparison tool inventing results.** The
     frame-signature tool judged its confidence as "the gap between the best and second
     orientation, as a FRACTION OF THE SPREAD". On two real cases it was right. On the

@@ -417,10 +417,38 @@ uint32_t LoadGpu(const uint8_t* base, uint32_t addrDword)
 }
 
 // --- register writes --------------------------------------------------------------
+// CZ_PM4_CONST_WATCH=<hex register index> — log every write to one register of the
+// file, with the value and a running count.
+//
+// The instrument for "this constant holds sensible data early in the frame and zero by
+// the time the shader that needs it draws". A register file has exactly three writers
+// here (SET_CONSTANT, SET_CONSTANT2, LOAD_ALU_CONSTANT) and nothing clears it, so a
+// value that becomes zero was WRITTEN as zero — and the only way to find out by whom is
+// to watch the register rather than reason about the packet stream.
+const char* g_constWatchEnv = getenv("CZ_PM4_CONST_WATCH");
+const uint32_t g_constWatch =
+    g_constWatchEnv ? uint32_t(strtoul(g_constWatchEnv, nullptr, 16)) : 0xFFFFFFFFu;
+const char* g_constWatchSource = "?";
+
 void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 {
     if (index >= kRegCount)
         return;
+    if (index == g_constWatch)
+    {
+        static uint64_t n = 0, zeros = 0;
+        ++n;
+        // Only the LATE zero writes. The early ones are the boot setting up; the
+        // question is who zeroes this register in a steady-state frame, which is a
+        // different population entirely and a total cap can never reach it.
+        if (value == 0 && Pm4_FrameCount() > 400 && zeros++ < 24)
+        {
+            float f;
+            memcpy(&f, &value, 4);
+            fprintf(stderr, "[constwatch] #%llu %s reg %04X <- %08X (%.6f)\n",
+                    (unsigned long long)n, g_constWatchSource, index, value, f);
+        }
+    }
     g_regs[index] = value;
 
     // Scratch-register writeback: when SCRATCH_UMSK enables a scratch register, each
@@ -508,6 +536,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     {
         if (avail < 3)
             return 0;
+        g_constWatchSource = "TYPE1";
         WriteRegister(base, header & 0x7FF, fetch(pos + 1));
         WriteRegister(base, (header >> 11) & 0x7FF, fetch(pos + 2));
         return 3;
@@ -521,6 +550,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     {
         const uint32_t reg = header & 0x7FFF;
         const bool oneReg = (header >> 15) & 1;
+        g_constWatchSource = oneReg ? "TYPE0(one-reg)" : "TYPE0(run)";
         for (uint32_t i = 0; i < bodyCount; i++)
             WriteRegister(base, oneReg ? reg : reg + i, fetch(pos + 1 + i));
         return bodyCount + 1;
@@ -787,6 +817,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 case 4: index += 0x2000; break; // registers
                 default: index = kRegCount;     // unknown bank: drop
             }
+            g_constWatchSource = "SET_CONSTANT";
             for (uint32_t i = 1; i < bodyCount; i++)
                 WriteRegister(base, index + i - 1, body(i));
             break;
@@ -794,6 +825,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
 
         case 0x55: // SET_CONSTANT2 / SET_SHADER_CONSTANTS: absolute index in body(0)
         case 0x56:
+            g_constWatchSource = "SET_CONSTANT2";
             for (uint32_t i = 1; i < bodyCount; i++)
                 WriteRegister(base, (body(0) & 0xFFFF) + i - 1, body(i));
             break;
@@ -814,6 +846,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             }
             const uint32_t addr = PhysToVa(body(0) & 0x3FFFFFFC);
             const uint32_t size = body(2) & 0xFFF;
+            g_constWatchSource = "LOAD_ALU_CONSTANT";
             for (uint32_t i = 0; i < size; i++)
                 WriteRegister(base, index + i, GuestLoad32(base, addr + i * 4));
             break;
