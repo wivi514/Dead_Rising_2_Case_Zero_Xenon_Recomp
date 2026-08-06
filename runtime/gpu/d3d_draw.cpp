@@ -316,20 +316,35 @@ uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t ava
             // real-ring INTERRUPT still delivers on the pump.
             {
                 std::lock_guard<std::recursive_mutex> mlock(Vd_MirrorMutex());
-                const uint32_t mirrorBlock = GuestLoad32(base, user + 0x2A94);
-                if (mirrorBlock < 0x1000)
+                // The arming state comes from THIS STREAM's register file, not the
+                // guest-memory mirror. Our file is in-position coherent by
+                // construction (one stream, one thread); the memory mirror is
+                // where BOTH streams' armings and poisons land, and consulting it
+                // skipped the movie era's job kicks whenever the other stream had
+                // poisoned its own consumed arming there — the 600 s run
+                // deadlocked at cinematics on exactly those skips.
+                uint32_t armed = g_regs[0x057C];
+                uint32_t arg = g_regs[0x057D];
+                if (armed == 0 || armed == 0x0BADF00D)
                 {
-                    Count("walker: INTERRUPT with no mirror block");
-                    break;
+                    // The arm rode the OTHER transport: the movie player's
+                    // unredirected emitters arm through the real ring while the
+                    // INTERRUPT rides the content stream. pm4's register file is
+                    // that transport's in-position state; a spurious extra kick is
+                    // a no-op to the job queue, calling the poison is a crash, and
+                    // skipping starves the worker (measured: the movie era stalls
+                    // ~150 frames further in without this fallback).
+                    const uint32_t* preg = Pm4_Registers();
+                    armed = preg[0x057C];
+                    arg = preg[0x057D];
+                    Count("walker: INTERRUPT arm taken from the ring transport");
                 }
-                const uint32_t armed = GuestLoad32(base, mirrorBlock + 0x10);
-                const uint32_t arg = GuestLoad32(base, mirrorBlock + 0x14);
                 static std::atomic<uint64_t> disp{ 0 };
                 const uint64_t dn = disp.fetch_add(1);
                 if (dn < 16)
-                    fprintf(stderr, "[d3ddraw] INTERRUPT #%llu at position: mirror=%08X "
+                    fprintf(stderr, "[d3ddraw] INTERRUPT #%llu at position: "
                                     "armed=%08X arg=%08X\n",
-                            (unsigned long long)dn, mirrorBlock, armed, arg);
+                            (unsigned long long)dn, armed, arg);
                 if (armed == 0 || armed == 0x0BADF00D)
                 {
                     Count("walker: INTERRUPT skipped (mirror unarmed/poisoned at position)");
