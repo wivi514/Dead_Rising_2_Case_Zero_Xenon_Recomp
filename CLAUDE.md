@@ -1737,7 +1737,26 @@ API stream's 20 Clears/frame with phase 5's ~20 resolves/frame.
 `tools/guest_callers.py` is the call-graph scanner Phase A was answered with —
 reach for it before disassembling anything's callers by hand.
 
-**PHASE B IS DELIVERED (same session): `CZ_D3D=1` services the content APIs
+**PHASE C IS BUILT AND RENDERING (2026-08-06, session 13): draws serviced by
+REDIRECTED EMISSION — the title's own flush is the encoder.** `CZ_D3D_DRAW=1`
+redirects each content API call's command-buffer cursor (`dev+0x30/0x34/0x38`)
+into a private guest scratch, lets the guest body run, and a private PM4-subset
+walker (`runtime/gpu/d3d_draw.cpp`) folds the emission into a private register
+file + shader hashes for the phase-5 renderer's decode guts
+(`VkRenderer_D3DDraw/D3DSwap`, parameterized — `pm4.cpp` untouched as the control
+arm). Measured: the legal screen and CAPCOM logo render pixel-correct from the
+D3D arm; **A1 = exact 82-prefix (phase B's KeResetEvent window CLOSED), A5 exit 0
+with zero real windows — the port's best kernel gates**; zero crashes on the
+final interrupt design. The hard-won piece was interrupt delivery: content-stream
+INTERRUPTs carry the token worker's kick, their arms are dual-transport, and the
+walker now performs the ISR's source-1 path itself from one guarded read (four
+designs; the trail is in the git log and `docs/d3d-translation-plan.md`).
+**OPEN BLOCKER: the boot deadlocks mid-cinematics** on the movie's fence/worker
+protocol (fence lag pins at 16, CP caught up) — **THE NEXT SESSION STARTS FROM
+`docs/d3d-phase-c2-kickoff.md`**, which carries the hypotheses ranked by cost and
+the fastest route to the picture gate (the movie is START-skippable).
+
+**PHASE B IS DELIVERED (2026-08-06, session 12): `CZ_D3D=1` services the content APIs
 (draws/clears/resolves → no-op) while the frame lifecycle calls through — and
 the ring goes SILENT (+0 packets/frame steady state), the boot reaching the
 title screen at ~340 fps with zero faults over 33,984 frames.** The title's own
