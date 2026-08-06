@@ -911,6 +911,35 @@ From phase C part 2 (the movie deadlock, and how it was finally named):
     were in the wrong stream, and that the frame-end submit was reasoning about a
     buffer the title never sees.
 
+From phase C part 4 (the replay is the flywheel, not the fault):
+
+150. **A feedback loop with gain one is a PIPELINE while its pointer advances and a
+    runaway the moment it stops — so "this loop regenerates its own wake-up" is not
+    by itself a defect.** Case Zero's GPU→ISR→worker→ring hand-off does exactly that
+    on hardware and on our PM4 control arm: each frame's arm-carrying segments produce
+    the interrupts that drive the NEXT frame's walks, because the guest arms with a new
+    token buffer every frame. Three sessions read the regeneration as the bug. It is
+    the design; what breaks is that the phase C arm's guest stalls, the pointer stops
+    moving, and the same buffer is walked forever. Before theorising about a loop, ask
+    whether its state advances — and the cheapest form of that question is to print the
+    ITERATION'S IDENTITY (here the token-buffer pointer) and flag repeats.
+151. **A conditional inside an instrument can make every measurement of it a
+    measurement of nothing.** `CZ_PM4_STOP_ON_WAIT` was gated on `depth == 0` — the
+    ring itself — and every wait it was aimed at lives inside an INDIRECT BUFFER, i.e.
+    at depth ≥ 1. It was measured and retired TWICE, once on the grounds that the
+    packets were in the wrong stream and once on the grounds that they had moved to the
+    right one, and on both occasions the flag could not fire. Gotcha 148 says a retired
+    hypothesis is retired against a binary; this is the sharper form — read the arm's
+    own code before quoting what its absence proved. Two symptoms to recognise: an arm
+    whose "on" run is byte-identical to its "off" run, and an arm with no counter
+    saying how many times it engaged.
+152. **A stall below the top of a nested walk needs a resume plan, or the retry is a
+    replay.** Unwinding an indirect buffer and re-entering it next tick re-executes
+    every packet before the stall — including the arm and the INTERRUPT the stall
+    exists to hold back — so the fix makes the symptom. Record (buffer, dword) per
+    depth and resume there; and do not count a deliberate stop as a truncation, or the
+    one live alarm finding 39 left behind sits permanently nonzero.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1001,7 +1030,8 @@ From phase C part 2 (the movie deadlock, and how it was finally named):
   recon, licensing, and the per-phase build-out records — the first read before any
   renderer work**, with `d3d-kickoff.md` / `d3d-phase-c-kickoff.md` /
   `d3d-phase-c2-kickoff.md` / `d3d-phase-c3-kickoff.md` /
-  **`d3d-phase-c4-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c4-kickoff.md` /
+  **`d3d-phase-c5-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1176,7 +1206,16 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
-CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does
+CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does.
+                   Until phase C part 4 this was gated on `depth == 0` and therefore
+                   could not affect a single one of this title's hand-off waits, all
+                   of which are inside INDIRECT BUFFERs — so both of its retirements
+                   measured a no-op (gotcha 151). It now stalls at any depth and
+                   RESUMES at the recorded dword next tick rather than re-walking the
+                   buffer. Still off by default, and now for a measured reason: with
+                   it on, BOTH arms park at frame 1 on a WAIT for SCRATCH_REG1
+                   (`mirror+4`, reg 0x0579) to read back zero, which nothing in our
+                   runtime ever writes
 CZ_PM4_IB_TRACE=1  the first 64 INDIRECT_BUFFER packets with their raw address/size
 CZ_PM4_DUMP_TRUNCATED=path dump the first 6 indirect buffers whose walk stopped short,
                    for offline re-walking (finding 38)
@@ -1218,7 +1257,21 @@ CZ_FENCE_PROBE=1   the WHOLE producer side of the D3D fence/callback protocol, i
                    submit and only incrementer (8284B9C0), the counter spin itself
                    (82846210) and the ring submitter (828455C0) — and every cursor
                    argument is labelled SCRATCH or not, because "who reads what this
-                   emits" is unanswerable from a bare address
+                   emits" is unanswerable from a bare address.
+                   Session 16 added the three fields that retired phase C part 3's
+                   ranked hypotheses: `[fence] submit` prints the fork's real inputs
+                   (`incr` = r7, the counter delta, and `queue` = r8, which token
+                   stream), and `[fence] kick` is a hook on sub_8284AAD0 ITSELF — the
+                   ISR callback that pushes a token buffer onto the D3D worker's job
+                   ring — printing the buffer pointer and flagging a kick that repeats
+                   the previous one. Two arms, one diff: arms:deliveries is 768:766 on
+                   the control arm and 12:856 on the draw arm
+CZ_FENCE_RINGSUB=N how many sub_828455C0 calls print EVERY entry of their submission
+                   list (default 4000), rather than the first two dwords of the first
+                   eight. A replayed segment states its own identity nowhere else —
+                   this is what showed the control arm submitting each frame's
+                   arm-carrying segments about twice and the draw arm submitting one
+                   of them 1,100 times
 CZ_D3D_NO_RESERVE_KICK=1  suppress the guest's segment close/kick when the reserve
                    fires mid-redirect — the pre-fix arm for phase C part 2. With it
                    on the boot deadlocks at cinematics.big again (measured: file #56
@@ -1898,7 +1951,8 @@ succeed, and the worker drains far MORE than the title submits (6 increments aga
 **PHASE C PART 3 (2026-08-06, session 15): the counter is negative because the command
 processor is REPLAYING the hand-off block.** Details in
 `docs/d3d-translation-plan.md` §"Phase C part 3"; hand-off in
-**`docs/d3d-phase-c4-kickoff.md`, which is where the next session starts.**
+`docs/d3d-phase-c4-kickoff.md` (superseded by
+`docs/d3d-phase-c5-kickoff.md`).
 
 `CZ_PM4_MEM_WATCH` pointed at the ISR mirror's callback slot counts **8,152,069 writes
 in 200 s** — `8284AAD0` armed 2,717,263 times and poisoned 4,076,035 — while the guest
@@ -1923,14 +1977,54 @@ emitter, and redirected it put all 405 of a boot's armings in the private scratc
 the only site that arms `sub_8284AAD0` and the only `+1` the counter gets).
 `CZ_D3D_REDIRECT_PRESWAP=1` is the same-binary pre-fix arm.
 
-`CZ_PM4_STOP_ON_WAIT=1` was re-tested rather than inherited as retired: part 2 retired
+~~`CZ_PM4_STOP_ON_WAIT=1` was re-tested rather than inherited as retired: part 2 retired
 it while the arm blocks were in the SCRATCH, where the flag could not apply to them at
-all. With them in the ring it genuinely gates them — and it is still runaway. It stays
-retired, now on a premise that survives the change (gotchas 13 and 79, in our own notes).
+all. With them in the ring it genuinely gates them — and it is still runaway.~~
+**Retracted in part 4 below: the flag was gated on `depth == 0`, so it could not apply
+to these packets in EITHER session** (gotcha 151).
 
 Gates, this binary, both arms: `--smoke` OK; A1 = exact 84-prefix (control) / exact
 81-prefix (draw, when the run does not hit the long-known position-71 permutation);
 A5 = exit 0, **0 real windows**, on both. Unchanged from the phase C best.
+
+**PHASE C PART 4 (2026-08-06, session 16): the replay is the FLYWHEEL, not the fault —
+and the one brake our command processor has never had is now built.** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 4".
+
+Part 3's two ranked candidates are both retired **by measurement, on the control arm**.
+The arm block is inside its own segment by construction (`sub_8284B9C0` writes it at
+`r28-4` and submits `[r28, armEnd+4)`), and the control arm queues that segment to the
+worker on 5,696 of its 5,698 frames without ever looping — so "the queued segment
+should not contain the arm block" was never a difference between the arms. The same
+probe on both arms, same era:
+
+| | PM4 control | phase C draw |
+|---|---|---|
+| `[fence] arm cb=8284AAD0` : `[fence] isr cb=8284AAD0` | 768 : 766 | 12 : 856 |
+| whole boot, `incr=1` submits : drains | 3,958 : 7,913 | 6 : 132,545 |
+
+The hand-off regenerates its own wake-up on hardware too, and it converges because the
+guest arms with a NEW token buffer every frame: gain one, pointer advancing, a
+pipeline. The draw arm's whole boot has **four** armings cycling between **two** buffer
+pointers, so once the guest stalls each walk resubmits the same segments forever.
+**The guest stalling makes the counter negative and the negative counter keeps the guest
+stalled** — part 3 read the flywheel as the cause.
+
+The missing brake: on hardware the CP STALLS at the hand-off block's `WAIT_REG_MEM`s.
+`gpu/pm4.cpp` gated `CZ_PM4_STOP_ON_WAIT` on `depth == 0`, and every one of these waits
+is inside an INDIRECT BUFFER — so both of the flag's retirements measured a no-op
+(gotcha 151). It now stalls at any depth and **resumes at the recorded dword** rather
+than re-walking the buffer (gotcha 152), and a deliberate stop is explicitly not a
+truncation. With it working, **both arms park at frame 1 on the same packet**: a wait
+for SCRATCH_REG1 (`mirror+4`, register `0x0579`, the one `sub_82841AD0` sets to 1) to
+read back zero, which nothing in our runtime ever writes. That is a statement about the
+runtime, not about phase C, and it is where part 5 starts.
+
+Gates, this binary, both arms, default flags: `--smoke` OK; A1 = 84-prefix on the
+control arm (this run hit the long-known position-71 permutation) / **exact 82-prefix**
+on the draw arm; A5 = exit 0, **0 real windows**, on both; `truncated=0` with 3.59 M
+packets walked. Deepest file: #63 `prologue_z01.big` (control) / #60 `models\zombies.big`
+(draw). Unchanged from the phase C best.
 
 **PHASE B IS DELIVERED (2026-08-06, session 12): `CZ_D3D=1` services the content APIs
 (draws/clears/resolves → no-op) while the frame lifecycle calls through — and

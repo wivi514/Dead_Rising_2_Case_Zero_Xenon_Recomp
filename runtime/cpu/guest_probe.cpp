@@ -714,12 +714,57 @@ PPC_FUNC(sub_828459D0)
 
 PPC_FUNC(sub_82845AC0)
 {
+    // r7 (`incr`) and r8 (`queue`) are the two arguments that decide whether this
+    // submission can become a replay, and neither was printed before phase C part 4.
+    //
+    // sub_8284B9C0 submits its arm-carrying segment with incr=1 and queue=dev+0x3518,
+    // and its fence segment with incr=0 and queue=dev+0x3500 — two DIFFERENT token
+    // streams — while the callback it arms (sub_8284AAD0) is handed the head of the
+    // 0x3500 stream. So on a healthy frame the arm block is either submitted straight
+    // to the ring (counter == 0) or parked in a stream the wake-up does not name. It
+    // is only when the counter is ALREADY nonzero at the incr=1 submit that the arm
+    // lands in a token stream at all, and from there the loop closes: the ISR pushes
+    // that stream, the worker resubmits the arm, the CP raises the interrupt again.
+    // Printing the fork's inputs is what makes "which of those happened" readable
+    // instead of inferred (gotcha 145 — a claim about a value needs the value).
     if (FenceProbeEnabled() && FenceLine())
-        fprintf(stderr, "[fence] submit t=%08X addr=%08X dwords=%u 2B04=%08X -> %s\n",
-                GuestThread::GetCurrentThreadId(), ctx.r5.u32, ctx.r6.u32,
-                PPC_LOAD_U32(ctx.r3.u32 + 0x2B04),
+        fprintf(stderr, "[fence] submit t=%08X addr=%08X dwords=%u incr=%u queue=%08X "
+                        "tok=%08X%s 2B04=%d -> %s\n",
+                GuestThread::GetCurrentThreadId(), ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
+                ctx.r8.u32, ctx.r4.u32, WhereCursor(ctx.r4.u32),
+                int32_t(PPC_LOAD_U32(ctx.r3.u32 + 0x2B04)),
                 PPC_LOAD_U32(ctx.r3.u32 + 0x2B04) ? "WORKER TOKEN QUEUE" : "ring direct");
     __imp__sub_82845AC0(ctx, base);
+}
+
+// sub_8284AAD0 — the worker KICK, i.e. the only function in the image that pushes a
+// token-buffer pointer onto the per-CPU D3D worker's job ring and signals its event.
+//
+// It is the ISR's callback, so on the producer side it appears only as a constant
+// passed to sub_82845BA0. Hooking it directly gives the count the mem-watch could only
+// infer, and — more usefully — the VALUE pushed: sub_8284B568 pops that pointer and,
+// when the interpreter's nesting depth is 1 and [obj+0x48] is clear, walks it from
+// `pointer + 4`. Two consecutive kicks carrying the SAME pointer are therefore the
+// same token stream walked twice, which is the replay stated in one line.
+extern "C" PPC_FUNC(__imp__sub_8284AAD0);
+
+PPC_FUNC(sub_8284AAD0)
+{
+    if (FenceProbeEnabled())
+    {
+        static std::atomic<uint64_t> kicks{ 0 };
+        static std::atomic<uint32_t> last{ 0 };
+        const uint64_t k = kicks.fetch_add(1);
+        const uint32_t arg = ctx.r3.u32;
+        const uint32_t prev = last.exchange(arg);
+        // Every kick while the count is small (the era the seed lives in), then only
+        // the periodic total — a runaway prints millions and the budget is shared.
+        if ((k < 64 || (k % 10000) == 0) && FenceLine())
+            fprintf(stderr, "[fence] kick  t=%08X #%llu buf=%08X%s%s\n",
+                    GuestThread::GetCurrentThreadId(), (unsigned long long)k, arg,
+                    WhereCursor(arg), (k && arg == prev) ? " SAME-AS-PREVIOUS" : "");
+    }
+    __imp__sub_8284AAD0(ctx, base);
 }
 
 PPC_FUNC(sub_82845DE0)
@@ -881,20 +926,36 @@ PPC_FUNC(sub_828455C0)
         static std::atomic<uint64_t> entries{ 0 };
         const uint64_t k = calls.fetch_add(1);
         const uint64_t e = entries.fetch_add(ctx.r5.u32) + ctx.r5.u32;
-        // First few for the shape, then a periodic total — because the interesting
-        // claim is a RATE (entries per second), and a capped list of lines cannot
-        // carry one (gotcha 109).
-        if (k < 8 || (k % 20000) == 0)
+        // Every entry of the first CZ_FENCE_RINGSUB calls (default 4000), then a
+        // periodic total — because the interesting claim is a RATE (entries per
+        // second), and a capped list of lines cannot carry one (gotcha 109).
+        //
+        // The per-entry form exists for one question phase C part 4 could not answer
+        // any other way: WHICH segment addresses does the ring see more than once?
+        // The replay is 106 M submissions of the same three segments, so the entry
+        // address is the identity of the thing being replayed, and a submission list
+        // is the only place it is stated. Entries are {0x8100_0000|dwords, gpuAddr}
+        // pairs — the same 8-byte record sub_82845DE0 appends to dev+0x350C and
+        // sub_82845AC0 builds on its stack.
+        static const uint64_t verbose = [] {
+            const char* v = getenv("CZ_FENCE_RINGSUB");
+            const long l = v ? strtol(v, nullptr, 10) : 0;
+            return l > 0 ? uint64_t(l) : uint64_t(4000);
+        }();
+        if (k < verbose || (k % 20000) == 0)
         {
             const uint32_t arr = ctx.r4.u32;
+            const uint32_t n = ctx.r5.u32 > 8 ? 8 : ctx.r5.u32;
+            char ents[512];
+            int off = 0;
+            for (uint32_t i = 0; i < n && arr >= 0x1000; i++)
+                off += snprintf(ents + off, sizeof ents - off, " %08X/%u",
+                                PPC_LOAD_U32(arr + i * 8 + 4), PPC_LOAD_U32(arr + i * 8) & 0xFFFFFF);
+            ents[off] = 0;
             fprintf(stderr, "[fence] ringsub t=%08X #%llu count=%u totalEntries=%llu "
-                            "arr=%08X%s [0]=%08X/%u [1]=%08X/%u\n",
+                            "arr=%08X%s ents:%s\n",
                     GuestThread::GetCurrentThreadId(), (unsigned long long)k, ctx.r5.u32,
-                    (unsigned long long)e, arr, WhereCursor(arr),
-                    arr >= 0x1000 ? PPC_LOAD_U32(arr) : 0,
-                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 4) : 0,
-                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 8) : 0,
-                    arr >= 0x1000 ? PPC_LOAD_U32(arr + 12) : 0);
+                    (unsigned long long)e, arr, WhereCursor(arr), ents);
         }
     }
     __imp__sub_828455C0(ctx, base);

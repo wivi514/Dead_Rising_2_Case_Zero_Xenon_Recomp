@@ -366,6 +366,40 @@ struct Source
     }
 };
 
+// ---------------------------------------------------------------------------------
+// The deliberate WAIT_REG_MEM stall, and why it needs a resume plan.
+//
+// CZ_PM4_STOP_ON_WAIT makes the command processor do what hardware does: hold at an
+// unsatisfied WAIT_REG_MEM instead of evaluating it once and carrying on. It was
+// written for, and gated on, `depth == 0` — the ring itself — because at ring level
+// "stop" is free: Pm4_Execute simply does not advance its cursor and retries next
+// tick.
+//
+// That gate is why the flag has been measured and retired TWICE (phase C parts 2 and
+// 3) without ever having been able to apply to the packets it was aimed at. Case
+// Zero's GPU/CPU hand-off blocks — the callback arm, its three WAIT_REG_MEMs, its
+// INTERRUPT and its re-poison — are emitted into COMMAND SEGMENTS, and segments reach
+// the ring as INDIRECT_BUFFER packets. Every one of those waits is therefore
+// evaluated at depth 1 or deeper, where the flag was a no-op. Gotcha 148 says a
+// retired hypothesis is retired against a binary; this is the sharper form — it was
+// retired against a code path that structurally excluded it.
+//
+// Stopping below the ring is not free, because unwinding to the ring and retrying
+// re-walks the indirect buffer FROM THE START, re-executing every packet before the
+// wait — including the arm and its INTERRUPT, which is precisely the duplication the
+// stall exists to prevent. So a stall records, per depth, the buffer it stopped in
+// and the dword it stopped at, and the next tick's walk of that same buffer resumes
+// there. Depth 0 needs no entry: the ring cursor is the plan.
+struct StallPlan
+{
+    uint32_t va[9] = {};  // the buffer identity at each depth, 0 = no entry
+    uint32_t pos[9] = {}; // the dword to resume at
+    bool pending = false;
+};
+StallPlan g_stallPlan;     // carried from the previous tick
+StallPlan g_stallNext;     // being recorded this tick
+bool g_stallHit = false;   // an unsatisfied wait stopped this tick's walk
+
 // Returns the dword position the walk stopped at — `sizeDwords` if it consumed the
 // whole buffer, less than that if a packet claimed more dwords than remained. Callers
 // mostly ignore it; ExecuteLinearVerified below needs it to correlate a truncation
@@ -756,8 +790,21 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // Pm4_Execute reports a frozen cursor after 60 ticks — but it would
                 // regress a gate that currently reaches 56 of 93. Measure both arms
                 // before promoting it.
-                if (g_stopOnWait && depth == 0)
+                //
+                // It stalls at ANY depth now (see StallPlan above). The `depth == 0`
+                // this used to carry made the flag unable to affect a single one of
+                // this title's hand-off waits, all of which sit inside indirect
+                // buffers — so both of its retirements measured a no-op.
+                if (g_stopOnWait)
+                {
+                    if (depth > 0 && depth < 9)
+                    {
+                        g_stallNext.va[depth] = fetch.va;
+                        g_stallNext.pos[depth] = pos;
+                    }
+                    g_stallHit = true;
                     return 0;
+                }
             }
             break;
         }
@@ -937,6 +984,22 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                         ExecuteLinearVerified(base, PhysToVa(addr), size, depth + 1);
                     else
                         ExecuteLinear(base, PhysToVa(addr), size, depth + 1);
+
+                    // A stall inside the buffer has to unwind all the way to the ring
+                    // cursor, or the enclosing walk would carry on past a packet the
+                    // GPU has not reached yet. Recording this level's position too is
+                    // what lets the next tick re-enter this exact INDIRECT_BUFFER and
+                    // then resume inside it, rather than replaying the packets before
+                    // it (see StallPlan).
+                    if (g_stallHit)
+                    {
+                        if (depth > 0 && depth < 9)
+                        {
+                            g_stallNext.va[depth] = fetch.va;
+                            g_stallNext.pos[depth] = pos;
+                        }
+                        return 0;
+                    }
                 }
                 else
                 {
@@ -964,6 +1027,15 @@ uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int dept
 {
     Source fetch{ base, va, 0 };
     uint32_t pos = 0;
+    // Resume where a stall in a previous tick left this buffer. Keyed on the buffer's
+    // own address so an unrelated buffer arriving at the same depth is not skipped
+    // into; the entry is consumed once, because the plan is rebuilt each tick.
+    if (g_stallPlan.pending && depth > 0 && depth < 9 && g_stallPlan.va[depth] == va &&
+        g_stallPlan.pos[depth] < sizeDwords)
+    {
+        pos = g_stallPlan.pos[depth];
+        g_stallPlan.va[depth] = 0;
+    }
     // The last few packets walked, so a truncation can name the packet whose LENGTH
     // was wrong rather than the innocent dword it eventually tripped over. A stopped
     // walk always reports the position where the arithmetic ran out, which is data by
@@ -983,6 +1055,12 @@ uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int dept
         steps++;
         if (!consumed)
         {
+            // A DELIBERATE stall is not a truncation, and counting it as one would put
+            // the load-stall alarm (`truncated=`) permanently at a nonzero value and
+            // retire the one live gate finding 39 left behind.
+            if (g_stallHit)
+                return pos;
+
             // A packet claiming more dwords than the buffer holds. Stopping is right —
             // guessing would desync — but stopping SILENTLY is not, and that is what
             // this did until finding 38.
@@ -1160,14 +1238,33 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
 
     Source fetch{ base, g_ringBase, g_ringDwords };
 
+    // One tick = one attempt at the plan the previous tick left behind. Rebuilt from
+    // scratch each tick so a stall that has cleared does not leave a stale resume
+    // point behind for a recycled command buffer to land on.
+    g_stallHit = false;
+    g_stallNext = StallPlan{};
+
     uint32_t guard = g_ringDwords + 1; // never walk more than one lap per call
     while (g_cursor != target && guard--)
     {
         const uint32_t avail = (target + g_ringDwords - g_cursor) % g_ringDwords;
         const uint32_t consumed = ExecutePacket(base, fetch, g_cursor, avail, 0);
         if (!consumed)
-            break; // tail packet not fully written yet — resume next tick
+            break; // tail packet not fully written yet, or a deliberate wait stall —
+                   // either way the cursor stays put and we come back next tick
         g_cursor = (g_cursor + consumed) % g_ringDwords;
+    }
+
+    g_stallNext.pending = g_stallHit;
+    g_stallPlan = g_stallNext;
+    if (g_stallHit)
+    {
+        static std::atomic<uint64_t> stalls{ 0 };
+        const uint64_t n = stalls.fetch_add(1) + 1;
+        if (n <= 4 || (n & 0xFFFFF) == 0)
+            fprintf(stderr, "[pm4] CZ_PM4_STOP_ON_WAIT: ring held at an unsatisfied "
+                            "WAIT_REG_MEM (#%llu), resuming next tick\n",
+                    (unsigned long long)n);
     }
 
     // A stall here is reported, not papered over. Skipping ahead to the write pointer
