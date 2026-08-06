@@ -358,6 +358,110 @@ loads through `prologue_z01.big` (file #63) — the title screen's own scene. Bo
 wall-time is ~4-5x the PM4 arm's (the load era paces on lifecycle round-trips); a
 number to re-measure after the picture gate, phase 5 precedent.
 
+### Phase C part 2: the movie deadlock, and the rule the redirect was missing
+
+Session 14 (2026-08-06). The blocker `docs/d3d-phase-c2-kickoff.md` handed over — the
+boot parking mid-cinematics with the engine thread in its per-frame GPU sync and
+`emitted - completed` pinned at 16 — is **fixed**, and the diagnosis names a rule the
+redirect had no statement of.
+
+**The measurement that ended the argument.** The kickoff ranked three hypotheses. What
+settled it was neither of them directly: it was running the SAME probe on both arms.
+`CZ_FENCE_PROBE=1` (`runtime/cpu/guest_probe.cpp`) hooks the whole producer side of
+the fence number — the fence-block emitter `sub_828459D0`, the segment submit
+`sub_82845AC0`, the close/kick `sub_82845DE0`, the callback armer `sub_82845BA0` and
+the graphics ISR `sub_82844D38` itself. Over one boot each:
+
+| | PM4 control arm | phase C draw arm (before) |
+|---|---|---|
+| ISR delivers `sub_82841878` (frame tick) | 1,799 | 5 |
+| ISR delivers `sub_827CC628`/`827CC640` (job ticks) | ~1,200 | 49 each |
+| **ISR delivers `sub_8284AAD0`** | **138** | **1** |
+| walker delivers interrupts (draw arm only) | — | 200, ALL `82841878` |
+
+(Read the control column as a floor, not a total: `CZ_FENCE_PROBE` shares a
+40,000-line budget across its five hooks and the control run saturates it. The draw
+column does not — that run produced 17,385 probe lines in 240 s, so **one** is the
+true whole-boot count. Gotcha 109 in our own new instrument, caught before it was
+quoted as a ratio.)
+
+`sub_8284AAD0` is the one that matters, and it had never been named: it pushes a job
+onto the per-CPU D3D worker's ring (`[[0x82000758]] + cpu*0x6C + 0x2C40`, slot
+`0x5C + (head&3)*4`) and `KeSetEvent`s the worker's event at `+0x3C`. The engine waits
+on fences that only the worker retires. Delivered once and never again, the worker
+sleeps forever and the boot parks — exactly the picture `gdb` showed: every thread
+parked, the two worker threads (`sub_8284B828`) asleep in `KeWaitForSingleObject`.
+
+**Why the redirect ate it.** `sub_82846288` — the Phase A table's "fence/throttle-shaped"
+row, retracted here: it is the **callback armer**. It forwards to `sub_82845BA0`, which
+lays down one block at the command cursor:
+
+```
+type-0 write reg 0x05C8 = 0x20000
+type-0 write regs 0x057C,0x057D = (callback, argument)     <- the arm
+WAIT_REG_MEM x3   hold the GPU until that mirror is visible in memory
+INTERRUPT
+WAIT_REG_MEM + type-0 write reg 0x057C = 0x0BADF00D        <- the re-poison
+```
+
+The ISR reads its callback back out of GUEST MEMORY (`[[user+0x2A94]] + 0x10/+0x14`),
+so the whole block is a hand-off whose correctness IS its ordering against the CP and
+against the guest's own poison store. Redirected emission put it in our private
+scratch, where the walker had to emulate it — four designs, all racing the poison, and
+the one that shipped read the arming out of the walker's own register file with a
+fallback to pm4's. That fallback is why every delivery was the frame tick: the
+`8284AAD0` arms rode transports it did not look at.
+
+**The fix is to stop emulating it.** `D3dDraw_ServiceRealRing` runs `sub_82846288`'s
+body with the REAL cursor block restored, so the arm/WAIT/INTERRUPT/poison block lands
+in the ring and the title's own ISR delivers it, in the title's own order. The walker's
+`0x54` handler is now dead code on this path and its counter says so. Measured, same
+binary, one boot each: ISR deliveries of `sub_8284AAD0` went from **one in an entire
+240 s boot** to continuous (enough that they saturate the probe's whole 40,000-line
+budget), walker interrupt deliveries **200 -> 0**, and the boot moved from
+`cinematics.big` (file #56) to `prologue_menu\zonelist.big` + `models\zombies.big`
+(files #57-60 of 64).
+
+A second, smaller fix was needed for the first to work at all. **The reserve
+(`sub_82845F68`) is not "give me space" — it is CLOSE-AND-KICK.** It ignores the cursor
+entirely: it hands the pending segment to the worker, closes and kicks it
+(`sub_82845DE0`, which measures the segment as `[dev+0x3B20] .. [dev+0x30]+4`), and only
+then returns `[dev+0x30]`. Resolve's MULTI-TILE path (`sub_82838858 + 0x250`, taken once
+`dev+0x327C` — the bin/tile count — exceeds 1, i.e. from the first tiled frame) calls it
+and DISCARDS the return value: the call is there purely for the kick, immediately before
+the `0x88000000` token that queues that segment. Phase C's first service suppressed the
+whole thing because running it mid-redirect would have measured the segment out to our
+scratch cursor. That reasoning was right and the conclusion was too strong. The service
+now restores the real cursor block, runs the guest's own reserve against it, adopts the
+fresh segment, re-installs the scratch and answers with the scratch cursor —
+`CZ_D3D_NO_RESERVE_KICK=1` is the same-binary arm for the old behaviour.
+
+**The general rule, and it is the one phase C should have started with:** redirected
+emission is right for CONTENT, whose only consumer is our renderer. It is wrong for any
+packet whose consumer is the title itself. Those must be emitted where their reader
+lives. The test for a hooked entry is not "does it emit?" but "who reads what it
+emits?".
+
+**THE NEW BLOCKER, localised but not fixed.** The boot now parks a little later, at
+`models\zombies.big`, with the engine thread at 99% CPU in `sub_82846210`'s
+`while ([dev+0x2B04] != 0)` spin — the "wait for every outstanding async segment to
+drain" loop. `dev+0x2B04` is incremented only in `sub_82845AC0` (`+= r7`, and only
+`sub_8284B9C0` at `8284BB44` ever passes `r7 = 1`); a whole-image scan finds no
+instruction that decrements it. A hardware watchpoint on the control arm named the
+decrementer in one hit: **`sub_8284A960`, called from the token interpreter
+`sub_8284B568` on the D3D worker thread** — it is the worker draining the queue, not a
+GPU write. On the control arm the counter oscillates 0->1->2->1->0 continuously; on the
+draw arm it never returns to 0.
+
+Two counts from the same probe window sharpen the question. The draw arm ARMS
+`sub_8284AAD0` exactly **4 times** in a boot and the ISR then delivers it thousands of
+times: the mirror stays armed, so every later source-1 interrupt re-enqueues the same
+job. And the draw arm submits only **28** segments to the worker token queue where the
+control arm submits **13,498** — because redirected emission is exactly what empties
+those segments. So the worker is being woken constantly with almost nothing to drain,
+which is at least consistent with the counter never reaching zero.
+`docs/d3d-phase-c3-kickoff.md` carries the ranked follow-ups.
+
 **D — retire or keep.** Measure both arms; the PM4 path stays as the control until the
 D3D arm is strictly better on every gate.
 

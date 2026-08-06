@@ -611,3 +611,132 @@ PPC_FUNC(sub_82876080)
     }
     __imp__sub_82876080(ctx, base);
 }
+
+// ---------------------------------------------------------------------------------
+// CZ_FENCE_PROBE=1 — the D3D fence/segment plumbing, end to end.
+//
+// WHY: phase C's boot parks in the engine's per-frame GPU sync with
+// `emitted - completed` pinned at 16, and every static reading of the path was
+// consistent with several different causes. The three functions below are the whole
+// producer side of that number and there is nowhere else it can come from:
+//
+//   sub_828459D0  the fence-block emitter: writes an INVALIDATE_STATE + two
+//                 EVENT_WRITE_SHD packets at a caller-supplied cursor, advances
+//                 dev+0x2A9C by 2, and has a CPU FAST PATH that writes the
+//                 completion word itself when dev+0x54EC == 0 and dev+0x2ABD bit 1
+//                 is set. Whether that path is taken decides who retires the fence.
+//   sub_82845AC0  the segment submit, and it is a FORK: dev+0x2B04 != 0 queues the
+//                 segment as a token for the D3D worker, == 0 submits it to the ring
+//                 directly. A queued segment nobody drains is an unretired fence.
+//   sub_82845DE0  the close/kick, which decides between those on flags this probe
+//                 prints (dev+0x2ABC, dev+0x2ABD, dev+0x3460) and can bail out
+//                 entirely when the segment measures zero dwords.
+//
+// It prints one line per call, capped, with the guest thread id — the cap exists
+// because a stalled boot emits thousands and only the tail is interesting.
+extern "C" PPC_FUNC(__imp__sub_828459D0);
+extern "C" PPC_FUNC(__imp__sub_82845AC0);
+extern "C" PPC_FUNC(__imp__sub_82845DE0);
+
+namespace {
+
+bool FenceProbeEnabled()
+{
+    static const bool on = getenv("CZ_FENCE_PROBE") != nullptr;
+    return on;
+}
+
+// Shared across the three hooks so their lines interleave in call order and the cap
+// is a budget for the whole picture, not per function.
+std::atomic<uint64_t> g_fenceLines{ 0 };
+bool FenceLine()
+{
+    return g_fenceLines.fetch_add(1, std::memory_order_relaxed) < 40000;
+}
+
+} // namespace
+
+PPC_FUNC(sub_828459D0)
+{
+    if (FenceProbeEnabled() && FenceLine())
+    {
+        const uint32_t dev = ctx.r3.u32;
+        const uint32_t wb = PPC_LOAD_U32(dev + 0x2A90);
+        fprintf(stderr, "[fence] emit  t=%08X cursor=%08X fence=%u wb=%08X completed=%u "
+                        "54EC=%08X 2ABD=%02X cpuPath=%d\n",
+                GuestThread::GetCurrentThreadId(), ctx.r4.u32,
+                PPC_LOAD_U32(dev + 0x2A9C), wb, wb ? PPC_LOAD_U32(wb) : 0,
+                PPC_LOAD_U32(dev + 0x54EC), PPC_LOAD_U8(dev + 0x2ABD),
+                (PPC_LOAD_U32(dev + 0x54EC) == 0 && (PPC_LOAD_U8(dev + 0x2ABD) & 2)) ? 1 : 0);
+    }
+    __imp__sub_828459D0(ctx, base);
+}
+
+PPC_FUNC(sub_82845AC0)
+{
+    if (FenceProbeEnabled() && FenceLine())
+        fprintf(stderr, "[fence] submit t=%08X addr=%08X dwords=%u 2B04=%08X -> %s\n",
+                GuestThread::GetCurrentThreadId(), ctx.r5.u32, ctx.r6.u32,
+                PPC_LOAD_U32(ctx.r3.u32 + 0x2B04),
+                PPC_LOAD_U32(ctx.r3.u32 + 0x2B04) ? "WORKER TOKEN QUEUE" : "ring direct");
+    __imp__sub_82845AC0(ctx, base);
+}
+
+PPC_FUNC(sub_82845DE0)
+{
+    if (FenceProbeEnabled() && FenceLine())
+    {
+        const uint32_t dev = ctx.r3.u32;
+        const uint32_t cursor = PPC_LOAD_U32(dev + 0x30);
+        const uint32_t segStart = PPC_LOAD_U32(dev + 0x3B20);
+        fprintf(stderr, "[fence] close t=%08X dev=%08X cursor=%08X seg=%08X dwords=%d "
+                        "2ABC=%02X 2ABD=%02X 3460=%08X 2B04=%08X\n",
+                GuestThread::GetCurrentThreadId(), dev, cursor, segStart,
+                int(int32_t(cursor + 4 - segStart) >> 2), PPC_LOAD_U8(dev + 0x2ABC),
+                PPC_LOAD_U8(dev + 0x2ABD), PPC_LOAD_U32(dev + 0x3460),
+                PPC_LOAD_U32(dev + 0x2B04));
+    }
+    __imp__sub_82845DE0(ctx, base);
+}
+
+// The graphics ISR itself, under the same CZ_FENCE_PROBE budget. sub_82844D38's
+// source-1 path reads its callback and argument out of GUEST MEMORY at
+// [[user+0x2A94]] + 0x10/+0x14 — the scratch-register mirror the command stream arms
+// just before each INTERRUPT packet — so this line says exactly which kick the title
+// asked for and whether it was armed at the moment the interrupt arrived. It is the
+// one place the PM4 control arm and the phase C draw arm can be compared directly:
+// phase C's walker replicates this path itself for content-stream interrupts, so a
+// callback that appears here on the control arm and nowhere on the draw arm is a kick
+// the redirect ate.
+extern "C" PPC_FUNC(__imp__sub_82844D38);
+
+PPC_FUNC(sub_82844D38)
+{
+    if (FenceProbeEnabled() && FenceLine())
+    {
+        const uint32_t mirror = ctx.r3.u32 == 1 ? PPC_LOAD_U32(ctx.r4.u32 + 0x2A94) : 0;
+        fprintf(stderr, "[fence] isr   t=%08X source=%u mirror=%08X cb=%08X arg=%08X\n",
+                GuestThread::GetCurrentThreadId(), ctx.r3.u32, mirror,
+                mirror >= 0x1000 ? PPC_LOAD_U32(mirror + 0x10) : 0,
+                mirror >= 0x1000 ? PPC_LOAD_U32(mirror + 0x14) : 0);
+    }
+    __imp__sub_82844D38(ctx, base);
+}
+
+// sub_82845BA0 is the callback-arming emitter, and it is the producer side of the ISR
+// line above: it writes a type-0 packet setting scratch registers 0x057C/0x057D to
+// (callback, argument), three WAIT_REG_MEMs that hold the GPU until that mirror has
+// landed in memory, and then the INTERRUPT packet. Printing its CURSOR says which
+// stream each arming went into — under phase C's redirect, a cursor inside the private
+// scratch means our walker owns that kick and a cursor in the real command buffer
+// means the CP does.
+extern "C" PPC_FUNC(__imp__sub_82845BA0);
+
+PPC_FUNC(sub_82845BA0)
+{
+    if (FenceProbeEnabled() && FenceLine())
+        fprintf(stderr, "[fence] arm   t=%08X cursor=%08X flags=%08X cb=%08X arg=%08X\n",
+                GuestThread::GetCurrentThreadId(), ctx.r4.u32, ctx.r5.u32, ctx.r6.u32,
+                ctx.r7.u32);
+    __imp__sub_82845BA0(ctx, base);
+}

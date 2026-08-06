@@ -841,6 +841,42 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
     Watching the register itself settled it in one run (no zero writes at all after
     frame 400). Bound every state probe by FRAME as well as by count; this is the same
     trap as bounding it by vertex count and finding only the small early meshes.
+From phase C part 2 (the movie deadlock, and how it was finally named):
+
+141. **When you interpose on a stream, the question for each packet is not "can I
+    emulate this?" but "WHO READS IT?".** Redirected emission is right for content,
+    whose only consumer is your renderer, and wrong for anything the title itself
+    reads back. Case Zero's callback hand-off is an arming of two GPU scratch
+    registers, three `WAIT_REG_MEM`s that hold the GPU until that mirror is visible
+    in memory, an `INTERRUPT`, and a re-poison — and the ISR reads the callback out
+    of GUEST MEMORY at delivery time, so the whole thing is an ORDERING contract
+    against the CP and against the guest's own stores. Four increasingly clever
+    emulations of it all raced the poison. Emitting the block into the stream whose
+    reader owns it took two dozen lines and no semantics at all.
+142. **A probe is worth writing when it can run on BOTH arms — that is what makes it
+    an oracle rather than a description.** Three sessions of hypotheses about
+    interrupt races ended with one flag (`CZ_FENCE_PROBE`) hooking the five functions
+    that produce the fence/callback protocol, run once on the PM4 control arm and
+    once on the D3D arm, and diffed: the control arm's ISR delivered `sub_8284AAD0`
+    138 times and ours delivered it ONCE. The missing call had never even been named
+    before that line printed. Instrument the seam both arms share, not the arm you
+    suspect.
+143. **A "no callers / no writers" scan result is a statement about STATIC form, not
+    about behaviour, and one hardware watchpoint settles it.** `dev+0x2B04` is
+    incremented by a `stw` a scan finds instantly and decremented by nothing the whole
+    8.8 MB image contains — because the decrementer holds the pointer in a register.
+    `gdb -p`, `watch *(unsigned int*)((char*)g_memory.base + <va>)`, two continues,
+    two backtraces: `sub_8284A960` under the worker's token interpreter, in one run.
+    (Read the values as big-endian: guest 2 prints as 33554432.) The same trick names
+    the caller of an indirect-only function.
+144. **Name a function by what its ARGUMENT does, not by its shape.** `sub_82846288`
+    was recorded for a phase as "fence/throttle-shaped" on the strength of its call
+    rate and its comparison of two cursor fields. It is the callback armer, and the
+    thing that said so was `tools/gdis.py --find-uses` on the ADDRESS of the callback
+    it arms — the constant `0x8284AAD0` appears at exactly three call sites, all
+    passing it as an argument to this function. A 32-bit constant is never one
+    instruction, so grepping the image for it misses every one.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -928,7 +964,10 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
   **`d3d-translation-plan.md` the renderer-architecture pivot (2026-08-06): plan,
-  recon, licensing — the first read before any renderer work**,
+  recon, licensing, and the per-phase build-out records — the first read before any
+  renderer work**, with `d3d-kickoff.md` / `d3d-phase-c-kickoff.md` /
+  `d3d-phase-c2-kickoff.md` / **`d3d-phase-c3-kickoff.md` (current)** the hand-offs,
+  each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
   `runtime-plan.md` the phase plan, `phase1-notes.md`, `phase3-notes.md` and
@@ -1131,6 +1170,19 @@ CZ_QUEUE_PROBE=1   the audio work-queue drain (sub_828576D8) and its seven call
 CZ_JOBQ_PROBE=1    the graphics command-stream interpreter (sub_8284B568) on entry:
                    its shared object's callback/cursor state and the token buffer it
                    is about to walk. The last line before a crash IS the fatal call
+CZ_FENCE_PROBE=1   the WHOLE producer side of the D3D fence/callback protocol, in
+                   one flag and on BOTH arms: the fence-block emitter (828459D0),
+                   the segment submit and its worker-vs-ring fork (82845AC0), the
+                   close/kick (82845DE0), the callback armer (82845BA0) and the
+                   graphics ISR itself (82844D38). Capped at 40,000 lines shared.
+                   Run it on the PM4 arm AND on CZ_D3D_DRAW and DIFF — that
+                   comparison found the missing worker kick after three sessions of
+                   hypotheses about interrupt races
+CZ_D3D_NO_RESERVE_KICK=1  suppress the guest's segment close/kick when the reserve
+                   fires mid-redirect — the pre-fix arm for phase C part 2. With it
+                   on the boot deadlocks at cinematics.big again (measured: file #56
+                   vs #60, 5 worker kicks vs 36,747), which is what makes the fix a
+                   measurement rather than an assertion
 CZ_CRASH_TEST=nullcall  call through a zero ctr on purpose, to prove the crash
                    reporter names it. A self-test, not an arm — it announces itself
                    and the crash it causes is deliberate (finding 40)
@@ -1751,10 +1803,49 @@ final interrupt design. The hard-won piece was interrupt delivery: content-strea
 INTERRUPTs carry the token worker's kick, their arms are dual-transport, and the
 walker now performs the ISR's source-1 path itself from one guarded read (four
 designs; the trail is in the git log and `docs/d3d-translation-plan.md`).
-**OPEN BLOCKER: the boot deadlocks mid-cinematics** on the movie's fence/worker
-protocol (fence lag pins at 16, CP caught up) — **THE NEXT SESSION STARTS FROM
-`docs/d3d-phase-c2-kickoff.md`**, which carries the hypotheses ranked by cost and
-the fastest route to the picture gate (the movie is START-skippable).
+~~OPEN BLOCKER: the boot deadlocks mid-cinematics.~~ **CLOSED in session 14, below** —
+and the walker's ISR replication described above is retracted with it.
+
+**PHASE C PART 2 (2026-08-06, session 14): the movie deadlock is fixed, and the rule
+the redirect was missing is "emit where the READER lives".** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 2"; hand-off in
+**`docs/d3d-phase-c3-kickoff.md`, which is where the next session starts**.
+
+`sub_82846288` is the **callback armer** (the Phase A "fence/throttle" label is
+retracted): it lays down an arm of scratch registers `0x057C/0x057D`, three
+`WAIT_REG_MEM`s, an `INTERRUPT` and a re-poison, and the graphics ISR reads that
+callback back out of GUEST MEMORY. Redirected emission put the whole block in our
+private scratch, where the walker had to emulate a hand-off whose correctness IS its
+ordering — four designs, all racing the poison. It now runs with the REAL cursor
+restored (`D3dDraw_ServiceRealRing`), so the title's own ISR delivers it. The second
+half: **the reserve `sub_82845F68` is not "give me space", it is CLOSE-AND-KICK**, and
+Resolve's multi-tile path calls it purely for the kick and discards the return value;
+suppressing it left the block unkicked.
+
+Measured, same binary, one boot each — and both halves are load-bearing, because
+`CZ_D3D_NO_RESERVE_KICK=1` reproduces the old stall exactly:
+
+| | before | after | NO_RESERVE_KICK arm |
+|---|---|---|---|
+| ISR delivers `sub_8284AAD0` (the worker kick) | **1 in a whole boot** | continuous* | 5 |
+| walker-delivered interrupts | 200, all `82841878` | 0 | — |
+| deepest file | #56 `cinematics.big` | **#60 `models\zombies.big`** | #56 |
+
+Gates on this binary, both arms: `--smoke` OK; A1 = exact 84-prefix (control) / exact
+82-prefix (draw); A5 = exit 0, 2 permutation windows, **0 real**, on both. Unchanged
+from the phase C best.
+
+**THE NEW BLOCKER, localised:** the boot parks at `models\zombies.big` with the engine
+thread at 99% CPU in `sub_82846210`'s `while ([dev+0x2B04] != 0)` spin — the count of
+outstanding async command segments. It is incremented only in `sub_82845AC0` and
+decremented by `sub_8284A960` under the D3D worker's token interpreter `sub_8284B568`
+(named by a hardware watchpoint, because no static scan can see a store through a
+register-held pointer). Control arm: oscillates 0-1-2-1-0. Draw arm: never returns to
+0. The draw arm ARMS that callback 4 times a boot and the ISR then delivers it
+thousands of times (the mirror stays armed, so every later interrupt re-enqueues the
+same job), and it submits 28 segments to the worker queue where the control arm submits
+13,498 - redirected emission is what empties them. The worker is woken constantly with
+nothing to drain; reconciling that is probably the fix.
 
 **PHASE B IS DELIVERED (2026-08-06, session 12): `CZ_D3D=1` services the content APIs
 (draws/clears/resolves → no-op) while the frame lifecycle calls through — and

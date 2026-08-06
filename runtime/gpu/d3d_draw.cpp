@@ -24,6 +24,11 @@
 
 #include "ppc_recomp_shared.h"
 
+// The command-buffer reserve's REAL body. ppc_recomp_shared.h declares only the weak
+// alias, which d3d_hooks.cpp has taken over — calling the alias from the reserve
+// service would re-enter the hook. See D3dDraw_ServiceReserve.
+extern "C" PPC_FUNC(__imp__sub_82845F68);
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -122,6 +127,10 @@ int g_depth = 0;                            // nesting depth on the owning threa
 uint32_t g_dev = 0;
 uint32_t g_save30 = 0, g_save34 = 0, g_save38 = 0;
 uint32_t g_parseVa = 0; // next unparsed scratch dword (guest VA)
+// Nonzero while a call is deliberately emitting into the REAL command buffer from
+// inside a redirect (D3dDraw_ServiceRealRing). Thread-confined like g_depth: only the
+// redirect's owning thread ever touches it.
+int g_realRingDepth = 0;
 
 // --- shader binding ----------------------------------------------------------------
 // FNV-1a over the big-endian microcode: the renderer's cache key, byte-identical to
@@ -357,6 +366,15 @@ uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t ava
                     break;
                 }
                 Count("walker: INTERRUPT callback delivered in-position");
+                {
+                    // Per-callback, because "an interrupt was delivered" and "the
+                    // kick the worker was waiting for was delivered" are different
+                    // claims: the content stream arms more than one callback and a
+                    // single total hides which ones never fire.
+                    char nm[64];
+                    snprintf(nm, sizeof nm, "walker: INTERRUPT -> %08X", armed);
+                    Count(nm);
+                }
                 PPCContext saved = ctx;
                 ctx.r3.u64 = arg;
                 cb(ctx, base);
@@ -797,29 +815,132 @@ void D3dDraw_OnSwap(uint8_t* base)
         D3dDraw_DumpStats();
 }
 
+bool D3dDraw_ServiceRealRing(PPCContext& ctx, uint8_t* base, CzGuestFunc through)
+{
+    const uint32_t dev = ctx.r3.u32;
+    if (g_redirectOwner.load(std::memory_order_acquire) != SelfThreadId() || g_depth <= 0 ||
+        dev != g_dev)
+    {
+        // No redirect in the way: this entry is ordinary guest code.
+        through(ctx, base);
+        return true;
+    }
+
+    // Everything staged in the scratch so far belongs BEFORE this emission, so consume
+    // it now: our walk is the execution, and it must happen before the packets that
+    // announce that work is finished reach the CP.
+    ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
+
+    const uint32_t scratchCursor = GuestLoad32(base, dev + 0x30);
+    GuestStore32(base, dev + 0x30, g_save30);
+    GuestStore32(base, dev + 0x34, g_save34);
+    GuestStore32(base, dev + 0x38, g_save38);
+
+    ++g_realRingDepth;   // keeps the reserve service out of the way (see below)
+    through(ctx, base);
+    --g_realRingDepth;
+
+    g_save30 = GuestLoad32(base, dev + 0x30);
+    g_save34 = GuestLoad32(base, dev + 0x34);
+    g_save38 = GuestLoad32(base, dev + 0x38);
+    GuestStore32(base, dev + 0x30, scratchCursor);
+    GuestStore32(base, dev + 0x34, g_scratchVa + kScratchBytes);
+    GuestStore32(base, dev + 0x38, g_scratchVa + kScratchBytes - kScratchHeadroom);
+    Count("redirect: callback/interrupt block emitted to the REAL ring");
+    return true;
+}
+
 bool D3dDraw_ServiceReserve(PPCContext& ctx, uint8_t* base)
 {
-    if (g_redirectOwner.load(std::memory_order_acquire) != SelfThreadId() || g_depth <= 0)
-        return false; // no redirect on this thread: the real reserve runs untouched
+    if (g_redirectOwner.load(std::memory_order_acquire) != SelfThreadId() || g_depth <= 0 ||
+        g_realRingDepth > 0)
+        return false; // no redirect on this thread (or we put the real cursor back
+                      // ourselves): the real reserve runs untouched
 
-    // Mid-redirect the answer is always "you have space": hand back the scratch
-    // cursor exactly as the real reserve hands back [dev+0x30], and keep the guest's
-    // segment-close/kick/park machinery away from a cursor it does not own. This is
-    // also a natural parse boundary — the emitter asked for a fresh block, so
-    // everything before the ask is complete packets.
     const uint32_t dev = ctx.r3.u32;
-    if (dev == g_dev)
-        ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
-    else
-        Count("redirect: reserve on a DIFFERENT device (serviced anyway)");
-    ctx.r3.u64 = GuestLoad32(base, g_dev + 0x30);
-    Count("redirect: reserve serviced from the scratch");
+    if (dev != g_dev)
+    {
+        // Not our device: we have no saved cursor block to lend it, so the only safe
+        // answer is the one the old service gave. Counted; it has never fired.
+        Count("redirect: reserve on a DIFFERENT device (answered from the scratch)");
+        ctx.r3.u64 = GuestLoad32(base, dev + 0x30);
+        return true;
+    }
+
+    // A natural parse boundary: the caller asked for a fresh block, so everything
+    // before the ask is complete packets.
+    ParseUpTo(ctx, base, GuestLoad32(base, dev + 0x30) + 4);
+
+    // THE RESERVE IS NOT "GIVE ME SPACE" — IT IS CLOSE-AND-KICK.
+    //
+    // sub_82845F68 ignores the cursor entirely: it hands the pending segment to the
+    // worker (sub_82845810/82845AC0), closes and kicks it (sub_82845DE0, which
+    // measures the segment as [dev+0x3B20, [dev+0x30]+4)), optionally throttles, and
+    // only then returns [dev+0x30]. Resolve's MULTI-TILE path (sub_82838858+0x250,
+    // taken once dev+0x327C — the bin/tile count — exceeds 1, i.e. from the moment
+    // the title starts rendering its two 640-wide tiles) calls it and DISCARDS the
+    // return value: the call is there purely for the kick, immediately before the
+    // 0x88000000 token that queues that segment to the D3D worker.
+    //
+    // The first version of this service suppressed the whole thing, because running
+    // it mid-redirect would have measured the segment from the real start to OUR
+    // SCRATCH cursor. That reasoning was right and the conclusion was too strong: it
+    // also suppressed every kick, so from the first tiled frame the real segment
+    // holding the lifecycle's fence EVENT_WRITEs was never closed. Measured symptom:
+    // the boot parks in the engine's per-frame GPU sync at cinematics.big with
+    // `emitted - completed` pinned at 16 and the CP fully caught up.
+    //
+    // The correct service gives the guest its kick without letting it see the
+    // scratch: put the REAL cursor block back, run the guest's own reserve against
+    // it, adopt whatever fresh segment it hands out as the new saved block, then
+    // re-install the scratch and answer with the scratch cursor. Nothing is invented
+    // — this is the guest's own function operating on the guest's own segment.
+    // The same-binary control arm for the paragraph above: with it on, the reserve is
+    // suppressed exactly as it was before this fix, so "does the guest's own kick
+    // matter" is one environment variable rather than one rebuild.
+    static const bool noKick = [] {
+        const char* v = getenv("CZ_D3D_NO_RESERVE_KICK");
+        const bool on = v && *v && *v != '0';
+        if (on)
+            fprintf(stderr, "[d3ddraw] CZ_D3D_NO_RESERVE_KICK=1 — the reserve is serviced "
+                            "from the scratch and the guest's segment close/kick is "
+                            "SUPPRESSED (the pre-fix arm)\n");
+        return on;
+    }();
+    if (noKick)
+    {
+        ctx.r3.u64 = GuestLoad32(base, dev + 0x30);
+        Count("redirect: reserve serviced from the scratch (NO_RESERVE_KICK arm)");
+        return true;
+    }
+
+    const uint32_t scratchCursor = GuestLoad32(base, dev + 0x30);
+    const uint32_t realBefore = g_save30;
+    GuestStore32(base, dev + 0x30, g_save30);
+    GuestStore32(base, dev + 0x34, g_save34);
+    GuestStore32(base, dev + 0x38, g_save38);
+
+    PPCContext saved = ctx;
+    __imp__sub_82845F68(ctx, base);   // the real body; the hook is not re-entered
+    ctx = saved;
+
+    g_save30 = GuestLoad32(base, dev + 0x30);
+    g_save34 = GuestLoad32(base, dev + 0x34);
+    g_save38 = GuestLoad32(base, dev + 0x38);
+    GuestStore32(base, dev + 0x30, scratchCursor);
+    GuestStore32(base, dev + 0x34, g_scratchVa + kScratchBytes);
+    GuestStore32(base, dev + 0x38, g_scratchVa + kScratchBytes - kScratchHeadroom);
+    ctx.r3.u64 = scratchCursor;
+
+    Count("redirect: reserve ran the guest's close/kick on the REAL segment");
     {
         static std::atomic<uint64_t> n{ 0 };
         const uint64_t k = n.fetch_add(1);
         if (k < 12)
-            fprintf(stderr, "[d3ddraw] reserve serviced #%llu: caller lr=%08X cursor=%08X\n",
-                    (unsigned long long)(k + 1), uint32_t(ctx.lr), uint32_t(ctx.r3.u32));
+            fprintf(stderr, "[d3ddraw] reserve #%llu: caller lr=%08X real cursor %08X->%08X, "
+                            "answered scratch %08X\n",
+                    (unsigned long long)(k + 1), uint32_t(saved.lr), realBefore,
+                    g_save30, scratchCursor);
     }
     return true;
 }

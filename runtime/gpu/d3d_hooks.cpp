@@ -225,7 +225,10 @@ void SwapSummary()
 //                 which runs the guest body itself under a redirected command-buffer
 //                 cursor and renders what it emitted.
 // ---------------------------------------------------------------------------------
-enum class ServiceResult { CallThrough, Serviced, Redirect };
+//   RealRing    — phase C: the opposite of Redirect. The guest body runs with the REAL
+//                 cursor restored, so its packets reach the CP and the title's own ISR
+//                 instead of our walker (see d3d_draw.h's D3dDraw_ServiceRealRing).
+enum class ServiceResult { CallThrough, Serviced, Redirect, RealRing };
 
 // The reserve's real body, used directly by the sync-wait service below. The X-macro
 // extern block further down declares the rest; this one is needed before it.
@@ -247,6 +250,17 @@ ServiceResult Service(HookId id, PPCContext& ctx, uint8_t* base)
         // real reserve runs untouched everywhere else (see d3d_draw.h).
         if (DrawMode() && D3dDraw_ServiceReserve(ctx, base))
             return ServiceResult::Serviced;
+        return ServiceResult::CallThrough;
+    case kH_Fence_82846288_q:
+        // The Phase A label was "fence/throttle-shaped"; the disassembly says it is the
+        // CALLBACK ARMER — it forwards to sub_82845BA0, which lays down the
+        // arm / WAIT_REG_MEM x3 / INTERRUPT / re-poison block that hands a callback to
+        // the graphics ISR. Its three callbacks over a boot are the frame tick
+        // (82841878), the job ticks (827CC628/827CC640) and, once tiled rendering
+        // starts, sub_8284AAD0 — the one that wakes the D3D worker. That block belongs
+        // in the ring, never in our scratch.
+        if (DrawMode() && D3dDraw_Enabled())
+            return ServiceResult::RealRing;
         return ServiceResult::CallThrough;
     case kH_InsertCallback_q:
         // The engine's per-frame GPU sync (retraction of the Phase A label: this is
@@ -354,6 +368,10 @@ CZ_D3D_HOOKS(X)
                 return;                                                              \
             case ServiceResult::Redirect:                                            \
                 if (D3dDraw_ServiceContent(ctx, base, __imp__sub_##addr))            \
+                    return;                                                          \
+                break;                                                               \
+            case ServiceResult::RealRing:                                            \
+                if (D3dDraw_ServiceRealRing(ctx, base, __imp__sub_##addr))           \
                     return;                                                          \
                 break;                                                               \
             case ServiceResult::CallThrough:                                         \

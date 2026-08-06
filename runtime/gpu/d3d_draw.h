@@ -83,11 +83,43 @@ void D3dDraw_OnSwap(uint8_t* base);
 // points at our scratch. The first run stalled the boot exactly there.
 //
 // The correct service follows from the reserve's own contract (disassembled: it
-// takes only the device and returns [dev+0x30]): while a redirect is active on the
-// calling thread, "you have space" is ALWAYS true — so answer r3 = the scratch
-// cursor and never run the guest's segment machinery. Outside a redirect it calls
-// through untouched. Returns true when it serviced the call.
+// takes only the device and returns [dev+0x30]) — but "answer the scratch cursor and
+// never run the segment machinery" was only HALF of it, and the other half deadlocked
+// the boot movie. The reserve's real job is CLOSE-AND-KICK: it hands the pending
+// segment to the worker and publishes it, and Resolve's multi-tile path calls it for
+// exactly that, discarding the return value. So the service restores the real cursor
+// block, runs the guest's own reserve against it, adopts the fresh segment it hands
+// back, and only then re-installs the scratch — the kick is the guest's, the cursor
+// the guest sees afterwards is ours. Outside a redirect it calls through untouched.
+// Returns true when it serviced the call.
 bool D3dDraw_ServiceReserve(PPCContext& ctx, uint8_t* base);
+
+// Run `through` with the REAL command-buffer cursor restored, even though a redirect
+// is active — i.e. deliberately let this one entry emit into the ring rather than into
+// the scratch. Returns true; the call-through already happened inside.
+//
+// WHY ANY CALL SHOULD ESCAPE THE REDIRECT
+// ---------------------------------------
+// Redirected emission is right for CONTENT, whose only consumer is our renderer. It is
+// wrong for the packets that drive the title's own GPU/CPU protocol, because those
+// have a consumer we do not own: sub_82846288 emits a callback ARMING (a type-0 write
+// of scratch registers 0x057C/0x057D), three WAIT_REG_MEMs that hold the GPU until
+// that mirror has landed in memory, an INTERRUPT, and then a re-POISON of the same
+// registers. The graphics ISR (sub_82844D38) reads the callback back out of guest
+// memory at interrupt time, so the whole block is a hand-off whose correctness is its
+// ORDERING against the CP and against the guest's own stores.
+//
+// Phase C first tried to emulate that hand-off inside the walker. Four designs failed
+// on the same race, and the measurement that ended the argument is this: over one boot
+// the walker delivered 200 interrupts and every single one was the frame tick
+// (sub_82841878), while the PM4 control arm's ISR delivered sub_8284AAD0 — the call
+// that pushes a job onto the D3D worker's ring and KeSetEvents it — 138 times. The
+// missing kick is exactly why the boot movie deadlocked: the engine waits on fences
+// that only the worker retires, and the worker was never woken again after its first
+// job.
+//
+// So the block is not emulated at all any more. It is emitted where its reader lives.
+bool D3dDraw_ServiceRealRing(PPCContext& ctx, uint8_t* base, CzGuestFunc through);
 
 // The walker's counters, printed at exit alongside the renderer's.
 void D3dDraw_DumpStats();
