@@ -102,7 +102,7 @@ void TraceIsrMirror(const char* when)
     if (i >= 24)
         return;
     uint8_t* base = g_memory.base;
-    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + 10900);
+    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + kDeviceIsrMirror);
     if (mirror < 0x1000)
         return;
     const uint32_t reg4 = PPC_LOAD_U32(mirror + 16);
@@ -137,13 +137,38 @@ bool MirrorIsPoisoned()
     if (!g_pumpIsr.userData)
         return false;
     uint8_t* base = g_memory.base;
-    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + 10900);
+    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + kDeviceIsrMirror);
     if (mirror < 0x1000 || mirror >= PPC_MEMORY_SIZE - 24)
         return false;
     return PPC_LOAD_U32(mirror + 16) == 0x0BADF00D;
 }
 
 std::atomic<uint64_t> g_poisonedSkips{ 0 };
+
+// The graphics interrupt is addressed to a SET of hardware threads, not to one.
+//
+// The arm block's first packet is `SCRATCH_REG0 = mask`, and the mirror slot it writes
+// is a six-bit acknowledge bitmap: the ISR clears `1 << PCR[0x10C]` out of it (at
+// 82844D88-82844D98, under the dev+0x2A98 lock), and the arm block's TRAILING
+// WAIT_REG_MEM holds the command processor until the whole word reads zero. So a
+// delivery on one CPU acknowledges one bit, and an arm naming a CPU we never deliver on
+// stalls the ring forever — which is exactly what a faithful CZ_PM4_STOP_ON_WAIT run
+// does: it parks at `mem <mirror>|2 value=00000010 ref=0`, bit 4, while our single pump
+// thread clears bit 2.
+//
+// The mask is chosen by whoever arms. `sub_82845BA0` takes it as `(flags >> 8) & 0x3F`
+// and defaults to 4 (CPU 2) — which is where vd.cpp has always run the pump — but
+// `sub_827D2FC0` arms with flags 0x1000, i.e. mask 0x10, CPU 4. The ISR's own body is
+// per-CPU too: `sub_8284AAD0` pushes the token buffer onto the job ring at
+// `dev + cpu*0x6C + 0x2C40`, so which CPU runs it decides which worker sees the kick.
+//
+// We have one guest thread for the graphics interrupt and are not going to grow six, so
+// the honest stand-in is for that one thread to take the interrupt once per named CPU,
+// reporting each CPU in its PCR while it does. CZ_ISR_SINGLE_CPU=1 is the same-binary
+// control arm: the pre-fix behaviour, one delivery as whatever CPU the pump was
+// constructed with.
+const bool g_isrPerCpu = getenv("CZ_ISR_SINGLE_CPU") == nullptr;
+std::atomic<uint64_t> g_isrPerCpuDeliveries{ 0 };
 
 // See Vd_MirrorMutex in vd.h. Recursive: the walker's in-position delivery holds
 // it across the guest ISR, whose callback can re-enter the walker's mirror writes
@@ -173,9 +198,42 @@ void DeliverCommandProcessorInterrupt()
         KLOG("delivering first command-processor interrupt to %08X(1, %08X) — the ring "
              "is being consumed\n",
              g_pumpIsr.callback, g_pumpIsr.userData);
+
+    // The interrupt is addressed to a SET of hardware threads, and every one of them
+    // has to run the ISR — see g_isrPerCpu above for why one delivery is not enough.
+    // The mask is the low six bits of the mirror's first word, written by the arm
+    // block's own `SCRATCH_REG0 = mask` packet.
+    uint8_t* base = g_memory.base;
+    const uint32_t mirror = PPC_LOAD_U32(g_pumpIsr.userData + kDeviceIsrMirror);
+    uint32_t mask = 0;
+    if (g_isrPerCpu && mirror >= 0x1000 && mirror < PPC_MEMORY_SIZE - 24)
+        mask = PPC_LOAD_U32(mirror) & 0x3F;
+
     g_pumpIsr.context->r3.u64 = 1; // source 1: command processor
     g_pumpIsr.context->r4.u64 = g_pumpIsr.userData;
-    g_pumpIsr.func(*g_pumpIsr.context, g_pumpIsr.base);
+    if (mask == 0)
+    {
+        g_pumpIsr.func(*g_pumpIsr.context, g_pumpIsr.base);
+        return;
+    }
+
+    // One delivery per bit, with this thread's PCR reporting that CPU for the
+    // duration. Restored afterwards so every other consumer of PCR+0x10C on this
+    // thread — and there are several, the critical-section backoff among them —
+    // sees the pump's real identity again.
+    const uint32_t pcr = uint32_t(g_pumpIsr.context->r13.u32);
+    const uint8_t saved = base[pcr + 0x10C];
+    for (uint32_t cpu = 0; cpu < 6; ++cpu)
+    {
+        if ((mask & (1u << cpu)) == 0)
+            continue;
+        base[pcr + 0x10C] = uint8_t(cpu);
+        g_pumpIsr.context->r3.u64 = 1;
+        g_pumpIsr.context->r4.u64 = g_pumpIsr.userData;
+        g_pumpIsr.func(*g_pumpIsr.context, g_pumpIsr.base);
+        g_isrPerCpuDeliveries.fetch_add(1, std::memory_order_relaxed);
+    }
+    base[pcr + 0x10C] = saved;
 }
 
 // The guest graphics ISR, delivered on its own thread — and the thread the command
@@ -340,6 +398,50 @@ void GraphicsInterruptPump()
         // interrupt fired and hung" — which are opposite bugs.
         if (ticks == 0)
             KLOG("delivering first vblank to %08X(0, %08X)\n", callback, userData);
+
+        // The display controller's gate (vd.h). Asserted before the ISR runs, because
+        // the ISR reads it and the whole point is that the swap-queue walker should
+        // execute on this delivery. Re-asserted every tick rather than once: nothing
+        // in the image ever writes this address, so a single store would do — and a
+        // store that only ever happened once is a store that stops being true the day
+        // something else clears the page.
+        //
+        // CZ_NO_VBLANK_GATE=1 is the same-binary control arm: the pre-fix runtime, in
+        // which the walker never runs. Every claim about this change is measured
+        // against it rather than against a remembered number (gotcha 86).
+        static const bool vblankGate = getenv("CZ_NO_VBLANK_GATE") == nullptr;
+        if (vblankGate)
+            PPC_STORE_U32(kDisplayControllerGate,
+                          PPC_LOAD_U32(kDisplayControllerGate) | 1);
+
+        // CZ_SWAPQ_TRACE=1 — the swap queue once a second. Head and tail are the
+        // measurement that separates "the walker has nothing to do" from "the walker
+        // never ran": a tail climbing away from a pinned head is a queue of flips the
+        // title is waiting on. `wait` is the rendezvous word the command processor's
+        // WAIT_REG_MEM polls, printed beside it because the walker's zero-surface case
+        // is what clears it.
+        if (getenv("CZ_SWAPQ_TRACE") && userData && (ticks % (1000 / vblankMs)) == 0)
+        {
+            const uint32_t mirror = PPC_LOAD_U32(userData + kDeviceIsrMirror);
+            const uint32_t head = PPC_LOAD_U32(userData + kDeviceSwapHead);
+            // The head record's own fields. The walker stops at the first record whose
+            // due tick is in the future, so "why did head stop moving" is answerable
+            // only from the record it stopped ON — a head/tail pair alone says the
+            // queue is stuck and nothing about what is holding it.
+            const uint32_t rec = userData + kDeviceSwapQueue + (head & 15) * 8;
+            KLOG("swapq: gate=%08X tick=%u done=%u head=%u tail=%u "
+                 "head{surface=%08X due=%u} | mirror=%08X wait[mirror+4]=%08X | "
+                 "D1GRPH_PRIMARY_SURFACE=%08X | ack[mirror+0]=%08X percpu=%llu\n",
+                 PPC_LOAD_U32(kDisplayControllerGate),
+                 PPC_LOAD_U32(userData + kDeviceVblankTick),
+                 PPC_LOAD_U32(userData + kDeviceFlipsDone), head,
+                 PPC_LOAD_U32(userData + kDeviceSwapTail), PPC_LOAD_U32(rec),
+                 PPC_LOAD_U32(rec + 4), mirror,
+                 mirror >= 0x1000 ? PPC_LOAD_U32(mirror + 4) : 0xFFFFFFFFu,
+                 PPC_LOAD_U32(kD1GrphPrimarySurfaceAddress),
+                 mirror >= 0x1000 ? PPC_LOAD_U32(mirror) : 0xFFFFFFFFu,
+                 (unsigned long long)g_isrPerCpuDeliveries.load());
+        }
 
         threadContext.ppcContext.r3.u64 = 0; // source 0: vblank
         threadContext.ppcContext.r4.u64 = userData;

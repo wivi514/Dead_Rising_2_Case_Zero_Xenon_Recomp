@@ -22,6 +22,36 @@ constexpr uint32_t kGpuRegisterBase = 0x7FC80000;
 constexpr uint32_t kGpuRegisterSize = 0x00010000;
 constexpr uint32_t kCpRbWptrAddress = 0x7FC80714;
 
+// The title's ENTIRE GPU MMIO surface is four registers (scan of every `lis rX,0x7FC8`
+// in the image and the load/store that follows it), and only one of them is READ:
+//
+//   0x7FC80714  CP_RB_WPTR                       written, the ring kick
+//   0x7FC83214  (engine enable, = 7)             written once, by VdInitializeEngines'
+//   0x7FC83408  (            , = 0x800)          own callback sub_8284C770
+//   0x7FC86110  D1GRPH_PRIMARY_SURFACE_ADDRESS   written, the scanout flip
+//   0x7FC86544  the display controller's gate    READ, bit 0, once — at 82844DB0
+//
+// The last one is the whole of this runtime's MMIO read surface, and it decides
+// whether the guest's own vblank ISR runs its swap-queue walker at all. `sub_82844D38`
+// (the graphics ISR), source 0:
+//
+//     lis  r11,0x7FC8
+//     lwz  r11,0x6544(r11)
+//     clrlwi. r11,r11,31          ; bit 0
+//     beq  <skip>
+//     bl   sub_82841760           ; the swap-queue walker, its ONLY caller
+//
+// On hardware the display controller sets that bit. In our flat memory it is zero for
+// the life of the process, so the walker never runs: the vblank tick [dev+0x4174]
+// never advances, the 16-entry flip queue at [dev+0x418C] is never drained, and — the
+// part that matters beyond presentation — the walker's "no surface to scan out" case
+// is the ONLY CPU writer of the GPU/CPU rendezvous word at [[dev+0x2A94]]+4, which the
+// command processor's own WAIT_REG_MEM blocks on. Fable 2 hit the identical gate at
+// the identical address (its findings 48 and 57) and ended up asserting it by default;
+// this is the same driver.
+constexpr uint32_t kD1GrphPrimarySurfaceAddress = 0x7FC86110;
+constexpr uint32_t kDisplayControllerGate = 0x7FC86544;
+
 // Offsets into the driver's device struct — the `userData` argument of
 // VdSetGraphicsInterruptCallback. Both are read out of this image's own code rather
 // than inherited; the previous port's equivalents are at different offsets, so
@@ -48,6 +78,22 @@ constexpr uint32_t kCpRbWptrAddress = 0x7FC80714;
 //           This is the loop the boot was stuck in before this module existed.
 constexpr uint32_t kDeviceKickedWptr = 10956;
 constexpr uint32_t kDeviceWritebackPtr = 10896;
+
+// The swap queue, read out of `sub_82841760` (the walker) and `sub_82841878` (the
+// source-1 flip callback the hand-off blocks arm — our ISR trace prints it as
+// SCRATCH_REG4). Sixteen 8-byte records {surface address, due vblank tick}; a record
+// whose surface is zero means "nothing to scan out, just release the GPU", and its
+// completion is the store `[[dev+0x2A94]+4] = 0`.
+// A POINTER to the scratch-register mirror the graphics ISR reads: word 0 is the
+// six-bit per-CPU acknowledge bitmap, +0x10/+0x14 the armed callback and its argument
+// (SCRATCH_REG4/5), +4 the GPU/CPU rendezvous word the swap queue clears.
+constexpr uint32_t kDeviceIsrMirror = 10900; // 0x2A94
+
+constexpr uint32_t kDeviceVblankTick = 0x4174;   // ++ per walker run
+constexpr uint32_t kDeviceFlipsDone = 0x4188;    // ++ per record retired
+constexpr uint32_t kDeviceSwapQueue = 0x418C;    // 16 x {surface, dueTick}
+constexpr uint32_t kDeviceSwapHead = 0x420C;
+constexpr uint32_t kDeviceSwapTail = 0x4210;
 
 struct VdGraphicsState
 {

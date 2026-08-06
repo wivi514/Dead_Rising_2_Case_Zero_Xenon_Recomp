@@ -940,6 +940,44 @@ From phase C part 4 (the replay is the flywheel, not the fault):
     depth and resume there; and do not count a deliberate stop as a truncation, or the
     one live alarm finding 39 left behind sits permanently nonzero.
 
+From phase C part 5 (the missing CPU side of the hand-off was a display controller):
+
+153. **A register the title only ever READS cannot be found by hunting for its
+    writer.** Every previous hunt in this project started from a store — the ring kick,
+    the counter's decrementer, the callback armer — and `CZ_PM4_MEM_WATCH` is a
+    store-side instrument by construction, so it answered "who writes this word" with
+    3,089 writes of the value 1 and complete silence about the zero. The zero came from
+    the CPU, behind an MMIO **load** at `0x7FC86544` that appears exactly once in 8.8 MB.
+    What found it was scanning for the aperture BASE (`lis rX,0x7FC8`) and enumerating
+    every load and store built on it: this title's entire GPU MMIO surface is **five
+    instructions**, four registers, and only one of them is read.
+154. **One hardware status bit can gate an entire subsystem, and its absence looks
+    exactly like nothing at all.** Behind that bit is the guest's own swap queue —
+    16 records of `{surface, due tick}`, a vblank tick, a walker — and with the bit
+    clear the walker has no caller, the tick stays 0 for the life of the process, and
+    the queue grows to 1,540 entries with **one** ever retired. No error, no log line,
+    no wait that visibly fails; the only symptom is a GPU wait somewhere else that
+    never completes. Fable 2 hit the identical gate at the identical address, which is
+    the real lesson: when a hand-off has a CPU side you cannot find, read what the
+    previous port did about the display controller before theorising about packets.
+155. **An interrupt can be addressed to a SET of hardware threads, and a
+    single-threaded ISR acknowledges exactly one of them.** Case Zero's arm block
+    writes a six-bit CPU mask; the ISR clears `1 << PCR[0x10C]`; the block's trailing
+    `WAIT_REG_MEM` holds the command processor until the whole word is zero. The mask
+    DEFAULTS to CPU 2, which is where our pump has run since phase 1 — so the common
+    case was right by accident and the one caller that names CPU 4 deadlocked the ring.
+    A runtime with one ISR thread has to take the interrupt once per named CPU,
+    reporting each in its PCR; anything else is one acknowledgement short. And the ISR
+    body is per-CPU too (the D3D job ring is at `dev + cpu*0x6C + 0x2C40`), so the CPU
+    number decides *which worker* gets the kick, not just who acknowledges.
+156. **A brake and its release are one mechanism; half of it is worse than neither.**
+    The CP stalling at `WAIT_REG_MEM` and the vblank handler clearing the word it polls
+    are this title's entire frame pacing. With only the release, the title free-runs and
+    its flip queue overflows (head 27, tail 1,074). With only the brake, the ring parks
+    at frame 1. With both, head equals tail, one record retires per frame, and the boot
+    reaches the title screen with `truncated=0`. Two changes, each of which measures as
+    a regression on its own.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1031,7 +1069,8 @@ From phase C part 4 (the replay is the flywheel, not the fault):
   renderer work**, with `d3d-kickoff.md` / `d3d-phase-c-kickoff.md` /
   `d3d-phase-c2-kickoff.md` / `d3d-phase-c3-kickoff.md` /
   `d3d-phase-c4-kickoff.md` /
-  **`d3d-phase-c5-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c5-kickoff.md` /
+  **`d3d-phase-c6-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1212,10 +1251,28 @@ CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware do
                    of which are inside INDIRECT BUFFERs — so both of its retirements
                    measured a no-op (gotcha 151). It now stalls at any depth and
                    RESUMES at the recorded dword next tick rather than re-walking the
-                   buffer. Still off by default, and now for a measured reason: with
-                   it on, BOTH arms park at frame 1 on a WAIT for SCRATCH_REG1
-                   (`mirror+4`, reg 0x0579) to read back zero, which nothing in our
-                   runtime ever writes
+                   buffer. Part 4 measured it parking at frame 1 on a WAIT for
+                   `mirror+4` to read zero; part 5 supplied both missing writers (the
+                   display-controller gate and the per-CPU acknowledge) and with them
+                   the SAME flag runs a frame-paced boot to the title screen with
+                   truncated=0. Still off by default until it has a rate rather than a
+                   run behind it
+CZ_NO_VBLANK_GATE=1  do NOT assert bit 0 of the display controller's gate at
+                   0x7FC86544 — i.e. the pre-part-5 runtime, in which the guest's own
+                   vblank ISR never runs its swap-queue walker. The same-binary control
+                   arm for the gate: with it on, `dev+0x4174` stays 0 for the whole run
+                   and the 16-record flip queue grows to 1,540 with nothing retired
+CZ_SWAPQ_TRACE=1   the swap queue once a second: the gate, the vblank tick, records
+                   retired, head/tail, the head record's own surface and due tick, the
+                   GPU/CPU rendezvous word at [mirror+4] and the per-CPU acknowledge
+                   bitmap at [mirror+0]. head==tail is the healthy shape; a tail
+                   climbing away from a pinned head is a queue of flips nobody drains
+CZ_ISR_SINGLE_CPU=1  deliver each graphics interrupt ONCE, as whatever CPU the pump
+                   was constructed with (2) — the pre-part-5 behaviour. Default is one
+                   delivery per bit of the arm's own six-bit CPU mask, with PCR+0x10C
+                   reporting that CPU, because the ISR acknowledges by clearing
+                   `1 << PCR[0x10C]` and an arm naming CPU 4 could never be
+                   acknowledged otherwise (and the ISR's job ring is per-CPU too)
 CZ_PM4_IB_TRACE=1  the first 64 INDIRECT_BUFFER packets with their raw address/size
 CZ_PM4_DUMP_TRUNCATED=path dump the first 6 indirect buffers whose walk stopped short,
                    for offline re-walking (finding 38)
@@ -2024,6 +2081,61 @@ Gates, this binary, both arms, default flags: `--smoke` OK; A1 = 84-prefix on th
 control arm (this run hit the long-known position-71 permutation) / **exact 82-prefix**
 on the draw arm; A5 = exit 0, **0 real windows**, on both; `truncated=0` with 3.59 M
 packets walked. Deepest file: #63 `prologue_z01.big` (control) / #60 `models\zombies.big`
+(draw). Unchanged from the phase C best.
+
+**PHASE C PART 5 (2026-08-06, session 17): the missing CPU side of the hand-off was a
+DISPLAY CONTROLLER, and the brake now works.** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 5"; hand-off in
+`docs/d3d-phase-c6-kickoff.md`.
+
+Part 4's question — who writes the zero the hand-off block's `WAIT_REG_MEM` waits for —
+is answered, and the answer is nowhere near the ring. `CZ_PM4_MEM_WATCH=BBF39464` on a
+healthy control boot: **3,089 writes, every one the value 1, every one from the PM4
+stream.** The zero comes from the CPU, in the guest's own vblank ISR path, behind a GPU
+MMIO **read** at `0x7FC86544` bit 0 — the display controller's gate, which our runtime
+left at zero for the life of every process this port has ever started. Behind it sits
+the title's swap queue: 16 records of `{surface, due tick}` at `dev+0x418C`, a vblank
+tick at `dev+0x4174`, and a walker (`sub_82841760`) whose ONLY caller is that branch.
+A record whose surface is zero means "nothing to scan out, just release the GPU" and IS
+the `[mirror+4] = 0` store. Fable 2 found the same gate at the same address (its
+findings 48 and 57); two sessions of phase C reasoned about the hand-off's packets
+without either port's notes being consulted for the register (gotchas 153-154).
+
+A second defect surfaced the instant the first was fixed: **the graphics interrupt is
+addressed to a SET of hardware threads.** The arm block writes a six-bit CPU mask into
+`mirror+0`, the ISR clears `1 << PCR[0x10C]`, and the block's trailing `WAIT_REG_MEM`
+holds the CP until the word is zero. The mask DEFAULTS to CPU 2 — where the pump has run
+since phase 1, so the common case was right by accident — but `sub_827D2FC0` arms with
+CPU 4 and our one ISR thread could never acknowledge it. The pump now takes the interrupt
+once per named CPU (gotcha 155). The ISR body is per-CPU too: `sub_8284AAD0` pushes onto
+the job ring at `dev + cpu*0x6C + 0x2C40`.
+
+Measured, same binary, arms alternated, one 100 s boot each:
+
+| | control (`CZ_NO_VBLANK_GATE` / `CZ_ISR_SINGLE_CPU`) | fixed |
+|---|---|---|
+| vblank tick after 30 s | 0 | 1,860 (62/s) |
+| swap queue, brake OFF | head 0 / tail 1,540 | head 27 / tail 1,165 |
+| brake ON, PM4 arm | parks at frame **7**, `ack=00000010` | **217 frames and climbing**, head = tail, `truncated=0`, `prologue_z01.big` |
+| brake ON, draw arm | parks the same way | **725 frames**, head 724 / tail 725, `truncated=0`, `models\zombies.big` |
+
+**With all three pieces — the gate, the per-CPU acknowledge and part 4's
+stall-with-resume — `CZ_PM4_STOP_ON_WAIT=1` runs this title's real GPU/CPU hand-off end
+to end, paced by the guest, on BOTH arms.** The draw arm's part-3 runaway (1.25 M packets
+and ~135,000 draws a second with `XE_SWAP` frozen) does not happen: 306,288 packets,
+46,560 draws, 725 frames. The gate and the per-CPU acknowledge are ON by default; the
+BRAKE is not, because this is one run per arm and not a rate (gotchas 50-51) — measuring
+it properly and promoting it is part 6's first job.
+
+The cost, stated because it is real: **with the brake OFF the per-CPU acknowledge makes
+the draw arm's runaway spin harder** (1,745 -> 2,856,448 `XE_SWAP` in 100 s), because
+each interrupt now produces several worker kicks instead of one. Same flywheel, more
+gain; the control arm is untouched (3,091 vs 3,088 frames). It stays default-on because
+it is correct, and the pairing with the brake is now explicit.
+
+Gates, this binary, default flags: `--smoke` OK; A1 = **exact 84-prefix** (control) /
+position-71 divergence (draw, the long-known scheduling window); A5 = **exit 0, 0 real
+windows, on both**. Deepest file: `prologue_z01.big` (control) / `models\zombies.big`
 (draw). Unchanged from the phase C best.
 
 **PHASE B IS DELIVERED (2026-08-06, session 12): `CZ_D3D=1` services the content APIs

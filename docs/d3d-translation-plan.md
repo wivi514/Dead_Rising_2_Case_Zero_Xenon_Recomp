@@ -719,6 +719,196 @@ is one question with two arms, and it is the first thing part 5 should answer.
    finds its stream's segments already submitted is doing no work, and the count of
    such walks is measurable directly from `[fence] kick`'s SAME-AS-PREVIOUS flag.
 
+### Phase C part 5: the CP's brake was never the missing piece — the DISPLAY CONTROLLER was
+
+Session 17 (2026-08-06). Part 4 left one question: **who writes the zero the hand-off
+block's `WAIT_REG_MEM` waits for?** It has a clean answer, it is not in the ring, and
+finding it turned up a whole subsystem this runtime has never had.
+
+**The measurement that settled it, and what it did NOT say.** `CZ_PM4_MEM_WATCH=BBF39464`
+on the healthy control arm, one 100 s boot: **3,089 writes, every one of them the value
+`00000001`, every one from the PM4 stream.** No packet ever writes zero. Since that watch
+only sees GPU stores, the answer had to be the CPU — and the CPU's store is four
+instructions away from where part 4 stopped reading:
+
+```
+82841760  sub_82841760:                       ; the swap-queue walker
+828417E0      lwz  r11,0x2a94(r31)            ;   the ISR mirror
+828417E4      stw  r9,4(r11)                  ;   r9 = 0        <-- the zero
+...
+828419FC      lwz  r11,0x2a94(r31)            ; sub_82841878, the same store
+82841A04      stw  r10,4(r11)                 ;   r10 = 0
+```
+
+**`sub_82841760` has exactly one caller, and it is behind an MMIO read we never
+satisfy.** The graphics ISR's *vblank* path (`sub_82844D38`, source 0):
+
+```
+82844DAC  lis     r11,0x7FC8
+82844DB0  lwz     r11,0x6544(r11)     ; the display controller's gate
+82844DB4  clrlwi. r11,r11,31          ; bit 0
+82844DB8  beq     <skip>
+82844DC0  bl      sub_82841760
+```
+
+A scan of every `lis rX,0x7FC8` in the image and the load/store that follows it gives
+this title's **entire** GPU MMIO surface — four registers, and only one of them read:
+
+| address | R/W | what | site |
+|---|---|---|---|
+| `0x7FC80714` | W | `CP_RB_WPTR`, the ring kick | `sub_82845698` |
+| `0x7FC83214` / `0x7FC83408` | W | engine enable (7 / 0x800) | `sub_8284C770`, VdInitializeEngines' own callback |
+| `0x7FC86110` | W | `D1GRPH_PRIMARY_SURFACE_ADDRESS`, the scanout flip | `sub_82841760`, `sub_82841878` |
+| `0x7FC86544` | **R** | the display controller's gate, bit 0 | `sub_82844D38` **only** |
+
+So the runtime's whole MMIO *read* surface is one bit, and that bit decides whether an
+entire subsystem runs. `kernel/heap.cpp` withholds the aperture from the allocator but
+nothing writes into it, so it read zero for the life of every process this port has ever
+started. **Fable 2 hit the identical gate at the identical address** (its findings 48 and
+57) and ended up asserting it by default; this is the same XDK driver, and the offsets
+below are the same structure at Case Zero's addresses.
+
+**What was behind the gate: a swap queue, read out of the title's own two functions.**
+
+| field | meaning |
+|---|---|
+| `dev+0x4174` | the vblank tick, `++` per walker run — the clock every due-time is measured against |
+| `dev+0x417C` | the running "next due tick" the scheduler hands out |
+| `dev+0x4188` | records retired |
+| `dev+0x418C` | 16 records of `{surface address, due tick}` |
+| `dev+0x420C` / `dev+0x4210` | head / tail, free-running counters masked `& 15` |
+
+`sub_82841878` — which our ISR trace has printed as `SCRATCH_REG4=82841878` since phase
+1, i.e. **the callback the hand-off blocks arm** — schedules one record per present. Due
+now, or the queue empty: act immediately. A record's surface is either an address, which
+goes to `D1GRPH_PRIMARY_SURFACE_ADDRESS` (the flip), **or zero, which means "nothing to
+scan out, just release the GPU" and IS the `[mirror+4] = 0` store.** The walker
+`sub_82841760` does the same for records that come due later. Neither can run without the
+gate.
+
+**Measured, same binary, arms alternated, `CZ_NO_VBLANK_GATE=1` as the control**
+(`CZ_SWAPQ_TRACE=1`, one 100 s control-arm boot each):
+
+| | gate OFF (the whole port to date) | gate ON |
+|---|---|---|
+| vblank tick `dev+0x4174` after 30 s | **0** | 1,860 (62/s, the pump's cadence) |
+| records retired `dev+0x4188` | 1 | 27 |
+| head / tail | 0 / 1,540 | 26 / 1,074 |
+| `[mirror+4]` in steady state | 1 | 1 |
+
+The control arm is Fable 2's finding 57 verbatim: **a queue that only ever grows, with
+nothing on the other end.** The gate demonstrably starts the walker. What it does not do
+on its own is drain the queue, because head still stops early and tail still runs away —
+and the reason for that is the other half of the same design.
+
+**The brake and the release are ONE mechanism, and we had neither.** On hardware the
+command processor stalls at the hand-off block's `WAIT_REG_MEM` until the CPU's vblank
+handler releases it; that is the whole of this title's frame pacing. Part 4 built the
+stall (`CZ_PM4_STOP_ON_WAIT` at any depth, with a resume plan) and found it parked at
+frame 1 forever. With the gate, the same flag behaves completely differently:
+
+| `CZ_PM4_STOP_ON_WAIT=1`, gate ON | PM4 control arm | phase C draw arm |
+|---|---|---|
+| stalls on `mirror+4 == 0` | 5, **every one released** | 4, every one released |
+| swap queue at the end | head = tail = 5, `[mirror+4] = 0` | head = tail = 4, `[mirror+4] = 0` |
+| then parks permanently on | `mem 1BF39462 value=00000010 ref=0` | the same packet, the same value |
+
+The queue is *healthy* under the brake — head equals tail, nothing accumulates, the
+rendezvous word sits at zero — which is the first time this port has seen that. The
+title is being paced instead of free-running. And then both arms stop at the same place,
+which is what makes the next finding a statement about the runtime rather than about
+phase C.
+
+**The new blocker, named precisely: the interrupt is addressed to a SET of hardware
+threads.** `1BF39462` is `mirror+0`, and that word is a **six-bit per-CPU acknowledge
+bitmap**. The arm block's first packet is `SCRATCH_REG0 = mask`; the ISR clears
+`1 << PCR[0x10C]` out of it under the `dev+0x2A98` lock (82844D88-82844D98); the arm
+block's trailing `WAIT_REG_MEM` holds the CP until the whole word reads zero. One
+delivery acknowledges one bit.
+
+`sub_82845BA0` takes the mask as `(flags >> 8) & 0x3F` and **defaults to 4** — bit 2,
+CPU 2, which is exactly where `vd.cpp` has always run the graphics pump, so the default
+case has been right by accident since phase 1. But `sub_827D2FC0` arms with flags
+`0x1000`, i.e. **mask `0x10`, CPU 4**, and our one pump thread can never clear that bit.
+The ISR body is per-CPU too: `sub_8284AAD0` pushes the token buffer onto the job ring at
+`dev + cpu*0x6C + 0x2C40`, so *which* CPU takes the interrupt also decides which D3D
+worker sees the kick — a fact phase C has been reasoning around without knowing it
+existed.
+
+**The fix, and it is the honest one rather than a fudge.** We have one guest thread for
+the graphics interrupt and are not going to grow six, so that thread takes the interrupt
+**once per CPU named in the mask**, reporting each CPU in `PCR+0x10C` for the duration
+and restoring its own afterwards (`DeliverCommandProcessorInterrupt` in `gpu/vd.cpp`).
+Every CPU in the mask runs the ISR on hardware; this is that, serialised.
+`CZ_ISR_SINGLE_CPU=1` is the same-binary control arm.
+
+**Measured, same binary, one 100 s control-arm boot each, brake ON:**
+
+| `CZ_PM4_STOP_ON_WAIT=1`, gate ON | `CZ_ISR_SINGLE_CPU=1` (pre-fix) | per-CPU (default) |
+|---|---|---|
+| unsatisfied waits, by kind | 6 × `mirror+4`, then **stuck** on `mirror+0` | 8 × `mirror+4`, **all released** |
+| `ack[mirror+0]` at the end | `00000010` | `00000000` |
+| per-CPU deliveries | 0 | 387 |
+| `XE_SWAP` frames | **7, frozen** | 217 and climbing, ~21/s |
+| swap queue | head = tail = 6, dead | head = tail = 216, advancing one record per frame |
+| deepest file | — | `prologue_z01.big`, the title screen |
+| `truncated=` | — | **0** |
+
+So with all three pieces in place — the display-controller gate, the per-CPU
+acknowledge, and part 4's stall-with-resume — **the command processor runs this title's
+real GPU/CPU hand-off protocol end to end for the first time in this port, paced by the
+guest rather than free-running, and boots to the title screen.** That is one run, not a
+rate (gotchas 50-51), which is why `CZ_PM4_STOP_ON_WAIT` stays off by default; promoting
+it is a measurement, and it is the first thing part 6 should make.
+
+**And the phase C draw arm, with the brake on, stops running away.** Part 3's ring
+runaway was 1.25 M packets and ~135,000 draws a second with `XE_SWAP` frozen. The same
+arm, same 100 s, brake on, per-CPU acknowledge on: **306,288 packets, 46,560 draws, 725
+`XE_SWAP` frames, head 724 against tail 725, `ack[mirror+0] = 0`, `truncated = 0`,
+deepest file `models\zombies.big`** — the draw arm's long-standing depth, reached with a
+sane packet rate instead of a spinning one. Part 4 predicted the flywheel would collapse
+once the CP could not outrun the CPU; this is the first measurement consistent with that,
+and it is still one run per arm.
+
+**The caveat, stated because it is a real cost and not a footnote: with the brake OFF,
+the per-CPU acknowledge makes the draw arm's runaway spin HARDER.** Same 100 s, gate on,
+default flags, draw arm:
+
+| | single-CPU delivery | per-CPU delivery |
+|---|---|---|
+| `XE_SWAP` frames | 1,745 | **2,856,448** |
+| packets | 749.6 M | 1,191 M |
+| interrupts | 6.75 M | 11.4 M |
+
+That is not a new fault, it is the SAME flywheel with more gain: each interrupt now runs
+`sub_8284AAD0` once per named CPU, so each turn of the loop generates several worker
+kicks instead of one. The control arm is untouched by the change (3,091 vs 3,088 frames,
+94.7 M vs 95.5 M packets over 100 s — noise), and with the brake on the draw arm is
+healthy. The per-CPU acknowledge stays on by default because it is *correct* — an arm
+naming CPU 4 is unacknowledgeable without it — but the pairing is now explicit: it is
+the brake that makes the draw arm's default configuration liveable, and part 6 should
+promote the brake before anyone reads a default-flags draw-arm number again.
+
+**Gates, this binary, default flags, both arms:** `--smoke` OK; A1 = **exact 84-prefix**
+on the control arm / position-71 divergence on the draw arm (the long-known
+scheduling-sensitive window, gotcha 86); A5 = **exit 0, 0 real windows, on both**.
+Unchanged from the phase C best.
+
+**Two method notes.**
+
+* *The gate is a READ, and a read has no write to grep for.* Every previous hunt in this
+  project has started from a store — the `CP_RB_WPTR` kick, the counter's decrementer,
+  the callback armer. `0x7FC86544` is the one address in this title's whole MMIO surface
+  that is only ever **loaded**, so no writer-scan could find it and no capture logs it.
+  What found it was scanning for the *aperture base* (`lis rX,0x7FC8`) and enumerating
+  everything the title does with it — five instructions in the entire 8.8 MB image.
+* *The previous port had already solved it.* Fable 2's `docs/runtime.md` names
+  `0x7FC86544` and `0x7FC86110` by their AMD Avivo identities and records the same
+  "queue grows, nothing retires" measurement. Two sessions of phase C reasoned about the
+  hand-off's *packets* without either port's notes being consulted for the *register*.
+  The transferable form: when a hand-off has a CPU side you cannot find, check what the
+  other ports did about the display controller.
+
 ## Standing discipline, unchanged
 
 Both arms in the same binary; a rate, never a single run; the animated title screen is
