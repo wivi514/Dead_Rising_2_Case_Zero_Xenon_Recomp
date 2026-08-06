@@ -208,6 +208,45 @@ called from the suspected movie-player module `sub_827A00B8`).
 hook `CreateDevice` + `Present` only. Gate: the boot reaches the title screen with the
 ring **never touched** (`Pm4_PacketCount() == 0` on the hooked arm) and A1/A5 hold.
 
+### Phase B: DELIVERED (2026-08-06, session 12) — the ring goes silent by itself
+
+`CZ_D3D=1` in `runtime/gpu/d3d_hooks.cpp`. What is serviced is CONTENT only — the
+four draw entries, Clear/ClearF, Resolve and PreSwapResolve return S_OK and do
+nothing. Everything belonging to the frame LIFECYCLE — Swap, fences, flushes,
+busy-tracking, creation, destruction, init — still calls through, with the PM4
+executor consuming whatever skeleton stream that produces. **Measured over 100 s:
+the boot reaches the title screen (`prologue_z01.big`, full state traffic, ~1,450
+serviced draws/frame), 33,984 frames, zero faults, and `pm4_packets` FROZEN —
++0 per frame in steady state.** With the content gone, the title's own Swap takes
+its empty-frame branch and completes synchronously, so the ring falls silent
+without the completion protocol being replaced at all. (~340 fps: the empty-swap
+path never throttles; expected, not a defect.)
+
+Two stricter variants failed first, and the reasons are load-bearing:
+
+* **Servicing Swap hung the boot at frame 1.** The D3D worker thread
+  (`sub_8284B828`) waits on an event embedded in the device struct that the real
+  swap-completion protocol signals; the engine render thread (entry
+  `sub_82769D58`) waits on the worker; the main thread polls the render queue's
+  ticket (predicate `sub_82766760`, poll utility `sub_8276D590`) forever.
+  Replacing Swap outright means implementing that protocol at the API line —
+  a phase C/D task with the worker's disassembly in hand, not a skeleton task.
+* **Servicing `sub_82837D70` (busy-track A) crashed the boot**: it is a
+  Lock-style entry that RETURNS A CPU POINTER, and the engine dereferenced our
+  serviced 0 while filling a resource from `boot.bct`. Its Phase A label was
+  wrong in the way OBSERVE cannot see (rates fine, semantics not) — only
+  REPLACE distinguishes "fires plausibly" from "return value consumed".
+
+Gates on the replace arm: `--smoke` OK; A5 exit with 1 permutation + 1 real
+window; A1 clean to position 81 with one REAL window — `KeResetEvent`,
+`KfAcquireSpinLock`, `KfReleaseSpinLock` never occur in our run. All three are
+verified downstream of ring consumption (the spinlocks are the graphics ISR's,
+which only runs when the CP raises interrupts; KeResetEvent sits between two
+Resolves in the completion path). An arm whose GPU work is empty legitimately
+never reaches them — gotcha 106's class: a configuration difference of the arm,
+recorded, not a regression. The control arm (same binary, `CZ_D3D` unset) gates
+clean as before.
+
 **C — resources and draws.** Textures/buffers/shaders/declarations/draw hooks, reusing
 our decode guts. Gate: `frame_signature.py` vs E2 says `identity`, and the kernel gates
 still hold.

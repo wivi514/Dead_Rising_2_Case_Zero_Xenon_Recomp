@@ -1737,6 +1737,22 @@ API stream's 20 Clears/frame with phase 5's ~20 resolves/frame.
 `tools/guest_callers.py` is the call-graph scanner Phase A was answered with —
 reach for it before disassembling anything's callers by hand.
 
+**PHASE B IS DELIVERED (same session): `CZ_D3D=1` services the content APIs
+(draws/clears/resolves → no-op) while the frame lifecycle calls through — and
+the ring goes SILENT (+0 packets/frame steady state), the boot reaching the
+title screen at ~340 fps with zero faults over 33,984 frames.** The title's own
+Swap takes its empty-frame branch when nothing was drawn, so the completion
+protocol did not need replacing for the skeleton. Two failures worth their
+weight: servicing Swap directly deadlocks three threads (the completion protocol
+lives in the D3D worker `sub_8284B828` + an event inside the device struct), and
+servicing the busy-track entry `sub_82837D70` crashes — it RETURNS A CPU POINTER
+(a Lock-style API); OBSERVE validates firing patterns but only REPLACE validates
+return-value semantics. A1 on the replace arm has exactly one real window
+(`KeResetEvent` + the ISR spinlocks — all verified downstream of ring
+consumption, which the arm removes by design). Next: phase C — service the
+draws/state with a host renderer reusing `vk_renderer.cpp`'s decode guts, keyed
+off the device struct's register shadow (offsets in the Phase A table).
+
 Next, in order:
 
 1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —

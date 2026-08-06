@@ -23,6 +23,17 @@
 // NAMING: hook names ending in '?' in the table below are TENTATIVE — recorded in
 // docs/d3d-kickoff.md's Phase A table with per-row evidence. The per-frame stream
 // summary this file prints is what confirms or retracts each of them.
+// REPLACE mode (CZ_D3D=1, phase B) services a subset of the hooks instead of
+// calling through: the draws, clears, resolves, flushes and fences become no-ops
+// (with the fence VALUE still advancing, because InsertFence's return feeds guest
+// bookkeeping), and Swap presents directly to the host window. CreateDevice, device
+// init and every state setter still call through — init is what keeps the
+// kernel-call order the A1/A5 gates diff (kickoff trap 2), and the setters are what
+// keep the device struct's register shadow current for phase C to read. The PM4
+// executor stays ON as the missed-hook detector: with the emitting APIs serviced,
+// per-frame ring traffic should collapse to almost nothing, and the per-frame
+// pm4_packets delta printed at each Swap names the frame any unhooked emitter
+// slips a packet in.
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +42,7 @@
 
 #include "ppc_recomp_shared.h"
 #include "pm4.h"
+#include "../host/window.h"
 
 // ---------------------------------------------------------------------------------
 // The Phase A hook table. One X-macro row per identified function:
@@ -125,6 +137,19 @@ bool Observe()
     return on;
 }
 
+bool Replace()
+{
+    static const bool on = [] {
+        const char* v = std::getenv("CZ_D3D");
+        bool en = v && *v && *v != '0';
+        if (en)
+            fprintf(stderr, "[d3d] REPLACE mode (phase B): draws/clears/resolves serviced (no-op) at the "
+                            "API line; frame lifecycle (Swap/fences/flushes) still passes through\n");
+        return en;
+    }();
+    return on;
+}
+
 // First few calls of each hook print their raw args (r3..r7 covers every identified
 // signature's interesting prefix); after that only the counters move.
 constexpr uint64_t kVerboseCalls = 6;
@@ -146,8 +171,10 @@ void Note(HookId id, PPCContext& ctx)
 // a count wildly off the PM4 executor's own numbers is a misidentification.
 void SwapSummary()
 {
+    static uint64_t lastPackets = 0;   // only touched here, on the presenting thread
     uint64_t f = g_swaps.fetch_add(1, std::memory_order_relaxed) + 1;
     bool print = f <= 8 || (f & 63) == 0;
+    uint64_t packets = Pm4_PacketCount();
     if (print) {
         char line[1024];
         int off = snprintf(line, sizeof line, "[d3d] frame %llu:", (unsigned long long)f);
@@ -157,11 +184,56 @@ void SwapSummary()
                 off += snprintf(line + off, sizeof line - off, " %s=%llu",
                                 kHookName[i], (unsigned long long)c);
         }
-        fprintf(stderr, "%s | pm4_packets=%llu\n", line,
-                (unsigned long long)Pm4_PacketCount());
+        // In replace mode the delta since the last PRINTED frame is the missed-hook
+        // detector: the serviced APIs emit nothing, so sustained nonzero traffic
+        // here means an unhooked entry is still submitting packets.
+        fprintf(stderr, "%s | pm4_packets=%llu (+%llu)\n", line,
+                (unsigned long long)packets, (unsigned long long)(packets - lastPackets));
     }
+    if (print)
+        lastPackets = packets;
     for (auto& c : g_sinceSwap)
         c.store(0, std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------------
+// REPLACE-mode services. Return true = serviced, do not call through.
+// Guest device fields are read/written through the same endian-swapping macros the
+// recompiled code uses, so every value here is what the guest sees.
+// ---------------------------------------------------------------------------------
+bool Service(HookId id, PPCContext& ctx, uint8_t* base)
+{
+    (void)base;
+    switch (id) {
+    // Phase B services CONTENT only: the draws, clears and resolves become no-ops
+    // (returning S_OK for callers that look). Everything belonging to the frame
+    // LIFECYCLE — Swap, fences, flushes, busy-tracking — still calls through, and
+    // the PM4 arm keeps consuming the skeleton stream it produces. Two failed
+    // stricter attempts are recorded here so they are not retried naively:
+    //   * Servicing Swap directly hung the boot at frame 1: the D3D worker thread
+    //     (sub_8284B828) waits on an event embedded in the device struct that the
+    //     real swap-completion protocol signals, the engine's render thread waits
+    //     on that worker, and the main thread polls the render queue's ticket
+    //     (predicate sub_82766760) forever. Replacing Swap means implementing that
+    //     completion protocol at the API line — deferred until the OBSERVE data
+    //     and the worker's disassembly pin every field it touches.
+    //   * Servicing GpuBusyTrack_A crashed the boot: it is a Lock-style entry that
+    //     RETURNS A CPU POINTER (the engine dereferenced our 0 minus 8 while
+    //     filling a resource from boot.bct). Fence_82846288 likewise returns a
+    //     cursor the engine stores.
+    case kH_Clear:
+    case kH_ClearF:
+    case kH_Resolve:
+    case kH_PreSwapResolve:
+    case kH_DrawIndexedVertices:
+    case kH_DrawVerticesUP:
+    case kH_DrawIndexedVerticesUP:
+    case kH_DrawUP_82842570_q:
+        ctx.r3.u64 = 0;
+        return true;
+    default:
+        return false;   // everything else calls through
+    }
 }
 
 } // namespace
@@ -179,6 +251,8 @@ CZ_D3D_HOOKS(X)
             if (kH_##name == kH_Swap)                                                \
                 SwapSummary();                                                       \
         }                                                                            \
+        if (Replace() && Service(kH_##name, ctx, base))                              \
+            return;                                                                  \
         __imp__sub_##addr(ctx, base);                                                \
     }
 CZ_D3D_HOOKS(X)
