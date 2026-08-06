@@ -834,6 +834,23 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 132. **A threshold derived from the runs being compared cannot fail.** It widens to
     accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
     band as a constant measured once from five baseline runs.
+137. **A negative control is what stops a comparison tool inventing results.** The
+    frame-signature tool judged its confidence as "the gap between the best and second
+    orientation, as a FRACTION OF THE SPREAD". On two real cases it was right. On the
+    negative control — the title screen against the ESRB card, two unrelated images —
+    it reported "THE FRAME IS TRANSFORMED: flip-horizontal, 52% of the spread", because
+    four nearly equal correlations make a tiny gap a large fraction of a tiny spread. A
+    SMALL SPREAD IS NOT EVIDENCE OF A CLEAR WINNER; it is evidence that nothing
+    discriminates. The fix is two gates — an absolute correlation floor and an absolute
+    gap — and the general rule is that a comparison tool needs a pair of inputs that
+    SHOULD NOT match, or its confident answers are unfalsifiable.
+138. **Normalise by the geometry, not by the content.** Cropping to the non-black
+    bounding box looked like the obvious way to compare frames of different sizes, and
+    it destroyed the comparison: capture E's shots are mostly black, so the bbox finds
+    the LOGO rather than the screen, and two images then get squashed to the grid by
+    different amounts. Cropping both to the largest centred 16:9 rect instead — the
+    game area's real geometry, checkable on E4, the one shot bright enough to reveal it
+    — took the correlation from 0.067 to 0.947.
 136. **A texture's component SWIZZLE is runtime data, so the runtime must apply it.**
     The Xenos fetch constant carries it in dword3; a shader compiled without the fetch
     constant cannot bake it in. Ignoring it makes a single-channel font atlas sample
@@ -1220,6 +1237,21 @@ python3 tools/frame_compare.py /tmp/base.txt /tmp/arm.txt
 Baseline band is **1.36 pp** of median surface coverage over five runs of one binary;
 the tool calls anything inside 1.5 pp "no detectable difference". It has been shown
 capable of failing (gotcha 30): `CZ_VK_PRIM_RESTART=1` reads 17 pp outside the band.
+
+Check a frame against capture E, and NAME the transform if it is one. This is the
+instrument the phase-5 blind spot needed: the frame was rendered vertically mirrored for
+a whole phase and no aggregate could see it (gotcha 135). Exit 1 = the frame is
+transformed:
+```
+python3 tools/frame_signature.py \
+    --ref "Xenia logs/E_screenshots/E2_title_screen_logo.png" /tmp/frames/frame_000448.ppm
+```
+And the pixel A/B against a noise floor measured from the same runs — imported from
+Fable 2, and preferred over `frame_compare.py`'s quoted band whenever there are >= 2
+runs per arm:
+```
+python3 tools/frame_matched_diff.py --a runA1 runA2 --b runB1 runB2
+```
 
 Disassemble the guest image. **Reach for this before reading `ppc/`** — a recompiled
 function is a translation, and most questions ("what writes this field", "which branch

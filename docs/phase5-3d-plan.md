@@ -24,7 +24,7 @@ it is the last link that does not reach the front buffer.
 
 ---
 
-## Step 0 — FIRST: an instrument that can see a transform
+## Step 0 — DONE: `tools/frame_signature.py`
 
 Do this before any renderer change, because the last two defects say the current
 instruments cannot adjudicate this work.
@@ -48,8 +48,36 @@ a small grid (8x8 or 16x16) of per-cell coverage and mean luminance, and compare
 * It stays honest about the animation: E3's background is animated, so compare E2 (the
   logo era, static) for layout and use the grid only for structure, not for exact values.
 
-This is one tool, `tools/frame_signature.py`, and it is what makes every later step in
-this plan adjudicable.
+**Built and verified.** `tools/frame_signature.py --ref <E screenshot> <frame.ppm>`
+crops both to the game area (the largest centred 16:9 rect), reduces to a 32x18 grid of
+z-scored luminance, and correlates our frame against the reference under each candidate
+transform — identity, flip-vertical, flip-horizontal, rotate-180 — reporting which fits
+and exiting 1 when it is not identity.
+
+Three cases, and the third is the one that made it trustworthy:
+
+| case | result |
+|---|---|
+| the fixed frame vs E2 | `identity` at correlation **+0.947**, gap 0.124 — LAYOUT AGREES |
+| `CZ_VK_NO_FLIP_Y=1` vs E2 | **`flip-vertical`** at +0.951, gap 0.166 — TRANSFORMED |
+| title screen vs E1 (ESRB card) | **NO MATCH** — best correlates only +0.576 |
+
+Two design mistakes are recorded in the file itself because both produced confident
+wrong answers:
+
+* **Cropping to the non-black bounding box** rather than to the game area. E's shots are
+  mostly black, so the bbox finds the logo instead of the screen and the two images get
+  squashed to the grid by different amounts. Fixing it took the correlation from 0.067
+  to 0.947. The game area's geometry is checkable on E4, the one shot bright enough to
+  reveal it: content 1384x785, aspect 1.763, full width and letterboxed about the centre.
+* **Judging confidence as a fraction of the candidate spread.** On the negative control
+  that reported "TRANSFORMED: flip-horizontal, 52% of the spread" about two unrelated
+  images, because four nearly equal correlations make a tiny gap a large fraction of a
+  tiny spread. Now gated on an absolute correlation floor AND an absolute gap.
+
+Also imported from Fable 2: `tools/frame_matched_diff.py`, which measures the within-arm
+noise floor from the same runs at the same time rather than quoting a constant band —
+strictly better than `frame_compare.py` whenever there are two or more runs per arm.
 
 ## Step 1 — why the scene never reaches the front buffer
 
