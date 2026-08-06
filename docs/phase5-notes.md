@@ -675,6 +675,42 @@ animation phase depends on — the obvious next probe is to log the guest's own 
 counter and the scene's start frame alongside the camera fingerprint, and see whether
 the divergent run simply started the scene at a different point in its own logic.
 
+## 6q. THE FRAME WAS UPSIDE DOWN, AND NO INSTRUMENT HERE COULD SEE IT
+
+The operator ran the game, looked at the Blue Castle Games logo, and said "it is upside
+down". That one observation fixed the title screen.
+
+A Xenos vertex shader emits clip coordinates in **D3D convention, where +y is UP in
+NDC**. Vulkan's NDC has **+y DOWN**. Passing the guest's clip position straight into a
+positive-height viewport renders every frame vertically mirrored. The fix is a
+negative-height viewport (core since Vulkan 1.1) on the viewport-transform path only —
+expressed there rather than folded into a matrix so it cannot double up with the
+window-coordinate path's `g_PosScale`/`g_PosOffset`, which does NOT need a flip because
+the runtime builds that mapping itself.
+
+**Why it survived the entire phase is the finding.** A vertical flip preserves coverage,
+mean luminance, distinct-colour count and the full histogram — *exactly*. Every number
+`tools/frame_compare.py` computes is invariant under it, so the metric built two sections
+ago scores a flipped frame as **identical** to a correct one. It is not a weak
+measurement of this defect; it is a blind one.
+
+That is a sharper statement of §6m's lesson than §6m managed. The metric was built to
+stop conclusions being drawn from noise, and it does that. It says nothing about
+transforms of the picture — flips, rotations, mirrorings, channel swaps — and an aggregate
+over pixel values never will. Catching those needs a *reference*, not a statistic: the E
+screenshots, or an operator's eyes.
+
+It also explains a symptom this document has recorded three times and never diagnosed:
+"the content is in the upper-left corner". A vertically flipped frame puts a
+bottom-anchored HUD at the top, and §5's tiling investigation, §6f's window-scissor work
+and §7's table all describe the same picture partly through this flip.
+
+**Result:** the title screen renders — the DEAD RISING 2 wordmark, the CASE ZERO stamp,
+the blood streak — recognisably capture E2. `CZ_VK_NO_FLIP_Y=1` is the arm.
+
+Still wrong on that screen: "PRESS START" and the copyright line render as solid blocks
+rather than glyphs, which is the next thread and is a *text* problem, not a geometry one.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,

@@ -2276,13 +2276,42 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     // viewport; the y scale is negative in D3D convention, and taking its absolute
     // value here while leaving the sign to the clip-space fold is what keeps the two
     // conventions from cancelling each other out by accident.
+    // THE Y FLIP, and it is a real one for this path.
+    //
+    // A Xenos vertex shader emits clip coordinates in D3D convention, where +y is UP in
+    // NDC. Vulkan's NDC has +y DOWN. Passing the guest's clip position straight into a
+    // positive-height viewport therefore renders the frame VERTICALLY MIRRORED.
+    //
+    // This was missed for the whole phase because it is invisible to every instrument
+    // here: a vertical flip preserves coverage, mean luminance, distinct-colour count
+    // and even the histogram exactly, so `tools/frame_compare.py` scores a flipped
+    // frame as IDENTICAL. It took a human looking at the Blue Castle Games logo and
+    // saying "that is upside down". A measurement that cannot see a transform is not a
+    // weaker measurement, it is a blind one — and the fix is another instrument, not
+    // more of this one.
+    //
+    // Expressed as a NEGATIVE-HEIGHT viewport (core since Vulkan 1.1) rather than a
+    // matrix fold, so it applies to the viewport-transform path only and cannot
+    // double up with the window-coordinate path's g_PosScale/g_PosOffset — which does
+    // NOT need a flip, because there the runtime builds the mapping itself and maps
+    // window y=0 to clip -1 directly. Getting those two confused is the double flip
+    // that cost the previous port a session.
+    static const bool noFlipY = EnvOn("CZ_VK_NO_FLIP_Y");
     VkViewport viewport{};
     if (vte & 0x1)
     {
         viewport.x = xo - std::fabs(xs);
-        viewport.y = yo - std::fabs(ys);
         viewport.width = 2.0f * std::fabs(xs);
-        viewport.height = 2.0f * std::fabs(ys);
+        if (noFlipY)
+        {
+            viewport.y = yo - std::fabs(ys);
+            viewport.height = 2.0f * std::fabs(ys);
+        }
+        else
+        {
+            viewport.y = yo + std::fabs(ys);
+            viewport.height = -2.0f * std::fabs(ys);
+        }
     }
     else
     {
@@ -2293,7 +2322,9 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw)
     }
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    if (viewport.width <= 0.0f || viewport.height <= 0.0f)
+    // Height may legitimately be NEGATIVE now (the Y flip above), so the check is on
+    // magnitude. Testing `height <= 0` here would silently drop every single draw.
+    if (viewport.width <= 0.0f || std::fabs(viewport.height) <= 0.0f)
     {
         Count("draw: degenerate viewport");
         return;

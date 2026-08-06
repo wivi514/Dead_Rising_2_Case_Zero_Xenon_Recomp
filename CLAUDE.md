@@ -834,6 +834,16 @@ From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 132. **A threshold derived from the runs being compared cannot fail.** It widens to
     accommodate whatever difference is present. `frame_compare.py` quotes its 1.5 pp
     band as a constant measured once from five baseline runs.
+135. **An aggregate over pixel VALUES is blind to a transform of the picture.** The
+    whole frame was rendered vertically mirrored for the entire phase — a Xenos vertex
+    shader emits D3D-convention clip coordinates (+y up) and Vulkan's NDC is +y down —
+    and not one instrument here could see it, because a flip preserves coverage, mean
+    luminance, distinct-colour count and the full histogram EXACTLY. The purpose-built
+    A/B metric scores a flipped frame as identical to a correct one. It took an
+    operator looking at the Blue Castle Games logo and saying "that is upside down".
+    Catching a transform needs a REFERENCE (the E screenshots, or eyes), never a
+    statistic — and this is also why "the content is in the upper-left corner" was
+    recorded three times without being diagnosed.
 133. **One frame of an animated scene is ONE SAMPLE — and that applies to LOOKING, not
     just to measuring.** Three runs of an identical binary and an identical shader
     filter produced three completely unrelated pictures of this title screen, one
@@ -1161,6 +1171,10 @@ CZ_VK_STATE_PROBE=1    the state registers the renderer ASSUMES rather than read
 CZ_VK_FETCH_SLOT_INVERT=1  read vertex fetch constants at 95-slot — the arm that
                    settled the fetch-slot convention unambiguously (inverted: 0.0%)
 CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw
+CZ_VK_NO_FLIP_Y=1  render with a positive-height viewport, i.e. the pre-fix vertically
+                   MIRRORED frame. The arm for the flip that made the title screen
+                   appear; note no numeric instrument in this project can tell the two
+                   arms apart (gotcha 135)
 CZ_VK_NO_TEXCOORD_SWAP=1   suppress the 16-bit texcoord unswizzle mask
 CZ_VK_PRIM_RESTART=1   honour 0xFFFF as a strip separator. OFF because the guest
                    declares VGT_MAX_VTX_INDX=65535, i.e. 0xFFFF is a LEGAL index
