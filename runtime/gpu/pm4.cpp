@@ -622,6 +622,70 @@ uint32_t LoadGpu(const uint8_t* base, uint32_t addrDword)
     return GpuSwapResidual(GuestLoad32(base, va), addrDword);
 }
 
+// --- the screen-extent query ------------------------------------------------------
+//
+// EVENT_WRITE_EXT with event 0x1A and a single address argument is the Xenos SCREEN
+// EXTENT query: the GPU writes the extent of what it has rasterized since the
+// matching EVENT_WRITE 0x19 to that address. This title issues one per draw block —
+// 818,507 of them in the first 6 M packets of B1, always body=2 and always event
+// 0x1A, against 819,953 EVENT_WRITE 0x19 — and OUR command processor did nothing with
+// them, because the fence family's handler only stores when the packet carries a
+// value dword (bodyCount >= 3) and this form does not.
+//
+// THAT IS WHY THE SCENE'S RIGHT TILE WAS EMPTY (phase C part 11). The extent is not
+// bookkeeping: it is the input to the bin-mask fix-up pass. The chain, all of it in
+// the guest and all of it measured:
+//
+//   * a draw block is `SET_BIN_MASK_LO FFFFFFFF ; DRAW_INDX ; SET_BIN_MASK_LO
+//     80000000 ; EVENT_WRITE_EXT{0x1A, &record+4} ; EVENT_WRITE{0x19}`, and the
+//     emitter (82842998 and its two twins) records `record[0] = <the stream cursor>`
+//     so the first mask dword is at `record[0] + 8`;
+//   * the record is SIXTEEN bytes and the extent is the other twelve — six halfwords
+//     at record+4, in units of 8 pixels, `{minX, maxX, minY, maxY, minZ, maxZ}`. The
+//     order is fixed by which dword each of sub_8284A7F8's four comparisons loads;
+//   * the D3D worker's token dispatcher (sub_8284B228, token 0x89......) calls
+//     sub_8284A900 -> sub_8284A7F8, which intersects each record's extent against the
+//     tile rects at `workerObj+0x6C+8` and writes `bit31 | (3 per overlapping tile)`
+//     back to `record[0] + 8`;
+//   * the next tile pass replays the same buffer with the patched masks.
+//
+// With the extent never written, that intersection ran on uninitialised memory. Our
+// probe measured the result directly: 76% of 388,451 patched records came back
+// `80000000` — "touches no tile" — where hardware's are `8000000F`, "touches both".
+//
+// WHAT WE WRITE, AND WHY IT IS NOT THE REAL EXTENT. We do not rasterize on the
+// command-processor thread and cannot know what a draw covered. The conservative
+// answer is the only honest one: "this draw may have touched anything", i.e. an
+// extent that overlaps every tile, which makes bin predication a no-op rather than a
+// wrong filter. That is also what the capture measures hardware doing in practice —
+// B1 discards 0.3% of its draw packets, and both tiles are offered exactly 575,744
+// draws and keep 573,124 of them. A too-large extent can only cost work (a draw
+// submitted to a tile it does not touch, where the scissor rejects it); a too-small
+// one silently deletes geometry, which is the failure we are fixing.
+//
+// CZ_PM4_NO_SCREEN_EXTENT=1 restores the pre-part-11 behaviour on BOTH streams, so
+// every claim about this change has a same-binary control arm.
+constexpr uint16_t kExtentMax = 0x1FFF; // * 8 px = 65,536: larger than any tile rect
+
+const bool g_noScreenExtent = [] {
+    const char* v = getenv("CZ_PM4_NO_SCREEN_EXTENT");
+    return v && *v && *v != '0';
+}();
+
+void WriteScreenExtent(uint8_t* base, uint32_t addrDword)
+{
+    if (g_noScreenExtent)
+        return;
+    // GPU-NATIVE dword order: the GPU is little-endian, so the FIRST halfword of a
+    // pair sits in the LOW half of the dword it writes, and the address's endian code
+    // (1 = 8-in-16 here) is what turns that into halfwords a `lhz` reads. StoreGpu
+    // already applies exactly that conversion, so passing the pair the other way round
+    // would transpose minX with maxX — a silent swap that reads as an empty rect.
+    StoreGpu(base, addrDword, (uint32_t(kExtentMax) << 16) | 0u, 0); // minX, maxX
+    StoreGpu(base, addrDword, (uint32_t(kExtentMax) << 16) | 0u, 1); // minY, maxY
+    StoreGpu(base, addrDword, (uint32_t(1) << 16) | 0u, 2);          // minZ, maxZ
+}
+
 // --- register writes --------------------------------------------------------------
 // CZ_PM4_CONST_WATCH=<hex register index> — log every write to one register of the
 // file, with the value and a running count.
@@ -1015,10 +1079,18 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x46: // EVENT_WRITE
         case 0x58: // EVENT_WRITE_SHD  (VS/PS-done fence)
         case 0x59: // EVENT_WRITE_CFL  (cache-flush-done fence)
-        case 0x5A: // EVENT_WRITE_EXT
             WriteRegister(base, 0x21F9 /* VGT_EVENT_INITIATOR */, body(0) & 0x3F);
             if (bodyCount >= 3)
                 StoreGpu(base, body(1), body(2));
+            break;
+
+        // EVENT_WRITE_EXT — the SCREEN EXTENT QUERY, and the whole of phase C part 11.
+        case 0x5A:
+            WriteRegister(base, 0x21F9 /* VGT_EVENT_INITIATOR */, body(0) & 0x3F);
+            if (bodyCount >= 3)
+                StoreGpu(base, body(1), body(2));
+            else if (bodyCount >= 2)
+                WriteScreenExtent(base, body(1));
             break;
 
         case 0x3C: // WAIT_REG_MEM: wait_info, addr/reg(+endian), ref, mask, [interval]

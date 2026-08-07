@@ -235,6 +235,24 @@ uint32_t LoadGpu(const uint8_t* base, uint32_t addrDword)
     return GpuSwapResidual(GuestLoad32(base, va), addrDword);
 }
 
+// The screen-extent write. gpu/pm4.cpp holds the derivation and the measurement; this
+// is the same six halfwords, and CZ_PM4_NO_SCREEN_EXTENT gates both.
+constexpr uint16_t kExtentMax = 0x1FFF;
+
+const bool g_noScreenExtent = [] {
+    const char* v = getenv("CZ_PM4_NO_SCREEN_EXTENT");
+    return v && *v && *v != '0';
+}();
+
+void WriteScreenExtent(uint8_t* base, uint32_t addrDword)
+{
+    if (g_noScreenExtent)
+        return;
+    StoreGpu(base, addrDword, (uint32_t(kExtentMax) << 16) | 0u, 0); // minX, maxX
+    StoreGpu(base, addrDword, (uint32_t(kExtentMax) << 16) | 0u, 1); // minY, maxY
+    StoreGpu(base, addrDword, (uint32_t(1) << 16) | 0u, 2);          // minZ, maxZ
+}
+
 // --- the walker --------------------------------------------------------------------
 // Executes one packet at `va`; returns dwords consumed, 0 to stop (malformed). The
 // opcode set is the D3D library's content-path vocabulary — a subset of B1's 21 —
@@ -528,11 +546,29 @@ uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t ava
         case 0x46: // EVENT_WRITE
         case 0x58: // EVENT_WRITE_SHD
         case 0x59: // EVENT_WRITE_CFL
-        case 0x5A: // EVENT_WRITE_EXT
             Count("walker: EVENT_WRITE executed");
             WriteRegister(base, 0x21F9 /* VGT_EVENT_INITIATOR */, body(0) & 0x3F);
             if (bodyCount >= 3)
                 StoreGpu(base, body(1), body(2));
+            break;
+
+        // EVENT_WRITE_EXT — the screen-extent query. gpu/pm4.cpp's WriteScreenExtent
+        // carries the derivation; the duplication is deliberate and follows the same
+        // rule as the index swizzle (CZ_PM4_INDEX_ADDR_SWIZZLE): a decode the two
+        // streams do differently makes the arms incomparable, so every such change
+        // lands in both files in the same commit, sharing one env arm.
+        case 0x5A:
+            Count("walker: EVENT_WRITE executed");
+            WriteRegister(base, 0x21F9 /* VGT_EVENT_INITIATOR */, body(0) & 0x3F);
+            if (bodyCount >= 3)
+            {
+                StoreGpu(base, body(1), body(2));
+            }
+            else if (bodyCount >= 2)
+            {
+                Count("walker: screen extent written");
+                WriteScreenExtent(base, body(1));
+            }
             break;
 
         case 0x3D: // MEM_WRITE
