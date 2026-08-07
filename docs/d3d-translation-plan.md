@@ -1565,7 +1565,38 @@ Measured, same binary, `CZ_PM4_NO_SCREEN_EXTENT=1` as the control arm:
 the capture. The residue is symmetric and legitimate — the per-tile clear loop at
 82844180 emits `SET_BIN_MASK_LO 3 << 2i`, so each tile skips the other's clears.
 
-### 5. The general lesson, for Case West
+### 5. Gates, both arms
+
+| | PM4 control (`CZ_VKDRAW=1`) | phase C draw (`CZ_D3D_DRAW=1`) |
+|---|---|---|
+| `--smoke` | OK | OK |
+| A1 | **exact 84-prefix** | **exact 84-prefix** |
+| A5 (`--include-high-frequency`) | exit 0, 2 permutation windows, **0 real** | exit 0, 2 permutation, **0 real** |
+| `truncated` | 0 | 0 |
+| deepest file | **#83 `skeleton\cinezombie.big`** | **#83 `skeleton\cinezombie.big`** |
+| predication | 10,076 of 3,731,554 = **0.27%** | 0 of 30,552 on the ring |
+| chain | — | `arms=1115 ints=1114 isr=1114`, `walks==kicks==drains=476`, `distinct=191`, engine counter **0** |
+| max wait hold streak | 1 | 1 |
+
+Both capture oracles clean: `pm4_packet_lengths.py` 24,527,474 packets, 0 disagreeing;
+`pm4_indirect_walks.py` 28,727 buffers, 0 disagreeing. The draw arm is in the healthy
+shape part 7 defined, unchanged by this session's work.
+
+### 6. Item 2 (the walker's dead code): still zero, and still not deleted
+
+Part 10 declined to delete the walker's `case 0x54:` INTERRUPT block and
+`MirrorIsPoisoned()` because the zeros behind that recommendation were measured on an
+arm that stalled at `#60`. Re-measured on the current draw arm at `#83`: the walker's
+in-position INTERRUPT delivery prints **zero** lines and the poisoned-skip counter is
+**zero**. So the recommendation's evidence now holds in the current regime.
+
+It is still not done here, for the reason gotcha 182 gives from the other side: this
+session changed what executes inside both streams (818,507 previously-dead packets a
+boot now write memory), which is exactly the kind of regime change that invalidates a
+"this has always been zero" argument. One session that changes nothing else should
+confirm the zeros and delete.
+
+### 7. The general lesson, for Case West
 
 **A packet we implement and a packet we implement for every FORM it takes are not the
 same claim.** `EVENT_WRITE_EXT` has had a name in the opcode table since phase 1,

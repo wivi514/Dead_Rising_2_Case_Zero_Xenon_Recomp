@@ -34,9 +34,13 @@ PM4 control arm, `CZ_VKDRAW=1`:
   vertices a frame, over two runs per arm alternated against
   `CZ_PM4_NO_SCREEN_EXTENT=1` (56.1 / 53.8%, 1,630 draws, 820 k vertices).
 
-Phase C draw arm, `CZ_D3D_DRAW=1` — see the gate section at the bottom for the numbers
-this session measured; part 10's healthy shape (`arms:ints` ~= 1.0, `walks == kicks ==
-drains`, `distinct` in the hundreds, engine counter 0) is the thing to check.
+Phase C draw arm, `CZ_D3D_DRAW=1`:
+
+* `--smoke` OK. A1: exact 84-prefix. A5: exit 0, 0 real windows.
+* `truncated=0`; deepest file **#83** — the same as the control arm.
+* the healthy chain shape part 7 defined, unchanged: `arms=1115 ints=1114 isr=1114`
+  (0.999), `walks == kicks == drains`, `distinct=191`, engine counter `dev+0x2B04` = 0,
+  max wait hold streak 1.
 
 ## Where part 12 starts, in order
 
@@ -60,9 +64,15 @@ drains`, `distinct` in the hundreds, engine counter 0) is the thing to check.
    current cost has not been shown to matter.
 
 3. **Item 2 from part 10/11's kickoff — the walker's dead `case 0x54:` INTERRUPT block
-   and `MirrorIsPoisoned()`.** Re-measured this session on the current draw arm; the
-   result is in the gate section below. Delete only if they are still zero *there*, and
-   not in a session that is also changing segment routing (gotcha 182).
+   and `MirrorIsPoisoned()` — is READY TO DELETE, and part 11 deliberately did not.**
+   Re-measured on the current draw arm at `#83`: the walker's in-position INTERRUPT
+   delivery prints zero lines and the poisoned-skip counter is zero. So part 10's
+   objection (the zeros came from an arm that stalled at `#60`) no longer applies. The
+   reason it is still here is gotcha 182 from the other side: part 11 changed what
+   executes inside BOTH streams — 818,507 previously-dead packets a boot now write
+   guest memory — and "this has always been zero" is not an argument you make in the
+   session that changed the regime. **A session that changes nothing else should
+   confirm the two zeros and delete both.** That is the cheapest item on this list.
 
 4. **The kernel gates are exhausted as a forward oracle.** A1's position 93 is not the
    next piece of work (finding 49, gotcha 107). Going further needs a gameplay
