@@ -20,6 +20,7 @@
 
 #include <xbox.h>
 
+#include "../cpu/chain_stats.h"
 #include "../cpu/guest_thread.h"
 #include "../kernel/guestcall.h"
 #include "../kernel/heap.h"
@@ -213,6 +214,7 @@ void DeliverCommandProcessorInterrupt()
     g_pumpIsr.context->r4.u64 = g_pumpIsr.userData;
     if (mask == 0)
     {
+        ChainStats_CountIsr();
         g_pumpIsr.func(*g_pumpIsr.context, g_pumpIsr.base);
         return;
     }
@@ -230,6 +232,7 @@ void DeliverCommandProcessorInterrupt()
         base[pcr + 0x10C] = uint8_t(cpu);
         g_pumpIsr.context->r3.u64 = 1;
         g_pumpIsr.context->r4.u64 = g_pumpIsr.userData;
+        ChainStats_CountIsr();
         g_pumpIsr.func(*g_pumpIsr.context, g_pumpIsr.base);
         g_isrPerCpuDeliveries.fetch_add(1, std::memory_order_relaxed);
     }
@@ -403,6 +406,34 @@ void GraphicsInterruptPump()
                  Pm4_HoldStreak() > 60 ? "   <-- the ring has sat on ONE wait for over a "
                                          "second: nothing is going to release it"
                                        : "");
+            // The GPU/CPU hand-off chain, link by link (cpu/chain_stats.h). Read it as
+            // a chain of RATIOS: arms -> ints is how many times the command processor
+            // executed each arm block, ints -> isr is the per-CPU acknowledge's own
+            // multiplier, kicks -> walks -> ringsub is what one delivery regenerates.
+            // `distinct` is whether the token-buffer pointer ADVANCES, which is the
+            // difference between a pipeline and a runaway (gotcha 150).
+            const ChainStats cs = ChainStats_Read();
+            KLOG("ring: chain arms=%llu ints=%llu isr=%llu kicks=%llu (distinct=%llu%s "
+                 "repeat=%llu) walks=%llu drains=%llu segsub=%llu/queued=%llu "
+                 "ringsub=%llu/ents=%llu\n",
+                 (unsigned long long)cs.arms, (unsigned long long)Pm4_InterruptCount(),
+                 (unsigned long long)cs.isr, (unsigned long long)cs.kicks,
+                 (unsigned long long)cs.kickDistinct, cs.kickDistinct >= 4096 ? "+" : "",
+                 (unsigned long long)cs.kickRepeat, (unsigned long long)cs.walks,
+                 (unsigned long long)cs.drains, (unsigned long long)cs.segSubmit,
+                 (unsigned long long)cs.segQueued, (unsigned long long)cs.ringsub,
+                 (unsigned long long)cs.ringsubEnts);
+            // The counter the engine's frame sync SPINS on, printed SIGNED — because
+            // two sessions described it as "not yet back to zero" and the word held
+            // -552, so the loop was unsatisfiable rather than slow (gotcha 145). It
+            // belongs on the same line as the chain because the chain's producer half
+            // freezing and this going negative are one event seen from two sides.
+            //
+            // dev+0x2B00 is the token interpreter's nesting depth and dev+0x2B04 the
+            // outstanding-segment count; the ISR's user data IS the device struct, so
+            // both are free here.
+            KLOG("ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d\n",
+                 int(PPC_LOAD_U32(userData + 0x2B04)), int(PPC_LOAD_U32(userData + 0x2B00)));
         }
 
         // Log the first delivery BEFORE the call, not after. A guest ISR that never

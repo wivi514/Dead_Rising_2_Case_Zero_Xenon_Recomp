@@ -53,6 +53,7 @@
 
 #include "../gpu/d3d_draw.h"
 #include "../kernel/memory.h"
+#include "chain_stats.h"
 #include "guest_thread.h"
 #include "ppc_recomp_shared.h"
 
@@ -65,6 +66,84 @@ extern "C" PPC_FUNC(__imp__sub_82959360);
 extern "C" PPC_FUNC(__imp__sub_829565B8);
 extern "C" PPC_FUNC(__imp__sub_82955780);
 extern "C" PPC_FUNC(__imp__sub_82689A70);
+
+// ---------------------------------------------------------------------------------
+// The always-on chain counters (cpu/chain_stats.h says why they are separate from the
+// probe above, and what each link means). Relaxed atomics on hooks that already exist,
+// so they cost nothing and are present on EVERY run rather than only on a probe run.
+//
+// They live at the top of the file because their first user — the worker's token
+// interpreter hook — is several hundred lines above the fence probe they belong with.
+namespace {
+
+std::atomic<uint64_t> g_chainArms{ 0 };
+std::atomic<uint64_t> g_chainIsr{ 0 };
+std::atomic<uint64_t> g_chainKicks{ 0 };
+std::atomic<uint64_t> g_chainKickRepeat{ 0 };
+std::atomic<uint64_t> g_chainWalks{ 0 };
+std::atomic<uint64_t> g_chainDrains{ 0 };
+std::atomic<uint64_t> g_chainRingsub{ 0 };
+std::atomic<uint64_t> g_chainRingsubEnts{ 0 };
+std::atomic<uint64_t> g_chainSegSubmit{ 0 };
+std::atomic<uint64_t> g_chainSegQueued{ 0 };
+
+// Distinct token-buffer pointers ever kicked.
+//
+// A bounded open-addressed set rather than a std::set, because this runs on the ISR
+// path and the runaway arm reaches it eleven million times in a boot: an allocation
+// there would change the thing being measured (gotcha 7). 8,192 slots is far more than
+// the interesting range — the healthy arm advances its pointer once per frame, i.e. a
+// few thousand in a two-minute boot, and the sick arm is expected to sit on a handful.
+//
+// The cap is reported rather than hidden: once the table is full the count SATURATES,
+// and a saturated count is a floor, not a number (gotcha 109). `ChainStats_Read` says
+// so by returning the saturated value, and the printer flags it with a '+'.
+constexpr size_t kKickSetSlots = 8192;
+std::atomic<uint32_t> g_kickSet[kKickSetSlots];
+std::atomic<uint64_t> g_kickDistinct{ 0 };
+
+void NoteKickBuffer(uint32_t buf)
+{
+    if (!buf || g_kickDistinct.load(std::memory_order_relaxed) >= kKickSetSlots / 2)
+        return; // saturated: stop probing, the count is already a floor
+    // Fibonacci hash, then linear probe. Races can insert the same pointer twice and
+    // over-count by a handful; that is acceptable for a distinctness ORDER OF MAGNITUDE
+    // and a lock here would sit on the interrupt path.
+    size_t h = (size_t(buf) * 2654435761u) % kKickSetSlots;
+    for (size_t i = 0; i < 64; i++)
+    {
+        std::atomic<uint32_t>& slot = g_kickSet[(h + i) % kKickSetSlots];
+        uint32_t cur = slot.load(std::memory_order_relaxed);
+        if (cur == buf)
+            return;
+        if (cur == 0 && slot.compare_exchange_strong(cur, buf, std::memory_order_relaxed))
+        {
+            g_kickDistinct.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+
+} // namespace
+
+ChainStats ChainStats_Read()
+{
+    ChainStats s{};
+    s.arms = g_chainArms.load(std::memory_order_relaxed);
+    s.isr = g_chainIsr.load(std::memory_order_relaxed);
+    s.kicks = g_chainKicks.load(std::memory_order_relaxed);
+    s.kickDistinct = g_kickDistinct.load(std::memory_order_relaxed);
+    s.kickRepeat = g_chainKickRepeat.load(std::memory_order_relaxed);
+    s.walks = g_chainWalks.load(std::memory_order_relaxed);
+    s.drains = g_chainDrains.load(std::memory_order_relaxed);
+    s.ringsub = g_chainRingsub.load(std::memory_order_relaxed);
+    s.ringsubEnts = g_chainRingsubEnts.load(std::memory_order_relaxed);
+    s.segSubmit = g_chainSegSubmit.load(std::memory_order_relaxed);
+    s.segQueued = g_chainSegQueued.load(std::memory_order_relaxed);
+    return s;
+}
+
+void ChainStats_CountIsr() { g_chainIsr.fetch_add(1, std::memory_order_relaxed); }
 
 namespace {
 
@@ -428,6 +507,7 @@ extern "C" void CzMaybeCrashTest(PPCContext& ctx, uint8_t* base);
 
 PPC_FUNC(sub_8284B568)
 {
+    g_chainWalks.fetch_add(1, std::memory_order_relaxed);
     if (JobProbeEnabled())
         DumpInterpreter(ctx, base);
     CzMaybeCrashTest(ctx, base);
@@ -714,6 +794,9 @@ PPC_FUNC(sub_828459D0)
 
 PPC_FUNC(sub_82845AC0)
 {
+    g_chainSegSubmit.fetch_add(1, std::memory_order_relaxed);
+    if (PPC_LOAD_U32(ctx.r3.u32 + 0x2B04))
+        g_chainSegQueued.fetch_add(1, std::memory_order_relaxed);
     // r7 (`incr`) and r8 (`queue`) are the two arguments that decide whether this
     // submission can become a replay, and neither was printed before phase C part 4.
     //
@@ -750,13 +833,18 @@ extern "C" PPC_FUNC(__imp__sub_8284AAD0);
 
 PPC_FUNC(sub_8284AAD0)
 {
+    // Always-on: this is the link whose ratio to `arms` is the ~300x part 7 exists to
+    // explain, and it must not be a by-product of a line-budgeted print (gotcha 109).
+    static std::atomic<uint32_t> lastKick{ 0 };
+    const uint64_t k = g_chainKicks.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t arg = ctx.r3.u32;
+    const uint32_t prev = lastKick.exchange(arg, std::memory_order_relaxed);
+    if (k && arg == prev)
+        g_chainKickRepeat.fetch_add(1, std::memory_order_relaxed);
+    NoteKickBuffer(arg);
+
     if (FenceProbeEnabled())
     {
-        static std::atomic<uint64_t> kicks{ 0 };
-        static std::atomic<uint32_t> last{ 0 };
-        const uint64_t k = kicks.fetch_add(1);
-        const uint32_t arg = ctx.r3.u32;
-        const uint32_t prev = last.exchange(arg);
         // Every kick while the count is small (the era the seed lives in), then only
         // the periodic total — a runaway prints millions and the budget is shared.
         if ((k < 64 || (k % 10000) == 0) && FenceLine())
@@ -841,6 +929,7 @@ extern "C" PPC_FUNC(__imp__sub_82845BA0);
 
 PPC_FUNC(sub_82845BA0)
 {
+    g_chainArms.fetch_add(1, std::memory_order_relaxed);
     if (FenceProbeEnabled() && FenceLine())
         fprintf(stderr, "[fence] arm   t=%08X cursor=%08X%s flags=%08X cb=%08X arg=%08X\n",
                 GuestThread::GetCurrentThreadId(), ctx.r4.u32, WhereCursor(ctx.r4.u32),
@@ -889,6 +978,7 @@ extern "C" PPC_FUNC(__imp__sub_82846210);
 
 PPC_FUNC(sub_8284A960)
 {
+    g_chainDrains.fetch_add(1, std::memory_order_relaxed);
     if (FenceProbeEnabled() && FenceLine())
     {
         const uint32_t obj = ctx.r3.u32;
@@ -920,12 +1010,11 @@ extern "C" PPC_FUNC(__imp__sub_828455C0);
 
 PPC_FUNC(sub_828455C0)
 {
+    const uint64_t k = g_chainRingsub.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t e =
+        g_chainRingsubEnts.fetch_add(ctx.r5.u32, std::memory_order_relaxed) + ctx.r5.u32;
     if (FenceProbeEnabled())
     {
-        static std::atomic<uint64_t> calls{ 0 };
-        static std::atomic<uint64_t> entries{ 0 };
-        const uint64_t k = calls.fetch_add(1);
-        const uint64_t e = entries.fetch_add(ctx.r5.u32) + ctx.r5.u32;
         // Every entry of the first CZ_FENCE_RINGSUB calls (default 4000), then a
         // periodic total — because the interesting claim is a RATE (entries per
         // second), and a capped list of lines cannot carry one (gotcha 109).
