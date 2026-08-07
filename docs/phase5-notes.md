@@ -1356,6 +1356,10 @@ that metric, it is deterministic, it needs no era alignment, and it reads 1 -> 0
 
 ## 6z. Still open, and now measurable: the menu panels
 
+**MEASURED IN PART 12 — read §6aa.** Both halves are localised to a named object there,
+and the third bullet below (§6s's shape) is refuted: the panel samples no surface our
+renderer failed to produce. The rest of this section stands as written.
+
 Also from the operator's run, and **not fixed**: on the new-game screen, three panels
 render as solid black rectangles and some label text is malformed, while the body text
 on the loading screen next to it renders perfectly.
@@ -1376,6 +1380,118 @@ What is already known, and it narrows the hunt:
   never wrote is served whatever the guest's allocator left there, and the per-pass
   dependency graph (`CZ_VK_RESOLVE_TRACE` + `CZ_VK_SNAP_DUMP`, gotcha 140) is what
   turns "this pass is black" into "this pass's input was never produced".
+
+## 6aa. The menu panels, measured: two defects, both localised, neither yet fixed
+
+Session 24 (phase C part 12). §6z handed over "three black panels and some malformed
+label text on the new-game screen", first reachable headless via
+`CZ_FAKE_PRESS_SEQ=START,A,A`. Both are now localised to a named object, both by arms
+rather than by reading, and the two are unrelated to each other.
+
+The screen: `CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A` on the PM4 arm walks
+title -> logo -> menu -> **save-slot panel** (about ten frames around frame 570 of a
+70 s boot) -> loading screen. The panel is drawn in the frame's LAST pass — a
+115-draw, 835-vertex compose straight into the front buffer `00E48000` — which is why
+no snapshot dump could ever show it in isolation.
+
+### The three black rectangles are ONE texture, and they are drawn OVER correct content
+
+The per-pass draw list with texture addresses (`CZ_VK_PASS_DRAWS=140`, which had to be
+implemented first — see below) breaks that compose into three families:
+
+| family | draws | textures |
+|---|---|---|
+| `vs=d6aceb89.. ps=27af67a3..` prim6, 4 idx | ~40 | one UI quad each: `037xxxxx`/`038xxxxx`/`039xxxxx` |
+| `vs=2067afd5.. ps=e93897ec..` prim13, 4..60 idx | ~20 | **two** glyph atlases, `007BB000` and `007C6000` |
+| `vs=8bb7e189.. ps=438c2af8..` prim1, 1 idx | 50 | none |
+
+Three of the first family bind `0364B000` — a 16x16 DXT1 whose every texel reads zero.
+`CZ_VK_SKIP_TEX=0364B000` (767 draws filtered over a boot) removes exactly the three
+black rectangles, **and what appears underneath is three correct thumbnails**. So the
+draws behind them are right, the compose order is right, and the defect is one opaque
+black quad painted on top.
+
+What it is not: those draws carry `mask=F blend=07060706`, i.e. `SRC_ALPHA` /
+`ONE_MINUS_SRC_ALPHA` with an ADD combine, which our pipeline does honour — so a
+transparent texture would be invisible. An all-zero DXT1 block is opaque black under
+BC1 (both colour endpoints zero selects the punch-through mode, and index 0 still picks
+colour0, alpha 1), so it is opaque here and would be opaque on hardware given the same
+bytes. **Therefore hardware's bytes differ from ours**, and the open question is who was
+supposed to write them. `CZ_PM4_MEM_WATCH` is a GPU-store instrument and will not see a
+CPU write; the tool for this is gotcha 143's — a hardware watchpoint on that guest word
+under `gdb -p` in a healthy run, which names the writer in one hit.
+
+### The obvious repair was built, measured and REFUTED — and its first version lied
+
+A texture uploaded before the guest streamed its pixels in is black, and the cache key
+is the fetch constant, which does not change when the data arrives. That is a real
+defect class, it is §6s's shape one level down, and it is wrong here.
+
+The first version of the test asked whether guest memory at the texture's address is
+still zero, and reported **39 textures uploaded black whose memory reads NON-ZERO by
+the end of the run**. That number is an artifact. A 16x16 DXT1 occupies **128 bytes**
+inside an **8 KB** tiled footprint (`srcPitchUnits` 32 x `srcRows` 32 x 8), so scanning
+the footprint mostly asks about the NEIGHBOURING textures. Asking the same question of
+the same texels the untile actually reads gives **zero** — none of a boot's 58 all-black
+uploads ever becomes non-zero.
+
+The repair built on the bad number is worth recording too, because it looked like it
+was working: it fired 3,258 times in a boot and turned the save-slot panel **entirely
+white**. Two independent faults, one in each half:
+
+* the predicate and the re-check tested DIFFERENT byte ranges, so an entry whose padding
+  was non-zero flipped between "arrived" and "not arrived" every frame, forever;
+* each re-upload allocated a fresh bindless slot, so the 4096-entry heap ran out —
+  **62,619 fetches served the 1x1 dummy**, which is what the white panel was.
+
+Both are gotcha 30 in the same shape: the arm had never been shown capable of failing.
+The machinery is not in the tree; what remains is one counter, `texture: uploaded
+entirely BLACK (the guest has not written it)` (58 a boot), because that is what named
+`0364B000`.
+
+### The malformed text is one of two glyph atlases, and it is NOT the atlas
+
+The two text atlases differ in exactly one field:
+
+```
+s0=007C6000 376x376 fmt=2 swz=124 tiled=1 pitchBlk=12 end=0    <- garbled, cyan
+s0=007BB000 184x184 fmt=2 swz=124 tiled=1 pitchBlk=6  end=0    <- crisp, white
+```
+
+Same shader pair, same format, same swizzle, same tiling, same endian. `CZ_VK_SKIP_TEX`
+attributes them: skipping `007BB000` removes the crisp white run of "TIP: Items with
+the wrench icon..." and leaves the cyan garbage, so the two runs of one line are drawn
+from two different atlases and only the 376 one is wrong.
+
+Two hypotheses tested, both refuted, both with an arm that demonstrably engaged:
+
+* **stale dynamic atlas.** These are runtime-rasterized glyph caches, so the cache could
+  be holding the sheet as it stood at its first fetch. `CZ_VK_TEX_REFRESH=007C6000`
+  re-reads the pixels on every fetch into the same image and slot — 2,250 refreshes in a
+  boot — and **the picture does not change by one pixel**. Guest memory there is static.
+* **our untiling.** `CZ_VK_TEX_DUMP` writes the untiled bytes as a PGM, and the
+  376x376 sheet is a **clean, correctly laid out page of glyphs** — as is the 184x184
+  one. Nothing is scrambled on the way in.
+
+So the atlas is right and the draw samples it wrong, which leaves the texture
+COORDINATES. The suggestive number is that **376/184 = 2.04** and the garbled glyphs
+read as magnified fragments; the next instrument is a draw probe over the vertex data of
+a draw isolated with `CZ_VK_ONLY_TEX=007C6000`. Recorded as a lead, not a conclusion.
+
+### The instruments, and one that was documented for a phase without existing
+
+`CZ_VK_PASS_DRAWS=N` has been in `CLAUDE.md`'s instrument list since part 9 with a
+default of 4 — and **was never implemented**; the 4 was a hardcoded literal and the
+environment variable was read nowhere. That is gotcha 25's shape in the documentation
+rather than in a grep: an instrument nobody could have used, described as if they had.
+It works now, and each entry carries the draw's texture address, because a UI compose is
+a hundred quads sharing two shaders and the shader is not what distinguishes them.
+
+Also added: `CZ_VK_SKIP_TEX` / `CZ_VK_ONLY_TEX` (the bisection arm one level below
+`CZ_VK_ONLY_VS`), `CZ_VK_TEX_CENSUS` (per address: uploads, all-black uploads, snapshot
+hits, too-old fallbacks), `CZ_VK_SNAP_FRAME` (the snapshot dump's frame was a hardcoded
+600), and `CZ_VK_FRAME_DUMP_EVERY` (the panel appeared in exactly one frame of a 180 s
+boot at the built-in 64).
 
 ## 7. What is NOT right yet, with the measurement for each
 

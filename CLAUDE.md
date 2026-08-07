@@ -1242,6 +1242,35 @@ From phase C part 11 (the screen extent — a packet implemented and never execu
      tell that from a frame dump). Gotcha 103 said a gate needing a human is a capture
      request; this is the other half — extend the arm until it is not.
 
+191. **A range that is not the range answers a different question, confidently.** "39
+     textures uploaded black and their guest memory reads NON-ZERO now" was the whole
+     case for "we cached a texture before the guest streamed its pixels in" — and it was
+     measured over the 8 KB tiled FOOTPRINT of textures whose own texels are 128 bytes,
+     so it was mostly reporting on the NEIGHBOURING textures. Asked of the bytes the
+     untile actually reads, the answer is **zero of 58**. Two ways to catch it: make the
+     predicate and its re-check read the identical bytes by construction (ours did not,
+     so entries flip-flopped forever), and be suspicious of a footprint that is 64x the
+     object inside it.
+192. **A repair that engages hard is not a repair that works, and a metric can rise
+     while the picture collapses.** The one built on that number fired 3,258 times a
+     boot — no dead-arm doubt (gotcha 151) — and turned the save-slot panel entirely
+     WHITE, because each re-upload took a fresh bindless slot and exhausted the
+     4096-entry heap: 62,619 fetches served the 1x1 dummy. A recycled resource is part of
+     any invalidate-and-redo path, and the symptom of not recycling it is not a leak, it
+     is every later texture silently becoming the fallback.
+193. **A documented instrument can not exist.** `CZ_VK_PASS_DRAWS=N` sat in this file's
+     instrument list for three phases with a stated default; the count was a hardcoded
+     literal and the environment variable was read nowhere in the tree. Gotcha 25 says to
+     grep the emitter before believing a zero — the same applies before quoting a knob,
+     and the check is `grep -n CZ_VK_PASS_DRAWS runtime/`.
+194. **Two arms of one runtime can be mutually exclusive, and setting both silently
+     gives you the wrong one.** `CZ_D3D_DRAW=1 CZ_VKDRAW=1` is the PM4 arm: the runtime
+     disables the draw arm and says so once, in a line that scrolls past. Three "draw
+     arm" runs here were PM4 runs, and they agreed with each other AND with a control
+     perfectly — consistency is no defence, because both sides of the comparison were the
+     same wrong thing. The tell was in the chain counters (`arms=74, kicks=0, walks=0`
+     against the real arm's `arms=12627, kicks=6752`). Confirm an arm ANNOUNCED itself
+     before reading anything else off its log.
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1376,7 +1405,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c7-kickoff.md` /
   `d3d-phase-c8-kickoff.md` / `d3d-phase-c9-kickoff.md` /
   `d3d-phase-c10-kickoff.md` / `d3d-phase-c11-kickoff.md` /
-  **`d3d-phase-c12-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c12-kickoff.md` /
+  **`d3d-phase-c13-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1782,6 +1812,34 @@ CZ_VK_FRAME_DUMP=dir   every 64th presented frame as a PPM — the renderer chec
 CZ_VK_SNAP_DUMP=dir    EVERY resolve snapshot of one frame. The frame is the last link
                    in the chain, so a wrong frame is consistent with any pass being
                    wrong; this is the only instrument that says which
+CZ_VK_SNAP_FRAME=N which frame that is (default 600). It was a hardcoded 600 for as long
+                   as the instrument existed, which was fine while every question was
+                   about the title screen and useless the moment one was not
+CZ_VK_FRAME_DUMP_EVERY=N  the frame-dump interval (default 64). The save-slot panel the
+                   synthetic-input arm walks THROUGH appears in exactly ONE frame of a
+                   180 s boot at 64
+CZ_VK_SKIP_TEX / CZ_VK_ONLY_TEX=<hex[,hex]>  render all but, or only, the draws whose
+                   first bound texture is at that guest address. The bisection arm one
+                   level below CZ_VK_ONLY_VS, because a UI compose is a hundred quads
+                   sharing two shaders and the SHADER is not what distinguishes them.
+                   This is how a rectangle on screen gets an identity: skip an address
+                   and look at what vanished. `CZ_VK_SKIP_TEX=0364B000` deletes the
+                   new-game screen's three black panels and reveals three correct
+                   thumbnails underneath
+CZ_VK_TEX_CENSUS=1 per texture ADDRESS: uploads, how many came out entirely black,
+                   fetches served from a resolve snapshot, and fetches that fell back
+                   because the snapshot was too old. Off by default because the snapshot
+                   column is hit ~500,000 times a run (gotcha 7)
+CZ_VK_TEX_REFRESH=<hex[,hex]>  re-read those textures' pixels on EVERY fetch, into the
+                   SAME image and slot (the dimensions are part of the cache key, so
+                   updating in place is exact and needs no allocation). The arm for "we
+                   cached a texture the guest is still writing" — and on the garbled
+                   glyph atlas it engages 2,250 times and changes nothing
+CZ_VK_TEX_DUMP=dir + CZ_VK_TEX_DUMP_ADDR=<hex[,hex]>  the UNTILED bytes of a texture as
+                   a greyscale PGM. It separates "our untiling scrambled this" from "the
+                   texture is fine and the draw samples it wrong", which are different
+                   subsystems — and a human can tell a page of glyphs from a page of
+                   noise instantly, which no aggregate over it can
 CZ_VK_RESOLVE_TRACE=1  each resolve's destination, extent and clear bits, against the
                    front buffer VdSwap named. The trace that found finding 5 below
 CZ_VK_VIEWPORT_TRACE=1 every DISTINCT viewport setup, once each
@@ -1840,9 +1898,12 @@ CZ_VK_NO_DEPTH_TEST=1  draw everything regardless of depth. An ARM, never a fix:
                    the only cheap way to separate "this geometry was never submitted"
                    from "this geometry was submitted and rejected by depth left over
                    from another pass", which look identical in a snapshot
-CZ_VK_PASS_DRAWS=N     how many of a pass's draws the resolve trace lists (default 4).
-                   Four says what KIND of pass it is; it cannot say what a 57-draw
-                   compose did, which is where every "why is it black" question ends
+CZ_VK_PASS_DRAWS=N     how many of a pass's draws the resolve trace lists (default 4),
+                   each with the draw's TEXTURE address. Four says what KIND of pass it
+                   is; it cannot say what a 115-draw UI compose did, which is where every
+                   "why is that rectangle black" question ends. NB this knob was
+                   documented here from part 9 and did not exist until part 12 — the
+                   count was a hardcoded literal and the variable was read nowhere
 CZ_VK_RESOLVE_TRACE_PASSES=N  the resolve trace's budget, in PASSES rather than lines
                    (default 20, about one frame). Counting lines meant the budget bought
                    a different number of passes depending on the resolve order, so the
@@ -2797,6 +2858,46 @@ and hands the renderer 1,313; the predication eats the difference. `ring: ... dr
 (predicated out=M)` is now always on, because a mechanism with no counter cannot be
 subtracted from a comparison (gotcha 162).
 
+**PHASE C PART 12 (2026-08-07, session 24): the menu panels, localised — and the dead
+ISR code deleted.** `docs/phase5-notes.md` §6aa; hand-off in
+`docs/d3d-phase-c13-kickoff.md`.
+
+Part 11 handed over "three black panels and malformed label text on the new-game
+screen", newly reachable headless via `CZ_FAKE_PRESS_SEQ=START,A,A`. Both are now
+localised to a NAMED OBJECT by arms rather than by reading, and the shape part 11
+predicted (§6s's — a pass reading a surface the renderer never wrote) is **refuted**:
+the panel is the frame's last pass, a 115-draw compose into the front buffer, and its
+inputs are all present.
+
+* **The three black rectangles are ONE texture** — `0364B000`, a 16x16 DXT1 whose every
+  texel reads zero. `CZ_VK_SKIP_TEX=0364B000` removes exactly those three rectangles and
+  **reveals three correct thumbnails underneath**, so everything behind them is right.
+  The draws blend `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (honoured), and an all-zero DXT1 is
+  opaque black under BC1 — so hardware's bytes differ from ours, and the open question is
+  who writes them. That is a CPU write, so `CZ_PM4_MEM_WATCH` cannot see it; the tool is
+  gotcha 143's hardware watchpoint.
+* **The malformed text is one of two glyph atlases** — `007C6000` (376x376) garbles,
+  `007BB000` (184x184) is perfect, through the SAME `(vs, ps)` pair with every other
+  fetch-constant field identical. Two arms cleared the atlas itself: `CZ_VK_TEX_REFRESH`
+  (2,250 in-place re-uploads, picture identical) and `CZ_VK_TEX_DUMP` (a clean, correctly
+  untiled page of glyphs). That leaves the draw's texture COORDINATES; 376/184 = 2.04 and
+  the glyphs read as magnified fragments.
+
+**Part 11's item 4 is closed**: the private walker's `case 0x54:` ISR replication and
+`MirrorIsPoisoned()` are deleted, after re-confirming both zeros on a correctly
+configured draw arm at `#83` (`arms=12627 ints=12626 isr=12626`, `kicks == walks ==
+drains = 6752`, `distinct=885`, `truncated=0`). They guarded a race the brake closed in
+parts 4-6, and the counter read zero even on part 6's brake-OFF arm.
+
+Six new instruments, all off by default, and one of them existed only in this file:
+`CZ_VK_SKIP_TEX`/`CZ_VK_ONLY_TEX`, `CZ_VK_TEX_CENSUS`, `CZ_VK_TEX_REFRESH`,
+`CZ_VK_TEX_DUMP`, `CZ_VK_SNAP_FRAME`, `CZ_VK_FRAME_DUMP_EVERY` — plus
+**`CZ_VK_PASS_DRAWS`, which has been documented here since part 9 and was never
+implemented** (the count was a hardcoded 4).
+
+**Gates, both arms:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
+0 real**; `truncated=0`; deepest file **#83 `cinezombie.big`**.
+
 Next, in order:
 
 1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
@@ -2818,7 +2919,15 @@ Next, in order:
    this title screen is two screens (gotcha 176). `docs/phase5-notes.md` §7 is the
    older enumerated gap and is now largely superseded by §§6s-6x. Gate on **per-era
    aggregates, never frame index** (gotcha 38).
-4. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+4. **The two menu defects, each one probe from an answer** (part 12 above): who writes
+   `0364B000` — a hardware watchpoint under `gdb -p`, not `CZ_PM4_MEM_WATCH` — and what
+   texture coordinates the `007C6000` glyph draws carry, isolated with
+   `CZ_VK_ONLY_TEX`.
+5. **A crash 53 files deeper than any gate here.** Held down, `CZ_FAKE_PRESS_SEQ`
+   walks past the menu into the real game load and SIGSEGVs in guest code at file
+   **#137 `audio\Prologue.txt`**. First evidence this port has of what happens after
+   the menu; a frontier, not a regression.
+6. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 

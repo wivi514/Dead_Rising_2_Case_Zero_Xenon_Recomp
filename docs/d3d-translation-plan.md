@@ -1605,3 +1605,67 @@ appears in the census, and passed both capture oracles — because
 arithmetic was right (gotcha 88, third time). The cheap standing check that would have
 caught it: census the capture by `(opcode, body length, event type)` rather than by
 opcode, and read any row your handler falls through as a hole.
+
+## Phase C part 12 (2026-08-07, session 24): the menu panels, localised — and the dead ISR code deleted
+
+Part 11's hand-off listed five items. This session closed **item 4** and took **item 1**
+from "an operator report with no headless reproduction" to two named objects. Items 2, 3
+and 5 are unchanged and carried into `docs/d3d-phase-c13-kickoff.md`.
+
+### 1. The save-slot panel: two defects, neither of them a missing pass
+
+Full record in `docs/phase5-notes.md` §6aa; the short form is that the shape part 11
+predicted (§6s's — a pass reading a surface our renderer never wrote) is **refuted**.
+The panel is drawn in the frame's LAST pass, a 115-draw compose straight into the front
+buffer, and its inputs are all present.
+
+* **The three black rectangles are one texture**, `0364B000`, a 16x16 DXT1 whose every
+  texel reads zero. `CZ_VK_SKIP_TEX=0364B000` removes exactly those three rectangles and
+  reveals **three correct thumbnails underneath**. The draws carry ordinary
+  `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` blending, which our pipeline honours, and an
+  all-zero DXT1 is opaque black under BC1 — so hardware's bytes at that address must
+  differ from ours, and the open question is who writes them. `CZ_PM4_MEM_WATCH` cannot
+  answer it (it is a GPU-store instrument); gotcha 143's hardware watchpoint under
+  `gdb -p` can.
+* **The malformed label text is one of two glyph atlases** — `007C6000` (376x376)
+  garbles, `007BB000` (184x184) is perfect, and every other field of the two fetch
+  constants is identical. Two hypotheses were built as arms and both are negative with
+  the arm demonstrably engaged: the atlas is not stale (`CZ_VK_TEX_REFRESH`, 2,250
+  in-place re-uploads, picture unchanged) and it is not mis-untiled (`CZ_VK_TEX_DUMP`
+  writes a clean page of glyphs). That leaves the draw's texture COORDINATES.
+
+The repair that looked right and was not is worth more than either: "the texture was
+uploaded before the guest streamed its pixels in" is a real defect class, and the first
+measurement of it reported **39 textures uploaded black whose memory is non-zero now** —
+an artifact of scanning the 8 KB tiled FOOTPRINT rather than the 128 bytes the untile
+actually reads. Asked of the right bytes it is **zero of 58**. The repair built on the
+bad number fired 3,258 times and turned the panel entirely white (it allocated a fresh
+bindless slot per re-upload and exhausted the 4096-entry heap: 62,619 fetches served the
+1x1 dummy). Nothing of it is in the tree.
+
+### 2. Item 4 closed: the walker's INTERRUPT block and `MirrorIsPoisoned()` are gone
+
+Both zeros re-confirmed first, on a **correctly configured** part 12 draw arm —
+`arms=12627 ints=12626 isr=12626` (0.9999), `kicks == walks == drains = 6752`,
+`distinct=885`, `#83 cinezombie.big`, `truncated=0`, max wait-hold streak 1 — where the
+walker's in-position INTERRUPT delivery prints zero lines and the poisoned-skip counter
+reads zero.
+
+`MirrorIsPoisoned()` was a guard against our command processor running AHEAD of the
+CPU-side handshake and handing the guest a consumed callback (`ctr=0BADF00D`, ~2 crashes
+in 10). Parts 4-6 removed its premise by making the CP stall at the hand-off block's
+`WAIT_REG_MEM`, and the counter has read zero on every arm since — including part 6's
+brake-OFF arm, which is why the zero is not merely the brake hiding it. The walker's
+`case 0x54:` is now a counter and nothing else, because "no INTERRUPT packet reaches the
+private walker" is a claim about the redirect and a claim without a counter is an
+assumption (gotcha 162).
+
+### 3. The trap that voided three runs, and the runtime caught it
+
+**`CZ_D3D_DRAW=1 CZ_VKDRAW=1` is not the draw arm — it is the PM4 arm.** The two are
+mutually exclusive and the runtime says so, once, in a line that scrolls past:
+`[d3ddraw] CZ_D3D_DRAW and CZ_VKDRAW are mutually exclusive; CZ_D3D_DRAW DISABLED for
+this run`. Three "draw arm" runs here were PM4 runs, and they agreed with each other and
+with a control perfectly — a clean, consistent, wrong measurement. The tell was in the
+numbers: `arms=74, kicks=0, walks=0` against the real arm's `arms=12627, kicks=6752`.
+Check the arm announced itself before reading anything else off its log.
