@@ -521,11 +521,29 @@ struct TextureEntry
 // and the consumer would then untile them again, for a round trip whose only purpose is
 // to lose precision. Instead the destination address becomes the key, and a texture
 // fetch that names it is served the host image directly.
+//
+// A resolve's SOURCE is RB_COPY_CONTROL's low three bits — 0..3 name a colour target
+// and 4 names the DEPTH buffer — and 18.4% of this title's resolves are depth ones
+// (10,448 of 56,925 in B1, `tools/xtr_resolve_census.py`). They are its shadow
+// cascades and the scene depth its depth-of-field pass reads back, so a snapshot taken
+// from the colour target for those is not an approximation: it is a different picture
+// entirely, handed to a pass that then computes a circle of confusion out of it.
+// Set in a snapshot map key to mean "this is the DEPTH resolve to that address, not
+// the colour one". A guest address is above 0x1FFFFFFF nowhere in this runtime, so
+// bit 31 is free for the purpose and the key stays one integer.
+constexpr uint32_t kSnapshotDepthBit = 0x80000000u;
+
 struct Snapshot
 {
     Image image;
     uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
     uint64_t frameSeen = 0;
+    // Which buffer this snapshot was taken FROM. It is part of the identity because
+    // one guest address can be the destination of both a colour resolve and a depth
+    // one (B1's 1812F000 is: 890 depth, 852 colour), and the two need different image
+    // formats — so a change of source has to rebuild the image, exactly as a change of
+    // extent does.
+    bool fromDepth = false;
 };
 
 struct Renderer
@@ -570,7 +588,16 @@ struct Renderer
     std::map<uint64_t, ShaderMeta> shaders;
     std::map<PipelineKey, VkPipeline> pipelines;
     std::unordered_map<uint64_t, TextureEntry> textures;
-    std::unordered_map<uint32_t, Snapshot> snapshots; // by resolve destination
+    // By resolve destination, with bit 31 of the key set for a DEPTH resolve.
+    //
+    // The address alone is NOT an identity. `1439B000` is a shadow cascade's depth
+    // destination early in a frame and the tone map's colour output late in the SAME
+    // frame — the trace shows the final compose sampling it — and the capture agrees
+    // (B1's 1812F000: 890 depth resolves, 852 colour). Keyed on the address alone the
+    // two evict each other twice a frame, which is a device-wait and a fresh bindless
+    // slot each time, i.e. gotcha 192's descriptor-heap exhaustion. A fetch picks the
+    // one it meant by its own FORMAT: `k_24_8` and `k_24_8_FLOAT` are depth surfaces.
+    std::unordered_map<uint32_t, Snapshot> snapshots;
     uint32_t nextTextureSlot = 1; // slot 0 is the dummy
 
     // Per-frame vertex/index stream cache: one guest buffer copied once per frame
@@ -1419,7 +1446,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         }
     }
     {
-        auto snap = R->snapshots.find(t.address & 0x1FFFFFFF);
+        // Which snapshot of this address the fetch means, when there are two. The
+        // guest says so in the fetch constant's own format field: `k_24_8` and
+        // `k_24_8_FLOAT` are the two depth surface formats, and a pass sampling a
+        // shadow cascade or a scene depth declares one of them. Fall back to the other
+        // kind if only one exists, so a title that resolves depth to an address and
+        // reads it back with a colour format still gets its pixels rather than nothing.
+        const bool wantsDepth =
+            t.format == xenos::kFmt_24_8 || t.format == xenos::kFmt_24_8_FLOAT;
+        const uint32_t snapKey =
+            (t.address & 0x1FFFFFFF) | (wantsDepth ? kSnapshotDepthBit : 0u);
+        auto snap = R->snapshots.find(snapKey);
+        if (snap == R->snapshots.end())
+        {
+            snap = R->snapshots.find((t.address & 0x1FFFFFFF) |
+                                     (wantsDepth ? 0u : kSnapshotDepthBit));
+            if (snap != R->snapshots.end())
+                Count(wantsDepth
+                          ? "texture: depth fetch served by a COLOUR resolve snapshot"
+                          : "texture: colour fetch served by a DEPTH resolve snapshot");
+        }
         if (g_texCensus)
         {
             TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
@@ -1440,8 +1486,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         }
         if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
         {
-            Count("texture: served from a resolve snapshot");
-            const uint32_t key = t.address & 0x1FFFFFFF;
+            Count(snap->second.fromDepth
+                      ? "texture: served from a DEPTH resolve snapshot"
+                      : "texture: served from a resolve snapshot");
+            // The pass-inputs list keeps the depth bit, because "this pass sampled the
+            // scene colour" and "this pass sampled the scene DEPTH" are the two
+            // different answers the dependency graph exists to separate.
+            const uint32_t key =
+                (t.address & 0x1FFFFFFF) |
+                (snap->second.fromDepth ? kSnapshotDepthBit : 0u);
             if (std::find(R->snapshotsSampledThisPass.begin(),
                           R->snapshotsSampledThisPass.end(),
                           key) == R->snapshotsSampledThisPass.end())
@@ -3559,6 +3612,19 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     R->lastResolveDest = dest;
     Count("resolve");
 
+    // RB_COPY_CONTROL bits 0..2 — copy_src_select. 0..3 name a colour target, 4 names
+    // the DEPTH buffer. This renderer read that field nowhere until phase C part 14 and
+    // snapshotted the colour target for every resolve, which is wrong for close to a
+    // fifth of them. `CZ_VK_NO_DEPTH_RESOLVE=1` is the same-binary control arm for
+    // every claim about the change.
+    static const bool noDepthResolve = EnvOn("CZ_VK_NO_DEPTH_RESOLVE");
+    const uint32_t srcSelect = control & 7;
+    const bool fromDepth = srcSelect == 4 && !noDepthResolve;
+    if (srcSelect == 4)
+        Count("resolve: source is the DEPTH buffer");
+    else if (srcSelect != 0)
+        Count("resolve: source is a colour target other than 0");
+
     // RB_COPY_CONTROL bits 8/9: clear colour / clear depth after the copy. This is the
     // title's own clear, and honouring it is what makes a persistent EDRAM target
     // correct rather than an accumulating smear.
@@ -3573,17 +3639,33 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // CZ_VK_RESOLVE_TRACE=N starts at frame N (1 = from the beginning). The boot's
     // first frames are not the frame anyone is investigating, and 60 lines of them is
     // all a from-the-start trace ever shows.
-    if (EnvOn("CZ_VK_RESOLVE_TRACE") &&
+    //
+    // CZ_VK_RESOLVE_TRACE_PASSES=N is the budget, in PASSES. It has been in CLAUDE.md
+    // since part 12 with a stated default and was read NOWHERE in the tree until part
+    // 14 (gotcha 193, the second documented-but-absent knob in three sessions) — and
+    // the hardcoded budget it replaces guarded only the HEADER line, so the two
+    // follow-up lines printed uncapped for the rest of the run. That is the identical
+    // defect part 9's own note says it fixed by "putting the budget in passes"; the
+    // note was written and the code was not. Both halves are the point: the budget has
+    // to be in passes, and it has to cover every line a pass prints, or the trace runs
+    // out of headers while still printing thousands of orphan input lines.
+    static const int tracePasses =
+        Env("CZ_VK_RESOLVE_TRACE_PASSES")
+            ? int(strtol(Env("CZ_VK_RESOLVE_TRACE_PASSES"), nullptr, 10))
+            : 20;
+    static int passesLeft = tracePasses;
+    if (EnvOn("CZ_VK_RESOLVE_TRACE") && passesLeft > 0 &&
         R->frame >= uint64_t(strtoul(Env("CZ_VK_RESOLVE_TRACE"), nullptr, 10)))
     {
-        static int left = 60;
-        if (left-- > 0)
+        --passesLeft;
+        {
             fprintf(stderr,
-                    "[vkresolve] frame=%llu dest=%08X destPitch=%u destHeight=%u "
+                    "[vkresolve] frame=%llu dest=%08X src=%s destPitch=%u destHeight=%u "
                     "surfacePitch=%u scissor=%u,%u..%u,%u win=%u,%u..%u,%u "
                     "winoff=%08X ctl=%08X info=%08X "
                     "front=%08X rtFmt=%u draws=%llu verts=%llu\n",
                     (unsigned long long)R->frame, dest,
+                    srcSelect == 4 ? "DEPTH" : "colour",
                     regs[xenos::kRbCopyDestPitch] & 0x3FFF,
                     (regs[xenos::kRbCopyDestPitch] >> 16) & 0x3FFF,
                     regs[xenos::kRbSurfaceInfo] & 0x3FFF,
@@ -3600,12 +3682,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     (regs[xenos::kRbColorInfo] >> 16) & 0xF,
                     (unsigned long long)R->drawsThisPass,
                     (unsigned long long)R->verticesThisPass);
+        }
         // The pass's INPUTS, which is what says whether a compose is reading the scene.
         fprintf(stderr, "[vkresolve]     sampled snapshots:");
         if (R->snapshotsSampledThisPass.empty())
             fprintf(stderr, " (none)");
         for (uint32_t a : R->snapshotsSampledThisPass)
-            fprintf(stderr, " %08X", a);
+            fprintf(stderr, " %08X%s", a & 0x1FFFFFFF,
+                    (a & kSnapshotDepthBit) ? "(depth)" : "");
         fprintf(stderr, "   guest textures uploaded: %llu\n",
                 (unsigned long long)R->guestTexturesThisPass);
         fprintf(stderr, "[vkresolve]     first draws:");
@@ -3657,7 +3741,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     const uint32_t copyH = wy1 > wy ? std::min(wy1, h) - copyY : h - copyY;
     if (w && h && copyW && copyH)
     {
-        const uint32_t key = baseKey;
+        const uint32_t key = baseKey | (fromDepth ? kSnapshotDepthBit : 0u);
         auto it = R->snapshots.find(key);
         // A destination whose extent changed is a different surface reusing an
         // address, so the image is rebuilt rather than partially overwritten — a
@@ -3678,11 +3762,27 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         {
             Snapshot s;
             s.slot = R->nextTextureSlot++;
-            if (CreateImage(s.image, w, h, VK_FORMAT_R8G8B8A8_UNORM,
+            s.fromDepth = fromDepth;
+            // A depth snapshot keeps the EDRAM depth buffer's own format, because
+            // vkCmdCopyImage is only defined between identical depth formats — there
+            // is no copy from a depth image into a colour one. It is viewed through
+            // the DEPTH aspect with every component reading that value, so a shader
+            // sampling it gets the 24-bit depth in .r (which is what a Xenos `tfetch`
+            // of a `k_24_8` surface returns) and a defined value in .gba rather than
+            // Vulkan's undefined non-red components of a depth view.
+            const VkComponentMapping depthSwizzle{
+                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE
+            };
+            if (CreateImage(s.image, w, h,
+                            fromDepth ? R->depth.format : VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                 VK_IMAGE_USAGE_SAMPLED_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT))
+                            fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                      : VK_IMAGE_ASPECT_COLOR_BIT,
+                            VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                            fromDepth ? depthSwizzle : VkComponentMapping{}))
             {
                 VkDescriptorImageInfo ii{};
                 ii.imageView = s.image.view;
@@ -3706,34 +3806,45 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         }
         if (it != R->snapshots.end())
         {
+            // The source EDRAM buffer, and the aspect that goes with it. A depth
+            // resolve copies out of R->depth: the whole point of reading
+            // copy_src_select is that these two are different pictures.
+            Image& src = fromDepth ? R->depth : R->color;
+            const VkImageAspectFlags aspect =
+                fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             BeginFrame();
             EndRendering();
-            Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_IMAGE_ASPECT_COLOR_BIT);
+            // The EDRAM depth image is tracked with both aspects everywhere else, so
+            // its barriers carry both here too; the snapshot has only depth.
+            Barrier(R->cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    fromDepth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+                              : VK_IMAGE_ASPECT_COLOR_BIT);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_ASPECT_COLOR_BIT);
+                    aspect);
             // Copy the TILE, at its own position in both images. Source and destination
             // offsets are the same because our EDRAM is full-screen-sized and the
             // window offset is deliberately not applied to the geometry (see the
             // scissor note in DoDraw), so a tile sits at its true screen position in
             // both.
             VkImageCopy copy{};
-            copy.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.srcSubresource = { aspect, 0, 0, 1 };
             copy.srcOffset = { int32_t(copyX), int32_t(copyY), 0 };
-            copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            copy.dstSubresource = { aspect, 0, 0, 1 };
             copy.dstOffset = { int32_t(copyX), int32_t(copyY), 0 };
             copy.extent = { copyW, copyH, 1 };
-            vkCmdCopyImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
             // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_IMAGE_ASPECT_COLOR_BIT);
+                    aspect);
             it->second.frameSeen = R->frame;
+            Count(fromDepth ? "resolve: snapshot taken from the DEPTH buffer"
+                            : "resolve: snapshot taken from the colour buffer");
 
-            if (R->frontBuffer && key == (R->frontBuffer & 0x1FFFFFFF))
+            if (!fromDepth && R->frontBuffer && key == (R->frontBuffer & 0x1FFFFFFF))
             {
                 R->frontWidth = w;
                 R->frontHeight = h;
@@ -3811,14 +3922,36 @@ bool InitCommon()
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT) ||
+        // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
+        // buffer rather than the colour one (its shadow cascades and the scene depth
+        // its depth-of-field pass reads back) — see DoResolve.
         !CreateImage(R->depth, R->targetWidth, R->targetHeight,
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
     {
         fprintf(stderr, "[vk] render target creation FAILED\n");
         return false;
+    }
+
+    // A depth snapshot is sampled through the same bindless heap and the same single
+    // linear sampler as every other texture, so the device has to be able to filter
+    // that format. Checked rather than assumed: if it cannot, the picture would be
+    // undefined rather than wrong, and silently — say so once, loudly.
+    {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(R->physical, R->depth.format, &fp);
+        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+            fprintf(stderr, "[vk] WARNING: %u is not sampleable on this device — "
+                            "depth resolves will not be readable by the guest\n",
+                    unsigned(R->depth.format));
+        else if (!(fp.optimalTilingFeatures &
+                   VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+            fprintf(stderr, "[vk] NOTE: depth format %u has no linear filtering; "
+                            "depth snapshots are sampled with the linear sampler\n",
+                    unsigned(R->depth.format));
     }
 
     // 128 MB of per-frame arena. The frontend's streams are small; gameplay is the
@@ -4106,6 +4239,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     uint32_t surfaceW = 0, surfaceH = 0;
     if (statsFile && statsSurface)
     {
+        // No depth bit in the key, deliberately: "coverage" and "mean luminance" do not
+        // mean anything over a depth surface, and the snapshot map's key carries the
+        // distinction so the metric cannot accidentally read one through the wrong
+        // image aspect.
         auto sit = R->snapshots.find(statsSurface);
         if (sit != R->snapshots.end())
         {
@@ -4246,26 +4383,65 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             const size_t n = size_t(snap.image.width) * snap.image.height * 4;
             if (n > R->readback.size)
                 continue;
+            const VkImageAspectFlags aspect = snap.fromDepth
+                                                  ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                  : VK_IMAGE_ASPECT_COLOR_BIT;
             RunImmediate([&](VkCommandBuffer cb) {
                 Image& img = const_cast<Image&>(snap.image);
-                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        VK_IMAGE_ASPECT_COLOR_BIT);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aspect);
                 VkBufferImageCopy c{};
-                c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                c.imageSubresource = { aspect, 0, 0, 1 };
                 c.imageExtent = { img.width, img.height, 1 };
                 vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                        R->readback.buffer, 1, &c);
-                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_IMAGE_ASPECT_COLOR_BIT);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
             });
             char path[512];
-            snprintf(path, sizeof path, "%s/snap_%08X_%ux%u.ppm", snapDir, dest,
-                     snap.image.width, snap.image.height);
+            snprintf(path, sizeof path, "%s/snap_%08X_%ux%u%s.ppm", snapDir,
+                     dest & 0x1FFFFFFF, snap.image.width, snap.image.height,
+                     snap.fromDepth ? "_depth" : "");
             if (FILE* f = fopen(path, "wb"))
             {
                 fprintf(f, "P6\n%u %u\n255\n", snap.image.width, snap.image.height);
-                for (size_t i = 0; i < n; i += 4)
-                    fwrite(R->readback.mapped + i, 1, 3, f);
+                if (snap.fromDepth)
+                {
+                    // The depth aspect of D24_UNORM_S8_UINT comes back one 32-bit word
+                    // per texel with the value in the low 24 bits. A perspective depth
+                    // buffer's values all sit within a hair of 1.0, so a linear grey
+                    // would be a white rectangle whatever it contained — the image is
+                    // therefore stretched between the surface's OWN min and max, and
+                    // the filename says `_depth` so nobody reads it as a colour
+                    // surface. The range is printed with it, because the stretch is a
+                    // display choice and the numbers are the measurement.
+                    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+                    for (size_t i = 0; i < n; i += 4)
+                    {
+                        uint32_t v;
+                        memcpy(&v, R->readback.mapped + i, 4);
+                        v &= 0xFFFFFFu;
+                        lo = std::min(lo, v);
+                        hi = std::max(hi, v);
+                    }
+                    const double span = hi > lo ? double(hi - lo) : 1.0;
+                    for (size_t i = 0; i < n; i += 4)
+                    {
+                        uint32_t v;
+                        memcpy(&v, R->readback.mapped + i, 4);
+                        v &= 0xFFFFFFu;
+                        const uint8_t g = uint8_t(255.0 * double(v - lo) / span);
+                        const uint8_t rgb[3] = { g, g, g };
+                        fwrite(rgb, 1, 3, f);
+                    }
+                    fprintf(stderr, "[vk]   %08X is a DEPTH snapshot, 24-bit range "
+                                    "%u..%u (%.6f..%.6f)\n",
+                            dest & 0x1FFFFFFF, lo, hi, double(lo) / 16777215.0,
+                            double(hi) / 16777215.0);
+                }
+                else
+                {
+                    for (size_t i = 0; i < n; i += 4)
+                        fwrite(R->readback.mapped + i, 1, 3, f);
+                }
                 fclose(f);
             }
         }
