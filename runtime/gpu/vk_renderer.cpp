@@ -619,6 +619,11 @@ struct Renderer
     // can name the surface each draw sampled (gotcha 140).
     uint32_t lastTexAddr = 0;
     uint32_t lastTexSlot = 0;
+    // The first bound texture's DIMENSIONS, so a probe printing normalized texture
+    // coordinates can state them in texels. A UV is meaningless without the size it is
+    // normalized by — that is the whole question when two atlases differ only in size.
+    uint32_t lastTexW = 0;
+    uint32_t lastTexH = 0;
     uint32_t targetWidth = 1280, targetHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
@@ -2550,8 +2555,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const uint32_t slot = UploadTexture(base, regs, constIdx);
             if (!R->lastTexAddr)
             {
-                R->lastTexAddr = xenos::DecodeTextureFetch(regs, constIdx).address;
+                const xenos::TextureFetch t0 = xenos::DecodeTextureFetch(regs, constIdx);
+                R->lastTexAddr = t0.address;
                 R->lastTexSlot = slot;
+                R->lastTexW = t0.width;
+                R->lastTexH = t0.height;
             }
             reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
@@ -3049,6 +3057,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // float attribute — which is all of them in this title. A stream carrying packed
     // attributes would need per-format arithmetic; the fallback copies r0's bytes and
     // COUNTS itself rather than being silently wrong.
+    // VGT_INDX_OFFSET — the base vertex every index of this draw is measured from.
+    //
+    // A draw packet carries no base-vertex field, so this register is the ONLY way a
+    // title sub-allocates one vertex buffer between draws — and this one does exactly
+    // that for its whole UI. Its save-slot screen fills a single ~400 KB dynamic buffer
+    // per frame and issues 115 draws whose fetch constant never changes address: only
+    // the offset moves, by precisely the previous draw's index count (0, 16, 20, 68,
+    // 84, 88, 136, ...). Ignoring it does not drop anything or fail anywhere — every
+    // draw renders the FIRST run's vertices, so one text run comes out correct and
+    // every other one is that same run's glyphs sampled through whichever atlas the
+    // draw happened to bind. That reads as a font or texture-coordinate bug, which is
+    // where two sessions looked, and the atlas and the UVs are both perfect.
+    //
+    // CZ_VK_NO_INDX_OFFSET=1 is the same-binary control arm: the pre-fix renderer.
+    static const bool noIndxOffset = EnvOn("CZ_VK_NO_INDX_OFFSET");
+    const int32_t indxOffset =
+        noIndxOffset ? 0 : int32_t(regs[xenos::kVgtIndxOffset] & 0xFFFFFF);
+
     static const bool rectHalf = EnvOn("CZ_VK_RECT_HALF");
     const bool rectSynth =
         expand == Expansion::RectangleList && draw.indexCount == 3 && !rectHalf;
@@ -3056,9 +3082,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (rectSynth)
     {
         const uint8_t* isrc = draw.indexed ? base + draw.indexVa : nullptr;
+        // The offset applies here too, and it has to be folded in RATHER than passed to
+        // the draw call: this path resolves the three real corners into a private
+        // four-vertex stream, so by draw time the indices are 0..3 of a buffer that has
+        // no base to offset from.
         for (uint32_t k = 0; k < 3; k++)
             rectCorner[k] =
-                ReadIndex(isrc, k, draw.index32, draw.indexEndian, draw.indexed);
+                uint32_t(int32_t(ReadIndex(isrc, k, draw.index32, draw.indexEndian,
+                                           draw.indexed)) +
+                         indxOffset);
     }
 
     uint32_t binding = 0;
@@ -3075,6 +3107,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Count("draw: vertex stream outside the physical arena");
             streamsOk = false;
             break;
+        }
+        // The whole fetch buffer is uploaded, so a base vertex stays inside it — but
+        // only if the guest's own numbers say it does. A draw whose offset plus count
+        // runs off the end would read another draw's vertices (or, past the arena, walk
+        // off a Vulkan buffer), and that has to be LOUD rather than quietly clamped
+        // back to zero: clamping is the defect this offset exists to fix, reintroduced
+        // wearing a safety check's name.
+        if (indxOffset && a.strideDwords)
+        {
+            const uint64_t need =
+                (uint64_t(uint32_t(indxOffset) + draw.indexCount) * a.strideDwords) * 4;
+            if (need > bytes)
+            {
+                Count("draw: VGT_INDX_OFFSET runs past the vertex stream");
+                streamsOk = false;
+                break;
+            }
         }
         const VkDeviceSize at = UploadStream(base, va, bytes, vf.endian);
         if (at == VkDeviceSize(-1))
@@ -3151,9 +3200,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             R->frame >= minFrame && left-- > 0)
         {
             const uint32_t* c = regs + xenos::kAluConstantBase;
-            fprintf(stderr, "[vkprobe] vs=%016llx prim=%u indexCount=%u indexed=%d\n",
-                    (unsigned long long)vsBind.hash, draw.primType, draw.indexCount,
-                    draw.indexed ? 1 : 0);
+            // The bound texture belongs on the header line. Two draws through one shader
+            // pair can differ ONLY in which texture they sample — that is exactly what
+            // CZ_VK_ONLY_TEX exists for — and a probe that does not name it produces two
+            // transcripts nobody can tell apart afterwards.
+            fprintf(stderr,
+                    "[vkprobe] frame=%llu vs=%016llx prim=%u indexCount=%u indexed=%d "
+                    "tex=%08X %ux%u VGT_INDX_OFFSET=%d min=%u max=%u\n",
+                    (unsigned long long)R->frame, (unsigned long long)vsBind.hash,
+                    draw.primType, draw.indexCount, draw.indexed ? 1 : 0, R->lastTexAddr,
+                    R->lastTexW, R->lastTexH, int32_t(regs[xenos::kVgtIndxOffset]),
+                    regs[xenos::kVgtMinVtxIndx], regs[xenos::kVgtMaxVtxIndx]);
             fprintf(stderr,
                     "[vkprobe]   vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
                     "%.1f,%.1f %.1fx%.1f  scissor %d,%d %ux%u  posScale=%.5f,%.5f "
@@ -3267,20 +3324,45 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     const uint32_t sva = PhysToVa(vf.address);
                     if (!GuestRangeOk(sva, uint64_t(vf.sizeDwords) * 4))
                         continue;
+                    // Every COMPONENT of the attribute, and as a float when the format
+                    // is one. The first version printed a single dword per vertex as
+                    // hex, which for a float2 texture coordinate shows only `u` — so
+                    // two draws sampling different atlases produced transcripts that
+                    // agreed on every printed value and disagreed on the one that
+                    // mattered. A texture coordinate is the pair or it is nothing.
+                    const uint32_t comps = VertexFormatDwords(a.format);
+                    const bool isF32 = a.format == 36 || a.format == 37 ||
+                                       a.format == 57 || a.format == 38;
                     fprintf(stderr, "[vkprobe]   loc%-3d fmt=%2u int=%u off=%u:",
                             a.location, a.format, a.isInteger, a.offsetDwords);
-                    for (uint32_t v = 0; v < 3; v++)
+                    // CZ_VK_DRAW_PROBE_VERTS=N — how many vertices to print (default 4).
+                    // Four is one quad, i.e. ONE glyph of a text run, and one glyph
+                    // cannot show whether a run's cells advance sensibly across the
+                    // sheet. That is the actual question for a font atlas.
+                    static const uint32_t probeVerts =
+                        Env("CZ_VK_DRAW_PROBE_VERTS")
+                            ? uint32_t(atoi(Env("CZ_VK_DRAW_PROBE_VERTS")))
+                            : 4;
+                    for (uint32_t v = 0; v < probeVerts; v++)
                     {
                         const uint64_t dw =
                             uint64_t(v) * a.strideDwords + a.offsetDwords;
-                        if (dw >= vf.sizeDwords)
+                        if (dw + comps > vf.sizeDwords)
                             break;
-                        uint32_t raw;
-                        CopySwapped(reinterpret_cast<uint8_t*>(&raw),
-                                    base + sva + dw * 4, 4, vf.endian);
-                        fprintf(stderr, "  %08X[%u,%u,%u,%u]", raw, raw & 0xFF,
-                                (raw >> 8) & 0xFF, (raw >> 16) & 0xFF, raw >> 24);
+                        uint32_t raw[4] = {};
+                        CopySwapped(reinterpret_cast<uint8_t*>(raw), base + sva + dw * 4,
+                                    comps * 4, vf.endian);
+                        fprintf(stderr, "  v%u(", v);
+                        for (uint32_t k = 0; k < comps; k++)
+                        {
+                            if (isF32)
+                                fprintf(stderr, "%s%.5f", k ? "," : "", F32(raw[k]));
+                            else
+                                fprintf(stderr, "%s%08X", k ? "," : "", raw[k]);
+                        }
+                        fprintf(stderr, ")");
                     }
+                    fprintf(stderr, "\n");
                     // For an 8-bit INTEGER attribute, scan the whole stream and report
                     // the range of each component. On a skinned mesh this is the bone
                     // index, and the range decides whether `vc(8 + a0)` stays inside
@@ -3364,7 +3446,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (at == VkDeviceSize(-1))
             return;
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, 0, 0);
+        // rectSynth already folded the base vertex into its three corners, and its
+        // expanded indices name a private four-vertex stream — so offsetting again
+        // would apply it twice.
+        vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset, 0);
     }
     else if (draw.indexed)
     {
@@ -3399,12 +3484,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             return;
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at,
                              draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
-        vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, 0, 0);
+        vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
         Count("draw: indexed");
     }
     else
     {
-        vkCmdDraw(R->cmd, draw.indexCount, 1, 0, 0);
+        vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
         Count("draw: auto-index");
     }
     // Fingerprint the draw. Order matters and is included by construction, because the
@@ -3418,6 +3503,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     R->drawFingerprint = mix(R->drawFingerprint, psBind.hash);
     R->drawFingerprint = mix(R->drawFingerprint, (uint64_t(draw.primType) << 32) |
                                                      draw.indexCount);
+    if (indxOffset)
+        Count("draw: VGT_INDX_OFFSET applied (nonzero base vertex)");
     R->verticesThisFrame += draw.indexCount;
     if (R->drawsThisFrame == 0)
     {
