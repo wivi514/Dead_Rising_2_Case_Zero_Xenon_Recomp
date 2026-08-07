@@ -1338,3 +1338,133 @@ one sample per frame (gotcha 133); every picture claim through `frame_signature.
 an operator's eyes; the kernel gates run, not assumed. The known boot crash
 (`XexGetModuleSection('Digest')` → the title's own assert, `deadrising/asserts.php`) is
 orthogonal to the pivot and stays parked by the operator's explicit call.
+
+---
+
+## Phase C part 10 (2026-08-07, session 22): the right tile is not a command-processor defect
+
+Part 9 handed over one open item — the scene's right tile executes 23 draws against the
+left tile's 931, because ME bin predication discards a third of this title's draw
+packets — with an explicit instruction: **replay the rule over capture B1 before
+theorising, because it needs no emulator.** That was the right instruction and it
+retired every hypothesis on the list.
+
+### 1. The rule is right. Hardware discards 0.3%; we discard 33%.
+
+`tools/xtr_bin_predication.py` replays SET_BIN_MASK/SELECT and the ME's
+`(header & 1) && (mask & select) == 0` over a `.xtr`. It exists because our command
+processor is the suspect in this question and therefore cannot be its own oracle — and
+because Xenia writes a `PacketStart` for every packet *before* it evaluates predication,
+so the capture contains the skipped packets and the rule can simply be replayed.
+
+Over all **24,527,474** packets of B1:
+
+| | draw packets | discarded |
+|---|---|---|
+| B1 (hardware) | 1,643,219 | **5,240 — 0.3%** |
+| ours, one 170 s boot | 3,644,332 | **1,195,021 — 33%** |
+
+and in the capture both tiles are offered **exactly 575,744** draws and each keeps
+**573,124 — 99.5%**. Perfectly symmetric. So part 9's three named suspects — the 64-bit
+LO/HI assembly, the meaning of bit 31, and a mask read one draw late — are all dead, and
+so is "this title's geometry really is almost all in bins 0/1".
+
+Any port with a GPU capture has this oracle. It is thirty minutes of work and it is the
+difference between measuring the title and measuring yourself.
+
+### 2. Where it IS wrong: one number, and it is a placeholder
+
+Our runtime now prints the same pair table (`CZ_PM4_BIN_CENSUS=1`, on the ring trace
+beside `predicated out=`):
+
+| bin select | hardware | ours |
+|---|---|---|
+| `80000003` (left tile) | mask `FFFFFFFF` x570,504, all kept | `FFFFFFFF` x1,290,325, all kept |
+| `0000000C` (right tile) | mask **`8000000F`** x570,504, all kept | **`80000000`** x893,687 SKIPPED |
+| | | **`80000003`** x291,336 SKIPPED |
+| | | `8000000F` x100,325, kept |
+
+The left tile matches hardware's shape exactly; the right tile carries two mask values
+hardware never has standing at a draw.
+
+`CZ_PM4_BIN_TRACE` now logs the mask WRITES in stream order, not just the draws
+(`CZ_PM4_BIN_TRACE_ARMMASK=8000000F` holds the budget until the mature tiled era; the
+prologue is packet-identical on both sides). Same bracket, one different number:
+
+```
+hardware   MASK_LO 8000000F ; DRAW -> run ; MASK_LO 80000000 ; ... ; MASK_LO 8000000F ; DRAW -> run
+ours       MASK_LO 80000000 ; MASK_LO 80000000 ; DRAW -> SKIP
+```
+
+`0x80000000` is a **literal** — the three UP-draw emitters build it with
+`lis rX, -0x8000` and store it straight after the `0xC0006000` header (82842A18,
+82842DE0, 8284322C). The real mask is patched in afterwards, in place, by the D3D
+worker:
+
+```
+sub_8284B568 (token interpreter) -> sub_8284B228 -> sub_8284A900 -> sub_8284A7F8
+```
+
+`sub_8284A7F8` is the only rect-to-bin-mask computation in the 8.8 MB image: a list of
+16-byte `{record*, x0, x1-1, y0, y1-1}` entries (the rect is in units of 8 pixels, hence
+its `<<3`), intersected against the tile rects at `tileInfo+8`, accumulating
+`(acc << 2) | 3` per overlapping tile, ORing in bit 31, stored at `record+8` — exactly
+the dword the emitter left as `0x80000000`.
+
+And the patch is gated on **bit 31 of `[obj+0x164]`**, with the token consumed either
+way, so a clear bit is silent. Measured on the PM4 control arm, one 170 s boot,
+`CZ_BINMASK_PROBE=1`: the dispatcher ran **once** with that word at `00000000`, the
+patch pass ran **once** and patched **zero** records, while 1,040,207 draws executed
+carrying the placeholder. Consistent with part 7's independent finding that the D3D
+worker is never used at all for the whole healthy era.
+
+**Open, and stated as open:** the same boot has 97,115 draws carrying `8000000F` and
+239,063 carrying `80000003` at the right tile, and with the patch pass having touched
+zero records those came from somewhere this session did not find. The placeholder story
+explains the 1,040,207 and is not yet shown to explain the rest.
+
+### 3. Item 2: the draw arm reaches the healthy shape — on MOST runs, and it is still bimodal
+
+Part 9 could not re-gate the phase C draw arm and said so. Re-gated now, and the first
+run was startling: the arm was not merely unbroken, it was in the healthy chain shape
+part 7 defined and this port had never reached. **The first run was also very nearly a
+wrong conclusion**, because part 6 recorded this arm as BIMODAL (gotcha 159) and one run
+of a bimodal arm is a coin flip. Six runs, 170 s each:
+
+| | part 8 | healthy runs (RATE BELOW) | sick runs |
+|---|---|---|---|
+| deepest file | #60 `models\zombies.big` | **#83 `skeleton\cinezombie.big`** | #60 |
+| `ints/arms` | 12 : 856 | **1.000** | 241 : 207,599 (arms FROZEN) |
+| `isr/ints` | — | 1.000 | 1.000 |
+| `walks == kicks == drains` | — | yes | no (206,811 / 206,733) |
+| `distinct` token buffers | 2 | **523-831** | **6** |
+| engine counter `dev+0x2B04` | -552 | **0** | — |
+| frames (XE_SWAP) | — | 1,662-3,363 | 812 |
+
+RATE_PLACEHOLDER
+
+A1 is an exact 84-prefix and A5 is exit 0 with 0 real windows on the healthy runs — the
+port's best draw-arm kernel gates. `distinct` is the load-bearing column (gotcha 162):
+523-831 different token buffers is a pipeline, 6 is a replay, and it is the same
+frozen-`arms` signature part 7 diagnosed at the first tiled frame.
+
+Nothing in this session caused the improvement — the only runtime change here is the
+predication refactor (no behavioural change) and probes that are off by default. It is
+parts 8 and 9 arriving on the arm that was never re-measured, which is exactly why the
+kickoff listed it as item 2 and why gotcha 67 exists. What is NOT fixed is part 7's
+stall: it still happens, just less often.
+
+NB `CZ_D3D_DRAW` and `CZ_VKDRAW` are mutually exclusive and the runtime says so loudly
+on stderr; a draw-arm command line carrying both silently runs the PM4 arm instead. One
+run was wasted on that before the line was read.
+
+### 4. Item 3: NOT done, deliberately
+
+The kickoff proposed deleting the walker's dead `case 0x54:` INTERRUPT block and
+`MirrorIsPoisoned()`, on the grounds that both record zero across every arm. That
+evidence was gathered on a draw arm that stalled at `#60`. The arm now runs to `#83`
+with a completely different chain shape, so the regime those zeros were measured in no
+longer exists, and both are guards against a crash that was real. Re-measure on the
+current arm before deleting; the kickoff's own condition — "a session that is not also
+changing the routing" — is not met by a session in which the routing's behaviour changed
+this much, even though it changed for free.

@@ -1129,6 +1129,45 @@ From phase C part 9 (the picture — four defects between the scene and the scre
      arm's job is as much to exonerate as to convict. Corollary: a session that only
      runs one arm cannot see a regression in the other, and this one nearly shipped it.
 
+From phase C part 10 (the right tile, and the oracle that was sitting in the capture):
+
+178. **When your own subsystem is the suspect, it cannot be its own oracle — but the
+     capture can replay YOUR RULE.** Three phases treated "a third of this title's draw
+     packets are discarded by bin predication" as a fact to explain. Replaying the same
+     `(header & 1) && (mask & select) == 0` test over B1 took an hour to write and said
+     hardware discards **0.3%** against our 33%, with both tiles offered exactly 575,744
+     draws and each keeping 99.5%. That killed four ranked hypotheses at once. The
+     enabling detail is general: Xenia writes a `PacketStart` for every packet BEFORE it
+     evaluates predication, so the capture contains the packets hardware skipped, and any
+     rule your command processor applies can be replayed against it.
+179. **A value written as a LITERAL and patched later is indistinguishable from a
+     computed one until you look for its writer.** `0x80000000` stood at 1,040,207 of our
+     right-tile draws and reads perfectly plausibly as "the guest decided this draw
+     touches no tile". It is a placeholder: three draw emitters store it as a constant
+     and a fix-up pass in the D3D worker overwrites it in place with the real
+     rect-vs-tile intersection. The distinguishing question is not "what computed this
+     value" but "is there any code that computes this KIND of value at all" — here
+     exactly one function in 8.8 MB, and it had run once and patched nothing.
+180. **Trace the WRITES, not just the reads, and hold the budget until the era that
+     matters.** A draw-only bin trace can only restate the symptom. The write trace made
+     the two streams comparable line by line — and the first 300,000 packets of both are
+     packet-IDENTICAL, so a trace armed at the start would have shown perfect agreement
+     and proved nothing. `CZ_PM4_BIN_TRACE_ARMMASK` exists because gotcha 139's rule
+     (bound a probe by the era, not by the count) applies to stream traces too.
+181. **An arm nobody has re-measured is where last session's fixes are hiding.** Part 9
+     fixed four renderer defects on the PM4 control arm and could not re-gate the phase C
+     draw arm. Re-gated with zero new changes, that arm went from `#60` and
+     `ints/arms = 12:856` to `#83`, `1.000`, `distinct=831`, engine counter 0, and an
+     exact 84-prefix on A1 — the healthy shape part 7 defined and the port had never
+     reached. Gotcha 67 says an implemented import that never ran is a prediction; so is
+     a fix that has only been measured on one arm.
+182. **A "delete this dead code" recommendation expires when the code's regime
+     changes.** The walker's INTERRUPT block and `MirrorIsPoisoned()` recorded zero on
+     every arm — measured on a draw arm that stalled at `#60`. The arm now runs to `#83`
+     with a completely different chain shape, so those zeros describe a machine that no
+     longer exists, and both are guards against a crash that was real. Gotcha 13's shelf
+     life, pointed at a deletion rather than a finding.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1463,6 +1502,25 @@ CZ_PM4_BIN_TRACE=N  the ME predication inputs for the first N draw packets: the 
                    discarded by them, so a tile that renders almost nothing is either a
                    tile the guest had nothing for or a comparison we get wrong — and
                    only the values say which (phase5-notes §6v)
+CZ_PM4_BIN_TRACE_ARM=hex / CZ_PM4_BIN_TRACE_ARMMASK=hex  hold the bin trace's budget
+                   until the bin SELECT (or MASK) first takes that value. Not a
+                   refinement: the first 300,000 packets of our stream and B1's are
+                   packet-IDENTICAL, so a trace armed at the start shows perfect
+                   agreement and proves nothing. `ARMMASK=8000000F` lands in the mature
+                   tiled era, which is where the two diverge
+CZ_PM4_BIN_CENSUS=1  the whole-run (bin mask, bin select) -> offered/skipped table,
+                   printed by the ring trace. Deliberately the SAME table
+                   tools/xtr_bin_predication.py prints for a capture, because our
+                   command processor is the suspect in every question about
+                   predication and cannot be its own oracle. Hardware discards 0.3% of
+                   draw packets; we discard 33%, all of it one mask value at the right
+                   tile (phase5-notes §6w)
+CZ_BINMASK_PROBE=1 the guest side of that: the bin-mask setter's caller census, the
+                   rect-to-bin-mask PATCH pass (sub_8284A7F8) with a histogram of what
+                   it actually wrote — read BACK out of the records rather than
+                   recomputed, so the probe cannot merely agree with itself — and the
+                   `[obj+0x164]` bit-31 gate above it, which is what decides whether the
+                   patch runs at all
 CZ_PM4_NO_PREDICATION=1  execute predicated packets anyway. An ARM, and a destructive
                    one: running a packet hardware skipped puts one tile's geometry in
                    another tile's pass and corrupts the state stream with it (a boot
@@ -1781,6 +1839,15 @@ python3 tools/xtr_determinism.py \
     "Xenia logs/gpu_B1b_boot_repeat/58410A8D_stream.xtr" --labels B1 B1b
 ```
 `--verify` is the only check in the census that *can* fail — always pass it.
+
+Replay the ME's bin-predication rule over a capture. **This is the oracle for any claim
+about what our command processor discards**, and it needs no emulator: Xenia records a
+`PacketStart` for every packet BEFORE evaluating predication, so the capture contains
+the packets hardware skipped. Compare its pair table against `CZ_PM4_BIN_CENSUS=1`'s —
+hardware discards **0.3%** of this title's draw packets and we discard 33% (gotcha 178):
+```
+python3 tools/xtr_bin_predication.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr" --per-select
+```
 
 Check the command processor against the boundaries hardware itself used. The first
 covers each packet's LENGTH (24.5 M packets); the second covers a WALK — every indirect

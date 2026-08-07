@@ -1026,6 +1026,117 @@ another tile's pass and corrupts the state stream with it. It is there so that "
 pass had 23 draws" and "this pass had 900 and 877 were predicated away" stop being the
 same picture.
 
+## 6w. THE RIGHT TILE: the RULE is right, the MASK is an UNPATCHED PLACEHOLDER
+
+Session 22 (phase C part 10). §6v ended with a check to run and no emulator needed:
+replay the predication rule over capture B1 and count how many draws survive under each
+bin select. Done — `tools/xtr_bin_predication.py` — and the answer retires every
+hypothesis §6v listed.
+
+### The capture's answer: hardware discards 0.3%, we discard 33%
+
+Over all **24,527,474** packets of B1, replaying SET_BIN_MASK/SELECT and the ME's
+`(header & 1) && (mask & select) == 0` exactly as `gpu/pm4.cpp` performs it:
+
+| | draw packets | discarded by the bin rule |
+|---|---|---|
+| **B1 (hardware)** | 1,643,219 | **5,240 — 0.3%** |
+| ours, one 170 s boot | 3,644,332 | **1,195,021 — 33%** |
+
+and in the capture the two tiles are offered **exactly 575,744 draws each** and each
+keeps **573,124 — 99.5%**, perfectly symmetric. So the rule is not wrong, the 64-bit
+LO/HI assembly is not wrong, bit 31 is not a special always-pass, and the ordering is
+not off by a draw. All four of §6v's candidates are dead.
+
+The tool is worth keeping for the general reason: our command processor is the suspect,
+so it cannot be its own oracle, and a Xenia capture records a `PacketStart` for every
+packet *before* predication is evaluated — so the skipped packets are in there and the
+rule can simply be replayed. Any title with a capture has this oracle available.
+
+### Where it is wrong: the pair table
+
+Our runtime now prints the same table (`CZ_PM4_BIN_CENSUS=1`, on the ring trace next to
+`predicated out=`). Side by side:
+
+| bin select | hardware | ours |
+|---|---|---|
+| `80000003` (left tile) | mask `FFFFFFFF` x570,504, all kept | mask `FFFFFFFF` x1,290,325, all kept |
+| `0000000C` (right tile) | mask **`8000000F`** x570,504, all kept | mask **`80000000`** x893,687 **SKIPPED** |
+| | | mask **`80000003`** x291,336 **SKIPPED** |
+| | | mask `8000000F` x100,325, kept |
+
+The left tile matches hardware in shape exactly. The right tile does not, and the whole
+difference is two mask values hardware never has standing at a draw.
+
+### `80000000` is not a computed answer — it is the placeholder
+
+`CZ_PM4_BIN_TRACE` now logs the mask WRITES in stream order, not just the draws, because
+"the wrong value" is a question about which writes landed. `CZ_PM4_BIN_TRACE_ARMMASK=8000000F`
+holds the budget until the mature tiled era — the prologue is packet-identical on both
+sides and says nothing, which is itself worth knowing. Over the same era:
+
+```
+hardware   MASK_LO 8000000F ; DRAW -> run ; MASK_LO 80000000 ; ... ; MASK_LO 8000000F ; DRAW -> run
+ours       MASK_LO 80000000 ; MASK_LO 80000000 ; DRAW -> SKIP
+```
+
+Same bracket, same structure, one different number. And `0x80000000` is a **literal**:
+the three UP-draw emitters build it with `lis rX, -0x8000` and store it straight after
+the `0xC0006000` header (82842A18, 82842DE0, 8284322C).
+
+The real mask is patched in afterwards, **in place**, by the D3D worker:
+
+```
+sub_8284B568 (token interpreter) -> sub_8284B228 (this stream's dispatcher)
+    -> sub_8284A900 -> sub_8284A7F8
+```
+
+`sub_8284A7F8` is the only rect-to-bin-mask computation in the 8.8 MB image. It walks a
+list of 16-byte `{record*, x0, x1-1, y0, y1-1}` entries — the rect is in units of 8
+pixels, hence its `<<3` — intersects each against the tile rects at `tileInfo+8`,
+accumulates `(acc << 2) | 3` per overlapping tile, ORs in bit 31, and stores the result
+at `record+8`: exactly the dword the emitter left as `0x80000000`. `8000000F` is what
+that computation returns for "this draw touches all four bins".
+
+### And the patch is behind a gate that is closed
+
+`sub_8284B228`'s case for that token is
+
+```
+lwz     r11, 0x164(r30)
+rlwinm. r11, r11, 0, 0, 0     ; bit 31
+beq     skip                  ; clear -> the patch never runs
+bl      sub_8284A900
+```
+
+with the token consumed either way, so a clear bit is completely silent — the same shape
+as part 5's display-controller gate (gotcha 154), and one token handler in the same
+dispatcher writes `0x7FFFFFFF` there (8284B3C4), i.e. bit 31 clear.
+
+Measured, PM4 control arm, one 170 s boot, `CZ_BINMASK_PROBE=1`:
+
+| | count |
+|---|---|
+| `sub_8284B228`, the dispatcher | **1**, `[obj+0x164]=00000000`, bit 31 clear |
+| `sub_8284A7F8`, the patch pass | **1**, patched **0** records |
+| `sub_82838088`, the other mask setter | **1**, mask 0, from `sub_82841AD0` |
+| draws executed with `80000000` against the right tile | 1,040,207 |
+
+That is consistent with part 7's independent observation that the D3D worker is never
+used at all for the whole healthy era (`kicks=0`, `queued=0` at all 986 segment submits).
+
+### Stated as open
+
+The placeholder story explains the 1,040,207 and is **not yet shown to explain the
+rest**: the same boot has 97,115 draws carrying `8000000F` and 239,063 carrying
+`80000003` at the right tile, and with the patch pass having touched zero records those
+values came from somewhere this session did not identify. Recorded rather than smoothed
+over, because a partial explanation quoted as a whole one is how §6c's index-endianness
+retirement survived a phase (gotcha 172).
+
+The probe reads the masks BACK out of the records the pass patched rather than
+recomputing the arithmetic, so it cannot merely agree with itself.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
