@@ -490,3 +490,138 @@ Phase 3 is **complete** and every gate passes:
 
 The synthetic-input arm is retired as the *only* way to move the boot, and kept as the
 control for "was it really my press that did that".
+
+## 11. Finding 50 — the crash 53 files past every gate was the title's own assertion
+
+Session 25 (phase C part 13). Part 12 recorded, as a frontier rather than a regression,
+that holding `CZ_FAKE_PRESS_SEQ=START,A,A` walks the boot through the menu into the real
+game load and SIGSEGVs at file **#137 `game:\data\audio\Prologue.txt`**, with
+`lr=827885DC` and `r4` pointing at the string `deadrising/asserts.php`. It is closed, and
+the fault was never a memory bug.
+
+### Why it did not look like an assertion
+
+`sub_82788478`'s tail is:
+
+```
+82788648  0FE00016  twui r0, 0x16        <- trap ALWAYS
+8278864C  93400000  stw  r26, 0(0)       <- store to guest address 0
+```
+
+`twi`/`twui` is PowerPC's unconditional trap, and it is how this engine's `dbAssert`
+stops. **XenonRecomp lowers it to nothing** — the generated C++ carries the comment
+`// twi 31,r0,22` and no code — so the trap does not happen and the deliberate null
+store one instruction later is what faults. The crash reporter then truthfully says
+"faulting GUEST address 00000000 (the NULL page)", which reads as a wild pointer in
+guest code and says nothing about an assertion. Worth carrying to Case West: **in a
+recompiled image a guest ASSERT presents as a null-pointer crash**, and the tell is a
+`twi` immediately above the faulting store.
+
+The strings the failure path builds name it outright, once the right `lis`/`addi` pairs
+are followed (gotcha 144's rule — a 32-bit constant is never one instruction):
+
+```
+0x820B0BC8  '0 && "Bad file digest.  Please re-link the executable and try again."'
+0x820B0B80  'c:\bcg\deadrisingprologue\library\systemlib\xbox360\digestmanager.cpp'
+0x82009B88  'dbAssert: %s\n%s:%d\n'
+```
+
+### The chain, and how each link was separated from the next
+
+The line immediately above the crash in every log for four sessions was
+`XexGetModuleSection module=88000260 name='Digest' -> not found`. Three links, each
+fixed and measured before the next was visible; **none of them changes an observable
+alone**, which is why they are one commit.
+
+1. **`XexGetModuleSection` answered nothing, ever.** Its comment said "We have no module
+   image to hand back a section from, so STATUS_NOT_FOUND is the truthful answer" — true
+   when written, about a runtime with no loader, and never re-asked (gotcha 13). The
+   names are XEX **resources**, they live in an optional header of the XEX this runtime
+   already publishes, and A1's own header dump lists them:
+
+   ```
+   Serial2  82AF0000-82AF0020, 32b     Serial   82AF0080-82AF00BF, 63b
+   Digest   82AF0100-82AF011C, 28b     58410A8D 82B00000-82B3072B, 198443b
+   ```
+
+   `XexFindResource` walks `XEX_HEADER_RESOURCE_INFO` (key `0x000002FF`: a `blockSize`
+   dword then `{ char name[8]; be32 address; be32 size }` entries). Measured:
+   `Digest -> 82AF0100 28 bytes`, matching A1 exactly. Names are NUL-PADDED, not
+   NUL-terminated, so `Serial` and `Serial2` separate only under an 8-byte compare.
+
+2. **Guest memory at that address held twenty-eight zero bytes**, because `main.cpp`
+   skipped `.idata` — and `.idata` is 82AF0000..82AF047A, i.e. exactly where this XEX
+   keeps those resources. The skip was a NAME list, `.reloc / .XBLD / .edata / .idata`,
+   under the comment "not read at runtime and, in this XEX, their source ranges over-run
+   the loaded image buffer". Only the second clause is a real condition and it applies
+   to exactly one of the four: the loader points each section at
+   `image.data.get() + VirtualAddress` inside one `image.size`-byte buffer, and `.reloc`
+   is 0xB00200..0xBBA0D4 against an image size of 0xB40000. `.idata` ends 0x4FB86 inside
+   it. **A name list cannot state the condition it stands in for**, so the next reader
+   inherits the conclusion without the test; it is now the bounds check itself, and it
+   prints which sections it dropped and why.
+
+3. **The guest still compared twenty zero bytes**, because `sub_82822420/28/30` are
+   one-instruction tail-call thunks (`b 0x829C3084`, `b 0x829C3094`,
+   `li r5,0x14; b 0x829C30A4`) onto the **`XeCryptShaInit` / `XeCryptShaUpdate` /
+   `XeCryptShaFinal` imports**, and all three were generated honest-failure stubs. The
+   callee is invisible in the caller's disassembly (gotcha 64), which is why four
+   sessions of looking at this crash never named them.
+
+### Why a stub was the wrong shape here
+
+This is gotcha 59's family, and the sharpest instance of it this port has produced.
+There is **no SHA-1 digest that means "not implemented"**: the result is a value the
+caller consumes, not a status it can test, so a stub that returns without writing its
+output is not failing honestly — it is answering "the digest of your file is twenty
+zero bytes", confidently and wrongly. The caller then does the only sensible thing with
+that answer, which is to refuse to run.
+
+Implemented for real, over the console's own 88-byte state layout
+(`{ be32 count; be32 state[5]; u8 buffer[64] }`). The partial block has to live in the
+state across calls, because this title hashes the file and then the file's **length** as
+a separate four-byte update — an implementation that only handled one call would produce
+a plausible wrong digest on every real use. `XeCryptSha`, the one-shot, is implemented
+too and has not run (gotcha 67).
+
+### The instrument, and why a debugger could not do it
+
+`CZ_DIGEST_PROBE=1` hooks the verify and `SHA1_Final` through the alias seam. It exists
+because **gotcha 57 applies to breakpoints, not just to crash dumps**: two attempts to
+read the computed digest off the guest stack under `gdb` returned twenty zero bytes and
+the assert-REPORTING path's registers, because the compiler keeps `PPCContext` fields in
+host registers and `ctx.rN` read in the middle of a recompiled function is stale. At a
+function's ENTRY they are fresh, which is exactly what a `PPC_FUNC` hook gets for free.
+
+The probe also recomputes the engine's own string hash (`h = h*0x21 ^ (signed char)c`)
+in HOST code, which is what makes it an oracle rather than a description — had the
+guest's hash of the same bytes disagreed, the defect would have been in the recompiled
+hash function and no amount of reading the table could have said so. Both give
+`73E624A9` for `data/audio/Prologue.txt`, which is the table's single entry.
+
+### Measured
+
+```
+[digest] verify 'data/audio/Prologue.txt' buffer=A3316830 length=232137
+         section='Digest'  host hash=73E624A9
+[digest]   SHA1_Final -> 19962B38 5180629C 66FDE711 E72AE257 6586FF23
+[digest] verify 'data/audio/Prologue.txt' -> 1
+```
+
+That digest is byte-for-byte what the XEX ships, and it is reproducible outside the
+runtime: `sha1(file_bytes || be32(len))` over `assets/game/data/audio/Prologue.txt` is
+the same twenty bytes. Two witnesses.
+
+| | before | after |
+|---|---|---|
+| deepest file with `START,A,A` held | **#137 + SIGSEGV** | **#154 `skeleton\childfullbody.big`, zero faults** |
+
+Gates unchanged: `--smoke` OK; A1 exact 84-prefix; A5 exit 0, 2 windows, 0 real;
+`truncated=0`; deepest file on a no-input boot still #83 `cinezombie.big`.
+
+### The new frontier
+
+The boot now runs 300 s without faulting and stops loading at **#154**, in a run of
+`skeleton\child*.big` files, presenting a black screen. Nothing is crashing and
+`truncated=0`; whether that is a stall or simply the next thing to implement is not yet
+measured, and it is 71 files past anything this project had reached.

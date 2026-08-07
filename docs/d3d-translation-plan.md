@@ -1669,3 +1669,51 @@ this run`. Three "draw arm" runs here were PM4 runs, and they agreed with each o
 with a control perfectly — a clean, consistent, wrong measurement. The tell was in the
 numbers: `arms=74, kicks=0, walks=0` against the real arm's `arms=12627, kicks=6752`.
 Check the arm announced itself before reading anything else off its log.
+
+## Phase C part 13 (2026-08-07, session 25): the UI's text layer, and the crash was an assert
+
+Part 13's list was the two menu defects, then the picture as a whole. Both menu items are
+answered — one fixed, one turned from an inference into a measured negative — and the
+crash item, which was listed last as a frontier, turned out to be the largest thing in
+the session. Details: `docs/phase5-notes.md` §§6ab-6ad and `docs/phase3-notes.md`
+finding 50.
+
+**1. The malformed text was not the texture coordinates.** It was `VGT_INDX_OFFSET`, the
+only register a Xenos draw packet has for sub-allocating one vertex buffer between
+draws, read by `CZ_VK_STATE_PROBE` since phase 5 and applied by nothing. This title's
+entire UI fills one dynamic buffer per frame and issues 115 draws whose fetch address
+never moves; only the offset does, by exactly the previous draw's index count. Every
+draw therefore rendered the FIRST run's vertices, so one text run came out right and
+every other one was that run's glyphs sampled through whichever atlas it bound — which
+part 12 attributed to the atlases, that being the visible difference between the two
+families of draw rather than the cause of either. The save-slot screen now renders
+`SLOT 1/2/3`, `- NEW GAME -`, `GAMER PROFILE`, `Player`, `LV. N/A`, the PP/Money rows
+and the `A/B/Y` legend; `CZ_VK_NO_INDX_OFFSET=1` is the control arm.
+
+**2. The black panels: nothing writes them.** Three hardware watchpoints, one per
+physical alias, through the whole menu era: zero hits, and no resolve targets that
+address. Part 12's inference that "hardware's bytes differ from ours" is retracted in
+favour of a measurement — the title binds a 16x16 DXT1 it never fills, on three draws
+for three EMPTY save slots. The remaining test is a run with a real save.
+
+**3. The crash at file #137 was the title's own `dbAssert`,** and closing it moved the
+boot 17 files past it with zero faults. Three links: `XexGetModuleSection` answered
+nothing (its comment was written about a runtime with no loader and never re-asked);
+the resources it should answer from live in `.idata`, which `main.cpp` skipped by NAME
+under a comment describing a bounds condition that applies to `.reloc` alone; and the
+SHA-1 the digest manager calls is three kernel imports that were generated stubs. A
+stub is the wrong shape for a hash — there is no digest value that means "not
+implemented" — so the guest compared twenty zero bytes and refused to run. The
+observable was a null-pointer SIGSEGV because XenonRecomp lowers `twi` to nothing, so
+the `dbAssert` tail's deliberate `stw r26,0(0)` is what faults.
+
+**4. The picture against capture E, finally asked cleanly.** No transform (every frame's
+best orientation is `identity`, runner-up 0.14-0.35 behind), and four named differences:
+the whole frame is uniformly out of focus at every depth, colour is flat and
+green-shifted, the copyright line and one sign's lettering are missing, and the `GAS`
+balloon and the street bunting are blank. The blur is the one that changes the picture
+most.
+
+**Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
+0 real**; `truncated=0`; deepest file on a no-input boot **#83 `cinezombie.big`**.
+With `CZ_FAKE_PRESS_SEQ=START,A,A` held: **#154, zero faults, over 300 s.**

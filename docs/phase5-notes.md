@@ -1493,6 +1493,152 @@ hits, too-old fallbacks), `CZ_VK_SNAP_FRAME` (the snapshot dump's frame was a ha
 600), and `CZ_VK_FRAME_DUMP_EVERY` (the panel appeared in exactly one frame of a 180 s
 boot at the built-in 64).
 
+## 6ab. The UI's whole text layer was ONE run repeated: VGT_INDX_OFFSET
+
+Session 25 (phase C part 13). §6aa handed over two localised menu defects and one
+conclusion about the second of them: "the atlas is right and the draw samples it wrong,
+which leaves the texture COORDINATES". The coordinates are right too. So is the atlas,
+so is the shader, so is every field of the fetch constant. What was wrong is which
+VERTICES the draw read, and the register that says so had been read by an instrument
+and applied by nothing.
+
+### The observation the probe was not built to make
+
+`CZ_VK_ONLY_TEX=007C6000` isolates the garbled atlas's draws, so the obvious next step
+was `CZ_VK_DRAW_PROBE` over them. The probe printed one dword per vertex for a
+non-position attribute — which for a `32_32_FLOAT` texture coordinate is `u` and not
+`v` — and the two atlases' draws agreed on every printed value. That looked like a
+coincidence worth checking rather than a finding, so the probe grew: every COMPONENT
+decoded as a float, `CZ_VK_DRAW_PROBE_VERTS` to cover more than one glyph, and the
+bound texture and its dimensions on the header line.
+
+With that, three draws of one frame — different index counts, different atlases, drawn
+at different places on screen — read **bit-identical vertex data**:
+
+```
+[vkprobe] frame=560 ... indexCount=16 tex=007C6000 376x376
+[vkprobe]   loc4 fmt=37 off=3: v0(0.34309,0.45479) v1(0.34309,0.55319) v2(0.41755,0.55319) ...
+[vkprobe] frame=560 ... indexCount=48 tex=007C6000 376x376
+[vkprobe]   loc4 fmt=37 off=3: v0(0.34309,0.45479) v1(0.34309,0.55319) v2(0.41755,0.55319) ...
+[vkprobe] frame=560 ... indexCount=24 tex=007BB000 184x184
+[vkprobe]   loc4 fmt=37 off=3: v0(0.34309,0.45479) v1(0.34309,0.55319) v2(0.41755,0.55319) ...
+```
+
+Those numbers are not noise and they are not wrong: `0.34309 x 376 = 129.0`,
+`0.41755 x 376 = 157.0`, `0.45479 x 376 = 171.0`, `0.55319 x 376 = 208.0`. Every UV in
+the buffer is an exact texel of the 376 grid, and the cells are 28x37, 26x37, 32x37,
+30x37 — variable-width glyphs of one font sheet. Perfect data, read by every draw.
+
+### The register
+
+The vertex fetch constant's ADDRESS is the same for every one of the 115 draws in that
+pass and alternates between two values across frames — one dynamic vertex buffer, double
+buffered. A Xenos draw packet has no base-vertex field, so the only thing left that can
+sub-allocate it is **`VGT_INDX_OFFSET`** (register `0x2102`), which the hardware adds to
+every index, generated or fetched, before the vertex fetch. Printed per draw it is:
+
+```
+0, 16, 20, 68, 84, 88, 136, 152, 156, 204, 228, 240, 276, 324, 336, 348, 360, 412, ...
+```
+
+— each entry the previous one plus the previous draw's index count, exactly.
+
+`gpu/xenos.h` has had `kVgtIndxOffset` since phase 5 and `CZ_VK_STATE_PROBE` has been
+printing it since then. All three submission paths passed 0.
+
+### Why five phases of scene work never saw it
+
+Because nothing drops and nothing errors. Every draw renders the FIRST run's vertices,
+so exactly one text run comes out correct — the one that happens to sit at offset 0 —
+and every other draw paints that same run's glyphs at that same place, sampled through
+whichever atlas it bound. On a 376-glyph sheet that is legible text drawn many times
+over; on the 184 sheet the same normalized coordinates land between cells and the result
+is the "magnified fragments" §6aa recorded. Part 12 attributed that split to the
+atlases, which is the visible difference between the two families of draw and not the
+cause of either.
+
+It engages **211 times in a plain title-screen boot** and on essentially every draw of
+the menu, which is the other half of the answer: the scene does not use it.
+
+### Measured
+
+`CZ_VK_NO_INDX_OFFSET=1` is the same-binary control arm. On the save-slot screen
+(`CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A`, frame 564):
+
+| | control | fixed |
+|---|---|---|
+| the panel | one overlapped garbled run, nothing else | `SLOT 1/2/3`, `- NEW GAME -`, `GAMER PROFILE`, `Player`, `LV. N/A`, `Total PP:`, `Total Money:`, and the `A SELECT / B BACK / Y DEVICE SELECTOR` legend |
+
+Applied to all three submission paths — `firstVertex` for auto-index, `vertexOffset` for
+indexed and for expanded — and folded into `rectSynth`'s corners instead of passed to
+the draw, because that path resolves the three real corners into a private four-vertex
+stream and offsetting again would apply it twice. Bounds-checked against the uploaded
+stream, with the draw DROPPED and counted if it does not fit rather than clamped back to
+zero: clamping is the defect itself wearing a safety check's name. Zero drops in a boot.
+
+Gates: `--smoke` OK; A1 exact 84-prefix; A5 exit 0, 2 windows, 0 real; `truncated=0`;
+deepest file #83.
+
+## 6ac. The black panels: nothing writes them, and that is a measurement now
+
+Part 12 left "who was supposed to write `0364B000`" open and inferred that "hardware's
+bytes differ from ours". The inference is retracted; the measurement is a negative.
+
+Three hardware watchpoints under `gdb -p`, one on each of the three physical views the
+Xbox 360 memory model aliases (`0xA0000000`, `0xC0000000`, `0xE0000000` — a watchpoint on
+one alias cannot see a write through another, which is the trap this instrument has),
+attached four seconds into the boot and left running through the entire save-slot era:
+**zero hits**. The texture is not bound at all on a plain title-screen boot
+(`CZ_VK_TEX_CENSUS` never names it), so it is created when the menu loads, ~30 s after
+the watchpoints were armed. No resolve targets that address either — a boot's resolve
+destinations are `06BE4000/06BF8000`, the `14xxxxxx` pyramid and `00E48000`, nowhere
+near it.
+
+So this is not a lost write. The title binds a 16x16 DXT1 it never fills, on three draws
+— one per save slot, all three slots empty. What remains open is only whether hardware
+fills it on a path we do not execute; the cheapest test is a run with a REAL save
+present, because the obvious candidate is a thumbnail the slot does not have. The
+practical note for anyone looking at the screen meanwhile: `CZ_VK_SKIP_TEX=0364B000`
+removes the three rectangles and reveals three correct thumbnails underneath.
+
+The joining detail that made the whole session cheaper: the runtime already prints
+`runtime: guest memory at 0x...` unconditionally, so `gdb` needs no symbol lookup to
+compute a host address for a guest one — which matters, because `g_memory` did not
+resolve as a minimal symbol from every frame.
+
+## 6ad. The picture against capture E, at last: four named differences
+
+Item 3 of part 13's kickoff, and the first time it can be asked cleanly — both tiles
+render, the scene surface is 99.5% non-black, and the frame is not transformed.
+
+`tools/frame_signature.py` over a whole dumped title-screen era against `E2` and `E3`
+says what it said before: every frame's best orientation is **`identity`**, at +0.36 to
++0.55 against E2 and +0.49 to +0.55 against E3, none reaching the tool's +0.70 floor and
+every runner-up 0.14-0.35 behind. That is the signature of a matching scene photographed
+at a different moment, not of a transform, and it is all a correlation can say about an
+animated camera (gotcha 127). The rest needs eyes, so here is the list, confirmed on two
+frames of different camera angles rather than one (gotcha 133):
+
+1. **The whole frame is out of focus.** E3 is sharp from the foreground survivor to the
+   Still Creek sign, with genuine depth of field only in the far distance. Ours is
+   uniformly blurred at every depth including the near sign and the character. A
+   depth-of-field or bloom pass is being composited at full strength everywhere, which
+   is what a wrong depth input to the blend looks like — everything reads as "far".
+   This is also the defect that made gotcha 188's single black column visible as a 19 px
+   band, so the blur is real, live and load-bearing, not an absence.
+2. **Colour is flat, desaturated and green-shifted.** E3's sky is a deep blue and its
+   ground is warm; ours is a pale grey-blue over a green-grey street. The tone map's LUT
+   is the thing §6s already proved this frame depends on completely.
+3. **Some text is missing.** `PRESS START` renders; the
+   `(C) CAPCOM CO., LTD. 2010 ALL RIGHTS RESERVED` line under it does not, and neither
+   does the small community-watch sign's lettering.
+4. **Some signage is blank.** The `GAS` balloon is a white blob, and the bunting strung
+   across the street between the poles is absent entirely.
+
+None of these is a missing pass in the §6s sense — the chain composes and the scene
+arrives. They are four separate questions, and (1) is the one that changes the picture
+most.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

@@ -1271,6 +1271,61 @@ From phase C part 11 (the screen extent — a packet implemented and never execu
      same wrong thing. The tell was in the chain counters (`arms=74, kicks=0, walks=0`
      against the real arm's `arms=12627, kicks=6752`). Confirm an arm ANNOUNCED itself
      before reading anything else off its log.
+
+From phase C part 13 (the UI's text layer, and a crash that was an assertion):
+
+195. **A draw packet has no base-vertex field, so a title that sub-allocates ONE vertex
+     buffer between draws can only do it with `VGT_INDX_OFFSET` — and ignoring that
+     register drops nothing and errors nowhere.** Case Zero's whole UI fills one dynamic
+     buffer per frame and issues 115 draws whose fetch constant never changes address;
+     only the offset moves, by exactly the previous draw's index count (0, 16, 20, 68,
+     84, 88, 136, ...). Every draw therefore rendered the FIRST run's vertices, so
+     exactly one text run came out correct and every other one was that same run's
+     glyphs sampled through whichever atlas it bound. Two sessions read that as a
+     property of the two ATLASES, which is the visible difference between the draws and
+     the cause of neither. `gpu/xenos.h` had the register and `CZ_VK_STATE_PROBE` had
+     been printing it since phase 5; all three submission paths passed 0.
+196. **A probe that prints one component of a vector has not printed the vector.** The
+     draw probe showed a single dword per vertex for non-position attributes, which for
+     a `32_32_FLOAT` texture coordinate is `u` and not `v` — so two draws sampling
+     different atlases produced transcripts that agreed on every printed value and
+     disagreed on the one that mattered. The bit-identical `u` was the finding, read as
+     a coincidence. And one quad is one GLYPH: bound a probe's vertex count by what the
+     structure under investigation repeats at, not by what fits on a line.
+197. **In a recompiled image a guest ASSERT presents as a null-pointer crash.**
+     XenonRecomp lowers `twi`/`twui` — PowerPC's unconditional trap, and how a `dbAssert`
+     stops — to nothing, so the deliberate `stw rX,0(0)` that follows it is what faults,
+     and the crash reporter truthfully reports guest address 0. The tell is a `twi`
+     immediately above the faulting store; the assertion's own text is two `lis`/`addi`
+     pairs away (gotcha 144). Case Zero's said
+     `0 && "Bad file digest.  Please re-link the executable and try again."` from
+     `digestmanager.cpp`, which named the entire hunt in one string.
+198. **Gotcha 57 applies to BREAKPOINTS, not just to crash dumps.** `ctx.rN` read under
+     `gdb` in the middle of a recompiled function is stale — the compiler keeps
+     `PPCContext` fields in host registers — so two attempts to read a computed digest
+     off the guest stack returned twenty zero bytes and a completely different code
+     path's registers. At a function's ENTRY the values are fresh, which is exactly what
+     a `PPC_FUNC` hook gets for free. Hook the function; do not breakpoint its middle.
+199. **A hardware watchpoint on one alias cannot see a write through another.** The
+     physical arena is mapped at `0xA0000000`, `0xC0000000` and `0xE0000000` from one
+     memfd on purpose, because the guest converts pointers between the views by
+     arithmetic. Watch all three or the silence means nothing. (And the runtime prints
+     `runtime: guest memory at 0x...` unconditionally, so `gdb` needs no symbol lookup
+     to turn a guest address into a host one — `g_memory` does not resolve as a minimal
+     symbol from every frame.)
+200. **A skip list keyed on NAMES cannot state the condition it stands in for.**
+     `main.cpp` skipped `.reloc / .XBLD / .edata / .idata` under the comment "not read at
+     runtime and, in this XEX, their source ranges over-run the loaded image buffer".
+     Exactly one of the four over-runs. `.idata` is where this XEX keeps its RESOURCES,
+     so skipping it made `XexGetModuleSection("Digest")` twenty-eight zero bytes and cost
+     four sessions. Write the check, not the list: a check is re-evaluated every build
+     and a list is inherited without its test.
+201. **"Fail honestly" has no spelling for a function that returns a VALUE, and a hash is
+     the purest case.** There is no SHA-1 digest that means "not implemented", so the
+     `XeCryptShaFinal` stub's silence was not an error the caller could notice — it was
+     the confident answer "your file hashes to twenty zero bytes", and the caller did the
+     only sensible thing with it. Gotcha 59's rule (predicates) generalises: whenever the
+     return is consumed rather than tested, implementing it is the only correct option.
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1406,7 +1461,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c8-kickoff.md` / `d3d-phase-c9-kickoff.md` /
   `d3d-phase-c10-kickoff.md` / `d3d-phase-c11-kickoff.md` /
   `d3d-phase-c12-kickoff.md` /
-  **`d3d-phase-c13-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c13-kickoff.md` /
+  **`d3d-phase-c14-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1909,6 +1965,26 @@ CZ_VK_RESOLVE_TRACE_PASSES=N  the resolve trace's budget, in PASSES rather than 
                    a different number of passes depending on the resolve order, so the
                    frame's LAST pass fell off the end
 CZ_VK_DRAW_PROBE_COUNT=N  how many draws the draw probe prints (default 3)
+CZ_VK_DRAW_PROBE_VERTS=N  how many VERTICES it prints per attribute (default 4 = one
+                   quad = one GLYPH of a text run, which cannot show whether a run's
+                   cells advance across the sheet). The probe also decodes every
+                   COMPONENT of a float attribute rather than its first dword — printing
+                   only `u` of a texture coordinate is what let two draws sampling
+                   different atlases agree on every printed value — and carries the bound
+                   texture, its dimensions and VGT_INDX_OFFSET/min/max on its header line
+CZ_VK_NO_INDX_OFFSET=1  do NOT apply VGT_INDX_OFFSET, i.e. the pre-part-13 renderer, in
+                   which every draw reads from vertex 0 of the fetch buffer. A draw
+                   packet has no base-vertex field, so this register is the only way a
+                   title sub-allocates one dynamic vertex buffer between draws — which
+                   is how this title's ENTIRE UI works. With it on, the save-slot panel
+                   shows one overlapped garbled text run and nothing else
+CZ_DIGEST_PROBE=1  the file-digest check link by link, through the alias seam: the name
+                   being verified with its buffer and length, the XEX resource the
+                   container asks for, the engine's own string hash RECOMPUTED IN HOST
+                   CODE (which makes it an oracle rather than a description — a
+                   disagreement would put the defect in the recompiled hash), and the 20
+                   bytes SHA1_Final actually wrote. A hook rather than a debugger
+                   because gotcha 198: ctx.rN is stale mid-function
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS
@@ -2898,36 +2974,91 @@ implemented** (the count was a hardcoded 4).
 **Gates, both arms:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
 0 real**; `truncated=0`; deepest file **#83 `cinezombie.big`**.
 
+**PHASE C PART 13 (2026-08-07, session 25): the UI's whole text layer was ONE run
+repeated, and the crash 53 files deep was the title's own ASSERTION.**
+`docs/phase5-notes.md` §§6ab-6ad and `docs/phase3-notes.md` **finding 50**; hand-off in
+`docs/d3d-phase-c14-kickoff.md`.
+
+Part 13's list was the two menu defects then the picture; the item listed LAST as a
+frontier turned out to be the biggest thing in the session.
+
+- **The malformed menu text was not the texture coordinates — it was
+  `VGT_INDX_OFFSET`.** A draw packet has no base-vertex field, so that register is the
+  only way a title sub-allocates ONE dynamic vertex buffer between draws, and this
+  title's entire UI works that way: 115 draws whose fetch constant never changes
+  address, with the offset advancing by exactly the previous draw's index count. The
+  renderer printed the register in `CZ_VK_STATE_PROBE` and applied it in none of its
+  three submission paths, so **every draw rendered the FIRST run's vertices** — one text
+  run correct, every other one that same run's glyphs through whichever atlas it bound.
+  Part 12's attribution to the two glyph ATLASES is retracted: that is the visible
+  difference between the draws and the cause of neither. The save-slot screen now
+  renders `SLOT 1/2/3`, `- NEW GAME -`, `GAMER PROFILE`, `Player`, `LV. N/A`, the
+  PP/Money rows and the `A SELECT / B BACK / Y DEVICE SELECTOR` legend.
+  `CZ_VK_NO_INDX_OFFSET=1` is the control arm; it engages 211 times in a plain
+  title-screen boot and on essentially every menu draw, which is why five phases of
+  scene work never saw it.
+- **The black panels: nothing writes them.** Three hardware watchpoints, one per
+  physical alias, through the whole menu era: **zero hits**, and no resolve targets that
+  address. Part 12's inference that "hardware's bytes differ from ours" is retracted for
+  a measurement — the title binds a 16x16 DXT1 it never fills, on three draws for three
+  EMPTY save slots. The one remaining test is a run with a real save present.
+- **The SIGSEGV at file #137 was `dbAssert(0 && "Bad file digest.  Please re-link the
+  executable and try again.")` from `digestmanager.cpp`** — not a memory bug. It looks
+  like one because XenonRecomp lowers `twi` to nothing, so the deliberate `stw r26,0(0)`
+  that follows the trap is what faults. Three links, each measured, none of them
+  changing an observable alone: `XexGetModuleSection` answered nothing ever (its comment
+  was written about a runtime with no loader and never re-asked); the XEX RESOURCES it
+  should answer from live in `.idata`, which `main.cpp` skipped by NAME under a comment
+  describing a bounds condition only `.reloc` meets; and the SHA-1 the digest manager
+  calls is three kernel imports left as generated stubs — and a stub is the wrong shape
+  for a hash, because no digest value means "not implemented", so the guest compared
+  twenty zero bytes and refused to run.
+  **Result: #137 + SIGSEGV -> #154 `skeleton\childfullbody.big`, zero faults over
+  300 s** — 71 files past anything this project had reached.
+- **The picture against capture E, asked cleanly for the first time.** No transform
+  (every frame's best orientation is `identity`, runner-up 0.14-0.35 behind), and four
+  named differences: the whole frame is uniformly out of focus AT EVERY DEPTH where E3
+  is sharp except in the far distance; colour is flat and green-shifted; the
+  `(C) CAPCOM CO., LTD. 2010` line and one sign's lettering are missing; the `GAS`
+  balloon and the street bunting are blank.
+
+**Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
+0 real**; `truncated=0`; deepest file on a no-input boot **#83 `cinezombie.big`**. The
+phase C draw arm was NOT re-gated — gotcha 181 says that is where the session's fixes
+hide, and all of part 13's are in shared code.
+
 Next, in order:
 
-1. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+1. **#154 IS THE FRONTIER — stalled, or just the next thing to implement?** Nobody has
+   asked yet. Cheap instruments first (`CZ_WAIT_TRACE`, `CZ_CS_TRACE`, `CZ_RING_TRACE`'s
+   chain counters, `CZ_FILE_TRACE` for a FAILING open), then gotcha 82's escalation:
+   a thread spinning in guest code is invisible from inside the runtime, and `gdb -p`
+   plus `CZ_THREAD_TRACE=1` is how you see it.
+2. **THE BLUR** — the largest visible difference from E3 and the only one of the four
+   that changes the whole frame. A live pass fed a wrong depth, not a missing pass.
+   Judge any change over an ERA with `tools/frame_compare.py` (gotchas 127, 133).
+3. **The other three picture differences.** Re-check the two TEXT ones first and
+   cheaply: missing text is exactly the shape `VGT_INDX_OFFSET` produces, and those
+   frames were dumped before that fix in some runs.
+4. **The black panels' last test: a run with a REAL save.** Gate with an EMPTY
+   `CZ_SAVE_DIR` (gotcha 106) and test with a populated one.
+5. **The conservative screen extent is still a placeholder** (part 11). Both tiles
+   execute ~975,000 draws where hardware executes ~573,000 each. **Do not do this
+   speculatively** — the cost has still not been shown to matter.
+6. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
    `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
    means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
-   path we do not drive (finding 49, gotcha 107). The gate now needs a capture that
-   goes further than A1: gameplay (A2), which is a different comparison to build.
-2. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+   path we do not drive (finding 49, gotcha 107). Going further needs a gameplay
+   comparison built from A2 — and #154 is the first run this port has had that would
+   exercise one.
+7. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
    save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
-   shuts audio down), and the save layer's own `XamContentCreateEx`/`XamContentClose`,
-   which need gameplay to reach a save point.
-3. **Phase 5 — COMPARE THE PICTURE AGAINST CAPTURE E, and say what is still wrong.**
-   Since part 11 both tiles render and the scene surface is 99.5% non-black, so this
-   is the first time the question can be asked cleanly. `tools/frame_signature.py`
-   against `E2`/`E3` is the instrument, and it must be run over the WHOLE dumped era —
-   this title screen is two screens (gotcha 176). `docs/phase5-notes.md` §7 is the
-   older enumerated gap and is now largely superseded by §§6s-6x. Gate on **per-era
-   aggregates, never frame index** (gotcha 38).
-4. **The two menu defects, each one probe from an answer** (part 12 above): who writes
-   `0364B000` — a hardware watchpoint under `gdb -p`, not `CZ_PM4_MEM_WATCH` — and what
-   texture coordinates the `007C6000` glyph draws carry, isolated with
-   `CZ_VK_ONLY_TEX`.
-5. **A crash 53 files deeper than any gate here.** Held down, `CZ_FAKE_PRESS_SEQ`
-   walks past the menu into the real game load and SIGSEGVs in guest code at file
-   **#137 `audio\Prologue.txt`**. First evidence this port has of what happens after
-   the menu; a frontier, not a regression.
-6. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+   shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
+   part 13's `XeCryptSha` one-shot.
+8. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
