@@ -30,9 +30,19 @@ Same binary with `CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A`, 300 s:
 * deepest file **#154 `game:\data\skeleton\childfullbody.big`**, **zero faults**,
   `truncated=0`. The screen is black there and the file count stops climbing.
 
-The phase C draw arm was NOT re-gated this session. Gotcha 181 says that is where the
-last session's fixes hide, and part 13's are all in shared code (the renderer's draw
-path, the loader, the kernel), so re-gating it is close to free and may move it.
+Phase C draw arm, **`CZ_D3D_DRAW=1` ALONE** (the mutual-exclusion trap is still live),
+one 170 s boot — re-gated at the end of the session, because part 13's fixes are all in
+shared code and gotcha 181 says that is where they hide:
+
+* announced itself (`[d3ddraw] Phase C draw service UP`), which is the check that
+  distinguishes this arm from a PM4 run wearing its name.
+* `arms=12741 ints=12740 isr=12740` (0.9999), `kicks == walks == drains = 6776`,
+  `distinct=813` — the healthy shape part 7 defined. `truncated=0`; deepest file **#83**.
+* A5: exit 0, 3 windows, **0 real**. A1: the long-known position-71 scheduling window
+  (gotcha 86; it permutes 4-of-10 against 1-of-10 on both binaries), not a regression.
+* `draw: VGT_INDX_OFFSET applied` reads **2,258** here, so the fix reaches this arm too —
+  `d3d_draw.cpp`'s `SetReg` is generic, so the register lands in its private file by
+  construction rather than by anyone having remembered it.
 
 ## Where part 14 starts, in order
 

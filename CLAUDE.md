@@ -3022,10 +3022,13 @@ frontier turned out to be the biggest thing in the session.
   `(C) CAPCOM CO., LTD. 2010` line and one sign's lettering are missing; the `GAS`
   balloon and the street bunting are blank.
 
-**Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
-0 real**; `truncated=0`; deepest file on a no-input boot **#83 `cinezombie.big`**. The
-phase C draw arm was NOT re-gated — gotcha 181 says that is where the session's fixes
-hide, and all of part 13's are in shared code.
+**Gates, BOTH arms:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`;
+deepest file on a no-input boot **#83 `cinezombie.big`**. A1 is an exact 84-prefix on
+the PM4 arm and hit the long-known position-71 scheduling window on the draw arm
+(gotcha 86). The draw arm's chain is the healthy shape — `arms=12741 ints=12740
+isr=12740`, `kicks == walks == drains = 6776`, `distinct=813` — and it applies the base
+vertex 2,258 times a boot, because `d3d_draw.cpp`'s `SetReg` is generic and the register
+lands in its private file by construction.
 
 Next, in order:
 
