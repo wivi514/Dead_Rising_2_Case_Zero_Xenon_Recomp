@@ -1116,7 +1116,8 @@ From phase C part 6 (the brake promoted, and the harness that nearly decided it 
   `d3d-phase-c2-kickoff.md` / `d3d-phase-c3-kickoff.md` /
   `d3d-phase-c4-kickoff.md` /
   `d3d-phase-c5-kickoff.md` /
-  **`d3d-phase-c6-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c6-kickoff.md` /
+  **`d3d-phase-c7-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
