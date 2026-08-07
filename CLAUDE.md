@@ -477,6 +477,7 @@ From finding 37 (the frontend was waiting for input, and the arm that proved it)
     in your own status section. "Our run reaches `mainmenu.tex` and stops" was true
     when written and had quietly stopped being the interesting fact: the runtime now
     loads 64 files through to the title screen's 3D scene and renders it at ~34 fps.
+    (The "64" is itself the print cap — see gotcha 109; the real count is 84.)
     Acting on the stale version would have sent someone hunting a file-loading bug
     that no longer exists.
 
@@ -701,11 +702,20 @@ From the save-data layer (A1 positions 86-92, built straight after phase 3):
     callers answered in two runs what the call graph could only make plausible: the
     drain is never entered, and three of its seven callers are. `CZ_QUEUE_PROBE` in
     `runtime/cpu/guest_probe.cpp` is the worked example.
-109. **A log line that is capped is not a count.** `NtCreateFile` successes are printed
-    only for the first 64 (`n < 64 || FileTrace()`) while failures are printed always,
-    so "the boot opens 64 files" — quoted in this project since finding 37 — is the
-    cap, not the number. Check the emitter before quoting a number off a log, the same
-    way gotcha 25 says to check it before believing a zero.
+109. **A log line that is capped is not a count — and naming the trap does not fix the
+    emitter.** `NtCreateFile` successes were printed only for the first 64
+    (`n < 64 || FileTrace()`) while failures were printed always, so "the boot opens 64
+    files" — quoted in this project since finding 37 — was the cap, not the number.
+    This gotcha was written in phase 3 and the emitter was left alone for four more
+    sessions, through part 5's tables, because the cap sat EXACTLY at the boot's depth:
+    a run printed indices 0..63 and fell silent, so `prologue_z01.big` looked like the
+    end of the boot and any change that went further would have been invisible in the
+    one column used to score it. Fixed in part 6 (`n < 512`, then every 64th): the boot
+    opens **84** files and ends at `#83 skeleton\cinezombie.big`, having passed through
+    `cinematics.big` and `700_prologue_intro.big`. Check the emitter before quoting a
+    number off a log, the same way gotcha 25 says to check it before believing a zero —
+    and when the check finds a cap, RAISE it, because a gotcha in a document does not
+    stop the next session quoting the number.
 
 From phase 5 (the renderer; details in `docs/phase5-notes.md`):
 
@@ -978,6 +988,42 @@ From phase C part 5 (the missing CPU side of the hand-off was a display controll
     reaches the title screen with `truncated=0`. Two changes, each of which measures as
     a regression on its own.
 
+From phase C part 6 (the brake promoted, and the harness that nearly decided it wrong):
+
+157. **A metric whose discriminator differs between the arms cannot compare them.** The
+    brake's health was first measured as "what fraction of stalls are RELEASED", and a
+    release was detected by the stall's address changing. That reads the two arms
+    differently for a reason that has nothing to do with the title: phase C re-emits its
+    hand-off block at a FIXED private-scratch address every frame, so a healthy re-stall
+    looks identical to being stuck, while the PM4 arm's blocks rotate through ring
+    addresses so every re-stall looks like a release. Same behaviour, 100% against 4.9%,
+    and it produced a confident "the draw arm's ring is chronically parked" that had to
+    be retracted in the same session — the swap queue was retiring one record per frame
+    throughout. The fix is a quantity with no such dependency: **consecutive ticks spent
+    on ONE wait**, which reads 1 / 2 / 5,491 for paced-control / paced-draw / parked.
+    Before comparing two arms, ask whether the METRIC means the same thing on both.
+158. **Build the negative control before believing the instrument, not after.** Two
+    successive versions of that counter were wrong, and neither was caught by reading
+    the code. What caught both was running the configuration whose answer was already
+    known — `CZ_ISR_SINGLE_CPU=1` with the brake on, which part 5 measured parking at
+    frame 7 — and seeing it report `released=4568` for a run that managed 6 frames. A
+    counter that has only ever been pointed at healthy runs has not been shown capable
+    of reporting sickness (gotcha 30, applied to instruments rather than tests).
+159. **A bimodal arm makes every single-run claim a coin flip.** The phase C draw arm's
+    default configuration produces 332 to 3,451,841 frames in the same 120 s — three
+    near-stalled runs and seven runaway out of ten. Part 5's "1,745" and "2,856,448" are
+    two modes of one distribution reported as two measurements. Gotchas 50-51 say to
+    measure a rate; this is the sharper form — a MEDIAN over runs is not enough either,
+    because a bimodal median lands between two states the system never occupies. Print
+    the runs.
+160. **A long campaign leaves the gates a free control — use it on the one number that
+    is not flat.** A1's position-71 window permuted on the promoted binary, which reads
+    as a regression. Re-gating the 20 saved control-arm logs cost nothing and gave
+    4 of 10 with the brake on against 1 of 10 with it off: not distinguishable at that
+    sample size (Fisher p ~= 0.30), no cost in boot depth or in A5. Gotcha 95 again, and
+    the discipline is to report the rate INCLUDING when it is mildly unfavourable rather
+    than quote the one clean run.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1241,22 +1287,34 @@ CZ_CS_NO_BACKOFF=1 restore the pure yield spin RtlEnterCriticalSection used to d
 CZ_STALL_TRACE=N   every N-th sleep, dump the sleeping thread's guest call sites
 CZ_PEEK=addr[,n]   dump guest memory as the XEX shipped it, before any guest code runs
 CZ_NULL_PAGE_READABLE=1|rw   null reads succeed (as on console) / page 0 fully mapped
-CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT use
+CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT use.
+                   Carries `ring: waits unmet=N held=N streak=N max=N` — the brake's
+                   own health, where `max` is the longest run of CONSECUTIVE ticks
+                   spent on ONE wait. That is the number that separates a title pacing
+                   itself (1 on the PM4 arm, 2 on the draw arm) from a ring nothing
+                   will ever release (5,491, measured with CZ_ISR_SINGLE_CPU=1). A
+                   release COUNT cannot do this job: its discriminator is the stall's
+                   address, and phase C re-emits its hand-off block at a FIXED scratch
+                   address while the PM4 arm's rotate through the ring, so the same
+                   behaviour reads 100% healthy on one arm and 4.9% on the other
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
-CZ_PM4_STOP_ON_WAIT=1      stall the ring at an unsatisfied wait, as hardware does.
-                   Until phase C part 4 this was gated on `depth == 0` and therefore
-                   could not affect a single one of this title's hand-off waits, all
-                   of which are inside INDIRECT BUFFERs — so both of its retirements
-                   measured a no-op (gotcha 151). It now stalls at any depth and
-                   RESUMES at the recorded dword next tick rather than re-walking the
-                   buffer. Part 4 measured it parking at frame 1 on a WAIT for
-                   `mirror+4` to read zero; part 5 supplied both missing writers (the
-                   display-controller gate and the per-CPU acknowledge) and with them
-                   the SAME flag runs a frame-paced boot to the title screen with
-                   truncated=0. Still off by default until it has a rate rather than a
-                   run behind it
+CZ_PM4_NO_STOP_ON_WAIT=1   do NOT stall the ring at an unsatisfied WAIT_REG_MEM —
+                   i.e. the pre-part-6 command processor, which evaluates each wait
+                   once and carries on. **The brake is ON by default since phase C
+                   part 6**, because that is what hardware does and because 40 runs
+                   say so: PM4 control 2,446 frames +-1 over 10 runs with the swap
+                   queue's head equal to its tail 10 of 10, against a queue that
+                   OVERFLOWS 10 of 10 free-running; phase C draw 3,614-3,670 frames
+                   against a BIMODAL 332..3,451,841. Zero crashes and truncated=0 in
+                   all 40. This flag is the same-binary control arm for every one of
+                   those claims. (CZ_PM4_STOP_ON_WAIT=1 still works, so recipes
+                   written before part 6 keep meaning what they said.) Until part 4
+                   the brake was gated on `depth == 0` and could not affect a single
+                   one of this title's hand-off waits, all of which are inside
+                   INDIRECT BUFFERs — so both of its early retirements measured a
+                   no-op (gotcha 151)
 CZ_NO_VBLANK_GATE=1  do NOT assert bit 0 of the display controller's gate at
                    0x7FC86544 — i.e. the pre-part-5 runtime, in which the guest's own
                    vblank ISR never runs its swap-queue walker. The same-binary control
@@ -1714,7 +1772,8 @@ silent recompiler, zero dropped branches, zero `// ERROR`, `--smoke` passing.
 
 **The frontend was waiting for input, and that is now measured (session 6).**
 `docs/phase1-notes.md` finding 37. A healthy run reaches the **title screen** — 64
-files through to `prologue_menu\prologue_z01.big`, rendering at ~34 fps and ~1,982
+files through to `prologue_menu\prologue_z01.big` — the print cap, corrected in part 6
+to 84 files ending at `skeleton\cinezombie.big` (gotcha 109) — rendering at ~34 fps and ~1,982
 draws/frame against A1's title-screen ~2,540 — and sits there. Supplying one synthetic
 START press (`CZ_FAKE_START_MS`, a measurement arm, never on for a gate) advances the
 A1 gate from an 84-deep prefix to **85**, `XamShowDeviceSelectorUI`, five log lines
@@ -2153,6 +2212,49 @@ return-value semantics. A1 on the replace arm has exactly one real window
 consumption, which the arm removes by design). Next: phase C — service the
 draws/state with a host renderer reusing `vk_renderer.cpp`'s decode guts, keyed
 off the device struct's register shadow (offsets in the Phase A table).
+
+**PHASE C PART 6 (2026-08-06, session 18): the brake is the DEFAULT, on 40 runs — and
+three of the four numbers it was to be judged on could not have judged it.** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 6".
+
+`CZ_PM4_STOP_ON_WAIT` is promoted; **`CZ_PM4_NO_STOP_ON_WAIT=1` is now the control
+arm.** 10 runs per configuration, 120 s each, arms alternated within each round:
+
+| | frames (median) | spread | max hold streak | queue head==tail | deepest | crashes |
+|---|---|---|---|---|---|---|
+| PM4, brake off | 3,680 | 1x | 0 | **0 of 10** | #83 | 0 |
+| **PM4, brake on** | 2,446 | 1x | 1 | **10 of 10** | #83 | 0 |
+| draw, brake off | 290,874 | **10,397x** | 0 | 3 of 10 | #60 | 0 |
+| **draw, brake on** | 3,616 | 1x | 2 | **10 of 10** | #60 | 0 |
+
+`truncated=0` in all 40. The cost is 2,446 frames against 3,680 and it is not a loss —
+it is the title paced at its own frame timing rather than the CP outrunning it. Two
+facts in that table are about the title, not the brake: **free-running overflows the
+flip queue in 10 of 10** (the unpaced state was never healthy, it just had no
+instrument on it), and **the draw arm's default configuration is BIMODAL** — 332 to
+3,451,841 frames — so part 5's two draw-arm numbers are two modes of one distribution
+(gotcha 159).
+
+**Part 4's prediction is RETIRED, not confirmed.** Re-running part 3's instruments on
+the current binary: the brake cuts the callback hand-off's per-frame amplification
+~39x (430 -> 11.1 kicks/frame against the control arm's 1.9) but leaves the raw
+deliveries-to-armings ratio **unchanged at ~300x**. It contains the symptom; the cause
+is untouched, and that is where part 7 starts.
+
+Three of the harness's own numbers were broken before any of the above could be
+measured, and the story is gotchas 157-160: the deepest-file column was the PRINT CAP
+(the boot opens 84 files, not 64, and ends at `cinezombie.big`); the stall counts were
+the running index of a capped print; the number that decides the promotion — is a stall
+ever released — did not exist; and the counter written for it was wrong twice, caught
+both times by the deliberately-parked control arm rather than by reading the code.
+`MirrorIsPoisoned()` is NOT retired by the promotion as the kickoff expected: it
+records zero skips across all 40 runs **including brake-off**, so it was already inert
+independently.
+
+**Gates:** `--smoke` OK; A5 **exit 0, 0 real windows, both arms**; A1 exact 82-prefix
+on the draw arm; both capture oracles clean. A1's position-71 window permutes 4 of 10
+brake-on against 1 of 10 brake-off (Fisher p ~= 0.30, no cost in depth or in A5) —
+reported because it is the one number that is not flat.
 
 Next, in order:
 

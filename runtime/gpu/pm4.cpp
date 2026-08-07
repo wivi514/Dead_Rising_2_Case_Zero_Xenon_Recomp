@@ -96,9 +96,37 @@ uint32_t g_ringBase = 0;   // guest virtual address of the ring
 uint32_t g_ringDwords = 0; // ring size in dwords
 uint32_t g_cursor = 0;     // our read pointer, ring-relative, in dwords
 
-// CZ_PM4_STOP_ON_WAIT — see the WAIT_REG_MEM case. Read once; an env lookup per
-// packet would be measurable at 1.27 M packets per 25 s.
-const bool g_stopOnWait = getenv("CZ_PM4_STOP_ON_WAIT") != nullptr;
+// The brake: hold at an unsatisfied WAIT_REG_MEM instead of evaluating it once and
+// carrying on. See the WAIT_REG_MEM case for the mechanism and StallPlan for the
+// resume. Read once; an env lookup per packet would be measurable at 1.27 M packets
+// per 25 s.
+//
+// ON BY DEFAULT since phase C part 6. This is what hardware does — the command
+// processor cannot run ahead of the CPU — and it was off only because part 5 had one
+// run per arm behind it. Promoted on 40 runs, 10 per configuration, arms alternated
+// within each round, same binary (docs/d3d-translation-plan.md, "Phase C part 6"):
+//
+//   PM4 control  brake on   2,446 frames +-1 over 10 runs, swap queue head == tail
+//                           10 of 10, boot to #83 cinezombie.big, 0 crashes,
+//                           truncated=0, max hold streak 1 tick
+//   PM4 control  brake off  3,680 frames, and the queue OVERFLOWS in 10 of 10 (head
+//                           25-29 against tail ~3,679): the title free-running with
+//                           nothing draining its flips
+//   phase C draw brake on   3,614-3,670 frames, i.e. a 1x spread
+//   phase C draw brake off  332 to 3,451,841 frames — a 10,397x BIMODAL spread, three
+//                           near-stalled runs and seven runaway
+//
+// The cost is real and is not a loss: 2,446 frames against 3,680 is the title being
+// paced at its own frame timing instead of the CP outrunning it.
+//
+// CZ_PM4_NO_STOP_ON_WAIT=1 is the same-binary control arm for every claim above, and
+// the flag CZ_PM4_STOP_ON_WAIT still works so older recipes keep meaning what they
+// said. The failure mode this could have had — a wait nothing ever satisfies, parking
+// the ring forever — is measured rather than assumed: `ring: waits ... max=` in the
+// ring trace is the longest run of consecutive ticks spent on one wait, and it reads
+// 1 on the control arm and 2 on the draw arm against 5,491 for a deliberately parked
+// ring (CZ_ISR_SINGLE_CPU=1 with the brake on).
+const bool g_stopOnWait = getenv("CZ_PM4_NO_STOP_ON_WAIT") == nullptr;
 
 // CZ_PM4_ZERO_IS_NOP — the rejected reading of a zero header, kept as a measurable
 // arm rather than deleted; see ExecutePacket.
@@ -416,9 +444,23 @@ bool g_stallHit = false;   // an unsatisfied wait stopped this tick's walk
 // Reported once a second on the ring trace, beside truncated=, because that is where
 // this project already keeps the counter whose nonzero value means a thread is waiting
 // forever.
+// The number that says "parked" is the CONSECUTIVE-HOLD STREAK, not a release count.
+//
+// The first version of this counted a release whenever the next tick's stall had a
+// different (buffer, dword) identity, and that discriminator is not stable across the
+// two arms: phase C re-emits its hand-off block at the SAME private-scratch address
+// every frame, so a perfectly healthy re-stall looks identical to being stuck, while
+// the PM4 arm's blocks land at rotating ring addresses and every re-stall looks like a
+// fresh release. Same behaviour, opposite readings — it scored the control arm 100%
+// and the draw arm 4.9% while both were advancing one swap-queue record per frame.
+//
+// How many ticks IN A ROW the ring has sat on one wait has no such dependency. A title
+// pacing itself releases within a tick or three; a ring nothing will ever release grows
+// the streak without bound. Max streak is the whole diagnosis in one number.
 std::atomic<uint64_t> g_waitUnmet{ 0 };     // WAIT_REG_MEM evaluated and not satisfied
 std::atomic<uint64_t> g_ringHeld{ 0 };      // ticks that ended held at such a wait
-std::atomic<uint64_t> g_ringReleased{ 0 };  // held ticks whose wait later came true
+std::atomic<uint64_t> g_holdStreak{ 0 };    // consecutive ticks held at the SAME wait
+std::atomic<uint64_t> g_holdStreakMax{ 0 };
 
 // Returns the dword position the walk stopped at — `sizeDwords` if it consumed the
 // whole buffer, less than that if a packet claimed more dwords than remained. Callers
@@ -763,11 +805,12 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 break;
             const uint32_t info = body(0), poll = body(1), ref = body(2), mask = body(3);
             const bool isMemory = (info & 0x10) != 0;
-            // Evaluated once, not spun on. Everything this executor can satisfy it
-            // has already satisfied by the time it gets here, because we execute the
-            // stream strictly in order and synchronously; and a wait that only a
-            // guest thread can satisfy must NOT be blocked on, because that guest
-            // thread is very likely the one waiting for us to make progress.
+            // Never SPUN on, whatever the brake says. Everything this executor can
+            // satisfy it has already satisfied by the time it gets here, because we
+            // execute the stream strictly in order and synchronously; and a wait that
+            // only a guest thread can satisfy must not be blocked on inside this call,
+            // because that guest thread is very likely the one waiting for us to make
+            // progress. Holding means returning and retrying next tick — see below.
             uint32_t value;
             if (isMemory)
             {
@@ -792,8 +835,8 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                             (unsigned long long)n, g_stopOnWait ? "STOPPING" : "continuing",
                             isMemory ? "mem" : "reg", poll, value, mask, ref, info & 7);
 
-                // CZ_PM4_STOP_ON_WAIT=1 — the more faithful behaviour, offered as an
-                // experiment rather than the default because it can regress.
+                // The brake, on by default since part 6 (see g_stopOnWait for the 40
+                // runs behind that). CZ_PM4_NO_STOP_ON_WAIT=1 is the control arm.
                 //
                 // Real hardware STALLS the command processor here until the condition
                 // holds; we evaluate once and carry on, which is how our CP gets
@@ -803,12 +846,13 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // against the very guest thread that has to satisfy the wait, but
                 // returning and retrying next tick — is what the console does.
                 //
-                // The risk, and the reason it is not the default: if the condition is
-                // only ever satisfied by work that appears LATER in the same stream,
-                // the ring stalls permanently. That failure is at least loud —
-                // Pm4_Execute reports a frozen cursor after 60 ticks — but it would
-                // regress a gate that currently reaches 56 of 93. Measure both arms
-                // before promoting it.
+                // The risk this carried while it was off: a condition only ever
+                // satisfied by work appearing LATER in the same stream parks the ring
+                // permanently. It is no longer a hypothetical either way — the hold
+                // streak in the ring trace counts consecutive ticks on one wait, and
+                // it reads 1 (control arm) and 2 (draw arm) against 5,491 for a ring
+                // deliberately parked with CZ_ISR_SINGLE_CPU=1. Both stall sites also
+                // stay loud: Pm4_Execute reports a frozen cursor after 60 ticks.
                 //
                 // It stalls at ANY depth now (see StallPlan above). The `depth == 0`
                 // this used to carry made the flag unable to affect a single one of
@@ -1266,6 +1310,7 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     // the parked ones, which is the one case this counter exists to name.
     const StallPlan prevPlan = g_stallPlan;
     const bool wasHeld = prevPlan.pending;
+    const uint32_t cursorAtEntry = g_cursor; // "did the ring move at all this tick"
     g_stallHit = false;
     g_stallNext = StallPlan{};
 
@@ -1281,19 +1326,13 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     }
 
     g_stallNext.pending = g_stallHit;
-    // Held this tick, or released the wait the previous tick was held at. "Released" is
-    // the whole point: a brake whose stalls are all released is the title pacing
-    // itself, and a brake with stalls and no releases is a parked ring wearing exactly
-    // the same numbers everywhere else.
-    //
-    // The comparison is against the stall's IDENTITY (which buffer, which dword), not
-    // against "did this tick stall at all". A paced boot stalls on nearly every tick —
-    // it releases one hand-off wait and runs on to the next frame's — so counting only
-    // ticks that ended clean undercounts releases by a handful per second and makes the
-    // warning below fire on a perfectly healthy run.
-    if (wasHeld)
+    // The consecutive-hold streak: how many ticks in a row the ring has sat on ONE
+    // wait. Progress of any kind — the cursor moved, or the stall moved to a different
+    // packet — ends the streak. See the counters above for why this and not a release
+    // count.
+    if (g_stallHit)
     {
-        bool sameWait = g_stallHit;
+        bool sameWait = wasHeld && g_cursor == cursorAtEntry;
         if (sameWait)
             for (int d = 1; d < 9; ++d)
                 if (g_stallNext.va[d] != prevPlan.va[d] || g_stallNext.pos[d] != prevPlan.pos[d])
@@ -1301,9 +1340,13 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
                     sameWait = false;
                     break;
                 }
-        if (!sameWait)
-            g_ringReleased.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t streak = sameWait ? g_holdStreak.load() + 1 : 1;
+        g_holdStreak.store(streak);
+        if (streak > g_holdStreakMax.load())
+            g_holdStreakMax.store(streak);
     }
+    else
+        g_holdStreak.store(0);
     g_stallPlan = g_stallNext; // AFTER the comparison above, which reads the old plan
     if (g_stallHit)
     {
@@ -1389,7 +1432,8 @@ uint64_t Pm4_IbVerifyDirtyCount() { return g_ibVerifyDirty.load(); }
 
 uint64_t Pm4_WaitUnmetCount() { return g_waitUnmet.load(); }
 uint64_t Pm4_RingHeldCount() { return g_ringHeld.load(); }
-uint64_t Pm4_RingReleasedCount() { return g_ringReleased.load(); }
+uint64_t Pm4_HoldStreak() { return g_holdStreak.load(); }
+uint64_t Pm4_HoldStreakMax() { return g_holdStreakMax.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }

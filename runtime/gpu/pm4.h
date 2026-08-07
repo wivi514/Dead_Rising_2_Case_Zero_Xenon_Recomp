@@ -103,17 +103,22 @@ uint64_t Pm4_IbTruncatedCount();
 uint64_t Pm4_IbVerifyCleanCount();
 uint64_t Pm4_IbVerifyDirtyCount();
 
-// WAIT_REG_MEM health, and the pair that decides whether CZ_PM4_STOP_ON_WAIT is safe
-// as a default. `unmet` counts every evaluation that failed (with the brake off, the
-// command processor carries on past each one). `held` counts the ticks the brake
-// actually stopped a walk, and `released` the held ticks whose condition later came
-// true. held == released + (at most one outstanding) is a title pacing itself;
-// held climbing with released pinned is a ring parked forever, which looks exactly
-// like health in every other counter. Both stall sites print sparsely, so these exist
+// WAIT_REG_MEM health, and the numbers that decide whether CZ_PM4_STOP_ON_WAIT is
+// safe as a default. `unmet` counts every evaluation that failed (with the brake off,
+// the command processor carries on past each one). `held` counts the ticks the brake
+// actually stopped a walk.
+//
+// `streak`/`streakmax` are how many ticks IN A ROW the ring has sat on one wait: a
+// title pacing itself releases within a tick or three, a ring nothing will ever
+// release grows the streak without bound. A release COUNT cannot do this job — its
+// discriminator (has the stall's address changed?) reads the two arms differently,
+// because phase C re-emits its hand-off block at a fixed scratch address while the
+// PM4 arm's rotate through the ring. Both stall sites print sparsely, so these exist
 // because the running index of a capped print is not a count (gotcha 109).
 uint64_t Pm4_WaitUnmetCount();
 uint64_t Pm4_RingHeldCount();
-uint64_t Pm4_RingReleasedCount();
+uint64_t Pm4_HoldStreak();
+uint64_t Pm4_HoldStreakMax();
 
 // The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
 // FNV-1a over the big-endian microcode and is the renderer's cache key; it is zero

@@ -909,6 +909,128 @@ Unchanged from the phase C best.
   The transferable form: when a hand-off has a CPU side you cannot find, check what the
   other ports did about the display controller.
 
+### Phase C part 6: the brake is PROMOTED — and three of the numbers it was to be judged on could not have judged it
+
+Session 18 (2026-08-06). Part 5 ran the brake once per arm, said so, and left the
+promotion to part 6 as a measurement. It is made, the brake is on by default, and the
+more transferable half of the session is what building the harness for it found.
+
+**Three of the four columns the decision would have been scored on were broken, and
+each in a different way.**
+
+* **The deepest file was a CAP, not a depth.** `NtCreateFile` printed only the first
+  64 successful opens and a boot-to-title opens exactly 64, so the log fell silent AT
+  the depth every claim in this project is scored on. "The boot opens 64 files" and
+  "deepest file `prologue_z01.big`" — quoted since finding 37 and in the part 5 tables
+  above — were statements about the printer. With the cap at 512 the same boot opens
+  **84** and ends at `#83 game:\data\skeleton\cinezombie.big`, having passed through
+  `cinematics.big` and `700_prologue_intro.big`. Gotcha 109 named this trap and the
+  emitter it was written about went unraised for four sessions.
+* **The stall counts were the running index of a capped print.** Both stall sites print
+  the first few and then one in 65,536 / 1,048,576, so "#4" means "at least 4, fewer
+  than a million". A healthy paced ring and a ring parked forever both report `#4` and
+  then fall silent.
+* **The number that actually decides the promotion did not exist.** The only real risk
+  of making the brake default is a wait nothing ever satisfies, and that state is
+  invisible: `truncated=0`, a plausible frame count, `head == tail`. Gotcha 81 — the
+  missing instrument is the one whose silence reads as health.
+
+**And the replacement was wrong twice, which is the part worth copying.** The first
+version counted a RELEASE whenever the next tick's stall had a different `(buffer,
+dword)` identity. Two defects, both caught by a control rather than by reading:
+
+1. It compared against `g_stallPlan` at end of tick — but the resume path CONSUMES its
+   entry (zeroes `va[depth]` once it has re-entered that buffer), so a parked ring
+   scored a release every tick. Running the known-parked configuration as a negative
+   control (`CZ_ISR_SINGLE_CPU=1` with the brake on, which part 5 measured parking at
+   frame 7) reported `released=4568` for a run that managed 6 frames.
+2. Fixed, it then reported the control arm at 100% released and the phase C draw arm at
+   **4.9%** — and that produced a confident finding ("the draw arm's ring is chronically
+   parked") that was **retracted the same session**. The draw arm's swap queue was
+   retiring one record per frame throughout. The discriminator is not stable across the
+   arms: phase C re-emits its hand-off block at the SAME private-scratch address every
+   frame, so a healthy re-stall is indistinguishable from being stuck, while the PM4
+   arm's blocks rotate through ring addresses and every re-stall looks like a fresh
+   release. Same behaviour, opposite readings.
+
+What has no such dependency is **how many ticks IN A ROW the ring sits on one wait**.
+`ring: waits unmet=N held=N streak=N max=N`, and the three states are three orders of
+magnitude apart:
+
+| | held | max streak | frames | swap queue |
+|---|---|---|---|---|
+| PM4 control, brake on | 1,846 | **1** | 1,846 | head == tail |
+| phase C draw, brake on | 5,249 | **2** | 2,684 | head == tail |
+| deliberately parked (`CZ_ISR_SINGLE_CPU=1`) | 5,498 | **5,491** | 8 | dead |
+| brake off | 0 | 0 | 2,779 | 26 / 2,778 |
+
+**The measurement: 40 runs, 10 per configuration, 120 s each, arms alternated WITHIN
+each round so a busy patch of the afternoon hits all four equally** (there was one —
+another port's runtime was running on the same machine for part of it).
+
+| | frames (median) | spread | max streak | queue head==tail | deepest | crashes | truncated |
+|---|---|---|---|---|---|---|---|
+| PM4, brake off | 3,680 | 1x | 0 | **0 of 10** | #83 | 0 | 0 |
+| **PM4, brake on** | 2,446 | **1x** | 1 | **10 of 10** | #83 | 0 | 0 |
+| draw, brake off | 290,874 | **10,397x** | 0 | 3 of 10 | #60 | 0 | 0 |
+| **draw, brake on** | 3,616 | **1x** | 2 | **10 of 10** | #60 | 0 | 0 |
+
+Two things in that table are new facts about the title rather than about the brake.
+**The control arm free-running overflows its flip queue in 10 of 10 runs** (head 25-29
+against tail ~3,679) — the unpaced state was never healthy, it merely had no instrument
+pointed at it. And **the draw arm's default configuration is BIMODAL**: 332 to 3,451,841
+frames, three near-stalled runs and seven runaway. Part 5's "1,745 frames" and
+"2,856,448 frames" are two modes of one distribution, not two measurements, and any
+single-run claim about that arm has been sampling a coin flip.
+
+So the brake is promoted: `CZ_PM4_NO_STOP_ON_WAIT=1` is now the control arm, and
+`CZ_PM4_STOP_ON_WAIT=1` still works so older recipes keep meaning what they said. The
+cost is stated rather than buried — 2,446 frames against 3,680 — and it is not a loss:
+it is the title paced at its own frame timing instead of the command processor
+outrunning it.
+
+**Part 6's second question is answered, and the answer is NO.** Part 4 predicted the
+draw arm's replay would collapse once the CP could not run ahead. Part 3's instruments
+re-run on the current binary, 200 s per arm, none of them saturating the probe budget:
+
+| | guest armings | ISR deliveries of `8284AAD0` | kicks per FRAME | vs control |
+|---|---|---|---|---|
+| PM4 control, brake on | 14,794 | 7,743 | 1.9 | 1x (gain < 1) |
+| draw, brake off | 437 | 143,191 | 430 | **226x** |
+| draw, brake on | 230 | 68,381 | 11.1 | **6x** |
+
+The brake cuts the per-frame amplification by ~39x, which is large and real, and the
+raw ratio of deliveries to armings is **unchanged at ~300x**. It contains the symptom
+and does not touch the cause. The prediction is retired, not confirmed; whatever makes
+one guest arming produce three hundred ISR deliveries on this arm is still there, and
+it is where part 7 starts.
+
+**`MirrorIsPoisoned()` is NOT retired by this, and the reason matters.** The kickoff
+expected the promotion to make that poison-skip path deletable. It records **zero skips
+across all 40 campaign runs — including the brake-OFF arms** — so it is already inert
+independent of the brake, and crediting the promotion for it would be crediting the
+wrong change. It stays until something explains why the case it was written for no
+longer occurs.
+
+**Gates, this binary, new default, both arms:** `--smoke` OK; A5 **exit 0, 0 real
+windows, on both arms**; A1 an **exact 82-prefix on the draw arm** (the phase C best);
+both capture oracles clean (`pm4_packet_lengths.py` 0 disagreeing over 24.5 M packets,
+`pm4_indirect_walks.py` OK over 28,726 buffers); `truncated=0` in all 40 runs; zero
+crashes in all 40.
+
+**The one number that is not flat, reported because it is not flat.** A1's
+position-71 window (`XamUserCheckPrivilege` vs `XexGetModuleHandle`) has been known
+since phase 1 to be scheduling-sensitive on both binaries. The campaign left 20 saved
+control-arm logs, so the rate is free rather than a single run (gotcha 95): it
+permutes in **4 of 10 brake-on runs against 1 of 10 brake-off**. That is not
+distinguishable at this sample size (Fisher two-tailed p ~= 0.30) and the mechanism
+is plausible either way, since pacing the ring changes thread interleaving. It costs
+nothing measurable: all 10 brake-on runs reach `#83 cinezombie.big`, A5 is exit 0
+with zero real windows, and the window is a permutation of one name set rather than
+a missing or extra call. Recorded so that a future session reading "4 of 10" does not
+mistake a known window for a new regression — and so that if it ever climbs, there is
+a number to climb from.
+
 ## Standing discipline, unchanged
 
 Both arms in the same binary; a rate, never a single run; the animated title screen is
