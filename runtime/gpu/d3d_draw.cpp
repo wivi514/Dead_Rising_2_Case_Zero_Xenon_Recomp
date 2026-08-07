@@ -500,9 +500,18 @@ uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t ava
             d.indexed = sourceSelect == 0;
             if (d.indexed && bodyCount > initiatorAt + 2)
             {
+                // Same decode as gpu/pm4.cpp's DRAW_INDX — the swizzle is the TOP two
+                // bits of the SIZE dword, and the address dword is a bare address
+                // whose bit 1 is real (16-bit index buffers are 2-byte aligned). The
+                // two walkers have to agree or the arms stop being comparable.
                 const uint32_t addrDword = body(initiatorAt + 1);
-                d.indexEndian = addrDword & 3;
-                d.indexVa = PhysToVa(addrDword & ~3u);
+                const uint32_t sizeDword = body(initiatorAt + 2);
+                static const bool oldReading =
+                    getenv("CZ_PM4_INDEX_ADDR_SWIZZLE") != nullptr;
+                d.indexEndian = oldReading ? (addrDword & 3) : (sizeDword >> 30);
+                d.indexVa = PhysToVa(oldReading ? (addrDword & ~3u) : addrDword);
+                d.indexEndianTop = sizeDword >> 30;
+                d.indexSizeDword = sizeDword;
             }
             else if (d.indexed)
             {

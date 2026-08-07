@@ -160,6 +160,11 @@ struct Pm4Draw
     uint32_t indexVa;     // guest VA of the index buffer, 0 when not indexed
     bool index32;         // 32-bit indices rather than 16-bit
     uint32_t indexEndian; // the index buffer's own endian swizzle code
+    // The SAME question read the other way: hardware carries a DMA index buffer's
+    // swizzle in the TOP two bits of the size dword, not the low two of the address.
+    // Both readings are carried so an arm can switch between them in one binary.
+    uint32_t indexEndianTop;
+    uint32_t indexSizeDword;
 };
 void Pm4_SetDrawSink(void (*sink)(uint8_t* base, const Pm4Draw&));
 

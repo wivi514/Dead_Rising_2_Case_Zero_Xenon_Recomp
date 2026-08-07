@@ -2530,22 +2530,25 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // or by a transform the shader applied.
     if (EnvOn("CZ_VK_VIEWPORT_TRACE"))
     {
-        static std::vector<uint64_t> seen;
-        const uint64_t k = (uint64_t(vte & 0x3F) << 58) ^
-                           (uint64_t(uint32_t(viewport.x)) << 40) ^
-                           (uint64_t(uint32_t(viewport.y)) << 26) ^
-                           (uint64_t(uint32_t(viewport.width)) << 13) ^
-                           uint64_t(uint32_t(viewport.height));
-        if (std::find(seen.begin(), seen.end(), k) == seen.end() && seen.size() < 64)
+        // The SCISSOR is part of the setup and belongs in the key. This title tiles its
+        // scene, so two draws with the same viewport and different scissors are two
+        // different tiles — and reading a trace that cannot tell them apart is how
+        // "which half of the screen is this pass painting?" stays unanswerable.
+        static std::vector<std::string> seen;
+        char line[512];
+        snprintf(line, sizeof line,
+                 "[vkvp] vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
+                 "%.1f,%.1f %.1fx%.1f  scissor %d,%d %ux%u  winoff=%08X "
+                 "posScale=%.5f,%.5f posOffset=%.2f,%.2f surfacePitch=%u",
+                 vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
+                 viewport.height, scissor.offset.x, scissor.offset.y,
+                 scissor.extent.width, scissor.extent.height,
+                 regs[xenos::kPaScWindowOffset], posScale[0], posScale[1], posOffset[0],
+                 posOffset[1], regs[xenos::kRbSurfaceInfo] & 0x3FFF);
+        if (std::find(seen.begin(), seen.end(), line) == seen.end() && seen.size() < 64)
         {
-            seen.push_back(k);
-            fprintf(stderr,
-                    "[vkvp] vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
-                    "%.1f,%.1f %.1fx%.1f  posScale=%.5f,%.5f posOffset=%.2f,%.2f "
-                    "surfacePitch=%u\n",
-                    vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
-                    viewport.height, posScale[0], posScale[1], posOffset[0], posOffset[1],
-                    regs[xenos::kRbSurfaceInfo] & 0x3FFF);
+            seen.push_back(line);
+            fprintf(stderr, "%s\n", line);
         }
     }
 

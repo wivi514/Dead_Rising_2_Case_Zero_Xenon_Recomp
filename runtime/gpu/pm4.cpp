@@ -777,16 +777,65 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             d.indexCount = init >> 16;
             d.indexed = sourceSelect == 0; // 0 = DMA; 2 = auto-index; 1 = immediate
 
-            // The index buffer's address dword follows the initiator, and like every
-            // address in this stream it carries its endian swizzle in the low two
-            // bits. Dropping that swizzle is not a crash — it is a mesh whose indices
-            // are byte-reversed, which draws a dense triangle soup over the screen and
-            // reads as a vertex-format bug.
+            // THE INDEX BUFFER'S ADDRESS AND ITS SWIZZLE ARE IN DIFFERENT DWORDS, and
+            // getting that wrong was this renderer's exploded geometry.
+            //
+            // Most addresses in a PM4 stream carry their endian swizzle in the low two
+            // bits, and DRAW_INDX is the exception: `dword[n+1]` is a bare physical
+            // address and `dword[n+2]` is `endian:2 | 0 | count:24`. Reading the
+            // swizzle off the address instead cost TWO defects in one line —
+            //
+            //   * the swizzle came out as 0 or 2 depending on nothing but alignment,
+            //     when the packet says **1 (8-in-16) on every draw in this title**,
+            //     which is the only swizzle that makes sense for a big-endian 16-bit
+            //     index buffer; and
+            //   * masking the low two bits off the address MOVED IT. 16-bit index
+            //     buffers are 2-byte aligned, so bit 1 is a real address bit — about
+            //     40% of this title's draws have it set, and every one of those was
+            //     read one index early.
+            //
+            // The count is in both dwords (`init >> 16` and `size & 0xFFFFFF`) and
+            // they agree on every draw of a boot, which is the packet's own check that
+            // this reading of the size dword is the right one.
             if (d.indexed && bodyCount > initiatorAt + 2)
             {
                 const uint32_t addrDword = body(initiatorAt + 1);
-                d.indexEndian = addrDword & 3;
-                d.indexVa = PhysToVa(addrDword & ~3u);
+                const uint32_t sizeDword = body(initiatorAt + 2);
+                // CZ_PM4_INDEX_ADDR_SWIZZLE=1 restores the old reading — the
+                // same-binary control arm for the fix.
+                static const bool oldReading = getenv("CZ_PM4_INDEX_ADDR_SWIZZLE") != nullptr;
+                d.indexEndian = oldReading ? (addrDword & 3) : (sizeDword >> 30);
+                d.indexVa = PhysToVa(oldReading ? (addrDword & ~3u) : addrDword);
+                d.indexEndianTop = sizeDword >> 30;
+                d.indexSizeDword = sizeDword;
+                // The packet states the index count TWICE, and the two readings
+                // agreeing is the standing proof that this decode of the size dword is
+                // the right one. Silent on a healthy stream; the moment it is not, the
+                // layout assumption above has stopped holding and the geometry that
+                // follows is not to be trusted.
+                if ((sizeDword & 0xFFFFFFu) != d.indexCount)
+                {
+                    static uint32_t complained = 0;
+                    if (complained++ < 8)
+                        fprintf(stderr,
+                                "[pm4] DRAW_INDX index count disagrees: init>>16=%u "
+                                "size&0xFFFFFF=%u (size=%08X) — the size dword's "
+                                "layout is not endian:2|count:24 as assumed\n",
+                                d.indexCount, sizeDword & 0xFFFFFFu, sizeDword);
+                }
+                // CZ_PM4_DRAW_TRACE=1 — the raw DRAW_INDX body for the first few
+                // draws. Which dword carries the index swizzle is the whole question
+                // (low two bits of the ADDRESS, as every other address in this stream
+                // does it, or the top two bits of the SIZE dword), and only the packet
+                // can answer it.
+                static int left = getenv("CZ_PM4_DRAW_TRACE") ? 24 : 0;
+                if (left-- > 0)
+                    fprintf(stderr,
+                            "[pm4draw] init=%08X prim=%u count=%u i32=%u addr=%08X "
+                            "size=%08X  addr&3=%u  size>>30=%u  size&0xFFFFFF=%u\n",
+                            init, d.primType, d.indexCount, d.index32 ? 1u : 0u,
+                            addrDword, sizeDword, addrDword & 3, sizeDword >> 30,
+                            sizeDword & 0xFFFFFF);
             }
             else if (d.indexed)
             {
