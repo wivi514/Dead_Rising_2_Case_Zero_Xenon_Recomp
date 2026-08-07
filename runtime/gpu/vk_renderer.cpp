@@ -533,6 +533,20 @@ struct TextureEntry
 // bit 31 is free for the purpose and the key stays one integer.
 constexpr uint32_t kSnapshotDepthBit = 0x80000000u;
 
+// The largest resolve destination we will build a snapshot image for. This title's
+// biggest is its shadow cascade at 4096x1024; the cap exists so a garbage
+// RB_COPY_DEST_PITCH cannot ask for a terabyte, and it has its own counter so hitting
+// it is visible rather than silent.
+constexpr uint32_t kMaxSurfaceExtent = 4096;
+
+// The EDRAM stand-in's size, which is NOT the presented frame's size and was the same
+// number for five phases. The scene is 1280x720, but the shadow pass renders a
+// 1024x1024 cascade — so with a 720-row target every cascade lost its bottom 304 rows
+// before anything downstream had a chance to sample them. Heights are what this title
+// needs more of; the width stays at the presentation width because no pass here renders
+// wider than the screen.
+constexpr uint32_t kEdramHeight = 1024;
+
 struct Snapshot
 {
     Image image;
@@ -1468,7 +1482,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         }
         if (g_texCensus)
         {
-            TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
+            // Keyed with the depth bit, for the same reason the snapshot map is
+            // (gotcha 203): one address can be a colour surface and a depth one in the
+            // same frame, and keyed on the address alone the two overwrite each other's
+            // extent and format so the row shows whichever fetched last. 1439B000 is
+            // exactly that — the tone map's output AND a shadow cascade — and the
+            // aliased row read `1280x720 f6`, which is the colour use and says nothing
+            // about the shadow map's real dimensions.
+            TexSource& s = g_texSources[(t.address & 0x1FFFFFFF) |
+                                        (wantsDepth ? kSnapshotDepthBit : 0u)];
             s.width = t.width;
             s.height = t.height;
             s.format = t.format;
@@ -3733,12 +3755,39 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     const uint32_t baseKey =
         (dest - macroTileOffset(wx, wy, surfW)) & 0x1FFFFFFF;
 
-    const uint32_t w = std::min(surfW, R->color.width);
-    const uint32_t h = std::min(surfH, R->color.height);
+    // THE SNAPSHOT IS THE SIZE OF THE DESTINATION SURFACE, not of our EDRAM.
+    //
+    // It used to be `min(surface, EDRAM)`, which is wrong whenever the two differ and
+    // silently so: a consumer samples the surface with NORMALIZED coordinates computed
+    // for the extent the FETCH CONSTANT declares, so an image of any other size hands it
+    // different texels. This title's shadow cascade is the case that matters — the guest
+    // declares it 4096x1024 and fetches it 629,023 times a boot, more than any other
+    // texture in the frame, and it was being stored 1280x720. Nothing about the shadow
+    // lookup could work, which is exactly what the picture showed: no shadows anywhere,
+    // and the power-line shadow across the Still Creek forecourt missing.
+    //
+    // The COPY is still bounded by what the EDRAM actually holds — we cannot copy pixels
+    // we never rendered — and the shortfall is counted rather than silently absorbed,
+    // because "the snapshot is the right size" and "the snapshot is FULL" are different
+    // claims and only the second one makes a shadow map usable.
+    static const bool smallEdram = EnvOn("CZ_VK_SMALL_EDRAM");
+    const uint32_t w = smallEdram ? std::min(surfW, R->color.width)
+                                  : std::min(surfW, kMaxSurfaceExtent);
+    const uint32_t h = smallEdram ? std::min(surfH, R->color.height)
+                                  : std::min(surfH, kMaxSurfaceExtent);
+    if (!smallEdram && (surfW > kMaxSurfaceExtent || surfH > kMaxSurfaceExtent))
+        Count("resolve: destination surface larger than the snapshot cap");
     const uint32_t copyX = std::min(wx, w);
     const uint32_t copyY = std::min(wy, h);
-    const uint32_t copyW = wx1 > wx ? std::min(wx1, w) - copyX : w - copyX;
-    const uint32_t copyH = wy1 > wy ? std::min(wy1, h) - copyY : h - copyY;
+    uint32_t copyW = wx1 > wx ? std::min(wx1, w) - copyX : w - copyX;
+    uint32_t copyH = wy1 > wy ? std::min(wy1, h) - copyY : h - copyY;
+    // Bound by the EDRAM we can read from, and say so when that bites.
+    const uint32_t availW = copyX < R->color.width ? R->color.width - copyX : 0;
+    const uint32_t availH = copyY < R->color.height ? R->color.height - copyY : 0;
+    if (copyW > availW || copyH > availH)
+        Count("resolve: copy region clipped by the EDRAM stand-in's size");
+    copyW = std::min(copyW, availW);
+    copyH = std::min(copyH, availH);
     if (w && h && copyW && copyH)
     {
         const uint32_t key = baseKey | (fromDepth ? kSnapshotDepthBit : 0u);
@@ -3917,7 +3966,16 @@ bool InitCommon()
 
     // The EDRAM stand-in. Sized to the guest's own stated front-buffer dimensions,
     // which VdSwap carries in every swap packet; 1280x720 until the first one arrives.
-    if (!CreateImage(R->color, R->targetWidth, R->targetHeight,
+    // The EDRAM stand-in is TALLER than the presented frame, and that is the point.
+    // `targetWidth/targetHeight` is what VdSwap says the FRONT BUFFER is; the EDRAM has
+    // to hold the largest surface any PASS renders into, and this title's shadow pass
+    // renders a 1024x1024 cascade. At 720 rows every cascade lost its bottom 304 rows
+    // before anything could sample them. `CZ_VK_SMALL_EDRAM=1` restores the old size and
+    // is the same-binary control arm.
+    static const bool smallEdram = EnvOn("CZ_VK_SMALL_EDRAM");
+    const uint32_t edramH =
+        smallEdram ? R->targetHeight : std::max(R->targetHeight, kEdramHeight);
+    if (!CreateImage(R->color, R->targetWidth, edramH,
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -3925,7 +3983,7 @@ bool InitCommon()
         // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
         // buffer rather than the colour one (its shadow cascades and the scene depth
         // its depth-of-field pass reads back) — see DoResolve.
-        !CreateImage(R->depth, R->targetWidth, R->targetHeight,
+        !CreateImage(R->depth, R->targetWidth, edramH,
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -3968,7 +4026,13 @@ bool InitCommon()
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       false) ||
         !CreateBuffer(R->readback,
-                      uint64_t(R->targetWidth) * R->targetHeight * 4,
+                      // Big enough for the presented frame AND for the largest snapshot
+                      // CZ_VK_SNAP_DUMP might read back — this title's shadow cascade
+                      // is 4096x1024, and the dump SKIPS anything that does not fit,
+                      // which would have made the one surface under investigation the
+                      // one surface absent from the directory.
+                      std::max(uint64_t(R->targetWidth) * R->targetHeight,
+                               uint64_t(4096) * 1024) * 4,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -4143,8 +4207,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     if (frontSnap == R->snapshots.end())
         R->haveFrontSnapshot = false;
     Image& source = R->haveFrontSnapshot ? frontSnap->second.image : R->color;
-    const uint32_t width0 = R->haveFrontSnapshot ? R->frontWidth : R->color.width;
-    const uint32_t height0 = R->haveFrontSnapshot ? R->frontHeight : R->color.height;
+    // The raw-EDRAM fallback presents the FRAME's extent, not the EDRAM image's. Those
+    // stopped being the same number when the EDRAM grew to hold the 1024-row shadow
+    // cascade, and reading back the whole image would hand the window a 1280x1024
+    // buffer as if it were the 1280x720 frame.
+    const uint32_t width0 = R->haveFrontSnapshot ? R->frontWidth : R->targetWidth;
+    const uint32_t height0 = R->haveFrontSnapshot ? R->frontHeight : R->targetHeight;
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
 
@@ -4560,9 +4628,10 @@ void VkRenderer_DumpStats()
                                : "   <- uploaded BLACK, guest memory is NON-ZERO NOW";
             }
             fprintf(stderr,
-                    "[vk]     %08X %4ux%-4u f%-2u | up %llu (zero %llu)  snap %llu  "
+                    "[vk]     %08X%-7s %4ux%-4u f%-2u | up %llu (zero %llu)  snap %llu  "
                     "tooOld %llu (max age %llu)%s\n",
-                    addr, s.width, s.height, s.format, (unsigned long long)s.uploads,
+                    addr & 0x1FFFFFFF, (addr & kSnapshotDepthBit) ? "(depth)" : "",
+                    s.width, s.height, s.format, (unsigned long long)s.uploads,
                     (unsigned long long)s.zeroUploads,
                     (unsigned long long)s.fromSnapshot,
                     (unsigned long long)s.snapshotTooOld, (unsigned long long)s.maxAge,
