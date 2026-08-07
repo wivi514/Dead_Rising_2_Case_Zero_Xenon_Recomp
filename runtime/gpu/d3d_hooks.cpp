@@ -43,6 +43,7 @@
 #include "ppc_recomp_shared.h"
 #include "pm4.h"
 #include "d3d_draw.h"
+#include "../cpu/chain_stats.h"
 #include "../cpu/fence_probe.h"
 #include "../host/window.h"
 
@@ -427,6 +428,14 @@ CZ_D3D_HOOKS(X)
 #define X(addr, name)                                                                \
     PPC_FUNC(sub_##addr)                                                             \
     {                                                                                \
+        /* Unconditional, and deliberately ABOVE both gates: these two feed the      */\
+        /* always-on `ring: chain` line, and the PM4 control arm runs with neither   */\
+        /* Observe() nor Replace() true. The conditions are compile-time constants,  */\
+        /* so every other row in the table pays nothing (see cpu/chain_stats.h).     */\
+        if (kH_##name == kH_Resolve)                                                 \
+            ChainStats_CountResolve();                                               \
+        if (kH_##name == kH_FrameEndAsyncSubmit)                                     \
+            ChainStats_CountAsyncSubmit();                                           \
         if (Observe()) {                                                             \
             Note(kH_##name, ctx);                                                    \
             if (kH_##name == kH_Swap)                                                \

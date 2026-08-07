@@ -55,6 +55,8 @@ struct ChainStats
     uint64_t ringsubEnts; // total indirect-buffer entries those calls submitted
     uint64_t segSubmit;   // sub_82845AC0 — segment submits
     uint64_t segQueued;   // ...of which forked into the worker token queue
+    uint64_t resolves;    // sub_82838858 — Resolve entries, the denominator below
+    uint64_t asyncSubmit; // sub_8284B9C0 — the frame-end async submit, i.e. the RESEED
 };
 
 // A snapshot. Not consistent across fields — they are independent relaxed counters read
@@ -65,3 +67,21 @@ ChainStats ChainStats_Read();
 // Counted here rather than in guest_probe.cpp because the ISR delivery loop lives in
 // gpu/vd.cpp and knows the CPU mask; guest_probe.cpp owns all the others.
 void ChainStats_CountIsr();
+
+// THE RESEED, and why it is on this line. Every link above says how a delivery is
+// regenerated; none of them says how the loop ENDS. sub_8284B9C0 is the answer: before
+// it arms sub_8284AAD0 it calls sub_82845290 on all SEVEN of the device's worker token
+// streams (dev+0x3470/0x3488/0x34A0/0x34B8/0x34D0/0x34E8/0x3500), i.e. it throws away
+// every segment descriptor a previous frame left in them, and then arms the callback
+// with the freshly-emptied dev+0x3500 head. A replayed walk of a stale stream survives
+// exactly until the next reseed rewrites the stream underneath it.
+//
+// Resolve (sub_82838858) calls it from its COMMON TAIL — single-tile and multi-tile
+// paths both converge on 82838CC8 — so `resolves` is the denominator that says whether
+// a low reseed count is a stopped run or a skipped call (gotcha 161: never quote a
+// total whose denominator has frozen). These are counted in gpu/d3d_hooks.cpp, which
+// already owns both symbols' strong definitions, and OUTSIDE its observe/replace gates
+// so the PM4 control arm reports them too — an instrument that only exists on the arm
+// under suspicion cannot compare the two (gotcha 142).
+void ChainStats_CountResolve();
+void ChainStats_CountAsyncSubmit();

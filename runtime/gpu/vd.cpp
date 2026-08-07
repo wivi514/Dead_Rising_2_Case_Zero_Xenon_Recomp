@@ -425,14 +425,15 @@ void GraphicsInterruptPump()
             const ChainStats cs = ChainStats_Read();
             KLOG("ring: chain arms=%llu ints=%llu isr=%llu kicks=%llu (distinct=%llu%s "
                  "repeat=%llu) walks=%llu drains=%llu segsub=%llu/queued=%llu "
-                 "ringsub=%llu/ents=%llu\n",
+                 "ringsub=%llu/ents=%llu resolve=%llu/reseed=%llu\n",
                  (unsigned long long)cs.arms, (unsigned long long)Pm4_InterruptCount(),
                  (unsigned long long)cs.isr, (unsigned long long)cs.kicks,
                  (unsigned long long)cs.kickDistinct, cs.kickDistinct >= 4096 ? "+" : "",
                  (unsigned long long)cs.kickRepeat, (unsigned long long)cs.walks,
                  (unsigned long long)cs.drains, (unsigned long long)cs.segSubmit,
                  (unsigned long long)cs.segQueued, (unsigned long long)cs.ringsub,
-                 (unsigned long long)cs.ringsubEnts);
+                 (unsigned long long)cs.ringsubEnts, (unsigned long long)cs.resolves,
+                 (unsigned long long)cs.asyncSubmit);
             // The counter the engine's frame sync SPINS on, printed SIGNED — because
             // two sessions described it as "not yet back to zero" and the word held
             // -552, so the loop was unsatisfiable rather than slow (gotcha 145). It

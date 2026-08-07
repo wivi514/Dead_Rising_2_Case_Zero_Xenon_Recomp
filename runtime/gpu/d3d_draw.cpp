@@ -929,9 +929,85 @@ bool D3dDraw_ServiceReserve(PPCContext& ctx, uint8_t* base)
     GuestStore32(base, dev + 0x34, g_save34);
     GuestStore32(base, dev + 0x38, g_save38);
 
+    // KEEP THE ARM BLOCK OUT OF THE STREAM ITS OWN INTERRUPT TELLS THE WORKER TO WALK.
+    //
+    // This is the close that Resolve's multi-tile path makes at 82838AA8, four
+    // instructions after it armed sub_8284AAD0 at 82838A94 — so the segment being
+    // closed here CONTAINS that arm block, its INTERRUPT packet and its re-poison.
+    // Where the descriptor goes is decided by dev+0x3460, which sub_8284AAD0 (the
+    // ISR's own kick) SETS and sub_8284B9C0 (the reseed) clears:
+    //
+    //   3460 != 0  -> sub_82845DE0 appends {size|0x81000000, physStart} straight to
+    //                 the worker token stream at dev+0x350C, i.e. dev+0x3500 — the
+    //                 exact stream whose head the arm block just handed the ISR.
+    //   3460 == 0  -> it emits a fence and submits through sub_82845AC0, which with
+    //                 dev+0x2B04 at zero goes RING DIRECT and enters no stream at all.
+    //
+    // On hardware and on the PM4 control arm the first case is harmless, because the
+    // reseed at the END of the same Resolve call (82838CC8 -> sub_8284B9C0 resets all
+    // seven token streams) empties the stream before the command processor has chewed
+    // through the thousands of dwords of tile content sitting in front of the arm
+    // block. Measured: the control arm's ints/arms is 0.9997 — not one arm block in a
+    // whole boot is executed twice.
+    //
+    // Phase C redirects that content away. The segment is 93 dwords of pure protocol,
+    // the CP reaches the INTERRUPT immediately, the ISR kicks the worker with the head
+    // of a stream that still holds this segment, and the walk resubmits it — which
+    // re-executes the INTERRUPT, which kicks again. Measured at the first tick either
+    // arm runs a Resolve at all: 1.6 kicks per Resolve on the control arm against
+    // 16 here. The reseed is the loop's only exit and the guest never reaches it,
+    // because the engine is by then parked in the per-frame fence wait.
+    //
+    // So for the duration of the guest's own close, say what is true: there is no
+    // outstanding async segment. The GUARD is dev+0x2B04 == 0 — that is the same
+    // condition sub_82845AC0's own fork tests, so this reorders nothing: it can only
+    // pick the branch the title would have picked if the kick had not just set 3460.
+    // If the counter is nonzero there IS queued work and the append is the ordered
+    // thing to do, so we leave it alone and count the decline.
+    //
+    // Same-binary control arm, and the reason this is a measurement rather than an
+    // assertion: CZ_D3D_NO_ARM_SEG_DIRECT=1 restores the append.
+    static const bool noDirect = [] {
+        const char* v = getenv("CZ_D3D_NO_ARM_SEG_DIRECT");
+        const bool on = v && *v && *v != '0';
+        if (on)
+            fprintf(stderr, "[d3ddraw] CZ_D3D_NO_ARM_SEG_DIRECT=1 — the arm-carrying "
+                            "segment is appended to the worker token stream again "
+                            "(the pre-fix arm)\n");
+        return on;
+    }();
+    const uint32_t async3460 = GuestLoad32(base, dev + 0x3460);
+    bool forcedDirect = false;
+    if (!noDirect && async3460 != 0)
+    {
+        if (GuestLoad32(base, dev + 0x2B04) == 0)
+        {
+            GuestStore32(base, dev + 0x3460, 0);
+            forcedDirect = true;
+            Count("redirect: arm-carrying segment routed to the RING, not the walked stream");
+        }
+        else
+        {
+            // Real outstanding async work: appending is the ordered thing to do.
+            Count("redirect: arm-carrying segment LEFT in the stream (counter nonzero)");
+        }
+    }
+
     PPCContext saved = ctx;
     __imp__sub_82845F68(ctx, base);   // the real body; the hook is not re-entered
     ctx = saved;
+
+    // Put the title's own async marker back: only this one close's ROUTING was ours.
+    //
+    // The obvious worry is that the ISR fires on the pump thread inside that window
+    // and sets a FRESH value we then clobber with the old one. It cannot matter, and
+    // that is a property of the field rather than of the timing: every one of the four
+    // readers in the image (82844EA8, 82844EE8, 82845004, 82845104) plus the two that
+    // decide routing (82845E7C, 82845F90) tests dev+0x3460 for nonzero-ness ONLY and
+    // then uses dev+0x3464 for the value — and dev+0x3464 is never touched here. Both
+    // the stale and the fresh value are nonzero, so no reader can tell them apart.
+    if (forcedDirect)
+        GuestStore32(base, dev + 0x3460, async3460);
 
     g_save30 = GuestLoad32(base, dev + 0x30);
     g_save34 = GuestLoad32(base, dev + 0x34);
