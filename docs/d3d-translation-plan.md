@@ -1205,11 +1205,12 @@ after ninety seconds of a loop that keeps consuming.
 > worker's token stream. Every walk of that stream resubmits the segment; every
 > resubmission makes the command processor execute the arm block's INTERRUPT again;
 > every interrupt makes the ISR kick the worker with the same token buffer. Gain
-> exactly one, and the same on the control arm — but the replayed segment also carries
-> that frame's `EVENT_WRITE` fences, so each turn rewrites the fence completion word
-> with STALE values. The engine's next fence wait is then waiting for a number that
-> word will never hold. The engine stops, the token-buffer pointer stops advancing with
-> it, and the loop loses its only exit.
+> exactly one, and the same on the control arm — but the ring is now saturated with
+> that one segment, so the segments the engine emits AFTER it are never executed. Its
+> next fence wait is for a number no packet the CP reaches will ever write. (The
+> replayed segment's own `EVENT_WRITE`s rewriting the word with stale values is the
+> visible symptom, and item 2 below shows it is not the blocker.) The engine stops, the
+> token-buffer pointer stops advancing with it, and the loop loses its only exit.
 
 The control arm runs the same loop and leaves it: its worst-replayed segment is
 resubmitted **11** times against the draw arm's **132 and climbing**, because a guest
@@ -1224,13 +1225,19 @@ that keeps producing frames supersedes each token stream before the replay matte
    one that matters. Whether the segment boundary can be drawn to exclude it, and
    whether the guest's own `sub_82845F68` can be made to close it before Resolve
    appends the `0x88000000` token, is the design question.
-2. **Or the replay must not be able to move the fence word backwards.** A resubmitted
-   segment re-executing an `EVENT_WRITE` with a smaller value than the word already
-   holds is something hardware also does and gets away with; the difference is that
-   hardware never walks the same stream twice. Rejecting a completion-word store that
-   REGRESSES would be a runtime-side stand-in — cheap, testable in one run, and to be
-   treated as an experiment that names the cause rather than as a fix, because a
-   command processor that second-guesses a packet's value is not a faithful one.
+2. ~~Or the replay must not be able to move the fence word backwards.~~ **Run, and it
+   is a NEGATIVE result — which sharpens the diagnosis rather than costing a session.**
+   `CZ_PM4_FENCE_MONOTONIC=1` refuses any GPU store that moves the completion word
+   backwards, so the word latches at the top of its carousel instead of resetting. It
+   engages hard — **5,711 refusals in 90 s**, so this is not gotcha 151's dead flag —
+   and the boot freezes in exactly the same place, `arms` pinned at 190, `distinct=2`,
+   `#60 models\zombies.big`. So the regression is NOT what blocks the wait. The wait
+   is for a fence beyond the top of the carousel, and the segments carrying those
+   `EVENT_WRITE`s are never executed at all, because the ring is saturated with the
+   replayed arm segment. **The missing execution is the fault; the regressing word was
+   only the most visible symptom of it.** The flag stays as an arm, off by default and
+   announcing itself, because it is the cheapest way to re-ask this question after any
+   change to the segment routing.
 3. Only then re-ask the depth question. **`#60 models\zombies.big` is not a
    file-loading depth at all** — it is the frame at which the title first renders in
    two tiles, and every draw-arm run stops there because that is where the mechanism

@@ -17,7 +17,8 @@ boot** while the numerator keeps counting, so the figure is a stopwatch: 1.8x at
 it is ONE event at the **first tiled frame**, the engine blocks in its per-frame GPU
 sync, and the fence completion word it waits on is on a **nine-value carousel** that
 resets every lap — 440 laps in 4,000 stores, and visibly regressing (1023 -> 1017)
-between two consecutive lines of an existing trace. What the command processor is
+between two consecutive lines of an existing trace (though the regression turns out not
+to be the blocker — item 2). What the command processor is
 replaying is the **arm block's own 93-dword segment**, resubmitted 132 times against
 the control arm's worst case of 11.
 
@@ -27,11 +28,10 @@ the control arm's worst case of 11.
 > worker's token stream. Every walk of that stream resubmits the segment; every
 > resubmission makes the CP execute the arm block's INTERRUPT again; every interrupt
 > makes the ISR kick the worker with the same token buffer. Gain exactly one, and the
-> control arm does the same thing — but the replayed segment also carries that frame's
-> `EVENT_WRITE` fences, so each turn rewrites the fence completion word with STALE
-> values. The engine's next fence wait is then waiting for a number that word will
-> never hold. The engine stops, the token-buffer pointer stops advancing with it, and
-> the loop loses its only exit.
+> control arm does the same thing — but the ring is now saturated with that one segment,
+> so the segments the engine emits AFTER it are never executed. Its next fence wait is
+> for a number no packet the CP reaches will ever write. The engine stops, the
+> token-buffer pointer stops advancing with it, and the loop loses its only exit.
 
 The three functions, at Case Zero's addresses:
 
@@ -52,10 +52,13 @@ The three functions, at Case Zero's addresses:
    guest's own `sub_82845F68` runs at 82838AA8, i.e. **between** the arm and the
    `0x88000000` token, so the ordering may already be there and the extent may be the
    only thing wrong (`[dev+0x3B20] .. [dev+0x30]+4`, and phase C moves `dev+0x30`).
-2. **Or: reject a completion-word store that REGRESSES**, as an experiment. Cheap, one
-   run, and it would name the cause by making the engine's wait satisfiable again. Treat
-   it as a diagnostic and not a fix — a command processor that second-guesses a packet's
-   value is not a faithful one — and put it behind a flag that announces itself.
+2. **The regressing fence word is NOT the blocker — that is already measured, do not
+   re-run it as a hypothesis.** `CZ_PM4_FENCE_MONOTONIC=1` (part 7, off by default,
+   announces itself) refuses any GPU store that moves the completion word backwards. It
+   engages **5,711 times in 90 s** and the boot freezes identically: `arms` pinned at
+   190, `distinct=2`, `#60`. The wait is for a fence beyond the top of the carousel, and
+   the segments carrying those `EVENT_WRITE`s are never executed at all. Keep the flag
+   as the cheap re-ask after any change to segment routing.
 3. **Then re-ask the depth question, in the right units.** `#60 models\zombies.big` is
    not a loading depth; it is the first tiled frame. The right measurement after any fix
    is "how many tiled frames does the draw arm complete", which the chain line's
@@ -76,7 +79,7 @@ on every run including ones saved for something else:
 ```
 ring: chain arms=N ints=N isr=N kicks=N (distinct=N repeat=N) walks=N drains=N
            segsub=N/queued=N ringsub=N/ents=N
-ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d
+ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d fenceRegressionsRefused=%llu
 ```
 
 Calibration, measured, 173 s per arm:

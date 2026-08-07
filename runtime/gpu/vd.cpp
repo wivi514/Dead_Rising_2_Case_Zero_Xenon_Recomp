@@ -345,6 +345,10 @@ void GraphicsInterruptPump()
         {
             g_pumpIsr = { &threadContext.ppcContext, func, base, callback, userData,
                           g_pumpIsr.delivered };
+            // Republished every tick, not once: the guest can re-register the writeback
+            // block, and pm4.cpp watching a stale address would make the fence
+            // experiment arm silently watch nothing (gotcha 25's shape).
+            Pm4_SetFenceWord(PPC_LOAD_U32(userData + kDeviceWritebackPtr));
             const uint32_t kickedWptr = PPC_LOAD_U32(userData + kDeviceKickedWptr);
             const uint32_t cursor = Pm4_Execute(base, kickedWptr);
             if (const uint32_t slot = g_rptrWriteback.load())
@@ -432,8 +436,14 @@ void GraphicsInterruptPump()
             // dev+0x2B00 is the token interpreter's nesting depth and dev+0x2B04 the
             // outstanding-segment count; the ISR's user data IS the device struct, so
             // both are free here.
-            KLOG("ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d\n",
-                 int(PPC_LOAD_U32(userData + 0x2B04)), int(PPC_LOAD_U32(userData + 0x2B00)));
+            //
+            // The refusal count is here rather than only in the experiment arm's own
+            // print, because that print is CAPPED at four and a capped print is not a
+            // count (gotcha 109). It reads 0 unless CZ_PM4_FENCE_MONOTONIC is on.
+            KLOG("ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d "
+                 "fenceRegressionsRefused=%llu\n",
+                 int(PPC_LOAD_U32(userData + 0x2B04)), int(PPC_LOAD_U32(userData + 0x2B00)),
+                 (unsigned long long)Pm4_FenceRegressionCount());
         }
 
         // Log the first delivery BEFORE the call, not after. A guest ISR that never

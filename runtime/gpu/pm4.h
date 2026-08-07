@@ -120,6 +120,13 @@ uint64_t Pm4_RingHeldCount();
 uint64_t Pm4_HoldStreak();
 uint64_t Pm4_HoldStreakMax();
 
+// The engine's fence completion word, so the command processor can recognise stores to
+// it. Set from the graphics pump, which is the only place that knows the device struct.
+// Only CZ_PM4_FENCE_MONOTONIC (a phase C part 7 EXPERIMENT arm) acts on it; the count
+// of refused backwards stores is free to read either way.
+void Pm4_SetFenceWord(uint32_t va);
+uint64_t Pm4_FenceRegressionCount();
+
 // The microcode bound by the last IM_LOAD/IM_LOAD_IMMEDIATE for a stage. `hash` is
 // FNV-1a over the big-endian microcode and is the renderer's cache key; it is zero
 // until a stage has been bound. See the shader-load block in pm4.cpp for why the

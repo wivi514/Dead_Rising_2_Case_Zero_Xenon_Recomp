@@ -1052,6 +1052,14 @@ From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
     `completed=1017`, and one memory watch showed the word on a **nine-value carousel**,
     440 laps in 4,000 stores. A wait for anything past the top of the carousel is not
     slow, it is unsatisfiable — and no single sample of that word can say so.
+165. **The most visible symptom is rarely the blocker, and an arm that ENGAGES and
+    changes nothing is the cheapest way to find that out.** The draw arm's fence word
+    demonstrably regressed, so "stop it regressing" looked like the cure and was one
+    flag away. It refused 5,711 backwards stores in 90 s — no dead-arm doubt, unlike
+    gotcha 151 — and the boot froze in the identical place. That negative result is
+    worth more than the fix would have been: it says the wait is for a fence beyond the
+    top of the carousel and the packets carrying it are never EXECUTED, which is a
+    different fault in a different subsystem from the one the symptom pointed at.
 164. **A stall's ERA names the feature that starts there, and the file it stops on is a
     coincidence of timing.** "The draw arm stops at #60 `models\zombies.big`" has been
     quoted as a loading depth for four sessions. It is the frame at which the title
@@ -1348,6 +1356,15 @@ CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR co
                    deadlocks at boot.bct (file #5) because the protocol needs the
                    command-processor interrupt from the first frame (measured, part 7)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
+CZ_PM4_FENCE_MONOTONIC=1   refuse any GPU store that moves the engine's fence
+                   COMPLETION word backwards. An EXPERIMENT arm, never a fix — hardware
+                   re-executes stale EVENT_WRITEs too, and a command processor that
+                   second-guesses a packet's value is not a faithful one. It engages
+                   hard (5,711 refusals in 90 s on the draw arm, counted on the
+                   `ring: engine` line rather than by its own capped print) and the boot
+                   freezes identically, which is what RETIRED "the regressing fence word
+                   is what blocks the wait" (part 7). Kept as the cheap re-ask after any
+                   change to segment routing
 CZ_PM4_NO_STOP_ON_WAIT=1   do NOT stall the ring at an unsatisfied WAIT_REG_MEM —
                    i.e. the pre-part-6 command processor, which evaluates each wait
                    once and carries on. **The brake is ON by default since phase C
@@ -2342,7 +2359,15 @@ What the freeze IS, traced end to end and reproduced:
   Resolve closes around its own arm — at 132/126/86 resubmissions against the control
   arm's worst case of **11**.
 
-Two hypotheses were drafted and killed by running the same probe on the control arm,
+**And the obvious cure was RUN and is a negative result.** `CZ_PM4_FENCE_MONOTONIC=1`
+refuses any GPU store that moves the completion word backwards; it engages **5,711
+times in 90 s** and the boot freezes identically (`arms` pinned at 190, `distinct=2`,
+`#60`). So the regression is not what blocks the wait — the wait is for a fence beyond
+the top of the carousel, and the segments carrying those `EVENT_WRITE`s are **never
+executed at all**, because the ring is saturated with the replayed arm segment. The
+missing execution is the fault; the regressing word was its most visible symptom.
+
+Two more hypotheses were drafted and killed by running the same probe on the control arm,
 recorded because each looked decisive: the `[obj+0x48]` resume pointer is non-null at
 half the drains on **both** arms (1,732:1,731 vs 3,576:3,575), and "6 increments against
 1,873" is 1.0 per frame against 3.0 per tiled frame — the same frozen-denominator trap

@@ -477,6 +477,21 @@ std::atomic<uint64_t> g_ibVerifyClean{ 0 };
 std::atomic<uint64_t> g_ibVerifyDirty{ 0 };
 std::atomic<uint64_t> g_ibTruncated{ 0 };
 
+// The engine's fence completion word, published by gpu/vd.cpp (which is the only place
+// that knows the device struct) so StoreGpuRaw can recognise it. Zero until the guest
+// has registered a writeback pointer, which is the whole of the early boot.
+std::atomic<uint32_t> g_fenceWord{ 0 };
+const bool g_fenceMonotonic = [] {
+    const char* v = getenv("CZ_PM4_FENCE_MONOTONIC");
+    const bool on = v && *v && *v != '0';
+    if (on)
+        fprintf(stderr, "[pm4] CZ_PM4_FENCE_MONOTONIC=1 — GPU stores that move the fence "
+                        "completion word BACKWARDS will be refused. This is a phase C "
+                        "part 7 EXPERIMENT arm and must never be on for a gate run.\n");
+    return on;
+}();
+std::atomic<uint64_t> g_fenceRegressions{ 0 };
+
 // --- memory-writing helpers -------------------------------------------------------
 // Refuse anything that does not land in the physical arena rather than storing
 // through it: a malformed or half-written packet parsed as a fence would otherwise
@@ -498,6 +513,37 @@ bool StoreGpuRaw(uint8_t* base, uint32_t physAddr, uint32_t value)
             clock_gettime(CLOCK_MONOTONIC, &ts);
             fprintf(stderr, "[pm4] MEM_WATCH %08X <- %08X (t=%ld.%03ld)\n", va, value,
                     (long)ts.tv_sec, ts.tv_nsec / 1000000);
+        }
+    }
+    // CZ_PM4_FENCE_MONOTONIC=1 — an EXPERIMENT, not a fix, and it announces itself.
+    //
+    // Phase C part 7 measured the draw arm's fence completion word on a nine-value
+    // CAROUSEL: the command processor is re-executing an old segment, so the segment's
+    // EVENT_WRITE packets rewrite the word with values it has already passed, and the
+    // engine's next fence wait becomes unsatisfiable rather than merely slow. Refusing
+    // a store that moves that one word BACKWARDS makes the wait satisfiable again, so
+    // a run with this on says whether the carousel is what stops the boot — and a run
+    // with it off is the same binary's control.
+    //
+    // It is deliberately not a candidate fix. Hardware re-executes stale EVENT_WRITEs
+    // too; it gets away with it because it never walks the same token stream twice, and
+    // a command processor that second-guesses a packet's value is not a faithful one.
+    // The cure has to be upstream, at whatever puts the arm block inside a segment the
+    // worker resubmits.
+    if (g_fenceMonotonic && va == g_fenceWord.load(std::memory_order_relaxed))
+    {
+        const uint32_t current = GuestLoad32(base, va);
+        // A signed difference, not `value < current`: fence numbers are free to wrap,
+        // and a wrap must not look like a regression forever after.
+        if (int32_t(value - current) < 0)
+        {
+            const uint64_t n = g_fenceRegressions.fetch_add(1) + 1;
+            if (n <= 4 || (n & 0xFFFF) == 0)
+                fprintf(stderr, "[pm4] CZ_PM4_FENCE_MONOTONIC: REFUSED fence store "
+                                "%08X <- %08X (word holds %08X) #%llu — this is the "
+                                "EXPERIMENT arm, not a fix\n",
+                        va, value, current, (unsigned long long)n);
+            return true; // reported as stored: the packet is not malformed
         }
     }
     if (va < kPhysArenaBase || va + 4 > kPhysArenaEnd)
@@ -1434,6 +1480,12 @@ uint64_t Pm4_WaitUnmetCount() { return g_waitUnmet.load(); }
 uint64_t Pm4_RingHeldCount() { return g_ringHeld.load(); }
 uint64_t Pm4_HoldStreak() { return g_holdStreak.load(); }
 uint64_t Pm4_HoldStreakMax() { return g_holdStreakMax.load(); }
+
+// Published by gpu/vd.cpp each pump tick — see g_fenceWord. A store rather than a
+// read-back because the guest can re-register the writeback block, and a stale address
+// here would make the experiment arm silently watch nothing.
+void Pm4_SetFenceWord(uint32_t va) { g_fenceWord.store(va, std::memory_order_relaxed); }
+uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
