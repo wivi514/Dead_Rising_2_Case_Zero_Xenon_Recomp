@@ -1024,6 +1024,42 @@ From phase C part 6 (the brake promoted, and the harness that nearly decided it 
     the discipline is to report the rate INCLUDING when it is mildly unfavourable rather
     than quote the one clean run.
 
+From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
+
+161. **A ratio between a counter that is still running and one that has stopped is a
+    STOPWATCH, not a gain — and it reads like a mechanism.** "One guest arming produces
+    ~300 ISR deliveries, unchanged by the brake" survived a whole session as the port's
+    top open question. The denominator freezes seven seconds into the boot and the
+    numerator does not, so the same binary reads 1.8x at 8 s, 10x at 35 s and 30x at
+    78 s. Nothing multiplies anywhere: measured link by link the chain is
+    `ints/arms` = 0.9997, `isr/ints` = 1.000, `walks == kicks == drains`. Before
+    believing any X-per-Y, plot BOTH series against time and check they are both still
+    moving; a frozen denominator is the finding, not the ratio built on it. It caught
+    me twice in one session — the second time on "6 increments against 1,873", which is
+    1.0 per frame against 3.0 per frame once the stopped run's frames are counted.
+162. **Count a chain LINK BY LINK, in one always-on line, or you are comparing two
+    printers.** The old figures came from a line-budgeted probe, two hooks, two greps —
+    so neither half was a count (gotcha 109) and their ratio was meaningless twice over.
+    Unconditional relaxed atomics on hooks that already exist cost nothing, appear on
+    every run including the ones saved for something else, and turn "which step
+    amplifies" from an argument into a column. `cpu/chain_stats.h` is the worked
+    example; the load-bearing field is `distinct`, the number of DIFFERENT values the
+    loop has iterated on, because that is what separates a pipeline from a replay.
+163. **A fence word that REGRESSES is proof; a fence word that repeats is only a
+    suspicion.** Gotcha 146 recorded that a completion word pinned to a constant means
+    replay rather than latency. The sharper form was already sitting in an existing
+    trace: two consecutive prints of the engine's own wait showed `completed=1023` then
+    `completed=1017`, and one memory watch showed the word on a **nine-value carousel**,
+    440 laps in 4,000 stores. A wait for anything past the top of the carousel is not
+    slow, it is unsatisfiable — and no single sample of that word can say so.
+164. **A stall's ERA names the feature that starts there, and the file it stops on is a
+    coincidence of timing.** "The draw arm stops at #60 `models\zombies.big`" has been
+    quoted as a loading depth for four sessions. It is the frame at which the title
+    first renders its scene as two 640-wide tiles (gotcha 118), which is the only place
+    in the image that arms the worker callback and queues its own segment to the worker
+    in the same breath. Ask what the title STARTS DOING at a stall, not what it was
+    reading.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1117,7 +1153,8 @@ From phase C part 6 (the brake promoted, and the harness that nearly decided it 
   `d3d-phase-c4-kickoff.md` /
   `d3d-phase-c5-kickoff.md` /
   `d3d-phase-c6-kickoff.md` /
-  **`d3d-phase-c7-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c7-kickoff.md` /
+  **`d3d-phase-c8-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1297,9 +1334,19 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    release COUNT cannot do this job: its discriminator is the stall's
                    address, and phase C re-emits its hand-off block at a FIXED scratch
                    address while the PM4 arm's rotate through the ring, so the same
-                   behaviour reads 100% healthy on one arm and 4.9% on the other
+                   behaviour reads 100% healthy on one arm and 4.9% on the other.
+                   ALSO carries `ring: chain ...` — the GPU/CPU hand-off counted link
+                   by link (arms -> ints -> isr -> kicks -> walks -> ringsub), plus the
+                   number of DISTINCT token-buffer pointers the loop has iterated on and
+                   the engine's spin counter printed SIGNED. Read it as a chain of
+                   ratios: 0.9997 / 1.000 / 0.523 with walks==kicks==drains is the
+                   healthy shape, `distinct=2` with `arms` frozen is a replay. It is
+                   what retired the "~300x amplification" (gotchas 161-162)
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
-CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control)
+CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control).
+                   NB it cannot be used to test "is the replay the cause": the boot
+                   deadlocks at boot.bct (file #5) because the protocol needs the
+                   command-processor interrupt from the first frame (measured, part 7)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
 CZ_PM4_NO_STOP_ON_WAIT=1   do NOT stall the ring at an unsatisfied WAIT_REG_MEM —
                    i.e. the pre-part-6 command processor, which evaluates each wait
@@ -2240,7 +2287,8 @@ instrument on it), and **the draw arm's default configuration is BIMODAL** — 3
 the current binary: the brake cuts the callback hand-off's per-frame amplification
 ~39x (430 -> 11.1 kicks/frame against the control arm's 1.9) but leaves the raw
 deliveries-to-armings ratio **unchanged at ~300x**. It contains the symptom; the cause
-is untouched, and that is where part 7 starts.
+is untouched, and that is where part 7 starts. (**The ~300x is RETRACTED by part 7** —
+it is a stopwatch, not a gain; see below. The ~39x per-frame figure stands.)
 
 Three of the harness's own numbers were broken before any of the above could be
 measured, and the story is gotchas 157-160: the deepest-file column was the PRINT CAP
@@ -2256,6 +2304,54 @@ independently.
 on the draw arm; both capture oracles clean. A1's position-71 window permutes 4 of 10
 brake-on against 1 of 10 brake-off (Fisher p ~= 0.30, no cost in depth or in A5) —
 reported because it is the one number that is not flat.
+
+**PHASE C PART 7 (2026-08-06, session 19): there is no 300x amplifier — and the draw
+arm's stall is ONE event, at the first tiled frame.** Details in
+`docs/d3d-translation-plan.md` §"Phase C part 7".
+
+Part 6's open question was "what does one delivery do that makes the next one happen,
+to the tune of three hundred?" Nothing does. `cpu/chain_stats.h` counts the hand-off
+link by link on every run (`ring: chain ...` in `CZ_RING_TRACE`), and on the PM4
+control arm every ratio is one or a constant: **`ints/arms` = 0.9997** — the command
+processor executes each arm block exactly once — **`isr/ints` = 1.000**, `kicks/isr` =
+0.523, and `walks == kicks == drains` to the unit over 173 s. The draw arm's `arms`
+column **freezes at 227 seven seconds into the boot** while the numerator keeps
+counting, so the "~300x" reads 1.8x at 8 s, 10x at 35 s and 30x at 78 s on one binary.
+A frozen denominator was the finding (gotcha 161); part 6's own table already showed it
+(437 and 230 armings against the control arm's 14,794) without it being read.
+
+What the freeze IS, traced end to end and reproduced:
+
+- **A single event, not a decay.** For the whole healthy era the D3D worker is never
+  used at all — `kicks=0`, `queued=0` at all 986 segment submits. Within one tick the
+  worker engages and the guest stops arming for good. The control arm has the identical
+  transition at the identical era and survives it.
+- **The era is the first TILED frame**, not a file: Resolve's multi-tile path, taken
+  once the title starts rendering its scene as two 640-wide tiles (gotcha 118). It is
+  the only site in the image that arms `sub_8284AAD0` (82838A94), closes-and-kicks
+  (82838AA8) and queues that segment to the worker (82838AD0) in one breath. `#60
+  models\zombies.big` is a coincidence of timing (gotcha 164).
+- **The engine blocks in the per-frame GPU sync** (`sub_82845230` -> `sub_82845160`),
+  `target=1039 emitted=1043 completed=1019`, and never returns.
+- **The fence completion word is on a nine-value CAROUSEL, not lagging.** 26,017 GPU
+  stores in 100 s; the last 4,000 are 440 laps of `2DF 2E1 2E3 2E5 2E7 2E9 2EB 2ED 2EF`.
+  It also visibly REGRESSES between two consecutive sync-wait prints (1023 -> 1017), so
+  a wait past the top of the carousel is unsatisfiable rather than slow (gotcha 163).
+- **What is being replayed is the arm block itself.** The three most-resubmitted ring
+  entries on the draw arm are 93-dword segments — the size of the segment the multi-tile
+  Resolve closes around its own arm — at 132/126/86 resubmissions against the control
+  arm's worst case of **11**.
+
+Two hypotheses were drafted and killed by running the same probe on the control arm,
+recorded because each looked decisive: the `[obj+0x48]` resume pointer is non-null at
+half the drains on **both** arms (1,732:1,731 vs 3,576:3,575), and "6 increments against
+1,873" is 1.0 per frame against 3.0 per tiled frame — the same frozen-denominator trap
+as the 300x, one screen further down. `CZ_PM4_NO_CP_INTERRUPT=1` is also recorded as a
+NEGATIVE result: it cannot isolate the replay, because the boot deadlocks at `boot.bct`
+(file #5) without source 1.
+
+Gates unchanged: `--smoke` OK; the control arm reaches `#83 cinezombie.big`;
+`truncated=0`, `max` hold streak 1 (control) / 2 (draw).
 
 Next, in order:
 

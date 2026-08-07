@@ -1005,6 +1005,14 @@ and does not touch the cause. The prediction is retired, not confirmed; whatever
 one guest arming produce three hundred ISR deliveries on this arm is still there, and
 it is where part 7 starts.
 
+> **RETRACTED in part 7: the ~300x is not an amplification.** The draw arm's `arms`
+> column stops moving seven seconds into the boot and the deliveries column does not,
+> so that ratio is a stopwatch — it reads 1.8x at 8 s and 30x at 78 s on the same
+> binary. Measured link by link, no step in the chain multiplies by anything: the CP
+> executes each arm block exactly once (`ints/arms` = 0.9997 on the control arm) and
+> one interrupt is one ISR entry. The two numbers in the row above are a frozen
+> denominator, and the freeze is the finding. See part 7.
+
 **`MirrorIsPoisoned()` is NOT retired by this, and the reason matters.** The kickoff
 expected the promotion to make that poison-skip path deletable. It records **zero skips
 across all 40 campaign runs — including the brake-OFF arms** — so it is already inert
@@ -1030,6 +1038,204 @@ with zero real windows, and the window is a permutation of one name set rather t
 a missing or extra call. Recorded so that a future session reading "4 of 10" does not
 mistake a known window for a new regression — and so that if it ever climbs, there is
 a number to climb from.
+
+### Phase C part 7: the ~300x was a STOPWATCH, and the draw arm's stall is ONE event at the first tiled frame
+
+Session 19 (2026-08-06). Part 6 handed over one open question — "what does one
+delivery do that makes the next one happen, to the tune of three hundred?" — and the
+answer is that nothing does. There is no 300x link anywhere in the chain. The figure
+was a ratio between a counter that keeps running and a counter that stopped.
+
+**The instrument, and why the old numbers could not have settled it.** Part 6's two
+amplification figures were grepped out of `CZ_FENCE_PROBE`, which is a LINE budget: a
+count taken from a budgeted printer is a floor unless someone goes back and checks it
+did not saturate (gotcha 109), and the two halves of the ratio came from two different
+hooks' prints. `cpu/chain_stats.h` replaces that with unconditional relaxed atomics on
+hooks that already existed, so the whole chain is on **every** run, free, and on one
+line:
+
+```
+ring: chain arms=N ints=N isr=N kicks=N (distinct=N repeat=N) walks=N drains=N
+           segsub=N/queued=N ringsub=N/ents=N
+ring: engine counter[dev+2B04]=%d depth[dev+2B00]=%d
+```
+
+Six links, each of which could multiply: the guest ARMS a callback (`sub_82845BA0`);
+the command processor reaches the arm block's INTERRUPT packet (`ints`); the runtime
+runs the guest ISR, once per CPU named in the arm's mask (`isr`); the ISR's callback
+KICKS the D3D worker with a token-buffer pointer (`sub_8284AAD0`); the worker WALKS
+that buffer (`sub_8284B568`); the walk RESUBMITS that stream's segments to the ring
+(`sub_828455C0`), which is where the next arm block comes from. `distinct` is how many
+different token-buffer pointers the run has ever kicked with — part 4 established that
+this loop converges only because that pointer advances, so it is the number that
+separates a pipeline from a runaway (gotcha 150).
+
+**Measured, 173 s, same binary, both arms, default flags.**
+
+| | arms | ints | isr | kicks | distinct | walks | drains |
+|---|---|---|---|---|---|---|---|
+| PM4 control | 13,676 | 13,672 | 13,672 | 7,151 | 545 | 7,151 | 7,151 |
+| phase C draw | **227, frozen at t = 7 s** | 6,903 | 6,903 | 4,486 | **2** | 4,486 | 4,486 |
+
+The control arm's every ratio is one or a constant: `ints/arms` = **0.9997** (the CP
+executes each arm block exactly once), `isr/ints` = **1.000** (this title's masks name
+one CPU, so part 5's per-CPU acknowledge is not a multiplier here), `kicks/isr` =
+**0.523** (about half the deliveries have `sub_8284AAD0` armed and the rest the
+swap-queue scheduler `sub_82841878`), and `walks == kicks == drains` to the unit.
+
+**So part 6's "~300x, unchanged by the brake" is retired.** On the draw arm the
+denominator STOPS and the numerator does not, so the ratio is a function of how long
+you ran: 1.8x at 8 s, 10x at 35 s, 30x at 78 s, and part 6's 300x was a 200 s run of a
+boot that had frozen in the first ten seconds of it. Part 6 also read the same shape
+without seeing it — its own table has the draw arm at 437 and 230 armings against a
+control arm's 14,794, which is the freeze stated in the numerator's absence.
+
+**Which makes part 7's item 2 the only question, and it is a much sharper one than
+"the draw arm stops at #60".** The chain line's first seven ticks say the stall is a
+single event, not a decay:
+
+```
+arms=217 ints=217 isr=217 kicks=0 (distinct=0) walks=0 drains=0 segsub=986/queued=0
+arms=227 ints=309 isr=309 kicks=62 (distinct=2) walks=62 drains=62 segsub=1044/queued=28
+```
+
+For the whole healthy era the D3D worker is **never used at all** — zero kicks, zero
+walks, every segment submitted straight to the ring because `dev+0x2B04` is zero at
+every one of 986 submits. Then within one tick the worker engages for the first time
+and the guest stops arming, permanently. The control arm has the identical transition
+at the identical era (tick 7: kicks 0 -> 10, queued 0 -> 44) and survives it.
+
+**What that transition IS: the first tiled frame.** The era is `models\zombies.big`,
+and the code is Resolve's MULTI-TILE path, taken from the moment `dev+0x327C` exceeds
+1 — i.e. from the moment the title starts rendering its scene as two 640-wide tiles
+(gotcha 118). That path is the only site in the image that does all three things at
+once, at `sub_82838858 + 0x23C..+0x284`:
+
+```
+82838A50  lwz  r11,0x3500(r31)      ; the head of the D3D worker's token stream
+82838A94  bl   sub_82846288         ; ARM sub_8284AAD0 with that stream as argument
+82838AA8  bl   sub_82845F68         ; the reserve = CLOSE AND KICK
+82838AD0  stw  r11,0(r3)            ; 0x88000000 — queue that segment to the worker
+```
+
+**Where the engine is stuck.** The last thing it does is the per-frame GPU sync
+(`sub_82845230` -> `sub_82845160`), and it never returns:
+
+```
+[d3d] sync-wait #166 target=1035 emitted=1039 completed=1019
+[d3d] sync-wait #167 target=1039 emitted=1043 completed=1019     <-- never returns
+```
+
+Reproduced on a second run at `target=1037 completed=1017`, and that run had printed
+`completed=1023` at the call before it. **The completion word goes BACKWARDS.**
+
+**And it is not lagging, it is on a carousel.** `CZ_PM4_MEM_WATCH` on the fence
+writeback word, draw arm, 100 s — 26,017 GPU stores, and the last 4,000 of them are:
+
+```
+440 <- 000002EF   440 <- 000002ED   440 <- 000002EB   440 <- 000002E9
+440 <- 000002E7   440 <- 000002E5   440 <- 000002E3   440 <- 000002E1
+440 <- 000002DF
+```
+
+Nine values, 440 laps, forever. The completion word climbs 735 -> 751 and resets to
+735 on every lap, so a wait for anything past 751 is not slow, it is **unsatisfiable** —
+and a wait for something inside the range is satisfied and then unsatisfied again.
+Gotcha 146 said a fence word pinned to a constant is replay rather than latency; a
+fence word that REGRESSES is the same statement with no ambiguity left in it, and it
+is visible in two consecutive lines of an existing trace.
+
+**What the command processor is replaying.** `CZ_FENCE_PROBE`'s `ringsub` entry list,
+which is the only place a resubmitted segment states its own address:
+
+| | most-resubmitted segment | its size | how many times |
+|---|---|---|---|
+| PM4 control | `1BF794C0` | 11 dwords | 11 |
+| phase C draw | `1C65BA60` | **93 dwords** | **132** |
+| | `1C613C00` | **93** | 126 |
+| | `1C5CBC20` | **93** | 86 |
+
+Ninety-three dwords is the size of the segment the multi-tile Resolve closes around its
+own arm block (`[fence] close ... seg=BC5843A0 dwords=93` sits between the `arm
+cb=8284AAD0` and the reserve, on every cycle). So the top three replayed segments on
+the draw arm are **the arm blocks themselves**: the arm-carrying segment is inside the
+token stream that its own interrupt tells the worker to walk. That is gotcha 147's
+shape — a block ending up inside the segment its own wake-up resubmits — and the
+control arm's worst case is an order of magnitude smaller.
+
+**The two-cycle sequence, out of one log, in order.** This is the whole mechanism and
+it takes two turns to close:
+
+1. `arm cb=8284AAD0 arg=DC5C3B00` (real ring), reserve, `fsubmit tiles=2`, then
+   `submit ... incr=1 ... 2B04=0 -> ring direct`. The counter was zero, so the
+   arm-carrying segment went straight to the ring. Nothing is wrong yet.
+2. The ISR delivers `cb=8284AAD0 arg=DC5C3B00`, the worker walks it, and
+   `ringsub #724 ents: 1C5843A0/93` **resubmits the 93-dword arm segment**.
+3. Its drain reads `depth=1 counter=1 48=DC5C3C14`. `sub_8284A960` decrements the
+   counter only when the nesting depth reaches zero AND `[obj+0x48]` is clear, and it
+   is not — so the `+1` from step 1 stays.
+4. Next cycle: `arm cb=8284AAD0 arg=DC60BA00`, and now `submit ... incr=1 ... 2B04=1
+   -> WORKER TOKEN QUEUE`. **The arm block is now inside a token stream**, which is
+   exactly the state part 4 named ("it is only when the counter is ALREADY nonzero at
+   the incr=1 submit that the arm lands in a token stream at all, and from there the
+   loop closes"). The pointer advances once more and then never again.
+
+**Two things that LOOK like the divergence and are not, both killed by running the
+same probe on the control arm.** Writing them down because each had a paragraph
+drafted against it before the comparison was run:
+
+* *"Half the draw arm's drains decline to decrement, so `[obj+0x48]` is the bug."* The
+  control arm's split is **1,732 non-null against 1,731 null** and the draw arm's is
+  **3,576 against 3,575**. It is 50/50 on both arms; a resume-pointer set at every
+  other drain is simply how this interpreter works.
+* *"The draw arm gets six increments where the control arm gets 1,873, so the increment
+  side is starved."* Over 100 s that is 1.0 per frame on the control arm and **3.0 per
+  TILED frame** on the draw arm, which got two of them. Same trap as the ~300x this
+  section opens with, one screen further down: a per-run total compared against a run
+  that stopped.
+
+What survives both is that **nothing on the guest side is abnormal until the freeze**.
+The counter reaching -2,731 and part 3's negative-counter finding are downstream: 3,575
+decrements against 6 increments is what a boot that stopped producing frames looks like
+after ninety seconds of a loop that keeps consuming.
+
+**So the mechanism, stated once and in the direction the evidence runs:**
+
+> The first multi-tile Resolve puts an arm block inside a segment that reaches the D3D
+> worker's token stream. Every walk of that stream resubmits the segment; every
+> resubmission makes the command processor execute the arm block's INTERRUPT again;
+> every interrupt makes the ISR kick the worker with the same token buffer. Gain
+> exactly one, and the same on the control arm — but the replayed segment also carries
+> that frame's `EVENT_WRITE` fences, so each turn rewrites the fence completion word
+> with STALE values. The engine's next fence wait is then waiting for a number that
+> word will never hold. The engine stops, the token-buffer pointer stops advancing with
+> it, and the loop loses its only exit.
+
+The control arm runs the same loop and leaves it: its worst-replayed segment is
+resubmitted **11** times against the draw arm's **132 and climbing**, because a guest
+that keeps producing frames supersedes each token stream before the replay matters.
+
+**Where part 8 starts.** The target is now one property rather than a subsystem:
+
+1. **The arm block and its `INTERRUPT` must not be inside a segment the worker
+   resubmits.** That is gotcha 147 restated as a requirement, and it is the one link
+   in the chain above that our runtime has any say over — parts 2, 3 and 5 moved four
+   emitters between streams on exactly this reasoning, and this is the fifth and the
+   one that matters. Whether the segment boundary can be drawn to exclude it, and
+   whether the guest's own `sub_82845F68` can be made to close it before Resolve
+   appends the `0x88000000` token, is the design question.
+2. **Or the replay must not be able to move the fence word backwards.** A resubmitted
+   segment re-executing an `EVENT_WRITE` with a smaller value than the word already
+   holds is something hardware also does and gets away with; the difference is that
+   hardware never walks the same stream twice. Rejecting a completion-word store that
+   REGRESSES would be a runtime-side stand-in — cheap, testable in one run, and to be
+   treated as an experiment that names the cause rather than as a fix, because a
+   command processor that second-guesses a packet's value is not a faithful one.
+3. Only then re-ask the depth question. **`#60 models\zombies.big` is not a
+   file-loading depth at all** — it is the frame at which the title first renders in
+   two tiles, and every draw-arm run stops there because that is where the mechanism
+   above engages. Any future note quoting it as "how far the draw arm loads" is
+   quoting a symptom.
 
 ## Standing discipline, unchanged
 
