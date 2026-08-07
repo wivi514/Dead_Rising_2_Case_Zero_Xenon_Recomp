@@ -1118,6 +1118,17 @@ From phase C part 9 (the picture — four defects between the scene and the scre
      one; the two eras differ by 2.31% vs 37% coverage and 880 vs 81,014 colours, so one
      `awk` over the stats file separates them.
 
+177. **`git add -A` commits what is in the tree, not what you changed — so diff the
+     whole subsystem against the last known good commit before committing.** Five files
+     were rolled back to their pre-part-8 content by something outside the session's
+     edits, and the commit took phase C part 8's entire fix out with it; the draw arm
+     regressed to `ints/arms` in the tens and stopped at `#60` again. The tell was in
+     `git diff <good> HEAD --stat -- runtime/`: deletions in files the session never
+     opened. And the thing that proved it was not the session's own work was reverting
+     every one of its changes THROUGH THEIR ARMS and watching the failure survive — an
+     arm's job is as much to exonerate as to convict. Corollary: a session that only
+     runs one arm cannot see a regression in the other, and this one nearly shipped it.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was

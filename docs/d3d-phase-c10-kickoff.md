@@ -98,6 +98,18 @@ re-gated this session — see item 2.
 
 ## Traps this session paid for — do not re-buy them
 
+* **CHECK THE WHOLE DIFF AGAINST THE LAST KNOWN GOOD COMMIT BEFORE COMMITTING.** Five
+  files in the working tree were rolled back to their pre-part-8 content by something
+  outside this session's edits, and `git add -A` committed the rollback — taking part
+  8's entire fix with it (`D3dDraw_ServiceReserve`'s `dev+0x3460` routing, the two
+  `ChainStats` resolve/reseed counters and their hook-table call sites). The draw arm
+  duly regressed to `ints/arms` in the tens and `#60 zombies.big`. What found it was
+  `git diff <last-known-good> HEAD --stat -- runtime/`, which showed deletions in files
+  this session never opened; what proved it was not part 9's work was reverting all four
+  of part 9's fixes with their arms and seeing the draw arm STILL fail. Run
+  `git diff` over the whole runtime, and run the OTHER arm, before believing a session
+  changed nothing it did not mean to.
+
 * **A counter behind an early return counts the times the early return did not happen.**
   `texture: resolve snapshot too old, falling back to guest memory` read **7** on the
   broken binary and **70,681** on the fixed one, because the cache hit short-circuited
