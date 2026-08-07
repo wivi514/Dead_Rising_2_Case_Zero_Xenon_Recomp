@@ -2580,8 +2580,27 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     // Half-pixel offset: the Xbox 360 samples pixel centres at integers, desktop APIs
     // at half-integers. The shaders apply this themselves; the runtime just states it.
-    const float halfPixel[2] = { -1.0f / float(R->targetWidth),
-                                 -1.0f / float(R->targetHeight) };
+    //
+    // ...AND IT IS ZERO, since phase C part 11. The shader adds it to every vertex's
+    // clip position (`oPos.xy += g_HalfPixelOffset * oPos.w`), so it is a subpixel
+    // shift of ALL geometry, and a shift is not what the convention difference needs.
+    // On Xenos a screen-space rect [0, W] samples pixel centres at the integers
+    // 0..W-1 and covers W pixels; on Vulkan the same rect samples centres at
+    // 0.5..W-0.5 and covers W pixels. The coverage already agrees. Shifting by half a
+    // pixel on top of that moves the rect to [-0.5, W-0.5), whose last pixel centre
+    // lands EXACTLY on the exclusive right edge — and the top-left fill rule drops it.
+    //
+    // Measured, and it is not a subtlety: the scene's left tile clears screen 0..640,
+    // so with the shift its column 639 was never covered by ANYTHING. The resolved
+    // scene surface had exactly one all-black column, at x=639, and the frame's blur
+    // smeared that single column into a ~19 px darkening centred on the tile boundary
+    // — a visible full-height line down the middle of the picture. Zeroed: zero
+    // all-black columns, and the sky reads a flat 128.3 straight across the join.
+    //
+    // CZ_VK_HALF_PIXEL=1 restores the old value as the same-binary control arm.
+    static const bool wantHalfPixel = EnvOn("CZ_VK_HALF_PIXEL");
+    const float halfPixel[2] = { wantHalfPixel ? -1.0f / float(R->targetWidth) : 0.0f,
+                                 wantHalfPixel ? -1.0f / float(R->targetHeight) : 0.0f };
     memcpy(shared + kSharedHalfPixelOffset, halfPixel, sizeof halfPixel);
 
     // The viewport itself. With the XY transform enabled the scale/offset ARE the
