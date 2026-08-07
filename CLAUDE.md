@@ -1136,18 +1136,21 @@ From phase C part 10 (the right tile, and the oracle that was sitting in the cap
      packets are discarded by bin predication" as a fact to explain. Replaying the same
      `(header & 1) && (mask & select) == 0` test over B1 took an hour to write and said
      hardware discards **0.3%** against our 33%, with both tiles offered exactly 575,744
-     draws and each keeping 99.5%. That killed four ranked hypotheses at once. The
+     draws and each keeping 99.5%. That killed four ranked hypotheses at once, and one
+     part later the cause (gotcha 185) brought us to 0.28%. The
      enabling detail is general: Xenia writes a `PacketStart` for every packet BEFORE it
      evaluates predication, so the capture contains the packets hardware skipped, and any
      rule your command processor applies can be replayed against it.
-179. **A value written as a LITERAL and patched later is indistinguishable from a
-     computed one until you look for its writer.** `0x80000000` stood at 1,040,207 of our
-     right-tile draws and reads perfectly plausibly as "the guest decided this draw
-     touches no tile". It is a placeholder: three draw emitters store it as a constant
-     and a fix-up pass in the D3D worker overwrites it in place with the real
-     rect-vs-tile intersection. The distinguishing question is not "what computed this
-     value" but "is there any code that computes this KIND of value at all" — here
-     exactly one function in 8.8 MB, and it had run once and patched nothing.
+179. ~~**A value written as a LITERAL and patched later is indistinguishable from a
+     computed one until you look for its writer.**~~ **RETRACTED by part 11.**
+     `0x80000000` was not a placeholder: it is a deliberate trailing reset, the
+     placeholder is the LEADING `SET_BIN_MASK_LO FFFFFFFF`, and the fix-up pass had NOT
+     "run once and patched nothing" — that was a probe printing only its first call
+     (gotcha 186). It ran 1,751 times over 388,451 records and computed "touches no
+     tile", because the screen extent it intersects was never written (gotcha 185). The
+     surviving half of the rule is still worth having, and it is the question that
+     actually cracked this: "is there any code that computes this KIND of value at all",
+     then INSTRUMENT that code rather than reading it.
 180. **Trace the WRITES, not just the reads, and hold the budget until the era that
      matters.** A draw-only bin trace can only restate the symptom. The write trace made
      the two streams comparable line by line — and the first 300,000 packets of both are
@@ -1347,7 +1350,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c6-kickoff.md` /
   `d3d-phase-c7-kickoff.md` /
   `d3d-phase-c8-kickoff.md` / `d3d-phase-c9-kickoff.md` /
-  **`d3d-phase-c10-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c10-kickoff.md` / `d3d-phase-c11-kickoff.md` /
+  **`d3d-phase-c12-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -2696,7 +2700,42 @@ instrument that made 3 and 4 diagnosable is `CZ_VK_NO_DEPTH_TEST=1` (gotcha 173)
 **Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 0 real windows**;
 `truncated=0`; deepest file **#83 `cinezombie.big`**; frames presented unchanged.
 
-**THE OPEN ITEM, named and measured (`docs/phase5-notes.md` §6v):** the RIGHT tile
+**PHASE C PART 11 (2026-08-07, session 23): THE RIGHT TILE IS FIXED, AND IT WAS A
+PACKET WE NEVER ANSWERED.** `docs/phase5-notes.md` §6x; hand-off in
+`docs/d3d-phase-c12-kickoff.md`. The open item below and part 10's whole explanation of
+it are superseded — read §6x before either.
+
+`EVENT_WRITE_EXT` with event `0x1A` is the Xenos **screen extent query**: the GPU writes
+the rectangle it just rasterized into guest memory, and this title feeds it straight
+into the next frame's bin masks. Our command processor decoded that packet and did
+nothing with it — 818,507 no-ops a boot — because the fence family's handler stores only
+when a packet carries a value dword and this form carries an address and none. So the
+guest's own fix-up pass (`sub_8284A7F8`) intersected **uninitialised memory** against
+its tile rects and wrote "touches no tile" onto 76% of records, and the right tile's
+pass discarded them.
+
+Answering it conservatively — an extent larger than any tile, "this draw may have
+touched anything" — with `CZ_PM4_NO_SCREEN_EXTENT=1` as the same-binary control arm:
+
+| | control | fixed | B1 (hardware) |
+|---|---|---|---|
+| draw packets discarded by the bin rule | 32.7% | **0.28%** | **0.3%** |
+| fix-up pass output | 76% `80000000` | 100% `8000000F` | — |
+| scene surface median coverage | 56.1 / 53.8% | **99.5 / 99.5%** | — |
+| draws per frame (median) | 1,630 / 1,634 | **2,484 / 2,474** | — |
+
+First time this port's predication has agreed with the capture. Two runs per arm,
+alternated; 45.7 pp cross-arm against a 1.5 pp band and 0.00 pp within-arm.
+
+**And part 10's three claims about this are RETRACTED in place** (`phase5-notes.md` §6w):
+the fix-up pass is not gated shut (3,496 of 3,497 dispatcher entries have it open) and
+does not patch zero records (1,751 calls, 388,451 records) — those numbers were a probe
+printing only its FIRST call (gotcha 186); `[obj+0x164]` is the current bin SELECT, not
+a flags word, and its bit 31 means "tile 0", which is also why the LEFT tile keeps every
+draw regardless of mask; and `0x80000000` is not the placeholder but a trailing reset,
+the placeholder being the LEADING `SET_BIN_MASK_LO FFFFFFFF`.
+
+**THE OPEN ITEM AS PART 10 LEFT IT — superseded by the above, kept for the trail:** the RIGHT tile
 (screen 640..1280) is nearly empty, and it is **ME bin predication**. `gpu/pm4.cpp` has
 implemented `(header & 1) && (binMask & binSelect) == 0` since phase 1 and had never
 counted it: **a third of this title's draw packets are discarded by it** (1,039,423 of
@@ -2732,12 +2771,13 @@ Next, in order:
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), and the save layer's own `XamContentCreateEx`/`XamContentClose`,
    which need gameplay to reach a save point.
-3. **Phase 5 — finish the renderer.** It exists and draws (below); what it does not yet
-   do is produce a correct title screen. `docs/phase5-notes.md` §7 is the enumerated
-   gap, with a measurement for each part of it. Gate on **per-era aggregates, never
-   frame index**: two hardware runs agree frame-exactly only 80.0% of the time (gotcha
-   38), so the plan's "per-pixel diff at the same frame" is the one line of it to
-   correct.
+3. **Phase 5 — COMPARE THE PICTURE AGAINST CAPTURE E, and say what is still wrong.**
+   Since part 11 both tiles render and the scene surface is 99.5% non-black, so this
+   is the first time the question can be asked cleanly. `tools/frame_signature.py`
+   against `E2`/`E3` is the instrument, and it must be run over the WHOLE dumped era —
+   this title screen is two screens (gotcha 176). `docs/phase5-notes.md` §7 is the
+   older enumerated gap and is now largely superseded by §§6s-6x. Gate on **per-era
+   aggregates, never frame index** (gotcha 38).
 4. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
