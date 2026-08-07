@@ -112,6 +112,35 @@ constexpr uint32_t kMaxDescriptors = 4096; // per heap; the frontend uses a few 
 std::map<std::string, uint64_t> g_stats;
 void Count(const char* name) { ++g_stats[name]; }
 
+// CZ_VK_TEX_CENSUS=1 — per texture ADDRESS, where its pixels came from.
+//
+// The aggregate counters above say how many fetches took each path; they cannot say
+// WHICH surface took which, and that is the whole question behind a black rectangle on
+// screen. A surface our renderer resolved to and then served from guest memory is
+// serving pixels nobody ever wrote there (gotcha 113: a resolve becomes a host image,
+// not guest bytes), and the symptom is a filled black quad four layers away. The
+// `zero` column is the one that matters: an upload whose every byte is zero is this
+// runtime saying out loud that it had nothing to give.
+//
+// Gated on the env var because the `snapshot` column is hit ~500,000 times a run and a
+// probe expensive enough to change the frame rate manufactures what it reports
+// (gotcha 7).
+struct TexSource
+{
+    uint32_t width = 0, height = 0, format = 0;
+    uint64_t uploads = 0, zeroUploads = 0, fromSnapshot = 0, snapshotTooOld = 0;
+    uint64_t maxAge = 0;
+    bool everResolved = false;
+    // Enough to re-read the same bytes at report time. "This upload was black" and
+    // "this upload was black AND the guest has filled it in since" are completely
+    // different defects — the first says the data was never there, the second says we
+    // cached a texture that arrived late — and only a re-read separates them.
+    const uint8_t* src = nullptr;
+    uint64_t srcBytes = 0;
+};
+std::map<uint32_t, TexSource> g_texSources;
+bool g_texCensus = false;
+
 bool g_active = false;
 bool g_initTried = false;
 
@@ -585,6 +614,11 @@ struct Renderer
     // a post-processing blit, and when those are the passes producing nothing, the
     // question is which shader draws them.
     std::vector<std::string> firstDrawsThisPass;
+    // The first texture the CURRENT draw bound, for the pass draw list. "This pass is
+    // black" and "this pass's input was never produced" are the same picture until you
+    // can name the surface each draw sampled (gotcha 140).
+    uint32_t lastTexAddr = 0;
+    uint32_t lastTexSlot = 0;
     uint32_t targetWidth = 1280, targetHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
@@ -1381,6 +1415,24 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     }
     {
         auto snap = R->snapshots.find(t.address & 0x1FFFFFFF);
+        if (g_texCensus)
+        {
+            TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
+            s.width = t.width;
+            s.height = t.height;
+            s.format = t.format;
+            if (snap != R->snapshots.end())
+            {
+                s.everResolved = true;
+                if (snap->second.frameSeen + 1 >= R->frame)
+                    s.fromSnapshot++;
+                else
+                {
+                    s.snapshotTooOld++;
+                    s.maxAge = std::max(s.maxAge, R->frame - snap->second.frameSeen);
+                }
+            }
+        }
         if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
         {
             Count("texture: served from a resolve snapshot");
@@ -1491,6 +1543,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         Count("texture: linear");
     }
 
+    if (g_texCensus)
+    {
+        TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
+        s.width = t.width;
+        s.height = t.height;
+        s.format = t.format;
+        s.uploads++;
+        s.src = src;
+        s.srcBytes = srcBytes;
+        bool allZero = true;
+        for (uint8_t b : pixels)
+            if (b)
+            {
+                allZero = false;
+                break;
+            }
+        if (allZero)
+            s.zeroUploads++;
+    }
+
     if (R->nextTextureSlot >= kMaxDescriptors)
     {
         Count("texture: bindless heap full");
@@ -1500,6 +1572,25 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     TextureEntry entry;
     entry.key = key;
     entry.slot = R->nextTextureSlot++;
+    // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
+    // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
+    // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
+    // opaque black boxes. The obvious repair — treat it as provisional and re-upload
+    // until the guest fills it — was built and MEASURED, and it fires zero times:
+    // none of this boot's 58 all-black uploads ever becomes non-zero at its own texels.
+    // See docs/phase5-notes.md 6aa; the counter stays because it is what named the
+    // texture.
+    {
+        bool allZero = true;
+        for (uint8_t b : pixels)
+            if (b)
+            {
+                allZero = false;
+                break;
+            }
+        if (allZero)
+            Count("texture: uploaded entirely BLACK (the guest has not written it)");
+    }
     if (!CreateImage(entry.image, t.width, t.height, format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
@@ -2385,6 +2476,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                                      regs[xenos::kRbBlendControl0])
                           : 0;
 
+    R->lastTexAddr = 0;
+    R->lastTexSlot = 0;
     auto bindTextures = [&](const std::vector<uint32_t>& consts) {
         for (uint32_t constIdx : consts)
         {
@@ -2392,6 +2485,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 continue;
             const size_t snapsBefore = R->snapshotsSampledThisPass.size();
             const uint32_t slot = UploadTexture(base, regs, constIdx);
+            if (!R->lastTexAddr)
+            {
+                R->lastTexAddr = xenos::DecodeTextureFetch(regs, constIdx).address;
+                R->lastTexSlot = slot;
+            }
             reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
             if (psbind && psbindAt < int(sizeof psbindLine) - 96)
@@ -2408,6 +2506,35 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     };
     bindTextures(ps.tfetchConsts);
     bindTextures(vs.tfetchConsts);
+
+    // CZ_VK_ONLY_TEX / CZ_VK_SKIP_TEX=<hex[,hex...]> — render only, or all but, the
+    // draws whose first bound texture is at that guest address.
+    //
+    // The bisection arms one level down from CZ_VK_ONLY_VS. A UI compose is a hundred
+    // quads sharing two shaders, so "which shader draws this" cannot separate them and
+    // "which TEXTURE does this draw sample" can. It is how a rectangle on screen gets
+    // an identity: skip one address, look at what vanished. That turns "the save-slot
+    // boxes are black" into "the save-slot boxes are texture 0364B000", which is a
+    // question with an answer.
+    {
+        static const char* onlyTex = Env("CZ_VK_ONLY_TEX");
+        static const char* skipTex = Env("CZ_VK_SKIP_TEX");
+        if (onlyTex || skipTex)
+        {
+            char hex[16];
+            snprintf(hex, sizeof hex, "%08X", R->lastTexAddr);
+            if (onlyTex && !strstr(onlyTex, hex))
+            {
+                Count("draw: filtered out (CZ_VK_ONLY_TEX)");
+                return;
+            }
+            if (skipTex && strstr(skipTex, hex))
+            {
+                Count("draw: filtered out (CZ_VK_SKIP_TEX)");
+                return;
+            }
+        }
+    }
     if (psbind)
     {
         // Dedupe on the BINDINGS, never on the whole line — the line carries the frame
@@ -3237,12 +3364,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         R->cameraFingerprint = h;
     }
 
-    if (R->firstDrawsThisPass.size() < 4)
+    // CZ_VK_PASS_DRAWS=N — how many of a pass's draws the resolve trace lists. Four
+    // says what KIND of pass it is; it cannot say what a 115-draw UI compose did, which
+    // is where every "why is this rectangle black" question ends. The texture address
+    // is on the line because a draw's identity for this purpose is its INPUT.
+    static const size_t passDraws =
+        Env("CZ_VK_PASS_DRAWS") ? strtoul(Env("CZ_VK_PASS_DRAWS"), nullptr, 10) : 4;
+    if (R->firstDrawsThisPass.size() < passDraws)
     {
-        char buf[96];
-        snprintf(buf, sizeof buf, "prim%u/%uidx/vs=%016llx/ps=%016llx", draw.primType,
-                 draw.indexCount, (unsigned long long)vsBind.hash,
-                 (unsigned long long)psBind.hash);
+        char buf[128];
+        snprintf(buf, sizeof buf, "prim%u/%uidx/vs=%016llx/ps=%016llx/tex=%08X%s",
+                 draw.primType, draw.indexCount, (unsigned long long)vsBind.hash,
+                 (unsigned long long)psBind.hash, R->lastTexAddr,
+                 R->lastTexAddr && !R->lastTexSlot ? "(DUMMY)" : "");
         R->firstDrawsThisPass.push_back(buf);
     }
     ++R->drawsThisFrame;
@@ -3324,7 +3458,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 (unsigned long long)R->guestTexturesThisPass);
         fprintf(stderr, "[vkresolve]     first draws:");
         for (const auto& d : R->firstDrawsThisPass)
-            fprintf(stderr, " %s", d.c_str());
+            fprintf(stderr, "\n[vkresolve]       %s", d.c_str());
         fprintf(stderr, "\n");
     }
     R->drawsThisPass = 0;
@@ -3639,6 +3773,7 @@ bool InitCommon()
         return false;
 
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
+    g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_active = true;
     fprintf(stderr, "[vk] renderer UP: %ux%u target, %zu shaders\n", R->targetWidth,
             R->targetHeight, R->shaders.size());
@@ -3748,8 +3883,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // sounds: every other gate this project owns is a log diff, and "the picture is
     // right" is the one claim that needs an image. A headless run plus a directory of
     // frames is a self-servable version of the E-screenshot comparison.
+    // CZ_VK_FRAME_DUMP_EVERY=N overrides the 64. A screen the synthetic-input arm walks
+    // THROUGH rather than parks on can be shorter than 64 frames, and one dump of it is
+    // one sample of a transition — the save-slot panel below appeared in exactly one
+    // frame of a 180 s boot.
     static const char* dumpDir = Env("CZ_VK_FRAME_DUMP");
-    if (dumpDir && (R->frame % 64) == 0)
+    static const uint64_t dumpEvery =
+        Env("CZ_VK_FRAME_DUMP_EVERY")
+            ? std::max<uint64_t>(1, strtoull(Env("CZ_VK_FRAME_DUMP_EVERY"), nullptr, 10))
+            : 64;
+    if (dumpDir && (R->frame % dumpEvery) == 0)
     {
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06llu.ppm", dumpDir,
@@ -3936,8 +4079,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // the only instrument that can: the frame is the last link, so a wrong frame is
     // consistent with every pass being wrong and with exactly one being wrong. Dumping
     // all of them turns that into a directory you can look at.
+    // CZ_VK_SNAP_FRAME=N picks the frame. It was a hardcoded 600 for as long as the
+    // instrument existed, which was fine while every question was about the title
+    // screen — and useless the moment one was not. Phase C part 12's defect is on a
+    // menu two presses past the title, i.e. at whatever frame the synthetic-input arm
+    // happens to land on, and a dependency graph of the wrong frame answers nothing.
     static const char* snapDir = Env("CZ_VK_SNAP_DUMP");
-    if (snapDir && R->frame == 600)
+    static const uint64_t snapFrame =
+        Env("CZ_VK_SNAP_FRAME") ? strtoull(Env("CZ_VK_SNAP_FRAME"), nullptr, 10) : 600;
+    if (snapDir && R->frame == snapFrame)
     {
         for (const auto& [dest, snap] : R->snapshots)
         {
@@ -4051,5 +4201,45 @@ void VkRenderer_DumpStats()
     for (const auto& [name, count] : g_stats)
         fprintf(stderr, "[vk]   %-52s %llu\n", name.c_str(),
                 (unsigned long long)count);
+
+    // The per-address table. Only the rows that say something are printed: a surface
+    // this renderer resolved to, or an upload that came out entirely zero. Everything
+    // else is an ordinary disc texture and the aggregate counters already cover it.
+    if (g_texCensus)
+    {
+        fprintf(stderr, "[vk]   texture sources (addr, extent, fmt | uploads/zero, "
+                        "snapshot, tooOld maxAge):\n");
+        for (const auto& [addr, s] : g_texSources)
+        {
+            if (!s.everResolved && !s.zeroUploads)
+                continue;
+            // Re-read the source bytes NOW. A row that uploaded black and is still
+            // black in guest memory is a texture the guest never wrote; one that
+            // uploaded black and now reads non-zero is a texture that arrived AFTER
+            // our one and only upload, and is frozen black by the cache.
+            const char* note = "";
+            if (s.zeroUploads && s.srcBytes && s.src)
+            {
+                const uint8_t* p = s.src;
+                bool nowZero = true;
+                for (uint64_t i = 0; i < s.srcBytes; i++)
+                    if (p[i])
+                    {
+                        nowZero = false;
+                        break;
+                    }
+                note = nowZero ? "   <- uploaded BLACK, guest memory STILL zero"
+                               : "   <- uploaded BLACK, guest memory is NON-ZERO NOW";
+            }
+            fprintf(stderr,
+                    "[vk]     %08X %4ux%-4u f%-2u | up %llu (zero %llu)  snap %llu  "
+                    "tooOld %llu (max age %llu)%s\n",
+                    addr, s.width, s.height, s.format, (unsigned long long)s.uploads,
+                    (unsigned long long)s.zeroUploads,
+                    (unsigned long long)s.fromSnapshot,
+                    (unsigned long long)s.snapshotTooOld, (unsigned long long)s.maxAge,
+                    note);
+        }
+    }
 }
 
