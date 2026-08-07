@@ -745,6 +745,119 @@ different coverage — but the metric was never pointed at the presented frame's
 no aggregate would have named the cause. Both were found in one minute of a human
 looking at the game.
 
+## 6s. THE SCENE WAS NEVER MISSING — ONE STALE CACHE ENTRY COMPOSED IT AWAY
+
+Session 21 (2026-08-06), on the PM4 control arm as `docs/d3d-phase-c9-kickoff.md`
+prescribed. This is the "3D background and DEAD RISING 2 wordmark are black on both
+arms" item, and it is closed.
+
+### The observation that reframed it: the title screen is TWO screens
+
+Every phase-5 and phase-C claim about "the title screen" has been made from a single
+dumped frame, and the frames dumped happened to be one of the two. Dumping every 64th
+frame of a 170 s boot and measuring all 32 says so at a glance:
+
+| frames | non-black | distinct colours | what it is |
+|---|---|---|---|
+| 448..1377, 1427..2048 | **2.31%** | ~880 | PRESS START and the copyright line, on black |
+| 1378..1426 | 34–37.7% | up to 81,014 | **the DEAD RISING 2 CASE ZERO logo, fading in and out over 49 frames** |
+
+The logo frame is a near-exact match for capture E2. So the renderer could already
+produce a correct title screen and had been doing it for one frame in twenty, unseen.
+
+And capture **E3** says what the other era is supposed to be: the title screen's
+animated **Still Creek** 3D background, with the same PRESS START bar over it. The
+title alternates the two. Our runtime rendered the logo era correctly — because E2's
+background is black anyway — and the Still Creek era as pure black.
+
+### The dependency graph, which is what actually localised it
+
+`CZ_VK_RESOLVE_TRACE` already prints each pass's sampled snapshots (gotcha 140). Two
+instrument defects had to be fixed before it could answer, both of them the same shape
+as gotcha 109:
+
+* the trace's 60-line cap guarded only the pass HEADER, so the two follow-up lines kept
+  printing uncapped for the rest of the run — and the budget bought a different number
+  of passes depending on the resolve order, so the frame's LAST pass (the front buffer,
+  the one every "why is it black" question ends at) fell off the end. The budget is now
+  in PASSES (`CZ_VK_RESOLVE_TRACE_PASSES`, default 20).
+* the per-pass draw list was capped at 4, which says what KIND of pass this is and
+  nothing about what a 57-draw compose did. `CZ_VK_PASS_DRAWS=N`.
+
+With those, one frame of the title screen is 56 passes and reads as a clean chain:
+
+```
+scene colour 0684B000 (two 640 tiles, one key — gotcha 121)
+   -> 14733000 bright pass -> 1476F000 -> 147AB000 -> 147BA000        (bloom)
+   -> 1439B000  TONE MAP + COLOUR GRADE  <- 0684B000 + 3 bloom levels + LUT 14338000
+   -> 147C0000 (DOF blur, <- 1439B000 + depth 06BE4000)
+   -> 149A0000 (circle of confusion, <- depth)
+   -> 00E48000 FRONT BUFFER  <- 1439B000 + 06BE4000 + 147C0000 + 149A0000, then 57 UI draws
+```
+
+Every link measured non-black **except one**: the tone map's own output at `1439B000`
+was **0.00% non-black**, from a `0684B000` input that was 61.8% covered. One pass, one
+fullscreen quad, live inputs, and black out.
+
+`1439B000` is also a shadow-cascade destination earlier in the same frame — an address
+this title reuses, which cost some time before the ordered pass list made it obvious
+that the LATE resolve is the tone map's.
+
+### The cause: the texture cache was consulted BEFORE the resolve snapshot
+
+`UploadTexture` had, in this order:
+
+1. look the fetch constant's six dwords up in `R->textures`; on a hit, return it;
+2. if the fetch's address names a resolve snapshot from this frame or the last, return
+   the snapshot — *"deliberately NOT cached, because a snapshot's contents change every
+   frame while its fetch constant does not"* (gotcha 114, correctly stated in the code);
+3. otherwise untile it out of guest memory and cache it.
+
+Step 2's rule only holds for a surface whose **first** fetch already had a snapshot.
+This title's colour-grading LUT is resolved LATE in a frame (pass 55 of 56) and sampled
+EARLY in the next one (pass 46), so during the boot — before any pass had resolved it —
+its first fetch fell through to guest memory, uploaded whatever the allocator had left
+at `14338000`, and cached that under the fetch constant. **The fetch constant never
+changed again**, so every subsequent frame took the cache-hit path, and the tone map
+sampled a dead first-frame upload for the rest of the process.
+
+The tone map's final instructions are two LUT lookups blended (`tfetch2D r4, r3.xy, tf4`
+/ `tfetch2D r1, r3.wy, tf4`, then `mad_sat` / `max oC0`), so a black LUT is a black
+frame. Nothing else had to be wrong.
+
+**The fix is to check the snapshot before the cache**, which is what the comment already
+said the rule was. `CZ_VK_TEX_CACHE_FIRST=1` is the same-binary control arm.
+
+Measured, same binary, PM4 control arm, 170 s headless boots:
+
+| | fixed | `CZ_VK_TEX_CACHE_FIRST=1` |
+|---|---|---|
+| tone map output `1439B000` | **95.3% non-black, 56,658 colours** | 0.00%, 1 colour |
+| front buffer `00E48000` | **96.4%, 133,114 colours** | 2.31%, 880 |
+| presented frame 1024 / 1920 | **99.4% / 99.5%** | 2.31% / 2.31% |
+| texture fetches served from a snapshot | 544,818 | 492,238 |
+| frames presented | 1,188 | 1,189 |
+
+That is a structural change, not a metric shift (gotcha 127) — the scene now reaches the
+screen at all — and it costs nothing measurable in frame rate.
+
+### What this says about the instruments, which is the transferable part
+
+Every instrument this project owns reported a healthy chain while the picture was black:
+the LUT's own resolve snapshot was 99.9% non-black; the tone map's four other inputs
+were live snapshots; its colour mask was `F`; its blend was `00010001`; its constants
+were sane; no decline counter moved; `texture: cache hit` was 2.2 M and looked like
+health. The one number that could have named it — `texture: resolve snapshot too old,
+falling back to guest memory` — read **7** on the broken binary and **70,681** on the
+fixed one, because on the broken binary the cache hit short-circuited before the
+snapshot was ever consulted. **A counter downstream of an early return counts the times
+the early return did not happen**, and its silence is unfalsifiable from inside.
+
+What broke the deadlock was the per-pass dependency graph: not "is this pass healthy"
+but "which link of the chain is the first black one". That question needs the passes in
+ORDER, with their inputs, which is exactly what gotcha 140 was written for and what two
+capped prints were preventing.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,

@@ -1336,13 +1336,6 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         key ^= regs[xenos::kFetchConstantBase + constIdx * 6 + i];
         key *= 1099511628211ull;
     }
-    auto cached = R->textures.find(key);
-    if (cached != R->textures.end())
-    {
-        Count("texture: cache hit");
-        return cached->second.slot;
-    }
-
     const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
     if (t.type != 2)
     {
@@ -1360,6 +1353,32 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // Deliberately NOT cached in R->textures: a snapshot's contents change every
     // frame while its fetch constant does not, so caching it on the fetch constant
     // would freeze the first frame's version of the surface forever.
+    //
+    // THE SNAPSHOT IS CHECKED BEFORE THE CACHE, and that ordering is the whole point.
+    // It used to be checked after, so the "not cached" rule only held for a surface
+    // whose FIRST fetch already had a snapshot. This title's colour-grading LUT is
+    // resolved LATE in a frame and sampled EARLY in the next one, so its very first
+    // fetch — during the boot, before any pass had resolved it — fell through to guest
+    // memory, uploaded whatever the allocator had left there, and cached that under
+    // the fetch constant. The fetch constant never changed again, so every subsequent
+    // frame took the cache-hit path and the tone map sampled a dead first-frame
+    // upload for the rest of the run. One stale entry, and the entire scene composed
+    // black while every instrument reported a healthy chain: the LUT's own snapshot
+    // was 99.9% non-black, the tone map's four other inputs were live snapshots, its
+    // colour mask was F and its constants were sane.
+    //
+    // CZ_VK_TEX_CACHE_FIRST=1 restores the old order — the same-binary control arm for
+    // every claim about this fix.
+    static const bool cacheFirst = EnvOn("CZ_VK_TEX_CACHE_FIRST");
+    if (cacheFirst)
+    {
+        auto c = R->textures.find(key);
+        if (c != R->textures.end())
+        {
+            Count("texture: cache hit");
+            return c->second.slot;
+        }
+    }
     {
         auto snap = R->snapshots.find(t.address & 0x1FFFFFFF);
         if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
@@ -1374,6 +1393,13 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         }
         if (snap != R->snapshots.end())
             Count("texture: resolve snapshot too old, falling back to guest memory");
+    }
+
+    auto cached = R->textures.find(key);
+    if (cached != R->textures.end())
+    {
+        Count("texture: cache hit");
+        return cached->second.slot;
     }
 
     uint32_t bytesPerUnit = 0, blockDim = 1;
@@ -2248,10 +2274,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     snprintf(psbindWant, sizeof psbindWant, "%016llx", (unsigned long long)psBind.hash);
     const bool psbind = psbindEnv && strstr(psbindEnv, psbindWant);
     char psbindLine[512];
+    // The pass's WRITE state belongs on this line too. "colour = f(constants,
+    // textures)" is only true of a draw that writes its colour at all: an empty
+    // RB_COLOR_MASK makes a pipeline that discards every channel, and its output is
+    // indistinguishable from a shader that computed black. 43% of this title's draws
+    // arrive with an empty mask, so the question is live for every one of them.
     int psbindAt = psbind ? snprintf(psbindLine, sizeof psbindLine,
-                                     "[psbind] frame=%llu ps=%016llx",
+                                     "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                                      (unsigned long long)R->frame,
-                                     (unsigned long long)psBind.hash)
+                                     (unsigned long long)psBind.hash,
+                                     regs[xenos::kRbColorMask] & 0xF,
+                                     regs[xenos::kRbBlendControl0])
                           : 0;
 
     auto bindTextures = [&](const std::vector<uint32_t>& consts) {
@@ -2311,7 +2344,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 at = comma + 1;
             }
         }
-        const char* bindings = strstr(psbindLine, "  s");
+        const char* bindings = strstr(psbindLine, "mask=");
         std::string key(bindings ? bindings : psbindLine);
         if (std::find(seenBind.begin(), seenBind.end(), key) == seenBind.end() &&
             seenBind.size() < 64)
