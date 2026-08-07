@@ -1244,6 +1244,84 @@ that keeps producing frames supersedes each token stream before the replay matte
    above engages. Any future note quoting it as "how far the draw arm loads" is
    quoting a symptom.
 
+### Phase C part 9: the picture — four defects between the scene and the screen
+
+Session 21 (2026-08-06/07). `docs/d3d-phase-c9-kickoff.md` handed over one item at the
+top of its list: *the 3D background and the DEAD RISING 2 wordmark are black on BOTH
+arms, so that is a phase-5 renderer gap the pivot neither caused nor fixed.* It was, and
+the kickoff's advice to work it on the **PM4 control arm** was right — everything below
+was found there in a binary that is also the draw arm.
+
+Full technical record in `docs/phase5-notes.md` §§6s-6u. The short form, in the order
+each one hid the next:
+
+**0. The title screen is TWO screens, and every claim about it for three phases was a
+single sample of whichever one the dump caught.** Measuring all 32 frames of a 170 s
+boot instead of looking at one: 49 frames in ~1000 carry the DEAD RISING 2 CASE ZERO
+logo (a near-exact match for capture E2, fading in and out over a 49-frame pulse) and
+the rest carry PRESS START on black. Capture **E3** says the second era is the animated
+**Still Creek** 3D background. So the logo era was already correct — E2's background is
+black anyway — and it was the Still Creek era that rendered as nothing.
+
+**1. One stale texture-cache entry composed the scene away.** `UploadTexture` consulted
+the fetch-constant cache BEFORE the resolve-snapshot check, so the rule the code already
+stated — *a snapshot is deliberately not cached, its contents change every frame while
+its fetch constant does not* — only held for a surface whose FIRST fetch already had a
+snapshot. This title's colour-grading LUT is resolved late in a frame and sampled early
+in the next, so its first fetch during the boot fell through to guest memory, uploaded
+whatever the allocator had left, and cached it under a fetch constant that never changed
+again. The tone map's last instructions are two LUT lookups blended: a black LUT is a
+black frame. Checking the snapshot first took the tone map's output from 0.00% non-black
+to 95.3%, and the presented frame from 2.31% to 99.4%.
+
+**2. The exploded geometry was DRAW_INDX read one dword off.** The index swizzle lives
+in the TOP two bits of the SIZE dword, not the low two of the ADDRESS — and reading it
+off the address also masked away address bit 1, which is real for a 2-byte-aligned
+16-bit index buffer. Every draw in this title is `8-in-16`; ~40% were also being read
+one index early. Fixed, the scene is a recognisable Still Creek.
+
+**3 and 4. Half of every clear rectangle was missing, twice over.** A rectangle list's
+fourth corner (`v0 + v2 - v1`) was never drawn — the expansion emitted the same triangle
+twice — and these draws are the guest's per-pass CLEAR, half of them depth-only, so half
+of every rect kept the previous pass's depth and rejected the scene behind it. Then, with
+whole rects, the scene tile's clear still covered 320 of its 640 columns, because that
+clear runs with `RB_SURFACE_INFO` declaring 4x MSAA and on Xenos 4x doubles a surface's
+width: window coordinates are in PIXELS and our EDRAM is at sample resolution.
+
+**What the arms are.** Every one of the four has a same-binary control:
+`CZ_VK_TEX_CACHE_FIRST`, `CZ_PM4_INDEX_ADDR_SWIZZLE`, `CZ_VK_RECT_HALF`,
+`CZ_VK_NO_MSAA_WINDOW_SCALE`. The instrument that made 3 and 4 diagnosable at all is
+`CZ_VK_NO_DEPTH_TEST=1`, which separates "never submitted" from "submitted and rejected
+by stale depth" — the same picture, completely different investigations.
+
+**Gates, PM4 arm, fixed binary:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 0
+real windows**; `truncated=0`; deepest file **#83 `cinezombie.big`**; no change in frames
+presented (1,188 against 1,189).
+
+**What is still wrong, sized.** The title screen's LEFT half renders as a complete,
+bright Still Creek; the RIGHT half (screen 640..1280, the scene's second tile) is nearly
+empty. Hardware issues **~2,540 draws a frame** at this screen and we issue **~1,620** —
+the left tile's pass carries 928 draws and 495,541 vertices, the right tile's 96 and
+30,755, and with the depth test off the right tile still paints nothing. So those draws
+are not in our stream at all, which is a different class of fault from anything above and
+is where part 10 starts.
+
+**Method notes worth more than the fixes.**
+
+* The counter that could have named defect 1 read **7** on the broken binary and
+  **70,681** on the fixed one, because it sits downstream of the early return that WAS
+  the defect. A counter behind an early return counts the times the early return did not
+  happen, and its silence is unfalsifiable from inside.
+* Defect 2 retracts `phase5-notes` §6c's retirement of index endianness. That A/B was
+  honest and was scored against a black frame, because defect 1 was upstream of the
+  metric. **A retirement is only as good as the oracle it was measured on** — gotcha 13's
+  shelf life, applied to our own earlier measurements rather than to a capture's.
+* `CZ_VK_FORCE_COLORMASK=1` produced a visibly better picture and is not a fix; it was
+  the animated title screen resampled (gotcha 133), and this phase has now nearly lost
+  four claims to that one cause. What settled it was a counter, not a picture: splitting
+  "empty colour mask" by `RB_MODECONTROL` shows the empty masks are a real Z prepass plus
+  the degenerate point draws.
+
 ## Standing discipline, unchanged
 
 Both arms in the same binary; a rate, never a single run; the animated title screen is

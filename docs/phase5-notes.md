@@ -858,7 +858,130 @@ but "which link of the chain is the first black one". That question needs the pa
 ORDER, with their inputs, which is exactly what gotcha 140 was written for and what two
 capped prints were preventing.
 
+## 6t. THE EXPLODED GEOMETRY WAS DRAW_INDX READ ONE DWORD OFF
+
+Session 21, immediately after §6s put the scene on the screen for the first time.
+
+**The vanishing point named the cause.** Measuring the scene surface rather than
+looking at it: the triangles converge at (640, 360) — the exact centre of a 1280x720
+frame, i.e. NDC (0,0), which is where a triangle goes when its indices are garbage
+rather than when its transform is wrong. Every input to that transform had already been
+verified individually (§6i, §6c, §7), and all of those verifications stand.
+
+**The packet.** `CZ_PM4_DRAW_TRACE=1` prints the raw DRAW_INDX body:
+
+```
+[pm4draw] init=21870006 prim=6 count=8583 i32=0 addr=15BF75E0 size=40002187  addr&3=0  size>>30=1  size&0xFFFFFF=8583
+[pm4draw] init=00390006 prim=6 count=57   i32=0 addr=15B7E726 size=40000039  addr&3=2  size>>30=1  size&0xFFFFFF=57
+```
+
+`dword[n+1]` is a bare physical address; `dword[n+2]` is `endian:2 | 0 | count:24`. The
+parser read the swizzle from the low two bits of the ADDRESS, which is how every OTHER
+address in a PM4 stream carries it, and that one line held two defects:
+
+* the swizzle came out 0 or 2 depending on nothing but alignment — 680,964 draws at 0
+  and 468,683 at 2 over a boot — when the packet says **1 (8-in-16) on every draw**,
+  the only swizzle that makes sense for a big-endian 16-bit index buffer;
+* masking the low two bits off the address **moved it**. A 16-bit index buffer is
+  2-byte aligned, so bit 1 is a real address bit (`15B7E726` above), and the ~40% of
+  draws that have it set were read one index early.
+
+The count appears in both dwords and they agree on every draw of a boot, which is the
+packet's own proof that this reading of the size dword is right; the parser now checks
+it every draw and says so if it ever stops holding.
+
+**Result:** a recognisable Still Creek. `CZ_PM4_INDEX_ADDR_SWIZZLE=1` is the control arm.
+
+**This RETRACTS §6c's retirement of index endianness** ("the packet's own code beats
+both overrides by two orders of magnitude"). That A/B was scored on the scene-coverage
+metric while the compose chain of §6s was dead, so all three arms were being measured
+against a black frame. The arm was right to exist and was read against a broken oracle —
+which is the same shape as gotcha 13, applied to our own earlier measurement.
+
+## 6u. HALF OF EVERY CLEAR RECT WAS MISSING, TWICE OVER
+
+With the geometry fixed, the title screen's background rendered inside **one triangle**
+and nothing outside it. Two independent defects, both in how a *screen-space rectangle*
+reaches the screen, and the second only became visible once the first was fixed.
+
+### The fourth corner of a rectangle list
+
+A Xenos rectangle list stores three corners and the hardware generates the fourth. The
+expansion emitted `(v0,v1,v2)` and `(v0,v2,v1)` — the same triangle twice — and the
+comment beside it claimed that was "correct for an axis-aligned screen rect". It is
+correct for nothing: it covers exactly half of every rect.
+
+That is not cosmetic, because these draws are the guest's per-pass **clear** — one at
+the head of nearly every pass, 46,404 a boot — and 233,155 draws a boot clear
+DEPTH ONLY (`RB_MODECONTROL` 5, empty colour mask). With half a rect uncleared, the
+previous pass's depth survives there and rejects the whole scene behind it. The symptom
+is a picture with a diagonal edge, which reads as broken geometry rather than a missing
+clear.
+
+The corners are measured, not assumed — the stream holds TL, TR, BR:
+
+```
+v0 = (0,0)    v1 = (64,0)    v2 = (64,64)
+v0 = (0,0)    v1 = (480,0)   v2 = (480,512)
+v0 = (960,0)  v1 = (1024,0)  v2 = (1024,1024)      <- a 64-wide strip of a 1024 surface
+```
+
+so the missing corner is `v0 + v2 - v1`. An index rewrite cannot name a vertex that does
+not exist, so the fix builds a real four-record vertex stream per rect draw and
+extrapolates record 3 per dword as a float — exactly what the hardware does. Non-float
+attributes copy record 0 and count themselves; a multi-rect draw (none in this title)
+falls back and counts itself. `CZ_VK_RECT_HALF=1` is the control arm.
+
+### Window coordinates are in PIXELS; our EDRAM is at SAMPLE resolution
+
+Even with whole rects, the scene tile is 640 columns wide and its clear covers 320.
+The clear rect really is `(0,0)-(320,720)` — and the pass that issues it has
+`RB_SURFACE_INFO = 0x0A020280`, i.e. **MSAA bits 16..17 = 2 = 4x**, while the scene's
+own draws run at `0x0A010280` = 2x. On Xenos it is 4x that doubles a surface's WIDTH,
+so 320 pixels *is* the full 640-sample tile. Mapped one-to-one it clears half of it.
+
+`posScale.x` is now doubled for a 4x surface on the window-coordinate path; 42,749 draws
+a boot take it. `CZ_VK_NO_MSAA_WINDOW_SCALE=1` is the control arm.
+
+**The instrument that made this diagnosable is `CZ_VK_NO_DEPTH_TEST=1`** — an ARM, never
+a fix. "This geometry was never submitted" and "this geometry was submitted and rejected
+by depth left over from another pass" are the same picture and completely different
+investigations, and one run separates them: with the depth test off the tile's coverage
+goes from columns 0..320 to columns 0..640, which says the draws were there the whole
+time.
+
+### One correction that is honest about having done nothing
+
+Window-coordinate draws are also moved to their tile's screen origin by undoing
+`PA_SC_WINDOW_OFFSET`, because a window coordinate is relative to the EDRAM surface
+while our EDRAM holds every tile at its true screen position. It is correct and its
+counter reads **zero** over a whole boot — every window-coordinate draw this title
+issues runs with the offset at 0. It is credited with nothing (gotcha 151).
+
+### And one thing that looked like a fix and was a camera angle
+
+`CZ_VK_FORCE_COLORMASK=1` produced a visibly better-textured scene, which was the
+animated title screen resampled (gotcha 133) — very nearly this phase's fourth
+retraction to the same cause. Settled by a counter instead of a picture: splitting
+"empty colour mask" by `RB_MODECONTROL` gives **233,155** draws in depth-only mode (a
+real Z prepass, needs no explanation) and **148,150** in colour mode — and that second
+number is, to within noise, the count of the degenerate 1-index point draws that emit
+`oPos = (0,0,0,1)` regardless. `RB_COLOR_MASK` is read from the right register.
+
 ## 7. What is NOT right yet, with the measurement for each
+
+**SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
+compose chain, the index decode and the two rectangle defects were fixed. The current
+state is: the title screen's LEFT HALF renders as a complete, bright Still Creek —
+sky, power lines, the gas station, zombies, the road, the grass — and the RIGHT HALF
+(screen 640..1280, the scene's second tile) is nearly empty. The one number that sizes
+that gap: hardware issues **~2,540 draws a frame** at this screen (finding 10d) and we
+issue **~1,620**, with the missing ~900 almost exactly one scene tile's worth — the
+left tile's pass carries 928 draws and 495,541 vertices, the right tile's 96 and
+30,755. With `CZ_VK_NO_DEPTH_TEST=1` the right tile still paints nothing, so unlike
+§6u this is not a clear or a depth problem: those draws are not in our stream.
+
+The original table, for the record:
 
 The picture at the title screen is the blood streak from the DEAD RISING 2 wordmark,
 some UI text and two untextured bars — against E2's full logo. What the snapshot dump

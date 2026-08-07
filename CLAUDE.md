@@ -1068,6 +1068,56 @@ From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
     in the same breath. Ask what the title STARTS DOING at a stall, not what it was
     reading.
 
+From phase C part 9 (the picture — four defects between the scene and the screen):
+
+171. **A counter behind an early return counts the times the early return did not
+     happen, and its silence is unfalsifiable from inside.** `texture: resolve snapshot
+     too old` read **7** on the binary whose texture cache was consulted BEFORE the
+     snapshot check, and **70,681** on the fixed one — because on the broken binary the
+     cache hit short-circuited before the snapshot was ever looked at. Every other
+     instrument reported a healthy chain while the whole scene composed black: the LUT's
+     own resolve snapshot was 99.9% non-black, the tone map's four other inputs were live
+     snapshots, its colour mask was F, its constants were sane, and `texture: cache hit`
+     read 2.2 M and looked like health.
+172. **A retirement is only as good as the ORACLE it was measured on.** Index endianness
+     was A/B'd and retired in phase 5 ("the packet's own code beats both overrides by two
+     orders of magnitude"). The A/B was honest; it was scored on a frame that was black
+     for an unrelated upstream reason, so all three arms measured the same nothing. When
+     the upstream defect was fixed, the same arm turned exploded geometry into Still
+     Creek. Gotcha 13's shelf life, pointed at your own earlier measurements.
+173. **"Never submitted" and "submitted and rejected by stale depth" are the same
+     picture and completely different investigations.** One arm separates them —
+     `CZ_VK_NO_DEPTH_TEST=1` took the scene tile's coverage from columns 0..320 to
+     0..640 and thereby proved the draws had been there all along, which moved the hunt
+     from the geometry to the CLEAR. Build that arm before theorising about missing
+     geometry; it is four lines.
+174. **A screen-space rectangle reaches the screen through two conventions, and each
+     one can lose half of it.** A Xenos rectangle list stores three corners (TL, TR, BR)
+     and the hardware generates `v0 + v2 - v1`; an index rewrite cannot name a vertex
+     that does not exist, so "reuse the three real corners" covers exactly half of every
+     rect — and these draws are the guest's per-pass CLEAR, half of them depth-only, so
+     the other half keeps the previous pass's depth and rejects everything behind it.
+     Then window coordinates are in PIXELS while an EDRAM image is at SAMPLE resolution:
+     on a 4x-MSAA surface (which doubles the width on Xenos) a 320-wide clear IS the
+     640-wide tile. Both present as a picture with a diagonal edge, i.e. as broken
+     geometry.
+175. **A packet's field can be in a different dword from every other packet's, and the
+     packet states the count twice so you can check.** DRAW_INDX carries its index
+     buffer's endian swizzle in the TOP two bits of the SIZE dword, not the low two of
+     the ADDRESS — and reading it off the address ALSO masks away address bit 1, which
+     is real for a 2-byte-aligned 16-bit index buffer (~40% of this title's draws). The
+     symptom is triangles radiating from the exact screen centre, which is NDC (0,0) and
+     therefore says "the indices are garbage", not "the transform is wrong". `init >> 16`
+     and `size & 0xFFFFFF` agree on every draw of a boot; that agreement is now a
+     standing check.
+176. **A title screen can be TWO screens.** Case Zero's alternates a 49-frame logo pulse
+     (capture E2) with a long animated 3D background era (capture E3), so a frame dump
+     every 64 frames is a Bernoulli trial over which one you are looking at — and three
+     phases of "the title screen is black" were single samples of the era that was
+     broken while the other one was already correct. Measure ALL the dumped frames, not
+     one; the two eras differ by 2.31% vs 37% coverage and 880 vs 81,014 colours, so one
+     `awk` over the stats file separates them.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1162,7 +1212,8 @@ From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
   `d3d-phase-c5-kickoff.md` /
   `d3d-phase-c6-kickoff.md` /
   `d3d-phase-c7-kickoff.md` /
-  **`d3d-phase-c8-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c8-kickoff.md` / `d3d-phase-c9-kickoff.md` /
+  **`d3d-phase-c10-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1356,6 +1407,14 @@ CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR co
                    deadlocks at boot.bct (file #5) because the protocol needs the
                    command-processor interrupt from the first frame (measured, part 7)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
+CZ_PM4_DRAW_TRACE=1  the raw DRAW_INDX body for the first 24 indexed draws — the
+                   instrument that settled which dword carries the index buffer's endian
+                   swizzle (the TOP two bits of the SIZE dword, not the low two of the
+                   ADDRESS, whose bit 1 is a real address bit)
+CZ_PM4_INDEX_ADDR_SWIZZLE=1  read the index swizzle off the address dword's low bits
+                   again — the pre-part-9 arm, i.e. exploded geometry radiating from the
+                   exact screen centre. Applies to gpu/pm4.cpp and gpu/d3d_draw.cpp
+                   together, so the two arms stay comparable
 CZ_PM4_FENCE_MONOTONIC=1   refuse any GPU store that moves the engine's fence
                    COMPLETION word backwards. An EXPERIMENT arm, never a fix — hardware
                    re-executes stale EVENT_WRITEs too, and a command processor that
@@ -1549,6 +1608,29 @@ CZ_VK_STATE_PROBE=1    the state registers the renderer ASSUMES rather than read
 CZ_VK_FETCH_SLOT_INVERT=1  read vertex fetch constants at 95-slot — the arm that
                    settled the fetch-slot convention unambiguously (inverted: 0.0%)
 CZ_VK_INDEX_ENDIAN=N   force one index swizzle code for every draw
+CZ_VK_TEX_CACHE_FIRST=1    consult the fetch-constant texture cache BEFORE the resolve
+                   snapshot — the pre-part-9 lookup order, which freezes a surface at
+                   whatever guest memory held the first time it was fetched. Reproduces
+                   the black scene exactly (2.31% non-black against 99.4%)
+CZ_VK_RECT_HALF=1  expand a rectangle list to the SAME TRIANGLE TWICE again, i.e. the
+                   pre-part-9 half-covered per-pass clear. Half of every depth clear
+                   missing means the previous pass's depth rejects the scene behind it
+CZ_VK_NO_MSAA_WINDOW_SCALE=1  map window coordinates one-to-one on a 4x MSAA surface —
+                   the pre-part-9 behaviour, in which the scene tile's clear covers 320
+                   of its 640 columns. Also disables the (never-yet-exercised) tile
+                   origin correction
+CZ_VK_NO_DEPTH_TEST=1  draw everything regardless of depth. An ARM, never a fix: it is
+                   the only cheap way to separate "this geometry was never submitted"
+                   from "this geometry was submitted and rejected by depth left over
+                   from another pass", which look identical in a snapshot
+CZ_VK_PASS_DRAWS=N     how many of a pass's draws the resolve trace lists (default 4).
+                   Four says what KIND of pass it is; it cannot say what a 57-draw
+                   compose did, which is where every "why is it black" question ends
+CZ_VK_RESOLVE_TRACE_PASSES=N  the resolve trace's budget, in PASSES rather than lines
+                   (default 20, about one frame). Counting lines meant the budget bought
+                   a different number of passes depending on the resolve order, so the
+                   frame's LAST pass fell off the end
+CZ_VK_DRAW_PROBE_COUNT=N  how many draws the draw probe prints (default 3)
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS
@@ -2377,6 +2459,55 @@ NEGATIVE result: it cannot isolate the replay, because the boot deadlocks at `bo
 
 Gates unchanged: `--smoke` OK; the control arm reaches `#83 cinezombie.big`;
 `truncated=0`, `max` hold streak 1 (control) / 2 (draw).
+
+**PHASE C PART 9 (2026-08-06/07, session 21): the title screen is TWO screens, and four
+defects sat between the 3D one and the display.** Details in `docs/phase5-notes.md`
+§§6s-6u and `docs/d3d-translation-plan.md` §"Phase C part 9"; hand-off in
+`docs/d3d-phase-c10-kickoff.md`.
+
+Part 8 handed over "the 3D background and the DEAD RISING 2 wordmark are black on BOTH
+arms" as a phase-5 renderer gap. Measuring all 32 dumped frames of a boot rather than
+looking at one says why the claim was half wrong: **49 frames in ~1,000 carry the
+DEAD RISING 2 CASE ZERO logo and are a near-exact match for capture E2.** The renderer
+had been producing a correct title screen for one frame in twenty, unseen, and it was
+the OTHER era — capture **E3**'s animated Still Creek background — that rendered black.
+Four defects, each hiding the next, all found and fixed on the **PM4 control arm**:
+
+1. **A stale texture-cache entry composed the whole scene away.** `UploadTexture`
+   consulted the fetch-constant cache before the resolve-snapshot check, so the rule the
+   code already stated (a snapshot must not be cached) only held for a surface whose
+   FIRST fetch already had one. The colour-grading LUT is resolved late in a frame and
+   sampled early in the next, so its first fetch during the boot uploaded whatever the
+   allocator had left there and froze it for the process. The tone map ends in two LUT
+   lookups: a black LUT is a black frame. Tone map output 0.00% -> **95.3%** non-black,
+   presented frame 2.31% -> **99.4%**.
+2. **The exploded geometry was DRAW_INDX read one dword off** — the index swizzle is the
+   TOP two bits of the SIZE dword, and reading it off the ADDRESS also masked away
+   address bit 1, real for a 2-byte-aligned 16-bit index buffer (~40% of draws, read one
+   index early). Every draw in this title is `8-in-16`. Fixed: a recognisable Still Creek.
+3. **A rectangle list's fourth corner was never drawn** (`v0 + v2 - v1`), so half of
+   every per-pass CLEAR was missing — and 233,155 draws a boot clear DEPTH ONLY, so the
+   previous pass's depth survived in the other half and rejected the scene behind it.
+4. **Window coordinates are in PIXELS and our EDRAM is at SAMPLE resolution**, so on the
+   4x-MSAA surface the scene tile's clear covers 320 of its 640 columns.
+
+**The title screen's LEFT HALF now renders as a complete, bright Still Creek** — sky,
+power lines, the gas station, zombies, the road, the grass.
+
+Every one of the four has a same-binary control arm (`CZ_VK_TEX_CACHE_FIRST`,
+`CZ_PM4_INDEX_ADDR_SWIZZLE`, `CZ_VK_RECT_HALF`, `CZ_VK_NO_MSAA_WINDOW_SCALE`), and the
+instrument that made 3 and 4 diagnosable is `CZ_VK_NO_DEPTH_TEST=1` (gotcha 173).
+
+**Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 0 real windows**;
+`truncated=0`; deepest file **#83 `cinezombie.big`**; frames presented unchanged.
+
+**THE OPEN ITEM, sized:** the RIGHT tile (screen 640..1280) is nearly empty. Hardware
+issues **~2,540 draws a frame** at this screen and we issue **~1,620**; the left tile's
+pass carries 928 draws / 495,541 vertices and the right tile's **96 / 30,755**, and with
+the depth test off the right tile still paints nothing — so those ~900 draws are not in
+our stream at all. First move is to count the draws between the two scene resolves in
+capture **B1** before theorising; the standing suspect is `SET_BIN_MASK` predication,
+which this runtime records and does not act on.
 
 Next, in order:
 
