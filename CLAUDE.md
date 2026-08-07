@@ -1326,6 +1326,49 @@ From phase C part 13 (the UI's text layer, and a crash that was an assertion):
      the confident answer "your file hashes to twenty zero bytes", and the caller did the
      only sensible thing with it. Gotcha 59's rule (predicates) generalises: whenever the
      return is consumed rather than tested, implementing it is the only correct option.
+
+From phase C part 14 (a resolve has a source, and the whole frame was out of focus):
+
+202. **A resolve has a SOURCE as well as a destination, and ignoring it is not a
+     cosmetic gap.** `RB_COPY_CONTROL`'s low three bits select the buffer being copied —
+     0..3 a colour target, **4 the DEPTH buffer** — and 18.4% of this title's resolves
+     (10,448 of 56,925 in B1) copy depth: three shadow cascades and the scene depth its
+     depth-of-field pass reads back. Serving those from the colour target made the circle
+     of confusion saturate everywhere, so the ENTIRE FRAME was composited at full blur
+     strength for five phases. §6d named the gap in the session it appeared and sized it
+     as "four black surfaces in a table"; nobody asked what CONSUMED them. The question
+     that closes it is a census of the capture by the field you are not reading.
+203. **One guest address can be two different surfaces inside one frame, and the fix is
+     a wider KEY, not a rebuild.** `1439B000` is a shadow cascade's depth destination
+     early in a frame and the tone map's colour output late in the same one (B1's
+     `1812F000`: 890 depth resolves, 852 colour). Evicting one for the other on each
+     resolve is a device-wait and a fresh bindless slot twice a frame — gotcha 192's
+     descriptor exhaustion with a new cause. Put the discriminator in the key and let the
+     consumer choose: a fetch says which it means in its own format field (`k_24_8` is a
+     depth surface).
+204. **A blur is invisible to every aggregate over pixel VALUES — gotcha 135's second
+     disguise.** Coverage, mean luminance, distinct colours and the histogram are all
+     nearly preserved by a low-pass filter, so `frame_compare.py` scored a uniformly
+     out-of-focus frame and a sharp one **0.01 pp apart**, inside its own 1.5 pp band,
+     and reported "no detectable difference" about the largest visible defect in the
+     port. A blur is a statement about the spatial DERIVATIVE: mean |gradient|
+     (`tools/frame_sharpness.py`) reads 1.19/1.20 against 7.64/7.67, 6.47x with no
+     overlap. When an operator can see something a purpose-built metric cannot, the
+     metric is measuring the wrong quantity, not reporting a small effect.
+205. **An address that has been "the scene" for five phases can be the scene DEPTH.**
+     `CZ_VK_FRAME_STATS_SURFACE=06BE4000` is documented here as the scene surface and was
+     used for every renderer A/B in this port — and `06BE4000`/`06BF8000` are the depth's
+     two tiles, `0684B000`/`0685F000` the colour's. It contained colour pixels only
+     BECAUSE of gotcha 202: our depth resolve copied the colour buffer, so the label was
+     confirmed every time it was checked. A defect can validate the very name it
+     corrupts; the thing that separated them was a field neither had ever printed.
+206. **A file-open counter stops climbing when the title stops OPENING files, not when
+     it stops loading.** `#154 skeleton\childfullbody.big` was handed over as "the
+     frontier — stalled, or the next thing to implement?" It is neither: `NtCreateFile`
+     successes stop because the title switches to reading assets out of `.big` containers
+     it already has open, and `CZ_FILE_TRACE` shows the loading running on for another
+     ~40 s through the cinematic props. Gotcha 109 said a capped log line is not a count;
+     this is the other half — an UNCAPPED count can still not be the quantity you want.
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1896,8 +1939,19 @@ CZ_VK_TEX_DUMP=dir + CZ_VK_TEX_DUMP_ADDR=<hex[,hex]>  the UNTILED bytes of a tex
                    texture is fine and the draw samples it wrong", which are different
                    subsystems — and a human can tell a page of glyphs from a page of
                    noise instantly, which no aggregate over it can
-CZ_VK_RESOLVE_TRACE=1  each resolve's destination, extent and clear bits, against the
-                   front buffer VdSwap named. The trace that found finding 5 below
+CZ_VK_RESOLVE_TRACE=1  each resolve's destination, SOURCE (colour or DEPTH), extent and
+                   clear bits, against the front buffer VdSwap named. The trace that
+                   found finding 5 below
+CZ_VK_NO_DEPTH_RESOLVE=1  snapshot the COLOUR target even for a resolve whose
+                   RB_COPY_CONTROL selects the DEPTH buffer — i.e. the pre-part-14
+                   renderer, in which 18.4% of this title's resolves (its three shadow
+                   cascades and its scene depth) delivered the wrong picture and the
+                   depth-of-field pass computed a circle of confusion out of the scene's
+                   own colour. With it on the WHOLE FRAME is uniformly out of focus at
+                   every depth, the community-watch sign and `POP 753` are unreadable and
+                   the street bunting is gone. NB no aggregate over pixel VALUES can see
+                   this (coverage moves 0.01 pp): use tools/frame_sharpness.py, which
+                   reads 1.19/1.20 with it on against 7.64/7.67 with it off
 CZ_VK_VIEWPORT_TRACE=1 every DISTINCT viewport setup, once each
 CZ_VK_FETCH_PROBE=1    which vertex fetch slots the guest has actually populated
 CZ_VK_STATE_PROBE=1    the distinct values of the state registers the renderer ASSUMES
@@ -1924,7 +1978,12 @@ CZ_VK_FRAME_STATS=file  one line per presented frame: draws, vertices, a draw-st
 CZ_VK_FRAME_STATS_SURFACE=hex  ALSO measure that resolve surface each frame. Not a
                    refinement — the metric does not work without it, because the
                    PRESENTED frame at the title screen is mostly UI and a change
-                   touching 476,858 draws moved it 0.1 pp. 06BE4000 is the scene
+                   touching 476,858 draws moved it 0.1 pp. **The scene colour is
+                   0684B000.** It was quoted as 06BE4000 from phase 5 to part 13 and
+                   that address is the scene DEPTH — it held colour pixels only because
+                   our resolve copied the colour buffer for depth resolves too (part
+                   14). Both tiles of each: colour 0684B000/0685F000, depth
+                   06BE4000/06BF8000
 CZ_VK_ONLY_VS=hex[,hex] / CZ_VK_SKIP_VS=hex[,hex]  render only, or all but, those
                    vertex shaders' draws — the bisection arms. NB the picture they
                    produce is a random sample of an animated scene: judge them with
@@ -1963,7 +2022,13 @@ CZ_VK_PASS_DRAWS=N     how many of a pass's draws the resolve trace lists (defau
 CZ_VK_RESOLVE_TRACE_PASSES=N  the resolve trace's budget, in PASSES rather than lines
                    (default 20, about one frame). Counting lines meant the budget bought
                    a different number of passes depending on the resolve order, so the
-                   frame's LAST pass fell off the end
+                   frame's LAST pass fell off the end. NB this is the SECOND knob
+                   documented here before it existed (gotcha 193): part 9's note says it
+                   put the budget in passes and the code still counted 60 HEADER lines
+                   while the two follow-up lines printed uncapped forever — so a trace
+                   ran out of headers and then emitted thousands of orphan input lines.
+                   Really implemented in part 14; `grep -n CZ_VK_RESOLVE_TRACE_PASSES
+                   runtime/` is the check that costs nothing
 CZ_VK_DRAW_PROBE_COUNT=N  how many draws the draw probe prints (default 3)
 CZ_VK_DRAW_PROBE_VERTS=N  how many VERTICES it prints per attribute (default 4 = one
                    quad = one GLYPH of a text run, which cannot show whether a run's
@@ -2026,7 +2091,7 @@ not a measurement (gotchas 50/51/86). Aggregate over the era; never compare by f
 index (gotcha 38):
 ```
 for a in base arm; do
-  (cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_FRAME_STATS_SURFACE=06BE4000 \
+  (cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_VK_FRAME_STATS_SURFACE=0684B000 \
       CZ_VK_FRAME_STATS=/tmp/$a.txt timeout 85 ./cz_runtime >/dev/null 2>&1)
 done
 python3 tools/frame_compare.py /tmp/base.txt /tmp/arm.txt
@@ -2048,6 +2113,25 @@ Fable 2, and preferred over `frame_compare.py`'s quoted band whenever there are 
 runs per arm:
 ```
 python3 tools/frame_matched_diff.py --a runA1 runA2 --b runB1 runB2
+```
+And how SHARP the frame is, which is the one thing no aggregate over pixel VALUES can
+report. A blur preserves coverage, mean luminance, distinct colours and the whole
+histogram exactly as a vertical flip does (gotcha 135), so `frame_compare.py` scored
+part 14's blurred and sharp arms 0.01 pp apart — inside its own band — while the
+operator could see the difference instantly. Measure the spatial DERIVATIVE instead;
+it separated those arms 6.47x with no overlap:
+```
+python3 tools/frame_sharpness.py /tmp/dump_base1 /tmp/dump_base2 /tmp/dump_arm1 \
+    /tmp/dump_arm2 --stats /tmp/base1.txt /tmp/base2.txt /tmp/arm1.txt /tmp/arm2.txt
+```
+
+Census a capture's RESOLVES by source and destination. **18.4% of this title's resolves
+copy the DEPTH buffer, not a colour target** — its three shadow cascades and its scene
+depth — and our command processor read that field nowhere until part 14, which is what
+made the whole frame uniformly out of focus. It is also the tool that named the scene's
+real colour address:
+```
+python3 tools/xtr_resolve_census.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
 ```
 
 Disassemble the guest image. **Reach for this before reading `ppc/`** — a recompiled

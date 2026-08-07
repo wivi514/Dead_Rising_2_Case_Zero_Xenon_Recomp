@@ -1639,6 +1639,135 @@ None of these is a missing pass in the §6s sense — the chain composes and the
 arrives. They are four separate questions, and (1) is the one that changes the picture
 most.
 
+**THEY WERE NOT FOUR QUESTIONS.** §6ae below closes 1, 3 and 4 with one fix and moves 2
+a long way: they are all the depth-of-field pass compositing at full strength over the
+whole frame, and the fine detail it erased.
+
+## 6ae. Three of those four were ONE defect: a resolve has a SOURCE
+
+Phase C part 14. `CZ_VK_NO_DEPTH_RESOLVE=1` is the same-binary control arm.
+
+### What was wrong
+
+`RB_COPY_CONTROL`'s low three bits are `copy_src_select`: 0..3 name a colour target and
+**4 names the DEPTH buffer**. `DoResolve` read that field nowhere. Every resolve, for
+five phases, snapshotted the colour target.
+
+§6d named this in the session it appeared — "RB_MODECONTROL 5 is depth-only and we
+resolve the wrong buffer for it" — and quantified it as "four of the black 1280x720
+surfaces in §7's table are depth resolves being served an empty colour buffer", i.e. as
+a cosmetic gap in a table of surfaces nobody was looking at. Nothing since asked how
+much of a FRAME depends on it, because our own command processor is the suspect in any
+such question and cannot be its own oracle (gotcha 178).
+
+The capture answers it with no emulator involved. `tools/xtr_resolve_census.py` replays
+`RB_COPY_CONTROL` / `RB_COPY_DEST_BASE` / `RB_MODECONTROL` over B1's 24,527,474 packets:
+
+| | resolves | share |
+|---|---|---|
+| `colour0` | 46,477 | 81.6% |
+| **`DEPTH`** | **10,448** | **18.4%** |
+
+and the destinations say what they are: three 4096x1024 depth surfaces (the shadow
+cascades), one 1280x720 depth surface over the scene's tile region, and one address
+(`1812F000`) that is the destination of both 890 depth resolves and 852 colour ones.
+
+### What it did to the picture
+
+The frame's last pass composes `tone map + scene depth + DOF blur + circle of
+confusion`, and both the DOF blur and the CoC are computed FROM the scene depth. Handed
+the colour buffer instead, the circle of confusion comes out saturated everywhere: every
+pixel reads as maximally out of focus, so the sharp input is thrown away and the blurred
+one is kept, at every depth. That is §6ad item 1 exactly — "uniformly blurred including
+the near sign and the character, which is what a wrong depth input to the blend looks
+like" — and items 3 and 4 are its consequences rather than separate defects, because
+lettering on a sign and bunting against a sky are precisely the fine detail a
+full-strength blur removes first.
+
+### The measurement, and why coverage could not make it
+
+Two runs per arm, arms alternated, 85 s each, no input, measured over the era:
+
+| | control (`CZ_VK_NO_DEPTH_RESOLVE=1`) | fixed |
+|---|---|---|
+| median mean-\|gradient\| (`tools/frame_sharpness.py`) | **1.185 / 1.204** | **7.640 / 7.666** |
+| median distinct colours, scene colour surface | 72,740 / 72,711 | **85,555 / 85,752** |
+| median coverage, scene colour surface | 99.61 / 99.62 | 99.62 / 99.62 |
+| frames per 85 s | 859 / 848 | 803 / 811 |
+
+**Coverage moves 0.01 pp** — inside `frame_compare.py`'s own 1.5 pp band, i.e. this
+project's purpose-built renderer A/B metric reports "no detectable difference" between a
+frame that is uniformly out of focus and one that is sharp. That is gotcha 135's lesson
+in a second disguise: a blur, like a flip, preserves coverage, mean luminance, distinct
+colours and the whole histogram. A blur is a statement about the spatial DERIVATIVE, so
+`tools/frame_sharpness.py` measures that, and it separates the arms by 6.47x with the
+within-arm spread at 1.6% and 0.3%.
+
+The picture: the title screen is now sharp from the foreground survivor to the Still
+Creek sign, `POP 753` is readable, the community-watch sign reads "THE AREA IS OBSERVED
+BY COMMUNITY WATCH CITIZENS", the bunting is strung across the street and the gas
+station's signage is legible — all of which E3 has and none of which we had. Colour is
+warmer and much closer to E3, though §6ad item 2 is not fully closed.
+
+The cost is ~6% of the frame rate (four 1280x720 shadow-cascade depth copies plus the
+scene depth's two tiles, per frame). Stated rather than optimised: nothing has yet shown
+it matters, and the obvious refinement — snapshot a depth resolve only if some fetch
+ever names that address with a depth format — should be done on evidence, not on a hunch.
+
+### Two details the fix had to get right beyond reading the field
+
+* **A depth snapshot keeps the EDRAM depth format.** `vkCmdCopyImage` is defined only
+  between identical depth formats — there is no copy from a depth image into a colour
+  one — so the snapshot is `D24_UNORM_S8_UINT`, viewed through the DEPTH aspect with
+  `.gba` mapped to `.r`. A Xenos `tfetch` of a `k_24_8` surface returns the 24-bit depth
+  in the first component, and mapping the rest keeps Vulkan's undefined non-red
+  components of a depth view out of the picture.
+* **The snapshot key needs the SOURCE in it, not a rebuild on change.** `1439B000` is a
+  shadow cascade's depth destination early in a frame and the tone map's colour output
+  late in the SAME frame — the resolve trace shows the final compose sampling it, and
+  §6s recorded both facts about that address a phase apart without joining them. Keyed on
+  the address alone, the two evict each other twice a frame: a `vkDeviceWaitIdle` and a
+  fresh bindless slot each time, which is gotcha 192's descriptor-heap exhaustion with a
+  different cause. The map key carries a depth bit and a fetch picks the one it meant by
+  its own format field.
+
+### THE RETRACTION: `06BE4000` is the scene DEPTH
+
+This is the part to carry to Case West. `CZ_VK_FRAME_STATS_SURFACE=06BE4000` has been
+documented as "the scene" since phase 5 §6 and used as the surface for every renderer
+A/B in this port. The resolve trace, once its budget was fixed (below), reads:
+
+```
+dest=06BE4000 src=DEPTH   1280x720  win=0,0..640,720     draws=928 verts=494615
+dest=0684B000 src=colour  1280x720  win=0,0..640,720     draws=0
+dest=06BF8000 src=DEPTH   1280x720  win=640,0..1280,720  draws=927 verts=494612
+dest=0685F000 src=colour  1280x720  win=640,0..1280,720  draws=0
+```
+
+**`06BE4000`/`06BF8000` are the scene depth's two tiles; `0684B000`/`0685F000` are the
+colour's.** The address held colour pixels for five phases only BECAUSE of this defect —
+our depth resolve copied the colour buffer, so a surface labelled "the scene" happened to
+contain the scene. Every earlier A/B measured real colour content and is not invalidated;
+the label was wrong, and CLAUDE.md's recipe now names `0684B000`. Gotcha 121's
+`06BF8000 - 06BE4000 = 0x14000` tile arithmetic is unaffected — it is true of the depth
+surface, and equally true of the colour one.
+
+The depth snapshots themselves read as depth should: `CZ_VK_SNAP_DUMP` writes them
+stretched between the surface's own min and max with a `_depth` suffix and prints the
+24-bit range, and the scene's is `0.943370..1.000000` — a perspective depth buffer, with
+the survivor, the sign, the power lines and the debris all legible in it.
+
+### And an instrument that did not exist
+
+`CZ_VK_RESOLVE_TRACE_PASSES` has been in CLAUDE.md since part 12 with a stated default
+and was read **nowhere in the tree**; the hardcoded budget it names counted 60 HEADER
+lines while the two follow-up lines printed uncapped for the rest of the run. That is the
+identical defect §6s's own note says it fixed by "putting the budget in PASSES" — the
+note was written and the code was not. So a trace ran out of headers after seven passes
+and then emitted 37,000 orphan input lines, which is how the frame-1000 chain above was
+nearly read with the destinations missing. Gotcha 193, for the second time in three
+sessions, and the check is one grep.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
