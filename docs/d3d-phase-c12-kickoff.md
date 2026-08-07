@@ -34,6 +34,31 @@ PM4 control arm, `CZ_VKDRAW=1`:
   vertices a frame, over two runs per arm alternated against
   `CZ_PM4_NO_SCREEN_EXTENT=1` (56.1 / 53.8%, 1,630 draws, 820 k vertices).
 
+**The one number this session could not settle, recorded with all four runs** (gotcha
+159 says print them). The screen extent makes ~2x more draws execute, so it might cost
+frame rate on the draw arm. Two 170 s runs per arm, serial, alternated,
+`CZ_PM4_NO_SCREEN_EXTENT=1` as the control:
+
+| run | frames | deepest | `truncated` | `ints/arms` | `walks==kicks==drains` | engine ctr |
+|---|---|---|---|---|---|---|
+| control 1 | 3,659 | #83 | 0 | 1.000 | yes | 0 |
+| **extent 1** | **3,570** | #83 | 0 | 1.000 | yes | 0 |
+| control 2 | 3,053 | #83 | 0 | 1.000 | yes | 0 |
+| **extent 2** | **410** | #83 | 0 | 1.000 | yes | 0 |
+
+Read it carefully, because the obvious reading is wrong twice over. **There is no
+systematic cost visible**: 3,570 against 3,659 is 2.4%, and the CONTROL arm's own two
+runs differ by 20%. And the 410 run is **not part 7's stall** — that had `arms` frozen
+while `ints` climbed and `distinct` collapsed to 2-6. This run's every ratio is healthy
+and every counter is scaled down together (`arms` 1,036, `distinct` 169, 476 kicks), it
+ran the full 171 s, it did not crash, and it reached #83 with `truncated=0`. It is a
+slow run, not a broken one.
+
+What n=2 per arm CANNOT do is separate "the extent made the slow mode more likely" from
+"this arm has been bimodal since part 6 and I sampled it twice". **If that matters,
+n>=5 per arm, serial (about an hour).** Every structural gate is clean on all four
+runs, so it is not a blocker.
+
 Phase C draw arm, `CZ_D3D_DRAW=1`:
 
 * `--smoke` OK. A1: exact 84-prefix. A5: exit 0, 0 real windows.
