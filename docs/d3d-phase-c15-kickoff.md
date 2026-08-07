@@ -44,6 +44,43 @@ card renders correctly) -> the prologue, reaching **#154
 loading on past it out of already-open containers for another ~40 s. From frame ~943 the
 presented frame is **0.00% non-black** for the remaining ~1,800 frames.
 
+## THE OPERATOR'S REPORT ON THE RUNNING BUILD — read this before the list
+
+Part 14 ended with the operator playing the current binary and reporting five things.
+They are the best evidence this port has about the picture and they are worth more than
+any aggregate here, because a human sees a class of defect no statistic in this project
+can (gotcha 135, gotcha 204). Verbatim, in their words: **no shadows anywhere**; a
+texture problem on the left of Still Creek where the power line's shadow normally falls;
+the **big round GAS sign** broken — "we can see the form properly but it seems straight
+up open and you can see the light inside of it"; **all textures grainy**; **zombie
+light/shadow only works on one side of their body**; and the **lighting is colder** than
+the 360.
+
+Three of those were chased in the last hour of part 14. What came of each:
+
+* **No shadows — cause still OPEN, but the map is now visible and it is half empty.**
+  The census, once its key was widened to carry the depth bit (it was aliasing two uses
+  of one address and showing whichever fetched last), says the guest declares its shadow
+  cascade **4096x1024, format 22 (`k_24_8`)** and fetches it **629,023 times a boot** —
+  more than any other texture in the frame. Both the EDRAM stand-in and the snapshot
+  were sized off the PRESENTED FRAME, so it was being stored 1280x720 and sampled with
+  normalized coordinates computed for 4096x1024. That is fixed (`CZ_VK_SMALL_EDRAM=1` is
+  the control arm) and the cascade now comes back at its declared size with real depth
+  in it — **and the shadows still do not appear.** `CZ_VK_SNAP_DUMP` says why they
+  cannot: the only populated part, the left 1024x1024, is **48.7% pure ZERO** — a ground
+  gradient and two power lines down to about row 510, then nothing. A lookup landing in
+  the black half sees depth 0 and produces no occlusion.
+* **"One side of the body darker" is probably NOT shadowing.** With no usable shadow map
+  the more likely candidate is per-vertex or per-pixel lighting off the normal, which is
+  a different subsystem — worth separating before either is worked on.
+* **The graininess has a confirmed, untouched cause:** `ci.mipLevels = 1`. This renderer
+  has never uploaded a single mipmap, for any texture, in any phase. That is exactly the
+  aliasing on the gravel, the chain-link and the distant buildings.
+* **The Still Creek sign's dark smear is neither the untiler nor a shadow** — both
+  refuted by measurement, see the traps section.
+* **The GAS roundel** (a noisy white blob where the sign's face should be) has not been
+  investigated at all.
+
 ## Where part 15 starts, in order
 
 1. **THE FRONTIER IS A BLACK SCREEN AT THE PROLOGUE, and its first black link is already
@@ -93,24 +130,64 @@ presented frame is **0.00% non-black** for the remaining ~1,800 frames.
    the correct picture for a slot the title has no valid content for — which is what
    part 13's three hardware watchpoints were really saying.
 
-3. **The last picture difference: colour is flat and green-shifted** (§6ad item 2). Much
+3. **THE SHADOW CASCADE IS HALF EMPTY — and the next question is about its DRAWS, not
+   its plumbing.** Every plumbing hypothesis is now retired: the source field is read,
+   the snapshot is the declared size, the EDRAM is tall enough, and the pass's own
+   draws already get a correct 1024x1024 viewport and scissor. So the remaining question
+   is where the 111-224 draws and 60,000-177,000 vertices that go into the cascade each
+   frame actually LAND in light space. The pair to reach for is gotcha 124's:
+   `CZ_VK_SHADER_CENSUS` names the shader doing the cascade's work and the capture ships
+   that shader's disassembly beside its blob, and `CZ_VK_DRAW_PROBE=<vsHash>` prints one
+   of those draws' matrices and the vertices it reads. Two specific things to check
+   before anything else, because both are cheap and both are the kind of convention that
+   is silently wrong:
+   * **the depth CLEAR value and the compare direction.** The cascade's empty half is
+     ZERO, not one. If this pass is reverse-Z (clear to 0, GREATER test) then zero is
+     the correct "nothing here" and the map is fine as far as it goes; if it is
+     conventional (clear to 1, LESS) then zero means something wrote it. `RB_DEPTH_CLEAR`
+     and `RB_DEPTHCONTROL`'s compare bits say which, and they are already decoded.
+   * **whether the geometry simply misses the bottom half**, i.e. the light's projection
+     covers a region our draws fall outside of. Note the content that IS there — a
+     ground plane and two power lines — is plausible and correctly shaped, so the pass
+     is not producing garbage; it is producing too little.
+   And keep the ordering honest: the shadow lookup cannot be judged until the map is
+   right, so do not go hunting the consumer's shader first.
+
+4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, for
+   every texture in every phase. This is the operator's "all textures seem weird grainy",
+   and it is the single most visible remaining texture defect. It is real work rather
+   than a one-liner: the Xenos mip chain has its own address layout and the untiler
+   currently reads mip 0 only, so it needs the per-level offset arithmetic and a
+   `mipLevels`-aware upload. Worth doing properly — a title screen with a gravel
+   forecourt and a chain-link fence is close to a worst case for aliasing, and no
+   filtering setting can substitute.
+
+5. **The Still Creek sign's dark smear, and the GAS roundel.** Both are localised marks
+   on identifiable objects and neither has an identity yet. The route is the same for
+   both and it is `CZ_VK_SKIP_TEX` to give the object an address — skip an address and
+   see what vanishes — then `CZ_VK_TEX_DUMP`/`CZ_VK_TEX_DUMP_ADDR` on it, which
+   separates "our decode scrambled this" from "the texture is fine and the draw shades
+   it wrong". A human can tell correct sign artwork from corrupted artwork instantly and
+   no aggregate over it can, so dump it and LOOK.
+
+6. **The last picture difference: colour is flat and green-shifted** (§6ad item 2). Much
    improved by part 14 and not closed. §6s proved this frame depends completely on the
    colour-grading LUT, which is the thing to look at. Judge any change over an ERA
    (gotchas 127, 133) and remember that a colour shift IS visible to
    `frame_compare.py`'s luminance and colour-count columns, unlike a blur.
 
-4. **The conservative screen extent is still a placeholder** (unchanged since part 11).
+7. **The conservative screen extent is still a placeholder** (unchanged since part 11).
    `WriteScreenExtent` answers "this draw may have touched anything", which makes bin
    predication a no-op and costs work. **Do not do this speculatively** — the cost has
    still not been shown to matter.
 
-5. **The depth-resolve cost, if it ever matters.** ~6% of the frame rate, from four
+8. **The depth-resolve cost, if it ever matters.** ~6% of the frame rate, from four
    1280x720 shadow-cascade depth copies plus the scene depth's two tiles every frame.
    The obvious refinement is to snapshot a depth resolve only when some fetch has ever
    named that address with a depth format — but that is an optimisation with no measured
    problem behind it, so it needs evidence first.
 
-6. **The kernel gates are exhausted as a forward oracle** (unchanged since part 9). A1's
+9. **The kernel gates are exhausted as a forward oracle** (unchanged since part 9). A1's
    position 93 is not the next piece of work (finding 49, gotcha 107). Going further
    needs a gameplay comparison built from A2 — and the prologue run is the first this
    port has had that would exercise one.
@@ -142,6 +219,33 @@ presented frame is **0.00% non-black** for the remaining ~1,800 frames.
 * **A file-open counter is not a loading counter.** `#154` stopped climbing because the
   title stopped opening NEW files; `CZ_FILE_TRACE=1` shows the loading continuing out of
   containers already open.
+* **THREE REFUTATIONS FROM THE LAST HOUR, so they are not re-bought.** Each looked
+  convincing and each died to one measurement:
+  - **The untiler is not corrupting textures.** `UntileTexture`'s inner loop skipped any
+    unit whose tiled offset landed outside the computed footprint with a bare
+    `continue`, leaving it ZERO — and an all-zero DXT1 block decodes to OPAQUE BLACK, so
+    that bug's symptom would be exactly black rectangles scattered through an otherwise
+    correct texture. Silent since phase 5 (gotcha 171 again). It now counts and prints,
+    and a full boot reads **zero skips across 925 untiled textures**.
+  - **The sign smear is not a shadow.** `CZ_VK_NO_DEPTH_FETCH=1` serves every
+    depth-format fetch the white dummy — nothing occluded anywhere — and the smear is
+    unchanged. NB that arm is deliberately not called "no shadow": this title has TWO
+    depth consumers and it hits both, so it also re-blurs the whole frame exactly as the
+    pre-part-14 renderer did. That is a free second confirmation of §6ae, and a reminder
+    to read what an arm disables before reading a result off it.
+  - **The `vte==0` viewport fallback is not the half-empty cascade.**
+    `CZ_VK_VIEWPORT_TRACE` does show the cascade's surface taking that path with a
+    hardcoded 1280x720 viewport, which is what made the story convincing — but the same
+    trace shows its real DRAWS setting `vte=3F, xs=512, ys=-512`, i.e. already getting
+    1024x1024. Only its clears reach the fallback. Computing a per-pass extent from
+    `PA_SC_WINDOW_SCISSOR` moved **358,993 draws a boot and left the cascade
+    bit-identical**, so it was reverted; the reasoning is in a comment at the site.
+* **A picture fix is not a picture fix until it is measured, and "mechanism" is an
+  honest half-answer.** The EDRAM/snapshot sizing change is committed on the argument
+  that a 4096x1024 texture cannot be sampled out of a 1280x720 image — NOT on a measured
+  improvement. The one metric tried (dark-pixel fraction over the sign region) read
+  7.83% against the control's 10.49% over one run per arm with overlapping ranges, which
+  separates nothing. Say which of the two you have when you report.
 * **Run timed arms serially** (gotcha 183) — unchanged.
 
 ## New instruments and arms
@@ -152,7 +256,25 @@ CZ_VK_NO_DEPTH_RESOLVE=1      snapshot the COLOUR target even for a DEPTH resolv
                               focus at every depth, no sign lettering, no bunting
 CZ_VK_RESOLVE_TRACE_PASSES=N  now real (default 20), and it budgets every line a pass
                               prints rather than the header alone
+CZ_VK_SMALL_EDRAM=1           the pre-part-14 EDRAM: 1280x720 instead of 1280x1024, and
+                              snapshots clamped to it. With it on the 1024-row shadow
+                              cascade loses its bottom 304 rows and is stored 1280x720
+                              against the 4096x1024 the guest declares
+CZ_VK_NO_DEPTH_FETCH=1        serve EVERY depth-format fetch the 1x1 white dummy. Hits
+                              BOTH depth consumers — the shadow cascade and the scene
+                              depth the DOF pass reads — so it also re-blurs the whole
+                              frame. To isolate one, name its address with
+                              CZ_VK_SKIP_TEX
 ```
+
+`CZ_VK_TEX_CENSUS` is keyed with the depth bit now, so a row reads `1439B000(depth)
+4096x1024 f22` separately from `1439B000 1280x720 f6`. Keyed on the address alone it
+showed whichever fetched last, which is how a 629,023-fetch shadow map hid behind a
+1,680-fetch tone-map output for five phases.
+
+The untiler prints a line and holds a counter whenever a unit falls outside the
+footprint and is therefore left BLACK. Zero on this title today; it is the alarm for a
+defect class whose symptom is black rectangles in an otherwise correct texture.
 
 ```
 tools/xtr_resolve_census.py   every resolve in a capture by SOURCE and destination —

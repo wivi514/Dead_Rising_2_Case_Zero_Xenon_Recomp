@@ -1943,6 +1943,22 @@ CZ_VK_TEX_DUMP=dir + CZ_VK_TEX_DUMP_ADDR=<hex[,hex]>  the UNTILED bytes of a tex
 CZ_VK_RESOLVE_TRACE=1  each resolve's destination, SOURCE (colour or DEPTH), extent and
                    clear bits, against the front buffer VdSwap named. The trace that
                    found finding 5 below
+CZ_VK_SMALL_EDRAM=1  the pre-part-14 EDRAM stand-in: 1280x720 instead of 1280x1024, and
+                   snapshots clamped to it rather than sized to the destination SURFACE.
+                   Both numbers used to be the presented frame's, which is right for
+                   every pass that happens to be screen-sized and wrong for the one that
+                   is not — this title's shadow cascade is declared 4096x1024 and fetched
+                   629,023 times a boot, and it was being stored 1280x720 with its bottom
+                   304 rows never rendered at all. NB the fix is committed on MECHANISM
+                   (a 4096x1024 texture cannot be sampled out of a 1280x720 image), not
+                   on a measured picture improvement — shadows still do not appear
+CZ_VK_NO_DEPTH_FETCH=1  serve EVERY depth-format fetch the 1x1 white dummy, i.e. nothing
+                   is occluded anywhere. An ARM for "is this dark mark a shadow or the
+                   surface's own texture", and deliberately NOT called "no shadow": this
+                   title has two depth consumers and it hits both, so it also re-blurs
+                   the whole frame exactly as the pre-part-14 renderer did (which is a
+                   free second confirmation of §6ae). To isolate one consumer, name its
+                   address with CZ_VK_SKIP_TEX
 CZ_VK_NO_DEPTH_RESOLVE=1  snapshot the COLOUR target even for a resolve whose
                    RB_COPY_CONTROL selects the DEPTH buffer — i.e. the pre-part-14
                    renderer, in which 18.4% of this title's resolves (its three shadow
@@ -3188,26 +3204,48 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
+3. **THE SHADOW CASCADE IS HALF EMPTY, and every plumbing hypothesis is retired.** The
+   operator's top report on the running build is "no shadows anywhere". The guest
+   declares its cascade **4096x1024 f22** and fetches it **629,023 times a boot** — more
+   than any other texture in the frame — and part 14 fixed its size (it was stored
+   1280x720 and sampled with coordinates computed for 4096x1024). Shadows still do not
+   appear, and `CZ_VK_SNAP_DUMP` says why they cannot: the populated left 1024x1024 is
+   **48.7% pure ZERO**, a ground gradient and two power lines to about row 510 and
+   nothing below. The source field is read, the snapshot is the declared size, the EDRAM
+   is tall enough, and the pass's own draws already take the REAL viewport path
+   (`vte=3F, xs=512, ys=-512`). So the question is about its DRAWS: check the depth
+   CLEAR value and compare direction first (the empty half is ZERO, not one — reverse-Z
+   would make that correct), then where the pass's 60,000-177,000 vertices land in light
+   space, with gotcha 124's pair (`CZ_VK_SHADER_CENSUS` + the capture's disassembly +
+   `CZ_VK_DRAW_PROBE`).
+4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
+   texture, every phase. This is the operator's "all textures seem weird grainy", and it
+   is real work rather than a one-liner: the Xenos mip chain has its own address layout.
+5. **The Still Creek sign's dark smear and the GAS roundel.** Neither has an identity.
+   Both are `CZ_VK_SKIP_TEX` to name the address, then `CZ_VK_TEX_DUMP` to separate "our
+   decode scrambled this" from "the texture is fine and the draw shades it wrong". The
+   smear is NOT the untiler (0 skips in 925 textures) and NOT a shadow
+   (`CZ_VK_NO_DEPTH_FETCH=1` leaves it).
+6. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
    Much improved by part 14 and not closed. The tone map's LUT is what §6s proved this
    frame depends on completely.
-4. **The conservative screen extent is still a placeholder** (part 11). Both tiles
+7. **The conservative screen extent is still a placeholder** (part 11). Both tiles
    execute ~975,000 draws where hardware executes ~573,000 each. **Do not do this
    speculatively** — the cost has still not been shown to matter.
-5. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+8. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
    `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
    means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
    path we do not drive (finding 49, gotcha 107). Going further needs a gameplay
    comparison built from A2 — and the run that reaches the prologue is the first this
    port has had that would exercise one.
-6. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+9. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
    save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
    part 13's `XeCryptSha` one-shot.
-7. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+10. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
