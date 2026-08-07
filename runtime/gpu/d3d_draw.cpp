@@ -317,104 +317,24 @@ uint32_t ExecutePacket(PPCContext& ctx, uint8_t* base, uint32_t va, uint32_t ava
         case 0x3B: // INVALIDATE_STATE
             break;
 
-        case 0x54: // INTERRUPT: the content path emits ~1 per frame (the resolve
-                   // completion tick), and it is the token worker's kick.
-        {
-            const uint32_t user = Vd_InterruptUserData();
-            if (!user || !Vd_InterruptCallbackVa())
-            {
-                Count("walker: INTERRUPT with no registered ISR");
-                break;
-            }
-            // NOT delivered by calling the guest ISR. Three designs died on the
-            // same crash (ctr=0x0BADF00D inside the ISR): deferring to the pump
-            // arrived after the guest re-poisoned the mirror; deferring WITH a
-            // mirror snapshot replayed at delivery still raced the guest CPU's own
-            // poison stores; and calling the ISR in-position still let the ISR
-            // RE-READ the mirror word after our guard, which a concurrent guest
-            // store (the worker poisoning a consumed arming) can change. No host
-            // lock intercepts plain guest stores. So the walker performs the ISR's
-            // source-1 path ITSELF from ONE guarded read: if the mirror is armed
-            // at this position, call that callback with that argument, then
-            // replicate the ISR's tail (clear this CPU's pending bit under the ISR
-            // spinlock, sub_82844D38's own sequence). An unarmed or poisoned
-            // mirror at our position means the arm rode the other transport (an
-            // unredirected emitter -> the real ring): skip, counted — the pairing
-            // real-ring INTERRUPT still delivers on the pump.
-            {
-                std::lock_guard<std::recursive_mutex> mlock(Vd_MirrorMutex());
-                // The arming state comes from THIS STREAM's register file, not the
-                // guest-memory mirror. Our file is in-position coherent by
-                // construction (one stream, one thread); the memory mirror is
-                // where BOTH streams' armings and poisons land, and consulting it
-                // skipped the movie era's job kicks whenever the other stream had
-                // poisoned its own consumed arming there — the 600 s run
-                // deadlocked at cinematics on exactly those skips.
-                uint32_t armed = g_regs[0x057C];
-                uint32_t arg = g_regs[0x057D];
-                if (armed == 0 || armed == 0x0BADF00D)
-                {
-                    // The arm rode the OTHER transport: the movie player's
-                    // unredirected emitters arm through the real ring while the
-                    // INTERRUPT rides the content stream. pm4's register file is
-                    // that transport's in-position state; a spurious extra kick is
-                    // a no-op to the job queue, calling the poison is a crash, and
-                    // skipping starves the worker (measured: the movie era stalls
-                    // ~150 frames further in without this fallback).
-                    const uint32_t* preg = Pm4_Registers();
-                    armed = preg[0x057C];
-                    arg = preg[0x057D];
-                    Count("walker: INTERRUPT arm taken from the ring transport");
-                }
-                static std::atomic<uint64_t> disp{ 0 };
-                const uint64_t dn = disp.fetch_add(1);
-                if (dn < 16)
-                    fprintf(stderr, "[d3ddraw] INTERRUPT #%llu at position: "
-                                    "armed=%08X arg=%08X\n",
-                            (unsigned long long)dn, armed, arg);
-                if (armed == 0 || armed == 0x0BADF00D)
-                {
-                    Count("walker: INTERRUPT skipped (mirror unarmed/poisoned at position)");
-                    break;
-                }
-                PPCFunc* cb = g_memory.FindFunction(armed);
-                if (!cb)
-                {
-                    Count("walker: INTERRUPT callback not recompiled (SKIPPED)");
-                    break;
-                }
-                Count("walker: INTERRUPT callback delivered in-position");
-                {
-                    // Per-callback, because "an interrupt was delivered" and "the
-                    // kick the worker was waiting for was delivered" are different
-                    // claims: the content stream arms more than one callback and a
-                    // single total hides which ones never fire.
-                    char nm[64];
-                    snprintf(nm, sizeof nm, "walker: INTERRUPT -> %08X", armed);
-                    Count(nm);
-                }
-                PPCContext saved = ctx;
-                ctx.r3.u64 = arg;
-                cb(ctx, base);
-                ctx = saved;
-
-                PPCFunc* lk = g_memory.FindFunction(0x829C3354);
-                PPCFunc* ulk = g_memory.FindFunction(0x829C3344);
-                if (lk && ulk)
-                {
-                    const uint32_t cpuBit = 1u << (base[saved.r13.u32 + 0x10C] & 31);
-                    ctx.r3.u64 = user + 0x2A98;
-                    lk(ctx, base);
-                    const uint32_t mb = GuestLoad32(base, user + 0x2A94);
-                    if (mb >= 0x1000)
-                        GuestStore32(base, mb, (GuestLoad32(base, mb) & ~cpuBit) & 0x3F);
-                    ctx.r3.u64 = user + 0x2A98;
-                    ulk(ctx, base);
-                    ctx = saved;
-                }
-            }
+        case 0x54: // INTERRUPT
+            // COUNTED, NOT DELIVERED — and that is the whole of it now.
+            //
+            // Until phase C part 2 this case replicated the guest ISR's source-1 path
+            // itself, from a guarded read of the arming registers, because redirected
+            // emission had put the GPU/CPU hand-off block in our private scratch where
+            // nothing else would ever execute it. Four designs died on the same crash.
+            // Part 2 moved the block to the REAL ring instead (`emit where the READER
+            // lives`), so the title's own ISR delivers it and this case has had nothing
+            // to do since: zero in-position deliveries and zero poisoned skips across
+            // every arm measured in parts 6 through 12, most recently on a part 12 draw
+            // arm reaching #83 with ints/arms = 0.9999 and walks == kicks == drains.
+            //
+            // Kept as a counter rather than folded into the no-op list above, because
+            // "no INTERRUPT packet reaches the private walker" is a CLAIM about the
+            // redirect, and a claim with no counter is an assumption (gotcha 162).
+            Count("walker: INTERRUPT in the private stream (not delivered)");
             break;
-        }
 
         case 0x60: g_binMask = (g_binMask & 0xFFFFFFFF00000000ull) | body(0); break;
         case 0x61: g_binMask = (g_binMask & 0xFFFFFFFFull) | (uint64_t(body(0)) << 32); break;

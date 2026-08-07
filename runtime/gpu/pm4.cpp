@@ -1134,8 +1134,9 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 //
                 // Real hardware STALLS the command processor here until the condition
                 // holds; we evaluate once and carry on, which is how our CP gets
-                // ahead of the CPU and finds the scratch mirror poisoned at a later
-                // INTERRUPT (see MirrorIsPoisoned in gpu/vd.cpp). Stopping the ring
+                // ahead of the CPU and found the scratch mirror poisoned at a later
+                // INTERRUPT — the race whose guard part 12 deleted, because the brake
+                // below is what closed it. Stopping the ring
                 // walk at this packet — not spinning inside it, which would deadlock
                 // against the very guest thread that has to satisfy the wait, but
                 // returning and retrying next tick — is what the console does.
