@@ -46,6 +46,7 @@
 // (gotcha 7: a probe expensive enough to change the timing manufactures the
 // behaviour it reports, and this code runs inside the per-frame render path).
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1111,12 +1112,60 @@ bool BinMaskProbeEnabled()
     return on;
 }
 
+// Report on a CLOCK, not on a call count.
+//
+// Part 10 read "the dispatcher ran 1 time" and "the other mask setter ran 1 time, with
+// mask 0" off probes that printed at call #1 and then every 20,000/200,000. A subsystem
+// that runs 900 times a boot therefore prints exactly one line — its FIRST — and that
+// line's counts are all 1 by construction. Both numbers were quoted as totals. This is
+// gotcha 109 (a capped emitter's output is not a count) arriving in our own probes for
+// the third time, so the schedule is now wall-clock: every REPORT_SECONDS, whatever the
+// call rate, plus one final-ish line often enough that a 170 s boot always produces
+// several. A time-based report also costs nothing on the hot path — one relaxed load
+// and a compare — because the clock is only read when the deadline has passed.
+constexpr double kBinReportSeconds = 15.0;
+
+bool BinReportDue(std::atomic<uint64_t>& nextNs)
+{
+    const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    uint64_t due = nextNs.load(std::memory_order_relaxed);
+    if (now < due)
+        return false;
+    // Whoever wins the exchange prints; the losers skip. No lock, and no risk of two
+    // threads interleaving a multi-line report is claimed — the reports below are one
+    // fprintf each for exactly that reason.
+    return nextNs.compare_exchange_strong(
+        due, now + uint64_t(kBinReportSeconds * 1e9), std::memory_order_relaxed);
+}
+
 std::atomic<uint64_t> g_binPatchCalls{ 0 };
 std::atomic<uint64_t> g_binPatchRecords{ 0 };
 // Histogram of the masks this pass actually writes, keyed on the low nibble plus the
 // all-ones case. Small and fixed: the interesting values are 0 (no tile), 3 (tile 0),
 // C (tile 1) and F (both), and anything else is worth seeing as "other".
 std::atomic<uint64_t> g_binPatchValue[17];
+
+// The (rect -> mask) census. Bounded and lock-guarded; the pass runs ~1,750 times a
+// boot over ~390,000 records, which is far too rare to matter on any hot path.
+struct RectRow { uint16_t x0, x1, y0, y1; uint32_t mask; uint64_t count; bool used; };
+constexpr size_t kRectRows = 24;
+RectRow g_rectRows[kRectRows];
+std::mutex g_rectMutex;
+std::atomic<uint64_t> g_rectOverflow{ 0 };
+
+void RectCensusNote(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1, uint32_t mask)
+{
+    std::lock_guard<std::mutex> lock(g_rectMutex);
+    for (size_t i = 0; i < kRectRows; i++)
+    {
+        if (!g_rectRows[i].used) { g_rectRows[i] = { x0, x1, y0, y1, mask, 1, true }; return; }
+        if (g_rectRows[i].x0 == x0 && g_rectRows[i].x1 == x1 && g_rectRows[i].y0 == y0 &&
+            g_rectRows[i].y1 == y1 && g_rectRows[i].mask == mask)
+        { g_rectRows[i].count++; return; }
+    }
+    g_rectOverflow.fetch_add(1, std::memory_order_relaxed);
+}
 
 } // namespace
 
@@ -1128,6 +1177,7 @@ PPC_FUNC(sub_8284A7F8)
         return;
     }
 
+    const uint32_t tileInfo = ctx.r3.u32;
     const uint32_t list = ctx.r4.u32;
     __imp__sub_8284A7F8(ctx, base);
 
@@ -1147,11 +1197,21 @@ PPC_FUNC(sub_8284A7F8)
             const uint32_t lo = mask & 0xF;
             g_binPatchValue[(mask & 0x80000000u) ? lo : 16].fetch_add(
                 1, std::memory_order_relaxed);
+            // The RECT that produced that mask, as a census. 76% of our records come
+            // back "touches no tile" against hardware's ~100% "touches both", so the
+            // next question is which of the two inputs is wrong — the draw's rect or
+            // the tile rects — and neither is guessable. The rect is in units of 8
+            // pixels (the pass's own `<<3`) and stored x0, x1-1, y0, y1-1 as u16, so
+            // a whole-screen 1280x720 draw is 0,159,0,89. Keyed on the rect so a
+            // handful of distinct values collapses to a handful of rows.
+            RectCensusNote(PPC_LOAD_U16(p + 4), PPC_LOAD_U16(p + 6),
+                           PPC_LOAD_U16(p + 8), PPC_LOAD_U16(p + 10), mask);
         }
     }
 
+    static std::atomic<uint64_t> nextReport{ 0 };
     const uint64_t n = g_binPatchCalls.fetch_add(1) + 1;
-    if (n == 1 || (n % 20000) == 0)
+    if (n == 1 || BinReportDue(nextReport))
     {
         fprintf(stderr, "[binmask] patch pass ran %llu times, patched %llu records:",
                 (unsigned long long)n,
@@ -1167,6 +1227,41 @@ PPC_FUNC(sub_8284A7F8)
                 fprintf(stderr, "  8000000%X=%llu", i, (unsigned long long)c);
         }
         fprintf(stderr, "\n");
+
+        // The TILE rects, the pass's other input. sub_8284A7F8 reads a count at
+        // tileInfo+4 and `count` 16-byte rects from tileInfo+8, in PIXELS, laid out
+        // {x0, y0, x1, y1} — that ordering is fixed by which of the four dwords each
+        // of its four comparisons loads (offsets -4/+0/+4/+8 around tileInfo+8+16i+4).
+        // Printed because "the intersection returns empty" has exactly two possible
+        // causes and this is the cheap one to rule out.
+        if (tileInfo >= 0x1000)
+        {
+            const uint32_t tiles = PPC_LOAD_U32(tileInfo + 4);
+            // `list` is printed because the extent the patch pass reads is written by
+            // the GPU, through a PHYSICAL address the guest builds from the record —
+            // so a record outside our physical arena means the store is dropped and
+            // the pass reads uninitialised memory anyway (StoreGpuRaw says so, but
+            // only for the first eight).
+            fprintf(stderr, "[binmask] list=%08X tileInfo=%08X [+0]=%08X tiles=%u",
+                    list, tileInfo, PPC_LOAD_U32(tileInfo), tiles);
+            for (uint32_t t = 0; t < tiles && t < 8; t++)
+            {
+                const uint32_t r = tileInfo + 8 + 16 * t;
+                fprintf(stderr, "  tile%u=%u,%u..%u,%u", t, PPC_LOAD_U32(r),
+                        PPC_LOAD_U32(r + 4), PPC_LOAD_U32(r + 8), PPC_LOAD_U32(r + 12));
+            }
+            fprintf(stderr, "\n");
+        }
+
+        std::lock_guard<std::mutex> lock(g_rectMutex);
+        fprintf(stderr, "[binmask] rect -> mask (rect in units of 8 px, overflow=%llu):\n",
+                (unsigned long long)g_rectOverflow.load());
+        for (size_t i = 0; i < kRectRows && g_rectRows[i].used; i++)
+            fprintf(stderr, "[binmask]   %u,%u..%u,%u  (px %u,%u..%u,%u)  -> %08X  x%llu\n",
+                    g_rectRows[i].x0, g_rectRows[i].y0, g_rectRows[i].x1, g_rectRows[i].y1,
+                    g_rectRows[i].x0 * 8u, g_rectRows[i].y0 * 8u,
+                    (g_rectRows[i].x1 + 1u) * 8u, (g_rectRows[i].y1 + 1u) * 8u,
+                    g_rectRows[i].mask, (unsigned long long)g_rectRows[i].count);
     }
 }
 
@@ -1182,6 +1277,14 @@ PPC_FUNC(sub_8284A7F8)
 // in the same dispatcher writes 0x7FFFFFFF there (8284B3C4) — bit 31 clear — so the
 // question "is the gate ever open" is a question about a VALUE, and gotcha 65 says
 // print it rather than read it a third time. r30 is this function's second argument.
+//
+// PART 11 CORRECTION: `[obj+0x164]` is not a flags word with a gate bit in it. It is
+// the CURRENT BIN SELECT — sub_8284A6D0 computes the select for the tile being
+// recorded, caches it there, and emits SET_BIN_SELECT_LO with it (see the probe on
+// that function below). So the test above reads "is bit 31 of the current select set",
+// and sub_8284A668 sets bit 31 exactly when the tile index is 0. The patch pass
+// therefore runs once per multi-tile recording, at the FIRST tile — which is why an
+// object whose select has never been computed (0x00000000, what we measured) is silent.
 extern "C" PPC_FUNC(__imp__sub_8284B228);
 
 PPC_FUNC(sub_8284B228)
@@ -1193,15 +1296,104 @@ PPC_FUNC(sub_8284B228)
     }
     static std::atomic<uint64_t> calls{ 0 };
     static std::atomic<uint64_t> gateOpen{ 0 };
+    static std::atomic<uint64_t> nextReport{ 0 };
     const uint32_t obj = ctx.r4.u32;
     const uint32_t gate = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x164) : 0;
     const uint64_t n = calls.fetch_add(1) + 1;
     if (gate & 0x80000000u)
         gateOpen.fetch_add(1, std::memory_order_relaxed);
-    if (n == 1 || (n % 20000) == 0)
+    if (n == 1 || BinReportDue(nextReport))
         fprintf(stderr, "[binmask] dispatcher #%llu obj=%08X [obj+0x164]=%08X "
                         "bit31=%u  (open on %llu of %llu entries)\n",
                 (unsigned long long)n, obj, gate, (gate >> 31) & 1,
                 (unsigned long long)gateOpen.load(), (unsigned long long)n);
     __imp__sub_8284B228(ctx, base);
+}
+
+// The BIN SELECT producer — the other half of the predication pair, and the thing the
+// "gate" above actually reads.
+//
+//   sub_8284A668(obj):                        ; compute the select
+//       r11 = 0x2AAAAAAA if [obj+0x30] bit31   ; three "which half of a bin pair" modes
+//           = 0x15555555 if [obj+0x30] bit30
+//           = 0xFFFFFFFF otherwise             ; not tiling: select everything
+//       if [obj+0x30] bit29:                   ; tiling is ON
+//           r11 &= 3 << (2 * [obj+0x34])       ; [obj+0x34] is the TILE INDEX
+//           if tile == 0 and not the bit31 mode: r11 |= 0x80000000
+//       return r11
+//
+//   sub_8284A6D0(obj):                        ; publish it, if it changed
+//       sel = sub_8284A668(obj)
+//       if sel != [obj+0x164]:
+//           [obj+0x164] = sel
+//           emit SET_BIN_SELECT_LO sel         ; header C0006200, via sub_82844B60
+//
+// That is where our two observed selects come from and what they mean: `80000003` is
+// tile 0 (bins 0-1, plus the bit-31 "first tile" flag) and `0000000C` is tile 1 (bins
+// 2-3). It also explains why the LEFT tile keeps every draw on hardware AND on our
+// runtime regardless of the mask: every patched mask carries bit 31 too (sub_8284A7F8
+// ORs it in unconditionally), so `mask & select` is nonzero for tile 0 by construction.
+// Only the right tile's pass ever consults the real bin bits, which is exactly the pass
+// that renders nothing here.
+//
+// The census is keyed on (select, [obj+0x30] mode bits, tile index) because the
+// question is not only "what select was published" but "did the tiling flags ever say
+// we are tiling at all" — a select of FFFFFFFF means bit 29 was clear, i.e. the guest
+// believes it is rendering untiled, which would be a completely different fault from a
+// select that is right and a mask that is wrong.
+extern "C" PPC_FUNC(__imp__sub_8284A6D0);
+
+PPC_FUNC(sub_8284A6D0)
+{
+    if (!BinMaskProbeEnabled())
+    {
+        __imp__sub_8284A6D0(ctx, base);
+        return;
+    }
+    struct Site { uint32_t sel, flags, tile; uint64_t count; bool used; };
+    constexpr size_t kSites = 32;
+    static Site sites[kSites];
+    static std::mutex mutex;
+    static std::atomic<uint64_t> calls{ 0 };
+    static std::atomic<uint64_t> changed{ 0 };
+    static std::atomic<uint64_t> nextReport{ 0 };
+
+    const uint32_t obj = ctx.r3.u32;
+    const uint32_t flags = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x30) : 0;
+    const uint32_t tile = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x34) : 0;
+    const uint32_t before = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x164) : 0;
+
+    __imp__sub_8284A6D0(ctx, base);
+
+    // Read the published select BACK out of the object rather than recomputing
+    // sub_8284A668 here: a probe that reimplements what it measures can only agree
+    // with itself (the same rule the patch-pass probe above follows).
+    const uint32_t after = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x164) : 0;
+    if (after != before)
+        changed.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        size_t i = 0;
+        for (; i < kSites; i++)
+        {
+            if (!sites[i].used) { sites[i] = { after, flags, tile, 1, true }; break; }
+            if (sites[i].sel == after && sites[i].flags == flags && sites[i].tile == tile)
+            { sites[i].count++; break; }
+        }
+    }
+    const uint64_t n = calls.fetch_add(1) + 1;
+    if (n == 1 || BinReportDue(nextReport))
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        char line[1024];
+        int off = snprintf(line, sizeof line,
+                           "[binmask] select producer: %llu calls, %llu published:",
+                           (unsigned long long)n, (unsigned long long)changed.load());
+        for (size_t i = 0; i < kSites && sites[i].used; i++)
+            off += snprintf(line + off, sizeof line - size_t(off),
+                            "  sel=%08X(flags=%08X tile=%u)x%llu", sites[i].sel,
+                            sites[i].flags, sites[i].tile,
+                            (unsigned long long)sites[i].count);
+        fprintf(stderr, "%s\n", line);
+    }
 }

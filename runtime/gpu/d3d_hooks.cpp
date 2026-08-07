@@ -35,6 +35,7 @@
 // pm4_packets delta printed at each Swap names the frame any unhooked emitter
 // slips a packet in.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -242,8 +243,22 @@ void BinMaskNote(PPCContext& ctx)
     }
     // Reported on a schedule rather than at exit: this boot parks rather than
     // terminating, so an atexit report would never print.
+    //
+    // The schedule is a CLOCK, not a call count. It was `n % 200000` and this function
+    // is called a few thousand times a boot, so the only line a run ever printed was
+    // the one at call #1 — whose census necessarily reads "x1". Part 10 quoted that as
+    // "the other mask setter ran once, with mask 0". Gotcha 109 in our own probe.
     const uint64_t n = calls.fetch_add(1) + 1;
-    if (n == 1 || (n % 200000) == 0) {
+    static std::atomic<uint64_t> nextNs{ 0 };
+    bool due = false;
+    {
+        const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        uint64_t deadline = nextNs.load(std::memory_order_relaxed);
+        due = now >= deadline && nextNs.compare_exchange_strong(
+                  deadline, now + 15ull * 1000000000ull, std::memory_order_relaxed);
+    }
+    if (n == 1 || due) {
         std::lock_guard<std::mutex> lock(mutex);
         fprintf(stderr, "[binmask] after %llu calls (overflow=%llu):\n",
                 (unsigned long long)n, (unsigned long long)overflow.load());

@@ -37,8 +37,20 @@ The window scissor is tracked alongside, because "which tile is this" is not
 knowable from the bin select — that mapping is the very thing in doubt — and
 PA_SC_WINDOW_SCISSOR states it directly in screen coordinates.
 
+THE TRACE MODE
+--------------
+`--trace-window N` prints the same stream-order window the runtime's CZ_PM4_BIN_TRACE
+prints — every bin mask/select write with its value, every draw with the pair the
+ME compared — and `--trace-arm-mask` / `--trace-arm-select` hold that budget until
+the register first takes a given value, exactly like CZ_PM4_BIN_TRACE_ARMMASK.
+The symmetry is the point: the two windows are meant to be read side by side, and
+a trace armed at the start of either stream proves nothing, because the first
+~300,000 packets of a boot are packet-identical on both sides (part 10).
+
 USAGE
     xtr_bin_predication.py <trace.xtr> [--limit-packets N] [--per-select]
+                           [--trace-window N] [--trace-arm-mask HEX]
+                           [--trace-arm-select HEX]
 """
 
 import argparse
@@ -62,7 +74,8 @@ DRAW_OPCODES = (0x22, 0x36)  # DRAW_INDX, DRAW_INDX_2
 _BE = struct.Struct(">I")
 
 
-def replay(path, limit_packets=None, per_select=False):
+def replay(path, limit_packets=None, per_select=False, trace=0,
+           trace_arm_mask=None, trace_arm_select=None):
     data, hdr = xtr.open_trace(path)
     n = len(data)
     print(f"file   : {path}")
@@ -91,6 +104,19 @@ def replay(path, limit_packets=None, per_select=False):
 
     mask_writes = collections.Counter()
     t0 = time.time()
+
+    # The stream-order window. `armed` starts true only when no arm was asked for.
+    trace_left = trace
+    armed = trace_arm_mask is None and trace_arm_select is None
+
+    trace_done = False
+
+    def trace_line(text):
+        nonlocal trace_left, trace_done
+        trace_left -= 1
+        if trace_left <= 0:
+            trace_done = True
+        print(text)
 
     def word(off, i):
         return _BE.unpack_from(data, off + 12 + 4 * i)[0]
@@ -130,6 +156,36 @@ def replay(path, limit_packets=None, per_select=False):
         # SET_CONSTANT is as real as a skipped draw, and counting only draws
         # would hide a mask that is being set by a packet we skipped.
         predicated = (header & 1) and (bin_mask & bin_select) == 0
+
+        if not armed and (
+                (trace_arm_mask is not None
+                 and (bin_mask & 0xFFFFFFFF) == trace_arm_mask)
+                or (trace_arm_select is not None
+                    and (bin_select & 0xFFFFFFFF) == trace_arm_select)):
+            armed = True
+
+        if armed and trace_left > 0:
+            if opcode in DRAW_OPCODES:
+                tl = regs.get(PA_SC_WINDOW_SCISSOR_TL, 0)
+                br = regs.get(PA_SC_WINDOW_SCISSOR_BR, 0)
+                trace_line(
+                    f"[b1bin]     DRAW pred={header & 1} mask={bin_mask:016X} "
+                    f"select={bin_select:016X} scissor={tl & 0x7FFF},"
+                    f"{(tl >> 16) & 0x7FFF}..{br & 0x7FFF},{(br >> 16) & 0x7FFF}"
+                    f" -> {'SKIP' if predicated else 'run'}")
+            elif opcode in (0x50, 0x51, 0x60, 0x61, 0x62, 0x63):
+                what = {0x50: "SET_BIN_MASK", 0x51: "SET_BIN_SELECT",
+                        0x60: "MASK_LO", 0x61: "MASK_HI",
+                        0x62: "SELECT_LO", 0x63: "SELECT_HI"}[opcode]
+                trace_line(f"[b1bin] {what:<15} {word(off, 1):08X}"
+                           f"{'   (SKIPPED)' if predicated else ''}")
+            # A trace run stops at its budget rather than walking the remaining
+            # gigabytes: a 1.7 GB replay is a twenty-minute wait for a window that
+            # was complete after a hundred packets. The census below is then over a
+            # PREFIX and says so, so that a partial table is never mistaken for the
+            # whole-capture one the paragraph above quotes.
+            if trace_done:
+                break
 
         if opcode in DRAW_OPCODES:
             draws += 1
@@ -187,6 +243,9 @@ def replay(path, limit_packets=None, per_select=False):
 
     dt = time.time() - t0
     print(f"walked : {packets:,} packets in {dt:.0f} s")
+    if trace_done:
+        print("NOTE   : stopped at the trace budget — every count below is over a "
+              "PREFIX of the capture, not the whole of it")
     print()
     print(f"draw packets              : {draws:,}")
     print(f"  with predication bit set: {draws_predicated_bit:,} "
@@ -241,8 +300,20 @@ def main():
     ap.add_argument("--limit-packets", type=int, default=None,
                     help="stop after N packets (a smoke test, not a measurement)")
     ap.add_argument("--per-select", action="store_true")
+    # NB --trace-window, not --trace: the positional argument is already called
+    # `trace` (the .xtr path), and argparse would silently give both the same dest.
+    ap.add_argument("--trace-window", type=int, default=0, dest="trace_window",
+                    help="print N bin-relevant packets in stream order, the same "
+                         "window CZ_PM4_BIN_TRACE prints for our runtime")
+    ap.add_argument("--trace-arm-mask", default=None,
+                    help="hold the trace budget until the bin mask LO first equals "
+                         "this hex value (mirrors CZ_PM4_BIN_TRACE_ARMMASK)")
+    ap.add_argument("--trace-arm-select", default=None,
+                    help="likewise for the bin select LO (CZ_PM4_BIN_TRACE_ARM)")
     args = ap.parse_args()
-    return replay(args.trace, args.limit_packets, args.per_select)
+    return replay(args.trace, args.limit_packets, args.per_select, args.trace_window,
+                  int(args.trace_arm_mask, 16) if args.trace_arm_mask else None,
+                  int(args.trace_arm_select, 16) if args.trace_arm_select else None)
 
 
 if __name__ == "__main__":
