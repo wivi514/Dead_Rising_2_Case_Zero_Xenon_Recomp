@@ -1068,6 +1068,47 @@ From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
     in the same breath. Ask what the title STARTS DOING at a stall, not what it was
     reading.
 
+From phase C part 8 (the replay had an exit, and the redirect was losing a race to it):
+
+166. **A self-sustaining loop usually has an EXIT in the code you have not read yet, and
+     it is worth one more pass to find it before designing one.** Four sessions treated
+     Case Zero's GPU→ISR→worker→ring replay as a mechanism to contain, break or
+     out-run. It has a designed exit: `sub_8284B9C0` RESETS all seven worker token
+     streams (`sub_82845290` x7) and clears the async marker before re-arming, and
+     `Resolve` calls it from its **common tail**, so every Resolve throws away every
+     segment descriptor a previous frame left behind. The loop was never infinite on
+     hardware; our arm simply never reached the exit. Look for the reset before
+     inventing a brake.
+167. **The two writers of one field can be the whole control system.** A scan of the
+     8.8 MB image for stores to `dev+0x3460` finds exactly two: the ISR's worker kick
+     SETS it and the frame-end async submit CLEARS it, and while it is set every
+     segment close is routed into the worker's token stream instead of the ring. One
+     `stw`/`lwz` scan at a fixed struct offset answered in seconds what three sessions
+     of packet-level reasoning had not — and it is the same question gotcha 143 asks
+     ("who writes this?"), asked statically because the field is written by name.
+168. **A structural difference and a RACE look identical in a log, and the way to tell
+     them apart is to find the era where both arms do the thing for the first time.**
+     Redirected emission does not change *whether* the arm block lands in the walked
+     stream — both arms put it there — it changes *how long it sits there*, because the
+     content that used to be in front of it in the ring is gone. At the first tick
+     either arm runs a Resolve, kicks-per-Resolve is 1.6 on the control arm and 16 on
+     the draw arm. Every earlier comparison was taken after the draw arm had frozen,
+     where the ratio is a stopwatch (gotcha 161) and the structural reading is
+     unfalsifiable.
+169. **When you change a guest field to change ONE decision, guard it on the condition
+     the guest's own fork tests, and put it back.** The fix zeroes `dev+0x3460` for the
+     duration of one call and only when `dev+0x2B04 == 0` — the same test
+     `sub_82845AC0` makes — so it can only pick the branch the title would have picked
+     anyway, and it reorders nothing. The guard is also the instrument: the decline
+     branch counted **zero** over a whole boot, which is how you know it was honest
+     rather than decorative.
+170. **A denominator that proves an identity is worth printing next to the thing it
+     divides.** `resolve` and `reseed` come from two different guest functions and are
+     equal to the unit on every tick of every run of both arms, which is the log's own
+     proof that Resolve's tail reaches the reseed unconditionally. Without it, "the
+     draw arm reseeds 6 times" is indistinguishable from "the draw arm stopped", which
+     is the exact confusion part 7 spent a session on.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1162,7 +1203,8 @@ From phase C part 7 (the ~300x amplification, retired — it was never a ratio):
   `d3d-phase-c5-kickoff.md` /
   `d3d-phase-c6-kickoff.md` /
   `d3d-phase-c7-kickoff.md` /
-  **`d3d-phase-c8-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c8-kickoff.md` /
+  **`d3d-phase-c9-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1349,7 +1391,13 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    the engine's spin counter printed SIGNED. Read it as a chain of
                    ratios: 0.9997 / 1.000 / 0.523 with walks==kicks==drains is the
                    healthy shape, `distinct=2` with `arms` frozen is a replay. It is
-                   what retired the "~300x amplification" (gotchas 161-162)
+                   what retired the "~300x amplification" (gotchas 161-162).
+                   Part 8 added `resolve=N/reseed=N` — Resolve entries and calls to the
+                   frame-end async submit, which RESETS all seven worker token streams
+                   and is the replay's only exit. They are equal to the unit on every
+                   tick of both arms (Resolve's common tail always reaches it), which
+                   is what makes a low reseed count readable as "the guest stopped"
+                   rather than "the call was skipped" (gotchas 166, 170)
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control).
                    NB it cannot be used to test "is the replay the cause": the boot
@@ -1457,6 +1505,16 @@ CZ_D3D_NO_RESERVE_KICK=1  suppress the guest's segment close/kick when the reser
                    on the boot deadlocks at cinematics.big again (measured: file #56
                    vs #60, 5 worker kicks vs 36,747), which is what makes the fix a
                    measurement rather than an assertion
+CZ_D3D_NO_ARM_SEG_DIRECT=1  append the arm-carrying segment to the worker's token
+                   stream again — i.e. the pre-part-8 draw arm, which replays its own
+                   hand-off block until the boot freezes at the first tiled frame. The
+                   fix zeroes dev+0x3460 across the guest's own close/kick (and only
+                   when dev+0x2B04 is zero, the same test sub_82845AC0's fork makes),
+                   so the segment holding the arm block and its INTERRUPT goes RING
+                   DIRECT instead of into the stream that arm just handed the ISR.
+                   The same-binary control arm for every part-8 claim: with it on,
+                   ints/arms is 47.2 and the boot stops at #60; with it off, 0.9996
+                   and #83, matching the PM4 arm
 CZ_D3D_REDIRECT_PRESWAP=1  put sub_82841AD0's callback-arm block back in the
                    private scratch — the pre-fix arm for phase C part 3. That function
                    is named "PreSwapResolve" in the Phase A table and RESOLVES NOTHING;
@@ -2377,6 +2435,70 @@ NEGATIVE result: it cannot isolate the replay, because the boot deadlocks at `bo
 
 Gates unchanged: `--smoke` OK; the control arm reaches `#83 cinezombie.big`;
 `truncated=0`, `max` hold streak 1 (control) / 2 (draw).
+
+**PHASE C PART 8 (2026-08-06, session 20): the replay had an EXIT all along, and the
+redirect was losing a race to it — the draw arm now boots as deep as the control arm.**
+Details in `docs/d3d-translation-plan.md` §"Phase C part 8"; hand-off in
+`docs/d3d-phase-c9-kickoff.md`.
+
+Part 7's requirement — *the arm block and its `INTERRUPT` must not be inside a segment
+the worker resubmits* — was right, for a reason no session had named: **the title's own
+code takes that segment back out again, every frame.** `sub_8284B9C0` (hooked since part
+3, and described until now only as "the only `+1` `dev+0x2B04` ever gets") clears the
+async marker `dev+0x3460`, calls `sub_82845290` on **all seven worker token streams** —
+a reset that throws away every segment descriptor a previous frame left in them — and
+only then re-arms with the freshly emptied head. `Resolve` calls it from its **common
+tail** (`82838CC8`; single-tile and multi-tile converge, no early return between), so
+every Resolve reseeds. The log proves the identity on itself: `resolve` and `reseed` are
+equal to the unit on every tick of every run of both arms.
+
+A scan of the whole image for `dev+0x3460` finds exactly **two** writers — the ISR's
+worker kick `sub_8284AAD0` SETS it, `sub_8284B9C0` clears it — and while it is set,
+`sub_82845DE0` appends each closed segment to the worker's token stream instead of
+submitting it to the ring. So the multi-tile Resolve's arm block lands in the very
+stream its own arm hands the ISR. **That is true on BOTH arms**; what differs is how
+long it sits there. On hardware and on the PM4 arm the thousands of dwords of tile
+content in front of it keep the command processor away until the reset lands; phase C
+redirects that content away, the segment is 93 dwords of pure protocol, and the CP gets
+there first. Measured at the first tick either arm runs a Resolve at all — both counters
+moving, so it is a ratio and not part 7's stopwatch: **1.6 kicks per Resolve on the
+control arm against 16 on the draw arm.**
+
+The fix is one field for the duration of one call: `D3dDraw_ServiceReserve` zeroes
+`dev+0x3460` across the guest's own close/kick, **guarded on `dev+0x2B04 == 0`** — the
+same test `sub_82845AC0`'s own fork makes, so it can only pick the branch the title
+would have picked anyway — and restores it afterwards. The guard is also the instrument:
+its decline branch counted **zero** over a whole boot, and `arm-carrying segment routed
+to the RING` equals `reserve ran the guest's close/kick` exactly (1,079 of 1,079).
+
+Measured, same binary, arms alternated, 120 s each, 5 runs per arm plus 3 PM4 controls:
+
+| | pre-fix (`CZ_D3D_NO_ARM_SEG_DIRECT=1`) | **fixed** | PM4 control |
+|---|---|---|---|
+| `ints/arms` — CP executions per arm block | 53.8-64.3 | **1.000, 5 of 5** | 0.998-1.000 |
+| `distinct` token buffers | 2-6 | 2-719 | 300-504 |
+| `dev+0x2B04` | **-3,555 to -4,167** | **0 or 1** | 0-2 |
+| deepest file | #60, **5 of 5** | **#83, 4 of 5** | #83, 3 of 3 |
+| A1 gate | 82-prefix, never better | **exact 84-prefix** | exact 84-prefix |
+
+`truncated=0`, `max` hold streak 1-2 and zero crashes in all 13 runs. **A5 exit 0 with
+zero real windows on every run of every arm.** A1's position-71 window permutes 2 of 5
+on the fix arm against 3 of 5 pre-fix — the long-known scheduling-sensitive window, no
+different between them.
+
+**The one run that did not improve is reported rather than dropped:** `fix_5` stopped at
+#60 like the pre-fix arm — but with `ints/arms = 1.000`, `2B04 = 0` and `distinct = 2`,
+i.e. **no replay at all**. So there is a second, much quieter stall at the same era that
+the loud one was hiding, and it is 1 in 5 rather than 5 in 5. Naming it is part 9's
+work, and the instruments now separate it cleanly from this one.
+
+Two housekeeping items from part 8's kickoff are answered by measurement: the walker's
+own `case 0x54:` INTERRUPT replication is **dead on every arm** — its unconditional
+first-16 print emits zero lines across six runs, pre- and post-fix, because parts 2/3/5
+moved all four arm-block emitters to the real ring — and `MirrorIsPoisoned()` still
+records zero skips. Neither was deleted: the walker block's own comment records that
+removing its ring-transport fallback once cost ~150 frames of the movie era, and the
+routing has changed twice since that measurement.
 
 Next, in order:
 

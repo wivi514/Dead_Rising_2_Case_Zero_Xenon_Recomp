@@ -1244,6 +1244,134 @@ that keeps producing frames supersedes each token stream before the replay matte
    above engages. Any future note quoting it as "how far the draw arm loads" is
    quoting a symptom.
 
+### Phase C part 8: the replay had an EXIT all along, and the redirect was losing a race to it
+
+Session 20 (2026-08-06). Part 7 handed over one requirement — *the arm block and its
+`INTERRUPT` must not be inside a segment the worker resubmits* — and it turned out to
+be exactly right, for a reason nobody had yet named: **the title's own code takes that
+segment back out again, every frame, and phase C was letting the command processor get
+there first.**
+
+**The exit, which had never been identified.** `sub_8284B9C0` — the "frame-end async
+submit", already in the hook table as the only `+1` the outstanding-segment counter
+gets — does three things before it arms anything:
+
+```
+8284BA30  stw  r27,0x3460(r31)     ; r27 = 0: clear the ASYNC marker
+8284BA38  stw  r27,0x3464(r31)
+8284BA5C..8284BA90  bl sub_82845290 x7   ; RESET all seven worker token streams
+8284BAD4  bl   sub_82845BA0         ; arm sub_8284AAD0 with the freshly EMPTIED head
+```
+
+`sub_82845290` is a stream reset: it relinks the stream's head to its own base and
+writes the `0xC0000000` sentinel there, i.e. it throws away every segment descriptor a
+previous frame left in it. And `Resolve` (`sub_82838858`) calls `sub_8284B9C0` from its
+**common tail** at `82838CC8` — single-tile and multi-tile paths both converge on it,
+with no early return anywhere between — so *every* Resolve reseeds. Measured, and this
+is the check that the two are the same event: `resolve` and `reseed` are **equal to the
+unit on every tick of every run of both arms**.
+
+**The marker that decides the routing, and its only two writers in 8.8 MB.** A scan for
+`stw`/`lwz` at offset `0x3460` over the whole D3D cluster finds it written in exactly
+two places: `sub_8284AAD0` (the ISR's worker kick) SETS it, and `sub_8284B9C0` clears
+it. In between, `sub_82845DE0` reads it and branches:
+
+| `dev+0x3460` | what a segment close does with the descriptor |
+|---|---|
+| `!= 0` | appends `{size\|0x81000000, physStart}` straight to `dev+0x350C`, i.e. the worker token stream `dev+0x3500` |
+| `== 0` | emits a fence and submits through `sub_82845AC0`, which with `dev+0x2B04` at zero goes **RING DIRECT** and enters no stream at all |
+
+**So the whole mechanism is a race, and its two arms differ only in what phase C
+removed.** The multi-tile Resolve arms `sub_8284AAD0` at `82838A94` with the head of
+stream `0x3500`, then closes the arm-carrying segment four instructions later at
+`82838AA8`. If the kick has already set `0x3460`, that segment — INTERRUPT packet and
+all — is appended to the very stream the arm just handed the ISR. On hardware and on
+the PM4 control arm that is harmless, because the reseed at the end of the same Resolve
+empties the stream before the command processor has chewed through the **thousands of
+dwords of tile content** sitting in front of the arm block. Phase C redirects that
+content away; the segment is **93 dwords of pure protocol**; the CP reaches the
+INTERRUPT immediately; the walk resubmits the segment; the INTERRUPT fires again.
+
+**The number, taken at the first tick either arm runs a Resolve at all** — same era,
+both counters moving, so it is a ratio and not part 7's stopwatch (gotcha 161):
+
+| tick 7 of the boot | resolves | kicks | kicks per resolve |
+|---|---|---|---|
+| PM4 control | 5 | 8 | 1.6 |
+| phase C draw, pre-fix | 4 | **64** | **16** |
+
+and over a whole 90 s run, `ints/arms` — how many times the CP executes each arm block:
+
+| | arms | ints | ints/arms | resolve=reseed | distinct |
+|---|---|---|---|---|---|
+| PM4 control | 6,441 | 6,438 | **0.9995** | 1,654 | 461 |
+| draw, pre-fix | 203 | 9,589 | **47.2** | **6, frozen** | **6** |
+
+**The fix is one field, for the duration of one call, guarded by the title's own
+condition.** In `D3dDraw_ServiceReserve` — the interposer that already restores the real
+cursor block and runs the guest's own `sub_82845F68` — `dev+0x3460` is zeroed across
+that call when, and only when, `dev+0x2B04 == 0`. That guard is the same test
+`sub_82845AC0`'s own fork makes, so this cannot reorder anything: it can only pick the
+branch the title would have picked if the kick had not just set the marker. The value
+is restored afterwards, so exactly one close's ROUTING is ours and no other reader of
+the field sees a change. `CZ_D3D_NO_ARM_SEG_DIRECT=1` is the same-binary pre-fix arm.
+
+Two counters say what it actually did over a run: `reserve ran the guest's close/kick on
+the REAL segment` = 1,079 and `arm-carrying segment routed to the RING` = **1,079**, and
+the decline branch (`counter nonzero`) fired **zero** times. Every serviced reserve in a
+boot had no outstanding async work, so the guard is honest and never had to say no.
+
+**Measured, same binary, arms ALTERNATED within each round, 120 s each, five runs per
+arm plus three PM4 controls.**
+
+| | pre-fix (`CZ_D3D_NO_ARM_SEG_DIRECT=1`) | **fixed** | PM4 control |
+|---|---|---|---|
+| `ints/arms` — CP executions per arm block | 53.8 - 64.3 | **1.000, 5 of 5** | 0.998 - 1.000 |
+| `distinct` token buffers | 2 - 6 | 2 - 719 | 300 - 504 |
+| `resolve` = `reseed` | 2 - 6, frozen at 7 s | 2 - 2,381 | 640 - 2,274 |
+| counter `dev+0x2B04` | **-3,555 to -4,167** | **0 or 1** | 0 - 2 |
+| deepest file | #60, **5 of 5** | **#83, 4 of 5** | #83, 3 of 3 |
+| A1 gate | 82-prefix, never better | **exact 84-prefix** | exact 84-prefix |
+
+`truncated=0`, `max` hold streak 1-2, **zero crashes in all thirteen runs**, and
+`sync-wait` back to an ordinary 4-14 fence lag (`target=17027 emitted=17037
+completed=17023`) instead of a carousel it could never reach. **The phase C draw arm now
+reaches the same boot depth as the PM4 control arm**, which it has not done since the
+arm was built in session 13.
+
+**The one run that did not improve is reported rather than dropped.** `fix_5` stopped at
+#60 like the pre-fix arm — but with `ints/arms = 1.000`, `dev+0x2B04 = 0` and
+`distinct = 2`, i.e. **no replay at all**. So there is a second, much quieter stall at
+the same era that the loud one was hiding, and it is 1 in 5 rather than 5 in 5. The
+instruments separate the two cleanly now: a run stuck WITH `ints/arms` in the tens is
+this section's fault, a run stuck with it at 1.000 is the other one.
+
+**And the picture, which is what the pivot was for.** Both arms were run headless with
+`CZ_VK_FRAME_DUMP` and both reach the title screen. The phase C frame renders
+**PRESS START and the CAPCOM copyright line** — the first title screen this port's D3D
+translation layer has ever produced. Against the PM4 arm's own title-screen frame as
+the reference, `tools/frame_signature.py` reports **identity, correlation +0.893,
+beating the runner-up orientation by 0.914** — i.e. the two arms agree on layout and
+pass both of that tool's negative-control gates (gotcha 137). Neither arm matches
+capture E2 (+0.06 draw, +0.10 PM4): the 3D background and the DEAD RISING 2 wordmark
+are black on BOTH, so that gap belongs to the phase-5 renderer and the pivot did not
+introduce it. These are single frames of an animated scene (gotcha 133), so the claim
+here is parity between the arms, not correctness of the picture.
+
+**What this retracts and what it leaves standing.**
+
+* Part 7's "the arm block's own segment is replayed" stands, and its cause is now
+  named: not a structural property of the title, a race that redirected emission loses.
+* Part 4's "the loop has gain one by design and converges because the guest arms with a
+  new token buffer every frame" was right about the arithmetic and incomplete about the
+  exit. The exit is the reseed, and it is a *stream reset*, not a pointer advancing —
+  the advancing pointer is a consequence of it.
+* Part 7's `CZ_PM4_FENCE_MONOTONIC` negative result is now explained rather than merely
+  recorded: the fence values the engine waited for were in segments the CP never
+  reached, and stopping the stale ones regressing could not conjure the missing ones.
+* Gotcha 164 ("`#60 models\zombies.big` is a coincidence of timing") stands, and the
+  draw arm now stops where the control arm stops.
+
 ## Standing discipline, unchanged
 
 Both arms in the same binary; a rate, never a single run; the animated title screen is

@@ -86,6 +86,8 @@ std::atomic<uint64_t> g_chainRingsub{ 0 };
 std::atomic<uint64_t> g_chainRingsubEnts{ 0 };
 std::atomic<uint64_t> g_chainSegSubmit{ 0 };
 std::atomic<uint64_t> g_chainSegQueued{ 0 };
+std::atomic<uint64_t> g_chainResolves{ 0 };
+std::atomic<uint64_t> g_chainAsyncSubmit{ 0 };
 
 // Distinct token-buffer pointers ever kicked.
 //
@@ -140,10 +142,17 @@ ChainStats ChainStats_Read()
     s.ringsubEnts = g_chainRingsubEnts.load(std::memory_order_relaxed);
     s.segSubmit = g_chainSegSubmit.load(std::memory_order_relaxed);
     s.segQueued = g_chainSegQueued.load(std::memory_order_relaxed);
+    s.resolves = g_chainResolves.load(std::memory_order_relaxed);
+    s.asyncSubmit = g_chainAsyncSubmit.load(std::memory_order_relaxed);
     return s;
 }
 
 void ChainStats_CountIsr() { g_chainIsr.fetch_add(1, std::memory_order_relaxed); }
+void ChainStats_CountResolve() { g_chainResolves.fetch_add(1, std::memory_order_relaxed); }
+void ChainStats_CountAsyncSubmit()
+{
+    g_chainAsyncSubmit.fetch_add(1, std::memory_order_relaxed);
+}
 
 namespace {
 
