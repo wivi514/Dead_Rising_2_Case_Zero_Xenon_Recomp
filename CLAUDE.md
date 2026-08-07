@@ -1186,6 +1186,44 @@ From phase C part 9 (the picture — four defects between the scene and the scre
     dump is the only instrument that can tell an early wrong pass from a late one,
     because the frame is the last link and a wrong frame is consistent with both.
 
+## Inherited from the Fable 2 port: shared-decode cross-checks, and a do-not-chase list
+
+Everything below is **hardware-level decode**, not title-specific, so a defect found in
+one port is a defect in the other unless this one was written differently. Checking is
+minutes; diagnosing the symptom is days. **Both of the first two were checked in
+session 21 and this repo is correct on both** — recorded so the next session does not
+re-check them, and so Case West can check them in one grep.
+
+| shared decode | correct form | this repo |
+|---|---|---|
+| fetch-constant SIZE field — the endian bits occupy the low 2 bits of `fdw1`, so `fdw1 & 0x7FFFFF` swallows them (reads ~4x too large, permits reads past the buffer, and *under*-reports past ~2^21 dwords) | `(fdw1 >> 2) & 0xFFFFFF` | ✓ `gpu/xenos.h:125`, and gotcha 110 is the same finding arrived at independently |
+| `num_format_all` INTEGER semantics — a fetch declaring unsigned/integer on `k_8_8_8_8` bound as `R8G8B8A8_UNORM` delivers 0..1 where the guest asked 0..255 (typically packed bone indices, TEXCOORD-wrapped as 360 titles do) | deliver the integer as its own value into a FLOAT input | ✓ via `USCALED`/`SSCALED` in `XenosVertexFormat`, gotcha 122 |
+
+On the second: Fable 2 fixes it by emitting `* (2^bits − 1)` at translation time and
+warns *against* rebinding to a UINT format. `USCALED`/`SSCALED` is not that rebind — it
+is the same semantic (an integer delivered as its own value into a float input) obtained
+without touching the emitter or the vertex input signatures. Both are correct; ours
+costs nothing in XenosRecomp, which matters because that recompiler is shared.
+
+**Confirmed NON-issues — do not chase these.** Measured over ~860 shader blobs and 971
+vertex fetches in the **Fable 2** bank, so the provenance is another title and the
+census has not been repeated here (one pass over our 336 shaders would settle it, and
+`tools/gdis.py` plus the meta sidecars are enough to do it):
+
+- the guest requests **8-in-32 endian on 100%** of fetches;
+- **`exp_adjust` is declared but zero everywhere**;
+- the Xenos compiler emits a **`yxwz`-shaped destination swizzle on ~87% of 16-bit
+  fetches** (identity on 32-bit) that compensates the 8-in-32 pair transposition, and
+  XenosRecomp already honours it on both the declared and `XeVfetchDep` paths.
+
+**That third one is a live lead here, not just trivia.** It is the most plausible
+explanation for phase 5 §6n, where disabling this port's own 16-bit texcoord unswizzle
+(`g_SwappedTexcoords`, 616,417 draws a boot) had **no measurable effect on the picture**
+— if the shader already compensates via its destination swizzle, our mask is
+compensating a second time or not at all. §6n recorded the null result honestly and
+could not explain it; this is the explanation to test. Refutation by compensation, and
+it is exactly why that rule is in the conventions.
+
 ## Layout
 
 - `config/CaseZero.toml` — XenonRecomp main config: helper addresses, plus 139 function
@@ -2571,6 +2609,62 @@ Next, in order:
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
+## Reusability: what gets extracted, and when
+
+Case West is the next port and this is the **second** implementation in the workspace
+(Fable 2 is the first). That is what makes extraction justified now and would have made
+it premature before. Two rules govern it:
+
+> **Extract only what is proven in BOTH ports. Never extract from Case Zero alone.**
+
+> **Extract after the second implementation forces the seam — not in anticipation of a
+> third.**
+
+**Tier 1 — hardware-defined, identical wherever you cut the layer.** Xenos microcode →
+HLSL/SPIR-V (vfetch lives *in* the shader, so input layouts are reconstructed from
+shader code either way); fetch-constant decode; vertex and texture format tables;
+texture detiling (the Xenos address swizzle is an algorithm, not a per-title thing);
+endian utilities; 7e3, D24FS8, DXN/DXT conversion; PPC/VMX helpers; the guest memory
+model; XEX/STFS loading.
+
+**Tier 2 — XDK-defined, NOT per-game.** The 360 D3D9 surface is defined by the XDK, so
+build the function-signature database **keyed by XDK version** (OOVPA-style patterns)
+and never hardcode per-title addresses. State vector → PSO, render and sampler state
+mapping, vertex declaration handling, resolve and tiling semantics all transfer
+wholesale. Case Zero (2010) and Fable 2 (2008) probably differ; **Case West almost
+certainly matches Case Zero**, which is exactly what makes it the cheapest next target.
+`docs/d3d-translation-plan.md`'s Phase A table is this port's contribution to it.
+
+**Tier 3 — platform.** Kernel and XAM imports (**grown lazily — implement what a title
+actually needs, never speculatively**, which is gotcha 5's rule stated as a roadmap);
+XBLA entitlement handling; input abstraction; XMA/audio plumbing; save containers
+mapped onto the native filesystem; achievements behind a provider interface.
+
+**Tier 4 — host.** Graphics backend; shader hash → translation → pipeline cache.
+
+**Never shared.** Renderer translation specifics, engine reverse engineering, hook
+addresses, timing/framerate/FOV/UI patches, shader hacks.
+
+Rules on top of the tiers:
+
+- **Static-link shared code into each port.** No shared runtime DLL, no ABI versioning,
+  no launcher dependency — each port stays independently buildable and preservable, and
+  one update cannot break another.
+- **Upstream universal fixes** to XenonRecomp/XenosRecomp (new instructions, jump-table
+  patterns, generic shader features); title-specific corrections stay in this repo's
+  config and patch tree. `docs/xenonrecomp-upstream-bugs.md` is the ledger.
+- **Record the license of every borrowed component in `THIRD_PARTY.md` before the first
+  line is copied** — UnleashedRecomp, ReXGlue, Xenia included. (plume is
+  licence-verified MIT; only video.cpp-derived code carries GPLv3.)
+- Structure the renderer so a sibling title *could* reuse it, but **do not build the
+  sibling abstraction until Case West actually starts.**
+
+**Precompile everything you can.** n = 1 per port, which a general emulator can never
+assume: scan assets at install, translate shaders ahead of time, and ship a populated
+pipeline database so the title starts without PSO-compilation stutter. The shader cache
+(`assets/shader_spv/`, 336 blobs) already does half of this; the **125 pipelines are
+still created at runtime** and are the obvious next candidate.
+
 ## Conventions (same as the two template ports)
 
 - No copyright/license headers in new files (user's own repo — ask before adding any).
@@ -2590,3 +2684,63 @@ Next, in order:
   was claimed and explain the artifact.
 - Measurement discipline from day one: A/B with same-binary arms, gate comparisons,
   pre-register capture questions.
+
+### Evidence rules (non-negotiable)
+
+- **Measure before inferring.** A hypothesis about guest behaviour is tested against a
+  census over the image, the shader bank or the capture — never argued from
+  documentation or from model knowledge. **Report counts, not impressions.**
+- **One change per experiment.** Fixes with distinct predictions land in separate
+  commits and are verified separately.
+- **State the prediction before running it.** Every fix commit records the falsifiable
+  claim it makes about on-screen behaviour or dumped state, so a run can refute it.
+- **A/B ADMISSIBILITY.** Two configurations are comparable at matched indices only if
+  they are two states of ONE renderer producing the SAME draw set. If one arm renders
+  less — or more — the comparison is inadmissible; say so and fall back to within-run
+  evidence. This is the rule that would have caught `CZ_VK_FORCE_COLORMASK` in phase C
+  part 9: the arm adds draws, so its picture cannot be compared with the baseline's at
+  all, and it took a counter to settle what a picture never could.
+- **Refutation by compensation beats refutation by absence.** When a mechanism is real
+  but compensated somewhere else, record BOTH — that closes the branch properly, where
+  "we looked and saw nothing" leaves it open. Phase 5 §6n is the worked example.
+- **An untrusted path is not an oracle.** Only diff against a subsystem that has itself
+  been validated, and re-ask that question whenever an upstream defect is fixed
+  (gotcha 172). Case Zero has no in-project second implementation to diff against, so
+  the substitutes are (a) Xenia traces, read for the FIRST divergent operation rather
+  than the visibly broken object twenty frames later, and (b) the Fable 2 port for
+  anything in the shared decode layer.
+
+### Things not to do
+
+- **Do not extract a library from this port alone**, and do not build the Case West
+  abstraction before Case West starts. No interfaces or library splits "for later".
+- **Do not bundle independent fixes into one commit.**
+- **Do not treat documentation or prior model output as ground truth over a census** —
+  including this file. Every number here was measured once and has a shelf life
+  (gotcha 13).
+- **Do not add speculative Xenos coverage.** An unsupported packet, format or import
+  fails LOUDLY with its identifier; it never guesses (gotcha 5).
+- **Do not copy external code before its licence is recorded.**
+- **Do not delete the PM4 command processor.** See the note below — it is the control
+  arm, not legacy.
+
+### A conflict with the external "Project Constitution", recorded so it is not re-litigated
+
+An outside constitution document describes this port as *"API-level HLE — a D3D
+translation layer. There is no command processor in this project and none will be
+added."* **That is not this repository.** `runtime/gpu/pm4.cpp` is a live PM4 command
+processor: it is the boot engine (phase C's D3D arm still needs it for the ring and the
+GPU/CPU hand-off), and more importantly it is the **same-binary control arm** for every
+claim the D3D arm makes — the discipline the last nine sessions are built on. Phase C
+part 9's four renderer fixes were all found on the PM4 arm because it is faster and
+better instrumented. The constitution's *intent* — the D3D translation layer is where
+the port is going — is right and is exactly `docs/d3d-translation-plan.md`; its
+statement about the CP is wrong about the code and would, if acted on, delete the
+ability to A/B.
+
+Two more of its claims are superseded by measurement in this repo and should not be
+re-derived: this title's tiles are **left/right 640-wide halves**, not horizontal bands
+(window scissors `0..640` and `640..1280`, window offset `-640`), and its
+"force a single tile, ignore predication" diagnostic HAS been run — it is
+`CZ_PM4_NO_PREDICATION=1`, and it is destructive rather than diagnostic (phase5-notes
+§6v).
