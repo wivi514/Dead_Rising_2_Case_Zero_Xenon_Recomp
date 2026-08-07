@@ -65,6 +65,8 @@
 // `extern "C" PPC_FUNC`, while a plain PPC_FUNC declaration here would be
 // C++-mangled and fail to link (gotcha 33, from the other direction).
 extern "C" PPC_FUNC(__imp__sub_82959360);
+extern "C" PPC_FUNC(__imp__sub_82788478);
+extern "C" PPC_FUNC(__imp__sub_82822430);
 extern "C" PPC_FUNC(__imp__sub_829565B8);
 extern "C" PPC_FUNC(__imp__sub_82955780);
 extern "C" PPC_FUNC(__imp__sub_82689A70);
@@ -1396,4 +1398,89 @@ PPC_FUNC(sub_8284A6D0)
                             (unsigned long long)sites[i].count);
         fprintf(stderr, "%s\n", line);
     }
+}
+
+// ---------------------------------------------------------------------------------
+// CZ_DIGEST_PROBE=1 — the file-digest check, link by link.
+//
+// `sub_82788478(container, name, buffer, length, flags)` is the digest manager's
+// verify. It calls XexGetModuleSection for the XEX resource whose name sits at
+// `container+4` ("Digest"), hashes `name` with the engine's own `h = h*0x21 ^ (signed
+// char)c` string hash, looks that hash up in the table, SHA-1s `buffer || length`, and
+// compares. If ANY of those steps fails it runs
+// `dbAssert(0 && "Bad file digest.  Please re-link the executable and try again.")`
+// from digestmanager.cpp, whose tail is `twi 31,r0,22` followed by `stw r26,0(0)` —
+// so the observable is a null-store SIGSEGV in guest code with no hint that an
+// assertion is what produced it.
+//
+// The reason this needs a hook rather than a debugger is gotcha 57: the compiler keeps
+// PPCContext fields in host registers across calls, so `ctx.rN` read at a breakpoint
+// in the MIDDLE of a recompiled function is stale — two attempts to read the computed
+// digest off the guest stack under `gdb` returned the assert-reporting path's
+// registers and twenty zero bytes. At a function's ENTRY the values are fresh, which
+// is exactly what the alias seam gives for free.
+static bool DigestProbeEnabled()
+{
+    static const bool on = getenv("CZ_DIGEST_PROBE") != nullptr;
+    return on;
+}
+
+static void DumpBytes(const char* label, uint32_t va, uint32_t n)
+{
+    uint8_t* base = g_memory.base;
+    fprintf(stderr, "[digest]   %s %08X:", label, va);
+    for (uint32_t i = 0; i < n; i++)
+        fprintf(stderr, "%s%02X", (i % 4) ? "" : " ", PPC_LOAD_U8(va + i));
+    fprintf(stderr, "\n");
+}
+
+// SHA1_Final(context, out) — the last link. Printing its OUTPUT is the one thing that
+// separates "the table lookup missed" from "the hash of the file came out wrong",
+// which are different subsystems and look identical from the assert.
+PPC_FUNC(sub_82822430)
+{
+    const uint32_t out = ctx.r4.u32;
+    __imp__sub_82822430(ctx, base);
+    if (DigestProbeEnabled())
+    {
+        static std::atomic<int> shown{ 0 };
+        if (shown.fetch_add(1, std::memory_order_relaxed) < 8)
+            DumpBytes("SHA1_Final ->", out, 20);
+    }
+}
+
+PPC_FUNC(sub_82788478)
+{
+    if (!DigestProbeEnabled())
+    {
+        __imp__sub_82788478(ctx, base);
+        return;
+    }
+    const uint32_t container = ctx.r3.u32;
+    const uint32_t nameVa = ctx.r4.u32;
+    const uint32_t buffer = ctx.r5.u32;
+    const uint32_t length = ctx.r6.u32;
+
+    // The engine's string hash, recomputed HERE in host code. That makes this an
+    // oracle rather than a description: if the guest's own hash of the same bytes
+    // disagrees with this one, the defect is in the recompiled hash function and not
+    // in the table, and no amount of reading the table can say so.
+    char name[256] = {};
+    for (uint32_t i = 0; i < sizeof name - 1; i++)
+    {
+        name[i] = char(PPC_LOAD_U8(nameVa + i));
+        if (!name[i])
+            break;
+    }
+    uint32_t want = 0;
+    for (const char* p = name; *p; p++)
+        want = uint32_t(want * 0x21) ^ uint32_t(int32_t(*p));
+
+    fprintf(stderr,
+            "[digest] verify '%s' buffer=%08X length=%u  section='%s'  host hash=%08X\n",
+            name, buffer, length, reinterpret_cast<const char*>(base + container + 4),
+            want);
+
+    __imp__sub_82788478(ctx, base);
+    fprintf(stderr, "[digest] verify '%s' -> %u\n", name, ctx.r3.u32);
 }
