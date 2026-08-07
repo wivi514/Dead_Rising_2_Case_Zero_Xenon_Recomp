@@ -1,8 +1,14 @@
 # Third-party components and licensing
 
-**This repository is licensed GPLv3** (`COPYING`). Recorded 2026-08-07, at the
-operator's instruction, alongside the sibling Fable II port which took the same
-licence on the same day.
+**This repository is licensed [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)**
+(`LICENSE`). Free to use, modify, fork and redistribute for any noncommercial
+purpose; selling it needs a licence from the copyright holder. Recorded 2026-08-07,
+alongside the sibling Fable II port, which took the same licence the same day.
+
+**A GPLv3 declaration made earlier that day was reversed**, on the premise — checked
+and found false — that this repository already contained UnleashedRecomp code. It
+does not; see below. Neither declaration was ever pushed, and no code was ever
+copied, so nothing attached.
 
 `docs/d3d-translation-plan.md` recorded the decision to adapt UnleashedRecomp's code
 ("get the maximum") before this file existed. CLAUDE.md §"Reuse strategy" requires
@@ -28,13 +34,15 @@ So the D3D translation layer here was built from UnleashedRecomp's **architectur
 this port's own PM4 knowledge. Architecture and findings are not copyrightable;
 **no licence obligation has been incurred by that.**
 
-**The licence is therefore a CHOICE here, not a remedy.** It is taken deliberately:
-to keep this port in the same commons as the tools it is built on, to stay
-consistent with the Fable II port, and because the plan reserves the right to adapt
-`video.cpp` directly later — at which point GPLv3 stops being optional.
+**So the licence here is a CHOICE, not a remedy** — and PolyForm Noncommercial is
+chosen for the same reason as in the sibling port: users get everything (use,
+modify, fork, redistribute), while selling stays with the copyright holder so a
+rights-holder arrangement remains possible.
 
-**If that changes, this section must change with it.** The moment a file is adapted
-from UnleashedRecomp, it gets a provenance header and a row in the log below.
+**UnleashedRecomp's code must stay out.** Adopting it would make this a GPLv3
+derivative and remove that option. It remains a structural reference only — which
+has been sufficient to reach phase C12. If that ever changes, the licence cannot
+stand as written and must be revisited BEFORE the first line is copied.
 
 ---
 
@@ -44,7 +52,7 @@ from UnleashedRecomp, it gets a provenance header and a row in the log below.
 
 | component | licence | status |
 |---|---|---|
-| **UnleashedRecomp** (hedge-dev) | **GPLv3** | **Architecture and findings only. No code copied as of 2026-08-07.** Approved for direct adaptation when wanted; every adapted file must carry a provenance header and a row here. |
+| **UnleashedRecomp** (hedge-dev) | **GPLv3** | **Architecture and findings only. No code copied, and none may be** — see above. Structural reference; port the method, write our own. |
 | **plume** (the RHI UnleashedRecomp renders through) | **MIT — licence VERIFIED** (recorded in CLAUDE.md) | Not vendored. MIT, so it carries no copyleft obligation if adopted. |
 
 ### Used, and NOT part of this repository
@@ -54,7 +62,7 @@ from UnleashedRecomp, it gets a provenance header and a row in the log below.
 | **XenonRecomp** (hedge-dev) | **MIT** | The static recompiler. Universal fixes go upstream under MIT. |
 | **XenosRecomp** (hedge-dev) | **MIT** | The Xenos shader translator. Same arrangement. |
 | **XenonUtils `xbox.h`** guest structs | MIT | GPL-compatible; retain the MIT notice on anything derived from it. |
-| **Fable II port** (`~/GithubRepo/Fable2XenonRecomp`) | **GPLv3** (2026-08-07) | Sibling port. Findings flow freely both ways — that exchange is facts, not code, and needs no licence step. |
+| **Fable II port** (`~/GithubRepo/Fable2XenonRecomp`) | **PolyForm Noncommercial 1.0.0** (2026-08-07) | Sibling port. Findings flow freely both ways — that exchange is facts, not code, and needs no licence step. |
 
 ### Not distributed, and not licensable by us
 
