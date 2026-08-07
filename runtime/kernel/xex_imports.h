@@ -41,3 +41,15 @@ uint32_t XexHeaderField(uint32_t headerBase, uint32_t key);
 // The content enumerator needs it because the title FILTERS enumerated saves by it
 // (sub_825D8E60), so a save carrying the wrong id is silently skipped.
 uint32_t XexTitleId();
+
+// One XEX *resource* section by name, out of XEX_HEADER_RESOURCE_INFO — the table
+// A1's own header dump prints as `Serial2 / Serial / Digest / 58410A8D`. Returns
+// false when this XEX has no resource of that name.
+//
+// It exists because XexGetModuleSection had nothing to answer from, and the answer
+// it gave instead (STATUS_NOT_FOUND, both out-parameters zeroed) is what stops this
+// title dead 53 files past any gate in this project: `Digest` is the digest
+// manager's hash table, and a null table is not a soft failure — it is
+// `dbAssert(0 && "Bad file digest. Please re-link the executable and try again.")`
+// from digestmanager.cpp, whose tail is `twi 31,r0,22` and a store to address 0.
+bool XexFindResource(const char* name, uint32_t& address, uint32_t& size);

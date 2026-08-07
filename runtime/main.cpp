@@ -220,14 +220,36 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Skip the PE metadata sections: not read at runtime and, in this XEX, their
-    // source ranges over-run the loaded image buffer.
-    auto skip = [](const std::string& n) {
-        return n == ".reloc" || n == ".XBLD" || n == ".edata" || n == ".idata";
+    // Which sections get copied is decided by the BUFFER, not by a list of names.
+    //
+    // The loader points every section at `image.data.get() + VirtualAddress` inside one
+    // `image.size`-byte decompressed image, so a section whose virtual range ends past
+    // `image.size` would be memcpy'd out of somebody else's heap. In this XEX exactly
+    // one does: `.reloc` is 0xB00200..0xBBA0D4 against an image size of 0xB40000.
+    //
+    // This used to be a NAME list — ".reloc, .XBLD, .edata, .idata" — introduced with
+    // the comment "not read at runtime and, in this XEX, their source ranges over-run
+    // the loaded image buffer". Only the first of those two claims applies to `.reloc`,
+    // and NEITHER applies to `.idata`: it ends at 0xAF047A, comfortably inside the
+    // buffer, and it is where this XEX keeps its RESOURCES —
+    //
+    //     Serial2  82AF0000  32b       Serial   82AF0080  63b
+    //     Digest   82AF0100  28b
+    //
+    // — which the title reads through XexGetModuleSection. Leaving it unloaded made
+    // `Digest` twenty-eight zero bytes, so the digest manager computed a perfectly
+    // correct SHA-1 of `data/audio/Prologue.txt` and compared it against nothing (see
+    // finding 50). A name list cannot state the condition it is standing in for, so
+    // the next reader inherits the conclusion without the test; a bounds check IS the
+    // condition, and it prints which sections it dropped and why.
+    const uint64_t imageEnd = uint64_t(image.base) + image.size;
+    auto skip = [&](const auto& s) {
+        return !s.data || uint64_t(s.base) + s.size > imageEnd ||
+               uint64_t(s.base) + s.size > PPC_MEMORY_SIZE;
     };
     for (const auto& s : image.sections)
     {
-        if (skip(s.name) || !s.data || s.base + s.size > PPC_MEMORY_SIZE)
+        if (skip(s))
             continue;
         memcpy(g_memory.base + s.base, s.data, s.size);
     }
@@ -236,7 +258,8 @@ int main(int argc, char** argv)
     for (const auto& s : image.sections)
         fprintf(stderr, "runtime:   section %-10s %08X..%08X flags=%u%s%s\n", s.name.c_str(),
                 uint32_t(s.base), uint32_t(s.base) + s.size, unsigned(s.flags),
-                s.data ? "" : " (no data)", skip(s.name) ? " (skipped)" : "");
+                s.data ? "" : " (no data)",
+                skip(s) ? " (SKIPPED: runs past the loaded image buffer)" : "");
 
     // CZ_PEEK=<hexaddr>[,<words>]: dump guest memory as the XEX shipped it, before
     // any guest code runs. The use is differential — compare a value seen at a fault

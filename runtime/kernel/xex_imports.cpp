@@ -298,3 +298,48 @@ uint32_t XexTitleId()
     uint8_t* base = g_memory.base;
     return PPC_LOAD_U32(info + 12);
 }
+
+bool XexFindResource(const char* name, uint32_t& address, uint32_t& size)
+{
+    address = 0;
+    size = 0;
+    if (!name || !*name)
+        return false;
+
+    // XEX_HEADER_RESOURCE_INFO. The key's low byte is 0xFF, so XexHeaderField hands
+    // back the block itself rather than an inline word. Layout (all big-endian):
+    //
+    //   uint32 blockSize;                    // includes this field
+    //   { char name[8]; uint32 address; uint32 size; } resources[(blockSize - 4) / 16];
+    //
+    // Names are 8 bytes NUL-padded, NOT NUL-terminated — "58410A8D" fills all eight,
+    // so a strcmp against the raw bytes would run into the address that follows it.
+    constexpr uint32_t XEX_HEADER_RESOURCE_INFO = 0x000002FF;
+    const uint32_t block = XexHeaderField(0, XEX_HEADER_RESOURCE_INFO);
+    if (!block)
+        return false;
+
+    uint8_t* base = g_memory.base;
+    const uint32_t blockSize = PPC_LOAD_U32(block);
+    if (blockSize < 4 || blockSize > 0x10000)
+        return false;
+    const uint32_t count = (blockSize - 4) / 16;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const uint32_t entry = block + 4 + i * 16;
+        char have[9] = {};
+        for (uint32_t k = 0; k < 8; k++)
+            have[k] = char(PPC_LOAD_U8(entry + k));
+        if (strncmp(have, name, 8) != 0)
+            continue;
+        // A resource shorter than the caller's name is a different resource: "Serial"
+        // and "Serial2" share their first six characters, and strncmp over eight
+        // bytes separates them only because the shorter one is NUL-padded.
+        if (strlen(name) < 8 && have[strlen(name)] != '\0')
+            continue;
+        address = PPC_LOAD_U32(entry + 8);
+        size = PPC_LOAD_U32(entry + 12);
+        return true;
+    }
+    return false;
+}

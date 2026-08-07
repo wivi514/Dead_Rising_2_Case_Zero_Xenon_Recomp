@@ -2576,23 +2576,49 @@ static void ExRegisterTitleTerminateNotification_x(uint32_t registration, uint32
 }
 
 // A1: XexGetModuleSection(30014000, 820B0FB4("Serial"), 7018FA94, 7018FA90) — the
-// title asking a module for a named section. Note the handle 0x30014000 is NOT the
-// xam handle our XexLoadImage minted (0x30002000); on hardware it is the title's own
-// module, and "Serial" is the XEX resource section A1's header dump lists at
-// 82AF0080. We have no module image to hand back a section from, so STATUS_NOT_FOUND
-// is the truthful answer.
+// title asking a module for a named section. The handle 0x30014000 is NOT the xam
+// handle our XexLoadImage minted (0x30002000); on hardware it is the title's own
+// module, and the names are XEX *resources*, which A1's own header dump lists:
 //
-// Both out-parameters are written anyway. Finding 14: an error return does not
-// protect a caller that ignores the status and reads the buffer.
+//     Serial2  82AF0000-82AF0020, 32b
+//     Serial   82AF0080-82AF00BF, 63b
+//     Digest   82AF0100-82AF011C, 28b
+//     58410A8D 82B00000-82B3072B, 198443b
+//
+// This returned STATUS_NOT_FOUND with both out-parameters zeroed, on the reasoning
+// that "we have no module image to hand back a section from". We do: the resource
+// table is an optional header of the XEX we already publish, and every byte it
+// points at is inside the image the loader already mapped. The comment was written
+// about a loader that did not exist yet and was never re-asked (gotcha 13).
+//
+// What it cost is finding 50: `Digest` is the digest manager's hash table, and a
+// null table is not a soft failure. `sub_82788478` calls this for "Digest", tests
+// only the returned POINTER, and on zero runs
+// `dbAssert(0 && "Bad file digest.  Please re-link the executable and try again.")`
+// from `digestmanager.cpp` — whose tail is `twi 31,r0,22` and `stw r26,0(0)`. That
+// is the SIGSEGV at file #137 `audio\Prologue.txt`, 53 files deeper than any gate
+// here, and it presents as a null-pointer bug in guest code because XenonRecomp
+// lowers `twi` to nothing and the store one instruction later is what faults.
+//
+// The module handle is ignored: this process has exactly one module with resources,
+// and answering the title's own is right for every caller observed. A second module
+// would need a real registry, and inventing one before a caller exists is the
+// speculation gotcha 5 forbids.
+//
+// Both out-parameters are written on every path. Finding 14: an error return does
+// not protect a caller that ignores the status and reads the buffer.
 static uint32_t XexGetModuleSection_x(uint32_t module, const char* name, be<uint32_t>* dataOut,
                                       be<uint32_t>* sizeOut)
 {
+    uint32_t address = 0, size = 0;
+    const bool found = XexFindResource(name, address, size);
     if (dataOut)
-        *dataOut = 0;
+        *dataOut = address;
     if (sizeOut)
-        *sizeOut = 0;
-    KLOG("XexGetModuleSection module=%08X name='%s' -> not found\n", module, name ? name : "");
-    return STATUS_NOT_FOUND;
+        *sizeOut = size;
+    KLOG("XexGetModuleSection module=%08X name='%s' -> %08X %u bytes%s\n", module,
+         name ? name : "", address, size, found ? "" : " (NOT FOUND)");
+    return found ? 0 : STATUS_NOT_FOUND;
 }
 
 // Filesystem cache sizing hint. A1: FscSetCacheElementCount(00000000, 00000400) then
@@ -2638,7 +2664,193 @@ GUEST_FUNCTION_HOOK(__imp__XamGetExecutionId, XamGetExecutionId_x)
 GUEST_FUNCTION_HOOK(__imp__FscSetCacheElementCount, FscSetCacheElementCount_x)
 GUEST_FUNCTION_HOOK(__imp__ExRegisterTitleTerminateNotification,
                     ExRegisterTitleTerminateNotification_x)
+
+// ---------------------------------------------------------------------------------
+// XeCrypt SHA-1. Real, because a hash has no honest failure value.
+//
+// These were three of the generated honest-failure stubs, and finding 50 is what they
+// cost: `sub_82822420/28/30` are one-instruction tail-call thunks onto them
+// (`b 0x829C3084`, `b 0x829C3094`, `li r5,0x14; b 0x829C30A4` — gotcha 64, the callee
+// is invisible in the caller's disassembly), and the digest manager calls them to hash
+// a loaded file before use. A stub left the 20-byte output untouched, so the guest
+// compared twenty ZERO bytes against a real digest, failed, and ran
+// `dbAssert("Bad file digest...")`, whose tail is `twi 31,r0,22` and a store to
+// address 0 — the SIGSEGV at file #137 `audio\Prologue.txt`.
+//
+// This is gotcha 59's family. "Fail honestly" is not available to a function whose
+// result is a VALUE the caller consumes rather than a status it can test: there is no
+// SHA-1 digest that means "not implemented", and the stub's silence reads as a
+// specific, wrong answer. Implementing it is the only correct option.
+//
+// The state layout is the console's, because it is a guest stack object shared between
+// the three entry points: `{ be32 count; be32 state[5]; u8 buffer[64] }`, 88 bytes.
+// The guest reserves 0xA0 of frame for it, so the size is not tight.
+namespace
+{
+constexpr uint32_t kShaCount = 0;
+constexpr uint32_t kShaState = 4;
+constexpr uint32_t kShaBuffer = 24;
+
+inline uint32_t Rol32(uint32_t v, uint32_t n) { return (v << n) | (v >> (32 - n)); }
+
+// One 64-byte block into the five-word state. Plain FIPS 180-1.
+void Sha1Block(uint32_t h[5], const uint8_t* block)
+{
+    uint32_t w[80];
+    for (uint32_t i = 0; i < 16; i++)
+        w[i] = (uint32_t(block[i * 4]) << 24) | (uint32_t(block[i * 4 + 1]) << 16) |
+               (uint32_t(block[i * 4 + 2]) << 8) | uint32_t(block[i * 4 + 3]);
+    for (uint32_t i = 16; i < 80; i++)
+        w[i] = Rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+    for (uint32_t i = 0; i < 80; i++)
+    {
+        uint32_t f, k;
+        if (i < 20)      { f = (b & c) | (~b & d);          k = 0x5A827999; }
+        else if (i < 40) { f = b ^ c ^ d;                   k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+        else             { f = b ^ c ^ d;                   k = 0xCA62C1D6; }
+        const uint32_t t = Rol32(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = Rol32(b, 30); b = a; a = t;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+}
+} // namespace
+
+static void XeCryptShaInit_x(uint32_t state)
+{
+    if (!state)
+        return;
+    uint8_t* base = g_memory.base;
+    static const uint32_t iv[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476,
+                                    0xC3D2E1F0 };
+    PPC_STORE_U32(state + kShaCount, 0);
+    for (uint32_t i = 0; i < 5; i++)
+        PPC_STORE_U32(state + kShaState + i * 4, iv[i]);
+}
+
+// The message is a BYTE stream, so the guest's buffer is read straight out of guest
+// memory with no swap — only the state's dwords are big-endian. The partial block has
+// to live in the state across calls, because this title hashes the file and then the
+// file's LENGTH as a SEPARATE four-byte update: an implementation that only handled a
+// single call would produce a confident wrong digest on every real use.
+static void XeCryptShaUpdate_x(uint32_t state, uint32_t input, uint32_t count)
+{
+    if (!state || (!input && count))
+        return;
+    uint8_t* base = g_memory.base;
+    uint32_t h[5];
+    for (uint32_t i = 0; i < 5; i++)
+        h[i] = PPC_LOAD_U32(state + kShaState + i * 4);
+
+    const uint32_t total = PPC_LOAD_U32(state + kShaCount);
+    uint32_t held = total % 64;
+    uint8_t* buffer = base + state + kShaBuffer;
+    const uint8_t* src = base + input;
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        buffer[held] = src[i];
+        if (++held == 64)
+        {
+            Sha1Block(h, buffer);
+            held = 0;
+        }
+    }
+    PPC_STORE_U32(state + kShaCount, total + count);
+    for (uint32_t i = 0; i < 5; i++)
+        PPC_STORE_U32(state + kShaState + i * 4, h[i]);
+}
+
+static void XeCryptShaFinal_x(uint32_t state, uint32_t out, uint32_t outCount)
+{
+    if (!state || !out)
+        return;
+    uint8_t* base = g_memory.base;
+    uint32_t h[5];
+    for (uint32_t i = 0; i < 5; i++)
+        h[i] = PPC_LOAD_U32(state + kShaState + i * 4);
+    const uint32_t total = PPC_LOAD_U32(state + kShaCount);
+    const uint32_t held = total % 64;
+
+    uint8_t block[64] = {};
+    memcpy(block, base + state + kShaBuffer, held);
+    block[held] = 0x80;
+    if (held >= 56)
+    {
+        Sha1Block(h, block);
+        memset(block, 0, sizeof block);
+    }
+    const uint64_t bits = uint64_t(total) * 8;
+    for (uint32_t i = 0; i < 8; i++)
+        block[56 + i] = uint8_t(bits >> (56 - i * 8));
+    Sha1Block(h, block);
+
+    // outCount is the caller's buffer size; this title passes 0x14. A shorter one gets
+    // the leading bytes, as the console does. A longer one is NOT padded, because
+    // writing past the end of the digest would be inventing data.
+    const uint32_t n = outCount < 20 ? outCount : 20;
+    for (uint32_t i = 0; i < n; i++)
+        PPC_STORE_U8(out + i, uint8_t(h[i / 4] >> (24 - (i % 4) * 8)));
+}
+
+// The one-shot: up to three buffers hashed in order into one digest. It keeps its
+// state on the HOST stack and reuses the block function, so there is one SHA-1 in this
+// file rather than two that can drift. Not yet reached by this title (gotcha 67 —
+// implemented is a prediction, not a result); it is here because leaving it stubbed
+// leaves exactly the same silent-wrong-value trap the other three just cost us.
+static void XeCryptSha_x(uint32_t in1, uint32_t in1Size, uint32_t in2, uint32_t in2Size,
+                         uint32_t in3, uint32_t in3Size, uint32_t out, uint32_t outSize)
+{
+    if (!out)
+        return;
+    uint8_t* base = g_memory.base;
+    uint32_t h[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
+    uint8_t block[64] = {};
+    uint32_t held = 0;
+    uint64_t total = 0;
+
+    const uint32_t ins[3] = { in1, in2, in3 };
+    const uint32_t sizes[3] = { in1Size, in2Size, in3Size };
+    for (uint32_t s = 0; s < 3; s++)
+    {
+        if (!ins[s] || !sizes[s])
+            continue;
+        const uint8_t* src = base + ins[s];
+        for (uint32_t i = 0; i < sizes[s]; i++)
+        {
+            block[held] = src[i];
+            if (++held == 64)
+            {
+                Sha1Block(h, block);
+                held = 0;
+            }
+        }
+        total += sizes[s];
+    }
+    memset(block + held, 0, sizeof block - held);
+    block[held] = 0x80;
+    if (held >= 56)
+    {
+        Sha1Block(h, block);
+        memset(block, 0, sizeof block);
+    }
+    const uint64_t bits = total * 8;
+    for (uint32_t i = 0; i < 8; i++)
+        block[56 + i] = uint8_t(bits >> (56 - i * 8));
+    Sha1Block(h, block);
+
+    const uint32_t n = outSize < 20 ? outSize : 20;
+    for (uint32_t i = 0; i < n; i++)
+        PPC_STORE_U8(out + i, uint8_t(h[i / 4] >> (24 - (i % 4) * 8)));
+}
+
 GUEST_FUNCTION_HOOK(__imp__XexGetModuleSection, XexGetModuleSection_x)
+GUEST_FUNCTION_HOOK(__imp__XeCryptShaInit, XeCryptShaInit_x)
+GUEST_FUNCTION_HOOK(__imp__XeCryptShaUpdate, XeCryptShaUpdate_x)
+GUEST_FUNCTION_HOOK(__imp__XeCryptShaFinal, XeCryptShaFinal_x)
+GUEST_FUNCTION_HOOK(__imp__XeCryptSha, XeCryptSha_x)
 // Unloading a module we never really loaded is a genuine no-op in this runtime.
 GUEST_FUNCTION_STUB(__imp__XexUnloadImage)
 
