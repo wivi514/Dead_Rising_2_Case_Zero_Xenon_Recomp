@@ -625,3 +625,59 @@ The boot now runs 300 s without faulting and stops loading at **#154**, in a run
 `skeleton\child*.big` files, presenting a black screen. Nothing is crashing and
 `truncated=0`; whether that is a stall or simply the next thing to implement is not yet
 measured, and it is 71 files past anything this project had reached.
+
+
+## 12. Finding 51 — the black save panel is a THUMBNAIL, and a real save is rejected
+
+Phase C part 14, closing part 13's last open menu item. `CZ_SAVE_DIR=/tmp/c14_save` with
+A3's actual `DR2P000.DSF` (303,104 bytes, from `Xenia logs/A3_save_content/`) laid out
+as `<root>/DR2P000.DSF/DR2P000.DSF`, `CZ_FAKE_PRESS_SEQ=START,A`.
+
+**Our content layer enumerates it correctly.** `content enumerator ...: 1 item(s)`,
+`enumerate: item 'DR2P000.DSF' (device 1 type 1)`, and
+`XMsgCompleteIORequest(result=0)` — the accepted shape gotcha 105 is about, against the
+`result=1627 / extended=80070012` that ends the enumeration.
+
+**The title then reaches the save-slot panel and refuses the save.** SLOT 1 is labelled
+**`Damaged Content`** and the screen puts up `Load failed! Please check your storage
+device and try again.` So the panel this port has been calling "three black rectangles"
+since part 12 is the save's THUMBNAIL, and black is the CORRECT picture for a slot the
+title has no valid content for — which is what part 13's three hardware watchpoints were
+really saying when they recorded zero writes to `0364B000`. Part 12's item closes as a
+renderer question.
+
+**What it uncovered is a save-layer gap, and the log names it in one line.** Immediately
+after the enumeration completes:
+
+```
+[kernel] XexGetProcedureAddress module=30002000 ord=0x271 -> NOT_FOUND
+         (not one of the seven A1 resolves)
+```
+
+`imports.cpp`'s `kResolvable` is `{ 0xAFF, 0xB00, 0xB0B, 0xB10, 0x305, 0x30B, 0x279 }`,
+derived from A1 — and A1 was captured with **no save present**, so it never walked this
+path. A3 did, and it resolves an **eighth** ordinal:
+
+```
+d> F8000008 XexGetProcedureAddress(30002000, 00000271, 82A5C87C(00000000))
+d> F8000008 XexGetProcedureAddress(30002000, 00000279, 82A5C880(00000000))
+```
+
+adjacent mint slots, so hardware resolves both. Ours answers `NOT_FOUND` for `0x271` and
+the load fails. This is gotcha 45's shape again — a capture-derived list is only as
+complete as the path that capture walked — and the reason it stayed invisible for three
+sessions is gotcha 106: the A1 gate is run with an EMPTY save root by design, which is
+exactly the configuration in which this call never happens.
+
+**Deliberately NOT fixed here.** Minting an honest-failure stub for `0x271` is one line
+and would be a guess: what the ordinal IS has not been established, and a stub whose
+return value the title consumes rather than tests is gotcha 59/201's trap. The next step
+is to name it from the guest's own call site — note `tools/gdis.py --find-uses 0x271`
+finds nothing, so the ordinal is not built by a plain `li` and the caller has to be read
+from the `XexGetProcedureAddress` call site itself.
+
+There is a second, independent question underneath: A3's save was made under the fork's
+profile GUID, and an Xbox 360 save is signed per profile. "Damaged Content" may be the
+right answer to THIS file even with `0x271` implemented — so the fix and the test need
+separating, and the honest test of the fix is whether the title gets far enough to read
+the file at all (our log shows it never opens `save:\DR2P000.DSF`).

@@ -73,24 +73,44 @@ presented frame is **0.00% non-black** for the remaining ~1,800 frames.
    `CZ_VK_RESOLVE_TRACE=N` should be armed at the frame you actually want with
    `CZ_VK_RESOLVE_TRACE_PASSES` set high.
 
-2. **The last picture difference: colour is flat and green-shifted** (§6ad item 2). Much
+2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
+   (`docs/phase3-notes.md` finding 51 — written this session and worth reading whole).
+   With A3's real save installed (`Xenia logs/A3_save_content/cz_A3_save_DR2P000.zip`,
+   laid out as `<CZ_SAVE_DIR>/DR2P000.DSF/DR2P000.DSF`), our content layer enumerates it
+   correctly — `1 item(s)`, `XMsgCompleteIORequest(result=0)` — and the title reaches
+   the save-slot panel, labels SLOT 1 **`Damaged Content`** and puts up `Load failed!
+   Please check your storage device and try again`, having never opened the file.
+   `imports.cpp`'s `kResolvable` is the SEVEN ordinals A1 resolves, and A1 was captured
+   with no save present; A3 resolves an eighth at an adjacent mint slot. Do NOT mint a
+   stub for it blind — a return value the title consumes rather than tests is gotchas
+   59/201's trap — name it from the guest's own call site first, and note that
+   `tools/gdis.py --find-uses 0x271` finds nothing, so the ordinal is not built by a
+   plain `li`. The profile-signature question (an Xbox 360 save is signed per profile,
+   and A3's was made under the fork's GUID) is separate and may make "Damaged Content"
+   the right answer to THAT file even once the ordinal exists.
+
+   **This closes part 12's black panels.** They are the save's THUMBNAIL, and black is
+   the correct picture for a slot the title has no valid content for — which is what
+   part 13's three hardware watchpoints were really saying.
+
+3. **The last picture difference: colour is flat and green-shifted** (§6ad item 2). Much
    improved by part 14 and not closed. §6s proved this frame depends completely on the
    colour-grading LUT, which is the thing to look at. Judge any change over an ERA
    (gotchas 127, 133) and remember that a colour shift IS visible to
    `frame_compare.py`'s luminance and colour-count columns, unlike a blur.
 
-3. **The conservative screen extent is still a placeholder** (unchanged since part 11).
+4. **The conservative screen extent is still a placeholder** (unchanged since part 11).
    `WriteScreenExtent` answers "this draw may have touched anything", which makes bin
    predication a no-op and costs work. **Do not do this speculatively** — the cost has
    still not been shown to matter.
 
-4. **The depth-resolve cost, if it ever matters.** ~6% of the frame rate, from four
+5. **The depth-resolve cost, if it ever matters.** ~6% of the frame rate, from four
    1280x720 shadow-cascade depth copies plus the scene depth's two tiles every frame.
    The obvious refinement is to snapshot a depth resolve only when some fetch has ever
    named that address with a depth format — but that is an optimisation with no measured
    problem behind it, so it needs evidence first.
 
-5. **The kernel gates are exhausted as a forward oracle** (unchanged since part 9). A1's
+6. **The kernel gates are exhausted as a forward oracle** (unchanged since part 9). A1's
    position 93 is not the next piece of work (finding 49, gotcha 107). Going further
    needs a gameplay comparison built from A2 — and the prologue run is the first this
    port has had that would exercise one.

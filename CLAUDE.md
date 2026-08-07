@@ -3086,7 +3086,9 @@ frontier turned out to be the biggest thing in the session.
   physical alias, through the whole menu era: **zero hits**, and no resolve targets that
   address. Part 12's inference that "hardware's bytes differ from ours" is retracted for
   a measurement — the title binds a 16x16 DXT1 it never fills, on three draws for three
-  EMPTY save slots. The one remaining test is a run with a real save present.
+  EMPTY save slots. ~~The one remaining test is a run with a real save present.~~
+  **CLOSED in part 14 by that test: the panel is the save's THUMBNAIL, and black is the
+  correct picture for a slot with no valid content** (`docs/phase3-notes.md` finding 51).
 - **The SIGSEGV at file #137 was `dbAssert(0 && "Bad file digest.  Please re-link the
   executable and try again.")` from `digestmanager.cpp`** — not a memory bug. It looks
   like one because XenonRecomp lowers `twi` to nothing, so the deliberate `stw r26,0(0)`
@@ -3176,26 +3178,36 @@ Next, in order:
    black — and the same instrument found it. Start there, with
    `CZ_VK_RESOLVE_TRACE_PASSES` high enough to see the late passes (the budget is
    shared across frames, so arm it at the frame you want).
-2. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
+2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
+   (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
+   enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
+   `Damaged Content` and puts up `Load failed! Please check your storage device and try
+   again`, having never opened the file. `imports.cpp`'s `kResolvable` is the SEVEN
+   ordinals A1 resolves, and A1 was captured with no save; A3 resolves an eighth. Do NOT
+   mint a stub for it blind (gotchas 59/201) — name it from the guest's call site first,
+   and note the profile-signature question is separate. This also CLOSES part 12's black
+   panels: they are the save's thumbnail, and black is correct for a slot with no valid
+   content.
+3. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
    Much improved by part 14 and not closed. The tone map's LUT is what §6s proved this
    frame depends on completely.
-3. **The conservative screen extent is still a placeholder** (part 11). Both tiles
+4. **The conservative screen extent is still a placeholder** (part 11). Both tiles
    execute ~975,000 draws where hardware executes ~573,000 each. **Do not do this
    speculatively** — the cost has still not been shown to matter.
-4. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+5. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
    `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
    means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
    path we do not drive (finding 49, gotcha 107). Going further needs a gameplay
    comparison built from A2 — and the run that reaches the prologue is the first this
    port has had that would exercise one.
-5. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+6. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
    save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
    part 13's `XeCryptSha` one-shot.
-6. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+7. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
