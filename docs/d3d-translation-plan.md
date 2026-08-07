@@ -1717,3 +1717,53 @@ most.
 **Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2 windows,
 0 real**; `truncated=0`; deepest file on a no-input boot **#83 `cinezombie.big`**.
 With `CZ_FAKE_PRESS_SEQ=START,A,A` held: **#154, zero faults, over 300 s.**
+
+## Phase C part 14 (2026-08-07, session 26): a resolve has a SOURCE, and it was the blur
+
+Part 14's list was the frontier at file #154, then the blur, then the other three
+picture differences. The frontier item dissolved on measurement, and the blur turned out
+to be three of the four picture items at once. Details: `docs/phase5-notes.md` §6ae.
+
+**1. `#154` is not a frontier, and the boot is not stalled.** `NtCreateFile` successes
+stop climbing because the title stops OPENING files, not because it stops loading: with
+`CZ_FILE_TRACE=1` the reads run on for another ~40 s out of `.big` containers it already
+has open — `npcs.big`, `cine_props.big`, `streamedassets.big` — through the prologue
+cinematic's props, and end with three `XMACreateContext` calls, i.e. the cinematic's
+audio. Through all of it the ring chain stays healthy (`arms≈ints≈isr`,
+`kicks==walks==drains`, `truncated=0`, `max` hold streak 2), frames keep presenting at
+~1,200 draws each, and every thread in `[wait]` is either an idle worker or one of the
+two the title blocks by design (finding 41). The real defect at that point is the
+PICTURE: from frame 908 the presented front buffer is **0.00% non-black** while the
+scene surface is 100% covered with 42,000 colours. That is still open — see below.
+
+**2. The blur was `RB_COPY_CONTROL`'s `copy_src_select`,** a three-bit field this
+renderer read nowhere. 18.4% of this title's resolves copy the DEPTH buffer rather than a
+colour target (10,448 of 56,925 in B1, `tools/xtr_resolve_census.py`) — three shadow
+cascades and the scene depth — and the depth-of-field pass was therefore computing a
+circle of confusion out of the scene's own colour, saturating it, and compositing full
+blur over every pixel at every depth. Fixed, with `CZ_VK_NO_DEPTH_RESOLVE=1` as the
+control arm. Two runs per arm, alternated:
+
+| | control | fixed |
+|---|---|---|
+| median mean-\|gradient\| (`tools/frame_sharpness.py`) | 1.185 / 1.204 | **7.640 / 7.666** |
+| median distinct colours, scene colour surface | 72,740 / 72,711 | **85,555 / 85,752** |
+| median coverage, scene colour surface | 99.61 / 99.62 | 99.62 / 99.62 |
+| frames per 85 s | 859 / 848 | 803 / 811 |
+
+**It closes part 13's items 1, 3 and 4 together** — the blur, the missing sign lettering
+(`POP 753`, "THE AREA IS OBSERVED BY COMMUNITY WATCH CITIZENS") and the absent bunting
+and gas-station signage were all fine detail the full-strength blur erased — and moves
+item 2 (colour) a long way without closing it. Note that COVERAGE moves 0.01 pp: no
+aggregate over pixel values can see a blur, which is gotcha 135's lesson in a second
+disguise and is why `tools/frame_sharpness.py` now exists.
+
+**3. A retraction that matters for every earlier A/B's LABEL.** `06BE4000` is the scene
+DEPTH, not the scene colour; the colour is `0684B000`. It has been documented as "the
+scene surface" since phase 5 and used as `CZ_VK_FRAME_STATS_SURFACE` throughout, and it
+contained colour pixels only because of the defect above. The measurements stand; the
+name did not.
+
+**Gates, PM4 arm, renderer on:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0,
+2 windows, 0 real**; `truncated=0`; deepest file on a no-input boot **#83
+`cinezombie.big`**.
