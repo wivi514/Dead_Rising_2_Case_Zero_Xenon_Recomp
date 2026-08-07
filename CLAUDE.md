@@ -1505,7 +1505,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c10-kickoff.md` / `d3d-phase-c11-kickoff.md` /
   `d3d-phase-c12-kickoff.md` /
   `d3d-phase-c13-kickoff.md` /
-  **`d3d-phase-c14-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c14-kickoff.md` /
+  **`d3d-phase-c15-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -3114,38 +3115,87 @@ isr=12740`, `kicks == walks == drains = 6776`, `distinct=813` — and it applies
 vertex 2,258 times a boot, because `d3d_draw.cpp`'s `SetReg` is generic and the register
 lands in its private file by construction.
 
+**PHASE C PART 14 (2026-08-07, session 26): a resolve has a SOURCE, and it was the
+blur — three of the four picture defects at once.** `docs/phase5-notes.md` §6ae and
+`docs/d3d-translation-plan.md` §"Phase C part 14".
+
+Part 14's list was the frontier at `#154`, then the blur, then the other three picture
+differences. The first item dissolved on measurement and the second turned out to
+contain the third and fourth.
+
+- **`#154` was never a frontier, and the boot is not stalled.** `NtCreateFile`
+  successes stop climbing because the title stops OPENING files, not because it stops
+  loading: with `CZ_FILE_TRACE=1` the reads run on for another ~40 s out of `.big`
+  containers it already has open — `npcs.big`, `cine_props.big`, `streamedassets.big` —
+  through the prologue cinematic's props, ending with three `XMACreateContext` calls.
+  Throughout, the ring chain is the healthy shape, `truncated=0`, frames keep presenting
+  at ~1,200 draws each, and every `[wait]` is an idle worker or one of the two threads
+  the title blocks by design (finding 41). Gotcha 206.
+- **The blur was `RB_COPY_CONTROL`'s `copy_src_select`** — three bits this renderer read
+  nowhere. **18.4% of this title's resolves copy the DEPTH buffer** (10,448 of 56,925 in
+  B1, `tools/xtr_resolve_census.py`): three shadow cascades and the scene depth. The
+  depth-of-field pass was therefore computing its circle of confusion out of the scene's
+  own COLOUR, saturating it, and compositing full blur over every pixel at every depth.
+  Two runs per arm, alternated, `CZ_VK_NO_DEPTH_RESOLVE=1` as the control: median
+  mean-|gradient| **1.185/1.204 -> 7.640/7.666** (6.47x, no overlap), median distinct
+  colours on the scene colour surface 72,740/72,711 -> **85,555/85,752**, frames per
+  85 s 859/848 -> 803/811. **It closes §6ad's items 1, 3 and 4 together** — the missing
+  `POP 753` and community-watch sign lettering and the absent bunting and gas-station
+  signage were fine detail the blur erased — and moves item 2 (colour) a long way.
+- **No aggregate over pixel VALUES could see it.** Coverage moved **0.01 pp**, inside
+  `frame_compare.py`'s own 1.5 pp band, so this project's purpose-built renderer A/B
+  metric reported "no detectable difference" about its largest visible defect. Gotcha
+  135 in a second disguise, and `tools/frame_sharpness.py` is the instrument for it.
+- **RETRACTION: `06BE4000` is the scene DEPTH.** It has been documented here as "the
+  scene" since phase 5 and used as `CZ_VK_FRAME_STATS_SURFACE` for every renderer A/B
+  in this port — and it held colour pixels only BECAUSE of the defect above. The scene
+  colour is **`0684B000`** (`0685F000` for the second tile); the depth's tiles are
+  `06BE4000`/`06BF8000`. Earlier measurements stand; the label did not (gotcha 205).
+- **`CZ_VK_RESOLVE_TRACE_PASSES` did not exist**, for the second time in three sessions
+  (gotcha 193) — and the budget it names still counted 60 HEADER lines while the two
+  follow-up lines printed uncapped, which is the exact defect part 9's note says it
+  fixed. Now real.
+
+**Gates, PM4 arm, renderer on:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0,
+2 windows, 0 real**; `truncated=0`; deepest file on a no-input boot **#83
+`cinezombie.big`**.
+
 Next, in order:
 
-1. **#154 IS THE FRONTIER — stalled, or just the next thing to implement?** Nobody has
-   asked yet. Cheap instruments first (`CZ_WAIT_TRACE`, `CZ_CS_TRACE`, `CZ_RING_TRACE`'s
-   chain counters, `CZ_FILE_TRACE` for a FAILING open), then gotcha 82's escalation:
-   a thread spinning in guest code is invisible from inside the runtime, and `gdb -p`
-   plus `CZ_THREAD_TRACE=1` is how you see it.
-2. **THE BLUR** — the largest visible difference from E3 and the only one of the four
-   that changes the whole frame. A live pass fed a wrong depth, not a missing pass.
-   Judge any change over an ERA with `tools/frame_compare.py` (gotchas 127, 133).
-3. **The other three picture differences.** Re-check the two TEXT ones first and
-   cheaply: missing text is exactly the shape `VGT_INDX_OFFSET` produces, and those
-   frames were dumped before that fix in some runs.
-4. **The black panels' last test: a run with a REAL save.** Gate with an EMPTY
-   `CZ_SAVE_DIR` (gotcha 106) and test with a populated one.
-5. **The conservative screen extent is still a placeholder** (part 11). Both tiles
+1. **THE NEW FRONTIER IS A BLACK SCREEN AT THE PROLOGUE, and its first black link is
+   already named.** With `CZ_FAKE_PRESS_SEQ=START,A,A` the boot walks title -> menu ->
+   NEW GAME -> the game's own loading screen (the `TIP: Combo Weapons give extra PP`
+   card renders correctly) and then, from frame ~943 for the remaining 1,800 frames of
+   a 300 s run, presents **0.00% non-black** while issuing ~1,200 draws a frame. It is
+   a compose failure, not a stall. `CZ_VK_SNAP_DUMP` at frame 1100 says which link:
+   the scene colour `0684B000` is **100% non-black**, its depth `06BE4000` 99.9%, the
+   shadow cascades 58%, the LUTs 99.8% and the whole downsample pyramid live — and the
+   TONE MAP's output at `1439B000` (the COLOUR resolve to that address) is **0.00%**,
+   with everything downstream of it black: the DOF blur `147C0000` and the front buffer
+   `00E48000`. That is the same SHAPE as §6s — a live pass with live inputs producing
+   black — and the same instrument found it. Start there, with
+   `CZ_VK_RESOLVE_TRACE_PASSES` high enough to see the late passes (the budget is
+   shared across frames, so arm it at the frame you want).
+2. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
+   Much improved by part 14 and not closed. The tone map's LUT is what §6s proved this
+   frame depends on completely.
+3. **The conservative screen extent is still a placeholder** (part 11). Both tiles
    execute ~975,000 draws where hardware executes ~573,000 each. **Do not do this
    speculatively** — the cost has still not been shown to matter.
-6. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+4. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
    `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
    means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
    path we do not drive (finding 49, gotcha 107). Going further needs a gameplay
-   comparison built from A2 — and #154 is the first run this port has had that would
-   exercise one.
-7. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+   comparison built from A2 — and the run that reaches the prologue is the first this
+   port has had that would exercise one.
+5. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
    save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
    part 13's `XeCryptSha` one-shot.
-8. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
+6. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
    lands in ordinary flat memory and is inert; a real decoder needs that aperture
    trapped as MMIO or the kick is written and never noticed.
 
