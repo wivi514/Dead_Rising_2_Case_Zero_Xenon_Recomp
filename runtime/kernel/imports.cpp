@@ -3517,6 +3517,51 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         return 0;
     }
 
+    // CZ_FAKE_PRESS_SEQ=START,A,A — the SEQUENCE the arm walks, one button per
+    // interval, holding the last one thereafter. Unset means START every interval,
+    // which is exactly what this arm did before and what every recipe written against
+    // it expects.
+    //
+    // It exists because a screen you cannot reach without a human is a screen nobody
+    // can measure (gotcha 103), and phase C part 11 hit that: the operator reported
+    // black panels and malformed text on the new-game screen, which is two menu
+    // levels past the title and therefore past everything CZ_FAKE_START_MS can reach.
+    // A press of START alone lands on the logo screen and stops. The same rule as
+    // before still governs it — this MANUFACTURES progress, so it is loud, off by
+    // default, and never on for a gate run.
+    struct NamedButton { const char* name; uint16_t mask; };
+    static constexpr NamedButton kButtons[] = {
+        { "A", 0x1000 },        { "B", 0x2000 },     { "X", 0x4000 },
+        { "Y", 0x8000 },        { "START", 0x0010 }, { "BACK", 0x0020 },
+        { "UP", 0x0001 },       { "DOWN", 0x0002 },  { "LEFT", 0x0004 },
+        { "RIGHT", 0x0008 },
+    };
+    static const std::vector<uint16_t> sequence = [] {
+        std::vector<uint16_t> seq;
+        const char* e = getenv("CZ_FAKE_PRESS_SEQ");
+        if (!e || !*e)
+            return seq;
+        std::string all(e), one;
+        for (size_t i = 0; i <= all.size(); i++)
+        {
+            if (i == all.size() || all[i] == ',')
+            {
+                for (const auto& b : kButtons)
+                    if (one == b.name)
+                        seq.push_back(b.mask);
+                one.clear();
+            }
+            else if (!isspace(static_cast<unsigned char>(all[i])))
+            {
+                one.push_back(char(toupper(static_cast<unsigned char>(all[i]))));
+            }
+        }
+        KLOG("CZ_FAKE_PRESS_SEQ: %zu synthetic presses queued, one per interval. "
+             "SYNTHETIC INPUT IS ON — this run's progress is not evidence.\n",
+             seq.size());
+        return seq;
+    }();
+
     static std::atomic<uint32_t> packet{ 1 };
     static std::atomic<bool> pressedNow{ false };
     // Measured from the first poll rather than from process start: the title only
@@ -3527,14 +3572,31 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                                std::chrono::steady_clock::now() - firstPoll)
                                .count();
     const bool press = elapsedMs > fakeStartMs && (elapsedMs % fakeStartMs) < 150;
+
+    // Which button this interval belongs to. Interval 0 is the first press after the
+    // initial delay; the sequence HOLDS its last entry rather than wrapping, because a
+    // wrap would walk back out of the screen it was aimed at and the run would
+    // oscillate between two menus with no way to tell from a frame dump.
+    uint16_t button = XINPUT_GAMEPAD_START;
+    const char* buttonName = "START";
+    if (!sequence.empty())
+    {
+        const size_t interval = size_t(elapsedMs / fakeStartMs) - 1;
+        const size_t idx = std::min(interval, sequence.size() - 1);
+        button = sequence[idx];
+        for (const auto& b : kButtons)
+            if (b.mask == button)
+                buttonName = b.name;
+    }
+
     if (press != pressedNow.exchange(press))
     {
         const uint32_t n = packet.fetch_add(1) + 1;
-        KLOG("CZ_FAKE_START_MS: synthetic START %s at %llds (packet %u)\n",
+        KLOG("CZ_FAKE_START_MS: synthetic %s %s at %llds (packet %u)\n", buttonName,
              press ? "DOWN" : "up", static_cast<long long>(elapsedMs / 1000), n);
     }
     state->packetNumber = packet.load();
-    state->gamepad.buttons = press ? XINPUT_GAMEPAD_START : 0;
+    state->gamepad.buttons = press ? button : 0;
     return 0;
 }
 
