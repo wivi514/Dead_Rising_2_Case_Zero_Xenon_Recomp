@@ -1056,14 +1056,18 @@ rule can simply be replayed. Any title with a capture has this oracle available.
 ### Where it is wrong: the pair table
 
 Our runtime now prints the same table (`CZ_PM4_BIN_CENSUS=1`, on the ring trace next to
-`predicated out=`). Side by side:
+`predicated out=`). Side by side — hardware is the whole of B1, ours is one 170 s boot,
+and the absolute counts differ between our own runs because how far a boot gets in fixed
+wall time is a distribution (gotcha 75); it is the SHAPE that is being compared:
 
-| bin select | hardware | ours |
-|---|---|---|
-| `80000003` (left tile) | mask `FFFFFFFF` x570,504, all kept | mask `FFFFFFFF` x1,290,325, all kept |
-| `0000000C` (right tile) | mask **`8000000F`** x570,504, all kept | mask **`80000000`** x893,687 **SKIPPED** |
-| | | mask **`80000003`** x291,336 **SKIPPED** |
-| | | mask `8000000F` x100,325, kept |
+| bin select | hardware (all of B1) | ours (run A) | ours (run B) |
+|---|---|---|---|
+| `80000003` (left tile) | mask `FFFFFFFF` x570,504, all kept | `FFFFFFFF` x1,290,325, all kept | `FFFFFFFF` x1,382,604, all kept |
+| `0000000C` (right tile) | mask **`8000000F`** x570,504, all kept | **`80000000`** x893,687 **SKIPPED** | **`80000000`** x1,040,207 **SKIPPED** |
+| | | **`80000003`** x291,336 **SKIPPED** | **`80000003`** x239,063 **SKIPPED** |
+| | | `8000000F` x100,325, kept | `8000000F` x97,115, kept |
+
+Run B is the one the probe numbers below come from, so the two are directly comparable.
 
 The left tile matches hardware in shape exactly. The right tile does not, and the whole
 difference is two mask values hardware never has standing at a draw.
@@ -1124,6 +1128,15 @@ Measured, PM4 control arm, one 170 s boot, `CZ_BINMASK_PROBE=1`:
 
 That is consistent with part 7's independent observation that the D3D worker is never
 used at all for the whole healthy era (`kicks=0`, `queued=0` at all 986 segment submits).
+
+### The draw arm, re-gated on the way past
+
+Not a renderer finding, but it belongs next to these numbers: part 9 could not re-gate
+the phase C draw arm and part 10 did. Six serial 170 s boots, all six reaching **#83
+`skeleton\cinezombie.big`** with `arms:ints = 0.9998`, `walks == kicks == drains`,
+`distinct=816-911`, engine counter `dev+0x2B04` = 0, `truncated=0`, an exact 84-prefix on
+A1 and A5 exit 0 — inherited free from parts 8 and 9. Details and the retraction that
+goes with it in `docs/d3d-translation-plan.md` "Phase C part 10" §3.
 
 ### Stated as open
 

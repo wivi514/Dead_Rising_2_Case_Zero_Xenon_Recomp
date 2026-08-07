@@ -34,19 +34,25 @@ PM4 control arm, `CZ_VKDRAW=1`, 170 s headless boot:
 * `truncated=0`; deepest file **#83 `game:\data\skeleton\cinezombie.big`**.
 * `draws=4,409,812 (predicated out=1,461,744)`.
 
-Phase C draw arm, `CZ_D3D_DRAW=1` (NB it is mutually exclusive with `CZ_VKDRAW` and says
-so loudly on stderr — a command line carrying both silently runs the PM4 arm):
+Phase C draw arm, `CZ_D3D_DRAW=1`, **six serial 170 s boots** (NB it is mutually
+exclusive with `CZ_VKDRAW` and says so loudly on stderr — a command line carrying both
+silently runs the PM4 arm):
 
-| | part 8 | **now** |
+| | part 8 | **now, 6 of 6** |
 |---|---|---|
 | deepest file | #60 `models\zombies.big` | **#83 `skeleton\cinezombie.big`** |
-| `ints/arms` | 12 : 856 | **1.000** |
-| `walks == kicks == drains` | — | yes |
-| `distinct` token buffers | 2 | **523-831** |
+| `arms` : `ints` | 12 : 856 | **0.9998** |
+| `walks == kicks == drains` | — | equal in all six |
+| `distinct` token buffers | 2 | **816 - 911** |
 | engine counter `dev+0x2B04` | -552 | **0** |
+| frames (XE_SWAP) | — | 3,360 - 3,654 (1.09x spread) |
 | A1 | 82-prefix | **exact 84-prefix** |
 | A5 | exit 0, 0 real | exit 0, 0 real |
-| `truncated` | 0 | 0 |
+| `truncated` | 0 | 0 in all six |
+
+Part 6's 10,397x bimodal spread is gone; 1.09x over six runs is not a bimodal
+distribution. **But part 7's stall is not fixed, only made rare** — see the traps below
+for the reproducer, which is free.
 
 ## Where part 11 starts, in order
 
@@ -71,7 +77,7 @@ so loudly on stderr — a command line carrying both silently runs the PM4 arm):
    **A caution that is not optional here.** The gate being closed is entangled with
    part 7's finding that the D3D worker is never used at all for the healthy era on the
    PM4 arm. On the DRAW arm the worker now genuinely runs (`walks == kicks == drains`,
-   `distinct=831`), so **re-run the bin census and the probe on the draw arm before
+   `distinct=816-911`), so **re-run the bin census and the probe on the draw arm before
    concluding anything about the gate** — the two arms may not have the same answer, and
    part 10 measured the probe only on the control arm.
 
@@ -95,6 +101,14 @@ so loudly on stderr — a command line carrying both silently runs the PM4 arm):
 
 ## Traps this session paid for — do not re-buy them
 
+* **RUN TIMED ARMS SERIALLY. Two boots of this binary at once is an INTERVENTION on the
+  variable under test**, not a background load: this arm's health is decided by
+  multi-threaded scheduling. Two overlapping background loops produced a run reporting
+  `#60`, `arms=241 ints=207,599`, `distinct=6` — the exact part-7 failure — and it was
+  written up mid-session as "the arm is still bimodal" before the clean serial set came
+  back 6 of 6. **The useful half of that mistake: running two draw-arm boots at once is a
+  cheap REPRODUCER for part 7's stall.** Anyone attacking it should start there rather
+  than waiting for it to happen by itself.
 * **`CZ_D3D_DRAW=1 CZ_VKDRAW=1` is not the draw arm.** They are mutually exclusive; the
   runtime prints `CZ_D3D_DRAW DISABLED for this run` on stderr and proceeds as the PM4
   arm. A 170 s gate run was spent before that line was read. The tell in the log is
@@ -135,4 +149,5 @@ Both arms, this binary, default flags:
 * A1: **exact 84-prefix** on both (position 71 permutes on some runs).
 * A5: **exit 0, 0 real windows** on both.
 * `truncated=0`; deepest file `#83 game:\data\skeleton\cinezombie.big` on both.
+* Draw arm: 6 of 6 serial runs at the healthy chain shape above.
 * Both PM4 capture oracles (`pm4_packet_lengths.py`, `pm4_indirect_walks.py`) clean.

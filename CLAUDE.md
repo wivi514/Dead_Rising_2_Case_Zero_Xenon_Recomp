@@ -1157,10 +1157,19 @@ From phase C part 10 (the right tile, and the oracle that was sitting in the cap
 181. **An arm nobody has re-measured is where last session's fixes are hiding.** Part 9
      fixed four renderer defects on the PM4 control arm and could not re-gate the phase C
      draw arm. Re-gated with zero new changes, that arm went from `#60` and
-     `ints/arms = 12:856` to `#83`, `1.000`, `distinct=831`, engine counter 0, and an
-     exact 84-prefix on A1 — the healthy shape part 7 defined and the port had never
-     reached. Gotcha 67 says an implemented import that never ran is a prediction; so is
-     a fix that has only been measured on one arm.
+     `arms:ints = 12:856` to `#83`, `0.9998`, `distinct=816-911`, engine counter 0, and
+     an exact 84-prefix on A1 — 6 of 6 serial runs, the healthy shape part 7 defined and
+     the port had never reached. Gotcha 67 says an implemented import that never ran is a
+     prediction; so is a fix that has only been measured on one arm.
+183. **A second copy of your own binary is not background load — it is an INTERVENTION on
+     the variable under test.** Two overlapping run loops put two 170 s draw-arm boots on
+     the machine at once, and one of them reported `#60`, `arms=241 ints=207,599`,
+     `distinct=6`: part 7's stall, exactly. That reading was written up as "the arm is
+     still bimodal" and was wrong — the clean serial set is 6 of 6 healthy with a 1.09x
+     frame spread. When the quantity being measured is decided by multi-threaded
+     scheduling, halving the effective CPU changes it. **Run timed arms serially.** The
+     useful half: contention is now the cheapest known REPRODUCER for that stall, which
+     otherwise has to be waited for.
 182. **A "delete this dead code" recommendation expires when the code's regime
      changes.** The walker's INTERRUPT block and `MirrorIsPoisoned()` recorded zero on
      every arm — measured on a draw arm that stalled at `#60`. The arm now runs to `#83`

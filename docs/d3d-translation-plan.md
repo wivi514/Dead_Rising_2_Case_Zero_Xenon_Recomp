@@ -1423,40 +1423,50 @@ worker is never used at all for the whole healthy era.
 zero records those came from somewhere this session did not find. The placeholder story
 explains the 1,040,207 and is not yet shown to explain the rest.
 
-### 3. Item 2: the draw arm reaches the healthy shape — on MOST runs, and it is still bimodal
+### 3. Item 2: the draw arm inherited parts 8 and 9, and it is in the healthy shape
 
-Part 9 could not re-gate the phase C draw arm and said so. Re-gated now, and the first
-run was startling: the arm was not merely unbroken, it was in the healthy chain shape
-part 7 defined and this port had never reached. **The first run was also very nearly a
-wrong conclusion**, because part 6 recorded this arm as BIMODAL (gotcha 159) and one run
-of a bimodal arm is a coin flip. Six runs, 170 s each:
+Part 9 could not re-gate the phase C draw arm and said so. Re-gated now, over **six
+serial 170 s boots** — serial because part 6 recorded this arm as BIMODAL (gotcha 159)
+and one run of a bimodal arm is a coin flip:
 
-| | part 8 | healthy runs (RATE BELOW) | sick runs |
-|---|---|---|---|
-| deepest file | #60 `models\zombies.big` | **#83 `skeleton\cinezombie.big`** | #60 |
-| `ints/arms` | 12 : 856 | **1.000** | 241 : 207,599 (arms FROZEN) |
-| `isr/ints` | — | 1.000 | 1.000 |
-| `walks == kicks == drains` | — | yes | no (206,811 / 206,733) |
-| `distinct` token buffers | 2 | **523-831** | **6** |
-| engine counter `dev+0x2B04` | -552 | **0** | — |
-| frames (XE_SWAP) | — | 1,662-3,363 | 812 |
+| | part 8 | **now, 6 of 6** |
+|---|---|---|
+| deepest file | #60 `models\zombies.big` | **#83 `skeleton\cinezombie.big`** — 6 of 6 |
+| `arms` : `ints` | 12 : 856 | **12,790 : 12,787 = 0.9998** |
+| `isr` / `ints` | — | 1.000 |
+| `walks == kicks == drains` | — | equal in all six |
+| `distinct` token buffers | 2 | **816 - 911** |
+| engine counter `dev+0x2B04` | -552 | **0** |
+| frames (XE_SWAP) | — | 3,360 - 3,654 (**1.09x spread**) |
+| A1 | 82-prefix | **exact 84-prefix** |
+| A5 | exit 0, 0 real | exit 0, 0 real |
+| `truncated` | 0 | 0 in all six |
 
-RATE_PLACEHOLDER
+`distinct` is the load-bearing column (gotcha 162): 816-911 different token buffers is a
+pipeline; part 3's `distinct=2` was a replay. Part 7's stall at the first tiled frame,
+part 3's negative counter and part 6's 10,397x bimodal spread are all absent — 1.09x
+across six runs is not a bimodal distribution.
 
-A1 is an exact 84-prefix and A5 is exit 0 with 0 real windows on the healthy runs — the
-port's best draw-arm kernel gates. `distinct` is the load-bearing column (gotcha 162):
-523-831 different token buffers is a pipeline, 6 is a replay, and it is the same
-frozen-`arms` signature part 7 diagnosed at the first tiled frame.
+Nothing in this session caused that. The only runtime change here is the predication
+refactor (no behavioural change) and probes that are off by default. It is parts 8 and 9
+arriving on the arm that was never re-measured, which is exactly why the kickoff listed
+it as item 2 and why gotcha 67 exists.
 
-Nothing in this session caused the improvement — the only runtime change here is the
-predication refactor (no behavioural change) and probes that are off by default. It is
-parts 8 and 9 arriving on the arm that was never re-measured, which is exactly why the
-kickoff listed it as item 2 and why gotcha 67 exists. What is NOT fixed is part 7's
-stall: it still happens, just less often.
+**A retraction inside this section, because the wrong version was believed for an hour.**
+Mid-session this was written up as "healthy on most runs, still bimodal", on the strength
+of a run that reported `#60`, `arms=241 ints=207,599`, `distinct=6` — the exact part-7
+failure. That run was one of two `cz_runtime` processes started from two overlapping
+background loops, i.e. two 170 s boots competing for the machine. The clean serial set is
+6 of 6. Two things follow, and the second is the useful one:
 
-NB `CZ_D3D_DRAW` and `CZ_VKDRAW` are mutually exclusive and the runtime says so loudly
-on stderr; a draw-arm command line carrying both silently runs the PM4 arm instead. One
-run was wasted on that before the line was read.
+* **A rate measured with another copy of the same binary running is not a rate.** This
+  arm's health is decided by multi-threaded scheduling, so halving its effective CPU is
+  not a neutral background load — it is an intervention on the variable under test.
+  Gotcha 7 is usually quoted about probes; it applies to anything else sharing the box.
+* **The old failure mode is still REACHABLE, under CPU contention.** That is worth more
+  than a clean six: it means part 7's stall was never fixed, only made rare, and there is
+  a cheap reproducer for it — run two draw-arm boots at once. Anyone attacking the stall
+  should start there rather than waiting for it to happen.
 
 ### 4. Item 3: NOT done, deliberately
 
