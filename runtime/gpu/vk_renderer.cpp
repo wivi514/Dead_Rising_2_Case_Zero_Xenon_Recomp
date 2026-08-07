@@ -1447,8 +1447,25 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             Count("texture: resolve snapshot too old, falling back to guest memory");
     }
 
+    // CZ_VK_TEX_REFRESH=<hex[,hex...]> — re-read these textures' pixels on every fetch,
+    // into the SAME image and the SAME bindless slot.
+    //
+    // The texture cache is keyed on the fetch constant's six dwords, which is right for
+    // a texture that arrives from disc once. It is wrong for one the CPU keeps writing:
+    // this title rasterizes its fonts into glyph atlases at runtime, so the atlas the
+    // first draw sees is the atlas as it stood at that instant, and the key does not
+    // change when the guest adds a glyph. This arm asks the question — point it at an
+    // address and see whether the picture changes — without a general dirty-tracking
+    // mechanism, which is a much larger piece of work and should not be built on a
+    // hunch. The dimensions cannot have changed, because they are part of the key, so
+    // updating in place is exact.
+    static const char* refreshEnv = Env("CZ_VK_TEX_REFRESH");
+    char addrHex[16];
+    snprintf(addrHex, sizeof addrHex, "%08X", t.address);
+    const bool refresh = refreshEnv && strstr(refreshEnv, addrHex);
+
     auto cached = R->textures.find(key);
-    if (cached != R->textures.end())
+    if (cached != R->textures.end() && !refresh)
     {
         Count("texture: cache hit");
         return cached->second.slot;
@@ -1561,6 +1578,52 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             }
         if (allZero)
             s.zeroUploads++;
+    }
+
+    // CZ_VK_TEX_DUMP=<dir> plus CZ_VK_TEX_DUMP_ADDR=<hex[,hex]> — write the UNTILED
+    // bytes of those textures as a greyscale PGM, once per upload.
+    //
+    // It is the only way to separate "our untiling scrambled this texture" from "the
+    // texture is fine and the draw samples it wrong", and those are different
+    // subsystems. A font atlas is the ideal subject: a human can tell a sheet of
+    // glyphs from a sheet of noise instantly, which no aggregate over it can.
+    static const char* texDumpDir = Env("CZ_VK_TEX_DUMP");
+    static const char* texDumpAddr = Env("CZ_VK_TEX_DUMP_ADDR");
+    if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, addrHex)) && bytesPerUnit == 1)
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/tex_%08X_%ux%u.pgm", texDumpDir, t.address,
+                 unitW, unitH);
+        if (FILE* f = fopen(path, "wb"))
+        {
+            fprintf(f, "P5\n%u %u\n255\n", unitW, unitH);
+            fwrite(pixels.data(), 1, size_t(dstBytes), f);
+            fclose(f);
+        }
+    }
+
+    // The refresh arm: same image, same slot, new pixels. No allocation, so it can run
+    // every fetch without exhausting the bindless heap.
+    if (refresh && cached != R->textures.end())
+    {
+        if (dstBytes <= R->staging.size)
+        {
+            memcpy(R->staging.mapped, pixels.data(), dstBytes);
+            Image& img = cached->second.image;
+            RunImmediate([&](VkCommandBuffer cb) {
+                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                VkBufferImageCopy copy{};
+                copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                copy.imageExtent = { t.width, t.height, 1 };
+                vkCmdCopyBufferToImage(cb, R->staging.buffer, img.image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+            });
+            Count("texture: refreshed in place (CZ_VK_TEX_REFRESH)");
+        }
+        return cached->second.slot;
     }
 
     if (R->nextTextureSlot >= kMaxDescriptors)
@@ -2497,8 +2560,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
                 psbindAt += snprintf(
                     psbindLine + psbindAt, sizeof psbindLine - psbindAt,
-                    "  s%u=%08X %ux%u fmt=%u swz=%03X slot=%u%s%s", constIdx, t.address,
-                    t.width, t.height, t.format, t.swizzle, slot,
+                    "  s%u=%08X %ux%u fmt=%u swz=%03X tiled=%u pitchBlk=%u end=%u "
+                    "slot=%u%s%s",
+                    constIdx, t.address, t.width, t.height, t.format, t.swizzle,
+                    t.tiled ? 1u : 0u, t.pitchBlocks, t.endian, slot,
                     slot == 0 ? "(DUMMY)" : "",
                     R->snapshotsSampledThisPass.size() > snapsBefore ? "(snap)" : "");
             }
