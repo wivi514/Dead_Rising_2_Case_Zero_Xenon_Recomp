@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <cstring>
 
 #include "ppc_recomp_shared.h"
@@ -191,6 +192,64 @@ void Note(HookId id, PPCContext& ctx)
         fprintf(stderr, "[d3d] %s(r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X) call #%llu\n",
                 kHookName[id], ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
                 (unsigned long long)(n + 1));
+    }
+}
+
+// ---------------------------------------------------------------------------------
+// THE BIN-MASK PROBE — CZ_BINMASK_PROBE=1
+//
+// Phase C part 10. The scene's right tile renders almost nothing because a third of
+// this title's draw packets are discarded by ME bin predication, and capture B1 says
+// hardware discards 0.3% (tools/xtr_bin_predication.py). The pair census
+// (CZ_PM4_BIN_CENSUS) localised that to one number: at the right tile's draws
+// hardware's bin mask is 8000000F — "this draw touches all four bins" — and ours is
+// 80000000 ("no bins") or 80000003 ("the left tile only").
+//
+// That mask is not something our command processor computes. It arrives as an
+// UNPREDICATED SET_BIN_MASK_LO packet the guest emits from sub_82838088, whose body
+// is "store r4 at dev+0x3254, emit it" — so the wrong number is decided by guest code
+// ABOVE this function, out of something our runtime feeds it.
+//
+// This names that code. A line per call would be millions, so it is a census keyed on
+// (mask, return address): the caller identifies the computation, and the set of masks
+// each caller produces says whether a caller is deciding wrongly or never running.
+// The return address is read from ctx.lr on ENTRY, the one moment it belongs to the
+// caller — this function saves and restores lr itself.
+void BinMaskNote(PPCContext& ctx)
+{
+    static const bool on = getenv("CZ_BINMASK_PROBE") != nullptr;
+    if (!on)
+        return;
+
+    struct Site { uint32_t mask, lr; uint64_t count; bool used; };
+    constexpr size_t kSites = 64;
+    static Site sites[kSites];
+    static std::mutex mutex;
+    static std::atomic<uint64_t> overflow{ 0 };
+    static std::atomic<uint64_t> calls{ 0 };
+
+    const uint32_t mask = ctx.r4.u32;
+    const uint32_t lr = uint32_t(ctx.lr);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        size_t i = 0;
+        for (; i < kSites; i++) {
+            if (!sites[i].used) { sites[i] = { mask, lr, 1, true }; break; }
+            if (sites[i].mask == mask && sites[i].lr == lr) { sites[i].count++; break; }
+        }
+        if (i == kSites)
+            overflow.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Reported on a schedule rather than at exit: this boot parks rather than
+    // terminating, so an atexit report would never print.
+    const uint64_t n = calls.fetch_add(1) + 1;
+    if (n == 1 || (n % 200000) == 0) {
+        std::lock_guard<std::mutex> lock(mutex);
+        fprintf(stderr, "[binmask] after %llu calls (overflow=%llu):\n",
+                (unsigned long long)n, (unsigned long long)overflow.load());
+        for (size_t i = 0; i < kSites && sites[i].used; i++)
+            fprintf(stderr, "[binmask]   mask=%08X from lr=%08X  x%llu\n",
+                    sites[i].mask, sites[i].lr, (unsigned long long)sites[i].count);
     }
 }
 
@@ -436,6 +495,10 @@ CZ_D3D_HOOKS(X)
             ChainStats_CountResolve();                                               \
         if (kH_##name == kH_FrameEndAsyncSubmit)                                     \
             ChainStats_CountAsyncSubmit();                                           \
+        /* Phase C part 10: who computes the per-draw bin mask, and what does it     */\
+        /* decide? Behind CZ_BINMASK_PROBE, and only on this one row.                */\
+        if (kH_##name == kH_FlushState_82838088_q)                                   \
+            BinMaskNote(ctx);                                                        \
         if (Observe()) {                                                             \
             Note(kH_##name, ctx);                                                    \
             if (kH_##name == kH_Swap)                                                \

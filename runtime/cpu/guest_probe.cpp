@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "../gpu/d3d_draw.h"
 #include "../kernel/memory.h"
@@ -1071,4 +1072,136 @@ PPC_FUNC(sub_82846210)
     if (probe && FenceLine())
         fprintf(stderr, "[fence] spin+ t=%08X dev=%08X RETURNED counter=%u\n",
                 GuestThread::GetCurrentThreadId(), dev, PPC_LOAD_U32(dev + 0x2B04));
+}
+
+// ---------------------------------------------------------------------------------
+// THE BIN-MASK PATCH PASS — CZ_BINMASK_PROBE=1
+//
+// Phase C part 10. Capture B1 says hardware discards 0.3% of this title's draw
+// packets to bin predication and we discard 33%, and the pair census
+// (CZ_PM4_BIN_CENSUS) localised that to the mask VALUE standing at the right tile's
+// draws: hardware 8000000F, ours 80000000.
+//
+// 80000000 is not a computed value. It is the PLACEHOLDER: the draw emitters write
+// `SET_BIN_MASK_LO 0x80000000` into the command buffer as a literal (82842A18,
+// 82842DE0, 8284322C are the three sites), and the real mask is patched in later, in
+// place, by the D3D worker:
+//
+//   sub_8284B568 (token interpreter) -> sub_8284B228 -> sub_8284A900 -> sub_8284A7F8
+//
+// sub_8284A7F8 walks a list of 16-byte {record*, x0, x1-1, y0, y1-1} entries — the
+// rect is in units of 8 pixels, hence the <<3 — intersects each against the tile
+// rects at tileInfo+8, accumulates `(acc << 2) | 3` per overlapping tile, ORs in bit
+// 31, and stores the result at record+8, which is the dword the emitter left as
+// 0x80000000.
+//
+// So a draw carrying 80000000 is a draw whose mask was NEVER PATCHED — the command
+// processor reached it before (or without) the worker's fix-up pass. That is an
+// ordering/liveness question about our worker, not a bin-mask question, and the two
+// numbers that separate them are: how often this pass runs, and what it computes.
+// If it computes 8000000F and the stream still shows 80000000, we execute too early;
+// if it barely runs, the worker is not getting there.
+extern "C" PPC_FUNC(__imp__sub_8284A7F8);
+
+namespace {
+
+bool BinMaskProbeEnabled()
+{
+    static const bool on = getenv("CZ_BINMASK_PROBE") != nullptr;
+    return on;
+}
+
+std::atomic<uint64_t> g_binPatchCalls{ 0 };
+std::atomic<uint64_t> g_binPatchRecords{ 0 };
+// Histogram of the masks this pass actually writes, keyed on the low nibble plus the
+// all-ones case. Small and fixed: the interesting values are 0 (no tile), 3 (tile 0),
+// C (tile 1) and F (both), and anything else is worth seeing as "other".
+std::atomic<uint64_t> g_binPatchValue[17];
+
+} // namespace
+
+PPC_FUNC(sub_8284A7F8)
+{
+    if (!BinMaskProbeEnabled())
+    {
+        __imp__sub_8284A7F8(ctx, base);
+        return;
+    }
+
+    const uint32_t list = ctx.r4.u32;
+    __imp__sub_8284A7F8(ctx, base);
+
+    // Read the masks BACK out of the records the pass just patched, rather than
+    // reimplementing its arithmetic here: a probe that recomputes what it is
+    // measuring can only ever agree with itself.
+    if (list >= 0x1000)
+    {
+        const uint32_t end = PPC_LOAD_U32(list);
+        for (uint32_t p = list + 4; p + 16 <= end && p < list + 0x10000; p += 16)
+        {
+            const uint32_t rec = PPC_LOAD_U32(p);
+            if (rec < 0x1000)
+                continue;
+            const uint32_t mask = PPC_LOAD_U32(rec + 8);
+            g_binPatchRecords.fetch_add(1, std::memory_order_relaxed);
+            const uint32_t lo = mask & 0xF;
+            g_binPatchValue[(mask & 0x80000000u) ? lo : 16].fetch_add(
+                1, std::memory_order_relaxed);
+        }
+    }
+
+    const uint64_t n = g_binPatchCalls.fetch_add(1) + 1;
+    if (n == 1 || (n % 20000) == 0)
+    {
+        fprintf(stderr, "[binmask] patch pass ran %llu times, patched %llu records:",
+                (unsigned long long)n,
+                (unsigned long long)g_binPatchRecords.load());
+        for (uint32_t i = 0; i < 17; i++)
+        {
+            const uint64_t c = g_binPatchValue[i].load();
+            if (!c)
+                continue;
+            if (i == 16)
+                fprintf(stderr, "  bit31-clear=%llu", (unsigned long long)c);
+            else
+                fprintf(stderr, "  8000000%X=%llu", i, (unsigned long long)c);
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
+// The gate above the patch pass. sub_8284B228 is the worker's token dispatcher for
+// this stream; its bin-mask-patch case is
+//
+//     lwz     r11, 0x164(r30)
+//     rlwinm. r11, r11, 0, 0, 0     ; test BIT 31
+//     beq     skip                  ; clear -> the patch never runs
+//     bl      sub_8284A900          ; set   -> patch every record's mask
+//
+// and the token is consumed either way, so a clear bit is silent. One token handler
+// in the same dispatcher writes 0x7FFFFFFF there (8284B3C4) — bit 31 clear — so the
+// question "is the gate ever open" is a question about a VALUE, and gotcha 65 says
+// print it rather than read it a third time. r30 is this function's second argument.
+extern "C" PPC_FUNC(__imp__sub_8284B228);
+
+PPC_FUNC(sub_8284B228)
+{
+    if (!BinMaskProbeEnabled())
+    {
+        __imp__sub_8284B228(ctx, base);
+        return;
+    }
+    static std::atomic<uint64_t> calls{ 0 };
+    static std::atomic<uint64_t> gateOpen{ 0 };
+    const uint32_t obj = ctx.r4.u32;
+    const uint32_t gate = obj >= 0x1000 ? PPC_LOAD_U32(obj + 0x164) : 0;
+    const uint64_t n = calls.fetch_add(1) + 1;
+    if (gate & 0x80000000u)
+        gateOpen.fetch_add(1, std::memory_order_relaxed);
+    if (n == 1 || (n % 20000) == 0)
+        fprintf(stderr, "[binmask] dispatcher #%llu obj=%08X [obj+0x164]=%08X "
+                        "bit31=%u  (open on %llu of %llu entries)\n",
+                (unsigned long long)n, obj, gate, (gate >> 31) & 1,
+                (unsigned long long)gateOpen.load(), (unsigned long long)n);
+    __imp__sub_8284B228(ctx, base);
 }
