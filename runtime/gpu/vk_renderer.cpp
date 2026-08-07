@@ -1764,7 +1764,13 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     VkPipelineDepthStencilStateCreateInfo ds{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
     };
-    ds.depthTestEnable = ((key.depthControl >> 1) & 1) ? VK_TRUE : VK_FALSE;
+    // CZ_VK_NO_DEPTH_TEST=1 — an ARM, never a fix: draw everything regardless of
+    // depth. It separates "this geometry was never submitted" from "this geometry was
+    // submitted and rejected by depth left over from another pass", which look
+    // identical in a snapshot and have completely different causes.
+    static const bool noDepthTest = getenv("CZ_VK_NO_DEPTH_TEST") != nullptr;
+    ds.depthTestEnable =
+        (!noDepthTest && ((key.depthControl >> 1) & 1)) ? VK_TRUE : VK_FALSE;
     ds.depthWriteEnable = ((key.depthControl >> 2) & 1) ? VK_TRUE : VK_FALSE;
     ds.depthCompareOp = XenosCompareOp((key.depthControl >> 4) & 7);
     ds.minDepthBounds = 0.0f;
@@ -2004,17 +2010,70 @@ inline uint32_t ReadIndex(const uint8_t* p, uint32_t i, bool index32, uint32_t e
     return v;
 }
 
+// Build a FOUR-vertex stream for one rectangle-list draw: the three real corners
+// followed by the one the hardware synthesises, `r3 = r0 + r2 - r1`.
+//
+// `at` is where the guest stream already sits in the arena (dword-swapped), `stride` is
+// the fetch's stride in dwords, and `corner` the three vertex indices this draw uses.
+// Returns the arena offset of the new four-record stream, which is bound in place of
+// the guest's — so the same attribute offsets still apply.
+//
+// The extrapolation is done on FLOAT dwords, which is exact for a 32-bit float
+// attribute and is what hardware does to every attribute of a rect. A packed format
+// would need its own arithmetic; that case copies r0 and counts itself, because a
+// wrong fourth corner that says nothing is the failure mode this whole function exists
+// to remove.
+VkDeviceSize SynthRectStream(VkDeviceSize at, uint64_t streamBytes, uint32_t strideDwords,
+                             const uint32_t corner[3], uint32_t format)
+{
+    const uint32_t stride = strideDwords * 4;
+    for (uint32_t k = 0; k < 3; k++)
+    {
+        if (uint64_t(corner[k] + 1) * stride > streamBytes)
+        {
+            Count("draw: rect corner past the end of its stream");
+            return VkDeviceSize(-1);
+        }
+    }
+    const VkDeviceSize out = ArenaAlloc(uint64_t(stride) * 4, 16);
+    if (out == VkDeviceSize(-1))
+        return out;
+    uint8_t* dst = R->arena.mapped + out;
+    const uint8_t* src = R->arena.mapped + at;
+    for (uint32_t k = 0; k < 3; k++)
+        memcpy(dst + uint64_t(k) * stride, src + uint64_t(corner[k]) * stride, stride);
+    // 57 = 32_32_32_FLOAT, 38 = 32_32_32_32_FLOAT, 37 = 32_32_FLOAT, 36 = 32_FLOAT.
+    // Anything else in this record is not a float dword and the combination below is
+    // not defined for it.
+    const bool floatFormat = format == 36 || format == 37 || format == 38 || format == 57;
+    if (!floatFormat)
+    {
+        Count("draw: rect fourth corner copied (attribute is not 32-bit float)");
+        memcpy(dst + uint64_t(3) * stride, dst, stride);
+        return out;
+    }
+    for (uint32_t d = 0; d < strideDwords; d++)
+    {
+        float a, b, c;
+        memcpy(&a, dst + 0 * stride + d * 4, 4);
+        memcpy(&b, dst + 1 * stride + d * 4, 4);
+        memcpy(&c, dst + 2 * stride + d * 4, 4);
+        const float v = a + c - b;
+        memcpy(dst + 3 * stride + d * 4, &v, 4);
+    }
+    Count("draw: rect fourth corner synthesised");
+    return out;
+}
+
 // Rewrite a quad or rectangle list as a triangle list. Returns the arena offset of a
 // 32-bit index buffer and its count, or -1.
 //
-// The rectangle list's fourth corner is the reflection of the second through the
-// midpoint of the first and third — that is what the hardware synthesises, and it is
-// why a rect list only stores three vertices. We cannot synthesise a VERTEX on the CPU
-// (the attributes are whatever the shader declared), so the second triangle reuses the
-// three real corners: (0, 2, 1) wound the other way covers the same area as the
-// missing half ONLY for an axis-aligned screen rect, which is what this title uses
-// them for. Stated rather than hidden, and counted, so the day a rotated rect appears
-// there is a number for it rather than a puzzle.
+// A rectangle list stores three corners and the hardware generates the fourth, so the
+// expanded indices for one rect are (0,1,2) and (0,2,3) into the FOUR-record stream
+// SynthRectStream built for this draw — not into the guest's stream. That indirection
+// is the whole reason the synthesised corner is possible at all: an index rewrite on
+// its own cannot name a vertex that does not exist, which is why this used to emit the
+// same triangle twice and cover half of every rect.
 VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
                            uint32_t& outCount)
 {
@@ -2047,8 +2106,28 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
         }
         else
         {
-            dst[p * 6 + 0] = v[0]; dst[p * 6 + 1] = v[1]; dst[p * 6 + 2] = v[2];
-            dst[p * 6 + 3] = v[0]; dst[p * 6 + 4] = v[2]; dst[p * 6 + 5] = v[1];
+            // Into the four-record synthetic stream, not the guest's: 0,1,2 are the
+            // corners as fetched and 3 is the one SynthRectStream extrapolated.
+            // CZ_VK_RECT_HALF=1 restores the old same-triangle-twice expansion — the
+            // same-binary control arm for the missing clear.
+            //
+            // Only a SINGLE-rect draw gets the synthetic stream — every rect list this
+            // title issues is exactly 3 indices. A multi-rect draw would need four
+            // records per rect and falls back to the old half-covering expansion,
+            // counted so it is a number rather than a surprise.
+            static const bool half = EnvOn("CZ_VK_RECT_HALF");
+            if (half || prims != 1)
+            {
+                if (prims != 1)
+                    Count("draw: multi-rect list, fourth corners NOT synthesised");
+                dst[p * 6 + 0] = v[0]; dst[p * 6 + 1] = v[1]; dst[p * 6 + 2] = v[2];
+                dst[p * 6 + 3] = v[0]; dst[p * 6 + 4] = v[2]; dst[p * 6 + 5] = v[1];
+            }
+            else
+            {
+                dst[0] = 0; dst[1] = 1; dst[2] = 2;
+                dst[3] = 0; dst[4] = 2; dst[5] = 3;
+            }
         }
     }
     Count(expand == Expansion::QuadList ? "draw: quad list expanded"
@@ -2223,6 +2302,25 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // rejected by state we decoded or was never there.
     if (key.colorMask == 0)
         Count("draw: colour write mask is empty");
+    // ...and the pair that says whether an empty mask is a DEPTH PREPASS or a register
+    // read at the wrong index. RB_MODECONTROL's edram mode is the guest's own statement
+    // of what a pass writes (4 = colour+depth, 5 = depth-only), so "mode 5, mask 0" is
+    // a prepass and needs no explanation, while "mode 4, mask 0" is a draw that set up
+    // a colour target and then asked for none of it — a shape worth counting rather
+    // than assuming.
+    {
+        static char pairNames[8][48];
+        static bool built = false;
+        if (!built)
+        {
+            built = true;
+            for (uint32_t m = 0; m < 8; m++)
+                snprintf(pairNames[m], sizeof pairNames[m],
+                         "draw: modeControl %u with an EMPTY colour mask", m);
+        }
+        if (key.colorMask == 0)
+            Count(pairNames[key.modeControl & 7]);
+    }
     if (((key.depthControl >> 1) & 1) && ((key.depthControl >> 4) & 7) == 0)
         Count("draw: depth compare is NEVER");
 
@@ -2428,6 +2526,54 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         posScale[1] = 2.0f / float(R->targetHeight);
         posOffset[0] = -1.0f;
         posOffset[1] = -1.0f;
+        // MSAA: window coordinates are in PIXELS and our EDRAM image is at sample
+        // resolution, so a 4x pass's pixel is two of our columns wide. RB_SURFACE_INFO
+        // bits 16..17: 0 = 1x, 1 = 2x, 2 = 4x, and on Xenos it is 4x that doubles the
+        // surface's WIDTH.
+        //
+        // This is not a subtlety. The title clears its scene tile with a
+        // rectangle-list draw of (0,0)-(320,720) while the tile is 640 wide, because
+        // that clear runs with the surface declared 4x; mapped one-to-one it clears
+        // half the tile, the previous pass's DEPTH survives in the other half, and the
+        // whole right side of the 3D background is rejected by a depth test on stale
+        // values. The geometry is submitted for all 640 columns either way — proved by
+        // CZ_VK_NO_DEPTH_TEST=1, which fills every one of them.
+        //
+        // CZ_VK_NO_MSAA_WINDOW_SCALE=1 is the same-binary control arm.
+        static const bool noMsaaScale = EnvOn("CZ_VK_NO_MSAA_WINDOW_SCALE");
+        const uint32_t msaa = (regs[xenos::kRbSurfaceInfo] >> 16) & 3;
+        if (!noMsaaScale && msaa == 2)
+        {
+            posScale[0] *= 2.0f;
+            Count("draw: window coordinates scaled for a 4x MSAA surface");
+        }
+        // ...and the TILE ORIGIN, for the same reason the viewport path does NOT need
+        // it. A window coordinate is relative to the EDRAM surface, and hardware moves
+        // a tile's geometry into that surface with PA_SC_WINDOW_OFFSET (-640 for this
+        // title's right-hand tile). Our EDRAM is full size and holds every tile at its
+        // true screen position, so the offset has to be UNDONE here: window x 0 of the
+        // right tile is screen x 640. The viewport path needs nothing because the
+        // viewport already places geometry in screen space.
+        //
+        // HONEST ABOUT ITS OWN EFFECT: over a whole boot this counter reads ZERO.
+        // Every window-coordinate draw this title issues runs with the window offset
+        // at 0 — the offset is only ever set for the tiled scene, whose draws all take
+        // the viewport path. So the code below is correct and has never yet executed;
+        // it must not be credited with anything, and the counter is what says so
+        // (gotcha 151). It stays because the alternative is rediscovering the rule the
+        // next time a title puts a window-coordinate draw inside a tile.
+        const uint32_t wo = regs[xenos::kPaScWindowOffset];
+        auto signed15 = [](uint32_t v) {
+            return int32_t(v & 0x7FFF) - int32_t((v & 0x4000) ? 0x8000 : 0);
+        };
+        const int32_t tileX = -signed15(wo);
+        const int32_t tileY = -signed15(wo >> 16);
+        if (!noMsaaScale && (tileX || tileY))
+        {
+            posOffset[0] += 2.0f * float(tileX) / float(R->targetWidth);
+            posOffset[1] += 2.0f * float(tileY) / float(R->targetHeight);
+            Count("draw: window coordinates moved to the tile's screen origin");
+        }
     }
     memcpy(shared + kSharedPosScale, posScale, sizeof posScale);
     memcpy(shared + kSharedPosOffset, posOffset, sizeof posOffset);
@@ -2539,12 +2685,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         snprintf(line, sizeof line,
                  "[vkvp] vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
                  "%.1f,%.1f %.1fx%.1f  scissor %d,%d %ux%u  winoff=%08X "
-                 "posScale=%.5f,%.5f posOffset=%.2f,%.2f surfacePitch=%u",
+                 "posScale=%.5f,%.5f posOffset=%.2f,%.2f surfacePitch=%u msaa=%u "
+                 "surfaceInfo=%08X",
                  vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
                  viewport.height, scissor.offset.x, scissor.offset.y,
                  scissor.extent.width, scissor.extent.height,
                  regs[xenos::kPaScWindowOffset], posScale[0], posScale[1], posOffset[0],
-                 posOffset[1], regs[xenos::kRbSurfaceInfo] & 0x3FFF);
+                 posOffset[1], regs[xenos::kRbSurfaceInfo] & 0x3FFF,
+                 (regs[xenos::kRbSurfaceInfo] >> 16) & 3, regs[xenos::kRbSurfaceInfo]);
         if (std::find(seen.begin(), seen.end(), line) == seen.end() && seen.size() < 64)
         {
             seen.push_back(line);
@@ -2668,6 +2816,40 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
 
     // --- vertex streams -------------------------------------------------------------
+    //
+    // RECTANGLE LISTS GET A SYNTHESISED FOURTH CORNER. A Xenos rect list stores three
+    // vertices — this title's are TL, TR, BR, measured straight off the stream:
+    // (0,0) (64,0) (64,64), (0,0) (480,0) (480,512), (960,0) (1024,0) (1024,1024) —
+    // and the hardware generates BL = v0 + v2 - v1 to complete the quad. An index
+    // rewrite alone cannot express that, because BL is a vertex that does not exist,
+    // so the old expansion emitted (v0,v1,v2) and (v0,v2,v1): the SAME triangle twice,
+    // covering the TL-TR-BR half and leaving the other half of every rect untouched.
+    //
+    // That is not a cosmetic loss here. These draws are the guest's per-pass CLEAR —
+    // one at the head of nearly every pass, 28,743 a boot — and half of them cleared
+    // DEPTH ONLY (modeControl 5, empty colour mask). With half the rect uncleared, the
+    // previous pass's depth survives there and rejects the whole scene: the title
+    // screen's 3D background appeared inside one triangle with a diagonal edge and
+    // nothing outside it, which reads as broken geometry rather than a missing clear.
+    //
+    // So the fourth corner is built for real: four records are copied into the arena
+    // and record 3 is `r0 + r2 - r1` per dword, read as float. That linear combination
+    // is exactly what the hardware extrapolates, and it is correct for every 32-bit
+    // float attribute — which is all of them in this title. A stream carrying packed
+    // attributes would need per-format arithmetic; the fallback copies r0's bytes and
+    // COUNTS itself rather than being silently wrong.
+    static const bool rectHalf = EnvOn("CZ_VK_RECT_HALF");
+    const bool rectSynth =
+        expand == Expansion::RectangleList && draw.indexCount == 3 && !rectHalf;
+    uint32_t rectCorner[3] = { 0, 1, 2 };
+    if (rectSynth)
+    {
+        const uint8_t* isrc = draw.indexed ? base + draw.indexVa : nullptr;
+        for (uint32_t k = 0; k < 3; k++)
+            rectCorner[k] =
+                ReadIndex(isrc, k, draw.index32, draw.indexEndian, draw.indexed);
+    }
+
     uint32_t binding = 0;
     bool streamsOk = true;
     for (const VertexAttribute& a : vs.attributes)
@@ -2688,6 +2870,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         {
             streamsOk = false;
             break;
+        }
+        if (rectSynth && a.strideDwords)
+        {
+            const VkDeviceSize four =
+                SynthRectStream(at, bytes, a.strideDwords, rectCorner, a.format);
+            if (four == VkDeviceSize(-1))
+            {
+                streamsOk = false;
+                break;
+            }
+            const VkDeviceSize offset = four + uint64_t(a.offsetDwords) * 4;
+            vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
+            ++binding;
+            continue;
         }
         const VkDeviceSize offset = at + uint64_t(a.offsetDwords) * 4;
         if (offset >= R->arena.size)
@@ -2731,7 +2927,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Env("CZ_VK_DRAW_PROBE_MINFRAME")
                 ? uint64_t(atoll(Env("CZ_VK_DRAW_PROBE_MINFRAME")))
                 : 0;
-        static int left = 3;
+        // CZ_VK_DRAW_PROBE_COUNT=N — how many draws to print (default 3). Three is
+        // enough for "what does this shader read"; it is not enough when a shader is
+        // issued many times per pass with different data, which is exactly what a
+        // rectangle-list CLEAR does — this title clears a surface in 64-wide vertical
+        // STRIPS, so the first three entries describe three strips of one pass and say
+        // nothing about the pass you are actually looking at.
+        static int left = Env("CZ_VK_DRAW_PROBE_COUNT")
+                              ? atoi(Env("CZ_VK_DRAW_PROBE_COUNT"))
+                              : 3;
         if (vsBind.hash == strtoull(probe, nullptr, 16) && draw.indexCount >= minVerts &&
             R->frame >= minFrame && left-- > 0)
         {
