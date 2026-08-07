@@ -1,6 +1,6 @@
 # D3D phase C, part 10 kickoff. Paste this into a fresh conversation.
 
-`CLAUDE.md` loads automatically. Read **`docs/phase5-notes.md` §§6s-6u** first — they are
+`CLAUDE.md` loads automatically. Read **`docs/phase5-notes.md` §§6s-6v** first — they are
 the record of the session this hands off from, and they are about the RENDERER rather
 than about phase C's command-stream work. `docs/d3d-translation-plan.md`'s
 **"Phase C part 9"** section is the same story in one page.
@@ -41,24 +41,45 @@ re-gated this session — see item 2.
 
 ## Where part 10 starts, in order
 
-1. **THE RIGHT TILE. Hardware issues ~2,540 draws a frame at this screen and we issue
-   ~1,620.** The scene is rendered as two 640-wide tiles (gotcha 118). The left tile's
-   pass carries **928 draws / 495,541 vertices** and renders correctly; the right tile's
-   carries **96 / 30,755** and paints essentially nothing — and with `CZ_VK_NO_DEPTH_TEST=1`
-   it still paints nothing, so this is NOT the clear/depth class of fault part 9 fixed:
-   those ~900 draws are not in our stream at all. Both passes use the identical
-   view-projection (`vc(0..3)` printed by `CZ_VK_DRAW_PROBE` is the same in both), so the
-   guest is not pre-offsetting geometry per tile and our "no window offset, full-size
-   EDRAM, scissor in screen coordinates" convention is not obviously wrong.
+1. **THE RIGHT TILE IS BIN PREDICATION, and the numbers are already on the table.**
+   Full record in `docs/phase5-notes.md` §6v. The scene is rendered as two 640-wide
+   tiles (gotcha 118); the left tile's pass executes **931 draws / 496,130 vertices**
+   and renders correctly, the right tile's executes **23 / 9,219**. The reason is that
+   `gpu/pm4.cpp` implements ME predication — `(header & 1) && (binMask & binSelect) == 0`
+   — and **a third of this title's draw packets are discarded by it** (1,039,423 of
+   3,113,236 over 1,579 frames). `CZ_PM4_BIN_TRACE=N` prints the pair hardware compares;
+   over 300,000 draw packets:
 
-   The cheapest decisive check has not been run and should be first: **count the draws
-   between the two scene resolves in capture B1** (`tools/xtr.py` + the PM4 census) and
-   compare with 928 / 96. If hardware's second tile also has ~96, our reading of the
-   tiling is wrong and the right half's content comes from somewhere else; if it has
-   ~900, we are losing draws and the suspects are `SET_BIN_MASK`/`SET_BIN_SELECT`
-   predication (the single most frequent opcode in the whole stream, 2,353,460 of B1's
-   8,283,322, and something this runtime records and does not act on) and a re-walk of
-   the same indirect buffer under a different bin.
+   | draw's `SET_BIN_MASK` | tile's `SET_BIN_SELECT` | count | outcome |
+   |---|---|---|---|
+   | `00000000FFFFFFFF` | `0000000080000003` | 108,328 | run |
+   | `00000000FFFFFFFF` | `00000000FFFFFFFF` | 81,079 | run |
+   | `0000000080000003` | `000000000000000C` | **74,773** | SKIPPED |
+   | `0000000080000000` | `000000000000000C` | **25,770** | SKIPPED |
+   | `000000008000000F` | `000000000000000C` | 8,385 | run |
+
+   So the two tiles select bins `{0,1,31}` and `{2,3}`, and the `{2,3}` tile keeps ~8%
+   of what it is offered. A title does not emit 74,773 unreachable draws a boot, so
+   either the bins are not the left/right split we assume, or the comparison is wrong in
+   one of three specific places: the 64-bit assembly from the LO/HI packets, the meaning
+   of bit 31 (set in nearly every mask and in one select but not the other), or the
+   ORDER — a mask read one draw late produces exactly this shape, and `SET_BIN_MASK_LO`
+   outnumbers draw packets ~1.6:1 in B1 so the pairing is not obvious.
+
+   **Run this first, and it needs no emulator:** B1 carries the same
+   `SET_BIN_MASK`/`SET_BIN_SELECT`/`DRAW_INDX` stream, so replaying the predication rule
+   over it with `tools/xtr.py` and counting survivors per bin select says whether 8% is
+   what hardware does. `CZ_PM4_NO_PREDICATION=1` is the arm and is NOT a candidate fix:
+   it is destructive (257,395 draws in 2,905 frames, black screen), because running a
+   packet hardware skipped puts one tile's geometry in another tile's pass.
+
+   A number that had to be WITHDRAWN on the way, because it would have sent the next
+   session hunting the wrong thing: "hardware issues ~2,540 draws a frame and we issue
+   ~1,620" compares draw PACKETS in a capture against draws the RENDERER ACCEPTED. At
+   the same instant of one run the command processor parses 1,971 packets a frame and
+   hands the renderer 1,313. The predication that eats the difference had been in the
+   code since phase 1 and had never been counted — `ring: ... draws=N (predicated
+   out=M)` is now always on.
 
 2. **Re-gate the phase C DRAW arm.** Everything in part 9 is in shared renderer code
    (`gpu/vk_renderer.cpp`) plus one matching change in `gpu/d3d_draw.cpp`'s walker, so
@@ -119,6 +140,11 @@ CZ_VK_NO_DEPTH_TEST=1          an ARM, never a fix: draw everything regardless o
 CZ_VK_PASS_DRAWS=N             how many of a pass's draws the resolve trace lists
 CZ_VK_RESOLVE_TRACE_PASSES=N   the resolve trace's budget, in PASSES rather than lines
 CZ_VK_DRAW_PROBE_COUNT=N       how many draws the draw probe prints
+CZ_PM4_BIN_TRACE=N             the predication inputs for the first N draw packets:
+                               the draw's bin MASK, the tile's bin SELECT, their overlap
+                               and whether the packet ran
+CZ_PM4_NO_PREDICATION=1        execute predicated packets anyway. An arm, and a
+                               DESTRUCTIVE one — see item 1
 ```
 
 The `[vkvp]` viewport line now carries the SCISSOR, the window offset, the MSAA mode and

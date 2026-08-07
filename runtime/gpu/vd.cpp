@@ -384,9 +384,15 @@ void GraphicsInterruptPump()
             // health check: equal means caught up, frozen behind a rising wptr means
             // the parser is stuck — which gpu/pm4.cpp reports separately and loudly
             // rather than skipping ahead.
-            KLOG("ring: pm4 packets=%llu frames(XE_SWAP)=%llu draws=%llu interrupts=%llu\n",
+            // `predicated` is on this line and not in a probe because it is a third of
+            // the draw packets in this title: the scene is rendered in two tiles and the
+            // bin mask decides which tile each draw belongs to, so "the renderer only
+            // got N draws" is meaningless without it.
+            KLOG("ring: pm4 packets=%llu frames(XE_SWAP)=%llu draws=%llu "
+                 "(predicated out=%llu) interrupts=%llu\n",
                  (unsigned long long)Pm4_PacketCount(), (unsigned long long)Pm4_FrameCount(),
                  (unsigned long long)Pm4_DrawCount(),
+                 (unsigned long long)Pm4_DrawsPredicatedOut(),
                  (unsigned long long)Pm4_InterruptCount());
             // Truncated indirect buffers, on the same line as the healthy counters
             // because that is the pairing that matters: three green numbers and a

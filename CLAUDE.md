@@ -1407,6 +1407,19 @@ CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR co
                    deadlocks at boot.bct (file #5) because the protocol needs the
                    command-processor interrupt from the first frame (measured, part 7)
 CZ_PM4_RESYNC=1    scan past a parser stall instead of reporting it (off on purpose)
+CZ_PM4_BIN_TRACE=N  the ME predication inputs for the first N draw packets: the draw's
+                   own bin MASK, the SELECT of the tile being rendered, their overlap
+                   and whether the packet ran. This title splits its scene across two
+                   tiles with those two registers and a THIRD of its draw packets are
+                   discarded by them, so a tile that renders almost nothing is either a
+                   tile the guest had nothing for or a comparison we get wrong — and
+                   only the values say which (phase5-notes §6v)
+CZ_PM4_NO_PREDICATION=1  execute predicated packets anyway. An ARM, and a destructive
+                   one: running a packet hardware skipped puts one tile's geometry in
+                   another tile's pass and corrupts the state stream with it (a boot
+                   with it on renders nothing). It exists so that "this pass had 23
+                   draws" and "this pass had 900 and 877 were predicated away" stop
+                   being the same picture
 CZ_PM4_DRAW_TRACE=1  the raw DRAW_INDX body for the first 24 indexed draws — the
                    instrument that settled which dword carries the index buffer's endian
                    swizzle (the TOP two bits of the SIZE dword, not the low two of the
@@ -2501,13 +2514,27 @@ instrument that made 3 and 4 diagnosable is `CZ_VK_NO_DEPTH_TEST=1` (gotcha 173)
 **Gates, PM4 arm:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 0 real windows**;
 `truncated=0`; deepest file **#83 `cinezombie.big`**; frames presented unchanged.
 
-**THE OPEN ITEM, sized:** the RIGHT tile (screen 640..1280) is nearly empty. Hardware
-issues **~2,540 draws a frame** at this screen and we issue **~1,620**; the left tile's
-pass carries 928 draws / 495,541 vertices and the right tile's **96 / 30,755**, and with
-the depth test off the right tile still paints nothing — so those ~900 draws are not in
-our stream at all. First move is to count the draws between the two scene resolves in
-capture **B1** before theorising; the standing suspect is `SET_BIN_MASK` predication,
-which this runtime records and does not act on.
+**THE OPEN ITEM, named and measured (`docs/phase5-notes.md` §6v):** the RIGHT tile
+(screen 640..1280) is nearly empty, and it is **ME bin predication**. `gpu/pm4.cpp` has
+implemented `(header & 1) && (binMask & binSelect) == 0` since phase 1 and had never
+counted it: **a third of this title's draw packets are discarded by it** (1,039,423 of
+3,113,236 over 1,579 frames). One frame's two scene passes execute **931** draws and
+**23**. `CZ_PM4_BIN_TRACE` prints the pair hardware compares, and the shape is stark —
+the tiles select bins `{0,1,31}` and `{2,3}`, and in the `{2,3}` tile 74,773 draws
+carrying mask `80000003` and 25,770 carrying `80000000` can never overlap it. A title
+does not emit 100,000 unreachable draws a boot, so either the bins are not the
+left/right split we assume or the comparison is wrong in one of three places (the 64-bit
+LO/HI assembly, the meaning of bit 31, or the ORDER — a mask read one draw late gives
+exactly this shape). **The check to run first needs no emulator:** B1 carries the same
+`SET_BIN_MASK`/`SET_BIN_SELECT`/`DRAW_INDX` stream, so replaying the rule over it says
+whether 8% survival is what hardware does.
+
+**And a number withdrawn before it did damage:** "hardware issues ~2,540 draws a frame
+and we issue ~1,620" compares draw PACKETS in a capture against draws the RENDERER
+ACCEPTED. At one instant of one run the command processor parses 1,971 packets a frame
+and hands the renderer 1,313; the predication eats the difference. `ring: ... draws=N
+(predicated out=M)` is now always on, because a mechanism with no counter cannot be
+subtracted from a comparison (gotcha 162).
 
 Next, in order:
 

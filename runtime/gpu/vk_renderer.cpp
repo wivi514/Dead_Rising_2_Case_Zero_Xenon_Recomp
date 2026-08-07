@@ -3647,6 +3647,12 @@ void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)
 {
     if (!g_active || g_d3dMode)
         return;
+    // The renderer's own count of draws it was HANDED, next to the per-primitive
+    // census of draws it accepted. The command processor's `ring: ... draws=` counter
+    // and the renderer's prim counters disagreed by half and there was no number in
+    // between to say where the difference lived — a chain has to be counted link by
+    // link (gotcha 162), including the link between two modules.
+    Count("draw: handed to the renderer");
     const uint32_t* regs = Pm4_Registers();
     // The resolve discriminator, and the only one: RB_MODECONTROL's edram_mode.
     if ((regs[0x2208] & 7) == 6)

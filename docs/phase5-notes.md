@@ -968,18 +968,71 @@ real Z prepass, needs no explanation) and **148,150** in colour mode — and tha
 number is, to within noise, the count of the degenerate 1-index point draws that emit
 `oPos = (0,0,0,1)` regardless. `RB_COLOR_MASK` is read from the right register.
 
+## 6v. THE EMPTY RIGHT TILE IS BIN PREDICATION, AND THE NUMBERS ARE ON THE TABLE
+
+The remaining defect, characterised but NOT fixed. Everything here is measured.
+
+**First, a number that had to be withdrawn before it did damage.** The obvious framing
+was "hardware issues ~2,540 draws a frame at this screen and we issue ~1,620, so we are
+losing a tile's worth". Those are not the same quantity: the capture's figure counts
+draw PACKETS in the stream and ours counted draws the renderer ACCEPTED. Counted at the
+same instant of the same run, the command processor parses **1,971 draw packets a
+frame** and hands the renderer **1,313** — because `gpu/pm4.cpp` implements ME
+predication and **a third of this title's draw packets are discarded by the bin mask**
+(1,039,423 of 3,113,236 over 1,579 frames). That mechanism was in the code and had never
+been counted, so the missing draws had no line to appear on. `ring: ... draws=N
+(predicated out=M)` is now always on.
+
+**Second, where the discards land.** One frame's two scene passes:
+
+| pass | window scissor | draws EXECUTED | vertices |
+|---|---|---|---|
+| left tile | 0,0..640,720 | **931** | 496,130 |
+| right tile | 640,0..1280,720 | **23** | 9,219 |
+
+**Third, the predication inputs themselves** (`CZ_PM4_BIN_TRACE=N`, 300,000 draw packets
+of one boot, grouped by the pair the hardware compares):
+
+| draw's `SET_BIN_MASK` | tile's `SET_BIN_SELECT` | overlap | count | outcome |
+|---|---|---|---|---|
+| `00000000FFFFFFFF` | `0000000080000003` | nonzero | 108,328 | run |
+| `00000000FFFFFFFF` | `00000000FFFFFFFF` | nonzero | 81,079 | run |
+| `0000000080000003` | `000000000000000C` | **0** | **74,773** | SKIPPED |
+| `0000000080000000` | `000000000000000C` | **0** | **25,770** | SKIPPED |
+| `000000008000000F` | `000000000000000C` | nonzero | 8,385 | run |
+| four rarer pairs | | | ~1,300 | mixed |
+
+So the two tiles select bins `{0,1,31}` and `{2,3}`, and in the `{2,3}` tile roughly
+**8%** of the draws offered to it survive. That is the empty right half, exactly.
+
+**What it does not yet say is whether the discards are right.** A title does not emit
+74,773 draws per boot that can never execute, so either this title's geometry really is
+almost all in bins 0/1 — possible, if the bins are not a left/right split at all — or
+the mask/select comparison is wrong somewhere: the 64-bit assembly from the LO/HI
+packets, the meaning of bit 31 (set in almost every mask and in one select but not the
+other), or the ORDER (a mask read one draw late would produce exactly this shape, and
+`SET_BIN_MASK_LO` outnumbers draw packets ~1.6:1 in B1, so the pairing is not obvious).
+
+**The check to run first, and it is self-servable:** capture B1 contains the same
+`SET_BIN_MASK`/`SET_BIN_SELECT`/`DRAW_INDX` stream, so replaying this predication rule
+over B1 with `tools/xtr.py` and counting how many draws survive under each bin select
+answers "is 8% what hardware does" without an emulator run. If hardware also keeps 8%,
+the tiling is not what we think it is and the right half's content comes from elsewhere.
+
+`CZ_PM4_NO_PREDICATION=1` exists as the arm and is **not** a candidate fix — it is
+destructive (a boot with it on renders nothing and only reaches 257,395 draws in 2,905
+frames), because running a packet the hardware skipped puts one tile's geometry in
+another tile's pass and corrupts the state stream with it. It is there so that "this
+pass had 23 draws" and "this pass had 900 and 877 were predicated away" stop being the
+same picture.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
 compose chain, the index decode and the two rectangle defects were fixed. The current
 state is: the title screen's LEFT HALF renders as a complete, bright Still Creek —
 sky, power lines, the gas station, zombies, the road, the grass — and the RIGHT HALF
-(screen 640..1280, the scene's second tile) is nearly empty. The one number that sizes
-that gap: hardware issues **~2,540 draws a frame** at this screen (finding 10d) and we
-issue **~1,620**, with the missing ~900 almost exactly one scene tile's worth — the
-left tile's pass carries 928 draws and 495,541 vertices, the right tile's 96 and
-30,755. With `CZ_VK_NO_DEPTH_TEST=1` the right tile still paints nothing, so unlike
-§6u this is not a clear or a depth problem: those draws are not in our stream.
+(screen 640..1280, the scene's second tile) is nearly empty. **§6v names why.**
 
 The original table, for the record:
 

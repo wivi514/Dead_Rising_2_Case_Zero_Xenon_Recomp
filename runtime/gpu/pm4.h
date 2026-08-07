@@ -89,6 +89,7 @@ void Pm4_SetInterruptSink(void (*sink)());
 // writeback registers — for the ring trace. The read pointer the guest polls is a
 // number this module owns, so a trace that prints only what the DRIVER thinks the
 // read pointer is cannot say whether we are behind or writing it somewhere else.
+uint64_t Pm4_DrawsPredicatedOut();
 uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();

@@ -1298,13 +1298,22 @@ by stale depth" — the same picture, completely different investigations.
 real windows**; `truncated=0`; deepest file **#83 `cinezombie.big`**; no change in frames
 presented (1,188 against 1,189).
 
-**What is still wrong, sized.** The title screen's LEFT half renders as a complete,
-bright Still Creek; the RIGHT half (screen 640..1280, the scene's second tile) is nearly
-empty. Hardware issues **~2,540 draws a frame** at this screen and we issue **~1,620** —
-the left tile's pass carries 928 draws and 495,541 vertices, the right tile's 96 and
-30,755, and with the depth test off the right tile still paints nothing. So those draws
-are not in our stream at all, which is a different class of fault from anything above and
-is where part 10 starts.
+**What is still wrong, named and measured (`phase5-notes` §6v).** The title screen's
+LEFT half renders as a complete, bright Still Creek; the RIGHT half is nearly empty, and
+it is **ME bin predication**. `gpu/pm4.cpp` has implemented
+`(header & 1) && (binMask & binSelect) == 0` since phase 1 and had never counted it: a
+THIRD of this title's draw packets are discarded by it, and one frame's two scene passes
+execute 931 draws and 23. The tiles select bins `{0,1,31}` and `{2,3}`, and in the
+`{2,3}` tile 100,000 draws a boot carry masks that can never overlap it — so either the
+bins are not the left/right split we assume, or the comparison is wrong in one of three
+specific places. B1 carries the same mask/select/draw stream, so replaying the rule over
+the capture answers it without an emulator run. That is where part 10 starts.
+
+A number was WITHDRAWN on the way there, because it would have sent the next session
+hunting the wrong thing: "hardware issues ~2,540 draws a frame and we issue ~1,620"
+compares draw PACKETS in a capture against draws the RENDERER ACCEPTED. Counted at one
+instant of one run, the command processor parses 1,971 packets a frame and hands the
+renderer 1,313. A mechanism with no counter cannot be subtracted from a comparison.
 
 **Method notes worth more than the fixes.**
 

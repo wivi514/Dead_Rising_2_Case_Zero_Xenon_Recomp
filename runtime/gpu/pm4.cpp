@@ -161,6 +161,10 @@ std::atomic<uint64_t> g_packets{ 0 };
 std::atomic<uint64_t> g_types[4];
 std::atomic<uint64_t> g_opcodes[128];
 std::atomic<uint64_t> g_draws{ 0 };
+// Draws the bin mask discarded. Printed next to `draws=` because the ratio is the only
+// thing that separates "this pass had few draws" from "this pass had many and hardware
+// wanted them in the other tile".
+std::atomic<uint64_t> g_drawsPredicatedOut{ 0 };
 std::atomic<uint64_t> g_frames{ 0 };
 std::atomic<uint64_t> g_interrupts{ 0 };
 void (*g_interruptSink)() = nullptr;
@@ -737,8 +741,38 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // ME predication: header bit 0 marks a packet the hardware runs only when the
     // current bin mask and bin select overlap. Skipping the body wholesale is what
     // the ME does, for every type-3 opcode alike.
+    //
+    // CZ_PM4_NO_PREDICATION=1 executes predicated packets anyway — the same-binary arm
+    // for every claim about what the bin mask is discarding. It is NOT a candidate fix:
+    // running a packet hardware skipped draws a tile's geometry into another tile. It
+    // exists because "this pass has 96 draws" and "this pass had 900 draws and 804 of
+    // them were predicated away" are the same picture and different faults, and the
+    // counters below are what tell them apart.
+    static const bool noPredication = getenv("CZ_PM4_NO_PREDICATION") != nullptr;
+    // CZ_PM4_BIN_TRACE=N — the predication inputs for the first N draw packets: the
+    // mask the guest set for THIS draw, the select for the tile being rendered, and
+    // whether the two overlapped. This title splits its scene across two tiles with
+    // these two registers, so a tile that renders almost nothing is either a tile the
+    // guest had nothing for or a mask/select comparison we are getting wrong, and only
+    // the values say which.
+    if ((opcode == 0x22 || opcode == 0x36) && getenv("CZ_PM4_BIN_TRACE"))
+    {
+        static int left = atoi(getenv("CZ_PM4_BIN_TRACE"));
+        if (left-- > 0)
+            fprintf(stderr,
+                    "[pm4bin] pred=%u mask=%016llX select=%016llX overlap=%016llX -> %s\n",
+                    header & 1, (unsigned long long)g_binMask,
+                    (unsigned long long)g_binSelect,
+                    (unsigned long long)(g_binMask & g_binSelect),
+                    ((header & 1) && (g_binMask & g_binSelect) == 0) ? "SKIPPED" : "run");
+    }
     if ((header & 1) && (g_binMask & g_binSelect) == 0)
-        return bodyCount + 1;
+    {
+        if (opcode == 0x22 || opcode == 0x36)
+            g_drawsPredicatedOut.fetch_add(1, std::memory_order_relaxed);
+        if (!noPredication)
+            return bodyCount + 1;
+    }
 
     auto body = [&](uint32_t i) { return fetch(pos + 1 + i); };
 
@@ -1540,6 +1574,7 @@ uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
 uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
 uint64_t Pm4_DrawCount() { return g_draws.load(); }
+uint64_t Pm4_DrawsPredicatedOut() { return g_drawsPredicatedOut.load(); }
 uint64_t Pm4_FrameCount() { return g_frames.load(); }
 uint64_t Pm4_InterruptCount() { return g_interrupts.load(); }
 const char* Pm4_OpcodeName(uint32_t opcode)
