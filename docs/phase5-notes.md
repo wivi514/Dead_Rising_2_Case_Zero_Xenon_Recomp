@@ -1262,6 +1262,33 @@ Zero `GPU store outside the physical arena DROPPED` lines, which had to be check
 the guest builds a PHYSICAL address for that write, and a record outside our physical
 arena would have had the store dropped and the pass would still be reading rubbish.
 
+### The picture, and a metric that cannot be fooled by a transform
+
+`CZ_VK_FRAME_DUMP` on both arms, coverage measured PER HALF of the presented frame —
+which is the right unit here, because the defect is a screen-space split at x=640 and a
+whole-frame aggregate would blur it into a single number (and, per gotcha 135, an
+aggregate cannot see a transform at all; a per-half one at least localises):
+
+| frame | control: left / right | **fixed: left / right** |
+|---|---|---|
+| 448 | 100.0% / **32.3%** | 100.0% / **98.1%** |
+| 576 | 100.0% / **32.6%** | 99.5% / **99.5%** |
+| 768 | 98.9% / **59.9%** | 99.7% / **99.5%** |
+| 1024 | 96.3% / **60.4%** | 99.8% / **96.5%** |
+
+The left half is unchanged between the arms and only the right half moves, which is
+exactly the shape the fix predicts and is not something a global change could produce.
+The control arm's frame is the Still Creek title screen with a black rectangle from
+x=640 to x=1280; the fixed arm's is the whole scene — the gas station, the power lines,
+the zombie, the grass, and on the right the "Still Creek ELEV 2" road sign that had
+never been rendered by this port.
+
+Against capture E3 with `tools/frame_signature.py`, **every dumped title-screen frame's
+best orientation is `identity`** (+0.42 to +0.55, beating the runner-up by 0.25), so
+nothing is mirrored or rotated. None reaches the tool's +0.70 match floor, which is
+expected and is part 12's first item: E3 is one moment of an animated camera and our
+frames are others (gotchas 127, 133).
+
 ### Two method notes
 
 * **The capture's stream window is a packet-level oracle, and it was one command
