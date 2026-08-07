@@ -399,6 +399,11 @@ void GraphicsInterruptPump()
             // silent fourth is what let finding 38's dropped fences run for a whole
             // port unnoticed. Any nonzero value is a hang waiting for a thread to
             // wait on it.
+            // The bin census, when it is on. On the ring trace rather than in its own
+            // flag because its only use is to be read next to `predicated out=` above:
+            // a third of this title's draw packets are discarded here and B1 says
+            // hardware discards 0.3%, so the pair table is where that gap is localised.
+            Pm4_BinCensusReport();
             KLOG("ring: indirect buffers truncated=%llu | verify clean=%llu dirty=%llu\n",
                  (unsigned long long)Pm4_IbTruncatedCount(),
                  (unsigned long long)Pm4_IbVerifyCleanCount(),
@@ -576,6 +581,8 @@ void VdInitializeRingBuffer_x(uint32_t basePhysical, uint32_t sizeLog2)
     // Handing the ring to the command processor resets its cursor: a re-init is a new
     // stream, not a continuation of the old one.
     Pm4_SetRingBuffer(base, size);
+    if (getenv("CZ_PM4_BIN_CENSUS"))
+        Pm4_BinCensusEnable();
 }
 
 // A1: VdEnableRingBufferRPtrWriteBack(03D7103C, 8) — again a physical address,

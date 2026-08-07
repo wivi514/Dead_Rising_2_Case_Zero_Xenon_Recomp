@@ -90,6 +90,11 @@ void Pm4_SetInterruptSink(void (*sink)());
 // number this module owns, so a trace that prints only what the DRIVER thinks the
 // read pointer is cannot say whether we are behind or writing it somewhere else.
 uint64_t Pm4_DrawsPredicatedOut();
+
+// The (mask, select) pair census — the table `tools/xtr_bin_predication.py` prints for
+// a Xenia capture, so the two can be compared directly. Off unless enabled.
+void Pm4_BinCensusEnable();
+void Pm4_BinCensusReport();
 uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();

@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <vector>
 
 // The only cross-module include here, and it is one function: the present seam.
@@ -15,6 +16,7 @@
 #include "../cpu/timebase.h"
 #include "../host/window.h"
 #include "vk_renderer.h"
+#include "xenos.h"   // register indices, for the bin trace's window scissor
 
 namespace {
 
@@ -155,6 +157,48 @@ constexpr uint32_t kRegCoherStatusHost = 0x0A31; // bit 31 = coherency action pe
 // silently execute a large fraction of the stream.
 uint64_t g_binMask = ~0ull;
 uint64_t g_binSelect = ~0ull;
+
+// The (mask, select) pair census, for exactly one comparison: `tools/xtr_bin_predication.py`
+// prints the same table for capture B1, and the two tables side by side are the only
+// way to ask "is discarding these draws what hardware does" — our command processor
+// cannot be its own oracle for a rule it is the suspect in. A windowed trace cannot do
+// this job: the pairs that dominate are a quarter of a million packets into the boot,
+// and the pairs that dominate the PROLOGUE are identical on both sides.
+//
+// Bounded to 32 distinct pairs with an overflow count rather than a growing map,
+// because a census that can allocate inside the command processor is a census that
+// can change what it measures. B1 has 8 pairs in 24.5 M packets.
+struct BinPair
+{
+    uint64_t mask = 0, select = 0;
+    uint64_t offered = 0, skipped = 0;
+    bool used = false;
+};
+constexpr uint32_t kBinPairs = 32;
+BinPair g_binPairs[kBinPairs];
+std::atomic<uint64_t> g_binPairOverflow{ 0 };
+std::mutex g_binPairMutex;
+bool g_binCensus = false;
+
+void BinCensusRecord(uint64_t mask, uint64_t select, bool skipped)
+{
+    std::lock_guard<std::mutex> lock(g_binPairMutex);
+    for (uint32_t i = 0; i < kBinPairs; i++)
+    {
+        if (!g_binPairs[i].used)
+        {
+            g_binPairs[i] = { mask, select, 1, skipped ? 1ull : 0ull, true };
+            return;
+        }
+        if (g_binPairs[i].mask == mask && g_binPairs[i].select == select)
+        {
+            g_binPairs[i].offered++;
+            g_binPairs[i].skipped += skipped ? 1 : 0;
+            return;
+        }
+    }
+    g_binPairOverflow.fetch_add(1, std::memory_order_relaxed);
+}
 
 // --- census -----------------------------------------------------------------------
 std::atomic<uint64_t> g_packets{ 0 };
@@ -749,24 +793,73 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // them were predicated away" are the same picture and different faults, and the
     // counters below are what tell them apart.
     static const bool noPredication = getenv("CZ_PM4_NO_PREDICATION") != nullptr;
-    // CZ_PM4_BIN_TRACE=N — the predication inputs for the first N draw packets: the
-    // mask the guest set for THIS draw, the select for the tile being rendered, and
-    // whether the two overlapped. This title splits its scene across two tiles with
-    // these two registers, so a tile that renders almost nothing is either a tile the
-    // guest had nothing for or a mask/select comparison we are getting wrong, and only
-    // the values say which.
-    if ((opcode == 0x22 || opcode == 0x36) && getenv("CZ_PM4_BIN_TRACE"))
+    const bool predicated = (header & 1) && (g_binMask & g_binSelect) == 0;
+
+    // CZ_PM4_BIN_TRACE=N — N lines of the predication story in stream ORDER: every
+    // SET_BIN_MASK/SELECT packet with the value it carries and whether the ME skipped
+    // it, and every draw with the pair the ME compared.
+    //
+    // The WRITES are in here, not just the draws, because the census over B1 says the
+    // rule is right and the mask VALUE is wrong (0.3% of hardware's draw packets are
+    // discarded against a third of ours), and "wrong value" is a question about order
+    // and about which writes landed. A draw-only trace can only ever restate the
+    // symptom. Note in particular that a mask write can itself be predicated away,
+    // which is self-sustaining: skip the write that would restore the overlap and
+    // every later packet in the pass is skipped too.
+    //
+    // CZ_PM4_BIN_TRACE_ARM=hex holds the trace until the bin select first takes that
+    // value, because the interesting era is a quarter of a million packets into the
+    // boot and a budget spent on the untiled prologue says nothing (gotcha 139).
+    if (getenv("CZ_PM4_BIN_TRACE"))
     {
         static int left = atoi(getenv("CZ_PM4_BIN_TRACE"));
-        if (left-- > 0)
-            fprintf(stderr,
-                    "[pm4bin] pred=%u mask=%016llX select=%016llX overlap=%016llX -> %s\n",
-                    header & 1, (unsigned long long)g_binMask,
-                    (unsigned long long)g_binSelect,
-                    (unsigned long long)(g_binMask & g_binSelect),
-                    ((header & 1) && (g_binMask & g_binSelect) == 0) ? "SKIPPED" : "run");
+        static const char* armEnv = getenv("CZ_PM4_BIN_TRACE_ARM");
+        static const char* armMaskEnv = getenv("CZ_PM4_BIN_TRACE_ARMMASK");
+        static const uint64_t armSelect = armEnv ? strtoull(armEnv, nullptr, 16) : 0;
+        static const uint64_t armMask = armMaskEnv ? strtoull(armMaskEnv, nullptr, 16) : 0;
+        static bool armed = !armEnv && !armMaskEnv;
+        if (!armed && ((armEnv && g_binSelect == armSelect) ||
+                       (armMaskEnv && g_binMask == armMask)))
+            armed = true;
+        if (armed && left > 0)
+        {
+            const char* what = nullptr;
+            switch (opcode)
+            {
+                case 0x50: what = "SET_BIN_MASK";    break;
+                case 0x51: what = "SET_BIN_SELECT";  break;
+                case 0x60: what = "MASK_LO";         break;
+                case 0x61: what = "MASK_HI";         break;
+                case 0x62: what = "SELECT_LO";       break;
+                case 0x63: what = "SELECT_HI";       break;
+                default: break;
+            }
+            if (what)
+            {
+                left--;
+                fprintf(stderr, "[pm4bin] %-15s %08X%s\n", what, fetch(pos + 1),
+                        predicated ? "   (SKIPPED)" : "");
+            }
+            else if (opcode == 0x22 || opcode == 0x36)
+            {
+                left--;
+                const uint32_t tl = g_regs[xenos::kPaScWindowScissorTl];
+                const uint32_t br = g_regs[xenos::kPaScWindowScissorBr];
+                fprintf(stderr,
+                        "[pm4bin]     DRAW pred=%u mask=%016llX select=%016llX "
+                        "scissor=%u,%u..%u,%u -> %s\n",
+                        header & 1, (unsigned long long)g_binMask,
+                        (unsigned long long)g_binSelect,
+                        tl & 0x7FFF, (tl >> 16) & 0x7FFF, br & 0x7FFF, (br >> 16) & 0x7FFF,
+                        predicated ? "SKIP" : "run");
+            }
+        }
     }
-    if ((header & 1) && (g_binMask & g_binSelect) == 0)
+
+    if (g_binCensus && (opcode == 0x22 || opcode == 0x36))
+        BinCensusRecord(g_binMask, g_binSelect, predicated);
+
+    if (predicated)
     {
         if (opcode == 0x22 || opcode == 0x36)
             g_drawsPredicatedOut.fetch_add(1, std::memory_order_relaxed);
@@ -1575,6 +1668,29 @@ uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() :
 uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
 uint64_t Pm4_DrawCount() { return g_draws.load(); }
 uint64_t Pm4_DrawsPredicatedOut() { return g_drawsPredicatedOut.load(); }
+
+// The (mask, select) pair table, in the same shape `tools/xtr_bin_predication.py`
+// prints for capture B1. Enabled by CZ_PM4_BIN_CENSUS=1 and printed by the ring trace.
+void Pm4_BinCensusEnable() { g_binCensus = true; }
+void Pm4_BinCensusReport()
+{
+    if (!g_binCensus)
+        return;
+    std::lock_guard<std::mutex> lock(g_binPairMutex);
+    fprintf(stderr, "[kernel] ring: bin census (mask, select) -> offered / skipped   "
+                    "[B1: 0.3%% of draw packets are discarded; overflow=%llu]\n",
+            (unsigned long long)g_binPairOverflow.load());
+    for (uint32_t i = 0; i < kBinPairs && g_binPairs[i].used; i++)
+        fprintf(stderr,
+                "[kernel] ring:   %016llX %016llX  offered %10llu  skipped %10llu  "
+                "kept %5.1f%%\n",
+                (unsigned long long)g_binPairs[i].mask,
+                (unsigned long long)g_binPairs[i].select,
+                (unsigned long long)g_binPairs[i].offered,
+                (unsigned long long)g_binPairs[i].skipped,
+                100.0 * double(g_binPairs[i].offered - g_binPairs[i].skipped) /
+                    double(g_binPairs[i].offered ? g_binPairs[i].offered : 1));
+}
 uint64_t Pm4_FrameCount() { return g_frames.load(); }
 uint64_t Pm4_InterruptCount() { return g_interrupts.load(); }
 const char* Pm4_OpcodeName(uint32_t opcode)
