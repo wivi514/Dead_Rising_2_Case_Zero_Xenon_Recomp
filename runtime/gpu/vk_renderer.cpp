@@ -1506,6 +1506,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
                 }
             }
         }
+        // CZ_VK_NO_DEPTH_FETCH=1 — serve EVERY depth-format fetch the 1x1 white dummy.
+        // An ARM, never a fix. It is the cheap way to ask whether a dark mark in the
+        // picture comes from a DEPTH surface being sampled (a shadow, an occlusion term)
+        // or from the surface's own texture — two investigations that look identical in
+        // a screenshot (gotcha 173's rule, pointed at shading rather than geometry).
+        //
+        // It is deliberately NOT called "no shadow", because this title has two
+        // consumers of depth fetches and the arm hits both: the shadow cascade AND the
+        // scene depth the depth-of-field pass reads. Turning it on re-blurs the whole
+        // frame exactly as the pre-part-14 renderer did, which is a second, independent
+        // confirmation of §6ae — and a reminder to read what an arm actually disables
+        // before reading a result off it. To isolate one consumer, name its address
+        // with CZ_VK_SKIP_TEX instead.
+        static const bool noDepthFetch = EnvOn("CZ_VK_NO_DEPTH_FETCH");
+        if (noDepthFetch && wantsDepth)
+        {
+            Count("texture: depth fetch forced to the white dummy "
+                  "(CZ_VK_NO_DEPTH_FETCH)");
+            return 0;
+        }
         if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
         {
             Count(snap->second.fromDepth
@@ -1619,17 +1639,45 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             Count("texture: tiled with a non-power-of-two unit, skipped");
             return 0;
         }
+        // THE OUT-OF-FOOTPRINT SKIP IS COUNTED, because a skipped unit is not a
+        // no-op: `pixels` is zero-initialised, so the unit stays ZERO, and an all-zero
+        // DXT1 block decodes to OPAQUE BLACK. The symptom is therefore black rectangles
+        // scattered through an otherwise correct texture — the tiled swizzle interleaves,
+        // so the units that fall outside are not a truncated bottom edge but a pattern
+        // of blocks — and the operator sees it as "the Still Creek sign has smears on
+        // it" while every counter in the renderer reads healthy. It was a bare
+        // `continue` for the whole of phase 5 (gotcha 171: a counter behind an early
+        // return counts the times the early return did not happen).
+        uint64_t skipped = 0;
         for (uint32_t y = 0; y < unitH; y++)
             for (uint32_t x = 0; x < unitW; x++)
             {
                 const uint32_t unit = Tiled2DOffset(x, y, srcPitchUnits, log2bpu);
                 const uint64_t off = uint64_t(unit) * bytesPerUnit;
                 if (off + bytesPerUnit > srcBytes)
+                {
+                    ++skipped;
                     continue;
+                }
                 CopySwapped(&pixels[(uint64_t(y) * unitW + x) * bytesPerUnit], src + off,
                             bytesPerUnit, t.endian);
             }
         Count("texture: untiled");
+        if (skipped)
+        {
+            Count("texture: units left BLACK — tiled offset outside the footprint");
+            static int left = 20;
+            if (left-- > 0)
+                fprintf(stderr,
+                        "[vk] untile %08X %ux%u fmt=%u bpu=%u pitchUnits=%u "
+                        "srcRows=%u srcBytes=%llu: %llu of %llu units (%.1f%%) fell "
+                        "OUTSIDE the footprint and are left black\n",
+                        t.address, t.width, t.height, t.format, bytesPerUnit,
+                        srcPitchUnits, srcRows, (unsigned long long)srcBytes,
+                        (unsigned long long)skipped,
+                        (unsigned long long)(uint64_t(unitW) * unitH),
+                        100.0 * double(skipped) / double(uint64_t(unitW) * unitH));
+        }
     }
     else
     {
