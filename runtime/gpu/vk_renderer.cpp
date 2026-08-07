@@ -2838,6 +2838,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     const float xo = (vte & 0x2) ? F32(regs[xenos::kPaClVportXOffset]) : 0.0f;
     const float yo = (vte & 0x8) ? F32(regs[xenos::kPaClVportYOffset]) : 0.0f;
 
+    // NOT the presented frame's extent — and this fallback is NOT where that matters.
+    //
+    // Part 14 tried computing a per-pass extent here from PA_SC_WINDOW_SCISSOR's
+    // bottom-right corner, on the theory that the shadow pass renders a 1024x1024
+    // cascade and was being folded and clipped as if it were 1280x720. The reading was
+    // wrong and the measurement says so in one line: the cascade's real draws set
+    // `vte=3F` with `xs=512, ys=-512`, i.e. they take the REAL viewport path above and
+    // already get 1024x1024. Only its clears land here. The change moved 358,993 draws
+    // and left the cascade bit-identical (mean 120.4, 48.7% zero, before and after), so
+    // it was reverted rather than kept on a plausible story.
+    //
+    // What the cascade's half-empty look actually is remains open; it is NOT this.
     float posScale[2] = { 1.0f, 1.0f };
     float posOffset[2] = { 0.0f, 0.0f };
     if (!(vte & 0x1))
