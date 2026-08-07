@@ -1217,6 +1217,31 @@ From phase C part 11 (the screen extent — a packet implemented and never execu
      computed and came out empty" where a whole phase had read "the mask is an unpatched
      placeholder". Build the capture-side twin of every stream instrument you own.
 
+188. **A defect one column wide is invisible to every aggregate and obvious to a human,
+     because the frame's own blur AMPLIFIES it.** The half-pixel offset shifted every
+     vertex by -0.5 px, so a screen-space rect `[0, W]` became `[-0.5, W-0.5)` and its
+     last pixel centre landed exactly on the exclusive right edge, where the fill rule
+     drops it — the scene tile's clear covered 0..638 and column 639 was covered by
+     NOTHING. That is 0.08% of the frame, far under `frame_compare.py`'s 1.5 pp band;
+     convolved with the scene's depth-of-field kernel it becomes a 19 px dark band, and
+     the operator saw it in one glance. Gotcha 135's mirror image, and the same
+     conclusion: an aggregate over pixels cannot see a single-column defect, so the
+     metric has to be STRUCTURAL and within-surface. `all-black columns in the resolved
+     surface` reads 1 -> 0, is deterministic, and needs no era alignment.
+189. **The pixel-centre convention needs no shift for COVERAGE, and adding one costs a
+     column.** Xenos samples centres at integers, Vulkan at half-integers; a rect
+     `[0, W]` covers W pixels under BOTH. The classic D3D9 half-pixel fix is about
+     texel-to-pixel alignment, not coverage, and applying it to geometry is a
+     subpixel shift of everything. Before inheriting one, ask which of the two it is.
+190. **A screen you cannot reach without a human is a screen nobody can measure.**
+     `CZ_FAKE_START_MS` presses only START, so every defect more than one menu level
+     past the title was an operator report with no headless reproduction —
+     `CZ_FAKE_PRESS_SEQ=START,A,A` is the fix, and the design detail that matters is
+     that it HOLDS its last entry rather than wrapping (a wrap walks back out of the
+     screen it was aimed at, and the run oscillates between two menus with no way to
+     tell that from a frame dump). Gotcha 103 said a gate needing a human is a capture
+     request; this is the other half — extend the arm until it is not.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1723,11 +1748,18 @@ CZ_AUDIO_TRACE=1   XMA context allocation + every 512th driver frame WITH its pe
 CZ_AUDIO_FRAME_US=N  the driver frame period (default 5333 = 256 samples @ 48 kHz)
 CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the control
                    arm for every claim about driving the audio callback
-CZ_FAKE_START_MS=N synthetic START press every N ms. A MEASUREMENT ARM, NOT A
+CZ_FAKE_START_MS=N synthetic press every N ms. A MEASUREMENT ARM, NOT A
                    FEATURE — it manufactures progress, so it announces itself on
                    every press and must NEVER be on for a gate run (gotcha 78).
                    Kept now that real input exists: it is the control for "was it
                    really my press that moved the boot"
+CZ_FAKE_PRESS_SEQ=START,A,A  which buttons that arm sends, one per interval, HOLDING
+                   the last rather than wrapping. Unset = START every interval, as
+                   before. It exists because everything more than one menu level past
+                   the title was unreachable headless and therefore unmeasurable
+                   (gotcha 190): with START,A,A the boot walks title -> logo -> menu ->
+                   loading screen with no operator. Names: A B X Y START BACK UP DOWN
+                   LEFT RIGHT
 CZ_SAVE_DIR=path   where saves live (default: a SIBLING of the package directory,
                    assets/save/ — never inside assets/game/, which is extractor
                    output). An EMPTY save root is part of the A1 gate's configuration
@@ -1819,6 +1851,14 @@ CZ_VK_DRAW_PROBE_COUNT=N  how many draws the draw probe prints (default 3)
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS
+CZ_VK_HALF_PIXEL=1 restore the -0.5 px shift the shaders' g_HalfPixelOffset used to
+                   carry — i.e. the pre-part-11 renderer, in which the scene tile's
+                   clear covered columns 0..638 and column 639 of the resolved scene
+                   surface was BLACK. The frame's blur turns that one column into a
+                   ~19 px dark band down the middle of the picture, which no aggregate
+                   in this project can see and an operator sees instantly (gotcha 188).
+                   The metric that CAN see it is structural: all-black columns in the
+                   resolved surface, 1 with this on and 0 without
 CZ_VK_NO_FLIP_Y=1  render with a positive-height viewport, i.e. the pre-fix vertically
                    MIRRORED frame. The arm for the flip that made the title screen
                    appear; note no numeric instrument in this project can tell the two

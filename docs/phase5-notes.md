@@ -1307,6 +1307,76 @@ frames are others (gotchas 127, 133).
   again: when every check of a computation passes and the result is wrong, the inputs
   are wrong — and here we were the ones failing to produce them.
 
+## 6y. THE LINE DOWN THE MIDDLE: one constant, one column, and no aggregate could see it
+
+Reported by the operator on a live run, immediately after §6x made the right tile
+render. A faint full-height line down the centre of the picture.
+
+**It is the half-pixel offset.** The translated shaders add `g_HalfPixelOffset` to
+every vertex's clip position and the runtime set it to -0.5 px, for the D3D9-vs-modern
+pixel-centre convention. That shift is not what the convention difference needs:
+
+* on Xenos a screen-space rect `[0, W]` samples pixel centres at the **integers**
+  `0..W-1` and covers W pixels;
+* on Vulkan the same rect samples centres at `0.5..W-0.5` and covers W pixels.
+
+The coverage already agrees. Shifting half a pixel on top moves the rect to
+`[-0.5, W-0.5)`, and the last pixel's centre then lands **exactly** on the exclusive
+right edge, where the top-left fill rule drops it.
+
+The scene's left tile clears screen 0..640, so its column 639 was covered by nothing at
+all. Measured on the resolved scene surface (`CZ_VK_SNAP_DUMP`), sky band, same binary:
+
+| | all-black columns | sky[639] |
+|---|---|---|
+| `CZ_VK_HALF_PIXEL=1` (the old value) | **[639]** | 0.0 |
+| default since part 11 | **[]** | 128.3, flat across the join |
+
+`frame_compare.py` over the era, two runs per arm alternated: 99.48 / 99.48 against
+99.61 / 99.62 median scene coverage — a 0.15 pp spread, **inside** the 1.5 pp band, so
+no regression. The 0.13 pp is in the right direction and about the right size for one
+column in 1280, and it is inside the band, so it is not claimed.
+
+### Why this one is worth a gotcha
+
+**One column in 1280 is 0.08% of the frame, and every aggregate this project owns is
+blind to it — but a human sees it instantly, because the frame's blur AMPLIFIES it.**
+A single black column, convolved with the scene's depth-of-field kernel, becomes a
+~19 px darkening: measured in the presented frame's sky band it runs x=629..648 with a
+minimum of 134.8 against a flat 150.1 either side. So the defect is 0.08% of the pixels
+and 1.5% of the width by the time it reaches the screen.
+
+That is the mirror image of gotcha 135 (the frame was upside down and no statistic could
+see it). There the aggregate was blind to a transform; here it is blind to a defect too
+small to move a median — and in both cases the operator's eye was the instrument that
+worked. The lesson is not "trust eyes over numbers": it is that a metric aggregating
+over pixels cannot see a defect whose extent is a single column, and the metric that
+CAN is a within-surface structural one. `all-black columns in the resolved surface` is
+that metric, it is deterministic, it needs no era alignment, and it reads 1 -> 0.
+
+## 6z. Still open, and now measurable: the menu panels
+
+Also from the operator's run, and **not fixed**: on the new-game screen, three panels
+render as solid black rectangles and some label text is malformed, while the body text
+on the loading screen next to it renders perfectly.
+
+The reason it is only recorded here is gotcha 103 in a new place — that screen is two
+menu levels past the title, and `CZ_FAKE_START_MS` presses only START, so no headless
+run could reach it. `CZ_FAKE_PRESS_SEQ=START,A,A` fixes that: a headless run now walks
+title -> logo -> menu -> loading screen, and part 12 can dump and measure those frames
+without an operator.
+
+What is already known, and it narrows the hunt:
+
+* **the glyph pipeline is not broken.** The loading screen's tip text renders crisply
+  and correctly in the same run, so this is not §6r's swizzle defect returning.
+* the black rectangles are large filled areas, not thin ones, so they are not the
+  §6y class of coverage defect.
+* the shape to check first is §6s's: a panel that samples a surface which our renderer
+  never wrote is served whatever the guest's allocator left there, and the per-pass
+  dependency graph (`CZ_VK_RESOLVE_TRACE` + `CZ_VK_SNAP_DUMP`, gotcha 140) is what
+  turns "this pass is black" into "this pass's input was never produced".
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

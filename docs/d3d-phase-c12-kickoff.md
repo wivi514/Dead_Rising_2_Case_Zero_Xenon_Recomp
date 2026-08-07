@@ -44,16 +44,33 @@ Phase C draw arm, `CZ_D3D_DRAW=1`:
 
 ## Where part 12 starts, in order
 
-1. **THE PICTURE IS THE NEXT QUESTION, and it is now worth asking properly.** Every
-   defect between the scene and the screen that this port knows about is fixed; the
-   scene surface is 99.5% non-black with both tiles rendering. What nobody has done is
-   compare the result against capture E with `tools/frame_signature.py` and say what is
-   still wrong — colour, gamma, missing passes, the UI layer. Do that FIRST, because it
-   is the only thing that can tell you whether the renderer's remaining work is large or
-   cosmetic. Bind it by era, not by one frame: this title screen is TWO screens (gotcha
-   176), so measure every dumped frame and separate the eras with one `awk`.
+1. **THE MENU PANELS — the one open defect with a live operator report, and it is now
+   MEASURABLE.** On the new-game screen three panels render as solid black rectangles
+   and some label text is malformed. Full record in `docs/phase5-notes.md` §6z. It was
+   not touched in part 11 because that screen is two menu levels past the title and
+   nothing headless could reach it; **`CZ_FAKE_PRESS_SEQ=START,A,A` now walks title ->
+   logo -> menu -> loading screen with no operator**, so dump and measure it first.
 
-2. **The conservative extent is a placeholder for a real one, and it should be measured
+   Two facts already narrow it: the loading screen's tip text renders crisply in the
+   same run, so the glyph pipeline is NOT broken and this is not §6r's swizzle defect
+   returning; and the black areas are large filled rectangles, so it is not §6y's
+   single-column coverage class either. The shape to check first is §6s's — a pass
+   sampling a surface our renderer never wrote is served whatever the guest's allocator
+   left there, and `CZ_VK_RESOLVE_TRACE` + `CZ_VK_SNAP_DUMP` is the per-pass dependency
+   graph that turns "this pass is black" into "this pass's input was never produced"
+   (gotcha 140).
+
+2. **THEN THE PICTURE AS A WHOLE.** Every defect between the scene and the screen that
+   this port knows about is fixed; the scene surface is 99.5% non-black with both tiles
+   rendering. What nobody has done is compare the result against capture E with
+   `tools/frame_signature.py` and say what is still wrong — colour, gamma, missing
+   passes, the UI layer. Bind it by era, not by one frame: this title screen is TWO
+   screens (gotcha 176), so measure every dumped frame and separate the eras with one
+   `awk`. Note the current state: every dumped title-screen frame's best orientation is
+   `identity` at +0.42..+0.55, none reaching the tool's +0.70 floor, which is what an
+   animated camera looks like rather than a defect.
+
+3. **The conservative extent is a placeholder for a real one, and it should be measured
    before it is improved.** `WriteScreenExtent` writes "this draw may have touched
    anything", which makes bin predication a no-op. That is correct output and it costs
    work: both tiles now execute ~975,000 draws where hardware executes ~573,000 each. If
@@ -63,7 +80,7 @@ Phase C draw arm, `CZ_D3D_DRAW=1`:
    `CZ_PM4_NO_SCREEN_EXTENT=1` plus the census. **Do not do this speculatively.** The
    current cost has not been shown to matter.
 
-3. **Item 2 from part 10/11's kickoff — the walker's dead `case 0x54:` INTERRUPT block
+4. **Item 2 from part 10/11's kickoff — the walker's dead `case 0x54:` INTERRUPT block
    and `MirrorIsPoisoned()` — is READY TO DELETE, and part 11 deliberately did not.**
    Re-measured on the current draw arm at `#83`: the walker's in-position INTERRUPT
    delivery prints zero lines and the poisoned-skip counter is zero. So part 10's
@@ -74,7 +91,7 @@ Phase C draw arm, `CZ_D3D_DRAW=1`:
    session that changed the regime. **A session that changes nothing else should
    confirm the two zeros and delete both.** That is the cheapest item on this list.
 
-4. **The kernel gates are exhausted as a forward oracle.** A1's position 93 is not the
+5. **The kernel gates are exhausted as a forward oracle.** A1's position 93 is not the
    next piece of work (finding 49, gotcha 107). Going further needs a gameplay
    comparison built from A2. Unchanged from parts 9, 10 and 11.
 
@@ -97,6 +114,13 @@ Phase C draw arm, `CZ_D3D_DRAW=1`:
   that does not exist writes nothing and says nothing. `mkdir -p` first.
 * **Run timed arms serially** (gotcha 183) — unchanged, and it still applies to the
   draw arm.
+* **A `cmake --build runtime/build` from INSIDE runtime/build fails, and `| tail -3`
+  swallows the failure** — the pipeline's exit status is tail's, so a following `&&`
+  proceeds and the A/B runs the OLD binary in both arms. That happened here and
+  produced two identical arms; the tell is an arm whose "on" run matches its "off" run
+  exactly (gotcha 151's signature).
+* **`CZ_VK_FRAME_DUMP` does not create its directory**, and says nothing when it
+  cannot write. `mkdir -p` first.
 
 ## New instruments and arms
 
@@ -105,6 +129,13 @@ CZ_PM4_NO_SCREEN_EXTENT=1        do not answer the GPU's screen-extent query —
                                  pre-part-11 command processor, and the same-binary
                                  control arm for the right tile. Applies to pm4.cpp and
                                  d3d_draw.cpp together
+CZ_VK_HALF_PIXEL=1               restore the -0.5 px vertex shift — the pre-part-11
+                                 renderer, whose scene tile left column 639 BLACK and
+                                 whose blur turned that into a visible line down the
+                                 middle of the picture
+CZ_FAKE_PRESS_SEQ=START,A,A      which buttons the synthetic-input arm sends, one per
+                                 interval, holding the last. This is what makes the
+                                 menu screens measurable at all
 CZ_BINMASK_PROBE=1               now reports on a 15-second clock and covers all four
                                  inputs: the mask setter's callers, the fix-up pass's
                                  output histogram, its TWO INPUTS (tile rects + a census
