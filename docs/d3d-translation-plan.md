@@ -1478,3 +1478,99 @@ longer exists, and both are guards against a crash that was real. Re-measure on 
 current arm before deleting; the kickoff's own condition — "a session that is not also
 changing the routing" — is not met by a session in which the routing's behaviour changed
 this much, even though it changed for free.
+
+## Phase C part 11 (2026-08-07, session 23): the empty right tile was a packet we never implemented
+
+Part 10 handed over "the mask standing at the right tile's draws is `80000000`, which is
+the placeholder the draw emitters write and a fix-up pass in the D3D worker is supposed
+to overwrite — and on our runtime that pass runs once, behind a closed gate, and patches
+zero records", plus one explicitly open item: the 97,115 draws carrying `8000000F` and
+239,063 carrying `80000003` that the placeholder story could not explain.
+
+**The open item dissolved because the premise was wrong, and the retraction is the whole
+finding.** Full record in `docs/phase5-notes.md` §6x; §6w carries the retraction in
+place.
+
+### 1. The probe was printing its first call and nothing else
+
+`sub_8284A7F8`, the fix-up pass, runs **1,751 times a boot and patches 388,451
+records**. `sub_8284B228`, the dispatcher above it, runs **3,497 times with its gate
+OPEN on 3,496 of them**. Part 10's "once, closed, zero" was `if (n == 1 || n % 20000)`
+against a subsystem that runs a few thousand times: the only line any run ever emitted
+was the one at call #1, whose counts are all 1 by construction. That is gotcha 109 — a
+capped emitter is not a count — inside our own instruments for the second time in three
+sessions. **Both probes now report on a 15-second clock, and the schedule is the thing
+to check first when a probe reports "1".**
+
+`[obj+0x164]` is not a flags word with a gate bit either. It is the current **bin
+select**, published by `sub_8284A6D0` from `sub_8284A668`, which sets bit 31 exactly
+when the tile index is 0 — so the "gate" reads "are we recording the first tile", and
+the patch running once per multi-tile recording is the design. (That also explains a
+number this port has stared at for three phases: the left tile keeps every draw
+regardless of its mask, because every patched mask carries bit 31 too, so
+`mask & 80000003` is nonzero by construction. Only the right tile ever consults the
+real bin bits.)
+
+### 2. What the pass computed, and which of its two inputs was rubbish
+
+| the fix-up pass wrote | records | share |
+|---|---|---|
+| `80000000` — touches NO tile | 294,787 | **75.9%** |
+| `80000003` — tile 0 only | 58,624 | 15.1% |
+| `8000000C` — tile 1 only | 2,450 | 0.6% |
+| `8000000F` — both tiles | 32,590 | 8.4% |
+
+The tile rects it intersects against are **perfect** — `tiles=2 tile0=0,0..640,720
+tile1=640,0..1280,720`, printed by the probe. The per-record rects are uninitialised
+memory (`50176,17408..0,0`, `0,0..8978,65535`, a dominant degenerate `0,0..0,0`).
+
+### 3. Whose job it was to fill them: EVENT_WRITE_EXT, event 0x1A
+
+The record is sixteen bytes — `{stream cursor, u16 minX, maxX, minY, maxY, minZ,
+maxZ}`, the extent in units of 8 pixels — and **the GPU writes the extent**. Each draw
+block ends `EVENT_WRITE_EXT {0x1A, &record+4} ; EVENT_WRITE {0x19}`: the Xenos screen
+extent query, dumping what was rasterized since the matching `0x19` into the record so
+the worker can turn it into next frame's bin mask.
+
+Our command processor decoded that packet and did nothing, because the fence family's
+handler stores only when a packet carries a value dword and this form carries an address
+and none. The capture is unambiguous about the form: over B1's first 6,000,001 packets,
+`EVENT_WRITE_EXT` appears **818,507 times, every one `body=2, event=0x1A`**, against
+819,953 `EVENT_WRITE body=1 event=0x19`. One pair per draw block, 818,507 no-ops a boot.
+
+Also retracted with it: `0x80000000` was never the placeholder. The placeholder is the
+**leading** `SET_BIN_MASK_LO FFFFFFFF` at `record[0] + 8`; the `0x80000000` part 10
+found is a deliberate trailing reset that confines the two bookkeeping packets after the
+draw to the first tile's pass.
+
+### 4. The fix, and the numbers
+
+`WriteScreenExtent` in `gpu/pm4.cpp`, duplicated into `gpu/d3d_draw.cpp` under one
+shared env arm so the two streams cannot decode a packet differently (the same rule
+`CZ_PM4_INDEX_ADDR_SWIZZLE` follows). We cannot know what a draw covered, so we write
+the conservative extent — larger than any tile, "this draw may have touched anything" —
+which makes bin predication a no-op rather than a wrong filter. Too large costs work;
+too small silently deletes geometry.
+
+Measured, same binary, `CZ_PM4_NO_SCREEN_EXTENT=1` as the control arm:
+
+| | control (pre-fix) | **fixed** | B1 (hardware) |
+|---|---|---|---|
+| fix-up pass output | 76% `80000000` | **100% `8000000F`** | — |
+| draw packets discarded by the bin rule | **32.7%** | **0.28%** | **0.3%** |
+| right tile (select `0000000C`) | `80000000` x1,125,183 SKIPPED | `8000000F` x974,779, kept 100% | `8000000F` x570,504, kept 100% |
+| the two tiles' offered counts | 1,472,725 vs 1,466,725 | 975,698 vs 974,779 | 575,744 vs 575,744 |
+
+0.28% against hardware's 0.3% is the first time this port's predication has agreed with
+the capture. The residue is symmetric and legitimate — the per-tile clear loop at
+82844180 emits `SET_BIN_MASK_LO 3 << 2i`, so each tile skips the other's clears.
+
+### 5. The general lesson, for Case West
+
+**A packet we implement and a packet we implement for every FORM it takes are not the
+same claim.** `EVENT_WRITE_EXT` has had a name in the opcode table since phase 1,
+appears in the census, and passed both capture oracles — because
+`pm4_packet_lengths.py` and `pm4_indirect_walks.py` check our arithmetic, and our
+arithmetic was right (gotcha 88, third time). The cheap standing check that would have
+caught it: census the capture by `(opcode, body length, event type)` rather than by
+opcode, and read any row your handler falls through as a hole.

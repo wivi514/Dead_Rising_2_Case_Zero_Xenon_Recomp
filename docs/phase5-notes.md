@@ -1028,6 +1028,16 @@ same picture.
 
 ## 6w. THE RIGHT TILE: the RULE is right, the MASK is an UNPATCHED PLACEHOLDER
 
+> **PARTLY RETRACTED BY §6x (session 23).** The first half of this section stands and is
+> load-bearing: the ME rule is right, the capture replay is right, and the wrong number
+> is the MASK VALUE standing at the right tile's draws. The second half does not. The
+> patch pass is NOT gated shut and does NOT patch zero records — it runs 1,751 times a
+> boot over 388,451 records, and "ran once, patched zero" was the probe's schedule
+> (call #1, then every 20,000) rather than a count. `0x80000000` is not the placeholder
+> either; it is a deliberate trailing reset, and the placeholder is the LEADING
+> `FFFFFFFF`. The real defect is one packet upstream of everything below — see §6x.
+
+
 Session 22 (phase C part 10). §6v ended with a check to run and no emulator needed:
 replay the predication rule over capture B1 and count how many draws survive under each
 bin select. Done — `tools/xtr_bin_predication.py` — and the answer retires every
@@ -1104,6 +1114,13 @@ that computation returns for "this draw touches all four bins".
 
 ### And the patch is behind a gate that is closed
 
+> **RETRACTED (§6x).** The gate is OPEN — 3,496 of 3,497 dispatcher entries — and
+> `[obj+0x164]` is not a flags word at all: it is the CURRENT BIN SELECT, published by
+> `sub_8284A6D0` out of `sub_8284A668`, which sets bit 31 exactly when the tile index
+> is 0. So the test below reads "are we recording the first tile", and the patch runs
+> once per multi-tile recording, as designed. The reading below came from a probe that
+> printed only its first call.
+
 `sub_8284B228`'s case for that token is
 
 ```
@@ -1149,6 +1166,119 @@ retirement survived a phase (gotcha 172).
 
 The probe reads the masks BACK out of the records the pass patched rather than
 recomputing the arithmetic, so it cannot merely agree with itself.
+
+## 6x. THE RIGHT TILE WAS A PACKET WE NEVER IMPLEMENTED: the SCREEN EXTENT query
+
+Session 23 (phase C part 11). §6w's open item — where the `8000000F` and `80000003`
+masks came from "given the patch pass touched zero records" — dissolved, because the
+premise was wrong. **The patch pass runs 1,751 times a boot and patches 388,451
+records.** §6w's "ran once, patched zero" was the probe's *first* line and nothing
+else: it printed at call #1 and then every 20,000, and the pass runs a few thousand
+times, so the only line any run ever emitted was the one whose counts are all 1 by
+construction. Gotcha 109 — a capped emitter is not a count — for the third time in this
+project, and the second time inside our own instruments. Both probes now report on a
+15-second CLOCK.
+
+### What the pass actually computed
+
+With a real census (`CZ_BINMASK_PROBE=1`, PM4 control arm, one 170 s boot):
+
+| what the fix-up pass wrote | records | share |
+|---|---|---|
+| `80000000` — touches NO tile | 294,787 | **75.9%** |
+| `80000003` — tile 0 only | 58,624 | 15.1% |
+| `8000000C` — tile 1 only | 2,450 | 0.6% |
+| `8000000F` — both tiles | 32,590 | 8.4% |
+
+which is the census's right-tile row-for-row (1,125,183 skipped on `80000000`, 216,412
+on `80000003`, 124,602 kept on `8000000F`). So the pass ran, and computed *empty*.
+
+Its two inputs are the tile rects and each record's rect. **The tile rects are
+perfect** — the probe prints them: `tiles=2  tile0=0,0..640,720  tile1=640,0..1280,720`,
+the exact left/right split. The record rects are garbage: `50176,17408..0,0`,
+`0,0..8978,65535`, and a dominant degenerate `0,0..0,0` — uninitialised memory.
+
+### Whose job was it to fill them
+
+The draw block the three UP emitters lay down is
+
+```
+SET_BIN_MASK_LO  FFFFFFFF        <- the patch TARGET, at record[0] + 8
+DRAW_INDX (predicated)
+SET_BIN_MASK_LO  80000000        <- a trailing reset, "tile 0 only"
+EVENT_WRITE_EXT  {0x1A, &record+4}
+EVENT_WRITE      {0x19}
+```
+
+`0x80000000` was never the placeholder (§6w's reading, retracted): the placeholder is
+the LEADING `FFFFFFFF`, and `0x80000000` is a deliberate trailing reset that confines
+the two bookkeeping packets after it to the first tile's pass. The record is sixteen
+bytes: `{stream cursor, u16 minX, maxX, minY, maxY, minZ, maxZ}` — four bytes of
+pointer and twelve of extent, in units of 8 pixels, and **the GPU writes the extent**.
+That is what `EVENT_WRITE_EXT` event `0x1A` is: the Xenos screen-extent query, dumping
+what was rasterized since the matching `EVENT_WRITE 0x19` into the record.
+
+Our command processor decoded that packet and did nothing with it. The fence family's
+handler stores only when a packet carries a value dword (`bodyCount >= 3`), and this
+form carries an address and no value. The capture says there is exactly one form of it
+in this title: over B1's first 6,000,001 packets, `EVENT_WRITE_EXT` is **818,507**
+packets, every one `body=2, event=0x1A`, against 819,953 `EVENT_WRITE body=1
+event=0x19`. One pair per draw block.
+
+So: extent never written -> fix-up pass intersects uninitialised memory against the
+tile rects -> 76% of records come back "touches no tile" -> the right tile's pass
+discards them. Four layers between the missing packet and the symptom, and every layer
+in between was working correctly.
+
+### The fix, and what it writes
+
+`WriteScreenExtent` in `gpu/pm4.cpp` (and its twin in `gpu/d3d_draw.cpp`, sharing one
+env arm so the two streams cannot decode this differently). We do not rasterize on the
+command-processor thread and cannot know what a draw covered, so we write the
+conservative answer — an extent larger than any tile, i.e. "this draw may have touched
+anything". That makes bin predication a no-op rather than a wrong filter, and it can
+only ever cost work: a draw offered to a tile it does not touch is rejected by the
+scissor. A too-SMALL extent silently deletes geometry, which is the failure being
+fixed. The layout is fixed by the pass's own four comparisons, and the halfword order
+by the address's endian code (1 = 8-in-16), which `StoreGpu` already applies — passing
+the pair the other way round transposes minX with maxX and reads as an empty rect.
+
+### Measured, same binary, `CZ_PM4_NO_SCREEN_EXTENT=1` as the control arm
+
+| | control (pre-fix) | **fixed** | B1 (hardware) |
+|---|---|---|---|
+| fix-up pass output | 76% `80000000` | **100% `8000000F`** (259,844 of 259,844) | — |
+| draw packets discarded by the bin rule | 1,352,721 of 4,141,388 = **32.7%** | **7,853 of 2,761,594 = 0.28%** | 5,240 of 1,643,219 = **0.3%** |
+| right tile (select `0000000C`) | `80000000` x1,125,183 SKIPPED | `8000000F` x974,779, **kept 100%** | `8000000F` x570,504, kept 100% |
+| left tile (select `80000003`) | `FFFFFFFF` x1,472,725, kept | `FFFFFFFF` x975,698, kept | `FFFFFFFF` x570,504, kept |
+| the two tiles' offered counts | 1,472,725 vs 1,466,725 | 975,698 vs 974,779 | 575,744 vs 575,744 |
+
+The residue is symmetric and legitimate: the per-tile clear loop at 82844180 emits
+`SET_BIN_MASK_LO 3 << 2i` per tile, so each tile skips the other's clears — 3,928 and
+3,925 in the run above. **0.28% against hardware's 0.3%** is the first time this
+port's predication has agreed with the capture.
+
+Zero `GPU store outside the physical arena DROPPED` lines, which had to be checked:
+the guest builds a PHYSICAL address for that write, and a record outside our physical
+arena would have had the store dropped and the pass would still be reading rubbish.
+
+### Two method notes
+
+* **The capture's stream window is a packet-level oracle, and it was one command
+  away.** `tools/xtr_bin_predication.py --trace-window N --trace-arm-mask 8000000F`
+  prints the same window `CZ_PM4_BIN_TRACE` prints for our runtime. Hardware's reads
+  `MASK_LO 8000000F ; DRAW -> run ; MASK_LO 80000000 ; MASK_LO 8000000F ; DRAW -> run`
+  — the block structure above, with the leading mask PATCHED — while ours read
+  `MASK_LO 80000000 ; MASK_LO 80000000 ; DRAW -> SKIP`. Two consecutive `80000000`
+  writes is not "the mask is a placeholder", it is "the leading mask was computed and
+  came out empty", and the difference is visible in four lines.
+* **A packet we implement and a packet we implement for every FORM it takes are not
+  the same claim.** `EVENT_WRITE_EXT` has been in the opcode table since phase 1, has
+  a name, appears in the census, and passed both capture oracles — because
+  `pm4_packet_lengths.py` and `pm4_indirect_walks.py` check our *arithmetic*, and our
+  arithmetic was right. It executed 818,507 times a boot and did nothing. Gotcha 88
+  again: when every check of a computation passes and the result is wrong, the inputs
+  are wrong — and here we were the ones failing to produce them.
 
 ## 7. What is NOT right yet, with the measurement for each
 

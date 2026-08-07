@@ -1177,6 +1177,43 @@ From phase C part 10 (the right tile, and the oracle that was sitting in the cap
      longer exists, and both are guards against a crash that was real. Gotcha 13's shelf
      life, pointed at a deletion rather than a finding.
 
+From phase C part 11 (the screen extent — a packet implemented and never executed):
+
+184. **A packet you IMPLEMENT and a packet you implement for every FORM it takes are
+     different claims, and the census that separates them is keyed on the packet's own
+     fields.** `EVENT_WRITE_EXT` has had a name in this port's opcode table since phase
+     1, appears in every census, and passed both capture oracles — and did nothing
+     818,507 times a boot, because the fence family's handler stores only when a packet
+     carries a value dword and this form carries an address and none. Census a capture
+     by `(opcode, body length, event type)`, not by opcode, and read any row your
+     handler falls through as a hole. Gotcha 88's other half: the oracles check your
+     ARITHMETIC, and ours was right.
+185. **A GPU can be an INPUT to guest logic, not only an output.** Xenos's screen-extent
+     query (`EVENT_WRITE_EXT` event `0x1A`, paired with `EVENT_WRITE 0x19`) writes the
+     rectangle the GPU just rasterized into guest memory, and this title feeds it
+     straight back into next frame's bin masks. A recompiled runtime that renders on the
+     host and never writes those extents leaves the guest intersecting UNINITIALISED
+     MEMORY against its tile rects — 76% of records came back "touches no tile" — and
+     the symptom lands four layers away, as a scene tile that renders nothing. Where a
+     query cannot be answered honestly, answer it CONSERVATIVELY: an extent larger than
+     any tile makes predication a no-op, and too large only costs work while too small
+     silently deletes geometry.
+186. **A probe that reports "1" is reporting its schedule until you have read the
+     schedule.** Two probes here printed at call #1 and then every 20,000, against
+     subsystems that run a few thousand times a boot — so every run emitted exactly one
+     line, whose counts are all 1 by construction, and a whole session's conclusions
+     ("the pass runs once, patches zero records, behind a closed gate") were built on
+     it. Report on a CLOCK, not a call count: a time-based schedule cannot be wrong
+     about a rate it has never seen. Gotcha 109 in our own instruments, twice in three
+     sessions.
+187. **The capture can replay your stream-order window, not just your rule.**
+     `xtr_bin_predication.py --trace-window N --trace-arm-mask HEX` prints the same
+     window `CZ_PM4_BIN_TRACE` prints for us. Hardware's read `MASK_LO 8000000F ; DRAW
+     -> run ; MASK_LO 80000000 ; MASK_LO 8000000F ; DRAW -> run` and ours read `MASK_LO
+     80000000 ; MASK_LO 80000000 ; DRAW -> SKIP`. Four lines said "the leading mask was
+     computed and came out empty" where a whole phase had read "the mask is an unpatched
+     placeholder". Build the capture-side twin of every stream instrument you own.
+
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1524,12 +1561,27 @@ CZ_PM4_BIN_CENSUS=1  the whole-run (bin mask, bin select) -> offered/skipped tab
                    predication and cannot be its own oracle. Hardware discards 0.3% of
                    draw packets; we discard 33%, all of it one mask value at the right
                    tile (phase5-notes §6w)
-CZ_BINMASK_PROBE=1 the guest side of that: the bin-mask setter's caller census, the
-                   rect-to-bin-mask PATCH pass (sub_8284A7F8) with a histogram of what
-                   it actually wrote — read BACK out of the records rather than
-                   recomputed, so the probe cannot merely agree with itself — and the
-                   `[obj+0x164]` bit-31 gate above it, which is what decides whether the
-                   patch runs at all
+CZ_BINMASK_PROBE=1 the guest side of that, and all four inputs to the mask in one
+                   flag: the bin-mask setter's caller census; the rect-to-bin-mask PATCH
+                   pass (sub_8284A7F8) with a histogram of what it wrote, read BACK out
+                   of the records rather than recomputed so the probe cannot merely agree
+                   with itself; the pass's TWO INPUTS — the tile rects (`tiles=2
+                   tile0=0,0..640,720 tile1=640,0..1280,720`) and a census of the
+                   per-record screen extents that produced each mask; and the bin SELECT
+                   producer (sub_8284A6D0), which is what `[obj+0x164]` actually holds.
+                   Every report is on a 15-SECOND CLOCK, not a call count: the previous
+                   version printed at call #1 and then every 20,000, so a subsystem that
+                   runs a few thousand times a boot emitted exactly one line — reading
+                   "ran 1 time" — and part 10 believed it (gotcha 186)
+CZ_PM4_NO_SCREEN_EXTENT=1  do NOT answer the GPU's screen-extent query
+                   (EVENT_WRITE_EXT event 0x1A) — i.e. the pre-part-11 command
+                   processor, in which 818,507 of those packets a boot did nothing and
+                   the guest's own bin-mask fix-up pass intersected uninitialised memory
+                   against its tile rects. The same-binary control arm for the right
+                   tile: with it on, 76% of records come back "touches no tile" and
+                   32.7% of draw packets are discarded; off, 100% come back `8000000F`
+                   and 0.28% are discarded, against B1's 0.3%. Applies to gpu/pm4.cpp
+                   and gpu/d3d_draw.cpp together, so the two arms stay comparable
 CZ_PM4_NO_PREDICATION=1  execute predicated packets anyway. An ARM, and a destructive
                    one: running a packet hardware skipped puts one tile's geometry in
                    another tile's pass and corrupts the state stream with it (a boot
@@ -1853,10 +1905,15 @@ Replay the ME's bin-predication rule over a capture. **This is the oracle for an
 about what our command processor discards**, and it needs no emulator: Xenia records a
 `PacketStart` for every packet BEFORE evaluating predication, so the capture contains
 the packets hardware skipped. Compare its pair table against `CZ_PM4_BIN_CENSUS=1`'s —
-hardware discards **0.3%** of this title's draw packets and we discard 33% (gotcha 178):
+hardware discards **0.3%** of this title's draw packets and, since part 11's screen
+extent, so do we (0.28%; it was 33% — gotcha 178, and gotcha 185 for the cause):
 ```
 python3 tools/xtr_bin_predication.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr" --per-select
 ```
+`--trace-window N --trace-arm-mask 8000000F` prints the capture's own stream-order
+window — the exact twin of `CZ_PM4_BIN_TRACE` + `CZ_PM4_BIN_TRACE_ARMMASK`, and the
+comparison that named part 11's defect in four lines (gotcha 187). It stops at the
+budget, so its census is over a PREFIX and says so.
 
 Check the command processor against the boundaries hardware itself used. The first
 covers each packet's LENGTH (24.5 M packets); the second covers a WALK — every indirect
