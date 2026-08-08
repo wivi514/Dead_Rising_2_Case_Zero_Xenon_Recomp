@@ -572,6 +572,31 @@ static uint32_t XamEnumerate_x(uint32_t handle, uint32_t flags, uint32_t buffer,
 //   -> NtCreateFile(save:\DR2P000.DSF), NtWriteFile(length=0x0004A000)
 // so the export's whole job is to make `save:` mean a directory. The low nibble of
 // `flags` is the disposition, in the CreateFile sense.
+//
+// THE NINTH ARGUMENT IS AN OVERLAPPED, AND IGNORING IT FROZE THE SAVE.
+// ---------------------------------------------------------------------
+// This export mounted `save:` correctly, returned 0, and hung the game on "Saving
+// content. Please do not turn off your console." — with no error anywhere, no
+// blocked thread, and the directory created on disk. Every observable said success.
+//
+// A XAM export that takes an overlapped is ASYNCHRONOUS whenever the caller supplies
+// one: it returns ERROR_IO_PENDING and completes the block later. The title pre-arms
+// `[ovl+0] = 997` itself and waits for someone to change it, so a synchronous 0 with
+// the block untouched is not a wrong answer the guest can notice — it is a promise
+// nobody keeps. Gotcha 46 for the third time in this port (NtReadFile's APC, then
+// XamUserReadProfileSettings, now this): the contract of an async call includes its
+// NOTIFICATION, not just its data.
+//
+// Where the argument is, stated by the guest rather than by an ABI document. The
+// wrapper sub_825D79C0 forwards its own ninth argument into the outgoing parameter
+// save area immediately before the call:
+//
+//     825D7A1C  lwz  r11,0xC4(r1)      ; its own arg 9, past its 0x70 frame
+//     825D7A20  stw  r11,0x54(r1)      ; slot 0 of the outgoing save area
+//     825D7A24  bl   XamContentCreateEx
+//
+// and 0x54 is the same slot gpu/vd.cpp reads VdSwap's spilled arguments from, so the
+// convention is one this port has already validated in an unrelated subsystem.
 PPC_FUNC(__imp__XamContentCreateEx)
 {
     KCALL("XamContentCreateEx");
@@ -581,10 +606,13 @@ PPC_FUNC(__imp__XamContentCreateEx)
     const uint32_t flags = ctx.r6.u32;
     const uint32_t dispositionPtr = ctx.r7.u32;
     const uint32_t licenseMaskPtr = ctx.r8.u32;
+    const uint32_t overlapped =
+        *reinterpret_cast<be<uint32_t>*>(base + ctx.r1.u32 + 0x54);
 
     if (!rootNamePtr || !dataPtr)
     {
-        ctx.r3.u64 = ERROR_INVALID_PARAMETER;
+        Xam_CompleteOverlapped(overlapped, ERROR_INVALID_PARAMETER, 0);
+        ctx.r3.u64 = overlapped ? kErrorIoPending : ERROR_INVALID_PARAMETER;
         return;
     }
 
@@ -632,25 +660,37 @@ PPC_FUNC(__imp__XamContentCreateEx)
         std::lock_guard lock(g_mountMutex);
         VfsMountDevice(rootName, dir.string());
         g_mounts[rootName] = dir.string();
-        KLOG("XamContentCreateEx('%s', content '%s', flags %08X) -> mounted at %s\n",
-             rootName, name.c_str(), flags, dir.string().c_str());
+        KLOG("XamContentCreateEx('%s', content '%s', flags %08X, overlapped %08X) -> "
+             "mounted at %s\n",
+             rootName, name.c_str(), flags, overlapped, dir.string().c_str());
     }
     else
     {
-        KLOG("XamContentCreateEx('%s', content '%s', flags %08X) -> %u\n", rootName,
-             name.c_str(), flags, status);
+        KLOG("XamContentCreateEx('%s', content '%s', flags %08X, overlapped %08X) -> %u\n",
+             rootName, name.c_str(), flags, overlapped, status);
     }
-    ctx.r3.u64 = status;
+
+    // The notification half. Done on the failure path too, because an unanswered
+    // overlapped hangs the caller just as hard when the answer is "no".
+    Xam_CompleteOverlapped(overlapped, status, 0);
+    ctx.r3.u64 = overlapped ? kErrorIoPending : status;
 }
 
 // XamContentClose(rootName, overlapped) — A3: `(8209089C(save), 00000000)`, and Xenia
 // answers by unregistering both the symlink and the device. Unmounting is the whole
 // job; the files stay on disk, which is the point of a save.
+//
+// It takes an overlapped as well. A3 passes 00000000 there, so the synchronous path
+// is the one hardware exercised and the one that matters; the async path is wired
+// anyway because XamContentCreateEx has just demonstrated what dropping it costs,
+// and because "the capture happened to pass null" is a fact about the capture.
 static uint32_t XamContentClose_x(uint32_t rootNamePtr, uint32_t overlapped)
 {
-    (void)overlapped;
     if (!rootNamePtr)
-        return ERROR_INVALID_PARAMETER;
+    {
+        Xam_CompleteOverlapped(overlapped, ERROR_INVALID_PARAMETER, 0);
+        return overlapped ? kErrorIoPending : ERROR_INVALID_PARAMETER;
+    }
     const char* rootName = reinterpret_cast<const char*>(g_memory.Translate(rootNamePtr));
     std::lock_guard lock(g_mountMutex);
     auto it = g_mounts.find(rootName);

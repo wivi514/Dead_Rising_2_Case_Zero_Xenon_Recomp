@@ -16,6 +16,15 @@
 // unless CZ_SAVE_DIR says otherwise.
 void ContentSetRootFromGameDir(const std::string& gameDir);
 
+// Complete an XOVERLAPPED in place (kernel/imports.cpp owns the struct layout, which
+// is transcribed there from the title's OWN XGetOverlappedResult). A XAM export that
+// takes an overlapped is ASYNCHRONOUS when the caller supplies one: it must fill the
+// block, signal the event, and return ERROR_IO_PENDING. Returning a synchronous
+// success and leaving the block alone looks correct from every angle except the one
+// that matters — the guest pre-arms +0 to 997 and waits for someone to change it.
+constexpr uint32_t kErrorIoPending = 997;
+void Xam_CompleteOverlapped(uint32_t overlappedPtr, uint32_t result, uint32_t length);
+
 // The implementation bound to a dynamically-resolved xam ordinal, or nullptr if we
 // have none for it. XexGetProcedureAddress uses this to decide whether to mint a
 // thunk to a real function or to the generic honest-failure stub.

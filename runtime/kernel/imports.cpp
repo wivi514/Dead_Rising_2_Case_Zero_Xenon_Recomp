@@ -3311,7 +3311,7 @@ static uint32_t ProfileDefaultValue(uint32_t settingId)
 // event is signalled anyway, because a *different* caller may wait on the handle
 // directly and gotcha 46 is precisely about the notification half of an async
 // contract being the half that gets dropped.
-static void CompleteOverlapped(GuestOverlapped* ovl, uint32_t result, uint32_t length)
+void CompleteOverlapped(GuestOverlapped* ovl, uint32_t result, uint32_t length)
 {
     if (!ovl)
         return;
@@ -3332,6 +3332,19 @@ static void CompleteOverlapped(GuestOverlapped* ovl, uint32_t result, uint32_t l
     }
 
     SignalGuestEvent(ovl->event);
+}
+
+// The same thing addressed by GUEST ADDRESS, for the exports that live in another
+// TU. content.cpp needs it because XamContentCreateEx is asynchronous whenever the
+// caller supplies an overlapped, and that is the half of the contract this runtime
+// has dropped twice now (gotcha 46).
+void Xam_CompleteOverlapped(uint32_t overlappedPtr, uint32_t result, uint32_t length)
+{
+    if (!overlappedPtr)
+        return;
+    CompleteOverlapped(
+        reinterpret_cast<GuestOverlapped*>(g_memory.Translate(overlappedPtr)), result,
+        length);
 }
 
 // XamUserReadProfileSettings(titleId, userIndex, numXuids, xuids, numSettingIds,
