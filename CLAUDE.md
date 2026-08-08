@@ -2115,6 +2115,45 @@ CZ_VK_SNAP_DUMP=dir    EVERY resolve snapshot of one frame. The frame is the las
 CZ_VK_SNAP_FRAME=N which frame that is (default 600). It was a hardcoded 600 for as long
                    as the instrument existed, which was fine while every question was
                    about the title screen and useless the moment one was not
+CZ_VK_SNAP_ON_BLACK[=pct]  dump the whole resolve chain of the frame the picture DIED
+                   on, triggered BY it dying (default floor 0.5% coverage). The
+                   view-dependent whole-frame black happens when a human turns a camera,
+                   so CZ_VK_SNAP_FRAME — which fires on a frame NUMBER — could never
+                   capture it, and every report of that defect has been the black frame
+                   ALONE, which is consistent with every pass being wrong and with
+                   exactly one being wrong. It fires on a TRANSITION, not a threshold:
+                   this runtime presents plenty of legitimately black frames during boot
+                   and loading, so a bare threshold dumps a chain nobody wants.
+                   CZ_VK_SNAP_ON_BLACK_LIT=pct is the arming bar (default 20) and
+                   CZ_VK_SNAP_ON_BLACK_MAX=N caps total episodes (default 4). The cap is
+                   not caution: the instrument's own positive control (floor 99, which
+                   fires on essentially every frame) dumped **9,833 PPMs** and refilled a
+                   tmpfs whose exhaustion kills this machine's shell. Its POSITIVE
+                   CONTROL is `CZ_VK_SNAP_ON_BLACK=99 CZ_VK_SNAP_ON_BLACK_LIT=20
+                   CZ_VK_SNAP_FRAME=999999` — four lines, 180 files; run it before
+                   believing a run that dumped nothing, because the FIRST version of this
+                   trigger could not fire at all and neither could its control
+CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not a frame
+                   count — a per-N-frames report samples a different amount of wall time
+                   in every era and averages the boot's fast frames with gameplay's slow
+                   ones, gotcha 186). `draw` wraps ALL of DoDraw so the renderer and
+                   everything else separate by subtraction; `submit` is the honest check
+                   on the whole table, being the wait for the GPU. **Gameplay, ~1,900
+                   draws, 87 ms/frame: draw 8.6% [constants 0.5 streams 2.2 textures 1.0
+                   record 5.0 other 0.0] submit 32.6% readback 0.4% outside 58.5%**, at
+                   134% process CPU — one saturated thread. So the frame is GPU wait plus
+                   guest/PM4 code and the ENTIRE renderer is under a tenth of it; making
+                   the renderer instant buys ~1.09x. Read this before planning renderer
+                   optimisation — the per-draw constant upload is the obvious suspect
+                   (8 KB x 1,900 draws = ~19 MB a frame) and is 0.5%
+CZ_VK_READBACK_UNCACHED=1  allocate the readback buffer HOST_VISIBLE|HOST_COHERENT only,
+                   i.e. the pre-part-17 WRITE-COMBINED buffer. FindMemoryType returns the
+                   FIRST type matching its mask, and on a discrete GPU that one is
+                   write-combined — right for every other mapped buffer here, which are
+                   CPU-write-only, and exactly wrong for the one buffer the CPU READS.
+                   With it on, presenting a frame reads 3.7 MB back uncached at ~230 MB/s:
+                   readback 15.7% of a 103 ms frame against 0.4% of an 87 ms one, 9.7 fps
+                   against 11.5 (operator, windowed: ~10 against ~15)
 CZ_VK_FRAME_DUMP_EVERY=N  the frame-dump interval (default 64). The save-slot panel the
                    synthetic-input arm walks THROUGH appears in exactly ONE frame of a
                    180 s boot at 64
@@ -3556,6 +3595,47 @@ error that spares saturated reds and yellows while turning a pale blue sky magen
 the mid greys green is the signature of a **wrong colour-grading LUT**, which is exactly
 what §6s proved this frame depends on completely and §6af caught silently expiring. It is
 item 6 below, at last visible somewhere it cannot hide.
+
+**PHASE C PART 17 (2026-08-08, session 29): the world is reachable headless, the frame
+is PROFILED, and the renderer is not where it goes.** Hand-off in
+`docs/d3d-phase-c18-kickoff.md`.
+
+* **Analog sticks in the synthetic-input arm.** `LSUP/LSDOWN/LSLEFT/LSRIGHT` walk Chuck,
+  `RSUP/RSDOWN/RSLEFT/RSRIGHT` aim the camera; a stick entry HOLDS for its interval where
+  a button entry taps for 150 ms. Verified: `LSUP` walks him from mid-safehouse to the
+  door and raises its "Open (B)" prompt, `RSRIGHT` swings the camera ~90°. This closes
+  the other half of gotcha 190 — menus were reachable headless and the WORLD was not, so
+  every gameplay defect on the board was an operator report with no reproduction.
+* **THE FRAME RATE IS NOT THE RENDERER'S, and this is measured rather than argued.**
+  `CZ_VK_PROFILE` on gameplay: **the entire renderer is 8.6% of an 87 ms frame**, against
+  33% GPU wait and 58% guest code + command processor, at 134% process CPU. Making the
+  renderer instant buys ~1.09x. **My own prime suspect before measuring — the per-draw
+  constant upload, 8 KB x ~1,900 draws = ~19 MB a frame — is 0.5%** (gotcha 80: write the
+  oracle before the theory, and this session did it backwards).
+* **One real win: the readback buffer was WRITE-COMBINED.** Presenting a frame read
+  3.7 MB back uncached at ~230 MB/s. `readback` 15.7% -> 0.4%, frame 103 -> 87 ms, 9.7 ->
+  11.5 fps headless and ~10 -> ~15 windowed. `CZ_VK_READBACK_UNCACHED=1` is the control.
+* **`CZ_VK_SNAP_ON_BLACK`** captures the view-dependent black by itself. The operator
+  produced its first BEFORE/AFTER pair, and the DIRECTION names the mechanism: a
+  degenerate auto-exposure that saturated would go WHITE, and this goes BLACK — which is
+  what `exposure = key / averageLuminance` does when the average is enormous or
+  non-finite, with an enormous blown-out glow sitting in the "before" frame.
+* **Two retractions, both from ordinary play** (the part-17 pattern, again): the Still
+  Creek **pause menu is pixel-correct**, and **Dick renders**. Re-check Fausto's legs and
+  Gemini's hair before working item 3d.
+* **The save's failure MOVED rather than persisting.** `XUserWriteAchievements` no longer
+  returns E_FAIL and `XamContentCreateEx` mounts. Its `XamContentClose` is ~10 lines
+  later with no file activity between — **which is NOT evidence that nothing was
+  written**, because `NtCreateFile` successes print only for the first 512 and then every
+  64th and that run was thousands of opens deep (gotcha 109). One save with
+  `CZ_FILE_TRACE=1 CZ_SAVE_PROBE=1` settles it.
+* **Operational, and it cost the session's best evidence: `/tmp` is a TMPFS on this
+  machine**, 32 GB, and it was sitting at 24 GB of scratch from earlier sessions. A full
+  one makes `cz_runtime` runs fail with `write error: Disk quota exceeded`, which
+  presents as the SHELL DYING seconds after a run, and it stopped the operator saving
+  screenshots — losing both frames of the black-transition pair. `df -h /tmp` before a
+  run, not after a mystery. Note the misdiagnosis too: this session's own ~1 GB of frame
+  dumps were blamed for the whole thing, and deleting them changed the total by 4%.
 
 Next, in order:
 
