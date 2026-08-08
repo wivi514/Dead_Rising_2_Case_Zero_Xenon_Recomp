@@ -283,10 +283,12 @@ Next, in order:
 9. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
    not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
    `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
-   save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
-   paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
-   shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
-   part 13's `XeCryptSha` one-shot.
+   save-data path. **Part 19 cleared the save layer's own
+   `XamContentCreateEx`/`XamContentClose` off this list and added `NtWriteFile` and
+   `XamContentCreateInternal` to the proven set**, all four on a save/load round trip an
+   operator drove end to end. Still unrun: the rest of finding 34, both of finding 36's
+   teardown paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot
+   never shuts audio down), and part 13's `XeCryptSha` one-shot.
 10. Audio output and XMA decoding (phase 6). **DEMOTED by part 16** — it is no longer
    a candidate for the prologue blocker, so it is back to being "the game is silent".
    The kick bitmap at `0x7FEA1A80` lands in ordinary flat memory and is inert; a real

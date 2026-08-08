@@ -11,9 +11,10 @@ worked example.
 Case Zero boots, renders and plays. Ordinary gameplay is 31 fps and closed at the title's
 own pacing; crowds are 22-25 and CPU-bound in our runtime. The picture matches capture E2
 at +0.9597 identity. **The port's top rendering defect for the last six parts — the
-view-dependent whole-frame black — is solved and was a 128 MB allocator. And the SAVE
-WORKS**, confirmed by an operator and byte-checked against the hardware save capture;
-only the LOAD half is untested. What is open: the shadow cascade, mipmaps, NPC part
+view-dependent whole-frame black — is solved and was a 128 MB allocator. And SAVE AND
+LOAD are a closed round trip**, confirmed by an operator and byte-checked against the
+hardware save capture — the first title state in this port that survives a process exit.
+What is open: the shadow cascade, mipmaps, NPC part
 meshes, the magenta sky / colour-grading LUT, the prologue cinematic, and the CPU half of
 the crowd frame.
 
@@ -33,23 +34,22 @@ the crowd frame.
      GPU term (gotcha 219). It was P8 for the whole of part 19, which is fine because
      part 19 measured no frame times.
 
-2. **THE SAVE WRITES. The remaining half is the LOAD, and it is one relaunch.**
-   Confirmed by an operator the same day: "Game saved successfully", A3's exact call
-   sequence, and a 303,104-byte file whose bytes 4..31 are IDENTICAL to the hardware save
-   A3 shipped. Open-items 1b is retracted by that run.
-   **Nothing has read the file back yet.** Relaunch and choose Load Game; the save on
-   disk is now OURS, from this machine's profile, which removes the confound that made
-   open-items 2 ambiguous — A3's save was made under the fork's profile GUID and a 360
-   save is signed per profile, so `Damaged Content` may always have been the correct
-   answer to that file rather than evidence about XAM ordinal `0x271`. One run separates
-   "the ordinal is missing" from "that file was never ours to load", and `0x271` should
-   appear in the log when it does.
-   NB **the pause menu has no save option** (RESUME / BIKE PARTS / CASE FILE / COMBO
-   CARDS / STATUS / NOTEBOOK / MAP / TUTORIALS / HELP & OPTIONS / LEADERBOARDS /
-   ACHIEVEMENTS / QUIT), and the image names saving as `cTriggerVolume::ACTION_SAVE_GAME`
-   — it is a volume you walk into. That is why the synthetic-input arm could not reach it
-   and why this one needed a human; do not spend another session trying to drive it
-   headlessly without first finding the trigger's world position.
+2. ~~**THE SAVE**~~ **DONE — save and load are a closed round trip.** Both halves
+   confirmed by an operator: the title writes a 303,104-byte file whose header is
+   byte-identical to hardware's from offset 4, and reads it back and resumes. Four
+   defects, each independently fatal: `NtCreateFile` honoured no disposition,
+   `NtWriteFile` was a stub, the VFS cached negative lookups, and xam ordinal `0x271`
+   (`XamContentCreateInternal`) was refused because `kResolvable` was built from A1,
+   which was captured with an EMPTY save root — the one configuration in which the load
+   path never runs. **Open-items 1b and 2 are both retracted**, and 2's per-profile
+   signature theory with them: A3's save was never ours to load, so every conclusion
+   drawn from trying was about the wrong file.
+   Two notes for anyone touching this area. **The pause menu has no save option** and the
+   image names saving as `cTriggerVolume::ACTION_SAVE_GAME` — it is a volume you walk
+   into, which is why the synthetic-input arm cannot reach it and why this needed a
+   human. And the LOAD half **is** headlessly reachable: the slot panel enumerates and
+   mounts at boot once a save exists, so `ord=0x271 -> ...` and the `save:` open both
+   appear in a plain run.
 
 3. **The remaining picture defects, now that the black is out of the way.** They were all
    competing with it for attention and several were probably contaminated by it — a frame

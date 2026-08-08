@@ -1204,6 +1204,21 @@ superseded by the overnight session before this one started.
   item outlived the defect. What is still untested is the LOAD half, and it is now a
   better test than it has ever been, because the save on disk is OURS rather than A3's
   (whose foreign profile GUID was the confound under open-items 2's `Damaged Content`).
+* **AND IT LOADS. The save round trip is closed** — the first title state in this port
+  that survives a process exit. The first Load attempt failed with **"Load failed. File
+  appears to be corrupt."** with the file untouched on disk, and the log named the real
+  cause: `XexGetProcedureAddress ord=0x271 -> NOT_FOUND`, and **the file was never
+  opened**. The title's own error text named the wrong subsystem, which is what three
+  sessions of reading `Damaged Content` as evidence about the save's CONTENTS had been
+  worth. **Ordinal `0x271` is `XamContentCreateInternal`**, named from A3's own load-back
+  and from the guest's call site rather than from an ordinal table — `sub_825D8F30`
+  builds an `XCONTENT_DATA` on its stack with a **42-byte** file-name field, which is
+  exactly `XCONTENT_DATA::szFileName`, and passes flags 3 = `OPEN_EXISTING`. It is the
+  same mount `XamContentCreateEx` already did, so the two are now one shared body.
+  **This CLOSES open-items 2 and retires its per-profile-signature explanation as
+  wrong**: A3's save was never ours to load. And `kResolvable` is no longer "the seven
+  A1 resolves" — A1 was captured with an EMPTY save root, the one configuration in which
+  the load path never runs (gotchas 45 and 106, for the second time).
 * **THE SAVE COULD NOT WRITE, IN TWO INDEPENDENT WAYS, and neither was visible.**
   `NtCreateFile` ignored `createDisposition` entirely and opened every handle `"rb"`;
   `NtWriteFile` was a generated honest-failure stub. Either alone produces exactly the

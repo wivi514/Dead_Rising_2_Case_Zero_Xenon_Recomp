@@ -528,11 +528,14 @@ Where the port is, as of 2026-08-08 (phase C part 19):
   post chain and presented black over a correctly rendered scene. 160 black frames of
   8,216 at 128 MB, zero at 512, and every one of the 160 the frame after an exhaustion.
   It grows now. `docs/phase5-notes.md` §6ap.
-* **The save WORKS**, confirmed by an operator and cross-checked against hardware: the
-  title reports "Game saved successfully" and the file is 303,104 bytes with bytes 4..31
-  identical to the real 360 save capture A3 shipped (`docs/phase3-notes.md` finding 52).
-  `NtCreateFile` had honoured no disposition and `NtWriteFile` was a stub. **The LOAD
-  half is untested** and is one relaunch away.
+* **SAVE AND LOAD BOTH WORK — a closed round trip, and the first title state in this
+  port that survives a process exit** (`docs/phase3-notes.md` finding 52). The file is
+  303,104 bytes with bytes 4..31 identical to the real 360 save A3 shipped. Three
+  defects, each of which alone was enough: `NtCreateFile` honoured no disposition,
+  `NtWriteFile` was a stub, and the VFS cached negative lookups so a created file could
+  never be re-opened. The LOAD needed a fourth — xam ordinal `0x271`,
+  `XamContentCreateInternal`, which `kResolvable` refused because A1's list of resolves
+  was captured with an empty save root.
 * **The renderer's remaining picture defects** are the shadow cascade, NPC part meshes,
   mipmaps and the colour-grading LUT — all in `docs/open-items.md` with the measurement
   for each, and all worth re-testing now that a frame losing its post chain is no longer
