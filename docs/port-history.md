@@ -1192,6 +1192,18 @@ superseded by the overnight session before this one started.
   a boot, refreshed free inside the resolve that writes their source), after a counter
   said the mismatch is 3.3% of fetches rather than a general problem needing a general
   mechanism.
+* **THE SAVE WORKS — end to end, and cross-checked against the hardware save.** The
+  operator played to a save point on this binary and the title reported **"Game saved
+  successfully"** with the slot panel filled in and a rendered thumbnail. The log is A3's
+  exact sequence (`XamContentCreateEx -> mounted`, `NtCreateFile ... WRITABLE,
+  disposition 5 (created)`, `NtWriteFile ... 303104 written`, `XamContentClose`), and the
+  file on disk is **303,104 bytes with bytes 4..31 IDENTICAL to A3's real 360 save** and
+  the same non-zero region boundaries; only the leading four bytes differ, which is a
+  checksum or a timestamp. That RETRACTS open-items 1b: the unhandled XGI message it
+  blamed does not appear in the successful run at all — it was fixed by part 16 and the
+  item outlived the defect. What is still untested is the LOAD half, and it is now a
+  better test than it has ever been, because the save on disk is OURS rather than A3's
+  (whose foreign profile GUID was the confound under open-items 2's `Damaged Content`).
 * **THE SAVE COULD NOT WRITE, IN TWO INDEPENDENT WAYS, and neither was visible.**
   `NtCreateFile` ignored `createDisposition` entirely and opened every handle `"rb"`;
   `NtWriteFile` was a generated honest-failure stub. Either alone produces exactly the

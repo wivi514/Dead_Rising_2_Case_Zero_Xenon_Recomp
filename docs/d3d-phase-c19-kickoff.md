@@ -33,16 +33,23 @@ crowd frame.
      GPU term (gotcha 219). It was P8 for the whole of part 19, which is fine because
      part 19 measured no frame times.
 
-2. **THE SAVE: the write path exists and is untested end to end.** `NtCreateFile` honours
-   all six dispositions, `NtWriteFile` is implemented, and `CZ_FILE_WRITE_SELFTEST=1`
-   proves the layer round-trips 303,104 bytes through the real entry points. What is
-   missing is a run that reaches a save point — the headless recipe never calls
-   `XamContentCreateEx` at all. Two ways forward and the first is cheap: extend the
-   recipe (the pause menu has a save option, and `START` then D-pad reaches it), or ask
-   the operator for one save attempt with `CZ_FILE_TRACE=1 CZ_SAVE_PROBE=1`. **Every file
-   operation on a device that is not `game:`/`d:` is now logged UNCAPPED**, so that run
-   is self-explaining. Open-items 1b (`[xam] no handler for app FB message 000B0008`) may
-   still stop it one layer up and is unchanged.
+2. **THE SAVE WRITES. The remaining half is the LOAD, and it is one relaunch.**
+   Confirmed by an operator the same day: "Game saved successfully", A3's exact call
+   sequence, and a 303,104-byte file whose bytes 4..31 are IDENTICAL to the hardware save
+   A3 shipped. Open-items 1b is retracted by that run.
+   **Nothing has read the file back yet.** Relaunch and choose Load Game; the save on
+   disk is now OURS, from this machine's profile, which removes the confound that made
+   open-items 2 ambiguous — A3's save was made under the fork's profile GUID and a 360
+   save is signed per profile, so `Damaged Content` may always have been the correct
+   answer to that file rather than evidence about XAM ordinal `0x271`. One run separates
+   "the ordinal is missing" from "that file was never ours to load", and `0x271` should
+   appear in the log when it does.
+   NB **the pause menu has no save option** (RESUME / BIKE PARTS / CASE FILE / COMBO
+   CARDS / STATUS / NOTEBOOK / MAP / TUTORIALS / HELP & OPTIONS / LEADERBOARDS /
+   ACHIEVEMENTS / QUIT), and the image names saving as `cTriggerVolume::ACTION_SAVE_GAME`
+   — it is a volume you walk into. That is why the synthetic-input arm could not reach it
+   and why this one needed a human; do not spend another session trying to drive it
+   headlessly without first finding the trigger's world position.
 
 3. **The remaining picture defects, now that the black is out of the way.** They were all
    competing with it for attention and several were probably contaminated by it — a frame

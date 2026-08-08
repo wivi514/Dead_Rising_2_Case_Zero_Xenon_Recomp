@@ -770,14 +770,57 @@ independent things, including the negative: a write through a read-only handle m
 fail, because opening every handle read-only is exactly the defect above and a test that
 did not check it would pass on the broken code.
 
-### What is still NOT known
+### CONFIRMED END TO END, the same day, by an operator playing to a save point
 
-Whether the title's save now completes. That needs a run that reaches a save point, and
-the headless recipe does not — the gameplay run this was written alongside never calls
-`XamContentCreateEx` at all. What HAS changed is that the next attempt is legible
-without any new instrument: every file operation on a device that is not `game:`/`d:`
-now logs uncapped (saves are rare, disc reads are not), so a save either prints its open
-and its write or it does not, and the printer can no longer be the reason for a silence.
+The title says **"Game saved successfully."** and the slot panel fills in
+(`Day 1 - 07:05 AM / Safe House / Find Katey Zombrex`, with a rendered thumbnail).
+`~/DR2CZ-troubleshooting/operator-screenshots/2026-08-08_save-succeeded_slot1.png`.
 
-Open-items 1b (`[xam] no handler for app FB message 000B0008`) is untouched by this and
-may still stop the save one layer up.
+The log is the whole A3 sequence, in A3's order:
+
+```
+XamContentCreateEx('save', content 'DR2P000.DSF', flags 00001012, ...) -> mounted
+NtCreateFile('save:\DR2P000.DSF') -> handle BC8D8760, WRITABLE, disposition 5 (created),
+                                     access 40100080
+NtWriteFile('save:\DR2P000.DSF', 303104 bytes @ 0) -> 303104 written
+XamContentClose('save') -> unmounted
+```
+
+**And the file is cross-checked against hardware, not merely present.** A3 shipped the
+real 360 save (`cz_A3_save_DR2P000.zip`), so the two can be compared directly:
+
+| | A3 (hardware) | ours |
+|---|---|---|
+| size | 303,104 | **303,104** |
+| bytes 0..3 | `875f4820` | `89b6c6a0` |
+| bytes 4..31 | `0000006d 0000000a 0000000a 01013f00 00000101 01010101 010101 000000` | **identical** |
+| first five non-zero regions | `0x0-0x4, 0x7-0x8, 0xb-0xc, 0xf-0x13, 0x16-0x1d` | **identical** |
+| final non-zero region | `0x49ffc-0x4a000` | **identical** |
+| non-zero bytes | 19,942 | 9,582 |
+
+Only the first four bytes differ, which is a checksum or a timestamp, and the non-zero
+byte count differs because A3's save is a played session while ours is a fresh Day 1
+07:05 AM game at 0 PP and $2,000. The header layout and the trailing four-byte field
+agree exactly. That is a much stronger statement than "a file appeared": the title wrote
+a structurally correct save through our file layer.
+
+### What this RETRACTS
+
+**Open-items 1b — "the save fails on one unhandled XAM message,
+`[xam] no handler for app FB message 000B0008`" — did not happen.** That message does
+not appear anywhere in the successful save run. The message that IS there,
+`no handler for app FA message 0007001B`, fires early and did not stop anything. 1b was
+measured end to end and its chain (E_FAIL -> overlapped 0x80004005 -> the poll at
+825D6094 tearing down) was real when it was written; it was fixed by part 16's
+`XUserWriteAchievements` work, and the item outlived the defect. A finding with a
+complete causal chain can still be about a path the title no longer takes.
+
+### What is still NOT known: the LOAD half
+
+This run saved and did not re-launch, so nothing has yet read the file back. That is now
+a much better test than it was, because **the save on disk is OURS** rather than A3's —
+and A3's was made under the fork's profile GUID, which is the confound that made
+open-items 2's `Damaged Content` ambiguous (a 360 save is signed per profile, so
+"Damaged Content" may have been the right answer to that file). One relaunch and a Load
+Game answers both halves at once, and the XAM ordinal `0x271` that item names should
+appear in the log when it does.

@@ -96,7 +96,18 @@ Next, in order:
    real game plays two cinematics with loadings between them and then PAUSES to show a
    tutorial** — so a frozen world is a state the game legitimately enters later, and
    there is a known-good sequence to compare against.
-1b. **THE SAVE FAILS ON ONE UNHANDLED XAM MESSAGE — measured end to end.**
+1b. ~~**THE SAVE FAILS ON ONE UNHANDLED XAM MESSAGE**~~ **RETRACTED IN PART 19 — THE
+   SAVE WORKS.** An operator played to a save point on the part-19 binary and the title
+   reported "Game saved successfully"; the log is A3's exact sequence and the file is
+   303,104 bytes with bytes 4..31 IDENTICAL to the hardware save A3 shipped. The message
+   this item is about, `app FB message 000B0008`, does not appear in that run at all —
+   it was fixed by part 16's `XUserWriteAchievements` work and the item outlived the
+   defect. **A finding with a complete causal chain can still be about a path the title
+   no longer takes**; the chain below was real when it was measured. What actually
+   stopped the save was two defects in the file layer (`docs/phase3-notes.md` finding
+   52): `NtCreateFile` ignored `createDisposition` and opened every handle read-only,
+   and `NtWriteFile` was a stub. The original report follows.
+1b-original. **THE SAVE FAILS ON ONE UNHANDLED XAM MESSAGE — measured end to end.**
    `[xam] no handler for app FB message 000B0008 (8-byte buffer) — returning E_FAIL`,
    that E_FAIL completes an overlapped with `0x80004005`, and the save's poll reads it
    (`[save] XGetOverlappedResult(ovl=A3EDD414) block{result=80004005 ...} -> 2147500037`)
@@ -114,7 +125,14 @@ Next, in order:
    block showed all zeros, and the probe then named a DIFFERENT overlapped. A backtrace
    names the branch, not the datum it branched on.
 
-2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
+2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND** —
+   **and part 19 removed this item's biggest confound.** The only save this port had ever
+   been able to test against was A3's, made under the fork's profile GUID, and a 360 save
+   is signed per profile — so `Damaged Content` may have been the correct answer to that
+   file and the ordinal a red herring. There is now a save on disk that THIS RUNTIME
+   wrote, from this machine's profile, structurally identical to hardware's. One relaunch
+   and a Load Game separates the two explanations for the first time. Everything below
+   still applies to the ordinal itself.
    (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
    enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
    `Damaged Content` and puts up `Load failed! Please check your storage device and try
