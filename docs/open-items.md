@@ -1,0 +1,261 @@
+# Open items, in order
+
+**Split out of `CLAUDE.md` on 2026-08-08.** The actionable backlog. Items struck through
+are closed or retracted and are kept because a retraction is worth as much as a finding
+— several of these were "fixed" by something else entirely, and the record of what was
+NOT the cause is what stops the next session re-buying it.
+
+Next, in order:
+
+0. ~~**GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.**~~ **DONE — the recipe is in
+   the Commands section above and it reaches live gameplay with no operator.** START
+   skips a cinematic; the Zombrex tutorial's second page needs D-pad LEFT then B. Every
+   gameplay item below is now self-servable.
+
+1. ~~**CINEMATICS NEVER END**~~ **RETRACTED THE SAME NIGHT IT WAS WRITTEN.** Later in
+   the same operator session, cinematics played through and returned control cleanly —
+   the Katey Zombrex grab, and the bike-frame delivery to the safehouse. The claim was
+   generalised from two failures and is false as stated. What is actually true:
+   **SOME cinematics fail and most do not** — and the list shrank twice more while it
+   was being written. The COMBO-WEAPON one (camera parked, HUD gone, and skipping it did
+   not award the weapon) **now plays properly and awards the weapon**. So the only
+   confirmed remaining failure is the PROLOGUE's, which is black with the camera frozen
+   at the first frame; Katey Zombrex, the bike-frame delivery and the combo weapon all
+   complete.
+   **What fixed the combo weapon is NOT known.** The plausible candidates are the same
+   session's shader-cache completion (337 -> 353) and the bindless-heap raise, and
+   nothing isolates them. Do not record either as the cause; the honest statement is
+   that it was broken on the old binary and works on the new one. If it matters, the
+   arm is `CZ_VK_MAX_TEXTURES=4096` — which reproduces the old heap — against a cache
+   trimmed back.
+   And a large share of the "cinematic is broken" evidence was never cinematics at all:
+   the operator established that a black screen after a cinematic was the VIEW-DEPENDENT
+   BLACK (item 1c) seen through a camera the save prompt and tutorial had locked. Two
+   symptoms, one of them borrowed. Re-derive this item from scratch before working it —
+   the surviving question is why those specific three fail, not why "the trigger is
+   missing everywhere".
+1c. **A VIEW-DEPENDENT WHOLE-FRAME BLACK, and it is now the top rendering defect.**
+   Looking at the gas station (and at least one spot in the Quarantine Area) turns the
+   ENTIRE frame black; turning away restores it instantly. It absorbed three separate
+   "black screen" reports before the operator noticed the camera dependence. **Missing
+   shaders are ruled out** — a run with `no translated shader` = 0 still does it.
+   Leading hypothesis: the AUTO-EXPOSURE chain. A whole-frame, instantly reversible,
+   view-dependent black is what a degenerate scene-luminance measurement produces — a
+   bright emissive surface driving the 64x64 luminance reduction to an inf/NaN and
+   collapsing the tone map's exposure. Supporting evidence from the other end: when the
+   bindless heap was exhausted and the scene filled with WHITE dummies, the frame washed
+   out, so exposure demonstrably tracks scene content. `CZ_VK_SNAP_DUMP` dumps that
+   luminance chain and is the direct check.
+1d. **The prologue-vs-later cinematic split may be a CLOCK problem, untested.** The two
+   failure modes are opposites — frozen at the first frame, or (apparently) jumping past
+   the end — which is what a timeline driven by an unclamped wall-clock delta does either
+   side of a long load. `CZ_DETERMINISTIC_CLOCK=1` advances the guest clock a fixed
+   quantum per presented frame and is the arm that tests it in one run. NB the "jumped
+   past the end" half is itself uncertain: the operator first read auto-skips and then
+   retracted them (see 1's retraction). Retired with arms and not to be re-bought: not audio, not a deadlock, not
+   our synthetic input, not a missing import, not the renderer. Start from the SKIP
+   path — find what it calls to end a cinematic, then ask who else should call it and
+   what condition they are waiting on. `cCinematic`, `cCinematicsItem`, `cCineMovieEvent`,
+   `cCineBackendMovieEvent`, `cMissionCinematic` are all named in the image with their
+   source paths, and `CZ_GUEST_LOG` is already wired for the day the debug gates go up.
+   **And skipping is not a workaround for PLAYING**: the operator reports that skipping
+   the combo-weapon cutscene does not award the combo weapon, which is the same defect
+   from the other end — the completion is what grants the reward. That puts a floor
+   under how much of the game is reachable until this is fixed.
+
+2. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
+   not audio, not a deadlock, not our synthetic input, not a missing import and not the
+   renderer, all with arms to show for it. Three lines, cheapest first: **raise the
+   engine's debug-log gates** so the title says what state it is in (`CZ_GUEST_LOG` is
+   already wired; the tutorial gate is the global at `0x829EC974`, the cinematic ones
+   are object-relative); **instrument the cinematic system directly** (`cCinematic`,
+   `cCineMovieEvent`, `cMissionCinematic` are all named in the image, with their source
+   paths); or **diff what the guest does per frame either side of frame ~974**, since
+   the loading screen and title screen both animate and only the world does not. The
+   no-fade shader arm (`CZ_SHADER_SPV` + one line in `ps_114c4965eaabd54c`, §6af) is how
+   you watch the scene while it is faded out. **Operator intel: after a new game the
+   real game plays two cinematics with loadings between them and then PAUSES to show a
+   tutorial** — so a frozen world is a state the game legitimately enters later, and
+   there is a known-good sequence to compare against.
+1b. **THE SAVE FAILS ON ONE UNHANDLED XAM MESSAGE — measured end to end.**
+   `[xam] no handler for app FB message 000B0008 (8-byte buffer) — returning E_FAIL`,
+   that E_FAIL completes an overlapped with `0x80004005`, and the save's poll reads it
+   (`[save] XGetOverlappedResult(ovl=A3EDD414) block{result=80004005 ...} -> 2147500037`)
+   at `825D6094`, where the guest accepts ONLY 0 or 996 and tears down on anything else.
+   The content overlapped is innocent — it reads 0. Its sender is
+   `sub_825D7CA8(dwordA, dwordB, overlapped)`, which posts the 8-byte pair as XGI
+   `0x000B0008`, returns 1627 on a negative result and 997 when given an overlapped;
+   callers `sub_825C4400` <- `sub_825C4190` / `sub_825C86A0`. `docs/phase1-notes.md`
+   already put `000B0008` among the LOCAL XGI messages (everything past it is Live), so
+   this is implementable rather than a gap — but **derive its two dwords from those
+   callers before writing a handler** (gotchas 5/59/201: this is a message whose result
+   the guest tests, so a wrong "success" is worse than the honest E_FAIL).
+   **RETRACTED on the way**: this failure was first read off `CZ_KCALL_WHO`'s teardown
+   backtrace as "the CONTENT overlapped poll returns a bad value". A live read of that
+   block showed all zeros, and the probe then named a DIFFERENT overlapped. A backtrace
+   names the branch, not the datum it branched on.
+
+2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
+   (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
+   enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
+   `Damaged Content` and puts up `Load failed! Please check your storage device and try
+   again`, having never opened the file. `imports.cpp`'s `kResolvable` is the SEVEN
+   ordinals A1 resolves, and A1 was captured with no save; A3 resolves an eighth. Do NOT
+   mint a stub for it blind (gotchas 59/201) — name it from the guest's call site first,
+   and note the profile-signature question is separate. This also CLOSES part 12's black
+   panels: they are the save's thumbnail, and black is correct for a slot with no valid
+   content.
+3. **THE SHADOW CASCADE IS STILL HALF EMPTY, and part 15 halved the question.** The
+   operator's top report on the running build is "no shadows anywhere". Part 15 counted
+   the empty region's exact boundaries — rows 0..511 fully populated, rows 512..719 in a
+   64-wide strip at x=960..1023, nothing below 720 — fixed the one boundary that was
+   ours (the window-coordinate clip at 720, worth exactly that strip), and named the
+   title's own clear rects with `CZ_VK_DRAW_PROBE`: **`(0,0)-(480,512)` and
+   `(960,0)-(1024,1024)`**, z=1.0, compare func ALWAYS. Those do not cover a 1024x1024
+   map and nothing this renderer does causes it. Three readings, all testable: 480x512
+   is a PIXEL extent wanting a x2 somewhere (the pass reports `msaa=0`, so our 4x
+   scaling does not apply — check what the guest thinks that surface's sample extent
+   is); the "cascade" is really several smaller maps packed into one surface (four
+   cascades are resolved per frame and it is 4096 wide); or the uncleared region is
+   never sampled and the shadows fail elsewhere. Test the third first, because it is
+   free: the consumer's fetch coordinates say which part of the map it reads
+   (`CZ_VK_DRAW_PROBE` on the pass that fetches `1439B000(depth)`, 629,023 fetches a
+   boot). Do NOT judge the shadow lookup until the map is right.
+3b. **THE BINDLESS HEAP — MITIGATED (4096 -> 65536), NOT YET FIXED.** Confirmed
+   working: a Still Creek session that reached **4,522 slots** reports `bindless heap
+   full` ZERO times and the white buildings are gone. That is past the old cap, so the
+   same session would have been serving dummies before. Slot recycling is still the
+   real fix; a cap is only ever a bigger number. NB the operator's white BLOOD SPLATTER
+   is NOT this — it keeps its splatter shape and only the colour is wrong, and the heap
+   is healthy — so it is a separate texture/shading defect.
+3z. **THE BINDLESS HEAP WAS EXHAUSTED IN STILL CREEK — MEASURED.** White buildings,
+   white NPCs, white blood, white button glyphs, and `R->nextTextureSlot` read
+   **4096** — exactly `kMaxDescriptors` — out of the operator's LIVE process with
+   `gdb -p ... print`. Texture slots are handed out monotonically and NEVER RECYCLED
+   (`entry.slot = R->nextTextureSlot++`); on overflow `UploadTexture` returns slot 0,
+   the 1x1 white dummy, and counts `texture: bindless heap full` silently.
+   **The fix is slot recycling** (an LRU over the texture cache, with deferred
+   destruction so an in-flight frame cannot lose its image).
+   Two things the operator's pictures add that a counter cannot. The rule is not "late
+   in TIME goes white" but **"anything needing a NEW SLOT after the heap filled goes
+   white"** — this title streams textures BY DISTANCE, so approaching a building
+   requests a higher-resolution texture, which is a new fetch constant, a new cache
+   entry and a new slot. That is why every building whitens on approach while its
+   distant version was fine. And the washed-out frame and greyed HUD are a PREDICTED
+   second-order effect: the dummy is white, so a scene full of dummies is a scene full
+   of maximum-luminance surfaces driving auto-exposure and bloom too bright — if the
+   wash survives the fix, it is a separate defect. Pictures 13-16 in
+   `~/DR2CZ-troubleshooting/INDEX.md`.
+   **The cheap confirming arm before the real fix**: raise `kMaxDescriptors`. If the
+   buildings render, the whole causal chain is proven end to end; it is not the fix,
+   because a cap is only ever a bigger number.
+3e. ~~**PP / LEVELLING IS BROKEN**~~ **RETRACTED WITHIN THE HOUR — Case Zero needs
+   20,000 PP PER LEVEL, and the operator was at 9,700.** Staying at LV. 1 was CORRECT
+   and there is no levelling defect. Progression is tracked properly throughout: the
+   STATUS screen reads `OVERALL TOTAL PP 9,700`, `CURRENT GAME TOTAL PP 9,700`,
+   `ZOMBIE KILL COUNT 41`, money $2,000 -> $17,000.
+   What survives is small and cosmetic: **the HUD's PP bar looks empty at 9,700 of
+   20,000**, where it should read roughly half full. Worth one look, not an
+   investigation — and note the bar is thin and dark, so "looks empty" is an
+   impression from a screenshot rather than a measurement.
+   The case timer bar not running is UNCHANGED and still open. NB the guest clock IS
+   advancing (save screens read `Day 1 - 07:08 AM` then `07:58 AM`), so a stopped case
+   timer is not a stopped clock.
+   The lesson is the cheap one: the threshold was a NUMBER, it was knowable, and the
+   defect was written up before anyone looked it up. Check the game's own rules before
+   filing a game-logic bug.
+   NB the guest clock IS advancing (save screens read `Day 1 - 07:08 AM` then
+   `07:58 AM`), so a stopped case timer is not simply a stopped clock.
+3d. **NPC PART MESHES GO MISSING, DIFFERENT PARTS ON DIFFERENT CHARACTERS.** Dick
+   renders as a head and one hand; Fausto has no legs; Gemini has no hair (her dark
+   arms are GLOVES and correct). These characters are assembled from separate part
+   meshes — the boot loads `childface`, `childhand`, `childupperbdy`, `childfullbody`
+   as distinct files — so the thing to look for is what a missing part has in common
+   with the other missing parts, not what is wrong with a given character. Hair in
+   particular is normally its own alpha-tested material, which is a natural candidate
+   for a shader or blend-state gap.
+   **Distance matters**: Dick was INVISIBLE at range and became head-and-hand on
+   approach, which is the same "approaching asks for a new resource and whatever we
+   lack goes missing silently" signature as the white buildings (3b) and the black
+   areas (item 0's shader misses).
+   **UNRESOLVED WHETHER THIS IS A CACHE MISS.** The session that found it ran 351
+   shaders while 370 were on disk, and every one of the 16 shaders it reported missing
+   is now translated — so some of these parts may already be fixed. Re-test on a fresh
+   launch BEFORE investigating: if the parts come back, it was the cache; if they do
+   not, it is a real material/geometry defect and Gemini's correctly-rendered body is
+   the control sitting next to it.
+3c. **The pause menu is sheared and broken in STILL CREEK and perfect in the
+   SAFEHOUSE.** Same menu, same shaders, different world state — so it arrives with its
+   own control, which is rare. The paper becomes a trapezoid with stray white polygons
+   and thin black lines, i.e. garbage GEOMETRY rather than a texture fault. Part 13
+   established that this title sub-allocates its whole UI out of ONE dynamic vertex
+   buffer via `VGT_INDX_OFFSET`, so a busier scene sharing that buffer is the obvious
+   place to look: an offset that drifts, or a buffer that wraps.
+3f. ~~**PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.**~~ **ORDINARY GAMEPLAY IS
+   CLOSED (11.8 -> 31 fps, the title's own cap). CROWDS ARE THE OPEN ITEM, AND THEY ARE
+   CPU-BOUND IN OUR RUNTIME — the plan is `docs/perf-cpu-plan.md`.** A Still Creek zombie
+   crowd issues **4,800-6,800 draws a frame** against ordinary gameplay's 1,930, which is
+   3.5x the workload every conclusion in this port was based on, and it reorders the
+   whole frame budget. At 6,592 draws / 43.4 ms with the GPU at 1950 MHz: **renderer draw
+   path 21.4 ms (49%), PM4 walk 11.0 ms (25%)**, GPU 6.6 ms (15%), pump sleep 3.9 ms.
+   75% of the frame is our own CPU in two roughly equal halves, both linear in the draw
+   count, neither ever optimised. **Item 0 of that plan blocks the rest: the headless
+   recipe reaches gameplay but only ~1,930 draws, i.e. it never enters the workload —
+   so every A/B would run against the vblank cap where CPU savings are invisible by
+   construction, which is exactly how the state cache first measured as a dead heat.** The first operator play-through
+   ran at 8-12 fps and stopped partly because of it; the frame rate was a blocker on
+   EVIDENCE rather than a polish item. Two changes, neither of which deletes any work,
+   took a gameplay frame from 84.4 ms to ~34 ms — **the ring is walked promptly
+   (`CZ_PM4_TICK_MS`, 1.21x) and the vblank arrives on time (`CZ_VBLANK_TICKCOUNT`,
+   2.0x)** — both because a frame's dominant term was the graphics pump asleep in its
+   own loop, which no instrument here could see. `docs/phase5-notes.md` §§6aj-6am.
+   **Every "known contributor" listed here before was wrong or unmeasured**: the
+   synchronous submit is 0.1% on the CPU side, the per-draw constant upload is 0.5%,
+   the whole renderer is under a quarter of the frame, and the readback was fixed in
+   part 17. **What is left is one open question and it is not ours**: the GPU has been
+   running at **210 MHz of 2100** for every measurement this port has ever taken
+   (gotcha 219). **ANSWERED by the operator session: `sudo nvidia-smi -pm 1` then
+   `-lgc 2100,2100` takes it to 1950 MHz and the GPU term from 18.8 ms to 6.64 ms —
+   2.9x, and it is now the SMALLEST term in a crowd frame.** Crowd fps 15-25 -> 22-25.
+   That configuration must be stated with any GPU number from this machine, and it is
+   invisible outside crowds because everything else is on the title's own cap.
+4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
+   texture, every phase. This is the operator's "all textures seem weird grainy", and it
+   is real work rather than a one-liner: the Xenos mip chain has its own address layout.
+5. **The Still Creek sign's dark smear and the GAS roundel.** Neither has an identity.
+   Both are `CZ_VK_SKIP_TEX` to name the address, then `CZ_VK_TEX_DUMP` to separate "our
+   decode scrambled this" from "the texture is fine and the draw shades it wrong". The
+   smear is NOT the untiler (0 skips in 925 textures) and NOT a shadow
+   (`CZ_VK_NO_DEPTH_FETCH=1` leaves it).
+6. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
+   Much improved by part 14 and not closed. The tone map's LUT is what §6s proved this
+   frame depends on completely.
+7. **The conservative screen extent is still a placeholder** (part 11). Both tiles
+   execute ~975,000 draws where hardware executes ~573,000 each. **Do not do this
+   speculatively** — the cost has still not been shown to matter.
+8. **A1 is exhausted as an oracle.** Its position 93 is NOT the next piece of work —
+   `KeQueryBasePriorityThread` has been implemented since phase 1, and reaching it
+   means reproducing an audio-subsystem FAILURE that hardware had once, late, on a
+   path we do not drive (finding 49, gotcha 107). Going further needs a gameplay
+   comparison built from A2 — and the run that reaches the prologue is the first this
+   port has had that would exercise one.
+9. **Prove the still-unexercised imports** (gotcha 67 — implemented is a prediction,
+   not a result). Four of finding 34's eight have now RUN — `XamTaskSchedule`,
+   `XamGetOverlappedResult`, `XMsgInProcessCall`, `XMsgCompleteIORequest`, all on the
+   save-data path. Still unrun: the rest of finding 34, both of finding 36's teardown
+   paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
+   shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
+   part 13's `XeCryptSha` one-shot.
+10. Audio output and XMA decoding (phase 6). **DEMOTED by part 16** — it is no longer
+   a candidate for the prologue blocker, so it is back to being "the game is silent".
+   The kick bitmap at `0x7FEA1A80` lands in ordinary flat memory and is inert; a real
+   decoder needs that aperture trapped as MMIO or the kick is written and never
+   noticed. `CZ_XMA_NULL_DECODER` is the half-implementation to build on: it already
+   models input consumption at a rate.
+11. **A VFS gap, recorded rather than fixed** (§6ah(vi)). `VfsTranslate` returns empty
+   for any guest path with no `:`, so a path with no device prefix can never resolve.
+   A boot makes 29 such opens; none of those files exist under any prefix either, so
+   nothing is currently lost. On console a relative path resolves against the title's
+   own directory, and CLAUDE.md already warns that at least one path here is built at
+   runtime (`anm_%s.big`).
+
