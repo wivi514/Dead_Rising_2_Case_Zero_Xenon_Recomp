@@ -175,7 +175,10 @@ struct ProfilePhases
     uint64_t submitCall = 0;
     uint64_t fenceWait = 0;
     uint64_t readback = 0;    // image -> host buffer -> window
-    uint64_t drawTotal = 0;   // ALL of DoDraw, so the phases above can be subtracted
+    // DoDraw's own untimed work — register decode, the pipeline-key build and its
+    // lookup, the fetch-constant walk, and the always-on censuses. EXCLUSIVE of every
+    // phase above, which it was not until part 20; see the ProfScope comment.
+    uint64_t drawOther = 0;
     uint64_t draws = 0;       // how many draws those numbers are spread over
 };
 ProfilePhases g_prof;
@@ -188,19 +191,60 @@ inline uint64_t ProfNow()
                                      .count())
                        : 0;
 }
-// Scoped accumulator. Compiles to nothing measurable when the profile is off, because
-// every call short-circuits on one already-hot bool.
+// Scoped accumulator, EXCLUSIVE of any scope nested inside it. Compiles to nothing
+// measurable when the profile is off, because every call short-circuits on one
+// already-hot bool.
+//
+// THE EXCLUSIVITY IS A PART-20 BUG FIX, and it silently re-ordered this project's own
+// performance plan. These scopes nest: `record` opens partway down DoDraw and lives to
+// the end of it, so the three `UploadStream` calls below it ran INSIDE `record` and
+// their `streams` time was counted twice — once in `streams` and once in `record`.
+// `submit` encloses `submitCall` and `fenceWait` the same way. The print then computed
+// DoDraw's residual as `drawTotal - (constants + streams + textures + record)`, which
+// subtracts `streams` twice, so the residual came out that much too small.
+//
+// The arithmetic is not subtle once written down, but the effect was: it made `record`
+// look like the draw path's dominant term and the residual look like its smallest, and
+// `docs/perf-cpu-plan.md` was written on those numbers — filing the residual as "the
+// cheapest item in this document".
+//
+// The mechanism is worth stating generally, because a profiler is exactly the kind of
+// code whose defects are invisible: a nested scope moves time from the OUTER scope's
+// residual into the inner scope's name, and both columns still add up to the same
+// total. Nothing looks wrong. The fix is for every scope to subtract what its children
+// took, which makes each column mean "time in THIS phase and no other" — and then the
+// columns and the total become independent statements that can disagree.
+//
+// `g_profileOn` is set once at init, before any draw, and never changes; the ctor and
+// dtor would otherwise have to agree about a flag that moved between them.
 struct ProfScope
 {
     uint64_t* sink;
-    uint64_t t0;
-    explicit ProfScope(uint64_t* s) : sink(s), t0(ProfNow()) {}
+    uint64_t t0 = 0;
+    uint64_t childNs = 0;   // what scopes opened inside this one consumed
+    ProfScope* parent = nullptr;
+    static thread_local ProfScope* current;
+
+    explicit ProfScope(uint64_t* s) : sink(s)
+    {
+        if (!g_profileOn)
+            return;
+        t0 = ProfNow();
+        parent = current;
+        current = this;
+    }
     ~ProfScope()
     {
-        if (g_profileOn)
-            *sink += ProfNow() - t0;
+        if (!g_profileOn)
+            return;
+        const uint64_t total = ProfNow() - t0;
+        *sink += total - childNs;
+        if (parent)
+            parent->childNs += total;
+        current = parent;
     }
 };
+thread_local ProfScope* ProfScope::current = nullptr;
 
 // CZ_VK_TEX_CENSUS=1 — per texture ADDRESS, where its pixels came from.
 //
@@ -2901,12 +2945,14 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
 void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const Pm4ShaderBinding& vsBind, const Pm4ShaderBinding& psBind)
 {
-    // The WHOLE draw, so that "the renderer" and "everything else in the frame" can be
-    // told apart by subtraction. Without it the profile's unaccounted column mixes this
-    // function's own untimed work (register decode, the pipeline-key build and lookup,
-    // the fetch-constant walk) with the guest's simulation and the command processor —
-    // three completely different investigations behind one number.
-    ProfScope _pDraw(&g_prof.drawTotal);
+    // DoDraw's OWN work, exclusive of the named phases nested inside it. Without a
+    // scope here the profile's unaccounted column would mix this function's untimed
+    // work (register decode, the pipeline-key build and lookup, the fetch-constant
+    // walk) with the guest's simulation and the command processor — three completely
+    // different investigations behind one number. The whole draw is the sum of this and
+    // the phases, computed at print time; it is not measured separately, because a sum
+    // and a second measurement of the same interval can only ever disagree.
+    ProfScope _pDraw(&g_prof.drawOther);
     if (!vsBind.hash || !psBind.hash)
     {
         Count("draw: no shader bound");
@@ -5368,15 +5414,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // seeing rather than hiding.
             auto pct = [&](uint64_t ns) { return 100.0 * (double(ns) * 1e-6) / ms; };
             const double perFrame = frames ? ms / double(frames) : 0.0;
-            // `drawOther` is DoDraw's own untimed work — the register decode, the
-            // pipeline-key build and its lookup, the fetch-constant walk. `outside` is
-            // everything that is not the renderer at all: the guest's simulation, the
-            // command processor, and any wait between frames.
-            const uint64_t inDraw = g_prof.constants + g_prof.streams +
-                                    g_prof.textures + g_prof.record;
-            const uint64_t drawOther =
-                g_prof.drawTotal > inDraw ? g_prof.drawTotal - inDraw : 0;
-            const uint64_t known = g_prof.drawTotal + g_prof.submit + g_prof.readback;
+            // Every phase below is EXCLUSIVE of every other (see ProfScope), so the
+            // totals are sums rather than subtractions. That is the whole difference:
+            // a subtraction hides an error in one term inside another term's residual,
+            // where a sum leaves it visible in `outside`.
+            //
+            // `other` is DoDraw's own untimed work — the register decode, the
+            // pipeline-key build and its lookup, the fetch-constant walk, and the
+            // always-on censuses. `outside` is everything that is not the renderer at
+            // all: the guest's simulation, the command processor, and any wait between
+            // frames.
+            const uint64_t drawTotal = g_prof.constants + g_prof.streams +
+                                       g_prof.textures + g_prof.record +
+                                       g_prof.drawOther;
+            const uint64_t submitTotal =
+                g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
+            const uint64_t known = drawTotal + submitTotal + g_prof.readback;
             fprintf(stderr,
                     "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
                     "[constants %.1f streams %.1f textures %.1f record %.1f other "
@@ -5384,9 +5437,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     "outside %.1f%%\n",
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
-                    pct(g_prof.drawTotal), pct(g_prof.constants), pct(g_prof.streams),
-                    pct(g_prof.textures), pct(g_prof.record), pct(drawOther),
-                    pct(g_prof.submit), pct(g_prof.submitCall), pct(g_prof.fenceWait),
+                    pct(drawTotal), pct(g_prof.constants), pct(g_prof.streams),
+                    pct(g_prof.textures), pct(g_prof.record), pct(g_prof.drawOther),
+                    pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), 100.0 - pct(known));
 
             // ...and what `outside` actually IS. The renderer runs on the graphics
@@ -5399,15 +5452,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             static PumpStats lastPump{};
             const PumpStats p = PumpStats_Read();
             const uint64_t dTicks = p.ticks - lastPump.ticks;
+            const uint64_t walkNs = p.walkNs - lastPump.walkNs;
+            // `pm4` is the command processor's OWN cost, and it needs saying because
+            // the walk is where the renderer is called from: `walk` contains every
+            // draw, every submit and the readback, so reading it as the command
+            // processor's cost over-states that by the whole of the renderer. This is
+            // the term `docs/perf-cpu-plan.md` §2 is about, and until now it could only
+            // be got by subtracting two lines of this report by hand.
+            const uint64_t pm4Ns = walkNs > known ? walkNs - known : 0;
             fprintf(stderr,
                     "[vkprof] pump %llu ticks (%.2f/frame) | sleep %.1f%% walk %.1f%% "
-                    "vblank-isr %.1f%% | unaccounted %.1f%%\n",
+                    "[pm4 %.1f] vblank-isr %.1f%% | unaccounted %.1f%%\n",
                     (unsigned long long)dTicks,
                     frames ? double(dTicks) / double(frames) : 0.0,
-                    pct(p.sleepNs - lastPump.sleepNs), pct(p.walkNs - lastPump.walkNs),
+                    pct(p.sleepNs - lastPump.sleepNs), pct(walkNs), pct(pm4Ns),
                     pct(p.isrNs - lastPump.isrNs),
-                    100.0 - pct((p.sleepNs - lastPump.sleepNs) +
-                                (p.walkNs - lastPump.walkNs) +
+                    100.0 - pct((p.sleepNs - lastPump.sleepNs) + walkNs +
                                 (p.isrNs - lastPump.isrNs)));
             lastPump = p;
 
