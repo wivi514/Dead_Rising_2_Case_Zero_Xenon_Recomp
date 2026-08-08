@@ -311,7 +311,15 @@ tools/build_shader_spv.sh <dir> assets/shader_spv
 ```
 Both of Still Creek's were recovered this way and both hashed EXACTLY, which is what
 makes it a measurement rather than a hopeful memory read — a stale or reused buffer
-would fail the hash rather than produce a plausible wrong shader.
+would fail the hash rather than produce a plausible wrong shader. **Part 19 recovered
+TWENTY this way from a single operator session, all twenty hashing exactly**, which
+takes this from a trick that worked once to the standard recovery.
+
+**Use `process_vm_readv`, not `gdb`, when the operator is still playing.** It reads
+another process's memory without ptrace-stopping it, where a `gdb` attach freezes the
+game for a second — which during a load test contaminates the very thing being tested.
+Same permission model, no interruption; ~30 lines of `ctypes` and the FNV-1a check is
+identical.
 
 Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
 build). SDL2 is required rather than optional-with-a-fallback, because a build that
