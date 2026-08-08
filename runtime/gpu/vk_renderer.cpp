@@ -1404,6 +1404,48 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
 
 namespace {
 
+// IS THIS SNAPSHOT STILL THE RIGHT ANSWER FOR THAT ADDRESS?
+//
+// It always is, and for a structural reason: a resolve's pixels are never written back
+// into guest memory (see the Snapshot comment), so for an address the GPU has resolved
+// to, the snapshot is the ONLY copy of what that surface holds. Guest memory there is
+// whatever the allocator left, which is normally zero.
+//
+// This used to be `frameSeen + 1 >= frame` — the snapshot had to have been taken this
+// frame or last. That window was written when every known consumer was a
+// post-processing pass reading the surface a pass earlier in the SAME frame had just
+// resolved, and it is silently wrong for a surface the title resolves ONCE and then
+// samples for the rest of the run. Case Zero's colour-grading LUT is exactly that: at
+// the title screen it re-renders all three LUTs every frame, so the window never
+// bound; at the prologue the grade is static, the LUT stops being resolved, and from
+// the second frame onward the tone map's LUT fetch fell out of the snapshot path into
+// guest memory and sampled zeros. §6s already established that a black LUT is a black
+// frame, so the whole prologue presented 0.00% non-black while every other input to
+// the compose was live — the same shape as §6s and part 9's ordering bug, one link
+// further along.
+//
+// The risk the window was implicitly guarding against is real but different: the guest
+// could free a former resolve destination and put a CPU-uploaded texture there, and we
+// would serve the stale snapshot. Nothing in this title does that — its resolve
+// destinations are a fixed set of render targets — and the census counts the age of
+// every snapshot it serves, so the day one does the number is on screen rather than in
+// a picture. CZ_VK_SNAPSHOT_MAX_AGE=N restores a bounded window (1 = the pre-part-15
+// behaviour) as the same-binary control arm.
+uint64_t SnapshotMaxAge()
+{
+    static const uint64_t age =
+        Env("CZ_VK_SNAPSHOT_MAX_AGE")
+            ? strtoull(Env("CZ_VK_SNAPSHOT_MAX_AGE"), nullptr, 10)
+            : 0;   // 0 = no limit
+    return age;
+}
+
+bool SnapshotUsable(const Snapshot& s)
+{
+    const uint64_t maxAge = SnapshotMaxAge();
+    return maxAge == 0 || s.frameSeen + maxAge >= R->frame;
+}
+
 // Upload the texture a fetch constant describes and return its bindless slot, or 0 for
 // the dummy. Cached on the fetch constant's own six dwords: if none of them changed the
 // texture is the same texture, and if any did it is a different one. Keying on the base
@@ -1497,13 +1539,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             if (snap != R->snapshots.end())
             {
                 s.everResolved = true;
-                if (snap->second.frameSeen + 1 >= R->frame)
+                // maxAge is tracked on the SERVED path too, now that a snapshot is
+                // served at any age: it is the number that says how far a fetch is
+                // reaching back, and therefore the only visible sign if the guest ever
+                // reuses a resolve destination for something else.
+                s.maxAge = std::max(s.maxAge, R->frame - snap->second.frameSeen);
+                if (SnapshotUsable(snap->second))
                     s.fromSnapshot++;
                 else
-                {
                     s.snapshotTooOld++;
-                    s.maxAge = std::max(s.maxAge, R->frame - snap->second.frameSeen);
-                }
             }
         }
         // CZ_VK_NO_DEPTH_FETCH=1 — serve EVERY depth-format fetch the 1x1 white dummy.
@@ -1526,7 +1570,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
                   "(CZ_VK_NO_DEPTH_FETCH)");
             return 0;
         }
-        if (snap != R->snapshots.end() && snap->second.frameSeen + 1 >= R->frame)
+        if (snap != R->snapshots.end() && SnapshotUsable(snap->second))
         {
             Count(snap->second.fromDepth
                       ? "texture: served from a DEPTH resolve snapshot"
