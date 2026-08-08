@@ -142,6 +142,33 @@ uint32_t g_maxDescriptors = 4096;   // replaced at init from the device's own li
 std::map<std::string, uint64_t> g_stats;
 void Count(const char* name) { ++g_stats[name]; }
 
+// ...and the same counters, reached without paying for them, for the handful of call
+// sites that run on EVERY draw.
+//
+// `Count` constructs a `std::string` from the literal (a heap allocation for any name
+// over 15 characters, and most of ours are) and walks a red-black tree comparing
+// strings, per call. That is fine at a few hundred calls and it is not fine at the
+// ~5 unconditional counters a draw times 6,600 draws a frame: it is instrumentation
+// overhead inside the phase being instrumented, which is the same defect that made
+// part 18's state cache first measure as a dead heat (`docs/perf-cpu-plan.md` §1a,
+// hypothesis B — the one item there filed as needing no measurement to justify).
+//
+// A `std::map` node is stable for the life of the map and `g_stats` is never cleared,
+// so the address of a counter can be resolved ONCE per call site and then incremented
+// directly. `COUNT(literal)` does exactly that with a function-local static; the
+// printing interface, the names and the ordering are untouched, so nothing downstream
+// of `VkRenderer_DumpStats` can tell the difference.
+//
+// `Count` stays, and is still the right thing for every path that declines a draw:
+// those run rarely, and a cold call site is not worth a static.
+uint64_t* CounterSlot(const char* name) { return &g_stats[name]; }
+#define COUNT(lit)                                                                     \
+    do                                                                                 \
+    {                                                                                  \
+        static uint64_t* _czSlot = CounterSlot(lit);                                   \
+        ++*_czSlot;                                                                    \
+    } while (0)
+
 // --- CZ_VK_PROFILE=N — where a FRAME's CPU time actually goes ------------------------
 //
 // Every frame-rate number this project owned before today divided a whole run's frames
@@ -2985,16 +3012,22 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // is a fact about the title, and it is the difference between "quad lists are
     // unsupported" and "quad lists are 0.2% of the stream" — the second is a decision
     // and the first is only an alarm.
+    // Resolved to 64 counter ADDRESSES on first use rather than 64 names looked up per
+    // draw, for the reason `COUNT` exists; the names and their order are identical.
     {
-        static char names[64][32];
+        static uint64_t* slots[64];
         static bool built = false;
         if (!built)
         {
             built = true;
+            char name[32];
             for (uint32_t i = 0; i < 64; i++)
-                snprintf(names[i], sizeof names[i], "prim %02u", i);
+            {
+                snprintf(name, sizeof name, "prim %02u", i);
+                slots[i] = CounterSlot(name);
+            }
         }
-        Count(names[draw.primType & 63]);
+        ++*slots[draw.primType & 63];
     }
 
     bool topologySupported = false;
@@ -3092,14 +3125,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // reverse) addresses entirely wrong vertices, which is one of the few remaining
     // shapes that produces triangles between unrelated points.
     if (draw.indexed)
-        Count(draw.index32 ? "draw: 32-bit indices" : "draw: 16-bit indices");
+    {
+        if (draw.index32)
+            COUNT("draw: 32-bit indices");
+        else
+            COUNT("draw: 16-bit indices");
+    }
 
     // CZ_VK_SHADER_CENSUS=1 — draws per (vs, ps) pair, in the stats block. Which
     // shader pair does the work of a pass is the question that turns "the scene is
     // flat" into "THIS pixel shader is flat", and from there Xenia's disassembly of
     // that exact shader says what it was supposed to compute. Off by default because
     // it makes one counter per pair.
-    if (EnvOn("CZ_VK_SHADER_CENSUS"))
+    static const bool shaderCensus = EnvOn("CZ_VK_SHADER_CENSUS");
+    if (shaderCensus)
     {
         char name[64];
         snprintf(name, sizeof name, "pair vs=%016llx ps=%016llx",
@@ -3113,28 +3152,32 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // never pass. If a whole pass is black, this says whether the geometry was
     // rejected by state we decoded or was never there.
     if (key.colorMask == 0)
-        Count("draw: colour write mask is empty");
+        COUNT("draw: colour write mask is empty");
     // ...and the pair that says whether an empty mask is a DEPTH PREPASS or a register
     // read at the wrong index. RB_MODECONTROL's edram mode is the guest's own statement
     // of what a pass writes (4 = colour+depth, 5 = depth-only), so "mode 5, mask 0" is
     // a prepass and needs no explanation, while "mode 4, mask 0" is a draw that set up
     // a colour target and then asked for none of it — a shape worth counting rather
     // than assuming.
+    if (key.colorMask == 0)
     {
-        static char pairNames[8][48];
+        static uint64_t* slots[8];
         static bool built = false;
         if (!built)
         {
             built = true;
+            char name[48];
             for (uint32_t m = 0; m < 8; m++)
-                snprintf(pairNames[m], sizeof pairNames[m],
+            {
+                snprintf(name, sizeof name,
                          "draw: modeControl %u with an EMPTY colour mask", m);
+                slots[m] = CounterSlot(name);
+            }
         }
-        if (key.colorMask == 0)
-            Count(pairNames[key.modeControl & 7]);
+        ++*slots[key.modeControl & 7];
     }
     if (((key.depthControl >> 1) & 1) && ((key.depthControl >> 4) & 7) == 0)
-        Count("draw: depth compare is NEVER");
+        COUNT("draw: depth compare is NEVER");
 
     VkPipeline pipeline = GetPipeline(key, vs, ps);
     if (pipeline == VK_NULL_HANDLE)
@@ -3180,10 +3223,22 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // new one could: a post pass is `colour = f(constants, textures)`, so once the
     // constants are known good the answer has to be in the textures — and `slot=0` is
     // the 1x1 dummy, which stands in silently for whatever the pass meant to read.
+    //
+    // The `snprintf` that formats this shader's hash is INSIDE the `psbindEnv` test,
+    // and that is a part-20 performance fix rather than a tidy-up: it used to run on
+    // every draw whether or not the instrument was on, so a diagnostic nobody had
+    // enabled was formatting 6,600 strings a frame. An instrument is only free when off
+    // if its cost is behind its own gate — see `docs/instruments.md`, which promises
+    // exactly that of every arm in this runtime.
     static const char* psbindEnv = Env("CZ_VK_PSBIND");
-    char psbindWant[24];
-    snprintf(psbindWant, sizeof psbindWant, "%016llx", (unsigned long long)psBind.hash);
-    const bool psbind = psbindEnv && strstr(psbindEnv, psbindWant);
+    bool psbind = false;
+    if (psbindEnv)
+    {
+        char psbindWant[24];
+        snprintf(psbindWant, sizeof psbindWant, "%016llx",
+                 (unsigned long long)psBind.hash);
+        psbind = strstr(psbindEnv, psbindWant) != nullptr;
+    }
     char psbindLine[512];
     // The pass's WRITE state belongs on this line too. "colour = f(constants,
     // textures)" is only true of a draw that writes its colour at all: an empty
@@ -3341,7 +3396,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] =
             disable ? 0u : swapped;
         if (swapped)
-            Count("draw: 16-bit texcoord unswizzle published");
+            COUNT("draw: 16-bit texcoord unswizzle published");
     }
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.
@@ -3583,7 +3638,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // matters; the set of distinct states is small (a title screen uses a handful) and
     // it is what says whether the geometry is being placed by a viewport we computed
     // or by a transform the shader applied.
-    if (EnvOn("CZ_VK_VIEWPORT_TRACE"))
+    static const bool viewportTrace = EnvOn("CZ_VK_VIEWPORT_TRACE");
+    if (viewportTrace)
     {
         // The SCISSOR is part of the setup and belongs in the key. This title tiles its
         // scene, so two draws with the same viewport and different scissors are two
@@ -3675,7 +3731,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // ASSUMES rather than reads. Each of these is a place where a wrong assumption
     // produces a plausible wrong picture instead of an error, so the cheap version of
     // checking them is to print what the guest actually writes.
-    if (EnvOn("CZ_VK_STATE_PROBE"))
+    static const bool stateProbe = EnvOn("CZ_VK_STATE_PROBE");
+    if (stateProbe)
     {
         static std::vector<uint64_t> seen;
         const uint64_t k = (uint64_t(regs[0x2307]) << 32) ^ regs[0x2308];
@@ -3704,7 +3761,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // two is a display convention and the other is the hardware's index, and no amount
     // of reading either tool settles it. The register file does: exactly one of the two
     // readings names slots the guest has written a plausible address and size into.
-    if (EnvOn("CZ_VK_FETCH_PROBE") && !vs.attributes.empty())
+    static const bool fetchProbe = EnvOn("CZ_VK_FETCH_PROBE");
+    if (fetchProbe && !vs.attributes.empty())
     {
         static int left = 4;
         if (left-- > 0)
@@ -3765,7 +3823,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         entry[1] = uint32_t(addr >> 32);
         entry[2] = vf.sizeDwords;
         entry[3] = 0;
-        Count("draw: dependent fetch stream published");
+        COUNT("draw: dependent fetch stream published");
     }
 
     // --- vertex streams -------------------------------------------------------------
@@ -3900,7 +3958,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // iPosition0)`, the position format needs no conversion, and the fetch slot is
     // settled. When every input checks out and the output is wrong, the next move is
     // not another hypothesis — it is to look at the values.
-    if (const char* probe = Env("CZ_VK_DRAW_PROBE"))
+    static const char* const drawProbeEnv = Env("CZ_VK_DRAW_PROBE");
+    if (const char* probe = drawProbeEnv)
     {
         // CZ_VK_DRAW_PROBE_MINVERTS bounds the probe to the big meshes. The first three
         // draws of a shader are usually its smallest, and a defect that only shows on
@@ -4203,15 +4262,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const uint32_t endian =
             endianOverride ? uint32_t(atoi(endianOverride)) : draw.indexEndian;
         {
-            static char names[4][32];
+            static uint64_t* slots[4];
             static bool built = false;
             if (!built)
             {
                 built = true;
+                char name[32];
                 for (uint32_t i = 0; i < 4; i++)
-                    snprintf(names[i], sizeof names[i], "index endian code %u", i);
+                {
+                    snprintf(name, sizeof name, "index endian code %u", i);
+                    slots[i] = CounterSlot(name);
+                }
             }
-            Count(names[draw.indexEndian & 3]);
+            ++*slots[draw.indexEndian & 3];
         }
         const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian);
         if (at == VkDeviceSize(-1))
@@ -4219,12 +4282,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at,
                              draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
         vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
-        Count("draw: indexed");
+        COUNT("draw: indexed");
     }
     else
     {
         vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
-        Count("draw: auto-index");
+        COUNT("draw: auto-index");
     }
     // Fingerprint the draw. Order matters and is included by construction, because the
     // accumulator is sequential — two frames with the same draws in a different order
@@ -4238,7 +4301,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     R->drawFingerprint = mix(R->drawFingerprint, (uint64_t(draw.primType) << 32) |
                                                      draw.indexCount);
     if (indxOffset)
-        Count("draw: VGT_INDX_OFFSET applied (nonzero base vertex)");
+        COUNT("draw: VGT_INDX_OFFSET applied (nonzero base vertex)");
     R->verticesThisFrame += draw.indexCount;
     if (R->drawsThisFrame == 0)
     {
@@ -5457,8 +5520,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // the walk is where the renderer is called from: `walk` contains every
             // draw, every submit and the readback, so reading it as the command
             // processor's cost over-states that by the whole of the renderer. This is
-            // the term `docs/perf-cpu-plan.md` §2 is about, and until now it could only
-            // be got by subtracting two lines of this report by hand.
+            // the 10.98 ms term `docs/perf-cpu-plan.md` §2 is about, and until now it
+            // could only be got by subtracting two lines of this report by hand.
             const uint64_t pm4Ns = walkNs > known ? walkNs - known : 0;
             fprintf(stderr,
                     "[vkprof] pump %llu ticks (%.2f/frame) | sleep %.1f%% walk %.1f%% "
