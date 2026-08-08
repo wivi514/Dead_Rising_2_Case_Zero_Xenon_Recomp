@@ -1,5 +1,30 @@
 # Overnight CPU/performance plan. Paste this into a fresh conversation.
 
+> **EXECUTED 2026-08-08 (session 30). Read `docs/phase5-notes.md` §§6aj-6am first — this
+> file is the plan, those are the results, and several of the items below are retired.**
+>
+> Outcome: **11.8 fps -> ~30 fps** in gameplay, from two changes that delete no work.
+> Step 1's attribution found `outside` was **92% the graphics pump's own `sleep_for`**,
+> not the four investigations this file expected — the guest's simulation is not on the
+> frame's critical path at all, and `perf`'s top symbols (73% of all cycles in the
+> guest's ring-progress spin) are a busy-wait on nobody's critical path.
+>
+> * **§2b (compiler flags) RETIRED** — the recompiled image is most of the CPU and none
+>   of the frame. Not attempted.
+> * **§2d (critical-section volume) RETIRED** — does not appear in the profile at all.
+> * **§2a (pipeline the submit) and §2c (EDRAM size / MSAA fill) ON HOLD, not refuted.**
+>   Both target `submit`, and `submit` is 0.1% driver call + 99.9% GPU fence wait
+>   measured on a GPU pinned at **210 MHz of a 2100 MHz maximum** for this port's entire
+>   history (§6al). One root command — `sudo nvidia-smi -pm 1`, then the recipe below —
+>   decides whether there is anything there. **Do that before building either.**
+> * **§2e (per-draw record cost) is now the largest CPU item in the renderer** at ~13% of
+>   a 33 ms frame, up from 5% of an 85 ms one. Unstarted.
+>
+> The measurement recipe, the gates and the ground rules below all still apply, with one
+> change: the gate expectation "A1 exact 84-deep prefix" now holds only with
+> `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1`. On the default arm positions 71-76 permute
+> every run, for the reason and at the price recorded in §6ak and gotcha 221.
+
 `CLAUDE.md` loads automatically. This is a **self-contained work plan for an unattended
 overnight session** — no operator will be awake, so everything here is self-servable.
 `docs/d3d-phase-c18-kickoff.md` is the general hand-off and is NOT superseded by this;
