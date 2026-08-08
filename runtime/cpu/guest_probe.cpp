@@ -1487,6 +1487,55 @@ PPC_FUNC(sub_82788478)
 }
 
 // ---------------------------------------------------------------------------------
+// CZ_GUEST_LOG=1 — the ENGINE'S OWN debug output, which it has been writing all
+// along and nobody was reading.
+//
+// WHY THIS EXISTS
+// ---------------
+// Every hunt in this port so far has instrumented the runtime and inferred the
+// title's state from the outside. But this image is a release build of a PC-hosted
+// engine and it kept its debug logging: `sub_827877C8` is a vsnprintf into an 0x800
+// stack buffer with **640 distinct callers**, and it hands the formatted result to
+// `sub_828223A0`, which twelve sites in the image share. Hooking that one function
+// turns the game into its own narrator — `[FE] Showing tutorial %d`,
+// `cinematics are playing`, `For cinematic props... check the prop names match`,
+// and 637 more, in the engine's own vocabulary and at the engine's own moments.
+//
+// The catch, stated because it is what makes the output partial rather than
+// complete: most of the interesting call sites are gated on a debug byte
+// (`lbz r11,<flag>; cmplwi r11,0; bne <skip>`) that a shipped build leaves at zero.
+// So this prints what the title logs UNCONDITIONALLY — errors, warnings and
+// asserts — and the gated categories stay silent until their flag is raised.
+// Silence from a category is therefore not evidence about that category (gotcha
+// 25); it is evidence about the flag.
+extern "C" PPC_FUNC(__imp__sub_828223A0);
+
+PPC_FUNC(sub_828223A0)
+{
+    static const bool on = getenv("CZ_GUEST_LOG") != nullptr;
+    if (on)
+    {
+        char text[512];
+        uint32_t i = 0;
+        for (; i < sizeof text - 1; i++)
+        {
+            const char c = char(PPC_LOAD_U8(ctx.r3.u32 + i));
+            if (!c)
+                break;
+            text[i] = c;
+        }
+        text[i] = '\0';
+        // The engine's messages carry their own newlines inconsistently, so trim
+        // and re-add one: a log whose lines do not line up cannot be grepped.
+        while (i && (text[i - 1] == '\n' || text[i - 1] == '\r'))
+            text[--i] = '\0';
+        if (i)
+            fprintf(stderr, "[guest] %s\n", text);
+    }
+    __imp__sub_828223A0(ctx, base);
+}
+
+// ---------------------------------------------------------------------------------
 // CZ_XMA_PROBE=1 — the guest's own "is this voice still playing?" predicate, beside
 // the hardware bits it computes the answer from.
 //
