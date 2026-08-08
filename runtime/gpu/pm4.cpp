@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <chrono>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -687,38 +689,108 @@ void WriteScreenExtent(uint8_t* base, uint32_t addrDword)
 }
 
 // --- register writes --------------------------------------------------------------
-// CZ_PM4_CONST_WATCH=<hex register index> — log every write to one register of the
-// file, with the value and a running count.
+// CZ_PM4_CONST_WATCH=<hex>[-<hex>] — log writes to one register of the file, or to a
+// range of them, with the value as both a dword and a float.
 //
 // The instrument for "this constant holds sensible data early in the frame and zero by
 // the time the shader that needs it draws". A register file has exactly three writers
 // here (SET_CONSTANT, SET_CONSTANT2, LOAD_ALU_CONSTANT) and nothing clears it, so a
 // value that becomes zero was WRITTEN as zero — and the only way to find out by whom is
 // to watch the register rather than reason about the packet stream.
+//
+// It also answers the opposite question, which is the one part 16 needed: a shader
+// constant that is WRONG and a shader constant the guest never wrote in this era look
+// identical from inside the shader, and only the writer's silence separates them. So
+// the watch reports a per-era WRITE COUNT unconditionally — a count of zero over the
+// era under investigation is the finding, and it is one no sampling of the value
+// could ever produce.
+//
+// CZ_PM4_CONST_WATCH_FRAME=N holds the report until frame N, because the era that
+// matters is never the boot (gotcha 139); CZ_PM4_CONST_WATCH_ZEROS=1 restricts it to
+// zero writes, which is what this instrument did when it only had one job.
 const char* g_constWatchEnv = getenv("CZ_PM4_CONST_WATCH");
-const uint32_t g_constWatch =
-    g_constWatchEnv ? uint32_t(strtoul(g_constWatchEnv, nullptr, 16)) : 0xFFFFFFFFu;
+uint32_t g_constWatchLo = 0xFFFFFFFFu;
+uint32_t g_constWatchHi = 0xFFFFFFFFu;
+const bool g_constWatchInit = []
+{
+    if (!g_constWatchEnv)
+        return false;
+    char* end = nullptr;
+    g_constWatchLo = uint32_t(strtoul(g_constWatchEnv, &end, 16));
+    g_constWatchHi = (end && *end == '-') ? uint32_t(strtoul(end + 1, nullptr, 16))
+                                          : g_constWatchLo;
+    return true;
+}();
+const uint32_t g_constWatchFrame = []
+{
+    const char* e = getenv("CZ_PM4_CONST_WATCH_FRAME");
+    return e ? uint32_t(strtoul(e, nullptr, 10)) : 0u;
+}();
+const bool g_constWatchZerosOnly = getenv("CZ_PM4_CONST_WATCH_ZEROS") != nullptr;
 const char* g_constWatchSource = "?";
+
+// A HISTOGRAM, not a sample. The first version of this printed the first 32 writes
+// and then every 4096th, and that is worse than useless on a range: the head is
+// eaten by whichever register the guest happens to write first, so the registers
+// further up the range print NOTHING and read as "never written", and the thinned
+// tail then samples one lane in four and invites "every write is zero". Both
+// mistakes were made here within one session, on the same instrument, after writing
+// gotcha 109's warning into its own comment. What a watch on a shader constant is
+// actually asked is "which values, how often, per register" — so it has to count
+// them all and report the distribution.
+std::mutex g_constWatchMutex;
+std::map<uint32_t, std::map<uint32_t, uint64_t>> g_constWatchHist;
+std::chrono::steady_clock::time_point g_constWatchNext{};
+
+void ConstWatchRecord(uint32_t index, uint32_t value)
+{
+    if (Pm4_FrameCount() < g_constWatchFrame)
+        return;
+    if (g_constWatchZerosOnly && value != 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_constWatchMutex);
+    auto& perValue = g_constWatchHist[index];
+    // Bound the distinct-value set so a register carrying per-draw data cannot grow
+    // this without limit; the cap is announced rather than silent.
+    if (perValue.size() < 24 || perValue.count(value))
+        perValue[value]++;
+    else
+        perValue[0xFFFFFFFEu]++;   // the "other" bucket, printed as such
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < g_constWatchNext)
+        return;
+    g_constWatchNext = now + std::chrono::seconds(15);
+
+    fprintf(stderr, "[constwatch] frame %llu — value histogram per register\n",
+            (unsigned long long)Pm4_FrameCount());
+    for (const auto& [reg, values] : g_constWatchHist)
+    {
+        const uint32_t alu = reg - xenos::kAluConstantBase;
+        fprintf(stderr, "[constwatch]   reg %04X (pc%d.%c):", reg,
+                int(alu / 4) - 256, "xyzw"[alu % 4]);
+        for (const auto& [v, n] : values)
+        {
+            if (v == 0xFFFFFFFEu)
+            {
+                fprintf(stderr, "  <other> x%llu", (unsigned long long)n);
+                continue;
+            }
+            float f;
+            memcpy(&f, &v, 4);
+            fprintf(stderr, "  %08X(%.4f) x%llu", v, double(f), (unsigned long long)n);
+        }
+        fprintf(stderr, "\n");
+    }
+}
 
 void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 {
     if (index >= kRegCount)
         return;
-    if (index == g_constWatch)
-    {
-        static uint64_t n = 0, zeros = 0;
-        ++n;
-        // Only the LATE zero writes. The early ones are the boot setting up; the
-        // question is who zeroes this register in a steady-state frame, which is a
-        // different population entirely and a total cap can never reach it.
-        if (value == 0 && Pm4_FrameCount() > 400 && zeros++ < 24)
-        {
-            float f;
-            memcpy(&f, &value, 4);
-            fprintf(stderr, "[constwatch] #%llu %s reg %04X <- %08X (%.6f)\n",
-                    (unsigned long long)n, g_constWatchSource, index, value, f);
-        }
-    }
+    if (index >= g_constWatchLo && index <= g_constWatchHi)
+        ConstWatchRecord(index, value);
     g_regs[index] = value;
 
     // Scratch-register writeback: when SCRATCH_UMSK enables a scratch register, each
