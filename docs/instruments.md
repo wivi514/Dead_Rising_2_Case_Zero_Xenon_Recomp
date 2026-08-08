@@ -454,7 +454,30 @@ CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not 
                    thread, so everything that thread does between two presents lands in
                    `outside`, including a sleep no cycles profile can see. Gameplay on
                    the current binary: **~34 ms/frame, ~29 fps**, pump 6-9 ticks/frame,
-                   sleep ~22%, gpu ~42%, draw ~22%
+                   sleep ~22%, gpu ~42%, draw ~22%.
+                   **PART 20 FIXED THIS INSTRUMENT AND EVERY NUMBER ABOVE IT IS FROM THE
+                   BROKEN VERSION.** `ProfScope` accumulated INCLUSIVE time and the
+                   scopes nest — `record` opens partway down `DoDraw` and lives to the
+                   end of it, so the `UploadStream` calls below it ran inside it and
+                   their cost landed in `streams` AND in `record`; `submit` enclosed
+                   `submitCall` and `fenceWait` the same way. The print then derived
+                   DoDraw's residual by a subtraction that removed `streams` twice, so
+                   `record` was overstated by the whole of `streams` and `other` was
+                   understated by it. `other 0.0` above is that defect, not a fact.
+                   Every scope is now EXCLUSIVE of its children and the whole-draw total
+                   is a SUM of the columns rather than a separately measured quantity
+                   (gotcha 228). Corrected crowd frame, 6,876 draws, 48.0 ms, GPU at P8:
+                   **draw 28.4% [constants 2.7 streams 7.0 textures 6.8 record 6.4 other
+                   5.4] submit 37.6% readback 0.7% outside 33.4%**.
+                   The pump line gains `[pm4 N]` — the command processor's OWN cost,
+                   i.e. `walk` minus the renderer, which `walk` contains because the
+                   draws are called from inside it. And a third line counts what the
+                   walk was walking: **90,316 packets a frame at 138 ns each, carrying
+                   815,020 register-write dwords at 15.3 ns each** — which is the whole
+                   of the walk's 12.5 ms and turns `docs/perf-cpu-plan.md` §2 from a
+                   suspicion into a target. Counted once per PACKET from its body count,
+                   never per `WriteRegister` call, so the census cannot become the thing
+                   it measures (gotcha 7)
 CZ_VK_PROFILE + nvidia-smi  **read the GPU's CLOCK before believing any `submit`
                    figure.** Every GPU number this port has ever recorded was taken with
                    the card at **P8, 210 MHz of a 2100 MHz maximum, 15.7 W of a 240 W

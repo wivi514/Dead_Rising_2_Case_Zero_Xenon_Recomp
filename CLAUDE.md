@@ -397,9 +397,13 @@ The ones reached for most often:
 CZ_NO_WINDOW=1     headless; the control arm for every phase 3 claim
 CZ_VKDRAW=1        the renderer. OFF by default, so the same binary is the control arm
 CZ_VK_PROFILE=N    the frame's CPU time by phase, every N seconds, plus a `pump` line
-                   splitting the graphics pump's own ticks/sleep/walk. START HERE for
-                   any performance question — and read the GPU's clock before believing
-                   the `submit` column (gotcha 219)
+                   splitting the graphics pump's own ticks/sleep/walk/`pm4`, plus a
+                   packet census (packets/frame, ns/packet, register dwords/frame).
+                   START HERE for any performance question — and read the GPU's clock
+                   before believing the `submit` column (gotcha 219). **Every phase is
+                   EXCLUSIVE of the ones nested inside it as of part 20; it was not
+                   before, and numbers from earlier sessions overstate `record` by the
+                   whole of `streams` (gotcha 228)**
 CZ_VK_FRAME_STATS=file   one line per presented frame; input to tools/frame_compare.py
 CZ_VK_FRAME_DUMP=dir     every 64th frame as a PPM — the picture, self-servable
 CZ_VK_SNAP_DUMP=dir      EVERY resolve snapshot of one frame: which PASS went wrong
@@ -524,11 +528,20 @@ Where the port is, as of 2026-08-08 (phase C part 19):
   `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` reduces it rather than removing it (part 18
   said "restores" on the strength of one run). Quote A5.
 * **Performance: ordinary gameplay is 31 fps and CLOSED** — that is the title's own
-  two-vblank pacing and it will not go higher. **Crowds are the open item at 22-25 fps
-  and are CPU-bound in our runtime**: 75% of a 6,592-draw frame is the renderer's draw
-  path (21.4 ms) and the PM4 walk (11.0 ms). `docs/perf-cpu-plan.md` is the plan, and
-  **its item 0 is now closed** — the headless recipe reaches the outdoor world at
-  6,400-8,700 draws a frame, so §1 and §2 are runnable.
+  two-vblank pacing and it will not go higher. **Crowds are the open item and are
+  CPU-bound in our runtime**: 75% of a crowd frame is the renderer's draw path and the
+  PM4 walk. `docs/perf-cpu-plan.md` is the plan; item 0 is closed (the headless recipe
+  reaches the outdoor world at 6,400-8,700 draws a frame) and **part 20 re-measured the
+  rest, because the profiler was counting nested phases twice and the plan's ranking of
+  §1 was built on the result** (gotcha 228). Corrected, at ~6,800 draws: draw path
+  19.9 ms (`record` 6.7, `other` 5.6, `streams` 3.7, `textures` 2.7, `constants` 1.3),
+  PM4 walk 11.8 ms. Taking the instrumentation off the per-draw path is **−11.0% of a
+  crowd frame**, three runs an arm with no overlap. **The PM4 walk is a register-write
+  loop — 90,316 packets a frame carrying 815,020 register dwords at 15.3 ns each** — and
+  it is the biggest untouched term.
+  **The noise floor here is 10-13% at one run a side** (gotcha 229): use
+  `tools/frame_perf_bins.py`, three runs an arm, alternated, and run the null comparison
+  first. A real A/B on this workload is an hour of wall time.
 * **The view-dependent whole-frame black is SOLVED** and was the renderer's per-frame
   bump arena overflowing at a fixed 128 MB against a 161 MB peak, which lost the whole
   post chain and presented black over a correctly rendered scene. 160 black frames of

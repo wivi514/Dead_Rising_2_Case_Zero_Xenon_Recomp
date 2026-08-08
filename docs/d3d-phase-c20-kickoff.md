@@ -41,25 +41,33 @@ Three things part 20 established that will otherwise cost a session each.
 
 ## Where part 21 starts, in order
 
-1. **`docs/perf-cpu-plan.md` §2 — the PM4 walk, 11.8 ms (21.6%) of a crowd frame — is
-   now the biggest single untouched item, and part 20 left the instrument for it half
-   built.** `[vkprof]` prints the walk's own cost as a `pm4` column, and a second line
-   giving packets/frame, ns/packet, register-write dwords/frame and dwords/packet. That
-   turns §2's leading suspect — `WriteRegister`, called once per dword of every
-   SET_CONSTANT and LOAD_ALU_CONSTANT — into a testable claim for the first time.
-   Two specific leads, both cheap:
+1. **`docs/perf-cpu-plan.md` §2 — the PM4 walk — is the biggest untouched item, and
+   part 20 MEASURED what it is made of, so this starts from a number rather than a
+   suspicion.** At 6,876 draws a frame and 48.0 ms (P8), the walk's own cost is 12.5 ms
+   (26.0%) and it executes **90,316 packets carrying 815,020 register-write dwords** —
+   9.0 dwords per packet, 138 ns per packet, **15.3 ns per register dword**. The dwords
+   account for essentially the whole 12.5 ms: `WriteRegister` is the walk.
+   `[vkprof]` prints all of it; §2 of the plan is rewritten around it. In order of the
+   size the number supports:
+   * **`LOAD_ALU_CONSTANT` reads from GUEST memory**, so a crowd frame streams ~3.3 MB
+     through the cache one `GuestLoad32` at a time — a `memcpy`, a `bswap` and a
+     non-inlined `WriteRegister` call per dword, where a contiguous run wants one bulk
+     byte-swapping pass. This is the biggest single lead and it is where to start.
    * **`ExecutePacket` does 2-4 `lock`ed atomic increments per packet** (`g_packets`,
      `g_types[]`, `g_opcodes[]`, `g_draws`). `gpu/pm4.h` states in its own header that
      "everything here runs on one thread (the vblank pump)" and that the counters are
-     atomic only so a future tracer can read them — which makes a relaxed
-     load-add-store equivalent and a plain `add` instead of a `lock xadd`. At ~7 ns each
-     that is worth ~25 ns a packet; the packets/frame figure says whether that matters.
-   * `Source::operator()` does a `%` per dword AT RING LEVEL only (indirect buffers pass
-     `wrapDwords = 0`), so the division is NOT on the hot path. Do not spend time there.
-   The plan says split before theorising. **Do not do that with `ProfScope`** — two
-   `clock_gettime` calls at ~25 ns against a packet that costs maybe 150 ns would report
-   mostly itself (gotcha 7). Use `perf record -F 999 -g` on the crowd recipe instead;
-   `perf_event_paranoid` is 2 on this machine, which is enough for user-space symbols.
+     atomic only so a future tracer can read them safely — which makes a relaxed
+     load-add-store equivalent and a plain `add` instead of a `lock xadd`. ~7 ns each
+     against 90,316 packets a frame is **~2 ms**, and it is cheap to arm and revert.
+   * `g_regs` is larger than L1; whether its footprint costs anything is a hardware
+     counter question, not an argument.
+   **Do not split the walk with `ProfScope`** — two `clock_gettime` calls at ~25 ns
+   against a 138 ns packet would report mostly itself (gotcha 7). If finer attribution
+   is needed, use `perf record -F 999 -g` on the crowd recipe; `perf_event_paranoid` is
+   2 on this machine, which is enough for user-space symbols.
+   **`pm4.cpp` is under two capture oracles** — `tools/pm4_packet_lengths.py` and
+   `tools/pm4_indirect_walks.py`, both exit-1-on-defect. Run them after every change
+   there; part 20 did and both are clean.
 2. **§1d — `other`, `DoDraw`'s untimed work — is 5.6 ms and is now the second biggest
    term in the draw path.** Part 20 halved it by removing the instrumentation, and what
    is left is real work: two `std::map<uint64_t>` shader lookups, a
@@ -100,12 +108,25 @@ Three things part 20 established that will otherwise cost a session each.
   ungated `snprintf`. `record` −47%, `other` −49% at matched draw counts, and the crowd
   frame time follows.
 * **`tools/frame_perf_bins.py`**, and the noise floor it exposed.
-* **`[vkprof]`'s `pm4` column and the packet/register-dword census**, which is the
-  instrument §2 needs.
+* **`[vkprof]`'s `pm4` column and the packet/register-dword census**, which answered
+  §2 rather than merely instrumenting it: the walk is a register-write loop.
+* **The A/B result: −11.0% of a crowd frame** (arm A 55.30/53.00/53.17 ms against arm B
+  48.35/48.51/46.89, three runs an arm alternated, no overlap), 18.7 -> 20.9 fps in the
+  top populated bin at P8.
 * **The bind-repeat measurement**, recorded and deliberately not acted on.
 * Gotchas 228 (a nested profiler scope counts twice and every column still adds up),
   229 (measure the noise floor with a null arm; binning is not enough), 230 (an
   instrument that is off must be free in its WORK, not just its OUTPUT).
+
+## Gates, all run on the part-20 binary
+
+`--smoke` OK; A5 **exit 0, 3 permutation windows, 0 real**; `truncated=0`;
+`no translated shader` = 0; both PM4 capture oracles clean (24,527,474 packet lengths
+agreeing, every indirect buffer tiling exactly). The picture was not re-checked against
+capture E this part — nothing in it touches what is drawn, only how long drawing takes,
+and the frame-stats fingerprints are unchanged — but that is an argument, not a
+measurement, and `tools/frame_signature.py` against E2 is two minutes if part 21 wants
+it before touching the renderer again.
 
 ## The method notes worth carrying
 
