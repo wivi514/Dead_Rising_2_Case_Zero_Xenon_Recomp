@@ -28,6 +28,7 @@
 #include "../kernel/memory.h"
 #include "../kernel/xex_imports.h"
 #include "pm4.h"
+#include "pump_stats.h"
 #include "vk_renderer.h"
 
 // kernel/imports.cpp — the clock sources the timestamp bundle is refreshed from.
@@ -140,6 +141,21 @@ void TraceIsrMirror(const char* when)
 const bool g_isrPerCpu = getenv("CZ_ISR_SINGLE_CPU") == nullptr;
 std::atomic<uint64_t> g_isrPerCpuDeliveries{ 0 };
 
+// gpu/pump_stats.h — where the pump's wall time goes. See that header for why a cycles
+// profile structurally cannot answer this: the pump spends most of a frame asleep, and
+// a sleeping thread contributes no samples.
+std::atomic<uint64_t> g_pumpTicks{ 0 };
+std::atomic<uint64_t> g_pumpSleepNs{ 0 };
+std::atomic<uint64_t> g_pumpWalkNs{ 0 };
+std::atomic<uint64_t> g_pumpIsrNs{ 0 };
+
+inline uint64_t NowNs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
+
 // See Vd_MirrorMutex in vd.h. Recursive: the walker's in-position delivery holds
 // it across the guest ISR, whose callback can re-enter the walker's mirror writes
 // on the same thread.
@@ -232,7 +248,29 @@ void GraphicsInterruptPump()
     const char* env = getenv("CZ_VBLANK_MS");
     const int vblankMs = env ? std::max(1, atoi(env)) : 16;
 
-    KLOG("graphics interrupt pump started (%d ms cadence)\n", vblankMs);
+    // CZ_PM4_TICK_MS — how often the RING is walked, as opposed to how often the guest
+    // sees a vblank. Those have been the same number since phase 1 and there is no
+    // reason for them to be: the vblank cadence is the title's own frame pacing and
+    // must stay at 16 ms (parts 5-6), while the command processor is hardware that runs
+    // continuously and only looks periodic here because it lives in this loop.
+    //
+    // The cost of conflating them is the largest single term in a gameplay frame.
+    // Measured with gpu/pump_stats.h: 3.00 pump ticks per frame and 57% of the entire
+    // wall clock asleep in the line below — 48 ms of an 85 ms frame — because the walk
+    // stops at every unsatisfied WAIT_REG_MEM and resumes on the NEXT tick (part 4), so
+    // each hand-off wait in a frame costs a whole sleep period whatever released it.
+    //
+    // Measured before promoting, two runs per arm alternated and serial (§6ak): 84.4 ms
+    // a frame at a 16 ms tick against 69.9 ms at 1 ms, eight windows each and no
+    // overlap — 1.21x — with `submit` identical at 24.0 ms on both arms, i.e. the whole
+    // delta is sleep and none of it is GPU. **`CZ_PM4_TICK_MS=16` is now the control
+    // arm** for every claim above.
+    const char* tickEnv = getenv("CZ_PM4_TICK_MS");
+    const int tickMs =
+        tickEnv ? std::max(1, std::min(atoi(tickEnv), vblankMs)) : std::min(1, vblankMs);
+
+    KLOG("graphics interrupt pump started (%d ms vblank cadence, %d ms ring tick)\n",
+         vblankMs, tickMs);
 
     // Registered here rather than at construction: the sink runs guest code on THIS
     // thread's context, so it must not be reachable before the context exists.
@@ -259,15 +297,29 @@ void GraphicsInterruptPump()
     if (VkRenderer_Init())
         Pm4_SetDrawSink(VkRenderer_Draw);
 
-    uint64_t ticks = 0;
+    uint64_t ticks = 0;   // VBLANKS delivered — every `ticks %` below means vblanks
+    int sinceVblankMs = 0; // ms of ring ticks accumulated toward the next vblank
     for (;;)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(vblankMs));
+        // Timed, because this sleep is the single largest term in a gameplay frame and
+        // no instrument in this port could see it (gpu/pump_stats.h).
+        const uint64_t tSleep = NowNs();
+        std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
+        g_pumpSleepNs.fetch_add(NowNs() - tSleep, std::memory_order_relaxed);
+        g_pumpTicks.fetch_add(1, std::memory_order_relaxed);
 
         // Keep the exported KeTimeStampBundle current before waking the guest. The
         // kernel refreshes it on every clock interrupt, and titles read the struct
         // directly rather than calling KeQuerySystemTime per frame — left frozen at
         // zero, the guest's own clock never advances.
+        //
+        // Left at the top of EVERY tick rather than moved into the vblank half below,
+        // for two reasons: with CZ_PM4_TICK_MS unset this keeps the loop byte-for-byte
+        // the pre-part-18 one, and the ring walk runs guest code (the source-1 ISR and
+        // the worker kick under it) which is entitled to read this struct — so moving
+        // it after the walk would hand that code a bundle one whole tick staler. A
+        // faster tick therefore also refreshes the guest clock more often, which is
+        // what a real kernel's 1 ms clock interrupt does anyway.
         if (const uint32_t bundle = g_keTimeStampBundle.load())
         {
             const uint64_t interruptTime = KernelInterruptTime();
@@ -319,11 +371,22 @@ void GraphicsInterruptPump()
             // experiment arm silently watch nothing (gotcha 25's shape).
             Pm4_SetFenceWord(PPC_LOAD_U32(userData + kDeviceWritebackPtr));
             const uint32_t kickedWptr = PPC_LOAD_U32(userData + kDeviceKickedWptr);
+            const uint64_t tWalk = NowNs();
             const uint32_t cursor = Pm4_Execute(base, kickedWptr);
+            g_pumpWalkNs.fetch_add(NowNs() - tWalk, std::memory_order_relaxed);
             if (const uint32_t slot = g_rptrWriteback.load())
                 PPC_STORE_U32(slot, cursor);
 
         }
+
+        // Everything below this line is the VBLANK, and it keeps the guest's own
+        // cadence whatever the ring is ticking at. With CZ_PM4_TICK_MS unset the two
+        // are the same number and this is a no-op, which is what makes the default the
+        // pre-part-18 loop exactly.
+        sinceVblankMs += tickMs;
+        if (sinceVblankMs < vblankMs)
+            continue;
+        sinceVblankMs -= vblankMs;
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
         // second from the driver's own device struct — including the MMIO dword we
@@ -382,11 +445,18 @@ void GraphicsInterruptPump()
             // the number that separates a title pacing itself (streak of a few) from a
             // ring nothing will ever release (streak without bound). Every other
             // counter on these lines reads identically in both cases (gotcha 81).
-            KLOG("ring: waits unmet=%llu held=%llu streak=%llu max=%llu%s\n",
+            //
+            // The streak is in TICKS, and a tick is CZ_PM4_TICK_MS milliseconds — which
+            // stopped being the vblank period in part 18. It is printed here so the
+            // number stays comparable across arms that tick at different rates: at a
+            // 1 ms tick a wait released by the next VBLANK legitimately reads ~16, and
+            // reading that against a figure recorded at a 16 ms tick would score a
+            // healthy run as a 16x regression (gotcha 157).
+            KLOG("ring: waits unmet=%llu held=%llu streak=%llu max=%llu (tick=%dms)%s\n",
                  (unsigned long long)Pm4_WaitUnmetCount(),
                  (unsigned long long)Pm4_RingHeldCount(),
                  (unsigned long long)Pm4_HoldStreak(),
-                 (unsigned long long)Pm4_HoldStreakMax(),
+                 (unsigned long long)Pm4_HoldStreakMax(), tickMs,
                  Pm4_HoldStreak() > 60 ? "   <-- the ring has sat on ONE wait for over a "
                                          "second: nothing is going to release it"
                                        : "");
@@ -480,7 +550,9 @@ void GraphicsInterruptPump()
 
         threadContext.ppcContext.r3.u64 = 0; // source 0: vblank
         threadContext.ppcContext.r4.u64 = userData;
+        const uint64_t tIsr = NowNs();
         func(threadContext.ppcContext, base);
+        g_pumpIsrNs.fetch_add(NowNs() - tIsr, std::memory_order_relaxed);
 
         if (++ticks == 1 || (ticks % (1000 / vblankMs)) == 0)
             KLOG("vblank #%llu delivered to %08X(0, %08X)\n", (unsigned long long)ticks,
@@ -580,6 +652,14 @@ void VdSetSystemCommandBufferGpuIdentifierAddress_x(uint32_t address)
 }
 
 } // namespace
+
+PumpStats PumpStats_Read()
+{
+    return PumpStats{ g_pumpTicks.load(std::memory_order_relaxed),
+                      g_pumpSleepNs.load(std::memory_order_relaxed),
+                      g_pumpWalkNs.load(std::memory_order_relaxed),
+                      g_pumpIsrNs.load(std::memory_order_relaxed) };
+}
 
 // ---------------------------------------------------------------------------
 // Display queries

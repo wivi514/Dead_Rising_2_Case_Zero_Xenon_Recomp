@@ -2229,6 +2229,208 @@ cheapest next instrument is not a probe — it is the button sequence that skips
 cinematic**, because it turns gameplay into something a headless run can reach, and
 every renderer question above then becomes self-servable in the session that asks it.
 
+## 6aj. WHERE A GAMEPLAY FRAME ACTUALLY GOES — and 57% of it is a `sleep_for`
+
+`docs/perf-plan-overnight.md` §1 says: attribute the 58% that `CZ_VK_PROFILE` calls
+`outside` before optimising a single thing, because that one number contains at least
+four different investigations. This is that attribution. **It is not what the plan
+expected, and it is not work at all.**
+
+The starting picture, re-measured on the current binary (steady gameplay, headless,
+~1,890 draws a frame, five consecutive `[vkprof]` windows):
+
+```
+11.8 fps (85.0 ms/frame) | draw 8.8% [constants 0.5 streams 2.3 textures 1.0
+                            record 5.1 other 0.0] submit 28.5% readback 0.4%
+                            outside 62.2%
+```
+
+### (i) `perf` says the CPU is a guest BUSY-WAIT, and the renderer is a rounding error
+
+`perf` is installed on this machine now (it was not as of part 17). Attached to the
+running process during the gameplay era — 60 s, 18,201 samples, 332.9 G cycles, i.e.
+**1.33 cores busy**:
+
+| symbol | share of all cycles |
+|---|---|
+| `__imp__sub_8283C6C8` | **38.1%** |
+| `__imp__sub_82845160` | **21.3%** |
+| `__imp____restgprlr_29` / `__savegprlr_29` | 9.9% / 3.9% |
+| `__imp__sub_82821FF0` | 2.9% |
+| `UploadStream` / `DoSwapImpl` / `DoDraw` / `BindShader` | 2.0 / 1.5 / 0.6 / 0.4 |
+| `memcmp_avx2` / `strncmp_avx2` / `getenv` / `std::map::operator[]` | 0.8 / 0.8 / 0.4 / 0.4 |
+
+That top pair is **finding 38's ring-progress spin** — `sub_82845230` -> `sub_82845160`
+-> `sub_8283C6C8`, the engine's per-frame GPU sync — and with the save/restore ladders
+it accounts for roughly **73% of every cycle the process burns**. Per THREAD the same
+data reads 77.6% in one thread, 10.8% in the next, then 5.1 / 2.9 / 2.1 and nothing.
+
+So the picture from the CPU's side is: one guest thread burns a full core waiting for a
+fence, and the thread that runs the command processor AND the entire renderer uses
+0.14 of a core. Gotcha 97's "a yield loop is a busy loop wearing a polite name",
+arriving from the guest's side this time — except that here it is not even a defect we
+can fix, because it is the title's own code and on console it spins for microseconds.
+
+**What it is NOT is an explanation of the frame time.** A cycles profile can only see
+threads that are on a CPU, and the thread that decides when a frame ends is not.
+
+### (ii) The pump is ASLEEP for most of a frame, and nothing could see it
+
+The renderer runs on the graphics interrupt pump's thread, so everything that thread
+does between two presents lands in `outside` — including the `sleep_for(vblankMs)` at
+the top of its own loop. `runtime/gpu/pump_stats.h` is the instrument: four counters,
+always on, printed on a second `[vkprof]` line. Same run, same windows:
+
+```
+[vkprof] pump 180 ticks (3.00/frame) | sleep 57.3% walk 42.7% vblank-isr 0.0%
+[vkprof] pump 177 ticks (3.00/frame) | sleep 56.5% walk 43.5% vblank-isr 0.0%
+[vkprof] pump 180 ticks (3.00/frame) | sleep 57.3% walk 42.6% vblank-isr 0.0%
+[vkprof] pump 177 ticks (3.00/frame) | sleep 56.6% walk 43.5% vblank-isr 0.0%
+```
+
+**3.00 ticks per frame, every window, to two decimals.** The frame is quantised by the
+pump's cadence. Ranked attribution of the 85 ms, which is the deliverable §1 asked for:
+
+| term | ms | share | what it is |
+|---|---|---|---|
+| **`sleep_for(16 ms)` x 3** | **48.5** | **57%** | not work, not GPU wait — the pump waiting for its next tick |
+| `submit` (GPU fence wait) | 24.2 | 28% | inside the walk |
+| the whole renderer's CPU | 7.5 | 9% | inside the walk; `record` is 5.1 pp of it |
+| PM4 walk + resolve + everything else on that thread | ~4.4 | 5% | inside the walk |
+| the guest's vblank ISR | ~0.03 | 0.0% | the swap-queue walker is free |
+
+`outside` = the sleep plus the non-renderer part of the walk, and the sleep is 92% of
+it. **The guest's own simulation is not in the frame's critical path at all** — it runs
+on other threads, in parallel, and its most expensive thread is a spin.
+
+### (iii) Why three ticks, and what it means
+
+The ring walk stops at every unsatisfied `WAIT_REG_MEM` and **resumes on the NEXT tick**
+(phase C part 4, gotcha 152). So a frame containing N hand-off waits costs at least N
+sleep periods no matter what released them or how quickly. Three ticks a frame means
+this title's per-frame hand-off protocol has about two stalls in it, and each one is
+being charged a full 16 ms of latency that exists only because the command processor
+lives inside the vblank loop.
+
+That conflation has been in the runtime since phase 1 and there is no reason for it.
+The **vblank cadence** is the title's own frame pacing and must stay at 16 ms (parts
+5-6: with the brake on, the swap queue's head equals its tail on 10 of 10 runs). The
+**command processor** is hardware that runs continuously and only looks periodic here
+because it shares a loop with the vblank.
+
+`CZ_PM4_TICK_MS=N` separates them: the loop sleeps N ms and walks the ring every
+iteration, while the vblank ISR, the display-controller gate and the guest timestamp
+bundle stay on exactly the 16 ms cadence they had. Default is `vblankMs`, i.e. the
+pre-part-18 loop byte for byte, so it is its own control arm.
+
+### (iv) What this retires from the overnight plan's §2 before it is started
+
+* **§2b (compiler flags).** The recompiled image is 73% of the process's cycles and
+  essentially all of that is one spin loop. Making the spin 10% faster spins 10% faster.
+  It cannot move a frame time whose critical path is a sleep.
+* **§2d (critical-section call volume).** Does not appear in the profile at all —
+  `RtlEnterCriticalSection` is not in the top 40 symbols.
+* **§2e (per-draw record cost).** Real, 5.1% of the frame, and correctly ranked below
+  everything above it.
+* **§2a (overlapping the GPU with the CPU)** stays the biggest *remaining* item once
+  the sleep is gone, because `submit` is 28% and would then be over half the frame.
+
+The plan's own cautionary tale (part 17 picked the constant upload on arithmetic and it
+was 0.5%) applies to this session too, in the other direction: the prime suspect before
+measuring was "the guest's own recompiled logic is the bulk, so the frame rate is near
+its floor". The guest's logic IS the bulk of the CPU and is not the bulk of the FRAME,
+and no instrument this port owned could tell those apart.
+
+## 6ak. The ring tick, split from the vblank — 11.8 fps -> 14.3 fps
+
+§6aj's attribution says the largest single term in a gameplay frame is the pump's own
+`sleep_for`, and that the frame is quantised at **exactly 3.00 pump ticks**. This is the
+change that tests it and the measurement that decides it.
+
+`CZ_PM4_TICK_MS=N` makes the pump loop sleep N ms and walk the ring on every iteration,
+while the vblank ISR, the display-controller gate and the guest's timestamp bundle stay
+on the 16 ms cadence they have always had. Unset, `N` is the vblank period and the loop
+is the pre-part-18 one exactly — so the default IS the control arm.
+
+### The A/B: two runs per arm, alternated, serial
+
+Gameplay, headless, the `CZ_FAKE_PRESS_SEQ` recipe, the last four `[vkprof]` windows of
+each run (i.e. steady gameplay, ~1,890 draws a frame):
+
+| arm | ms/frame, run 1 | ms/frame, run 2 | median | fps |
+|---|---|---|---|---|
+| control (16 ms tick) | 84.1 84.8 84.5 84.3 | 84.2 85.0 84.0 85.2 | **84.4** | 11.8 |
+| `CZ_PM4_TICK_MS=1` | 69.6 70.1 70.3 69.8 | 69.3 70.3 70.1 69.6 | **69.9** | **14.3** |
+
+**1.21x, with no overlap between the arms' eight windows each.** The within-arm spread
+is 1.4% and the between-arm gap is 17%.
+
+Two internal consistency checks make it a measurement rather than a number:
+
+* `submit` is **24.0 ms on both arms** — 28.4% of 84.4 and 34.4% of 69.9. The GPU work
+  did not change, only the wall clock it is a fraction of. The whole delta is sleep.
+* The pump line reads **3.00 ticks/frame** on the control and **32.00** on the arm.
+  32 ticks at the ~1.05 ms a `sleep_for(1)` really costs is **33.6 ms — two vblank
+  periods.** The control's three ticks were **48 ms — three.** So the change did not
+  make the title faster; it stopped charging it for a vblank period it was not waiting
+  for.
+
+### What the residual 2 vblanks is, and why it should stay
+
+**Case Zero targets 30 fps**, i.e. two 60 Hz vblanks per frame, and after this change
+its per-frame hand-off protocol waits for exactly two vblank-gated releases. That is the
+title pacing itself correctly (parts 5-6) and must not be "optimised". The remaining
+36 ms is ours: 24 ms of GPU fence wait, 7.2 ms of renderer CPU and ~5 ms of command
+processor. **If that fitted inside the 33.6 ms the pump now spends asleep, this title
+would run at its own 30 fps.**
+
+### The brake's health counter had to be re-expressed, and one instrument threshold
+
+`ring: waits unmet=... max=N` counts consecutive TICKS on one wait, and a tick stopped
+being the vblank period. The same physical hold now reads `max=2 (tick=16ms)` on the
+control and `max=31 (tick=1ms)` on the arm — **32 ms either way.** The line prints the
+tick period for exactly that reason: a figure recorded under one cadence and read under
+another scores a healthy run as a 16x regression (gotcha 157). Likewise `pm4.cpp`'s
+"the ring has not moved" dump was `>= 60 ticks`, which meant "about a second" only while
+a tick was a vblank; it is a `std::chrono::seconds(1)` now (gotcha 98).
+
+### Gates
+
+Both arms, on the same binary: `--smoke` OK; A5 **exit 0, 0 real windows**;
+`truncated=0`; `no translated shader` = 0; deepest file **#83 `cinezombie.big`**; the
+chain the healthy shape (`ints/arms` 0.9998, `isr/ints` 1.000, `kicks == walks ==
+drains`).
+
+**A1's position-71 window** needed its own campaign, because the first three arm gates
+diverged there 3 of 3 while the control was clean 3 of 3 — which reads as the change
+making a known-stochastic race deterministic. It does not. The window is a two-thread
+interleave, visible in the logs directly: the control has
+`XamUserReadProfileSettings` -> `XamUserCheckPrivilege` land *before* the
+`cAsyncFileLoadQueue Thread` is created, the arm has them land after the
+`serial.bin`/`capcom.txt`/`select` block, and positions 77 onward realign — the same six
+names in a different order, which is what A5's set analysis calls a permutation. Ten
+gate runs per arm, alternated:
+
+| arm | A1 pos-71 permutes | A5 | truncated | deepest |
+|---|---|---|---|---|
+| control (16 ms tick) | **1 of 10** | exit 0, 0 real, 10/10 | 0, 10/10 | #83, 10/10 |
+| `CZ_PM4_TICK_MS=1` | **5 of 10** | exit 0, 0 real, 10/10 | 0, 10/10 | #83, 10/10 |
+
+Fisher one-sided **p = 0.07**: suggestive of a real shift, not established at n=10, and
+reported including the fact that it is unfavourable (gotcha 160). The control's 1 of 10
+is the same figure part 6 measured for this window on a different change, which is some
+evidence the window's baseline rate is stable and ours is a genuine nudge to it. What is
+NOT in doubt is that nothing else moved: **every one of the 20 runs** gave A5 exit 0 with
+zero real windows, `truncated=0`, and file #83.
+
+**It is promoted anyway, and the reasoning is on the record.** The permutation has an
+identified mechanism, is confirmed benign by the stricter set-based gate, occurs on the
+control arm too, and has an exact same-binary control (`CZ_PM4_TICK_MS=16`). Against it
+is a 1.21x on the quantity this port has recorded as a blocker on EVIDENCE rather than
+polish. And the direction of the change is toward hardware, not away: a real command
+processor runs continuously, and the reason our thread interleaving moved is that the
+ring is now serviced promptly rather than up to 16 ms late.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

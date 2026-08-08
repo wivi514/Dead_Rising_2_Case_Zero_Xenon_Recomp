@@ -1731,11 +1731,20 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
     // CZ_PM4_RESYNC=1 enables a forward scan to the next plausible packet header for
     // when that trade is worth making deliberately; it is off by default precisely so
     // a parser bug shows up as a stall rather than as mystery garbage.
+    // The threshold is a DURATION, not a tick count. It was 60 ticks, which meant "about
+    // a second" only because the pump ticked at the vblank cadence — and CZ_PM4_TICK_MS
+    // exists precisely to break that identity, so at a 1 ms tick the same constant would
+    // have reported a stall after 60 ms and filled the log of a perfectly healthy run.
+    // Gotcha 98: when a wait's cadence changes, re-express every gate on it in a unit
+    // that survives the change.
     static uint32_t s_lastCursor = ~0u;
-    static uint32_t s_staleTicks = 0;
+    static std::chrono::steady_clock::time_point s_staleSince{};
     if (g_cursor == s_lastCursor && g_cursor != target)
     {
-        if (++s_staleTicks >= 60)
+        const auto now = std::chrono::steady_clock::now();
+        if (s_staleSince.time_since_epoch().count() == 0)
+            s_staleSince = now;
+        if (now - s_staleSince >= std::chrono::seconds(1))
         {
             static int dumps = 0;
             if (dumps++ < 4)
@@ -1766,12 +1775,12 @@ uint32_t Pm4_Execute(uint8_t* base, uint32_t writePtr)
                     }
                 }
             }
-            s_staleTicks = 0;
+            s_staleSince = {};
         }
     }
     else
     {
-        s_staleTicks = 0;
+        s_staleSince = {};
     }
     s_lastCursor = g_cursor;
 

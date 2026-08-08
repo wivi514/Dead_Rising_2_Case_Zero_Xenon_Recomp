@@ -1,6 +1,7 @@
 #include "vk_renderer.h"
 
 #include "pm4.h"
+#include "pump_stats.h"
 #include "xenos.h"
 #include "../host/window.h"
 
@@ -4956,6 +4957,29 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     pct(g_prof.textures), pct(g_prof.record), pct(drawOther),
                     pct(g_prof.submit), pct(g_prof.readback),
                     100.0 - pct(known));
+
+            // ...and what `outside` actually IS. The renderer runs on the graphics
+            // pump's thread, so everything the pump does between two presents is in
+            // that column — including the sleep at the top of its loop, which is not
+            // work and which no cycles profile can see (gpu/pump_stats.h). `ticks` is
+            // the number that makes the rest readable: the ring walk stops at every
+            // unsatisfied WAIT_REG_MEM and resumes on the NEXT tick, so a frame
+            // costs at least one sleep period per hand-off wait in it.
+            static PumpStats lastPump{};
+            const PumpStats p = PumpStats_Read();
+            const uint64_t dTicks = p.ticks - lastPump.ticks;
+            fprintf(stderr,
+                    "[vkprof] pump %llu ticks (%.2f/frame) | sleep %.1f%% walk %.1f%% "
+                    "vblank-isr %.1f%% | unaccounted %.1f%%\n",
+                    (unsigned long long)dTicks,
+                    frames ? double(dTicks) / double(frames) : 0.0,
+                    pct(p.sleepNs - lastPump.sleepNs), pct(p.walkNs - lastPump.walkNs),
+                    pct(p.isrNs - lastPump.isrNs),
+                    100.0 - pct((p.sleepNs - lastPump.sleepNs) +
+                                (p.walkNs - lastPump.walkNs) +
+                                (p.isrNs - lastPump.isrNs)));
+            lastPump = p;
+
             g_prof = ProfilePhases{};
             last = now;
             lastFrame = R->frame;
