@@ -685,6 +685,41 @@ struct Renderer
     VkDescriptorSet sets[5]{};
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
 
+    // --- what is already bound on `cmd`, so a draw can skip re-binding it ------------
+    //
+    // Vulkan's pipeline binding, dynamic state and descriptor sets are properties of
+    // the COMMAND BUFFER and persist across draws and across render-pass instances, so
+    // re-issuing them per draw is pure overhead. It went unnoticed for four phases
+    // because it is proportional to the draw count and the draw count was ~1,900:
+    // `record` was 5% of an 85 ms frame. A Still Creek zombie crowd issues **4,900 to
+    // 6,300 draws a frame**, where the same code is 21.6% of a 56 ms frame and the
+    // renderer's CPU is the largest single term in it (operator session, part 18).
+    //
+    // Safe to cache against the command buffer because every pipeline this renderer
+    // creates declares the SAME three dynamic states (viewport, scissor, blend
+    // constants) and shares ONE pipeline layout — so a pipeline bind never invalidates
+    // the dynamic state or the descriptor bindings. Reset in BeginFrame, which is the
+    // one place a fresh command buffer starts. CZ_VK_NO_STATE_CACHE=1 is the arm.
+    struct BoundState
+    {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkViewport viewport{};
+        VkRect2D scissor{};
+        float blend[4]{};
+        bool haveViewport = false, haveScissor = false, haveBlend = false;
+        bool setsBound = false;
+    } bound;
+    // How often each bind was skipped, across the whole run. An arm needs a counter or
+    // its absence proves nothing (gotcha 151) — but the counter must not cost more than
+    // the thing it measures. The first version used Count(), which is a
+    // std::map<std::string> lookup, so the cached arm paid five map lookups per draw to
+    // save five vkCmd calls and the A/B came out a dead heat BY CONSTRUCTION. These are
+    // plain adds on a struct that is already hot, printed once with the stats.
+    struct BindSkips
+    {
+        uint64_t pipeline = 0, viewport = 0, scissor = 0, blend = 0, sets = 0, draws = 0;
+    } skips;
+
     VkSampler linearSampler = VK_NULL_HANDLE;
     VkSampler pointSampler = VK_NULL_HANDLE;
     Image dummy2D, dummy3D, dummyCube, dummy1D;
@@ -2357,6 +2392,10 @@ void BeginFrame()
     R->arenaCursor = 0;
     R->streamCache.clear();
     R->drawsThisFrame = 0;
+    // A fresh command buffer binds nothing. This must be here and nowhere else: a
+    // stale `bound` across a vkResetCommandBuffer would skip binds that ARE needed,
+    // and the symptom would be a draw rendering with the previous frame's pipeline.
+    R->bound = Renderer::BoundState{};
 }
 
 void BeginRendering()
@@ -3292,16 +3331,59 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
 
     ProfScope _pRecord(&g_prof.record);
-    vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdSetViewport(R->cmd, 0, 1, &viewport);
-    vkCmdSetScissor(R->cmd, 0, 1, &scissor);
+    // Only what has actually changed since the last draw on this command buffer. See
+    // Renderer::BoundState for why that is sound; CZ_VK_NO_STATE_CACHE=1 re-issues
+    // everything every draw, which is the pre-part-18 renderer and the control arm.
+    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
+    ++R->skips.draws;
     const float blendConstants[4] = {
         F32(regs[xenos::kRbBlendRed]), F32(regs[xenos::kRbBlendRed + 1]),
         F32(regs[xenos::kRbBlendRed + 2]), F32(regs[xenos::kRbBlendRed + 3])
     };
-    vkCmdSetBlendConstants(R->cmd, blendConstants);
-    vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout, 0, 5,
-                            R->sets, 0, nullptr);
+    if (noStateCache || pipeline != R->bound.pipeline)
+    {
+        vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        R->bound.pipeline = pipeline;
+    }
+    else
+        ++R->skips.pipeline;
+    if (noStateCache || !R->bound.haveViewport ||
+        memcmp(&viewport, &R->bound.viewport, sizeof(viewport)) != 0)
+    {
+        vkCmdSetViewport(R->cmd, 0, 1, &viewport);
+        R->bound.viewport = viewport;
+        R->bound.haveViewport = true;
+    }
+    else
+        ++R->skips.viewport;
+    if (noStateCache || !R->bound.haveScissor ||
+        memcmp(&scissor, &R->bound.scissor, sizeof(scissor)) != 0)
+    {
+        vkCmdSetScissor(R->cmd, 0, 1, &scissor);
+        R->bound.scissor = scissor;
+        R->bound.haveScissor = true;
+    }
+    else
+        ++R->skips.scissor;
+    if (noStateCache || !R->bound.haveBlend ||
+        memcmp(blendConstants, R->bound.blend, sizeof(blendConstants)) != 0)
+    {
+        vkCmdSetBlendConstants(R->cmd, blendConstants);
+        memcpy(R->bound.blend, blendConstants, sizeof(blendConstants));
+        R->bound.haveBlend = true;
+    }
+    else
+        ++R->skips.blend;
+    // The five bindless heaps never change address, so this is once per command
+    // buffer rather than once per draw — and it is the most expensive of the five.
+    if (noStateCache || !R->bound.setsBound)
+    {
+        vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout,
+                                0, 5, R->sets, 0, nullptr);
+        R->bound.setsBound = true;
+    }
+    else
+        ++R->skips.sets;
 
     const uint64_t pushConstants[3] = { uint64_t(R->arena.address + vsConstAt),
                                         uint64_t(R->arena.address + psConstAt),
@@ -5072,6 +5154,19 @@ void VkRenderer_DumpStats()
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
             R->pipelines.size(), R->shaders.size(), R->textures.size(),
             (unsigned long long)(R->arenaHighWater >> 10));
+    // The state cache's own engagement, as fractions of the draws it was offered.
+    // Printed unconditionally, including on the CZ_VK_NO_STATE_CACHE arm where every
+    // figure is 0 by construction — an arm whose "on" run is indistinguishable from its
+    // "off" run is exactly what a missing counter hides (gotcha 151).
+    if (const uint64_t d = R->skips.draws)
+        fprintf(stderr,
+                "[vk]   binds skipped per draw: pipeline %.1f%% viewport %.1f%% "
+                "scissor %.1f%% blend %.1f%% descriptor-sets %.1f%% (of %llu draws)\n",
+                100.0 * double(R->skips.pipeline) / double(d),
+                100.0 * double(R->skips.viewport) / double(d),
+                100.0 * double(R->skips.scissor) / double(d),
+                100.0 * double(R->skips.blend) / double(d),
+                100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
     for (const auto& [name, count] : g_stats)
         fprintf(stderr, "[vk]   %-52s %llu\n", name.c_str(),
                 (unsigned long long)count);
