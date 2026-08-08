@@ -29,6 +29,12 @@ the crowd frame.
    * **§1a hypothesis D just got a second reason.** The per-draw constant block is 8 KB
      of the ~27 KB a draw the arena now has to hold; deduplicating identical consecutive
      blocks pays in frame time AND in the resource that used to black the frame out.
+   * **RE-MEASURE BEFORE OPTIMISING — the table in that plan predates this session's
+     renderer changes.** 21.4 ms / 11.0 ms were taken on the part-18 binary. Part 19
+     added ~12 small image copies a frame (snapshot views) plus 25,076 refreshes a boot
+     inside the resolve path, and an arena that reallocates once. All of that is expected
+     to be small and none of it has been timed, which is exactly the state a number
+     should not be trusted in (gotcha 13, pointed at my own work).
    * **Quote the GPU clock with every number.** `sudo nvidia-smi -pm 1` then
      `-lgc 2100,2100`; this machine idles at 210 MHz of 2100 and it is worth 2.9x on the
      GPU term (gotcha 219). It was P8 for the whole of part 19, which is fine because
@@ -68,7 +74,11 @@ the crowd frame.
 
 ## What part 19 delivered
 
-* **The whole-frame black is the per-frame arena** (`docs/phase5-notes.md` §6ap).
+* **The whole-frame black is the per-frame arena** (`docs/phase5-notes.md` §6ap). NB the
+  growth is reactive, so a session still costs ONE degraded frame — the one that
+  discovers the size — and it announces itself (`arena EXHAUSTED on frame N` followed by
+  `arena grown to 256 MB`). A single black frame early in a session is that, not a
+  regression.
   128 MB against a 161 MB peak; `ArenaAlloc` skips every draw it cannot satisfy and the
   post chain is last in the frame. **128 MB: 160 black frames of 8,216. 512 MB: zero.
   Every one of the 160 is the frame after an `arena EXHAUSTED` line — 160 of 160.** The
