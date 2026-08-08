@@ -384,6 +384,27 @@ CZ_VK_SNAP_ON_BLACK[=pct]  dump the whole resolve chain of the frame the picture
                    CZ_VK_SNAP_FRAME=999999` — four lines, 180 files; run it before
                    believing a run that dumped nothing, because the FIRST version of this
                    trigger could not fire at all and neither could its control
+CZ_VK_SNAP_ON_DARK=<meanLuma>  the same trigger on the metric the defect actually moves,
+                   and it dumps a BRIGHT REFERENCE chain to sit beside the dark one.
+                   SNAP_ON_BLACK fires on COVERAGE, and in a gameplay run the only things
+                   that trip a 0.5% coverage floor are loading screens, which are
+                   legitimately black. Both are kept: the two thresholds answer different
+                   questions, and silently changing what an instrument means would
+                   invalidate every run taken with it. The PAIR is the point — one dark
+                   chain is consistent with "this pass is broken" and with "the scene
+                   really is dark here", and only a bright chain from the same location
+                   seconds later separates them (gotcha 133). A dark episode OWES a
+                   bright reference and the next frame that re-arms pays it.
+                   CZ_VK_SNAP_ON_DARK_LIT=N is the arming bar (default 20),
+                   CZ_VK_SNAP_ON_DARK_MAX=N the episode cap (default 3), and
+                   CZ_VK_SNAP_ON_DARK_AFTER_MS=N ignores everything before N ms of wall
+                   clock — not a refinement, because the boot, the title screen and every
+                   loading fade would otherwise spend a budget aimed at gameplay before
+                   gameplay starts. Wall time rather than a frame index because the
+                   recipes that reach gameplay are written in seconds and a frame index
+                   for the same moment moves with the frame rate. POSITIVE CONTROL:
+                   `CZ_VK_SNAP_ON_DARK=8 CZ_VK_SNAP_ON_DARK_LIT=20 CZ_VK_SNAP_FRAME=999999`
+                   on a plain boot fires at the title screen and prints both lines
 CZ_VK_NO_SNAPSHOT_VIEWS=1  serve resolve snapshots at the destination surface's PITCH,
                    which is what every phase before this one did. THE CONTROL ARM for
                    §6ao: a sampler normalises over the image it is handed, the fetch
@@ -393,6 +414,24 @@ CZ_VK_NO_SNAPSHOT_VIEWS=1  serve resolve snapshots at the destination surface's 
                    tail of the luminance reduction, whose last link — the 2x1 scene
                    average the tone map reads — was identically ZERO in every frame of
                    every era
+CZ_VK_ARENA_MB=N   the per-frame bump arena's STARTING size (default 128; it grows now).
+                   The arm that identified the whole-frame black: `ArenaAlloc` SKIPS
+                   every draw it cannot satisfy, this title's post chain is at the END of
+                   the frame, and its biggest frames are the ones a camera angle produces
+                   — so an arena that overruns loses exactly the post chain and presents
+                   black with a correctly rendered scene sitting in EDRAM behind it.
+                   128 MB: 160 black frames of 8,216 and the high water pinned at the
+                   cap. 512 MB: zero of either, true peak 161 MB. Every one of the 160 is
+                   the frame after an exhaustion — 160 of 160 (§6ap).
+                   `arena EXHAUSTED on frame N` names the frame once per frame, uncapped,
+                   because exhaustion is a property of ONE frame and a running total
+                   cannot be joined to a frame-stats line
+CZ_VK_NO_ARENA_GROWTH=1  pin the arena at its starting size — the exact pre-part-19
+                   renderer, and the control arm for the growth. Without it the arena
+                   doubles at the next frame boundary whenever a frame overran it, which
+                   is the only place it is safe (the command buffer has just been reset,
+                   so its previous submission has completed, and every consumer of the
+                   arena is per-frame)
 CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not a frame
                    count — a per-N-frames report samples a different amount of wall time
                    in every era and averages the boot's fast frames with gameplay's slow

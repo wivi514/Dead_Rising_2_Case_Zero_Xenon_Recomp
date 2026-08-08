@@ -34,7 +34,26 @@ Next, in order:
    symptoms, one of them borrowed. Re-derive this item from scratch before working it —
    the surviving question is why those specific three fail, not why "the trigger is
    missing everywhere".
-1c. **A VIEW-DEPENDENT WHOLE-FRAME BLACK, and it is now the top rendering defect.**
+1c. ~~**A VIEW-DEPENDENT WHOLE-FRAME BLACK**~~ **SOLVED IN PART 19: it is the renderer's
+   per-frame bump ARENA overflowing, and the auto-exposure hypothesis below is refuted.**
+   `ArenaAlloc` skips every draw it cannot satisfy, this title's post-process chain is at
+   the END of the frame, and the arena was a fixed 128 MB against a true peak of 161 —
+   so a frame with enough geometry in it lost its whole post chain and presented black
+   with a correctly rendered scene sitting in EDRAM behind it. "View-dependent" is just
+   "which way the camera points decides how much geometry is in the frame".
+   Measured both ways on one binary: **128 MB gives 160 black frames of 8,216 gameplay
+   frames and 512 MB gives zero**, and within the control arm **every one of the 160 is
+   the frame immediately after an `arena EXHAUSTED` line — 160 of 160**. The resolve-chain
+   dump of a black frame is what pointed at it: the scene colour `0684B000` was 98.4%
+   lit at mean 35.7 and every downstream surface — the downsamples, the luminance ladder,
+   the three colour LUTs, the tone-map output — was identically zero.
+   The arena grows now rather than being a bigger number (`CZ_VK_NO_ARENA_GROWTH=1` is
+   the control). What is NOT closed is the consumption: ~27 KB a draw, 8 KB of which is
+   the per-draw constant block that `perf-cpu-plan.md` §1a-D already wants deduplicated.
+   `docs/phase5-notes.md` §6ap. The original report is kept below, because the
+   hypothesis it argues for was wrong in an instructive way — every piece of supporting
+   evidence in it was real and none of it was the cause.
+1c-original. **A VIEW-DEPENDENT WHOLE-FRAME BLACK, and it is now the top rendering defect.**
    Looking at the gas station (and at least one spot in the Quarantine Area) turns the
    ENTIRE frame black; turning away restores it instantly. It absorbed three separate
    "black screen" reports before the operator noticed the camera dependence. **Missing
@@ -219,6 +238,10 @@ Next, in order:
    2.9x, and it is now the SMALLEST term in a crowd frame.** Crowd fps 15-25 -> 22-25.
    That configuration must be stated with any GPU number from this machine, and it is
    invisible outside crowds because everything else is on the title's own cap.
+   **ITEM 0 OF THAT PLAN IS CLOSED (part 19): the headless recipe reaches the outdoor
+   world and 6,400-8,100 draws a frame.** It is in `CLAUDE.md`'s Commands section beside
+   the safehouse one; the change is one extra `B` at the door and alternating `LSUP` with
+   `RSRIGHT`/`RSLEFT`. §1 and §2 of the plan are now runnable.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.

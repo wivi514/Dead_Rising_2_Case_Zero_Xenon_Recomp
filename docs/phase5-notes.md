@@ -2772,6 +2772,123 @@ directions, which is the strongest form this project can get without hardware.
 
 ---
 
+## 6ap. THE VIEW-DEPENDENT WHOLE-FRAME BLACK, CAPTURED HEADLESSLY AT LAST — and the
+## auto-exposure hypothesis is REFUTED
+
+Open-items 1c and the part-18 kickoff both name auto-exposure as the leading
+hypothesis: a whole-frame, instantly reversible, view-dependent black is what
+`exposure = key / averageLuminance` does when the average comes back enormous or
+non-finite. **It is not what happens here.**
+
+### Getting there without an operator
+
+Two things were needed and neither existed. First a trigger: `CZ_VK_SNAP_ON_BLACK` fires
+on COVERAGE, and it turns out to fire on loading screens and nothing else — the two
+episodes it caught in a gameplay run were both menu-to-loading transitions, which are
+legitimately black. `CZ_VK_SNAP_ON_DARK=<meanLuma>` fires on mean luminance instead, and
+**it dumps a BRIGHT REFERENCE chain from the same location seconds later**, because one
+dark chain is consistent with "this pass is broken" and with "the scene really is dark
+here" and only the pair separates them (gotcha 133). `CZ_VK_SNAP_ON_DARK_AFTER_MS`
+ignores everything before N ms, because the boot, the title and every loading fade would
+otherwise spend the episode budget before gameplay starts.
+
+Second, a recipe that goes OUTDOORS. The existing one reaches gameplay and parks in the
+safehouse. Adding `B` at the door and alternating `LSUP` with `RSRIGHT`/`RSLEFT` walks
+Chuck into Still Creek and sweeps the camera — and that is also the answer to
+`docs/perf-cpu-plan.md` item 0, which blocked the whole CPU plan: the same run reaches
+**8,130 draws a frame**, past the operator's 6,592.
+
+### What the pair says
+
+Three black frames in 9,219 gameplay frames, all inside one 9-second window:
+`coveragePct 0.0000, meanLuma 0.000, 1 distinct colour` — the whole frame, not a dark
+frame. The next frame but one is back at 74% lit. Instantly reversible, exactly as
+reported.
+
+Reading the black frame's resolve chain against the bright reference two frames later:
+
+| surface | black frame | bright reference |
+|---|---|---|
+| **0684B000 scene colour 1280x720** | **98.4% lit, mean 35.70** | 98.1% lit, mean 37.21 |
+| 147C0000 / 148B0000 640x360 downsample | 0.0 | 75.3% lit |
+| 149DC000 .. 14A81000 luminance ladder | 0.0 everywhere | populated |
+| 14338000 / 14359000 / 1437A000 colour LUTs | **0.0** | 99.8% lit |
+| 1439B000 tone-map output | 0.0 | 73.7% lit |
+| 00E48000 presented frame | 0.0 | 74.2% lit |
+
+**The scene renders correctly and then every single post-process pass produces
+nothing.** Not "dark" — absent. That rules out the tone map, the exposure and the grade
+as causes: they are victims in the same list. The auto-exposure hypothesis is refuted
+not by absence but by the chain showing exactly where the picture stops (the
+compensation rule in CLAUDE.md's conventions, applied to a hypothesis rather than a fix).
+
+### The mechanism this points at, with the arm to test it
+
+The black frames are the BIGGEST frames. Frame 12138 has **6,930 draws and 4,190,043
+vertices** against its neighbours' ~6,450 and ~3.55M, and it took **242 ms** where they
+take 50-65. The renderer's per-frame bump arena is 128 MB, `ArenaAlloc` **skips every
+draw it cannot satisfy**, and this title's post chain is at the END of the frame. So a
+frame that overruns the arena loses precisely its post chain and presents black, and it
+overruns exactly when the camera brings enough geometry into view — which is what
+"view-dependent" means.
+
+That prediction is falsifiable in one run, so it was stated before the run rather than
+after: **`CZ_VK_ARENA_MB=128` should print `arena EXHAUSTED on frame N` for exactly the
+frames whose coverage is 0, and `CZ_VK_ARENA_MB=512` should print none and have no black
+frames.** If the control printed no exhaustion at all, the mechanism was something else
+and this section was wrong.
+
+### It is confirmed, in both directions and to the frame
+
+Two runs of the outdoor recipe, one binary, one arm:
+
+| | arena exhausted | BLACK gameplay frames | gameplay frames | arena high water |
+|---|---|---|---|---|
+| `CZ_VK_ARENA_MB=128` | 172 | **160** | 8,216 | **131,072 KB — pinned at the cap** |
+| `CZ_VK_ARENA_MB=512` | **0** | **0** | 7,974 | 164,752 KB |
+
+And within the control arm, joining the two logs frame by frame: **every one of the 160
+black frames is the frame immediately after an `arena EXHAUSTED` line. 160 of 160.** Not
+a correlation over eras — an exact per-frame correspondence, which is the strongest
+statement this project has ever been able to make about a rendering defect.
+
+The peak requirement is **161 MB** and the arena was 128. It was 20% short, and the 20%
+was six parts of investigation: open-items 1c, three separate "black screen" reports the
+operator had to disentangle, a shader-cache theory, a bindless-heap theory and an
+auto-exposure theory.
+
+### The fix is to GROW, because a bigger number is what this already was
+
+Open-items 3b says it about the bindless heap and it is just as true here: *a cap is only
+ever a bigger number*. So `ArenaAlloc` now asks for double at the next frame boundary and
+`BeginFrame` reallocates there — the only place it is provably safe, because the command
+buffer has just been reset (which is legal only once its previous submission completed)
+and every consumer of the arena is per-frame. There is a 2 GB ceiling as a runaway
+backstop, and it announces itself if it ever bites.
+
+`CZ_VK_NO_ARENA_GROWTH=1` pins the size and is therefore the exact pre-part-19 renderer;
+`CZ_VK_ARENA_MB=N` sets the starting size, which is how the A/B above was run.
+
+Verified on a fifth run of the same recipe with the defaults: **one** exhaustion line
+(frame 8011, 127 MB of 128), then `arena grown to 256 MB`, then **zero black frames in
+7,518 gameplay frames** with a high water of 166 MB and a peak of 8,687 draws. The cost
+of self-tuning is exactly one degraded frame per session — the one that discovers the
+size — and that frame announces itself.
+
+### What this does NOT close
+
+The consumption itself. ~6,000 draws needing 161 MB is ~27 KB a draw, and 8 KB of that
+is the per-draw constant block that `docs/perf-cpu-plan.md` §1a hypothesis D already
+wants deduplicated for a completely different reason. That is one change that would pay
+in two currencies, and it is the reason the growth is not the end of this item.
+
+`ArenaAlloc` now names the frame once per frame rather than only counting, because
+exhaustion is a property of ONE frame — the arena resets at every swap — and a total
+says "some draws were skipped somewhere" where the claim that matters is "frame N lost
+its post chain".
+
+---
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

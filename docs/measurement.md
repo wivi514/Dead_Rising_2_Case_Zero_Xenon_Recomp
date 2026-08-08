@@ -49,6 +49,17 @@ python3 tools/frame_sharpness.py /tmp/dump_base1 /tmp/dump_base2 /tmp/dump_arm1 
     /tmp/dump_arm2 --stats /tmp/base1.txt /tmp/base2.txt /tmp/arm1.txt /tmp/arm2.txt
 ```
 
+Summarise a `CZ_VK_SNAP_DUMP` directory — one line per resolve snapshot, grouped by
+frame and ordered by address. A single frame of this title dumps 61 surfaces, so "open
+them and look" is not an analysis anyone repeats, and it is gotcha 133 applied to a
+directory: whichever three you happen to open become the conclusion. The `lit%`, `mean`
+and `max` columns down an address ladder are what say which LINK of a reduction chain
+broke, and reading them that way is how §6ao's pitch-vs-width defect was found and how
+§6ap separated "the scene is dark" from "the post chain did not run":
+```
+tools/snap_dump_stats.py <dir> [--frame N] [--min-lit PCT] [--sort addr|lit|size]
+```
+
 Census a capture's RESOLVES by source and destination. **18.4% of this title's resolves
 copy the DEPTH buffer, not a colour target** — its three shadow cascades and its scene
 depth — and our command processor read that field nowhere until part 14, which is what

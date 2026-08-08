@@ -1152,3 +1152,69 @@ boot's `frame_003456` matches capture E2 at **+0.959, identity orientation**.
 in §6ak, and `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` restores the exact 84-prefix in
 one command — but `kernel_call_diff.py` refuses to relax the masked gate for
 permutations on purpose, so it is a real loss and not a technicality (gotcha 221).
+
+**PHASE C PART 19 (2026-08-08, session 31): the port's top rendering defect was a
+128 MB allocator, the save could not write, and the headless recipe now reaches the
+outdoor world.** `docs/phase5-notes.md` §§6ao-6ap, `docs/phase3-notes.md` finding 52.
+
+The part-18 kickoff's list, worked in its own order. Item 1 was already done (part 17
+committed and controlled `CZ_VK_SNAP_ON_BLACK`); item 4's performance section was
+superseded by the overnight session before this one started.
+
+* **THE VIEW-DEPENDENT WHOLE-FRAME BLACK IS SOLVED, and the auto-exposure hypothesis
+  that led the board for six parts is REFUTED.** It is the renderer's per-frame bump
+  ARENA overflowing: `ArenaAlloc` skips every draw it cannot satisfy, this title's post
+  chain is at the END of the frame, and the arena was a fixed 128 MB against a true peak
+  of 161. A frame with enough geometry in it therefore lost its downsamples, its
+  luminance ladder, its three colour LUTs and its tone map, and presented black with a
+  correctly rendered scene sitting in EDRAM behind it. "View-dependent" was literal:
+  which way the camera points decides how much geometry is in the frame.
+  **One binary, two arms: 128 MB gives 160 black frames of 8,216 gameplay frames,
+  512 MB gives zero — and every one of the 160 is the frame immediately after an
+  `arena EXHAUSTED` line, 160 of 160.** The arena grows now rather than being a bigger
+  number (`CZ_VK_NO_ARENA_GROWTH=1` is the control); what is NOT closed is the
+  consumption, ~27 KB a draw, 8 KB of which is the constant block `perf-cpu-plan.md`
+  §1a-D already wants deduplicated for an unrelated reason.
+* **The resolve-chain dump is what named it, and the pair is why.** `CZ_VK_SNAP_ON_BLACK`
+  fires on COVERAGE and in a gameplay run catches only loading screens, which are
+  legitimately black. `CZ_VK_SNAP_ON_DARK` fires on mean luminance and **dumps a BRIGHT
+  REFERENCE chain from the same location seconds later** — one dark chain is equally
+  consistent with "this pass is broken" and "the scene really is dark here" (gotcha 133
+  turned into an instrument). Read side by side, the black frame's scene colour was
+  98.4% lit at mean 35.7 and every downstream surface was identically zero. That is what
+  ruled the tone map, the exposure and the grade out: they are victims in the same list.
+* **A second, independent renderer defect found on the way: a snapshot is PITCH-sized
+  and a fetch is WIDTH-sized.** Where those differ every texture coordinate is scaled by
+  width/pitch, which is invisible on full-screen surfaces and compounding on a reduction
+  ladder — and the 2x1 scene-average luminance the tone map reads was identically ZERO
+  in every frame of every era. Predicted lit-column counts from that one ratio match five
+  consecutive links exactly, before and after. Fixed with right-sized views (9 created in
+  a boot, refreshed free inside the resolve that writes their source), after a counter
+  said the mismatch is 3.3% of fetches rather than a general problem needing a general
+  mechanism.
+* **THE SAVE COULD NOT WRITE, IN TWO INDEPENDENT WAYS, and neither was visible.**
+  `NtCreateFile` ignored `createDisposition` entirely and opened every handle `"rb"`;
+  `NtWriteFile` was a generated honest-failure stub. Either alone produces exactly the
+  symptom part 17 recorded, which is why the symptom could not discriminate. Both are
+  implemented from A3 (six dispositions, mode from the guest's own access mask,
+  `IO_STATUS_BLOCK.Information` per outcome, and the write path's EVENT completion where
+  the read path uses an APC). A THIRD defect only a test could find:
+  `CZ_FILE_WRITE_SELFTEST` wrote 303,104 bytes and then could not re-open them, because
+  `VfsResolveExisting` caches NEGATIVE results and the create's own existence check is
+  what caches the "no". **What is still not known is whether the title's save completes**
+  — no headless recipe reaches a save point — but every file operation off `game:`/`d:`
+  is now logged uncapped, so the printer can no longer be the reason for a silence.
+* **`docs/perf-cpu-plan.md` item 0 is CLOSED: the headless recipe reaches the outdoor
+  world at 6,400-8,100 draws a frame**, past the operator's 6,592. One extra `B` at the
+  safehouse door and alternating `LSUP` with `RSRIGHT`/`RSLEFT`. It is in `CLAUDE.md`
+  beside the safehouse recipe, and it is what reproduced the black in the first place —
+  the same argument the plan made for why it had to come first, paid off twice.
+* `tools/snap_dump_stats.py` summarises a 61-surface snapshot dump as one line per
+  surface, because "open them and look" is gotcha 133 applied to a directory.
+* One shader recovered from a run that reached new ground; the cache is **371**.
+
+**Gates:** `--smoke` OK; A1 exact 84-deep prefix (with `CZ_PM4_TICK_MS=16
+CZ_VBLANK_TICKCOUNT=1`); A5 exit 0, 0 real windows; deepest file **#83
+`cinezombie.big`**; `no translated shader` = 0; the picture matches capture E2 at
+**+0.9597, identity**, against the pre-fix arm's +0.959; median scene coverage inside
+the 1.5 pp band across the renderer change.

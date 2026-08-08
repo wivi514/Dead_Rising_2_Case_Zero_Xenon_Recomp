@@ -704,6 +704,9 @@ struct Renderer
     Buffer arena;
     VkDeviceSize arenaCursor = 0;
     VkDeviceSize arenaHighWater = 0;
+    // Set by ArenaAlloc when it has to refuse a draw; acted on at the next frame
+    // boundary, which is the only place the old buffer is provably not in use.
+    VkDeviceSize arenaWant = 0;
 
     Buffer staging;
     VkDeviceSize stagingCursor = 0;
@@ -1008,6 +1011,31 @@ VkDeviceSize ArenaAlloc(VkDeviceSize bytes, VkDeviceSize align = 256)
     if (at + bytes > R->arena.size)
     {
         Count("arena: exhausted, draw skipped");
+        // Ask for twice the size at the next frame boundary. A fixed number is what
+        // caused this — see the growth code in BeginFrame.
+        static const bool noGrowth = EnvOn("CZ_VK_NO_ARENA_GROWTH");
+        if (!noGrowth)
+            R->arenaWant = std::max(R->arenaWant, R->arena.size * 2);
+        // Named ONCE PER FRAME, uncapped over the run.
+        //
+        // A total is the wrong shape for this: exhaustion is a property of one frame
+        // (the arena resets at every swap), it happens on the BIGGEST frames, and the
+        // draws it skips are the ones LATE in the frame — which in this title is the
+        // whole post-process chain. A counter that only aggregates says "some draws were
+        // skipped somewhere" where the interesting claim is "frame N lost its post
+        // chain", and those are the frames that present BLACK. See docs/phase5-notes.md
+        // §6ap; the frame number here is what lets a frame-stats line be joined to it.
+        static uint64_t saidForFrame = ~0ull;
+        if (saidForFrame != R->frame)
+        {
+            saidForFrame = R->frame;
+            fprintf(stderr,
+                    "[vk] arena EXHAUSTED on frame %llu (%llu MB used of %llu MB) — every "
+                    "remaining draw of this frame is skipped\n",
+                    (unsigned long long)R->frame,
+                    (unsigned long long)(R->arenaCursor >> 20),
+                    (unsigned long long)(R->arena.size >> 20));
+        }
         return VkDeviceSize(-1);
     }
     R->arenaCursor = at + bytes;
@@ -2532,6 +2560,68 @@ void BeginFrame()
     vkBeginCommandBuffer(R->cmd, &bi);
     R->recording = true;
     R->rendering = false;
+    // GROW THE ARENA IF THE LAST FRAME OVERRAN IT.
+    //
+    // The arena was a fixed 128 MB, ArenaAlloc SKIPS every draw it cannot satisfy, and
+    // this title's post-process chain is at the END of the frame — so a frame that
+    // overran presented a completely BLACK picture with a correctly rendered scene
+    // sitting in EDRAM behind it. That was the port's top rendering defect for six
+    // parts, reported as a view-dependent whole-frame black, and it is view-dependent
+    // for the obvious reason once you know the mechanism: which way the camera points
+    // decides how much geometry is in the frame. Measured: 160 black frames in 8,216
+    // gameplay frames at 128 MB and every one of them the frame after an exhaustion;
+    // zero of either at 512 MB, with a true peak of 161 MB. §6ap.
+    //
+    // Growing rather than picking a bigger number, because a bigger number is what this
+    // was. Here is safe and nowhere else is: the command buffer has just been reset,
+    // which is only legal once its previous submission has completed, and the arena's
+    // consumers are all per-frame (the stream cache is cleared two lines down, and the
+    // constants are reached through device addresses recorded in this frame's push
+    // constants). The ceiling is a backstop against a runaway, not a tuned value; it is
+    // announced when it bites so a future frame that needs more says so out loud.
+    if (R->arenaWant > R->arena.size)
+    {
+        constexpr VkDeviceSize kArenaCeiling = 2048ull << 20;
+        const VkDeviceSize want = std::min(R->arenaWant, kArenaCeiling);
+        if (want > R->arena.size)
+        {
+            vkDeviceWaitIdle(R->device);
+            const Buffer old = R->arena;
+            Buffer grown{};
+            if (CreateBuffer(grown, want,
+                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             /*deviceAddress=*/true))
+            {
+                R->arena = grown;
+                vkDestroyBuffer(R->device, old.buffer, nullptr);
+                vkFreeMemory(R->device, old.memory, nullptr);
+                fprintf(stderr, "[vk] arena grown to %llu MB\n",
+                        (unsigned long long)(want >> 20));
+            }
+            else
+            {
+                // Keep the old one rather than running with none. The frames that
+                // overrun will keep presenting black, and the per-frame line above
+                // keeps saying so.
+                fprintf(stderr, "[vk] arena could NOT be grown to %llu MB — frames that "
+                                "overrun %llu MB will keep losing their post chain\n",
+                        (unsigned long long)(want >> 20),
+                        (unsigned long long)(old.size >> 20));
+                R->arenaWant = 0;
+            }
+        }
+        else
+        {
+            fprintf(stderr, "[vk] arena is at its %llu MB ceiling and a frame still "
+                            "overran it\n",
+                    (unsigned long long)(kArenaCeiling >> 20));
+            R->arenaWant = 0;
+        }
+    }
     R->arenaCursor = 0;
     R->streamCache.clear();
     R->drawsThisFrame = 0;
@@ -4562,7 +4652,15 @@ bool InitCommon()
     // 128 MB of per-frame arena. The frontend's streams are small; gameplay is the
     // question, and the high-water mark is printed with the stats so the number can be
     // raised on evidence rather than guessed at again.
-    if (!CreateBuffer(R->arena, 128ull << 20,
+    //
+    // It GROWS now (see BeginFrame), so this is the STARTING size rather than the limit.
+    // 128 is kept as the start deliberately: it is the size every measurement in this
+    // port up to part 18 was taken at, so `CZ_VK_NO_ARENA_GROWTH=1` reproduces the old
+    // renderer exactly and remains a usable control arm. CZ_VK_ARENA_MB=N sets the
+    // start, which is how the 128-vs-512 A/B that identified the black frames was run.
+    static const uint64_t arenaMb =
+        Env("CZ_VK_ARENA_MB") ? strtoull(Env("CZ_VK_ARENA_MB"), nullptr, 10) : 128;
+    if (!CreateBuffer(R->arena, arenaMb << 20,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -4820,39 +4918,114 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Env("CZ_VK_SNAP_ON_BLACK_MAX") ? atoi(Env("CZ_VK_SNAP_ON_BLACK_MAX")) : 4;
     static bool sawLitFrame = false;
     static int onBlackBudget = 2;   // the transition frame, and the next one
+    // CZ_VK_SNAP_ON_DARK=<meanLuma> — the same trigger on the metric the defect ACTUALLY
+    // moves, and it dumps a BRIGHT reference chain to sit beside the dark one.
+    //
+    // The first headless run to sweep the camera in Still Creek found the defect
+    // immediately and SNAP_ON_BLACK could not fire on it: sweeping the camera through
+    // ~360 degrees swings the presented frame's mean luminance between ~27 and ~4.5
+    // while its COVERAGE stays 30-75%. The frame goes very dark, not empty, so a
+    // coverage floor of 0.5% never trips. Coverage was the right metric for the
+    // operator's report — a whole-frame black — and it is the wrong one for the thing
+    // that is actually measurable here; both are kept because the two thresholds
+    // answer different questions and an instrument whose meaning silently changed
+    // would invalidate every run taken with it.
+    //
+    // The PAIR is the point. One dark chain is consistent with "this pass is broken"
+    // and with "the scene really is dark here"; a bright chain from the same location
+    // seconds later, with the same surfaces at the same addresses, is the control that
+    // separates them (gotcha 133 — one frame of an animated scene is one sample). So a
+    // dark episode owes a bright reference, and the next frame that re-arms pays it.
+    static const char* onDarkEnv = Env("CZ_VK_SNAP_ON_DARK");
+    static const double darkLitLuma =
+        Env("CZ_VK_SNAP_ON_DARK_LIT") ? atof(Env("CZ_VK_SNAP_ON_DARK_LIT")) : 20.0;
+    static int darkEpisodesLeft =
+        Env("CZ_VK_SNAP_ON_DARK_MAX") ? atoi(Env("CZ_VK_SNAP_ON_DARK_MAX")) : 3;
+    static bool sawBrightFrame = false;
+    static bool oweBrightReference = false;
+
     bool blackTransition = false;
-    if (onBlackEnv)
+    if (onBlackEnv || onDarkEnv)
     {
         // Sampled every 16th pixel: this runs on the present path of every frame, and
         // the quantity is a whole-frame fraction that a 1-in-16 sample estimates to far
         // better than the 0.5 percentage points anyone cares about here.
-        uint64_t lit = 0, seen = 0;
+        uint64_t lit = 0, seen = 0, luma = 0;
         for (size_t i = 0; i + 4 <= bytes; i += 64)
         {
             const uint8_t* p = R->presentPixels.data() + i;
             if (p[0] || p[1] || p[2])
                 lit++;
+            luma += (77u * p[0] + 150u * p[1] + 29u * p[2]) >> 8;
             seen++;
         }
         const double covPct = seen ? 100.0 * double(lit) / double(seen) : 0.0;
-        const double floorPct = atof(onBlackEnv) > 0.0 ? atof(onBlackEnv) : 0.5;
-        // Fire first, then arm — two independent tests rather than an if/else, so a
-        // control whose thresholds overlap can exercise the trigger.
-        if (sawLitFrame && covPct < floorPct && onBlackBudget > 0 && episodesLeft > 0)
+        const double meanLuma = seen ? double(luma) / double(seen) : 0.0;
+
+        if (onBlackEnv)
         {
-            blackTransition = true;
-            onBlackBudget--;
-            episodesLeft--;
-            sawLitFrame = false;
-            fprintf(stderr,
-                    "[vk] SNAP_ON_BLACK: frame %llu went black (%.3f%% lit, floor "
-                    "%.2f%%) — dumping the resolve chain (%d episode dumps left)\n",
-                    (unsigned long long)R->frame, covPct, floorPct, episodesLeft);
+            const double floorPct = atof(onBlackEnv) > 0.0 ? atof(onBlackEnv) : 0.5;
+            // Fire first, then arm — two independent tests rather than an if/else, so a
+            // control whose thresholds overlap can exercise the trigger.
+            if (sawLitFrame && covPct < floorPct && onBlackBudget > 0 && episodesLeft > 0)
+            {
+                blackTransition = true;
+                onBlackBudget--;
+                episodesLeft--;
+                sawLitFrame = false;
+                fprintf(stderr,
+                        "[vk] SNAP_ON_BLACK: frame %llu went black (%.3f%% lit, floor "
+                        "%.2f%%) — dumping the resolve chain (%d episode dumps left)\n",
+                        (unsigned long long)R->frame, covPct, floorPct, episodesLeft);
+            }
+            if (covPct >= litPct)
+            {
+                sawLitFrame = true;
+                onBlackBudget = 2;      // re-arm, so a second episode is caught too
+            }
         }
-        if (covPct >= litPct)
+
+        if (onDarkEnv)
         {
-            sawLitFrame = true;
-            onBlackBudget = 2;      // re-arm, so a second episode is caught too
+            const double floorLuma = atof(onDarkEnv) > 0.0 ? atof(onDarkEnv) : 8.0;
+            // CZ_VK_SNAP_ON_DARK_AFTER_MS=N — ignore everything before N ms of wall
+            // clock. Not a refinement: the boot, the title screen and every loading
+            // screen fade, so an episode budget aimed at gameplay is spent before
+            // gameplay starts. Wall time rather than a frame index because the recipes
+            // that reach gameplay are written in seconds (CZ_FAKE_START_MS intervals)
+            // and a frame index for the same moment moves with the frame rate.
+            static const auto darkT0 = std::chrono::steady_clock::now();
+            static const long long afterMs =
+                Env("CZ_VK_SNAP_ON_DARK_AFTER_MS")
+                    ? atoll(Env("CZ_VK_SNAP_ON_DARK_AFTER_MS")) : 0;
+            const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - darkT0).count();
+            const bool live = nowMs >= afterMs;
+            if (live && sawBrightFrame && meanLuma < floorLuma && darkEpisodesLeft > 0)
+            {
+                blackTransition = true;
+                darkEpisodesLeft--;
+                sawBrightFrame = false;
+                oweBrightReference = true;
+                fprintf(stderr,
+                        "[vk] SNAP_ON_DARK: frame %llu went DARK (mean luma %.2f, floor "
+                        "%.2f, %.2f%% lit) — dumping the resolve chain (%d left)\n",
+                        (unsigned long long)R->frame, meanLuma, floorLuma, covPct,
+                        darkEpisodesLeft);
+            }
+            if (meanLuma >= darkLitLuma)
+            {
+                if (live && oweBrightReference)
+                {
+                    oweBrightReference = false;
+                    blackTransition = true;
+                    fprintf(stderr,
+                            "[vk] SNAP_ON_DARK: frame %llu is the BRIGHT REFERENCE for "
+                            "the episode above (mean luma %.2f, %.2f%% lit)\n",
+                            (unsigned long long)R->frame, meanLuma, covPct);
+                }
+                sawBrightFrame = true;
+            }
         }
     }
 

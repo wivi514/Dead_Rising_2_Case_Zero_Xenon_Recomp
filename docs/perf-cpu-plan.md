@@ -23,7 +23,28 @@ scene with more than ~1,930 draws in it.
 
 ---
 
-## 0. FIRST, AND IT BLOCKS EVERYTHING ELSE: a headless recipe that reaches a crowd
+## 0. ~~FIRST, AND IT BLOCKS EVERYTHING ELSE~~ **DONE (part 19): the recipe is in
+## `CLAUDE.md` and it reaches 6,400-8,100 draws a frame**
+
+The change was smaller than this section feared: one extra `B` press to open the
+safehouse door, then alternating `LSUP` with `RSRIGHT`/`RSLEFT` to walk Chuck into the
+junkyard behind it and sweep the camera. 57 entries at the existing 8 s interval; the
+world arrives at ~300 s. The acceptance test is the number, as prescribed:
+`awk 'NR>1 && $2>m {m=$2} END {print m}' frame_stats.txt` reads 7,175-8,130 across four
+runs.
+
+The warning below still stands and is worth more now, not less: it is 57 fixed 8 s steps
+against a boot whose depth in fixed wall time is a distribution, so **read the draw count
+off every run before quoting anything measured on it**. §1 and §2 are unblocked.
+
+Kept below as written, because its argument for why this had to come first is the
+reusable part — and it was right twice over: the same recipe is what finally reproduced
+the view-dependent whole-frame black, which had been an operator report for six parts
+(`docs/phase5-notes.md` §6ap).
+
+---
+
+## 0-original. FIRST, AND IT BLOCKS EVERYTHING ELSE: a headless recipe that reaches a crowd
 
 Every number above came from an operator playing. The existing recipe in `CLAUDE.md`
 reaches live gameplay headlessly but renders ~1,930 draws — **it never enters the

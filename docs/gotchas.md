@@ -1469,6 +1469,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      is 3x that in a crowd. Gotcha 7 says a probe expensive enough to stall the game
      manufactures the stability it reports; this is the same rule at the scale of a
      single branch, and it cost two false results in one day.
+224. **A FIXED-SIZE per-frame allocator turns "too much geometry" into "a black
+     screen", and nothing in the picture says so.** This renderer's per-frame bump arena
+     was 128 MB against a true peak of 161; `ArenaAlloc` skips every draw it cannot
+     satisfy, and this title's post-process chain is at the END of the frame — so an
+     overrun lost the downsamples, the luminance ladder, the colour LUTs and the tone
+     map, and presented a completely black frame with a correctly rendered scene sitting
+     in EDRAM behind it. It was reported as a **view-dependent whole-frame black** and
+     spent six parts as the port's top rendering defect, attracting an auto-exposure
+     hypothesis, a shader-cache hypothesis and a bindless-heap hypothesis. "View
+     dependent" was literal and benign: which way the camera points decides how much
+     geometry is in the frame.
+     Three transferable pieces. **Exhaustion is a property of ONE FRAME**, so a running
+     total is the wrong shape — name the frame, once per frame, or the counter can never
+     be joined to the frame that presented wrong. **Grow, do not raise**: a bigger fixed
+     number is the same defect further away (open-items 3b says the same about a bindless
+     heap), and the safe place to reallocate is the frame boundary where the command
+     buffer has just been reset. And **a resource limit is a rendering defect wearing a
+     disguise** — when a picture fails in a way that scales with scene complexity, audit
+     every fixed-size pool before theorising about shading.
 225. **A sampler normalises over the image you hand it, not over the surface the guest
      declared.** A resolve destination's PITCH and its WIDTH are different numbers —
      `RB_COPY_DEST_PITCH`'s low field is the pitch — and a snapshot built at the pitch,
@@ -1482,6 +1501,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      copying: predict the lit-column count of each link from that one ratio and check
      five links in a row. The height needed no fix, because pitch is a width-only
      concept.
+226. **A trigger fires on the metric you gave it, not on the defect you meant.** A
+     "dump the frame the picture died on" instrument keyed to COVERAGE caught only
+     loading screens — legitimately black, and the only thing in a gameplay run that
+     trips a 0.5% coverage floor. The defect it was built for moves MEAN LUMINANCE.
+     Both thresholds are now kept rather than one being redefined, because silently
+     changing what an instrument means invalidates every run already taken with it.
+     And the addition that made it useful: a dark episode dumps a **BRIGHT REFERENCE**
+     chain from the same location seconds later, because one dark chain is equally
+     consistent with "this pass is broken" and "the scene really is dark here", and only
+     the pair separates them (gotcha 133 turned into a feature).
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

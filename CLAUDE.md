@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 223 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 226 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -143,7 +143,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 223-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 226-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -341,6 +341,24 @@ camera-distinctness number before trusting anything measured off it**: every ste
 fixed 8 s interval against a boot whose depth in fixed wall time has always been a
 distribution (gotcha 75), so the press counts will drift with load or frame rate. It
 MANUFACTURES progress, so it is never a gate configuration (gotcha 78).
+
+Reach the OUTDOOR WORLD and a CROWD headlessly — Chuck walks out of the safehouse into
+Still Creek and the camera sweeps. **This is the recipe every gameplay-rendering and
+gameplay-performance question needs**, because the one above parks in the safehouse at
+~1,900 draws, which is against the title's own two-vblank cap where a CPU saving
+measures as exactly zero (`docs/perf-cpu-plan.md` item 0, which this closes). The extra
+`B` is the safehouse door; a stick entry HOLDS for its whole interval where a button
+taps for 150 ms, which is why walking needs `LSUP` and not `A`:
+```
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_FAKE_START_MS=8000 \
+  CZ_FAKE_PRESS_SEQ=START,A,A,A,A,A,A,A,A,A,A,START,START,START,START,START,START,START,START,A,A,LEFT,B,LSUP,LSUP,B,LSUP,LSUP,RSRIGHT,RSRIGHT,RSRIGHT,RSRIGHT,LSUP,LSUP,LSUP,RSRIGHT,RSRIGHT,LSUP,LSUP,LSUP,RSRIGHT,RSRIGHT,RSRIGHT,RSRIGHT,LSUP,LSUP,RSLEFT,RSLEFT,RSLEFT,RSLEFT,LSUP,LSUP,RSRIGHT,RSRIGHT,RSRIGHT,RSRIGHT,NONE \
+  CZ_VK_FRAME_STATS=/tmp/out.txt timeout 620 ./cz_runtime > /tmp/out.log 2>&1)
+awk 'NR>1 && $2>m {m=$2} END {print m}' /tmp/out.txt      # >= 6,000 = it got there
+```
+Reaches the junkyard behind the safehouse by ~300 s at **6,400-8,100 draws a frame**,
+past the operator's 6,592. Same warning as above and more so: it is 57 fixed 8 s steps
+against a drifting boot, so **check the draw count before trusting anything measured off
+it** rather than assuming the run went where the last one did.
 
 Run the guest and gate it against hardware. **Both captures, always** — A1 is the
 authority for the boot sequence, A5 for the synchronisation surface, and A5 is *not* a
