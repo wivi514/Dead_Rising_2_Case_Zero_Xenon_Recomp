@@ -148,7 +148,7 @@ it is exactly why that rule is in the conventions.
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
-    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..18}-kickoff.md` are the per-part
+    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..19}-kickoff.md` are the per-part
     hand-offs, each superseding the last; the newest is the live one. A kickoff's most
     valuable section is its list of the parts of that phase that **already exist** and
     would otherwise be rewritten from the plan text — write that section for every phase.
@@ -494,7 +494,7 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-08 (phase C part 18 + the operator session):
+Where the port is, as of 2026-08-08 (phase C part 19):
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch
@@ -504,18 +504,29 @@ Where the port is, as of 2026-08-08 (phase C part 18 + the operator session):
   The operator has played Still Creek: combo weapons, the Zombrex tutorial, cinematics.
 * **Gates, both arms:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`;
   `no translated shader` = 0; deepest file on a no-input boot **#83 `cinezombie.big`**;
-  both PM4 capture oracles clean; the picture matches capture E2 at +0.959 correlation,
-  identity orientation. **A1's position-71 window now permutes on every run** — a benign
-  two-thread interleave, priced in gotcha 221, and `CZ_PM4_TICK_MS=16
-  CZ_VBLANK_TICKCOUNT=1` restores the exact 84-prefix.
+  both PM4 capture oracles clean; the picture matches capture E2 at **+0.9597**
+  correlation, identity orientation. **A1's strict-prefix gate is BIMODAL** — the benign
+  position-71 three-name interleave of gotcha 221 shows on some runs and not others, and
+  `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` reduces it rather than removing it (part 18
+  said "restores" on the strength of one run). Quote A5.
 * **Performance: ordinary gameplay is 31 fps and CLOSED** — that is the title's own
   two-vblank pacing and it will not go higher. **Crowds are the open item at 22-25 fps
   and are CPU-bound in our runtime**: 75% of a 6,592-draw frame is the renderer's draw
-  path (21.4 ms) and the PM4 walk (11.0 ms). `docs/perf-cpu-plan.md` is the plan and its
-  item 0 blocks the rest.
-* **The renderer's remaining picture defects** are the view-dependent whole-frame black,
-  the shadow cascade, NPC part meshes and mipmaps — all in `docs/open-items.md` with the
-  measurement for each.
+  path (21.4 ms) and the PM4 walk (11.0 ms). `docs/perf-cpu-plan.md` is the plan, and
+  **its item 0 is now closed** — the headless recipe reaches the outdoor world at
+  6,400-8,700 draws a frame, so §1 and §2 are runnable.
+* **The view-dependent whole-frame black is SOLVED** and was the renderer's per-frame
+  bump arena overflowing at a fixed 128 MB against a 161 MB peak, which lost the whole
+  post chain and presented black over a correctly rendered scene. 160 black frames of
+  8,216 at 128 MB, zero at 512, and every one of the 160 the frame after an exhaustion.
+  It grows now. `docs/phase5-notes.md` §6ap.
+* **The save can write files now** — `NtCreateFile` honoured no disposition and
+  `NtWriteFile` was a stub — but no run here reaches a save point, so whether the
+  title's save COMPLETES is still unknown (`docs/phase3-notes.md` finding 52).
+* **The renderer's remaining picture defects** are the shadow cascade, NPC part meshes,
+  mipmaps and the colour-grading LUT — all in `docs/open-items.md` with the measurement
+  for each, and all worth re-testing now that a frame losing its post chain is no longer
+  contaminating the evidence.
 
 **The five-tool recompilation pipeline must run in this order**, re-running the
 recompiler between each, because each one's evidence is only valid against a current
