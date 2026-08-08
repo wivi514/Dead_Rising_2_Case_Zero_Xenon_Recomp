@@ -3544,8 +3544,39 @@ Next, in order:
    skips a cinematic; the Zombrex tutorial's second page needs D-pad LEFT then B. Every
    gameplay item below is now self-servable.
 
-1. **CINEMATICS NEVER END** (see above; supersedes part 16's framing of "the prologue is
-   stuck"). Retired with arms and not to be re-bought: not audio, not a deadlock, not
+1. ~~**CINEMATICS NEVER END**~~ **RETRACTED THE SAME NIGHT IT WAS WRITTEN.** Later in
+   the same operator session, cinematics played through and returned control cleanly —
+   the Katey Zombrex grab, and the bike-frame delivery to the safehouse. The claim was
+   generalised from two failures and is false as stated. What is actually true:
+   **SOME cinematics fail and most do not.** The known failures are the PROLOGUE's two
+   (black, camera frozen at the first frame) and the COMBO-WEAPON one (camera parked,
+   HUD gone, and skipping it does not award the weapon). Everything else observed so far
+   completes.
+   And a large share of the "cinematic is broken" evidence was never cinematics at all:
+   the operator established that a black screen after a cinematic was the VIEW-DEPENDENT
+   BLACK (item 1c) seen through a camera the save prompt and tutorial had locked. Two
+   symptoms, one of them borrowed. Re-derive this item from scratch before working it —
+   the surviving question is why those specific three fail, not why "the trigger is
+   missing everywhere".
+1c. **A VIEW-DEPENDENT WHOLE-FRAME BLACK, and it is now the top rendering defect.**
+   Looking at the gas station (and at least one spot in the Quarantine Area) turns the
+   ENTIRE frame black; turning away restores it instantly. It absorbed three separate
+   "black screen" reports before the operator noticed the camera dependence. **Missing
+   shaders are ruled out** — a run with `no translated shader` = 0 still does it.
+   Leading hypothesis: the AUTO-EXPOSURE chain. A whole-frame, instantly reversible,
+   view-dependent black is what a degenerate scene-luminance measurement produces — a
+   bright emissive surface driving the 64x64 luminance reduction to an inf/NaN and
+   collapsing the tone map's exposure. Supporting evidence from the other end: when the
+   bindless heap was exhausted and the scene filled with WHITE dummies, the frame washed
+   out, so exposure demonstrably tracks scene content. `CZ_VK_SNAP_DUMP` dumps that
+   luminance chain and is the direct check.
+1d. **The prologue-vs-later cinematic split may be a CLOCK problem, untested.** The two
+   failure modes are opposites — frozen at the first frame, or (apparently) jumping past
+   the end — which is what a timeline driven by an unclamped wall-clock delta does either
+   side of a long load. `CZ_DETERMINISTIC_CLOCK=1` advances the guest clock a fixed
+   quantum per presented frame and is the arm that tests it in one run. NB the "jumped
+   past the end" half is itself uncertain: the operator first read auto-skips and then
+   retracted them (see 1's retraction). Retired with arms and not to be re-bought: not audio, not a deadlock, not
    our synthetic input, not a missing import, not the renderer. Start from the SKIP
    path — find what it calls to end a cinematic, then ask who else should call it and
    what condition they are waiting on. `cCinematic`, `cCinematicsItem`, `cCineMovieEvent`,
