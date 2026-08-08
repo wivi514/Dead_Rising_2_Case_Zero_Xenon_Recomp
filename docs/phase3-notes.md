@@ -815,7 +815,93 @@ measured end to end and its chain (E_FAIL -> overlapped 0x80004005 -> the poll a
 `XUserWriteAchievements` work, and the item outlived the defect. A finding with a
 complete causal chain can still be about a path the title no longer takes.
 
-### What is still NOT known: the LOAD half
+### THE LOAD HALF, SAME DAY: ordinal `0x271` is `XamContentCreateInternal`
+
+The operator relaunched and chose Load, and got **"Load failed. File appears to be
+corrupt. Please check your storage device and try again."** The file was untouched —
+same 303,104 bytes, same SHA-1 — so nothing had corrupted it, and the log says why:
+
+```
+content enumerator ... -> 1 item(s)
+enumerate: item 'DR2P000.DSF' (device 1 type 1)
+XamGetExecutionId
+XexGetProcedureAddress module=30002000 ord=0x271 -> NOT_FOUND
+```
+
+and then the dialog. **The file was never opened.** The title's own error text named the
+wrong subsystem, and that is the reusable part of this: three sessions read
+`Damaged Content` / `File appears to be corrupt` as evidence about the save's CONTENTS,
+when it is what this title says when a step *before* the file fails.
+
+### Naming it, and why it is not a guess
+
+Two independent sources agree, and neither is an ordinal table.
+
+**Hardware.** A3's load-back, which is the same sequence one call further on:
+
+```
+XamGetExecutionId(7018F250)
+XamUserGetXUID(00000000, 00000001, 7018F2C0)
+XamContentCreateInternal(8209089C(save), 7018F2D0, 00000003, 0, 0, 0, 0, 0)
+-> Registered symbolic link: save: => \Device\Content\4\
+-> NtCreateFile(save:\DR2P000.DSF)  disposition 1 (FILE_OPEN), access 80100080
+```
+
+Our log has `XamGetExecutionId` in exactly that position, immediately before the refused
+resolve.
+
+**The guest's own call site**, which `sub_825D8F30` makes unambiguous:
+
+```
+825D8FB8  lis   r11, 0x82A6
+825D8FBC  li    r3, 0x271        <- the ordinal
+825D8FC0  addi  r30, r11, -0x3784   ; the slot it caches the pointer in, 0x82A5C87C
+825D8FC8  bl    0x825D8D48       ; resolve(ordinal, &slot)
+825D8FD0  bne   0x825D9088       ; on failure return it — nothing downstream runs
+...
+825D8FE8  bl    0x829C2754       ; XamUserGetXUID(user, 1, &stack+0x50)
+825D9008  bl    memset(&stack+0x60, 0, 0x200)
+825D9038  bl    copy(&stack+0x68,  item+8,     0x100)   ; szDisplayName, 128 WCHAR
+825D9048  bl    copy(&stack+0x168, item+0x108, 0x2A)    ; szFileName, 42 bytes
+825D904C  lwz   r11, 0(r30)
+825D906C  addi  r4, r1, 0x60     ; the XCONTENT_DATA it just built
+825D9070  mr    r3, r27          ; the root name
+825D9074  bctrl
+```
+
+**The 42 is the tell**: `XCONTENT_DATA::szFileName` is exactly 42 bytes, so the block at
+`r1+0x60` is an `XCONTENT_DATA` and the second argument is what its name says. `r5` is
+the flags, and the code has already checked `r29 & 0xF == 3` — `OPEN_EXISTING`, which is
+the value hardware passes.
+
+**A method note worth keeping.** `CLAUDE.md` said `gdis.py --find-uses 0x271` finds
+nothing and inferred the ordinal was not built by a plain `li`. It is: one site, a bare
+`li r3, 0x271`, found in seconds by scanning the image for the instruction encoding
+(opcode 14, RA=0, immediate 0x271) rather than for an address-building pair. A tool
+finding nothing is a fact about the tool (gotcha 3, one more time).
+
+### The fix, and what it needed
+
+`XamContentCreateEx` (save) and `XamContentCreateInternal` (load) differ only in their
+argument list — same root name, same `XCONTENT_DATA`, same disposition nibble, same job
+— so the mount is now one shared body and the two spellings are thin wrappers. They have
+to agree about which directory `save:` means or a title would write to one place and read
+from another. `MountContent` already honoured `OPEN_EXISTING`, so nothing new had to be
+invented; `0x271` simply had to be resolvable and bound to it.
+
+`kResolvable` is no longer "the seven A1 resolves". **A1 was captured with an EMPTY save
+root, which is precisely the configuration in which the load path never runs** — so that
+list was never a list of what this title resolves, only of what it resolved on that
+drive. Gotchas 45 and 106, and this is the second time A1's completeness has cost a
+session.
+
+Measured on the new binary: `ord=0x271 -> 824A52E4`, then
+`XamContentCreateInternal('save', content 'DR2P000.DSF', flags 00000003) -> mounted`,
+then `NtCreateFile('save:\DR2P000.DSF') -> read-only, disposition 1 (opened), 303104
+bytes` — hardware's sequence, argument for argument. **Whether the title then LOADS the
+save is the operator's next run**; what is established is that the file is now reached.
+
+### What is still NOT known: whether the load completes
 
 This run saved and did not re-launch, so nothing has yet read the file back. That is now
 a much better test than it was, because **the save on disk is OURS** rather than A3's —

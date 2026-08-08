@@ -2473,14 +2473,33 @@ static uint32_t XexGetProcedureAddress_x(uint32_t module, uint32_t ordinal, be<u
 {
     // The exact set Xenia resolves for this title in A1. Anything else is refused
     // and logged loudly, so a new one is never silent.
-    static const uint32_t kResolvable[] = { 0xAFF, 0xB00, 0xB0B, 0xB10, 0x305, 0x30B, 0x279 };
+    // The seven Xenia resolves for this title in A1, plus 0x271. A1 was captured with
+    // an EMPTY save root, which is the configuration in which the load path never runs
+    // — so its list was never a complete list of what this title resolves, only of what
+    // it resolved on that drive (gotchas 45 and 106). 0x271 is XamContentCreateInternal
+    // and it is the load path's only way in; A3, which DOES save and load, names it.
+    static const uint32_t kResolvable[] = { 0xAFF, 0xB00, 0xB0B, 0xB10,
+                                            0x305, 0x30B, 0x279, 0x271 };
     const bool known = std::find(std::begin(kResolvable), std::end(kResolvable), ordinal) !=
                        std::end(kResolvable);
     if (!known)
     {
         KLOG("XexGetProcedureAddress module=%08X ord=0x%X -> NOT_FOUND (not one of the "
-             "seven A1 resolves)\n",
+             "resolvable set)\n",
              module, ordinal);
+        // And WHO asked, because that is the only thing that can name the ordinal.
+        //
+        // A refused ordinal is not a puzzle about xam's export table — it is a question
+        // about this title, and the answer is in the code that consumes the pointer:
+        // how many arguments it pushes, what it does with the return value, and which
+        // branch it takes on failure (finding 29's method, and gotchas 59/201's reason
+        // for refusing to mint one blind). `CZ_KCALL_WHO` cannot reach this, because it
+        // dumps the FIRST call of an import and the first call here is a boot-era
+        // resolve that succeeds; the interesting one is the eighth.
+        //
+        // Uncapped: a refused ordinal is rare by construction — seven succeed and
+        // everything else lands here — and each distinct one is a piece of work.
+        CzDumpGuestBacktrace("XexGetProcedureAddress (refused ordinal)");
         if (out)
             *out = 0;
         return STATUS_NOT_FOUND;

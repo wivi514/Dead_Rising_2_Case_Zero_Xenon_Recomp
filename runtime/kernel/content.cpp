@@ -460,9 +460,16 @@ static void XamContentAggregateCreateEnumerator_x(PPCContext& ctx, uint8_t* base
         CreateEnumerator(ctx.r3.u64, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, handleOut);
 }
 
+// Defined further down, next to XamContentCreateEx, because the two share their body.
+static void XamContentCreateInternal_x(PPCContext& ctx, uint8_t* base);
+
 PPCFunc* ContentMintedExportForOrdinal(uint32_t ordinal)
 {
-    return ordinal == 0x279 ? &XamContentAggregateCreateEnumerator_x : nullptr;
+    if (ordinal == 0x279)
+        return &XamContentAggregateCreateEnumerator_x;
+    if (ordinal == 0x271)
+        return &XamContentCreateInternal_x;
+    return nullptr;
 }
 
 // The per-device form, which IS an import. Same work, one fewer argument.
@@ -629,24 +636,19 @@ static uint32_t XamEnumerate_x(uint32_t handle, uint32_t flags, uint32_t buffer,
 //
 // and 0x54 is the same slot gpu/vd.cpp reads VdSwap's spilled arguments from, so the
 // convention is one this port has already validated in an unrelated subsystem.
-PPC_FUNC(__imp__XamContentCreateEx)
+// The mount itself, shared by both spellings of it.
+//
+// The title uses XamContentCreateEx to SAVE and XamContentCreateInternal to LOAD, and
+// they differ only in their argument list — same root name, same XCONTENT_DATA, same
+// disposition nibble, same job. Sharing the body is not tidiness: the two paths have to
+// agree about which directory `save:` means, or a title would write to one place and
+// read from another.
+//
+// `caller` is only for the log line, so a reader can tell the two apart.
+static uint32_t MountContent(uint8_t* base, const char* caller, uint32_t rootNamePtr,
+                             uint32_t dataPtr, uint32_t flags, uint32_t dispositionPtr,
+                             uint32_t licenseMaskPtr, uint32_t overlapped)
 {
-    KCALL("XamContentCreateEx");
-
-    const uint32_t rootNamePtr = ctx.r4.u32;
-    const uint32_t dataPtr = ctx.r5.u32;
-    const uint32_t flags = ctx.r6.u32;
-    const uint32_t dispositionPtr = ctx.r7.u32;
-    const uint32_t licenseMaskPtr = ctx.r8.u32;
-    const uint32_t overlapped =
-        *reinterpret_cast<be<uint32_t>*>(base + ctx.r1.u32 + 0x54);
-
-    if (!rootNamePtr || !dataPtr)
-    {
-        Xam_CompleteOverlapped(overlapped, ERROR_INVALID_PARAMETER, 0);
-        ctx.r3.u64 = overlapped ? kErrorIoPending : ERROR_INVALID_PARAMETER;
-        return;
-    }
 
     const char* rootName = reinterpret_cast<const char*>(base + rootNamePtr);
     const auto* data = reinterpret_cast<const GuestXContentData*>(base + dataPtr);
@@ -692,20 +694,85 @@ PPC_FUNC(__imp__XamContentCreateEx)
         std::lock_guard lock(g_mountMutex);
         VfsMountDevice(rootName, dir.string());
         g_mounts[rootName] = dir.string();
-        KLOG("XamContentCreateEx('%s', content '%s', flags %08X, overlapped %08X) -> "
-             "mounted at %s\n",
-             rootName, name.c_str(), flags, overlapped, dir.string().c_str());
+        KLOG("%s('%s', content '%s', flags %08X, overlapped %08X) -> mounted at %s\n",
+             caller, rootName, name.c_str(), flags, overlapped, dir.string().c_str());
     }
     else
     {
-        KLOG("XamContentCreateEx('%s', content '%s', flags %08X, overlapped %08X) -> %u\n",
-             rootName, name.c_str(), flags, overlapped, status);
+        KLOG("%s('%s', content '%s', flags %08X, overlapped %08X) -> %u\n",
+             caller, rootName, name.c_str(), flags, overlapped, status);
     }
 
     // The notification half. Done on the failure path too, because an unanswered
     // overlapped hangs the caller just as hard when the answer is "no".
     Xam_CompleteOverlapped(overlapped, status, 0);
-    ctx.r3.u64 = overlapped ? kErrorIoPending : status;
+    return overlapped ? kErrorIoPending : status;
+}
+
+PPC_FUNC(__imp__XamContentCreateEx)
+{
+    KCALL("XamContentCreateEx");
+
+    const uint32_t rootNamePtr = ctx.r4.u32;
+    const uint32_t dataPtr = ctx.r5.u32;
+    const uint32_t flags = ctx.r6.u32;
+    const uint32_t dispositionPtr = ctx.r7.u32;
+    const uint32_t licenseMaskPtr = ctx.r8.u32;
+    const uint32_t overlapped =
+        *reinterpret_cast<be<uint32_t>*>(base + ctx.r1.u32 + 0x54);
+    ctx.r3.u64 = MountContent(base, "XamContentCreateEx", rootNamePtr, dataPtr, flags,
+                              dispositionPtr, licenseMaskPtr, overlapped);
+}
+
+// XamContentCreateInternal — xam ordinal 0x271, resolved dynamically, and THE LOAD
+// PATH'S ONLY WAY IN.
+//
+// Not an import: there is no `__imp__` symbol, the title reaches it through a minted
+// thunk, and answering NOT_FOUND made every load fail with **"Load failed. File appears
+// to be corrupt."** — a message about the file, produced without the file ever being
+// opened. That is the whole of open-items 2, and it is worth keeping as the example:
+// the title's own error text named the wrong subsystem, and three sessions read it as
+// evidence about the save's CONTENTS.
+//
+// NAMED FROM HARDWARE, not from an ordinal table. A3's load-back is:
+//
+//   XamGetExecutionId(7018F250)
+//   XamUserGetXUID(00000000, 00000001, 7018F2C0)
+//   XamContentCreateInternal(8209089C(save), 7018F2D0, 00000003, 0, 0, 0, 0, 0)
+//   -> Registered symbolic link: save: => \Device\Content\4\
+//   -> NtCreateFile(save:\DR2P000.DSF)   disposition 1 (FILE_OPEN), access 80100080
+//
+// and the guest's own call site agrees argument for argument. `sub_825D8F30` resolves
+// 0x271 into the global at 0x82A5C87C, and on failure returns that error straight to
+// its caller, which is why nothing downstream ever runs:
+//
+//     825D8FB8  lis   r11, 0x82A6
+//     825D8FBC  li    r3, 0x271          <- the ordinal, a bare `li`, which is why
+//     825D8FC0  addi  r30, r11, -0x3784     gdis.py --find-uses could not see it
+//     825D8FC8  bl    0x825D8D48         ; resolve(ordinal, &slot)
+//     825D8FD0  bne   0x825D9088         ; failure -> return it
+//
+// then builds an XCONTENT_DATA on its own stack from the enumerated item — deviceId,
+// contentType, a 256-byte display name copied from item+8, and the 42-byte file name
+// from item+0x108 — and calls through the slot with it:
+//
+//     825D904C  lwz   r11, 0(r30)
+//     825D9068  mtctr r11
+//     825D906C  addi  r4, r1, 0x60       ; the XCONTENT_DATA
+//     825D9070  mr    r3, r27            ; the root name, "save"
+//     825D9074  bctrl
+//
+// The 42 bytes are the tell: `XCONTENT_DATA::szFileName` is exactly 42 bytes, so the
+// structure at r1+0x60 is one and the second argument is what its name says.
+//
+// Flags 3 = OPEN_EXISTING, which `MountContent` already honours — it fails with
+// ERROR_FILE_NOT_FOUND when the directory is not there, which is the correct answer to
+// a load with no save and is NOT the answer this port was giving.
+static void XamContentCreateInternal_x(PPCContext& ctx, uint8_t* base)
+{
+    KCALL("XamContentCreateInternal");
+    ctx.r3.u64 = MountContent(base, "XamContentCreateInternal", ctx.r3.u32, ctx.r4.u32,
+                              ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, /*overlapped=*/0);
 }
 
 // XamContentClose(rootName, overlapped) — A3: `(8209089C(save), 00000000)`, and Xenia
