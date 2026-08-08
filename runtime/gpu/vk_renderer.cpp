@@ -637,11 +637,39 @@ constexpr uint32_t kMaxSurfaceExtent = 4096;
 // wider than the screen.
 constexpr uint32_t kEdramHeight = 1024;
 
+// A right-sized copy of a snapshot's top-left corner.
+//
+// A resolve snapshot is created at the destination surface's PITCH, because
+// RB_COPY_DEST_PITCH is what the resolve registers carry and its low field IS the pitch.
+// The fetch that later samples that address declares the surface's REAL width, and a
+// sampler normalises over the image it is handed — so whenever pitch != width every
+// texture coordinate is scaled by width/pitch and everything past that fraction reads
+// the padding, which is zero.
+//
+// It is invisible while both are multiples of 32, which is the entire scene chain
+// (1280, 640, 320, 160), and it destroys the tail of this title's luminance reduction,
+// whose surfaces are 80, 40, 20, 10, 5 and 2 wide in pitches of 96, 64, 32, 32, 32, 32.
+// Measured lit-column counts of five consecutive links fit that model exactly, and the
+// last link — the 2x1 scene-average luminance the tone map reads — came out EMPTY.
+// docs/phase5-notes.md §6ao.
+//
+// The height needs no such treatment: RB_COPY_DEST_PITCH's high field is the real
+// height, and the snapshots are already the right height everywhere.
+struct SnapshotView
+{
+    Image image;
+    uint32_t slot = 0;
+};
+
 struct Snapshot
 {
     Image image;
     uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
     uint64_t frameSeen = 0;
+    // Keyed (width << 16) | height. Refreshed from `image` by whatever resolve next
+    // writes it, in that resolve's own command buffer — so a view never costs a submit
+    // after the one that creates it, and it is never staler than its source.
+    std::unordered_map<uint32_t, SnapshotView> views;
     // Which buffer this snapshot was taken FROM. It is part of the identity because
     // one guest address can be the destination of both a colour resolve and a depth
     // one (B1's 1812F000 is: 890 depth, 852 colour), and the two need different image
@@ -1632,6 +1660,84 @@ bool SnapshotUsable(const Snapshot& s)
     return maxAge == 0 || s.frameSeen + maxAge >= R->frame;
 }
 
+// Copy a snapshot's top-left w x h corner into `view`, in the command buffer given.
+// Both images end in SHADER_READ_ONLY, which is the layout their descriptors were
+// written with; the caller is responsible for not being inside a render pass.
+void RefreshSnapshotView(VkCommandBuffer cb, Image& src, SnapshotView& view,
+                         VkImageAspectFlags aspect)
+{
+    Barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aspect);
+    Barrier(cb, view.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, aspect);
+    VkImageCopy c{};
+    c.srcSubresource = { aspect, 0, 0, 1 };
+    c.dstSubresource = { aspect, 0, 0, 1 };
+    c.extent = { view.image.width, view.image.height, 1 };
+    vkCmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, view.image.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    Barrier(cb, view.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
+    Barrier(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
+}
+
+// The bindless slot for a w x h view of `snap`, creating it on first use.
+//
+// The creating copy goes through RunImmediate — a submit and a wait — because this is
+// reached from inside DoDraw, where the render pass is open and vkCmdCopyImage is not
+// legal. It happens once per (address, size) pair for the life of the process (a few
+// dozen times in a whole run), and thereafter the view is refreshed for free inside
+// whatever resolve next writes its source. Doing the FIRST fill here rather than
+// deferring it to that resolve is deliberate: a surface the title resolves ONCE and then
+// samples forever — this title's colour-grading LUT is exactly that (§6s) — would
+// otherwise hand out an empty view for the rest of the run.
+uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
+{
+    const uint32_t key = (w << 16) | h;
+    auto it = snap.views.find(key);
+    if (it != snap.views.end())
+        return it->second.slot;
+    if (R->nextTextureSlot >= g_maxDescriptors)
+    {
+        Count("texture: snapshot view refused — bindless heap full");
+        return 0;
+    }
+
+    SnapshotView view;
+    view.slot = R->nextTextureSlot++;
+    const VkComponentMapping depthSwizzle{ VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                           VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
+    const VkImageAspectFlags aspect =
+        snap.fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    if (!CreateImage(view.image, w, h, snap.image.format,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT,
+                     aspect, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                     snap.fromDepth ? depthSwizzle : VkComponentMapping{}))
+    {
+        --R->nextTextureSlot;
+        Count("texture: snapshot view image creation FAILED");
+        return 0;
+    }
+
+    VkDescriptorImageInfo ii{};
+    ii.imageView = view.image.view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    wr.dstSet = R->sets[0];
+    wr.dstBinding = 0;
+    wr.dstArrayElement = view.slot;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    wr.pImageInfo = &ii;
+    vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+
+    RunImmediate([&](VkCommandBuffer cb) {
+        RefreshSnapshotView(cb, snap.image, view, aspect);
+    });
+    Count("texture: snapshot view created at the fetch's declared size");
+    const uint32_t slot = view.slot;
+    snap.views.emplace(key, std::move(view));
+    return slot;
+}
+
 // Upload the texture a fetch constant describes and return its bindless slot, or 0 for
 // the dummy. Cached on the fetch constant's own six dwords: if none of them changed the
 // texture is the same texture, and if any did it is a different one. Keying on the base
@@ -1762,6 +1868,43 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             Count(snap->second.fromDepth
                       ? "texture: served from a DEPTH resolve snapshot"
                       : "texture: served from a resolve snapshot");
+            // MEASUREMENT ONLY, and the thing it measures is a real defect with a
+            // quantitative fit — see docs/phase5-notes.md §6ao.
+            //
+            // A resolve snapshot's image is created at the destination surface's PITCH,
+            // because that is what the resolve registers give. The fetch that samples it
+            // declares the surface's REAL width, and a sampler normalises over the image
+            // it is given — so whenever pitch != width, every texture coordinate is
+            // scaled by width/pitch and everything past that fraction reads the padding,
+            // which is zero. It is invisible while both are multiples of 32 (the whole
+            // scene chain: 640, 320, 160) and it destroys the tail of this title's
+            // luminance reduction, where the surfaces are 80, 40, 20, 10, 5 and 2 wide
+            // in pitches of 96, 64, 32, 32, 32, 32. The lit-column counts of five
+            // consecutive links match that model exactly.
+            //
+            // The measurement that decided the shape of the fix: 25,092 of 764,575
+            // snapshot fetches in a boot mismatch (3.3%, ~12 a frame), and every one of
+            // them is NARROWER than its snapshot. A dozen small copies a frame is
+            // affordable; a general per-fetch scaling mechanism would not have been, and
+            // the counter is what said which (gotcha 80). CZ_VK_NO_SNAPSHOT_VIEWS=1 is
+            // the same-binary control arm.
+            static const bool noViews = EnvOn("CZ_VK_NO_SNAPSHOT_VIEWS");
+            if (t.width && t.height &&
+                (t.width != snap->second.image.width ||
+                 t.height != snap->second.image.height))
+            {
+                Count("texture: snapshot served at the surface PITCH, not the fetch's "
+                      "declared size — texture coordinates would be scaled wrong");
+                if (!noViews && t.width <= snap->second.image.width &&
+                    t.height <= snap->second.image.height)
+                {
+                    const uint32_t slot = SnapshotViewSlot(snap->second, t.width, t.height);
+                    if (slot)
+                        return slot;
+                    Count("texture: snapshot view could not be created — serving the "
+                          "pitch-sized image, coordinates ARE scaled wrong");
+                }
+            }
             // The pass-inputs list keeps the depth bit, because "this pass sampled the
             // scene colour" and "this pass sampled the scene DEPTH" are the two
             // different answers the dependency graph exists to separate.
@@ -4183,6 +4326,17 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             vkDestroyImageView(R->device, it->second.image.view, nullptr);
             vkDestroyImage(R->device, it->second.image.image, nullptr);
             vkFreeMemory(R->device, it->second.image.memory, nullptr);
+            // The views go with it: they are copies of an image that no longer exists,
+            // and a surface whose extent changed is a different surface. Their bindless
+            // slots are NOT recycled, for the same reason the snapshot's is not — slot
+            // recycling is open-items 3b and needs deferred destruction to be safe.
+            for (auto& [size, view] : it->second.views)
+            {
+                (void)size;
+                vkDestroyImageView(R->device, view.image.view, nullptr);
+                vkDestroyImage(R->device, view.image.image, nullptr);
+                vkFreeMemory(R->device, view.image.memory, nullptr);
+            }
             R->snapshots.erase(it);
             it = R->snapshots.end();
             Count("resolve: snapshot resized");
@@ -4269,6 +4423,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // descriptor was written with.
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     aspect);
+            // The right-sized views of this surface, refreshed in this same command
+            // buffer so they cost no submit and cannot be staler than their source.
+            for (auto& [size, view] : it->second.views)
+            {
+                (void)size;
+                RefreshSnapshotView(R->cmd, it->second.image, view, aspect);
+                Count("resolve: snapshot view refreshed");
+            }
             it->second.frameSeen = R->frame;
             Count(fromDepth ? "resolve: snapshot taken from the DEPTH buffer"
                             : "resolve: snapshot taken from the colour buffer");

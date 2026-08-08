@@ -384,6 +384,15 @@ CZ_VK_SNAP_ON_BLACK[=pct]  dump the whole resolve chain of the frame the picture
                    CZ_VK_SNAP_FRAME=999999` — four lines, 180 files; run it before
                    believing a run that dumped nothing, because the FIRST version of this
                    trigger could not fire at all and neither could its control
+CZ_VK_NO_SNAPSHOT_VIEWS=1  serve resolve snapshots at the destination surface's PITCH,
+                   which is what every phase before this one did. THE CONTROL ARM for
+                   §6ao: a sampler normalises over the image it is handed, the fetch
+                   declares the surface's REAL width, and where those differ every
+                   texture coordinate is scaled by width/pitch. Invisible on the scene
+                   chain (1280/640/320/160 are all multiples of 32) and it emptied the
+                   tail of the luminance reduction, whose last link — the 2x1 scene
+                   average the tone map reads — was identically ZERO in every frame of
+                   every era
 CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not a frame
                    count — a per-N-frames report samples a different amount of wall time
                    in every era and averages the boot's fast frames with gameplay's slow

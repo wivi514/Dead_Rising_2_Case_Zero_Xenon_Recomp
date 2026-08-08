@@ -1469,6 +1469,19 @@ From phase C part 18 (the frame rate — and none of it was work):
      is 3x that in a crowd. Gotcha 7 says a probe expensive enough to stall the game
      manufactures the stability it reports; this is the same rule at the scale of a
      single branch, and it cost two false results in one day.
+225. **A sampler normalises over the image you hand it, not over the surface the guest
+     declared.** A resolve destination's PITCH and its WIDTH are different numbers —
+     `RB_COPY_DEST_PITCH`'s low field is the pitch — and a snapshot built at the pitch,
+     sampled by a fetch that declares the width, scales every texture coordinate by
+     width/pitch. It is INVISIBLE whenever both are multiples of the tile alignment,
+     which is every full-screen surface (1280, 640, 320, 160), so a renderer can be
+     broadly right for phases while quietly destroying anything that is not: here it ate
+     the tail of a luminance reduction ladder (80-of-96, then 40-of-64, 20-of-32,
+     10-of-32, 5-of-32, compounding) and delivered the tone map a scene-average
+     luminance of **exactly zero** in every frame of every era. The confirmation is worth
+     copying: predict the lit-column count of each link from that one ratio and check
+     five links in a row. The height needed no fix, because pitch is a width-only
+     concept.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

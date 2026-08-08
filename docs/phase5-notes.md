@@ -2681,6 +2681,97 @@ title screen and **2.1-4.2% in crowds**, i.e. a term that only exists at scale.
 
 `docs/perf-cpu-plan.md` is the plan for it.
 
+## 6ao. THE LUMINANCE LADDER WAS COLLAPSING BECAUSE A SNAPSHOT IS PITCH-SIZED AND
+## A FETCH IS WIDTH-SIZED
+
+Found while hunting the view-dependent black with `CZ_VK_SNAP_ON_DARK` (below), and it
+is not that defect. It is its own, and it is a decode error in the shared part of the
+renderer, so **Case West will have it too**.
+
+### The measurement
+
+`CZ_VK_SNAP_DUMP` on any frame dumps this title's scene-luminance reduction: a 640x360
+surface averaged down a ladder to a single 2x1 average that the tone map reads. The
+snapshots come back at the destination surface's PITCH, so the ladder reads
+`640x360, 320x180, 160x90, 96x45, 64x22, 32x11, 32x5, 32x2, 32x1` — and A3's Xenia
+texture log names the same surfaces as `640x360, 320x180, 160x90, 80x45, 40x22, 20x11,
+10x5, 5x2, 2x1` with pitches `640, 320, 160, 96, 64, 32, 32, 32, 32`. Height is already
+right everywhere; only width is padded, because pitch is a width-only concept.
+
+Counting LIT COLUMNS down that ladder, on a title-screen frame:
+
+| surface | pitch x height | real width | lit columns | predicted |
+|---|---|---|---|---|
+| 149DC000 | 640x360 | 640 | 639 | 640 |
+| 14A54000 | 320x180 | 320 | 320 | 320 |
+| 14A72000 | 160x90 | 160 | 160 | 160 |
+| 14A7A000 | 96x45 | 80 | 80 | 80 |
+| 14A7D000 | 64x22 | 40 | **34** | **34** |
+| 14A7E000 | 32x11 | 20 | **11** | **11** |
+| 14A7F000 | 32x5 | 10 | **3** | **3** |
+| 14A80000 | 32x2 | 5 | **1** | **1** |
+| 14A81000 | 32x1 | 2 | **0** | **0** |
+
+The prediction is one line of arithmetic. A sampler normalises over the image it is
+given; we give it the PITCH-sized snapshot while the fetch constant declares the real
+width, so output column `j` of a `W`-wide target samples source column
+`((j+0.5)/W) x pitch_src` instead of `((j+0.5)/W) x width_src`. Everything past
+`width_src` is padding, which is zero. Each link therefore keeps only
+`width_src/pitch_src` of the previous link's content, and the losses compound: 80/96,
+then 40/64, then 20/32, then 10/32, then 5/32. **Five consecutive links fit exactly**,
+which is what makes this a mechanism rather than a story.
+
+The last link is the point: **the 2x1 scene-average luminance the tone map reads was
+identically ZERO**, in every frame, in every era. Both a dark frame and a bright one at
+the title screen produced `mean 0.00, 1 distinct colour` there.
+
+**This is invisible while pitch == width**, which is the whole scene chain (1280, 640,
+320, 160 are all multiples of 32) — which is why a renderer that gets the picture
+broadly right has been quietly feeding its tone map a zero for five phases.
+
+### The fix, and why it is shaped the way it is
+
+`RB_COPY_DEST_PITCH`'s low field IS the pitch; there is no real width in the resolve
+registers. The real width is in the FETCH CONSTANT, one pass later. So the fix has to be
+at fetch time, and the question was what it can afford to cost.
+
+**Measured before choosing** (gotcha 80, whose last violation in this project cost a
+session): a counter on "the fetch's declared size differs from the snapshot image"
+reads **25,092 of 764,575 snapshot fetches in a boot — 3.3%, about 12 a frame — and
+every one of them is NARROWER**. A dozen small copies a frame is affordable; a general
+per-fetch coordinate-scaling mechanism, which would have meant touching the shared
+XenosRecomp emitter, is not, and was not needed.
+
+So a snapshot now carries right-sized VIEWS of its own top-left corner, keyed by
+`(width, height)`. A view is created on first use — **9 of them in a whole boot** — and
+refreshed inside whatever resolve next writes its source, in that resolve's own command
+buffer, so it costs no submit and can never be staler than the snapshot. The creating
+copy goes through `RunImmediate` because the fetch happens inside an open render pass;
+doing that first fill eagerly rather than deferring it to the next resolve is deliberate,
+because a surface the title resolves ONCE and then samples forever — the colour-grading
+LUT is exactly that (§6s) — would otherwise hand out an empty view for the rest of the
+run.
+
+`CZ_VK_NO_SNAPSHOT_VIEWS=1` is the same-binary control arm.
+
+### What it does, measured the same way
+
+| surface | lit% before | lit% after | real/pitch |
+|---|---|---|---|
+| 14A7A000 96x45 | 83.03 | 83.22 | 83.3% |
+| 14A7D000 64x22 | 53.05 | **62.50** | 62.5% |
+| 14A7E000 32x11 | 34.38 | **62.50** | 62.5% |
+| 14A7F000 32x5 | 10.63 | **31.25** | 31.25% |
+| 14A80000 32x2 | 3.13 | **15.63** | 15.6% |
+| 14A81000 32x1 | 0.00 | **6.25** | 6.25% |
+
+Every link now fills its real extent exactly, the mean holds at ~36-38 all the way down
+instead of decaying to nothing, and **the 2x1 average is no longer zero** (mean 2.22 over
+the padded surface, max 47). That is the arithmetic prediction confirmed in both
+directions, which is the strongest form this project can get without hardware.
+
+---
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
