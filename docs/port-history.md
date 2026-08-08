@@ -1213,8 +1213,18 @@ superseded by the overnight session before this one started.
   surface, because "open them and look" is gotcha 133 applied to a directory.
 * One shader recovered from a run that reached new ground; the cache is **371**.
 
-**Gates:** `--smoke` OK; A1 exact 84-deep prefix (with `CZ_PM4_TICK_MS=16
-CZ_VBLANK_TICKCOUNT=1`); A5 exit 0, 0 real windows; deepest file **#83
-`cinezombie.big`**; `no translated shader` = 0; the picture matches capture E2 at
+**Gates:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`; deepest file
+**#83 `cinezombie.big`**; `no translated shader` = 0; the picture matches capture E2 at
 **+0.9597, identity**, against the pre-fix arm's +0.959; median scene coverage inside
 the 1.5 pp band across the renderer change.
+
+**And a correction to part 18's gate note, paid for by running it twice.** Part 18
+recorded that `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` "restores the exact 84-prefix in
+one command". It does not, reliably: two runs of that exact configuration this session
+gave an exact prefix once and the familiar position-71 rotation
+(`XamUserCheckPrivilege` / `XexGetModuleHandle` / `XexGetModuleSection`, three names,
+same set) the other time. The flags REDUCE the interleave's frequency; they do not
+remove it, and `kernel_call_diff.py` exits 1 on the run where it appears. That makes
+every single-run "exact prefix" claim a coin flip (gotcha 159), which is exactly what
+gotcha 221 says about this window and what part 18's own wording softened. The
+set-based A5 gate is the one that holds, and it holds.

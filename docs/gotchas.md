@@ -1517,6 +1517,11 @@ From phase C part 18 (the frame rate — and none of it was work):
      stays exit-0 with zero real windows, and `CZ_PM4_TICK_MS=16` / `CZ_VBLANK_TICKCOUNT=1`
      reproduce the strict prefix — but `kernel_call_diff.py` refuses to relax the masked
      gate for permutations ON PURPOSE, so this is a real loss and not a technicality.
+     **Refined in part 19 by running it twice: those two flags REDUCE the interleave, they
+     do not remove it.** Two runs of that exact configuration gave an exact prefix once
+     and the position-71 three-name rotation the other time, so "restores the prefix in
+     one command" was itself a single-run claim about a bimodal thing (gotcha 159). Quote
+     the set-based A5 gate, which holds.
      What decided it is that both changes move TOWARD the hardware: a command processor
      that runs continuously and a 60 Hz display timer are what the console has. Record
      the unfavourable number, not just the favourable one (gotcha 160).
