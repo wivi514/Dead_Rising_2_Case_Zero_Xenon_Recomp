@@ -2502,6 +2502,97 @@ own state is part of the measurement.** This port has profiled the CPU exhaustiv
 five sessions and never once asked what clock the GPU was at, so a 10x error sat under
 every "the GPU is 33% of the frame" statement that has ever been made here.
 
+## 6am. THE VBLANK HAS NEVER BEEN 60 Hz — and fixing that is another 2.0x
+
+§6ak left the frame at 69.9 ms with 33.6 ms of it asleep, and read that residual as
+"two vblank periods, which is the title pacing itself at its console 30 fps". That was
+half right. The title IS waiting for two vblanks. **Our vblanks were arriving at 31 a
+second.**
+
+The pump delivers the guest's vblank ISR from the same thread that walks the ring, and
+it decided when to deliver by counting loop ITERATIONS — `sinceVblankMs += tickMs`. An
+iteration is a sleep *plus a walk*, and the walk contains the GPU fence wait, so every
+millisecond spent waiting for the GPU pushed the guest's next vblank a millisecond
+further out. Counted over 290 s gameplay runs:
+
+| loop | vblanks/second |
+|---|---|
+| pre-part-18 (16 ms tick == vblank) | **40.2** |
+| §6ak's 1 ms ring tick, iteration-counted | **31.2** |
+| deadline-scheduled | **62.2** |
+
+The middle row is the trap worth naming: a *faster* ring tick made the vblank *slower*,
+because more iterations per frame meant more of the walk's time was charged against the
+vblank's budget. Neither of the first two is 60 Hz and neither ever was — **this defect
+predates tonight by the whole life of the runtime.**
+
+On hardware the vblank is a display timer that knows nothing about the command
+processor. Scheduling it on a `steady_clock` deadline instead (advancing by exactly one
+period so an overrunning walk pays back the vblanks it owes on later ticks, with the
+debt capped at four periods so one long stall cannot buy a burst) is simply what a timer
+is. `CZ_VBLANK_TICKCOUNT=1` restores the old accounting as the control arm.
+
+### Why it is worth 2x, and not just fidelity
+
+The two are coupled in a loop. The CP's per-frame `WAIT_REG_MEM`s are released by the
+swap-queue walker that runs *inside this ISR* (part 5). So a late vblank is a late
+release is a longer frame is a later vblank — the runtime was pacing the title off its
+own slowness.
+
+Two runs per arm, alternated, serial, four `[vkprof]` windows each:
+
+| arm | ms/frame | fps | vblanks/s | pump ticks/frame |
+|---|---|---|---|---|
+| `CZ_VBLANK_TICKCOUNT=1` | 69.7 70.5 / 69.7 70.5 | 14.2-14.3 | 31.2 | 32.00 |
+| deadline (default) | 32.5 35.6 / 38.8 33.8 | **25.8-30.7** | **62.2** | 6.4-9.3 |
+
+**2.0x**, with the same ~1,930 draws a frame. The arm is noisier than the control
+(25.8-30.7 against 14.2-14.3) and the reason is visible in `nvidia-smi`: the heavier
+sustained load lifts the GPU from P8/210 MHz to **P5/465-480 MHz**, so §6al's clock
+governor is now a source of run-to-run variance as well as of a 10x error. Still only
+23% of the 2100 MHz maximum.
+
+### What was checked before promoting a change to guest timing
+
+* **The swap queue is healthy**, which is the gate parts 5-6 established for exactly
+  this: `head=8547 tail=8548` on the arm and `head=4486 tail=4487` on the control — one
+  record in flight, not a queue nobody drains. `truncated=0` on both.
+* **The picture is unchanged.** A dumped boot's `frame_003456` matches capture E2 at
+  **+0.959 correlation with identity orientation** ("LAYOUT AGREES with the reference").
+  The neighbouring dumps correctly do not, because the title screen is two screens and
+  only a minority of frames carry the logo (gotcha 176).
+* **A5 exit 0, 0 real windows; `no translated shader` = 0; deepest file #83**, on every
+  gate run.
+
+### The cost, stated plainly: A1's position-71 window now permutes every time
+
+3 of 3 gate runs on the arm against the exact 84-prefix with `CZ_VBLANK_TICKCOUNT=1`.
+It is the same six-name interleave §6ak measured at 5 of 10 — `XamUserReadProfileSettings`
+-> `XamUserCheckPrivilege` landing either side of the `cAsyncFileLoadQueue Thread`'s
+creation — and `kernel_call_diff.py` deliberately refuses to relax the masked gate for
+permutations, so it reads as a hard failure and is a real loss of a standing gate.
+
+Promoted anyway, and the argument is the same one as §6ak's only stronger: **the change
+makes the runtime more like the hardware, not less.** A 60 Hz display timer is what the
+console has; 31 Hz was our bug. The permutation is a consequence of guest threads being
+scheduled against a correct clock instead of a slow one, the stronger set-based gate is
+clean, and `CZ_VBLANK_TICKCOUNT=1` reproduces the strict prefix in one environment
+variable when a session needs that gate.
+
+### Where the frame stands now
+
+11.8 fps -> **~29 fps, a 2.4x**, on the same binary and the same workload, from two
+changes that between them delete no work whatever: the ring is walked promptly and the
+vblank arrives on time.
+
+| term | ms of a ~34 ms frame | note |
+|---|---|---|
+| GPU fence wait | ~14 | and §6al says this is measured at 23% of the GPU's clock |
+| pump sleep | ~7.5 | what is left of the pacing |
+| renderer CPU | ~7.2 | `record` 4.4, streams 2.0, textures 0.8, constants 0.4 |
+| PM4 walk + resolves | ~5 | |
+| readback | 0.3 | |
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

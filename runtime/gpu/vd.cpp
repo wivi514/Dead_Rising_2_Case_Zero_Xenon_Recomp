@@ -299,6 +299,7 @@ void GraphicsInterruptPump()
 
     uint64_t ticks = 0;   // VBLANKS delivered — every `ticks %` below means vblanks
     int sinceVblankMs = 0; // ms of ring ticks accumulated toward the next vblank
+    auto nextVblankAt = std::chrono::steady_clock::now(); // ...or the deadline, below
     for (;;)
     {
         // Timed, because this sleep is the single largest term in a gameplay frame and
@@ -380,13 +381,48 @@ void GraphicsInterruptPump()
         }
 
         // Everything below this line is the VBLANK, and it keeps the guest's own
-        // cadence whatever the ring is ticking at. With CZ_PM4_TICK_MS unset the two
-        // are the same number and this is a no-op, which is what makes the default the
-        // pre-part-18 loop exactly.
-        sinceVblankMs += tickMs;
-        if (sinceVblankMs < vblankMs)
-            continue;
-        sinceVblankMs -= vblankMs;
+        // cadence whatever the ring is ticking at.
+        //
+        // The vblank is scheduled on a DEADLINE. CZ_VBLANK_TICKCOUNT=1 restores the
+        // old accounting, which counted loop ITERATIONS — and an iteration is a sleep
+        // PLUS a ring walk, so every millisecond the walk spent waiting for the GPU
+        // pushed the guest's next vblank a millisecond further out.
+        //
+        // **This runtime has never delivered a 60 Hz vblank.** Measured over 290 s
+        // gameplay runs: 40.2/s on the pre-part-18 loop, 31.2/s once the ring ticked
+        // at 1 ms (more iterations, same walk, so the debt per vblank grew), and
+        // 62.2/s on a deadline. On hardware the vblank is a display timer that knows
+        // nothing about the command processor, so the first two numbers are a defect
+        // that predates tonight and the third is what the title should always have
+        // seen.
+        //
+        // It matters beyond fidelity because the two are coupled: the CP's per-frame
+        // WAIT_REG_MEMs are released by the swap-queue walker inside this very ISR
+        // (part 5), so a late vblank is a late release is a longer frame is a later
+        // vblank. Breaking that loop is worth 2.0x on its own (§6am).
+        static const bool wallClockVblank = getenv("CZ_VBLANK_TICKCOUNT") == nullptr;
+        if (wallClockVblank)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < nextVblankAt)
+                continue;
+            // Advance by exactly one period so a walk that overran delivers the
+            // vblanks it owes on the following ticks rather than losing them — but
+            // never let the debt grow without bound, or a single long stall would buy
+            // a burst of hundreds. Four periods is the cap because that is already
+            // longer than any frame this title has.
+            nextVblankAt += std::chrono::milliseconds(vblankMs);
+            const auto floorAt = now - std::chrono::milliseconds(vblankMs * 4);
+            if (nextVblankAt < floorAt)
+                nextVblankAt = floorAt;
+        }
+        else
+        {
+            sinceVblankMs += tickMs;
+            if (sinceVblankMs < vblankMs)
+                continue;
+            sinceVblankMs -= vblankMs;
+        }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
         // second from the driver's own device struct — including the MMIO dword we
