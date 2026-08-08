@@ -1431,6 +1431,21 @@ From phase C part 15 (the prologue's black screen, and who was asking for it):
      is now a real entry with mask 0. NB the naive control is not the control: with
      only two A presses the run never leaves the TITLE screen, so several presses are
      load-bearing and the arm has to walk the menu first and go quiet after.
+216. **A shader the cache lacks is the quietest defect in this renderer, and the cache
+     is only ever as deep as the deepest run that built it.** The prologue needed one
+     shader neither capture contained (part 15); Still Creek needs two more. The symptom
+     is a BLACK SCREEN with no error — `[vk] no translated shader for VS <hash> — draws
+     skipped`, once per hash, plus a counter nobody reads. So `grep -c "no translated
+     shader"` belongs in every run's post-mortem, and `CZ_SHADER_DUMP` belongs on every
+     run that might reach new ground — especially an OPERATOR run, which is the only way
+     this port reaches most of the game.
+217. **A live process is a dumpable artefact, and a content hash makes the dump
+     trustworthy.** Two missing shaders were recovered from a RUNNING game with
+     `gdb -p ... dump binary memory`, using the guest address and dword count the
+     renderer had already printed, and both FNV-1a'd to exactly the hash the renderer
+     computed. That check is what separates this from a hopeful memory read: a freed or
+     reused buffer fails the hash instead of yielding a plausible wrong shader. Reach
+     for it before asking an operator to replay half an hour of game.
 215. **A release build can still carry its own logging, and one hook reads all of
      it.** This image's `sub_827877C8` is a vsnprintf with **640 distinct callers**
      feeding one formatted-string sink. Every hunt in this project so far
@@ -1721,6 +1736,24 @@ cache lacks is one log line and a silent counter, not a failure:
 ```
 grep -c "no translated shader" run.log         # must be 0
 ```
+**The cache is 339 and STILL CREEK needed two of them.** A1 stops at the title screen,
+A2 is gameplay, and the prologue and Still Creek each loaded a shader neither capture
+nor our own dump contained. Any run that reaches new ground should carry
+`CZ_SHADER_DUMP` so the blobs are captured for free — including an OPERATOR run, which
+is the only way this port reaches most of the game.
+
+**And if a run finds a missing shader without `CZ_SHADER_DUMP` set, the blobs are not
+lost — recover them from the LIVE process.** `[imload] VS va=%08X hash=%016llx size=%u`
+prints the guest address and the dword count, `runtime: guest memory at 0x...` prints
+the host base, and the renderer's own hash is a self-check on the result:
+```
+gdb -p <pid> -batch -ex "dump binary memory vs_<hash>.ucode <base+va> <base+va+size*4>"
+python3 -c "..."   # FNV-1a over the bytes must equal <hash>
+tools/build_shader_spv.sh <dir> assets/shader_spv
+```
+Both of Still Creek's were recovered this way and both hashed EXACTLY, which is what
+makes it a measurement rather than a hopeful memory read — a stale or reused buffer
+would fail the hash rather than produce a plausible wrong shader.
 
 Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
 build). SDL2 is required rather than optional-with-a-fallback, because a build that
