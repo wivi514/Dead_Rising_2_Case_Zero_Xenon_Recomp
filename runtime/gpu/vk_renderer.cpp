@@ -810,6 +810,16 @@ struct Renderer
         float blend[4]{};
         bool haveViewport = false, haveScissor = false, haveBlend = false;
         bool setsBound = false;
+        // The vertex and index bindings, tracked but NOT yet acted on — see
+        // `BindSkips` for why the counter comes before the change. 16 is above the
+        // highest binding this title has ever used; a draw with more is simply not
+        // counted rather than counted wrongly.
+        static constexpr uint32_t kMaxTrackedBindings = 16;
+        VkDeviceSize vertexOffset[kMaxTrackedBindings]{};
+        bool haveVertex[kMaxTrackedBindings]{};
+        VkDeviceSize indexOffset = 0;
+        VkIndexType indexType = VK_INDEX_TYPE_MAX_ENUM;
+        bool haveIndex = false;
     } bound;
     // How often each bind was skipped, across the whole run. An arm needs a counter or
     // its absence proves nothing (gotcha 151) — but the counter must not cost more than
@@ -820,6 +830,17 @@ struct Renderer
     struct BindSkips
     {
         uint64_t pipeline = 0, viewport = 0, scissor = 0, blend = 0, sets = 0, draws = 0;
+        // The vertex and index binds, COUNTED ONLY. `docs/perf-cpu-plan.md` §1a
+        // hypothesis A is that a crowd — many copies of a few zombie meshes — rebinds
+        // the same buffer at the same offset draw after draw, and that extending the
+        // state cache to cover them is a dozen lines. It says to add the counters and
+        // run without acting on them, because a low repeat rate kills the idea for
+        // free and a high one is the justification. These are that measurement: the
+        // `Repeat` counters are what a skip WOULD have saved, and they are reset
+        // exactly where `BoundState` is, so they cannot promise a saving that a fresh
+        // command buffer would take back.
+        uint64_t vertexBinds = 0, vertexBindRepeats = 0;
+        uint64_t indexBinds = 0, indexBindRepeats = 0;
     } skips;
 
     VkSampler linearSampler = VK_NULL_HANDLE;
@@ -2966,6 +2987,30 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
     return at;
 }
 
+// Count a vertex or index bind against what the state cache WOULD have skipped.
+// Counting only: the bind is still issued by the caller. See Renderer::BindSkips.
+void NoteVertexBind(uint32_t binding, VkDeviceSize offset)
+{
+    ++R->skips.vertexBinds;
+    if (binding >= Renderer::BoundState::kMaxTrackedBindings)
+        return;
+    if (R->bound.haveVertex[binding] && R->bound.vertexOffset[binding] == offset)
+        ++R->skips.vertexBindRepeats;
+    R->bound.haveVertex[binding] = true;
+    R->bound.vertexOffset[binding] = offset;
+}
+
+void NoteIndexBind(VkDeviceSize offset, VkIndexType type)
+{
+    ++R->skips.indexBinds;
+    if (R->bound.haveIndex && R->bound.indexOffset == offset &&
+        R->bound.indexType == type)
+        ++R->skips.indexBindRepeats;
+    R->bound.haveIndex = true;
+    R->bound.indexOffset = offset;
+    R->bound.indexType = type;
+}
+
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
@@ -3933,6 +3978,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
             const VkDeviceSize offset = four + uint64_t(a.offsetDwords) * 4;
+            NoteVertexBind(binding, offset);
             vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
             ++binding;
             continue;
@@ -3944,6 +3990,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             streamsOk = false;
             break;
         }
+        NoteVertexBind(binding, offset);
         vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
         ++binding;
     }
@@ -4238,6 +4285,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkDeviceSize at = ExpandIndices(base, draw, expand, expandedCount);
         if (at == VkDeviceSize(-1))
             return;
+        NoteIndexBind(at, VK_INDEX_TYPE_UINT32);
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
         // rectSynth already folded the base vertex into its three corners, and its
         // expanded indices name a private four-vertex stream — so offsetting again
@@ -4279,6 +4327,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian);
         if (at == VkDeviceSize(-1))
             return;
+        NoteIndexBind(at, draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at,
                              draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
         vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
@@ -5625,6 +5674,25 @@ void VkRenderer_DumpStats()
                 100.0 * double(R->skips.scissor) / double(d),
                 100.0 * double(R->skips.blend) / double(d),
                 100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
+    // ...and the two the cache does NOT cover yet, as the repeat rate a cache over them
+    // would convert into skips. Reported as counts as well as percentages because the
+    // absolute number is what multiplies by the ~340 ns a `vkCmd*` costs here; a high
+    // percentage of a small count is not worth a line of code.
+    if (R->skips.vertexBinds || R->skips.indexBinds)
+        fprintf(stderr,
+                "[vk]   binds NOT cached: vertex %llu of %llu repeat the previous "
+                "offset (%.1f%%), index %llu of %llu (%.1f%%)\n",
+                (unsigned long long)R->skips.vertexBindRepeats,
+                (unsigned long long)R->skips.vertexBinds,
+                R->skips.vertexBinds
+                    ? 100.0 * double(R->skips.vertexBindRepeats) /
+                          double(R->skips.vertexBinds)
+                    : 0.0,
+                (unsigned long long)R->skips.indexBindRepeats,
+                (unsigned long long)R->skips.indexBinds,
+                R->skips.indexBinds ? 100.0 * double(R->skips.indexBindRepeats) /
+                                          double(R->skips.indexBinds)
+                                    : 0.0);
     for (const auto& [name, count] : g_stats)
         fprintf(stderr, "[vk]   %-52s %llu\n", name.c_str(),
                 (unsigned long long)count);

@@ -24,9 +24,19 @@ high bins should move, and an arm that "improves" the low bins is measuring nois
 has changed the draw set (which would make the whole comparison inadmissible — see
 CLAUDE.md's A/B admissibility rule).
 
+Multiple runs per arm are the point, not a convenience. Measured against a genuine
+null arm — a commit that changed only the profiler's arithmetic — individual crowd bins
+still moved 10-13% at ONE run a side, because the frames inside a bin are not
+independent samples: consecutive frames share a camera, a location and a thermal state,
+so the effective N is a small fraction of the frame count and the standard error
+computed from the raw count is confidently wrong. Pool three runs an arm, alternated
+(a, b, a, b, a, b) so that any drift in the machine is shared between the arms, and
+read the per-run spread that this prints before reading the delta.
+
 Usage
 -----
-    tools/frame_perf_bins.py A.txt B.txt [--bin 1000] [--min-frames 20]
+    tools/frame_perf_bins.py --a a1.txt a2.txt a3.txt --b b1.txt b2.txt b3.txt
+    tools/frame_perf_bins.py A.txt B.txt                # one run an arm (see above)
     tools/frame_perf_bins.py A.txt                      # one arm, just the profile
 
 The `msec` column is a CUMULATIVE timestamp, not a duration, so each frame's cost is
@@ -86,21 +96,29 @@ def stats(values):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("a", help="frame stats file (the control arm)")
-    ap.add_argument("b", nargs="?", help="frame stats file (the test arm)")
+    ap.add_argument("pos", nargs="*", help="one or two frame stats files")
+    ap.add_argument("--a", nargs="+", default=None,
+                    help="control-arm frame stats files (pool several runs)")
+    ap.add_argument("--b", nargs="+", default=None,
+                    help="test-arm frame stats files (pool several runs)")
     ap.add_argument("--bin", type=int, default=1000, help="draw-count bin width")
     ap.add_argument("--min-frames", type=int, default=20,
                     help="skip bins with fewer frames than this in either arm")
     args = ap.parse_args()
 
-    fa = read_frames(args.a)
+    a_files = args.a if args.a else args.pos[:1]
+    b_files = args.b if args.b else args.pos[1:2]
+    if not a_files:
+        ap.error("give at least one frame stats file")
+
+    fa = [f for p in a_files for f in read_frames(p)]
     if not fa:
-        print(f"{args.a}: no usable frames", file=sys.stderr)
+        print(f"{a_files}: no usable frames", file=sys.stderr)
         return 1
     ba = bin_frames(fa, args.bin)
 
-    if not args.b:
-        print(f"{args.a}: {len(fa)} frames")
+    if not b_files:
+        print(f"{' '.join(a_files)}: {len(fa)} frames")
         print(f"{'draws':>14}  {'frames':>7}  {'ms/frame':>9}  {'sd':>6}  {'fps':>6}")
         for lo in sorted(ba):
             m, sd, _ = stats(ba[lo])
@@ -108,20 +126,41 @@ def main():
                   f"{sd:>6.2f}  {1000.0/m:>6.1f}")
         return 0
 
-    fb = read_frames(args.b)
+    fb = [f for p in b_files for f in read_frames(p)]
     if not fb:
-        print(f"{args.b}: no usable frames", file=sys.stderr)
+        print(f"{b_files}: no usable frames", file=sys.stderr)
         return 1
     bb = bin_frames(fb, args.bin)
 
-    print(f"A = {args.a}  ({len(fa)} frames)")
-    print(f"B = {args.b}  ({len(fb)} frames)")
+    print(f"A = {' '.join(a_files)}  ({len(fa)} frames)")
+    print(f"B = {' '.join(b_files)}  ({len(fb)} frames)")
     print()
+
+    # The per-RUN mean of the top bin, per arm. This is the number that says whether the
+    # delta below is bigger than the spread between runs of one binary — which at one
+    # run an arm it very often is not. Printing it beside the result is what stops a
+    # within-arm spread being read as a between-arm effect.
+    def per_run(files):
+        out = []
+        for p in files:
+            fr = [dt for draws, dt in read_frames(p) if draws >= 6000]
+            out.append(sum(fr) / len(fr) if fr else float("nan"))
+        return out
+
+    ra, rb = per_run(a_files), per_run(b_files)
+    if len(a_files) > 1 or len(b_files) > 1:
+        fmt = lambda xs: " ".join(f"{x:.2f}" for x in xs)
+        print(f"per-run mean ms of frames with >= 6000 draws:")
+        print(f"  A: {fmt(ra)}")
+        print(f"  B: {fmt(rb)}")
+        print()
     print(f"{'draws':>14}  {'A frames':>8} {'A ms':>8}  {'B frames':>8} {'B ms':>8}  "
           f"{'delta':>8}  {'sig':>5}")
-    # "sig" is the difference in units of its own combined standard error. It is a
-    # sanity flag, not a p-value: below ~2 the bin says nothing, and a change that only
-    # shows in bins nobody visited twice is not a result (gotcha 50).
+    # "sig" is the difference in units of its own combined standard error, and it is
+    # NOT a significance test — do not read it as one. A null arm (same binary, two
+    # runs) produced crowd bins at 10-13% and sig up to 22, because consecutive frames
+    # in a bin share a camera and a location and are nowhere near independent. Treat it
+    # as an ordering hint only, and let the per-run spread printed above decide.
     for lo in sorted(set(ba) | set(bb)):
         va, vb = ba.get(lo, []), bb.get(lo, [])
         if len(va) < args.min_frames or len(vb) < args.min_frames:
