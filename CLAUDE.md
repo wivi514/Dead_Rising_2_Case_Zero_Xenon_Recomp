@@ -1369,6 +1369,45 @@ From phase C part 14 (a resolve has a source, and the whole frame was out of foc
      it already has open, and `CZ_FILE_TRACE` shows the loading running on for another
      ~40 s through the cinematic props. Gotcha 109 said a capped log line is not a count;
      this is the other half — an UNCAPPED count can still not be the quantity you want.
+
+From phase C part 15 (the prologue's black screen, and who was asking for it):
+
+207. **"Did we compute this black, or were we TOLD to?" is a question only an arm on the
+     shader can answer, and it is the first question a black frame deserves.** Three
+     defects stacked under the prologue's black screen and the bottom one was the
+     guest's: its tone map sets the vignette POWER to 0 and its strength to 1.0, so
+     `pow(x,0) == 1` at every pixel and the compose lerps 100% to black. Every
+     instrument in this project reported a healthy chain, because the chain WAS healthy.
+     One line patched in the pixel shader under `CZ_SHADER_SPV` (gotcha 128) took the
+     frame from 0.00% non-black to 99.99% and showed the prologue's opening highway
+     underneath. The corollary is the trap: two of the three layers were ours, and the
+     first one fixed — a shader the cache did not have, 28,718 draws a run — changed
+     nothing at all, which reads as "wrong theory" and was really "right defect, wrong
+     layer".
+208. **A freshness window is a statement about ONE consumer's access pattern, and the
+     era you developed it in can hide that.** "A resolve snapshot may be one frame old"
+     was written for a post pass reading what an earlier pass in the same frame
+     resolved. Case Zero's title screen re-renders all three colour-grading LUTs every
+     frame, so the window never bound and looked correct for five phases; the prologue's
+     grade is static, the LUT stops being resolved, and the fetch silently fell through
+     to guest memory — which for a resolve destination is zero, because resolved pixels
+     are never written back. Ask what makes the value STALE, not how old it is: here
+     nothing can, so there is no window.
+209. **An identity mapping can still clip.** The window-coordinate draw path scaled by
+     `2/frontBufferWidth,Height` and then set a viewport of exactly those dimensions, so
+     window (X,Y) landed on framebuffer (X,Y) and every arithmetic check passed. But the
+     clip volume is NDC ±1, i.e. window y = 720, and the EDRAM is 1024 rows — so a clear
+     rect of `(960,0)-(1024,1024)` lost its bottom 304 rows with nothing to see in any
+     coordinate. A window coordinate belongs to the SURFACE the pass renders into; when
+     that can be bigger than the screen, the two are not interchangeable even when they
+     divide out.
+210. **When a picture defect resists, count the boundary instead of looking at it.** The
+     shadow cascade's "48.7% pure zero" had been a picture for a phase. Counting the
+     populated region per row gave three exact numbers — 512, 720, and a 64-wide strip at
+     x=960 — and 720 is the presented frame's height, which named our defect
+     immediately, while 480x512 and 64x1024 turned out to be the guest's own clear rects
+     read straight off `CZ_VK_DRAW_PROBE`. An axis-aligned boundary is a NUMBER; eyes are
+     for transforms and blurs (gotchas 135, 204), not for edges.
 140. **"Which pass consumed it" is not a question a global counter can answer.** The
     renderer counted 450,488 texture fetches served from resolve snapshots and could
     not say whether the pass that writes the front buffer was one of them — which was
@@ -1506,7 +1545,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c12-kickoff.md` /
   `d3d-phase-c13-kickoff.md` /
   `d3d-phase-c14-kickoff.md` /
-  **`d3d-phase-c15-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c15-kickoff.md` /
+  **`d3d-phase-c16-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -2028,6 +2068,26 @@ CZ_VK_TEX_CACHE_FIRST=1    consult the fetch-constant texture cache BEFORE the r
                    snapshot — the pre-part-9 lookup order, which freezes a surface at
                    whatever guest memory held the first time it was fetched. Reproduces
                    the black scene exactly (2.31% non-black against 99.4%)
+CZ_VK_SNAPSHOT_MAX_AGE=N   how many frames old a resolve snapshot may be and still be
+                   served (default 0 = NO limit). **1 is the pre-part-15 renderer**, in
+                   which a snapshot had to have been taken this frame or last. That is
+                   right for the case the mechanism was written for — a post pass reading
+                   what an earlier pass in the SAME frame resolved — and silently wrong
+                   for a surface the title resolves ONCE and samples forever. The title
+                   screen re-renders all three colour-grading LUTs every frame so the
+                   window never bound; the prologue's grade is static, so the LUT fetch
+                   fell out of the snapshot path into guest memory, which is zero, and
+                   §6s already proved a black LUT is a black frame. With the guest's own
+                   fade patched out to make the frame visible at all, the prologue reads
+                   0.00% non-black at MAX_AGE=1 against 99.99% with no limit
+CZ_VK_WINDOW_COORDS_FRONT_BUFFER=1  map a window-coordinate draw (VTE disabled) through
+                   the PRESENTED FRAME's 1280x720 rather than the EDRAM's 1280x1024 —
+                   the pre-part-15 renderer. The arithmetic is an identity either way,
+                   so nothing looks wrong; the CLIP is not, so every window-coordinate
+                   draw taller than the screen was cut off at row 719. This title clears
+                   its shadow cascade with a (960,0)-(1024,1024) rect, and that strip was
+                   losing its bottom 304 rows: cascade non-black 12.82% -> 13.28%, which
+                   is 64x304 pixels to the pixel
 CZ_VK_RECT_HALF=1  expand a rectangle list to the SAME TRIANGLE TWICE again, i.e. the
                    pre-part-9 half-covered per-pass clear. Half of every depth clear
                    missing means the previous pass's depth rejects the scene behind it
@@ -3187,22 +3247,73 @@ contain the third and fourth.
 2 windows, 0 real**; `truncated=0`; deepest file on a no-input boot **#83
 `cinezombie.big`**.
 
+**PHASE C PART 15 (2026-08-07, session 27): the prologue's black screen was THREE
+defects and only two were ours — the renderer draws the prologue.**
+`docs/phase5-notes.md` §§6af-6ag; hand-off in `docs/d3d-phase-c16-kickoff.md`.
+
+Part 14 handed over "a live pass with live inputs produces black, the same SHAPE as
+§6s". It is a stack, and the bottom of it belongs to the guest:
+
+1. **A shader the cache did not have.** `vs_24e60d91249e6d04`, 351 dwords, loaded by
+   the prologue and in NEITHER capture (A1 stops at the title screen, A2 is gameplay)
+   nor in our own dump, whose recipe built from a plain boot that also stops at the
+   title screen. **28,718 draws a run declined**, reported as one log line and a
+   counter. Fixed (337 shaders now, and the recipe reaches the prologue) — **and it did
+   not change the picture.** A real defect hiding behind a bigger one.
+2. **The colour-grading LUT's resolve snapshot EXPIRED.** The rule was "taken this
+   frame or last", which is right for a post pass reading an earlier pass of the same
+   frame and wrong for a surface the title resolves ONCE. The title screen re-renders
+   all three LUTs every frame so the window never bound; the prologue's grade is
+   static, so the fetch fell through to guest memory, which is zero. Measured with (3)
+   patched out: **0.00% -> 99.99% non-black, 1 -> ~89,450 colours**.
+   `CZ_VK_SNAPSHOT_MAX_AGE=1` is the control arm.
+3. **The rest is the GUEST asking for black, and the compose is faithful.** Printing
+   the tone map's constants rather than reasoning about them: `pc(111).x`, the
+   vignette POWER, is **0** at the prologue against 1.0 at the title screen, and
+   `pc(110).w`, its strength, is **1.0** against 0.4. `pow(x,0) == 1` at every pixel,
+   so the compose lerps 100% to `pc(110).xyz` = black. The LUT arithmetic constants are
+   bit-identical between the eras. Proved with an arm, not argued: one line patched in
+   `ps_114c4965eaabd54c` under `CZ_SHADER_SPV` takes the frame to **99.99% non-black,
+   ~89,450 colours**, and the picture is the prologue's opening highway into Still
+   Creek, tone-mapped and graded.
+
+**What is actually wrong is upstream of the renderer.** `CZ_VK_FRAME_STATS` over the
+black era: the **camera fingerprint is ONE constant value for 1,700+ frames** and the
+scene surface's mean luminance is pinned at 104.484, while the draw stream still moves
+(1,225-1,247 draws, 848k-883k vertices). The ring chain is the healthy shape
+(`arms=11489 ints=11483 isr=11483`, `kicks == walks == drains`, `distinct=764`,
+`truncated=0`) and every `[wait]` is an idle worker. The prologue is **stuck in a
+faded-out state**. Leading hypothesis, stated as one: the cinematic is cued off audio,
+the pump submits **55,808 driver frames of peak exactly 0.0000** because there is no XMA
+decoder, and it waits forever.
+
+**And one shadow-cascade defect of ours, with the title's own numbers beside it.** A
+window-coordinate draw was mapped through the PRESENTED FRAME's 1280x720 rather than
+the EDRAM's 1280x1024. The arithmetic is an identity either way so nothing looked
+wrong; the CLIP is not, so every such draw taller than the screen was cut at row 719.
+Cascade non-black **12.82% -> 13.28%**, which is the clipped 64x304 strip to the pixel
+(`CZ_VK_WINDOW_COORDS_FRONT_BUFFER=1` is the control arm). The rest of the empty half
+is the title's: `CZ_VK_DRAW_PROBE` says its clear rects for a 1024x1024 cascade are
+**`(0,0)-(480,512)` and `(960,0)-(1024,1024)`**, at z=1.0 with compare func ALWAYS.
+**Shadows still do not appear** — committed on mechanism plus a matching structural
+delta, which part 14's own rule says to declare.
+
+**Gates, PM4 arm, renderer on:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0,
+2 windows, 0 real**; `truncated=0`, 0 parser stalls; deepest file on a no-input boot
+**#83 `cinezombie.big`**; presented frame 98.99% non-black at the title screen.
+
 Next, in order:
 
-1. **THE NEW FRONTIER IS A BLACK SCREEN AT THE PROLOGUE, and its first black link is
-   already named.** With `CZ_FAKE_PRESS_SEQ=START,A,A` the boot walks title -> menu ->
-   NEW GAME -> the game's own loading screen (the `TIP: Combo Weapons give extra PP`
-   card renders correctly) and then, from frame ~943 for the remaining 1,800 frames of
-   a 300 s run, presents **0.00% non-black** while issuing ~1,200 draws a frame. It is
-   a compose failure, not a stall. `CZ_VK_SNAP_DUMP` at frame 1100 says which link:
-   the scene colour `0684B000` is **100% non-black**, its depth `06BE4000` 99.9%, the
-   shadow cascades 58%, the LUTs 99.8% and the whole downsample pyramid live — and the
-   TONE MAP's output at `1439B000` (the COLOUR resolve to that address) is **0.00%**,
-   with everything downstream of it black: the DOF blur `147C0000` and the front buffer
-   `00E48000`. That is the same SHAPE as §6s — a live pass with live inputs producing
-   black — and the same instrument found it. Start there, with
-   `CZ_VK_RESOLVE_TRACE_PASSES` high enough to see the late passes (the budget is
-   shared across frames, so arm it at the frame you want).
+1. **THE PROLOGUE IS STUCK, AND IT IS NOT THE RENDERER** (see part 15 above). The
+   camera fingerprint is one constant for 1,700+ frames while the draw stream still
+   moves, so the title is alive and its scene state is frozen. The leading hypothesis
+   is audio: no XMA decoder, 55,808 driver frames of peak 0.0000, and an in-engine
+   cinematic cued off a voice or music stream would look exactly like this. **The
+   cheap discriminator is a probe on what the cinematic polls**, not more renderer
+   work — and note the operator DOES get past this with a real controller, so a
+   comparison of the two input paths is also free evidence. The no-fade shader arm
+   (`CZ_SHADER_SPV` + one line in `ps_114c4965eaabd54c`, §6af) is how you watch the
+   scene while it is faded out.
 2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
    (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
    enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
@@ -3213,20 +3324,22 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. **THE SHADOW CASCADE IS HALF EMPTY, and every plumbing hypothesis is retired.** The
-   operator's top report on the running build is "no shadows anywhere". The guest
-   declares its cascade **4096x1024 f22** and fetches it **629,023 times a boot** — more
-   than any other texture in the frame — and part 14 fixed its size (it was stored
-   1280x720 and sampled with coordinates computed for 4096x1024). Shadows still do not
-   appear, and `CZ_VK_SNAP_DUMP` says why they cannot: the populated left 1024x1024 is
-   **48.7% pure ZERO**, a ground gradient and two power lines to about row 510 and
-   nothing below. The source field is read, the snapshot is the declared size, the EDRAM
-   is tall enough, and the pass's own draws already take the REAL viewport path
-   (`vte=3F, xs=512, ys=-512`). So the question is about its DRAWS: check the depth
-   CLEAR value and compare direction first (the empty half is ZERO, not one — reverse-Z
-   would make that correct), then where the pass's 60,000-177,000 vertices land in light
-   space, with gotcha 124's pair (`CZ_VK_SHADER_CENSUS` + the capture's disassembly +
-   `CZ_VK_DRAW_PROBE`).
+3. **THE SHADOW CASCADE IS STILL HALF EMPTY, and part 15 halved the question.** The
+   operator's top report on the running build is "no shadows anywhere". Part 15 counted
+   the empty region's exact boundaries — rows 0..511 fully populated, rows 512..719 in a
+   64-wide strip at x=960..1023, nothing below 720 — fixed the one boundary that was
+   ours (the window-coordinate clip at 720, worth exactly that strip), and named the
+   title's own clear rects with `CZ_VK_DRAW_PROBE`: **`(0,0)-(480,512)` and
+   `(960,0)-(1024,1024)`**, z=1.0, compare func ALWAYS. Those do not cover a 1024x1024
+   map and nothing this renderer does causes it. Three readings, all testable: 480x512
+   is a PIXEL extent wanting a x2 somewhere (the pass reports `msaa=0`, so our 4x
+   scaling does not apply — check what the guest thinks that surface's sample extent
+   is); the "cascade" is really several smaller maps packed into one surface (four
+   cascades are resolved per frame and it is 4096 wide); or the uncleared region is
+   never sampled and the shadows fail elsewhere. Test the third first, because it is
+   free: the consumer's fetch coordinates say which part of the map it reads
+   (`CZ_VK_DRAW_PROBE` on the pass that fetches `1439B000(depth)`, 629,023 fetches a
+   boot). Do NOT judge the shadow lookup until the map is right.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
