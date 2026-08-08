@@ -1487,6 +1487,58 @@ PPC_FUNC(sub_82788478)
 }
 
 // ---------------------------------------------------------------------------------
+// CZ_SAVE_PROBE=1 — the guest's OWN XGetOverlappedResult, printing the block it read.
+//
+// WHY THIS EXISTS
+// ---------------
+// The save reaches XamContentCreateEx, gets the ERROR_IO_PENDING its call site
+// demands, and is then torn down without a byte being written. The teardown's call
+// stack (CZ_KCALL_WHO=XamContentClose) puts the decision at 825D6094:
+//
+//     bl   sub_825D83A8          ; the title's hand-rolled XGetOverlappedResult
+//     cmplwi r3,0    / beq       ; 0     -> the save proceeds
+//     cmplwi r3,0x3e4/ beq       ; 996   -> ERROR_IO_INCOMPLETE, poll again
+//     ...                        ; ANYTHING ELSE -> free, close, "Save failed"
+//
+// and sub_825D83A8 simply returns `ovl->result` once that word is no longer 997. We
+// write 0 into it. So either the word we wrote is not the word it reads, or something
+// overwrites it between the two — and those are different bugs with different fixes,
+// which no amount of further disassembly can separate. Print the block from inside
+// the guest's own reader and the question is settled in one run.
+//
+// Budgeted rather than capped-and-silent: this poll also serves the profile and
+// enumerate paths, so it runs long before any save does.
+extern "C" PPC_FUNC(__imp__sub_825D83A8);
+
+PPC_FUNC(sub_825D83A8)
+{
+    static const bool on = getenv("CZ_SAVE_PROBE") != nullptr;
+    if (!on)
+    {
+        __imp__sub_825D83A8(ctx, base);
+        return;
+    }
+    const uint32_t ovl = ctx.r3.u32;
+    const uint32_t result = ovl ? PPC_LOAD_U32(ovl + 0) : 0;
+    const uint32_t length = ovl ? PPC_LOAD_U32(ovl + 4) : 0;
+    const uint32_t event = ovl ? PPC_LOAD_U32(ovl + 12) : 0;
+    const uint32_t extended = ovl ? PPC_LOAD_U32(ovl + 24) : 0;
+    __imp__sub_825D83A8(ctx, base);
+
+    // Everything that is NOT the ordinary "still pending" answer, plus a thin sample
+    // of the pending ones so the line rate says whether polling is even happening.
+    static std::atomic<uint64_t> n{ 0 };
+    const uint64_t i = n.fetch_add(1, std::memory_order_relaxed);
+    const bool interesting = result != 997;
+    if (interesting || (i % 2048) == 0)
+        fprintf(stderr,
+                "[save] XGetOverlappedResult(ovl=%08X) block{result=%08X length=%08X "
+                "event=%08X extended=%08X} -> %u%s\n",
+                ovl, result, length, event, extended, ctx.r3.u32,
+                result == 997 ? "  (pending, sampled)" : "");
+}
+
+// ---------------------------------------------------------------------------------
 // CZ_GUEST_LOG=1 — the ENGINE'S OWN debug output, which it has been writing all
 // along and nobody was reading.
 //

@@ -1614,6 +1614,12 @@ it is exactly why that rule is in the conventions.
   phase.
 - `Xenia logs/` — captures land here (gitignored); keep an index in
   `Xenia logs/Xenia_Run_Content.md`, which **is** tracked.
+- `~/DR2CZ-troubleshooting/` — **outside the repo on purpose**: operator screenshots
+  (the only evidence channel for "does it look right", and the one no instrument here
+  can replace) and headless `CZ_VK_FRAME_DUMP` frames. Its `INDEX.md` says what every
+  shot showed, INCLUDING the ones that were lost — Spectacle deletes its temp directory
+  when the window closes, so most of the first gameplay session's screenshots survive
+  only as descriptions. Save straight into it.
 - `runtime/` — the host runtime. Phases 1 and 3 complete; **phase 4's command
   processor is live too, ahead of the plan's ordering** — do not read the plan's phase
   numbers as the state of the code. There is a window, a present seam and real input;
@@ -3590,6 +3596,24 @@ Next, in order:
    free: the consumer's fetch coordinates say which part of the map it reads
    (`CZ_VK_DRAW_PROBE` on the pass that fetches `1439B000(depth)`, 629,023 fetches a
    boot). Do NOT judge the shadow lookup until the map is right.
+3b. **THE BINDLESS HEAP LOOKS EXHAUSTED IN STILL CREEK — white buildings, white NPCs,
+   white blood, white button glyphs.** Texture slots come from a 4096-entry heap
+   monotonically and are NEVER RECYCLED (`entry.slot = R->nextTextureSlot++`); on
+   overflow `UploadTexture` returns slot 0, the 1x1 white dummy, and counts
+   `texture: bindless heap full` silently. That predicts exactly the operator's
+   progression: everything loaded EARLY stays correct and everything appearing LATE
+   goes white, first small (a button glyph, blood decals) then whole streamed objects
+   (a building, an NPC, road decals). **A HYPOTHESIS, NOT A FINDING** — `CZ_VK_STATS=N`
+   prints the counter and was not on for that session. Non-zero means the fix is slot
+   recycling; zero means the white is something else entirely. Do not write an LRU
+   before reading the counter. Picture: `~/DR2CZ-troubleshooting/`.
+3c. **The pause menu is sheared and broken in STILL CREEK and perfect in the
+   SAFEHOUSE.** Same menu, same shaders, different world state — so it arrives with its
+   own control, which is rare. The paper becomes a trapezoid with stray white polygons
+   and thin black lines, i.e. garbage GEOMETRY rather than a texture fault. Part 13
+   established that this title sub-allocates its whole UI out of ONE dynamic vertex
+   buffer via `VGT_INDX_OFFSET`, so a busier scene sharing that buffer is the obvious
+   place to look: an offset that drifts, or a buffer that wraps.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
