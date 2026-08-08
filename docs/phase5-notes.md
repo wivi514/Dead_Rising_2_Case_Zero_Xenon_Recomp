@@ -2889,6 +2889,182 @@ its post chain".
 
 ---
 
+## 6aq. THE PROFILER WAS COUNTING NESTED PHASES TWICE, and the CPU plan was ranked
+## on the result
+
+`docs/perf-cpu-plan.md` is built on a table: a 6,592-draw crowd frame is 43.4 ms, of
+which the renderer's draw path is 21.40 ms and the PM4 walk is 10.98. That table is
+right. **How the 21.40 divides between the draw path's five phases was not**, and the
+plan's §1 and §2 are both ranked by expected size.
+
+### The defect
+
+`ProfScope` accumulated INCLUSIVE time. The scopes nest:
+
+* `record` opens partway down `DoDraw` (just before the first `vkCmd*`) and, being a
+  scope object, lives to the end of the function — so the three `UploadStream` calls
+  below it ran INSIDE it. Their cost landed in `streams` and in `record`.
+* `submit` encloses `submitCall` and `fenceWait` for the same reason.
+
+The frame print then derived `DoDraw`'s residual by subtraction:
+`drawTotal - (constants + streams + textures + record)`. Since `record` already
+contained `streams`, that removes `streams` twice.
+
+    printed        record 11.07   streams 4.77   other 0.91
+    corrected      record  6.30   streams 4.77   other 5.68
+
+**`other` — `DoDraw`'s own untimed work — is the second largest term in the draw path,
+and the plan files it as "the cheapest item in this document".** `record`, the plan's
+lead item, is under a third of the draw path rather than half.
+
+The reason this is worth a section rather than a line is that **nothing looked wrong**.
+The columns still summed to the total, because the error MOVES time out of the outer
+scope's residual and into an inner scope's name; it neither creates nor destroys any.
+There was no shortfall to notice, no counter that disagreed, and the `outside` column —
+which exists precisely to show what the instrument cannot account for — was unaffected.
+Gotcha 228, and its corollary: a profiler is instrumentation, so gotcha 30 applies to it
+too. Break it on purpose and check the columns move as predicted. This project had never
+done that to its own `ProfScope`, and neither had the two before it.
+
+Fixed structurally: each scope now subtracts what its children consumed, so a column
+means "time in THIS phase and no other", and the whole-draw total is a SUM of the
+columns rather than a separately measured quantity. Two statements that CAN disagree
+beat one that cannot.
+
+### Re-measured, and the PM4 walk survives untouched
+
+Part-20 binary, the headless outdoor recipe, at 6,737-6,806 draws a frame. **GPU at
+P8/210 MHz of 2100** — no passwordless sudo this session, so the fence column is
+inflated ~2.9x and nothing else is (gotcha 219):
+
+| term | % of frame | ms | note |
+|---|---|---|---|
+| `record` — the `vkCmd*` calls | 12.3% | 6.7 | was 11.07 |
+| `other` — `DoDraw`'s untimed work | 10.2% | 5.6 | was 0.91 |
+| `streams` — the dword-swap copy | 6.8% | 3.7 | |
+| `textures` — untile + upload | 4.9% | 2.7 | |
+| `constants` — the ALU block copy | 2.3% | 1.3 | |
+| **renderer draw path** | **36.5%** | **19.9** | |
+| **PM4 walk** | **21.6%** | **11.8** | unchanged by the defect |
+| GPU fence wait | 35.3% | 19.2 | at P8; ~6.6 ms at 2100 MHz |
+| pump sleep | 5.8% | 3.2 | |
+| readback | 0.6% | 0.3 | |
+
+The PM4 walk is unaffected because it was always derived by subtracting the renderer's
+INCLUSIVE total from the pump's walk time, and the inclusive total was correct. It now
+prints directly as a `pm4` column on `[vkprof]`'s pump line instead of being worked out
+by hand from two lines.
+
+### What was on the per-draw path, and what it cost
+
+Gotcha 223 was written in this project the previous day — never put a `Count()`, a
+`getenv` or a `std::string` on a path you are timing — and `DoDraw` had all three, on
+every draw:
+
+* **five `Count()` calls**, each constructing a `std::string` from a literal (a heap
+  allocation above 15 characters, and most of these names are longer) and walking a
+  red-black tree of ~90 counters. Two of them are unconditional censuses (primitive
+  type, index width); the rest fire on 20-40% of draws.
+* **four `getenv` calls** for instruments nobody had enabled.
+* **one `snprintf`** formatting the draw's pixel-shader hash for `[psbind]` — *above*
+  the gate that tests whether `CZ_VK_PSBIND` is set at all. `docs/instruments.md` opens
+  by promising every arm here is "off by default and free when off", and a gate around
+  the `fprintf` does not deliver that when the work feeding it is outside the gate.
+  That is its own rule now (gotcha 230), and the check is a grep.
+
+`COUNT(literal)` resolves the counter's ADDRESS once per call site into a function-local
+static and increments it directly — exact rather than approximate, because a `std::map`
+node is stable for the map's life and `g_stats` is never cleared. Names, order and
+`VkRenderer_DumpStats` are untouched.
+
+At ~1,100 draws, both arms on the corrected instrument, as a percentage of frame wall
+time:
+
+|  | `record` | `other` | draw path |
+|---|---|---|---|
+| before | 3.8 | 3.25 | 11.9% |
+| after | 2.0 | 1.65 | 7.9% |
+
+**−47% and −49%.** Neither term is all instrumentation, so this is not the whole of
+either — but four points of frame time were going to diagnostics that were switched off.
+
+### The frame time, and the noise floor that nearly swallowed it
+
+At 1,100 draws the frame is 32.2 ms in both arms, and that is correct rather than
+disappointing: the safehouse era sits on the title's own two-vblank cap, where a CPU
+saving has nowhere to go. The crowd bins are the only admissible place to look.
+
+Which needed a new tool and then a hard lesson. `tools/frame_perf_bins.py` compares two
+`CZ_VK_FRAME_STATS` files BINNED BY DRAW COUNT rather than averaged over the run,
+because the recipe is 57 fixed 8-second steps against a boot whose depth in wall time is
+a distribution (gotcha 75) — so two runs of one binary linger in different places and a
+whole-run mean is dominated by the capped safehouse era. Binned, the pre-part-20 binary
+shows the cap and the workload separately:
+
+    draws     0-999  1000-1999  2000-2999  4000-4999  5000-5999  6000-6999
+    ms/frame  32.22    32.67      35.51      46.03      49.70      52.84
+
+**That binning is necessary and it is not sufficient.** Two runs of the SAME binary
+disagree by 10-13% in exactly the crowd bins the claim lives in, with the tool's own
+standard-error column reading as high as 22 sigma — because consecutive frames inside a
+bin share a camera, a location and a thermal state, so they are nowhere near independent
+samples and any significance computed from the raw frame count is confidently wrong.
+Gotcha 229: **run the A/B with nothing changed before believing it, and treat what that
+prints as the floor.**
+
+So the result is three runs an arm, alternated a/b/a/b/a/b so any drift in the machine
+is shared between them. Arm A is the profiler fix alone (nothing that executes differs
+from the part-19 renderer); arm B adds the per-draw instrumentation removal. Mean frame
+time of every frame with >= 6,000 draws, per run:
+
+    A   55.30   53.00   53.17     mean 53.82
+    B   48.35   48.51   46.89     mean 47.92
+
+**−11.0%, and the two arms do not overlap** — the slowest B run is faster than the
+fastest A run. Binned:
+
+| draws | 0-999 | 1000-1999 | 2000-2999 | 3000-3999 | 4000-4999 | 5000-5999 | 6000-6999 | 7000-7999 |
+|---|---|---|---|---|---|---|---|---|
+| A ms | 32.35 | 32.32 | 33.42 | 40.82 | 43.19 | 48.99 | 53.49 | 57.75 |
+| B ms | 32.33 | 32.23 | 33.48 | 39.39 | 40.67 | 47.82 | 47.96 | 50.84 |
+| delta | −0.1% | −0.3% | +0.2% | −3.5% | −5.8% | −2.4% | **−10.3%** | **−12.0%** |
+
+**The two lowest bins being flat is the result's own admissibility check**, not a
+disappointment: they sit on the title's two-vblank cap, an arm that "improved" them
+would be measuring noise or drawing a different scene, and the draw set is identical by
+construction here. 18.7 fps to 20.9 fps in the top populated bin, at P8. The GPU fence
+is ~12.6 ms of both arms at this clock and would be ~4 ms at 2100 MHz, which would put
+the same pair at roughly 24 and 28 fps — an estimate, flagged as one, because nothing in
+part 20 was measured at a locked clock.
+
+The 5000-5999 bin moving only −2.4% against its neighbours' −5.8% and −10.3% is not
+explained. Both arms have >1,500 frames there so it is not a sample-size artifact; the
+most likely reading is that "5,000 draws" is not one scene and the two arms weighted its
+contents differently. Recorded rather than smoothed over.
+
+### §1a hypothesis A, measured and mostly refuted
+
+The plan's leading idea for `record` was that a crowd — many copies of a few zombie
+meshes — rebinds the same vertex buffer at the same offset draw after draw, and that
+extending `Renderer::BoundState` over the vertex and index binds is a dozen lines. It
+prescribes counters first, run without acting on them. Differencing the cumulative
+counters across a run's eras:
+
+| era (frames) | draws | vertex binds repeating | index binds repeating |
+|---|---|---|---|
+| 0-6000 | 6,819,987 | 23.7% of 2.97/draw | 4.8% of 0.79/draw |
+| 6000-12000 | 14,101,305 | **40.1%** of 3.05/draw | **28.3%** of 0.92/draw |
+| 12000-18000 | 9,282,473 | **32.0%** of 2.97/draw | **21.8%** of 0.88/draw |
+
+The first row is mostly safehouse; the last two are the outdoor world and the crowd. So
+a cache would skip ~1.1 of the 3.0 vertex binds and ~0.2 of the 0.9 index binds a draw —
+about 1.3 of the ~6.4 `vkCmd*` calls a draw issues, worth **~1.4 ms of a 54 ms frame at
+~155 ns a call**. Real, 2.5%, and permanently below this workload's single-run noise
+floor, so it could only ever be claimed from the counter. **The intuition is about a
+third true**, which is exactly why the plan asked for the counter before the code.
+
+---
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

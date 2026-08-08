@@ -1255,3 +1255,60 @@ remove it, and `kernel_call_diff.py` exits 1 on the run where it appears. That m
 every single-run "exact prefix" claim a coin flip (gotcha 159), which is exactly what
 gotcha 221 says about this window and what part 18's own wording softened. The
 set-based A5 gate is the one that holds, and it holds.
+
+
+**PHASE C PART 20 (2026-08-08, session 32): the profiler was counting nested phases
+twice, and the CPU plan was ranked on the result.**
+
+The session began where `d3d-phase-c19-kickoff.md` points — `docs/perf-cpu-plan.md`,
+"now fully runnable and the biggest single item" — and the kickoff's own warning is what
+it found: **re-measure before optimising.** Not because the numbers were stale, but
+because they were wrong.
+
+* **`ProfScope` accumulated INCLUSIVE time and the scopes nest.** `record` opens partway
+  down `DoDraw` and lives to the end of it, so the `UploadStream` calls below it ran
+  inside it: their cost landed in `streams` AND in `record`. The frame print then derived
+  DoDraw's residual by subtracting the named phases from the whole, removing `streams`
+  twice. `record` read 11.07 ms of a 21.40 ms draw path and the residual read 0.91 —
+  where the true split is 6.30 and 5.68. **The plan's §1 and §2 are ranked by expected
+  size, so the ranking was wrong**, and it filed its second-biggest item as "the cheapest
+  item in this document".
+  What makes this class hard is that nothing looks wrong: the error MOVES time out of the
+  outer scope's residual into an inner scope's name, so every column still sums to the
+  total and the `outside` column — which exists to show what the instrument cannot
+  account for — is unaffected. Gotcha 228, whose corollary is that a profiler is
+  instrumentation and gotcha 30 applies to it: break it on purpose and check the columns
+  move as predicted. Neither this port nor the two before it had ever done that.
+* **The corrected crowd frame, re-measured at 6,737-6,806 draws** (P8/210 MHz of 2100 —
+  no passwordless sudo this session, so the fence column is inflated ~2.9x and nothing
+  else is): `record` 6.7 ms, `other` 5.6, `streams` 3.7, `textures` 2.7, `constants` 1.3,
+  draw path **19.9 ms (36.5%)**; PM4 walk **11.8 ms (21.6%)**, unaffected by the defect
+  because it was always derived from the renderer's INCLUSIVE total. `[vkprof]` now
+  prints the walk's own cost as a `pm4` column instead of leaving it to be subtracted by
+  hand.
+* **The per-draw path was carrying its own instrumentation**, which gotcha 223 had warned
+  about in this project the day before: five `Count()` calls (each a `std::string`
+  construction and a red-black tree walk), four `getenv` calls for instruments nobody had
+  enabled, and one `snprintf` formatting the draw's shader hash for `[psbind]` — **above**
+  the gate that tests whether `CZ_VK_PSBIND` is set. That last is its own rule now
+  (gotcha 230): `docs/instruments.md` promises every arm is "free when off", and a gate
+  around the `fprintf` does not deliver that when the work feeding it sits outside the
+  gate. `COUNT(literal)` resolves each counter's ADDRESS once per call site into a
+  function-local static; names, order and the stats block are untouched. At matched draw
+  counts: **`record` −47%, `other` −49%**, four points of frame time.
+* **§1a hypothesis A measured and mostly refuted.** The plan's leading idea for `record`
+  was that a crowd rebinds the same vertex buffer over and over, and it prescribes
+  counters before code. In the crowd era **34% of vertex binds and 22% of index binds
+  repeat the previous offset** — ~1.3 of the ~6.4 `vkCmd*` calls a draw, worth ~1.4 ms of
+  a 54 ms frame. Real, about a third of what the hypothesis expected, and below the
+  noise floor, so it can only ever be claimed from the counter. Not acted on, as asked.
+* **THE NOISE FLOOR, which is the most transferable thing here.** `tools/frame_perf_bins.py`
+  compares two `CZ_VK_FRAME_STATS` files BINNED BY DRAW COUNT rather than averaged over a
+  run, because the crowd recipe is 57 fixed 8-second steps against a boot whose depth in
+  wall time is a distribution — so a whole-run mean is dominated by the capped safehouse
+  era. That binning is necessary and **it is not sufficient**: two runs of ONE binary
+  disagree by 10-13% in exactly the crowd bins, with the tool's own standard-error column
+  reading up to 22 sigma, because consecutive frames in a bin share a camera and a
+  location and are nowhere near independent samples. Gotcha 229: run the A/B with nothing
+  changed first, and treat what it prints as the floor.
+

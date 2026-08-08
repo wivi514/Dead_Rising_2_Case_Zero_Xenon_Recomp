@@ -21,6 +21,48 @@ Both big terms scale linearly with the draw count and neither has ever been opti
 because until the operator session of 2026-08-08 nothing in this port had profiled a
 scene with more than ~1,930 draws in it.
 
+### The SPLIT of the draw path in §1 was wrong, and part 20 measured it again
+
+The table above stands: the draw path is ~half a crowd frame and the PM4 walk is ~a
+quarter. **What was wrong is how the 21.40 ms divides between §1's four items**, because
+`ProfScope` accumulated INCLUSIVE time and its scopes nest — `record` opens partway down
+`DoDraw` and lives to the end of it, so `streams` ran inside it and was counted in both.
+The residual was then computed by a subtraction that removed `streams` twice. Fixed in
+part 20; the mechanism, and why a defect like it is invisible, is in the commit and in
+the `ProfScope` comment.
+
+Converted, and then re-measured on the part-20 binary at 6,737-6,806 draws a frame
+(the headless outdoor recipe, **GPU at P8/210 MHz of 2100** — which inflates the fence
+column and nothing else):
+
+| draw-path term | as §1 had it | corrected | re-measured, 6.8k draws |
+|---|---|---|---|
+| `record` — the `vkCmd*` calls | **11.07 ms** | 6.30 | **6.7 ms** (12.3%) |
+| `other` — `DoDraw`'s untimed work | **0.91 ms** | 5.68 | **5.6 ms** (10.2%) |
+| `streams` — the dword-swap copy | 4.77 | 4.77 | 3.7 ms (6.8%) |
+| `textures` — untile + upload | 3.43 | 3.43 | 2.7 ms (4.9%) |
+| `constants` — the ALU block copy | 1.22 | 1.22 | 1.3 ms (2.3%) |
+| whole draw path | 21.40 | 21.40 | 19.9 ms (36.5%) |
+
+**§1d — `other` — is therefore the SECOND biggest item in the draw path, not the
+smallest**, and this document filed it as "the cheapest item in this document" on the
+strength of the broken number. §1a's `record` is under a third of the draw path rather
+than a half. Both sections are ranked by expected size, so read the ranking below
+against this table and not against its own prose.
+
+The PM4 walk is unaffected and re-measures at **11.8 ms (21.6%)**, because it was always
+derived by subtracting the renderer's inclusive total from the pump's walk — a quantity
+the defect did not touch. `[vkprof]`'s pump line now prints it as a `pm4` column rather
+than leaving it to be worked out by hand.
+
+**The noise floor of a single crowd run is ±6%, measured rather than assumed.** Two runs
+of one binary do not visit the same places for the same durations (the recipe is 57
+fixed 8 s steps against a boot whose depth in wall time is a distribution), so
+`tools/frame_perf_bins.py` compares frames BINNED BY DRAW COUNT instead of averaging a
+run. Even then, a null arm — the part-20 instrument fix, which changes nothing that runs
+— moved individual bins by −5.9% to +5.0%. **Do not claim anything under that from one
+run a side.**
+
 ---
 
 ## 0. ~~FIRST, AND IT BLOCKS EVERYTHING ELSE~~ **DONE (part 19): the recipe is in
@@ -74,7 +116,17 @@ Ranked by (expected size) x (confidence), each with the measurement that settles
 BEFORE any code changes. The whole overnight session is the argument for that ordering:
 its prime suspect was 0.5% of the frame and the real cause was a sleep nobody had timed.
 
-### 1a. `record` is 11.07 ms — 1.68 µs for ~5 remaining vkCmd calls
+### 1a. ~~`record` is 11.07 ms~~ **`record` is 6.7 ms** — 1.0 µs for ~5 remaining vkCmd calls
+
+**Read the corrected table at the top of this file before this section.** `record` was
+never 11.07 ms; that number contained the whole of `streams`. At ~200 ns per remaining
+`vkCmd*` this is close to what a driver call should cost, which weakens the premise the
+four hypotheses below were built on — and hypotheses B and C turned out to be in `other`
+(§1d) rather than in `record` at all, because the code they name sits above the `record`
+scope. Part 20 acted on B and C for the reason B was always filed under: instrumentation
+overhead inside the thing being instrumented is worth removing whatever column it lands
+in.
+
 
 That is **~340 ns per call**, where a `vkCmd*` on this driver should be 50-150 ns. So
 either the calls are not what is costing, or something around them is. What remains per
@@ -126,11 +178,26 @@ lookup per fetch. **Measure:** uploads per frame versus fetches per frame
 still 3.4 ms, it is the lookup path and belongs with 1b; if uploads are frequent, it is
 real streaming work and the question becomes whether the untiler is efficient.
 
-### 1d. `other` is 0.91 ms and rising — 0.0% at the title screen, 2.1-4.2% in crowds
+### 1d. ~~`other` is 0.91 ms~~ **`other` is 5.6 ms and it is the second biggest item here**
 
-`DoDraw`'s untimed work: register decode, pipeline key build, hash lookup. A term that
-only appears at scale deserves its own `ProfScope` before anyone reasons about it —
-splitting it costs three lines and it is the cheapest item in this document.
+The 0.91 ms was the profiler's nested-scope defect (see the top of this file): the
+residual was computed by a subtraction that removed `streams` twice. Corrected and
+re-measured, `DoDraw`'s own untimed work is **5.6 ms of a 54.5 ms crowd frame, 10.2%**,
+second only to `record` in the draw path and larger than `streams` or `textures`.
+
+What is in it: the two shader-map lookups, the pipeline-key build and its
+`std::map` lookup, the fetch-constant walk, the register decode, and — until part 20 —
+several counters and diagnostics that ran on every draw whether or not anyone had asked
+for them. That last group is hypotheses B and C below, which were filed under §1a on the
+assumption that `record` was where the time was; they are not in `record` at all, they
+are here.
+
+A term this size still deserves splitting further before anyone optimises inside it:
+one `ProfScope` each around the shader lookups, `GetPipeline`, and the fetch-constant
+walk would say which third it is, and it costs three lines. But note the overhead
+budget honestly — a `ProfScope` is two `clock_gettime` calls at ~25 ns, so three more
+scopes on a 6,600-draw frame is ~1 ms of instrument on a 5.6 ms term (gotcha 7). Either
+accept that and state it, or sample.
 
 ---
 

@@ -1528,6 +1528,58 @@ From phase C part 18 (the frame rate — and none of it was work):
      side: this is why an unimplemented export must fail LOUDLY with its identifier
      (gotcha 5) — `ord=0x271 -> NOT_FOUND` is what turned a three-session-old mystery
      into an afternoon.
+228. **A NESTED scope in a profiler counts its time twice, and every column still adds
+     up.** `ProfScope` here accumulated inclusive time; `record` opens partway down
+     `DoDraw` and lives to the end of it, so the `UploadStream` calls below it ran
+     inside it and their cost landed in `streams` AND in `record`. The frame print then
+     derived `DoDraw`'s residual by subtracting the named phases from the whole, which
+     removed `streams` twice. Result: `record` read 11.07 ms of a 21.40 ms draw path
+     and the residual read 0.91 — where the true split is 6.30 and 5.68. **An entire
+     performance plan was written on that ranking**, filing its second-biggest item as
+     "the cheapest item in this document".
+     What makes this class hard is that nothing looks wrong. The sum of the columns
+     still equals the total, because the error MOVES time from the outer scope's
+     residual into an inner scope's name rather than creating or destroying any. There
+     is no shortfall to notice and no counter that disagrees.
+     The fix is structural, not arithmetic: every scope subtracts what its children
+     consumed, so a column means "time in THIS phase and no other". Then compute the
+     total as a SUM of the columns instead of measuring it separately — two independent
+     statements that CAN disagree are worth more than one that cannot, and the residual
+     stops being a place for errors to hide. The general rule: **a profiler is
+     instrumentation, so gotcha 30 applies to it — break it on purpose and check that
+     the columns move the way you predicted.** Neither this project nor the previous two
+     had ever done that to their own `ProfScope`.
+229. **The noise floor of a run-based A/B is measured with a NULL ARM, and binning is
+     not enough on its own.** Case Zero's headless crowd recipe is 57 fixed 8-second
+     steps against a boot whose depth in wall time is a distribution, so two runs of one
+     binary visit different places for different durations. `tools/frame_perf_bins.py`
+     handles the obvious half by comparing frames BINNED BY DRAW COUNT rather than
+     averaging a run — a 6,000-draw frame is the same workload whenever it arrived.
+     That is necessary and it is not sufficient. Run against a genuine null arm (a
+     commit that changed only the profiler's arithmetic, so nothing that executes
+     differs), individual bins still moved **−5.9% to +5.0%**, with the tool's own
+     standard-error column reading as high as 8.7 sigma. The frames inside a bin are not
+     independent samples: consecutive frames share a camera, a location and a thermal
+     state, so the effective N is a small fraction of the frame count and any
+     significance computed from the raw count is confidently wrong.
+     The practical rule: **before believing an A/B built on a long scripted run, run the
+     same comparison with nothing changed** and treat whatever it prints as the floor.
+     It costs one extra run and it is the only thing that tells you which of your
+     columns can carry a claim. This is gotcha 50's "a rate measured once is a fact
+     about that afternoon" arriving in a project that had already done the binning and
+     thought that was the answer.
+230. **An instrument that is "off" must be free in its WORK, not just in its OUTPUT.**
+     The `[psbind]` probe is gated on `CZ_VK_PSBIND`, and the gate was around the
+     `fprintf`. The `snprintf` that formatted the shader hash it compares against sat
+     ABOVE the gate and ran on every draw — ~6,600 string formats a frame for a
+     diagnostic nobody had enabled. Same shape as the four `getenv` calls per draw and
+     the `std::map<std::string>` counters beside them (gotcha 223): each is a line
+     written to make an instrument available, and each pays whether or not anyone
+     wanted it.
+     `docs/instruments.md` opens by promising every arm here is "off by default and free
+     when off". That promise is a claim about code, so it needs checking like any other:
+     `grep -n 'Env(\|getenv\|snprintf' ` over the per-draw path, and confirm each is
+     behind a function-local `static` or inside the gate rather than beside it.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

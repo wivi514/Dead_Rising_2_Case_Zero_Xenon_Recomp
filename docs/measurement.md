@@ -24,6 +24,36 @@ Baseline band is **1.36 pp** of median surface coverage over five runs of one bi
 the tool calls anything inside 1.5 pp "no detectable difference". It has been shown
 capable of failing (gotcha 30): `CZ_VK_PRIM_RESTART=1` reads 17 pp outside the band.
 
+A/B the FRAME TIME, which is a different question and needs a different tool. The
+recipe that reaches a crowd is 57 fixed 8-second steps against a boot whose depth in
+wall time is a distribution (gotcha 75), so two runs of one binary spend different
+amounts of time in each place and a whole-run mean is dominated by the ~1,900-draw
+safehouse era — where the title's own two-vblank pacing pins the frame at 31 fps and a
+CPU saving measures as exactly zero. Compare frames BINNED BY DRAW COUNT instead: a
+6,000-draw frame is the same workload whenever in the run it arrived.
+```
+python3 tools/frame_perf_bins.py /tmp/armA_stats.txt /tmp/armB_stats.txt
+python3 tools/frame_perf_bins.py /tmp/armA_stats.txt          # one arm, just the profile
+```
+**The floor is ±6% per bin at one run a side, and that is measured rather than
+assumed** (gotcha 229). Run against a genuine null arm — part 20's profiler fix, which
+changes only arithmetic inside the instrument — individual bins moved −5.9% to +5.0%,
+with the tool's own standard-error column reading up to 8.7 sigma. Frames inside a bin
+are not independent samples: consecutive frames share a camera and a location, so the
+effective N is a small fraction of the frame count. **Run the null comparison before
+believing a frame-time result**, and prefer two runs a side.
+
+The pre-part-20 binary, for reference (P8/210 MHz GPU — state the clock with any frame
+time, gotcha 219):
+
+| draws | 0-999 | 1000-1999 | 2000-2999 | 4000-4999 | 5000-5999 | 6000-6999 |
+|---|---|---|---|---|---|---|
+| ms/frame | 32.22 | 32.67 | 35.51 | 46.03 | 49.70 | 52.84 |
+
+The flat pair at the top is the title's pacing cap and the climb below it is the
+workload, which is why the high bins are the only admissible place to measure a CPU
+change.
+
 Check a frame against capture E, and NAME the transform if it is one. This is the
 instrument the phase-5 blind spot needed: the frame was rendered vertically mirrored for
 a whole phase and no aggregate could see it (gotcha 135). Exit 1 = the frame is

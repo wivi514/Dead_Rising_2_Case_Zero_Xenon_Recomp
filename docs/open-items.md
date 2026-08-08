@@ -260,6 +260,23 @@ Next, in order:
    world and 6,400-8,100 draws a frame.** It is in `CLAUDE.md`'s Commands section beside
    the safehouse one; the change is one extra `B` at the door and alternating `LSUP` with
    `RSRIGHT`/`RSLEFT`. §1 and §2 of the plan are now runnable.
+   **PART 20 RE-MEASURED THE DRAW PATH AND THE PLAN'S RANKING OF §1 WAS WRONG**, because
+   `ProfScope` counted nested phases twice (gotcha 228). `record` is 6.7 ms, not 11.07,
+   and `other` — `DoDraw`'s own untimed work, filed as "the cheapest item in this
+   document" — is 5.6 ms and second in the draw path. The PM4 walk is unaffected and
+   re-measures at 11.8 ms. Corrected table in `docs/perf-cpu-plan.md` and
+   `docs/phase5-notes.md` §6aq.
+   Two things were done on it. The per-draw path carried five `std::map<std::string>`
+   counters, four `getenv` calls and an ungated `snprintf`; removing them takes `record`
+   −47% and `other` −49% at matched draw counts. And §1a hypothesis A was measured
+   rather than assumed: in the crowd era **34% of vertex binds and 22% of index binds
+   repeat the previous offset**, worth ~1.4 ms — real, a third of what the hypothesis
+   expected, and permanently below this workload's noise floor, so it can only be
+   claimed from the counter.
+   **The noise floor is the thing to carry forward: two runs of ONE binary disagree by
+   10-13% in the crowd bins** (gotcha 229), so a frame-time claim here needs three runs
+   an arm, alternated. `tools/frame_perf_bins.py` bins frames by draw count and pools
+   runs; `docs/measurement.md` has the recipe.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
