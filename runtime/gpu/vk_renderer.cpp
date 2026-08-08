@@ -4523,6 +4523,81 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Host_PresentPixels(R->presentPixels.data(), width0, height0);
     }
 
+    // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture
+    // DIED on, triggered by the picture dying.
+    //
+    // The view-dependent whole-frame black is the port's top rendering defect and it has
+    // never been captured, because CZ_VK_SNAP_DUMP fires on a frame NUMBER and this
+    // event happens when a human turns a camera. Asking an operator to hit a frame index
+    // is not a request anyone can fulfil, so every report of this defect has been the
+    // black frame alone — which is consistent with every pass being wrong and with
+    // exactly one being wrong (the reason CZ_VK_SNAP_DUMP exists at all).
+    //
+    // The trigger is a TRANSITION, not a threshold, and that is what makes it usable:
+    // this runtime presents plenty of legitimately black frames during boot and loading,
+    // so "coverage below x%" alone would fire on the first one and dump a chain nobody
+    // wants. Requiring a LIT frame first means the dump lands on the frame where a
+    // working picture stopped working, which is the only frame that can distinguish the
+    // hypotheses.
+    //
+    // Both thresholds are settable, and that is what makes the instrument testable at
+    // all. The first version folded arming and firing into one if/else, so a frame
+    // could never do both — and its positive control (a 99% floor, which should fire on
+    // essentially any frame) sat silent through a whole boot, because reaching the fire
+    // branch still required coverage under the hard-coded 20% arming bar. An instrument
+    // whose control cannot reach its own trigger has not been shown capable of firing
+    // (gotcha 30). With `CZ_VK_SNAP_ON_BLACK=99 CZ_VK_SNAP_ON_BLACK_LIT=20` the second
+    // lit frame of any run fires it.
+    // And there is a HARD CAP on total episodes, because the arming logic re-arms on
+    // every lit frame and therefore has no natural bound. Its own positive control
+    // proved that the expensive way: a 99% floor fires on essentially every frame, which
+    // dumped **9,833 PPMs** and refilled a tmpfs whose exhaustion kills this machine's
+    // shell. The defect it exists to catch happens a handful of times in a session, so a
+    // low cap costs nothing real and turns a mis-set threshold from a filled disk into a
+    // few wasted files. CZ_VK_SNAP_ON_BLACK_MAX raises it.
+    static const char* onBlackEnv = Env("CZ_VK_SNAP_ON_BLACK");
+    static const double litPct =
+        Env("CZ_VK_SNAP_ON_BLACK_LIT") ? atof(Env("CZ_VK_SNAP_ON_BLACK_LIT")) : 20.0;
+    static int episodesLeft =
+        Env("CZ_VK_SNAP_ON_BLACK_MAX") ? atoi(Env("CZ_VK_SNAP_ON_BLACK_MAX")) : 4;
+    static bool sawLitFrame = false;
+    static int onBlackBudget = 2;   // the transition frame, and the next one
+    bool blackTransition = false;
+    if (onBlackEnv)
+    {
+        // Sampled every 16th pixel: this runs on the present path of every frame, and
+        // the quantity is a whole-frame fraction that a 1-in-16 sample estimates to far
+        // better than the 0.5 percentage points anyone cares about here.
+        uint64_t lit = 0, seen = 0;
+        for (size_t i = 0; i + 4 <= bytes; i += 64)
+        {
+            const uint8_t* p = R->presentPixels.data() + i;
+            if (p[0] || p[1] || p[2])
+                lit++;
+            seen++;
+        }
+        const double covPct = seen ? 100.0 * double(lit) / double(seen) : 0.0;
+        const double floorPct = atof(onBlackEnv) > 0.0 ? atof(onBlackEnv) : 0.5;
+        // Fire first, then arm — two independent tests rather than an if/else, so a
+        // control whose thresholds overlap can exercise the trigger.
+        if (sawLitFrame && covPct < floorPct && onBlackBudget > 0 && episodesLeft > 0)
+        {
+            blackTransition = true;
+            onBlackBudget--;
+            episodesLeft--;
+            sawLitFrame = false;
+            fprintf(stderr,
+                    "[vk] SNAP_ON_BLACK: frame %llu went black (%.3f%% lit, floor "
+                    "%.2f%%) — dumping the resolve chain (%d episode dumps left)\n",
+                    (unsigned long long)R->frame, covPct, floorPct, episodesLeft);
+        }
+        if (covPct >= litPct)
+        {
+            sawLitFrame = true;
+            onBlackBudget = 2;      // re-arm, so a second episode is caught too
+        }
+    }
+
     // CZ_VK_FRAME_DUMP=<dir> writes every 64th frame as a PPM. This is the instrument
     // that makes the renderer checkable WITHOUT a window, which matters more than it
     // sounds: every other gate this project owns is a log diff, and "the picture is
@@ -4754,7 +4829,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     static const char* snapDir = Env("CZ_VK_SNAP_DUMP");
     static const uint64_t snapFrame =
         Env("CZ_VK_SNAP_FRAME") ? strtoull(Env("CZ_VK_SNAP_FRAME"), nullptr, 10) : 600;
-    if (snapDir && R->frame == snapFrame)
+    if (snapDir && (R->frame == snapFrame || blackTransition))
     {
         for (const auto& [dest, snap] : R->snapshots)
         {
@@ -4774,10 +4849,13 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                        R->readback.buffer, 1, &c);
                 Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
             });
+            // The FRAME is in the name because CZ_VK_SNAP_ON_BLACK can fire on more
+            // than one frame, and a chain that silently overwrote the transition frame
+            // with the one after it would destroy the only frame worth having.
             char path[512];
-            snprintf(path, sizeof path, "%s/snap_%08X_%ux%u%s.ppm", snapDir,
-                     dest & 0x1FFFFFFF, snap.image.width, snap.image.height,
-                     snap.fromDepth ? "_depth" : "");
+            snprintf(path, sizeof path, "%s/f%06llu_snap_%08X_%ux%u%s.ppm", snapDir,
+                     (unsigned long long)R->frame, dest & 0x1FFFFFFF, snap.image.width,
+                     snap.image.height, snap.fromDepth ? "_depth" : "");
             if (FILE* f = fopen(path, "wb"))
             {
                 fprintf(f, "P6\n%u %u\n255\n", snap.image.width, snap.image.height);
