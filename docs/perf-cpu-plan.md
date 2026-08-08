@@ -55,13 +55,22 @@ derived by subtracting the renderer's inclusive total from the pump's walk — a
 the defect did not touch. `[vkprof]`'s pump line now prints it as a `pm4` column rather
 than leaving it to be worked out by hand.
 
-**The noise floor of a single crowd run is ±6%, measured rather than assumed.** Two runs
-of one binary do not visit the same places for the same durations (the recipe is 57
+**The noise floor of a single crowd run is 10-13%, measured rather than assumed.** Two
+runs of one binary do not visit the same places for the same durations (the recipe is 57
 fixed 8 s steps against a boot whose depth in wall time is a distribution), so
 `tools/frame_perf_bins.py` compares frames BINNED BY DRAW COUNT instead of averaging a
-run. Even then, a null arm — the part-20 instrument fix, which changes nothing that runs
-— moved individual bins by −5.9% to +5.0%. **Do not claim anything under that from one
-run a side.**
+run. That is necessary and **it is not sufficient**: a null arm — the part-20 instrument
+fix, which changes nothing that executes — moved individual crowd bins by 10-13%, with
+the tool's own standard-error column reading up to 22 sigma. Consecutive frames in a bin
+share a camera, a location and a thermal state, so they are nowhere near independent
+samples and any significance computed from the raw frame count is confidently wrong
+(gotcha 229).
+
+**Three runs an arm, alternated a/b/a/b/a/b, and read the per-run spread before the
+delta.** That is ~1 hour of wall time per A/B on this machine. Part 20's measured
+example, the mean of every frame with >= 6,000 draws: arm A 55.30 / 53.00 / 53.17
+against arm B 48.35 / 48.51 / 46.89 — **−11.0% with no overlap between the arms**,
+which is a result, where either arm alone would have been a coin flip.
 
 ---
 
@@ -127,11 +136,12 @@ scope. Part 20 acted on B and C for the reason B was always filed under: instrum
 overhead inside the thing being instrumented is worth removing whatever column it lands
 in.
 
-
-That is **~340 ns per call**, where a `vkCmd*` on this driver should be 50-150 ns. So
-either the calls are not what is costing, or something around them is. What remains per
-draw after the state cache: `vkCmdBindVertexBuffers` (once per binding),
-`vkCmdBindIndexBuffer`, `vkCmdPushConstants` (24 bytes), `vkCmdDrawIndexed`.
+~~That is ~340 ns per call, where a `vkCmd*` on this driver should be 50-150 ns.~~ At the
+corrected 6.7 ms over ~6.4 calls a draw it is **~155 ns per call**, which is inside the
+range this section expected and removes the premise that "something around them" must be
+costing. What remains per draw after the state cache: `vkCmdBindVertexBuffers` (once per
+binding, ~3.0 of them), `vkCmdBindIndexBuffer` (~0.9), `vkCmdPushConstants` (24 bytes),
+`vkCmdDrawIndexed`.
 
 * **Hypothesis A — the vertex/index binds repeat too.** A crowd is many copies of a few
   zombie meshes, and `UploadStream` already caches per frame by (address, size, endian),
@@ -140,6 +150,13 @@ draw after the state cache: `vkCmdBindVertexBuffers` (once per binding),
   a dozen lines. **Measure first:** add skip counters exactly like the existing ones and
   run WITHOUT acting on them — if the repeat rate is low this is dead, and the counters
   cost nothing to leave in.
+  **DONE (part 20), and it is about a third true.** In the crowd era **34% of vertex
+  binds and 22% of index binds** repeat the previous offset (23.7% / 4.8% in the
+  safehouse era, so quote the crowd figures). That is ~1.3 of the ~6.4 `vkCmd*` calls a
+  draw, **~1.4 ms of a 54 ms frame at ~155 ns a call — 2.5%**. Real, permanently below
+  this workload's noise floor, so it could only ever be claimed from the counter. The
+  counters are in the `CZ_VK_STATS` block as "binds NOT cached" and are reset exactly
+  where `BoundState` is. Not acted on, as this section asked.
 * **Hypothesis B — `Count()` is on the hot path.** `perf` at 1,930 draws already showed
   `std::map<std::string>::operator[]` at 0.44% and `__strncmp_avx2` at 0.75%; at 6,600
   draws that is ~3x, and `DoDraw` calls it several times per draw. Every call constructs
@@ -201,22 +218,62 @@ accept that and state it, or sample.
 
 ---
 
-## 2. The PM4 walk — 10.98 ms, 1.67 µs per draw packet
+## 2. The PM4 walk — 11.8 ms, and it is a REGISTER-WRITE LOOP
 
-Completely uninstrumented inside. `ExecutePacket` does header decode, an opcode switch,
-register writes and the draw-sink dispatch, and there is no way at present to say which.
+**Answered in part 20, at the census level.** This section used to say "completely
+uninstrumented inside", and its own advice was to split it with `ProfScope`s. Do not:
+a scope is two `clock_gettime` calls at ~25 ns against a packet that costs ~138, so the
+instrument would report mostly itself (gotcha 7). A COUNT is free, and it turned out to
+be enough.
 
-**Do exactly what `submit` got (§6al): split it before theorising.** Four `ProfScope`s
-inside the walk — packet dispatch, register writes, the draw sink, everything else —
-and one run answers it. Candidates worth having in mind, but NOT worth acting on first:
+`[vkprof]` now prints, per reporting window:
 
-* `WriteRegister` is called per dword of every `SET_CONSTANT` / `LOAD_ALU_CONSTANT`
-  packet, and a crowd frame carries a great many. It contains several env-gated side
-  paths (const watch, bin census); each is a predictable branch, but there are a lot of
-  dwords.
-* Every dword goes through `GuestLoad32` + a byte swap individually.
-* `Pm4Draw` is constructed and passed to the sink per draw — check whether that is a
-  copy of something large.
+```
+[vkprof] pump 705 ticks (3.37/frame) | sleep 7.4% walk 92.6% [pm4 26.0] ...
+[vkprof] pm4 18876153 packets (90316/frame, 138 ns each) | 170339227 register dwords
+         (815020/frame, 9.0/packet)
+```
+
+At **6,876 draws a frame, 48.0 ms** (part-20 binary, GPU at P8):
+
+| | per frame | per draw |
+|---|---|---|
+| PM4 walk's own cost | **12.5 ms** (26.0%) | 1.8 µs |
+| packets executed | **90,316** | 13.1 |
+| register-write DWORDS | **815,020** | 118.5 |
+| cost per packet | 138 ns | |
+| **cost per register dword** | **15.3 ns** | |
+
+**815,000 register writes a frame is the whole of it.** `WriteRegister` was this
+section's leading suspect on the grounds that a crowd "carries a great many"; it carries
+nine dwords for every packet in the stream, and at 15.3 ns each they account for
+essentially all 12.5 ms. Everything else in the walk — the header decode, the opcode
+switch, the draw-sink dispatch — is sharing 13 packets a draw between them.
+
+So the target is named, and the work is per-dword rather than per-packet. What is in
+`WriteRegister` per call: a bounds test, a two-sided const-watch range test on two
+globals, the store into `g_regs`, and a two-sided scratch-register range test. Plus the
+caller's own `GuestLoad32` (a `memcpy` and a `bswap`) per dword — and for
+`LOAD_ALU_CONSTANT` that read is from GUEST MEMORY, so a crowd frame streams ~3.3 MB
+through the cache to fill the register file. Candidates, in the order their size can be
+argued:
+
+* **The guest-memory stream is 3.3 MB a frame and cannot be removed**, only made
+  cheaper. `LOAD_ALU_CONSTANT` copies a contiguous run of dwords; a bulk byte-swapping
+  copy is one pass over the source instead of a call per dword.
+* **`ExecutePacket` does 2-4 `lock`ed atomic increments per packet** — `g_packets`,
+  `g_types[]`, `g_opcodes[]`, `g_draws`. `gpu/pm4.h` states in its own header that
+  "everything here runs on one thread (the vblank pump)" and that the counters are
+  atomic only so a future tracer can read them safely, which makes a relaxed
+  load-add-store equivalent and a plain `add` instead of a `lock xadd`. At ~7 ns each
+  and 90,316 packets a frame that is ~2 ms — worth having, and cheap to arm and revert.
+* **`g_regs` is larger than L1.** Whether the register file's own footprint is costing
+  anything is measurable with a hardware counter rather than argued.
+
+NOT a candidate, checked and dismissed: `Source::operator()` does a `%` per dword, but
+only at RING level — `ExecuteLinear` constructs its `Source` with `wrapDwords = 0`, and
+essentially every packet is inside an indirect buffer. The division is not on the hot
+path.
 
 ---
 

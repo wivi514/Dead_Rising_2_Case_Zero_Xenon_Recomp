@@ -204,6 +204,16 @@ void BinCensusRecord(uint64_t mask, uint64_t select, bool skipped)
 
 // --- census -----------------------------------------------------------------------
 std::atomic<uint64_t> g_packets{ 0 };
+// Register-write DWORDS, not packets. `docs/perf-cpu-plan.md` §2 names `WriteRegister`
+// as the walk's leading suspect precisely because it is called once per dword of every
+// SET_CONSTANT and LOAD_ALU_CONSTANT packet, and "a crowd frame carries a great many"
+// was as far as anyone had got. This is the number that turns 11.8 ms of walk into a
+// cost per dword, which is the only form in which the suspicion is testable.
+//
+// Bumped once per PACKET from the packet's own body count rather than once per call
+// inside `WriteRegister`, so the census cannot become the thing it is measuring
+// (gotcha 7) — one counter update per packet against up to 16,384 dwords.
+std::atomic<uint64_t> g_regWrites{ 0 };
 std::atomic<uint64_t> g_types[4];
 std::atomic<uint64_t> g_opcodes[128];
 std::atomic<uint64_t> g_draws{ 0 };
@@ -879,6 +889,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         if (avail < 3)
             return 0;
         g_constWatchSource = "TYPE1";
+        g_regWrites.fetch_add(2, std::memory_order_relaxed);
         WriteRegister(base, header & 0x7FF, fetch(pos + 1));
         WriteRegister(base, (header >> 11) & 0x7FF, fetch(pos + 2));
         return 3;
@@ -893,6 +904,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         const uint32_t reg = header & 0x7FFF;
         const bool oneReg = (header >> 15) & 1;
         g_constWatchSource = oneReg ? "TYPE0(one-reg)" : "TYPE0(run)";
+        g_regWrites.fetch_add(bodyCount, std::memory_order_relaxed);
         for (uint32_t i = 0; i < bodyCount; i++)
             WriteRegister(base, oneReg ? reg : reg + i, fetch(pos + 1 + i));
         return bodyCount + 1;
@@ -1311,6 +1323,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 default: index = kRegCount;     // unknown bank: drop
             }
             g_constWatchSource = "SET_CONSTANT";
+            g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
             for (uint32_t i = 1; i < bodyCount; i++)
                 WriteRegister(base, index + i - 1, body(i));
             break;
@@ -1319,6 +1332,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x55: // SET_CONSTANT2 / SET_SHADER_CONSTANTS: absolute index in body(0)
         case 0x56:
             g_constWatchSource = "SET_CONSTANT2";
+            g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
             for (uint32_t i = 1; i < bodyCount; i++)
                 WriteRegister(base, (body(0) & 0xFFFF) + i - 1, body(i));
             break;
@@ -1340,6 +1354,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             const uint32_t addr = PhysToVa(body(0) & 0x3FFFFFFC);
             const uint32_t size = body(2) & 0xFFF;
             g_constWatchSource = "LOAD_ALU_CONSTANT";
+            g_regWrites.fetch_add(size, std::memory_order_relaxed);
             for (uint32_t i = 0; i < size; i++)
                 WriteRegister(base, index + i, GuestLoad32(base, addr + i * 4));
             break;
@@ -1818,6 +1833,7 @@ void Pm4_SetFenceWord(uint32_t va) { g_fenceWord.store(va, std::memory_order_rel
 uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
+uint64_t Pm4_RegisterWriteCount() { return g_regWrites.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
 uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
 uint64_t Pm4_DrawCount() { return g_draws.load(); }

@@ -175,6 +175,11 @@ struct Pm4Draw
 void Pm4_SetDrawSink(void (*sink)(uint8_t* base, const Pm4Draw&));
 
 uint64_t Pm4_PacketCount();
+// Register-write DWORDS executed, cumulative. `WriteRegister` is called once per dword
+// of every SET_CONSTANT / LOAD_ALU_CONSTANT / type-0 run, and it is the leading suspect
+// for the walk's own cost (`docs/perf-cpu-plan.md` §2). Differenced per second by
+// `[vkprof]`, it turns the walk's milliseconds into a cost per dword.
+uint64_t Pm4_RegisterWriteCount();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F
 uint64_t Pm4_DrawCount();

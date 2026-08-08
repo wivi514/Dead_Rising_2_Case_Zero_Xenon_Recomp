@@ -5581,6 +5581,33 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     pct(p.isrNs - lastPump.isrNs),
                     100.0 - pct((p.sleepNs - lastPump.sleepNs) + walkNs +
                                 (p.isrNs - lastPump.isrNs)));
+
+            // ...and what the walk was WALKING. `pm4` above is a number of
+            // milliseconds; on its own it supports no hypothesis about what to change,
+            // which is the state §2 of `docs/perf-cpu-plan.md` describes as
+            // "completely uninstrumented inside". These two counts turn it into a cost
+            // per packet and a cost per register-write dword, and `WriteRegister` — the
+            // section's leading suspect, called once per dword of every SET_CONSTANT —
+            // is testable the moment the dword rate is known.
+            //
+            // Read off the same window as everything above, so the arithmetic is
+            // ns/packet = pm4Ns / dPackets with no cross-window mixing.
+            static uint64_t lastPackets = 0, lastRegWrites = 0;
+            const uint64_t packets = Pm4_PacketCount();
+            const uint64_t regWrites = Pm4_RegisterWriteCount();
+            const uint64_t dPackets = packets - lastPackets;
+            const uint64_t dRegWrites = regWrites - lastRegWrites;
+            lastPackets = packets;
+            lastRegWrites = regWrites;
+            fprintf(stderr,
+                    "[vkprof] pm4 %llu packets (%llu/frame, %.0f ns each) | %llu "
+                    "register dwords (%llu/frame, %.1f/packet)\n",
+                    (unsigned long long)dPackets,
+                    (unsigned long long)(frames ? dPackets / frames : 0),
+                    dPackets ? double(pm4Ns) / double(dPackets) : 0.0,
+                    (unsigned long long)dRegWrites,
+                    (unsigned long long)(frames ? dRegWrites / frames : 0),
+                    dPackets ? double(dRegWrites) / double(dPackets) : 0.0);
             lastPump = p;
 
             g_prof = ProfilePhases{};
