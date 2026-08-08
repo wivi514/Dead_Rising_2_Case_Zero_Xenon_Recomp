@@ -3741,12 +3741,18 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // A press of START alone lands on the logo screen and stops. The same rule as
     // before still governs it — this MANUFACTURES progress, so it is loud, off by
     // default, and never on for a gate run.
+    // NONE is a real entry, not a gap: the sequence holds its last element forever,
+    // so without it every recipe that reaches a screen KEEPS pressing at that screen
+    // for the rest of the run. That makes "the title froze here" and "the title is
+    // being poked every 8 s and cannot leave" indistinguishable — an arm that
+    // manufactures progress needs a way to stop manufacturing it, or it has no
+    // control of its own (gotcha 78).
     struct NamedButton { const char* name; uint16_t mask; };
     static constexpr NamedButton kButtons[] = {
         { "A", 0x1000 },        { "B", 0x2000 },     { "X", 0x4000 },
         { "Y", 0x8000 },        { "START", 0x0010 }, { "BACK", 0x0020 },
         { "UP", 0x0001 },       { "DOWN", 0x0002 },  { "LEFT", 0x0004 },
-        { "RIGHT", 0x0008 },
+        { "RIGHT", 0x0008 },    { "NONE", 0x0000 },
     };
     static const std::vector<uint16_t> sequence = [] {
         std::vector<uint16_t> seq;
