@@ -294,7 +294,13 @@ cache lacks is one log line and a silent counter, not a failure:
 ```
 grep -c "no translated shader" run.log         # must be 0
 ```
-**The cache is 339 and STILL CREEK needed two of them.** A1 stops at the title screen,
+**The cache is 394 and it has grown on EVERY session that reached new ground.** 335 from
+the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394 — the last 23 of
+those from two operator play sessions on 2026-08-08 alone, once the whole-frame black
+stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
+as a claim with a shelf life** (gotcha 13): every era of this game that no run has
+entered is a shader gap nobody has counted, and the counter is one log line.
+A1 stops at the title screen,
 A2 is gameplay, and the prologue and Still Creek each loaded a shader neither capture
 nor our own dump contained. Any run that reaches new ground should carry
 `CZ_SHADER_DUMP` so the blobs are captured for free — including an OPERATOR run, which
