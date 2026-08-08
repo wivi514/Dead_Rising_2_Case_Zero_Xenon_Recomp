@@ -1446,6 +1446,48 @@ From phase C part 15 (the prologue's black screen, and who was asking for it):
      computed. That check is what separates this from a hopeful memory read: a freed or
      reused buffer fails the hash instead of yielding a plausible wrong shader. Reach
      for it before asking an operator to replay half an hour of game.
+From phase C part 18 (the frame rate — and none of it was work):
+
+218. **A CPU profiler measures the CPU, and the thread that decides the frame rate was
+     ASLEEP.** `perf` over 60 s of gameplay put 38.1% of every cycle in `sub_8283C6C8`
+     and 21.3% in `sub_82845160` — 73% of the process with the save/restore ladders —
+     and that is the GUEST's own ring-progress busy-wait, on nobody's critical path. It
+     is a true and complete answer to "where does the CPU go" and says nothing at all
+     about where the FRAME goes, because a cycles profile cannot sample a thread that
+     is not on a CPU. Four counters in the pump loop said what a whole session of
+     profiling could not: **3.00 ticks per frame and 57% of the wall clock in one
+     `sleep_for`.** When a profile's top symbol is a spin, ask what the profile CANNOT
+     see before optimising what it can.
+219. **An instrument that reports the HOST's own state is part of the measurement.**
+     `submit` was 34% of the frame and every plan for it assumed a workload too big for
+     the hardware. Splitting it showed the driver call at 0.1% and the fence wait at
+     35.4%, and `nvidia-smi` showed why: **P8, 210 MHz of a 2100 MHz maximum, 15.7 W of
+     240 W, and the driver's own clocks-event reason is "Idle: Active" while the game
+     renders on it.** Five sessions of profiling this port never asked what clock the
+     GPU was at, so a 10x error sat under every "the GPU is a third of the frame"
+     statement it ever made. Two cross-checks make it a measurement rather than a
+     reading of one tool: utilisation matches the frame's duty cycle (24 ms of 69), and
+     power is 5 W over idle where real work would be 100-200 W.
+220. **A period built by counting ITERATIONS of a loop that also does work is not a
+     period.** The vblank was delivered every N iterations of a loop whose body is a
+     sleep PLUS a ring walk, so every millisecond the walk spent waiting for the GPU
+     pushed the guest's next vblank a millisecond out: **40.2 vblanks/s, never the 60
+     the console has, for the whole life of this runtime.** And the sharp edge — making
+     the ring tick 16x faster made the vblank SLOWER (31.2/s), because more iterations
+     per frame charged more of the walk against its budget. A timer must be scheduled on
+     a clock. Fixing it was 2.0x, because the CP's per-frame waits are released by the
+     swap-queue walker inside that very ISR, so the runtime was pacing the title off its
+     own slowness.
+221. **A measured win can cost a gate, and the honest move is to price both.** The two
+     changes above take A1's position-71 window from 1-in-10 to every run. It is a
+     two-thread interleave with an identified mechanism, the stronger set-based A5 gate
+     stays exit-0 with zero real windows, and `CZ_PM4_TICK_MS=16` / `CZ_VBLANK_TICKCOUNT=1`
+     reproduce the strict prefix — but `kernel_call_diff.py` refuses to relax the masked
+     gate for permutations ON PURPOSE, so this is a real loss and not a technicality.
+     What decided it is that both changes move TOWARD the hardware: a command processor
+     that runs continuously and a 60 Hz display timer are what the console has. Record
+     the unfavourable number, not just the favourable one (gotcha 160).
+
 215. **A release build can still carry its own logging, and one hook reads all of
      it.** This image's `sub_827877C8` is a vsnprintf with **640 distinct callers**
      feeding one formatted-string sink. Every hunt in this project so far
@@ -1837,6 +1879,31 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    healthy shape, `distinct=2` with `arms` frozen is a replay. It is
                    what retired the "~300x amplification" (gotchas 161-162)
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
+CZ_PM4_TICK_MS=N   how often the RING is walked, as opposed to how often the guest sees
+                   a vblank. **Default 1; `CZ_PM4_TICK_MS=16` is the control arm**, i.e.
+                   the pre-part-18 loop in which the two were the same number. They have
+                   no reason to be: the vblank cadence is the title's own frame pacing
+                   and must stay at 16 ms (parts 5-6), while the command processor is
+                   hardware that runs continuously and only looked periodic because it
+                   shared this loop. The walk stops at every unsatisfied WAIT_REG_MEM
+                   and resumes on the NEXT tick, so at a 16 ms tick each hand-off wait
+                   in a frame cost a whole sleep period: 3.00 ticks/frame and 48 ms of
+                   pure sleep, against the 2 vblank periods the title is really waiting
+                   for. Worth 84.4 -> 69.9 ms (1.21x), with `submit` identical at 24.0 ms
+                   on both arms — the entire delta is sleep and none of it is GPU
+CZ_VBLANK_TICKCOUNT=1  deliver the vblank every N loop ITERATIONS again instead of on a
+                   steady_clock deadline — the pre-part-18 accounting, and a defect that
+                   predates the whole of phase C. An iteration is a sleep PLUS a ring
+                   walk, and the walk contains the GPU fence wait, so the guest's vblank
+                   was pushed out by however long the GPU took: **40.2/s on the old
+                   loop, 31.2/s once the ring ticked at 1 ms, 62.2/s on a deadline.**
+                   (A faster ring tick making the vblank SLOWER is the tell.) The
+                   coupling that makes it worth 2.0x rather than only fidelity: the CP's
+                   per-frame WAIT_REG_MEMs are released by the swap-queue walker inside
+                   this very ISR, so a late vblank is a late release is a longer frame.
+                   NB with the default on, A1's position-71 window permutes on every
+                   run; this flag is how a session that needs the strict 84-prefix gets
+                   it back
 CZ_PM4_NO_CP_INTERRUPT=1   consume the ring but never raise source 1 (the ISR control).
                    NB it cannot be used to test "is the replay the cause": the boot
                    deadlocks at boot.bct (file #5) because the protocol needs the
@@ -2145,7 +2212,29 @@ CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not 
                    guest/PM4 code and the ENTIRE renderer is under a tenth of it; making
                    the renderer instant buys ~1.09x. Read this before planning renderer
                    optimisation — the per-draw constant upload is the obvious suspect
-                   (8 KB x 1,900 draws = ~19 MB a frame) and is 0.5%
+                   (8 KB x 1,900 draws = ~19 MB a frame) and is 0.5%.
+                   **Part 18 added the two lines that make `outside` readable**, and it
+                   was 92% a `sleep_for`. `submit` is split into `[call gpu]` — the
+                   driver translating a 1,900-draw command buffer is **0.1%** of the
+                   frame and the fence wait is all of it — and a second `[vkprof] pump`
+                   line reports the graphics pump's own ticks/frame, sleep, walk and
+                   vblank-ISR shares (gpu/pump_stats.h). The renderer runs on the pump's
+                   thread, so everything that thread does between two presents lands in
+                   `outside`, including a sleep no cycles profile can see. Gameplay on
+                   the current binary: **~34 ms/frame, ~29 fps**, pump 6-9 ticks/frame,
+                   sleep ~22%, gpu ~42%, draw ~22%
+CZ_VK_PROFILE + nvidia-smi  **read the GPU's CLOCK before believing any `submit`
+                   figure.** Every GPU number this port has ever recorded was taken with
+                   the card at **P8, 210 MHz of a 2100 MHz maximum, 15.7 W of a 240 W
+                   limit**, the driver's own clocks-event reason being "Idle: Active"
+                   while the game renders on it. Under part 18's heavier load it lifts
+                   to P5/465-480 MHz — still 23%. `nvidia-settings GPUPowerMizerMode=1`
+                   and running with a real SDL window both changed nothing; it wants
+                   `sudo nvidia-smi -pm 1` / `-lgc`, or a re-measure with the display
+                   awake. Until that is answered, `submit` is not evidence about the
+                   renderer's workload and the overnight plan's §2a (pipeline the
+                   submit) and §2c (EDRAM size / MSAA fill) are both aimed at a number
+                   that may be 8x smaller than it reads (gotcha 219)
 CZ_VK_READBACK_UNCACHED=1  allocate the readback buffer HOST_VISIBLE|HOST_COHERENT only,
                    i.e. the pre-part-17 WRITE-COMBINED buffer. FindMemoryType returns the
                    FIRST type matching its mask, and on a discrete GPU that one is
@@ -3637,6 +3726,47 @@ is PROFILED, and the renderer is not where it goes.** Hand-off in
   run, not after a mystery. Note the misdiagnosis too: this session's own ~1 GB of frame
   dumps were blamed for the whole thing, and deleting them changed the total by 4%.
 
+**PHASE C PART 18 (2026-08-08, session 30): the frame rate was 11.8 fps because the
+graphics pump was ASLEEP for 57% of every frame — it is ~29 fps now, and no work was
+deleted.** `docs/phase5-notes.md` §§6aj-6am; the plan executed is
+`docs/perf-plan-overnight.md`.
+
+Its §1 said to attribute the 58% that `CZ_VK_PROFILE` calls `outside` before optimising
+anything, on the grounds that it contains four different investigations. It contains
+one, and it is not work.
+
+* **`perf` says the CPU is a guest busy-wait, and that is a red herring.** 38.1% of all
+  cycles in `sub_8283C6C8` and 21.3% in `sub_82845160` — finding 38's ring-progress
+  spin, 73% of the process with the ladders, 77.6% in a single thread — while the thread
+  running the command processor AND the whole renderer uses 0.14 of a core. A cycles
+  profile cannot see the thread that decides when a frame ends, because it is asleep
+  (gotcha 218).
+* **`gpu/pump_stats.h` can: 3.00 pump ticks per frame, every window, and 57% of the wall
+  clock in `sleep_for(16 ms)`** — 48 ms of an 85 ms frame. The walk stops at every
+  unsatisfied WAIT_REG_MEM and resumes on the next tick, so each hand-off wait cost a
+  whole sleep period.
+* **`CZ_PM4_TICK_MS` splits the ring tick from the vblank: 84.4 -> 69.9 ms (1.21x)**,
+  with `submit` identical at 24.0 ms on both arms, i.e. the entire delta is sleep.
+* **`CZ_VBLANK_TICKCOUNT` names a defect older than phase C: the vblank has never been
+  60 Hz.** It was delivered every N loop ITERATIONS, and an iteration is a sleep plus a
+  ring walk — so the GPU's wait pushed the guest's vblank out. 40.2/s on the old loop,
+  31.2/s once the ring ticked faster, **62.2/s on a deadline**, and 2.0x, because the
+  CP's per-frame waits are released by the swap-queue walker inside that very ISR.
+* **The GPU has been at 210 MHz of 2100 for every measurement this port has ever made**
+  (gotcha 219). `submit` split into `[call 0.1% gpu 35.4%]`, so there is no host-side
+  driver cost — and `nvidia-smi` says P8, 15.7 W of 240 W, reason "Idle: Active".
+  **This retires the overnight plan's §2a and §2c until one root command answers it.**
+
+**Gates:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`; `no translated
+shader` = 0; deepest file **#83 `cinezombie.big`**; swap queue one record in flight
+(head 8547 / tail 8548), not a queue nobody drains; the picture unchanged — a dumped
+boot's `frame_003456` matches capture E2 at **+0.959, identity orientation**.
+**The cost, stated: A1's position-71 window now permutes on every run** (1 of 10 -> 5 of
+10 -> every run, over the two changes). Same six-name two-thread interleave, mechanism
+in §6ak, and `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` restores the exact 84-prefix in
+one command — but `kernel_call_diff.py` refuses to relax the masked gate for
+permutations on purpose, so it is a real loss and not a technicality (gotcha 221).
+
 Next, in order:
 
 0. ~~**GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.**~~ **DONE — the recipe is in
@@ -3823,16 +3953,22 @@ Next, in order:
    established that this title sub-allocates its whole UI out of ONE dynamic vertex
    buffer via `VGT_INDX_OFFSET`, so a busier scene sharing that buffer is the obvious
    place to look: an offset that drifts, or a buffer that wraps.
-3f. **PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.** The first operator
-   play-through ran at 8-12 fps throughout and stopped partly because of it ("won't
-   stay playing at around 10 fps for another 10,000 PP"). Until this session the frame
-   rate was a number to re-measure after the picture was right (phase 5 §8); it is now
-   the thing that limits how much of the game anyone can test, which makes it a
-   blocker on EVIDENCE rather than a polish item. Known contributors already recorded:
-   a synchronous submit and a full readback per frame, per-draw constant uploads at
-   ~900-2,500 draws a frame, and the depth-resolve cost (~6%). None has been profiled
-   against a gameplay scene — every frame-rate number in this project is from the
-   title screen.
+3f. ~~**PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.**~~ **LARGELY CLOSED BY
+   PART 18: 11.8 -> ~29 fps, and none of it was work.** The first operator play-through
+   ran at 8-12 fps and stopped partly because of it; the frame rate was a blocker on
+   EVIDENCE rather than a polish item. Two changes, neither of which deletes any work,
+   took a gameplay frame from 84.4 ms to ~34 ms — **the ring is walked promptly
+   (`CZ_PM4_TICK_MS`, 1.21x) and the vblank arrives on time (`CZ_VBLANK_TICKCOUNT`,
+   2.0x)** — both because a frame's dominant term was the graphics pump asleep in its
+   own loop, which no instrument here could see. `docs/phase5-notes.md` §§6aj-6am.
+   **Every "known contributor" listed here before was wrong or unmeasured**: the
+   synchronous submit is 0.1% on the CPU side, the per-draw constant upload is 0.5%,
+   the whole renderer is under a quarter of the frame, and the readback was fixed in
+   part 17. **What is left is one open question and it is not ours**: the GPU has been
+   running at **210 MHz of 2100** for every measurement this port has ever taken
+   (gotcha 219), so the ~14 ms `submit` may really be ~2. `sudo nvidia-smi -pm 1` and a
+   re-run of the gameplay recipe answers it; if it boosts, expect another large step
+   and the honest conclusion that the renderer's workload was never the problem.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
