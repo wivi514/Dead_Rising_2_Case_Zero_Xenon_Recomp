@@ -48,6 +48,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -3978,6 +3979,55 @@ struct GuestXgiUserContext
 };
 static_assert(sizeof(GuestXgiUserContext) == 24, "sub_825D7D20 passes length 24");
 
+// XGI 0x000B0008 — XUserWriteAchievements, AND THE REASON SAVING FAILED.
+//
+// This was the only unhandled message the title sends on a normal play session, and
+// an unhandled message returns E_FAIL. That E_FAIL travels in an overlapped, and the
+// save's own poll at 825D6094 accepts ONLY 0 and 996 and tears everything down on
+// anything else — so a save that had already created its content directory closed it
+// again and reported "Save failed. Please check your storage device." The content
+// layer was never at fault; its overlapped reads 0 throughout.
+//
+// The identification is the title's, not the SDK's. sub_825C4400 sets the call up:
+//
+//     lwz  r10,0xD0(r31)      ; cursor  — achievements already written
+//     lwz  r9,0xCC(r31)       ; total
+//     subf r3,r10,r9          ; arg1 = COUNT remaining
+//     slwi r11,r10,3          ; cursor * 8  -> entries are EIGHT BYTES
+//     add  r4,r11,r30         ; arg2 = &array[cursor]
+//     bl   sub_825D7CA8       ; posts {count, array} as an 8-byte XGI 0x000B0008
+//
+// and the same function formats one of the array's dwords into the string at
+// 0x8208CCF8, which reads `XUserWriteAchievements for user: %d` — with
+// `XUserWriteAchievements io pending` and `... succeed` sitting beside it. So the
+// payload is {count, pointer} and each entry is {user index, achievement id}, which
+// is XUSER_ACHIEVEMENT exactly.
+//
+// RETURNING 0 HERE IS IMPLEMENTING, NOT FAKING (gotchas 59 and 201). The guest does
+// not test this for an error it could route around — it tests it to decide whether
+// the save may proceed — and "the achievement was recorded" is a claim this runtime
+// can honestly make, because it does record it. What it cannot do is show a Live
+// popup or sync to a server, and neither is observable from guest code.
+struct GuestXgiWriteAchievements
+{
+    be<uint32_t> count;            // +0  how many entries
+    be<uint32_t> achievementsPtr;  // +4  guest address of the array
+};
+static_assert(sizeof(GuestXgiWriteAchievements) == 8, "the call site passes length 8");
+
+struct GuestXUserAchievement
+{
+    be<uint32_t> userIndex;      // +0
+    be<uint32_t> achievementId;  // +4
+};
+static_assert(sizeof(GuestXUserAchievement) == 8, "slwi r11,r10,3 says 8-byte entries");
+
+// Earned achievements, so "we recorded it" is true rather than a form of words. In
+// memory only: persisting them belongs with the save layer, and inventing a file
+// format for it before the title can even save would be the wrong order.
+std::mutex g_achievementMutex;
+std::set<std::pair<uint32_t, uint32_t>> g_achievements;
+
 // Presence contexts are per-user key/value bookkeeping — the system remembers what
 // the title last said it was doing. Storing them is a real implementation, not a
 // faked success: nothing here is being sent anywhere, and nothing needs to be.
@@ -4008,6 +4058,34 @@ static uint32_t DispatchAppMessage(uint32_t app, uint32_t message, void* buffer,
         const uint32_t id = msg->contextId.get();
         g_userContexts[(uint64_t(user) << 32) | id] = msg->contextValue.get();
         KLOG("XGI user %u context %04X = %u\n", user, id, msg->contextValue.get());
+        return 0;
+    }
+
+    if (app == kAppXgi && message == 0x000B0008)
+    {
+        if (!buffer || bufferLength < sizeof(GuestXgiWriteAchievements))
+            return E_FAIL;
+        const auto* msg = static_cast<const GuestXgiWriteAchievements*>(buffer);
+        const uint32_t count = msg->count.get();
+        const uint32_t arrayVa = msg->achievementsPtr.get();
+        // A guest-supplied count and pointer: bound both before walking (gotcha 73).
+        // 4096 is far above the console's per-title achievement limit, so a count past
+        // it is a corrupt message rather than a big write.
+        if (!arrayVa || count > 4096)
+        {
+            KLOG("XUserWriteAchievements: implausible request (count=%u array=%08X)\n",
+                 count, arrayVa);
+            return E_FAIL;
+        }
+        std::lock_guard lock(g_achievementMutex);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const auto* a = reinterpret_cast<const GuestXUserAchievement*>(
+                g_memory.Translate(arrayVa + i * sizeof(GuestXUserAchievement)));
+            if (g_achievements.emplace(a->userIndex.get(), a->achievementId.get()).second)
+                KLOG("achievement unlocked: user %u id %u (%zu earned)\n",
+                     a->userIndex.get(), a->achievementId.get(), g_achievements.size());
+        }
         return 0;
     }
 
