@@ -3681,18 +3681,21 @@ Next, in order:
    **The cheap confirming arm before the real fix**: raise `kMaxDescriptors`. If the
    buildings render, the whole causal chain is proven end to end; it is not the fix,
    because a cap is only ever a bigger number.
-3e. **PP / LEVELLING AND THE CASE TIMER BAR LOOK WRONG — gameplay logic, not the
-   renderer, and NOT yet separated from a HUD-drawing fault.** The operator finished
-   the Fausto/Gemini escort, saw `ESCORT BONUS! 3,000 PP`, killed 41 zombies, and
-   remained **LV. 1 with an empty PP bar**; the case timer bar does not appear to run.
-   Money DOES update ($2,000 -> $17,000), so it is not "the HUD is frozen".
-   The one piece of evidence that cuts across it: an earlier save screen read
-   **`Total PP: 400`**, so PP is being tracked somewhere. That makes three live
-   readings — tracked at 400, bar empty, level never rising — and they do not yet
-   distinguish "PP accrues but the bar and the level-up threshold do not see it" from
-   "the bar simply is not drawn and levelling is genuinely broken". Get that split
-   first; it decides whether this is a renderer question or a guest-logic one, and
-   they are different investigations.
+3e. ~~**PP / LEVELLING IS BROKEN**~~ **RETRACTED WITHIN THE HOUR — Case Zero needs
+   20,000 PP PER LEVEL, and the operator was at 9,700.** Staying at LV. 1 was CORRECT
+   and there is no levelling defect. Progression is tracked properly throughout: the
+   STATUS screen reads `OVERALL TOTAL PP 9,700`, `CURRENT GAME TOTAL PP 9,700`,
+   `ZOMBIE KILL COUNT 41`, money $2,000 -> $17,000.
+   What survives is small and cosmetic: **the HUD's PP bar looks empty at 9,700 of
+   20,000**, where it should read roughly half full. Worth one look, not an
+   investigation — and note the bar is thin and dark, so "looks empty" is an
+   impression from a screenshot rather than a measurement.
+   The case timer bar not running is UNCHANGED and still open. NB the guest clock IS
+   advancing (save screens read `Day 1 - 07:08 AM` then `07:58 AM`), so a stopped case
+   timer is not a stopped clock.
+   The lesson is the cheap one: the threshold was a NUMBER, it was knowable, and the
+   defect was written up before anyone looked it up. Check the game's own rules before
+   filing a game-logic bug.
    NB the guest clock IS advancing (save screens read `Day 1 - 07:08 AM` then
    `07:58 AM`), so a stopped case timer is not simply a stopped clock.
 3d. **NPC PART MESHES GO MISSING, DIFFERENT PARTS ON DIFFERENT CHARACTERS.** Dick
@@ -3720,6 +3723,16 @@ Next, in order:
    established that this title sub-allocates its whole UI out of ONE dynamic vertex
    buffer via `VGT_INDX_OFFSET`, so a busier scene sharing that buffer is the obvious
    place to look: an offset that drifts, or a buffer that wraps.
+3f. **PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.** The first operator
+   play-through ran at 8-12 fps throughout and stopped partly because of it ("won't
+   stay playing at around 10 fps for another 10,000 PP"). Until this session the frame
+   rate was a number to re-measure after the picture was right (phase 5 §8); it is now
+   the thing that limits how much of the game anyone can test, which makes it a
+   blocker on EVIDENCE rather than a polish item. Known contributors already recorded:
+   a synchronous submit and a full readback per frame, per-draw constant uploads at
+   ~900-2,500 draws a frame, and the depth-resolve cost (~6%). None has been profiled
+   against a gameplay scene — every frame-rate number in this project is from the
+   title screen.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
