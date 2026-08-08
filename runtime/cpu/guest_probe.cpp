@@ -54,6 +54,7 @@
 #include <mutex>
 
 #include "../gpu/d3d_draw.h"
+#include "../kernel/audio.h"
 #include "../kernel/memory.h"
 #include "chain_stats.h"
 #include "guest_thread.h"
@@ -1483,4 +1484,177 @@ PPC_FUNC(sub_82788478)
 
     __imp__sub_82788478(ctx, base);
     fprintf(stderr, "[digest] verify '%s' -> %u\n", name, ctx.r3.u32);
+}
+
+// ---------------------------------------------------------------------------------
+// CZ_XMA_PROBE=1 — the guest's own "is this voice still playing?" predicate, beside
+// the hardware bits it computes the answer from.
+//
+// WHY THIS EXISTS
+// ---------------
+// Part 15 left the prologue stuck in a faded-out state with a frozen camera while
+// the draw stream kept moving, and named audio as the leading hypothesis on the
+// strength of a peak amplitude of exactly 0.0000. That is a statement about our
+// output, not about anything the guest can observe, so it could never have been more
+// than a suspicion. The image states the mechanism outright:
+//
+//   sub_8285EFE0(pool, i)   reads the i'th XMA context's dword 0 and returns
+//                           ((d0 >> 20) & 3) == 0 — bits 20 and 21 are the two
+//                           input-buffer-VALID flags. The guest sets them when it
+//                           hands the decoder packets; the DECODER clears them as it
+//                           consumes them. So this is "has this context run dry".
+//   sub_82862A90(voice)     loops over the voice's contexts and returns 1 as soon as
+//                           one of them has NOT run dry, i.e. IsPlaying().
+//   sub_82864808(voice)     the per-update edge detector: it remembers the previous
+//                           answer at voice+0x120 and branches three ways on
+//                           (old, new) — the playing -> stopped transition is the
+//                           one that runs the voice's shutdown path at 828648A4.
+//
+// The edge is counted by reading voice+0x120 either side of the call rather than by
+// hooking the handler, because the first version of this probe hooked sub_828638D0
+// on the strength of the 82864854 call site and called it "the finished handler".
+// It has TWO call sites in that one function — the other is on the still-playing
+// path — so it is the per-update streaming refill, and the counter read 284,354
+// where the truth was 0. Attribute a count to the branch, not to the callee.
+//
+// We have no XMA decoder, so nothing on this machine ever clears an input-valid bit.
+// The prediction that follows is exact and falsifiable: IsPlaying() returns 1 for
+// every call for the life of the process, the playing -> stopped edge never fires,
+// and anything cued off a voice completing waits forever. This probe is what turns
+// that from a reading of the disassembly into a measurement — it counts both answers
+// and prints the raw context words the guest read them out of, so a run that
+// DISAGREES with the reading says so rather than being silently assumed.
+//
+// The clock is deliberate (gotcha 186): a call-count schedule on a predicate polled
+// tens of thousands of times a boot prints once and reads as "this ran once".
+extern "C" PPC_FUNC(__imp__sub_8285EFE0);
+extern "C" PPC_FUNC(__imp__sub_82862A90);
+extern "C" PPC_FUNC(__imp__sub_82864808);
+
+static bool XmaProbeEnabled()
+{
+    static const bool on = getenv("CZ_XMA_PROBE") != nullptr;
+    return on;
+}
+
+namespace
+{
+std::atomic<uint64_t> g_xmaIsPlayingCalls{ 0 };   // sub_82862A90 entries
+std::atomic<uint64_t> g_xmaIsPlayingTrue{ 0 };    //   ... that answered "still playing"
+std::atomic<uint64_t> g_xmaDryCalls{ 0 };         // sub_8285EFE0 entries
+std::atomic<uint64_t> g_xmaDryTrue{ 0 };          //   ... that answered "run dry"
+std::atomic<uint64_t> g_xmaUpdates{ 0 };          // sub_82864808 entries
+std::atomic<uint64_t> g_xmaStartEdges{ 0 };       // voice+0x120 0 -> 1 transitions
+std::atomic<uint64_t> g_xmaStopEdges{ 0 };        // voice+0x120 1 -> 0 transitions
+
+// Print on a 5 s clock. Returns true at most once per interval, from whichever
+// thread gets there first.
+bool XmaProbeTick()
+{
+    using clock = std::chrono::steady_clock;
+    static std::mutex m;
+    static clock::time_point next{};
+    std::lock_guard<std::mutex> lock(m);
+    const auto now = clock::now();
+    if (now < next)
+        return false;
+    next = now + std::chrono::seconds(5);
+    return true;
+}
+
+void XmaProbeReport()
+{
+    uint8_t* const base = g_memory.base;
+    const uint32_t arrayVa = Audio_XmaContextArray();
+    fprintf(stderr,
+            "[xma] isPlaying calls=%llu playing=%llu | dry-test calls=%llu dry=%llu | "
+            "updates=%llu startEdges=%llu stopEdges=%llu\n",
+            (unsigned long long)g_xmaIsPlayingCalls.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaIsPlayingTrue.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaDryCalls.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaDryTrue.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaUpdates.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaStartEdges.load(std::memory_order_relaxed),
+            (unsigned long long)g_xmaStopEdges.load(std::memory_order_relaxed));
+    if (!arrayVa)
+        return;
+
+    // The hardware kick bitmap, one bit per context, index >> 5 — the register the
+    // guest writes to tell the decoder a context is armed. It lands in ordinary flat
+    // memory here and nothing consumes it; printing it says whether the guest is
+    // still asking for work, which "the pump produced silence" cannot.
+    const uint32_t kickBitmap = 0x7FEA1A80;
+    fprintf(stderr, "[xma]   kick bitmap %08X: %08X %08X\n", kickBitmap,
+            *reinterpret_cast<uint32_t*>(g_memory.Translate(kickBitmap)),
+            *reinterpret_cast<uint32_t*>(g_memory.Translate(kickBitmap + 4)));
+
+    for (unsigned i = 0; i < Audio_XmaContextCount(); i++)
+    {
+        if (!Audio_XmaContextInUse(i))
+            continue;
+        const uint32_t va = arrayVa + i * Audio_XmaContextSize();
+        const uint32_t d0 = PPC_LOAD_U32(va + 0);
+        const uint32_t d1 = PPC_LOAD_U32(va + 4);
+        const uint32_t d2 = PPC_LOAD_U32(va + 8);
+        const uint32_t d3 = PPC_LOAD_U32(va + 12);
+        fprintf(stderr,
+                "[xma]   ctx%u @%08X d0=%08X d1=%08X d2=%08X d3=%08X  "
+                "inputValid=%u%u loopCount=%u pkts0=%u\n",
+                i, va, d0, d1, d2, d3, (d0 >> 20) & 1, (d0 >> 21) & 1, (d0 >> 12) & 0xFF,
+                d0 & 0xFFF);
+    }
+}
+} // namespace
+
+// sub_8285EFE0(pool, index) -> 1 when the context's two input buffers are both
+// invalid, i.e. the decoder has consumed everything it was given.
+PPC_FUNC(sub_8285EFE0)
+{
+    if (!XmaProbeEnabled())
+    {
+        __imp__sub_8285EFE0(ctx, base);
+        return;
+    }
+    __imp__sub_8285EFE0(ctx, base);
+    g_xmaDryCalls.fetch_add(1, std::memory_order_relaxed);
+    if (ctx.r3.u32)
+        g_xmaDryTrue.fetch_add(1, std::memory_order_relaxed);
+}
+
+// sub_82862A90(voice) -> IsPlaying: 1 if ANY of the voice's contexts still has input.
+PPC_FUNC(sub_82862A90)
+{
+    if (!XmaProbeEnabled())
+    {
+        __imp__sub_82862A90(ctx, base);
+        return;
+    }
+    __imp__sub_82862A90(ctx, base);
+    g_xmaIsPlayingCalls.fetch_add(1, std::memory_order_relaxed);
+    if (ctx.r3.u32)
+        g_xmaIsPlayingTrue.fetch_add(1, std::memory_order_relaxed);
+}
+
+// sub_82864808(voice) — the per-update edge detector. Counted so that "the predicate
+// is stuck" and "nothing is polling it" stay separable, which they are not from the
+// predicate's own counter alone. voice+0x120 is the cached previous answer, so
+// reading it either side of the call gives the transition the guest itself saw.
+PPC_FUNC(sub_82864808)
+{
+    if (!XmaProbeEnabled())
+    {
+        __imp__sub_82864808(ctx, base);
+        return;
+    }
+    const uint32_t voice = ctx.r3.u32;
+    const uint32_t before = PPC_LOAD_U32(voice + 0x120);
+    g_xmaUpdates.fetch_add(1, std::memory_order_relaxed);
+    __imp__sub_82864808(ctx, base);
+    const uint32_t after = PPC_LOAD_U32(voice + 0x120);
+    if (!before && after)
+        g_xmaStartEdges.fetch_add(1, std::memory_order_relaxed);
+    else if (before && !after)
+        g_xmaStopEdges.fetch_add(1, std::memory_order_relaxed);
+    if (XmaProbeTick())
+        XmaProbeReport();
 }

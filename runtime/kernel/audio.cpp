@@ -209,6 +209,102 @@ constexpr uint32_t kFrameChannels = 6;
 constexpr uint32_t kFrameBytes = kFrameSamples * kFrameChannels * 4;
 constexpr int kDefaultFrameUs = 5333;
 
+// ---------------------------------------------------------------------------
+// CZ_XMA_NULL_DECODER=1 — AN ARM, NOT A FEATURE.
+// ---------------------------------------------------------------------------
+//
+// There is no XMA decoder in this runtime, and the consequence is not only that the
+// game is silent. The decoder is also the only thing on the console that ever CLEARS
+// an XMA context's input-buffer-valid bits: the guest sets them when it hands over
+// packets, hardware clears them as it consumes them, and the title's own
+// sub_8285EFE0 reads exactly those two bits to answer "has this voice run dry".
+// With nothing clearing them, every voice this title has ever started is still
+// playing, for the life of the process.
+//
+// This arm makes the decoder consume its input and produce nothing — the minimum a
+// decoder does that is observable from guest code. It fabricates progress the real
+// hardware would only make after actually decoding the audio, so it is held to the
+// same standard as CZ_FAKE_START_MS (gotcha 78): it announces itself once, loudly,
+// and it must never be on for a gate run. Its whole purpose is to answer one
+// question — does anything downstream of "this voice finished" move? — which no
+// passive instrument can, because "waiting for a voice" and "idle" look identical
+// from outside (gotcha 77).
+//
+// CZ_XMA_NULL_DECODER_MS_PER_PKT=N sets the RATE, in milliseconds of audio per
+// 2048-byte packet (default 40). The rate is load-bearing rather than cosmetic: at
+// the instant setting (0) a voice is dry before anything can poll it, so IsPlaying
+// reads FALSE from the moment it starts and the arm tests "nothing ever plays"
+// rather than "everything plays and then finishes" — the opposite end of the same
+// axis from the stock runtime, which answers TRUE forever. Only a realistic rate
+// produces the third configuration, a voice that is observably playing and then
+// observably done, and that is the one a completion-gated cinematic needs.
+//
+// 40 ms is the natural full packet at this title's own declared format: the context
+// words say 48 kHz with `subframe_decode_count = 4`, i.e. 4 x 128 = 512 samples per
+// decode step, and a 2048-byte XMA packet carrying four 512-sample frames is
+// 2048 samples = 42.7 ms. It is an estimate and is labelled as one — the arm exists
+// to move a state machine, not to reproduce a bitrate.
+bool NullDecoderEnabled()
+{
+    static const bool on = getenv("CZ_XMA_NULL_DECODER") != nullptr;
+    return on;
+}
+
+// Called once per driver frame; `frameUs` is that frame's period, so the rate holds
+// even when CZ_AUDIO_FRAME_US changes it.
+void NullDecoderConsume(int frameUs)
+{
+    static const int msPerPacket = []
+    {
+        const char* env = getenv("CZ_XMA_NULL_DECODER_MS_PER_PKT");
+        return env ? std::max(0, atoi(env)) : 40;
+    }();
+
+    // Fractional packets per frame, accumulated so a rate slower than one packet per
+    // frame is expressible at all. At 40 ms/packet and a 5.333 ms frame this retires
+    // one packet every 7.5 frames.
+    static double credit = 0.0;
+    uint32_t retire = 0;
+    if (msPerPacket > 0)
+    {
+        credit += (frameUs / 1000.0) / msPerPacket;
+        retire = uint32_t(credit);
+        credit -= retire;
+        if (!retire)
+            return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_xmaMutex);
+    if (!g_xmaContextArray)
+        return;
+    uint8_t* base = g_memory.base;
+    for (uint32_t i = 0; i < kXmaContextCount; i++)
+    {
+        if (!g_xmaContextUsed[i])
+            continue;
+        const uint32_t va = g_xmaContextArray + i * kXmaContextSize;
+        uint32_t d0 = PPC_LOAD_U32(va);
+        if (!((d0 >> 20) & 3))
+            continue;                       // already dry — nothing to consume
+
+        const uint32_t packets = d0 & 0xFFF;   // input buffer 0's packet count
+        if (retire && packets > retire)
+        {
+            // Retire part of the buffer. The count is the field the guest wrote, so
+            // decrementing it is the same statement the hardware makes as it walks
+            // the packets, one step short of clearing the valid bit.
+            d0 = (d0 & ~0xFFFu) | (packets - retire);
+        }
+        else
+        {
+            // The buffer is spent: clear both valid bits, which is the transition
+            // sub_8285EFE0 is looking for.
+            d0 &= ~(3u << 20);
+        }
+        PPC_STORE_U32(va, d0);
+    }
+}
+
 // The client callback, on its own guest thread.
 //
 // It needs a GuestThreadContext for the same reason the graphics interrupt pump
@@ -237,6 +333,11 @@ void RenderDriverPump()
     const int frameUs = env ? std::max(100, atoi(env)) : kDefaultFrameUs;
     KLOG("render driver pump started (%d us/frame, %u samples x %u channels)\n", frameUs,
          kFrameSamples, kFrameChannels);
+    if (NullDecoderEnabled())
+        fprintf(stderr,
+                "[audio] *** CZ_XMA_NULL_DECODER IS ON: every XMA context's input is "
+                "retired without being decoded. THIS FABRICATES PLAYBACK PROGRESS — "
+                "it is a measurement arm and must not be on for a gate run. ***\n");
 
     // Sleep BEFORE the first callback, not after it. A render driver asks for a
     // frame when its frame clock ticks, never because a client just registered, and
@@ -264,6 +365,11 @@ void RenderDriverPump()
         if (deadline < now)
             deadline = now;
         std::this_thread::sleep_until(deadline);
+
+        // Before the callback, so a frame the guest is about to inspect sees the
+        // contexts in the state a decoder running concurrently would have left them.
+        if (NullDecoderEnabled())
+            NullDecoderConsume(frameUs);
 
         const uint32_t callback = g_clientCallback.load();
         if (!callback)
@@ -536,6 +642,14 @@ void Audio_Init()
             "to the decoder register at %08X\n",
             kXmaContextCount, kXmaContextSize, g_xmaContextArray, phys,
             kXmaContextArrayRegister);
+}
+
+uint32_t Audio_XmaContextArray() { return g_xmaContextArray; }
+unsigned Audio_XmaContextCount() { return kXmaContextCount; }
+unsigned Audio_XmaContextSize() { return kXmaContextSize; }
+bool Audio_XmaContextInUse(unsigned index)
+{
+    return index < kXmaContextCount && g_xmaContextUsed[index];
 }
 
 GUEST_FUNCTION_HOOK(__imp__XAudioGetSpeakerConfig, XAudioGetSpeakerConfig_x)
