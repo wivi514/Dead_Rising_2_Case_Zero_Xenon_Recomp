@@ -1401,6 +1401,44 @@ From phase C part 15 (the prologue's black screen, and who was asking for it):
      coordinate. A window coordinate belongs to the SURFACE the pass renders into; when
      that can be bigger than the screen, the two are not interchangeable even when they
      divide out.
+211. **A capped print is not a count, and a THINNED print is not a distribution.**
+     Gotcha 109's second half, and it cost two false readings in one afternoon off an
+     instrument whose own comment quoted gotcha 109. Watching a RANGE of shader
+     constants, the print budget's head was consumed by the lowest registers, so
+     `pc(111)` printed nothing and read as "the guest never writes the vignette
+     parameters in this era" — a finding, and false. Watching those four registers
+     alone, the 1-in-4096 tail sampled the `.w` lane every time and invited "every
+     write is zero" off four identical lines. When the question is "which values, how
+     often, per register", the instrument has to be a HISTOGRAM. Asked properly the
+     answer was unambiguous and confirmed the thing it was sent to doubt.
+212. **Attribute a count to the BRANCH, not to the callee.** The first XMA probe hooked
+     `sub_828638D0` on the strength of the call site at `82864854` and called it "the
+     finished handler". It has TWO call sites in that one function — the other is on
+     the still-playing path — so it is the per-update streaming refill, and the
+     counter read 284,354 where the truth was 0. Read `voice+0x120` either side of the
+     call instead: the guest's own cached answer names the transition.
+213. **An arm's POLARITY is a design decision, not a detail.** A null decoder that
+     retires a voice's input instantly makes IsPlaying read FALSE from the moment the
+     voice starts — the opposite end of the same axis from the stock runtime, which
+     answers TRUE forever. Both are extremes; a hypothesis about a *completion* needs
+     the middle configuration, a voice that is observably playing and then observably
+     done. That is why `CZ_XMA_NULL_DECODER` has a rate.
+214. **An arm that manufactures progress needs a way to STOP manufacturing it.**
+     `CZ_FAKE_PRESS_SEQ` holds its last button forever (gotcha 190), so every
+     observation this port ever made of the prologue was taken while the title was
+     being poked with A every 8 s — and "the title froze here" and "the title cannot
+     leave this screen because something keeps pressing" are the same picture. `NONE`
+     is now a real entry with mask 0. NB the naive control is not the control: with
+     only two A presses the run never leaves the TITLE screen, so several presses are
+     load-bearing and the arm has to walk the menu first and go quiet after.
+215. **A release build can still carry its own logging, and one hook reads all of
+     it.** This image's `sub_827877C8` is a vsnprintf with **640 distinct callers**
+     feeding one formatted-string sink. Every hunt in this project so far
+     instrumented the RUNTIME and inferred the title's state from outside; the title
+     was willing to say so all along. What stops it is a debug byte per category that
+     a shipped build leaves at zero — so silence from a category is evidence about
+     its FLAG, never about the category (gotcha 25 again). Look for this FIRST in any
+     port of a PC-hosted engine.
 210. **When a picture defect resists, count the boundary instead of looking at it.** The
      shadow cascade's "48.7% pure zero" had been a picture for a phase. Counting the
      populated region per row gave three exact numbers — 512, 720, and a 64-wide strip at
@@ -1545,8 +1583,8 @@ it is exactly why that rule is in the conventions.
   `d3d-phase-c12-kickoff.md` /
   `d3d-phase-c13-kickoff.md` /
   `d3d-phase-c14-kickoff.md` /
-  `d3d-phase-c15-kickoff.md` /
-  **`d3d-phase-c16-kickoff.md` (current)** the hand-offs,
+  `d3d-phase-c15-kickoff.md` / `d3d-phase-c16-kickoff.md` /
+  **`d3d-phase-c17-kickoff.md` (current)** the hand-offs,
   each superseding the last,
   `phase5-3d-plan.md` the superseded PM4-side plan for the 3D background (its Step 0
   instrument and Step 1 findings survive),
@@ -1938,7 +1976,52 @@ CZ_FAKE_PRESS_SEQ=START,A,A  which buttons that arm sends, one per interval, HOL
                    the title was unreachable headless and therefore unmeasurable
                    (gotcha 190): with START,A,A the boot walks title -> logo -> menu ->
                    loading screen with no operator. Names: A B X Y START BACK UP DOWN
-                   LEFT RIGHT
+                   LEFT RIGHT NONE. **NONE is the arm's own control** — mask 0, so a
+                   sequence can walk to a screen and then go quiet. Without it the
+                   title is being poked every 8 s for the whole run and "it froze
+                   here" cannot be told from "something keeps pressing at it"
+                   (gotcha 214). It takes about TEN A presses to reach the prologue,
+                   so `START,A,A,NONE` merely parks on the title screen
+CZ_XMA_PROBE=1     the guest's own audio state, on a 5 s clock: the IsPlaying
+                   predicate (sub_82862A90), the per-context "has it run dry" test
+                   (sub_8285EFE0, which reads the input-buffer-VALID bits at
+                   dword0 bits 20/21), the per-update edge detector (sub_82864808,
+                   counted off voice+0x120 either side of the call), and the raw XMA
+                   context words with the hardware kick bitmap beside them. The
+                   instrument that turned "there is no XMA decoder" from a statement
+                   about our silence into one about what the GUEST observes: nothing
+                   here ever clears an input-valid bit, so every voice the title has
+                   started is still playing for the life of the process
+CZ_XMA_NULL_DECODER=1  AN ARM, NOT A FEATURE: a decoder that consumes its input and
+                   produces nothing, so voices can finish. Announces itself on every
+                   run and must never be on for a gate run. It is what REFUTED the
+                   prologue's audio hypothesis — with it on, voices demonstrably
+                   start and stop (19 start / 18 stop edges) and the prologue is
+                   frame-for-frame identical
+CZ_XMA_NULL_DECODER_MS_PER_PKT=N  its rate, in ms of audio per 2048-byte packet
+                   (default 40, derived from the contexts' own declared 48 kHz and
+                   subframe_decode_count=4). 0 retires the whole buffer instantly,
+                   which is a DIFFERENT arm: a voice is then dry before anything can
+                   poll it, so IsPlaying reads FALSE always — the opposite extreme
+                   from the stock runtime rather than the middle (gotcha 213)
+CZ_GUEST_LOG=1     the ENGINE'S OWN debug printf. sub_827877C8 is a vsnprintf with
+                   **640 distinct callers** handing its result to sub_828223A0, and
+                   hooking that one function makes the title narrate itself. It
+                   prints nothing today and that is checked, not assumed — the strong
+                   PPC_FUNC is in the object file, so it is the CALL SITES that are
+                   gated, each on a debug byte a shipped build leaves at zero.
+                   Raising those flags is the open work (gotcha 215). `game:\cl.txt`
+                   is NOT the switch: sub_82482E50 reads it as a CHANGELIST NUMBER
+CZ_PM4_CONST_WATCH=<hex>[-<hex>]  a per-register value HISTOGRAM for one shader
+                   constant register or a range of them, on a 15 s clock. Not a
+                   sample: the sampling version read the same registers wrong twice in
+                   one session (gotcha 211). It answers "which values does the guest
+                   write here, how often" — and a count of ZERO over an era is the
+                   finding, which no sampling of the value can produce
+CZ_PM4_CONST_WATCH_FRAME=N  hold that report until frame N, because the era that
+                   matters is never the boot (gotcha 139)
+CZ_PM4_CONST_WATCH_ZEROS=1  restrict it to zero writes — what this instrument did
+                   when it only had one job ("who zeroes this register mid-frame")
 CZ_SAVE_DIR=path   where saves live (default: a SIBLING of the package directory,
                    assets/save/ — never inside assets/game/, which is extractor
                    output). An EMPTY save root is part of the A1 gate's configuration
@@ -3302,18 +3385,81 @@ delta, which part 14's own rule says to declare.
 2 windows, 0 real**; `truncated=0`, 0 parser stalls; deepest file on a no-input boot
 **#83 `cinezombie.big`**; presented frame 98.99% non-black at the title screen.
 
+**PHASE C PART 16 (2026-08-07, session 28): four wrong answers removed from the
+prologue, and part 15's own conclusion confirmed.** `docs/phase5-notes.md` §6ah;
+hand-off in `docs/d3d-phase-c17-kickoff.md`. This session is mostly **negative
+results** — each cost a build and a run, each has a same-binary arm behind it, and
+that is what stops the next session paying for them again.
+
+First, the timeline nobody had written down. Collapsing `CZ_VK_FRAME_STATS` on the
+camera fingerprint turns "the run freezes" into four eras: the title screen (frames
+1..591, 2,514 draws, a new camera every frame), the **loading screen** (596..962, ~150
+draws, ~36% coverage, 4-5 cameras cycling), the world's first frame (974), and then
+frozen from 1002 (1,225-1,247 draws, ~849,000 vertices, presented frame 0.00%). The
+loading COMPLETED; the scene surface's mean luminance is pinned at **104.484 to three
+decimals**, so the world is not merely hidden, it is not being simulated. The last
+files opened name what the title was about to do: `#146 cinematics\cinematics.big`,
+`#147 anim\cinematic\701_chuck_arrives_in_town.big`, `#148 skeleton\cineplayer.big`.
+**It is sitting at the start of the first cinematic.**
+
+- **NOT AUDIO — refuted, not merely unconfirmed.** Part 15's evidence was a peak
+  amplitude of 0.0000, which is a fact about our OUTPUT that no guest code can see.
+  The image states the real mechanism: `sub_8285EFE0` reads the XMA context's two
+  input-buffer-VALID bits, `sub_82862A90` ORs them into IsPlaying, `sub_82864808`
+  caches the answer at `voice+0x120` and branches on the transition. The guest sets
+  those bits; the DECODER clears them — so with no decoder every voice ever started is
+  still playing (measured: 284,373 polls, 284,354 "playing", **0 stop edges**).
+  `CZ_XMA_NULL_DECODER` supplies the missing half, and **all three configurations of
+  one binary give the identical frozen frame**: always-playing (stock), never-playing
+  (instant consume, `playing=0/318,631`), and plays-then-ends (40 ms/packet, 19 start
+  / 18 stop edges). Both polarities and the transition between them.
+- **NOT A DEADLOCK.** `gdb -p` over all 31 threads, joined to guest tids by the
+  always-on thread trace: exactly ONE thread is in guest code and it is the Draw Thread
+  doing its ordinary per-frame GPU sync. The MAIN guest thread is in an infinite
+  `NtWaitForSingleObjectEx` that `CZ_WAIT_TRACE` never reports — i.e. it is being
+  signalled and re-entered, so the main loop is turning. `[kcall]`'s first-occurrence
+  list ends at `XeCryptShaFinal`: **the prologue era reaches no new kernel import**, so
+  the blocker is not a stub we have yet to write.
+- **NOT OUR SYNTHETIC INPUT.** `CZ_FAKE_PRESS_SEQ` holds its last button forever, so
+  every prologue observation this port ever made was taken while the title was being
+  poked with A every 8 s. `NONE` now exists. Ten A presses then NONE — no input for the
+  last ~170 s — reaches `#154` and the identical state.
+- **PART 15 WAS RIGHT, and it was worth re-asking** (gotcha 172): a constant that is
+  WRONG and one the guest never wrote look identical from inside a shader. Over the
+  black era the guest writes `pc(110) = (0,0,0,1.0)` and `pc(111) = (0,0,0,0)`, **5,662
+  times each with exactly one distinct value per register**. The full-black fade is the
+  guest's and the renderer draws it faithfully.
+- **The engine has its OWN log, and it is switched off.** `sub_827877C8` is a vsnprintf
+  with **640 distinct callers** feeding one sink; `CZ_GUEST_LOG=1` hooks it. It prints
+  nothing today and the zero is checked rather than believed — the call sites are each
+  gated on a debug byte a shipped build leaves at zero. Raising them is the highest
+  leverage item on the board (gotcha 215). `game:\cl.txt` is **not** the switch: it is
+  read as a CHANGELIST NUMBER.
+- **One real defect, recorded rather than fixed.** `VfsTranslate` returns empty for any
+  path with no `:`, so a guest path with no device prefix can never resolve. A boot
+  makes 29 such opens (`data\anim\weapon\<Weapon>.big`); none of those files exist under
+  any prefix, so nothing is currently lost.
+
+**Gates, PM4 arm, renderer on:** `--smoke` OK; A1 **exact 84-prefix**; A5 **exit 0, 2
+windows, 0 real**; both capture oracles clean; `truncated=0`, 0 parser stalls,
+`max=2`; `no translated shader` = 0; deepest file on a no-input boot **#83**.
+
 Next, in order:
 
-1. **THE PROLOGUE IS STUCK, AND IT IS NOT THE RENDERER** (see part 15 above). The
-   camera fingerprint is one constant for 1,700+ frames while the draw stream still
-   moves, so the title is alive and its scene state is frozen. The leading hypothesis
-   is audio: no XMA decoder, 55,808 driver frames of peak 0.0000, and an in-engine
-   cinematic cued off a voice or music stream would look exactly like this. **The
-   cheap discriminator is a probe on what the cinematic polls**, not more renderer
-   work — and note the operator DOES get past this with a real controller, so a
-   comparison of the two input paths is also free evidence. The no-fade shader arm
-   (`CZ_SHADER_SPV` + one line in `ps_114c4965eaabd54c`, §6af) is how you watch the
-   scene while it is faded out.
+1. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
+   not audio, not a deadlock, not our synthetic input, not a missing import and not the
+   renderer, all with arms to show for it. Three lines, cheapest first: **raise the
+   engine's debug-log gates** so the title says what state it is in (`CZ_GUEST_LOG` is
+   already wired; the tutorial gate is the global at `0x829EC974`, the cinematic ones
+   are object-relative); **instrument the cinematic system directly** (`cCinematic`,
+   `cCineMovieEvent`, `cMissionCinematic` are all named in the image, with their source
+   paths); or **diff what the guest does per frame either side of frame ~974**, since
+   the loading screen and title screen both animate and only the world does not. The
+   no-fade shader arm (`CZ_SHADER_SPV` + one line in `ps_114c4965eaabd54c`, §6af) is how
+   you watch the scene while it is faded out. **Operator intel: after a new game the
+   real game plays two cinematics with loadings between them and then PAUSES to show a
+   tutorial** — so a frozen world is a state the game legitimately enters later, and
+   there is a known-good sequence to compare against.
 2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
    (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
    enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
@@ -3367,9 +3513,18 @@ Next, in order:
    paths (`XAudioUnregisterRenderDriverClient`, `XMAReleaseContext` — the boot never
    shuts audio down), the save layer's own `XamContentCreateEx`/`XamContentClose`, and
    part 13's `XeCryptSha` one-shot.
-10. Audio output and XMA decoding (phase 6). The kick bitmap at `0x7FEA1A80` currently
-   lands in ordinary flat memory and is inert; a real decoder needs that aperture
-   trapped as MMIO or the kick is written and never noticed.
+10. Audio output and XMA decoding (phase 6). **DEMOTED by part 16** — it is no longer
+   a candidate for the prologue blocker, so it is back to being "the game is silent".
+   The kick bitmap at `0x7FEA1A80` lands in ordinary flat memory and is inert; a real
+   decoder needs that aperture trapped as MMIO or the kick is written and never
+   noticed. `CZ_XMA_NULL_DECODER` is the half-implementation to build on: it already
+   models input consumption at a rate.
+11. **A VFS gap, recorded rather than fixed** (§6ah(vi)). `VfsTranslate` returns empty
+   for any guest path with no `:`, so a path with no device prefix can never resolve.
+   A boot makes 29 such opens; none of those files exist under any prefix either, so
+   nothing is currently lost. On console a relative path resolves against the title's
+   own directory, and CLAUDE.md already warns that at least one path here is built at
+   runtime (`anm_%s.big`).
 
 ## Reusability: what gets extracted, and when
 

@@ -1962,6 +1962,151 @@ is now a question with all four numbers on the table instead of a suspicion.
 mechanism plus a matching structural delta, which is the half-answer part 14's own rule
 says to declare (gotcha: "a picture fix is not a picture fix until it is measured").
 
+## 6ah. The prologue freeze: three readings retired, and part 15's confirmed
+
+Phase C part 16. Part 15 handed this over as "the prologue is stuck in a faded-out
+state with a frozen camera; the leading hypothesis is AUDIO". This section is mostly
+**negative results**, which is what it is for: each one cost a build and a run, each
+one had a mechanism behind it, and each one is now off the list with a same-binary arm
+to show for it. The blocker is still open and is now much better bounded.
+
+### The timeline, which nobody had written down
+
+`CZ_VK_FRAME_STATS` over one 300 s
+`CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A` run, collapsed on the camera
+fingerprint. Reading it as *eras* rather than as "the run freezes" is what made the
+rest of the session possible:
+
+| frames | draws | presented coverage | camera | what it is |
+|---|---|---|---|---|
+| 1..591 | 2,514 | ~96% | a new value every frame | the title screen, animating |
+| 596..962 | ~150 | ~36% | 4–5 values cycling | the **loading screen** |
+| 974 | 948 | 0.00% | changes once | the world's first frame |
+| 1002..end | 1,225–1,247 | **0.00%** | **`00d7a3a4aaed62c6`, constant** | frozen |
+
+So the loading COMPLETED, the world is being submitted at ~1,230 draws and ~849,000
+vertices a frame, and the scene surface's own mean luminance is pinned at **104.484 to
+three decimals** — the world is not merely hidden, it is not being simulated. And the
+last assets the boot opens name what the title was about to do: `#146
+cinematics\cinematics.big`, `#147 anim\cinematic\701_chuck_arrives_in_town.big`, `#148
+skeleton\cineplayer.big`, `#149 skeleton\cinechild.big`. **It is sitting at the start
+of the first cinematic.**
+
+### (i) It is not audio — refuted across all three configurations
+
+Part 15's evidence was 55,808 driver frames of peak amplitude exactly 0.0000. That is
+a fact about our OUTPUT, which no guest code can observe, so it could not have been
+more than a suspicion. The image states the real mechanism, and it is a good one:
+
+```
+sub_8285EFE0(pool, i)  -> ((ctx[i].dword0 >> 20) & 3) == 0
+                          bits 20/21 are the two input-buffer-VALID flags
+sub_82862A90(voice)    -> OR over the voice's contexts = IsPlaying()
+sub_82864808(voice)    -> caches it at voice+0x120, branches on the transition
+```
+
+The guest SETS those bits when it hands the decoder packets; the DECODER clears them
+as it consumes them. We have no decoder, so nothing on this machine ever clears one
+and **every voice the title has ever started is still playing, for the life of the
+process** — measured, not argued: 284,373 polls, 284,354 "playing", **0 stop edges**.
+
+`CZ_XMA_NULL_DECODER=1` is the arm: a decoder that consumes its input and produces
+nothing. Three configurations of one binary, all reaching `#154`:
+
+| arm | what the guest sees | camera | presented frame |
+|---|---|---|---|
+| stock | always playing | `00d7a3a4aaed62c6` | 0.00% |
+| `MS_PER_PKT=0` (instant) | **never** playing, `playing=0/318,631` | `00d7a3a4aaed62c6` | 0.00% |
+| `MS_PER_PKT=40` (real rate) | plays then ends: 19 start / 18 **stop** edges | `00d7a3a4aaed62c6` | 0.00% |
+
+Both polarities of the predicate AND the transition between them. The prologue does
+not move. **Refuted, not merely unconfirmed** — and the rate is why the third row
+exists at all: at instant consumption a voice is dry before anything can poll it, so
+that arm tests "nothing ever plays", which is the opposite end of the same axis rather
+than the middle of it.
+
+### (ii) Nothing is deadlocked — it is a logic state
+
+`gdb -p` over all 31 host threads, joined to guest thread ids by the always-on
+`guest thread tid=... host tid=...` line (gotcha 82). **Exactly one thread is in guest
+code**, and it is the Draw Thread doing its ordinary per-frame GPU sync
+(`sub_827D2FC0 -> sub_82845230 -> sub_82845160 -> sub_8283C6C8`). The MAIN guest
+thread (`tid=00000F00`) is in `NtWaitForSingleObjectEx` on an event with an infinite
+timeout — and `CZ_WAIT_TRACE` never reports it, which means that wait is being
+SIGNALLED and re-entered, i.e. the main loop is turning. Every other thread is an idle
+worker or one of the two the title blocks by design (finding 41).
+
+Corroborating from the other side: `[kcall]`'s first-occurrence list ends at
+`XeCryptShaFinal`. **The prologue era reaches no new kernel import at all**, so the
+blocker is not a stub we have yet to write.
+
+### (iii) It is not our synthetic input either
+
+`CZ_FAKE_PRESS_SEQ` holds its last entry forever, so every run that reached the
+prologue had been pressing A every 8 s at it for minutes. `NONE` now exists so the arm
+can stop. `START,A,A,NONE` stops at the TITLE screen — several A presses are
+load-bearing, so NONE alone proves nothing — but ten A presses then NONE, i.e. no
+input for the last ~170 s, reaches `#154` and **the identical frozen state**.
+
+### (iv) Part 15's "the guest is asking for black" is CONFIRMED
+
+This one was worth re-asking (gotcha 172), because a shader constant that is WRONG and
+one the guest never wrote in this era look identical from inside the shader. The
+answer is a clean confirmation. Over the black era the guest writes, **5,662 times
+each and with exactly one distinct value per register**:
+
+```
+pc(110) = (0, 0, 0, 1.0)      the vignette colour and its strength
+pc(111) = (0, 0, 0, 0)        the power and its normaliser
+```
+
+Not stale, not ours, not a missed packet form. The tone map's `pow(x, 0) == 1`
+therefore lerps every pixel to black exactly as part 15 said, and the renderer is
+drawing it faithfully.
+
+Getting there cost two wrong readings off my own instrument in one afternoon, both
+worth recording because they are the same mistake wearing different hats.
+`CZ_PM4_CONST_WATCH` printed the first 32 writes and then every 4096th. Watching a
+RANGE, the 32-line head was eaten by the lowest registers, so `pc(111)` printed nothing
+and read as *"the guest never writes the vignette parameters in this era"* — a
+finding, and false. Watching `45BC-45BF` alone, the thinned tail sampled the `.w` lane
+every time, which invited *"every write is zero"* off four identical lines. It is a
+per-register value **histogram** now. A capped print is not a count, and a thinned
+print is not a distribution.
+
+### (v) The engine has its own log, and it is switched off
+
+The most reusable thing this session found. `sub_827877C8` is the engine's global
+debug printf — a vsnprintf into an 0x800 stack buffer with **640 distinct callers** —
+handing the formatted string to `sub_828223A0`, which twelve sites share. `CZ_GUEST_LOG=1`
+hooks that one function and the title narrates itself.
+
+It currently prints nothing, and the zero is checked rather than believed: the strong
+`PPC_FUNC(sub_828223A0)` is present in the object file, so the seam is wired and it is
+the CALL SITES that are silent — each gated on a debug byte
+(`lbz rX,<flag>; cmplwi rX,0; bne <skip>`) that a shipped build leaves at zero.
+Raising those flags is the follow-up and it is worth real effort, because the strings
+say exactly what a stuck state machine would want to tell us: `[FE] Showing tutorial
+%d`, `[FE] NOT showing tutorial %d because we're not in the HUD`, `cinematics are
+playing`, `For cinematic props... check to make sure the prop names match up in the
+data files`.
+
+`game:\cl.txt` — which the boot probes and does not find — is **not** the switch, and
+that is worth writing down so nobody else spends an hour on it: `sub_82482E50` reads it
+as a CHANGELIST NUMBER, `atoi`s it into `0x82A5742C`, and if it lands between 10,000
+and 305,000 spins forever printing `your CL is bad, error code: 0xID 10T`.
+
+### (vi) One real defect found on the way, not yet shown to matter
+
+`VfsTranslate` returns empty for any path with no `:` in it, so **a guest path with no
+device prefix can never resolve**. A boot makes 29 such opens, all
+`data\anim\weapon\<Weapon>.big`, and every one fails. It is not currently costing
+anything — the package ships `allweapons.big` and none of the 29 names exist under any
+prefix — so this is recorded rather than fixed, with the note that on console a
+relative path resolves against the title's own directory. CLAUDE.md already warns that
+at least one path here is built at runtime (`anm_%s.big`), so the gap will bite
+eventually.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
