@@ -1735,6 +1735,22 @@ cmake --build runtime/build -j$(nproc)
 ./runtime/build/cz_runtime --smoke                # the phase 0.2 link gate, still live
 ```
 
+Reach live GAMEPLAY headlessly. Until part 16 this needed an operator, so every
+gameplay claim was a report with no reproduction (gotcha 190). **START skips a
+cinematic**, and the Zombrex tutorial's second page needs D-pad LEFT to open the watch
+and B to leave it — without those two the run parks on the card forever:
+```
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_FAKE_START_MS=8000 \
+  CZ_FAKE_PRESS_SEQ=START,A,A,A,A,A,A,A,A,A,A,START,START,START,START,START,START,START,START,A,A,LEFT,B,NONE \
+  CZ_VK_FRAME_STATS=/tmp/gp.txt timeout 330 ./cz_runtime > /tmp/gp.log 2>&1)
+tail -200 /tmp/gp.txt | awk '{print $5}' | sort -u | wc -l     # 200 = the camera moves
+```
+Arrives at ~185 s and reaches file **#184**, ~1,860 draws a frame. **Check the
+camera-distinctness number before trusting anything measured off it**: every step is a
+fixed 8 s interval against a boot whose depth in fixed wall time has always been a
+distribution (gotcha 75), so the press counts will drift with load or frame rate. It
+MANUFACTURES progress, so it is never a gate configuration (gotcha 78).
+
 Run the guest and gate it against hardware. **Both captures, always** — A1 is the
 authority for the boot sequence, A5 for the synchronisation surface, and A5 is *not* a
 superset of A1 (gotcha 45):
@@ -3484,12 +3500,10 @@ item 6 below, at last visible somewhere it cannot hide.
 
 Next, in order:
 
-0. **GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.** Not a probe — a button sequence.
-   Every item below about gameplay is currently an operator report with no headless
-   reproduction, which is exactly the state gotcha 190 says to fix by extending the arm.
-   `CZ_FAKE_PRESS_SEQ` reaches the menus and stops, because until now nothing had shown
-   a cinematic COULD be skipped. Once it can, the colour and HUD questions become
-   self-servable in the session that asks them.
+0. ~~**GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.**~~ **DONE — the recipe is in
+   the Commands section above and it reaches live gameplay with no operator.** START
+   skips a cinematic; the Zombrex tutorial's second page needs D-pad LEFT then B. Every
+   gameplay item below is now self-servable.
 
 1. **CINEMATICS NEVER END** (see above; supersedes part 16's framing of "the prologue is
    stuck"). Retired with arms and not to be re-bought: not audio, not a deadlock, not
@@ -3498,6 +3512,10 @@ Next, in order:
    what condition they are waiting on. `cCinematic`, `cCinematicsItem`, `cCineMovieEvent`,
    `cCineBackendMovieEvent`, `cMissionCinematic` are all named in the image with their
    source paths, and `CZ_GUEST_LOG` is already wired for the day the debug gates go up.
+   **And skipping is not a workaround for PLAYING**: the operator reports that skipping
+   the combo-weapon cutscene does not award the combo weapon, which is the same defect
+   from the other end — the completion is what grants the reward. That puts a floor
+   under how much of the game is reachable until this is fixed.
 
 2. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
    not audio, not a deadlock, not our synthetic input, not a missing import and not the

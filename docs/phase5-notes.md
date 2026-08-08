@@ -2179,6 +2179,46 @@ The exterior is also much brighter and closer to right overall, which is itself
 evidence: whatever is wrong is *graded* rather than *lit*, and it varies with the
 grade the title selects per area.
 
+### THE HEADLESS GAMEPLAY RECIPE — the thing that unblocks everything else
+
+**START skips a cinematic** (operator). That one fact, plus two more from the operator
+about the Zombrex tutorial, turns gameplay from an operator task into a headless run:
+
+```
+CZ_FAKE_START_MS=8000 \
+CZ_FAKE_PRESS_SEQ=START,A,A,A,A,A,A,A,A,A,A,START,START,START,START,START,START,START,START,A,A,LEFT,B,NONE
+```
+
+* `START` then ten `A` — title, logo, menu, new game, confirmations (ten is empirical:
+  with fewer, the run parks on the title screen);
+* eight `START` — the two prologue cinematics, with a loading screen between them;
+* `A`, `A` — the two pages of the Zombrex tutorial card;
+* **`LEFT`, `B`** — page two of that card requires opening the watch with D-pad LEFT and
+  backing out of it with B. Without those two the run sits on the card forever, which
+  is exactly what the first two attempts did (`#177` and `#178`, a frame frozen at
+  55.0% and 56.1% coverage);
+* `NONE` — go quiet, so the run is not being poked while it is measured.
+
+Measured: **`#184`, ~1,860 draws a frame, and 200 DISTINCT CAMERAS over the last 200
+frames.** The frame is Chuck in the safehouse with the bat and pipe pickups, the guide
+arrow, `Find Katey Zombrex` and `0 KILLED` — the same screen the operator reached with
+a controller. Roughly 185 s to arrive, so give it a 300 s+ timeout.
+
+Read it as a distribution, not a fact: every step is a fixed 8 s interval against a
+boot whose depth in fixed wall time has always varied (gotcha 75), so the number of
+`A`s and `START`s that lands correctly will drift with load and with any change to
+frame rate. Run it serially (gotcha 183) and check the camera-distinctness number
+before trusting a gameplay measurement taken from it.
+
+### A consequence of skipping, from the operator
+
+**Skipping the combo-weapon cutscene does not award the combo weapon.** That is not a
+second bug — it is the same one, seen from the other end: the cinematic's completion is
+what grants the reward, so a skip that bypasses the completion bypasses the grant too.
+It also means the skip is a workaround for *observing* the game and not for *playing*
+it, and it puts a floor under how much of the game is reachable until cinematics end
+properly.
+
 ### What this changes about method
 
 Everything above was unreachable headless, and part 16 spent a session measuring the
