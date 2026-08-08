@@ -29,11 +29,15 @@ Three things part 20 established that will otherwise cost a session each.
    **Three runs an arm, alternated a/b/a/b/a/b, and read the per-run spread the tool
    prints before reading the delta.** One 620 s run is ~10 minutes, so a real A/B here
    is an hour; budget for it or do not make the claim.
-2. **The GPU was at P8/210 MHz of 2100 for the whole of part 20** — this machine has no
-   passwordless sudo, and `sudo nvidia-smi -pm 1 && sudo nvidia-smi -lgc 2100,2100` needs
-   the operator (suggest they type `! sudo nvidia-smi ...`). It inflates the `gpu` column
-   ~2.9x and nothing else, so every CPU number in part 20 stands; every FRAME TIME in it
-   is a P8 frame time. Say which you are quoting (gotcha 219).
+2. **DO NOT PIN THE GPU CLOCK, and gotcha 219 is retracted in part.** The P8/210 MHz
+   this project quoted for five sessions came from an overnight run with the MONITOR
+   ASLEEP. Measured with the display awake over a full 620 s crowd run: **P5 in 182 of
+   200 samples, mean 524 MHz, 32% utilisation, 28.6 W** — the same place `vkcube`
+   settles on this machine, which is the control nobody had run. Sample and quote with
+   `tools/gpu_clock_sample.py`; every part-20 number was taken at that governed clock.
+   **A low clock at LOW utilisation is the governor being correct** (gotcha 231) — the
+   GPU is idle 68% of every frame because `SubmitAndWait` blocks immediately after
+   submitting, so our CPU and GPU never overlap. That is the defect, not the clock.
 3. **A profiler is instrumentation, so break it on purpose before trusting it**
    (gotcha 228). `ProfScope` counted nested phases twice for the whole of this project's
    life, and every column still summed to the total. That is the class: an error that

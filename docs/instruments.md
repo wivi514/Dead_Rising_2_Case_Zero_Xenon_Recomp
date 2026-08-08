@@ -478,18 +478,27 @@ CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not 
                    suspicion into a target. Counted once per PACKET from its body count,
                    never per `WriteRegister` call, so the census cannot become the thing
                    it measures (gotcha 7)
-CZ_VK_PROFILE + nvidia-smi  **read the GPU's CLOCK before believing any `submit`
-                   figure.** Every GPU number this port has ever recorded was taken with
-                   the card at **P8, 210 MHz of a 2100 MHz maximum, 15.7 W of a 240 W
-                   limit**, the driver's own clocks-event reason being "Idle: Active"
-                   while the game renders on it. Under part 18's heavier load it lifts
-                   to P5/465-480 MHz — still 23%. `nvidia-settings GPUPowerMizerMode=1`
-                   and running with a real SDL window both changed nothing; it wants
-                   `sudo nvidia-smi -pm 1` / `-lgc`, or a re-measure with the display
-                   awake. Until that is answered, `submit` is not evidence about the
-                   renderer's workload and the overnight plan's §2a (pipeline the
-                   submit) and §2c (EDRAM size / MSAA fill) are both aimed at a number
-                   that may be 8x smaller than it reads (gotcha 219)
+CZ_VK_PROFILE + tools/gpu_clock_sample.py  **sample the GPU's CLOCK and QUOTE it
+                   before believing any `submit` figure — and do NOT pin it.** The
+                   P8/210 MHz reading this entry used to carry, and the
+                   `sudo nvidia-smi -lgc 2100,2100` it recommended, came from an
+                   overnight session with the MONITOR ASLEEP; §6al recorded
+                   `display_active: Disabled` beside its own result and guessed as much
+                   without being able to test it. Re-measured in part 20 with the
+                   display awake, over a full 620 s crowd run: **P5 in 182 of 200
+                   samples, clock mean 524 MHz (min 210, max 630), utilisation mean 32%
+                   (max 62%), 28.6 W**. `vkcube` — an ordinary presenting Vulkan
+                   application — settles in the same place on the same machine (P5,
+                   510-600 MHz, 33-39%, 29.5 W), which is the control that was never
+                   run. **The governor was never mistreating us.**
+                   Read clock and utilisation TOGETHER (gotcha 231). A low clock at LOW
+                   utilisation is the governor being right — the GPU is idle 68% of
+                   every frame because the renderer submits and then blocks on the
+                   fence, so our CPU and our GPU never run at the same time. Pinning to
+                   2100 MHz costs 52.8 W against 28.6 to finish work the frame is not
+                   waiting on. The fix is to stop being idle, not to raise the clock,
+                   and that revives the overnight plan's §2a (overlap the GPU with the
+                   CPU) which §6al dismissed on the strength of the artifact
 CZ_VK_READBACK_UNCACHED=1  allocate the readback buffer HOST_VISIBLE|HOST_COHERENT only,
                    i.e. the pre-part-17 WRITE-COMBINED buffer. FindMemoryType returns the
                    FIRST type matching its mask, and on a discrete GPU that one is

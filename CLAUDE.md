@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 230 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 231 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -143,7 +143,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 230-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 231-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -542,6 +542,14 @@ Where the port is, as of 2026-08-08 (phase C part 19):
   **The noise floor here is 10-13% at one run a side** (gotcha 229): use
   `tools/frame_perf_bins.py`, three runs an arm, alternated, and run the null comparison
   first. A real A/B on this workload is an hour of wall time.
+  **DO NOT PIN THE GPU CLOCK — gotcha 219 is retracted in part.** The P8/210 MHz this
+  project quoted for five sessions was an overnight session with the MONITOR ASLEEP.
+  Awake, this workload governs itself to **P5, mean 524 MHz, 32% utilisation, 28.6 W**,
+  which is where `vkcube` sits on the same machine. Sample and quote with
+  `tools/gpu_clock_sample.py`. **The 32% is the real finding**: the GPU is idle 68% of
+  every frame because `SubmitAndWait` blocks straight after submitting, so our CPU and
+  GPU never overlap. Overlapping them is ~22 -> 36 fps at the SAME power and is now the
+  largest item in the plan (gotcha 231, `docs/phase5-notes.md` §6ar).
 * **The view-dependent whole-frame black is SOLVED** and was the renderer's per-frame
   bump arena overflowing at a fixed 128 MB against a 161 MB peak, which lost the whole
   post chain and presented black over a correctly rendered scene. 160 black frames of

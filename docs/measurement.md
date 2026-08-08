@@ -35,16 +35,21 @@ CPU saving measures as exactly zero. Compare frames BINNED BY DRAW COUNT instead
 python3 tools/frame_perf_bins.py /tmp/armA_stats.txt /tmp/armB_stats.txt
 python3 tools/frame_perf_bins.py /tmp/armA_stats.txt          # one arm, just the profile
 ```
-**The floor is ±6% per bin at one run a side, and that is measured rather than
+**The floor is 10-13% per crowd bin at one run a side, and that is measured rather than
 assumed** (gotcha 229). Run against a genuine null arm — part 20's profiler fix, which
-changes only arithmetic inside the instrument — individual bins moved −5.9% to +5.0%,
-with the tool's own standard-error column reading up to 8.7 sigma. Frames inside a bin
-are not independent samples: consecutive frames share a camera and a location, so the
-effective N is a small fraction of the frame count. **Run the null comparison before
-believing a frame-time result**, and prefer two runs a side.
+changes only arithmetic inside the instrument — individual crowd bins moved 10-13%, with
+the tool's own standard-error column reading up to 22 sigma. Frames inside a bin are not
+independent samples: consecutive frames share a camera, a location and a thermal state,
+so the effective N is a small fraction of the frame count. **Run the null comparison
+before believing a frame-time result**, and use three runs an arm, alternated
+a/b/a/b/a/b, pooled with `--a`/`--b`. Part 20's worked example: arm A 55.30/53.00/53.17
+against arm B 48.35/48.51/46.89, −11.0% with no overlap between the arms.
 
-The pre-part-20 binary, for reference (P8/210 MHz GPU — state the clock with any frame
-time, gotcha 219):
+The pre-part-20 binary, for reference. **Sample the GPU clock rather than pinning it**
+— `tools/gpu_clock_sample.py --csv /tmp/clk.csv -- ./cz_runtime ...` — and quote what it
+was; this workload governs itself to P5/~524 MHz at 32% utilisation, and the P8/210 MHz
+this project used to quote was a blanked monitor, not a defect (gotcha 219's retraction,
+gotcha 231):
 
 | draws | 0-999 | 1000-1999 | 2000-2999 | 4000-4999 | 5000-5999 | 6000-6999 |
 |---|---|---|---|---|---|---|

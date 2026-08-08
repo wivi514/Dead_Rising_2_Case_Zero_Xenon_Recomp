@@ -2434,6 +2434,17 @@ ring is now serviced promptly rather than up to 16 ms late.
 ## 6al. THE GPU HAS BEEN RUNNING AT 10% OF ITS CLOCK, AND EVERY GPU NUMBER THIS PORT
 ## OWNS WAS MEASURED THERE
 
+> **RETRACTED IN PART BY §6ar (part 20). The 210 MHz was real; the explanation was
+> not.** This session ran overnight with the monitor asleep, and the section's own last
+> bullet records `display_active: Disabled` and guesses that is the cause. It is. With
+> the display awake this runtime sits at **P5, mean 521 MHz, 32% utilisation, 28.6 W**
+> through gameplay and crowds — the same place `vkcube` settles on this machine. The
+> governor was never mistreating us, `sudo nvidia-smi -lgc 2100,2100` should NOT be a
+> standing measurement configuration, and this section's dismissal of the overnight
+> plan's §2a (overlap the GPU with the CPU) was built on the artifact and is withdrawn
+> with it. Everything below is kept because every measurement in it is sound and only
+> the conclusion drawn from them was wrong — which is the more instructive failure.
+
 After §6ak the frame is 69.9 ms and its largest term is `submit` at 34% — 24 ms of GPU.
 The overnight plan's §2a is built on that number (overlap the GPU with the CPU, ceiling
 ~1.5x) and §2c on the theory behind it (the 1280x1024 EDRAM and 4x-MSAA window scaling
@@ -3062,6 +3073,86 @@ about 1.3 of the ~6.4 `vkCmd*` calls a draw issues, worth **~1.4 ms of a 54 ms f
 ~155 ns a call**. Real, 2.5%, and permanently below this workload's single-run noise
 floor, so it could only ever be claimed from the counter. **The intuition is about a
 third true**, which is exactly why the plan asked for the counter before the code.
+
+---
+
+## 6ar. THE GPU WAS NEVER BEING THROTTLED — IT WAS A BLANKED MONITOR, and the clock
+## lock should never have become standing practice
+
+§6al found the GPU at **P8 / 210 MHz of 2100, 15.7 W, "Idle: Active" while the game
+renders**, and it was right about all of that. The project then adopted
+`sudo nvidia-smi -pm 1 && -lgc 2100,2100` as the standing measurement configuration,
+and every GPU number since has been quoted against it.
+
+**The 210 MHz was the monitor being asleep.** §6al ran overnight; its own last bullet
+records `nvidia-smi` reporting `display_active: Disabled` and names it "the most likely
+reason the governor holds P8" — but it could not test that, because the test needs
+someone awake at the machine.
+
+### Measured with the display awake
+
+A full 620 s crowd run of the part-20 binary, `nvidia-smi` sampled every 3 s
+(`tools/gpu_clock_sample.py`), reaching 7,580 draws a frame:
+
+| | pstate | clock | utilisation | power |
+|---|---|---|---|---|
+| desktop idle | P8 | 210 MHz | 1% | 25.0 W |
+| **Case Zero, whole run** | **P5 (182/200 samples)** | **mean 524 MHz** (210-630) | **mean 32%** (max 62%) | **28.6 W** |
+| `vkcube`, steady state | P5 | 510-600 MHz | 33-39% | 29.5 W |
+
+**`vkcube` is the control this question needed for five sessions and it takes twenty
+seconds.** It is an ordinary Vulkan application with a swapchain, presenting under
+vsync, and on this machine the governor puts it in exactly the same place it puts us.
+There is no "the driver thinks we are idle" defect: the driver treats us like any other
+graphics application, and 210 MHz is simply where this card sits when nothing is asking
+it for anything.
+
+Note also what `vkcube` does in its first second — **P0, 1830 MHz, 55 W** — and then
+falls back to P5 as the governor learns the workload is small. That transient is the
+answer to "does this machine boost at all", and it is why a single early sample is not a
+reading of a run's clock (the sampler excludes the first 15 s for exactly this reason).
+
+### The correction that matters is not the clock, it is the 32%
+
+Clock and utilisation are only meaningful together, and this is gotcha 231:
+
+* a low clock at **low** utilisation is the governor being **correct** — the GPU has
+  little to do and finishing sooner changes nothing;
+* a low clock at **high** utilisation would be the governor being wrong, and is the only
+  case where pinning is a measurement rather than a thumb on the scale.
+
+Ours is the first. **32% utilisation means the GPU is idle 68% of every frame**, and the
+reason is structural: `SubmitAndWait` submits the command buffer and immediately blocks
+on the fence, so the CPU and the GPU never run at the same moment. A 44.6 ms crowd frame
+is ~27.7 ms of CPU (the PM4 walk, the draw recording) followed by ~16.5 ms of GPU,
+strictly in series.
+
+Pinning to 2100 MHz shrinks the GPU's 16.5 ms to ~4 and costs **52.8 W against 28.6** —
+buying back frame time at nearly double the power, for a card that then idles at maximum
+clock for 90% of every frame. Overlapping the two instead gives max(27.7, 16.5) ≈ 28 ms,
+**22 -> 36 fps at the same 28.6 W**. That is a bigger win than everything part 20
+delivered, and it is free in power rather than costly.
+
+### What this retires, and what it revives
+
+§6al used its own finding to dismiss the overnight plan's §2a — "overlap the GPU with
+the CPU, ceiling ~1.5x" — on the grounds that it was "aimed at a number that is mostly
+an artifact of the machine's power state". **The artifact was the measurement's, not the
+frame's.** The GPU term is real, it is 37% of a crowd frame at the clock a player's
+machine will actually use, and overlapping it is now the single largest item in
+`docs/perf-cpu-plan.md`.
+
+Gotcha 172 in its exact form: *a retirement is only as good as the ORACLE it was
+measured on.* This one was measured on a sleeping monitor.
+
+What it needs, and why it is not a small change: the per-frame **readback** is what
+forces the wait — we copy the rendered image into a host buffer and `memcpy` it on the
+CPU every frame, so the CPU cannot proceed until the GPU is done. Taking it off the
+critical path means presenting through a real `VkSwapchainKHR` instead of SDL's
+CPU blit, and a second frame-in-flight needs a second per-frame arena (139 MB
+high-water in a crowd, so this is a real memory decision, not a bookkeeping one). The
+headless arms and every frame-stats / frame-dump instrument read that buffer, so the
+readback has to become conditional rather than deleted.
 
 ---
 

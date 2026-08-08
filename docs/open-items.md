@@ -251,11 +251,24 @@ Next, in order:
    the whole renderer is under a quarter of the frame, and the readback was fixed in
    part 17. **What is left is one open question and it is not ours**: the GPU has been
    running at **210 MHz of 2100** for every measurement this port has ever taken
-   (gotcha 219). **ANSWERED by the operator session: `sudo nvidia-smi -pm 1` then
-   `-lgc 2100,2100` takes it to 1950 MHz and the GPU term from 18.8 ms to 6.64 ms —
-   2.9x, and it is now the SMALLEST term in a crowd frame.** Crowd fps 15-25 -> 22-25.
-   That configuration must be stated with any GPU number from this machine, and it is
-   invisible outside crowds because everything else is on the title's own cap.
+   (gotcha 219). ~~**ANSWERED by the operator session: `sudo nvidia-smi -pm 1` then
+   `-lgc 2100,2100` takes it to 1950 MHz...**~~ **RE-ANSWERED IN PART 20, AND THE
+   PREMISE WAS AN ARTIFACT.** The 210 MHz came from an overnight session with the
+   MONITOR ASLEEP. Measured with the display awake over a full crowd run: **P5 in 182 of
+   200 samples, mean 524 MHz, 32% utilisation, 28.6 W**, and `vkcube` settles in the
+   same place on the same machine — the control that was never run. The governor was
+   never mistreating us; **do not pin the clock**, sample it with
+   `tools/gpu_clock_sample.py` and quote it.
+   What the pair of numbers actually says (gotcha 231): a low clock at LOW utilisation is
+   correct power management, and our 32% means the GPU is idle 68% of every frame because
+   `SubmitAndWait` blocks immediately after submitting. **The defect is the idleness.**
+   Overlapping the CPU and the GPU would take a 44.6 ms crowd frame to about
+   max(27.7, 16.5) = ~28 ms — **22 -> 36 fps at the SAME 28.6 W**, which is more than
+   everything part 20 did and costs no power. It needs the per-frame READBACK off the
+   critical path (a real swapchain present) and a second frame-in-flight arena. This
+   revives the overnight plan's §2a, which `docs/phase5-notes.md` §6al dismissed as
+   "aimed at a number that is mostly an artifact of the machine's power state" — the
+   artifact was the MEASUREMENT's, not the frame's (gotcha 172).
    **ITEM 0 OF THAT PLAN IS CLOSED (part 19): the headless recipe reaches the outdoor
    world and 6,400-8,100 draws a frame.** It is in `CLAUDE.md`'s Commands section beside
    the safehouse one; the change is one extra `B` at the door and alternating `LSUP` with

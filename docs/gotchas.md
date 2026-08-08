@@ -1432,13 +1432,30 @@ From phase C part 18 (the frame rate — and none of it was work):
 219. **An instrument that reports the HOST's own state is part of the measurement.**
      `submit` was 34% of the frame and every plan for it assumed a workload too big for
      the hardware. Splitting it showed the driver call at 0.1% and the fence wait at
-     35.4%, and `nvidia-smi` showed why: **P8, 210 MHz of a 2100 MHz maximum, 15.7 W of
-     240 W, and the driver's own clocks-event reason is "Idle: Active" while the game
-     renders on it.** Five sessions of profiling this port never asked what clock the
-     GPU was at, so a 10x error sat under every "the GPU is a third of the frame"
-     statement it ever made. Two cross-checks make it a measurement rather than a
-     reading of one tool: utilisation matches the frame's duty cycle (24 ms of 69), and
-     power is 5 W over idle where real work would be 100-200 W.
+     35.4%, and `nvidia-smi` showed the GPU at **P8, 210 MHz of a 2100 MHz maximum,
+     15.7 W of 240 W**, its own clocks-event reason reading "Idle: Active" while the
+     game rendered on it. Five sessions of profiling never asked what clock the GPU was
+     at. **That part stands and is the rule.**
+     **THE DIAGNOSIS DID NOT, and the correction is the more useful half.** That session
+     ran overnight with the MONITOR ASLEEP; it recorded `display_active: Disabled`
+     beside its own result and guessed that was the cause, but could not test it, and
+     the project then adopted `sudo nvidia-smi -lgc 2100,2100` as a standing measurement
+     configuration on the strength of it. Re-measured in part 20 with the display awake,
+     this runtime runs at **P5, a mean of 521 MHz, 32% utilisation, 28.6 W** through
+     gameplay and crowds — and `vkcube`, an ordinary presenting Vulkan application,
+     settles in the same place on the same machine (P5, 510-600 MHz, 33-39%, 29.5 W).
+     **The governor was never mistreating us; a blanked monitor was.**
+     So the two cross-checks quoted above were both real and both consistent with the
+     WRONG conclusion: utilisation matched the duty cycle and power matched the clock,
+     because the clock genuinely was 210 MHz — for a reason outside the program. A
+     cross-check confirms a reading, not an explanation of it, and this one needed a
+     CONTROL: another application on the same machine at the same moment. That control
+     costs 20 seconds (`vkcube`) and was never run.
+     What survives as a rule: sample the clock and QUOTE it (`tools/gpu_clock_sample.py`)
+     rather than pinning it. Pinning trades representativeness for comparability, and it
+     is only legitimate when the governor is demonstrably wrong — a low clock at HIGH
+     utilisation. A low clock at LOW utilisation is the governor being right, and the
+     thing to fix is then the idleness, not the clock. See gotcha 231.
 220. **A period built by counting ITERATIONS of a loop that also does work is not a
      period.** The vblank was delivered every N iterations of a loop whose body is a
      sleep PLUS a ring walk, so every millisecond the walk spent waiting for the GPU
@@ -1580,6 +1597,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      when off". That promise is a claim about code, so it needs checking like any other:
      `grep -n 'Env(\|getenv\|snprintf' ` over the per-draw path, and confirm each is
      behind a function-local `static` or inside the gate rather than beside it.
+231. **A low clock at LOW utilisation is the power governor being CORRECT — the defect
+     is the idleness.** Case Zero's crowd frame leaves the GPU idle 68% of the time
+     (32% utilisation), because the renderer submits its command buffer and immediately
+     blocks on the fence, so our CPU and our GPU never run at the same moment. The
+     driver responds by picking a mid clock, which is exactly what it should do: there
+     is no deadline the GPU is missing. Forcing 2100 MHz makes that work finish in 5 ms
+     instead of 18 and costs 52.8 W against 28.6 — buying back frame time that a
+     PIPELINED renderer would have got for nothing, at nearly double the power.
+     The diagnostic pair is the point. Clock alone says nothing; utilisation alone says
+     nothing; together they separate "the hardware is being held back" from "we are not
+     asking the hardware for anything". Only the first justifies touching the governor.
+     Corollary, and it is how this was found: **a retirement is only as good as the
+     oracle it was measured on** (gotcha 172). The overnight plan's §2a — overlap the
+     GPU with the CPU, ceiling ~1.5x — was dismissed on the grounds that the GPU term
+     was "mostly an artifact of the machine's power state". The artifact was the
+     MEASUREMENT's, not the frame's, and retiring it revives the item at its full size:
+     27.7 ms of CPU and 16.5 ms of GPU that currently run one after the other.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

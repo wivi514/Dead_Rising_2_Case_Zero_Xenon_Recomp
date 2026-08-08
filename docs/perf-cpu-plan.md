@@ -32,8 +32,9 @@ part 20; the mechanism, and why a defect like it is invisible, is in the commit 
 the `ProfScope` comment.
 
 Converted, and then re-measured on the part-20 binary at 6,737-6,806 draws a frame
-(the headless outdoor recipe, **GPU at P8/210 MHz of 2100** — which inflates the fence
-column and nothing else):
+(the headless outdoor recipe, GPU at its own governed clock — **P5, mean 524 MHz, 32%
+utilisation**, which is where this workload leaves it and is NOT the 210 MHz this
+project had been quoting; see §3 and gotcha 219's retraction):
 
 | draw-path term | as §1 had it | corrected | re-measured, 6.8k draws |
 |---|---|---|---|
@@ -234,7 +235,7 @@ be enough.
          (815020/frame, 9.0/packet)
 ```
 
-At **6,876 draws a frame, 48.0 ms** (part-20 binary, GPU at P8):
+At **6,876 draws a frame, 48.0 ms** (part-20 binary, GPU at its governed P5/~524 MHz):
 
 | | per frame | per draw |
 |---|---|---|
@@ -287,10 +288,16 @@ path.
   to establish (parts 5-6, 18).
 * **Do not put a `Count()`, an `Env()` or a `std::string` on a path you are timing.** It
   has now caused two false results in this project in one day.
-* **Do not quote a frame rate measured with the GPU at stock clocks.** Every GPU number
-  before 2026-08-08 was taken at P8/210 MHz of a 2100 MHz maximum (gotcha 219). The
-  measurement configuration is `sudo nvidia-smi -pm 1` and `-lgc 2100,2100`, and it must
-  be stated with any number, because it is worth 2.9x on the GPU term by itself.
+* ~~**Do not quote a frame rate measured with the GPU at stock clocks.**~~ **DO NOT PIN
+  THE CLOCK. Sample it and quote it** (`tools/gpu_clock_sample.py`). The P8/210 MHz
+  reading gotcha 219 was built on came from an overnight session with the MONITOR
+  ASLEEP. With the display awake this runtime runs at **P5, mean 524 MHz, 32%
+  utilisation, 28.6 W** across a full crowd run — statistically where `vkcube` settles on
+  the same machine. Pinning to 2100 MHz costs 52.8 W against 28.6 to finish work the
+  frame is not waiting on, and it makes every number describe a machine no player runs.
+  It is only legitimate when the governor is demonstrably wrong, which means a low clock
+  at HIGH utilisation; ours is a low clock at LOW utilisation, and that is the governor
+  being right (gotcha 231).
 * **Do not expect ordinary gameplay to move.** 31.2 fps is the title pacing itself at its
   console target. Only crowds can improve, and only the two CPU halves above.
 
