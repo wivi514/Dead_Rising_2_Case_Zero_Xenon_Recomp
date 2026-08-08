@@ -3444,9 +3444,62 @@ files opened name what the title was about to do: `#146 cinematics\cinematics.bi
 windows, 0 real**; both capture oracles clean; `truncated=0`, 0 parser stalls,
 `max=2`; `no translated shader` = 0; deepest file on a no-input boot **#83**.
 
+**OPERATOR SESSION ON THE PART-16 BINARY: GAMEPLAY IS REACHABLE, AND THE PROLOGUE
+FREEZE IS "CINEMATICS NEVER END".** `docs/phase5-notes.md` §6ai. The most informative
+hour this port has had, and no instrument produced it. The operator **skipped both
+prologue cinematics and played** — Zombrex tutorial card, watch/MESSAGES screen, Still
+Creek, combo weapons. A combo-weapon cutscene then parked the camera on the workbench
+with no HUD while Chuck still took input, and **skipping that cutscene restored the
+camera**. So:
+
+> **Every cinematic in this title starts and never ends. Skipping is the only exit,
+> and the skip path works perfectly.**
+
+The prologue's black screen is that defect wearing §6af's fade. Part 16's four negative
+results all stand and are now EXPLAINED rather than merely true — a cinematic that never
+advances asks nothing of the kernel, blocks no thread, and does not care whether audio
+finishes. **The skip path being clean is the strongest clue on the board**: it runs the
+same teardown a natural end would run and it demonstrably restores camera, HUD and
+control, so the teardown is fine and only the TRIGGER is missing. A alone does not skip.
+
+And the first like-for-like GAMEPLAY comparison this port has been able to make. **The
+HUD is NOT a defect** — an indoor frame missing most of it was written up as one and
+retracted within the hour when it appeared in full outside; the safehouse just has not
+raised it yet, and capture E4 is a LATER first-gameplay frame than the one it was being
+compared against (gotcha 127, applied to a whole screen rather than a metric).
+
+**The colour is**, and the exterior names it far better than the interior:
+
+| | hardware | ours |
+|---|---|---|
+| safehouse interior (vs E4) | warm red/brown wood, bright orange shirt | green-shifted, blacks crushed |
+| Still Creek exterior, daylight | pale hazy blue sky | **the sky is PINK/MAGENTA** |
+
+Chuck's orange shirt, the red car and the yellow LIFE pips are all CORRECT in that same
+frame, so this is not a tint or an exposure error — those would move the shirt too. A hue
+error that spares saturated reds and yellows while turning a pale blue sky magenta and
+the mid greys green is the signature of a **wrong colour-grading LUT**, which is exactly
+what §6s proved this frame depends on completely and §6af caught silently expiring. It is
+item 6 below, at last visible somewhere it cannot hide.
+
 Next, in order:
 
-1. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
+0. **GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.** Not a probe — a button sequence.
+   Every item below about gameplay is currently an operator report with no headless
+   reproduction, which is exactly the state gotcha 190 says to fix by extending the arm.
+   `CZ_FAKE_PRESS_SEQ` reaches the menus and stops, because until now nothing had shown
+   a cinematic COULD be skipped. Once it can, the colour and HUD questions become
+   self-servable in the session that asks them.
+
+1. **CINEMATICS NEVER END** (see above; supersedes part 16's framing of "the prologue is
+   stuck"). Retired with arms and not to be re-bought: not audio, not a deadlock, not
+   our synthetic input, not a missing import, not the renderer. Start from the SKIP
+   path — find what it calls to end a cinematic, then ask who else should call it and
+   what condition they are waiting on. `cCinematic`, `cCinematicsItem`, `cCineMovieEvent`,
+   `cCineBackendMovieEvent`, `cMissionCinematic` are all named in the image with their
+   source paths, and `CZ_GUEST_LOG` is already wired for the day the debug gates go up.
+
+2. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
    not audio, not a deadlock, not our synthetic input, not a missing import and not the
    renderer, all with arms to show for it. Three lines, cheapest first: **raise the
    engine's debug-log gates** so the title says what state it is in (`CZ_GUEST_LOG` is

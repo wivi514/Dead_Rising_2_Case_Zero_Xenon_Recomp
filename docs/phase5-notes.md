@@ -2107,6 +2107,88 @@ relative path resolves against the title's own directory. CLAUDE.md already warn
 at least one path here is built at runtime (`anm_%s.big`), so the gap will bite
 eventually.
 
+## 6ai. GAMEPLAY IS REACHABLE — and the prologue freeze is "cinematics never end"
+
+Phase C part 16, operator session on the part-16 binary (real controller, windowed,
+`CZ_VKDRAW=1`, no arms). This is the single most informative hour this port has had,
+and it did not come from an instrument.
+
+### The finding that unifies §6ah
+
+The operator **skipped both prologue cinematics and reached live gameplay** — the
+Zombrex tutorial card, the watch/MESSAGES screen, Still Creek, combo weapons. Then a
+combo-weapon cutscene left the camera parked on the workbench looking at Chuck with no
+HUD, while Chuck still responded to input. **Skipping that cutscene restored the
+camera.**
+
+So this is not "the prologue is stuck". It is:
+
+> **Every cinematic in this title starts and never ends. Skipping is the only exit,
+> and the skip path works perfectly.**
+
+The prologue's black screen is the same defect wearing §6af's fade: the title fades
+out for a cinematic that never completes, so the fade never comes back. §6ah's four
+negative results all stand and are now *explained* rather than merely true — a
+cinematic that never advances asks nothing of the kernel, blocks no thread, and is
+indifferent to whether audio finishes.
+
+**The skip path being clean is the strongest clue available.** Skipping runs the same
+"end this cinematic and give control back" code that a natural end would run, and it
+demonstrably restores the camera, the HUD and control. So the teardown is fine. What
+is missing is whatever *triggers* it — the cinematic's own notion of "I have reached
+my end". That is a much smaller target than "the prologue is stuck", and it is where
+part 17 should start.
+
+Two supporting details worth keeping: A alone does not skip (every part-16 headless
+run pressed A every 8 s at the prologue and stayed black), and the combo cutscene's
+camera is frozen at the cutscene's OPENING framing, not somewhere in the middle.
+
+### The picture in gameplay, with a hardware reference for the first time
+
+Capture **E4 is the first gameplay frame** and the operator's indoor screenshot is very
+nearly the same scene, which makes this the first like-for-like gameplay comparison
+this port has been able to make.
+
+**The HUD is NOT a defect — recorded because it was written up as one an hour before
+it was retracted.** The indoor frame showed only `Find Katey Zombrex` and `0 KILLED`
+against E4's full HUD, which read as "one class of HUD widget does not render". It
+appears in full the moment Chuck steps outside: LV/PP bar, LIFE pips, `$2,000`,
+`ZOMBREX 0`, the item wheel, the watch dial. The safehouse simply has not raised the
+HUD yet. E4 is a *later* first-gameplay frame than the one it was being compared to —
+gotcha 127's rule about single samples of a moving thing, applied to a whole SCREEN
+rather than to a metric.
+
+**The colour is a real defect and now has its sharpest symptom.** Two eras, and the
+outdoor one is far more diagnostic than the interior:
+
+| | hardware | ours |
+|---|---|---|
+| safehouse interior (vs E4) | warm red/brown wood, bright orange shirt | green-shifted, blacks crushed |
+| Still Creek exterior, daylight | pale hazy blue sky | **the sky is PINK/MAGENTA** |
+
+In the exterior frame Chuck's orange shirt, the red car body and the yellow LIFE pips
+are all correct, and the ground and fence are green-tinted, and the sky is magenta.
+That is not a global tint or an exposure error — those would move the shirt too. A hue
+error that spares saturated reds and yellows while turning a pale blue sky magenta and
+the mid greys green is the signature of a **wrong colour-grading LUT**, which is
+exactly the mechanism §6s proved this frame depends on completely and §6af caught
+silently expiring. It is the same "flat and green-shifted" as §6ad item 2, finally
+visible somewhere a hue error cannot hide.
+
+The exterior is also much brighter and closer to right overall, which is itself
+evidence: whatever is wrong is *graded* rather than *lit*, and it varies with the
+grade the title selects per area.
+
+### What this changes about method
+
+Everything above was unreachable headless, and part 16 spent a session measuring the
+one screen `CZ_FAKE_PRESS_SEQ` could get to. Gotcha 190 said to extend the arm until a
+gate no longer needs a human; the arm was extended to the menus and stopped there,
+because nothing had established that a cinematic could be skipped at all. **The
+cheapest next instrument is not a probe — it is the button sequence that skips a
+cinematic**, because it turns gameplay into something a headless run can reach, and
+every renderer question above then becomes self-servable in the session that asks it.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
