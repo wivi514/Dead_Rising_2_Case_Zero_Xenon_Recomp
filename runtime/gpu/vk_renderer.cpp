@@ -666,6 +666,9 @@ struct Renderer
     uint32_t lastTexW = 0;
     uint32_t lastTexH = 0;
     uint32_t targetWidth = 1280, targetHeight = 720;
+    // The EDRAM stand-in's extent, which is NOT the presented frame's (it is taller —
+    // this title's shadow cascade is 1024 rows). Set in InitCommon beside the images.
+    uint32_t edramWidth = 1280, edramHeight = 720;
     uint32_t frontBuffer = 0;
     uint32_t lastResolveDest = 0;
     uint32_t frontWidth = 0, frontHeight = 0;
@@ -2901,8 +2904,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // Window coordinates: map [0, w] x [0, h] to clip [-1, 1] x [-1, 1]. Vulkan's
         // clip Y already points down like the window's, so there is no flip here — and
         // adding one is the double-flip that cost the previous port a session.
-        posScale[0] = 2.0f / float(R->targetWidth);
-        posScale[1] = 2.0f / float(R->targetHeight);
+        //
+        // w AND h ARE THE EDRAM'S, NOT THE PRESENTED FRAME'S. A window coordinate is
+        // relative to the surface the pass is rendering into, and that surface can be
+        // taller than the screen: this title's shadow cascade is 1024 rows. Mapped
+        // through the front buffer's 720 the arithmetic still comes out as an identity
+        // (the fallback viewport below divides it straight back out) — but the CLIP
+        // does not, because everything past window y = 720 lands outside the clip
+        // volume and is thrown away before it reaches the framebuffer. The title
+        // clears its cascade in 64-wide vertical STRIPS of (x, 0)-(x+64, 1024), so
+        // every one of them was being cut off at row 719 and the bottom 304 rows of
+        // every shadow cascade were left at whatever the image was created with.
+        // Same identity, same 1280x720 result for every screen-sized pass; the only
+        // draws that move are the ones that were being clipped.
+        //
+        // CZ_VK_WINDOW_COORDS_FRONT_BUFFER=1 restores the front buffer's extent — the
+        // pre-part-15 behaviour, and the same-binary control arm for every claim about
+        // the shadow cascade's bottom rows.
+        static const bool windowCoordsFront = EnvOn("CZ_VK_WINDOW_COORDS_FRONT_BUFFER");
+        const uint32_t winW = windowCoordsFront ? R->targetWidth : R->edramWidth;
+        const uint32_t winH = windowCoordsFront ? R->targetHeight : R->edramHeight;
+        posScale[0] = 2.0f / float(winW);
+        posScale[1] = 2.0f / float(winH);
         posOffset[0] = -1.0f;
         posOffset[1] = -1.0f;
         // MSAA: window coordinates are in PIXELS and our EDRAM image is at sample
@@ -2949,8 +2972,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const int32_t tileY = -signed15(wo >> 16);
         if (!noMsaaScale && (tileX || tileY))
         {
-            posOffset[0] += 2.0f * float(tileX) / float(R->targetWidth);
-            posOffset[1] += 2.0f * float(tileY) / float(R->targetHeight);
+            posOffset[0] += 2.0f * float(tileX) / float(winW);
+            posOffset[1] += 2.0f * float(tileY) / float(winH);
             Count("draw: window coordinates moved to the tile's screen origin");
         }
     }
@@ -3025,10 +3048,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     else
     {
+        // The EDRAM's extent, matching the posScale above — the two are one mapping and
+        // splitting them would put a scale factor between window coordinates and
+        // pixels. See the vte==0 branch for why it is not the presented frame's.
+        static const bool windowCoordsFront = EnvOn("CZ_VK_WINDOW_COORDS_FRONT_BUFFER");
         viewport.x = 0.0f;
         viewport.y = 0.0f;
-        viewport.width = float(R->targetWidth);
-        viewport.height = float(R->targetHeight);
+        viewport.width = float(windowCoordsFront ? R->targetWidth : R->edramWidth);
+        viewport.height = float(windowCoordsFront ? R->targetHeight : R->edramHeight);
     }
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
@@ -4079,6 +4106,11 @@ bool InitCommon()
     static const bool smallEdram = EnvOn("CZ_VK_SMALL_EDRAM");
     const uint32_t edramH =
         smallEdram ? R->targetHeight : std::max(R->targetHeight, kEdramHeight);
+    // Kept on the Renderer because the WINDOW-COORDINATE draw path needs it: a window
+    // coordinate is relative to the EDRAM surface, not to the presented frame, so the
+    // clip volume it maps into has to be the EDRAM's (see the vte==0 branch).
+    R->edramWidth = R->targetWidth;
+    R->edramHeight = edramH;
     if (!CreateImage(R->color, R->targetWidth, edramH,
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
