@@ -3548,10 +3548,18 @@ Next, in order:
    the same operator session, cinematics played through and returned control cleanly —
    the Katey Zombrex grab, and the bike-frame delivery to the safehouse. The claim was
    generalised from two failures and is false as stated. What is actually true:
-   **SOME cinematics fail and most do not.** The known failures are the PROLOGUE's two
-   (black, camera frozen at the first frame) and the COMBO-WEAPON one (camera parked,
-   HUD gone, and skipping it does not award the weapon). Everything else observed so far
-   completes.
+   **SOME cinematics fail and most do not** — and the list shrank twice more while it
+   was being written. The COMBO-WEAPON one (camera parked, HUD gone, and skipping it did
+   not award the weapon) **now plays properly and awards the weapon**. So the only
+   confirmed remaining failure is the PROLOGUE's, which is black with the camera frozen
+   at the first frame; Katey Zombrex, the bike-frame delivery and the combo weapon all
+   complete.
+   **What fixed the combo weapon is NOT known.** The plausible candidates are the same
+   session's shader-cache completion (337 -> 353) and the bindless-heap raise, and
+   nothing isolates them. Do not record either as the cause; the honest statement is
+   that it was broken on the old binary and works on the new one. If it matters, the
+   arm is `CZ_VK_MAX_TEXTURES=4096` — which reproduces the old heap — against a cache
+   trimmed back.
    And a large share of the "cinematic is broken" evidence was never cinematics at all:
    the operator established that a black screen after a cinematic was the VIEW-DEPENDENT
    BLACK (item 1c) seen through a camera the save prompt and tutorial had locked. Two
