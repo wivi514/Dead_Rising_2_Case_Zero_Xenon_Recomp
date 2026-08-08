@@ -2593,6 +2593,94 @@ vblank arrives on time.
 | PM4 walk + resolves | ~5 | |
 | readback | 0.3 | |
 
+## 6an. THE OPERATOR SESSION: a crowd is a different workload, and it reordered
+## everything
+
+Parts 6aj-6am were all measured on the headless gameplay recipe, which renders **~1,930
+draws a frame**. An operator play session on the same binary produced the first
+measurement of a Still Creek zombie crowd: **4,800 to 6,800 draws a frame**, 3.5x the
+workload every conclusion in this port had ever been based on. It reordered the frame
+budget completely, and it is the reason the overnight plan's LAST-ranked item turned out
+to be worth doing.
+
+### The GPU: answered, and it was §6al's clock all along
+
+§6al recorded the GPU pinned at P8/210 MHz with the driver reporting "Idle: Active", and
+predicted that if it boosted, `submit` would fall from ~24 ms toward ~3 and the frame
+with it. The operator ran `sudo nvidia-smi -pm 1`, then `-lgc 2100,2100`. Measured on
+crowd frames at matched draw counts:
+
+| | before (P8, then 1005 MHz) | after (1950 MHz) |
+|---|---|---|
+| draws/frame | 6,277 | 6,592 |
+| frame | 55.9 ms (17.9 fps) | **43.4 ms (23.0 fps)** |
+| **GPU fence wait** | **18.8 ms (33.7%)** | **6.64 ms (15.3%)** |
+| renderer CPU | 22.2 ms | 21.4 ms |
+| PM4 walk + pump sleep | 14.3 ms | 14.8 ms |
+| GPU power | 15.7 W | 52.8 W |
+
+**2.9x on the GPU term, and it is now the SMALLEST term in a crowd frame.** The
+prediction in §6al was right in direction and roughly right in size. Operator-reported
+crowd frame rate went from 15-25 fps to 22-25.
+
+Note what this does NOT change: ordinary gameplay is 31.2 fps on both, because at
+~1,930 draws the frame sits on the title's own two-vblank cap and there is no time to
+give back. **The GPU clock is invisible everywhere except crowds**, which is precisely
+why five sessions of title-screen profiling never found it.
+
+### The per-draw state cache, and the instrument that nearly hid it
+
+Of the 8-10 `vkCmd*` calls a draw issued, five re-bound state Vulkan already holds on the
+command buffer: the five bindless descriptor sets are identical on every draw, and
+pipeline/viewport/scissor/blend constants change per PASS. Sound to cache because every
+pipeline here declares the same three dynamic states and shares one pipeline layout.
+Two runs per arm, alternated, at matched draw counts — the draw set is identical by
+construction, so this is admissible:
+
+```
+record 12.0% (11.9-12.2) cached  vs  13.55% (13.4-13.6) uncached, on a 32.0 ms frame
+       3.84 ms                       4.34 ms          -> an 11.4% cut, no overlap
+```
+
+Engagement, printed unconditionally so the arm can be believed: **pipeline 76.0%,
+viewport 98.0%, scissor 97.7%, blend 99.9%, descriptor-sets 99.9%** skipped, against
+**0.0% on every one** under `CZ_VK_NO_STATE_CACHE=1`.
+
+**The first two versions of this measured nothing, for opposite reasons.** The first had
+no counter at all. The second put five `Count()` calls on the skip paths — and `Count()`
+is a `std::map<std::string>` lookup, so the cached arm paid five map lookups per draw to
+save five `vkCmd` calls and the A/B came out a dead heat *by construction*. Gotcha 151
+with the instrument itself as the cause; the counters are plain adds now.
+
+Worth 0.50 ms of a 32 ms frame (1.6 pp) and ~1.6 ms of a crowd frame (~3%). Real,
+measured, and **not** a fix for the crowd frame rate — recorded that way so the number is
+not quoted later as if it were.
+
+### Where a crowd frame goes now — the CPU problem, fully posed
+
+6,592 draws, 43.4 ms, GPU at 1950 MHz. `outside` is split by the pump line, which reads
+**sleep 8.6-10%** in crowds (against 48% in ordinary gameplay), so the remainder is the
+command processor and not pacing:
+
+| term | ms | µs per draw | share |
+|---|---|---|---|
+| **renderer draw path** | **21.40** | **3.25** | **49.3%** |
+| ├ `record` (the vkCmd calls) | 11.07 | 1.68 | 25.5% |
+| ├ `streams` (vertex/index copy + swap) | 4.77 | 0.72 | 11.0% |
+| ├ `textures` (untile + upload) | 3.43 | 0.52 | 7.9% |
+| ├ `constants` | 1.26 | 0.19 | 2.9% |
+| └ `other` (decode, pipeline key + lookup) | 0.91 | 0.14 | 2.1% |
+| **PM4 command-processor walk** | **10.98** | **1.67** | **25.3%** |
+| GPU fence wait | 6.64 | 1.01 | 15.3% |
+| pump sleep | 3.86 | — | 8.9% |
+| readback | 0.56 | — | 1.3% |
+
+**75% of a crowd frame is our own CPU, in two roughly equal halves**, both scaling
+linearly with the draw count. `other` is worth noticing on its own: it is 0.0% at the
+title screen and **2.1-4.2% in crowds**, i.e. a term that only exists at scale.
+
+`docs/perf-cpu-plan.md` is the plan for it.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

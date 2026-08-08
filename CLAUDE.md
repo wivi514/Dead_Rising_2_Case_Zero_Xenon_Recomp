@@ -1478,6 +1478,26 @@ From phase C part 18 (the frame rate — and none of it was work):
      a clock. Fixing it was 2.0x, because the CP's per-frame waits are released by the
      swap-queue walker inside that very ISR, so the runtime was pacing the title off its
      own slowness.
+222. **A workload profiled at one scale is not the workload.** Every performance
+     conclusion this port ever reached was measured at the title screen (~2,500 draws) or
+     the headless gameplay recipe (~1,930). A Still Creek zombie crowd is **4,800-6,800**,
+     and at that scale the frame budget REORDERS: the GPU goes from the largest term to
+     the smallest, `other` goes from 0.0% to 4.2%, `textures` from 2.5% to 10.9%, and the
+     item the overnight plan ranked LAST becomes worth doing. Worse, ordinary gameplay
+     sits against the title's own two-vblank cap, so a CPU saving there measures as
+     exactly zero — a change can be genuinely worth 3% of the workload that matters and
+     score a dead heat in the one you can reach headlessly. Before optimising, ask what
+     the WORST case renders and whether your harness can reach it (gotcha 190's rule,
+     pointed at performance rather than at defects).
+223. **Never put a `Count()`, a `getenv` or a `std::string` on a path you are timing.**
+     `Count()` here is a `std::map<std::string>` lookup. Five of them added to the SKIP
+     paths of a per-draw state cache made the cached arm pay five map lookups to save
+     five `vkCmd` calls, and the A/B came out a dead heat BY CONSTRUCTION — the arm was
+     real, the instrument cancelled it exactly. `perf` had already shown
+     `std::map::operator[]` at 0.44% and `getenv` at 0.42% of a 1,930-draw frame, which
+     is 3x that in a crowd. Gotcha 7 says a probe expensive enough to stall the game
+     manufactures the stability it reports; this is the same rule at the scale of a
+     single branch, and it cost two false results in one day.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate
@@ -1627,6 +1647,8 @@ it is exactly why that rule is in the conventions.
   `bootstrap-2026-08-04.md` is the day-1 findings record,
   `xenonrecomp-upstream-bugs.md` the local recompiler patches,
   `xenia-capture-requests.md` the (unfulfilled) ground-truth requests,
+  `perf-plan-overnight.md` the executed performance plan and
+  **`perf-cpu-plan.md` its successor — a crowd frame is 75% our own CPU**,
   **`d3d-translation-plan.md` the renderer-architecture pivot (2026-08-06): plan,
   recon, licensing, and the per-phase build-out records — the first read before any
   renderer work**, with `d3d-kickoff.md` / `d3d-phase-c-kickoff.md` /
@@ -2422,6 +2444,17 @@ CZ_DIGEST_PROBE=1  the file-digest check link by link, through the alias seam: t
                    disagreement would put the defect in the recompiled hash), and the 20
                    bytes SHA1_Final actually wrote. A hook rather than a debugger
                    because gotcha 198: ctx.rN is stale mid-function
+CZ_VK_NO_STATE_CACHE=1  re-issue every draw's pipeline, viewport, scissor, blend
+                   constants and descriptor sets whether or not they changed — i.e. the
+                   pre-part-18 draw path. Vulkan holds all five on the COMMAND BUFFER,
+                   so a draw that repeats them is doing nothing, and the five bindless
+                   descriptor sets are identical on every draw in the title. Skipped
+                   fractions print with CZ_VK_STATS: pipeline 76%, viewport 98%, scissor
+                   98%, blend 99.9%, descriptor-sets 99.9% — and 0.0% on every one with
+                   this flag on, which is the negative control doing its job. Worth
+                   11.4% of `record` (4.34 -> 3.84 ms), which is 1.6 pp of an ordinary
+                   frame and ~3% of a crowd frame. It does NOT move fps in ordinary
+                   gameplay and cannot: that frame is on the title's two-vblank cap
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS
@@ -3757,6 +3790,24 @@ one, and it is not work.
   driver cost — and `nvidia-smi` says P8, 15.7 W of 240 W, reason "Idle: Active".
   **This retires the overnight plan's §2a and §2c until one root command answers it.**
 
+**AND THEN THE OPERATOR PLAYED IT, which moved the whole problem.** A Still Creek
+zombie crowd renders **4,800-6,800 draws a frame** against the headless recipe's 1,930 —
+3.5x the workload every conclusion in this port had been based on (gotcha 222). Three
+results:
+
+* **The GPU clock question is ANSWERED.** `sudo nvidia-smi -pm 1` + `-lgc 2100,2100`
+  takes the card from P8/210 MHz to 1950, and the GPU term in a crowd frame from
+  **18.8 ms to 6.64 ms — 2.9x, now the SMALLEST term**. Crowd fps 15-25 -> 22-25.
+  Invisible everywhere else, because everything else is on the title's own cap.
+* **Per-draw state binding is cached** (`CZ_VK_NO_STATE_CACHE=1` is the arm): 11.4% off
+  `record`, engagement 76-99.9% against a 0.0% negative control. Small — 1.6 pp of an
+  ordinary frame, ~3% of a crowd — and recorded as small.
+* **A crowd frame is now 75% our own CPU**, in two roughly equal halves: renderer draw
+  path 21.4 ms and PM4 walk 11.0 ms, both linear in the draw count, neither ever
+  optimised. **`docs/perf-cpu-plan.md` is the plan**, and its item 0 blocks the rest —
+  the headless recipe cannot reach a crowd, so every A/B would run against the vblank
+  cap where a CPU saving measures as exactly zero.
+
 **Gates:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`; `no translated
 shader` = 0; deepest file **#83 `cinezombie.big`**; swap queue one record in flight
 (head 8547 / tail 8548), not a queue nobody drains; the picture unchanged — a dumped
@@ -3953,8 +4004,18 @@ Next, in order:
    established that this title sub-allocates its whole UI out of ONE dynamic vertex
    buffer via `VGT_INDX_OFFSET`, so a busier scene sharing that buffer is the obvious
    place to look: an offset that drifts, or a buffer that wraps.
-3f. ~~**PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.**~~ **LARGELY CLOSED BY
-   PART 18: 11.8 -> ~29 fps, and none of it was work.** The first operator play-through
+3f. ~~**PERFORMANCE IS NOW A REAL ITEM: 8-12 fps in gameplay.**~~ **ORDINARY GAMEPLAY IS
+   CLOSED (11.8 -> 31 fps, the title's own cap). CROWDS ARE THE OPEN ITEM, AND THEY ARE
+   CPU-BOUND IN OUR RUNTIME — the plan is `docs/perf-cpu-plan.md`.** A Still Creek zombie
+   crowd issues **4,800-6,800 draws a frame** against ordinary gameplay's 1,930, which is
+   3.5x the workload every conclusion in this port was based on, and it reorders the
+   whole frame budget. At 6,592 draws / 43.4 ms with the GPU at 1950 MHz: **renderer draw
+   path 21.4 ms (49%), PM4 walk 11.0 ms (25%)**, GPU 6.6 ms (15%), pump sleep 3.9 ms.
+   75% of the frame is our own CPU in two roughly equal halves, both linear in the draw
+   count, neither ever optimised. **Item 0 of that plan blocks the rest: the headless
+   recipe reaches gameplay but only ~1,930 draws, i.e. it never enters the workload —
+   so every A/B would run against the vblank cap where CPU savings are invisible by
+   construction, which is exactly how the state cache first measured as a dead heat.** The first operator play-through
    ran at 8-12 fps and stopped partly because of it; the frame rate was a blocker on
    EVIDENCE rather than a polish item. Two changes, neither of which deletes any work,
    took a gameplay frame from 84.4 ms to ~34 ms — **the ring is walked promptly
@@ -3966,9 +4027,11 @@ Next, in order:
    the whole renderer is under a quarter of the frame, and the readback was fixed in
    part 17. **What is left is one open question and it is not ours**: the GPU has been
    running at **210 MHz of 2100** for every measurement this port has ever taken
-   (gotcha 219), so the ~14 ms `submit` may really be ~2. `sudo nvidia-smi -pm 1` and a
-   re-run of the gameplay recipe answers it; if it boosts, expect another large step
-   and the honest conclusion that the renderer's workload was never the problem.
+   (gotcha 219). **ANSWERED by the operator session: `sudo nvidia-smi -pm 1` then
+   `-lgc 2100,2100` takes it to 1950 MHz and the GPU term from 18.8 ms to 6.64 ms —
+   2.9x, and it is now the SMALLEST term in a crowd frame.** Crowd fps 15-25 -> 22-25.
+   That configuration must be stated with any GPU number from this machine, and it is
+   invisible outside crowds because everything else is on the title's own cap.
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
