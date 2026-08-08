@@ -88,9 +88,15 @@ the crowd frame.
   chain beside the dark one, and **`tools/snap_dump_stats.py`**, which turns a
   61-surface dump into 61 lines.
 * **The outdoor/crowd recipe**, closing `perf-cpu-plan.md` item 0.
+* **The save and load round trip**, four defects deep, and the shader cache at **394** —
+  23 of those recovered on the day from two operator play sessions, once the black frames
+  stopped keeping them out of parts of the map. `grep -c "no translated shader"` on every
+  operator log; the cache has grown on every session that reached new ground and there is
+  no reason to think that has stopped.
 * Gotchas 224 (a fixed-size per-frame allocator is a rendering defect in disguise),
   225 (a sampler normalises over the image you hand it), 226 (a trigger fires on the
-  metric you gave it, not the defect you meant).
+  metric you gave it, not the defect you meant), 227 (a title's error message names the
+  subsystem it BLAMES, not the one that failed).
 
 ## The method notes worth carrying
 
@@ -107,3 +113,17 @@ the crowd frame.
   find it; one `awk` over the columns did.
 * **Every instrument this session added was written before the theory it tested**, which
   is the opposite of part 17's method note and is why this one closed the item.
+* **Two capture-derived lists turned out to be lists about the CAPTURE, not the title.**
+  `kResolvable` was "the seven ordinals A1 resolves", and A1 was captured with an empty
+  save root — the one configuration in which the load path never runs. The shader cache
+  was "the 335 distinct shaders in the captures", and it is 394. Gotcha 45 says this in
+  general; it cost two separate items in one session, so check every allow-list in this
+  runtime against the path its capture actually walked.
+* **The operator is faster than the synthetic-input arm for anything needing ACTIONS.**
+  Several 6-10 minute headless runs failed to reach a save point that a human reached in
+  minutes — Case Zero's save is a `cTriggerVolume::ACTION_SAVE_GAME` volume with no
+  pause-menu entry. Automate DEPTH (reaching gameplay, reaching a crowd, sweeping a
+  camera — all now in `CLAUDE.md`); hand over ACTIONS with a copy-pasteable command, the
+  in-game step, and what each outcome would mean. And when recovering something from a
+  process the operator is still using, `process_vm_readv` reads its memory without
+  ptrace-stopping it where `gdb -p` would freeze their test.

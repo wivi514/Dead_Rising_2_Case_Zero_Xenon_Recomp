@@ -1511,6 +1511,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      chain from the same location seconds later, because one dark chain is equally
      consistent with "this pass is broken" and "the scene really is dark here", and only
      the pair separates them (gotcha 133 turned into a feature).
+227. **A title's error message names the subsystem it BLAMES, not the one that failed.**
+     Case Zero says "Load failed. File appears to be corrupt. Please check your storage
+     device" when an xam ordinal it needs is not resolvable — with the save file
+     untouched on disk and **never opened**. Three sessions read that text, and the
+     `Damaged Content` label beside it, as evidence about the save's CONTENTS, and one
+     of them built a whole theory on it (a 360 save is signed per profile, so a save
+     made under another profile GUID would legitimately be rejected — plausible,
+     testable only in principle, and wrong). The log said what actually happened in one
+     line, and the giveaway was that no `NtCreateFile` on the save device appeared
+     anywhere near the failure.
+     The rule: when a guest reports a failure, find the LAST thing it successfully did
+     and the FIRST thing it did not, and believe those. A title's diagnostics were
+     written for a console where the runtime beneath them was correct; on a
+     recompilation they describe a world that does not exist. Corollary for the fix
+     side: this is why an unimplemented export must fail LOUDLY with its identifier
+     (gotcha 5) — `ord=0x271 -> NOT_FOUND` is what turned a three-session-old mystery
+     into an afternoon.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate
