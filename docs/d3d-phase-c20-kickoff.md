@@ -70,59 +70,63 @@ this file was written, and it moves things. The short version:
 
 ## Where part 21 starts, in order
 
-1. **`docs/perf-cpu-plan.md` §2 — the PM4 walk — is the biggest untouched item, and
-   part 20 MEASURED what it is made of, so this starts from a number rather than a
-   suspicion.** At 6,876 draws a frame and 48.0 ms (P8), the walk's own cost is 12.5 ms
-   (26.0%) and it executes **90,316 packets carrying 815,020 register-write dwords** —
-   9.0 dwords per packet, 138 ns per packet, **15.3 ns per register dword**. The dwords
-   account for essentially the whole 12.5 ms: `WriteRegister` is the walk.
-   `[vkprof]` prints all of it; §2 of the plan is rewritten around it. In order of the
-   size the number supports:
-   * **`LOAD_ALU_CONSTANT` reads from GUEST memory**, so a crowd frame streams ~3.3 MB
-     through the cache one `GuestLoad32` at a time — a `memcpy`, a `bswap` and a
-     non-inlined `WriteRegister` call per dword, where a contiguous run wants one bulk
-     byte-swapping pass. This is the biggest single lead and it is where to start.
-   * **`ExecutePacket` does 2-4 `lock`ed atomic increments per packet** (`g_packets`,
-     `g_types[]`, `g_opcodes[]`, `g_draws`). `gpu/pm4.h` states in its own header that
-     "everything here runs on one thread (the vblank pump)" and that the counters are
-     atomic only so a future tracer can read them safely — which makes a relaxed
-     load-add-store equivalent and a plain `add` instead of a `lock xadd`. ~7 ns each
-     against 90,316 packets a frame is **~2 ms**, and it is cheap to arm and revert.
-   * `g_regs` is larger than L1; whether its footprint costs anything is a hardware
-     counter question, not an argument.
-   **Do not split the walk with `ProfScope`** — two `clock_gettime` calls at ~25 ns
-   against a 138 ns packet would report mostly itself (gotcha 7). If finer attribution
-   is needed, use `perf record -F 999 -g` on the crowd recipe; `perf_event_paranoid` is
-   2 on this machine, which is enough for user-space symbols.
-   **`pm4.cpp` is under two capture oracles** — `tools/pm4_packet_lengths.py` and
-   `tools/pm4_indirect_walks.py`, both exit-1-on-defect. Run them after every change
-   there; part 20 did and both are clean.
-2. **§1d — `other`, `DoDraw`'s untimed work — is 5.6 ms and is now the second biggest
-   term in the draw path.** Part 20 halved it by removing the instrumentation, and what
-   is left is real work: two `std::map<uint64_t>` shader lookups, a
-   `std::map<PipelineKey>` lookup with a 40-byte `memcmp` comparator, the fetch-constant
-   walk and the register decode. Memoising the last (vsHash, psHash) and the last
-   `PipelineKey` is the obvious first move — the state cache already reports the
-   pipeline unchanged on 74% of draws, so the lookup that produced it was wasted 74% of
-   the time. Measure it as a counter first; the frame-time floor is 10-13%.
-3. **§1a hypothesis D — the per-draw constant block — is the one item that pays twice.**
-   8 KB of the ~27 KB a draw the arena has to hold is the ALU constant copy, and the
-   arena is what blacked frames out until part 19 (`docs/phase5-notes.md` §6ap). The
-   cheap exact instrument is NOT a hash of the block: it is a generation counter bumped
-   in `WriteRegister` when an ALU constant register is written, compared against the
-   previous draw's. That costs nothing, is exact, and is also the mechanism for the fix.
-4. **§1a hypothesis A is measured and mostly refuted — do not re-derive it.** In the
-   crowd era 34% of vertex binds and 22% of index binds repeat the previous offset,
-   worth ~1.4 ms. Real, about a third of what the hypothesis expected, and below the
-   noise floor. The counters are in the `CZ_VK_STATS` block as "binds NOT cached".
-5. **The remaining picture defects**, unchanged from part 19's list and all worth
-   re-testing now that neither the whole-frame black nor a collapsed luminance ladder is
-   contaminating the evidence: the shadow cascade (open-items 3), mipmaps (4), NPC part
-   meshes (3d), the magenta sky / colour-grading LUT (6), the prologue cinematic.
-6. **The safehouse door renders as a fully saturated white slab** — carried over from
-   part 19 unchanged. It has no counter behind it and no measurement, so it is an
-   observation, not a defect. `CZ_VK_SKIP_TEX` to name the address is the cheap first
-   move.
+**This list was re-ordered by the operator session; the ranking above it is the reason.**
+Sizes are from real crowds (7,000-8,000 draws, ~50 ms), not from the headless recipe.
+
+1. **`streams` — 7.2 ms a frame, and the largest draw-path term in EVERY area the
+   operator visited** (12.3-14.3%, against 6.8% headless). This is plan §1b, which the
+   plan ranks third and describes as "genuinely ambiguous": the per-frame dword-swap
+   copy is cached by (address, size, endian) and cleared every frame, so a crowd could be
+   nearly all hits (and 0.7 µs/draw is then the LOOKUP, wanting a cheaper key) or mostly
+   misses (and it is real copying, wanting a different cache lifetime). **Count hits,
+   misses and bytes copied per frame before writing anything** — the two readings need
+   opposite fixes and no amount of reading the code decides it.
+2. **Move the arena growth out of `DoDraw`.** `BeginFrame()` allocates and maps the new
+   arena and is called from inside `DoDraw`, so a growth charges `other` — measured at
+   29.8% of a frame, the largest single spike of the operator session. Small, the
+   mechanism is the call graph rather than a theory, and it closes the last live piece of
+   open-items 1c.
+3. **Narrow the FIRST-VISIT STUTTER** (open-items 0b, §6as). 16.7 ms a frame on arrival
+   at new material, 6.1-6.3% flat on revisit, not a draw-count effect. **Pipeline
+   compilation is excluded by measurement — do not re-derive it** (0.08-0.15 ms per
+   pipeline, gotcha 232). What is left in `other` is per-draw: two `std::map<uint64_t>`
+   shader lookups, a `std::map<PipelineKey>` lookup with a 40-byte `memcmp` comparator,
+   the fetch-constant decode loop and the vertex-attribute loop. **Next cheap step: a
+   per-draw census of sampler slots and vertex attributes**, to test whether first-visit
+   draws simply carry more of both.
+   Reproducing this needs virgin material — an operator, or a recipe that enters an area
+   no run has entered. Every instrument here is blind to it by construction.
+4. **CPU/GPU overlap — the biggest single win, and the only architectural one.** A crowd
+   frame is ~27.7 ms of CPU then ~13.8 ms of GPU, strictly in series, because
+   `SubmitAndWait` blocks immediately after submitting; the GPU is idle 68% of every
+   frame and the driver correctly governs it down (gotcha 231). Overlapping is **~1.45x,
+   to 27-30 fps**. `CZ_VK_NO_SUBMIT=1` is the ceiling arm that measured the bound without
+   building it.
+   It needs the per-frame readback off the critical path — a real `VkSwapchainKHR`
+   present instead of SDL's CPU blit — and a second frame-in-flight arena (139 MB
+   high-water, so a real memory decision). It touches two things `CLAUDE.md` flags as
+   deliberate: the synchronous submit, and phase 3's renderer/window separation. Budget a
+   session; do not start it inside another item.
+5. **The PM4 walk — 12.5 ms, and it is a register-write loop.** 90,316 packets a frame
+   carrying **815,020 register-write dwords** at 15.3 ns each, which is essentially all
+   of it. Biggest lead: `LOAD_ALU_CONSTANT` reads from GUEST memory, so a crowd frame
+   streams ~3.3 MB through the cache one `GuestLoad32` at a time where a contiguous run
+   wants one bulk byte-swapping pass. Cheapest: `ExecutePacket` does 2-4 `lock`ed atomics
+   per packet while `gpu/pm4.h` states everything here runs on one thread — ~2 ms.
+   `Source::operator()`'s `%` is ring-level only and is NOT on the hot path; do not spend
+   time there. **`pm4.cpp` is under two exit-1 capture oracles — run them after every
+   change.**
+6. **The remaining picture defects**, unchanged and all worth re-testing now that neither
+   the whole-frame black nor a collapsed luminance ladder contaminates the evidence: the
+   shadow cascade (open-items 3), mipmaps (4), NPC part meshes (3d), the magenta sky /
+   colour-grading LUT (6), the prologue cinematic.
+7. **The safehouse door renders as a fully saturated white slab** — an observation with
+   no counter and no measurement, carried from part 19. `CZ_VK_SKIP_TEX` to name the
+   address is the cheap first move.
+
+**Retired — do not re-derive:** §1a hypothesis A (vertex/index bind caching; 34% and 22%
+repeat, ~1.4 ms, permanently below the noise floor — claim it from the counter or not at
+all), and pipeline compilation as the first-visit cost (item 3).
 
 ## What part 20 delivered
 
@@ -130,9 +134,11 @@ this file was written, and it moves things. The short version:
   now subtracts what its children consumed, and the whole-draw total is a SUM of the
   columns rather than a separately measured quantity — two statements that can disagree
   beat one that cannot.
-* **The corrected crowd table**, re-measured at 6,737-6,806 draws (P8): `record` 6.7 ms,
-  `other` 5.6, `streams` 3.7, `textures` 2.7, `constants` 1.3, draw path 19.9 ms
-  (36.5%); PM4 walk 11.8 ms (21.6%); GPU fence 19.2 ms at P8.
+* **The corrected crowd table**, re-measured headlessly at 6,737-6,806 draws: `record`
+  6.7 ms, `other` 5.6, `streams` 3.7, `textures` 2.7, `constants` 1.3, draw path 19.9 ms
+  (36.5%); PM4 walk 11.8 ms (21.6%). **Superseded for ranking purposes by the operator
+  session** — real crowds put `streams` at 12.3-14.3% and the headless recipe
+  under-samples it by half.
 * **The per-draw instrumentation removed** — five `Count()` calls, four `getenv`s and an
   ungated `snprintf`. `record` −47%, `other` −49% at matched draw counts, and the crowd
   frame time follows.
@@ -146,6 +152,16 @@ this file was written, and it moves things. The short version:
 * Gotchas 228 (a nested profiler scope counts twice and every column still adds up),
   229 (measure the noise floor with a null arm; binning is not enough), 230 (an
   instrument that is off must be free in its WORK, not just its OUTPUT).
+
+## A NOTE ON THIS FILE, written after it was first drafted
+
+The ordered list above was rewritten twice in one session — once when the profiler fix
+re-ranked the plan, and once when the operator session re-ranked it again. The first
+draft of this file kept its old numbered list under a new preamble saying "the order
+changed", which is precisely the stale hand-off gotcha 13 describes and which part 19's
+kickoff had already cost a session. **If you find a preamble here disagreeing with a
+numbered item, the numbered item is the stale one — check the git log and this file's
+own history before working it.**
 
 ## Gates, all run on the part-20 binary
 
