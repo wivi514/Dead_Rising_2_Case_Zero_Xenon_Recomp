@@ -3761,26 +3761,79 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // being poked every 8 s and cannot leave" indistinguishable — an arm that
     // manufactures progress needs a way to stop manufacturing it, or it has no
     // control of its own (gotcha 78).
-    struct NamedButton { const char* name; uint16_t mask; };
-    static constexpr NamedButton kButtons[] = {
-        { "A", 0x1000 },        { "B", 0x2000 },     { "X", 0x4000 },
-        { "Y", 0x8000 },        { "START", 0x0010 }, { "BACK", 0x0020 },
-        { "UP", 0x0001 },       { "DOWN", 0x0002 },  { "LEFT", 0x0004 },
-        { "RIGHT", 0x0008 },    { "NONE", 0x0000 },
+    //
+    // STICK entries (LSUP/LSLEFT/RSRIGHT/...) are the part that reaches the WORLD
+    // rather than the menus. A menu is walked with taps, but Chuck is walked with the
+    // left stick and the camera is aimed with the right one, and every gameplay defect
+    // this port has on its board — the gas station's whole-frame black, the magenta
+    // sky, the NPCs missing part meshes, the sheared pause menu — lives somewhere you
+    // have to WALK to. Until this existed, every one of them was an operator report
+    // with no headless reproduction, which is gotcha 190 with the buttons half solved
+    // and the movement half not.
+    //
+    // A stick entry therefore HOLDS for its whole interval where a button entry taps
+    // for 150 ms. That difference is the entire point and not a detail: a 150 ms nudge
+    // of the stick moves Chuck a few centimetres, so a tap-shaped stick would look
+    // exactly like a stick that does not work. Buttons keep the tap, so every recipe
+    // written against this arm before today still means what it said.
+    struct NamedButton
+    {
+        const char* name;
+        uint16_t mask;
+        int16_t lx, ly, rx, ry;
+        bool hold;              // stick entries deflect for the whole interval
     };
-    static const std::vector<uint16_t> sequence = [] {
-        std::vector<uint16_t> seq;
+    // Full deflection is 32767 and the Y axis is positive UP (gotcha 102 — the
+    // conversion the real pad path also makes). No deadzone is applied anywhere,
+    // because a deadzone is the title's to choose and not the runtime's.
+    static constexpr int16_t kFull = 32767;
+    static constexpr NamedButton kButtons[] = {
+        { "A", 0x1000, 0,0,0,0, false },     { "B", 0x2000, 0,0,0,0, false },
+        { "X", 0x4000, 0,0,0,0, false },     { "Y", 0x8000, 0,0,0,0, false },
+        { "START", 0x0010, 0,0,0,0, false }, { "BACK", 0x0020, 0,0,0,0, false },
+        { "UP", 0x0001, 0,0,0,0, false },    { "DOWN", 0x0002, 0,0,0,0, false },
+        { "LEFT", 0x0004, 0,0,0,0, false },  { "RIGHT", 0x0008, 0,0,0,0, false },
+        { "NONE", 0x0000, 0,0,0,0, false },
+        // Left stick — walk.
+        { "LSUP",    0, 0,  kFull, 0, 0, true },
+        { "LSDOWN",  0, 0, -kFull, 0, 0, true },
+        { "LSLEFT",  0, -kFull, 0, 0, 0, true },
+        { "LSRIGHT", 0,  kFull, 0, 0, 0, true },
+        // Right stick — aim the camera. This is the one that turns "looking at the
+        // gas station blacks the frame" from a sentence into a measurable sweep.
+        { "RSUP",    0, 0, 0, 0,  kFull, true },
+        { "RSDOWN",  0, 0, 0, 0, -kFull, true },
+        { "RSLEFT",  0, 0, 0, -kFull, 0, true },
+        { "RSRIGHT", 0, 0, 0,  kFull, 0, true },
+    };
+    static const std::vector<NamedButton> sequence = [] {
+        std::vector<NamedButton> seq;
         const char* e = getenv("CZ_FAKE_PRESS_SEQ");
         if (!e || !*e)
             return seq;
         std::string all(e), one;
+        size_t unknown = 0;
         for (size_t i = 0; i <= all.size(); i++)
         {
             if (i == all.size() || all[i] == ',')
             {
+                bool found = false;
                 for (const auto& b : kButtons)
                     if (one == b.name)
-                        seq.push_back(b.mask);
+                    {
+                        seq.push_back(b);
+                        found = true;
+                    }
+                // A misspelled name used to vanish silently, which shifts every later
+                // entry one interval earlier and desynchronises the whole recipe from
+                // the screens it was aimed at — a run that walks the wrong menu and
+                // reports it as the game's behaviour. Say so instead.
+                if (!found && !one.empty())
+                {
+                    unknown++;
+                    KLOG("CZ_FAKE_PRESS_SEQ: UNKNOWN entry \"%s\" IGNORED — the rest of "
+                         "the sequence is now one interval early.\n", one.c_str());
+                }
                 one.clear();
             }
             else if (!isspace(static_cast<unsigned char>(all[i])))
@@ -3788,14 +3841,35 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                 one.push_back(char(toupper(static_cast<unsigned char>(all[i]))));
             }
         }
-        KLOG("CZ_FAKE_PRESS_SEQ: %zu synthetic presses queued, one per interval. "
-             "SYNTHETIC INPUT IS ON — this run's progress is not evidence.\n",
-             seq.size());
+        KLOG("CZ_FAKE_PRESS_SEQ: %zu synthetic inputs queued, one per interval (%zu "
+             "unknown). SYNTHETIC INPUT IS ON — this run's progress is not evidence.\n",
+             seq.size(), unknown);
         return seq;
     }();
 
     static std::atomic<uint32_t> packet{ 1 };
-    static std::atomic<bool> pressedNow{ false };
+    // The previous EMITTED state, hashed.
+    //
+    // Keying this on the (interval, active) pair instead is the obvious shortcut and it
+    // is wrong, which the first version of this arm demonstrated on its first run: NONE
+    // emits an all-zero pad whether it is "pressed" or not, so a pair-keyed comparison
+    // reported a transition every interval and bumped the packet number through the
+    // whole quiet tail — for a state that never changed. That is precisely the contract
+    // gotcha 101 names (move the number in exactly one place, on an ACTUAL state
+    // change), broken by the entry whose entire job is to change nothing. Hashing what
+    // is actually written to the guest cannot drift from it.
+    // Seeded with the all-zero state's hash so the first poll reports no transition.
+    auto stateHash = [](uint16_t b, int16_t lx, int16_t ly, int16_t rx, int16_t ry) {
+        uint64_t h = 0xCBF29CE484222325ull;
+        for (uint16_t v : { b, uint16_t(lx), uint16_t(ly), uint16_t(rx), uint16_t(ry) })
+        {
+            h ^= v;
+            h *= 0x100000001B3ull;
+        }
+        return h;
+    };
+    static const uint64_t kNeutral = stateHash(0, 0, 0, 0, 0);
+    static std::atomic<uint64_t> lastState{ kNeutral };
     // Measured from the first poll rather than from process start: the title only
     // starts polling once its frontend is up, so this keeps the delay meaningful
     // regardless of how long loading took.
@@ -3803,32 +3877,54 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - firstPoll)
                                .count();
-    const bool press = elapsedMs > fakeStartMs && (elapsedMs % fakeStartMs) < 150;
 
-    // Which button this interval belongs to. Interval 0 is the first press after the
+    // Which entry this interval belongs to. Interval 0 is the first press after the
     // initial delay; the sequence HOLDS its last entry rather than wrapping, because a
     // wrap would walk back out of the screen it was aimed at and the run would
     // oscillate between two menus with no way to tell from a frame dump.
-    uint16_t button = XINPUT_GAMEPAD_START;
-    const char* buttonName = "START";
+    const bool started = elapsedMs > fakeStartMs;
+    NamedButton entry{ "START", XINPUT_GAMEPAD_START, 0, 0, 0, 0, false };
+    size_t idx = 0;
     if (!sequence.empty())
     {
-        const size_t interval = size_t(elapsedMs / fakeStartMs) - 1;
-        const size_t idx = std::min(interval, sequence.size() - 1);
-        button = sequence[idx];
-        for (const auto& b : kButtons)
-            if (b.mask == button)
-                buttonName = b.name;
+        // Only meaningful once the first interval has elapsed: before that the
+        // subtraction below would wrap and select the LAST entry, which is harmless
+        // while nothing is emitted and is a spurious transition once it is.
+        if (started)
+            idx = std::min(size_t(elapsedMs / fakeStartMs) - 1, sequence.size() - 1);
+        entry = sequence[idx];
     }
 
-    if (press != pressedNow.exchange(press))
+    // A tap is 150 ms of the interval; a hold is the whole interval.
+    const bool active =
+        started && (entry.hold || (elapsedMs % fakeStartMs) < 150);
+
+    const uint16_t outButtons = active ? entry.mask : uint16_t(0);
+    const int16_t outLX = active ? entry.lx : int16_t(0);
+    const int16_t outLY = active ? entry.ly : int16_t(0);
+    const int16_t outRX = active ? entry.rx : int16_t(0);
+    const int16_t outRY = active ? entry.ry : int16_t(0);
+
+    const uint64_t stateKey =
+        stateHash(outButtons, outLX, outLY, outRX, outRY);
+    if (stateKey != lastState.exchange(stateKey))
     {
         const uint32_t n = packet.fetch_add(1) + 1;
-        KLOG("CZ_FAKE_START_MS: synthetic %s %s at %llds (packet %u)\n", buttonName,
-             press ? "DOWN" : "up", static_cast<long long>(elapsedMs / 1000), n);
+        if (entry.hold)
+            KLOG("CZ_FAKE_START_MS: synthetic %s %s at %llds (stick %d,%d / %d,%d, "
+                 "packet %u)\n", entry.name, active ? "HELD" : "released",
+                 static_cast<long long>(elapsedMs / 1000), entry.lx, entry.ly,
+                 entry.rx, entry.ry, n);
+        else
+            KLOG("CZ_FAKE_START_MS: synthetic %s %s at %llds (packet %u)\n", entry.name,
+                 active ? "DOWN" : "up", static_cast<long long>(elapsedMs / 1000), n);
     }
     state->packetNumber = packet.load();
-    state->gamepad.buttons = press ? button : 0;
+    state->gamepad.buttons = outButtons;
+    state->gamepad.thumbLX = outLX;
+    state->gamepad.thumbLY = outLY;
+    state->gamepad.thumbRX = outRX;
+    state->gamepad.thumbRY = outRY;
     return 0;
 }
 
