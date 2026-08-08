@@ -3596,17 +3596,27 @@ Next, in order:
    free: the consumer's fetch coordinates say which part of the map it reads
    (`CZ_VK_DRAW_PROBE` on the pass that fetches `1439B000(depth)`, 629,023 fetches a
    boot). Do NOT judge the shadow lookup until the map is right.
-3b. **THE BINDLESS HEAP LOOKS EXHAUSTED IN STILL CREEK — white buildings, white NPCs,
-   white blood, white button glyphs.** Texture slots come from a 4096-entry heap
-   monotonically and are NEVER RECYCLED (`entry.slot = R->nextTextureSlot++`); on
-   overflow `UploadTexture` returns slot 0, the 1x1 white dummy, and counts
-   `texture: bindless heap full` silently. That predicts exactly the operator's
-   progression: everything loaded EARLY stays correct and everything appearing LATE
-   goes white, first small (a button glyph, blood decals) then whole streamed objects
-   (a building, an NPC, road decals). **A HYPOTHESIS, NOT A FINDING** — `CZ_VK_STATS=N`
-   prints the counter and was not on for that session. Non-zero means the fix is slot
-   recycling; zero means the white is something else entirely. Do not write an LRU
-   before reading the counter. Picture: `~/DR2CZ-troubleshooting/`.
+3b. **THE BINDLESS HEAP IS EXHAUSTED IN STILL CREEK — MEASURED.** White buildings,
+   white NPCs, white blood, white button glyphs, and `R->nextTextureSlot` read
+   **4096** — exactly `kMaxDescriptors` — out of the operator's LIVE process with
+   `gdb -p ... print`. Texture slots are handed out monotonically and NEVER RECYCLED
+   (`entry.slot = R->nextTextureSlot++`); on overflow `UploadTexture` returns slot 0,
+   the 1x1 white dummy, and counts `texture: bindless heap full` silently.
+   **The fix is slot recycling** (an LRU over the texture cache, with deferred
+   destruction so an in-flight frame cannot lose its image).
+   Two things the operator's pictures add that a counter cannot. The rule is not "late
+   in TIME goes white" but **"anything needing a NEW SLOT after the heap filled goes
+   white"** — this title streams textures BY DISTANCE, so approaching a building
+   requests a higher-resolution texture, which is a new fetch constant, a new cache
+   entry and a new slot. That is why every building whitens on approach while its
+   distant version was fine. And the washed-out frame and greyed HUD are a PREDICTED
+   second-order effect: the dummy is white, so a scene full of dummies is a scene full
+   of maximum-luminance surfaces driving auto-exposure and bloom too bright — if the
+   wash survives the fix, it is a separate defect. Pictures 13-16 in
+   `~/DR2CZ-troubleshooting/INDEX.md`.
+   **The cheap confirming arm before the real fix**: raise `kMaxDescriptors`. If the
+   buildings render, the whole causal chain is proven end to end; it is not the fix,
+   because a cap is only ever a bigger number.
 3c. **The pause menu is sheared and broken in STILL CREEK and perfect in the
    SAFEHOUSE.** Same menu, same shaders, different world state — so it arrives with its
    own control, which is rare. The paper becomes a trapezoid with stray white polygons
