@@ -3681,6 +3681,20 @@ Next, in order:
    **The cheap confirming arm before the real fix**: raise `kMaxDescriptors`. If the
    buildings render, the whole causal chain is proven end to end; it is not the fix,
    because a cap is only ever a bigger number.
+3e. **PP / LEVELLING AND THE CASE TIMER BAR LOOK WRONG — gameplay logic, not the
+   renderer, and NOT yet separated from a HUD-drawing fault.** The operator finished
+   the Fausto/Gemini escort, saw `ESCORT BONUS! 3,000 PP`, killed 41 zombies, and
+   remained **LV. 1 with an empty PP bar**; the case timer bar does not appear to run.
+   Money DOES update ($2,000 -> $17,000), so it is not "the HUD is frozen".
+   The one piece of evidence that cuts across it: an earlier save screen read
+   **`Total PP: 400`**, so PP is being tracked somewhere. That makes three live
+   readings — tracked at 400, bar empty, level never rising — and they do not yet
+   distinguish "PP accrues but the bar and the level-up threshold do not see it" from
+   "the bar simply is not drawn and levelling is genuinely broken". Get that split
+   first; it decides whether this is a renderer question or a guest-logic one, and
+   they are different investigations.
+   NB the guest clock IS advancing (save screens read `Day 1 - 07:08 AM` then
+   `07:58 AM`), so a stopped case timer is not simply a stopped clock.
 3d. **NPC PART MESHES GO MISSING, DIFFERENT PARTS ON DIFFERENT CHARACTERS.** Dick
    renders as a head and one hand; Fausto has no legs; Gemini has no hair (her dark
    arms are GLOVES and correct). These characters are assembled from separate part
