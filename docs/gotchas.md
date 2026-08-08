@@ -1614,6 +1614,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      was "mostly an artifact of the machine's power state". The artifact was the
      MEASUREMENT's, not the frame's, and retiring it revives the item at its full size:
      27.7 ms of CPU and 16.5 ms of GPU that currently run one after the other.
+232. **Model knowledge about how expensive something "usually is" is not a measurement
+     of YOUR code, and it can be 20-40x wrong.** A first-visit cost of 16.7 ms a frame
+     was attributed to Vulkan pipeline compilation, on arithmetic that seemed to close:
+     ~5 new pipelines a frame at ~3 ms each is ~15 ms. The 3 ms came from general
+     knowledge of what pipeline compilation costs, and it had never been measured in
+     this renderer. Timed: **0.08-0.15 ms**. The busiest window observed created 89
+     pipelines and spent 11.0 ms TOTAL — 0.2% of frame time, where the hypothesis needed
+     ~139 creations in a single frame.
+     The tell was available before the counter and was ignored three times: the
+     hypothesis was restated in three consecutive messages, each time as "still needs a
+     counter", and each time the argument was made instead. It then failed a
+     pre-registered prediction, and a rescue was available ("no new shaders loaded
+     there") which had to be refused because it was unfalsifiable — new pipelines come
+     from new STATE combinations too. **A hypothesis that has survived only inference is
+     not evidence, and the third time you write "this needs a counter" is the moment to
+     write the counter.** It cost twenty lines and refuted the idea on its first run.
+     The general form: every "X is expensive" and "Y is cheap" carried in from outside
+     the project is a prior, and priors about performance are exactly what profiling
+     exists to overturn. Put a number on it before it becomes a plan.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

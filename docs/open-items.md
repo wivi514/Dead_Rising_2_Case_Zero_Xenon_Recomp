@@ -7,6 +7,23 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0b. **A FIRST-VISIT STUTTER, found only because an operator played (§6as).** `other` —
+   `DoDraw`'s untimed work — sits at ~6% of a crowd frame and spikes to 20-26% (16.7 ms
+   a frame) on first arrival at new material, taking the frame from 20.1 to 15.5 fps.
+   **It does not recur**: revisiting the same spot 11 minutes later reads 6.1-6.3% across
+   six consecutive windows, flat. At MATCHED draw counts one area cost 3.1 ms and another
+   16.7, so it is not a draw-count effect.
+   **Not pipeline compilation** — inferred three times, failed a pre-registered
+   prediction, refuted on magnitude by `GetPipeline`'s new counter (0.08-0.15 ms per
+   pipeline, not the ~3 ms assumed; gotcha 232). What remains in `other`: two
+   `std::map<uint64_t>` shader lookups, a `std::map<PipelineKey>` lookup with a 40-byte
+   memcmp comparator, the fetch-constant decode loop and the vertex-attribute loop — all
+   per-draw. **Next cheap step: a per-draw census of sampler slots and vertex attributes**,
+   to see whether first-visit draws simply carry more of both.
+   This class is invisible to every instrument in this project, because a repeat run has
+   already paid for it and the headless recipe visits each area once at a drifting
+   offset. Reproducing it needs an operator or a recipe that enters virgin material.
+
 0. ~~**GET A HEADLESS RECIPE THAT SKIPS A CINEMATIC.**~~ **DONE — the recipe is in
    the Commands section above and it reaches live gameplay with no operator.** START
    skips a cinematic; the Zombrex tutorial's second page needs D-pad LEFT then B. Every
@@ -269,6 +286,13 @@ Next, in order:
    revives the overnight plan's §2a, which `docs/phase5-notes.md` §6al dismissed as
    "aimed at a number that is mostly an artifact of the machine's power state" — the
    artifact was the MEASUREMENT's, not the frame's (gotcha 172).
+   **RE-SCOPED BY THE OPERATOR SESSION (§6as).** Seven crowds, 26,241 frames: the areas
+   are interchangeable at matched draw counts and the item is one sentence — **a
+   ~7,500-draw crowd is ~20 fps**, everything below ~4,000 draws is already at the
+   title's cap. Real crowds are 7,000-9,000 draws where the CPU alone exceeds the 32 ms
+   cap, so overlap is worth ~1.45x (to ~27-30 fps) rather than reaching the cap as my
+   headless ceiling claimed. `streams` is the biggest draw-path term in real crowds
+   (12.3-14.3%, twice the headless figure), so plan §1b outranks §1a.
    **ITEM 0 OF THAT PLAN IS CLOSED (part 19): the headless recipe reaches the outdoor
    world and 6,400-8,100 draws a frame.** It is in `CLAUDE.md`'s Commands section beside
    the safehouse one; the change is one extra `B` at the door and alternating `LSUP` with

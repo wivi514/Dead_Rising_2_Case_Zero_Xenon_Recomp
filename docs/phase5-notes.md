@@ -3156,6 +3156,127 @@ readback has to become conditional rather than deleted.
 
 ---
 
+## 6as. THE OPERATOR SESSION: seven crowds, a first-visit stutter, and three of my own
+## claims retracted inside an hour
+
+19 minutes of live play, 26,241 frames, areas named by the operator as they reached them
+(`CZ_VK_PROFILE=10`, `CZ_VK_FRAME_STATS`, `CZ_SHADER_DUMP`, a real window, a live
+monitor, clocks untouched). It is the best data this port has on its own workload, and
+almost everything in it contradicts something measured headlessly.
+
+### The GPU clock question, answered seven times over
+
+| | pstate | clock | utilisation | power |
+|---|---|---|---|---|
+| my headless runs | P5 | mean 524 MHz | 32% | 28.6 W |
+| operator, every area | **P3-P0** | **765-1290 MHz** | **19-48%** | **31-45 W** |
+
+Windowed play boosts HIGHER than headless and never once approached saturation. §6ar's
+retraction is confirmed on the path that actually matters, and the case for pinning the
+clock is gone: the governor is responsive, and what it responds to is a GPU idle most of
+every frame.
+
+### The steady state, and it is homogeneous
+
+Once first-visit costs are paid, the areas are one workload:
+
+| area | draws | frame | fps |
+|---|---|---|---|
+| military camp | 4,770 | 33.4 ms | **30.0 — at the title's cap** |
+| bowling alley | 7,164 | 46.7 ms | 21.4 |
+| casino | 7,892 | 52.0 ms | 19.2 |
+| gas station (revisited) | 7,120 | 49.8 ms | 20.1 |
+
+Whole session binned by draw count: 0-3,999 draws flat at 32.7-33.0 ms (the two-vblank
+cap), then 34.2 at 4k, 41.9 at 5k, 46.3 at 6k, 50.7 at 7k, 55.6 at 8k. **The performance
+item is one sentence: a ~7,500-draw crowd is ~20 fps.** Not six area problems — the
+areas are interchangeable at matched draws.
+
+`streams` — the per-frame vertex/index dword-swap copy — was the largest draw-path term
+in every area, 12.3-14.3% (7.2 ms at 7,900 draws), against 6.8% in my headless runs.
+Plan §1b was ranked on evidence half the true size.
+
+### THE FIRST-VISIT STUTTER, which no headless run could have found
+
+`other` sat at ~6% all session and spiked repeatedly:
+
+    t+ 50s  29.8%   <- the arena growth; mechanism confirmed below
+    t+100s  14.2%
+    t+180s  17.2%
+    t+220s  20.0%
+    t+230s  25.8%   <- the gas station, 16.7 ms a frame
+    t+300s  12.5%
+    after t+300s: nothing above 12% for the rest of the session
+
+It is not a draw-count effect. At **matched draw counts** the bowling alley cost 3.1 ms
+in `other` and the gas station 16.7 — 5x the per-draw cost at a slightly LOWER draw
+count.
+
+And it is not a property of the location. Revisiting the same spot 11 minutes later, six
+consecutive windows read **6.1, 6.2, 6.2, 6.2, 6.3, 6.3%** — flat, not
+noisy-around-a-mean. **The cost is paid once on arrival and never again**, and the frame
+rate follows: 15.5 fps on first arrival, 20.1 fps standing in the same place later.
+
+A defect class this port had never seen, and invisible to every instrument here: a repeat
+run has already paid for it, and the headless recipe visits each area once at a drifting
+offset.
+
+### One spike IS explained: the arena growth charges `DoDraw`
+
+The largest, t+50s, coincides with the session's only arena exhaustion (frame 1303,
+t+45.2s, 127 MB of 128, grown to 256). `BeginFrame()` grows the arena — allocating and
+mapping 256 MB, destroying the old buffer — and `BeginFrame()` is called from INSIDE
+`DoDraw`, below the `drawOther` scope. A growth charges `other` directly. Call graph,
+not hypothesis.
+
+It is also open-items 1c in a different costume: the gas station is exactly the view
+whose geometry overran the arena and blacked the frame before part 19. Part 19 fixed the
+symptom; the growth still costs one badly degraded frame, and nobody saw the cost because
+everyone was looking for a black picture rather than a slow one. **Moving the growth out
+of `DoDraw` is a small change with a named benefit.**
+
+### The hypothesis I held for four messages, and the counter that killed it
+
+Pipeline compilation was the obvious candidate for a first-visit cost, and the arithmetic
+seemed to fit: ~5 new pipelines a frame at ~3 ms each is ~15 ms against 16.7 measured. It
+was inferred three times and never counted. Then it failed a **pre-registered
+prediction**: at the casino I predicted `other` would spike above 12% on new material,
+and it stayed at 6.0-7.6% across eight windows.
+
+A rescue was available — no new shaders loaded there — and it should not be taken: new
+pipelines come from new STATE combinations (blend, colour mask, depth, topology) with
+shaders the game already has, so "no new shaders" does not imply "no new pipelines". An
+unfalsifiable rescue is the signal to stop arguing and measure.
+
+`GetPipeline` is now timed and counted per window. **First run: a pipeline costs
+0.08-0.15 ms, not 3 ms.** The busiest window observed created 89 and spent 11.0 ms total
+— 0.2% of frame time. Reaching 16.7 ms in one frame would need ~139 creations in that
+frame.
+
+**The hypothesis is refuted on magnitude, by the first run of the counter it needed.**
+The 3 ms figure was model knowledge about pipeline compilation in general, not a
+measurement of this renderer, and it was 20-40x wrong — which is gotcha 232. What the
+counter buys is a narrowed `other`: what remains is the two shader-map lookups, the
+`std::map<PipelineKey>` lookup, the fetch-constant decode loop and the vertex-attribute
+loop. A per-draw census of sampler slots and vertex attributes is the next cheap step.
+
+### Method, and two corrections the operator forced
+
+* **A periodic instrument read on a human's cue is not synchronised with the human.** I
+  was reading the last 10-second profile window whenever a message arrived — up to 10 s
+  stale, averaged over wherever they were during it. My "first crowd / second area"
+  labels were mine, not measurements, and the operator corrected them. Ask for the area
+  name, or run `CZ_FILE_TRACE=1` so the log names the zone itself.
+* **Three claims made and retracted inside one hour**, each by the next measurement:
+  "crowds hit the 31 fps cap" (my headless ceiling — real crowds are 7,000-9,000 draws
+  where the CPU alone exceeds it); "the gas station is the worst case because it has 1.7x
+  the draws" (matched-draw comparison says `other`, not draws); "the gas station is the
+  worst case" (revisiting says it is an ordinary crowd). Each was stated with evidence
+  and each was wrong at the next scale. Gotcha 222, three times, in the session that
+  cited it.
+
+---
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

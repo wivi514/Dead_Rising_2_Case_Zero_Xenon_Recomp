@@ -207,6 +207,11 @@ struct ProfilePhases
     // phase above, which it was not until part 20; see the ProfScope comment.
     uint64_t drawOther = 0;
     uint64_t draws = 0;       // how many draws those numbers are spread over
+    // Pipeline creation, which lives INSIDE `drawOther` and is the only thing in there
+    // that costs milliseconds. Separated because a first-visit stutter and a per-draw
+    // overhead are different defects that were sharing one column. See GetPipeline.
+    uint64_t pipelineNs = 0;
+    uint64_t pipelinesCreated = 0;
 };
 ProfilePhases g_prof;
 bool g_profileOn = false;
@@ -2621,9 +2626,37 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     pci.pDynamicState = &dsi;
     pci.layout = R->pipeLayout;
 
+    // TIMED, and counted per reporting window, because this is the one thing inside
+    // `other` that costs MILLISECONDS rather than nanoseconds — and an operator session
+    // spent an evening making that matter.
+    //
+    // `other` (DoDraw's untimed work) sat at ~6% of a crowd frame all session and then
+    // spiked to 25.8% — 16.7 ms a frame — on first arrival at the gas station, at the
+    // SAME draw count where another area cost 3.1 ms. Revisiting the same spot later
+    // read 6.1-6.3% across six consecutive windows, so the cost is first-visit-only and
+    // does not recur: something is built once and then reused. Pipeline creation is the
+    // only candidate in this function with that shape, and the arithmetic fits (~5 new
+    // pipelines a frame at ~3 ms each is ~15 ms against 16.7 measured).
+    //
+    // It was inferred three times and never measured, and the inference then FAILED a
+    // pre-registered prediction at the casino — `other` stayed flat where new material
+    // should have spiked it. That could be rescued ("no new shaders loaded there"), but
+    // new pipelines come from new STATE combinations too, so the rescue is unfalsifiable
+    // and the honest response is this counter rather than a fourth argument. Gotcha 30:
+    // a hypothesis that has not been given a way to fail is not evidence.
+    //
+    // Cost when the profile is off: one bool test on a path that already builds a whole
+    // VkGraphicsPipelineCreateInfo, i.e. nothing. This is not a hot path — that is the
+    // entire hypothesis.
+    const uint64_t t0 = ProfNow();
     VkPipeline pipeline = VK_NULL_HANDLE;
     const VkResult r =
         vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline);
+    if (g_profileOn)
+    {
+        g_prof.pipelineNs += ProfNow() - t0;
+        g_prof.pipelinesCreated++;
+    }
     if (r != VK_SUCCESS)
     {
         fprintf(stderr, "[vk] vkCreateGraphicsPipelines failed (%d) vs=%016llx ps=%016llx\n",
@@ -2778,6 +2811,46 @@ void SubmitAndWait()
     EndRendering();
     vkEndCommandBuffer(R->cmd);
     R->recording = false;
+
+    // CZ_VK_NO_SUBMIT=1 — record the whole frame and then DO NOT EXECUTE IT.
+    //
+    // A CEILING MEASUREMENT, not a rendering arm, and its picture is knowingly invalid.
+    //
+    // The question it answers: this renderer's CPU and GPU never run at the same moment,
+    // because the line below submits a command buffer and then blocks on its fence. A
+    // crowd frame is ~27.7 ms of CPU followed by ~16.5 ms of GPU, strictly in series,
+    // and the GPU is consequently idle 68% of every frame — which is why the driver
+    // governs the card to a mid clock, correctly (gotcha 231, `docs/phase5-notes.md`
+    // §6ar). Overlapping them should give max(CPU, GPU) instead of CPU + GPU, but
+    // "should" is a model, and building frames-in-flight to test a model is the wrong
+    // order of work: it needs a real swapchain present and a second per-frame arena.
+    //
+    // Dropping the submit makes the GPU's contribution zero while EVERY byte of CPU work
+    // still happens — the PM4 walk, the register decode, the pipeline lookups, the
+    // stream copies and all ~6.4 `vkCmd*` calls a draw are recorded exactly as before.
+    // The frame time that remains IS the CPU-only time, and no amount of overlapping can
+    // beat it. So this is an upper bound on the win, measured in one run per arm instead
+    // of a session of rework.
+    //
+    // WHY NOT "submit but do not wait", which is the obvious version: skipping only the
+    // wait lets the next frame reset this command buffer while the GPU is still reading
+    // it, and — worse — lets it overwrite the arena holding the INDEX buffers of a draw
+    // in flight. Out-of-range indices are undefined behaviour on the device, so the
+    // likely outcome is a lost device or a hung GPU rather than a corrupted picture, and
+    // an instrument that can take the machine down is not one to reach for when a safe
+    // version measures the same quantity. Nothing here executes, so nothing can fault.
+    //
+    // What this arm is NOT: a comparison of two pictures. The draw set recorded is
+    // identical between the arms, which is what makes the TIMES comparable, but the
+    // frame presented on this arm is stale garbage and every picture statistic derived
+    // from it (`CZ_VK_FRAME_STATS`'s coverage, luma and hashes) is meaningless. Read the
+    // `msec` column and nothing else.
+    static const bool noSubmit = EnvOn("CZ_VK_NO_SUBMIT");
+    if (noSubmit)
+    {
+        Count("submit: SKIPPED (CZ_VK_NO_SUBMIT — ceiling measurement, picture invalid)");
+        return;
+    }
 
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
@@ -5553,6 +5626,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     pct(g_prof.textures), pct(g_prof.record), pct(g_prof.drawOther),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), 100.0 - pct(known));
+
+            // Pipeline creation, broken out of `other`. Printed only when it happened,
+            // because a line of zeroes every window would train the eye to skip it —
+            // and the whole point is that this is rare and expensive rather than
+            // steady. `of other` is the share it explains: if a spike in `other` is
+            // compilation, that number is most of it, and if it is not, the counter
+            // says so just as clearly.
+            if (g_prof.pipelinesCreated)
+                fprintf(stderr,
+                        "[vkprof] pipelines %llu created (%.2f/frame, %.1f ms total, "
+                        "%.2f ms each) = %.1f%% of frame, %.0f%% of `other`\n",
+                        (unsigned long long)g_prof.pipelinesCreated,
+                        frames ? double(g_prof.pipelinesCreated) / double(frames) : 0.0,
+                        double(g_prof.pipelineNs) * 1e-6,
+                        double(g_prof.pipelineNs) * 1e-6 /
+                            double(g_prof.pipelinesCreated),
+                        pct(g_prof.pipelineNs),
+                        g_prof.drawOther ? 100.0 * double(g_prof.pipelineNs) /
+                                               double(g_prof.drawOther) : 0.0);
 
             // ...and what `outside` actually IS. The renderer runs on the graphics
             // pump's thread, so everything the pump does between two presents is in

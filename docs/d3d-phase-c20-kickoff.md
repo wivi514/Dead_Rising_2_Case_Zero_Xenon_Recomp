@@ -43,6 +43,31 @@ Three things part 20 established that will otherwise cost a session each.
    life, and every column still summed to the total. That is the class: an error that
    MOVES time between columns leaves nothing looking wrong.
 
+## THE OPERATOR SESSION CHANGED THE ORDER — read `docs/phase5-notes.md` §6as first
+
+19 minutes of live play across seven crowds (26,241 frames) landed after the rest of
+this file was written, and it moves things. The short version:
+
+* **The performance item is one sentence: a ~7,500-draw crowd is ~20 fps.** The areas
+  are interchangeable at matched draw counts; there is no per-area problem. Below ~4,000
+  draws everything is already at the title's 31 fps cap.
+* **There is a FIRST-VISIT STUTTER worth 16.7 ms a frame** and nothing here could see
+  it: `other` spikes to 20-26% on arrival at new material and reads 6.1-6.3% across six
+  consecutive windows when the same spot is revisited. Invisible to any repeat
+  measurement, which is every measurement this project makes.
+* **Its cause is NOT pipeline compilation** — that was inferred three times, failed a
+  pre-registered prediction, and was refuted on magnitude by the counter it needed
+  (a pipeline costs 0.08-0.15 ms here, not the ~3 ms assumed; gotcha 232). `other` is
+  now narrowed to the two shader-map lookups, the `std::map<PipelineKey>` lookup, the
+  fetch-constant decode loop and the vertex-attribute loop.
+* **`streams` is the largest draw-path term in real crowds** — 12.3-14.3%, twice what
+  the headless recipe shows. Plan §1b was ranked on evidence half the true size.
+* **The GPU clock retraction is confirmed seven times windowed**: P3-P0, 765-1290 MHz,
+  19-48%, 31-45 W. Never pin it.
+* One spike IS explained: the arena growth runs inside `BeginFrame`, which is called
+  from inside `DoDraw`, so it charges `other` directly. Moving it out is small and
+  named.
+
 ## Where part 21 starts, in order
 
 1. **`docs/perf-cpu-plan.md` §2 — the PM4 walk — is the biggest untouched item, and

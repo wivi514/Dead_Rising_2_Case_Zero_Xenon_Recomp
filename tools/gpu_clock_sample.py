@@ -109,6 +109,13 @@ def main():
                 if csv:
                     csv.write(f"{elapsed:.1f},{s[0]},{s[1]:.0f},{s[2]:.0f},"
                               f"{s[3]:.1f},{s[4]}\n")
+                    # Flushed per sample, not left to Python's buffering. This tool's
+                    # whole job is to be readable WHILE something else runs — the first
+                    # session it was used in, an operator played for 20 minutes and the
+                    # file was still zero bytes, because a 4 KB buffer had not filled.
+                    # A log nobody can read until the writer exits is not a live
+                    # instrument.
+                    csv.flush()
                 if elapsed >= args.skip:
                     clocks.append(s[1])
                     utils.append(s[2])
