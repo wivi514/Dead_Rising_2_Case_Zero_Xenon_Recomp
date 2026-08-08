@@ -167,6 +167,13 @@ struct ProfilePhases
     uint64_t textures = 0;    // texture untile + upload
     uint64_t record = 0;      // the vkCmd calls of a draw
     uint64_t submit = 0;      // vkQueueSubmit + the fence wait (i.e. the GPU)
+    // ...and that split in two, because they are different subsystems wearing one
+    // number. `submitCall` is the driver translating a command buffer of ~1,900 draws
+    // on THIS cpu; `fenceWait` is the GPU actually executing it. 24 ms for that many
+    // small draws on an RTX 3070 is far too slow to be fill, so which half it is
+    // decides whether the next question is about barriers or about the host.
+    uint64_t submitCall = 0;
+    uint64_t fenceWait = 0;
     uint64_t readback = 0;    // image -> host buffer -> window
     uint64_t drawTotal = 0;   // ALL of DoDraw, so the phases above can be subtracted
     uint64_t draws = 0;       // how many draws those numbers are spread over
@@ -2412,9 +2419,15 @@ void SubmitAndWait()
     si.commandBufferCount = 1;
     si.pCommandBuffers = &R->cmd;
     ProfScope _p(&g_prof.submit);
-    vkResetFences(R->device, 1, &R->fence);
-    vkQueueSubmit(R->queue, 1, &si, R->fence);
-    vkWaitForFences(R->device, 1, &R->fence, VK_TRUE, UINT64_MAX);
+    {
+        ProfScope _c(&g_prof.submitCall);
+        vkResetFences(R->device, 1, &R->fence);
+        vkQueueSubmit(R->queue, 1, &si, R->fence);
+    }
+    {
+        ProfScope _w(&g_prof.fenceWait);
+        vkWaitForFences(R->device, 1, &R->fence, VK_TRUE, UINT64_MAX);
+    }
 }
 
 // ===================================================================================
@@ -4950,13 +4963,14 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             fprintf(stderr,
                     "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
                     "[constants %.1f streams %.1f textures %.1f record %.1f other "
-                    "%.1f] submit %.1f%% readback %.1f%% outside %.1f%%\n",
+                    "%.1f] submit %.1f%% [call %.1f gpu %.1f] readback %.1f%% "
+                    "outside %.1f%%\n",
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
                     pct(g_prof.drawTotal), pct(g_prof.constants), pct(g_prof.streams),
                     pct(g_prof.textures), pct(g_prof.record), pct(drawOther),
-                    pct(g_prof.submit), pct(g_prof.readback),
-                    100.0 - pct(known));
+                    pct(g_prof.submit), pct(g_prof.submitCall), pct(g_prof.fenceWait),
+                    pct(g_prof.readback), 100.0 - pct(known));
 
             // ...and what `outside` actually IS. The renderer runs on the graphics
             // pump's thread, so everything the pump does between two presents is in

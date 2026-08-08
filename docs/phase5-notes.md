@@ -2431,6 +2431,77 @@ polish. And the direction of the change is toward hardware, not away: a real com
 processor runs continuously, and the reason our thread interleaving moved is that the
 ring is now serviced promptly rather than up to 16 ms late.
 
+## 6al. THE GPU HAS BEEN RUNNING AT 10% OF ITS CLOCK, AND EVERY GPU NUMBER THIS PORT
+## OWNS WAS MEASURED THERE
+
+After §6ak the frame is 69.9 ms and its largest term is `submit` at 34% — 24 ms of GPU.
+The overnight plan's §2a is built on that number (overlap the GPU with the CPU, ceiling
+~1.5x) and §2c on the theory behind it (the 1280x1024 EDRAM and 4x-MSAA window scaling
+are "a lot of fill"). **Both are aimed at a number that is mostly an artifact of the
+machine's power state.**
+
+First the split, because `submit` was two subsystems wearing one name — the driver
+translating a ~1,900-draw command buffer on this CPU, and the GPU executing it:
+
+```
+submit 35.4% [call 0.1 gpu 35.4]
+```
+
+**The submit CALL is 0.1% of the frame.** There is no host-side driver cost to find. The
+24 ms is the GPU. And the GPU, sampled six times during that very run:
+
+```
+$ nvidia-smi --query-gpu=pstate,clocks.sm,clocks.max.sm,power.draw,power.limit,utilization.gpu
+P8, 210 MHz, 2100 MHz, 15.7 W, 240.00 W, 43 %
+$ nvidia-smi -q -d PERFORMANCE
+    Performance State : P8
+    Clocks Event Reasons
+        Idle : Active          <-- while the game is rendering on it
+```
+
+**210 MHz of a 2100 MHz maximum, 15.7 W of a 240 W limit, and the driver's own stated
+reason is that the GPU is idle.** The 43% utilisation is the check that it is not
+misreporting: 24 ms of work in a 69 ms frame is 34%, which is what a duty cycle of that
+shape should read. Power confirms it independently — an RTX 3070 doing real work at
+2 GHz draws 100-200 W, and this is 5 W above its idle 10.5 W.
+
+Consistency with the port's history: part 17 measured `submit` at 32.6% of an 87 ms
+frame, i.e. **28 ms**, and this is 24 ms. The GPU term has been the same size all along,
+so this is not a state the machine entered tonight.
+
+### What was tried, and it is a root-level fix
+
+* `nvidia-settings -a '[gpu:0]/GPUPowerMizerMode=1'` (prefer maximum performance) —
+  accepted, **no effect**: still P8/210 MHz, still 24 ms. Restored to 0 (Adaptive)
+  immediately afterwards; the machine is as it was found.
+* A real SDL window rather than a headless run — **no effect**: P8/210 MHz, 14.6 fps
+  against headless 14.3-14.8. This also retires the informal reading that the operator's
+  windowed runs were faster than headless ones; on the current binary they are the same.
+* `nvidia-smi` reports `display_active: Disabled` (the monitor is blanked overnight),
+  which is the most likely reason the governor holds P8, but the window test above says
+  a live client does not by itself lift it.
+
+**This needs one command the session cannot run:** `sudo nvidia-smi -pm 1` and
+`sudo nvidia-smi -lgc 1000,2100` (or simply a re-measure with the display awake), then
+the gameplay recipe. If the GPU boosts, `submit` should fall from ~24 ms toward ~3 ms
+and the frame from 69.9 ms to roughly **46-49 ms, i.e. ~20-21 fps, with no code change
+at all** — and every conclusion below about renderer cost changes with it.
+
+### What this retires from the overnight plan, pending that measurement
+
+* **§2a (pipeline the submit).** Its whole value is hiding a 24 ms GPU wait behind CPU
+  work. If that wait is really ~3 ms the change buys almost nothing, and it costs a
+  frame of present latency, a second arena and a genuine risk of silent corruption. **Do
+  not build it until the clock question is answered.**
+* **§2c (the EDRAM size / MSAA fill).** The premise was "that is a lot of fill". At 10%
+  core and ~6% memory clock, *everything* is a lot of fill. There is no evidence here
+  that the workload is too big for the hardware — only that the hardware was asleep.
+
+The general lesson, and it is gotcha 7's family: **an instrument that reports the host's
+own state is part of the measurement.** This port has profiled the CPU exhaustively for
+five sessions and never once asked what clock the GPU was at, so a 10x error sat under
+every "the GPU is 33% of the frame" statement that has ever been made here.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
