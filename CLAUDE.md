@@ -3570,6 +3570,24 @@ Next, in order:
    real game plays two cinematics with loadings between them and then PAUSES to show a
    tutorial** — so a frozen world is a state the game legitimately enters later, and
    there is a known-good sequence to compare against.
+1b. **THE SAVE FAILS ON ONE UNHANDLED XAM MESSAGE — measured end to end.**
+   `[xam] no handler for app FB message 000B0008 (8-byte buffer) — returning E_FAIL`,
+   that E_FAIL completes an overlapped with `0x80004005`, and the save's poll reads it
+   (`[save] XGetOverlappedResult(ovl=A3EDD414) block{result=80004005 ...} -> 2147500037`)
+   at `825D6094`, where the guest accepts ONLY 0 or 996 and tears down on anything else.
+   The content overlapped is innocent — it reads 0. Its sender is
+   `sub_825D7CA8(dwordA, dwordB, overlapped)`, which posts the 8-byte pair as XGI
+   `0x000B0008`, returns 1627 on a negative result and 997 when given an overlapped;
+   callers `sub_825C4400` <- `sub_825C4190` / `sub_825C86A0`. `docs/phase1-notes.md`
+   already put `000B0008` among the LOCAL XGI messages (everything past it is Live), so
+   this is implementable rather than a gap — but **derive its two dwords from those
+   callers before writing a handler** (gotchas 5/59/201: this is a message whose result
+   the guest tests, so a wrong "success" is worse than the honest E_FAIL).
+   **RETRACTED on the way**: this failure was first read off `CZ_KCALL_WHO`'s teardown
+   backtrace as "the CONTENT overlapped poll returns a bad value". A live read of that
+   block showed all zeros, and the probe then named a DIFFERENT overlapped. A backtrace
+   names the branch, not the datum it branched on.
+
 2. **XAM ordinal `0x271` is resolved on the save-LOAD path and we answer NOT_FOUND**
    (`docs/phase3-notes.md` finding 51). With A3's real save installed, our content layer
    enumerates it correctly and the title reaches the save-slot panel — then labels SLOT 1
@@ -3596,7 +3614,14 @@ Next, in order:
    free: the consumer's fetch coordinates say which part of the map it reads
    (`CZ_VK_DRAW_PROBE` on the pass that fetches `1439B000(depth)`, 629,023 fetches a
    boot). Do NOT judge the shadow lookup until the map is right.
-3b. **THE BINDLESS HEAP IS EXHAUSTED IN STILL CREEK — MEASURED.** White buildings,
+3b. **THE BINDLESS HEAP — MITIGATED (4096 -> 65536), NOT YET FIXED.** Confirmed
+   working: a Still Creek session that reached **4,522 slots** reports `bindless heap
+   full` ZERO times and the white buildings are gone. That is past the old cap, so the
+   same session would have been serving dummies before. Slot recycling is still the
+   real fix; a cap is only ever a bigger number. NB the operator's white BLOOD SPLATTER
+   is NOT this — it keeps its splatter shape and only the colour is wrong, and the heap
+   is healthy — so it is a separate texture/shading defect.
+3z. **THE BINDLESS HEAP WAS EXHAUSTED IN STILL CREEK — MEASURED.** White buildings,
    white NPCs, white blood, white button glyphs, and `R->nextTextureSlot` read
    **4096** — exactly `kMaxDescriptors` — out of the operator's LIVE process with
    `gdb -p ... print`. Texture slots are handed out monotonically and NEVER RECYCLED

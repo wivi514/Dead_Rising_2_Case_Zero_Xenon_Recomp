@@ -102,7 +102,36 @@ constexpr uint32_t kSharedSize = 544 + 96 * 16; // one entry per vertex fetch sl
 constexpr uint32_t kVsConstBytes = 256 * 16;
 constexpr uint32_t kPsConstBytes = 256 * 16;
 
-constexpr uint32_t kMaxDescriptors = 4096; // per heap; the frontend uses a few dozen
+// The bindless heap's size, and the number this renderer ran out of.
+//
+// It was 4096 with the comment "the frontend uses a few dozen", which was true of
+// every screen this port could reach at the time and stopped being true the moment it
+// reached Still Creek. Slots are handed out monotonically and never recycled
+// (`entry.slot = R->nextTextureSlot++`), so a long session in a texture-rich area
+// fills the heap and every texture after that is served slot 0 — the 1x1 WHITE dummy
+// — with only a counter to say so. `R->nextTextureSlot` read exactly 4096 out of a
+// live game via `gdb -p ... print`, with white buildings, a white NPC, white road
+// decals, white blood and white inventory icons on screen.
+//
+// The rule the operator's pictures establish is worth keeping, because it is not the
+// obvious one: it is NOT "things that appear late go white", it is "anything needing
+// a NEW SLOT after the heap filled goes white". This title streams textures BY
+// DISTANCE, so walking toward a building requests a higher-resolution version — a new
+// fetch constant, a new cache entry, a new slot — which is why EVERY building whitens
+// on approach while its distant version stays correct.
+//
+// RAISING THIS IS A MITIGATION, NOT THE FIX, and the distinction is the point: a cap
+// is only ever a bigger number, and this one now trades "textures silently turn white"
+// for "the texture working set grows without bound". The real fix is recycling — an
+// LRU over the texture cache with deferred destruction so an in-flight frame cannot
+// lose its image — and it is on the list. What this does buy is a session long enough
+// to find the NEXT defect, and a same-binary way to prove the causal chain end to end:
+// if the buildings stop whitening when the cap goes up, the chain is confirmed.
+//
+// Sized from the DEVICE rather than from a new magic number, clamped to something
+// sane, because "how many sampled images may a shader see" is a property of the host
+// and not something to guess twice.
+uint32_t g_maxDescriptors = 4096;   // replaced at init from the device's own limit
 
 // --- diagnostics --------------------------------------------------------------------
 // Every path that declines to do something increments one of these. The alternative —
@@ -895,6 +924,28 @@ bool CreateDevice()
             VK_VERSION_PATCH(props.apiVersion));
     vkGetPhysicalDeviceMemoryProperties(R->physical, &R->memProps);
 
+    // Size the bindless heap from the device, not from a constant (see g_maxDescriptors).
+    // The clamp is a memory decision rather than a Vulkan one: a slot costs nothing on
+    // its own, but every slot that gets USED is a VkImage, so an unbounded heap trades
+    // white textures for unbounded VRAM. 65536 is ~16x the working set that filled the
+    // old 4096 cap, which is room to find the next defect without pretending to be the
+    // LRU this still needs. CZ_VK_MAX_TEXTURES overrides it — including DOWNWARD, which
+    // is the same-binary arm that reproduces the exhaustion on demand.
+    {
+        const uint32_t deviceCap =
+            std::min(props.limits.maxPerStageDescriptorSampledImages,
+                     props.limits.maxDescriptorSetSampledImages / 4);
+        uint32_t want = std::min(deviceCap, 65536u);
+        if (const char* env = getenv("CZ_VK_MAX_TEXTURES"))
+            want = std::min(deviceCap, uint32_t(std::max(16, atoi(env))));
+        g_maxDescriptors = std::max(want, 256u);
+        fprintf(stderr,
+                "[vk] bindless heap: %u slots (device allows %u). Slots are not "
+                "recycled yet, so a session that exhausts this serves the 1x1 white "
+                "dummy from then on.\n",
+                g_maxDescriptors, deviceCap);
+    }
+
     uint32_t qcount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(R->physical, &qcount, nullptr);
     std::vector<VkQueueFamilyProperties> families(qcount);
@@ -992,7 +1043,7 @@ bool CreateDescriptorPlumbing()
         VkDescriptorSetLayoutBinding b{};
         b.binding = 0;
         b.descriptorType = types[i];
-        b.descriptorCount = kMaxDescriptors;
+        b.descriptorCount = g_maxDescriptors;
         b.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
         const VkDescriptorBindingFlags flags =
@@ -1017,8 +1068,8 @@ bool CreateDescriptorPlumbing()
     }
 
     VkDescriptorPoolSize sizes[2] = {
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxDescriptors * 4 },
-        { VK_DESCRIPTOR_TYPE_SAMPLER, kMaxDescriptors },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, g_maxDescriptors * 4 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER, g_maxDescriptors },
     };
     VkDescriptorPoolCreateInfo pi{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
@@ -1801,7 +1852,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         return cached->second.slot;
     }
 
-    if (R->nextTextureSlot >= kMaxDescriptors)
+    if (R->nextTextureSlot >= g_maxDescriptors)
     {
         Count("texture: bindless heap full");
         return 0;
@@ -3938,7 +3989,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             it = R->snapshots.end();
             Count("resolve: snapshot resized");
         }
-        if (it == R->snapshots.end() && R->nextTextureSlot < kMaxDescriptors)
+        if (it == R->snapshots.end() && R->nextTextureSlot < g_maxDescriptors)
         {
             Snapshot s;
             s.slot = R->nextTextureSlot++;

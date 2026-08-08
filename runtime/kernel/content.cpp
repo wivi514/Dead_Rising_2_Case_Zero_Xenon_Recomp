@@ -212,6 +212,38 @@ std::vector<ContentItem> ScanSaves(uint32_t deviceId, uint32_t contentType)
     {
         if (!entry.is_directory(ec))
             continue;
+
+        // AN EMPTY CONTENT DIRECTORY IS NOT CONTENT.
+        //
+        // XamContentCreateEx creates the directory and the title writes its save file
+        // inside it afterwards, so a directory with nothing in it is the footprint of a
+        // save that STARTED and never finished. Reporting it as an item is how the
+        // operator's slot 1 came to show "Day 1 - 07:08 AM, Safe House" and then answer
+        // "Content appears to be corrupt. Are you sure you want to overwrite it?" — the
+        // enumeration said a save was there and the title found nothing to read.
+        //
+        // That is our bug and not the title's, and it compounds the underlying one: it
+        // turns "the save silently wrote nothing" into "there is a save here and it is
+        // damaged", which is a more alarming and less accurate thing to tell a player.
+        // A3's real save is one 303,104-byte file inside the directory, so "contains at
+        // least one regular file" is the whole test.
+        bool hasContent = false;
+        for (const auto& f : std::filesystem::directory_iterator(entry.path(), ec))
+        {
+            if (f.is_regular_file(ec))
+            {
+                hasContent = true;
+                break;
+            }
+        }
+        if (!hasContent)
+        {
+            KLOG("content: '%s' is an empty directory — not enumerating it as a save "
+                 "(a create that never wrote its file)\n",
+                 entry.path().filename().string().c_str());
+            continue;
+        }
+
         ContentItem item;
         item.fileName = entry.path().filename().string();
         item.displayName = item.fileName;
