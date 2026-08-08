@@ -114,6 +114,33 @@ answered elsewhere.
   Spectacle deletes its temp directory on close; 13 of the first session's shots were
   lost and survive only as descriptions in that directory's `INDEX.md`.
 
+## Where everything is
+
+```
+assets/shader_spv/                      370 .spv (+ .meta.json). GITIGNORED — a fresh
+                                        clone must rebuild it, and the captures alone
+                                        will NOT reproduce these 370 (see below)
+~/DR2CZ-troubleshooting/                OUTSIDE the repo, 42 MB
+  INDEX.md                              what every screenshot shows, INCLUDING the 13
+                                        that were lost — read this before the images
+  operator-screenshots/  17 PNG         a human's view, descriptively named. The two
+                                        that matter most:
+                                          0058_gas-station-huge-blown-out-bloom  (1c)
+                                          0101_bar-fausto-no-legs-gemini-no-hair (3d)
+  ucode-dumps/          366 .ucode      every microcode blob seen in gameplay. THIS IS
+                                        THE ONLY COPY of the 33 shaders that are not in
+                                        either capture — rebuild the cache from here,
+                                        not from A1/A2:
+                                          tools/build_shader_spv.sh ~/DR2CZ-troubleshooting/ucode-dumps assets/shader_spv
+  renderer-dumps/        49 PNG         headless frames from the first gameplay run
+  logs/                    1            the 2 MB session log the findings came from
+```
+
+**The ucode-dumps directory is load-bearing and not backed up anywhere else.** A1 stops
+at the title screen and A2 is one gameplay session, so 33 of the 370 shaders exist only
+because someone walked into the rooms that load them. Losing that directory means
+replaying the game to get them back.
+
 ## Gates on the current binary
 
 ```
