@@ -11,11 +11,11 @@ worked example.
 Case Zero boots, renders and plays. Ordinary gameplay is 31 fps and closed at the title's
 own pacing; crowds are 22-25 and CPU-bound in our runtime. The picture matches capture E2
 at +0.9597 identity. **The port's top rendering defect for the last six parts — the
-view-dependent whole-frame black — is solved and was a 128 MB allocator.** The save can
-now write files, but no run here has reached a save point, so whether the title's save
-COMPLETES is still unknown. What is open: the shadow cascade, mipmaps, NPC part meshes,
-the magenta sky / colour-grading LUT, the prologue cinematic, and the CPU half of the
-crowd frame.
+view-dependent whole-frame black — is solved and was a 128 MB allocator. And the SAVE
+WORKS**, confirmed by an operator and byte-checked against the hardware save capture;
+only the LOAD half is untested. What is open: the shadow cascade, mipmaps, NPC part
+meshes, the magenta sky / colour-grading LUT, the prologue cinematic, and the CPU half of
+the crowd frame.
 
 ## Where part 20 starts, in order
 
@@ -80,7 +80,10 @@ crowd frame.
   consecutive links exactly, before and after.
 * **The save could not write, in two independent ways** (`docs/phase3-notes.md` finding
   52), plus a third — the VFS caches negative lookups, so a file this runtime created
-  could never be re-opened — that only a test could find.
+  could never be re-opened — that only a test could find. **Fixed and confirmed the same
+  day**: "Game saved successfully", and the file is 303,104 bytes with bytes 4..31
+  identical to A3's real 360 save. That retracts open-items 1b, whose complete causal
+  chain turned out to describe a path the title no longer takes.
 * **`CZ_VK_SNAP_ON_DARK`**, which fires on mean luminance and dumps a BRIGHT REFERENCE
   chain beside the dark one, and **`tools/snap_dump_stats.py`**, which turns a
   61-surface dump into 61 lines.
