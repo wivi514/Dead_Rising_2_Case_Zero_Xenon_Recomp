@@ -1768,6 +1768,133 @@ and then emitted 37,000 orphan input lines, which is how the frame-1000 chain ab
 nearly read with the destinations missing. Gotcha 193, for the second time in three
 sessions, and the check is one grep.
 
+## 6af. The prologue's black screen: TWO of our defects, and then the guest's own fade
+
+Phase C part 15. Part 14 handed this over as the frontier — "a live pass with live
+inputs produces black, the same SHAPE as §6s" — with the tone map named as the first
+black link. It is not one defect and the last of the three is not ours.
+
+Repro throughout: `CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A`, 300 s, no
+window. The presented frame is 37% non-black through the menus and loading card and
+**goes to 0.00% at frame ~1000 and stays there for the remaining ~2,400 frames.**
+
+### (i) A shader the cache did not have — real, and NOT the black
+
+The log says it in one line: `[vk] no translated shader for VS 24e60d91249e6d04 —
+draws skipped`, printed once per missing hash, with a counter (`draw: shader not in the
+cache`) reading **28,718 a run**. The blob is 351 dwords, loaded by the prologue, and it
+is in neither capture — A1 stops at the title screen, A2 is gameplay — nor in our own
+boot dump, which the cache recipe built from a plain boot that also stops at the title
+screen. Three sources and a hole in the middle of all of them.
+
+Fixed by dumping from a run that reaches the prologue (the recipe in CLAUDE.md now
+does), and the cache is 337 shaders. **It did not change the picture**: the missing
+count went to 0 and the frame stayed 0.00%. Recorded because a negative result on a
+real defect is worth as much as a positive one — and because the reporting is the
+lesson. A missing shader is one log line, no fallback, no picture alarm and no failure;
+`grep -c "no translated shader"` is the gate and it is now written down.
+
+### (ii) The colour-grading LUT's snapshot EXPIRED — ours, and a second full-frame black
+
+The dependency graph at the black frame, from `CZ_VK_SNAP_DUMP` + the resolve trace's
+`sampled snapshots` line, differs from the title screen's by exactly one entry:
+
+```
+frame  448 (works)  tone map inputs: 0684B000 1476F000 147AB000 147BA000 14338000
+frame 1100 (black)  tone map inputs: 0684B000 1476F000 147AB000 147BA000
+```
+
+`14338000` is the colour-grading LUT, and §6s already established that a black LUT is a
+black frame. The reason it dropped out is `frameSeen + 1 >= frame`: a snapshot had to
+have been taken this frame or last. **At the title screen the title re-renders all three
+LUTs every frame** (three resolves in frame 448's list) so the window never bound; at
+the prologue the grade is static, the LUT stops being resolved, and from the next frame
+the fetch fell out of the snapshot path into guest memory — which is zero, because
+resolved pixels are never written back there.
+
+The window is now gone (`CZ_VK_SNAPSHOT_MAX_AGE=1` restores it as the control arm). For
+an address the GPU has resolved to, the snapshot is the ONLY copy of what that surface
+holds, at any age; the risk the window was implicitly guarding — the guest freeing a
+resolve destination and putting a CPU texture there — is real, different, and does not
+happen in this title, and the census now tracks `maxAge` on the served path so it would
+be visible.
+
+This too was invisible until (iii) was arm'd out, and that is how it was measured:
+
+| prologue frames 1088..1664, with the fade patched out | non-black | colours |
+|---|---|---|
+| `CZ_VK_SNAPSHOT_MAX_AGE=1` (pre-part-15) | **0.00%** | 1 |
+| default (no age limit) | **99.99%** | ~89,450 |
+
+### (iii) The rest is the GUEST asking for black, and the compose is faithful
+
+With both of ours fixed the frame was still 0.00%, so the next move was to print the
+tone map's constants rather than reason about them (gotcha 145). `CZ_VK_DRAW_PROBE`
+with `CZ_VK_DRAW_PROBE_PC=105,106,110,111,112,254,255`, on the tone map draw
+(`tex=0684B000 1280x720`) in both eras:
+
+| | title screen (frame 440) | prologue (frame 1000) |
+|---|---|---|
+| `pc(110)` | 0, 0, 0, **0.4** | 0, 0, 0, **1.0** |
+| `pc(111)` | **1.0**, 1.414, 0, 0 | **0**, 0, 0, 0 |
+| `pc(254)` | .0156, 1.4142, .0312, 0 | .0156, 1.4142, .0312, 0 |
+| `pc(255)` | .9688, 31, 2, -1 | .9688, 31, 2, -1 |
+
+The shader's last four instructions are a vignette/fade:
+
+```
+r0.x = pow(r1.w / pc(111).y, pc(111).x) * pc(110).w;   // weight
+r0.xyw = saturate(r0.x * (pc(110).xyz - r1.xyz) + r1.xyz);
+```
+
+`pc(111).x` is the vignette POWER and `pc(110).w` its strength. With the power at
+**zero**, `pow(anything, 0) == 1` at every pixel, so the weight is `pc(110).w` = 1.0
+everywhere and the compose lerps 100% of the way to `pc(110).xyz`, which is black. The
+LUT arithmetic constants (254/255) are bit-identical between the eras, so nothing about
+the grade is wrong — the frame is being deliberately, uniformly faded out.
+
+**Proved with an arm rather than argued.** `CZ_SHADER_SPV=<dir>` and a one-line patch to
+`ps_114c4965eaabd54c`'s HLSL forcing the fade weight to zero (gotcha 128, a five-minute
+experiment):
+
+| prologue frames 1024..1664 | non-black | colours |
+|---|---|---|
+| stock shader | 0.00% | 1 |
+| fade weight forced to 0 | **99.99%** | **~89,450** |
+
+and the picture behind it is the prologue's opening highway — the road into Still Creek,
+power lines, rocks, the tree, tone-mapped and graded. **The renderer draws the prologue
+correctly.**
+
+### What IS wrong, then, and it is not the renderer
+
+`CZ_VK_FRAME_STATS` over the whole black era says the game is not advancing:
+
+* the **camera fingerprint is one constant value, `00d7a3a4aaed62c6`, for 1,700+
+  frames**, and the scene surface's mean luminance is pinned at 104.484 with coverage
+  100.0000 on every sampled frame;
+* the draw stream still moves a little — 1,225..1,247 draws and 848,653..883,067
+  vertices, cycling through a handful of fingerprints — so the title is alive and
+  submitting work, it is the scene STATE that is frozen;
+* everything underneath is healthy: `ring: chain arms=11489 ints=11483 isr=11483`,
+  `kicks == walks == drains = 6659`, `distinct=764`, `truncated=0`, zero parser stalls,
+  and every `[wait]` is an idle worker or one of the two threads the title blocks by
+  design (finding 41).
+
+So the prologue is stuck in a faded-out state with a frozen camera, and the black screen
+is the game's own fade drawn faithfully over it. The leading hypothesis for what it is
+waiting on is **audio**: the loading ends with `XMACreateContext` (six contexts), the
+pump runs — 55,808 driver frames in 300 s — and **every sampled frame has peak
+amplitude exactly 0.0000**, because there is no XMA decoder (phase 6). An in-engine
+cinematic cued off a voice or music stream that never plays would look exactly like
+this. That is a hypothesis with an obvious next probe, not a finding.
+
+The general lesson is the one this port keeps re-learning from the other side: **a
+symptom can be several defects deep, and the last layer can belong to the guest.** Three
+things had to be true for the prologue to be black, and only two of them were ours. The
+instrument that separated them was an arm on the shader itself — the only way to ask
+"is this black because we computed it wrong, or because we were told to".
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
