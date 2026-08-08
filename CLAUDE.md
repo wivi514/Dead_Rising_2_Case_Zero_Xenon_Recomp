@@ -2036,7 +2036,20 @@ CZ_FAKE_PRESS_SEQ=START,A,A  which buttons that arm sends, one per interval, HOL
                    title is being poked every 8 s for the whole run and "it froze
                    here" cannot be told from "something keeps pressing at it"
                    (gotcha 214). It takes about TEN A presses to reach the prologue,
-                   so `START,A,A,NONE` merely parks on the title screen
+                   so `START,A,A,NONE` merely parks on the title screen.
+                   **STICK names walk the WORLD, which buttons never could**: LSUP
+                   LSDOWN LSLEFT LSRIGHT move Chuck, RSUP RSDOWN RSLEFT RSRIGHT aim the
+                   camera. A stick entry HOLDS for its whole interval where a button
+                   entry taps for 150 ms — that difference is the point, not a detail,
+                   because a 150 ms nudge of the stick moves Chuck a few centimetres and
+                   would read exactly like a stick that does not work. Until this
+                   existed, gotcha 190 was only half solved: the menus were reachable
+                   headless and the WORLD was not, so every gameplay defect on the board
+                   (the gas station's whole-frame black, the magenta sky, the NPC part
+                   meshes, the sheared pause menu) was an operator report with no
+                   reproduction. An unknown name is now REPORTED rather than dropped —
+                   a silent drop shifts every later entry one interval early and
+                   desynchronises the recipe from the screens it was aimed at
 CZ_XMA_PROBE=1     the guest's own audio state, on a 5 s clock: the IsPlaying
                    predicate (sub_82862A90), the per-context "has it run dry" test
                    (sub_8285EFE0, which reads the input-buffer-VALID bits at
@@ -2178,7 +2191,14 @@ CZ_DETERMINISTIC_CLOCK=1  the guest clock advances a fixed quantum per PRESENTED
 CZ_VK_FRAME_STATS=file  one line per presented frame: draws, vertices, a draw-stream
                    fingerprint, a camera fingerprint, and the output's coverage, mean
                    luminance, distinct colours and pixel hash. The input to
-                   tools/frame_compare.py
+                   tools/frame_compare.py. The last column is **msec**, wall time since
+                   the first measured frame — APPENDED, so every column index the
+                   existing tools read is unchanged. It exists because the frame rate of
+                   an ERA was not a number this project could state: every frame-rate
+                   figure it owned divided a whole run's frames by its wall time, which
+                   for a run that boots, walks four menus, loads and only then plays is
+                   an average over eras differing by more than the effect anyone wants
+                   to measure. "8-12 fps in gameplay" was an operator's stopwatch
 CZ_VK_FRAME_STATS_SURFACE=hex  ALSO measure that resolve surface each frame. Not a
                    refinement — the metric does not work without it, because the
                    PRESENTED frame at the title screen is mostly UI and a change

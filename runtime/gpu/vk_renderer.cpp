@@ -141,6 +141,59 @@ uint32_t g_maxDescriptors = 4096;   // replaced at init from the device's own li
 std::map<std::string, uint64_t> g_stats;
 void Count(const char* name) { ++g_stats[name]; }
 
+// --- CZ_VK_PROFILE=N — where a FRAME's CPU time actually goes ------------------------
+//
+// Every frame-rate number this project owned before today divided a whole run's frames
+// by its wall time, and every one of them was taken at the TITLE SCREEN. "Gameplay runs
+// at 8-12 fps" was an operator's stopwatch, and the three suspects on the board (the
+// synchronous submit, the per-frame readback, the per-draw constant upload) had never
+// been separated — so any work on them would have been optimising whichever one came to
+// mind first. This splits the frame into named phases and prints milliseconds.
+//
+// The phases are CPU wall time on the thread that records the frame, which is the right
+// quantity while the renderer is CPU-bound and would be the wrong one if it were not.
+// `submit` is the honest check on that: it is the wait for the GPU to finish, so a
+// frame whose time is in `submit` is GPU-bound and the rest of this table is noise.
+//
+// It costs one clock read per phase entry and exit. At ~2,000 draws a frame that is a
+// few thousand vDSO reads, well under a millisecond of a ~100 ms frame — but it is off
+// by default anyway, because an instrument expensive enough to change the thing it
+// measures reports its own overhead (gotcha 7).
+struct ProfilePhases
+{
+    uint64_t constants = 0;   // the per-draw ALU constant copy into mapped memory
+    uint64_t streams = 0;     // vertex/index stream copy + dword swap
+    uint64_t textures = 0;    // texture untile + upload
+    uint64_t record = 0;      // the vkCmd calls of a draw
+    uint64_t submit = 0;      // vkQueueSubmit + the fence wait (i.e. the GPU)
+    uint64_t readback = 0;    // image -> host buffer -> window
+    uint64_t drawTotal = 0;   // ALL of DoDraw, so the phases above can be subtracted
+    uint64_t draws = 0;       // how many draws those numbers are spread over
+};
+ProfilePhases g_prof;
+bool g_profileOn = false;
+
+inline uint64_t ProfNow()
+{
+    return g_profileOn ? uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count())
+                       : 0;
+}
+// Scoped accumulator. Compiles to nothing measurable when the profile is off, because
+// every call short-circuits on one already-hot bool.
+struct ProfScope
+{
+    uint64_t* sink;
+    uint64_t t0;
+    explicit ProfScope(uint64_t* s) : sink(s), t0(ProfNow()) {}
+    ~ProfScope()
+    {
+        if (g_profileOn)
+            *sink += ProfNow() - t0;
+    }
+};
+
 // CZ_VK_TEX_CENSUS=1 — per texture ADDRESS, where its pixels came from.
 //
 // The aggregate counters above say how many fetches took each path; they cannot say
@@ -1506,6 +1559,7 @@ bool SnapshotUsable(const Snapshot& s)
 // address alone would be wrong in this title, which reuses addresses.
 uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
 {
+    ProfScope _p(&g_prof.textures);
     uint64_t key = 1469598103934665603ull;
     for (uint32_t i = 0; i < 6; i++)
     {
@@ -2320,6 +2374,7 @@ void SubmitAndWait()
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &R->cmd;
+    ProfScope _p(&g_prof.submit);
     vkResetFences(R->device, 1, &R->fence);
     vkQueueSubmit(R->queue, 1, &si, R->fence);
     vkWaitForFences(R->device, 1, &R->fence, VK_TRUE, UINT64_MAX);
@@ -2350,7 +2405,10 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
     const VkDeviceSize at = ArenaAlloc(bytes, 16);
     if (at == VkDeviceSize(-1))
         return at;
-    CopySwapped(R->arena.mapped + at, base + va, size_t(bytes), endian);
+    {
+        ProfScope _p(&g_prof.streams);
+        CopySwapped(R->arena.mapped + at, base + va, size_t(bytes), endian);
+    }
     R->streamCache.emplace(key, at);
     return at;
 }
@@ -2521,6 +2579,12 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
 void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const Pm4ShaderBinding& vsBind, const Pm4ShaderBinding& psBind)
 {
+    // The WHOLE draw, so that "the renderer" and "everything else in the frame" can be
+    // told apart by subtraction. Without it the profile's unaccounted column mixes this
+    // function's own untimed work (register decode, the pipeline-key build and lookup,
+    // the fetch-constant walk) with the guest's simulation and the command processor —
+    // three completely different investigations behind one number.
+    ProfScope _pDraw(&g_prof.drawTotal);
     if (!vsBind.hash || !psBind.hash)
     {
         Count("draw: no shader bound");
@@ -2723,17 +2787,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         sharedAt == VkDeviceSize(-1))
         return;
 
+    uint8_t* shared = R->arena.mapped + sharedAt;
     {
+        ProfScope _p(&g_prof.constants);
+        g_prof.draws++;
         uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
         for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + i];
         dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
         for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + 256 * 4 + i];
+        memset(shared, 0, kSharedSize);
     }
-
-    uint8_t* shared = R->arena.mapped + sharedAt;
-    memset(shared, 0, kSharedSize);
 
     // Texture and sampler descriptor indices, one per sampler slot the pixel shader
     // declared. A slot the shader does not use is left at 0, which is the dummy — a
@@ -3176,6 +3241,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
     }
 
+    ProfScope _pRecord(&g_prof.record);
     vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdSetViewport(R->cmd, 0, 1, &viewport);
     vkCmdSetScissor(R->cmd, 0, 1, &scissor);
@@ -4310,9 +4376,12 @@ bool InitCommon()
 
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
+    g_profileOn = EnvOn("CZ_VK_PROFILE");
     g_active = true;
     fprintf(stderr, "[vk] renderer UP: %ux%u target, %zu shaders\n", R->targetWidth,
             R->targetHeight, R->shaders.size());
+    if (g_profileOn)
+        fprintf(stderr, "[vkprof] frame CPU profile ON\n");
     return true;
 }
 
@@ -4413,10 +4482,13 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     SubmitAndWait();
 
     const size_t bytes = size_t(width0) * height0 * 4;
-    if (R->presentPixels.size() < bytes)
-        R->presentPixels.resize(bytes);
-    memcpy(R->presentPixels.data(), R->readback.mapped, bytes);
-    Host_PresentPixels(R->presentPixels.data(), width0, height0);
+    {
+        ProfScope _p(&g_prof.readback);
+        if (R->presentPixels.size() < bytes)
+            R->presentPixels.resize(bytes);
+        memcpy(R->presentPixels.data(), R->readback.mapped, bytes);
+        Host_PresentPixels(R->presentPixels.data(), width0, height0);
+    }
 
     // CZ_VK_FRAME_DUMP=<dir> writes every 64th frame as a PPM. This is the instrument
     // that makes the renderer checkable WITHOUT a window, which matters more than it
@@ -4468,7 +4540,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         "# frame draws vertices drawFingerprint cameraFingerprint "
                         "width height coveragePct meanLuma distinctColours pixelHash "
                         "surfW surfH surfCoveragePct surfMeanLuma surfDistinct "
-                        "surfHash\n");
+                        "surfHash msec\n");
             else
                 fprintf(stderr, "[vk] cannot write CZ_VK_FRAME_STATS=%s\n", path);
         }
@@ -4485,8 +4557,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // overlay. Gotcha 30: a test that has never failed has not been shown capable of
     // failing, and this one was shown incapable.
     //
-    // Set it to the scene's resolve destination (06BE4000 at the title screen; the
-    // CZ_VK_RESOLVE_TRACE output names it for any era).
+    // Set it to the scene's resolve destination. At the title screen that is
+    // **0684B000** — NOT 06BE4000, which was written here and quoted project-wide from
+    // phase 5 to part 13 and is the scene DEPTH's first tile. It held colour pixels
+    // only because our resolve copied the colour buffer for depth resolves too, so the
+    // wrong label was confirmed every time it was checked (part 14, gotcha 205).
+    // CZ_VK_RESOLVE_TRACE names the right address for any era.
     static const char* surfaceEnv = Env("CZ_VK_FRAME_STATS_SURFACE");
     static const uint32_t statsSurface =
         surfaceEnv ? uint32_t(strtoul(surfaceEnv, nullptr, 16)) & 0x1FFFFFFF : 0;
@@ -4579,9 +4655,23 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             }
         }
         const uint64_t spixels = surfacePixels.size() / 4;
+        // Milliseconds since the first measured frame — APPENDED, so every column index
+        // any existing tool reads is unchanged.
+        //
+        // It exists because the frame rate of an ERA is not a number this project could
+        // previously state. Every frame-rate figure it owns divides a whole run's frame
+        // count by its wall time, which for a run that boots, walks four menus, loads,
+        // and only then plays is an average over eras that differ by more than the
+        // effect anyone wants to measure. "8-12 fps in gameplay" was an operator's
+        // stopwatch. With a timestamp per frame, any era the camera fingerprint or the
+        // draw count can delimit has its own measurable rate, from a run that was
+        // already being made for another reason.
+        static const auto statsT0 = std::chrono::steady_clock::now();
+        const long long msec = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - statsT0).count();
         fprintf(statsFile,
                 "%llu %llu %llu %016llx %016llx %u %u %.4f %.3f %llu %016llx "
-                "%u %u %.4f %.3f %llu %016llx\n",
+                "%u %u %.4f %.3f %llu %016llx %lld\n",
                 (unsigned long long)R->frame, (unsigned long long)R->drawsThisFrame,
                 (unsigned long long)R->verticesThisFrame,
                 (unsigned long long)R->drawFingerprint,
@@ -4593,7 +4683,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 spixels ? 100.0 * double(slit) / double(spixels) : 0.0,
                 spixels ? double(slumaSum) / double(spixels) : 0.0,
                 (unsigned long long)sdistinct,
-                spixels ? (unsigned long long)sph : 0ull);
+                spixels ? (unsigned long long)sph : 0ull, msec);
         fflush(statsFile);
     }
     R->drawFingerprint = 0;
@@ -4708,6 +4798,58 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Env("CZ_VK_STATS") ? std::max(1L, strtol(Env("CZ_VK_STATS"), nullptr, 10)) : 0;
     if (statsEvery && (R->frame % statsEvery) == 0)
         VkRenderer_DumpStats();
+
+    // CZ_VK_PROFILE=N — the frame's CPU time by phase, every N seconds.
+    //
+    // On a CLOCK rather than a frame count, and the reason is this project's own
+    // history: a report every N frames samples a different amount of wall time in every
+    // era, so the boot's fast frames and gameplay's slow ones would be averaged by
+    // whatever the interval happened to buy (gotcha 186). Reporting per second makes
+    // the fps column mean the same thing everywhere, which is the entire point of
+    // having it.
+    if (g_profileOn)
+    {
+        static const auto t0 = std::chrono::steady_clock::now();
+        static auto last = t0;
+        static uint64_t lastFrame = 0;
+        static double period =
+            Env("CZ_VK_PROFILE") ? std::max(1.0, atof(Env("CZ_VK_PROFILE"))) : 5.0;
+        const auto now = std::chrono::steady_clock::now();
+        const double dt = std::chrono::duration<double>(now - last).count();
+        if (dt >= period)
+        {
+            const uint64_t frames = R->frame - lastFrame;
+            const double ms = dt * 1000.0;
+            // Every phase as a percentage of the WALL time of the window, so the
+            // columns are comparable and their shortfall from 100% is the frame time
+            // this instrument does not yet account for — which is a number worth
+            // seeing rather than hiding.
+            auto pct = [&](uint64_t ns) { return 100.0 * (double(ns) * 1e-6) / ms; };
+            const double perFrame = frames ? ms / double(frames) : 0.0;
+            // `drawOther` is DoDraw's own untimed work — the register decode, the
+            // pipeline-key build and its lookup, the fetch-constant walk. `outside` is
+            // everything that is not the renderer at all: the guest's simulation, the
+            // command processor, and any wait between frames.
+            const uint64_t inDraw = g_prof.constants + g_prof.streams +
+                                    g_prof.textures + g_prof.record;
+            const uint64_t drawOther =
+                g_prof.drawTotal > inDraw ? g_prof.drawTotal - inDraw : 0;
+            const uint64_t known = g_prof.drawTotal + g_prof.submit + g_prof.readback;
+            fprintf(stderr,
+                    "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
+                    "[constants %.1f streams %.1f textures %.1f record %.1f other "
+                    "%.1f] submit %.1f%% readback %.1f%% outside %.1f%%\n",
+                    frames / dt, perFrame,
+                    (unsigned long long)(frames ? g_prof.draws / frames : 0),
+                    pct(g_prof.drawTotal), pct(g_prof.constants), pct(g_prof.streams),
+                    pct(g_prof.textures), pct(g_prof.record), pct(drawOther),
+                    pct(g_prof.submit), pct(g_prof.readback),
+                    100.0 - pct(known));
+            g_prof = ProfilePhases{};
+            last = now;
+            lastFrame = R->frame;
+        }
+    }
 
     // The snapshot is per frame: a frame whose resolve chain never reaches the front
     // buffer must not present the previous frame's picture as if it were this one.
