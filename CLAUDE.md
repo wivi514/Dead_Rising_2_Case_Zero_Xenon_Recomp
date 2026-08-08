@@ -3681,6 +3681,24 @@ Next, in order:
    **The cheap confirming arm before the real fix**: raise `kMaxDescriptors`. If the
    buildings render, the whole causal chain is proven end to end; it is not the fix,
    because a cap is only ever a bigger number.
+3d. **NPC PART MESHES GO MISSING, DIFFERENT PARTS ON DIFFERENT CHARACTERS.** Dick
+   renders as a head and one hand; Fausto has no legs; Gemini has no hair (her dark
+   arms are GLOVES and correct). These characters are assembled from separate part
+   meshes — the boot loads `childface`, `childhand`, `childupperbdy`, `childfullbody`
+   as distinct files — so the thing to look for is what a missing part has in common
+   with the other missing parts, not what is wrong with a given character. Hair in
+   particular is normally its own alpha-tested material, which is a natural candidate
+   for a shader or blend-state gap.
+   **Distance matters**: Dick was INVISIBLE at range and became head-and-hand on
+   approach, which is the same "approaching asks for a new resource and whatever we
+   lack goes missing silently" signature as the white buildings (3b) and the black
+   areas (item 0's shader misses).
+   **UNRESOLVED WHETHER THIS IS A CACHE MISS.** The session that found it ran 351
+   shaders while 370 were on disk, and every one of the 16 shaders it reported missing
+   is now translated — so some of these parts may already be fixed. Re-test on a fresh
+   launch BEFORE investigating: if the parts come back, it was the cache; if they do
+   not, it is a real material/geometry defect and Gemini's correctly-rendered body is
+   the control sitting next to it.
 3c. **The pause menu is sheared and broken in STILL CREEK and perfect in the
    SAFEHOUSE.** Same menu, same shaders, different world state — so it arrives with its
    own control, which is rare. The paper becomes a trapezoid with stray white polygons
