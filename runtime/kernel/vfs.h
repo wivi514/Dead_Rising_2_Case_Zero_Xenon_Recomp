@@ -54,5 +54,10 @@ void VfsUnmountDevice(const std::string& device);
 std::string VfsTranslate(const std::string& guestPath);
 
 // Guest path -> an existing host path, applying the case-insensitive fallback.
-// Returns "" if nothing matches.
+// Returns "" if nothing matches. Both answers are cached, INCLUDING the misses.
 std::string VfsResolveExisting(const std::string& guestPath);
+
+// Forget one path's cached answer. Call this after creating a file: the create's own
+// existence check cached a miss, and without this the file it wrote can never be
+// re-opened. Mount/unmount clear the whole cache and do not need it.
+void VfsForget(const std::string& guestPath);

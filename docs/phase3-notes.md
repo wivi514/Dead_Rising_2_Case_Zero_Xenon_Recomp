@@ -681,3 +681,103 @@ profile GUID, and an Xbox 360 save is signed per profile. "Damaged Content" may 
 right answer to THIS file even with `0x271` implemented — so the fix and the test need
 separating, and the honest test of the fix is whether the title gets far enough to read
 the file at all (our log shows it never opens `save:\DR2P000.DSF`).
+
+---
+
+## 13. Finding 52 — the save could not write, in two independent ways, and neither was visible
+
+Part 16 fixed `XUserWriteAchievements`, part 17 watched the failure MOVE — the mount now
+succeeds, `XamContentCreateEx('save','DR2P000.DSF', flags 00001012) -> mounted` — and
+recorded the next question honestly as unanswered: the operator's log had the mount and
+its `XamContentClose` about ten lines apart with no file activity between them, and
+`NtCreateFile` successes print only for the first 512 and then every 64th, so **that
+silence was a printer limit, not a fact about the title** (gotcha 109).
+
+The answer did not need a save run. It is in the file layer, and it is two defects that
+each independently guarantee the save writes nothing:
+
+1. **`NtCreateFile` ignored `createDisposition` entirely and opened every handle
+   `"rb"`.** A3's save open is
+   `NtCreateFile(..., access 40100080, ..., share 0, disposition 00000005, options 64)`
+   — `FILE_OVERWRITE_IF` with `GENERIC_WRITE`. Our resolver looks the path up with
+   `VfsResolveExisting`, which returns empty for a file that does not exist, and the
+   function returned `STATUS_NO_SUCH_FILE`. The save's very first call failed.
+2. **`NtWriteFile` was a generated honest-failure stub.** It has been in the import
+   table since day one and had a stub since day one, and its only trace is one
+   `[kcall]` line.
+
+Either alone produces exactly the symptom that was reported, which is why the symptom
+could not discriminate. **An import list is not a feature list** (gotcha 67, and
+`docs/open-items.md` item 9 is a standing list of this exact mistake): a stub that fails
+honestly is still a feature that does not exist, and the honesty is what makes it quiet.
+
+### What the fix is, and it is all derived from A3
+
+`runtime/kernel/file_imports.cpp` now honours the six NT dispositions, derives the
+`fopen` mode from the guest's own `desiredAccess` + disposition rather than from the
+device name, sets `IO_STATUS_BLOCK.Information` to the right one of
+`FILE_CREATED`/`FILE_OPENED`/`FILE_OVERWRITTEN`/`FILE_SUPERSEDED` (a guest that opens
+`FILE_OPEN_IF` learns from that field alone which it got), and implements `NtWriteFile`
+as the mirror of `NtReadFile`.
+
+Two details that are evidence rather than convention:
+
+* **The read path and the write path use DIFFERENT completion notifications.** Every
+  boot-era `NtReadFile` passes `event = 0` and an APC; A3's `NtWriteFile` passes a real
+  event (`F80002C8`, created two lines earlier) and no APC. A layer that implemented
+  only the notification it had seen would hang the save at precisely the point the
+  boot's reads work. Both are signalled, for the same reason they are in `NtReadFile`.
+* **The whole save is ONE write.** A3: `length=0004A000` = 303,104 bytes, and the file
+  on disk is exactly 303,104 bytes. There is no append, no `NtSetInformationFile`, and
+  no `NtFlushBuffersFile` on that path — so `fflush` after the write is not caution, it
+  is the only thing standing between the payload and a save that exists until the
+  process dies.
+
+### The third defect, which only a test could have found
+
+`CZ_FILE_WRITE_SELFTEST=1` drives create → write → re-open → read → compare through the
+real entry points at startup, on its own mounted device in a temporary directory that it
+then deletes. It exists because **the feature is otherwise unreachable from here**: the
+only thing in this title that writes a file is the save, the save is reached by playing
+to a save point, and no headless recipe in this project reaches one. Shipping the write
+path without it would have been shipping a prediction (gotcha 67).
+
+Its first run FAILED, and on something neither A3 nor the code review would have shown:
+
+```
+NtCreateFile('selftest:\roundtrip.bin') -> handle A0000000, WRITABLE, disposition 5 (created)
+NtWriteFile('selftest:\roundtrip.bin', 303104 bytes @ 0) -> 303104 written
+NtCreateFile('selftest:\roundtrip.bin') -> not found          <- the file it just wrote
+[selftest] FAILED: NtCreateFile(FILE_OPEN) on the file just written
+```
+
+**`VfsResolveExisting` caches NEGATIVE results**, and does so deliberately — a title
+that probes for optional files would otherwise re-scan a directory on every miss, and
+this one probes `game:\data\capcom.txt` at boot. But the create's own existence check is
+what caches the "no", so a file this runtime creates is invisible to every later open
+for the life of the mount. That is the save's LOAD half, and A3 shows the title probing
+`save:\DR2P000.DSF` with `FILE_OPEN` before it ever writes one — so on the real path the
+miss is cached before the save even starts.
+
+`VfsForget(path)` drops one entry and `NtCreateFile` calls it when it creates a file.
+Mount and unmount already clear the whole map, which is right for a different reason: a
+device pointing somewhere new invalidates every path under it, and `save:` is remounted
+per content item.
+
+The test passes now, and — this is the part that makes it a test rather than a
+decoration — **it has been shown capable of failing** (gotcha 30). It checks five
+independent things, including the negative: a write through a read-only handle must
+fail, because opening every handle read-only is exactly the defect above and a test that
+did not check it would pass on the broken code.
+
+### What is still NOT known
+
+Whether the title's save now completes. That needs a run that reaches a save point, and
+the headless recipe does not — the gameplay run this was written alongside never calls
+`XamContentCreateEx` at all. What HAS changed is that the next attempt is legible
+without any new instrument: every file operation on a device that is not `game:`/`d:`
+now logs uncapped (saves are rare, disc reads are not), so a save either prints its open
+and its write or it does not, and the printer can no longer be the reason for a silence.
+
+Open-items 1b (`[xam] no handler for app FB message 000B0008`) is untouched by this and
+may still stop the save one layer up.

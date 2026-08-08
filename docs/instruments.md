@@ -16,7 +16,22 @@ Two distinctions that matter more than the list:
 Runtime instruments, all off by default and free when off:
 ```
 CZ_MEM_TRACE=1     every virtual-memory call with its arguments AND its answer
-CZ_FILE_TRACE=1    every open/read, including the not-founds
+CZ_FILE_TRACE=1    every open/read, including the not-founds. NB every operation on a
+                   device that is NOT `game:`/`d:` is logged UNCAPPED without it —
+                   saves are rare where disc reads are not, and part 17 could not say
+                   whether the save had opened a file because the capped printer had
+                   fallen silent thousands of opens earlier (gotcha 109)
+CZ_FILE_WRITE_SELFTEST=1  the file layer's own create/write/re-open/read/compare round
+                   trip, at startup, on its own device in a temporary directory it then
+                   deletes. A POSITIVE CONTROL, not a feature: the only thing this title
+                   writes is the save, the save needs a save point, and no headless
+                   recipe here reaches one — so without it the write path would ship as
+                   a prediction rather than a result (gotcha 67). It checks five
+                   independent things including the negative (a write through a
+                   read-only handle must FAIL), and it has been shown capable of
+                   failing: its first run wrote 303,104 bytes and then could not re-open
+                   them, which is how the VFS's cached negative lookups were found
+                   (finding 52)
 CZ_WAIT_TRACE=1    name any infinite wait that outlasts 5 s, with guest callers
 CZ_CS_TRACE=1      name the owner of a critical section a thread cannot get, every 4 s
                    of waiting. Gated on ELAPSED TIME, not on a spin count — the count

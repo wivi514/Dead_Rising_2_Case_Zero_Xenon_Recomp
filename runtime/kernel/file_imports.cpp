@@ -20,6 +20,29 @@
 // Read-only, synchronous, existing files. 312 opens across the boot. There is no
 // write path in the boot era at all — the save path (finding 12) is phase 8.
 //
+// AND THE SAVE PATH IS A DIFFERENT SHAPE, WHICH IS WHY IT SILENTLY DID NOTHING
+// ---------------------------------------------------------------------------
+// A3 (the save round-trip capture) shows the whole save as ONE open and ONE write:
+//
+//   NtCreateFile(handleOut, 40100080, objAttrs("save:\DR2P000.DSF"), iosb, 0, 0,
+//                share=0, disposition=00000005, options=00000064)
+//   NtWriteFile(handle, event, apc=0, apcCtx, iosb, buffer, length=0004A000, offset=0)
+//
+//   40100080 = GENERIC_WRITE | SYNCHRONIZE | FILE_READ_ATTRIBUTES
+//   disposition 5 = FILE_OVERWRITE_IF — create it, or truncate it if it is there
+//
+// Every earlier version of this file ignored `createDisposition` entirely and opened
+// unconditionally with `"rb"`, and `NtWriteFile` was a generated honest-failure stub.
+// So a save could not work in two independent ways at once, and NEITHER of them was
+// visible: the open failed with STATUS_NO_SUCH_FILE through a not-found printer that
+// stops after 32 lines, and the write failed through a stub whose only trace is the
+// `[kcall]` log. The title's own report was "the save mounts and then nothing
+// happens", which is exactly what those two produce together.
+//
+// The rule this is an instance of: an import list is not a feature list. `NtWriteFile`
+// was in the import table from day one and had a stub from day one, and a stub that
+// fails honestly is still a feature that does not exist (gotcha 67).
+//
 // THE OUT-PARAMETER RULE APPLIES HARDEST HERE
 // -------------------------------------------
 // Asura's Wrath's finding 14: an error return only protects you against a guest
@@ -40,6 +63,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "guestcall.h"
 #include "heap.h"
@@ -67,6 +91,16 @@ constexpr uint32_t STATUS_NO_SUCH_FILE       = 0xC000000F;
 constexpr uint32_t STATUS_END_OF_FILE        = 0xC0000011;
 constexpr uint32_t STATUS_OBJECT_PATH_NOT_FOUND = 0xC000003A;
 constexpr uint32_t STATUS_NOT_A_DIRECTORY    = 0xC0000103;
+constexpr uint32_t STATUS_OBJECT_NAME_COLLISION = 0xC0000035;
+constexpr uint32_t STATUS_ACCESS_DENIED      = 0xC0000022;
+
+// IO_STATUS_BLOCK.Information for a create, which is a different value per outcome
+// and not a success flag. A guest that opens with FILE_OPEN_IF learns from this
+// field alone whether it got an existing file or a fresh one.
+constexpr uint32_t FILE_SUPERSEDED  = 0;
+constexpr uint32_t FILE_OPENED      = 1;
+constexpr uint32_t FILE_CREATED     = 2;
+constexpr uint32_t FILE_OVERWRITTEN = 3;
 
 struct FileHandle final : KernelObject
 {
@@ -74,6 +108,7 @@ struct FileHandle final : KernelObject
     std::string guestPath;
     std::string hostPath;
     bool isDirectory = false;
+    bool writable = false;
     uint64_t size = 0;
 
     ~FileHandle() override
@@ -120,6 +155,53 @@ uint32_t OpenStatusFor(const std::string& guestPath)
                                                      : STATUS_OBJECT_NAME_NOT_FOUND;
 }
 
+// NT's create dispositions. The names matter more than usual here because three of
+// the six create a file that does not exist and three do not, and getting that
+// backwards turns "the save wrote nothing" into "the save overwrote the disc".
+enum : uint32_t
+{
+    FILE_SUPERSEDE    = 0,   // replace if present, create if not
+    FILE_OPEN         = 1,   // must exist
+    FILE_CREATE       = 2,   // must NOT exist
+    FILE_OPEN_IF      = 3,   // open, or create
+    FILE_OVERWRITE    = 4,   // must exist, truncate
+    FILE_OVERWRITE_IF = 5,   // truncate, or create   <- what this title's save uses
+};
+
+// The access bits that mean "this handle will be written through". A3's save open is
+// 0x40100080; every boot-era open is 0x80100080, so this is exactly the bit that
+// separates the save path from the 312 disc reads.
+bool WantsWrite(uint32_t desiredAccess, uint32_t createDisposition)
+{
+    constexpr uint32_t GENERIC_WRITE     = 0x40000000;
+    constexpr uint32_t GENERIC_ALL       = 0x10000000;
+    constexpr uint32_t FILE_WRITE_DATA   = 0x00000002;
+    constexpr uint32_t FILE_APPEND_DATA  = 0x00000004;
+    if (desiredAccess & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA))
+        return true;
+    // A disposition that can create or truncate is a write intent even if the access
+    // mask is sloppy about saying so.
+    return createDisposition == FILE_SUPERSEDE || createDisposition == FILE_CREATE ||
+           createDisposition == FILE_OVERWRITE || createDisposition == FILE_OVERWRITE_IF;
+}
+
+// Saves are RARE and disc reads are not, so anything that is not the game disc gets
+// an uncapped log line. The capped `NtCreateFile #n` printer below stops naming paths
+// after 512 opens and then prints every 64th, which is right for a boot that opens
+// hundreds of archives and useless for the one open a save makes thousands deep — the
+// part-17 operator log could not say whether the save had opened a file at all, and
+// that is a printer limit being read as a fact about the title (gotcha 109).
+bool ChattyDevice(const std::string& guestPath)
+{
+    const size_t colon = guestPath.find(':');
+    if (colon == std::string::npos)
+        return true;
+    std::string device = guestPath.substr(0, colon);
+    for (char& c : device)
+        c = char(tolower(static_cast<unsigned char>(c)));
+    return device == "game" || device == "d";
+}
+
 uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
                         XOBJECT_ATTRIBUTES* attrs, XIO_STATUS_BLOCK* iosb,
                         be<uint64_t>* allocationSize, uint32_t fileAttributes,
@@ -140,22 +222,49 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
     if (guestPath.empty())
         return STATUS_INVALID_PARAMETER;
 
-    const std::string hostPath = VfsResolveExisting(guestPath);
+    std::string hostPath = VfsResolveExisting(guestPath);
     std::error_code ec;
-    if (hostPath.empty())
+    const bool existed = !hostPath.empty();
+    const bool wantsWrite = WantsWrite(desiredAccess, createDisposition);
+    const bool mayCreate = createDisposition == FILE_SUPERSEDE ||
+                           createDisposition == FILE_CREATE ||
+                           createDisposition == FILE_OPEN_IF ||
+                           createDisposition == FILE_OVERWRITE_IF;
+
+    if (existed && createDisposition == FILE_CREATE)
+        return STATUS_OBJECT_NAME_COLLISION;
+
+    if (!existed)
     {
-        // FILE_OPEN (1) on a file that does not exist. This is a legitimate answer,
-        // not a runtime failure: A1 shows the title probing for optional files
-        // (game:\data\capcom.txt) and carrying on. Counted and logged sparsely so a
-        // WRONG not-found (a path we should have resolved) is still visible.
-        static std::atomic<int> misses{ 0 };
-        const int n = misses.fetch_add(1);
-        if (n < 32 || FileTrace())
-            KLOG("NtCreateFile('%s') -> not found\n", guestPath.c_str());
-        return OpenStatusFor(guestPath);
+        if (!mayCreate)
+        {
+            // FILE_OPEN (1) on a file that does not exist. This is a legitimate answer,
+            // not a runtime failure: A1 shows the title probing for optional files
+            // (game:\data\capcom.txt) and carrying on. Counted and logged sparsely so a
+            // WRONG not-found (a path we should have resolved) is still visible.
+            static std::atomic<int> misses{ 0 };
+            const int n = misses.fetch_add(1);
+            if (n < 32 || FileTrace() || !ChattyDevice(guestPath))
+                KLOG("NtCreateFile('%s') -> not found\n", guestPath.c_str());
+            return OpenStatusFor(guestPath);
+        }
+        // A creating disposition needs the path the file WOULD have, which is the
+        // untranslated mapping rather than the case-insensitive existing-file scan.
+        hostPath = VfsTranslate(guestPath);
+        if (hostPath.empty())
+        {
+            KLOG("NtCreateFile('%s', disposition %u): device is not mounted, so there "
+                 "is nowhere to create it\n", guestPath.c_str(), createDisposition);
+            return OpenStatusFor(guestPath);
+        }
+        fs::create_directories(fs::path(hostPath).parent_path(), ec);
+        // The lookup two lines up cached a MISS for this path, and it is about to stop
+        // being true. Without this the file we are creating can never be re-opened —
+        // which is the save's load half, and the self-test's first failure.
+        VfsForget(guestPath);
     }
 
-    const bool directory = fs::is_directory(hostPath, ec);
+    const bool directory = existed && fs::is_directory(hostPath, ec);
     constexpr uint32_t FILE_DIRECTORY_FILE     = 0x00000001;
     constexpr uint32_t FILE_NON_DIRECTORY_FILE = 0x00000040;
     if (directory && (createOptions & FILE_NON_DIRECTORY_FILE))
@@ -169,21 +278,38 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
     file->guestPath = guestPath;
     file->hostPath = hostPath;
     file->isDirectory = directory;
+    file->writable = wantsWrite;
+
+    // Truncate on the three dispositions that say so, and only then. FILE_OPEN_IF on an
+    // existing file must NOT truncate it, which is the one distinction in this table
+    // that silently destroys data when it is wrong.
+    const bool truncate = !existed || createDisposition == FILE_SUPERSEDE ||
+                          createDisposition == FILE_OVERWRITE ||
+                          createDisposition == FILE_OVERWRITE_IF;
+    uint32_t information = FILE_OPENED;
+    if (!existed)
+        information = FILE_CREATED;
+    else if (createDisposition == FILE_SUPERSEDE)
+        information = FILE_SUPERSEDED;
+    else if (createDisposition == FILE_OVERWRITE || createDisposition == FILE_OVERWRITE_IF)
+        information = FILE_OVERWRITTEN;
 
     if (!directory)
     {
         // Read-only is the whole boot era (A1: desiredAccess 0x80100080 on every
-        // open). A write path opens later for saves; when it does, it belongs here
-        // with its own evidence rather than as a speculative "rb+" today.
-        file->fp = fopen(hostPath.c_str(), "rb");
+        // open); "w+b"/"r+b" is the save path and nothing else reaches it. The mode is
+        // derived from the guest's own two arguments rather than from the device name,
+        // so a title that writes somewhere else is served by the same code.
+        const char* mode = !wantsWrite ? "rb" : (truncate ? "w+b" : "r+b");
+        file->fp = fopen(hostPath.c_str(), mode);
         if (!file->fp)
         {
-            KLOG("NtCreateFile('%s'): resolved to %s but fopen failed: %s\n",
-                 guestPath.c_str(), hostPath.c_str(), strerror(errno));
+            KLOG("NtCreateFile('%s'): resolved to %s but fopen(\"%s\") failed: %s\n",
+                 guestPath.c_str(), hostPath.c_str(), mode, strerror(errno));
             DestroyKernelObject(GetKernelHandle(file));
             return STATUS_UNSUCCESSFUL;
         }
-        file->size = fs::file_size(hostPath, ec);
+        file->size = truncate ? 0 : uint64_t(fs::file_size(hostPath, ec));
     }
 
     const uint32_t handle = GetKernelHandle(file);
@@ -192,8 +318,16 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
     if (iosb)
     {
         iosb->Status = STATUS_SUCCESS;
-        iosb->Information = 1; // FILE_OPENED
+        iosb->Information = information;
     }
+    if (!ChattyDevice(guestPath))
+        KLOG("NtCreateFile('%s') -> handle %08X, %s, disposition %u (%s), access %08X\n",
+             guestPath.c_str(), handle, wantsWrite ? "WRITABLE" : "read-only",
+             createDisposition,
+             information == FILE_CREATED ? "created"
+                 : information == FILE_OVERWRITTEN ? "overwritten"
+                 : information == FILE_SUPERSEDED ? "superseded" : "opened",
+             desiredAccess);
     // 512, then every 64th — not 64.
     //
     // The old cap was 64 and a boot-to-title opens 64, so this line printed indices
@@ -333,6 +467,77 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     return status;
 }
 
+// The mirror of NtReadFile, and the same argument list. A3's only call is the save:
+//
+//   NtWriteFile(handle, event=F80002C8, apc=0, apcCtx, iosb, buffer, 0004A000, offset=0)
+//
+// Note which notification this one uses: the READ path passes event=0 and an APC, and
+// the WRITE path passes a real event and no APC. Both are owed, and a layer that
+// implemented only the one it had seen would hang the save exactly where the boot's
+// reads work — so both are signalled here for the same reason they are there.
+//
+// fflush is not caution. The title writes its whole 303,104-byte save in this one call
+// and then closes the mount; a save that reaches the C library's buffer and no further
+// is a save that exists only until the process dies, which is precisely the failure
+// this function was written to end, one layer down.
+uint32_t NtWriteFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
+                       uint32_t apcContext, XIO_STATUS_BLOCK* iosb, const uint8_t* buffer,
+                       uint32_t length, be<uint64_t>* byteOffset)
+{
+    if (iosb)
+    {
+        iosb->Status = STATUS_UNSUCCESSFUL;
+        iosb->Information = 0;
+    }
+    FileHandle* file = Resolve(handle);
+    if (!file || !file->fp)
+        return STATUS_INVALID_HANDLE;
+    if (!buffer)
+        return STATUS_INVALID_PARAMETER;
+    if (!file->writable)
+    {
+        // An honest failure rather than a silent success: the handle was opened
+        // read-only, so this is our open that is wrong, and saying so names the bug.
+        KLOG("NtWriteFile('%s', %u bytes): handle is READ-ONLY — the open did not ask "
+             "for write access\n", file->guestPath.c_str(), length);
+        return STATUS_ACCESS_DENIED;
+    }
+
+    if (byteOffset)
+    {
+        const uint64_t offset = *byteOffset;
+        if (offset != 0xFFFFFFFFFFFFFFFEull)
+            fseeko(file->fp, off_t(offset), SEEK_SET);
+    }
+
+    const size_t put = fwrite(buffer, 1, length, file->fp);
+    fflush(file->fp);
+    const uint32_t status = put == length ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
+    const off_t end = ftello(file->fp);
+    if (end > 0 && uint64_t(end) > file->size)
+        file->size = uint64_t(end);
+    if (iosb)
+    {
+        iosb->Status = status;
+        iosb->Information = uint32_t(put);
+    }
+    // Uncapped, because a write is rare where a read is not, and because the whole
+    // question this function was added to answer is "did anything actually reach the
+    // disk". A count that stops printing cannot answer it (gotcha 109).
+    KLOG("NtWriteFile('%s', %u bytes @ %lld) -> %zu written, file is now %llu bytes "
+         "(apc=%08X event=%08X)\n", file->guestPath.c_str(), length,
+         byteOffset ? (long long)byteOffset->get() : -1LL, put,
+         (unsigned long long)file->size, apcRoutine, event);
+    if (put != length)
+        KLOG("NtWriteFile('%s'): SHORT WRITE — %s\n", file->guestPath.c_str(),
+             strerror(errno));
+
+    SignalGuestEvent(event);
+    if (apcRoutine)
+        QueueThreadApc(apcRoutine, apcContext, iosb ? g_memory.MapVirtual(iosb) : 0);
+    return status;
+}
+
 // A1: NtQueryInformationFile(F80000E0, iosb, buffer, 0x38, 0x22) and
 // (F80001D0, iosb, buffer, 0x08, 0x0E) — classes 0x22 and 0x0E, sizes 0x38 and 8.
 // 0x0E is FilePositionInformation (one 64-bit offset); 0x22 is
@@ -427,9 +632,119 @@ uint32_t NtSetInformationFile_x(uint32_t handle, XIO_STATUS_BLOCK* iosb, be<uint
 
 } // namespace
 
+// CZ_FILE_WRITE_SELFTEST=1 — drive the create/write/read/verify round trip through the
+// real entry points, at startup, and say whether it worked.
+//
+// THIS EXISTS BECAUSE THE FEATURE IT TESTS IS OTHERWISE UNREACHABLE FROM HERE.
+// The only thing in this title that writes a file is the save, the save is reached by
+// playing to a save point, and no headless recipe in this project reaches one — so
+// shipping the write path without this would be shipping a prediction rather than a
+// result (gotcha 67, and open-items item 9 is a list of exactly that mistake). It is
+// also the answer to gotcha 30: a test that has never failed has not been shown capable
+// of failing, so this one is written to fail loudly on each of the five things that can
+// go wrong independently (create, mode, seek, write, read-back).
+//
+// It runs against its OWN device mounted on its OWN directory, which is then deleted:
+// the point is to exercise the code path, not to leave state behind, and a self-test
+// that wrote into `save:` could destroy a real save.
+//
+// The guest-memory dance is not incidental. `XOBJECT_ATTRIBUTES::Name` is an
+// `xpointer`, so it is resolved against the guest base — a host-allocated attributes
+// block would dereference to garbage, and the test would be testing nothing.
+void FileImportsWriteSelfTest()
+{
+    if (!getenv("CZ_FILE_WRITE_SELFTEST"))
+        return;
+
+    const fs::path dir = fs::temp_directory_path() / "cz_file_selftest";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    VfsMountDevice("selftest", dir.string());
+
+    const char* name = "selftest:\\roundtrip.bin";
+    const size_t nameLen = strlen(name);
+
+    // One guest block: [XOBJECT_ATTRIBUTES][XANSI_STRING][name bytes].
+    auto* attrs = static_cast<XOBJECT_ATTRIBUTES*>(
+        g_heap.Alloc(sizeof(XOBJECT_ATTRIBUTES) + sizeof(XANSI_STRING) + nameLen + 1));
+    auto* ansi = reinterpret_cast<XANSI_STRING*>(attrs + 1);
+    char* text = reinterpret_cast<char*>(ansi + 1);
+    memcpy(text, name, nameLen + 1);
+    ansi->Length = uint16_t(nameLen);
+    ansi->MaximumLength = uint16_t(nameLen + 1);
+    ansi->Buffer = text;
+    attrs->RootDirectory = 0xFFFFFFFDu;   // "no root directory", as every A1 open has
+    attrs->Name = ansi;
+    attrs->Attributes = nullptr;
+
+    // The payload is deliberately a pattern rather than zeros: a write that never
+    // happened and a write that wrote zeros both leave a readable file, and only a
+    // pattern separates them.
+    constexpr uint32_t kBytes = 0x4A000;   // A3's save is exactly this size
+    std::vector<uint8_t> out(kBytes), back(kBytes);
+    for (uint32_t i = 0; i < kBytes; i++)
+        out[i] = uint8_t(i * 31 + (i >> 8));
+
+    int failures = 0;
+    auto check = [&](bool ok, const char* what) {
+        if (!ok)
+        {
+            failures++;
+            KLOG("[selftest] FAILED: %s\n", what);
+        }
+    };
+
+    be<uint32_t> handleOut{};
+    XIO_STATUS_BLOCK iosb{};
+    be<uint64_t> offset{};
+
+    // Create, with A3's own arguments: GENERIC_WRITE|SYNCHRONIZE|FILE_READ_ATTRIBUTES
+    // and FILE_OVERWRITE_IF on a file that does not exist.
+    uint32_t st = NtCreateFile_x(&handleOut, 0x40100080, attrs, &iosb, nullptr, 0, 0,
+                                 FILE_OVERWRITE_IF, 0x64);
+    check(st == STATUS_SUCCESS, "NtCreateFile(FILE_OVERWRITE_IF) on a new file");
+    check(iosb.Information == FILE_CREATED, "iosb.Information should say FILE_CREATED");
+    const uint32_t wh = handleOut;
+
+    st = NtWriteFile_x(wh, 0, 0, 0, &iosb, out.data(), kBytes, &offset);
+    check(st == STATUS_SUCCESS, "NtWriteFile of the whole payload");
+    check(iosb.Information == kBytes, "NtWriteFile should report every byte written");
+    DestroyKernelObject(wh);
+
+    // Re-open read-only through the same path the load side uses, and compare.
+    st = NtCreateFile_x(&handleOut, 0x80100080, attrs, &iosb, nullptr, 0, 1, FILE_OPEN,
+                        0x64);
+    check(st == STATUS_SUCCESS, "NtCreateFile(FILE_OPEN) on the file just written");
+    check(iosb.Information == FILE_OPENED, "iosb.Information should say FILE_OPENED");
+    const uint32_t rh = handleOut;
+    st = NtReadFile_x(rh, 0, 0, 0, &iosb, back.data(), kBytes, &offset);
+    check(st == STATUS_SUCCESS, "NtReadFile of the whole payload");
+    check(iosb.Information == kBytes, "NtReadFile should report every byte read");
+    check(back == out, "the bytes read back must equal the bytes written");
+
+    // And the negative half: a write through a READ-ONLY handle must fail rather than
+    // quietly succeed, because the previous version of this layer opened every handle
+    // read-only and that is precisely the failure this test is here to catch.
+    st = NtWriteFile_x(rh, 0, 0, 0, &iosb, out.data(), 16, &offset);
+    check(st != STATUS_SUCCESS, "NtWriteFile through a read-only handle must FAIL");
+    DestroyKernelObject(rh);
+
+    const uint64_t onDisk = fs::exists(dir / "roundtrip.bin", ec)
+                                ? uint64_t(fs::file_size(dir / "roundtrip.bin", ec))
+                                : 0;
+    check(onDisk == kBytes, "the host file must be exactly the payload's size");
+
+    KLOG("[selftest] file write round trip: %s (%d failures, %llu bytes on disk)\n",
+         failures ? "FAILED" : "OK", failures, (unsigned long long)onDisk);
+    VfsUnmountDevice("selftest");
+    fs::remove_all(dir, ec);
+}
+
 GUEST_FUNCTION_HOOK(__imp__NtCreateFile, NtCreateFile_x)
 GUEST_FUNCTION_HOOK(__imp__NtOpenFile, NtOpenFile_x)
 GUEST_FUNCTION_HOOK(__imp__NtQueryFullAttributesFile, NtQueryFullAttributesFile_x)
 GUEST_FUNCTION_HOOK(__imp__NtReadFile, NtReadFile_x)
+GUEST_FUNCTION_HOOK(__imp__NtWriteFile, NtWriteFile_x)
 GUEST_FUNCTION_HOOK(__imp__NtQueryInformationFile, NtQueryInformationFile_x)
 GUEST_FUNCTION_HOOK(__imp__NtSetInformationFile, NtSetInformationFile_x)

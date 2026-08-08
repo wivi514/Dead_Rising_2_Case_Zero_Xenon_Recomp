@@ -92,6 +92,24 @@ void VfsUnmountDevice(const std::string& device)
     g_resolved.clear();
 }
 
+// Drop one path's cached answer.
+//
+// The resolver caches NEGATIVE results on purpose (see VfsResolveExisting), which is
+// right for a boot that probes for optional files and wrong the moment anything in
+// this runtime CREATES one: the create itself is what asked "does it exist?" and got
+// the "no" that is now cached, so the file it just wrote is invisible to every later
+// open. The file layer's own self-test caught exactly that — it wrote 303,104 bytes
+// and then could not re-open them — and it is the save path end to end, because the
+// title probes for `save:\DR2P000.DSF` before it writes one.
+//
+// Mount and unmount clear the whole map instead, since a device pointing somewhere new
+// invalidates every path under it and there is no cheap way to enumerate those.
+void VfsForget(const std::string& guestPath)
+{
+    std::lock_guard lock(g_mutex);
+    g_resolved.erase(guestPath);
+}
+
 std::string VfsTranslate(const std::string& guestPath)
 {
     const size_t colon = guestPath.find(':');

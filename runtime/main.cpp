@@ -42,6 +42,11 @@
 #include "kernel/xex_imports.h"
 #include "ppc_recomp_shared.h"
 
+// kernel/file_imports.cpp. Declared here rather than in a header because the file
+// layer's only other callers are the guest's own imports, and one arm does not earn a
+// header of its own.
+void FileImportsWriteSelfTest();
+
 namespace {
 
 std::vector<uint8_t> LoadFile(const char* path)
@@ -289,6 +294,12 @@ int main(int argc, char** argv)
         fprintf(stderr, "runtime: entry point 0x%zX was not recompiled\n", image.entry_point);
         return 1;
     }
+
+    // CZ_FILE_WRITE_SELFTEST=1 — the file layer's own create/write/read/verify round
+    // trip, here because it needs guest memory (an OBJECT_ATTRIBUTES name is an
+    // xpointer) and must not race the title's own file activity. Off by default and
+    // free when off; see kernel/file_imports.cpp for why it exists at all.
+    FileImportsWriteSelfTest();
 
     // The window, before any guest code runs.
     //
