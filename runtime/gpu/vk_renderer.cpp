@@ -781,6 +781,42 @@ uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags want)
     return UINT32_MAX;
 }
 
+// The memory properties a READBACK buffer wants — which are not the ones every other
+// host-visible buffer here wants, and that difference is worth a function.
+//
+// `FindMemoryType` returns the FIRST type satisfying the mask, and on a discrete GPU
+// the first HOST_VISIBLE|HOST_COHERENT type is WRITE-COMBINED: writes stream to the
+// device beautifully and reads are UNCACHED, running at a few hundred MB/s. Every other
+// mapped buffer in this renderer is write-only from the CPU (the arena, the staging
+// buffer), so that type is right for them. The readback buffer is the one buffer the
+// CPU READS, and it had inherited the same mask — so presenting a frame meant reading
+// 3.7 MB back over an uncached mapping. Measured at 15.7% of a 103 ms gameplay frame,
+// which is ~230 MB/s and is what uncached reads look like.
+//
+// HOST_CACHED is the fix and it is the whole fix. Asking for it is a preference rather
+// than a requirement because an integrated GPU may not offer the combination, and a
+// renderer that refuses to start is worse than one that reads slowly.
+VkMemoryPropertyFlags ReadbackMemoryProps()
+{
+    const VkMemoryPropertyFlags base = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    // CZ_VK_READBACK_UNCACHED=1 — the pre-fix arm, i.e. the write-combined readback.
+    // The same-binary control for the frame-rate claim this change makes.
+    if (EnvOn("CZ_VK_READBACK_UNCACHED"))
+    {
+        fprintf(stderr, "[vk] readback buffer forced UNCACHED (the pre-fix arm)\n");
+        return base;
+    }
+    for (uint32_t i = 0; i < R->memProps.memoryTypeCount; i++)
+    {
+        const VkMemoryPropertyFlags f = R->memProps.memoryTypes[i].propertyFlags;
+        if ((f & base) == base && (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+            return base | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    }
+    fprintf(stderr, "[vk] no HOST_CACHED memory type — the readback stays uncached\n");
+    return base;
+}
+
 bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
                   VkMemoryPropertyFlags props, bool deviceAddress)
 {
@@ -4286,10 +4322,7 @@ bool InitCommon()
                       // one surface absent from the directory.
                       std::max(uint64_t(R->targetWidth) * R->targetHeight,
                                uint64_t(4096) * 1024) * 4,
-                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      false))
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
         return false;
