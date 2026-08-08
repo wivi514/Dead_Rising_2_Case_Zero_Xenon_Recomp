@@ -1625,14 +1625,23 @@ python3 tools/find_unlowered_switches.py --all    # also list the benign tail-ca
 Build the SPIR-V shader cache. **`assets/shader_spv/` is gitignored, so a fresh clone
 needs this before `CZ_VKDRAW=1` does anything.** Two sources, and they merge: the
 captures' shaders (which reach gameplay, where our runtime cannot yet go) and our own
-boot dump (which is the authority on the byte range, because the cache key is a hash of
-it — gotcha 115):
+dump (which is the authority on the byte range, because the cache key is a hash of
+it — gotcha 115). **Our dump run must go as DEEP as the runtime can go, not just to the
+title screen** — the plain boot ends at the title and the prologue loads a shader
+neither capture contains, which the renderer then declines to draw with (28,718 draws a
+run, one line in the log and nothing else):
 ```
 python3 tools/xenia_ucode_to_cache.py \
     "Xenia logs/A1_boot_title_fullgame/shaders" \
     "Xenia logs/A2_gameplay_stillcreek/shaders" /tmp/ucode      # 335 distinct
-(cd runtime/build && CZ_NO_WINDOW=1 CZ_SHADER_DUMP=/tmp/ucode ./cz_runtime)  # +1 of ours
-tools/build_shader_spv.sh /tmp/ucode assets/shader_spv          # 336, zero failures
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_SHADER_DUMP=/tmp/ucode \
+    CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=START,A,A timeout 300 ./cz_runtime)  # +2
+tools/build_shader_spv.sh /tmp/ucode assets/shader_spv          # 337, zero failures
+```
+The check that costs nothing, and the only thing that reports this at all — a shader the
+cache lacks is one log line and a silent counter, not a failure:
+```
+grep -c "no translated shader" run.log         # must be 0
 ```
 
 Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
