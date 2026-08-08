@@ -1895,6 +1895,73 @@ things had to be true for the prologue to be black, and only two of them were ou
 instrument that separated them was an arm on the shader itself — the only way to ask
 "is this black because we computed it wrong, or because we were told to".
 
+## 6ag. The shadow cascade: one clipping defect, and the guest's clear rects named
+
+Phase C part 15, item 3. Part 14 handed this over as "every plumbing hypothesis is
+retired, the map is 48.7% pure zero, so ask about its DRAWS". Asking about the draws
+found one of ours and then turned the rest into a measured fact about the title.
+
+### The exact shape of the empty half
+
+Counted off `CZ_VK_SNAP_DUMP`'s depth PPM rather than looked at (the boundary is what
+matters and it is axis-aligned, so a number is better than an eye here):
+
+```
+rows    0.. 511   all 1024 columns populated
+rows  512.. 719   only columns 960..1023  (a 64-wide strip)
+rows  720..1023   nothing
+nothing at all beyond x = 1024 on the 4096-wide surface
+```
+
+Three numbers, and two of them are explained by one defect and one by the title.
+
+### Ours: window coordinates were mapped through the PRESENTED FRAME
+
+The `vte == 0` path built `posScale = 2 / targetWidth, 2 / targetHeight` and then set a
+fallback viewport of `targetWidth x targetHeight`, i.e. the front buffer's 1280x720. The
+two divide out, so window (X, Y) lands on framebuffer (X, Y) and nothing looks wrong —
+but the CLIP happens at NDC ±1, which is window y = 720, on an EDRAM stand-in that has
+been 1024 rows tall since part 14. Every window-coordinate draw taller than the screen
+was being cut off at row 719.
+
+Both are the EDRAM's extent now. `CZ_VK_WINDOW_COORDS_FRONT_BUFFER=1` is the control arm,
+and the delta is exactly what the mechanism predicts and nothing more:
+
+| cascade snapshot at frame 448, non-black over 4096x1024 | |
+|---|---|
+| `CZ_VK_WINDOW_COORDS_FRONT_BUFFER=1` (pre-part-15) | 12.82% |
+| default | **13.28%** |
+
+0.46 pp of 4,194,304 pixels is 19,300; the clipped strip is 64 x 304 = 19,456. It is the
+strip, to the pixel, and nothing else moved.
+
+### The title's: the clear rects do not cover the map
+
+`CZ_VK_DRAW_PROBE` on the clear shader (`vs=539ea9e08aa83f0c`, prim 8, 3 indices — a
+rectangle list whose fourth corner part 9 synthesises) over 60 draws, deduplicated:
+
+| clear rect | count |
+|---|---|
+| `(0,0)-(480,512)` | 16 |
+| `(960,0)-(1024,1024)` | 17 |
+| `(0,0)-(320,720)` — the scene tile, part 9's | 2 |
+| `(0,0)-(640,360)`, `(0,0)-(64,64)`, `(0,0)-(1,1)` | the small passes |
+
+All at z = 1.0, with `depthCtl=76 (test=1 write=1 func=7)` — func 7 is ALWAYS, so these
+are unconditional depth writes, a clear in every sense but the name.
+
+So for a 1024x1024 cascade the guest issues a 480x512 rect and a 64x1024 one. That does
+not cover the map, and it is not a consequence of anything this renderer does — it is
+what the title's own vertex data says. Whether 480x512 is a pixel extent that should be
+doubled somewhere (the pass reports `msaa=0`, so our 4x scaling does not apply to it),
+whether the cascade is really four smaller maps packed into one surface, or whether the
+uncleared region is simply never sampled, is the open question part 16 inherits — and it
+is now a question with all four numbers on the table instead of a suspicion.
+
+**Honest about the picture: shadows still do not appear.** This is committed on
+mechanism plus a matching structural delta, which is the half-answer part 14's own rule
+says to declare (gotcha: "a picture fix is not a picture fix until it is measured").
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
