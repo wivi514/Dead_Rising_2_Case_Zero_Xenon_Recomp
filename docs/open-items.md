@@ -291,6 +291,37 @@ Next, in order:
    from the other end — the completion is what grants the reward. That puts a floor
    under how much of the game is reachable until this is fixed.
 
+1b. **CONFIRM HOW THE TITLE'S OWN DEBUG MENU OPENS — one in-game button press away, and
+   it is the cheapest item on this list.** Part 24 found that the retail executable still
+   carries Blue Castle's entire debug build, gated on 393 name-resolved booleans, and
+   `runtime/cpu/debug_tunables.cpp` now flips them (`CZ_DEBUG_MENU=1`, gotcha 239).
+   The flags provably flip — 0 -> 1 on a headless boot with a same-binary control — but
+   **no debug UI has been seen** (gotcha 240): the main menu is unchanged, because
+   `enable_debug_jump_menu`'s single reader at `0x824D6170` gates a text-formatting path
+   rather than the menu list.
+
+   The trigger, read from the code and NOT yet observed: `sub_82483378` is the
+   pause-button check (`COMMAND_PAUSEMENU` 0x00 / `COMMAND_FRONTEND_PAUSEMENU` 0x10,
+   with the 0x01/0x11 variants when `debug_on_controller_2_only` is set), and
+   `0x824A2244` reads `enable_one_button_debug_menu`, calls it, and on a hit dispatches
+   through a vtable at `0x824A22D0`. That reads as **START opens the debug menu once
+   you are in gameplay**, instead of pausing.
+
+   **This is an operator test, not a headless one.** Two headless attempts to land an
+   in-game START derailed — one to the main menu, one to the save-slot screen — because
+   `CZ_FAKE_PRESS_SEQ` is a fixed-interval arm against a boot whose depth in wall time
+   is a distribution (gotcha 75), and the same STARTs that drive the recipe are the
+   press being tested. Run `CZ_DEBUG_MENU=1`, reach gameplay, press START.
+
+   Why it is worth the five minutes: it would replace both remaining ways of reaching a
+   place in this game (an operator playing to it, or `CZ_FAKE_PRESS_SEQ` manufacturing
+   its way there over minutes) with a chosen jump — which is gotcha 190's whole
+   complaint, and it would make item 2 below and every crowd-performance A/B cheaper.
+   Note the ceiling: only Case Zero's scenes ship, so jumps outside
+   `prologue`/`prologue_menu`/`prologue_menu2`/`prologue_safehouse`/`safehouse` have no
+   data behind them. Nothing here is a substitute for the save round trip, which already
+   works — a backed-up `CZ_SAVE_DIR` is the checkpoint mechanism available today.
+
 2. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
    not audio, not a deadlock, not our synthetic input, not a missing import and not the
    renderer, all with arms to show for it. Three lines, cheapest first: **raise the

@@ -832,3 +832,38 @@ CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask
                    physical stick attached, because XInput's packet number moves on
                    raw jitter too and we do not filter (gotcha 102)
 ```
+
+## The title's own debug scaffolding (`runtime/cpu/debug_tunables.cpp`)
+
+Not measurement arms — these switch on code the studio shipped and disabled. See
+gotcha 239 for how the gate was found and 240 for what flipping it does and does not
+prove. Both are free when off (one env-var read on a function that runs once per
+process, three hops off the XEX entry point) and neither has any per-frame component.
+
+```
+CZ_DEBUG_MENU=1    the preset: enable_debug_jump_menu, enable_quickie_debug_menu,
+                   enable_one_button_debug_menu, display_fe_screen_info. Prints each
+                   flag's before/after value and its confirmed reader count, so a
+                   switch that is connected to nothing is visible as such
+CZ_DEBUG_TUNABLES=name[=0|1],...   any of the 21 curated tunables. An unknown name
+                   prints the whole list and its per-entry notes rather than failing
+                   silently, so `CZ_DEBUG_TUNABLES=?` is the way to see them
+```
+
+**What is confirmed**: every flag reads 0 before the hook and 1 after, and the boot is
+unaffected (the same-binary control arm — no env var — differs only in rumble calls and
+lock counters, no errors either side).
+
+**What is NOT confirmed**: that any debug UI appears. The main menu is unchanged. The
+open trigger is read from the code as START-while-in-game when
+`enable_one_button_debug_menu` is set — `sub_82483378` is the pause-button check
+(`COMMAND_PAUSEMENU` 0x00 / `COMMAND_FRONTEND_PAUSEMENU` 0x10, with the 0x01/0x11
+variants under `debug_on_controller_2_only`) and `0x824A2244` calls it and then
+dispatches through a vtable — but two headless attempts to land an in-game START
+derailed, one to the main menu and one to the save-slot screen. That is code-reading,
+not evidence. `docs/open-items.md` carries it as an open item.
+
+**Scope**: only Case Zero's scenes ship. The image still carries the full Dead Rising 2
+scene list because the two games share an engine, but `data/models/environment` holds
+only `prologue`, `prologue_menu`, `prologue_menu2`, `prologue_safehouse` and
+`safehouse`. A jump anywhere else has no data behind it.

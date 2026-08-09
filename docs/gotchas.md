@@ -1799,3 +1799,36 @@ From phase C part 18 (the frame rate — and none of it was work):
     task into something checkable in the session that caused it — and the per-snapshot
     dump is the only instrument that can tell an early wrong pass from a late one,
     because the frame is the last link and a wrong frame is consistent with both.
+239. **A shipped retail executable may still contain the studio's entire debug build,
+    switched off rather than compiled out — look before assuming it was stripped.**
+    Case Zero's image carries `common\debugmenu\debugmenu.cpp` in its source-path
+    strings, the `cDebugMenu` class, the whole menu item tree (System Menu, Chartz
+    Menu, Thread Edit Menu, Performance Chartz, GPU Timing Queries, NPC To Spawn), a
+    `God Mode:ON` overlay referenced by live code, and a `DebugJump` frontend screen
+    **whose layout ships**: `debugjump.txt` is a real entry in `data/frontend/
+    mainmenu.big` and at 4,144 bytes it is the LARGEST entry there, bigger than
+    `title.txt`. 393 booleans gate all of it. One loader (`sub_824A2470`) resolves
+    each BY NAME through a lookup that finds nothing in a retail build, and stores
+    the answer as a byte in one contiguous struct; every consumer gates on a plain
+    `lbz`/`cmplwi`/`beq`. **In a static recomp this is a one-line poke**, because the
+    loader has a single caller three hops off the XEX entry point and nothing rewrites
+    the bytes afterwards — so the hook has no per-frame component at all and cannot
+    perturb what it reports (gotcha 7). `runtime/cpu/debug_tunables.cpp` is the worked
+    example and `CZ_DEBUG_MENU=1` is the switch. **The generalisable part is the search
+    order**: grep the image for source paths and menu-item strings first, then find the
+    gate byte by walking `.text` for the loader's (`addi` name / `stb` offset) pairs,
+    then CONFIRM each byte independently by scanning for the `lbz` consumers that read
+    it back. That second scan is not optional — of 25 curated names here, four scanned
+    to ZERO readers, and shipping those as switches would have been advertising
+    controls that do nothing.
+240. **Flipping a feature's gate proves the gate flipped, not that the feature appeared.**
+    The three debug-menu bytes above go 0 -> 1 exactly as predicted, on a headless boot,
+    with a same-binary control — and the main menu still shows only START GAME /
+    LEADERBOARDS / ACHIEVEMENTS / HELP & OPTIONS / EXIT GAME. `enable_debug_jump_menu`'s
+    single reader turned out to gate a text-formatting path, not the menu list. The
+    `0 -> 1` transition is real evidence of exactly one thing (that the retail config
+    genuinely resolves these to false, which was the load-bearing assumption) and no
+    evidence at all of the thing that was actually wanted. **A flag is a cause; the
+    picture is the claim** — and this is gotcha 117 arriving from a new direction, since
+    the only reason the refutation was available in-session was that frames are
+    self-servable.
