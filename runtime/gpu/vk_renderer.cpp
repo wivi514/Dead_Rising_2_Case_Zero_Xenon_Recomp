@@ -348,6 +348,31 @@ struct StreamCensus
     uint64_t kindRepeatBytes[3] = { 0, 0, 0 };
 };
 StreamCensus g_streamCensus_c;
+
+// WHICH streams change in place, not just how many. Level 2 only, cumulative over the
+// whole run rather than per profile window.
+//
+// Part 21 established that 164 of 10,154,820 repeated keys really do get rewritten by the
+// guest — 0.0016%, and it described the changing set as "a recurring ~26". That number
+// decides how a persistent cache invalidates, and the two answers cost wildly different
+// amounts of work: if the rewritten streams are a NAMED set — one address range, or one
+// `kind` — then invalidation is an exclusion rule and costs nothing, while if they are
+// scattered across the geometry it has to be guest-page write tracking (`mprotect` plus a
+// `SIGSEGV` handler sharing the process with `cpu/crash_report.cpp`'s). The census
+// already detects each mismatch; it just threw the identity away. This keeps it.
+//
+// Cumulative on purpose: the claim under test is that the same keys recur, and a counter
+// reset every five seconds cannot show recurrence. Unbounded in principle, bounded in
+// practice by the finding it is testing — and if it is NOT bounded, that is the finding.
+struct StreamChange
+{
+    uint64_t times = 0;   // how many frames this key was seen rewritten
+    uint64_t bytes = 0;   // its size, which is part of the key and so constant
+    int kind = 0;         // 0 vertex binding, 1 index buffer, 2 dependent fetch
+    uint64_t firstFrame = 0, lastFrame = 0;
+};
+std::unordered_map<uint64_t, StreamChange> g_streamChanged;
+
 // Last frame's keys, and (level 2 only) a content hash for each. Rebuilt in BeginFrame
 // out of the cache that is about to be cleared, so the draw path never walks it.
 std::unordered_map<uint64_t, uint64_t> g_prevStreamKeys;
@@ -3050,10 +3075,30 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
             const uint64_t h =
                 StreamHash(base + va, size_t(bytes), g_streamPoison ? R->frame : 0);
             g_streamHashes[key] = h;
-            if (pit != g_prevStreamKeys.end() && pit->second == h)
+            if (pit != g_prevStreamKeys.end())
             {
-                ++g_streamCensus_c.prevFrameSameContent;
-                g_streamCensus_c.prevFrameSameBytes += bytes;
+                if (pit->second == h)
+                {
+                    ++g_streamCensus_c.prevFrameSameContent;
+                    g_streamCensus_c.prevFrameSameBytes += bytes;
+                }
+                else
+                {
+                    // The identity of the rewritten stream, which is what chooses the
+                    // invalidation mechanism. Note this branch is ALSO the whole
+                    // population when the poison arm is on, which is the point of that
+                    // arm — under poison this map fills with every repeated key and the
+                    // list below is meaningless, so it says so.
+                    StreamChange& c = g_streamChanged[key];
+                    if (!c.times)
+                    {
+                        c.bytes = bytes;
+                        c.kind = (kind >= 0 && kind < 3) ? kind : 0;
+                        c.firstFrame = R->frame;
+                    }
+                    ++c.times;
+                    c.lastFrame = R->frame;
+                }
             }
         }
     }
@@ -5938,6 +5983,57 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             frames ? double(s.prevFrameSameBytes) / double(frames) /
                                          1048576.0
                                    : 0.0);
+                // ...and WHICH ones, because that is what picks the invalidation
+                // mechanism. Cumulative over the run, so this list is the answer to "is
+                // the rewritten set a recurring few, and are they contiguous in guest
+                // memory". Capped at 32 lines with the remainder NAMED rather than
+                // dropped silently (gotcha 109) — and the guest address range is printed
+                // whether or not the list is capped, since a range is the thing an
+                // exclusion rule would be written against.
+                if (g_streamCensus >= 2 && !g_streamChanged.empty())
+                {
+                    std::vector<std::pair<uint64_t, StreamChange>> v(
+                        g_streamChanged.begin(), g_streamChanged.end());
+                    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
+                        return a.second.times > b.second.times;
+                    });
+                    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+                    uint64_t total = 0;
+                    for (const auto& e : v)
+                    {
+                        const uint32_t va = uint32_t(e.first >> 32);
+                        lo = std::min(lo, va);
+                        hi = std::max(hi, uint32_t(va + e.second.bytes));
+                        total += e.second.times;
+                    }
+                    fprintf(stderr,
+                            "[vkprof] streams REWRITTEN IN PLACE: %zu distinct keys, %llu "
+                            "occurrences, guest range %08X..%08X%s\n",
+                            v.size(), (unsigned long long)total, lo, hi,
+                            g_streamPoison ? "  [POISON ON — every repeat lands here by "
+                                             "construction; this list is meaningless]"
+                                           : "");
+                    static const char* kindName2[3] = { "vertex", "index ", "vfetch" };
+                    const size_t shown = std::min<size_t>(v.size(), 32);
+                    for (size_t i = 0; i < shown; ++i)
+                    {
+                        const uint32_t va = uint32_t(v[i].first >> 32);
+                        const StreamChange& c = v[i].second;
+                        fprintf(stderr,
+                                "[vkprof] streams   va=%08X size=%llu endian=%llu %s  "
+                                "x%llu  frames %llu..%llu\n",
+                                va, (unsigned long long)c.bytes,
+                                (unsigned long long)(v[i].first & 3), kindName2[c.kind],
+                                (unsigned long long)c.times,
+                                (unsigned long long)c.firstFrame,
+                                (unsigned long long)c.lastFrame);
+                    }
+                    if (v.size() > shown)
+                        fprintf(stderr,
+                                "[vkprof] streams   ...and %zu more distinct keys not "
+                                "listed\n",
+                                v.size() - shown);
+                }
                 g_streamCensus_c = StreamCensus{};
             }
 
