@@ -153,7 +153,7 @@ it is exactly why that rule is in the conventions.
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
-    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..21}-kickoff.md` are the per-part
+    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..23}-kickoff.md` are the per-part
     hand-offs, each superseding the last; the newest is the live one. A kickoff's most
     valuable section is its list of the parts of that phase that **already exist** and
     would otherwise be rewritten from the plan text — write that section for every phase.
@@ -578,6 +578,16 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   never be re-opened. The LOAD needed a fourth — xam ordinal `0x271`,
   `XamContentCreateInternal`, which `kResolvable` refused because A1's list of resolves
   was captured with an empty save root.
+* **CUBE MAPS HAVE NEVER BEEN BOUND — the top picture item, found in part 23.** 91 of
+  395 shaders sample set 2 (`TextureCube[]`) and every one reads descriptor index 0, the
+  1x1 white dummy, on every draw, since phase 5. `bindTextures` writes only the 2D index
+  array and `t.dimension` is hardcoded to 2D. Every reflective surface multiplies its
+  specular by white. `docs/open-items.md` item 00 has the census and the three-part fix;
+  three competing theories died in the same census and are recorded there so they are not
+  re-bought.
+* **Ordinary gameplay is ~30 fps and the CPU/GPU now OVERLAP** (part 23): the fence wait
+  fell from 31.5% of a crowd frame to 0.2% with `CZ_VK_FRAMES_IN_FLIGHT=2` (default; `=1`
+  is the old renderer, same binary). The binned frame-time A/B is still owed.
 * **The renderer's remaining picture defects** are the shadow cascade, NPC part meshes,
   mipmaps and the colour-grading LUT — all in `docs/open-items.md` with the measurement
   for each, and all worth re-testing now that a frame losing its post chain is no longer
