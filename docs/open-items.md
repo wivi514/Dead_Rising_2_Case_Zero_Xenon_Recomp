@@ -79,9 +79,11 @@ Next, in order:
    | **OPERATOR SESSION, wrong textures on screen throughout** | **139,775,032** | **1,968 — 0.00%** |
 
    The operator's own log is the decisive row: the wrong floor atlas, the iridescent
-   cabinet, the red dumpster and the blank white wall were all on screen while the counter
-   sat at zero, and `CZ_VK_TEX_REVALIDATE=1` repaired all 1,968 stale hits without
-   changing any of them. **Address recycling is real and utterly marginal.**
+   cabinet and the red dumpster were all on screen while the counter sat at zero, and
+   `CZ_VK_TEX_REVALIDATE=1` repaired all 1,968 stale hits without changing any of them.
+   (A "blank white wall" was listed here too and is REMOVED: the operator says that wall
+   is a normal texture rendering correctly. It was my reading of their screenshot, not
+   their report — see item 00's note on inferring defects from someone else's picture.) **Address recycling is real and utterly marginal.**
    The instrument is kept: it is two-sided (100% poisoned, 0.00% on a boot), it is the
    only thing that can see a stale texture at all, and it retired a plausible theory in
    one run instead of a session. But do not reach for it again for wrong textures.

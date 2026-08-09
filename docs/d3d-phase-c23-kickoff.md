@@ -85,11 +85,15 @@ new and both are about being wrong in public.
 4. **The remaining picture defects**, all older than part 23 and all worth re-testing after
    item 1: the shadow cascade (open-items 3), mipmaps (4), the pitch-vs-declared-size path
    firing 1.3M times a run (4b), NPC part meshes (3d), the magenta sky / colour-grading LUT
-   (6), the prologue cinematic. Plus two new observations with no mechanism yet: a large
-   translucent overlay with a **hard vertical seam at the exact middle of the frame** (the
-   tile boundary — a tiling or predication question, not a texture one), and
-   `texture: fetch constant is not a texture` returning the dummy **21,567 times** in one
-   operator session, which is what a blank untextured wall looks like.
+   (6), the prologue cinematic. Plus one new observation with no mechanism yet: a large
+   translucent overlay with a **hard vertical seam at the exact middle of the frame** — the
+   tile boundary, so a tiling or predication question and not a texture one.
+   **Do NOT chase `texture: fetch constant is not a texture` (21,567 in one operator
+   session) as a blank wall.** Part 23 listed it here on the strength of reading a flat
+   cream wall in a screenshot as the white dummy, and **the operator corrected that: the
+   wall is a normal texture rendering correctly.** 21,567 against 139,775,032 fetches is
+   0.015% and there is no reported symptom attached to it. It may still deserve a look
+   some day; it is not evidence of anything today.
 
 5. **The PM4 walk — ~12 ms, a register-write loop**, unchanged from part 22's hand-off.
    90,316 packets a frame carrying 815,020 register dwords. Biggest lead:
@@ -137,6 +141,13 @@ PM4 oracles, and the binned frame-time A/B.
   built on one sample per arm, and "no `GUARD MISSED` lines" quoted from a counter whose
   emitter was gated off. Both were caught by going back to the instrument rather than by
   thinking harder about the result.
-* **The operator's pictures named subsystems no counter here could.** A hard vertical seam
-  at x=640 is the tile boundary; a flat cream wall is the white dummy's signature. Neither
-  is visible in any aggregate this runtime prints.
+* **The operator's pictures named a subsystem no counter here could** — a hard vertical
+  seam at x=640 is the tile boundary, and no aggregate this runtime prints can see a
+  discontinuity.
+* **But only the operator can say which parts of their own screen are wrong.** Part 23 also
+  read a flat cream wall in one of those shots as the white dummy's signature and wrote it
+  up as corroboration; the operator's answer was that the wall is a normal texture
+  rendering correctly. A wrong-looking frame makes every surface in it suspect, which makes
+  this an easy and tempting mistake. Ask which parts are wrong; do not infer it. The seam
+  was a sound observation for the opposite reason: it is a discontinuity no correct render
+  can have, so it needed no interpretation.

@@ -3711,12 +3711,24 @@ beat three rounds of reasoning about pictures.**
 
 ### What the pictures were actually good for
 
-Two things no counter here produced. The giant translucent overlay had a **hard vertical
+One thing no counter here produced: the giant translucent overlay had a **hard vertical
 seam at the exact middle of the frame** — this title's tiles are left/right 640-wide halves
-— which is a tiling or predication question and not a texture one. And a flat cream wall
-with no detail is the *signature of the white dummy*, which is what pointed at the binding
-path rather than at the decode path. Gotcha 190 in both directions: the operator is the
-only channel for "does it look right", and what they see names the subsystem.
+— which is a tiling or predication question and not a texture one.
+
+**And one thing the pictures were NOT good for, recorded because it was written up as
+evidence and then corrected by the operator.** I read a large flat cream wall in one shot
+as "the signature of the 1x1 white dummy" and used it to corroborate the binding-path
+theory. **The operator says that wall is a normal texture rendering correctly.** It is a
+plaster wall; it looks like that. The corroboration is withdrawn — the cube-map finding
+stands entirely on the shader-bank census and never needed it.
+
+The general lesson is the sharper half of gotcha 190. An operator's screenshot is the only
+evidence channel for "does it look right", and this project keeps learning that what they
+SEE names a subsystem — but **only the operator can say which parts of their own screen
+are wrong.** Reading a defect out of an unremarkable region of someone else's screenshot
+is inventing evidence, and it is easy to do because a wrong-looking frame makes every
+surface in it suspect. Ask; do not infer. The same shot's seam at x=640 was a real
+observation precisely because it is a discontinuity no correct render can have.
 
 ## 7. What is NOT right yet, with the measurement for each
 
