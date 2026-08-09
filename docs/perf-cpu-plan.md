@@ -223,9 +223,26 @@ because each one changes how the numbers above should be read:
   title's vblank floor except in the band where it crosses one (gotcha 237): 44 ms -> 32 ms
   at ~3,700 draws, ~nothing at ~6,500. **Net draw path at ~6,000 draws: 13.9 ms -> 9.2 ms.**
 
-**The ranking below is therefore stale in one respect: with `streams` at zero, `textures`
-(§1c) is now the SECOND-largest draw-path term after `record`, at 5.8-7.0% of a crowd
-frame.** And open-items 0a-i is a five-line lead on exactly that.
+**What this does to the ranking below, stated carefully, because the obvious phrasing is
+wrong.** `textures` (§1c) did **not** get promoted by the store — it was already the
+second-largest draw-path term before it, behind `streams`, and it is still second, behind
+`record`. It did not move at all: 6.4% -> 6.5% of the frame, ~3.1 ms either way. Matched at
+~6,100 draws in a 48 ms frame:
+
+| | store OFF | store ON |
+|---|---|---|
+| `streams` | **11.0% — 5.28 ms** | 0.0% |
+| `textures` | 6.4% — 3.07 ms | 6.5% — 3.12 ms |
+| `record` | 5.3% — 2.54 ms | **7.1% — 3.41 ms** |
+| `other` | 4.7% — 2.26 ms | 4.8% — 2.30 ms |
+| `constants` | 2.4% — 1.15 ms | 2.5% — 1.20 ms |
+| **draw total** | **14.3 ms** | **10.0 ms** |
+
+Two things did change and neither is a re-ranking: the gap to first closed (textures was
+58% of the largest term, now 92% of it, near enough tied with `record`), and it is a
+bigger slice of a smaller draw path (21% -> 31%). So it is worth attacking now for the
+same reason it always was, only with less above it. open-items 0a-i is a five-line lead on
+exactly that.
 
 ### 1c. `textures` is 3.43 ms — and it is 7.9-10.9% in crowds against 2.5% in ordinary
 gameplay

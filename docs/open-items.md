@@ -46,8 +46,11 @@ Next, in order:
    and **most of its value was then taken away by 0a itself**: stream copying is now
    0.23 MB a frame, so the remaining beneficiary is TEXTURE upload (`CopySwapped` at
    `vk_renderer.cpp:2232`/`2255`). That is not nothing — with `streams` at zero,
-   **`textures` is now the second-largest draw-path term at 5.8-7.0% of a crowd frame
-   (2.8-3.4 ms), behind only `record`** — so a five-line change
+   **`textures` is ~3.1 ms of a crowd frame and sits behind only `record`** — note it was
+   already second before the store, behind `streams`, and did not move (6.4% -> 6.5%); what
+   changed is that it is now near enough tied with the largest term instead of half of it,
+   and 31% of the draw path instead of 21% (perf-cpu-plan §1b has the table). So a
+   five-line change
    (`__attribute__((target("ssse3")))` on that one function, keeping the rest of the
    binary at baseline) is plausibly worth ~1 ms. Measure it against `textures`, not the
    frame, and remember gotcha 237 before expecting the frame to move.

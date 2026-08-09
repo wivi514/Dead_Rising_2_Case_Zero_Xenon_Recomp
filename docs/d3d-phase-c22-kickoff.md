@@ -138,15 +138,31 @@ failed silently).
   when it cannot), **237 (a mean frame time measures the pacing floor)** and **238 (a
   zeroed column is not a saving until you check the residual)**.
 
-## One item was re-ranked by part 22 and it is cheap
+## What the store left behind in the draw path, and one cheap item aimed at it
 
-**With `streams` at zero, `textures` is now the second-largest draw-path term after
-`record`** — 5.8-7.0% of a crowd frame, 2.8-3.4 ms. open-items **0a-i** is a five-line
-change aimed straight at it: `CopySwapped` compiles to a 10-instruction SSE2 sequence
-where one `pshufb` would do, because `-msse4.1 -mavx` is applied to the `ppc_image` target
-and not to the runtime. `__attribute__((target("ssse3")))` on that one function keeps the
-rest of the binary at baseline. **Measure it against the `textures` column, not the
-frame** — see reading-note 4.
+Matched at ~6,100 draws in a 48 ms frame:
+
+| | store OFF | store ON |
+|---|---|---|
+| `streams` | **11.0% — 5.28 ms** | 0.0% |
+| `textures` | 6.4% — 3.07 ms | 6.5% — 3.12 ms |
+| `record` | 5.3% — 2.54 ms | **7.1% — 3.41 ms** |
+| `other` | 4.7% — 2.26 ms | 4.8% — 2.30 ms |
+| `constants` | 2.4% — 1.15 ms | 2.5% — 1.20 ms |
+| **draw total** | **14.3 ms** | **10.0 ms** |
+
+**Read that table before saying the store re-ranked anything — it did not.** `textures`
+was already second before it and is still second; it did not move. What changed is that it
+is now near enough tied with the largest term instead of half of it, and 31% of the draw
+path instead of 21%. (`record` is first only because it is carrying the store's guard —
+reading-note 6.)
+
+open-items **0a-i** is a five-line change aimed at `textures`: `CopySwapped` compiles to a
+10-instruction SSE2 sequence where one `pshufb` would do, because `-msse4.1 -mavx` is
+applied to the `ppc_image` target and not to the runtime.
+`__attribute__((target("ssse3")))` on that one function keeps the rest of the binary at
+baseline. **Measure it against the `textures` column, not the frame** — see
+reading-note 4.
 
 ## Two things about the store the next session should hold in mind
 
