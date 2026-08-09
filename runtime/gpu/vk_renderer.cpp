@@ -1181,7 +1181,7 @@ VkDeviceSize ArenaAlloc(VkDeviceSize bytes, VkDeviceSize align = 256)
     {
         Count("arena: exhausted, draw skipped");
         // Ask for twice the size at the next frame boundary. A fixed number is what
-        // caused this — see the growth code in BeginFrame.
+        // caused this — see GrowArenaIfNeeded, called at the END of this frame.
         static const bool noGrowth = EnvOn("CZ_VK_NO_ARENA_GROWTH");
         if (!noGrowth)
             R->arenaWant = std::max(R->arenaWant, R->arena.size * 2);
@@ -2747,35 +2747,46 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
 // ===================================================================================
 // Frame lifecycle
 // ===================================================================================
-void BeginFrame()
+// GROW THE ARENA IF A FRAME OVERRAN IT.
+//
+// CALLED AT THE END OF A FRAME, FROM `DoSwapImpl`, AND THAT PLACEMENT IS THE POINT.
+// It used to live at the top of `BeginFrame`, which is called from inside `DoDraw` —
+// so every growth charged its `vkDeviceWaitIdle`, its allocation and its map to the
+// draw path's `other` column. The operator session measured one such frame at 29.8%
+// of a frame in `other`, the largest single spike of the session, and the mechanism
+// was the CALL GRAPH rather than anything about drawing.
+//
+// This is a MEASUREMENT fix before it is a performance one, and saying which matters:
+// the work still happens, it is just charged to the frame boundary where it belongs
+// instead of to the draw that happened to be first. The one real saving is the
+// `vkDeviceWaitIdle` below, which here follows a fence wait that has already idled the
+// device and so costs nothing, where at the top of a frame it was a genuine stall.
+//
+// WHY THE END OF A FRAME IS SAFE, which is the whole question. The old comment said
+// "here is safe and nowhere else is: the command buffer has just been reset, which is
+// only legal once its previous submission has completed". The end of `DoSwapImpl` meets
+// that condition more directly — `SubmitAndWait` has waited on the fence, so the
+// submission is not merely complete, it has been observed to be. `R->recording` is
+// false, nothing holds a device address into the old buffer, and the arena's consumers
+// are all per-frame (the stream cache is cleared in `BeginFrame`; the constants are
+// reached through device addresses recorded in the push constants of the frame that has
+// just finished executing).
+//
+// The history the size is about: the arena was a fixed 128 MB, `ArenaAlloc` SKIPS every
+// draw it cannot satisfy, and this title's post-process chain is at the END of the frame
+// — so a frame that overran presented a completely BLACK picture with a correctly
+// rendered scene sitting in EDRAM behind it. That was the port's top rendering defect
+// for six parts, reported as a view-dependent whole-frame black, and it is
+// view-dependent for the obvious reason once you know the mechanism: which way the
+// camera points decides how much geometry is in the frame. Measured: 160 black frames in
+// 8,216 gameplay frames at 128 MB and every one of them the frame after an exhaustion;
+// zero of either at 512 MB, with a true peak of 161 MB. §6ap.
+//
+// Growing rather than picking a bigger number, because a bigger number is what this was.
+// The ceiling is a backstop against a runaway, not a tuned value; it is announced when it
+// bites so a future frame that needs more says so out loud.
+void GrowArenaIfNeeded()
 {
-    if (R->recording)
-        return;
-    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkResetCommandBuffer(R->cmd, 0);
-    vkBeginCommandBuffer(R->cmd, &bi);
-    R->recording = true;
-    R->rendering = false;
-    // GROW THE ARENA IF THE LAST FRAME OVERRAN IT.
-    //
-    // The arena was a fixed 128 MB, ArenaAlloc SKIPS every draw it cannot satisfy, and
-    // this title's post-process chain is at the END of the frame — so a frame that
-    // overran presented a completely BLACK picture with a correctly rendered scene
-    // sitting in EDRAM behind it. That was the port's top rendering defect for six
-    // parts, reported as a view-dependent whole-frame black, and it is view-dependent
-    // for the obvious reason once you know the mechanism: which way the camera points
-    // decides how much geometry is in the frame. Measured: 160 black frames in 8,216
-    // gameplay frames at 128 MB and every one of them the frame after an exhaustion;
-    // zero of either at 512 MB, with a true peak of 161 MB. §6ap.
-    //
-    // Growing rather than picking a bigger number, because a bigger number is what this
-    // was. Here is safe and nowhere else is: the command buffer has just been reset,
-    // which is only legal once its previous submission has completed, and the arena's
-    // consumers are all per-frame (the stream cache is cleared two lines down, and the
-    // constants are reached through device addresses recorded in this frame's push
-    // constants). The ceiling is a backstop against a runaway, not a tuned value; it is
-    // announced when it bites so a future frame that needs more says so out loud.
     if (R->arenaWant > R->arena.size)
     {
         constexpr VkDeviceSize kArenaCeiling = 2048ull << 20;
@@ -2819,6 +2830,20 @@ void BeginFrame()
             R->arenaWant = 0;
         }
     }
+}
+
+void BeginFrame()
+{
+    if (R->recording)
+        return;
+    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(R->cmd, 0);
+    vkBeginCommandBuffer(R->cmd, &bi);
+    R->recording = true;
+    R->rendering = false;
+    // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
+    // remains here is the reset, which is the cheap half and has to be per frame.
     R->arenaCursor = 0;
     // Remember what this frame cached before dropping it, so the next frame's misses can
     // say how many of them a cache that outlived the frame would have served. Off by
@@ -5260,6 +5285,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         memcpy(R->presentPixels.data(), R->readback.mapped, bytes);
         Host_PresentPixels(R->presentPixels.data(), width0, height0);
     }
+
+    // Grow the arena HERE, at the frame boundary, rather than inside the next frame's
+    // first draw. `SubmitAndWait` above has waited on the fence, so the buffer this may
+    // destroy is provably not in use. See GrowArenaIfNeeded for why the old placement was
+    // a measurement defect: it charged a device-wait and an allocation to `other`.
+    GrowArenaIfNeeded();
 
     // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture
     // DIED on, triggered by the picture dying.
