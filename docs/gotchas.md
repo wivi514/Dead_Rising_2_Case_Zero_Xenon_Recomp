@@ -1680,6 +1680,33 @@ From phase C part 18 (the frame rate — and none of it was work):
      "could have been zero but was not". Had the census read a true zero, the temptation
      to skip invalidation would have been much stronger, and the defect would have been
      an intermittent wrong mesh — see 233's family of caches that look fine.
+237. **When frame time is clamped by a PACING FLOOR, a mean over frames measures the
+     floor, not your change — read the MEDIAN and the share of frames sitting ON the
+     floor.** The cross-frame store removes 5.5 ms of copying from a crowd frame.
+     `tools/frame_perf_bins.py`, which reports means, scored it **+1.7% against a +1.3%
+     null** and would have been read as "below the noise floor, not worth the session".
+     Binned finer and read as medians it is **44 ms -> 32 ms, 27%, at ~3,700 draws** —
+     and the column that proves it is neither: the share of frames within 1 ms of a 16 ms
+     multiple goes from **10% to 97%**. That is the whole finding in one number. Arm B is
+     free-running and CPU-limited; arm A has been pushed onto the title's own vblank floor
+     and is no longer our problem.
+     The general rule: a saving converts to frame rate only where the frame is **above one
+     floor and within reach of the next**. At ~6,500 draws both arms were already parked
+     on the 48 ms three-vblank floor, 5 ms could not reach 32, and the same change measured
+     as nothing. `perf-cpu-plan.md` item 0 already said this for the TWO-vblank cap at
+     ~1,930 draws; it was not generalised, and a real win nearly got filed as noise.
+     **The pinned-share is also the more sensitive instrument** — it moved 10% -> 97%
+     where the mean moved 1.7%.
+238. **When you remove work from a timed scope, find out where the REPLACEMENT work is
+     charged.** With the store on, `streams` reads **0.0%** — the copying is genuinely
+     gone — and reading that alone would have claimed the full 5.5 ms. The guard hash that
+     makes the store safe runs inside `UploadStream` but outside `ProfScope(streams)`, and
+     `record`'s scope encloses it, so the guard's ~1.9 ms is charged to `record`, which
+     duly nearly doubled. The true net was 3.3 ms, not 5.5 — a 40% error in the direction
+     that flatters the change. This is the same lesson as 233's second half (**read where
+     the timer starts**) arriving from the other end: there, an unread scope made a cost
+     look ambiguous; here, an unread scope made a saving look bigger. A zeroed column is
+     not a saving until the residual is checked.
 236. **An instrument that writes FILES must complain when it cannot.** `CZ_VK_FRAME_DUMP`
      was a bare `fopen` whose failure was silent, so pointing it at a directory that did
      not exist produced an empty directory — which is indistinguishable from a renderer

@@ -78,6 +78,11 @@ The ten that bite most often, as one-liners. Each is a summary, not the entry:
 190/103. **A gate that needs a human is a capture request in disguise** — extend the arm
     until it is not. 222 is the performance form: ask what the WORST case renders and
     whether your harness can reach it.
+237/238. **A MEAN frame time measures this title's vblank pacing floor, not your change**
+    — read medians and the share of frames pinned to a 16 ms multiple, which is the far
+    more sensitive statistic (10% -> 97% where the mean moved 1.7%). And **a profiler
+    column that falls to zero is not a saving until you find where the replacement work
+    got charged**: `streams` read 0.0% while the guard that replaced it doubled `record`.
 
 ## Inherited from the Fable 2 port: shared-decode cross-checks, and a do-not-chase list
 
@@ -540,14 +545,18 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   crowd frame**, three runs an arm with no overlap. **The PM4 walk is a register-write
   loop — 90,316 packets a frame carrying 815,020 register dwords at 15.3 ns each** — and
   it is the biggest untouched term.
-  **The biggest NAMED one is the stream cache (part 21, `CZ_VK_STREAM_CENSUS`):** it is
-  93.6-94.0% hits within a frame and still copies **74-77 MB every frame**, 5.6-5.9 ms,
-  **95-97% of it repeating the previous frame's key**. It is real copying, not lookups,
-  and the fix is the cache's LIFETIME — but 0.0016% of repeated keys change in place, so
-  a persistent cache must invalidate rather than assume (open-items 0a, §6at).
+  **The stream cache is CLOSED as of part 22** — the cross-frame store (§6av) takes
+  `streams` from 11.1% of a crowd frame to **0.0%**, copied bytes from 61-66 MB/frame to
+  0.23, for a net 3.3-4.0 ms after its content guard.
   **The noise floor here is 10-13% at one run a side** (gotcha 229): use
   `tools/frame_perf_bins.py`, three runs an arm, alternated, and run the null comparison
   first. A real A/B on this workload is an hour of wall time.
+  **AND `frame_perf_bins.py` REPORTS MEANS, WHICH ON THIS TITLE MEASURE THE PACING FLOOR
+  RATHER THAN YOUR CHANGE (gotcha 237).** It scored the store at +1.7% against a +1.3%
+  null; read as medians the same data is **44 ms -> 32 ms at ~3,700 draws**, and the
+  decisive statistic is neither — it is the share of frames within 1 ms of a 16 ms
+  multiple, which goes **10% -> 97%**. A CPU saving converts to frame rate only where the
+  frame is above one vblank floor and within reach of the next, so quote the pinned share.
   **DO NOT PIN THE GPU CLOCK — gotcha 219 is retracted in part.** The P8/210 MHz this
   project quoted for five sessions was an overnight session with the MONITOR ASLEEP.
   Awake, this workload governs itself to **P5, mean 524 MHz, 32% utilisation, 28.6 W**,

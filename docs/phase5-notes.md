@@ -3513,6 +3513,77 @@ drop pays one frame at the old cost and runs warm again. `flushes` is on the pro
 so the evidence for building the harder thing would be visible; in these runs it is zero
 after the one growth from 128 to 256 MB.
 
+### THE FRAME-TIME RESULT, and why the headline number is small and the finding is not
+
+Three runs an arm, alternated a/b/a/b/a/b, 620 s each, arm A the store and arm B
+`CZ_VK_NO_PERSIST_STREAMS=1`. The null comparison first, within arm A: **+1.3%** in the
+6000-6999 bin. Then the arms, `tools/frame_perf_bins.py`, which reports **means**:
+
+```
+per-run mean ms of frames with >= 6000 draws:
+  A: 47.48 47.67 48.22      B: 48.56 48.35 48.63
+  6000-6999   A 47.63 ms    B 48.44 ms    +1.7%
+```
+
+Every A run beats every B run with no overlap, so the direction is not in doubt — but
+**+1.7% against a +1.3% null is not what removing 5.5 ms of measured copying should buy**,
+and publishing it without explaining the gap would have been publishing a number I could
+not account for.
+
+**The explanation is that this title's frame time is a PACING FLOOR, and a mean hides it.**
+Binned finer and read as medians, with the share of frames sitting within 1 ms of a 16 ms
+multiple:
+
+| draws | A median | A on a vblank | B median | B on a vblank |
+|---|---|---|---|---|
+| 3000-3499 | 32 ms | 93% | 34 ms | 42% |
+| **3500-3999** | **32 ms** | **97%** | **44 ms** | **10%** |
+| 5500-5999 | 48 ms | 80% | 48 ms | 67% |
+| 6000-6999 | 48 ms | 80% | 48 ms | 63% |
+
+At **~3,700 draws the store takes the frame from 44 ms to 32 ms — a 27% reduction, ~23 fps
+to 31** — and the giveaway is the pinning column: arm B is free-running at 10% pinned,
+arm A is *pacing-limited* at 97%. The workload stops being ours. At ~6,500 draws both arms
+are already mostly parked on the 48 ms three-vblank floor, the saving is ~5 ms, and 5 ms
+does not reach the next floor 16 ms away — so it appears as idle time and the mean barely
+moves.
+
+This is `perf-cpu-plan.md` item 0's rule ("do not optimise anything measured at ~1,930
+draws, the title's own two-vblank pacing makes a CPU saving measure as exactly zero")
+turning out to apply at **three** vblanks as well, and the honest statement of the win is
+therefore conditional: **the store removes the copying everywhere and converts it to frame
+rate only in the band where the frame is above one vblank floor and within reach of the
+next.**
+
+### Where the 5.5 ms went, measured rather than argued
+
+The profiler settles it. Matched draw counts, arm A at 5,670 draws and arm B at 5,727:
+
+| | store ON (46.5 ms) | store OFF (48.2 ms) |
+|---|---|---|
+| `streams` | **0.0% — 0.00 ms** | 11.1% — 5.35 ms |
+| `record` | 9.1% — 4.23 ms | 4.9% — 2.36 ms |
+| `textures` | 6.1% — 2.84 | 5.7% — 2.75 |
+| `other` | 4.5% — 2.09 | 4.3% — 2.07 |
+| `constants` | 2.3% — 1.07 | 2.2% — 1.06 |
+| **draw total** | **10.3 ms** | **13.6 ms** |
+| `submit` (GPU) | 17.5 | 19.0 |
+| `outside` (idle) | **18.4** | **15.3** |
+
+`streams` goes to **zero** — the predicted saving is fully realised — and the frame does
+not get 5.5 ms shorter because 3.1 ms of it reappears in `outside`, which is the CPU
+waiting on the pacing floor.
+
+**`record` nearly doubles, and that is not noise — it is the guard, charged to the wrong
+column.** `record`'s scope opens partway down `DoDraw` and encloses the `UploadStream`
+calls; the scopes are exclusive as of part 20, and `ProfScope(streams)` wraps only the
+`CopySwapped`. So the guard hash, which runs inside `UploadStream` and outside the
+`streams` scope, lands in `record`. Net CPU saving is 3.3 ms, not 5.5.
+
+Worth stating as a rule, because it is the same shape as §6at's own lesson: **when you
+remove work from a timed scope, check where the replacement work is charged.** Reading
+`streams: 0.0%` alone would have claimed 5.5 ms and been wrong by 40%.
+
 ### Gates
 
 `--smoke` OK; A5 exit 0 with 3 permutation windows and 0 real; `truncated=0`;

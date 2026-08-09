@@ -435,31 +435,46 @@ uint64_t StreamHash(const uint8_t* p, size_t bytes, uint64_t salt)
 constexpr size_t kGuardBytes = 512;
 constexpr size_t kGuardBlocks = 8;
 
+// EIGHT BYTES A STEP, not one, and the reason is the dependency chain rather than the
+// memory. FNV-1a is `h = (h ^ byte) * prime`, so every byte waits on the previous byte's
+// MULTIPLY — about four cycles each, serial, no matter how fast the loads are. At 512
+// bytes that is ~0.55 us per stream and ~1 ms per crowd frame, a fifth of what the store
+// saves, spent inside the check that makes the store safe. Folding a whole uint64 per
+// step keeps the mixing (xor then multiply by an odd constant is injective in the input
+// word either way) and cuts the chain to 64 steps.
+inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
+{
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8)
+    {
+        uint64_t v;
+        memcpy(&v, p + i, 8);   // unaligned-safe and compiles to one load
+        h = (h ^ v) * 1099511628211ull;
+    }
+    for (; i < n; ++i)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
 uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
 {
-    uint64_t h = 1469598103934665603ull;
     // The size is folded in first. Without it a stream that shrinks to a prefix of
     // itself would hash the same, and size is part of the key only for the streams the
     // key came from — a re-copy into the same slot keeps the slot's size.
-    h = (h ^ bytes) * 1099511628211ull;
+    uint64_t h = (1469598103934665603ull ^ bytes) * 1099511628211ull;
     if (bytes <= kGuardBytes)
     {
-        for (size_t i = 0; i < bytes; ++i)
-            h = (h ^ p[i]) * 1099511628211ull;
         if (readOut)
             *readOut += bytes;
-        return h;
+        return GuardFold(h, p, bytes);
     }
     const size_t block = kGuardBytes / kGuardBlocks;
     // Eight starts spread over [0, bytes - block], the first exactly at 0 and the last
-    // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive.
+    // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive, and the
+    // last block therefore ends on the final byte rather than near it.
     const size_t span = bytes - block;
     for (size_t b = 0; b < kGuardBlocks; ++b)
-    {
-        const size_t off = (span * b) / (kGuardBlocks - 1);
-        for (size_t i = 0; i < block; ++i)
-            h = (h ^ p[off + i]) * 1099511628211ull;
-    }
+        h = GuardFold(h, p + (span * b) / (kGuardBlocks - 1), block);
     if (readOut)
         *readOut += kGuardBytes;
     return h;
@@ -1377,7 +1392,11 @@ VkDeviceSize PersistAlloc(VkDeviceSize bytes, VkDeviceSize align = 16)
     const VkDeviceSize at = (R->persistCursor + align - 1) & ~(align - 1);
     if (at + bytes > R->persist.size)
     {
-        R->persistWant = std::max(R->persistWant, R->persist.size * 2);
+        // `at + bytes` in the max, not just a doubling: doubling alone cannot make
+        // progress from a zero-sized store, and a single stream larger than the whole
+        // store would otherwise ask for a size that still cannot hold it, forever.
+        R->persistWant =
+            std::max(R->persistWant, std::max(R->persist.size * 2, at + bytes));
         return VkDeviceSize(-1);
     }
     R->persistCursor = at + bytes;
@@ -3294,6 +3313,15 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 // The guard caught the guest rewriting this buffer in place. The size is
                 // part of the key, so the existing slot is exactly the right size and the
                 // re-copy needs no allocation.
+                //
+                // OVERWRITING IN PLACE IS ONLY SAFE BECAUSE THE SUBMIT IS SYNCHRONOUS.
+                // The draws that read this slot were recorded in an earlier frame, and
+                // `SubmitAndWait` waited on that frame's fence before this one began, so
+                // the GPU is provably not reading it. **The moment frames-in-flight lands
+                // (open-items item 3, the CPU/GPU overlap) this becomes a hazard** and the
+                // stale path has to allocate a fresh slot instead of reusing this one.
+                // Flagged here rather than in the plan because this is the line that
+                // breaks, and it breaks silently, into a wrong mesh.
                 {
                     ProfScope _p(&g_prof.streams);
                     CopySwapped(R->persist.mapped + e.at, src, size_t(bytes), endian);
@@ -5435,14 +5463,6 @@ bool InitCommon()
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true) ||
-        (R->persistOn &&
-         !CreateBuffer(R->persist, persistMb << 20,
-                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                       /*deviceAddress=*/true)) ||
         !CreateBuffer(R->staging, 64ull << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -5459,6 +5479,27 @@ bool InitCommon()
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
         return false;
+    }
+
+    // The cross-frame store is allocated SEPARATELY from the chain above, and its failure
+    // DEGRADES rather than kills the renderer. It is an optimisation: without it every
+    // stream takes the per-frame path, which is what this port did for twenty-one parts
+    // and which still renders the game correctly. Refusing to start at all because a
+    // machine could not spare another 128 MB would trade a 30% frame-time saving for the
+    // whole picture, which is not a trade anything here should make silently.
+    if (R->persistOn &&
+        !CreateBuffer(R->persist, persistMb << 20,
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      /*deviceAddress=*/true))
+    {
+        fprintf(stderr, "[vk] the %llu MB cross-frame stream store could not be "
+                        "allocated — running without it, which is slower and correct\n",
+                (unsigned long long)persistMb);
+        R->persistOn = false;
     }
 
     // Two samplers, and one global choice per draw is a stated simplification: the
