@@ -942,6 +942,45 @@ struct Snapshot
     bool fromDepth = false;
 };
 
+// --- one frame's worth of resources, so the CPU can record frame N+1 while the GPU is
+// --- still executing frame N ---------------------------------------------------------
+//
+// Everything in here is something the CPU WRITES and the GPU READS, or the reverse.
+// Nothing else needs duplicating: the EDRAM stand-in, the snapshots and the textures are
+// only ever touched by the device, and a single queue executes submissions in order, so
+// the barriers already in the recorder cover every GPU-to-GPU hazard across the frame
+// boundary. It is the host-visible things — the command buffer being recorded, the bump
+// arena the draws' vertices and constants live in, and the buffer the presented image is
+// read back into — that would otherwise be rewritten under a frame still in flight.
+//
+// The per-frame METADATA is here for a reason that is easy to miss and would have made
+// every A/B this change is measured with wrong. The present-side instruments (frame
+// stats, the PPM dump, the uniform-colour counter) read `presentPixels` and label it with
+// `R->frame`, `R->drawFingerprint` and the draw count — which with a deferred present
+// describe the frame being RECORDED, not the pixels being looked at. `frame_compare.py`
+// aligns two runs by exactly those fingerprints, so an off-by-one here does not look like
+// a bug, it looks like a picture regression. Captured at submit, read at present.
+struct FrameSlot
+{
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    Buffer present;             // the presented image, read back for the window
+    bool inFlight = false;      // has been submitted and not yet waited on
+    bool presentable = false;   // ...and had a real image copied into it
+
+    uint64_t frame = 0;
+    uint64_t draws = 0;
+    uint64_t vertices = 0;
+    uint64_t drawFingerprint = 0;
+    uint64_t cameraFingerprint = 0;
+    uint32_t width = 0, height = 0;
+    size_t bytes = 0;
+};
+// Two is the whole design: the CPU records one frame while the GPU executes one. Deeper
+// pipelining buys nothing here and costs a whole arena each — the GPU is 16.5 ms against
+// the CPU's 27.7, so one frame of overlap already hides all of it (§6ar).
+constexpr uint32_t kMaxFramesInFlight = 3;
+
 struct Renderer
 {
     VkInstance instance = VK_NULL_HANDLE;
@@ -952,6 +991,12 @@ struct Renderer
     VkPhysicalDeviceMemoryProperties memProps{};
 
     VkCommandPool cmdPool = VK_NULL_HANDLE;
+    // The slot the frame currently being recorded belongs to, and that slot's command
+    // buffer and fence hoisted out so the ~30 `R->cmd` call sites do not each have to
+    // know the ring exists. Assigned in BeginFrame and nowhere else.
+    FrameSlot frames[kMaxFramesInFlight];
+    uint32_t frameSlot = 0;
+    uint32_t framesInFlight = 1;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     bool recording = false;
@@ -965,8 +1010,17 @@ struct Renderer
     // Per-frame bump arena for constants, vertex copies and index copies. Device
     // address visible, because the translated shaders reach their constants through
     // vk::RawBufferLoad on a raw 64-bit address rather than through a descriptor.
+    // With frames in flight the arena is cut into `framesInFlight` equal regions and a
+    // frame bumps inside its own. A region rather than a second buffer, deliberately:
+    // `GrowArenaIfNeeded`'s buffer swap, the exhaustion path and every device address
+    // the draws record all stay exactly as they were, and the only line that changes is
+    // where the cursor starts and stops. The buffer is allocated `framesInFlight` times
+    // larger at startup so a frame's own capacity — the number that decided the
+    // whole-frame black (§6ap) — is unchanged between the arms.
     Buffer arena;
     VkDeviceSize arenaCursor = 0;
+    VkDeviceSize arenaBase = 0;    // this slot's region start
+    VkDeviceSize arenaLimit = 0;   // ...and its end
     VkDeviceSize arenaHighWater = 0;
     // Set by ArenaAlloc when it has to refuse a draw; acted on at the next frame
     // boundary, which is the only place the old buffer is provably not in use.
@@ -994,6 +1048,21 @@ struct Renderer
     struct PersistEntry
     {
         VkDeviceSize at = 0;
+        // The PING-PONG TWIN, allocated the first time this stream is caught being
+        // rewritten in place and never before.
+        //
+        // Overwriting `at` was correct for exactly as long as the submit was
+        // synchronous: the draws reading it were recorded in an earlier frame whose
+        // fence had been waited on. With frames in flight that stops being true, and the
+        // failure is a wrong mesh with no error anywhere. Two slots and an alternation
+        // are enough — when frame N+1 is being recorded, frame N-1 has provably retired
+        // (that is the ring's invariant), so the only slot that can still be read is the
+        // one frame N used, which is the other one.
+        //
+        // Lazy because it is rare: ~20 streams a frame go stale out of a store holding
+        // thousands, so allocating a twin for every entry would double the store to
+        // protect 1% of it.
+        VkDeviceSize alt = VkDeviceSize(-1);
         uint64_t guard = 0;      // StreamGuard over the guest bytes when it was copied
         uint64_t lastFrame = 0;  // for the age report; not an eviction policy yet
         uint32_t bytes = 0;
@@ -1015,6 +1084,12 @@ struct Renderer
         uint64_t overflow = 0;      // did not fit; fell back to the per-frame arena
         uint64_t flushes = 0;       // whole store dropped at a frame boundary
         uint64_t guardBytes = 0;    // what the guard itself read, i.e. its own cost
+        // A rewritten stream needed a ping-pong twin and the store could not give it
+        // one. The entry is DROPPED and the stream falls back to the per-frame arena —
+        // never overwritten in place, which with frames in flight is the silent wrong
+        // mesh this whole mechanism exists to prevent. Counted because "the safe
+        // fallback fired" is a performance fact and its absence is the correctness one.
+        uint64_t staleEvicted = 0;
     } persistStats;
     // ON by default, with `CZ_VK_NO_PERSIST_STREAMS=1` as the control arm — the same
     // shape as CZ_VK_NO_ARENA_GROWTH and CZ_VK_NO_SUBMIT, so one binary is both arms of
@@ -1347,7 +1422,9 @@ void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
 VkDeviceSize ArenaAlloc(VkDeviceSize bytes, VkDeviceSize align = 256)
 {
     const VkDeviceSize at = (R->arenaCursor + align - 1) & ~(align - 1);
-    if (at + bytes > R->arena.size)
+    // `arenaLimit`, not `arena.size`: with frames in flight this frame owns one region of
+    // the buffer and the region past it belongs to a frame the GPU may still be reading.
+    if (at + bytes > R->arenaLimit)
     {
         Count("arena: exhausted, draw skipped");
         // Ask for twice the size at the next frame boundary. A fixed number is what
@@ -1372,13 +1449,16 @@ VkDeviceSize ArenaAlloc(VkDeviceSize bytes, VkDeviceSize align = 256)
                     "[vk] arena EXHAUSTED on frame %llu (%llu MB used of %llu MB) — every "
                     "remaining draw of this frame is skipped\n",
                     (unsigned long long)R->frame,
-                    (unsigned long long)(R->arenaCursor >> 20),
-                    (unsigned long long)(R->arena.size >> 20));
+                    (unsigned long long)((R->arenaCursor - R->arenaBase) >> 20),
+                    (unsigned long long)((R->arenaLimit - R->arenaBase) >> 20));
         }
         return VkDeviceSize(-1);
     }
     R->arenaCursor = at + bytes;
-    R->arenaHighWater = std::max(R->arenaHighWater, R->arenaCursor);
+    // The high water is what ONE FRAME used, so it is measured from this slot's base and
+    // stays comparable across the arms. Reading it against the whole buffer would make
+    // the second frame in flight look like a doubling of the title's demand.
+    R->arenaHighWater = std::max(R->arenaHighWater, R->arenaCursor - R->arenaBase);
     return at;
 }
 
@@ -1562,15 +1642,25 @@ bool CreateDevice()
     VK_CHECK(vkCreateCommandPool(R->device, &pci, nullptr, &R->cmdPool),
              "vkCreateCommandPool");
 
+    // One command buffer and one fence PER FRAME SLOT. `framesInFlight` is read here
+    // because it decides how many of each exist; the buffers themselves are cheap, so
+    // all `kMaxFramesInFlight` are created and the arm only decides how many are used.
+    // That keeps the two arms one binary and keeps `CZ_VK_FRAMES_IN_FLIGHT=1` byte-for-
+    // byte the old renderer: slot 0 only, submitted and immediately waited on.
     VkCommandBufferAllocateInfo cbi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cbi.commandPool = R->cmdPool;
     cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbi.commandBufferCount = 1;
-    VK_CHECK(vkAllocateCommandBuffers(R->device, &cbi, &R->cmd),
-             "vkAllocateCommandBuffers");
-
     VkFenceCreateInfo fi{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    VK_CHECK(vkCreateFence(R->device, &fi, nullptr, &R->fence), "vkCreateFence");
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        VK_CHECK(vkAllocateCommandBuffers(R->device, &cbi, &R->frames[i].cmd),
+                 "vkAllocateCommandBuffers");
+        VK_CHECK(vkCreateFence(R->device, &fi, nullptr, &R->frames[i].fence),
+                 "vkCreateFence");
+    }
+    R->cmd = R->frames[0].cmd;
+    R->fence = R->frames[0].fence;
     return true;
 }
 
@@ -2956,7 +3046,7 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
 // WHY THE END OF A FRAME IS SAFE, which is the whole question. The old comment said
 // "here is safe and nowhere else is: the command buffer has just been reset, which is
 // only legal once its previous submission has completed". The end of `DoSwapImpl` meets
-// that condition more directly — `SubmitAndWait` has waited on the fence, so the
+// that condition more directly — the swap has waited on the fence, so the
 // submission is not merely complete, it has been observed to be. `R->recording` is
 // false, nothing holds a device address into the old buffer, and the arena's consumers
 // are all per-frame (the stream cache is cleared in `BeginFrame`; the constants are
@@ -2976,6 +3066,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
 // Growing rather than picking a bigger number, because a bigger number is what this was.
 // The ceiling is a backstop against a runaway, not a tuned value; it is announced when it
 // bites so a future frame that needs more says so out loud.
+// Defined next to the submit, because that is where the ring's state is maintained.
+void WaitAllFramesIdle();
+
 void GrowArenaIfNeeded()
 {
     if (R->arenaWant > R->arena.size)
@@ -2984,6 +3077,7 @@ void GrowArenaIfNeeded()
         const VkDeviceSize want = std::min(R->arenaWant, kArenaCeiling);
         if (want > R->arena.size)
         {
+            WaitAllFramesIdle();
             vkDeviceWaitIdle(R->device);
             const Buffer old = R->arena;
             Buffer grown{};
@@ -3043,6 +3137,11 @@ void PersistMaintenance()
     constexpr VkDeviceSize kPersistCeiling = 1024ull << 20;
     const VkDeviceSize want = std::min(R->persistWant, kPersistCeiling);
     R->persistWant = 0;
+    // Every path below either destroys the buffer or resets the cursor so its bytes are
+    // handed out again, and both are read by draws recorded in frames that may still be
+    // executing. Before part 23 the caller's fence wait made that impossible; it does
+    // not any more, so this idles explicitly. It runs at most a handful of times a run.
+    WaitAllFramesIdle();
     if (want > R->persist.size)
     {
         vkDeviceWaitIdle(R->device);
@@ -3090,6 +3189,15 @@ void BeginFrame()
 {
     if (R->recording)
         return;
+    // The slot this frame will record into. It was advanced at the previous swap, AFTER
+    // that swap waited on this slot's fence — so `vkResetCommandBuffer` below is legal
+    // and this slot's arena region is provably not being read. There is no wait here on
+    // purpose: a wait at the START of a frame would put the GPU back in series with the
+    // CPU and undo the whole change.
+    FrameSlot& fs = R->frames[R->frameSlot];
+    R->cmd = fs.cmd;
+    R->fence = fs.fence;
+
     VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkResetCommandBuffer(R->cmd, 0);
@@ -3097,8 +3205,12 @@ void BeginFrame()
     R->recording = true;
     R->rendering = false;
     // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
-    // remains here is the reset, which is the cheap half and has to be per frame.
-    R->arenaCursor = 0;
+    // remains here is the reset, which is the cheap half and has to be per frame. With
+    // frames in flight the reset is to this SLOT's region rather than to zero.
+    const VkDeviceSize region = R->arena.size / R->framesInFlight;
+    R->arenaBase = VkDeviceSize(R->frameSlot) * region;
+    R->arenaLimit = R->arenaBase + region;
+    R->arenaCursor = R->arenaBase;
     // Remember what this frame cached before dropping it, so the next frame's misses can
     // say how many of them a cache that outlived the frame would have served. Off by
     // default and free when off; when on it is one walk of a few hundred entries per
@@ -3171,11 +3283,17 @@ void EndRendering()
     R->rendering = false;
 }
 
-// Submit whatever has been recorded and wait. Synchronous on purpose: the guest's own
-// ring flow control already paces this runtime (findings 38-39), and a second,
-// host-side pipelining scheme would make "which frame is on screen" a question with
-// two answers.
-void SubmitAndWait()
+// Submit whatever has been recorded into this frame's slot, and DO NOT wait for it
+// unless there is only one slot.
+//
+// This was `SubmitAndWait` for twenty-two parts and the wait was deliberate — "a second,
+// host-side pipelining scheme would make 'which frame is on screen' a question with two
+// answers". That reasoning was about the PICTURE and it is still respected: the answer
+// stays single-valued because the ring is strictly in order and a frame is presented
+// exactly when its own fence signals, one frame later. What the reasoning did not price
+// was the GPU, which under a synchronous submit is idle 68% of every crowd frame while
+// the CPU records the next one (§6ar). Part 23 is that price being paid.
+void SubmitFrame()
 {
     if (!R->recording)
         return;
@@ -3195,6 +3313,11 @@ void SubmitAndWait()
     // §6ar). Overlapping them should give max(CPU, GPU) instead of CPU + GPU, but
     // "should" is a model, and building frames-in-flight to test a model is the wrong
     // order of work: it needs a real swapchain present and a second per-frame arena.
+    // **That was written before part 23 and the second half of it turned out to be
+    // wrong**: the overlap needed a second per-frame arena, which it got, and it did NOT
+    // need a swapchain — a per-slot readback buffer presented one frame later keeps the
+    // renderer/window separation phase 3 built and costs one frame of latency. The arm
+    // survives anyway, as the ceiling this is measured against.
     //
     // Dropping the submit makes the GPU's contribution zero while EVERY byte of CPU work
     // still happens — the PM4 walk, the register decode, the pipeline lookups, the
@@ -3223,19 +3346,66 @@ void SubmitAndWait()
         return;
     }
 
+    FrameSlot& fs = R->frames[R->frameSlot];
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
-    si.pCommandBuffers = &R->cmd;
+    si.pCommandBuffers = &fs.cmd;
     ProfScope _p(&g_prof.submit);
+    ProfScope _c(&g_prof.submitCall);
+    vkResetFences(R->device, 1, &fs.fence);
+    vkQueueSubmit(R->queue, 1, &si, fs.fence);
+    fs.inFlight = true;
+}
+
+// Wait for the OLDEST frame still in flight and hand back its slot, or -1 if there is
+// none yet. Called immediately after `SubmitFrame`, which is what makes this the whole
+// of the change: with one slot the oldest frame IS the one just submitted and this is
+// the old `SubmitAndWait` exactly; with two, it is the frame before it, whose GPU work
+// has had the entirety of this frame's CPU time to finish.
+//
+// `fenceWait` IS THE COUNTER THAT SAYS THE OVERLAP ENGAGED (gotcha 151). It is the
+// renderer's measure of "time blocked on the GPU", and the prediction this change makes
+// is that it collapses towards zero in a crowd while `submitCall` and every draw-path
+// column stay where they were. If `fenceWait` does not move, the frames are not
+// overlapping and nothing else in the profile is worth reading.
+int RetireOldestFrame()
+{
+    // Slots are used strictly in ring order, so when the frame just submitted is `s` the
+    // oldest one not yet waited on is `s + 1` — which for a single slot is `s` itself.
+    // CZ_VK_NO_SUBMIT recorded a frame and executed none of it, so no fence will ever
+    // signal. It forces one slot (see the init), and the present path below then reads
+    // whatever was left in that slot's buffer — which is exactly what that arm has always
+    // done, and exactly why its picture statistics are documented as meaningless.
+    static const bool noSubmit = EnvOn("CZ_VK_NO_SUBMIT");
+    if (noSubmit)
+        return int(R->frameSlot);
+
+    const uint32_t oldest = (R->frameSlot + 1) % R->framesInFlight;
+    FrameSlot& fs = R->frames[oldest];
+    if (!fs.inFlight)
+        return -1;
     {
-        ProfScope _c(&g_prof.submitCall);
-        vkResetFences(R->device, 1, &R->fence);
-        vkQueueSubmit(R->queue, 1, &si, R->fence);
-    }
-    {
+        ProfScope _p(&g_prof.submit);
         ProfScope _w(&g_prof.fenceWait);
-        vkWaitForFences(R->device, 1, &R->fence, VK_TRUE, UINT64_MAX);
+        vkWaitForFences(R->device, 1, &fs.fence, VK_TRUE, UINT64_MAX);
     }
+    fs.inFlight = false;
+    return int(oldest);
+}
+
+// Everything in flight has finished. The frame boundary's two destructive maintenance
+// steps (`GrowArenaIfNeeded`, `PersistMaintenance`) reuse or destroy memory whose
+// offsets are recorded in command buffers, and with frames in flight "the fence has been
+// waited on" is no longer enough — one of them may still be executing.
+void WaitAllFramesIdle()
+{
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        if (R->frames[i].inFlight)
+            vkWaitForFences(R->device, 1, &R->frames[i].fence, VK_TRUE, UINT64_MAX);
+    // `inFlight` is deliberately NOT cleared. It means "submitted and not yet PRESENTED",
+    // and a frame waited on here still owes the window its pixels; clearing it would drop
+    // that frame silently at every arena growth. Waiting twice on a signalled fence costs
+    // nothing.
 }
 
 // ===================================================================================
@@ -3307,30 +3477,59 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 ++R->persistStats.hits;
                 R->persistStats.hitBytes += bytes;
                 copied = false;
+                loc = StreamLoc{ &R->persist, e.at };
             }
             else
             {
                 // The guard caught the guest rewriting this buffer in place. The size is
-                // part of the key, so the existing slot is exactly the right size and the
-                // re-copy needs no allocation.
+                // part of the key, so a slot is exactly the right size and the re-copy
+                // needs no allocation — but it must not be THE SLOT AN IN-FLIGHT FRAME IS
+                // READING.
                 //
-                // OVERWRITING IN PLACE IS ONLY SAFE BECAUSE THE SUBMIT IS SYNCHRONOUS.
-                // The draws that read this slot were recorded in an earlier frame, and
-                // `SubmitAndWait` waited on that frame's fence before this one began, so
-                // the GPU is provably not reading it. **The moment frames-in-flight lands
-                // (open-items item 3, the CPU/GPU overlap) this becomes a hazard** and the
-                // stale path has to allocate a fresh slot instead of reusing this one.
-                // Flagged here rather than in the plan because this is the line that
-                // breaks, and it breaks silently, into a wrong mesh.
+                // Until part 23 it was, and that was correct: the submit was synchronous,
+                // so every draw pointing at this slot came from a frame whose fence had
+                // been waited on. With frames in flight it is a wrong mesh, silently. So
+                // the write goes to the entry's twin and the two alternate — see
+                // `PersistEntry::alt` for why two is exactly enough.
+                //
+                // When no twin can be had (the store is full) the entry is DROPPED rather
+                // than overwritten. That costs this stream a per-frame copy and puts it
+                // back on the pre-store path, which is the same trade the `overflow`
+                // counter below already makes; the alternative is trading correctness for
+                // a copy, which is never the trade to make silently.
+                bool safe = true;
+                if (R->framesInFlight > 1)
                 {
-                    ProfScope _p(&g_prof.streams);
-                    CopySwapped(R->persist.mapped + e.at, src, size_t(bytes), endian);
+                    if (e.alt == VkDeviceSize(-1))
+                    {
+                        const VkDeviceSize a = PersistAlloc(bytes);
+                        if (a != VkDeviceSize(-1))
+                            e.alt = a;
+                    }
+                    if (e.alt != VkDeviceSize(-1))
+                        std::swap(e.at, e.alt);
+                    else
+                        safe = false;
                 }
-                e.guard = guard;
-                ++R->persistStats.stale;
-                R->persistStats.staleBytes += bytes;
+                if (safe)
+                {
+                    {
+                        ProfScope _p(&g_prof.streams);
+                        CopySwapped(R->persist.mapped + e.at, src, size_t(bytes), endian);
+                    }
+                    e.guard = guard;
+                    ++R->persistStats.stale;
+                    R->persistStats.staleBytes += bytes;
+                    loc = StreamLoc{ &R->persist, e.at };
+                }
+                else
+                {
+                    // `e` dies with this line. Nothing below may touch it, and `loc`
+                    // stays empty so the per-frame arena path takes this stream.
+                    R->persistCache.erase(pit);
+                    ++R->persistStats.staleEvicted;
+                }
             }
-            loc = StreamLoc{ &R->persist, e.at };
         }
         else
         {
@@ -5457,7 +5656,57 @@ bool InitCommon()
     static const uint64_t persistMb =
         Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 128;
     R->persistOn = !EnvOn("CZ_VK_NO_PERSIST_STREAMS");
-    if (!CreateBuffer(R->arena, arenaMb << 20,
+
+    // --- CZ_VK_FRAMES_IN_FLIGHT ---------------------------------------------------------
+    //
+    // How many frames the CPU may be ahead of the GPU. 1 is the renderer this port ran
+    // for twenty-two parts: submit the frame, block on its fence, read it back, present.
+    //
+    // Why more than 1 is the largest item in the performance plan: a crowd frame is
+    // ~27.7 ms of CPU followed by ~16.5 ms of GPU, strictly in series, so the card is
+    // idle 68% of every frame and the driver correctly governs it down to a mid clock
+    // (gotcha 231, §6ar). `CZ_VK_NO_SUBMIT=1` measured the ceiling on removing that
+    // serialisation — CPU-only time, ~1.45x — without building it. This is building it.
+    //
+    // TWO IS THE DEFAULT AND THREE IS AVAILABLE, and neither is a guess about which
+    // wins: one frame of overlap already covers a GPU shorter than the CPU, so 3 should
+    // read as noise, and if it does not then the model of where the time goes is wrong
+    // and that is worth knowing. Both are one binary, which is what makes the A/B legal.
+    static const char* fifEnv = Env("CZ_VK_FRAMES_IN_FLIGHT");
+    R->framesInFlight = fifEnv ? uint32_t(strtoul(fifEnv, nullptr, 10)) : 2;
+    if (R->framesInFlight < 1)
+        R->framesInFlight = 1;
+    if (R->framesInFlight > kMaxFramesInFlight)
+        R->framesInFlight = kMaxFramesInFlight;
+
+    // The instruments that CANNOT be one frame late, and are therefore allowed to veto
+    // the pipelining rather than silently produce misaligned evidence.
+    //
+    // A deferred present hands the window frame N-1's pixels while the renderer's
+    // snapshot images, its resolve chain and its register state are all frame N's. The
+    // frame-stats and PPM paths are fixed properly below — they carry the presented
+    // frame's own metadata in its slot — but three instruments read the LIVE resolve
+    // chain next to the presented pixels and cannot be fixed that way:
+    // CZ_VK_SNAP_ON_BLACK and CZ_VK_SNAP_ON_DARK trigger a dump of the current
+    // snapshots from a pixel test on the presented frame, and CZ_VK_FRAME_STATS_SURFACE
+    // reads back a named snapshot to sit in the same stats line as the presented one.
+    // A one-frame skew there is a diagnostic that quietly answers about the wrong frame,
+    // which is worse than a slower diagnostic (gotcha 7's cousin: an instrument that
+    // reports about something other than what it names).
+    if (Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") ||
+        Env("CZ_VK_FRAME_STATS_SURFACE") || Env("CZ_VK_SNAP_DUMP") ||
+        EnvOn("CZ_VK_NO_SUBMIT"))
+    {
+        if (R->framesInFlight != 1)
+            fprintf(stderr, "[vk] frames-in-flight forced to 1: a snapshot-chain or "
+                            "no-submit instrument is on and those read the resolve state "
+                            "of the frame being RECORDED, not the one being presented\n");
+        R->framesInFlight = 1;
+    }
+    fprintf(stderr, "[vk] frames in flight: %u%s\n", R->framesInFlight,
+            R->framesInFlight == 1 ? " (submit and wait; the pre-part-23 renderer)" : "");
+
+    if (!CreateBuffer(R->arena, (arenaMb << 20) * R->framesInFlight,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -5479,6 +5728,24 @@ bool InitCommon()
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
         return false;
+    }
+
+    // One present readback buffer per slot. It is deliberately NOT a region of
+    // `R->readback`: that buffer is also the snapshot-dump target, and sharing it would
+    // mean an instrument's readback could land on top of a frame the window has not
+    // fetched yet — a corrupted picture that appears only when a diagnostic is on, which
+    // is the worst kind. Sized like `R->readback` so a front-buffer resolve larger than
+    // the frame extent still fits rather than being silently truncated.
+    for (uint32_t i = 0; i < R->framesInFlight; ++i)
+    {
+        if (!CreateBuffer(R->frames[i].present,
+                          std::max(uint64_t(R->targetWidth) * R->targetHeight,
+                                   uint64_t(4096) * 1024) * 4,
+                          VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
+        {
+            fprintf(stderr, "[vk] present readback buffer %u allocation FAILED\n", i);
+            return false;
+        }
     }
 
     // The cross-frame store is allocated SEPARATELY from the chain above, and its failure
@@ -5693,33 +5960,73 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
 
+    // Into THIS SLOT's readback buffer, not a shared one: with a frame in flight the
+    // window has not necessarily fetched the previous frame's pixels yet.
+    FrameSlot& rec = R->frames[R->frameSlot];
     Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
     VkBufferImageCopy copy{};
     copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     copy.imageExtent = { width0, height0, 1 };
     vkCmdCopyImageToBuffer(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           R->readback.buffer, 1, &copy);
-    SubmitAndWait();
+                           rec.present.buffer, 1, &copy);
 
-    const size_t bytes = size_t(width0) * height0 * 4;
+    // What this frame WAS, recorded next to the pixels it produced. Every present-side
+    // instrument below reads this and not `R->frame`/`R->drawFingerprint`, which from
+    // here on describe the frame being recorded rather than the one being shown.
+    rec.frame = R->frame;
+    rec.draws = R->drawsThisFrame;
+    rec.vertices = R->verticesThisFrame;
+    rec.drawFingerprint = R->drawFingerprint;
+    rec.cameraFingerprint = R->cameraFingerprint;
+    rec.width = width0;
+    rec.height = height0;
+    rec.bytes = size_t(width0) * height0 * 4;
+    rec.presentable = true;
+
+    SubmitFrame();
+    const int presentSlot = RetireOldestFrame();
+
+    // Advance the ring for the next frame. It happens HERE, after the wait above, so
+    // that when `BeginFrame` picks up this slot its fence has been observed to signal —
+    // which is what makes resetting its command buffer and reusing its arena region
+    // legal without a second wait at the top of the frame.
+    R->frameSlot = (R->frameSlot + 1) % R->framesInFlight;
+
+    // Reset the recorded frame's own accumulators here rather than after the stats line:
+    // they belong to the frame that has just been submitted, and the stats line below is
+    // now about a different one.
+    R->drawFingerprint = 0;
+    R->cameraFingerprint = 0;
+    R->verticesThisFrame = 0;
+
+    // Grow the arena HERE, at the frame boundary, rather than inside the next frame's
+    // first draw. Both of these idle every frame still in flight before they touch
+    // anything, which before part 23 the caller's fence wait did for them. See
+    // GrowArenaIfNeeded for why the old placement was a measurement defect: it charged a
+    // device-wait and an allocation to `other`.
+    GrowArenaIfNeeded();
+    // Same site, and for the store the reason is stronger: its offsets are recorded into
+    // command buffers, so reusing its memory before the GPU is done hands an in-flight
+    // draw somebody else's vertices.
+    PersistMaintenance();
+
+    // Nothing to show yet — the first frame of a run with two slots, because the second
+    // slot has never been submitted. One frame of a run.
+    if (presentSlot < 0)
+        return;
+    FrameSlot& pres = R->frames[presentSlot];
+    if (!pres.presentable)
+        return;
+    const uint32_t width1 = pres.width, height1 = pres.height;
+    const size_t bytes = pres.bytes;
     {
         ProfScope _p(&g_prof.readback);
         if (R->presentPixels.size() < bytes)
             R->presentPixels.resize(bytes);
-        memcpy(R->presentPixels.data(), R->readback.mapped, bytes);
-        Host_PresentPixels(R->presentPixels.data(), width0, height0);
+        memcpy(R->presentPixels.data(), pres.present.mapped, bytes);
+        Host_PresentPixels(R->presentPixels.data(), width1, height1);
     }
-
-    // Grow the arena HERE, at the frame boundary, rather than inside the next frame's
-    // first draw. `SubmitAndWait` above has waited on the fence, so the buffer this may
-    // destroy is provably not in use. See GrowArenaIfNeeded for why the old placement was
-    // a measurement defect: it charged a device-wait and an allocation to `other`.
-    GrowArenaIfNeeded();
-    // Same site and the same reason, and for the store the reason is stronger: its
-    // offsets are recorded into command buffers, so reusing its memory before the fence
-    // has been waited on hands an in-flight draw somebody else's vertices.
-    PersistMaintenance();
 
     // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture
     // DIED on, triggered by the picture dying.
@@ -5818,7 +6125,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fprintf(stderr,
                         "[vk] SNAP_ON_BLACK: frame %llu went black (%.3f%% lit, floor "
                         "%.2f%%) — dumping the resolve chain (%d episode dumps left)\n",
-                        (unsigned long long)R->frame, covPct, floorPct, episodesLeft);
+                        (unsigned long long)pres.frame, covPct, floorPct, episodesLeft);
             }
             if (covPct >= litPct)
             {
@@ -5852,7 +6159,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fprintf(stderr,
                         "[vk] SNAP_ON_DARK: frame %llu went DARK (mean luma %.2f, floor "
                         "%.2f, %.2f%% lit) — dumping the resolve chain (%d left)\n",
-                        (unsigned long long)R->frame, meanLuma, floorLuma, covPct,
+                        (unsigned long long)pres.frame, meanLuma, floorLuma, covPct,
                         darkEpisodesLeft);
             }
             if (meanLuma >= darkLitLuma)
@@ -5864,7 +6171,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     fprintf(stderr,
                             "[vk] SNAP_ON_DARK: frame %llu is the BRIGHT REFERENCE for "
                             "the episode above (mean luma %.2f, %.2f%% lit)\n",
-                            (unsigned long long)R->frame, meanLuma, covPct);
+                            (unsigned long long)pres.frame, meanLuma, covPct);
                 }
                 sawBrightFrame = true;
             }
@@ -5885,7 +6192,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Env("CZ_VK_FRAME_DUMP_EVERY")
             ? std::max<uint64_t>(1, strtoull(Env("CZ_VK_FRAME_DUMP_EVERY"), nullptr, 10))
             : 64;
-    if (dumpDir && (R->frame % dumpEvery) == 0)
+    if (dumpDir && (pres.frame % dumpEvery) == 0)
     {
         // Create the directory, and SAY SO if the frames cannot be written. This used to
         // be a bare fopen whose failure was silent, so a run pointed at a directory that
@@ -5903,10 +6210,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         }
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06llu.ppm", dumpDir,
-                 (unsigned long long)R->frame);
+                 (unsigned long long)pres.frame);
         if (FILE* f = fopen(path, "wb"))
         {
-            fprintf(f, "P6\n%u %u\n255\n", width0, height0);
+            fprintf(f, "P6\n%u %u\n255\n", width1, height1);
             for (size_t i = 0; i < bytes; i += 4)
                 fwrite(&R->presentPixels[i], 1, 3, f);
             fclose(f);
@@ -6074,10 +6381,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         fprintf(statsFile,
                 "%llu %llu %llu %016llx %016llx %u %u %.4f %.3f %llu %016llx "
                 "%u %u %.4f %.3f %llu %016llx %lld\n",
-                (unsigned long long)R->frame, (unsigned long long)R->drawsThisFrame,
-                (unsigned long long)R->verticesThisFrame,
-                (unsigned long long)R->drawFingerprint,
-                (unsigned long long)R->cameraFingerprint, width0, height0,
+                (unsigned long long)pres.frame, (unsigned long long)pres.draws,
+                (unsigned long long)pres.vertices,
+                (unsigned long long)pres.drawFingerprint,
+                (unsigned long long)pres.cameraFingerprint, width1, height1,
                 pixels ? 100.0 * double(lit) / double(pixels) : 0.0,
                 pixels ? double(lumaSum) / double(pixels) : 0.0,
                 (unsigned long long)distinct, (unsigned long long)ph,
@@ -6088,9 +6395,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 spixels ? (unsigned long long)sph : 0ull, msec);
         fflush(statsFile);
     }
-    R->drawFingerprint = 0;
-    R->cameraFingerprint = 0;
-    R->verticesThisFrame = 0;
+    // The fingerprint and vertex accumulators are reset at the SUBMIT above, not here:
+    // they belong to the frame that was just recorded, and everything from the present
+    // onwards is about a different one.
 
     // A frame that is entirely one colour is the single most common wrong result a
     // renderer produces, and it is invisible in a log. Counting it makes "the picture
@@ -6348,16 +6655,19 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             if (R->persistOn)
             {
                 const Renderer::PersistStats& p = R->persistStats;
-                const uint64_t touched = p.hits + p.fills + p.stale + p.overflow;
+                const uint64_t touched =
+                    p.hits + p.fills + p.stale + p.overflow + p.staleEvicted;
                 fprintf(stderr,
                         "[vkprof] store %llu first-touch/frame: %.1f%% served across the "
                         "frame boundary, %.2f MB/frame NOT copied | fills %llu stale %llu "
-                        "overflow %llu | guard read %.2f MB/frame\n",
+                        "(%llu evicted, no twin) overflow %llu | guard read %.2f MB/frame\n",
                         (unsigned long long)(frames ? touched / frames : 0),
                         touched ? 100.0 * double(p.hits) / double(touched) : 0.0,
                         frames ? double(p.hitBytes) / double(frames) / 1048576.0 : 0.0,
                         (unsigned long long)(frames ? p.fills / frames : 0),
-                        (unsigned long long)p.stale, (unsigned long long)p.overflow,
+                        (unsigned long long)p.stale,
+                        (unsigned long long)p.staleEvicted,
+                        (unsigned long long)p.overflow,
                         frames ? double(p.guardBytes) / double(frames) / 1048576.0 : 0.0);
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
