@@ -7,24 +7,35 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0a. **A CROSS-FRAME STREAM CACHE — measured, sized, and the largest named CPU item that
-   is not architectural (§6at).** The vertex/index stream cache is cleared at every frame
-   boundary, and a crowd frame therefore copies **74-77 MB** it copied last frame:
-   ~2,000 misses of ~37 KB, **95-97% of those bytes repeating the previous frame's key**,
-   costing **5.6-5.9 ms of a ~50 ms frame (11.3-11.7%)**. Split: vertex bindings 61-63 MB,
-   dependent fetches 11 MB, index buffers 1.8 MB.
-   The 94% hit rate the cache already achieves is *within* a frame and is not the
-   question — gotcha 233.
-   **It cannot be done by assuming.** 164 of 10,154,820 repeated keys really do change
-   content (0.0016%, a recurring set of ~26), so a persistent cache keyed on
-   (address, size, endian) serves a stale vertex buffer to those draws. Hashing to detect
-   it costs what the copy costs. Three requirements, all in §6at: storage that outlives
-   the frame (the arena is a bump allocator reset at every swap), **invalidation** — the
-   candidate is guest-page write tracking, `mprotect` plus a `SIGSEGV` handler that
-   coexists with `cpu/crash_report.cpp`'s — and a counter for both, because a cache that
-   silently serves stale data looks exactly like a rendering bug twenty frames later.
-   Budget a session. `CZ_VK_STREAM_CENSUS=2` is the before-measurement and the arm that
-   will say whether it worked.
+0a. ~~**A CROSS-FRAME STREAM CACHE**~~ **BUILT IN PART 22 (§6av).** 97.3% of first-touch
+   streams are now served across the frame boundary and copied bytes fall from
+   61-66 MB/frame to **0.23**, for a guard cost of under 0.8 MB/frame.
+   Three things worth carrying out of it rather than re-deriving:
+   * **`mprotect` was not needed.** The census was extended to name WHICH streams get
+     rewritten in place, and all 30 are exactly 80 bytes and all are declared vertex
+     bindings — so a guard that hashes anything up to 512 bytes exactly, and larger
+     streams at eight spread windows, covers the whole observed population. The
+     `SIGSEGV`-handler design (and its `fread`-returns-EFAULT hazard against
+     `kernel/vfs.cpp`) is written up in §6av and was never built.
+   * **The staleness risk was much larger than the census had said** — ~20 streams a
+     frame rather than 30 a run — because a frame-to-frame census cannot see an address
+     the guest recycles after a gap, which is exactly what a persistent cache is exposed
+     to. Gotcha 235. The guard catches all of them and `stale` counts them.
+   * **Eviction is a whole drop, counted, and deliberately not an LRU** — compaction
+     would have to move live streams, which is the copying this removed. `flushes` on the
+     profile line is the evidence that would justify building the harder thing; it is 0
+     in a crowd after one growth to 256 MB.
+
+0a-i. **`CopySwapped` is vectorised, but as a 10-instruction SSE2 sequence rather than one
+   `pshufb`** — `-msse4.1 -mavx` is applied to the `ppc_image` target only, so
+   `runtime/gpu/vk_renderer.cpp` compiles at baseline x86-64. Noticed while measuring 0a
+   and **most of its value was then taken away by 0a itself**: stream copying is now
+   0.23 MB a frame, so the remaining beneficiary is TEXTURE upload (`CopySwapped` at
+   `vk_renderer.cpp:2232`/`2255`, inside a `textures` column worth 2.3-3.6% of a frame).
+   Recorded because it is a five-line change (`__attribute__((target("ssse3")))` on that
+   one function, keeping the rest of the binary at baseline) and because the *reason* it
+   was worth much more an hour earlier is the useful part: sizing a micro-optimisation
+   before the structural change lands prices it against the wrong baseline.
 
 0b. **A FIRST-VISIT STUTTER, found only because an operator played (§6as).** `other` —
    `DoDraw`'s untimed work — sits at ~6% of a crowd frame and spikes to 20-26% (16.7 ms

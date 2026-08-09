@@ -543,7 +543,31 @@ CZ_VK_STREAM_CENSUS_POISON=1  the CONTROL for the line above, and the reason its
                    line MUST read 0.0%. Measured on one binary: 75,492 of 75,492 (100.0%)
                    off, 0 of 96,048 (0.0%) on. It also exposed what the rounding hid —
                    164 of 10,154,820 repeated keys really do change content, a recurring
-                   set of ~26 — which turns "safe to cache blindly" into "must invalidate"
+                   set of ~26 — which turns "safe to cache blindly" into "must invalidate".
+                   With the store built, poison ALSO drives the GUARD MISSED line to its
+                   maximum (240,652 of 240,652), which is that line's own control
+                   -- level 2 also prints REWRITTEN IN PLACE: WHICH keys change, cumulative
+                   over the run, with address, size, kind and the frame span. That is what
+                   chose the invalidation mechanism in part 22: all 30 are exactly 80
+                   bytes and all are declared vertex bindings, so a 512-byte exact guard
+                   covers the whole observed population and `mprotect` was not needed
+                   -- and GUARD MISSED: of the content changes the FULL hash sees, how
+                   many the store's bounded-cost guard let through as a hit. A stale
+                   vertex buffer handed to a draw. Must read 0; reads 0
+CZ_VK_NO_PERSIST_STREAMS=1  the CONTROL ARM for the cross-frame stream store — the same
+                   binary with the store off, which is the pre-part-22 renderer. The store
+                   is ON by default because it is a 97%-of-first-touch-streams saving;
+                   this is how one binary is both arms of its own A/B, the same shape as
+                   CZ_VK_NO_ARENA_GROWTH and CZ_VK_NO_SUBMIT
+CZ_VK_PERSIST_MB=N  the cross-frame store's STARTING size (default 128; it doubles when a
+                   frame overruns it, like the arena, and settles at 256 in a crowd).
+                   Two `[vkprof] store` lines report it whenever CZ_VK_PROFILE is on and
+                   are NOT behind the census: the share of first-touch streams served
+                   across the frame boundary, the MB/frame thereby not copied, fills,
+                   **stale** (the guard caught a rewrite and re-copied — ~20 a frame, see
+                   gotcha 235), overflow, what the guard itself read, and entries / MB
+                   used / flushes. A store that silently served stale data would look like
+                   a rendering bug frames later, so its counters are on by default
 CZ_VK_TEX_REFRESH=<hex[,hex]>  re-read those textures' pixels on EVERY fetch, into the
                    SAME image and slot (the dimensions are part of the cache key, so
                    updating in place is exact and needs no allocation). The arm for "we

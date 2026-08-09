@@ -1662,6 +1662,30 @@ From phase C part 18 (the frame rate — and none of it was work):
      cache blindly"; with it, the conclusion is "must invalidate", which is a different
      design. This is gotcha 30 in the specific shape it takes for *equality* checks, and
      equality checks are where it hides best, because the passing state is silent.
+235. **A census that only looks ONE STEP BACK measures a smaller question than the one a
+     cache asks — and will understate its risk by orders of magnitude.** Part 21 measured
+     how often a guest stream's bytes changed *since last frame* and got **164 of
+     10,154,820, 0.0016%**, a number that reads as "essentially never". The cross-frame
+     store built on it compares against the **last COPY**, which may be dozens of frames
+     old, and its counter immediately reported **~20 stale streams a frame** — two orders
+     of magnitude more. Neither number is wrong. An address the guest recycles for a
+     different mesh after a gap is invisible to a frame-to-frame comparison **by
+     construction**, and it is precisely the case a persistent cache is exposed to.
+     **Match the lookback of the measurement to the lifetime of the thing being
+     designed.** If a cache will hold data for N frames, a one-frame staleness census is
+     not evidence about it; it is evidence about a one-frame cache. The tell is that the
+     instrument's window is a parameter nobody chose deliberately — here it was
+     `g_prevStreamKeys`, cleared every `BeginFrame` because that was convenient.
+     The saving grace was building the guard anyway on the strength of a 0.0016% that
+     "could have been zero but was not". Had the census read a true zero, the temptation
+     to skip invalidation would have been much stronger, and the defect would have been
+     an intermittent wrong mesh — see 233's family of caches that look fine.
+236. **An instrument that writes FILES must complain when it cannot.** `CZ_VK_FRAME_DUMP`
+     was a bare `fopen` whose failure was silent, so pointing it at a directory that did
+     not exist produced an empty directory — which is indistinguishable from a renderer
+     that drew nothing, and the picture check is the one gate in this project with no
+     log-diff substitute (117). The same shape as 25 and 151: a path that can produce
+     nothing without saying so will eventually be read as a result.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

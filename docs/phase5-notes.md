@@ -3399,6 +3399,128 @@ The frame that overruns is lost either way; only the frame after it is rescued, 
 already was. The remaining black frames are the same four early-boot frames in both runs,
 at identical draw counts. Closes the last live piece of open-items 1c.
 
+## 6av. THE CROSS-FRAME STREAM STORE — and the invalidation question turned out to be
+## the whole of the work
+
+open-items 0a, built on §6at's measurement. The short version: the per-frame stream cache
+was 94% hits and was thrown away at every swap, so a crowd frame copied 61-77 MB it had
+copied last frame to the same guest address. This gives the cache a lifetime.
+
+### First, the measurement was re-run, because it was one afternoon's
+
+The hand-off said so and it was worth the ten minutes (gotchas 50/51/86). On the part-22
+binary, outdoor crowd recipe, 6,872 draws at peak: **93.5-94.1% hits within a frame,
+61-66 MB copied a frame, 93.5-94.7% of those bytes repeating last frame's key.** Part 21's
+shares reproduce exactly; its 74-77 MB does not, because level-2 hashing slows the frame
+and the fixed-interval recipe drifts with it. The shares are the claim; the MB is a
+property of where that particular run got to.
+
+### The census was made to name the changing streams, and that decided the design
+
+Part 21 knew 164 of 10,154,820 repeated keys really changed content and called the
+changing set "a recurring ~26". It did not know **which**, and that is the question the
+design hinges on: a named set is an exclusion rule and costs nothing, a scattered set is
+guest-page write tracking — `mprotect` plus a `SIGSEGV` handler sharing the process with
+`cpu/crash_report.cpp`'s, which uses `SA_NODEFER`, plus a hazard nobody had noticed
+(`kernel/vfs.cpp` reads file data into guest memory with `fread`, and a `read(2)` into a
+`PROT_READ` page returns **EFAULT** rather than faulting, so a level reload into a
+protected page would fail silently instead of trapping).
+
+Keeping the identity cost about fifteen lines. The answer:
+
+```
+streams REWRITTEN IN PLACE: 30 distinct keys, 112 occurrences,
+                            guest range A0162328..A03C5AE8
+streams   va=A0162448 size=80 endian=2 vertex  x5  frames 1654..2288
+...
+```
+
+**Every one is exactly 80 bytes, endian 2, a declared vertex binding**, in two narrow
+runs. Not one index buffer, not one dependent fetch, and nothing larger than 80 bytes.
+`mprotect` is not needed and was not built.
+
+### The guard: bounded cost, and it still CHECKS the streams that have never changed
+
+`StreamGuard` hashes a stream in full up to 512 bytes and, above that, at eight spread
+64-byte windows including the first and the last. The threshold puts the entire observed
+rewritten population on the exact branch with a 6x margin.
+
+The sampled branch exists because **"we have never seen a big one change" is a zero, and a
+zero is a detection failure until something could have detected it** (gotcha 3). A size
+cutoff that simply declined to check large streams would have been cheaper and would have
+had no way to ever discover it was wrong.
+
+Cost: **under 0.8 MB a frame read, against 61-77 MB of copying avoided** — about 1%.
+
+### What it does
+
+Gameplay recipe, ~1,900 first-touch streams a frame:
+
+```
+store 1878 first-touch/frame: 97.3% served across the frame boundary,
+      68.73 MB/frame NOT copied | fills 8 stale 5985 overflow 0
+      | guard read 0.78 MB/frame
+store 23005 entries, 141 MB of 256 MB used, 0 flushes this window
+streams 28360 lookups/frame: 93.4% hit | copied 0.23 MB/frame
+```
+
+**Copied bytes fall from 61-66 MB a frame to 0.23**, and `fills` in the steady state is
+eight — the store is warm and stays warm.
+
+### THE STALE COUNT IS THE FINDING, and it says part 21's number was too small
+
+`stale 5985` per fifteen-second window is roughly **20 streams a frame** served from an
+address the store already held whose contents had changed. That is two orders of magnitude
+more than the 30-per-run the census reports, and the gap is structural rather than a
+disagreement: **the census compares against LAST FRAME and the store compares against the
+LAST COPY.** An address the guest reuses for a different mesh after a gap of frames is
+invisible to the first and is exactly what the second exists to catch. Part 21's 0.0016%
+was an honest measurement of a smaller question than the one a persistent cache asks.
+
+Every one of those 20 a frame is a wrong mesh in a cache that assumed instead of checking.
+The hand-off's "invalidation is not optional" was right for a stronger reason than it knew.
+
+### The correctness counter, and the control that makes it worth reading
+
+`CZ_VK_STREAM_CENSUS=2` now also computes the full hash and counts every real content
+change the guard let through as a hit — a stale buffer handed to a draw, the only defect
+this design can cause, and one that would otherwise appear as a rendering bug frames later
+in the class this project has spent whole parts chasing.
+
+It reads **0**. And, because a check that only ever passes has not been shown capable of
+failing (gotcha 234), under `CZ_VK_STREAM_CENSUS_POISON=1` — where the salted full hash
+calls every repeat a change while the unsalted guard correctly does not — the same line
+reads **240,652 of 240,652**. The counter fires when it should.
+
+### Storage: a second buffer, not a region of the arena
+
+The arena's exhaustion path is load-bearing — it is what turned a fixed 128 MB into six
+parts of "view-dependent whole-frame black" (§6ap) — and carving a persistent region out
+of its bottom would put a moving floor under that machinery and under
+`GrowArenaIfNeeded`'s buffer swap. A separate buffer leaves every line of that alone. The
+price is that `UploadStream` must say which buffer it used, which is `StreamLoc` and three
+call sites; the synthesised rectangle stream still goes in the per-frame arena, because it
+is built from one draw's corner indices and is not shared.
+
+Maintenance runs where the arena's growth runs — the end of `DoSwapImpl`, after the fence
+has been **waited on**. That is load-bearing here in a way it is not for the arena: the
+store's offsets are recorded into command buffers, so reusing its memory a moment early
+hands an in-flight draw somebody else's vertices.
+
+**Eviction is a whole drop, on purpose and with a counter.** An LRU with compaction has to
+MOVE live streams to close its gaps, which is copying, which is the cost this removes. A
+drop pays one frame at the old cost and runs warm again. `flushes` is on the profile line
+so the evidence for building the harder thing would be visible; in these runs it is zero
+after the one growth from 128 to 256 MB.
+
+### Gates
+
+`--smoke` OK; A5 exit 0 with 3 permutation windows and 0 real; `truncated=0`;
+`no translated shader` = 0; both PM4 capture oracles clean. The picture against capture E2
+at frame 576 is **+0.9590 identity with the store on and +0.9596 with it off**, against
+the project's standing +0.9597, and the two arms' own frames correlate +0.9998, +0.9934,
++0.9929 and +0.9921 at matched indices.
+
 ---
 
 ## 7. What is NOT right yet, with the measurement for each
