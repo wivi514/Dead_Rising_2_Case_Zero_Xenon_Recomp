@@ -40,24 +40,45 @@ Next, in order:
      slot instead. The comment is at the line that breaks; the failure mode is a wrong
      mesh, silently.
 
-0a-i. **`CopySwapped` is vectorised, but as a 10-instruction SSE2 sequence rather than one
-   `pshufb`** — `-msse4.1 -mavx` is applied to the `ppc_image` target only, so
-   `runtime/gpu/vk_renderer.cpp` compiles at baseline x86-64. Noticed while measuring 0a
-   and **most of its value was then taken away by 0a itself**: stream copying is now
-   0.23 MB a frame, so the remaining beneficiary is TEXTURE upload (`CopySwapped` at
-   `vk_renderer.cpp:2232`/`2255`). That is not nothing — with `streams` at zero,
-   **`textures` is ~3.1 ms of a crowd frame and sits behind only `record`** — note it was
-   already second before the store, behind `streams`, and did not move (6.4% -> 6.5%); what
-   changed is that it is now near enough tied with the largest term instead of half of it,
-   and 31% of the draw path instead of 21% (perf-cpu-plan §1b has the table). So a
-   five-line change
-   (`__attribute__((target("ssse3")))` on that one function, keeping the rest of the
-   binary at baseline) is plausibly worth ~1 ms. Measure it against `textures`, not the
-   frame, and remember gotcha 237 before expecting the frame to move.
-   The *reason* its value moved is the part worth carrying: sizing a micro-optimisation
-   before the structural change lands prices it against the wrong baseline — this one was
-   worth multiple milliseconds an hour earlier, then almost nothing, and is now worth
-   about a millisecond again for a completely different reason.
+0a-i. ~~**Vectorise `CopySwapped`**~~ **RETRACTED — MEASURED AT ESSENTIALLY ZERO, and the
+   way it died is more useful than the item was.** `CopySwapped` really does compile to a
+   10-instruction SSE2 sequence where one `pshufb` would do (`-msse4.1 -mavx` is applied
+   to the `ppc_image` target only, so `runtime/gpu/vk_renderer.cpp` is baseline x86-64).
+   It is worth nothing, because after 0a there is almost nothing left for it to swap:
+   stream copying is 0.23 MB a frame, and **texture upload is 2,387 untilings in a whole
+   ten-minute run.**
+   I asserted "~1 ms" for this twice without measuring it, on the reasoning that
+   `textures` is ~3.1 ms of a crowd frame and texture upload is inside it. `CZ_VK_TEX_CENSUS`
+   says that reasoning was wrong at the first step:
+
+   | `UploadTexture` calls over one outdoor run | 166,715,853 | |
+   |---|---|---|
+   | cache hit | 123,735,182 | 74.2% |
+   | served from a DEPTH resolve snapshot | 38,200,406 | 22.9% |
+   | served from a resolve snapshot | 2,519,093 | 1.5% |
+   | fetch constant is not a texture | 2,258,785 | 1.4% |
+   | **actually UPLOADED (untiled + swapped)** | **2,387** | **0.0014%** |
+
+   **`ProfScope(textures)` wraps the whole of `UploadTexture`, not the upload** — the key
+   hash, the fetch-constant decode and the cache lookup are all inside it, and the copy
+   only happens on a miss. This is gotcha 233's second half ("read where the timer starts")
+   arriving a third time, and the third time it was me reading a column name and inferring
+   its contents. See 0a-ii, which is what the 3.1 ms actually is.
+
+0a-ii. **`textures` IS 3.1 ms OF PURE LOOKUP — ~13,900 `UploadTexture` calls a frame at
+   ~223 ns each, and 0.0014% of them do any work.** This is the item 0a-i was mistaken for,
+   and it is well specified because the census above already names every path. Each call
+   does a six-dword FNV hash over the fetch constant and then an `unordered_map` find;
+   223 ns for that is slow enough to suggest the map is missing cache on a large working
+   set, which is a measurement to make rather than a conclusion.
+   **It is the same shape as the stream store and should be cheaper:** consecutive draws
+   overwhelmingly re-fetch the same constants, so a within-frame memo keyed on the fetch
+   slot — invalidated the way the register file already tracks dirty constants — skips the
+   hash and the find entirely. Two cautions carried from 0a: measure it against the
+   `textures` column and not the frame (gotcha 237), and check where the replacement work
+   gets charged before believing the column (gotcha 238).
+   Note 22.9% of calls take the DEPTH-snapshot path, which has its own lookup, so a memo
+   has to cover both or it will move the cost rather than remove it.
 
 0b. **A FIRST-VISIT STUTTER, found only because an operator played (§6as).** `other` —
    `DoDraw`'s untimed work — sits at ~6% of a crowd frame and spikes to 20-26% (16.7 ms
@@ -375,6 +396,19 @@ Next, in order:
 4. **No mipmaps have ever been uploaded** — `ci.mipLevels = 1` in `CreateImage`, every
    texture, every phase. This is the operator's "all textures seem weird grainy", and it
    is real work rather than a one-liner: the Xenos mip chain has its own address layout.
+4b. **A KNOWN-WRONG TEXTURE PATH FIRES 1,337,658 TIMES IN ONE OUTDOOR RUN, and it has been
+   counting quietly the whole time.** The counter names its own defect:
+   `texture: snapshot served at the surface PITCH, not the fetch's declared size — texture
+   coordinates would be scaled wrong`. Found incidentally while running
+   `CZ_VK_TEX_CENSUS` for 0a-i; nobody had looked at it because the census needs
+   `CZ_VK_STATS=N` as well and so had effectively never been read.
+   Same run: `texture: colour fetch served by a DEPTH resolve snapshot` 10,956, and
+   `texture: uploaded entirely BLACK (the guest has not written it)` 250.
+   None of these is diagnosed. All three are cheap to start on because the counter already
+   says which fetch and the census's per-address table prints the extent and format —
+   and a wrongly scaled texture coordinate is exactly the kind of defect that reads as
+   "the art looks a bit off" rather than as a bug. **Read this before working 3, 4 or 6**:
+   it may be the mechanism behind one of them rather than a fourth separate thing.
 5. **The Still Creek sign's dark smear and the GAS roundel.** Neither has an identity.
    Both are `CZ_VK_SKIP_TEX` to name the address, then `CZ_VK_TEX_DUMP` to separate "our
    decode scrambled this" from "the texture is fine and the draw shades it wrong". The

@@ -241,8 +241,15 @@ second-largest draw-path term before it, behind `streams`, and it is still secon
 Two things did change and neither is a re-ranking: the gap to first closed (textures was
 58% of the largest term, now 92% of it, near enough tied with `record`), and it is a
 bigger slice of a smaller draw path (21% -> 31%). So it is worth attacking now for the
-same reason it always was, only with less above it. open-items 0a-i is a five-line lead on
-exactly that.
+same reason it always was, only with less above it.
+
+**And §1c's own open question is now ANSWERED — it is lookup, not upload.** §1c below says
+to measure uploads per frame against fetches per frame. Done, one outdoor run:
+**166,715,853 `UploadTexture` calls and 2,387 actual uploads — 0.0014%** (74.2% cache hit,
+22.9% depth snapshot, 1.5% resolve snapshot, 1.4% not a texture). `ProfScope(textures)`
+wraps the whole function, so the 3.1 ms is ~13,900 calls a frame at ~223 ns of six-dword
+FNV hash plus `unordered_map` find. open-items **0a-ii** is that item; **0a-i** —
+vectorising `CopySwapped` — is retracted, because there is nothing left for it to swap.
 
 ### 1c. `textures` is 3.43 ms — and it is 7.9-10.9% in crowds against 2.5% in ordinary
 gameplay

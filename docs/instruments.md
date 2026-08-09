@@ -521,7 +521,14 @@ CZ_VK_SKIP_TEX / CZ_VK_ONLY_TEX=<hex[,hex]>  render all but, or only, the draws 
 CZ_VK_TEX_CENSUS=1 per texture ADDRESS: uploads, how many came out entirely black,
                    fetches served from a resolve snapshot, and fetches that fell back
                    because the snapshot was too old. Off by default because the snapshot
-                   column is hit ~500,000 times a run (gotcha 7)
+                   column is hit ~500,000 times a run (gotcha 7).
+                   **NEEDS `CZ_VK_STATS=N` TOO, AND SAYS NOTHING WITHOUT IT.** The table
+                   is printed by `VkRenderer_DumpStats`, which is only called every N
+                   frames when CZ_VK_STATS is set — there is no dump at exit, and every
+                   headless recipe in this project runs under `timeout`, which SIGTERMs
+                   the process. On its own this variable turns the counting ON and prints
+                   it NOWHERE, which cost part 22 a 10-minute run that looked like a
+                   census with no textures in it (gotcha 236)
 CZ_VK_STREAM_CENSUS=1|2  what the per-frame vertex/index stream cache actually DOES:
                    lookups and hit rate, misses, MB copied per frame, MB the hits saved,
                    the split by kind (declared vertex binding / index buffer / shader-side

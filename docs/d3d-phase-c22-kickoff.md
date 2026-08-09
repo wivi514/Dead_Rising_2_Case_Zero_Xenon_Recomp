@@ -101,9 +101,14 @@ start** — it nearly caused a real win to be filed as noise.
    counter and no measurement, carried from part 19. `CZ_VK_SKIP_TEX` to name the address
    is the cheap first move.
 
-**Small and specified, if a session wants a warm-up:** open-items 0a-i. See "One item was
-re-ranked by part 22" below — it is a five-line change against what is now the second
-largest draw-path term.
+**Small and specified, if a session wants a warm-up:** open-items **0a-ii** — `textures`
+is 3.1 ms of a crowd frame and 99.9986% of it is lookup, not copying. See "What the store
+left behind in the draw path" below for the census that says so. (0a-i, vectorising
+`CopySwapped`, is **retracted** — measured at essentially zero.)
+And **open-items 4b**, which fell out of the same census: a counter that names its own
+picture defect — `snapshot served at the surface PITCH, not the fetch's declared size —
+texture coordinates would be scaled wrong` — is firing **1,337,658 times** in one outdoor
+run and has never been looked at.
 
 **Retired — do not re-derive:** §1a hypothesis A (vertex/index bind caching; ~1.4 ms,
 permanently below the noise floor); pipeline compilation as the first-visit cost; §1b's
@@ -157,12 +162,25 @@ is now near enough tied with the largest term instead of half of it, and 31% of 
 path instead of 21%. (`record` is first only because it is carrying the store's guard —
 reading-note 6.)
 
-open-items **0a-i** is a five-line change aimed at `textures`: `CopySwapped` compiles to a
-10-instruction SSE2 sequence where one `pshufb` would do, because `-msse4.1 -mavx` is
-applied to the `ppc_image` target and not to the runtime.
-`__attribute__((target("ssse3")))` on that one function keeps the rest of the binary at
-baseline. **Measure it against the `textures` column, not the frame** — see
-reading-note 4.
+**`textures` is 3.1 ms of PURE LOOKUP — do not go after the copy.** I twice recommended
+vectorising `CopySwapped` for this and twice had no measurement behind it.
+`CZ_VK_TEX_CENSUS` over one outdoor run:
+
+| `UploadTexture` calls | 166,715,853 | |
+|---|---|---|
+| cache hit | 123,735,182 | 74.2% |
+| served from a DEPTH resolve snapshot | 38,200,406 | 22.9% |
+| served from a resolve snapshot | 2,519,093 | 1.5% |
+| fetch constant is not a texture | 2,258,785 | 1.4% |
+| **actually UPLOADED** | **2,387** | **0.0014%** |
+
+`ProfScope(textures)` wraps the whole of `UploadTexture` — key hash, decode, cache find —
+and the copy only runs on a miss, of which there are 2,387 in ten minutes. **open-items
+0a-i is retracted; 0a-ii is the real item**: ~13,900 calls a frame at ~223 ns each, a
+six-dword FNV hash plus an `unordered_map` find, and a within-frame memo on the fetch slot
+should take most of it. Note 22.9% go down the depth-snapshot path with its own lookup, so
+a memo must cover both or it will move the cost rather than remove it.
+**Measure it against the `textures` column, not the frame** — see reading-note 4.
 
 ## Two things about the store the next session should hold in mind
 
