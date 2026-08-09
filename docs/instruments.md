@@ -432,6 +432,59 @@ CZ_VK_NO_ARENA_GROWTH=1  pin the arena at its starting size — the exact pre-pa
                    is the only place it is safe (the command buffer has just been reset,
                    so its previous submission has completed, and every consumer of the
                    arena is per-frame)
+CZ_VK_TEX_GUARD=1  a CONTENT guard over the texture cache: on a cache hit, hash a bounded
+                   sample of the guest bytes the image was built from and compare with the
+                   hash taken at upload. A mismatch is the cache serving pixels that are
+                   gone. Counted globally and per address (worst 24 printed), because "one
+                   atlas is stale every frame" and "a third of the world is wrong" are
+                   different defects. **It refuted the hypothesis it was built for** —
+                   0.00% on an operator session with wrong textures on screen throughout —
+                   and is kept because it is the only thing that can see a stale texture,
+                   and because it is two-sided (see the poison below). Needs CZ_VK_STATS=N
+                   to print anything at all. NB blind by construction to a fetch pointing
+                   at an address that was never that texture's home
+CZ_VK_TEX_GUARD_POISON=1  the POSITIVE control: perturbs only the COMPUTED guard, never
+                   the stored one, so every hit must mismatch. Measured 14,554,550 of
+                   14,554,550 = 100.00%, against 0.00% on an unpoisoned boot. A census that
+                   cannot report a positive proves nothing by reporting a negative
+                   (gotcha 30), and this project has shipped a comparison that could only
+                   ever read 100% (gotcha 234) — so both ends need exercising
+CZ_VK_TEX_REVALIDATE=1  the repair the guard would justify: re-upload on mismatch into the
+                   SAME image and SAME bindless slot, which is exact and allocation-free
+                   because the dimensions are part of the key. Correct, and NOT the fix for
+                   the wrong textures — it repaired all 1,968 stale hits of an operator
+                   session without changing any of the visible defects
+CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
+                   cannot serve a stale image under it, so it is the picture arm that
+                   would have proved the cache guilty had it been guilty
+CZ_VK_FRAMES_IN_FLIGHT=N  how many frames the CPU may be ahead of the GPU. **Default 2
+                   since part 23; `=1` is the pre-part-23 renderer exactly** — submit,
+                   block on the fence, read back, present — and is therefore this
+                   change's control arm out of the same binary. Max 3.
+                   What it duplicates is only what the CPU writes and the GPU reads, or
+                   the reverse: the command buffer, the bump arena (cut into N regions of
+                   ONE buffer, allocated N times larger so a frame's own capacity is
+                   unchanged) and the buffer the presented image is read back into.
+                   Everything else is device-only and one queue executes in order.
+                   **The counter that says it engaged is `submit [... gpu N]` in the
+                   profile** — the fence wait. It is the renderer's "time blocked on the
+                   GPU" and the whole prediction is that it collapses while every
+                   draw-path column stays put; if it does not move, the frames are not
+                   overlapping and nothing else in the profile is worth reading
+                   (gotcha 151).
+                   Costs ONE FRAME OF LATENCY: the window shows frame N-1 while the CPU
+                   records frame N. Each slot therefore carries its own frame number,
+                   draw count and fingerprints, captured at submit and read at present,
+                   so `CZ_VK_FRAME_STATS` and the PPM dump stay aligned with the pixels
+                   they describe.
+                   **Three instruments FORCE it back to 1 and say so**, because they read
+                   the LIVE resolve chain next to the presented pixels and cannot be
+                   frame-aligned under a deferred present: `CZ_VK_SNAP_ON_BLACK`,
+                   `CZ_VK_SNAP_ON_DARK`, `CZ_VK_FRAME_STATS_SURFACE` (and
+                   `CZ_VK_SNAP_DUMP`, and `CZ_VK_NO_SUBMIT`, which has no fence to wait
+                   on). That means `tools/frame_compare.py`'s surface metric always
+                   measures the N=1 renderer — which is sound only because the two arms'
+                   pictures are the same, and that is checked rather than assumed
 CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not a frame
                    count — a per-N-frames report samples a different amount of wall time
                    in every era and averages the boot's fast frames with gameplay's slow

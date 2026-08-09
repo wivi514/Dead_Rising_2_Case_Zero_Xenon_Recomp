@@ -7,6 +7,117 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+00. **CUBE MAPS ARE NEVER BOUND. 91 OF 395 SHADERS SAMPLE ONE AND EVERY ONE OF THEM GETS
+   THE 1x1 WHITE DUMMY, ON EVERY DRAW, SINCE PHASE 5.** Found in part 23 by census after
+   an operator reported wrong textures throughout the game. **This is the top picture item
+   and it is fully specified.**
+
+   The chain, all of it established by reading the code and censusing the shader bank —
+   no run was needed and none of it is inference:
+
+   * The shared constants the translated shaders read carry **four** descriptor-index
+     arrays, one per HLSL register space: `kSharedTex2D` (offset 0), `kSharedTex3D` (64),
+     `kSharedTexCube` (128), `kSharedTex1D` (288), matching descriptor sets 0/1/2/4.
+   * `bindTextures` (`vk_renderer.cpp:4262`) writes **only `kSharedTex2D`**, for every
+     fetch the shader declares, whatever its dimension. Grep the other three constants:
+     they appear at their own definitions and nowhere else.
+   * The block is `memset` to zero every draw, so a cube fetch reads index 0 — the dummy.
+     Not stale, not undefined: reliably white.
+   * It cannot do better, because **`t.dimension` is hardcoded to 1 (2D)** at
+     `vk_renderer.cpp:2160` with the comment "dimension is taken from the shader" — and
+     `ShaderMeta::tfetchConsts` is a flat `std::vector<uint32_t>` of slot numbers with no
+     dimension in it. The dimension is taken from nowhere.
+
+   **The census over all 395 sidecars and SPIR-V modules in the cache** (parse the
+   `OpDecorate ... DescriptorSet n` words; the script is in part 23's write-up):
+
+   | descriptor set | modules referencing it |
+   |---|---|
+   | 0 `Texture2D[]` | 303 |
+   | 1 `Texture3D[]` | **0** |
+   | 2 `TextureCube[]` | **91** |
+   | 3 `Sampler[]` | 303 |
+   | 4 `Texture1D[]` | **0** |
+
+   So 23% of the shader bank samples a cube map and always gets white. Cube maps here are
+   the environment/reflection maps, so every reflective surface multiplies its specular
+   term by pure white — which is the operator's "unicorn colour" file cabinet, the wrong
+   dumpster colour, and plausibly a share of "colour is flat" (item 6).
+   **Unlike every cache theory this defect is permanent and universal rather than
+   accumulating**, which is what matched the operator's report that these look wrong from
+   the moment they are first seen.
+
+   **The fix, in three parts, and part 1 is the real work:**
+   1. Carry the per-slot texture DIMENSION into the sidecar metadata. The shader knows it
+      — it indexes the cube array — so the source is either `tools/synth_shader_container.py`
+      reading it out of the translator, or a SPIR-V parse at load. Note a single shader
+      may sample both a 2D and a cube, so this must be per fetch slot, not per module.
+   2. Create cube textures as six array layers with a `VK_IMAGE_VIEW_TYPE_CUBE` view and
+      register them in **set 2**, not set 0. `CreateImage` already takes a view type and
+      layer count; `R->dummyCube` already exists.
+   3. Write `kSharedTexCube[constIdx]`.
+
+   **Two of this investigation's own hypotheses died in the same census and are recorded
+   so nobody re-buys them:** the colour-grading LUT is NOT a `Texture3D` (zero modules use
+   set 1), so that is not the route to item 6; and the `if (constIdx >= 16) continue;`
+   silent skip at `vk_renderer.cpp:4265` **never fires** — 0 of 1,076 declared fetch slots
+   in the whole bank are >= 16. That skip is still a silent drop with no counter and
+   should get one, but it is not a defect anyone is seeing.
+
+00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
+   Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
+   dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
+   this title's texture streaming reuses a heap address. It was built into an instrument
+   (`CZ_VK_TEX_GUARD`, a content guard over the guest bytes, with `CZ_VK_TEX_REVALIDATE`
+   as the repair and `CZ_VK_TEX_GUARD_POISON` as the control) and **refuted**:
+
+   | run | cache hits checked | served a stale image |
+   |---|---|---|
+   | poisoned control | 14,554,550 | 14,554,550 — **100.00%** |
+   | boot, no poison | 14,584,635 | 0 — **0.00%** |
+   | headless outdoor, 620 s | 144,560,672 | 118,757 — **0.08%**, 10 addresses |
+   | **OPERATOR SESSION, wrong textures on screen throughout** | **139,775,032** | **1,968 — 0.00%** |
+
+   The operator's own log is the decisive row: the wrong floor atlas, the iridescent
+   cabinet, the red dumpster and the blank white wall were all on screen while the counter
+   sat at zero, and `CZ_VK_TEX_REVALIDATE=1` repaired all 1,968 stale hits without
+   changing any of them. **Address recycling is real and utterly marginal.**
+   The instrument is kept: it is two-sided (100% poisoned, 0.00% on a boot), it is the
+   only thing that can see a stale texture at all, and it retired a plausible theory in
+   one run instead of a session. But do not reach for it again for wrong textures.
+   NB it is blind by construction to a fetch pointing at an address that was never that
+   texture's home — it only compares bytes at an address we already uploaded from.
+
+00c. **THE UI / AMMO-COUNTER DEFECT — UNRESOLVED, AND THE ONE THING PART 24 SHOULD SETTLE
+   FIRST BECAUSE IT MAY BE A PART-22 REGRESSION.** The operator reports the HUD
+   intermittently collapsing (text overlapping at the top-left, the ammo count absent) and
+   the pistol ammo flickering between **26 and 27 every frame regardless of the real
+   ammo**, triggered by firing a shot.
+   * It happens at `CZ_VK_FRAMES_IN_FLIGHT=1`, so part 23's ping-pong is **not** the
+     cause — that path is disabled at 1.
+   * One run with `CZ_VK_NO_PERSIST_STREAMS=1` had an intact HUD and a plausible ammo
+     count, which POINTS at part 22's cross-frame stream store. **This is one sample per
+     arm against a defect the operator describes as intermittent, so it is a lead and not
+     a result** — do not write it up as one, which part 23 briefly did.
+   * **Every headless instrument came back blind, not negative.** `CZ_VK_STREAM_CENSUS=2`
+     over 620 s at both settings reports `GUARD MISSED: 0 of 0` and
+     `cross-frame CONTENT UNCHANGED: 1,483,804 of 1,483,804 repeated keys (100.0%)`, with
+     the only rewritten streams being **30 distinct keys, all exactly 80 bytes** — below
+     the guard's 512-byte exact bound, so the guard is exact for everything the recipe can
+     see. The recipe walks and looks; it never shoots and never changes a HUD number.
+   * **A sampled-guard miss is therefore unlikely** and should not be assumed: a two-digit
+     counter is a few hundred bytes, also under the exact bound.
+   * The candidate that survives: the guest DOUBLE-BUFFERS its UI vertex data across two
+     addresses, one entry goes stale, and the display alternates between the true value
+     and a stale one every frame. Untested.
+   * **The test that would settle it needs an operator and one variable**: play with
+     `CZ_VK_NO_PERSIST_STREAMS=1`, FIRE SEVERAL ROUNDS, and keep playing a few minutes.
+     Never flickers there but reliably does with the store on -> the store is guilty.
+     Flickers in both -> the store is innocent and "two fixed values unrelated to the real
+     ammo" points upstream of the renderer entirely, at the guest's own HUD state.
+   * A headless recipe that FIRES A WEAPON and watches a HUD number would make this
+     self-servable; every existing recipe is blind to it by construction (gotcha 190).
+
 0a. ~~**A CROSS-FRAME STREAM CACHE**~~ **BUILT IN PART 22 (§6av).** 97-99% of first-touch
    streams are now served across the frame boundary, copied bytes fall from 61-66 MB/frame
    to **0.23**, and `streams` goes from 11.1% of a crowd frame to **0.0%** for a guard cost

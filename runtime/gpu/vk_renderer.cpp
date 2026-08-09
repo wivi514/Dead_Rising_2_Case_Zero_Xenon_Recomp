@@ -307,6 +307,60 @@ struct TexSource
 std::map<uint32_t, TexSource> g_texSources;
 bool g_texCensus = false;
 
+// --- CZ_VK_TEX_GUARD / CZ_VK_TEX_REVALIDATE ------------------------------------------
+//
+// THE OPERATOR'S REPORT THIS EXISTS FOR: "almost all the textures in the game are wrong
+// and got the texture of something else — a building getting the repeated texture of a
+// moose head item". That is not a scaling defect and not the bindless heap running out
+// (which serves the white dummy); it is object A being drawn with object B's PIXELS,
+// which means the cache handed out an image that no longer belongs to that fetch.
+//
+// The mechanism the code already half-admits, in the CZ_VK_TEX_REFRESH comment: the
+// texture cache is keyed on the fetch constant's six dwords and is NEVER INVALIDATED.
+// Those dwords are a descriptor — address, extent, format, tiling, swizzle, pitch — and
+// this title STREAMS ITS TEXTURES BY DISTANCE (open-items 3z), so it is constantly
+// loading a new texture into a heap address a previous one has been freed from. When
+// the new occupant has the same extent and format as the old one, every dword matches,
+// the key matches, and the draw gets the old image forever.
+//
+// `CZ_VK_TEX_REFRESH` was built for one instance of this (a font atlas the CPU keeps
+// writing) and it takes an ADDRESS, so it could only ever answer about a texture
+// somebody had already identified. The question here is a census over all of them.
+//
+// GUARD is the measurement: on a cache HIT, hash a bounded sample of the guest bytes the
+// entry was uploaded from and compare it with the hash taken at upload. A mismatch is
+// the cache serving pixels the guest has since replaced. Counted globally and per
+// address, so the answer is a number and a list rather than an impression.
+//
+// REVALIDATE is the repair the measurement would justify: on a mismatch, re-upload into
+// the SAME image and the SAME bindless slot — which is exact and allocation-free,
+// because the dimensions are part of the key. Kept behind its own switch and OFF until
+// the census says the mismatch is real, because a per-fetch re-upload is expensive and
+// "it looked better" is not a reason to ship one.
+//
+// POISON is the control (gotcha 30). It folds the frame number into the guard so every
+// hit MUST mismatch: a census that cannot report 100% has not been shown capable of
+// reporting anything, and this project has shipped a comparison that only ever read
+// 100% before (gotcha 234) — so both ends need exercising.
+bool g_texGuard = false;
+bool g_texRevalidate = false;
+bool g_texGuardPoison = false;
+struct TexGuardStats
+{
+    uint64_t hits = 0;        // cache hits the guard was computed for
+    uint64_t changed = 0;     // ...whose guest bytes had changed since upload
+    uint64_t reuploaded = 0;  // ...and were re-uploaded (REVALIDATE only)
+    uint64_t guardBytes = 0;  // what the guard itself read, i.e. its own cost
+} g_texGuardStats;
+// Per address, because "17% of hits are stale" and "one atlas is stale every frame" are
+// completely different defects and a single ratio cannot tell them apart.
+struct TexGuardAddr
+{
+    uint64_t hits = 0, changed = 0;
+    uint32_t width = 0, height = 0, format = 0;
+};
+std::map<uint32_t, TexGuardAddr> g_texGuardAddrs;
+
 // CZ_VK_STREAM_CENSUS=1|2 — what the per-frame vertex/index stream cache actually does.
 //
 // `streams` is the largest draw-path term in a real crowd (12.3-14.3% of a frame, twice
@@ -857,6 +911,20 @@ struct TextureEntry
     Image image;
     uint32_t slot = 0;   // index into the bindless heap
     uint64_t key = 0;
+    // WHERE the pixels came from, and WHAT THEY WERE. The cache key is the fetch
+    // constant's six dwords — a DESCRIPTOR — and this is the CONTENT that descriptor
+    // pointed at when the image was uploaded.
+    //
+    // Those are not the same thing, and the gap between them is a whole class of
+    // rendering defect: a title that streams textures reuses a heap address, so a
+    // building's texture can arrive at the address a dropped item's texture used, with
+    // the same width, height and format. Every dword of the fetch constant is then
+    // identical, the cache says "same texture", and the draw is handed the previous
+    // occupant's image. Keeping the source range and a content guard is what lets the
+    // cache ask the second question instead of assuming the answer.
+    uint32_t va = 0;
+    uint64_t srcBytes = 0;
+    uint64_t guard = 0;
 };
 
 // A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
@@ -2411,16 +2479,62 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // mechanism, which is a much larger piece of work and should not be built on a
     // hunch. The dimensions cannot have changed, because they are part of the key, so
     // updating in place is exact.
+    // CZ_VK_TEX_REFRESH_ALL=1 — the same thing for EVERY texture, which is the arm the
+    // operator's report needs: it makes the cache incapable of serving a stale image, at
+    // a cost nobody would ship, so a picture taken under it is what the picture SHOULD
+    // look like. If the wrong textures persist under this arm, the cache is not the
+    // mechanism and the whole hypothesis below is dead.
     static const char* refreshEnv = Env("CZ_VK_TEX_REFRESH");
-    char addrHex[16];
-    snprintf(addrHex, sizeof addrHex, "%08X", t.address);
-    const bool refresh = refreshEnv && strstr(refreshEnv, addrHex);
+    static const bool refreshAll = EnvOn("CZ_VK_TEX_REFRESH_ALL");
+    bool refresh = refreshAll;
+    // The `snprintf` is INSIDE the test now. It used to run on every call whether or not
+    // the instrument was on — ~13,900 string formats a frame charged to the `textures`
+    // column that open-items 0a-ii is about. Exactly the part-20 psbind fix, in the one
+    // place that was missed.
+    if (refreshEnv && !refresh)
+    {
+        char addrHex[16];
+        snprintf(addrHex, sizeof addrHex, "%08X", t.address);
+        refresh = strstr(refreshEnv, addrHex) != nullptr;
+    }
 
     auto cached = R->textures.find(key);
     if (cached != R->textures.end() && !refresh)
     {
-        Count("texture: cache hit");
-        return cached->second.slot;
+        // THE GUARD: are the bytes this image was built from still the bytes at that
+        // address? The key says the fetch constant is unchanged; only this says the
+        // TEXTURE is. See the CZ_VK_TEX_GUARD comment for why the two differ.
+        if ((g_texGuard || g_texRevalidate) && cached->second.srcBytes)
+        {
+            uint64_t read = 0;
+            uint64_t g = StreamGuard(base + cached->second.va,
+                                     size_t(cached->second.srcBytes), &read);
+            // The poison perturbs only the COMPUTED guard, never the stored one, so
+            // every hit is forced to mismatch and the census must read 100%.
+            if (g_texGuardPoison)
+                g ^= R->frame * 0x9E3779B97F4A7C15ull;
+            g_texGuardStats.guardBytes += read;
+            ++g_texGuardStats.hits;
+            TexGuardAddr& a = g_texGuardAddrs[t.address & 0x1FFFFFFF];
+            ++a.hits;
+            a.width = t.width;
+            a.height = t.height;
+            a.format = t.format;
+            if (g != cached->second.guard)
+            {
+                ++g_texGuardStats.changed;
+                ++a.changed;
+                Count("texture: cache hit but the GUEST BYTES CHANGED — this draw is "
+                      "being served an image built from pixels that are gone");
+                if (g_texRevalidate)
+                    refresh = true;   // fall through to the in-place re-upload below
+            }
+        }
+        if (!refresh)
+        {
+            Count("texture: cache hit");
+            return cached->second.slot;
+        }
     }
 
     uint32_t bytesPerUnit = 0, blockDim = 1;
@@ -2569,7 +2683,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // glyphs from a sheet of noise instantly, which no aggregate over it can.
     static const char* texDumpDir = Env("CZ_VK_TEX_DUMP");
     static const char* texDumpAddr = Env("CZ_VK_TEX_DUMP_ADDR");
-    if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, addrHex)) && bytesPerUnit == 1)
+    // Formatted here rather than at the top of the function: this is the one call site
+    // that needs it and it is behind the instrument's own gate, so a run without
+    // CZ_VK_TEX_DUMP does not format a string per fetch.
+    char dumpAddrHex[16] = {};
+    if (texDumpDir && texDumpAddr)
+        snprintf(dumpAddrHex, sizeof dumpAddrHex, "%08X", t.address);
+    if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, dumpAddrHex)) &&
+        bytesPerUnit == 1)
     {
         char path[512];
         snprintf(path, sizeof path, "%s/tex_%08X_%ux%u.pgm", texDumpDir, t.address,
@@ -2586,6 +2707,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // every fetch without exhausting the bindless heap.
     if (refresh && cached != R->textures.end())
     {
+        // Re-stamp the guard from the bytes we have just read, or a revalidating run
+        // re-uploads this texture on every single fetch for the rest of the run —
+        // which would read as "the fix is ruinously slow" when what is slow is the
+        // instrument never being satisfied.
+        cached->second.va = va;
+        cached->second.srcBytes = srcBytes;
+        cached->second.guard = StreamGuard(src, size_t(srcBytes), nullptr);
+        ++g_texGuardStats.reuploaded;
         if (dstBytes <= R->staging.size)
         {
             memcpy(R->staging.mapped, pixels.data(), dstBytes);
@@ -2615,6 +2744,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     TextureEntry entry;
     entry.key = key;
     entry.slot = R->nextTextureSlot++;
+    // The content this image is about to be built from, alongside the descriptor it is
+    // keyed on. See TextureEntry for why the cache needs both.
+    entry.va = va;
+    entry.srcBytes = srcBytes;
+    entry.guard = StreamGuard(src, size_t(srcBytes), nullptr);
     // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
     // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
     // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
@@ -5850,6 +5984,19 @@ bool InitCommon()
 
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
+    g_texGuard = EnvOn("CZ_VK_TEX_GUARD");
+    g_texRevalidate = EnvOn("CZ_VK_TEX_REVALIDATE");
+    g_texGuardPoison = EnvOn("CZ_VK_TEX_GUARD_POISON");
+    if (g_texGuardPoison)
+        fprintf(stderr, "[vk] texture guard POISONED — the changed share must now read "
+                        "100.0%%; anything else means the census cannot fire\n");
+    if (g_texRevalidate)
+        fprintf(stderr, "[vk] texture cache REVALIDATES on content: a cache hit whose "
+                        "guest bytes changed is re-uploaded in place\n");
+    if (EnvOn("CZ_VK_TEX_REFRESH_ALL"))
+        fprintf(stderr, "[vk] EVERY texture is re-read on EVERY fetch "
+                        "(CZ_VK_TEX_REFRESH_ALL) — a picture arm, ruinously slow, and "
+                        "the cache cannot serve a stale image under it\n");
     g_profileOn = EnvOn("CZ_VK_PROFILE");
     // Reported through the profile window, so it needs the profile on to say anything.
     // Saying so out loud rather than silently counting into a report nobody prints.
@@ -6953,6 +7100,49 @@ void VkRenderer_DumpStats()
                     (unsigned long long)s.fromSnapshot,
                     (unsigned long long)s.snapshotTooOld, (unsigned long long)s.maxAge,
                     note);
+        }
+    }
+
+    // The texture-content guard. The question is the operator's: is a draw being served
+    // an image built from pixels that are no longer at that address?
+    if (g_texGuardStats.hits)
+    {
+        const TexGuardStats& g = g_texGuardStats;
+        fprintf(stderr,
+                "[vk]   texture guard: %llu cache hits checked, **%llu served an image "
+                "whose guest bytes had CHANGED (%.2f%%)**, %llu re-uploaded | guard read "
+                "%.1f MB\n",
+                (unsigned long long)g.hits, (unsigned long long)g.changed,
+                100.0 * double(g.changed) / double(g.hits),
+                (unsigned long long)g.reuploaded,
+                double(g.guardBytes) / 1048576.0);
+        if (g_texGuardPoison)
+            fprintf(stderr, "[vk]   (POISONED: that share MUST be 100.00%% — the census "
+                            "is only trustworthy if it can also report a positive)\n");
+        // The addresses, worst first. A ratio alone cannot separate "one atlas the CPU
+        // rewrites every frame" from "a third of the world's textures are wrong", and
+        // those are different defects with different fixes.
+        std::vector<std::pair<uint32_t, TexGuardAddr>> rows(g_texGuardAddrs.begin(),
+                                                            g_texGuardAddrs.end());
+        std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+            return a.second.changed > b.second.changed;
+        });
+        size_t shown = 0, withChange = 0;
+        for (const auto& r : rows)
+            if (r.second.changed)
+                ++withChange;
+        fprintf(stderr, "[vk]   %zu of %zu cached texture addresses served changed "
+                        "bytes at least once; worst 24:\n",
+                withChange, rows.size());
+        for (const auto& [addr, a] : rows)
+        {
+            if (!a.changed || shown++ >= 24)
+                break;
+            fprintf(stderr, "[vk]     %08X %4ux%-4u f%-2u  %llu of %llu hits stale "
+                            "(%.1f%%)\n",
+                    addr, a.width, a.height, a.format, (unsigned long long)a.changed,
+                    (unsigned long long)a.hits,
+                    100.0 * double(a.changed) / double(a.hits));
         }
     }
 }

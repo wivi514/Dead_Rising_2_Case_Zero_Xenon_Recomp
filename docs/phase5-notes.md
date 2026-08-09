@@ -3594,6 +3594,130 @@ the project's standing +0.9597, and the two arms' own frames correlate +0.9998, 
 
 ---
 
+## 6aw. THE CPU AND THE GPU NOW OVERLAP — a ring of frame slots, and the swapchain the
+## plan insisted on turned out not to be needed
+
+`docs/perf-cpu-plan.md`'s largest item, and the one part 22's hand-off ranked first. A
+crowd frame was ~27.7 ms of CPU followed by ~16.5 ms of GPU **strictly in series**,
+because `SubmitAndWait` submitted a command buffer and blocked on its fence. The card sat
+idle 68% of every frame and the driver correctly governed it to a mid clock (§6ar,
+gotcha 231). `CZ_VK_NO_SUBMIT=1` had measured the ceiling on removing that at ~1.45x
+without building it.
+
+`CZ_VK_FRAMES_IN_FLIGHT=N`, default 2, and **`=1` is the pre-part-23 renderer exactly**,
+so one binary is both arms.
+
+### What actually had to be duplicated, which is less than the plan assumed
+
+Only what the CPU writes and the GPU reads, or the reverse: the command buffer, the bump
+arena, and the buffer the presented image is read back into. Everything else — the EDRAM
+stand-in, the resolve snapshots, the textures — is touched only by the device, and a
+single queue executes submissions in order, so the barriers already in the recorder cover
+every cross-frame GPU hazard. The bindless heap needed nothing either: it already carries
+`UPDATE_AFTER_BIND | PARTIALLY_BOUND` and slots are only ever handed out fresh.
+
+**The arena is cut into N regions of ONE buffer rather than becoming N buffers.** That
+keeps `GrowArenaIfNeeded`'s buffer swap, the exhaustion path and every device address a
+draw records exactly as they were; the only lines that change are where the cursor starts
+and stops. The buffer is allocated N times larger at startup so a frame's own capacity —
+the number that decided the whole-frame black (§6ap) — is identical between the arms.
+
+**The kickoff's claim that this needs a real `VkSwapchainKHR` was wrong.** A per-slot
+readback buffer presented one frame later keeps phase 3's renderer/window separation and
+costs one frame of latency, and nothing else. That claim had been carried in the
+`SubmitAndWait` comment since §6ar; it is retracted in place there.
+
+### The two hazards part 22 flagged in advance, both at the line that breaks
+
+* **The stream store's stale path overwrote a slot in place**, safe only while the submit
+  was synchronous. It now ping-pongs to a twin slot allocated lazily on the first rewrite.
+  Two slots is exactly enough: when frame N+1 is recording, frame N-1 has provably retired.
+  When no twin can be allocated the entry is DROPPED to the per-frame arena and counted
+  (`evicted, no twin`) rather than overwritten — trading a copy for correctness, never the
+  reverse. It read 0 in every run.
+* **The present-side instruments labelled `presentPixels` with `R->frame` and the
+  fingerprints**, which after this describe the frame being RECORDED. Each slot carries its
+  own metadata, captured at submit and read at present, so `frame_compare.py` still aligns
+  two runs by the right frame. Three instruments read the LIVE resolve chain next to the
+  presented pixels and cannot be fixed that way — `CZ_VK_SNAP_ON_BLACK`,
+  `CZ_VK_SNAP_ON_DARK`, `CZ_VK_FRAME_STATS_SURFACE` — so they force N=1 and say so.
+
+### The result
+
+The fence wait is the counter that says it engaged (gotcha 151), and it collapsed:
+
+| | N=1 (old renderer) | N=2 |
+|---|---|---|
+| `submit` | **31.5%** `[call 0.2 gpu 31.4]` | **0.2%** `[call 0.2 gpu 0.0]` |
+| store `evicted, no twin` | 0 | 0 |
+| store flushes | 0 | 0 |
+
+The CPU no longer blocks on the GPU at all. The picture is unchanged: capture E2 reads
+**+0.9595 identity at N=1 and +0.9594 at N=2** over a 120 s boot each, against part 22's
++0.9596/+0.9590.
+
+**The two profile windows above are NOT a frame-time comparison** — they sat at 6,433 and
+4,968 draws a frame, because the synthetic-input recipe drifts (gotcha 75). The binned
+three-runs-an-arm A/B is **still owed** and is part 24's first chore; it was stopped
+deliberately when an operator report arrived, because rebuilding the renderer underneath a
+running timing sweep contaminates it.
+
+**What an operator saw, which is better evidence than the bins would have been:** "the game
+is way more stable than before, staying almost always at around 30 fps", with 31-32 fps in
+every screenshot's title bar. That is exactly the statistic gotcha 237 says to quote — the
+share of frames pinned to a vblank multiple — arriving as a report rather than a number.
+
+### A method note, and a mistake worth keeping
+
+`pkill -f cz_runtime` killed its own parent shell before the second call ran, so the run
+being stopped kept going for ten more minutes alongside the next experiment. Kill by PID
+when the pattern can match the killer.
+
+
+## 6ax. AN OPERATOR REPORTED WRONG TEXTURES EVERYWHERE, AND THE ANSWER WAS A CENSUS OF THE
+## SHADER BANK RATHER THAN ANY OF THE THREE THEORIES THAT PRECEDED IT
+
+The report: "almost all the textures in the game are wrong and got the texture of something
+else, like a building getting the repeated texture of a moose head item", then a wrong
+floor (a different atlas each run), an iridescent "unicorn colour" filing cabinet, a wrong
+dumpster colour and a blank white wall.
+
+**The finding is `docs/open-items.md` item 00: 91 of 395 shaders sample a CUBE MAP and
+every one of them reads descriptor index 0 — the 1x1 white dummy — on every draw, and has
+since phase 5.** `bindTextures` writes only the `Texture2D` index array; `kSharedTex3D`,
+`kSharedTexCube` and `kSharedTex1D` appear at their definitions and nowhere else; and it
+cannot do better because `t.dimension` is hardcoded to 2D with a comment saying the
+dimension comes from the shader, while the shader metadata is a flat list of slot numbers
+with no dimension in it. Cube maps here are the environment/reflection maps, so every
+reflective surface multiplies its specular by pure white.
+
+### The three theories that came first, and why recording their deaths is the point
+
+1. **The texture cache serves a previous occupant's image**, because it is keyed on the
+   fetch constant (a descriptor) and never invalidated, while this title streams textures
+   by distance into recycled heap addresses. Plausible enough to build an instrument for —
+   and **refuted by the operator's own log at 0.00%** (1,968 stale of 139,775,032 hits,
+   with the wrong textures on screen throughout). The full table is in open-items 00b.
+2. **The colour-grading LUT is a `Texture3D` and therefore also unbound.** Killed by the
+   same census: **zero** modules reference set 1.
+3. **`if (constIdx >= 16) continue;` silently drops fetch slots 16-31.** Real, uncountered,
+   and it **never fires**: 0 of 1,076 declared fetch slots in the bank are >= 16.
+
+Three hypotheses, three refutations, and the survivor was found by parsing 395 SPIR-V
+modules for their `OpDecorate ... DescriptorSet` words — a census that needed no run, no
+operator and about a minute. The lesson is the project's own first evidence rule arriving
+in a new place: **the shader bank is a population that can be counted, and counting it
+beat three rounds of reasoning about pictures.**
+
+### What the pictures were actually good for
+
+Two things no counter here produced. The giant translucent overlay had a **hard vertical
+seam at the exact middle of the frame** — this title's tiles are left/right 640-wide halves
+— which is a tiling or predication question and not a texture one. And a flat cream wall
+with no detail is the *signature of the white dummy*, which is what pointed at the binding
+path rather than at the decode path. Gotcha 190 in both directions: the operator is the
+only channel for "does it look right", and what they see names the subsystem.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the
