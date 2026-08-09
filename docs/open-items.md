@@ -7,10 +7,16 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0a. ~~**A CROSS-FRAME STREAM CACHE**~~ **BUILT IN PART 22 (§6av).** 97.3% of first-touch
-   streams are now served across the frame boundary and copied bytes fall from
-   61-66 MB/frame to **0.23**, for a guard cost of under 0.8 MB/frame.
-   Three things worth carrying out of it rather than re-deriving:
+0a. ~~**A CROSS-FRAME STREAM CACHE**~~ **BUILT IN PART 22 (§6av).** 97-99% of first-touch
+   streams are now served across the frame boundary, copied bytes fall from 61-66 MB/frame
+   to **0.23**, and `streams` goes from 11.1% of a crowd frame to **0.0%** for a guard cost
+   of ~0.8 MB/frame. The draw path at ~6,000 draws is 9.2 ms against the store-off arm's
+   13.9 — **4.7 ms, a third of it.**
+   **In frame rate that is 44 ms -> 32 ms at ~3,700 draws and approximately nothing at
+   ~6,500**, because a CPU saving on this title converts to frame rate only where the frame
+   is above one vblank floor and within reach of the next (gotcha 237). Quote the share of
+   frames pinned to a 16 ms multiple — 10% -> 97% — not the mean, which moved 1.7%.
+   Four things worth carrying out of it rather than re-deriving:
    * **`mprotect` was not needed.** The census was extended to name WHICH streams get
      rewritten in place, and all 30 are exactly 80 bytes and all are declared vertex
      bindings — so a guard that hashes anything up to 512 bytes exactly, and larger
@@ -25,17 +31,30 @@ Next, in order:
      would have to move live streams, which is the copying this removed. `flushes` on the
      profile line is the evidence that would justify building the harder thing; it is 0
      in a crowd after one growth to 256 MB.
+   * **The guard's cost is charged to `record`, not `streams`** (gotcha 238), because
+     `ProfScope(streams)` wraps only the copy and `record`'s scope encloses `UploadStream`.
+     Re-baseline `record` before attributing anything to it — it read 5.2% with the store
+     off, 9.7% with the store and a per-byte guard, and 6.5% with the widened one.
+   * **The stale path overwrites a store slot IN PLACE, and that is safe only because the
+     submit is synchronous.** Item 3 below (CPU/GPU overlap) must make it allocate a fresh
+     slot instead. The comment is at the line that breaks; the failure mode is a wrong
+     mesh, silently.
 
 0a-i. **`CopySwapped` is vectorised, but as a 10-instruction SSE2 sequence rather than one
    `pshufb`** — `-msse4.1 -mavx` is applied to the `ppc_image` target only, so
    `runtime/gpu/vk_renderer.cpp` compiles at baseline x86-64. Noticed while measuring 0a
    and **most of its value was then taken away by 0a itself**: stream copying is now
    0.23 MB a frame, so the remaining beneficiary is TEXTURE upload (`CopySwapped` at
-   `vk_renderer.cpp:2232`/`2255`, inside a `textures` column worth 2.3-3.6% of a frame).
-   Recorded because it is a five-line change (`__attribute__((target("ssse3")))` on that
-   one function, keeping the rest of the binary at baseline) and because the *reason* it
-   was worth much more an hour earlier is the useful part: sizing a micro-optimisation
-   before the structural change lands prices it against the wrong baseline.
+   `vk_renderer.cpp:2232`/`2255`). That is not nothing — with `streams` at zero,
+   **`textures` is now the second-largest draw-path term at 5.8-7.0% of a crowd frame
+   (2.8-3.4 ms), behind only `record`** — so a five-line change
+   (`__attribute__((target("ssse3")))` on that one function, keeping the rest of the
+   binary at baseline) is plausibly worth ~1 ms. Measure it against `textures`, not the
+   frame, and remember gotcha 237 before expecting the frame to move.
+   The *reason* its value moved is the part worth carrying: sizing a micro-optimisation
+   before the structural change lands prices it against the wrong baseline — this one was
+   worth multiple milliseconds an hour earlier, then almost nothing, and is now worth
+   about a millisecond again for a completely different reason.
 
 0b. **A FIRST-VISIT STUTTER, found only because an operator played (§6as).** `other` —
    `DoDraw`'s untimed work — sits at ~6% of a crowd frame and spikes to 20-26% (16.7 ms

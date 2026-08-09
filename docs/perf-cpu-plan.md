@@ -207,6 +207,26 @@ needs **invalidation** — 0.0016% of repeated keys do change in place, hashing 
 that costs what the copy costs, so the candidate is guest-page write tracking. Budget a
 session; §6at states the three requirements.
 
+**BUILT IN PART 22 AND THIS ITEM IS CLOSED — `streams` is now 0.0%** (§6av, open-items
+0a). Three corrections this section earned, all worth reading before working §1c or §1d,
+because each one changes how the numbers above should be read:
+
+* **Invalidation did NOT need guest-page write tracking.** Extending the census to name
+  the rewritten streams showed all 30 are exactly 80 bytes, so a guard hashing up to
+  512 bytes exactly covers the observed population. `mprotect` was never built.
+* **The 0.0016% understated the risk by two orders of magnitude** (gotcha 235). It is a
+  frame-to-frame number and a persistent cache compares against the last COPY; the store
+  catches **~20 stale streams a frame**. Do not reuse that percentage for anything with a
+  lifetime longer than one frame.
+* **The saving does not all land in the frame, and part of it does not land in `streams`.**
+  The guard is charged to `record` (gotcha 238), and what remains is absorbed by the
+  title's vblank floor except in the band where it crosses one (gotcha 237): 44 ms -> 32 ms
+  at ~3,700 draws, ~nothing at ~6,500. **Net draw path at ~6,000 draws: 13.9 ms -> 9.2 ms.**
+
+**The ranking below is therefore stale in one respect: with `streams` at zero, `textures`
+(§1c) is now the SECOND-largest draw-path term after `record`, at 5.8-7.0% of a crowd
+frame.** And open-items 0a-i is a five-line lead on exactly that.
+
 ### 1c. `textures` is 3.43 ms — and it is 7.9-10.9% in crowds against 2.5% in ordinary
 gameplay
 

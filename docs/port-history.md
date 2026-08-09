@@ -1372,3 +1372,82 @@ candidate is guest-page write tracking), and counters for both; the hand-off say
 sizes it at a session. Measuring first and stopping is what the plan asked for, and the
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
+
+## Phase C part 22 (2026-08-08) — the cross-frame stream store, and two ways a real win
+## nearly measured as noise
+
+**The item the last three parts pointed at, built.** open-items 0a. `docs/phase5-notes.md`
+§6av is the full record.
+
+* **The measurement was re-run first**, because the hand-off said its numbers were one
+  afternoon's (gotchas 50/51/86). On the part-22 binary the shares reproduce exactly:
+  93.5-94.1% hits within a frame, 61-66 MB copied a frame, 93.5-94.7% of it repeating last
+  frame's key. The absolute MB does not reproduce (part 21 said 74-77) because level-2
+  hashing slows the frame and the fixed-interval recipe drifts with it — the shares are
+  the claim.
+* **The census was extended to name WHICH streams the guest rewrites in place, and that
+  is what decided the design.** Part 21 knew the count (164 of 10,154,820) and not the
+  identity. All 30 are **exactly 80 bytes**, endian 2, declared vertex bindings, in two
+  narrow guest ranges; no index buffer and no dependent fetch was ever rewritten. So a
+  guard that hashes anything up to 512 bytes in full covers the whole observed population
+  with a 6x margin, and the `mprotect` + `SIGSEGV` design the hand-off called for was
+  never built. §6av records it anyway, including the hazard that would have bitten it:
+  `kernel/vfs.cpp` reads file data into guest memory with `fread`, and `read(2)` into a
+  `PROT_READ` page returns **EFAULT** rather than faulting, so a level reload into a
+  protected page would have failed silently.
+* **The store itself is a SECOND BUFFER, not a region of the arena.** The arena's
+  exhaustion path is load-bearing — it is what turned a fixed 128 MB into six parts of
+  view-dependent whole-frame black — and a moving floor under it buys a smaller diff at
+  the price of the riskiest coupling available. The cost is `StreamLoc` and three call
+  sites. Maintenance runs where the arena's growth runs, after the fence wait.
+* **THE STALE COUNT IS THE FINDING.** ~20 streams a frame are served from an address the
+  store already held whose contents had changed — two orders of magnitude more than the
+  30-per-run the census reports. Not a disagreement: **the census compares against LAST
+  FRAME and the store against the LAST COPY**, and an address the guest recycles after a
+  gap is invisible to the first by construction. Gotcha 235. Part 21's "0.0016%, and it
+  could have been zero" was an honest answer to a smaller question than a persistent cache
+  asks, and had it read a true zero the temptation to skip invalidation would have been
+  much stronger.
+* **What it does.** `streams` 11.1% of a crowd frame -> **0.0%**; copied bytes 61-66 MB a
+  frame -> **0.23**; 97-99% of first-touch streams served across the frame boundary; 0
+  overflows and 0 flushes after one growth to 256 MB.
+
+**Then the frame-time A/B said +1.7% against a +1.3% null, and the rest of the part was
+finding out why.** Publishing that would have been publishing a number I could not
+account for. Two separate things were hiding the result, and both generalise:
+
+* **Gotcha 237 — a MEAN frame time on this title measures the vblank pacing floor.**
+  `tools/frame_perf_bins.py` reports means. Read as medians and binned finer, the same six
+  runs say **44 ms -> 32 ms at ~3,700 draws**, and the decisive statistic is neither: the
+  share of frames within 1 ms of a 16 ms multiple goes **10% -> 97%**. Arm B is
+  free-running and CPU-limited there; arm A has been pushed onto the title's own floor. At
+  ~6,500 draws both arms are already parked on the 48 ms three-vblank floor and 5 ms
+  cannot reach 32, so the same change measures as nothing. `perf-cpu-plan.md` item 0 said
+  exactly this for the TWO-vblank cap at ~1,930 draws and it was never generalised.
+* **Gotcha 238 — a column that falls to zero is not a saving until the residual is
+  checked.** `record`'s scope encloses the `UploadStream` calls and `ProfScope(streams)`
+  wraps only the copy, so the guard hash landed in `record`, which nearly doubled. Matched
+  at ~5,700 draws: streams 5.35 -> 0.00 ms, record 2.36 -> 4.23. Net 3.3 ms, not 5.5.
+* **So the guard was fixed, and it was a dependency chain rather than bandwidth.** FNV-1a
+  makes every byte wait on the previous byte's multiply. Folding a uint64 per step cut 512
+  iterations to 64. Predicted before running (record 9.0-9.2% -> ~7.5%, streams still 0.0,
+  guard bytes unchanged, GUARD MISSED still 0) and measured: **record 9.4-9.7% -> 6.4-6.5%,
+  guard read 0.84 -> 0.82 MB/frame, GUARD MISSED 0 of 26.** The draw path at ~6,000 draws
+  is now 9.2 ms against the store-off arm's 13.9 — **the store plus the guard fix is
+  4.7 ms, a third of it.**
+
+**The correctness counter and its control.** `CZ_VK_STREAM_CENSUS=2` computes the full
+hash as well and counts every real content change the bounded-cost guard let through as a
+hit — a stale buffer handed to a draw, the only defect this design can cause. It reads 0,
+and it is demonstrably capable of reading otherwise (gotcha 234): under
+`CZ_VK_STREAM_CENSUS_POISON=1` it reads **240,652 of 240,652**.
+
+**Gates:** `--smoke` OK; A5 **exit 0, 3 permutation windows, 0 real**; `truncated=0`;
+`no translated shader` = 0; both PM4 capture oracles clean (and `gpu/pm4.cpp` is untouched
+by this part). **The picture WAS re-checked, because a store can only fail by drawing the
+wrong mesh:** capture E2 at frame 576 reads +0.9590 identity with the store on against
++0.9596 with it off, and the two arms' own frames correlate +0.9998/+0.9934/+0.9929/+0.9921
+at matched indices.
+
+**Also fixed:** `CZ_VK_FRAME_DUMP` silently wrote nothing when its directory did not exist,
+which is indistinguishable from a renderer that drew nothing (gotcha 236).
