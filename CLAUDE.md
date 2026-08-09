@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 232 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 234 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -143,12 +143,12 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 232-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 234-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
-    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..19}-kickoff.md` are the per-part
+    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..21}-kickoff.md` are the per-part
     hand-offs, each superseding the last; the newest is the live one. A kickoff's most
     valuable section is its list of the parts of that phase that **already exist** and
     would otherwise be rewritten from the plan text — write that section for every phase.
@@ -512,7 +512,7 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-08 (phase C part 19):
+Where the port is, as of 2026-08-08 (phase C part 21):
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch
@@ -520,8 +520,9 @@ Where the port is, as of 2026-08-08 (phase C part 19):
 * **The game boots, renders and PLAYS.** A headless run reaches the title screen, the
   menus, the prologue and live gameplay with no operator (the recipe is in Commands).
   The operator has played Still Creek: combo weapons, the Zombrex tutorial, cinematics.
-* **Gates, both arms:** `--smoke` OK; A5 **exit 0, 0 real windows**; `truncated=0`;
-  `no translated shader` = 0; deepest file on a no-input boot **#83 `cinezombie.big`**;
+* **Gates, both arms:** `--smoke` OK; A5 **exit 0, 3 permutation windows, 0 real**;
+  `truncated=0`; `no translated shader` = 0; deepest file on a no-input boot
+  **#83 `cinezombie.big`**;
   both PM4 capture oracles clean; the picture matches capture E2 at **+0.9597**
   correlation, identity orientation. **A1's strict-prefix gate is BIMODAL** — the benign
   position-71 three-name interleave of gotcha 221 shows on some runs and not others, and
@@ -539,6 +540,11 @@ Where the port is, as of 2026-08-08 (phase C part 19):
   crowd frame**, three runs an arm with no overlap. **The PM4 walk is a register-write
   loop — 90,316 packets a frame carrying 815,020 register dwords at 15.3 ns each** — and
   it is the biggest untouched term.
+  **The biggest NAMED one is the stream cache (part 21, `CZ_VK_STREAM_CENSUS`):** it is
+  93.6-94.0% hits within a frame and still copies **74-77 MB every frame**, 5.6-5.9 ms,
+  **95-97% of it repeating the previous frame's key**. It is real copying, not lookups,
+  and the fix is the cache's LIFETIME — but 0.0016% of repeated keys change in place, so
+  a persistent cache must invalidate rather than assume (open-items 0a, §6at).
   **The noise floor here is 10-13% at one run a side** (gotcha 229): use
   `tools/frame_perf_bins.py`, three runs an arm, alternated, and run the null comparison
   first. A real A/B on this workload is an hour of wall time.

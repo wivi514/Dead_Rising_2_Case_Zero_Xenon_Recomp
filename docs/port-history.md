@@ -1312,3 +1312,63 @@ because they were wrong.
   location and are nowhere near independent samples. Gotcha 229: run the A/B with nothing
   changed first, and treat what it prints as the floor.
 
+
+---
+
+**PHASE C PART 21 (2026-08-08, session 33): the stream cache is 94% hits and still
+copies 74 MB a frame, and the arena growth was being charged to the draw path**
+
+Two items off the part-20 hand-off's ordered list, both of which it had ranked from the
+operator session. Neither is a speculative change: item 1 was explicitly "count before
+writing anything", and item 2 was a call-graph observation with a measured spike.
+
+* **`perf-cpu-plan.md` §1b is ANSWERED, and it answers the opposite way to the guess in
+  its own text.** The plan set up the ambiguity correctly — nearly all hits means the
+  cost is the lookup and the fix is a cheaper key; mostly misses means real copying and
+  the fix is a different cache lifetime — and said no reading of the code could decide
+  it. `CZ_VK_STREAM_CENSUS=1|2` decided it. At ~6,400 draws in a ~50 ms crowd frame:
+  **93.6-94.0% hit rate within a frame, and still ~2,000 misses copying 74-77 MB every
+  frame**, `streams` 11.3-11.7% = 5.6-5.9 ms, with **95-97% of the copied bytes
+  repeating the previous frame's key**. Vertex bindings 61-63 MB, dependent fetches
+  11 MB, index buffers 1.8 MB. So it is real copying, of the same buffers, thrown away
+  at every frame boundary — the fix is the cache's LIFETIME, and it is worth ~11% of a
+  crowd frame.
+  Half the ambiguity had in fact been answerable by reading nine lines, which is worth
+  saying because the plan said it was not: `ProfScope(&g_prof.streams)` wraps only the
+  `CopySwapped`, so a cache hit never touched that column at all and its lookup was
+  charged to `other` the whole time. Gotcha 233 is the general form — a hit RATE and a
+  byte COST are different questions, and 94% sounds like the copying is gone.
+* **The content check needed a control, and the control changed the answer.** A
+  persistent cache is only correct if the bytes at a repeated key are the same bytes, and
+  level 2's hash comparison read **100.0%, in every window of every run**. That is
+  indistinguishable, from the output, from a comparison whose two sides are equal by
+  construction. `CZ_VK_STREAM_CENSUS_POISON=1` salts the hash with the frame number so
+  identical bytes must hash differently: it reads **0 of 96,048 (0.0%)** on the same
+  binary, against 75,492 of 75,492 unpoisoned. With the control in place the unpoisoned
+  arm reads honestly too — **164 of 10,154,820 repeated keys DO change content**, a
+  recurring set of ~26 — so the design conclusion moves from "safe to cache blindly" to
+  "must invalidate". Gotcha 234, which is gotcha 30 in the shape it takes for equality
+  checks, where it hides best because the passing state is silent.
+* **The arena growth ran inside `DoDraw`.** `BeginFrame()` is called from there, and the
+  growth's `vkDeviceWaitIdle`, allocation and map were charged to the draw path's
+  `other` — the 29.8% single-frame spike the operator session measured. Moved to the end
+  of `DoSwapImpl`, after the fence wait, which satisfies the old comment's own stated
+  safety condition more directly than the old site did. **Stated as a measurement fix,
+  not a performance one**: verified against the pre-registered prediction that the
+  black-frame count per growth is UNCHANGED at one, and it is (pre-move: exhausted 1817,
+  black 1818, 6 of 13,410; post-move: exhausted 1258, black 1259, 7 of 5,387 — the same
+  four early-boot frames otherwise, at identical draw counts). The frame that overruns is
+  lost either way. Closes the last live piece of open-items 1c.
+
+**Gates:** `--smoke` OK; A5 **exit 0, 3 permutation windows, 0 real**; `truncated=0`;
+`no translated shader` = 0; both PM4 capture oracles clean (24,527,474 packet lengths
+agreeing, every indirect buffer tiling exactly). The picture was not re-checked against
+capture E — nothing this part touches what is drawn — and that is an argument rather than
+a measurement, as it was in part 20.
+
+**What this part deliberately did NOT do.** The cross-frame cache itself. It needs
+storage that outlives the frame, an invalidation mechanism that is not hashing (the
+candidate is guest-page write tracking), and counters for both; the hand-off says so and
+sizes it at a session. Measuring first and stopping is what the plan asked for, and the
+0.0016% mismatch is exactly the fact that would have been discovered late and expensively
+by writing the cache first.

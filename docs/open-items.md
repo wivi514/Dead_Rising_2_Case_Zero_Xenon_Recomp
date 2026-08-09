@@ -7,6 +7,25 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0a. **A CROSS-FRAME STREAM CACHE — measured, sized, and the largest named CPU item that
+   is not architectural (§6at).** The vertex/index stream cache is cleared at every frame
+   boundary, and a crowd frame therefore copies **74-77 MB** it copied last frame:
+   ~2,000 misses of ~37 KB, **95-97% of those bytes repeating the previous frame's key**,
+   costing **5.6-5.9 ms of a ~50 ms frame (11.3-11.7%)**. Split: vertex bindings 61-63 MB,
+   dependent fetches 11 MB, index buffers 1.8 MB.
+   The 94% hit rate the cache already achieves is *within* a frame and is not the
+   question — gotcha 233.
+   **It cannot be done by assuming.** 164 of 10,154,820 repeated keys really do change
+   content (0.0016%, a recurring set of ~26), so a persistent cache keyed on
+   (address, size, endian) serves a stale vertex buffer to those draws. Hashing to detect
+   it costs what the copy costs. Three requirements, all in §6at: storage that outlives
+   the frame (the arena is a bump allocator reset at every swap), **invalidation** — the
+   candidate is guest-page write tracking, `mprotect` plus a `SIGSEGV` handler that
+   coexists with `cpu/crash_report.cpp`'s — and a counter for both, because a cache that
+   silently serves stale data looks exactly like a rendering bug twenty frames later.
+   Budget a session. `CZ_VK_STREAM_CENSUS=2` is the before-measurement and the arm that
+   will say whether it worked.
+
 0b. **A FIRST-VISIT STUTTER, found only because an operator played (§6as).** `other` —
    `DoDraw`'s untimed work — sits at ~6% of a crowd frame and spikes to 20-26% (16.7 ms
    a frame) on first arrival at new material, taking the frame from 20.1 to 15.5 fps.
@@ -65,7 +84,13 @@ Next, in order:
    lit at mean 35.7 and every downstream surface — the downsamples, the luminance ladder,
    the three colour LUTs, the tone-map output — was identically zero.
    The arena grows now rather than being a bigger number (`CZ_VK_NO_ARENA_GROWTH=1` is
-   the control). What is NOT closed is the consumption: ~27 KB a draw, 8 KB of which is
+   the control). **Part 21 moved the growth OUT of `DoDraw`** — `BeginFrame()` is called
+   from inside it, so a growth charged its device-wait and its allocation to the draw
+   path's `other`, which §6as measured at 29.8% of a frame. It runs at the end of
+   `DoSwapImpl` now, after the fence wait. A measurement fix, not a black-frame fix: the
+   count is unchanged at one lost frame per growth in both arms, and it is the frame that
+   overran, which is lost either way (§6au). What is NOT closed is the consumption:
+   ~27 KB a draw, 8 KB of which is
    the per-draw constant block that `perf-cpu-plan.md` §1a-D already wants deduplicated.
    `docs/phase5-notes.md` §6ap. The original report is kept below, because the
    hypothesis it argues for was wrong in an instructive way — every piece of supporting
