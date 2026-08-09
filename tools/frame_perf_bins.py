@@ -33,11 +33,39 @@ computed from the raw count is confidently wrong. Pool three runs an arm, altern
 (a, b, a, b, a, b) so that any drift in the machine is shared between the arms, and
 read the per-run spread that this prints before reading the delta.
 
+THE MEAN IS NOT THE STATISTIC TO READ (gotcha 237)
+--------------------------------------------------
+This tool reported means only, for its first two parts, and that nearly filed part 22's
+cross-frame stream store as noise: it scored a change that removed 5.5 ms of measured
+copying at **+1.7% against a +1.3% null**. The mechanism was real and the metric could
+not see it.
+
+The reason is that this title's frame time is QUANTISED BY A PACING FLOOR. The frame
+sits on a multiple of the vblank interval — 32 ms at two, 48 ms at three — and a CPU
+saving converts into frame rate only where the frame is above one floor and within reach
+of the next. At ~6,500 draws both arms were already parked on 48 ms, and 5 ms cannot
+reach 32, so the saving appeared as idle time and the mean barely moved. At ~3,700 draws
+the SAME data reads 44 ms -> 32 ms.
+
+So this prints three things per bin and they answer different questions:
+
+  * **mean** — what it always printed. Sensitive to how long each arm lingered where,
+    and pulled about by the floor. Kept for continuity with earlier sessions' numbers.
+  * **median** — what the typical frame cost. This is the one that showed 44 -> 32.
+  * **pinned%** — the share of frames within `--pin-tol` ms of a multiple of
+    `--pin-ms`. **This is the most sensitive of the three**, because it turns "did the
+    frame reach the next floor" into a yes/no per frame instead of averaging across a
+    step function. Part 22's decisive number was this column going 10% -> 97% where the
+    mean moved 1.7%. A high pinned share means the workload is no longer yours: the
+    title's pacing is what is limiting the frame, and no further CPU saving in that bin
+    will show up until the next floor is in reach.
+
 Usage
 -----
     tools/frame_perf_bins.py --a a1.txt a2.txt a3.txt --b b1.txt b2.txt b3.txt
     tools/frame_perf_bins.py A.txt B.txt                # one run an arm (see above)
     tools/frame_perf_bins.py A.txt                      # one arm, just the profile
+    tools/frame_perf_bins.py --a ... --b ... --bin 500  # finer, to find the live band
 
 The `msec` column is a CUMULATIVE timestamp, not a duration, so each frame's cost is
 the difference from the previous frame's. The first frame of a file has no predecessor
@@ -94,6 +122,29 @@ def stats(values):
     return mean, sd, sd / math.sqrt(n)   # mean, sd, standard error of the mean
 
 
+def median(values):
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def pinned_pct(values, period, tol):
+    """Share of frames sitting within `tol` ms of a multiple of `period`.
+
+    The distance to the NEAREST multiple, not the remainder: a frame at 31.6 ms with a
+    16 ms period has remainder 15.6, which a naive `dt % period <= tol` test would call
+    free-running when it is one third of a millisecond off the two-vblank floor.
+    """
+    if period <= 0:
+        return float("nan")
+    hit = 0
+    for v in values:
+        r = v % period
+        if min(r, period - r) <= tol:
+            hit += 1
+    return 100.0 * hit / len(values)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pos", nargs="*", help="one or two frame stats files")
@@ -104,6 +155,13 @@ def main():
     ap.add_argument("--bin", type=int, default=1000, help="draw-count bin width")
     ap.add_argument("--min-frames", type=int, default=20,
                     help="skip bins with fewer frames than this in either arm")
+    # 16 ms rather than 16.67: this is the number part 22 measured the pinning at, and
+    # the frame stats' `msec` column is integer milliseconds, so a 16.67 period would
+    # spend the tolerance on the quantisation of the timestamp rather than on the frame.
+    ap.add_argument("--pin-ms", type=float, default=16.0,
+                    help="the pacing period frames pin to (default 16)")
+    ap.add_argument("--pin-tol", type=float, default=1.0,
+                    help="how close to a multiple counts as pinned (default 1 ms)")
     args = ap.parse_args()
 
     a_files = args.a if args.a else args.pos[:1]
@@ -119,11 +177,14 @@ def main():
 
     if not b_files:
         print(f"{' '.join(a_files)}: {len(fa)} frames")
-        print(f"{'draws':>14}  {'frames':>7}  {'ms/frame':>9}  {'sd':>6}  {'fps':>6}")
+        print(f"{'draws':>14}  {'frames':>7}  {'mean':>7}  {'median':>7}  {'sd':>6}  "
+              f"{'pinned':>7}  {'fps':>6}")
         for lo in sorted(ba):
             m, sd, _ = stats(ba[lo])
-            print(f"{lo:>6}-{lo+args.bin-1:<7}  {len(ba[lo]):>7}  {m:>9.2f}  "
-                  f"{sd:>6.2f}  {1000.0/m:>6.1f}")
+            md = median(ba[lo])
+            pin = pinned_pct(ba[lo], args.pin_ms, args.pin_tol)
+            print(f"{lo:>6}-{lo+args.bin-1:<7}  {len(ba[lo]):>7}  {m:>7.2f}  "
+                  f"{md:>7.2f}  {sd:>6.2f}  {pin:>6.0f}%  {1000.0/md:>6.1f}")
         return 0
 
     fb = [f for p in b_files for f in read_frames(p)]
@@ -154,8 +215,13 @@ def main():
         print(f"  A: {fmt(ra)}")
         print(f"  B: {fmt(rb)}")
         print()
-    print(f"{'draws':>14}  {'A frames':>8} {'A ms':>8}  {'B frames':>8} {'B ms':>8}  "
-          f"{'delta':>8}  {'sig':>5}")
+    print(f"pinned% = frames within {args.pin_tol:g} ms of a multiple of "
+          f"{args.pin_ms:g} ms — the title's pacing floor. READ THIS COLUMN FIRST "
+          f"(gotcha 237).")
+    print()
+    print(f"{'draws':>14}  {'A n':>6} {'A mean':>7} {'A med':>6} {'A pin':>6}  "
+          f"{'B n':>6} {'B mean':>7} {'B med':>6} {'B pin':>6}  "
+          f"{'d mean':>7} {'d med':>7}  {'sig':>5}")
     # "sig" is the difference in units of its own combined standard error, and it is
     # NOT a significance test — do not read it as one. A null arm (same binary, two
     # runs) produced crowd bins at 10-13% and sig up to 22, because consecutive frames
@@ -170,8 +236,13 @@ def main():
         se = math.sqrt(sea * sea + seb * seb)
         sig = (mb - ma) / se if se > 0 else 0.0
         pct = 100.0 * (mb - ma) / ma
-        print(f"{lo:>6}-{lo+args.bin-1:<7}  {len(va):>8} {ma:>8.2f}  "
-              f"{len(vb):>8} {mb:>8.2f}  {pct:>+7.1f}%  {sig:>+5.1f}")
+        da, db = median(va), median(vb)
+        dpct = 100.0 * (db - da) / da if da else 0.0
+        pa = pinned_pct(va, args.pin_ms, args.pin_tol)
+        pb = pinned_pct(vb, args.pin_ms, args.pin_tol)
+        print(f"{lo:>6}-{lo+args.bin-1:<7}  {len(va):>6} {ma:>7.2f} {da:>6.1f} "
+              f"{pa:>5.0f}%  {len(vb):>6} {mb:>7.2f} {db:>6.1f} {pb:>5.0f}%  "
+              f"{pct:>+6.1f}% {dpct:>+6.1f}%  {sig:>+5.1f}")
     return 0
 
 
