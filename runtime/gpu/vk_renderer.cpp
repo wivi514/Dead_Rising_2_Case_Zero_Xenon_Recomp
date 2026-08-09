@@ -346,7 +346,6 @@ struct StreamCensus
     uint64_t kindBytes[3] = { 0, 0, 0 };
     uint64_t kindMisses[3] = { 0, 0, 0 };
     uint64_t kindRepeatBytes[3] = { 0, 0, 0 };
-    uint64_t frames = 0;
 };
 StreamCensus g_streamCensus_c;
 // Last frame's keys, and (level 2 only) a content hash for each. Rebuilt in BeginFrame
@@ -2864,7 +2863,6 @@ void BeginFrame()
             g_prevStreamKeys.emplace(kv.first, h);
         }
         g_streamHashes.clear();
-        ++g_streamCensus_c.frames;
     }
     R->streamCache.clear();
     R->drawsThisFrame = 0;
@@ -5887,7 +5885,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // The stream cache, when asked for. Printed inside the profile window so the
             // rates are per-frame over the SAME frames the `streams` percentage above is
             // averaged over — a census counted over the whole run and a percentage
-            // counted over five seconds cannot be divided into each other.
+            // counted over five seconds cannot be divided into each other. The divisor is
+            // PRESENTED frames, like every other rate on these lines, not frames that
+            // recorded a draw; a frame with no draws never calls BeginFrame at all.
             if (g_streamCensus)
             {
                 const StreamCensus& s = g_streamCensus_c;
