@@ -1633,6 +1633,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      The general form: every "X is expensive" and "Y is cheap" carried in from outside
      the project is a prior, and priors about performance are exactly what profiling
      exists to overturn. Put a number on it before it becomes a plan.
+233. **A cache's HIT RATE and its COST are different questions, and a high hit rate can
+     hide an enormous one.** This renderer's per-frame vertex/index stream cache runs at
+     **94% hits** in a crowd — the number anyone would quote to say it is working — and
+     the remaining 6% still copies **74-77 MB every frame**, 5.6-5.9 ms, the largest term
+     in the draw path. The plan had written the ambiguity down correctly ("a high miss
+     rate and a high hit rate need opposite fixes") and then guessed the wrong branch
+     from the hit rate alone, because 94% *sounds* like the copying is gone.
+     **Count BYTES, not just hits.** A hit rate is a property of the lookups, and the cost
+     lives in the misses' sizes, which the ratio cannot see. Two caches with the same
+     94% can differ by two orders of magnitude in bytes moved.
+     Second half of the same lesson: the profiler scope wrapped only the copy, so a hit
+     never touched the column being argued about at all — nine lines of code answered
+     half of what was called unanswerable-without-measurement. **Read where the timer
+     starts before theorising about what the number contains.**
+234. **A comparison that only ever reports 100% has not been shown capable of reporting
+     anything else — SALT IT AND CHECK IT READS 0%.** A content check comparing each
+     cached buffer's hash against last frame's read exactly 100.0% in every window of
+     every run, which is either a real and very useful fact about the guest's geometry or
+     a comparison whose two sides are the same value by construction. From the output
+     those are identical. The control is one environment variable and four lines: salt
+     the hash with the frame number so identical bytes MUST hash differently, and require
+     the line to read 0.0%. It read 0 of 96,048.
+     **The control paid for itself immediately**, which is the part worth carrying: with
+     the poison arm in place the honest reading of the unpoisoned arm changed too, because
+     the rounding had been hiding real mismatches — 164 of 10,154,820 repeated keys DID
+     change content. Without the control the conclusion would have been "100%, safe to
+     cache blindly"; with it, the conclusion is "must invalidate", which is a different
+     design. This is gotcha 30 in the specific shape it takes for *equality* checks, and
+     equality checks are where it hides best, because the passing state is silent.
 221. **A measured win can cost a gate, and the honest move is to price both.** The two
      changes above take A1's position-71 window from 1-in-10 to every run. It is a
      two-thread interleave with an identified mechanism, the stronger set-based A5 gate

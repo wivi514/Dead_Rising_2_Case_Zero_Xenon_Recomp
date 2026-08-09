@@ -176,16 +176,36 @@ binding, ~3.0 of them), `vkCmdBindIndexBuffer` (~0.9), `vkCmdPushConstants` (24 
   allocation and the push could be skipped. **Measure:** hash the constant block per draw
   and count repeats before writing anything.
 
-### 1b. `streams` is 4.77 ms — 0.72 µs per draw
+### 1b. ~~`streams` is 4.77 ms — 0.72 µs per draw~~ **MEASURED (part 21): 5.6-5.9 ms, it
+### is REAL COPYING, and the fix is the cache's LIFETIME**
 
 The per-frame dword-swap copy, cached by (address, size, endian) in an
-`unordered_map<uint64_t, VkDeviceSize>`. In a crowd the same meshes recur constantly, so
-this should be nearly all cache hits — in which case 0.72 µs/draw is the *lookup*, not
-the copy, and the fix is a cheaper key or a small direct-mapped cache in front of it.
+`unordered_map<uint64_t, VkDeviceSize>`. This section used to say the ambiguity could not
+be resolved by reading the code and had to be counted. It was counted —
+`CZ_VK_STREAM_CENSUS=1|2`, `docs/phase5-notes.md` §6at — and it resolves to the *second*
+reading, not the "nearly all cache hits" one this text expected:
 
-**Measure first, and this one is genuinely ambiguous:** count hits and misses, and total
-bytes actually copied per frame. A high miss rate and a high hit rate need opposite
-fixes, and no reading of the code can tell you which you have.
+| at ~6,400 draws in a ~50 ms crowd frame | |
+|---|---|
+| hit rate WITHIN a frame | 93.6-94.0% |
+| misses per frame | ~2,000, average 37 KB |
+| **bytes copied per frame** | **74-77 MB** |
+| `streams` | 11.3-11.7% = **5.6-5.9 ms** |
+| **copied bytes repeating LAST frame's key** | **95-97%** |
+| of repeated keys, content unchanged | 99.9984% (164 changed of 10,154,820) |
+
+vertex bindings 61-63 MB, dependent fetches 11 MB, index buffers 1.8 MB.
+
+Both halves of the old guess were wrong in an instructive way. The hit rate IS high — but
+a high hit rate and a low byte cost are different claims, and 94% hits still leaves
+2,000 misses copying 74 MB. And `ProfScope(streams)` wraps only the `CopySwapped`, so a
+hit never touched this column at all: the lookup cost was in `other` the whole time.
+
+**The fix is a cache that outlives the frame**, worth ~5.5 ms of a crowd frame (≈11%).
+It is NOT a cheaper key. It needs its own storage (the arena is reset every swap) and it
+needs **invalidation** — 0.0016% of repeated keys do change in place, hashing to detect
+that costs what the copy costs, so the candidate is guest-page write tracking. Budget a
+session; §6at states the three requirements.
 
 ### 1c. `textures` is 3.43 ms — and it is 7.9-10.9% in crowds against 2.5% in ordinary
 gameplay

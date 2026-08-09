@@ -3277,6 +3277,130 @@ loop. A per-draw census of sampler slots and vertex attributes is the next cheap
 
 ---
 
+## 6at. THE STREAM CACHE IS 94% HITS AND STILL COPIES 74 MB A FRAME — §1b's ambiguity
+## is resolved, and it resolves the other way
+
+`streams` is the largest draw-path term in a real crowd (§6as: 12.3-14.3% of a frame,
+against 6.8% in the headless recipe). `docs/perf-cpu-plan.md` §1b called it **"genuinely
+ambiguous"** and refused to guess, because two opposite readings fit the same millisecond
+count and need opposite fixes:
+
+* nearly all HITS — then 0.72 µs/draw is the *lookup*, and the fix is a cheaper key;
+* mostly MISSES — then it is real copying, and the fix is a different cache **lifetime**.
+
+The plan's instruction was to count hits, misses and bytes before writing anything.
+`CZ_VK_STREAM_CENSUS=1|2` counts them.
+
+### What the code already settled, and nobody had read
+
+`ProfScope(&g_prof.streams)` wraps **only the `CopySwapped`** — not the map lookup, not
+the `ArenaAlloc`. So a cache HIT costs the `streams` column exactly nothing, and its
+lookup is charged to `other`. The whole `streams` column is copying, and half the
+ambiguity was answerable by reading nine lines. Recorded because the plan said "no
+reading of the code can tell you which you have", and on this half it could.
+
+### The numbers, outdoor crowd recipe, ~6,400 draws in a ~50 ms frame
+
+| | |
+|---|---|
+| lookups per frame | ~33,000 (≈5.2 per draw) |
+| hit rate WITHIN a frame | **93.6-94.0%** |
+| misses per frame | ~2,000, average 37 KB each |
+| **bytes copied per frame** | **74-77 MB** |
+| `streams` | 11.3-11.7% of the frame = **5.6-5.9 ms** |
+| **of the copied bytes, share repeating LAST frame's key** | **95-97%** |
+
+Split by what the stream is: **vertex bindings 61-63 MB, shader-side dependent fetches
+(`XeVfetchDep`) 11 MB, index buffers 1.8 MB.** The split matters because the three have
+different answers to "could this be cached across frames", and one total cannot be read
+that way.
+
+The census discriminates strongly across eras of a single run — hit rate 50% → 71% → 80%
+→ 82% → 94%, cross-frame repeat 6% → 18% → 65% → 98% — so it is demonstrably capable of
+reporting something other than what it reports in a crowd (gotcha 30).
+
+**So: it is real copying, and it is almost entirely the SAME buffer as last frame.** The
+cache is doing its job perfectly within a frame and is thrown away at every frame
+boundary. 74 MB a frame of dword-swapped copying into HOST_COHERENT memory, ~13 GB/s,
+95% of which reproduces bytes that are already there.
+
+### The content check, and the control that makes it believable
+
+"The key repeats" is not "the content repeats" — a persistent cache keyed on
+(address, size, endian) is *wrong* if the guest rewrites the buffer in place. Level 2
+hashes every stream's guest bytes and compares against last frame's hash for the same
+key. It read **100.0% unchanged**, in every window, in every era.
+
+**A number that only ever reads 100.0% has not been shown capable of reading anything
+else**, and a real fact about this title's geometry is indistinguishable from a
+comparison that cannot fail. `CZ_VK_STREAM_CENSUS_POISON=1` is the control: it salts the
+hash with the frame number, so identical bytes must hash differently and the line must
+read 0.0%. On the same binary:
+
+```
+poison off   CONTENT UNCHANGED: 75492 of 75492 repeated keys (100.0%)
+poison on    CONTENT UNCHANGED:     0 of 96048 repeated keys (  0.0%)
+```
+
+The control also exposed what the rounding was hiding. Over two full runs,
+**164 of 10,154,820 repeated keys DID change content — 0.0016%** — and the changing set
+recurs as a fixed 26. So in-place rewriting is real, rare, and **not zero**: a persistent
+cache must **invalidate**, not assume. Without the poison arm the honest reading would
+have been "100%, safe to cache blindly", which is wrong.
+
+### What this makes the fix
+
+A cross-frame stream cache is worth **~5.5 ms of a ~50 ms crowd frame (≈11%)** — the same
+order as the whole of part 20's instrumentation removal. It needs three things the
+per-frame cache does not:
+
+1. **Storage that outlives the frame.** The arena is a bump allocator reset at every swap;
+   persistent streams need their own allocation and an eviction policy.
+2. **Invalidation.** 0.0016% of repeats change in place, and a stale vertex buffer draws
+   the wrong mesh. Hashing to detect it costs what the copy costs, so the candidate is
+   guest-page write tracking (`mprotect` on the guest map plus a `SIGSEGV` handler that
+   coexists with `cpu/crash_report.cpp`'s). Static geometry then faults never; dynamic
+   buffers fault once a page a frame.
+3. **A counter for both**, since a cache that silently serves stale data looks exactly
+   like a rendering bug twenty frames later.
+
+That is a session's work and it should not be started inside another item.
+
+## 6au. The arena growth ran inside `DoDraw`, and that is why a growth cost 29.8% of
+## `other`
+
+`BeginFrame()` is called from inside `DoDraw`, and the arena growth lived at the top of
+it — so a growth charged its `vkDeviceWaitIdle`, its buffer allocation and its map to the
+draw path's `other` column. §6as measured one such frame at 29.8%, the largest single
+spike of the operator session, and the mechanism was the **call graph**, not anything
+about drawing. Moved to the end of `DoSwapImpl`, after `SubmitAndWait`.
+
+**This is a measurement fix before it is a performance one**, and saying which matters:
+the work still happens, it is charged where it belongs. The one real saving is the
+`vkDeviceWaitIdle`, which at the new site follows a fence wait that has already idled the
+device.
+
+The old comment claimed *"here is safe and nowhere else is: the command buffer has just
+been reset, which is only legal once its previous submission has completed"*. The end of
+`DoSwapImpl` meets that same condition more directly — the fence has been **waited on**,
+so the submission is not merely complete but observed to be.
+
+Verified against the stated prediction (the growth still fires, and the black-frame count
+per growth is unchanged at one):
+
+```
+pre-move   exhausted frame 1817, black frame 1818, 6 black of 13,410
+post-move  exhausted frame 1258, black frame 1259, 7 black of  5,387
+```
+
+In each, the black frame **is** the exhausting frame — the frame counter increments at
+the top of `DoSwapImpl`, so the message and the stats line are one apart by construction.
+The frame that overruns is lost either way; only the frame after it is rescued, and it
+already was. The remaining black frames are the same four early-boot frames in both runs,
+at identical draw counts. Closes the last live piece of open-items 1c.
+
+---
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

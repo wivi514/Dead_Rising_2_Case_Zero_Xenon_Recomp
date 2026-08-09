@@ -522,6 +522,28 @@ CZ_VK_TEX_CENSUS=1 per texture ADDRESS: uploads, how many came out entirely blac
                    fetches served from a resolve snapshot, and fetches that fell back
                    because the snapshot was too old. Off by default because the snapshot
                    column is hit ~500,000 times a run (gotcha 7)
+CZ_VK_STREAM_CENSUS=1|2  what the per-frame vertex/index stream cache actually DOES:
+                   lookups and hit rate, misses, MB copied per frame, MB the hits saved,
+                   the split by kind (declared vertex binding / index buffer / shader-side
+                   dependent fetch), and — the number that decides the fix — the share of
+                   MISSED bytes whose (address, size, endian) key repeats the PREVIOUS
+                   frame. Reports through the CZ_VK_PROFILE window and says so if that is
+                   off. Level 2 additionally hashes each stream's guest bytes and reports
+                   whether the repeated keys' CONTENT was unchanged, which is what a
+                   cross-frame cache stands or falls on — it costs about what the copy
+                   costs, so level 2 is a diagnostic run and never a frame-time
+                   measurement (gotcha 223). This settled perf-cpu-plan §1b, which had
+                   two opposite candidate fixes: at ~6,400 draws it reads 94% hit and
+                   STILL 74-77 MB copied a frame, 95-97% of which repeats last frame's key
+CZ_VK_STREAM_CENSUS_POISON=1  the CONTROL for the line above, and the reason its answer
+                   is believable. The content check reads 100.0% and nothing else, which
+                   is either a real fact about this title's geometry or a comparison that
+                   cannot fail — indistinguishable from the output. This salts the hash
+                   with the FRAME NUMBER, so identical bytes must hash differently and the
+                   line MUST read 0.0%. Measured on one binary: 75,492 of 75,492 (100.0%)
+                   off, 0 of 96,048 (0.0%) on. It also exposed what the rounding hid —
+                   164 of 10,154,820 repeated keys really do change content, a recurring
+                   set of ~26 — which turns "safe to cache blindly" into "must invalidate"
 CZ_VK_TEX_REFRESH=<hex[,hex]>  re-read those textures' pixels on EVERY fetch, into the
                    SAME image and slot (the dimensions are part of the cache key, so
                    updating in place is exact and needs no allocation). The arm for "we
