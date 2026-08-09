@@ -307,6 +307,78 @@ struct TexSource
 std::map<uint32_t, TexSource> g_texSources;
 bool g_texCensus = false;
 
+// CZ_VK_STREAM_CENSUS=1|2 — what the per-frame vertex/index stream cache actually does.
+//
+// `streams` is the largest draw-path term in a real crowd (12.3-14.3% of a frame, twice
+// what the headless recipe shows), and the plan could not say what to do about it,
+// because two opposite readings fit the same millisecond count:
+//
+//   * nearly all HITS — then the cost is the lookup and the fix is a cheaper key;
+//   * mostly MISSES — then it is real copying and the fix is a different cache LIFETIME.
+//
+// No amount of reading the code decides that, so this counts it. One thing the code DOES
+// decide: `ProfScope(streams)` wraps only the `CopySwapped`, so the `streams` column is
+// copy time and a hit costs it nothing — a hit's lookup is charged to `other`.
+//
+// Level 2 additionally answers the question a cross-frame cache stands or falls on:
+// whether the bytes at a repeated (address, size, endian) are the SAME bytes next frame.
+// A persistent cache keyed on the address is wrong if the guest rewrites the buffer in
+// place, and "the key repeats" is not evidence that "the content repeats". Level 2 hashes
+// every stream, which costs about as much as the copy — it is a diagnostic run, never a
+// frame-time measurement (gotcha 223).
+int g_streamCensus = 0;
+struct StreamCensus
+{
+    uint64_t hits = 0, misses = 0;      // per-draw cache outcomes
+    uint64_t bytesCopied = 0;           // what the misses actually swapped
+    uint64_t bytesHit = 0;              // what the hits avoided swapping
+    // Of the misses, the ones whose key was present in the PREVIOUS frame — i.e. what a
+    // cache that survived the frame boundary would have hit instead.
+    uint64_t prevFrameKeyHits = 0;
+    uint64_t prevFrameKeyBytes = 0;
+    // ...and of THOSE, the ones whose bytes were unchanged since last frame (level 2).
+    // The gap between this and the line above is the guest rewriting a buffer in place,
+    // which is exactly the traffic a persistent cache would serve stale.
+    uint64_t prevFrameSameContent = 0;
+    uint64_t prevFrameSameBytes = 0;
+    // Copied bytes and misses split by what the stream IS: [0] declared vertex binding,
+    // [1] index buffer, [2] shader-side dependent fetch.
+    uint64_t kindBytes[3] = { 0, 0, 0 };
+    uint64_t kindMisses[3] = { 0, 0, 0 };
+    uint64_t kindRepeatBytes[3] = { 0, 0, 0 };
+    uint64_t frames = 0;
+};
+StreamCensus g_streamCensus_c;
+// Last frame's keys, and (level 2 only) a content hash for each. Rebuilt in BeginFrame
+// out of the cache that is about to be cleared, so the draw path never walks it.
+std::unordered_map<uint64_t, uint64_t> g_prevStreamKeys;
+// This frame's hashes, level 2 only. Separate from `streamCache` because that map is on
+// the hot path and must not grow a field an instrument is the only reader of.
+std::unordered_map<uint64_t, uint64_t> g_streamHashes;
+
+// CZ_VK_STREAM_CENSUS_POISON=1 — THE CONTROL ARM FOR THE CONTENT CHECK, and it exists
+// because that check reports 100.0% and nothing else.
+//
+// The level-2 line says "of the streams whose key repeated last frame, N of N had
+// identical bytes". On this title it reads 149,925 of 149,925 in a crowd, which is either
+// a real and very useful fact about the guest's geometry or a comparison that cannot
+// fail. Those are indistinguishable from the output. With this on, the hash is salted
+// with the FRAME NUMBER, so the same bytes hash differently in consecutive frames and
+// the line MUST read 0.0%. If it still reads 100%, the instrument is broken and the
+// finding built on it is worthless (gotchas 30, 94, 158).
+bool g_streamPoison = false;
+
+// FNV-1a over a stream's GUEST bytes. Level 2 only, and deliberately over the source
+// rather than the arena copy: the question is whether the guest rewrote the buffer, and
+// the arena copy is our own output.
+uint64_t StreamHash(const uint8_t* p, size_t bytes, uint64_t salt)
+{
+    uint64_t h = 1469598103934665603ull ^ salt;
+    for (size_t i = 0; i < bytes; ++i)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
 bool g_active = false;
 bool g_initTried = false;
 
@@ -2748,6 +2820,27 @@ void BeginFrame()
         }
     }
     R->arenaCursor = 0;
+    // Remember what this frame cached before dropping it, so the next frame's misses can
+    // say how many of them a cache that outlived the frame would have served. Off by
+    // default and free when off; when on it is one walk of a few hundred entries per
+    // frame, off the draw path.
+    if (g_streamCensus)
+    {
+        g_prevStreamKeys.clear();
+        for (const auto& kv : R->streamCache)
+        {
+            uint64_t h = 0;
+            if (g_streamCensus >= 2)
+            {
+                auto hit = g_streamHashes.find(kv.first);
+                if (hit != g_streamHashes.end())
+                    h = hit->second;
+            }
+            g_prevStreamKeys.emplace(kv.first, h);
+        }
+        g_streamHashes.clear();
+        ++g_streamCensus_c.frames;
+    }
     R->streamCache.clear();
     R->drawsThisFrame = 0;
     // A fresh command buffer binds nothing. This must be here and nowhere else: a
@@ -2874,7 +2967,14 @@ void SubmitAndWait()
 // return its arena offset. Cached per frame by (address, size, endian): the frontend
 // draws the same buffer dozens of times a frame and copying it each time would be the
 // dominant cost of the renderer.
-VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian)
+// `kind` is census-only: 0 = a declared vertex binding, 1 = an index buffer, 2 = a
+// shader-side dependent fetch (XeVfetchDep). It exists because the three have different
+// answers to "could this be cached across frames" — an index buffer for static geometry
+// is a different proposition from a stream a shader raw-loads — and a single total
+// cannot be read that way. A constant at every call site, so it costs nothing when the
+// census is off.
+VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian,
+                          int kind)
 {
     // The key must be an IDENTITY, not a hash. The first version was
     // `(uint64_t(va) << 24) ^ (bytes << 2) ^ endian`, and those fields OVERLAP: a
@@ -2887,7 +2987,14 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
                          (endian & 3);
     auto it = R->streamCache.find(key);
     if (it != R->streamCache.end())
+    {
+        if (g_streamCensus)
+        {
+            ++g_streamCensus_c.hits;
+            g_streamCensus_c.bytesHit += bytes;
+        }
         return it->second;
+    }
 
     const VkDeviceSize at = ArenaAlloc(bytes, 16);
     if (at == VkDeviceSize(-1))
@@ -2897,6 +3004,36 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
         CopySwapped(R->arena.mapped + at, base + va, size_t(bytes), endian);
     }
     R->streamCache.emplace(key, at);
+    // The census, entirely on the MISS path — a miss already costs a copy, so the
+    // instrument is small against what it is measuring, and the hit path above pays two
+    // increments. Both are behind one already-hot int, which is what part 20's removal of
+    // the per-draw counters was about (gotcha 230).
+    if (g_streamCensus)
+    {
+        ++g_streamCensus_c.misses;
+        g_streamCensus_c.bytesCopied += bytes;
+        const int k = (kind >= 0 && kind < 3) ? kind : 0;
+        ++g_streamCensus_c.kindMisses[k];
+        g_streamCensus_c.kindBytes[k] += bytes;
+        auto pit = g_prevStreamKeys.find(key);
+        if (pit != g_prevStreamKeys.end())
+        {
+            ++g_streamCensus_c.prevFrameKeyHits;
+            g_streamCensus_c.prevFrameKeyBytes += bytes;
+            g_streamCensus_c.kindRepeatBytes[k] += bytes;
+        }
+        if (g_streamCensus >= 2)
+        {
+            const uint64_t h =
+                StreamHash(base + va, size_t(bytes), g_streamPoison ? R->frame : 0);
+            g_streamHashes[key] = h;
+            if (pit != g_prevStreamKeys.end() && pit->second == h)
+            {
+                ++g_streamCensus_c.prevFrameSameContent;
+                g_streamCensus_c.prevFrameSameBytes += bytes;
+            }
+        }
+    }
     return at;
 }
 
@@ -3929,7 +4066,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Count("draw: dependent fetch stream outside the physical arena");
             continue;
         }
-        const VkDeviceSize at = UploadStream(base, sva, bytes, vf.endian);
+        const VkDeviceSize at = UploadStream(base, sva, bytes, vf.endian, 2);
         if (at == VkDeviceSize(-1))
             continue;
         // {deviceAddress.lo, deviceAddress.hi, sizeDwords, 0} — the layout the
@@ -4035,7 +4172,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
         }
-        const VkDeviceSize at = UploadStream(base, va, bytes, vf.endian);
+        const VkDeviceSize at = UploadStream(base, va, bytes, vf.endian, 0);
         if (at == VkDeviceSize(-1))
         {
             streamsOk = false;
@@ -4397,7 +4534,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
             ++*slots[draw.indexEndian & 3];
         }
-        const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian);
+        const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian, 1);
         if (at == VkDeviceSize(-1))
             return;
         NoteIndexBind(at, draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
@@ -4997,6 +5134,20 @@ bool InitCommon()
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_profileOn = EnvOn("CZ_VK_PROFILE");
+    // Reported through the profile window, so it needs the profile on to say anything.
+    // Saying so out loud rather than silently counting into a report nobody prints.
+    g_streamCensus =
+        Env("CZ_VK_STREAM_CENSUS") ? atoi(Env("CZ_VK_STREAM_CENSUS")) : 0;
+    if (g_streamCensus && !g_profileOn)
+    {
+        fprintf(stderr, "[vk] CZ_VK_STREAM_CENSUS needs CZ_VK_PROFILE — it reports "
+                        "through that window; census OFF\n");
+        g_streamCensus = 0;
+    }
+    g_streamPoison = EnvOn("CZ_VK_STREAM_CENSUS_POISON");
+    if (g_streamPoison)
+        fprintf(stderr, "[vk] stream census POISONED — the content check must now read "
+                        "0.0%%; anything else means it cannot fail\n");
     g_active = true;
     fprintf(stderr, "[vk] renderer UP: %ux%u target, %zu shaders\n", R->targetWidth,
             R->targetHeight, R->shaders.size());
@@ -5701,6 +5852,63 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     (unsigned long long)(frames ? dRegWrites / frames : 0),
                     dPackets ? double(dRegWrites) / double(dPackets) : 0.0);
             lastPump = p;
+
+            // The stream cache, when asked for. Printed inside the profile window so the
+            // rates are per-frame over the SAME frames the `streams` percentage above is
+            // averaged over — a census counted over the whole run and a percentage
+            // counted over five seconds cannot be divided into each other.
+            if (g_streamCensus)
+            {
+                const StreamCensus& s = g_streamCensus_c;
+                const uint64_t n = s.hits + s.misses;
+                fprintf(stderr,
+                        "[vkprof] streams %llu lookups/frame: %.1f%% hit | copied "
+                        "%.2f MB/frame (%llu misses/frame, %llu B each) | hits saved "
+                        "%.2f MB/frame\n",
+                        (unsigned long long)(frames ? n / frames : 0),
+                        n ? 100.0 * double(s.hits) / double(n) : 0.0,
+                        frames ? double(s.bytesCopied) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)(frames ? s.misses / frames : 0),
+                        s.misses ? (unsigned long long)(s.bytesCopied / s.misses) : 0ull,
+                        frames ? double(s.bytesHit) / double(frames) / 1048576.0 : 0.0);
+                // What a cache that survived the frame boundary would have done. The
+                // second line only appears at level 2, because only level 2 knows whether
+                // it would have been CORRECT to serve it.
+                fprintf(stderr,
+                        "[vkprof] streams cross-frame: %.1f%% of misses repeat last "
+                        "frame's key (%.2f MB/frame)%s\n",
+                        s.misses ? 100.0 * double(s.prevFrameKeyHits) / double(s.misses)
+                                 : 0.0,
+                        frames ? double(s.prevFrameKeyBytes) / double(frames) / 1048576.0
+                               : 0.0,
+                        g_streamCensus >= 2 ? "" : "  [level 2 for the content check]");
+                static const char* kindName[3] = { "vertex", "index ", "vfetch" };
+                for (int k = 0; k < 3; ++k)
+                    fprintf(stderr,
+                            "[vkprof] streams   %s: %llu misses/frame, %.2f MB/frame "
+                            "copied, %.1f%% of those bytes repeat last frame\n",
+                            kindName[k],
+                            (unsigned long long)(frames ? s.kindMisses[k] / frames : 0),
+                            frames ? double(s.kindBytes[k]) / double(frames) / 1048576.0
+                                   : 0.0,
+                            s.kindBytes[k] ? 100.0 * double(s.kindRepeatBytes[k]) /
+                                                 double(s.kindBytes[k])
+                                           : 0.0);
+                if (g_streamCensus >= 2)
+                    fprintf(stderr,
+                            "[vkprof] streams cross-frame CONTENT UNCHANGED: %llu of "
+                            "%llu repeated keys (%.1f%%), %.2f MB/frame — the rest is the "
+                            "guest rewriting the buffer in place\n",
+                            (unsigned long long)s.prevFrameSameContent,
+                            (unsigned long long)s.prevFrameKeyHits,
+                            s.prevFrameKeyHits ? 100.0 * double(s.prevFrameSameContent) /
+                                                     double(s.prevFrameKeyHits)
+                                               : 0.0,
+                            frames ? double(s.prevFrameSameBytes) / double(frames) /
+                                         1048576.0
+                                   : 0.0);
+                g_streamCensus_c = StreamCensus{};
+            }
 
             g_prof = ProfilePhases{};
             last = now;
