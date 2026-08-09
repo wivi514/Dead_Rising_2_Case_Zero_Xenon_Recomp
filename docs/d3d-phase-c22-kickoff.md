@@ -10,15 +10,18 @@ Case Zero boots, renders and plays. Save and load are a closed round trip. The
 view-dependent whole-frame black is solved. Ordinary gameplay is 31 fps and closed at the
 title's own two-vblank pacing; **crowds are the open performance item and are CPU-bound in
 our runtime**. Part 22 built the cross-frame stream store the last three parts were
-pointing at: stream copying falls from 61-66 MB a frame to 0.23, and `streams` leaves the
-top of the CPU plan. What is open on the picture is unchanged: the shadow cascade,
+pointing at: stream copying falls from 61-66 MB a frame to 0.23, `streams` leaves the CPU
+plan entirely, and the draw path at ~6,000 draws goes 13.9 ms -> 9.2. **In frame rate that
+is 44 ms -> 32 at ~3,700 draws and roughly nothing at ~6,500** — read reading-note 4 before
+quoting either. What is open on the picture is unchanged: the shadow cascade,
 mipmaps, NPC part meshes, the magenta sky / colour-grading LUT, and the prologue
 cinematic.
 
 ## READ THIS BEFORE MEASURING ANYTHING
 
 The first three are carried forward unchanged, because each still costs a session. The
-fourth is new and is the one part 22 would most like to have known at the start.
+last three are new, and **4 is the one part 22 would most like to have known at the
+start** — it nearly caused a real win to be filed as noise.
 
 1. **The noise floor of a crowd frame-time A/B is 10-13% at one run a side** (gotcha 229).
    `tools/frame_perf_bins.py` bins by draw count, which is necessary and not sufficient.
@@ -85,8 +88,9 @@ fourth is new and is the one part 22 would most like to have known at the start.
    `other` is per-draw: two `std::map<uint64_t>` shader lookups, a `std::map<PipelineKey>`
    lookup with a 40-byte `memcmp` comparator, the fetch-constant decode loop and the
    vertex-attribute loop. **Next cheap step: a per-draw census of sampler slots and vertex
-   attributes.** Note `other` now also carries the store's guard hash (see below), so
-   re-baseline it before attributing anything.
+   attributes.** Note that `record` — not `other` — now also carries the store's guard
+   hash, so re-baseline `record` before attributing anything to it (5.2% store off, 6.5%
+   store on).
    Reproducing this needs virgin material — an operator, or a recipe entering an area no
    run has entered. Every instrument here is blind to it by construction.
 4. **The remaining picture defects**, unchanged and all worth re-testing now that neither
@@ -97,13 +101,9 @@ fourth is new and is the one part 22 would most like to have known at the start.
    counter and no measurement, carried from part 19. `CZ_VK_SKIP_TEX` to name the address
    is the cheap first move.
 
-**Small and specified, if a session wants a warm-up:** open-items 0a-i, `CopySwapped` as
-one `pshufb` rather than the 10-instruction SSE2 sequence it currently compiles to
-(`-msse4.1 -mavx` is applied to the `ppc_image` target, not the runtime). **Its value fell
-by an order of magnitude when the store landed** — stream copying is now 0.23 MB a frame,
-so the beneficiary is texture upload only. Recorded mostly because the reason it shrank is
-the lesson: sizing a micro-optimisation before the structural change lands prices it
-against the wrong baseline.
+**Small and specified, if a session wants a warm-up:** open-items 0a-i. See "One item was
+re-ranked by part 22" below — it is a five-line change against what is now the second
+largest draw-path term.
 
 **Retired — do not re-derive:** §1a hypothesis A (vertex/index bind caching; ~1.4 ms,
 permanently below the noise floor); pipeline compilation as the first-visit cost; §1b's
@@ -130,9 +130,23 @@ failed silently).
   bindings.
 * **`GUARD MISSED`** — the correctness counter for the store, with the poison arm as its
   control (0 unpoisoned, 240,652 of 240,652 poisoned).
-* Gotchas 235 (lookback vs lifetime) and 236 (an instrument that writes files must
-  complain when it cannot — `CZ_VK_FRAME_DUMP` silently wrote nothing into a
-  non-existent directory, which looks exactly like a renderer that drew nothing).
+* **The guard widened from one byte to eight bytes a step**, after gotcha 238 showed its
+  cost was hiding in `record`. `record` 9.4-9.7% -> 6.4-6.5% at ~6,000 draws, guard bytes
+  unchanged, GUARD MISSED still 0. **The draw path at ~6,000 draws is now 9.2 ms against
+  the store-off arm's 13.9.**
+* Gotchas 235 (lookback vs lifetime), 236 (an instrument that writes files must complain
+  when it cannot), **237 (a mean frame time measures the pacing floor)** and **238 (a
+  zeroed column is not a saving until you check the residual)**.
+
+## One item was re-ranked by part 22 and it is cheap
+
+**With `streams` at zero, `textures` is now the second-largest draw-path term after
+`record`** — 5.8-7.0% of a crowd frame, 2.8-3.4 ms. open-items **0a-i** is a five-line
+change aimed straight at it: `CopySwapped` compiles to a 10-instruction SSE2 sequence
+where one `pshufb` would do, because `-msse4.1 -mavx` is applied to the `ppc_image` target
+and not to the runtime. `__attribute__((target("ssse3")))` on that one function keeps the
+rest of the binary at baseline. **Measure it against the `textures` column, not the
+frame** — see reading-note 4.
 
 ## Two things about the store the next session should hold in mind
 
@@ -149,9 +163,29 @@ failed silently).
 
 `--smoke` OK; A5 **exit 0, 3 permutation windows, 0 real**; `truncated=0`;
 `no translated shader` = 0; both PM4 capture oracles clean (24,527,474 packet lengths
-agreeing, every indirect buffer tiling exactly). **The picture WAS re-checked this part,
-because the store can only fail by drawing the wrong mesh**: capture E2 at frame 576 reads
-+0.9590 identity with the store on against +0.9596 with it off, and the two arms' own
-frames correlate +0.9998/+0.9934/+0.9929/+0.9921 at matched indices.
+agreeing, every indirect buffer tiling exactly) — and `gpu/pm4.cpp` is not touched by this
+part at all, so those two remain valid by construction as well as by measurement.
+**The picture WAS re-checked this part, because a store can only fail by drawing the wrong
+mesh**: capture E2 at frame 576 reads +0.9590 identity with the store on against +0.9596
+with it off, and the two arms' own frames correlate +0.9998/+0.9934/+0.9929/+0.9921 at
+matched indices.
 
 **A1's strict-prefix gate is BIMODAL** and the standing advice is unchanged: quote A5.
+
+## The method notes worth carrying
+
+* **The plan asked for a measurement and the measurement changed the design twice.**
+  Naming the rewritten streams (fifteen lines on top of an existing instrument) removed an
+  entire `SIGSEGV`-handler subsystem from the work. Then the store's own stale counter
+  revised the risk that instrument had reported *upwards* by two orders of magnitude. Both
+  directions came from asking the cheap question first.
+* **The A/B nearly filed a real win as noise, and the fix was not more runs — it was a
+  different statistic.** Three runs an arm was already the discipline; what was missing
+  was noticing that the distribution is quantised by a pacing floor, so a mean cannot see
+  a change that moves frames *onto* the floor. The pinned share moved 10% -> 97% where the
+  mean moved 1.7%. When a metric barely moves but the mechanism says it should, suspect
+  the statistic before suspecting the mechanism.
+* **Two of this part's four gotchas are about the instrument rather than the game.** That
+  ratio has been stable for several parts now and is worth taking seriously when planning:
+  budget for re-reading what a column contains, not just for reading what it says.
+
