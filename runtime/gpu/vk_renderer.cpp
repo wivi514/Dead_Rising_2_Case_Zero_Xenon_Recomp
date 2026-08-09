@@ -341,6 +341,10 @@ struct StreamCensus
     // which is exactly the traffic a persistent cache would serve stale.
     uint64_t prevFrameSameContent = 0;
     uint64_t prevFrameSameBytes = 0;
+    // Of the streams the full hash says DID change, the ones the cross-frame store served
+    // from its own copy anyway — i.e. the ones its bounded-cost guard missed. This is the
+    // correctness measurement for the whole persistent cache and it must read zero.
+    uint64_t guardMissed = 0;
     // Copied bytes and misses split by what the stream IS: [0] declared vertex binding,
     // [1] index buffer, [2] shader-side dependent fetch.
     uint64_t kindBytes[3] = { 0, 0, 0 };
@@ -400,6 +404,64 @@ uint64_t StreamHash(const uint8_t* p, size_t bytes, uint64_t salt)
     uint64_t h = 1469598103934665603ull ^ salt;
     for (size_t i = 0; i < bytes; ++i)
         h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+// THE GUARD: a bounded-cost fingerprint of a stream's guest bytes, and the thing that
+// makes a cross-frame cache a cache rather than an assumption.
+//
+// The problem it solves is measured, not hypothetical. 30 distinct streams a run really
+// are rewritten in place by the guest at an address a previous frame already cached, and
+// serving the old copy draws the wrong mesh. Detecting that by hashing the whole stream
+// costs about what the copy costs, which would give the saving straight back.
+//
+// So the cost is capped at `kGuardBytes` regardless of stream size:
+//
+//   * a stream of `kGuardBytes` or fewer is hashed IN FULL, so the check is exact for it;
+//   * a larger one is hashed at eight evenly spread blocks, always including the first
+//     and the last, so a rewrite has to miss all eight windows to go unnoticed.
+//
+// The threshold is not arbitrary. Every rewritten stream this title has ever been seen
+// to produce is EXACTLY 80 bytes (30 of them, in two narrow guest ranges, all declared
+// vertex bindings — see the census's REWRITTEN IN PLACE line), so 512 puts the entire
+// observed population on the exact branch with a 6x margin. But "we have never seen a
+// big one change" is a zero, and a zero is a detection failure until something could
+// have detected it (gotcha 3) — hence the sampled branch rather than a size cutoff that
+// simply declines to check. `CZ_VK_STREAM_CENSUS=2` measures what the sampling misses:
+// it computes the FULL hash as well and counts every change the guard did not catch.
+//
+// Cost in a crowd frame: ~2,000 first-touch streams x <=512 B = under 1 MB, against the
+// 61-77 MB of copying it is there to avoid.
+constexpr size_t kGuardBytes = 512;
+constexpr size_t kGuardBlocks = 8;
+
+uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
+{
+    uint64_t h = 1469598103934665603ull;
+    // The size is folded in first. Without it a stream that shrinks to a prefix of
+    // itself would hash the same, and size is part of the key only for the streams the
+    // key came from — a re-copy into the same slot keeps the slot's size.
+    h = (h ^ bytes) * 1099511628211ull;
+    if (bytes <= kGuardBytes)
+    {
+        for (size_t i = 0; i < bytes; ++i)
+            h = (h ^ p[i]) * 1099511628211ull;
+        if (readOut)
+            *readOut += bytes;
+        return h;
+    }
+    const size_t block = kGuardBytes / kGuardBlocks;
+    // Eight starts spread over [0, bytes - block], the first exactly at 0 and the last
+    // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive.
+    const size_t span = bytes - block;
+    for (size_t b = 0; b < kGuardBlocks; ++b)
+    {
+        const size_t off = (span * b) / (kGuardBlocks - 1);
+        for (size_t i = 0; i < block; ++i)
+            h = (h ^ p[off + i]) * 1099511628211ull;
+    }
+    if (readOut)
+        *readOut += kGuardBytes;
     return h;
 }
 
@@ -746,6 +808,21 @@ struct Buffer
     VkDeviceSize size = 0;
 };
 
+// Where UploadStream put a stream's bytes. Two buffers are now possible — the per-frame
+// arena and the cross-frame store — and every consumer needs the handle, the device
+// address and the host pointer, so returning a bare offset no longer says enough.
+// `buf == nullptr` is the failure return that `VkDeviceSize(-1)` used to be.
+struct StreamLoc
+{
+    Buffer* buf = nullptr;
+    VkDeviceSize at = 0;
+    bool ok() const { return buf != nullptr; }
+    VkBuffer handle() const { return buf->buffer; }
+    uint8_t* bytes() const { return buf->mapped + at; }
+    VkDeviceAddress address() const { return buf->address + at; }
+    VkDeviceSize capacity() const { return buf->size; }
+};
+
 struct Image
 {
     VkImage image = VK_NULL_HANDLE;
@@ -880,6 +957,55 @@ struct Renderer
     // boundary, which is the only place the old buffer is provably not in use.
     VkDeviceSize arenaWant = 0;
 
+    // --- the CROSS-FRAME stream store -------------------------------------------------
+    //
+    // A SECOND buffer, deliberately not a reserved region of the arena. The arena is a
+    // bump allocator reset at every swap and its exhaustion path is load-bearing — it is
+    // what turned a too-small arena into six parts of "view-dependent whole-frame black"
+    // (§6ap) — so carving a persistent region out of the bottom of it would put a new
+    // moving floor under that machinery and under `GrowArenaIfNeeded`'s buffer swap. A
+    // separate buffer leaves every line of that alone, at the cost of `UploadStream`
+    // having to say WHICH buffer it put the bytes in. That is `StreamLoc`.
+    //
+    // Why this exists at all: 94% of stream lookups already hit within a frame, and the
+    // ~2,000 that miss still copy 61-77 MB — 94-97% of it byte-identical to what the
+    // previous frame copied to the same guest address (§6at). The cache was doing its job
+    // and being thrown away at the frame boundary.
+    Buffer persist;
+    VkDeviceSize persistCursor = 0;
+    // Raised when a persistent allocation did not fit; acted on at the frame boundary,
+    // which is the only place the buffer is provably not being read by the GPU.
+    VkDeviceSize persistWant = 0;
+    struct PersistEntry
+    {
+        VkDeviceSize at = 0;
+        uint64_t guard = 0;      // StreamGuard over the guest bytes when it was copied
+        uint64_t lastFrame = 0;  // for the age report; not an eviction policy yet
+        uint32_t bytes = 0;
+    };
+    std::unordered_map<uint64_t, PersistEntry> persistCache;
+    // Counted, not sampled, because a cache that silently serves stale data looks exactly
+    // like a rendering bug twenty frames later and this project has spent whole parts
+    // chasing those. Plain adds on a hot struct — never Count(), which is a
+    // std::map<std::string> lookup and would cost more than the copy it is measuring
+    // (gotcha 230).
+    struct PersistStats
+    {
+        uint64_t hits = 0;          // served across the frame boundary: bytes NOT copied
+        uint64_t hitBytes = 0;
+        uint64_t fills = 0;         // copied into the store for the first time
+        uint64_t fillBytes = 0;
+        uint64_t stale = 0;         // the guard caught a rewrite and we re-copied
+        uint64_t staleBytes = 0;
+        uint64_t overflow = 0;      // did not fit; fell back to the per-frame arena
+        uint64_t flushes = 0;       // whole store dropped at a frame boundary
+        uint64_t guardBytes = 0;    // what the guard itself read, i.e. its own cost
+    } persistStats;
+    // ON by default, with `CZ_VK_NO_PERSIST_STREAMS=1` as the control arm — the same
+    // shape as CZ_VK_NO_ARENA_GROWTH and CZ_VK_NO_SUBMIT, so one binary is both arms of
+    // its own A/B and the old renderer stays reachable for as long as it is useful.
+    bool persistOn = true;
+
     Buffer staging;
     VkDeviceSize stagingCursor = 0;
 
@@ -917,8 +1043,10 @@ struct Renderer
         // counted rather than counted wrongly.
         static constexpr uint32_t kMaxTrackedBindings = 16;
         VkDeviceSize vertexOffset[kMaxTrackedBindings]{};
+        VkBuffer vertexBuffer[kMaxTrackedBindings]{};
         bool haveVertex[kMaxTrackedBindings]{};
         VkDeviceSize indexOffset = 0;
+        VkBuffer indexBuffer = VK_NULL_HANDLE;
         VkIndexType indexType = VK_INDEX_TYPE_MAX_ENUM;
         bool haveIndex = false;
     } bound;
@@ -963,9 +1091,12 @@ struct Renderer
     std::unordered_map<uint32_t, Snapshot> snapshots;
     uint32_t nextTextureSlot = 1; // slot 0 is the dummy
 
-    // Per-frame vertex/index stream cache: one guest buffer copied once per frame
-    // however many draws read it.
-    std::unordered_map<uint64_t, VkDeviceSize> streamCache;
+    // Per-frame vertex/index stream cache: one guest buffer resolved once per frame
+    // however many draws read it. It records WHERE the bytes are, which since the
+    // cross-frame store exists is either buffer — a stream served across the frame
+    // boundary is registered here too, so the second and subsequent draws of that frame
+    // do not even pay its guard.
+    std::unordered_map<uint64_t, StreamLoc> streamCache;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -1233,6 +1364,23 @@ VkDeviceSize ArenaAlloc(VkDeviceSize bytes, VkDeviceSize align = 256)
     }
     R->arenaCursor = at + bytes;
     R->arenaHighWater = std::max(R->arenaHighWater, R->arenaCursor);
+    return at;
+}
+
+// --- the cross-frame stream store ------------------------------------------------------
+// A bump allocator too, but one that is NOT reset at the swap — that is the whole point.
+// It has no exhaustion-skips-the-draw path, because running out here is not a failure:
+// the stream falls back to the per-frame arena and renders exactly as it did before this
+// store existed. Only the saving is lost, and the counter says so.
+VkDeviceSize PersistAlloc(VkDeviceSize bytes, VkDeviceSize align = 16)
+{
+    const VkDeviceSize at = (R->persistCursor + align - 1) & ~(align - 1);
+    if (at + bytes > R->persist.size)
+    {
+        R->persistWant = std::max(R->persistWant, R->persist.size * 2);
+        return VkDeviceSize(-1);
+    }
+    R->persistCursor = at + bytes;
     return at;
 }
 
@@ -2856,6 +3004,69 @@ void GrowArenaIfNeeded()
     }
 }
 
+// The cross-frame store's frame-boundary maintenance: grow it, or drop it, or neither.
+// Called from exactly where `GrowArenaIfNeeded` is — the end of `DoSwapImpl`, after the
+// fence has been WAITED on, which is the only moment the GPU is provably not reading
+// anything in here. This is load-bearing: every offset the store hands out is recorded
+// into a command buffer, so reusing its memory a moment early is a wrong mesh, not a
+// crash, and would surface frames later as a rendering bug.
+//
+// EVICTION IS A WHOLE DROP, deliberately, and it is a v1 decision with a counter on it.
+// The alternative — an LRU with compaction — has to MOVE live streams to close the gaps,
+// which is copying, which is the cost this store exists to remove. A drop instead pays
+// exactly one frame at the pre-store cost and then runs warm again. If `flushes` turns
+// out to be more than a handful per area transition, that is the evidence for building
+// the harder thing; until then it is not.
+void PersistMaintenance()
+{
+    if (!R->persistOn || !R->persistWant)
+        return;
+    constexpr VkDeviceSize kPersistCeiling = 1024ull << 20;
+    const VkDeviceSize want = std::min(R->persistWant, kPersistCeiling);
+    R->persistWant = 0;
+    if (want > R->persist.size)
+    {
+        vkDeviceWaitIdle(R->device);
+        const Buffer old = R->persist;
+        Buffer grown{};
+        if (CreateBuffer(grown, want,
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         /*deviceAddress=*/true))
+        {
+            R->persist = grown;
+            vkDestroyBuffer(R->device, old.buffer, nullptr);
+            vkFreeMemory(R->device, old.memory, nullptr);
+            fprintf(stderr, "[vk] stream store grown to %llu MB\n",
+                    (unsigned long long)(want >> 20));
+        }
+        else
+        {
+            // Not fatal and not even degraded past the old renderer: without a store
+            // every stream takes the per-frame path, which is what this port did for
+            // twenty-one parts.
+            fprintf(stderr, "[vk] stream store could NOT be grown to %llu MB — streams "
+                            "fall back to the per-frame arena\n",
+                    (unsigned long long)(want >> 20));
+        }
+        // The contents are dropped rather than copied across. Copying up to a gigabyte to
+        // preserve a cache that refills itself in one frame would be the same mistake in
+        // a different place.
+    }
+    else
+    {
+        fprintf(stderr, "[vk] stream store is at its %llu MB ceiling and a frame still "
+                        "overran it — dropping and refilling\n",
+                (unsigned long long)(kPersistCeiling >> 20));
+    }
+    R->persistCache.clear();
+    R->persistCursor = 0;
+    ++R->persistStats.flushes;
+}
+
 void BeginFrame()
 {
     if (R->recording)
@@ -3011,18 +3222,27 @@ void SubmitAndWait()
 // ===================================================================================
 // The draw
 // ===================================================================================
-// Copy a guest vertex/index stream into the frame arena once, dword-swapped, and
-// return its arena offset. Cached per frame by (address, size, endian): the frontend
-// draws the same buffer dozens of times a frame and copying it each time would be the
-// dominant cost of the renderer.
+// Make a guest vertex/index stream available to the GPU, dword-swapped, and say where it
+// ended up. Two caches, in order:
+//
+//   1. `streamCache`, per frame, by (address, size, endian). The frontend draws the same
+//      buffer dozens of times a frame — 94% of lookups are this — and copying it each
+//      time would be the dominant cost of the renderer.
+//   2. `persistCache`, ACROSS frames, same key plus a content guard. The remaining 6%
+//      still copied 61-77 MB a frame, 94-97% of it byte-identical to what the previous
+//      frame put at the same address (§6at). This is that measurement acted on.
+//
+// A cross-frame hit costs one `StreamGuard` of at most 512 bytes and no copy. A miss
+// costs the guard plus exactly what it always cost.
+//
 // `kind` is census-only: 0 = a declared vertex binding, 1 = an index buffer, 2 = a
 // shader-side dependent fetch (XeVfetchDep). It exists because the three have different
 // answers to "could this be cached across frames" — an index buffer for static geometry
 // is a different proposition from a stream a shader raw-loads — and a single total
 // cannot be read that way. A constant at every call site, so it costs nothing when the
 // census is off.
-VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian,
-                          int kind)
+StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endian,
+                       int kind)
 {
     // The key must be an IDENTITY, not a hash. The first version was
     // `(uint64_t(va) << 24) ^ (bytes << 2) ^ endian`, and those fields OVERLAP: a
@@ -3044,36 +3264,117 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
         return it->second;
     }
 
-    const VkDeviceSize at = ArenaAlloc(bytes, 16);
-    if (at == VkDeviceSize(-1))
-        return at;
+    // Below here runs at most ONCE per (key, frame) — ~2,000 times in a crowd frame
+    // against ~33,000 lookups. It is the only place a guard hash or a copy can happen,
+    // which is what keeps both affordable.
+    const uint8_t* const src = base + va;
+    StreamLoc loc;
+    bool copied = true;
+
+    if (R->persistOn)
     {
-        ProfScope _p(&g_prof.streams);
-        CopySwapped(R->arena.mapped + at, base + va, size_t(bytes), endian);
+        uint64_t guardRead = 0;
+        const uint64_t guard = StreamGuard(src, size_t(bytes), &guardRead);
+        R->persistStats.guardBytes += guardRead;
+        auto pit = R->persistCache.find(key);
+        if (pit != R->persistCache.end())
+        {
+            Renderer::PersistEntry& e = pit->second;
+            e.lastFrame = R->frame;
+            if (e.guard == guard)
+            {
+                // The whole point: the bytes are already in device memory, dword-swapped,
+                // from some earlier frame. Nothing is copied.
+                ++R->persistStats.hits;
+                R->persistStats.hitBytes += bytes;
+                copied = false;
+            }
+            else
+            {
+                // The guard caught the guest rewriting this buffer in place. The size is
+                // part of the key, so the existing slot is exactly the right size and the
+                // re-copy needs no allocation.
+                {
+                    ProfScope _p(&g_prof.streams);
+                    CopySwapped(R->persist.mapped + e.at, src, size_t(bytes), endian);
+                }
+                e.guard = guard;
+                ++R->persistStats.stale;
+                R->persistStats.staleBytes += bytes;
+            }
+            loc = StreamLoc{ &R->persist, e.at };
+        }
+        else
+        {
+            const VkDeviceSize at = PersistAlloc(bytes);
+            if (at != VkDeviceSize(-1))
+            {
+                {
+                    ProfScope _p(&g_prof.streams);
+                    CopySwapped(R->persist.mapped + at, src, size_t(bytes), endian);
+                }
+                Renderer::PersistEntry e;
+                e.at = at;
+                e.guard = guard;
+                e.lastFrame = R->frame;
+                e.bytes = uint32_t(bytes);
+                R->persistCache.emplace(key, e);
+                ++R->persistStats.fills;
+                R->persistStats.fillBytes += bytes;
+                loc = StreamLoc{ &R->persist, at };
+            }
+            else
+            {
+                // The store is full. This stream takes the per-frame path below, exactly
+                // as it did before the store existed, and the frame boundary decides
+                // whether to grow or to drop the store.
+                ++R->persistStats.overflow;
+            }
+        }
     }
-    R->streamCache.emplace(key, at);
-    // The census, entirely on the MISS path — a miss already costs a copy, so the
-    // instrument is small against what it is measuring, and the hit path above pays two
-    // increments. Both are behind one already-hot int, which is what part 20's removal of
-    // the per-draw counters was about (gotcha 230).
+
+    if (!loc.ok())
+    {
+        const VkDeviceSize at = ArenaAlloc(bytes, 16);
+        if (at == VkDeviceSize(-1))
+            return StreamLoc{};
+        {
+            ProfScope _p(&g_prof.streams);
+            CopySwapped(R->arena.mapped + at, src, size_t(bytes), endian);
+        }
+        loc = StreamLoc{ &R->arena, at };
+    }
+    R->streamCache.emplace(key, loc);
+
+    // The census, entirely on the first-touch path — which already costs a guard and
+    // usually a copy, so the instrument is small against what it is measuring, and the
+    // hit path above pays two increments. Both are behind one already-hot int, which is
+    // what part 20's removal of the per-draw counters was about (gotcha 230).
     if (g_streamCensus)
     {
         ++g_streamCensus_c.misses;
-        g_streamCensus_c.bytesCopied += bytes;
         const int k = (kind >= 0 && kind < 3) ? kind : 0;
         ++g_streamCensus_c.kindMisses[k];
-        g_streamCensus_c.kindBytes[k] += bytes;
+        // `bytesCopied` means BYTES ACTUALLY COPIED, so that the same instrument reads
+        // the cost in both arms rather than reading the workload. With the store on and
+        // warm this collapses towards zero, and that collapse IS the measurement.
+        if (copied)
+        {
+            g_streamCensus_c.bytesCopied += bytes;
+            g_streamCensus_c.kindBytes[k] += bytes;
+        }
         auto pit = g_prevStreamKeys.find(key);
         if (pit != g_prevStreamKeys.end())
         {
             ++g_streamCensus_c.prevFrameKeyHits;
             g_streamCensus_c.prevFrameKeyBytes += bytes;
-            g_streamCensus_c.kindRepeatBytes[k] += bytes;
+            if (copied)
+                g_streamCensus_c.kindRepeatBytes[k] += bytes;
         }
         if (g_streamCensus >= 2)
         {
             const uint64_t h =
-                StreamHash(base + va, size_t(bytes), g_streamPoison ? R->frame : 0);
+                StreamHash(src, size_t(bytes), g_streamPoison ? R->frame : 0);
             g_streamHashes[key] = h;
             if (pit != g_prevStreamKeys.end())
             {
@@ -3084,7 +3385,7 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
                 }
                 else
                 {
-                    // The identity of the rewritten stream, which is what chooses the
+                    // The identity of the rewritten stream, which is what chose the
                     // invalidation mechanism. Note this branch is ALSO the whole
                     // population when the poison arm is on, which is the point of that
                     // arm — under poison this map fills with every repeated key and the
@@ -3098,11 +3399,21 @@ VkDeviceSize UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t e
                     }
                     ++c.times;
                     c.lastFrame = R->frame;
+                    // THE GUARD'S POWER, MEASURED RATHER THAN ASSUMED. The full hash says
+                    // this stream's bytes changed since last frame. If the store served
+                    // it as a hit this frame, the sampled guard did NOT notice — which is
+                    // a stale buffer handed to a draw, the exact defect the guard exists
+                    // to prevent. It must read zero, and unlike the content line it is
+                    // capable of reading otherwise: `CZ_VK_STREAM_CENSUS_POISON=1` makes
+                    // every repeat land here while the guard (unsalted) still says
+                    // unchanged, so under poison this counter equals the repeat count.
+                    if (!copied)
+                        ++g_streamCensus_c.guardMissed;
                 }
             }
         }
     }
-    return at;
+    return loc;
 }
 
 // Read one index from a guest index buffer, honouring the buffer's endian code, or
@@ -3143,18 +3454,20 @@ inline uint32_t ReadIndex(const uint8_t* p, uint32_t i, bool index32, uint32_t e
 // Build a FOUR-vertex stream for one rectangle-list draw: the three real corners
 // followed by the one the hardware synthesises, `r3 = r0 + r2 - r1`.
 //
-// `at` is where the guest stream already sits in the arena (dword-swapped), `stride` is
-// the fetch's stride in dwords, and `corner` the three vertex indices this draw uses.
-// Returns the arena offset of the new four-record stream, which is bound in place of
-// the guest's — so the same attribute offsets still apply.
+// `src` points at the guest stream's already dword-swapped bytes — which since the
+// cross-frame store exists may be in either buffer, hence a pointer rather than an
+// offset. `stride` is the fetch's stride in dwords and `corner` the three vertex indices
+// this draw uses. The OUTPUT is always in the per-frame arena, because it depends on this
+// draw's corner indices and so is not shared with any other draw.
 //
 // The extrapolation is done on FLOAT dwords, which is exact for a 32-bit float
 // attribute and is what hardware does to every attribute of a rect. A packed format
 // would need its own arithmetic; that case copies r0 and counts itself, because a
 // wrong fourth corner that says nothing is the failure mode this whole function exists
 // to remove.
-VkDeviceSize SynthRectStream(VkDeviceSize at, uint64_t streamBytes, uint32_t strideDwords,
-                             const uint32_t corner[3], uint32_t format)
+VkDeviceSize SynthRectStream(const uint8_t* src, uint64_t streamBytes,
+                             uint32_t strideDwords, const uint32_t corner[3],
+                             uint32_t format)
 {
     const uint32_t stride = strideDwords * 4;
     for (uint32_t k = 0; k < 3; k++)
@@ -3169,7 +3482,6 @@ VkDeviceSize SynthRectStream(VkDeviceSize at, uint64_t streamBytes, uint32_t str
     if (out == VkDeviceSize(-1))
         return out;
     uint8_t* dst = R->arena.mapped + out;
-    const uint8_t* src = R->arena.mapped + at;
     for (uint32_t k = 0; k < 3; k++)
         memcpy(dst + uint64_t(k) * stride, src + uint64_t(corner[k]) * stride, stride);
     // 57 = 32_32_32_FLOAT, 38 = 32_32_32_32_FLOAT, 37 = 32_32_FLOAT, 36 = 32_FLOAT.
@@ -3267,26 +3579,34 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
 
 // Count a vertex or index bind against what the state cache WOULD have skipped.
 // Counting only: the bind is still issued by the caller. See Renderer::BindSkips.
-void NoteVertexBind(uint32_t binding, VkDeviceSize offset)
+// The BUFFER is part of the comparison, not just the offset. Since the cross-frame store
+// exists there are two buffers a stream can be in, and offset 0 of one is a different
+// bind from offset 0 of the other — without this the repeat counters would over-report
+// exactly at the boundary between them, which is a measurement quietly telling a lie
+// about the change that introduced it.
+void NoteVertexBind(uint32_t binding, VkBuffer buffer, VkDeviceSize offset)
 {
     ++R->skips.vertexBinds;
     if (binding >= Renderer::BoundState::kMaxTrackedBindings)
         return;
-    if (R->bound.haveVertex[binding] && R->bound.vertexOffset[binding] == offset)
+    if (R->bound.haveVertex[binding] && R->bound.vertexOffset[binding] == offset &&
+        R->bound.vertexBuffer[binding] == buffer)
         ++R->skips.vertexBindRepeats;
     R->bound.haveVertex[binding] = true;
     R->bound.vertexOffset[binding] = offset;
+    R->bound.vertexBuffer[binding] = buffer;
 }
 
-void NoteIndexBind(VkDeviceSize offset, VkIndexType type)
+void NoteIndexBind(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 {
     ++R->skips.indexBinds;
     if (R->bound.haveIndex && R->bound.indexOffset == offset &&
-        R->bound.indexType == type)
+        R->bound.indexType == type && R->bound.indexBuffer == buffer)
         ++R->skips.indexBindRepeats;
     R->bound.haveIndex = true;
     R->bound.indexOffset = offset;
     R->bound.indexType = type;
+    R->bound.indexBuffer = buffer;
 }
 
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
@@ -4134,12 +4454,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Count("draw: dependent fetch stream outside the physical arena");
             continue;
         }
-        const VkDeviceSize at = UploadStream(base, sva, bytes, vf.endian, 2);
-        if (at == VkDeviceSize(-1))
+        const StreamLoc loc = UploadStream(base, sva, bytes, vf.endian, 2);
+        if (!loc.ok())
             continue;
         // {deviceAddress.lo, deviceAddress.hi, sizeDwords, 0} — the layout the
-        // generated XeVfetchDep reads, transcribed from shader_common.h.
-        const uint64_t addr = uint64_t(R->arena.address) + at;
+        // generated XeVfetchDep reads, transcribed from shader_common.h. A raw device
+        // address, so which buffer the stream landed in is invisible to the shader.
+        const uint64_t addr = loc.address();
         uint32_t* entry =
             reinterpret_cast<uint32_t*>(shared + kSharedVfetchTable + a.fetchSlot * 16);
         entry[0] = uint32_t(addr);
@@ -4240,36 +4561,39 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
         }
-        const VkDeviceSize at = UploadStream(base, va, bytes, vf.endian, 0);
-        if (at == VkDeviceSize(-1))
+        const StreamLoc loc = UploadStream(base, va, bytes, vf.endian, 0);
+        if (!loc.ok())
         {
             streamsOk = false;
             break;
         }
         if (rectSynth && a.strideDwords)
         {
+            // The synthesised four-corner stream is always in the per-frame arena, even
+            // when its source is in the cross-frame store — it is built from THIS draw's
+            // corner indices, so it is not shared and must not be persisted.
             const VkDeviceSize four =
-                SynthRectStream(at, bytes, a.strideDwords, rectCorner, a.format);
+                SynthRectStream(loc.bytes(), bytes, a.strideDwords, rectCorner, a.format);
             if (four == VkDeviceSize(-1))
             {
                 streamsOk = false;
                 break;
             }
             const VkDeviceSize offset = four + uint64_t(a.offsetDwords) * 4;
-            NoteVertexBind(binding, offset);
+            NoteVertexBind(binding, R->arena.buffer, offset);
             vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
             ++binding;
             continue;
         }
-        const VkDeviceSize offset = at + uint64_t(a.offsetDwords) * 4;
-        if (offset >= R->arena.size)
+        const VkDeviceSize offset = loc.at + uint64_t(a.offsetDwords) * 4;
+        if (offset >= loc.capacity())
         {
             Count("draw: vertex element offset past the stream");
             streamsOk = false;
             break;
         }
-        NoteVertexBind(binding, offset);
-        vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
+        NoteVertexBind(binding, loc.handle(), offset);
+        vkCmdBindVertexBuffers(R->cmd, binding, 1, &loc.buf->buffer, &offset);
         ++binding;
     }
     if (!streamsOk)
@@ -4563,7 +4887,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkDeviceSize at = ExpandIndices(base, draw, expand, expandedCount);
         if (at == VkDeviceSize(-1))
             return;
-        NoteIndexBind(at, VK_INDEX_TYPE_UINT32);
+        NoteIndexBind(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
         vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
         // rectSynth already folded the base vertex into its three corners, and its
         // expanded indices name a private four-vertex stream — so offsetting again
@@ -4602,12 +4926,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
             ++*slots[draw.indexEndian & 3];
         }
-        const VkDeviceSize at = UploadStream(base, draw.indexVa, bytes, endian, 1);
-        if (at == VkDeviceSize(-1))
+        const StreamLoc loc = UploadStream(base, draw.indexVa, bytes, endian, 1);
+        if (!loc.ok())
             return;
-        NoteIndexBind(at, draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
-        vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at,
-                             draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16);
+        const VkIndexType itype =
+            draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+        NoteIndexBind(loc.handle(), loc.at, itype);
+        vkCmdBindIndexBuffer(R->cmd, loc.handle(), loc.at, itype);
         vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
         COUNT("draw: indexed");
     }
@@ -5096,12 +5421,28 @@ bool InitCommon()
     // start, which is how the 128-vs-512 A/B that identified the black frames was run.
     static const uint64_t arenaMb =
         Env("CZ_VK_ARENA_MB") ? strtoull(Env("CZ_VK_ARENA_MB"), nullptr, 10) : 128;
+    // The CROSS-FRAME stream store, same usage and memory type as the arena because the
+    // GPU cannot tell them apart — the only difference is that this one is not reset at
+    // the swap. It grows on the same evidence-not-guesswork principle: 128 MB is where the
+    // arena starts too, and `PersistMaintenance` doubles it when a frame overruns it.
+    // CZ_VK_PERSIST_MB=N sets the start.
+    static const uint64_t persistMb =
+        Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 128;
+    R->persistOn = !EnvOn("CZ_VK_NO_PERSIST_STREAMS");
     if (!CreateBuffer(R->arena, arenaMb << 20,
                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true) ||
+        (R->persistOn &&
+         !CreateBuffer(R->persist, persistMb << 20,
+                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                       /*deviceAddress=*/true)) ||
         !CreateBuffer(R->staging, 64ull << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -5334,6 +5675,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // destroy is provably not in use. See GrowArenaIfNeeded for why the old placement was
     // a measurement defect: it charged a device-wait and an allocation to `other`.
     GrowArenaIfNeeded();
+    // Same site and the same reason, and for the store the reason is stronger: its
+    // offsets are recorded into command buffers, so reusing its memory before the fence
+    // has been waited on hands an in-flight draw somebody else's vertices.
+    PersistMaintenance();
 
     // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture
     // DIED on, triggered by the picture dying.
@@ -5501,6 +5846,20 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             : 64;
     if (dumpDir && (R->frame % dumpEvery) == 0)
     {
+        // Create the directory, and SAY SO if the frames cannot be written. This used to
+        // be a bare fopen whose failure was silent, so a run pointed at a directory that
+        // did not exist produced an empty result that looked exactly like a run whose
+        // renderer drew nothing — and the picture check is the one gate in this project
+        // that has no log-diff substitute. An instrument that can produce nothing without
+        // complaining is not an instrument (gotchas 25, 151).
+        static bool dirReady = false;
+        static bool complained = false;
+        if (!dirReady)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(dumpDir, ec);
+            dirReady = true;
+        }
         char path[512];
         snprintf(path, sizeof path, "%s/frame_%06llu.ppm", dumpDir,
                  (unsigned long long)R->frame);
@@ -5510,6 +5869,13 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             for (size_t i = 0; i < bytes; i += 4)
                 fwrite(&R->presentPixels[i], 1, 3, f);
             fclose(f);
+        }
+        else if (!complained)
+        {
+            complained = true;
+            fprintf(stderr, "[vk] CZ_VK_FRAME_DUMP cannot write %s — no frames will be "
+                            "dumped this run\n",
+                    path);
         }
     }
 
@@ -5933,6 +6299,34 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // counted over five seconds cannot be divided into each other. The divisor is
             // PRESENTED frames, like every other rate on these lines, not frames that
             // recorded a draw; a frame with no draws never calls BeginFrame at all.
+            // The cross-frame store, ALWAYS — not behind the census, because this is the
+            // line that says whether the thing is working and whether it is serving stale
+            // data, and a counter nobody looks at by default is a counter that reports a
+            // silent regression to nobody (gotcha 151). Rates are per PRESENTED frame,
+            // like everything else on these lines.
+            if (R->persistOn)
+            {
+                const Renderer::PersistStats& p = R->persistStats;
+                const uint64_t touched = p.hits + p.fills + p.stale + p.overflow;
+                fprintf(stderr,
+                        "[vkprof] store %llu first-touch/frame: %.1f%% served across the "
+                        "frame boundary, %.2f MB/frame NOT copied | fills %llu stale %llu "
+                        "overflow %llu | guard read %.2f MB/frame\n",
+                        (unsigned long long)(frames ? touched / frames : 0),
+                        touched ? 100.0 * double(p.hits) / double(touched) : 0.0,
+                        frames ? double(p.hitBytes) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)(frames ? p.fills / frames : 0),
+                        (unsigned long long)p.stale, (unsigned long long)p.overflow,
+                        frames ? double(p.guardBytes) / double(frames) / 1048576.0 : 0.0);
+                fprintf(stderr,
+                        "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
+                        " this window\n",
+                        R->persistCache.size(),
+                        (unsigned long long)(R->persistCursor >> 20),
+                        (unsigned long long)(R->persist.size >> 20),
+                        (unsigned long long)p.flushes);
+                R->persistStats = Renderer::PersistStats{};
+            }
             if (g_streamCensus)
             {
                 const StreamCensus& s = g_streamCensus_c;
@@ -5983,6 +6377,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             frames ? double(s.prevFrameSameBytes) / double(frames) /
                                          1048576.0
                                    : 0.0);
+                // THE GUARD'S POWER. The persistent store decides staleness with a
+                // bounded-cost fingerprint (at most 512 bytes, exact below that); this
+                // line is the full hash checking its work. Anything but zero is a stale
+                // vertex buffer handed to a draw, and this is the ONLY thing in the
+                // runtime that can see it. It reads zero when the store is off too — for
+                // the trivial reason that nothing was served across a frame — so read it
+                // alongside the `store` line above, never on its own.
+                if (g_streamCensus >= 2)
+                    fprintf(stderr,
+                            "[vkprof] streams GUARD MISSED: %llu of %llu real content "
+                            "changes served STALE by the cross-frame store%s\n",
+                            (unsigned long long)s.guardMissed,
+                            (unsigned long long)(s.prevFrameKeyHits -
+                                                 s.prevFrameSameContent),
+                            g_streamPoison
+                                ? "  [POISON ON — the full hash calls every repeat a "
+                                  "change while the guard correctly does not, so this "
+                                  "SHOULD equal the repeat count]"
+                                : "");
                 // ...and WHICH ones, because that is what picks the invalidation
                 // mechanism. Cumulative over the run, so this list is the answer to "is
                 // the rewritten set a recurring few, and are they contiguous in guest
