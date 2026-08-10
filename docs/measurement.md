@@ -96,8 +96,33 @@ awk 'NR>1 {print $1, $4, $5}' /tmp/armA.txt   # frame, drawFingerprint, cameraFi
 ```
 **Quote how many frames survived that filter.** On this title's synthetic-input recipes it
 is 13-44, and every one of them is under 1,800 draws — so a filter that is honest about
-drift currently discards the entire outdoor era, and no headless picture claim about
-reflections, shadows or anything else outdoors is possible until that is fixed.
+drift discards the entire outdoor era.
+
+**PART 26 SETTLED WHY, AND IT IS NOT THE RECIPE.** The DebugJump route lands in a crowd at
+7,300 draws and spends 93% of its frames there, so it was built to fix exactly this. Run
+the filter on two runs of ONE configuration — the null, which is the only way to tell "the
+arms disagree" from "the filter cannot be satisfied":
+```
+python3 tools/frame_determinism.py /tmp/det1.txt /tmp/det2.txt
+```
+It reports **422 of 13,056 frames matched, none above 141 draws, and 0 of the 12,174
+outdoor frames matched** — by index or by content. A crowd of animated actors never renders
+the same draw list twice, so exact equality selects for the frames where nothing is
+happening (gotcha 254; `frame_compare.py`'s docstring records the same failure from the
+other end, where 257 "perfectly aligned" frames were 257 copies of an empty scene).
+
+**So outdoors, do not align — AGGREGATE, and take the noise floor from that same null
+pair.** Over the 12,000+ frames above 1,800 draws, two runs of one configuration give:
+
+| era median, frames >= 1,800 draws | run 1 | run 2 | null |
+|---|---|---|---|
+| mean luma | 56.693 | 57.229 | **0.94%** |
+| distinct colours | 101,128 | 100,364 | **0.76%** |
+| coverage % | 99.671 | 99.675 | 0.004% — saturated outdoors, useless |
+
+That is the outdoor instrument: quote an arm's era median as a multiple of that null, and
+say how many frames each median is over. Two runs give one null; three an arm is better,
+and the same rule as everywhere else applies — run the null in the same serial block.
 And how SHARP the frame is, which is the one thing no aggregate over pixel VALUES can
 report. A blur preserves coverage, mean luminance, distinct colours and the whole
 histogram exactly as a vertical flip does (gotcha 135), so `frame_compare.py` scored
