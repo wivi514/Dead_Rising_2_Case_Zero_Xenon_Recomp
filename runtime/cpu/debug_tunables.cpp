@@ -798,8 +798,96 @@ static void PumpAutoChuckFromEnvironment(PPCContext& ctx, uint8_t* base)
             DebugElapsedSeconds(), since);
 }
 
+// CZ_DEBUG_FLAGS=NAME[,NAME...] — set the title's own gameplay debug bools without the
+// menu, by the label the menu shows.
+//
+// The F4 menu can already toggle every one of these, and for a question you can answer in
+// one sitting that is fine. It is not fine for the thing the operator actually needs,
+// which is to STAND STILL in front of a defect and photograph it while a crowd tries to
+// eat them: `ZOMBIES IGNORE ALL HUMANS` and `CHUCK GOD MODE` are the difference between a
+// comparison and a fight, and `DISABLE TIME OF DAY` is the difference between two arms lit
+// the same way and two arms lit ten in-game minutes apart. The last one matters most and
+// is the least obvious: the sun moves during a session, so an A/B taken twenty minutes
+// apart has a lighting confound baked into it that no amount of standing in the same spot
+// removes (and part 26's outdoor era medians are a whole-frame luma statistic, which is
+// exactly what a moving sun perturbs).
+//
+// APPLIED BY THE PUMP, not once at startup, and re-asserted every time. Same reason
+// `CZ_AUTOCHUCK` is: the bytes live in the guest image but the game writes them itself —
+// a level load, a case transition or the title's own debug loader can clear them, and a
+// flag that silently stopped being set halfway through a run is indistinguishable from a
+// flag that never worked. The count of re-asserts is reported so a flag that is being
+// fought over is a NUMBER rather than a mystery (gotcha 151 — an arm with no counter
+// cannot be shown to have engaged).
+void PumpDebugFlagsFromEnvironment(uint8_t* base)
+{
+    static const char* spec = getenv("CZ_DEBUG_FLAGS");
+    if (!spec)
+        return;
+    // Resolved once: which table entries the operator named, and whether every name was
+    // understood. A typo must fail LOUDLY and list what is available, exactly as
+    // CZ_DEBUG_TUNABLES does — a name that silently does nothing is indistinguishable
+    // from a flag that does nothing (gotcha 5).
+    static std::vector<const CustomBool*> wanted = [] {
+        std::vector<const CustomBool*> out;
+        std::string s(spec);
+        for (size_t pos = 0; pos <= s.size();)
+        {
+            const size_t comma = s.find(',', pos);
+            std::string item =
+                s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            pos = (comma == std::string::npos) ? s.size() + 1 : comma + 1;
+            if (item.empty())
+                continue;
+            // Case- and separator-insensitive, because the labels are shouted with spaces
+            // and slashes and nobody should have to quote them exactly.
+            auto norm = [](std::string v) {
+                std::string o;
+                for (char c : v)
+                    if (isalnum(static_cast<unsigned char>(c)))
+                        o += char(toupper(static_cast<unsigned char>(c)));
+                return o;
+            };
+            const std::string want = norm(item);
+            const CustomBool* hit = nullptr;
+            for (const CustomBool& b : kCustomBools)
+                if (norm(b.label) == want)
+                    hit = &b;
+            if (hit)
+            {
+                out.push_back(hit);
+                fprintf(stderr, "[debug] CZ_DEBUG_FLAGS: '%s' @%08X will be held ON\n",
+                        hit->label, hit->address);
+            }
+            else
+            {
+                fprintf(stderr, "[debug] CZ_DEBUG_FLAGS: unknown flag '%s'. Known:\n",
+                        item.c_str());
+                for (const CustomBool& b : kCustomBools)
+                    fprintf(stderr, "[debug]     %s\n", b.label);
+            }
+        }
+        return out;
+    }();
+
+    static uint64_t reasserts = 0;
+    for (const CustomBool* b : wanted)
+        if (!PPC_LOAD_U8(b->address))
+        {
+            PPC_STORE_U8(b->address, 1);
+            // The FIRST set of each flag and then every thousandth, because a flag the
+            // game rewrites every frame would otherwise drown the log — and the total is
+            // printed either way, so "it was fought over" is still visible.
+            if (++reasserts <= std::size(kCustomBools) || (reasserts % 1000) == 0)
+                fprintf(stderr, "[debug] CZ_DEBUG_FLAGS: '%s' set ON (%llu asserts so "
+                                "far — anything above one means the title cleared it)\n",
+                        b->label, (unsigned long long)reasserts);
+        }
+}
+
 void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
 {
+    PumpDebugFlagsFromEnvironment(base);
     PumpAutoChuckFromEnvironment(ctx, base);
 }
 
