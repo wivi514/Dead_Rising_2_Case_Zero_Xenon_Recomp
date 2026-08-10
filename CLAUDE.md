@@ -421,10 +421,9 @@ CZ_GUEST_LOG=1     the engine's OWN debug printf (640 callers, gated off in a sh
                    build — raising those gates is open work, gotcha 215)
 CZ_SHADER_DUMP=dir put this on any run that might reach new ground, including an
                    operator run: a missing shader is one log line and a silent counter
-CZ_DEBUG_MENU=1    the title's OWN debug menu and level-jump screen, which the retail
-                   build still contains and merely switched off (gotcha 239). The flags
-                   provably flip; **no debug UI has been SEEN yet** (gotcha 240) and the
-                   open trigger is `open-items.md` item 1b — an operator test
+CZ_DEBUG_MENU=1    enables retained debug scaffolding; at the title menu press F2 to
+                   open the shipped, operator-confirmed DebugJump testing screen; F4
+                   opens the host-rendered Case Zero debug submenus (Left goes back)
 
 ```
 

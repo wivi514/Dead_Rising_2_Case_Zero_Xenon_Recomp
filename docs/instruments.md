@@ -841,27 +841,52 @@ prove. Both are free when off (one env-var read on a function that runs once per
 process, three hops off the XEX entry point) and neither has any per-frame component.
 
 ```
-CZ_DEBUG_MENU=1    the preset: enable_debug_jump_menu, enable_quickie_debug_menu,
-                   enable_one_button_debug_menu, display_fe_screen_info. Prints each
+CZ_DEBUG_MENU=1    debug preset: the 26-reader master, debug-jump leaf, and
+                   frontend-screen witness. At the title menu F2 requests the shipped
+                   DebugJump screen through the frontend's own captured transition
+                   manager. F4 opens the host-rendered Case Zero debug menu in the
+                   frontend or gameplay. Up/Down select, Enter or Right opens/toggles,
+                   and Left returns from a submenu. Categories expose player/weapons,
+                   zombies/AI, vehicles, world/rendering, UI/flow and AutoChuck; the
+                   engine's readable original nodes remain under their own submenu.
+                   Prints each
                    flag's before/after value and its confirmed reader count, so a
                    switch that is connected to nothing is visible as such
 CZ_DEBUG_TUNABLES=name[=0|1],...   any of the 21 curated tunables. An unknown name
                    prints the whole list and its per-entry notes rather than failing
                    silently, so `CZ_DEBUG_TUNABLES=?` is the way to see them
+CZ_ZOMBIE_CAPTURE=1 logs up to 512 genuine calls to the retail actor-manager submit
+                   routine: caller LR, guest thread, factory, source tag/line, result,
+                   and the first 96 descriptor bytes. Use while walking through a
+                   populated Case Zero exterior; it is read-only and is the evidence
+                   needed to implement a host spawner from the normal population path
+                   instead of the incomplete Quickie scaffolding
 ```
 
 **What is confirmed**: every flag reads 0 before the hook and 1 after, and the boot is
 unaffected (the same-binary control arm — no env var — differs only in rumble calls and
 lock counters, no errors either side).
 
-**What is NOT confirmed**: that any debug UI appears. The main menu is unchanged. The
-open trigger is read from the code as START-while-in-game when
-`enable_one_button_debug_menu` is set — `sub_82483378` is the pause-button check
-(`COMMAND_PAUSEMENU` 0x00 / `COMMAND_FRONTEND_PAUSEMENU` 0x10, with the 0x01/0x11
-variants under `debug_on_controller_2_only`) and `0x824A2244` calls it and then
-dispatches through a vtable — but two headless attempts to land an in-game START
-derailed, one to the main menu and one to the save-slot screen. That is code-reading,
-not evidence. `docs/open-items.md` carries it as an open item.
+**Confirmed positive**: DebugJump is visible and usable. The operator opened it with
+F2 at the title menu; `/tmp/dbgrun5.log` recorded manager `A33F4CC0` and DebugJump hash
+`ACC86853`. The separate in-game "Quickie Menu v0.21" renderer remains a confirmed
+negative. F4 therefore uses a host renderer over the genuine retained menu state.
+The Case Zero categories write the addresses resolved by this executable's own
+`sub_824A2470` tunable loader. They deliberately omit Fortune City, TIR, poker/casino,
+online, DLC and main-game boss controls.
+
+The original selector type at vtable `820701C4` is also host-rendered now: Left/Right
+cycles it and the selected engine name is displayed. Case Zero contains a 64-entry
+`NPC To Spawn` selector but no surviving consumer of that selection, so it is not
+misrepresented as a working spawner. Likewise the shipped XEX has no retained vehicle
+spawn command. The story bike is mission-owned; constructing a partial `cBike` would
+not be a safe substitute for the missing debug-build vehicle factory.
+
+Zombie spawning is also deliberately absent. Although the XEX retains the Quickie
+labels and apparent request-building path, operator runs `dbgrun20` through `dbgrun26`
+showed that neither direct native calls nor injecting the original X-button record
+produced an actor. One direct call also crashed through controller-thread TLS. Those
+labels are incomplete retail scaffolding, not a feature this overlay claims to restore.
 
 **Scope**: only Case Zero's scenes ship. The image still carries the full Dead Rising 2
 scene list because the two games share an engine, but `data/models/environment` holds

@@ -3608,14 +3608,15 @@ GUEST_FUNCTION_HOOK(__imp__XNotifyGetNext, XNotifyGetNext_x)
 // The controller — one connected pad, fed by the host window (phase 3)
 // ---------------------------------------------------------------------------
 //
-// POLICY, STATED ONCE, same shape as the single local user: player 1 holds a
-// standard wired gamepad; players 2-4 hold nothing and say so. A1 polls
+// POLICY, STATED ONCE: player 1 is the physical SDL gamepad and player 2 is the
+// keyboard. Players 3-4 hold nothing and say so. A1 polls
 // XamInputGetCapabilities 1,108 times for user 0 AND 1,108 times for user 1 in a
 // single boot, so "not connected" is an answer the title is built to receive
 // constantly and is not an error path.
 //
-// Player 1's buttons come from `runtime/host/window.cpp` — a real keyboard and, when
-// one is attached, a real SDL game controller. Before phase 3 this reported neutral
+// Both devices come from `runtime/host/window.cpp`, but remain separate XInput users
+// so the title's own controller-2 debug route can consume the keyboard without
+// stealing the gameplay controller. Before phase 3 this reported neutral
 // forever, which was a *missing feature* rather than a claim that no buttons were
 // pressed, and it is what parked the boot at the press-start screen (finding 37).
 //
@@ -3660,7 +3661,7 @@ struct GuestInputCapabilities // 20 bytes
 };
 static_assert(sizeof(GuestInputCapabilities) == 20, "XINPUT_CAPABILITIES is 20 bytes");
 
-constexpr uint32_t kLocalPadIndex = 0;
+constexpr uint32_t kLocalPadCount = 2;
 
 // WHY subType 1 AND NOT 2, which is what one call site tests for. sub_825D7AC8 is
 // the rumble path, and on an old kernel it looks for a device with subType == 2 and
@@ -3676,7 +3677,7 @@ static uint32_t XamInputGetCapabilities_x(uint32_t userIndex, uint32_t flags,
     if (!caps)
         return STATUS_INVALID_PARAMETER;
     memset(caps, 0, sizeof(*caps));
-    if (userIndex != kLocalPadIndex)
+    if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
     caps->type = 1;      // XINPUT_DEVTYPE_GAMEPAD
     caps->subType = 1;   // XINPUT_DEVSUBTYPE_GAMEPAD
@@ -3721,7 +3722,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     if (!state)
         return STATUS_INVALID_PARAMETER;
     memset(state, 0, sizeof(*state));
-    if (userIndex != kLocalPadIndex)
+    if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
 
     static const int fakeStartMs = []() {
@@ -3740,7 +3741,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // on the arm wins and says so on every press, which is the loudness gotcha 78 is
     // about.
     HostPadState pad{};
-    if (fakeStartMs <= 0 && Host_PadState(pad))
+    if (fakeStartMs <= 0 && Host_PadState(userIndex, pad))
     {
         state->packetNumber = pad.packet;
         state->gamepad.buttons = pad.buttons;
@@ -3947,6 +3948,11 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     return 0;
 }
 
+void DebugTunables_RequestDebugJump(PPCContext& ctx, uint8_t* base);
+void DebugTunables_RequestDebugEnter(PPCContext& ctx, uint8_t* base);
+void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base);
+void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base);
+
 // Rumble. Accepted and discarded: there is no motor, and reporting failure would
 // send sub_825D7AC8's callers down an error path over an effect that does not
 // matter. The values are logged so the eventual input layer has a witness that the
@@ -3955,7 +3961,7 @@ static uint32_t XamInputSetState_x(uint32_t userIndex, uint32_t unk,
                                    GuestInputVibration* vibration)
 {
     (void)unk;
-    if (userIndex != kLocalPadIndex)
+    if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
     if (vibration)
         KLOG("XamInputSetState(user=%u, motors %u/%u)\n", userIndex,
@@ -3981,12 +3987,33 @@ static uint32_t XamInputGetKeystrokeEx_x(be<uint32_t>* userIndex, uint32_t flags
     if (keystroke)
         memset(keystroke, 0, sizeof(*keystroke));
     if (userIndex)
-        *userIndex = kLocalPadIndex;
+        *userIndex = 0;
     return ERROR_EMPTY;
 }
 
 GUEST_FUNCTION_HOOK(__imp__XamInputGetCapabilities, XamInputGetCapabilities_x)
-GUEST_FUNCTION_HOOK(__imp__XamInputGetState, XamInputGetState_x)
+PPC_FUNC(__imp__XamInputGetState)
+{
+    KCALL("__imp__XamInputGetState");
+    guestcall::Dispatch<XamInputGetState_x>(ctx, base);
+    if (Host_ConsumeDebugJumpPressed())
+    {
+        DebugTunables_RequestDebugJump(ctx, base);
+        ctx.r3.u64 = 0; // preserve XamInputGetState's successful return value
+    }
+    if (Host_ConsumeDebugEnterPressed())
+    {
+        DebugTunables_RequestDebugEnter(ctx, base);
+        ctx.r3.u64 = 0;
+    }
+    if (Host_ConsumeDebugMenuPressed())
+    {
+        DebugTunables_ToggleFullDebugMenu(ctx, base);
+        ctx.r3.u64 = 0;
+    }
+    DebugTunables_PumpDebugMenu(ctx, base);
+    ctx.r3.u64 = 0;
+}
 GUEST_FUNCTION_HOOK(__imp__XamInputSetState, XamInputSetState_x)
 GUEST_FUNCTION_HOOK(__imp__XamInputGetKeystrokeEx, XamInputGetKeystrokeEx_x)
 

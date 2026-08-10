@@ -291,21 +291,43 @@ Next, in order:
    from the other end — the completion is what grants the reward. That puts a floor
    under how much of the game is reachable until this is fixed.
 
-1b. **CONFIRM HOW THE TITLE'S OWN DEBUG MENU OPENS — one in-game button press away, and
-   it is the cheapest item on this list.** Part 24 found that the retail executable still
+1b. **CLOSED POSITIVE — DEBUGJUMP IS A USABLE TEST UI (F2 AT THE TITLE MENU).** Part 24 found that the retail executable still
    carries Blue Castle's entire debug build, gated on 393 name-resolved booleans, and
    `runtime/cpu/debug_tunables.cpp` now flips them (`CZ_DEBUG_MENU=1`, gotcha 239).
    The flags provably flip — 0 -> 1 on a headless boot with a same-binary control — but
-   **no debug UI has been seen** (gotcha 240): the main menu is unchanged, because
+   The normal main menu remains unchanged, because
    `enable_debug_jump_menu`'s single reader at `0x824D6170` gates a text-formatting path
-   rather than the menu list.
+   rather than the menu list. The working bridge captures the real frontend manager
+   from native startup transitions and F2 requests the shipped `DebugJump` screen via
+   `sub_827F6D40`. The operator confirmed it visible; `/tmp/dbgrun5.log` recorded
+   manager `A33F4CC0` and hash `ACC86853` on both requests.
 
    The trigger, read from the code and NOT yet observed: `sub_82483378` is the
    pause-button check (`COMMAND_PAUSEMENU` 0x00 / `COMMAND_FRONTEND_PAUSEMENU` 0x10,
    with the 0x01/0x11 variants when `debug_on_controller_2_only` is set), and
    `0x824A2244` reads `enable_one_button_debug_menu`, calls it, and on a hit dispatches
    through a vtable at `0x824A22D0`. That reads as **START opens the debug menu once
-   you are in gameplay**, instead of pausing.
+   you are in gameplay**, instead of pausing. The first operator test exposed two
+   preset bugs rather than confirming that prediction: `enable_quickie_debug_menu`
+   routed the loop to controller 2, and clearing that byte live still produced the
+   normal pause menu because the preset had omitted the 26-reader
+   `enable_dev_only_debug_tiwwchnt` master gate. The corrected runtime exposes the
+   keyboard as controller 2; its preset enables the master and quickie controller-2
+   routing. Input tracing then proved Enter and F7+F8 reached pad 2, but neither raw
+   XInput chord had a retail binding to the dev-only commands. A first command-query
+   bridge also proved the controller manager never creates slot 2: the raw pad packets
+   arrived but queries 0x122/0x123 were never made for it. A visibility-byte bridge
+   then proved `0x82A5AA4C` toggled 0 -> 1 without showing a menu; its only reader is
+   an unrelated text overlay. The actual renderer was identified from its literal
+   `"Quickie Menu v0.21"`: `sub_821E55A0` dispatches its four pages and requires the
+   previously omitted `enable_button_through_timed_dialogs` gate plus command bytes
+   in the active player record. The corrected preset enables that gate, and the host
+   fed **keyboard F7+F8 in gameplay** to the active player's menu-held field and the
+   real dispatcher ran every frame, but nothing appeared. The final arm bypassed every
+   dispatcher predicate and directly invoked page 0 (`sub_82195AB0`), which draws the
+   literal `"Quickie Menu v0.21"`. The log proved the call completed without a crash;
+   the operator still saw nothing. This closes the input, flag, trigger, and dispatcher
+   hypotheses. The experimental bridges were removed.
 
    **This is an operator test, not a headless one.** Two headless attempts to land an
    in-game START derailed — one to the main menu, one to the save-slot screen — because
@@ -591,4 +613,3 @@ Next, in order:
    nothing is currently lost. On console a relative path resolves against the title's
    own directory, and CLAUDE.md already warns that at least one path here is built at
    runtime (`anm_%s.big`).
-

@@ -20,7 +20,13 @@ void Host_Present(uint32_t, uint32_t, uint32_t) {}
 void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
 void Host_RequestQuit(const char*) {}
-bool Host_PadState(HostPadState&) { return false; }
+bool Host_PadState(uint32_t, HostPadState&) { return false; }
+bool Host_ConsumeDebugJumpPressed() { return false; }
+bool Host_ConsumeDebugEnterPressed() { return false; }
+bool Host_ConsumeDebugMenuPressed() { return false; }
+void Host_DebugMenuSetItems(const std::vector<std::string>&) {}
+void Host_DebugMenuSetVisible(bool) {}
+bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
 
 #else
 
@@ -70,7 +76,10 @@ std::mutex   g_padMutex;
 // Packet 1, not 0, so that the windowed and headless arms hand the guest the same
 // starting number. A control arm that differs from the live path in a field the title
 // is entitled to branch on is not a control.
-HostPadState g_pad{ 1, 0, 0, 0, 0, 0, 0, 0 };
+HostPadState g_pads[2] = {
+    { 1, 0, 0, 0, 0, 0, 0, 0 }, // user 0: physical controller
+    { 1, 0, 0, 0, 0, 0, 0, 0 }, // user 1: keyboard
+};
 
 // Keyboard input is gated on window focus. SDL does reset its keyboard state when a
 // window loses focus, so this is belt and braces — but the failure it prevents is a
@@ -79,6 +88,15 @@ HostPadState g_pad{ 1, 0, 0, 0, 0, 0, 0, 0 };
 // is deliberately NOT gated: a pad works whatever window is focused, which is what
 // every other application on the machine does.
 bool g_keyboardFocus = true;
+std::atomic<bool> g_debugJumpPressed{false};
+std::atomic<bool> g_debugEnterPressed{false};
+std::atomic<bool> g_debugMenuPressed{false};
+std::mutex g_debugOverlayMutex;
+std::vector<std::string> g_debugOverlayItems;
+std::atomic<bool> g_debugOverlayVisible{false};
+size_t g_debugOverlaySelection = 0;
+std::atomic<uint32_t> g_debugOverlayActionIndex{0};
+std::atomic<int32_t> g_debugOverlayAction{0};
 
 // The frame descriptor the present loop consumes. `seq` is the handshake: the PM4
 // executor bumps it, the loop presents when it changes and sleeps when it does not.
@@ -103,6 +121,114 @@ int g_frameTextureW = 0, g_frameTextureH = 0;
 std::atomic<const char*> g_quitReason{ nullptr };
 
 constexpr int kDefaultWidth = 1280, kDefaultHeight = 720;
+
+const char* Glyph(char c)
+{
+    if (c >= 'a' && c <= 'z') c -= 32;
+    switch (c)
+    {
+        case 'A': return "01110100011000111111100011000110001";
+        case 'B': return "11110100011000111110100011000111110";
+        case 'C': return "01111100001000010000100001000001111";
+        case 'D': return "11110100011000110001100011000111110";
+        case 'E': return "11111100001000011110100001000011111";
+        case 'F': return "11111100001000011110100001000010000";
+        case 'G': return "01111100001000010111100011000101111";
+        case 'H': return "10001100011000111111100011000110001";
+        case 'I': return "11111001000010000100001000010011111";
+        case 'J': return "00111000100001000010100101001001100";
+        case 'K': return "10001100101010011000101001001010001";
+        case 'L': return "10000100001000010000100001000011111";
+        case 'M': return "10001110111010110101100011000110001";
+        case 'N': return "10001110011010110011100011000110001";
+        case 'O': return "01110100011000110001100011000101110";
+        case 'P': return "11110100011000111110100001000010000";
+        case 'Q': return "01110100011000110001101011001001101";
+        case 'R': return "11110100011000111110101001001010001";
+        case 'S': return "01111100001000001110000010000111110";
+        case 'T': return "11111001000010000100001000010000100";
+        case 'U': return "10001100011000110001100011000101110";
+        case 'V': return "10001100011000110001100010101000100";
+        case 'W': return "10001100011000110101101011101110001";
+        case 'X': return "10001100010101000100010101000110001";
+        case 'Y': return "10001100010101000100001000010000100";
+        case 'Z': return "11111000010001000100010001000011111";
+        case '0': return "01110100011001110101110011000101110";
+        case '1': return "00100011000010000100001000010001110";
+        case '2': return "01110100010000100010001000100011111";
+        case '3': return "11110000010000101110000010000111110";
+        case '4': return "00010001100101010010111110001000010";
+        case '5': return "11111100001000011110000010000111110";
+        case '6': return "01110100001000011110100011000101110";
+        case '7': return "11111000010001000100010000100001000";
+        case '8': return "01110100011000101110100011000101110";
+        case '9': return "01110100011000101111000010000101110";
+        case '-': return "00000000000000011111000000000000000";
+        case '_': return "00000000000000000000000000000011111";
+        case '.': return "00000000000000000000000000110001100";
+        case ':': return "00000011000110000000011000110000000";
+        case '/': return "00001000100001000100010001000010000";
+        case '>': return "10000010000010000010001000100010000";
+        default:  return nullptr;
+    }
+}
+
+void DrawText(int x, int y, const std::string& text, int scale,
+              uint8_t r, uint8_t g, uint8_t b)
+{
+    SDL_SetRenderDrawColor(g_renderer, r, g, b, 255);
+    for (char c : text)
+    {
+        if (const char* bits = Glyph(c))
+            for (int row = 0; row < 7; ++row)
+                for (int col = 0; col < 5; ++col)
+                    if (bits[row * 5 + col] == '1')
+                    {
+                        SDL_Rect p{x + col * scale, y + row * scale, scale, scale};
+                        SDL_RenderFillRect(g_renderer, &p);
+                    }
+        x += 6 * scale;
+    }
+}
+
+void DrawDebugOverlay()
+{
+    std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
+    if (!g_debugOverlayVisible.load(std::memory_order_acquire))
+        return;
+
+    int w = 0, h = 0;
+    SDL_GetRendererOutputSize(g_renderer, &w, &h);
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_renderer, 8, 26, 96, 225);
+    SDL_Rect panel{24, 24, w > 760 ? 720 : w - 48, h - 48};
+    SDL_RenderFillRect(g_renderer, &panel);
+    SDL_SetRenderDrawColor(g_renderer, 70, 150, 255, 255);
+    SDL_RenderDrawRect(g_renderer, &panel);
+    DrawText(44, 42, "CASE ZERO DEBUG MENU", 3, 255, 255, 255);
+    DrawText(44, 70, "UP/DOWN SELECT  ENTER USE  LEFT/RIGHT EDIT  F4 CLOSE",
+             2, 145, 205, 255);
+
+    const size_t rows = panel.h > 120 ? size_t((panel.h - 110) / 18) : 0;
+    const size_t start = g_debugOverlaySelection >= rows
+        ? g_debugOverlaySelection - rows + 1 : 0;
+    for (size_t line = 0; line < rows && start + line < g_debugOverlayItems.size(); ++line)
+    {
+        const size_t index = start + line;
+        const bool selected = index == g_debugOverlaySelection;
+        if (selected)
+        {
+            SDL_SetRenderDrawColor(g_renderer, 35, 105, 205, 255);
+            SDL_Rect hi{38, 98 + int(line) * 18, panel.w - 28, 17};
+            SDL_RenderFillRect(g_renderer, &hi);
+        }
+        std::string label = (selected ? "> " : "  ") + g_debugOverlayItems[index];
+        if (label.size() > 54) label.resize(54);
+        DrawText(44, 101 + int(line) * 18, label, 2,
+                 selected ? 255 : 205, selected ? 255 : 225, 255);
+    }
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
+}
 
 // The key map, as one table so that printing it and applying it cannot drift apart.
 // Every recompilation port ends up with a keyboard fallback, and every one of them
@@ -161,7 +287,7 @@ const PadBinding kPadMap[] = {
 
 void PrintKeyMap()
 {
-    fprintf(stderr, "[host] keyboard -> pad:");
+    fprintf(stderr, "[host] keyboard -> pad 2:");
     for (const auto& k : kKeyMap)
         fprintf(stderr, "  %s=%s", k.keyName, k.padName);
     fprintf(stderr, "\n[host] keyboard -> sticks:  WASD=left stick  IJKL=right stick  "
@@ -220,12 +346,32 @@ int16_t PadAxisY(SDL_GameController* c, SDL_GameControllerAxis axis)
     return int16_t(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
 }
 
-HostPadState ReadDevices()
+HostPadState ReadKeyboard()
 {
     HostPadState s{};
+    static bool f2WasDown = false;
+    static bool f3WasDown = false;
+    static bool f4WasDown = false;
     if (g_keyboardFocus)
     {
         const uint8_t* keys = SDL_GetKeyboardState(nullptr);
+        const bool f2Down = keys[SDL_SCANCODE_F2] != 0;
+        const bool f3Down = keys[SDL_SCANCODE_F3] != 0;
+        const bool f4Down = keys[SDL_SCANCODE_F4] != 0;
+        if (f2Down && !f2WasDown)
+            g_debugJumpPressed.store(true, std::memory_order_release);
+        f2WasDown = f2Down;
+        if (f3Down && !f3WasDown)
+            g_debugEnterPressed.store(true, std::memory_order_release);
+        f3WasDown = f3Down;
+        if (f4Down && !f4WasDown)
+            g_debugMenuPressed.store(true, std::memory_order_release);
+        f4WasDown = f4Down;
+
+        // While the host overlay owns the keyboard, do not also hand its navigation
+        // presses to the game as controller-2 input.
+        if (g_debugOverlayVisible.load(std::memory_order_acquire))
+            return s;
 
         for (const auto& k : kKeyMap)
             if (keys[k.scancode])
@@ -241,9 +387,12 @@ HostPadState ReadDevices()
             s.rightTrigger = 255;
     }
 
-    // The controller is OR'd on top of the keyboard rather than replacing it: a pad
-    // being plugged in should not silently disable the keys, and a title that is
-    // being driven by one of them is not confused by the other reading neutral.
+    return s;
+}
+
+HostPadState ReadController()
+{
+    HostPadState s{};
     if (g_controller)
     {
         for (const auto& p : kPadMap)
@@ -252,18 +401,18 @@ HostPadState ReadDevices()
 
         const int lx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_LEFTX);
         const int rx = SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_RIGHTX);
-        if (s.thumbLX == 0) s.thumbLX = int16_t(lx);
-        if (s.thumbRX == 0) s.thumbRX = int16_t(rx);
-        if (s.thumbLY == 0) s.thumbLY = PadAxisY(g_controller, SDL_CONTROLLER_AXIS_LEFTY);
-        if (s.thumbRY == 0) s.thumbRY = PadAxisY(g_controller, SDL_CONTROLLER_AXIS_RIGHTY);
+        s.thumbLX = int16_t(lx);
+        s.thumbRX = int16_t(rx);
+        s.thumbLY = PadAxisY(g_controller, SDL_CONTROLLER_AXIS_LEFTY);
+        s.thumbRY = PadAxisY(g_controller, SDL_CONTROLLER_AXIS_RIGHTY);
 
         // SDL reports triggers as 0..32767; XInput's are 0..255.
         const int lt =
             SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) >> 7;
         const int rt =
             SDL_GameControllerGetAxis(g_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >> 7;
-        if (s.leftTrigger == 0) s.leftTrigger = uint8_t(lt < 0 ? 0 : lt > 255 ? 255 : lt);
-        if (s.rightTrigger == 0) s.rightTrigger = uint8_t(rt < 0 ? 0 : rt > 255 ? 255 : rt);
+        s.leftTrigger = uint8_t(lt < 0 ? 0 : lt > 255 ? 255 : lt);
+        s.rightTrigger = uint8_t(rt < 0 ? 0 : rt > 255 ? 255 : rt);
     }
     return s;
 }
@@ -282,18 +431,19 @@ bool SameState(const HostPadState& a, const HostPadState& b)
 // entirely. So a packet number that ticks every poll is not merely wasteful — and a
 // constant one with a changing button field hands the guest a press it may
 // legitimately ignore. This is the only place the number moves.
-void PublishPad(const HostPadState& fresh)
+void PublishPad(uint32_t userIndex, const HostPadState& fresh)
 {
     std::lock_guard<std::mutex> lock(g_padMutex);
-    if (SameState(fresh, g_pad))
+    HostPadState& pad = g_pads[userIndex];
+    if (SameState(fresh, pad))
         return;
-    const uint32_t packet = g_pad.packet + 1;
-    g_pad = fresh;
-    g_pad.packet = packet;
+    const uint32_t packet = pad.packet + 1;
+    pad = fresh;
+    pad.packet = packet;
     if (g_inputTrace)
         fprintf(stderr,
-                "[host] pad packet %u: buttons=%04X triggers=%u/%u L=(%d,%d) R=(%d,%d)\n",
-                packet, fresh.buttons, fresh.leftTrigger, fresh.rightTrigger,
+                "[host] pad %u packet %u: buttons=%04X triggers=%u/%u L=(%d,%d) R=(%d,%d)\n",
+                userIndex, packet, fresh.buttons, fresh.leftTrigger, fresh.rightTrigger,
                 fresh.thumbLX, fresh.thumbLY, fresh.thumbRX, fresh.thumbRY);
 }
 
@@ -432,12 +582,52 @@ void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height)
     g_havePixels = true;
 }
 
-bool Host_PadState(HostPadState& out)
+bool Host_PadState(uint32_t userIndex, HostPadState& out)
 {
-    if (!g_active)
+    if (!g_active || userIndex >= 2)
         return false;
     std::lock_guard<std::mutex> lock(g_padMutex);
-    out = g_pad;
+    out = g_pads[userIndex];
+    return true;
+}
+
+bool Host_ConsumeDebugJumpPressed()
+{
+    return g_debugJumpPressed.exchange(false, std::memory_order_acq_rel);
+}
+
+bool Host_ConsumeDebugEnterPressed()
+{
+    return g_debugEnterPressed.exchange(false, std::memory_order_acq_rel);
+}
+
+bool Host_ConsumeDebugMenuPressed()
+{
+    return g_debugMenuPressed.exchange(false, std::memory_order_acq_rel);
+}
+
+void Host_DebugMenuSetItems(const std::vector<std::string>& items)
+{
+    std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
+    g_debugOverlayItems = items;
+    if (g_debugOverlayItems.empty())
+        g_debugOverlaySelection = 0;
+    else if (g_debugOverlaySelection >= g_debugOverlayItems.size())
+        g_debugOverlaySelection = g_debugOverlayItems.size() - 1;
+}
+
+void Host_DebugMenuSetVisible(bool visible)
+{
+    std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
+    g_debugOverlayVisible.store(visible, std::memory_order_release);
+}
+
+bool Host_DebugMenuConsumeAction(uint32_t& itemIndex, int32_t& direction)
+{
+    direction = g_debugOverlayAction.exchange(0, std::memory_order_acq_rel);
+    if (!direction)
+        return false;
+    itemIndex = g_debugOverlayActionIndex.load(std::memory_order_acquire);
     return true;
 }
 
@@ -483,12 +673,49 @@ void Host_WindowRun()
                     else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
                         g_keyboardFocus = true;
                     break;
+                case SDL_KEYDOWN:
+                    if (!e.key.repeat)
+                    {
+                        std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
+                        if (g_debugOverlayVisible.load(std::memory_order_acquire) &&
+                            !g_debugOverlayItems.empty())
+                        {
+                            if (e.key.keysym.scancode == SDL_SCANCODE_UP)
+                                g_debugOverlaySelection = g_debugOverlaySelection == 0
+                                    ? g_debugOverlayItems.size() - 1
+                                    : g_debugOverlaySelection - 1;
+                            else if (e.key.keysym.scancode == SDL_SCANCODE_DOWN)
+                                g_debugOverlaySelection =
+                                    (g_debugOverlaySelection + 1) % g_debugOverlayItems.size();
+                            else if (e.key.keysym.scancode == SDL_SCANCODE_RETURN ||
+                                     e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER ||
+                                     e.key.keysym.scancode == SDL_SCANCODE_SPACE)
+                            {
+                                g_debugOverlayActionIndex.store(
+                                    uint32_t(g_debugOverlaySelection),
+                                    std::memory_order_release);
+                                g_debugOverlayAction.store(1, std::memory_order_release);
+                            }
+                            else if (e.key.keysym.scancode == SDL_SCANCODE_LEFT ||
+                                     e.key.keysym.scancode == SDL_SCANCODE_RIGHT)
+                            {
+                                g_debugOverlayActionIndex.store(
+                                    uint32_t(g_debugOverlaySelection),
+                                    std::memory_order_release);
+                                g_debugOverlayAction.store(
+                                    e.key.keysym.scancode == SDL_SCANCODE_LEFT ? -1 : 2,
+                                    std::memory_order_release);
+                            }
+                        }
+                    }
+                    break;
                 default:
                     break;
             }
         }
 
-        PublishPad(ReadDevices());
+        PublishPad(0, ReadController());
+        PublishPad(1, ReadKeyboard());
 
         const uint64_t seq = g_swapSeq.load(std::memory_order_acquire);
         if (seq != presented)
@@ -557,6 +784,7 @@ void Host_WindowRun()
                 SDL_SetRenderDrawColor(g_renderer, 0x14, 0x16, 0x1A, 0xFF);
                 SDL_RenderClear(g_renderer);
             }
+            DrawDebugOverlay();
             SDL_RenderPresent(g_renderer);
         }
         else

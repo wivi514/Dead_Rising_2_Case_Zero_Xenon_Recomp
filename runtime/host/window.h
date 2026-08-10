@@ -30,6 +30,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 // Bring up the window, the renderer and the game-controller subsystem.
 //
@@ -87,6 +89,19 @@ struct HostPadState
     int16_t thumbLX, thumbLY, thumbRX, thumbRY;
 };
 
-// The pad state the guest should see. False when there is no window, in which case
-// the caller must NOT invent one — it answers with its own documented neutral pad.
-bool Host_PadState(HostPadState& out);
+// The pad state the guest should see. Pad 0 is the physical SDL controller; pad 1 is
+// the keyboard. False when there is no window or the index is not one of those two.
+bool Host_PadState(uint32_t userIndex, HostPadState& out);
+
+// One-shot F2 edge used by the title's explicit DebugJump bridge. Consuming the
+// edge keeps the frontend request independent of the guest's controller polling
+// rate and prevents a held key from requesting the screen every frame.
+bool Host_ConsumeDebugJumpPressed();
+bool Host_ConsumeDebugEnterPressed();
+bool Host_ConsumeDebugMenuPressed();
+
+// Host-rendered replacement for the retail build's missing blue debug-menu layer.
+// The labels still come from the genuine guest cDebugMenu nodes.
+void Host_DebugMenuSetItems(const std::vector<std::string>& items);
+void Host_DebugMenuSetVisible(bool visible);
+bool Host_DebugMenuConsumeAction(uint32_t& itemIndex, int32_t& direction);
