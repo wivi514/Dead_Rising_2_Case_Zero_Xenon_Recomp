@@ -855,6 +855,16 @@ CZ_DEBUG_MENU=1    debug preset: the 26-reader master, debug-jump leaf, and
 CZ_DEBUG_TUNABLES=name[=0|1],...   any of the 21 curated tunables. An unknown name
                    prints the whole list and its per-entry notes rather than failing
                    silently, so `CZ_DEBUG_TUNABLES=?` is the way to see them
+CZ_VK_STREAM_GUARD_BYTES=N  the cross-frame store's guard is EXACT up to N bytes and
+                   samples 8x64 above it. Default 16384. This is the item 00c fix: at 512
+                   a small edit inside a large UI vertex buffer hashed identical and the
+                   store served last frame's HUD. Raise it FIRST if anything like that
+                   recurs -- no rebuild needed. Every profile window reports how many
+                   streams/frame exceeded the bound and were therefore only sampled, which
+                   is the residual exposure
+CZ_VK_STREAM_GUARD_EXACT=1  hash every byte whatever the size. The diagnostic that
+                   identified 00c. Not for normal use: 75x the hashing and +11.9 points of
+                   frame time against the 16 KB default's ~a quarter of that
 CZ_ZOMBIE_CAPTURE=1 logs up to 512 genuine calls to the retail actor-manager submit
                    routine: caller LR, guest thread, factory, source tag/line, result,
                    and the first 96 descriptor bytes. Use while walking through a

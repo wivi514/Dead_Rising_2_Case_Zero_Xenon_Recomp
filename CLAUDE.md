@@ -592,6 +592,13 @@ Where the port is, as of 2026-08-08 (phase C part 21):
 * **Ordinary gameplay is ~30 fps and the CPU/GPU now OVERLAP** (part 23): the fence wait
   fell from 31.5% of a crowd frame to 0.2% with `CZ_VK_FRAMES_IN_FLIGHT=2` (default; `=1`
   is the old renderer, same binary). The binned frame-time A/B is still owed.
+* **THE HUD / AMMO DEFECT IS FIXED** (part 24, open item 00c). It was our own
+  cross-frame stream store: its guard was exact only to 512 bytes and sampled 8x64
+  above that, so a small edit inside a batched multi-KB UI vertex buffer hashed
+  identical and the store served the previous frame's numbers. The exact bound is now
+  16 KB (`CZ_VK_STREAM_GUARD_BYTES=N`), the HUD is correct in a gas-station crowd, and
+  it costs **zero frame rate** — 32.2 ms at 6,778 draws, still the two-vblank floor.
+  Gotchas 242 and 243 are the transferable halves.
 * **The renderer's remaining picture defects** are the shadow cascade, NPC part meshes,
   mipmaps and the colour-grading LUT — all in `docs/open-items.md` with the measurement
   for each, and all worth re-testing now that a frame losing its post chain is no longer

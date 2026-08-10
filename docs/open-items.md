@@ -90,7 +90,31 @@ Next, in order:
    NB it is blind by construction to a fetch pointing at an address that was never that
    texture's home — it only compares bytes at an address we already uploaded from.
 
-00c. **THE UI / AMMO-COUNTER DEFECT — CAUSE AND MECHANISM BOTH FOUND. The cross-frame
+00c. ~~**THE UI / AMMO-COUNTER DEFECT**~~ **CLOSED (part 24). The cross-frame stream
+   store's guard was sampling; the exact bound is now 16 KB and the HUD is correct in a
+   crowd at zero frame-rate cost.**
+
+   **The closing measurement, operator, gas-station crowd:** at **6,778 draws/frame** the
+   frame is still pinned at **32.2 ms / 31.0 fps** — the title's two-vblank floor — with
+   `guard read` at 14.15 MB/frame and `record` at 19.3%. `outside` is 54.2%, so there is
+   still headroom. The store is simultaneously avoiding **50-61 MB/frame of copying**, so
+   the guard spends 13-14 MB of hashing to save 50-61 MB of memcpy. HUD confirmed correct
+   throughout, with the ammo counter tracking.
+
+   The cost is real in CPU terms and invisible in frame rate, which is gotcha 237 working
+   in our favour for once: a CPU saving converts to frame rate only above the vblank floor,
+   and so does a CPU COST. Do not re-quote 19.3% of `record` as a regression without
+   showing a frame above the floor.
+
+   **Residual exposure, deliberately left and counted:** 604-624 streams/frame still exceed
+   16 KB and are only sampled, so a small edit inside one of those is still invisible. The
+   profile line reports that count on every window. If a similar defect ever reappears,
+   raise `CZ_VK_STREAM_GUARD_BYTES` first — it needs no rebuild — and only then go looking.
+
+   The full history is below, kept because three sessions looked at this and the reasons it
+   survived them are more useful than the fix.
+
+00c-history. **CAUSE AND MECHANISM. The cross-frame
    stream store's GUARD was sampling, and a sampled guard cannot see a small edit inside a
    large UI buffer. `CZ_VK_STREAM_GUARD_EXACT=1` fixes it outright; what is left is making
    that affordable.**

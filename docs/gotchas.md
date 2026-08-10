@@ -1859,3 +1859,29 @@ From phase C part 18 (the frame rate — and none of it was work):
     the neighbouring flag. **A check that cannot distinguish the right answer from the
     adjacent wrong one is not a check** — ask what result would refute the binding
     before trusting a scan that confirms it.
+242. **A threshold fitted to a census is fitted to the population your instrument could
+    REACH, not to the population that exists.** The cross-frame store's guard was exact
+    to 512 bytes because a census reported every rewritten stream was exactly 80. That
+    census could only observe streams rewritten between two CONSECUTIVE frames, in a
+    headless recipe that walks and looks and never fires a weapon or changes a HUD
+    number. The streams it could not reach were the ones that broke — a HUD batched into
+    one multi-KB buffer where only the digit quads change, which the 8x64 sampling missed
+    entirely, so the store served last frame's numbers (open item 00c, three sessions).
+    The bound was not wrong when it was chosen; it was fitted to a keyhole. **Two habits
+    fall out of this.** Before setting a threshold from measured data, ask what the
+    measurement CANNOT see and whether the threshold is being asked to cover it. And ship
+    a COUNTER for whatever falls outside the threshold — the raised 16 KB bound reports
+    "604 streams/frame exceeded it and were SAMPLED" on every profile window, so the
+    residual exposure is a number somebody can read instead of an assumption nobody
+    revisits. This is gotcha 235's second instance and the first one where the fix was a
+    counter rather than a better census.
+243. **When the platform pins your frame time, a CPU COST is as invisible as a CPU saving
+    — and that cuts both ways.** Raising the guard's exact bound took `record` from 4.8%
+    to 19.3% of a crowd frame, hashing 14 MB where it used to hash 0.4, and the frame
+    stayed at 32.2 ms and 31.0 fps at 6,778 draws because this title paces itself to two
+    vblanks. That is the same mechanism as gotcha 237, which was learned as a reason a
+    saving did not show up. Read it in both directions: it makes a correctness fix
+    affordable that a spreadsheet would have rejected, and it means a real regression can
+    hide until some other change lifts the frame off the floor. Quote the headroom
+    (`outside`) alongside the phase percentages, because that is what says how much cost
+    the floor can still absorb.
