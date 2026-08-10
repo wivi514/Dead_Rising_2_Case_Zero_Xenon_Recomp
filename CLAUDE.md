@@ -299,6 +299,18 @@ cache lacks is one log line and a silent counter, not a failure:
 ```
 grep -c "no translated shader" run.log         # must be 0
 ```
+**AND THAT CHECK ONLY FIRES FOR A SHADER A RUN ACTUALLY BINDS.** Part 27 found
+`ps_7d6044e7dcaea1f2` sitting in `~/DR2CZ-troubleshooting/ucode-dumps` and MISSING from
+the built cache — microcode we have held for sessions and never translated. No run had
+bound it, so the counter read 0 every time, and the module COUNT could not show it either
+because the cache also carries `ps_926c15dd20571cf1`, whose microcode is lost: 410 dumps,
+410 modules, different sets. **The gate is to rebuild from the dumps and compare the
+NAMES, not the count** — it is free and it is two lines:
+```
+tools/build_shader_spv.sh ~/DR2CZ-troubleshooting/ucode-dumps /tmp/spv_check
+diff <(ls /tmp/spv_check/*.spv | xargs -n1 basename) \
+     <(ls assets/shader_spv/*.spv | xargs -n1 basename)   # only the lost-microcode entry may differ
+```
 And the gate on the sidecars themselves, which is **two-sided by construction** — the
 per-slot texture dimension is derivable both from our ucode parse and from DXC's
 `OpDecorate ... DescriptorSet` words, so a disagreement means one of the two decodes is
@@ -312,8 +324,8 @@ not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and two ope
 (the military arrival, then Still Creek end to end) recovered TEN of the eleven. The last,
 `ps_926c15dd20571cf1`, samples only sets 0 and 3 — an ordinary 2D shader, so nothing
 depends on it. A lost dump is a location nobody has replayed, not a permanent loss.
-**The cache is 409 and it has grown on EVERY session that reached new ground.** 335 from
-the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409 — 23 of
+**The cache is 411 and it has grown on EVERY session that reached new ground.** 335 from
+the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409, 411 — 23 of
 those from two operator play sessions on 2026-08-08 alone, once the whole-frame black
 stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
 as a claim with a shelf life** (gotcha 13): every era of this game that no run has
