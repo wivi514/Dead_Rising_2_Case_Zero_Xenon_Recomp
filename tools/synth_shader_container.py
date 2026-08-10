@@ -9,6 +9,9 @@ bare microcode. This tool fabricates the minimal container around each dump:
   ConstantTableContainer      one full-range float4 array ('vc'/'pc') so every
                               ALU constant reference resolves, plus one sampler
                               entry per tfetch fetch-constant used by the ucode
+                              (the sidecar also records each of those slots'
+                              texture DIMENSION — see tfetch_dims below, and
+                              docs/open-items.md item 00 for what its absence cost)
   Shader / VertexShader /     interpolators + (for VS) vertex elements keyed by
   PixelShader structs         the VFETCH instruction slot address — exactly how
                               shader_recompiler.cpp keys its decl lookups
@@ -31,6 +34,11 @@ import sys
 
 POSITION, TEXCOORD, COLOR = 0, 5, 10
 
+# XenosRecomp's TextureDimension, in its order. Only for the log line — the sidecar
+# carries the raw number, so the runtime and the translator agree on an integer rather
+# than on a spelling.
+DIM_NAME = {0: "1D", 1: "2D", 2: "3D", 3: "Cube"}
+
 # XenosRecomp USAGE_LOCATIONS: the Vulkan input locations its HLSL assigns.
 # TEXCOORD4..7 -> 12..15 and 8..15 -> 16..23 (world shaders take up to 12
 # streams); keep in sync with shader_recompiler.cpp's table.
@@ -47,7 +55,7 @@ def bits(v, lo, n):
 
 
 def parse_ucode(data):
-    """Return (vfetch_slots, tfetch_consts, ps_input_regs, vs_export_interps)."""
+    """Return (vfetch_slots, tfetch_consts, tfetch_dims, ps_inputs, vs_exports)."""
     n = len(data) // 4
     dw = struct.unpack(f">{n}I", data[: n * 4])
 
@@ -71,6 +79,20 @@ def parse_ucode(data):
 
     vfetch_slots = []   # instruction slot addresses, in program order
     tfetch_consts = []  # unique fetch-constant indices, in program order
+    # WHICH DESCRIPTOR ARRAY EACH OF THOSE SLOTS IS SAMPLED FROM, and it is only the
+    # SHADER that knows. The translated HLSL declares five register spaces --
+    # Texture2D[] in space0, Texture3D[] in space1, TextureCube[] in space2,
+    # Sampler[] in space3, Texture1D[] in space4 -- and reads the descriptor index for a
+    # fetch out of the shared constants at +0/+64/+128/+288 according to the DIMENSION
+    # the fetch instruction declares. A runtime that publishes only the Texture2D array
+    # therefore leaves every cube fetch reading index 0, which is the 1x1 dummy: 91 of
+    # this title's 395 shaders sample a cube map and every one of them multiplied its
+    # specular by pure white for the whole of phase 5 (docs/open-items.md item 00).
+    #
+    # PER SLOT, NOT PER SHADER. A single pixel shader here samples slot 3 as a cube and
+    # slots 0 and 2 as 2D in three consecutive instructions, so a per-module flag would
+    # be wrong for two thirds of it.
+    tfetch_dims = {}    # fetch-constant index -> 0=1D, 1=2D, 2=3D, 3=cube
     written = set()
     # INDIRECT VERTEX FETCH (docs/world-era-fatal-and-selector.md §3s).
     # A vfetch's address is a REGISTER, not necessarily the vertex index.
@@ -131,6 +153,14 @@ def parse_ucode(data):
                     c = bits(w0, 20, 5)
                     if c not in tfetch_consts:
                         tfetch_consts.append(c)
+                    # TextureFetchInstruction word 2 is
+                    # `useRegGradients:1, sampleLocation:1, lodBias:7, pad:5,
+                    #  dimension:2, offsetX:5, offsetY:5, offsetZ:5, predCondition:1`,
+                    # so the dimension starts at bit 14. Taken from XenosRecomp's own
+                    # shader_code.h rather than re-derived, because it is the struct the
+                    # translator itself switches on when it picks tfetch2D vs tfetchCube
+                    # — the two ends cannot disagree if they read the same field.
+                    tfetch_dims[c] = bits(w2, 14, 2)
                 # Any write kills the vertex id in that register -- including a
                 # fetch writing its own source (seen: `dst=r2 src=r2`).
                 vid_regs.discard(bits(w0, 12, 6))
@@ -151,7 +181,7 @@ def parse_ucode(data):
                 else:
                     written.add(vdst)
 
-    return vfetch_slots, tfetch_consts, inputs, exports
+    return vfetch_slots, tfetch_consts, tfetch_dims, inputs, exports
 
 
 class Blob:
@@ -262,7 +292,7 @@ def synthesize(path, out_dir):
     name = os.path.basename(path).replace(".ucode", "")
     is_vs = name.startswith("vs_")
     ucode = open(path, "rb").read()
-    vfetch_slots, tfetch_consts, inputs, exports = parse_ucode(ucode)
+    vfetch_slots, tfetch_consts, tfetch_dims, inputs, exports = parse_ucode(ucode)
 
     ctab = build_ctab(is_vs, tfetch_consts)
     shader = build_shader_struct(is_vs, len(ucode), vfetch_slots, inputs, exports)
@@ -292,7 +322,12 @@ def synthesize(path, out_dir):
     # then dropped that .spv SILENTLY at load — 25,364 draws per run skipped as
     # "unknown vs" for a shader sitting in the cache. Never emit the artifact
     # before the step that can fail.
-    meta = {"kind": "vs" if is_vs else "ps", "tfetchConsts": sorted(tfetch_consts)}
+    # `tfetchDims` is written POSITIONALLY against the sorted `tfetchConsts`, because
+    # the runtime's sidecar reader is a flat integer-array reader and a parallel array
+    # is the one shape it can already express. The two lists therefore have to be the
+    # same length and in the same order, which is asserted rather than assumed.
+    meta = {"kind": "vs" if is_vs else "ps", "tfetchConsts": sorted(tfetch_consts),
+            "tfetchDims": [tfetch_dims[c] for c in sorted(tfetch_consts)]}
     if is_vs:
         attrs = []
         for i, vf in enumerate(vfetch_slots):
@@ -321,7 +356,8 @@ def synthesize(path, out_dir):
     kind = "VS" if is_vs else "PS"
     print(f"{name}: {kind} ucode={len(ucode)}B "
           f"vfetch={[(v['slot'], v['fetchSlot'], v['format']) for v in vfetch_slots]} "
-          f"tfetch={tfetch_consts} psin={sorted(inputs) if not is_vs else '-'} "
+          f"tfetch={[(c, DIM_NAME[tfetch_dims[c]]) for c in tfetch_consts]} "
+          f"psin={sorted(inputs) if not is_vs else '-'} "
           f"vsout={sorted(exports) if is_vs else '-'} -> "
           f"{os.path.join(out_dir, name + '.xshd')}")
 
