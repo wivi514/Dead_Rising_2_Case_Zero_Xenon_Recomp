@@ -319,6 +319,52 @@ Next, in order:
    second implementation forces the seam: copy into `runtime/audio/` here first, and leave
    any shared-library question to Case West.
 
+00f. **WHITE PATCHES ON WORLD SURFACES — an operator session's evidence, and it is at
+   least TWO defects.** Reported part 26 and reproducible on every run: large blown-out
+   patches of ground with hard polygon edges (spawn area, gas-station forecourt), fully
+   white newspaper boxes, white parts of a cactus, a blown-out bathroom window, a mirror,
+   a cash register, a door side and a gas-station sign. Six `CZ_VK_DRAW_CENSUS` frames are
+   in `~/DR2CZ-troubleshooting/part26-operator/`.
+
+   **ESTABLISHED**
+   * **It is not the tone map.** The white is already in the SCENE buffer (`0684B000`)
+     before any post pass, and that buffer's maximum is **180**, not 255 — so nothing is
+     clipping. The presented frame is the same picture, graded.
+   * **One prop defect is confirmed and has a mechanism.** In frame 10211 a draw binds the
+     SAME texture twice — `s3=11C12000 slot=4000` and `s4=11C12000 slot=0(DUMMY)` —
+     because the shader declares that slot a CUBE map while the fetch constant describes a
+     2D texture. Part 25 declines that case (reading six faces out of a surface the guest
+     calls one would build a cube from five slabs of neighbouring memory), and declining
+     means the 1x1 **white** dummy. A reflection term multiplied by white blows the surface
+     out. `01330000`, the 4x4 already on file as uploading black, is served the dummy on
+     eight alpha-blended draws in the same frame.
+   * **The ground is a different defect.** Its draws bind three real DXT1 textures at real
+     slots plus the shadow cascade twice, with `vs=36eef2c94b4a065c ps=ad65b98593f95926`
+     — identical at the spawn and at the gas station, so it is ONE material misbehaving in
+     places rather than a per-location accident. `CZ_VK_DRAW_PROBE` on that shader shows
+     texture coordinates that VARY sensibly across vertices (0.117, 0.125, 0.110 ... in u),
+     so the coordinates are not constant.
+
+   **REFUTED, and both were mine**
+   * "The ground is untextured." Drawn from ONE 240x150 crop that happened to be flat.
+     Other ground regions of the same frame read stdev 63-72 with hundreds of distinct
+     colours, i.e. as textured as a character. The defect is patches, not the material.
+   * "Four of the six censuses show zero dummy binds." Those censuses each dropped 105-215
+     silently TRUNCATED lines, so absence proved nothing (fixed; see the commit).
+
+   **NEXT, in order**
+   1. Retake the censuses on the fixed binary — `CZ_VK_DRAW_CENSUS` now writes one file per
+      frame and marks truncation. The outdoor ones need no operator.
+   2. `CZ_VK_CUBE_POISON=1` as the visual control for the prop defect: if the white
+      newspaper boxes and window turn MAGENTA they sample the cube dummy, and if they stay
+      white that mechanism is dead. One operator run, two minutes.
+   3. For the ground patches, bisect with `CZ_VK_SKIP_TEX` / `CZ_VK_ONLY_TEX` on the three
+      diffuse addresses (`0DC01000`, `0DC31000`, and the per-area third), which is what
+      turns "that polygon is white" into "that polygon is texture X".
+   4. The mirror, register, door and gas-station sign are indoors or off the DebugJump
+      route, so they need the operator once the outdoor ones are understood. **The
+      slot-machine frame was lost to the overwriting bug and is worth one press.**
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
