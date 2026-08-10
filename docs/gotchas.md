@@ -1929,3 +1929,19 @@ From phase C part 18 (the frame rate — and none of it was work):
     One extra increment on a path that already has one, and it converts every future
     quotation from an absolute count — which means nothing across recipes — into a share,
     which means the same thing everywhere.
+247. **A cross-arm picture comparison needs an ADMISSIBILITY TEST it can actually run, and
+    a per-frame fingerprint is what makes one enforceable.** Part 25's cube-map A/B looked
+    decisive at first: matched present indices showed a mean |RGB| difference of 13-34 in
+    the gameplay era. All of it was DRIFT — the two runs are at different places at the
+    same index, because a fixed synthetic-input recipe reaches different depths on
+    different afternoons (gotcha 75). This repo's frame-stats file already carried a
+    `drawFingerprint` and a `cameraFingerprint`, so the A/B rule this project wrote down
+    sessions ago — two arms are comparable only if they are two states of ONE renderer
+    producing the SAME draw set — stops being a slogan and becomes a filter: of 301
+    matched dumped frames, 70 shared a camera and 44 shared camera AND draw set, and those
+    44 were byte-identical. **The filter also told me what the harness cannot reach**:
+    every admissible frame was under 1,800 draws, so the outdoor era contributed zero
+    comparable pairs and the null said nothing about it. Cheap rule: emit a per-frame
+    content and camera fingerprint from the renderer, then make every cross-arm claim
+    quote how many frames survived the filter. An A/B whose admissible n is not stated is
+    not an A/B.

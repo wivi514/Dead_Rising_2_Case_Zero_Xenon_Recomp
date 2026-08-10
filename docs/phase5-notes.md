@@ -3859,6 +3859,51 @@ Every log in this session says `VK_LAYER_KHRONOS_validation is NOT INSTALLED`, s
 (`sudo dnf install vulkan-validation-layers`) is the cheapest outstanding safety net this
 renderer has.
 
+### THE PICTURE A/B CAME BACK PIXEL-IDENTICAL, and that is a result about the HARNESS
+
+Four runs, two arms, same binary: cube maps bound versus `CZ_VK_NO_CUBE=1`, on the outdoor
+recipe with `CZ_VK_FRAME_DUMP`. 301 frames dumped per long arm, arm A peaking at 8,823
+draws and arm B at 9,223.
+
+**The admissibility rule did almost all the work here, and it is worth copying.** The
+naive comparison — every matched present index — reports a mean |RGB| difference of 13-34
+in the gameplay era and 0.000 in the boot era, which looks like a large effect. It is not:
+the two runs DRIFT, so at a matched index they are in different places, and this project's
+own A/B rule says two arms are comparable only if they are two states of one renderer
+producing the SAME draw set. The frame-stats file carries a `drawFingerprint` and a
+`cameraFingerprint` per frame, so the rule is enforceable rather than aspirational:
+
+| matched dumped indices | 301 |
+|---|---|
+| ...with the same **camera** fingerprint | 70 |
+| ...with the same camera **and the same draw set** | **44** |
+| median mean \|RGB\| over those 44 | **0.000 — byte-identical** |
+
+And the 44 admissible frames top out at **1,799 draws**. Every frame above 4,000 draws in
+either run has a different draw fingerprint, so **the outdoor era — where an environment
+map matters most — contributes exactly zero admissible pairs.** Of the whole run, 3,094 of
+19,279 frames share a draw fingerprint across the arms and **none of them is above 4,000
+draws.**
+
+So the honest reading is not "the cube maps changed nothing". It is: **inside the
+safehouse, at ≤1,799 draws, binding real cube maps changes no pixel; and the harness cannot
+currently produce an admissible outdoor comparison at all.** That is gotcha 242's shape for
+the third time — a statistic about the one population the instrument could reach.
+
+The null is still surprising, because cube fetches are not rare: arm B's control counter
+read **3,521,910 forced-back cube fetches against 53,882,535 draws, i.e. 6.5% of every
+draw in the run**. Two readings fit, and no amount of looking separates them — the cube
+sample never reaches the output, or it reaches it and is indistinguishable from white. So
+the next instrument is a POSITIVE CONTROL rather than another picture: `CZ_VK_CUBE_POISON=1`
+makes the cube DUMMY opaque magenta, which is what the pre-part-25 renderer's cube fetches
+read. A poisoned run that is still identical means the cube sample is discarded downstream
+and the item is mis-scoped; a frame full of magenta means the path is live and the null is
+a statement about the CONTENT of this title's cube maps.
+
+Two counters went in at the same time for the same reason — `draw: bound a REAL cube map`
+and `draw: cube fetch got the dummy` — because there was no way to tell a frame in which
+every cube bound correctly from one in which no draw asked for a cube (gotcha 151).
+
 ### One thread left open, with the measurement named
 
 `06805000` (64x64, `k_8_8_8_8`) is a cube map at an address this renderer holds a **resolve

@@ -2523,7 +2523,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // reads; but a silent disagreement would mean one of the two decodes is wrong, and
     // that is precisely the kind of thing this project has learned not to leave uncounted
     // (gotcha 3). The counter names the case rather than the fix.
-    if (t.dimension != shaderDim)
+    //
+    // NOT on the CZ_VK_NO_CUBE arm, where the caller has deliberately lied about the
+    // shader's answer: every cube fetch would then "disagree" by construction and the
+    // counter would read 3,431,182 in a ten-minute run, which is a measurement of the arm
+    // and not of the decode. An instrument that saturates under its own control arm cannot
+    // be read on either side of the A/B.
+    static const bool noCubeArm = EnvOn("CZ_VK_NO_CUBE");
+    if (t.dimension != shaderDim && !noCubeArm)
     {
         Count("texture: the SHADER and the FETCH CONSTANT disagree about the dimension");
         // MEASURED: 114 cube-declared fetches in a boot-to-gameplay run have a fetch
@@ -4670,6 +4677,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     Count("texture: shader declared an unknown dimension — bound as 2D");
                     break;
             }
+            // DID THE CUBE BINDING ACTUALLY REACH A DRAW? Counted on both sides, because
+            // the first picture A/B of this change came back pixel-identical on every
+            // admissible frame and there was no way to tell "the cube maps look like the
+            // dummy" from "no draw in these frames ever received one" (gotcha 151).
+            if (dim == 3)
+                Count(slot ? "draw: bound a REAL cube map"
+                           : "draw: cube fetch got the dummy");
             reinterpret_cast<uint32_t*>(shared + arrayBase)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
             if (psbind && psbindAt < int(sizeof psbindLine) - 96)
@@ -6362,7 +6376,25 @@ bool InitCommon()
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          VK_IMAGE_ASPECT_COLOR_BIT, type, layers, depth))
             return false;
-        const uint32_t white = 0xFFFFFFFFu;
+        // CZ_VK_CUBE_POISON=1 — make the CUBE dummy opaque MAGENTA instead of white.
+        //
+        // THE POSITIVE CONTROL, and this instrument exists because the change it tests
+        // came back invisible. Part 25's picture A/B — cube maps bound versus
+        // CZ_VK_NO_CUBE — was PIXEL-IDENTICAL on all 44 frames where both arms had the
+        // same camera and the same draw set, and a null like that has two readings that
+        // no amount of looking can separate: the cube samples do not reach the output at
+        // all, or they reach it and happen to be indistinguishable from white.
+        //
+        // Poisoning the DUMMY answers it, because the dummy is what the old renderer's
+        // cube fetches read. If a poisoned run is still identical, the cube sample is
+        // discarded somewhere downstream and the whole item is mis-scoped; if the frame
+        // fills with magenta, the path is live and the null above is a statement about
+        // the CONTENT of those cube maps. Same shape as CZ_VK_TEX_GUARD_POISON
+        // (gotcha 30) — a comparison that has never reported a positive proves nothing
+        // by reporting a negative.
+        static const bool cubePoison = EnvOn("CZ_VK_CUBE_POISON");
+        const uint32_t white =
+            (cubePoison && type == VK_IMAGE_VIEW_TYPE_CUBE) ? 0xFFFF00FFu : 0xFFFFFFFFu;
         memcpy(R->staging.mapped, &white, 4);
         RunImmediate([&](VkCommandBuffer cb) {
             Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
