@@ -433,6 +433,55 @@ Next, in order:
       route, so they need the operator once the outdoor ones are understood. **The
       slot-machine frame was lost to the overwriting bug and is worth one press.**
 
+00g. **THE ROUND-2 CAPTURES, AND WHAT THEY SETTLED.** Seven single-frame F4 traces, one
+   per defective surface, delivered 2026-08-10 with a screenshot each and the session's
+   whole `dump_shaders` output. `Xenia_Logs/R2_world/`, notes in
+   `R2_WORLD_CAPTURE_NOTES.md`, read with `tools/xtr_draw_bindings.py`.
+
+   **A single-frame trace is self-contained** — an `EdramSnapshot`, then a `MemoryRead`
+   carrying the ACTUAL SAMPLED BYTES for every texture, vertex and index buffer the frame
+   touched. It replays standalone, so a texture can be reconstructed without seeking a
+   long stream, and each file pairs unambiguously with the place it was taken. That is a
+   better artifact than the continuous stream this project asked for, and it is what the
+   next capture round should ask for.
+
+   **1. OUR SHADER COVERAGE IS COMPLETE.** All **357** distinct shaders in the capture are
+   already in our cache of 410 — zero gaps across all seven locations. (They read as 357
+   NEW at first: Xenia writes `.ucode.bin` DWORD-SWAPPED relative to the guest's
+   big-endian bytes. The hash self-test — 410 of 410 of our own dumps reproduce their own
+   filenames — is what proved the function right and sent the search to the data.)
+
+   **2. THE WHITE GROUND MATCHES HARDWARE ON EVERY INPUT.** The same draw is identifiable
+   across both stacks by shader hash and vertex count:
+
+       HARDWARE  draw 1003  verts=25234  vs_36eef2c94b4a065c  ps_ad65b98593f95926
+       OURS      draw  825  verts=25234  vs 36eef2c94b4a065c  ps ad65b98593f95926
+
+   Same bindings (two 512x512 DXT1, one 128x128 DXT1, the 4096x1024 shadow cascade twice;
+   hardware also holds constants in slots 4/6/7 that the shader's sidecar never declares).
+   The albedo hardware actually read was extracted — 131,072 bytes, exactly a 512x512
+   DXT1 — and decodes to a detailed ground atlas (mean 91, stdev 41, 1,340 distinct
+   colours). **And the render state matches**: `RB_BLENDCONTROL0 00010001`,
+   `RB_COLORCONTROL 00018004`, `RB_COLOR_MASK F`, `RB_MODECONTROL 4`, `RB_COLOR_INFO 0`,
+   and a depth control whose stencil enable is clear.
+   **Same shader, same textures, same contents, same state, different picture.** The
+   defect is in the SHADING or in the VERTEX DATA feeding it — the only input not yet
+   compared, and the one with an anomaly already recorded (two texcoord attributes at
+   different dword offsets decoding identically). The trace carries hardware's vertex
+   buffers, so that comparison is available and is the next step.
+
+   **3. OUR CUBE DECLINES FIRE ON A CONDITION HARDWARE NEVER SHOWS.** For every draw in
+   the gas-station frame where one of our 95 cube-declaring shaders is bound, the guest's
+   fetch constant reads **stack depth 5 (six faces) and dimension 3 (cube), on 414 of 414
+   draws — no disagreements at all.** Our runtime serves the white dummy to ~14,670 cube
+   fetches a run precisely BECAUSE the shader and the constant disagree, so we are
+   generating that disagreement ourselves: either our register file has lost a constant
+   the guest set, or our dimension decode misreads a case this frame does not contain.
+   **This is the mechanism behind the white glass and the blown-out bathroom window**,
+   both confirmed dummy-samplers by the magenta test — and it means the fix is upstream of
+   the decline rather than in what the decline chooses. Hardware also binds real, square
+   environment maps in those slots throughout: 32x32 and 128x128 DXT1, 64x64 and 4x4 8888.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
