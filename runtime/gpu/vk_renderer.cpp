@@ -395,6 +395,38 @@ struct DimClass
 };
 std::map<uint32_t, DimClass> g_dimClasses;  // shader-declared dimension -> the census
 
+// CZ_VK_DIM_DISAGREE=N — PRINT THE FIRST N SHADER-VERSUS-CONSTANT DISAGREEMENTS IN FULL.
+//
+// The cross-check in `UploadTexture` says a disagreement HAPPENED — ~14,670 cube fetches
+// a run declined to the white dummy because the shader indexes the cube array while the
+// fetch constant describes a 2D surface. It cannot say WHY, and the round-2 captures
+// turned that from a curiosity into a defect with a known victim: over the gas-station
+// frame, 414 of 414 cube-declared draws on HARDWARE read stack depth 5 and dimension 3,
+// with no disagreement at all (docs/open-items.md 00g). So the disagreement is ours, and
+// it is the confirmed mechanism behind the white glass and the blown-out bathroom window.
+//
+// Two candidate causes, and they need different fixes: our register file has LOST a
+// constant the guest set (so the slot holds something else — stale, or another slot's
+// texture), or our dimension DECODE misreads a case the capture does not contain. This
+// prints what separates them: the six raw dwords of the offending slot, and then the
+// whole 32-slot fetch-constant file as we hold it at that draw, so an off-by-one in the
+// slot index or a stale neighbour is visible rather than inferred.
+// The one-liners are capped, because the useful part is the CENSUS underneath them: which
+// shaders disagree, at which slot, about which texture. The first version printed only
+// the first 25 and every one of them was the same shader at the same slot on two frames —
+// which reads as "there is one case" and is equally consistent with "the cap was reached
+// inside one draw batch". A capped log line is not a count (gotcha 109), so the census is
+// unbounded and prints at shutdown.
+bool g_dimDisagree = false;
+int g_dimDisagreeLeft = 0;
+struct DimDisagree
+{
+    uint64_t psHash = 0, vsHash = 0;
+    uint32_t slot = 0, shaderDim = 0, constDim = 0, addr = 0, w = 0, h = 0, fmt = 0;
+    uint64_t fetches = 0;
+};
+std::map<uint64_t, DimDisagree> g_dimDisagreements;   // keyed on shader+slot+address
+
 // CZ_VK_STREAM_CENSUS=1|2 — what the per-frame vertex/index stream cache actually does.
 //
 // `streams` is the largest draw-path term in a real crowd (12.3-14.3% of a frame, twice
@@ -5113,6 +5145,66 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 R->lastTexW = t0.width;
                 R->lastTexH = t0.height;
             }
+            // The disagreement, printed rather than merely counted. Recomputed here and
+            // not inside UploadTexture because only this scope knows which SHADERS are
+            // bound, and a slot number means nothing without the shader that declared it.
+            if (g_dimDisagree)
+            {
+                const xenos::TextureFetch td =
+                    xenos::DecodeTextureFetch(regs, constIdx);
+                if (td.type == 2 && td.dimension != dim)
+                {
+                    uint64_t k = psBind.hash ^ (uint64_t(constIdx) << 56)
+                                 ^ (uint64_t(td.address) << 20) ^ td.dimension;
+                    DimDisagree& e = g_dimDisagreements[k];
+                    if (!e.fetches)
+                    {
+                        e.psHash = psBind.hash;
+                        e.vsHash = vsBind.hash;
+                        e.slot = constIdx;
+                        e.shaderDim = dim;
+                        e.constDim = td.dimension;
+                        e.addr = td.address;
+                        e.w = td.width;
+                        e.h = td.height;
+                        e.fmt = td.format;
+                    }
+                    ++e.fetches;
+                }
+                if (td.type == 2 && td.dimension != dim && g_dimDisagreeLeft > 0)
+                {
+                    --g_dimDisagreeLeft;
+                    const uint32_t* fc =
+                        regs + xenos::kFetchConstantBase + constIdx * 6;
+                    fprintf(stderr,
+                            "[dimdis] frame=%llu draw=%llu vs=%016llx ps=%016llx "
+                            "slot=%u shaderDim=%u constDim=%u depth=%u addr=%08X "
+                            "%ux%u fmt=%u | %08X %08X %08X %08X %08X %08X\n",
+                            (unsigned long long)R->frame,
+                            (unsigned long long)R->drawsThisFrame,
+                            (unsigned long long)vsBind.hash,
+                            (unsigned long long)psBind.hash, constIdx, dim,
+                            td.dimension, td.depth, td.address, td.width, td.height,
+                            td.format, fc[0], fc[1], fc[2], fc[3], fc[4], fc[5]);
+                    // THE WHOLE FILE, because the two candidate causes differ in what the
+                    // OTHER slots hold. A lost constant leaves the slot reading as some
+                    // neighbour's 2D texture; a decode error leaves a slot somewhere that
+                    // does read as a cube. Either is visible here and neither is
+                    // inferable from the offending slot alone.
+                    for (uint32_t s = 0; s < 32; s++)
+                    {
+                        const xenos::TextureFetch o =
+                            xenos::DecodeTextureFetch(regs, s);
+                        if (o.type != 2 || !o.address)
+                            continue;
+                        fprintf(stderr,
+                                "[dimdis]     s%-2u %08X %4ux%-4u fmt=%-3u dim=%u "
+                                "depth=%u tiled=%u\n",
+                                s, o.address, o.width, o.height, o.format, o.dimension,
+                                o.depth, o.tiled ? 1u : 0u);
+                    }
+                }
+            }
             if (g_dimCensus)
             {
                 DimClass& c = g_dimClasses[dim];
@@ -7038,6 +7130,11 @@ bool InitCommon()
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
+    if (const char* n = Env("CZ_VK_DIM_DISAGREE"))
+    {
+        g_dimDisagree = true;
+        g_dimDisagreeLeft = atoi(n);       // how many get printed as they happen
+    }
     g_texGuard = EnvOn("CZ_VK_TEX_GUARD");
     g_texRevalidate = EnvOn("CZ_VK_TEX_REVALIDATE");
     g_texGuardPoison = EnvOn("CZ_VK_TEX_GUARD_POISON");
@@ -8286,6 +8383,33 @@ void VkRenderer_DumpStats()
                                 sep);
                 }
             }
+    }
+
+    // WHICH SHADERS DISAGREE WITH THEIR OWN FETCH CONSTANTS, and about which texture.
+    // Unbounded, unlike the per-occurrence print above, because the population is the
+    // question: one shader disagreeing about one placeholder texture and fifty shaders
+    // disagreeing about fifty real ones are the same counter and completely different
+    // defects. Compare the shader hashes here against `tools/xtr_cube_agreement.py` on a
+    // capture — a shader that disagrees here and agrees there is OUR register file; a
+    // shader that appears in no capture is a case hardware has never been asked about.
+    if (g_dimDisagree)
+    {
+        static const char* kDimName[4] = { "1D", "2D", "3D", "Cube" };
+        uint64_t total = 0;
+        for (const auto& [k, e] : g_dimDisagreements)
+            total += e.fetches;
+        fprintf(stderr,
+                "[vk]   shader/constant dimension disagreements: %llu fetches over %zu "
+                "distinct (shader, slot, texture) cases\n",
+                (unsigned long long)total, g_dimDisagreements.size());
+        for (const auto& [k, e] : g_dimDisagreements)
+            fprintf(stderr,
+                    "[vk]     ps=%016llx vs=%016llx s%-2u shader=%-4s constant=%-4s "
+                    "%08X %ux%u fmt=%u  x%llu\n",
+                    (unsigned long long)e.psHash, (unsigned long long)e.vsHash, e.slot,
+                    e.shaderDim < 4 ? kDimName[e.shaderDim] : "?",
+                    e.constDim < 4 ? kDimName[e.constDim] : "?", e.addr, e.w, e.h, e.fmt,
+                    (unsigned long long)e.fetches);
     }
 
     // The texture-content guard. The question is the operator's: is a draw being served
