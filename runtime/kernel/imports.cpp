@@ -3719,6 +3719,7 @@ constexpr uint16_t XINPUT_GAMEPAD_START = 0x0010;
 // rather than with the other DebugTunables_* forward declarations further down, because
 // this is the one of them the SYNTHETIC INPUT arm reads and it is used above them.
 uint32_t DebugTunables_ScreenRequestsServiced();
+bool DebugTunables_WantAutoBack();
 
 static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                                    GuestInputState* state)
@@ -4054,7 +4055,13 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         }
     }
 
-    const uint16_t outButtons = active ? entry.mask : uint16_t(0);
+    // B, injected to close the screen AutoChuck opens by itself. B and not BACK: BACK is
+    // what OPENS the map on a 360 pad, so pressing it again was asking the game to open a
+    // screen that was already open. ORed in rather than replacing the entry, so it cannot
+    // swallow a press the recipe meant to make.
+    const uint16_t autoClose =
+        DebugTunables_WantAutoBack() ? uint16_t(0x2000) : uint16_t(0);
+    const uint16_t outButtons = uint16_t((active ? entry.mask : uint16_t(0)) | autoClose);
     const int16_t outLX = active ? entry.lx : int16_t(0);
     const int16_t outLY = active ? entry.ly : int16_t(0);
     const int16_t outRX = active ? entry.rx : int16_t(0);
@@ -4074,6 +4081,24 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
             KLOG("CZ_FAKE_START_MS: synthetic %s %s at %llds (packet %u)\n", entry.name,
                  active ? "DOWN" : "up", static_cast<long long>(elapsedMs / 1000), n);
     }
+    // DID A BACK EVER REACH THE GUEST? The map screen is BACK on a 360 pad, and it opens
+    // by itself two minutes into an AutoChuck run — under EXPLORER while roaming, so it is
+    // not the objective-driven promotion to MISSION MASTER that the first explanations
+    // blamed. Either the title opens that screen on its own, or something here is handing
+    // it a button nobody pressed, and those need completely different fixes.
+    //
+    // This is the cheap half of the answer and it costs one mask test. It should never
+    // fire while a recipe is parked on NONE; if it does, the input path is the culprit and
+    // the AI is innocent.
+    if (outButtons & 0x0020)
+    {
+        static uint64_t backs = 0;
+        if (backs++ == 0)
+            KLOG("CZ_FAKE_PRESS_SEQ: BACK delivered to the guest at %llds (entry \"%s\") — "
+                 "the map screen is BACK, so an unexplained one here would mean the INPUT "
+                 "path opens it, not the title\n",
+                 static_cast<long long>(elapsedMs / 1000), entry.name);
+    }
     state->packetNumber = packet.load();
     state->gamepad.buttons = outButtons;
     state->gamepad.thumbLX = outLX;
@@ -4087,6 +4112,7 @@ void DebugTunables_RequestDebugJump(PPCContext& ctx, uint8_t* base);
 void DebugTunables_RequestDebugEnter(PPCContext& ctx, uint8_t* base);
 void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base);
 void DebugTunables_PumpPendingScreen(PPCContext& ctx, uint8_t* base);
+void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base);
 void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base);
 
 // Rumble. Accepted and discarded: there is no motor, and reporting failure would
@@ -4153,6 +4179,11 @@ PPC_FUNC(__imp__XamInputGetState)
     // fires at a fixed wall-clock offset against a boot whose depth in fixed time is a
     // distribution, so "press it at the right moment" is not something a recipe can do.
     DebugTunables_PumpPendingScreen(ctx, base);
+    // CZ_AUTOCHUCK=<state> — hands Chuck to the AI as soon as a level exists, replacing
+    // "F4, arrow to AUTOCHUCK, Right, arrow to the state, Enter". The F4 overlay is driven
+    // by SDL keyboard events and so is unreachable headlessly; this drives the same guest
+    // writes the menu item does.
+    DebugTunables_PumpAutoChuck(ctx, base);
     DebugTunables_PumpDebugMenu(ctx, base);
 
     ctx.r3.u64 = result;

@@ -81,10 +81,12 @@
 // two scans rather than reusing these constants: find the (addi/stb) pairs in the
 // loader, then confirm each with its `lbz` readers.
 #include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -325,6 +327,39 @@ static void ShowDebugMenuRoot(uint8_t* base)
     PublishDebugMenuLabels(base);
 }
 
+// Put Chuck under AI control in one of the seven states, WITHOUT the menu.
+//
+// Lifted verbatim out of the menu handler so the two paths cannot drift: it is the
+// retained handler at 0x8240A2CC exactly — raise the gate at 0x82A586DB, call AutoChuck's
+// vtable +0x14 initializer once, then write the state to +0x70 and clear +0x5E5C.
+//
+// Returns false when the gameplay debug controller has not been constructed yet, which is
+// the normal state until a level is actually running. That is why `CZ_AUTOCHUCK` is
+// applied by a PUMP rather than at startup: "when the game loads" is not a moment the
+// runtime can name in advance, and the same problem produced the held DebugJump request.
+static bool SetAutoChuckState(PPCContext& ctx, uint8_t* base, uint32_t state,
+                              bool announce = true)
+{
+    const uint32_t autoChuck =
+        g_gameDebugController ? PPC_LOAD_U32(g_gameDebugController + 0x30) : 0;
+    if (!autoChuck)
+        return false;
+    if (!PPC_LOAD_U8(0x82A586DB))
+    {
+        PPC_STORE_U8(0x82A586DB, 1);
+        ctx.r3.u64 = autoChuck;
+        const uint32_t method = PPC_LOAD_U32(PPC_LOAD_U32(autoChuck) + 0x14);
+        ctx.ctr.u64 = method;
+        PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+    }
+    PPC_STORE_U32(autoChuck + 0x70, state);
+    PPC_STORE_U8(autoChuck + 0x5E5C, 0);
+    if (announce)
+        fprintf(stderr, "[debug] AutoChuck -> state %u (%s), object %08X\n", state,
+                kAutoChuckStates[state], autoChuck);
+    return true;
+}
+
 static void ShowAutoChuckMenu(uint8_t* base)
 {
     g_currentMenu = -2;
@@ -425,6 +460,35 @@ static PendingScreen g_pendingScreen;
 // jump landed at 131 s and DOWN had already fired at 128 s.
 static std::atomic<uint32_t> g_screenRequestsServiced{ 0 };
 
+// AUTO-CLOSE THE SCREEN AUTOCHUCK OPENS BY ITSELF.
+//
+// Measured, not guessed: with EXPLORER held and no synthetic input for over two minutes,
+// the title requests two screens of its own at the same instant the map appears —
+// 06903E1A and 890DF3E5 — and the BACK-delivered counter reads 0 throughout, so nothing in
+// our input path did it. Those two hashes are therefore the map, and they are the default
+// here; `CZ_AUTOCHUCK_CLOSE_HASHES=hex,hex` overrides the list and an empty value disables
+// the whole mechanism.
+//
+// Closing it means pressing BACK, which is what a player does — not unwinding the frontend
+// ourselves, because a screen stack we did not push is not one we should be popping. The
+// press is injected through the same XamInputGetState the guest already reads, so it is
+// indistinguishable from a real one and needs no new path.
+static std::atomic<bool> g_autoChuckHeld{ false };
+static std::atomic<long long> g_autoBackFromMs{ -1 };
+static std::atomic<long long> g_autoBackUntilMs{ -1 };
+static std::atomic<uint64_t> g_autoBackCount{ 0 };
+static long long g_autoBackLastMs = -1000000;
+// How long to let the screen settle before pressing, and how long to hold. The delay is
+// the operator's observation: the map may not accept a close on the frame it opens, and a
+// press that lands too early is indistinguishable from one that was never sent.
+static long long AutoCloseDelayMs()
+{
+    static const long long v =
+        getenv("CZ_AUTOCHUCK_CLOSE_DELAY_MS")
+            ? strtoll(getenv("CZ_AUTOCHUCK_CLOSE_DELAY_MS"), nullptr, 10) : 1200;
+    return v;
+}
+
 // Seconds since process start, on every line this file prints about a screen request.
 // A synthetic recipe has to place its menu presses AFTER the jump lands, and the jump
 // lands whenever the frontend gets round to it — so "when did it land" is the one number
@@ -441,6 +505,17 @@ static const auto g_debugEpoch = std::chrono::steady_clock::now();
 static long long DebugElapsedSeconds()
 {
     return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::steady_clock::now() - g_debugEpoch)
+        .count();
+}
+
+// Milliseconds since the same epoch. The auto-close window is "wait a beat, then hold the
+// button briefly", and both halves are sub-second — expressed against the SECONDS helper
+// they quantise to 0 or 1000 ms and the press either never happens or lasts a whole
+// second. A timing window needs a clock finer than the window.
+static long long DebugElapsedMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now() - g_debugEpoch)
         .count();
 }
@@ -502,6 +577,254 @@ void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base)
 // usable context — which is why it cannot simply be done inside the transition hook that
 // captures the manager, where re-entering the frontend would run a screen change from
 // inside a screen change.
+// CZ_AUTOCHUCK=<state> — hand Chuck to the AI as soon as a level is running, with no menu
+// navigation at all.
+//
+// The F4 debug menu can do this, but only through the HOST overlay, which is driven by SDL
+// keyboard events — so it is unreachable from a headless run and from `CZ_FAKE_PRESS_SEQ`,
+// which speaks pad buttons and the F2/F3/F4 edges but not overlay navigation. Rather than
+// build a second synthetic-input path into the overlay, this drives the same guest writes
+// the menu item does. One env var replaces "F4, arrow to AUTOCHUCK, Right, arrow to the
+// state, Enter".
+//
+// Accepts a state NAME (case- and space-insensitive: `EXPLORER`, `mission master`), an
+// INDEX 0..6, or `OFF`. An unrecognised value is refused loudly with the list, because a
+// silently ignored setting looks exactly like an AI that did not engage.
+//
+// A SCHEDULE, not just a state: `CZ_AUTOCHUCK="ITEM PICKER@0,ZOMBIE KILLER@180"` roams
+// picking up items for three minutes and then switches to fighting. That shape exists
+// because one state is rarely the right test on its own — a roamer covers ground and shows
+// many textures but stalls once it runs out of objectives (EXPLORER walks to the ambulance
+// and then opens the map), while a fighter stays in a crowd but never leaves it. `@seconds`
+// is measured from the moment the AI first engages on the CURRENT level, not from process
+// start, so a schedule means the same thing however long the boot took (gotcha 75).
+//
+// Applied by a pump, not at startup: it needs the gameplay debug controller, which does not
+// exist until a level is actually running. And it RE-APPLIES whenever the world under it
+// changes — a different AutoChuck object, or another screen request serviced — because the
+// first version fired once at 6 s against the controller that already exists at the MENU,
+// and the DebugJump level then loaded on top of it. A new screen request also restarts the
+// schedule, since a fresh level is a fresh test.
+struct AutoChuckStep
+{
+    int state;          // -1 = OFF, 0..6 = a state
+    long long atSeconds;
+};
+
+static void PumpAutoChuckFromEnvironment(PPCContext& ctx, uint8_t* base)
+{
+    static const char* want = getenv("CZ_AUTOCHUCK");
+    static bool refused = want == nullptr;
+    if (refused)
+        return;
+
+    static std::vector<AutoChuckStep> schedule;
+    static bool parsed = false;
+    if (!parsed)
+    {
+        parsed = true;
+        auto squash = [](const std::string& in) {
+            std::string out;
+            for (char c : in)
+                if (!isspace(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+                    out.push_back(char(toupper(static_cast<unsigned char>(c))));
+            return out;
+        };
+        const std::string all(want);
+        size_t at = 0;
+        while (at <= all.size())
+        {
+            const size_t comma = std::min(all.find(',', at), all.size());
+            std::string item = all.substr(at, comma - at);
+            at = comma + 1;
+            if (item.empty())
+                continue;
+            long long when = 0;
+            const size_t sep = item.find('@');
+            if (sep != std::string::npos)
+            {
+                when = strtoll(item.c_str() + sep + 1, nullptr, 10);
+                item = item.substr(0, sep);
+            }
+            const std::string w = squash(item);
+            int state = -2;
+            if (w == "OFF")
+                state = -1;
+            else if (w.size() == 1 && w[0] >= '0' && w[0] <= '6')
+                state = w[0] - '0';
+            else
+                for (uint32_t i = 0; i < 7; i++)
+                    if (squash(kAutoChuckStates[i]) == w)
+                    {
+                        state = int(i);
+                        break;
+                    }
+            if (state == -2)
+            {
+                fprintf(stderr, "[debug] CZ_AUTOCHUCK: \"%s\" is not a state. Use OFF, 0..6, "
+                                "or one of:", item.c_str());
+                for (uint32_t i = 0; i < 7; i++)
+                    fprintf(stderr, " %s%s", kAutoChuckStates[i], i == 6 ? "" : ",");
+                fprintf(stderr, "   (each entry may carry @SECONDS)\n");
+                refused = true;
+                return;
+            }
+            schedule.push_back({ state, when });
+        }
+        if (schedule.empty())
+        {
+            refused = true;
+            return;
+        }
+        // Sorted by time so the "which step is current" search below is a simple scan, and
+        // so an out-of-order schedule does what it says rather than what it was typed as.
+        std::sort(schedule.begin(), schedule.end(),
+                  [](const AutoChuckStep& a, const AutoChuckStep& b) {
+                      return a.atSeconds < b.atSeconds;
+                  });
+        fprintf(stderr, "[debug] CZ_AUTOCHUCK schedule:");
+        for (const auto& st : schedule)
+            fprintf(stderr, " %s@%llds", st.state < 0 ? "OFF" : kAutoChuckStates[st.state],
+                    st.atSeconds);
+        fprintf(stderr, "  (seconds from the AI first engaging on this level)\n");
+    }
+
+    const uint32_t objectNow =
+        g_gameDebugController ? PPC_LOAD_U32(g_gameDebugController + 0x30) : 0;
+    const uint32_t screensNow = g_screenRequestsServiced.load(std::memory_order_acquire);
+    static uint32_t appliedObject = 0;
+    static uint32_t appliedScreens = 0xFFFFFFFFu;
+    static long long epoch = -1;
+    static int appliedStep = -1;
+
+    // A fresh level restarts the schedule, and re-arms the first step.
+    if (objectNow != appliedObject || screensNow != appliedScreens)
+    {
+        epoch = -1;
+        appliedStep = -1;
+    }
+
+    if (epoch < 0)
+    {
+        // Not engaged yet. The first step decides when the clock starts, so an @0 step
+        // engages as soon as a level exists.
+        if (schedule.front().state >= 0 &&
+            !SetAutoChuckState(ctx, base, uint32_t(schedule.front().state)))
+            return;   // no controller yet — try again on the next poll
+        if (schedule.front().state < 0)
+        {
+            PPC_STORE_U8(0x82A586DB, 0);
+            if (objectNow)
+            {
+                PPC_STORE_U32(objectNow + 0x70, 0);
+                PPC_STORE_U8(objectNow + 0x5E5C, 0);
+            }
+        }
+        epoch = DebugElapsedSeconds();
+        appliedStep = 0;
+        g_autoChuckHeld.store(schedule.front().state >= 0, std::memory_order_release);
+        appliedObject = objectNow;
+        appliedScreens = screensNow;
+        fprintf(stderr, "[debug] CZ_AUTOCHUCK: %s engaged at %llds (object %08X, after %u "
+                        "screen request(s)) — Chuck is under AI control; this run's "
+                        "movement is SYNTHETIC and its progress is not evidence\n",
+                schedule.front().state < 0 ? "OFF"
+                                           : kAutoChuckStates[schedule.front().state],
+                epoch, objectNow, screensNow);
+        return;
+    }
+
+    // HOLD THE STATE, because the title's own AI changes it underneath us.
+    //
+    // Measured, not assumed: we wrote state 1 (ITEM PICKER) at 6 s and again at 28 s, and
+    // a live read of the running process an hour later found 4 (MISSION MASTER), stable.
+    // We never write 4. So `CZ_AUTOCHUCK` was only ever setting the INITIAL state and the
+    // AI promoted itself — which is why every state looked identical from the outside:
+    // each one walked to the ambulance objective and waited there, because by then it was
+    // MISSION MASTER. Two of my explanations for that (EXPLORER running out of waypoints,
+    // a stray synthetic A press opening the map) were wrong for the same reason.
+    //
+    // Re-asserting on every poll is cheap — the gate is already up, so it is two stores —
+    // and it is COUNTED, because "the AI overrode us 4,000 times a minute" and "once" are
+    // completely different facts about this title's debug AI and only the number tells
+    // them apart. `CZ_AUTOCHUCK_NO_HOLD=1` restores set-once, which is the control arm.
+    static const bool noHold = getenv("CZ_AUTOCHUCK_NO_HOLD") != nullptr;
+    static uint64_t overrides = 0;
+    static long long lastOverrideLog = -1;
+    if (!noHold && appliedStep >= 0 && schedule[size_t(appliedStep)].state >= 0 && objectNow)
+    {
+        const uint32_t desired = uint32_t(schedule[size_t(appliedStep)].state);
+        if (PPC_LOAD_U32(objectNow + 0x70) != desired)
+        {
+            SetAutoChuckState(ctx, base, desired, false);
+            ++overrides;
+            const long long now = DebugElapsedSeconds();
+            if (lastOverrideLog < 0 || now - lastOverrideLog >= 15)
+            {
+                lastOverrideLog = now;
+                fprintf(stderr, "[debug] CZ_AUTOCHUCK: the title's AI has changed the state "
+                                "away from %s %llu time(s); re-asserting (CZ_AUTOCHUCK_NO_HOLD=1 "
+                                "to let it win)\n",
+                        kAutoChuckStates[desired], (unsigned long long)overrides);
+            }
+        }
+    }
+
+    // Which step the schedule is on now.
+    const long long since = DebugElapsedSeconds() - epoch;
+    int want_step = 0;
+    for (size_t i = 0; i < schedule.size(); i++)
+        if (since >= schedule[i].atSeconds)
+            want_step = int(i);
+    if (want_step == appliedStep)
+        return;
+
+    const AutoChuckStep& st = schedule[size_t(want_step)];
+    if (st.state < 0)
+    {
+        PPC_STORE_U8(0x82A586DB, 0);
+        if (objectNow)
+        {
+            PPC_STORE_U32(objectNow + 0x70, 0);
+            PPC_STORE_U8(objectNow + 0x5E5C, 0);
+        }
+    }
+    else if (!SetAutoChuckState(ctx, base, uint32_t(st.state)))
+        return;
+    appliedStep = want_step;
+    g_autoChuckHeld.store(st.state >= 0, std::memory_order_release);
+    fprintf(stderr, "[debug] CZ_AUTOCHUCK: step %d -> %s at %llds (%llds into the level)\n",
+            want_step, st.state < 0 ? "OFF" : kAutoChuckStates[st.state],
+            DebugElapsedSeconds(), since);
+}
+
+void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
+{
+    PumpAutoChuckFromEnvironment(ctx, base);
+}
+
+// True while a BACK should be injected to close a screen AutoChuck opened. Read from the
+// input arm on a guest thread.
+bool DebugTunables_WantAutoBack()
+{
+    const long long until = g_autoBackUntilMs.load(std::memory_order_acquire);
+    if (until < 0)
+        return false;
+    const long long now = DebugElapsedMs();
+    if (now > until)
+    {
+        g_autoBackUntilMs.store(-1, std::memory_order_release);
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[debug] AutoChuck close: B released\n");
+        }
+        return false;
+    }
+    return now >= g_autoBackFromMs.load(std::memory_order_acquire);
+}
+
 // The barrier's predicate. Read from the synthetic-input arm on a guest thread.
 uint32_t DebugTunables_ScreenRequestsServiced()
 {
@@ -649,32 +972,8 @@ void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base)
     {
         if (action != 1)
             return;
-        const uint32_t autoChuck = g_gameDebugController
-            ? PPC_LOAD_U32(g_gameDebugController + 0x30) : 0;
-        if (!autoChuck)
-        {
-            fprintf(stderr, "[debug] AutoChuck unavailable: gameplay debug controller "
-                            "has not been constructed\n");
-            return;
-        }
-
-        // This is the retained handler at 0x8240A2CC exactly: raise its gate, then
-        // call AutoChuck's vtable +0x14 initializer. The adjacent handler states are
-        // direct writes to +0x70 and clear +0x5E5C.
-        if (!PPC_LOAD_U8(0x82A586DB))
-        {
-            PPC_STORE_U8(0x82A586DB, 1);
-            ctx.r3.u64 = autoChuck;
-            const uint32_t method = PPC_LOAD_U32(PPC_LOAD_U32(autoChuck) + 0x14);
-            ctx.ctr.u64 = method;
-            PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
-        }
-        const uint32_t state = node - kAutoChuckBase;
-        PPC_STORE_U32(autoChuck + 0x70, state);
-        PPC_STORE_U8(autoChuck + 0x5E5C, 0);
-        fprintf(stderr, "[debug] AutoChuck -> state %u (%s), object %08X\n",
-                state, kAutoChuckStates[state], autoChuck);
-        PublishDebugMenuLabels(base);
+        if (SetAutoChuckState(ctx, base, node - kAutoChuckBase))
+            PublishDebugMenuLabels(base);
         return;
     }
 
@@ -947,9 +1246,64 @@ PPC_FUNC(sub_824A2470)
 
 // Record the real manager on every native screen transition, then preserve the
 // original behaviour unchanged. This also catches the explicit F2 request itself.
+// EVERY screen transition passes through here, ours and the title's own — which makes it
+// the place to learn what the AI is doing behind our back.
+//
+// AutoChuck opens the map about two minutes into a roam and parks the run on it. The input
+// path is NOT the source: a counter on BACK delivered to the guest reads 0 while the map
+// opens, and no synthetic input is sent at all for the two minutes before it. So the title
+// requests that screen itself, and the only way to close it automatically is to recognise
+// it. r4 is the screen HASH the frontend was asked for; logging the distinct ones with a
+// timestamp is what lets the map's hash be identified from a run rather than guessed.
 PPC_FUNC(sub_827F6D40)
 {
     g_frontendTransitionManager = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    if (getenv("CZ_SCREEN_TRACE"))
+    {
+        static std::vector<uint32_t> seen;
+        const bool isNew = std::find(seen.begin(), seen.end(), hash) == seen.end();
+        if (isNew)
+            seen.push_back(hash);
+        fprintf(stderr, "[screen] transition -> hash %08X at %llds%s\n", hash,
+                DebugElapsedSeconds(), isNew ? "   <-- FIRST TIME" : "");
+    }
+    // Only while an AutoChuck state is being held: an unattended AI run is the one case
+    // where nobody is there to close it, and a player who opened the map deliberately
+    // would not thank us for shutting it.
+    if (g_autoChuckHeld.load(std::memory_order_acquire))
+    {
+        static const std::vector<uint32_t> closeHashes = [] {
+            std::vector<uint32_t> v;
+            const char* e = getenv("CZ_AUTOCHUCK_CLOSE_HASHES");
+            if (!e)
+                return std::vector<uint32_t>{ 0x06903E1Au, 0x890DF3E5u };
+            for (const char* p = e; *p;)
+            {
+                char* end = nullptr;
+                const unsigned long h = strtoul(p, &end, 16);
+                if (end == p)
+                    break;
+                v.push_back(uint32_t(h));
+                p = (*end == ',') ? end + 1 : end;
+            }
+            return v;
+        }();
+        const long long now = DebugElapsedSeconds();
+        if (std::find(closeHashes.begin(), closeHashes.end(), hash) != closeHashes.end() &&
+            now - g_autoBackLastMs >= 3)   // one press per screen, not per transition
+        {
+            g_autoBackLastMs = now;
+            const long long from = DebugElapsedMs() + AutoCloseDelayMs();
+            g_autoBackFromMs.store(from, std::memory_order_release);
+            g_autoBackUntilMs.store(from + 500, std::memory_order_release);
+            const uint64_t n = g_autoBackCount.fetch_add(1) + 1;
+            fprintf(stderr, "[debug] AutoChuck opened screen %08X at %llds — pressing B in "
+                            "%lldms to close it (%llu so far; CZ_AUTOCHUCK_CLOSE_HASHES= to "
+                            "disable, CZ_AUTOCHUCK_CLOSE_DELAY_MS=N to retime)\n",
+                    hash, now, AutoCloseDelayMs(), (unsigned long long)n);
+        }
+    }
     __imp__sub_827F6D40(ctx, base);
 }
 
