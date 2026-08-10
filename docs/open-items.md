@@ -450,6 +450,54 @@ Next, in order:
    `~/DR2CZ-troubleshooting/r2-shaders/shader_D007C18389DF0E55.ucode.frag`, 187 lines,
    located by hashing the dword-swapped `.ucode.bin` (gotcha 261).
 
+   **PART 27, FROM THE OPERATOR'S NIGHT CAPTURES: THE WHITE IS A CONSTANT, AND ITS VALUE
+   IS rgb(180,180,180).** This is the sharpest the item has ever been and it came from two
+   things the earlier work did not have — `DISABLE TIME OF DAY`, which put the world at
+   night so an unlit surface stops hiding in a lit scene, and `CZ_CAPTURE_KEY`, which
+   captures the picture, the census and all 67 resolve snapshots of ONE frame.
+
+   * **The surfaces are not modulated by scene lighting at all.** In the slot-machine room
+     90.1% of the presented frame is at or below luma 40 and 5.91% is fully saturated
+     255,255,255. The cabinets are pure white in a pitch-black room. A reflection term
+     multiplied by a white cube map would go dark when the sun does; these do not.
+   * **In the SCENE buffer they are one exact colour.** `0684B000`, the slot-machine
+     frame: **52,840 pixels at exactly rgb(180,180,180) — 5.73% — and the next most common
+     colour above luma 150 has TWO pixels.** That is a plateau, not a bright surface.
+   * **The same constant at every one of the seven locations**, 1.81% to 15.36% of the
+     frame, and in five of the seven the whole 1280x720 buffer never exceeds 180:
+
+     | frame | place | scene mean | scene max | px at exactly (180,180,180) |
+     |---|---|---|---|---|
+     | 2714 | w1_spawn | 50.5 | 180 | 141,564 (15.36%) |
+     | 4833 | w3_pawnshop | 48.5 | 180 | 114,381 (12.41%) |
+     | 6363 | w6_register_door | 26.4 | 180 | 63,562 (6.90%) |
+     | 5409 | w2_gasstation | 36.1 | 255 | 53,256 (5.78%) |
+     | 6668 | w7_slotmachine | 27.2 | 180 | 52,840 (5.73%) |
+     | 7103 | w4_bathroom | 20.2 | 255 | 15,822 (1.72%) |
+     | 4350 | w5_newsboxes | 36.5 | 180 | 16,692 (1.81%) |
+
+   * **The tone map then maps 180 to exactly 255**, and it is faithful in doing so: 96.1%
+     of the presented frame's white pixels were already >= 150 in the scene buffer, with
+     scene luma mean 173 and **max exactly 180**. So the tone map is the AMPLIFIER and not
+     the cause — part 26's "it is not the tone map" survives, but its supporting sentence
+     ("the white is already in the scene buffer, whose maximum is 180") was describing this
+     plateau without recognising it as one.
+
+   **THE ARITHMETIC, AND THE PREDICTION IT MAKES.** 180/255 = 0.70588, and sqrt(0.5) =
+   0.70711, i.e. **255 * sqrt(0.5) = 180.3**. A shader writing a literal **0.5** into a
+   surface encoded with **gamma 2.0** lands on exactly 180. sRGB does not fit — it would
+   give 188 — so if this is the mechanism it is the Xenos `k_8_8_8_8_GAMMA` encode and not
+   a general sRGB one. **Predicts: the pixel shaders for these surfaces write a constant
+   0.5 down a path our translation takes and hardware does not**, and that the same draws
+   on hardware write a shaded value. Refutable by reading
+   `ps_ad65b98593f95926` (the ground) against the capture's own disassembly, and by
+   `CZ_VK_DRAW_PROBE` on a slot-machine draw.
+
+   **What this retires:** everything that depends on the surfaces being *shaded too
+   brightly*. They are not shaded at all. Any hypothesis of the form "term X is too large"
+   is dead — the output is a constant that does not vary with lighting, time of day,
+   location or camera.
+
    **NEXT, in order**
    0. **The character cube fetches that are declined** — 0.28%, visible on the crowd, and
       the only part of this item with a mechanism. Decide what the honest fallback is: our
