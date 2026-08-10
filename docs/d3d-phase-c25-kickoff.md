@@ -82,9 +82,12 @@ question is open and belongs to the operator.
 
    What part 26 still owes on it is the thing it was built FOR: re-run the cube-map A/B
    (and the shadow/mipmap/colour ones) on this route and check how many frames now survive
-   the `drawFingerprint`/`cameraFingerprint` filter. Standing still rather than AutoChuck
-   should hold the camera matched across arms for long stretches. **Until that count is
-   quoted, nothing outdoors has been compared yet** — the route existing is not the same as
+   the `drawFingerprint`/`cameraFingerprint` filter. **Do NOT assume standing still keeps the
+   camera matched — measured, 300 of 300 tail frames had distinct camera fingerprints with
+   no input at all.** Whether two arms match depends on the engine being deterministic from
+   the WAITJUMP anchor, which is untested; measure that FIRST (two runs of one config,
+   count frames sharing a fingerprint). **Until that count is quoted, nothing outdoors has
+   been compared yet** — the route existing is not the same as
    the comparison being admissible.
 
    The original statement and the operator's route, kept because the reasoning is the
@@ -103,8 +106,8 @@ question is open and belongs to the operator.
    **Why this is the right shape and not just a shortcut:** it replaces 57 fixed 8-second
    stick steps against a drifting boot with a handful of discrete menu presses to a NAMED
    destination, which is what would let two arms land in the same place — and matched draw
-   sets are the entire admissibility problem. Standing still is even better: a stationary
-   camera should make `cameraFingerprint` match across arms for long stretches.
+   sets are the entire admissibility problem. (An early guess that standing still would hold
+   the camera matched is RETRACTED — see the measurement above.)
 
    **What it took, all of it now built and each step found by a run that failed loudly:**
    * F2 was a keyboard key, so the three debug edges moved OUTSIDE the `CZ_HAVE_SDL`

@@ -34,8 +34,13 @@ Next, in order:
       recipe is in `CLAUDE.md`'s Commands section.
       **What is NOT yet done is the thing it was built for**: re-run this item's A/B on
       that route and QUOTE how many frames survive the
-      `drawFingerprint`/`cameraFingerprint` filter. Standing still rather than AutoChuck
-      should hold the camera matched across arms. A route existing is not a comparison
+      `drawFingerprint`/`cameraFingerprint` filter. **Do NOT assume standing still keeps the
+      camera matched — it does not.** Measured on the DebugJump route: 300 of 300 frames in
+      a tail sample had DISTINCT camera fingerprints with no input at all (idle sway, crowd
+      motion). Whether two arms match therefore depends on the engine being deterministic
+      from the WAITJUMP anchor, which is untested. Measure that first — two runs of one
+      config, count frames sharing a fingerprint — because if it is near zero, no amount of
+      recipe work fixes it and the filter itself needs rethinking. A route existing is not a comparison
       being admissible, and until that count is quoted nothing outdoors has been compared.
 
    See "what part 25 did" at the end of this item.
