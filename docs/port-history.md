@@ -1437,6 +1437,35 @@ output device.
 down from 64 / 5, both pipeline-creation rather than per-draw. Not re-run and owed: the A5
 kernel-call diff, `truncated=0`, the PM4 capture oracles, the capture-E correlation.
 
+### Part 26, second half — the operator drove it, and the captures answered
+
+The first half of this entry is the cube snapshot path and the measurement work. The rest
+of the session was an operator at the keyboard, and it changed what the part is about.
+
+**A class of picture defects was reported and is OURS**: flat-white ground patches, white
+props, blown-out glass and windows. The operator has played the title on Xenia and none of
+them are wrong there — the check nobody had run, and it should have been first.
+
+**Seven hypotheses refuted, each by a measurement**, three of them mine and each costing a
+run: the tone map (the white is in the scene buffer, max 180 not 255), a missing texture
+(three real DXT1s at real slots), constant UVs (the probe shows them varying), the white
+dummy (all four heaps poisoned magenta — the ground stayed white), the clear colour
+(`RB_COLOR_CLEAR` is black), the EDRAM format (`rtFmt=0` on 600 of 600 passes), and a
+flat-decoding texture (a new uniform-upload counter finds nine, none of them the ground's).
+
+**Two instruments were built for the operator and both had defects found by USING them**:
+`CZ_VK_DRAW_CENSUS` truncated its lines silently at 512 bytes (105-215 lines of every
+census, and "zero dummy binds" was about to be published off it) and overwrote itself on
+every press (one captured frame was lost). F9 itself came from the operator, mid-run,
+standing on a defect waiting for a frame counter to reach a number chosen in advance.
+
+**Then round-2 captures**: seven self-contained single-frame traces, one per surface. They
+established that our shader coverage is complete (357/357), that the white ground matches
+hardware on shader, textures, texture CONTENTS and render state — leaving the vertex data
+as the only uncompared input — and that our cube declines fire on a disagreement hardware
+never exhibits (414 of 414 cube-declared draws agree perfectly). Details in open items 00f
+and 00g; the reusable half is gotchas 254-261.
+
 ## Phase C part 25 (2026-08-10) — cube maps bound, and the effect measured absent indoors
 
 Open item 00, the top picture item since part 23: 92 of the cache's 397 shaders sample
