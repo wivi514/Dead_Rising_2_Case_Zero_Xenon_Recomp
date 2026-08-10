@@ -22,26 +22,34 @@ Next, in order:
       near-white (small DXT1 environment maps, interior scene), or the surfaces sampling
       them are not on screen indoors. The outdoor era is exactly what item 3 below cannot
       reach admissibly. Same spot, twice, `CZ_VK_NO_CUBE=1` versus default.
-   2. **THE CUBE SNAPSHOT PATH** — six resolves into six layers for `06805000`.
-      **55% of all cube sampling in the game's opening hour is that one map**, which the
-      title renders itself and which is white in BOTH arms until this exists. By volume it
-      is the larger half of this item.
-   3. ~~**A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.**~~ **THE ROUTE IS BUILT**
-      (operator-supplied, implemented at the end of part 25): the title's own DebugJump
-      screen, driven headlessly by `CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,...`
-      with `CZ_DEBUG_MENU=1`. Lands Chuck by the military camp in a full crowd at **7,431
-      draws**, against the ~1,800 ceiling that made every outdoor frame inadmissible. The
-      recipe is in `CLAUDE.md`'s Commands section.
-      **What is NOT yet done is the thing it was built for**: re-run this item's A/B on
-      that route and QUOTE how many frames survive the
-      `drawFingerprint`/`cameraFingerprint` filter. **Do NOT assume standing still keeps the
-      camera matched — it does not.** Measured on the DebugJump route: 300 of 300 frames in
-      a tail sample had DISTINCT camera fingerprints with no input at all (idle sway, crowd
-      motion). Whether two arms match therefore depends on the engine being deterministic
-      from the WAITJUMP anchor, which is untested. Measure that first — two runs of one
-      config, count frames sharing a fingerprint — because if it is near zero, no amount of
-      recipe work fixes it and the filter itself needs rethinking. A route existing is not a comparison
-      being admissible, and until that count is quoted nothing outdoors has been compared.
+   2. ~~**THE CUBE SNAPSHOT PATH**~~ **BUILT IN PART 26, and the face layout it rests on was
+      measured rather than assumed.** `06805000` is now assembled from the six resolve
+      snapshots at `06805000 + i * 0x4000` into a six-layer `VK_IMAGE_VIEW_TYPE_CUBE` image
+      in set 2, and refreshed by each face's own resolve in that resolve's own command
+      buffer. The refresh is load-bearing: the title re-renders that map continuously
+      (8,850 face refreshes in a 240 s run), so a one-shot fill would have frozen the
+      environment at its first fetch. The census printed with it names each face address and
+      whether a snapshot was found there — it could have refuted the stride model face by
+      face and did not, all six filled. **358,767 of 999,508 cube fetches (35.9%) on a
+      240 s DebugJump run** are served from it where all of them read the white dummy
+      before; part 25's "55% of the opening hour" is a different population and the two
+      numbers are not the same claim. `CZ_VK_NO_CUBE_SNAPSHOT=1` is the same-binary arm.
+   3. ~~**A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.**~~ **THE ROUTE IS BUILT AND
+      THE FILTER IS UNSATISFIABLE ON IT — measured in part 26, and the conclusion is that
+      the FILTER has to change, not the recipe.** The route works: it lands in a crowd at
+      7,300 draws and **93% of a 420 s run's frames are above 1,800 draws**, with two runs'
+      draw counts agreeing to a median relative difference of **1.4%**. But run
+      `tools/frame_determinism.py` on two runs of ONE configuration and the answer is
+      **422 of 13,056 frames matched, none above 141 draws, and 0 of 12,174 outdoor frames
+      matched** — by present index or by content. A crowd of animated actors does not
+      render the same draw list twice, so exact fingerprint equality selects for stasis
+      (gotcha 254).
+      **The replacement is an ERA AGGREGATE with the null measured from that same pair**:
+      over the 12,000+ frames above 1,800 draws, the median mean-luma reproduces to 0.94%
+      and the median distinct-colour count to 0.76%; coverage saturates at 99.67% and is
+      useless. `docs/measurement.md` has the protocol. That is what unblocks items 00, 3, 4
+      and 6 — the thing the route was built for — and it is what part 26's cube A/B is read
+      with.
 
    See "what part 25 did" at the end of this item.
 
@@ -169,7 +177,36 @@ Next, in order:
    in the whole bank are >= 16. That skip is still a silent drop with no counter and
    should get one, but it is not a defect anyone is seeing.
 
-00d. **FIVE VULKAN VALIDATION DEFECTS, found the hour the layer was installed.** For the
+00d. **THREE OF THE FIVE VULKAN VALIDATION DEFECTS ARE CLOSED (part 26); TWO REMAIN.**
+   The tally on the outdoor route is now **20 `VkGraphicsPipelineCreateInfo-Input-08733`
+   and 6 `VkGraphicsPipelineCreateInfo-topology-08773`, and nothing else** — quote that as
+   the standing gate.
+
+   * `VkImageMemoryBarrier-image-03320` (20) and `VkImageViewCreateInfo-subResourceRange-01021`
+     (4) were both found by READING once the layer named them, and both went to 0:
+     `Barrier` now names DEPTH and STENCIL together on a depth/stencil format, and
+     `CreateImage` takes the image type from the VIEW type instead of from the depth extent.
+   * `vkCmdDraw-None-09600` (14) needed a run, and it needed OBJECT NAMES to be readable at
+     all — `VkImage 0x2350000000235` names none of the five places this renderer creates
+     images. `VK_EXT_debug_utils` now comes in with the layer and the next run printed
+     `[resolve snapshot 14A7A000 96x45 slot 32]`, with the other thirteen a halving chain
+     (64x22, 32x11, 32x5, 32x2, 32x1) — one bloom pyramid, every snapshot created
+     mid-frame. **The defect was the PUBLISH ORDER**: a snapshot's descriptor was written
+     before the fill-and-transition recorded into the frame's command buffer, so between
+     the two there was a descriptor claiming `SHADER_READ_ONLY` on an image still in
+     `UNDEFINED` — undefined content for anything indexing it, and with a bindless heap
+     "nothing indexes it" is an argument rather than a guarantee (gotchas 255, 256).
+     Transitioning in an immediate submit before publishing takes it to 0.
+   * **Still open, and both are pipeline-creation rather than per-draw:** `Input-08733`
+     (a vertex attribute at Location 15 declared `R32_UINT` where the shader input is a
+     float `vec4`) is very likely the deliberate `USCALED`/`SSCALED` decision seen from the
+     layer's side — read it against gotcha 122 and MEASURE before changing it.
+     `topology-08773` is a `POINT_LIST` pipeline whose vertex shader never writes
+     `PointSize`, i.e. point size is undefined for those draws; 6 pipelines.
+
+   The original table and its reading, kept because the argument for the layer is in it:
+
+00d-history. **FIVE VULKAN VALIDATION DEFECTS, found the hour the layer was installed.** For the
    whole of phases 5 and C this project ran without `VK_LAYER_KHRONOS_validation`, so every
    `VUID` grep in every log returned zero for the reason gotcha 25 exists. The operator
    installed it at the end of part 25 and ONE 12,802-frame session reported all of these:
@@ -230,8 +267,25 @@ Next, in order:
    the null-frame case separately.** This is the same blind spot as gotcha 151, in the one
    place it would send the whole item in the wrong direction.
 
+   **PART 26 SETTLED IT: THE GUEST IS GENUINELY HANDING US SILENCE.** The instrument was
+   rewritten rather than patched — every frame is scanned instead of one in 512, null
+   frames are counted separately from silent ones, the first non-silent frame and the
+   running maximum are reported, each buffer's guest address is printed, and the scanner
+   is SELF-TESTED at pump start on a synthetic frame of big-endian 0.5f (a scanner that
+   reads the wrong byte order reports zeros on any input, which is indistinguishable from
+   silence — gotcha 30). Boot to the outdoor world:
+
+       audio scan self-test: zero frame peak=0.0000, loud frame peak=0.5000
+       audio frame 3072 ... frames=3073 null=0 non-silent=0 (first at 0) maxpeak=0.000000
+
+   `null=0` says the mixer hands us real buffers; every sample of every one is zero; and
+   the scanner demonstrably reports 0.5000 when there is something to report. **So step 1
+   below is closed and the direction stands: the silence is upstream of the mixer, and the
+   next step is XMA decode — not an output device.**
+
    **Then, in order:**
-   1. Settle silence-vs-blindness with that counter.
+   1. ~~Settle silence-vs-blindness with that counter.~~ **CLOSED, part 26 — genuinely
+      silent, measured with a two-sided instrument.**
    2. If genuinely silent, the cause is upstream of the mixer: XMA contexts are allocated
       but nothing DECODES, so every voice is empty. That is Fable 2's `audio/xma_hw.cpp`
       (430 lines, the hardware register contract) and `audio/xma_decoder.cpp` (192, ffmpeg)
