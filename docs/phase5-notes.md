@@ -4281,6 +4281,51 @@ with. The prescription was never new (gotcha 38: aggregate over the era, never a
 it); what was missing was a measured null for the OUTDOOR era, and one null pair supplies
 it.
 
+### The outdoor cube A/B, read with three baselines — and the third one changed the answer
+
+Six 420 s runs of the DebugJump route, one serial block, arms alternated, era medians over
+every frame above 1,800 draws (~12,170 frames each):
+
+| arm | median mean luma | median distinct colours |
+|---|---|---|
+| **A** default — every cube bound, `06805000` assembled from its resolves (3 runs) | 56.593, 56.907, **56.738** | 98,566, 98,448, **103,777** |
+| **B** `CZ_VK_NO_CUBE_SNAPSHOT=1` — that one map white (2 runs) | 56.291, 57.086 | 99,910, 99,093 |
+| **C** `CZ_VK_NO_CUBE=1` — no cube map bound at all (1 run) | **59.469** | 106,276 |
+
+**C is decisively separated and that is the instrument's calibration.** 59.47 against a
+baseline band of 56.59-56.91 is eight times the band's whole width with no overlap, so a
+whole-frame era median CAN see a cube-map change outdoors. Part 25's worry that the harness
+is blind is dead twice over now — once by the magenta positive control indoors, once by
+this. The direction is also the physical one: white dummy reflections ADD light, so
+removing the real maps brightens the scene.
+
+**B is not separated.** Its two runs (56.291, 57.086) straddle the baseline band from both
+sides. So declining `06805000` to white moves the whole-frame median by less than the
+run-to-run spread, and the honest statement is a BOUND — the rendered cube map's
+contribution to the frame's median luma is below ~0.5% — not "no effect".
+
+**AND THE THIRD BASELINE IS WHY THIS IS THE WRITE-UP AND NOT THE OTHER ONE.** On two
+baselines, arm B's distinct-colour shift read **12.0x the null** and would have been
+published as a result. The third baseline came in at 103,777 against 98,566 and 98,448 —
+**a 5.4% spread on a statistic whose two-run null had read 0.12%** — and the 12x collapsed
+into the noise. Two independent pairs had already disagreed by 6x on that statistic
+(0.76% and 0.12%), which was the warning. **Median mean-luma is the usable outdoor
+statistic (0.55% over three runs); median distinct-colour count is NOT, and its two-sample
+nulls were flukes in both directions.**
+
+**Fetch share is not screen area, and this A/B is the demonstration.** `06805000` is 35.9%
+of all cube FETCHES and its removal is invisible in the frame's median, while removing
+*every* cube map is 8x the noise floor. A fetch count measures how often the sampler is
+asked; a median over pixels measures how much of the picture moved, and one 64x64
+environment map on scattered reflective surfaces is a small area however often it is
+sampled (gotcha 257). That is what sends this to the operator, with a specific instruction:
+look at reflective SURFACES — a car bonnet, a shop window — not at the frame.
+
+**Frame rate: unchanged, and that says less than it looks.** 13,058-13,061 presented frames
+in 420 s across all six runs, a 0.02% spread. The frame is pinned at the two-vblank floor,
+where a CPU cost is exactly as invisible as a saving (gotcha 243), so this bounds the cost
+at "does not push the frame above the floor" and not at zero.
+
 ### Three of the validation layer's five defects, closed
 
 `VkImageMemoryBarrier-image-03320` (20) and `VkImageViewCreateInfo-subResourceRange-01021`
