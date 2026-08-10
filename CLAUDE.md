@@ -680,6 +680,20 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   four-config block put the magenta positive control at **12.7x its null**, so the
   instrument is NOT blind and binding real cube maps changes nothing measurable in the
   safehouse and prologue — both surviving explanations put the effect OUTDOORS.
+* **A CLASS OF WHITE-SURFACE DEFECTS IS OPEN, IT IS OURS, AND SEVEN EXPLANATIONS ARE
+  ALREADY REFUTED** (part 26, `docs/open-items.md` 00f/00g). White ground patches, white
+  props, blown-out glass and windows — **Xenia renders all of them correctly.** Refuted by
+  measurement: the tone map, a missing texture, constant UVs, the white dummy (all four
+  heaps poisoned magenta), the clear colour, the EDRAM surface format, a flat-decoding
+  texture. **Do not re-buy any of them.**
+  Round-2 captures (`Xenia_Logs/R2_world/`, seven self-contained single-frame traces, read
+  with `tools/xtr_draw_bindings.py`) then established: our shader coverage is complete
+  (357/357); the ground draw matches hardware on shader, textures, texture CONTENTS and
+  render state, so the defect is in shading or in the VERTEX DATA (the one input never
+  compared); and **our cube declines fire on a shader-versus-constant disagreement hardware
+  never shows** — 414 of 414 cube-declared draws in the capture agree perfectly, while we
+  decline ~14,670 fetches a run for disagreeing, which is the mechanism behind the white
+  glass and window.
 * **OUTDOOR PICTURE CLAIMS ARE POSSIBLE AS ERA AGGREGATES AND IMPOSSIBLE AS MATCHED
   FRAMES — measured in part 26, and the route was never the problem.** Two arms are
   comparable only where `drawFingerprint` AND `cameraFingerprint` agree; run that filter on
