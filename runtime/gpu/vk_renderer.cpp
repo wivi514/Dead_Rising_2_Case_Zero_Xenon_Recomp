@@ -4929,12 +4929,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     {
         ProfScope _p(&g_prof.constants);
         g_prof.draws++;
+        // THE WINDOW THE GUEST NAMED, NOT THE ONE WE ASSUMED. SQ_VS_CONST (0x2307) and
+        // SQ_PS_CONST (0x2308) each carry a BASE in their low 9 bits, and this copy used
+        // to hardcode 0 and 256. A draw that moves its window reads someone else's
+        // constants, and the comment on kPsConstBytes above records what that looks like
+        // when it happens: not a tint, but "930 draws producing three distinct colours" —
+        // every pixel of the surface collapsed to a constant. Part 26 is chasing exactly
+        // that symptom on the ground, so the assumption gets a counter rather than a
+        // benefit of the doubt (gotcha 3: the zero we have is one draw, not a census).
+        const uint32_t vsBase = regs[0x2307] & 0x1FF;
+        const uint32_t psBase = regs[0x2308] & 0x1FF;
+        if (vsBase != 0 || psBase != 256)
+            Count("draw: the guest moved its ALU constant WINDOW away from 0/256");
         uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
         for (uint32_t i = 0; i < 256 * 4; i++)
-            dst[i] = regs[xenos::kAluConstantBase + i];
+            dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
         dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
         for (uint32_t i = 0; i < 256 * 4; i++)
-            dst[i] = regs[xenos::kAluConstantBase + 256 * 4 + i];
+            dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
         memset(shared, 0, kSharedSize);
     }
 
