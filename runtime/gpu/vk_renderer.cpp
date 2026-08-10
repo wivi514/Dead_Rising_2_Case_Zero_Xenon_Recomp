@@ -2808,6 +2808,16 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     if (t.type != 2)
     {
         Count("texture: fetch constant is not a texture");
+        // SPLIT OUT FOR THE CUBE CASE, because "cube fetch got the dummy" had no
+        // breakdown and part 26 attributed all of it to the shader/constant
+        // disagreement. It is not: the disagreement is 1,349 of 2.25 M cube fetches on
+        // the outdoor route while 18,057 cube fetches are served the dummy, so ~93% of
+        // the declines had an unnamed cause. Every early return that a cube fetch can
+        // reach now says which one it was — an unnamed decline is the shape of thing
+        // this project keeps having to re-measure (gotcha 171).
+        if (shaderDim == 3)
+            Count("texture: CUBE fetch whose constant is NOT A TEXTURE — served the "
+                  "dummy");
         return 0;
     }
 
