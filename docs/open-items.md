@@ -12,16 +12,27 @@ Next, in order:
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in
    priority order:
 
-   1. **THE OPERATOR'S VERDICT, and the reason is sharper than "ask a human".** In one
-      serial block, four configs, same recipe and binary, p90 of the per-frame mean |RGB|:
-      null (default vs default) **2.972**, real cubes vs white dummy **3.101**, second
-      pairing **2.393**, and the magenta positive control **37.877 — 12.7x the null, no
-      overlap.** So the instrument is emphatically NOT blind, and **binding real cube maps
-      changes nothing measurable in the safehouse and prologue.** Two live explanations,
-      both of which predict the effect lives OUTDOORS: this era's cube maps are themselves
-      near-white (small DXT1 environment maps, interior scene), or the surfaces sampling
-      them are not on screen indoors. The outdoor era is exactly what item 3 below cannot
-      reach admissibly. Same spot, twice, `CZ_VK_NO_CUBE=1` versus default.
+   1. **THE OPERATOR'S VERDICT — and part 26 measured outdoors, so the question to ask is
+      now much sharper.** Six 420 s DebugJump runs, one block, arms alternated, era medians
+      over ~12,170 frames each above 1,800 draws:
+
+      | arm | median mean luma |
+      |---|---|
+      | default — every cube bound, `06805000` from its resolves (3 runs) | 56.593, 56.907, 56.738 |
+      | `CZ_VK_NO_CUBE_SNAPSHOT=1` — that one map white (2 runs) | 56.291, 57.086 |
+      | `CZ_VK_NO_CUBE=1` — no cube map at all (1 run) | **59.469** |
+
+      **Removing every cube map is 8x the baseline band with no overlap**, so the outdoor
+      instrument is sensitive and cube maps as a class measurably darken this scene (white
+      dummy reflections add light). **Removing only the rendered map does not separate** —
+      its two runs straddle the band — so its contribution to the frame's median is under
+      ~0.5%, which is a BOUND and not a null. That is not a contradiction with its 35.9%
+      share of cube fetches: a fetch count is not a screen area (gotcha 257).
+      **So ask the operator about SURFACES, not about the frame**: a car bonnet, a shop
+      window, the gas-station forecourt, outdoors, three configs on the same binary
+      (default / `CZ_VK_NO_CUBE_SNAPSHOT=1` / `CZ_VK_NO_CUBE=1`). Indoors the earlier
+      four-config block already said binding cube maps changes nothing measurable in the
+      safehouse and prologue, with the magenta positive control at 12.7x its null.
    2. ~~**THE CUBE SNAPSHOT PATH**~~ **BUILT IN PART 26, and the face layout it rests on was
       measured rather than assumed.** `06805000` is now assembled from the six resolve
       snapshots at `06805000 + i * 0x4000` into a six-layer `VK_IMAGE_VIEW_TYPE_CUBE` image
