@@ -1373,6 +1373,70 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 26 (2026-08-10) — the rendered cube map, and a filter that was never
+## going to report anything
+
+Four things, and the two that will matter longest are both about measurement.
+
+**The cube snapshot path — open item 00's remaining half.** `06805000` is an environment
+map the title renders itself, so its address is a resolve destination and guest memory
+there is zeros; part 25 declined it to the 1x1 white dummy. It is now assembled from the
+six resolve snapshots at `base + i * 0x4000` into a six-layer `VK_IMAGE_VIEW_TYPE_CUBE`
+image in set 2, refreshed by each face's own resolve in that resolve's own command buffer.
+The refresh is load-bearing — **8,850 face refreshes in 240 s**, because the title
+re-renders the map continuously — and the face layout was PRINTED face by face so the
+stride model could refute itself; six of six filled. **358,767 of 999,508 cube fetches
+(35.9%)** now read it. `CZ_VK_NO_CUBE_SNAPSHOT=1` is the arm.
+
+**The outdoor admissibility filter is unsatisfiable, and the route was never why.** Part 25
+built the DebugJump route to reach an admissible outdoor frame and handed part 26 the job
+of checking it: two runs of ONE configuration, count the frames sharing both fingerprints.
+**422 of 13,056, none above 141 draws, and 0 of the 12,174 outdoor frames** — the same
+answer as the old stick recipe, on a route that demonstrably goes where it should (93% of
+its frames are outdoors, and two runs' draw counts agree to a median 1.4%). A crowd of
+animated actors does not render the same draw list twice, so exact equality selects for
+stasis (gotcha 254). `tools/frame_determinism.py` is the check; `tools/frame_era_medians.py`
+is the replacement protocol.
+
+**The cube A/B, read with three baselines — and the third one changed the answer.** Six
+420 s runs, one block, arms alternated. Removing EVERY cube map moves the era median luma
+from a 56.59-56.91 band to **59.47, eight times the band with no overlap**: the outdoor
+instrument is sensitive, and cube maps as a class measurably darken this scene. Removing
+only the rendered map does NOT separate — its two runs straddle the band — so its
+contribution is under ~0.5% of the frame's median, which is a bound and not a null. That is
+consistent with its 35.9% fetch share, because a fetch count is not a screen area
+(gotcha 257).
+**On two baselines that arm had read 12.0x the null on median distinct colours and would
+have been published.** The third baseline landed 5.4% away on that statistic, whose two-run
+null had read 0.12%, and the result vanished — mean luma reproduces across three runs
+(0.55%) and distinct-colour count does not (gotcha 258). The earlier numbers are retracted
+in place in `docs/measurement.md`.
+
+**Three of the validation layer's five defects, closed, and the layer now names our
+objects.** `03320` (20 messages) and `01021` (4) were both found by reading — a barrier on
+a depth/stencil format must name both aspects, and an image's TYPE must come from its view
+type — and both went to zero. `vkCmdDraw-None-09600` (14) needed a run and, first, NAMES:
+`VK_EXT_debug_utils` now comes in with the layer, and the next run said `[resolve snapshot
+14A7A000 96x45 slot 32]` with the other thirteen forming a halving chain, i.e. one bloom
+pyramid. The defect was the publish order — the descriptor was written before the
+fill-and-transition recorded into the frame's command buffer, so for that window a
+descriptor claimed `SHADER_READ_ONLY` on an `UNDEFINED` image. The snapshot VIEW path in
+the same file already had it right, which is why views never appeared in the messages
+(gotchas 255, 256).
+
+**And the audio trace was rewritten before its answer was trusted.** It sampled one frame
+in 512 and printed a peak that read 0.0000 both for a silent frame and for a null pointer.
+It now scans every frame, counts nulls separately, and self-tests the scanner on a
+synthetic frame of big-endian 0.5f. Boot to gameplay: `null=0 non-silent=0
+maxpeak=0.000000`, self-test 0.5000. **The guest hands us real buffers full of zeros**, so
+open item 00e's direction stands on a measurement: the next step is XMA decode, not an
+output device.
+
+**Gates:** `--smoke` OK; `shader_dim_census.py` exit 0 over all 409 shaders;
+`no translated shader` = 0 on both 420 s runs; Vulkan validation **26 messages / 2 VUIDs**,
+down from 64 / 5, both pipeline-creation rather than per-draw. Not re-run and owed: the A5
+kernel-call diff, `truncated=0`, the PM4 capture oracles, the capture-E correlation.
+
 ## Phase C part 25 (2026-08-10) — cube maps bound, and the effect measured absent indoors
 
 Open item 00, the top picture item since part 23: 92 of the cache's 397 shaders sample

@@ -111,8 +111,9 @@ the same draw list twice, so exact equality selects for the frames where nothing
 happening (gotcha 254; `frame_compare.py`'s docstring records the same failure from the
 other end, where 257 "perfectly aligned" frames were 257 copies of an empty scene).
 
-**So outdoors, do not align — AGGREGATE, and take the noise floor from that same null
-pair.** Over the 12,000+ frames above 1,800 draws, two runs of one configuration give:
+**So outdoors, do not align — AGGREGATE, and take the noise floor from baseline runs made
+in the same block.** Over the 12,000+ frames above 1,800 draws, THREE runs of one
+configuration give:
 
 | era median, frames >= 1,800 draws | 3 baseline runs | spread | usable? |
 |---|---|---|---|
