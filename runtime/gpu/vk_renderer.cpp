@@ -4629,6 +4629,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 dim = dims[i];
             else
                 Count("texture: shader sidecar has no tfetchDims — slot bound as 2D");
+            // COUNTED BEFORE THE ARM CAN REWRITE IT. The first version of the two cube
+            // counters below sat after the CZ_VK_NO_CUBE forcing, so on the very arm the
+            // A/B is read against they could not fire at all — and a poisoned-dummy run
+            // that showed no magenta was then unreadable, because nothing said whether any
+            // draw had asked for a cube in that era. This is the denominator for every
+            // cube claim about a given RECIPE, as opposed to about a whole run.
+            if (dim == 3)
+                Count("draw: shader asked for a CUBE map");
             // CZ_VK_NO_CUBE=1 — bind every cube fetch the way the renderer did before
             // part 25: publish its slot into the Texture2D array, leaving the cube array
             // at zero so the shader samples the white dummy. The same-binary control arm
@@ -6393,9 +6401,19 @@ bool InitCommon()
         // (gotcha 30) — a comparison that has never reported a positive proves nothing
         // by reporting a negative.
         static const bool cubePoison = EnvOn("CZ_VK_CUBE_POISON");
-        const uint32_t white =
-            (cubePoison && type == VK_IMAGE_VIEW_TYPE_CUBE) ? 0xFFFF00FFu : 0xFFFFFFFFu;
-        memcpy(R->staging.mapped, &white, 4);
+        const bool poisoned = cubePoison && type == VK_IMAGE_VIEW_TYPE_CUBE;
+        const uint32_t white = poisoned ? 0xFFFF00FFu : 0xFFFFFFFFu;
+        if (poisoned)
+            fprintf(stderr, "[vk] CZ_VK_CUBE_POISON: the cube dummy is MAGENTA "
+                            "(0xFFFF00FF), all six faces\n");
+        // ALL SIX FACES, not just the first. The copy below has always had
+        // `layerCount = layers`, but only four bytes were ever written into the staging
+        // buffer — so faces 1..5 of every 1x1 dummy were filled from whatever the staging
+        // buffer last held. It was invisible while the only multi-layer image was a dummy
+        // nobody could see, and it would have made a poisoned run report a nonsense
+        // colour on five faces out of six.
+        for (uint32_t f = 0; f < layers; f++)
+            memcpy(R->staging.mapped + f * 4, &white, 4);
         RunImmediate([&](VkCommandBuffer cb) {
             Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_ASPECT_COLOR_BIT);
