@@ -1945,3 +1945,18 @@ From phase C part 18 (the frame rate — and none of it was work):
     content and camera fingerprint from the renderer, then make every cross-arm claim
     quote how many frames survived the filter. An A/B whose admissible n is not stated is
     not an A/B.
+248. **A positive control has to be read with a statistic that can SEE the effect it is
+    controlling for, and the obvious statistic usually cannot.** Part 25 poisoned a cube
+    map dummy magenta to prove the cube sample reached the screen, then measured "what
+    fraction of pixels are magenta" — requiring saturated red and blue. It read 0.24% and
+    looked like a clean negative, which would have retired a real mechanism. But a cube
+    sample arrives multiplied by a specular term: it TINTS a surface, it does not repaint
+    it. Measured as "did the frame change at all against the same run with a white dummy",
+    the same data says **80 of 110 frames differ, worst frame 72% of pixels and a max
+    delta of 255.** The poison was working the whole time and the detector could not see
+    it. **Rule: a control's readout should be the most sensitive difference you can
+    compute — a per-pixel diff against the matched control run — not a semantic test for
+    the marker colour you injected.** The marker is there to make the effect large, not to
+    be recognised. Corollary for injected-colour instruments generally: always keep the
+    unpoisoned run and diff against it, because "I can see my marker" is a much weaker
+    question than "is this frame different".

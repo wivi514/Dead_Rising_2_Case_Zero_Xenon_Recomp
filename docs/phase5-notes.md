@@ -3923,6 +3923,42 @@ Two counters went in at the same time for the same reason — `draw: bound a REA
 and `draw: cube fetch got the dummy` — because there was no way to tell a frame in which
 every cube bound correctly from one in which no draw asked for a cube (gotcha 151).
 
+### The poison control is POSITIVE, and it took three attempts to build one that could say so
+
+The final form is one variable: **magenta cube dummy versus white cube dummy**, same
+binary, same recipe, `CZ_VK_NO_CUBE=1` on both sides so every cube fetch reads the dummy.
+
+| frames compared | 110 |
+|---|---|
+| frames that differ at all | **80** |
+| worst frame | mean \|RGB\| **53.7**, **72.1% of pixels changed**, max delta 255 |
+| draws that asked for a cube, this recipe | **747,097** |
+
+**So the cube sample is not discarded anywhere downstream — it reaches the presented image
+hard.** That kills the reading that item 00 is mis-scoped, and it makes the byte-identical
+A/B above harder rather than easier to explain: if repainting the dummy changes 72% of a
+frame, then replacing that dummy with a real cube map should change something too.
+
+**Three things had to be fixed before the control could report anything at all**, and each
+of them would have produced a confident wrong answer:
+
+1. The two cube reach counters sat AFTER the `CZ_VK_NO_CUBE` forcing, so on the arm the
+   control runs under they could not fire. `draw: shader asked for a CUBE map` is now
+   counted from the shader's own answer before any arm can rewrite it.
+2. The arm did not announce itself. A poisoned run showing no magenta was indistinguishable
+   from a run where the flag never took (gotcha 151).
+3. The dummy upload wrote **four bytes for a six-layer copy**, so faces 1..5 of every 1x1
+   dummy came from whatever the staging buffer last held. Invisible while the only
+   multi-layer image was a dummy nobody could see; it would have poisoned one face out of
+   six and left five reading garbage.
+
+**And the first readout was the wrong statistic.** I measured "how many pixels are
+magenta", requiring saturated R and B — but a cube sample arrives multiplied by a specular
+term, so it TINTS rather than saturating. That detector read 0.24% and looked like a clean
+negative. The right question was never "is it magenta"; it is "did the frame change at
+all", which is 80 of 110. A positive control has to be read with a statistic that can see
+the effect it is controlling for.
+
 ### One thread left open, with the measurement named
 
 `06805000` (64x64, `k_8_8_8_8`) is a cube map at an address this renderer holds a **resolve
