@@ -1818,9 +1818,11 @@ From phase C part 18 (the frame rate — and none of it was work):
     order**: grep the image for source paths and menu-item strings first, then find the
     gate byte by walking `.text` for the loader's (`addi` name / `stb` offset) pairs,
     then CONFIRM each byte independently by scanning for the `lbz` consumers that read
-    it back. That second scan is not optional — of 25 curated names here, four scanned
-    to ZERO readers, and shipping those as switches would have been advertising
-    controls that do nothing.
+    it back. **That confirm step is necessary but NOT sufficient, and gotcha 241 is
+    the correction**: every byte in such a struct is a real tunable that something
+    reads, so a reader scan cannot tell a correct address from its neighbour. Bind
+    names to bytes with a dataflow simulation over the loader, not by pairing each
+    name with the nearest store.
 240. **Flipping a feature's gate proves the gate flipped, not that the feature appeared.**
     The three debug-menu bytes above go 0 -> 1 exactly as predicted, on a headless boot,
     with a same-binary control — and the main menu still shows only START GAME /
@@ -1832,3 +1834,28 @@ From phase C part 18 (the frame rate — and none of it was work):
     picture is the claim** — and this is gotcha 117 arriving from a new direction, since
     the only reason the refutation was available in-session was that frames are
     self-servable.
+241. **When a loader resolves a list of names, the store next to a name is usually the
+    PREVIOUS name's result — bind them by dataflow, never by adjacency.** Case Zero's
+    tunable loader holds each lookup's result in a register, loads the NEXT name into
+    the argument register, and only then stores:
+
+        bl   lookup          ; nameA -> r3
+        mr   r11, r3
+        addi r4, <nameB>     ; nameB is now pending
+        stb  r11, <offA>     ; ...and this stores nameA
+        bl   lookup          ; nameB
+
+    Pairing each `addi` with the `stb` that follows it named all 387 flags after
+    their neighbour — a uniform off-by-one that produced a table which looked
+    perfectly regular. **Two independent-seeming checks failed to catch it.** The
+    `lbz` consumer scan finds readers at both candidate addresses, because in a dense
+    flag struct every byte is a real tunable something reads — so "it has readers" is
+    not evidence the name is right. And reading the bytes back out of the live process
+    only confirmed we had written the bytes we chose, which is a tautology, not a
+    check (gotcha 240 is the same shape). The cost was an entire session: the preset
+    that was supposed to open the debug menu set `enable_dev_only_debug_tiwwchnt`,
+    `debug_on_controller_2_only` and `debug_show_loading_time` instead, and the
+    plausible-looking "quickie routes debug input to controller 2" reading was just
+    the neighbouring flag. **A check that cannot distinguish the right answer from the
+    adjacent wrong one is not a check** — ask what result would refute the binding
+    before trusting a scan that confirms it.

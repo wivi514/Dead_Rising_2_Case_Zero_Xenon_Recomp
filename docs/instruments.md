@@ -863,6 +863,11 @@ CZ_ZOMBIE_CAPTURE=1 logs up to 512 genuine calls to the retail actor-manager sub
                    instead of the incomplete Quickie scaffolding
 ```
 
+**Addresses**: bound by a dataflow simulation over `sub_824A2470`, NOT by pairing each
+name with the nearest store — that pairing is off by one and named every flag after its
+neighbour (gotcha 241, which retracts the original table). A `lbz` reader scan cannot
+catch this, because every byte in the struct is a tunable something reads.
+
 **What is confirmed**: every flag reads 0 before the hook and 1 after, and the boot is
 unaffected (the same-binary control arm — no env var — differs only in rumble calls and
 lock counters, no errors either side).
