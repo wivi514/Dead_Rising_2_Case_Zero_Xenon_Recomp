@@ -1141,6 +1141,36 @@ struct Snapshot
     bool fromDepth = false;
 };
 
+// A cube map the TITLE RENDERS ITSELF: six resolve snapshots assembled into the six
+// layers of one `VK_IMAGE_VIEW_TYPE_CUBE` image in descriptor set 2.
+//
+// WHY THIS IS ITS OWN TYPE and not a Snapshot with six layers. A Snapshot is created by
+// a resolve, keyed on that resolve's destination address, and lives in set 0 where its
+// slot means "the 2D texture at this address". A rendered cube is SIX of those addresses
+// standing for ONE texture in a different descriptor heap, and nothing about the resolve
+// says which — the guest only says so later, when a fetch constant names the base
+// address with a shader that declares a cube. So the six snapshots stay exactly as they
+// are (other passes sample them as 2D surfaces, and do) and this is a second view of
+// them, assembled on the first cube fetch and refreshed by each face's own resolve.
+//
+// It is 55% of all cube sampling in this game's opening hour — 409,911 of 746,355
+// cube-declared draws in part 25's census — and until this existed every one of them
+// read the 1x1 white dummy, in BOTH arms of every A/B, because guest memory at a resolve
+// destination is whatever the allocator left there and for `06805000` that is zeros.
+struct CubeSnapshot
+{
+    Image image;               // six layers, CUBE view, registered in set 2
+    uint32_t slot = 0;         // index into set 2's heap, NOT set 0's
+    uint32_t faceExtent = 0;   // one face is faceExtent x faceExtent
+    uint32_t faceStride = 0;   // guest bytes between one face's base and the next
+    // Which faces have ever been copied in, as a bitmask. A COUNTER, because "the cube
+    // is bound" and "the cube has six faces in it" are different claims and the second
+    // is the one a reflection depends on — five faces and a stale sixth is a picture
+    // defect with no other symptom (gotcha 151).
+    uint32_t facesFilled = 0;
+    uint64_t frameSeen = 0;
+};
+
 // --- one frame's worth of resources, so the CPU can record frame N+1 while the GPU is
 // --- still executing frame N ---------------------------------------------------------
 //
@@ -1388,6 +1418,13 @@ struct Renderer
     // 2D heap fill mid-session and serve white (gotcha 192), so the two counters are kept
     // apart to keep that failure legible.
     uint32_t nextCubeSlot = 1;   // slot 0 is the 1x1 white cube dummy
+
+    // The cube maps the title renders itself, keyed on the BASE face's address, plus the
+    // reverse index a resolve needs: face address -> (base address, face number). The
+    // second map is what makes the refresh free — a resolve knows only where it wrote,
+    // and without it every resolve would have to search six candidate strides.
+    std::unordered_map<uint32_t, CubeSnapshot> cubeSnapshots;
+    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> cubeFaceOwner;
 
     // Per-frame vertex/index stream cache: one guest buffer resolved once per frame
     // however many draws read it. It records WHERE the bytes are, which since the
@@ -2483,6 +2520,164 @@ void RefreshSnapshotView(VkCommandBuffer cb, Image& src, SnapshotView& view,
     Barrier(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
 }
 
+// Copy one resolve snapshot into one FACE of a cube snapshot, in the command buffer
+// given. Both images end back in SHADER_READ_ONLY, which is the layout their descriptors
+// were written with — the snapshot because other passes sample it as an ordinary 2D
+// surface in the same frame, the cube because a draw may sample it immediately.
+//
+// The extent is the intersection of the two. A face is bounded by the snapshot that
+// feeds it: if the guest resolved a 32x32 region into a 64x64 face's address we copy
+// what exists rather than reading 64 rows out of a 32-row image, and the shortfall is
+// visible as a face that is only partly filled rather than as undefined content.
+void CopyFaceIntoCube(VkCommandBuffer cb, Image& src, CubeSnapshot& cube, uint32_t face)
+{
+    const uint32_t w = std::min(src.width, cube.faceExtent);
+    const uint32_t h = std::min(src.height, cube.faceExtent);
+    if (!w || !h || face >= 6)
+        return;
+    Barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(cb, cube.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageCopy c{};
+    c.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    c.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, face, 1 };
+    c.extent = { w, h, 1 };
+    vkCmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, cube.image.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    Barrier(cb, cube.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    cube.facesFilled |= 1u << face;
+}
+
+// Serve a cube fetch whose base address is a RESOLVE DESTINATION — i.e. a cube map the
+// title renders rather than loads. Returns a slot in set 2's heap, or 0 for the dummy.
+//
+// `faceStride` is the guest byte distance between one face's base and the next, computed
+// by the caller exactly as the guest-memory cube path computes it (the tiled footprint of
+// one face). It is a MODEL of the guest's layout, and the census this function prints on
+// its first call is the check on it: if the six face addresses it derives are not the six
+// addresses the resolves actually wrote, the log says so with both lists and the fill
+// comes up short rather than silently assembling a cube out of the wrong surfaces.
+//
+// CZ_VK_NO_CUBE_SNAPSHOT=1 declines to the dummy, i.e. the pre-part-26 renderer, in the
+// same binary — the control arm for every claim made about this path.
+uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
+{
+    static const bool disabled = EnvOn("CZ_VK_NO_CUBE_SNAPSHOT");
+    if (disabled)
+    {
+        Count("texture: CUBE at a resolve destination declined (CZ_VK_NO_CUBE_SNAPSHOT)");
+        return 0;
+    }
+    const uint32_t basePhys = t.address & 0x1FFFFFFF;
+    auto it = R->cubeSnapshots.find(basePhys);
+    if (it != R->cubeSnapshots.end())
+    {
+        // A face's extent is part of its identity for the same reason a snapshot's is:
+        // a different extent at the same address is a different surface, and copying
+        // into the old image would leave the previous one's pixels around the edge.
+        if (it->second.faceExtent != t.width)
+        {
+            Count("texture: CUBE snapshot extent changed — declined");
+            return 0;
+        }
+        it->second.frameSeen = R->frame;
+        Count("texture: CUBE served from resolve snapshots");
+        return it->second.slot;
+    }
+    if (R->nextCubeSlot >= g_maxDescriptors)
+    {
+        Count("texture: CUBE snapshot refused — cube heap full");
+        return 0;
+    }
+    if (t.width != t.height || !faceStride)
+    {
+        Count("texture: CUBE snapshot refused — non-square face or no stride");
+        return 0;
+    }
+
+    CubeSnapshot cube;
+    cube.faceExtent = t.width;
+    cube.faceStride = faceStride;
+    cube.slot = R->nextCubeSlot++;
+    // R8G8B8A8_UNORM, matching what a colour resolve snapshot is stored as: vkCmdCopyImage
+    // requires compatible formats, and this image exists only to be filled from those.
+    // The fetch constant's own format is deliberately NOT consulted — a rendered surface's
+    // pixels are whatever the render target held, not whatever the fetch declares.
+    if (!CreateImage(cube.image, t.width, t.height, VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_CUBE, 6, 1))
+    {
+        --R->nextCubeSlot;
+        Count("texture: CUBE snapshot image creation FAILED");
+        return 0;
+    }
+    NameImage(cube.image, "cube snapshot %08X %ux%u slot %u", basePhys, t.width, t.height,
+              cube.slot);
+
+    // Fill it BEFORE the descriptor is written, and transition every layer out of
+    // UNDEFINED whether or not a face was found for it. The order matters for the same
+    // reason it does in DoResolve: the descriptor becomes visible to the frame's whole
+    // command buffer the moment it is written, and a descriptor claiming
+    // SHADER_READ_ONLY on an image still in UNDEFINED is undefined CONTENT. That is
+    // `vkCmdDraw-None-09600`, and this is the third time this project has met the shape —
+    // the first was `Barrier`'s hardcoded `layerCount = 1`, which left five of the dummy
+    // cube's six faces sampled undefined for the whole of phase 5 (open item 00d).
+    RunImmediate([&](VkCommandBuffer cb) {
+        Barrier(cb, cube.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        for (uint32_t f = 0; f < 6; f++)
+        {
+            auto s = R->snapshots.find(basePhys + f * faceStride);
+            if (s == R->snapshots.end())
+                continue;
+            CopyFaceIntoCube(cb, s->second.image, cube, f);
+        }
+    });
+
+    VkDescriptorImageInfo ii{};
+    ii.imageView = cube.image.view;
+    ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    wr.dstSet = R->sets[2];
+    wr.dstBinding = 0;
+    wr.dstArrayElement = cube.slot;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    wr.pImageInfo = &ii;
+    vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+
+    for (uint32_t f = 0; f < 6; f++)
+        R->cubeFaceOwner[basePhys + f * faceStride] = { basePhys, f };
+    cube.frameSeen = R->frame;
+
+    // The census, once per cube, and it is the check on the stride model above. Six
+    // "yes" lines mean the layout is what the guest-memory path assumes; anything else
+    // is the measurement that says so, with the addresses, rather than a cube quietly
+    // assembled out of five faces and a hole.
+    fprintf(stderr,
+            "[vk] CUBE SNAPSHOT %08X %ux%u stride %08X -> set 2 slot %u, faces:\n",
+            basePhys, t.width, t.height, faceStride, cube.slot);
+    for (uint32_t f = 0; f < 6; f++)
+    {
+        auto s = R->snapshots.find(basePhys + f * faceStride);
+        fprintf(stderr, "[vk]   face %u at %08X: %s\n", f, basePhys + f * faceStride,
+                s == R->snapshots.end()
+                    ? "NO RESOLVE SNAPSHOT — this face is whatever the image was cleared to"
+                    : "filled from its resolve snapshot");
+    }
+    if (cube.facesFilled == 0x3F)
+        Count("texture: CUBE snapshot assembled from all six faces");
+    else
+        Count("texture: CUBE snapshot assembled with FEWER THAN SIX faces");
+
+    const uint32_t slot = cube.slot;
+    R->cubeSnapshots.emplace(basePhys, std::move(cube));
+    return slot;
+}
+
 // The bindless slot for a w x h view of `snap`, creating it on first use.
 //
 // The creating copy goes through RunImmediate — a submit and a wait — because this is
@@ -2662,8 +2857,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             return c->second.slot;
         }
     }
-    // A CUBE MAP THE TITLE RENDERS ITSELF — declined, because guest memory at a resolve
-    // destination is known NOT to hold the texture.
+    // A CUBE MAP THE TITLE RENDERS ITSELF — assembled out of its six faces' resolve
+    // snapshots, because guest memory at a resolve destination is known NOT to hold it.
     //
     // Exactly one of this title's cube maps is at an address this renderer holds a resolve
     // snapshot for: `06805000`, 64x64 `k_8_8_8_8`. The census settles what that means —
@@ -2673,16 +2868,18 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // back, so for an address the GPU resolved to, guest memory is whatever the allocator
     // left.
     //
-    // We cannot serve the snapshot either — it is a 2D image in set 0 and its slot number
-    // is meaningless in set 2 — so the honest failure is the dummy, which is also exactly
-    // the picture this surface had before part 25. Uploading the zeros instead would
-    // present "I had nothing" as a black reflection, which is a lie dressed as data.
-    // The real fix is a cube snapshot path (six resolves into six layers) and is open
-    // item 00's remaining half.
+    // Part 25 could not serve the snapshot either — one snapshot is a 2D image in set 0 and
+    // its slot number is meaningless in set 2 — so it declined to the dummy, which is what
+    // that surface had had since phase 5. Part 26 builds the thing that was missing: SIX
+    // snapshots copied into the six layers of one cube image in set 2 (CubeSnapshotSlot),
+    // refreshed by each face's own resolve. Two same-binary arms survive the change:
+    // `CZ_VK_NO_CUBE_SNAPSHOT=1` is the dummy, i.e. the pre-part-26 picture, and
+    // `CZ_VK_CUBE_FROM_GUEST=1` is the zeros in guest memory.
     //
-    // `CZ_VK_CUBE_FROM_GUEST=1` keeps the zeros — the same-binary arm for anyone who wants
-    // to see which of white and black is closer for this surface, which is an operator
-    // question and not one to settle by argument.
+    // The decision is DEFERRED to just below the face-stride computation rather than taken
+    // here, because the stride is what turns a base address into six face addresses and it
+    // is derived from the format and extent a few dozen lines down.
+    bool cubeAtResolveDest = false;
     if (cubeFetch && R->snapshots.count(t.address & 0x1FFFFFFF))
     {
         // NAMED, not just counted. A large count here has two completely different
@@ -2699,15 +2896,45 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                     "the title renders this cube map itself and guest memory there is not "
                     "it\n",
                     a, t.width, t.height, t.format);
+            // THE SNAPSHOT TABLE, ONCE, THE FIRST TIME THIS HAPPENS.
+            //
+            // The cube snapshot path needs one fact that nothing in this repo has ever
+            // measured: WHERE the six faces land. A cube the title renders itself is six
+            // resolves, and either they go to six addresses at a regular stride from this
+            // base (in which case a face index is `(dest - base) / stride` and the fill is
+            // mechanical) or they do not — and the design of the fix is different in each
+            // case. Guessing the stride from the format and extent would be exactly the
+            // recollection-over-census error part 25 made about the dimension field
+            // (gotcha 244); the resolve destinations are already in a map, so print them.
+            //
+            // Sorted by address, with the extent, because the question is a pattern in the
+            // gaps: six 64x64 entries 0x4000 apart is an answer, and one 64x64 entry
+            // alone is a different answer that says the faces are somewhere else.
+            std::vector<std::pair<uint32_t, const Snapshot*>> table;
+            for (const auto& [k, s] : R->snapshots)
+                table.emplace_back(k, &s);
+            std::sort(table.begin(), table.end(),
+                      [](const auto& x, const auto& y) { return x.first < y.first; });
+            fprintf(stderr, "[vk] resolve-destination census at that moment (%zu):\n",
+                    table.size());
+            uint32_t prev = 0;
+            for (const auto& [k, s] : table)
+            {
+                const uint32_t addr = k & 0x1FFFFFFF;
+                fprintf(stderr, "[vk]   %08X %ux%u%s  +%08X from previous%s\n", addr,
+                        s->image.width, s->image.height,
+                        (k & kSnapshotDepthBit) ? " DEPTH" : "",
+                        prev ? addr - prev : 0u,
+                        addr == a ? "   <-- the cube fetch's own base" : "");
+                prev = addr;
+            }
         }
         static const bool cubeFromGuest = EnvOn("CZ_VK_CUBE_FROM_GUEST");
         if (!cubeFromGuest)
-        {
-            Count("texture: CUBE fetch at a RESOLVE DESTINATION — served the dummy");
-            return 0;
-        }
-        Count("texture: CUBE fetch at a resolve destination, uploaded from guest memory "
-              "anyway (CZ_VK_CUBE_FROM_GUEST)");
+            cubeAtResolveDest = true;
+        else
+            Count("texture: CUBE fetch at a resolve destination, uploaded from guest "
+                  "memory anyway (CZ_VK_CUBE_FROM_GUEST)");
     }
     if (!cubeFetch)
     {
@@ -2961,6 +3188,21 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // slice stride is the suspect and nothing else in this function is.
     const uint32_t layers = (shaderDim == 3) ? 6 : 1;
     const uint64_t srcBytes = faceBytes * layers;
+
+    // The rendered cube, now that the stride exists. Note it uses the SAME `faceBytes` the
+    // guest-memory path uses, deliberately: if the two ever needed different strides one of
+    // them would be wrong, and a rendered cube gives the model a second, independent check
+    // — its six face addresses have to be six addresses the guest actually resolved to,
+    // which CubeSnapshotSlot prints face by face.
+    if (cubeAtResolveDest)
+    {
+        if (faceBytes > 0xFFFFFFFFull)
+        {
+            Count("texture: CUBE snapshot refused — face stride does not fit 32 bits");
+            return 0;
+        }
+        return CubeSnapshotSlot(t, uint32_t(faceBytes));
+    }
 
     const uint32_t va = PhysToVa(t.address);
     if (!GuestRangeOk(va, srcBytes))
@@ -6193,6 +6435,28 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             it->second.frameSeen = R->frame;
             Count(fromDepth ? "resolve: snapshot taken from the DEPTH buffer"
                             : "resolve: snapshot taken from the colour buffer");
+
+            // A FACE OF A RENDERED CUBE MAP, copied into its layer in this same command
+            // buffer. Same reasoning as the sized views above: it costs no submit and it
+            // cannot be staler than its source. A cube map the title renders is redrawn as
+            // the world changes, so a cube assembled once at its first fetch and never
+            // refreshed would freeze whatever the environment looked like at that instant
+            // — the exact defect the LUT had in §6s, one descriptor set over.
+            if (!fromDepth)
+            {
+                auto owner = R->cubeFaceOwner.find(baseKey);
+                if (owner != R->cubeFaceOwner.end())
+                {
+                    auto cube = R->cubeSnapshots.find(owner->second.first);
+                    if (cube != R->cubeSnapshots.end())
+                    {
+                        CopyFaceIntoCube(R->cmd, it->second.image, cube->second,
+                                         owner->second.second);
+                        cube->second.frameSeen = R->frame;
+                        Count("resolve: refreshed a face of a rendered CUBE MAP");
+                    }
+                }
+            }
 
             if (!fromDepth && R->frontBuffer && key == (R->frontBuffer & 0x1FFFFFFF))
             {
