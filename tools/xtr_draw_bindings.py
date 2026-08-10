@@ -108,6 +108,15 @@ def decode_fetch(regs, slot):
         'fmt': d[1] & 0x3F,
         'tiled': bool((d[0] >> 31) & 1),
         'pitch': (d[0] >> 22) & 0x1FF,
+        # The DIMENSION and the STACK DEPTH, decoded exactly as the runtime decodes them
+        # (dword5 bits 9..10, dword2 bits 26..31 stored minus one — both LOCATED BY
+        # CENSUS in part 25, not from documentation). They are here because part 27's
+        # question is whether hardware's constant for a given slot says what ours says:
+        # we decline ~14,670 cube fetches a run for a shader/constant disagreement, and
+        # the capture is the only thing that can say whether hardware has one too.
+        'dim': (d[5] >> 9) & 3 if d[5] is not None else None,
+        'depth': ((d[2] >> 26) & 0x3F) + 1,
+        'dwords': d,
     }
 
 
@@ -187,6 +196,24 @@ def main():
             idx = word(1) & 0xFFFF
             for i in range(2, count):
                 regs[idx + i - 2] = word(i)
+        elif opcode == 0x2F and count >= 4:           # LOAD_ALU_CONSTANT: from MEMORY
+            # THE DOMINANT CONSTANT PATH IN THIS TITLE, and it was missing here for a
+            # whole part. `w1_spawn.xtr` carries 620 of these against 36 SET_CONSTANTs,
+            # so a replay without it reads most of the ALU constant file as ZERO — and
+            # zero is indistinguishable from "the guest wrote zero". It was caught
+            # because the ground pixel shader uses `c255.w` as its literal 1.0 and the
+            # replay said c255 was all zeros, which would make the shader compute
+            # nonsense: an impossible value is the only kind of absence a replay
+            # announces by itself (gotcha 25).
+            base_reg = BANKS.get((word(2) >> 16) & 0xFF)
+            if base_reg is not None:
+                idx = word(2) & 0x7FF
+                src = word(1) & 0x3FFFFFFC
+                size = word(3) & 0xFFF
+                blob = mem.read(src, size * 4)
+                if blob:
+                    for i in range(size):
+                        regs[base_reg + idx + i] = BE.unpack_from(blob, i * 4)[0]
         elif opcode == 0x27 and count >= 3:           # IM_LOAD: stage in low 2 bits
             stage = word(1) & 3
             addr = word(1) & ~3
@@ -250,18 +277,19 @@ def main():
         print('  draw %-5d verts=%-6d prim=%u vs=%s ps=%s'
               % (i, n, prim, names.get('vs', '?'), names.get('ps', '?')))
         for t in tex[:8]:
-            print('      s%-2d %08X %4ux%-4u fmt=%-3u tiled=%u pitchBlk=%u'
-                  % (t['slot'], t['addr'], t['w'], t['h'], t['fmt'], t['tiled'],
-                     t['pitch']))
+            print('      s%-2d %08X %4ux%-4u fmt=%-3u dim=%s depth=%u tiled=%u pitchBlk=%u'
+                  % (t['slot'], t['addr'], t['w'], t['h'], t['fmt'], t['dim'],
+                     t['depth'], t['tiled'], t['pitch']))
 
     if args.csv:
         with open(args.csv, 'w') as f:
-            f.write('draw,verts,vs,ps,slot,addr,w,h,fmt\n')
+            f.write('draw,verts,vs,ps,slot,addr,w,h,fmt,dim,depth\n')
             for i, n, names, tex, prim in draws:
                 for t in tex:
-                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d\n'
+                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d,%s,%d\n'
                             % (i, n, names.get('vs', ''), names.get('ps', ''),
-                               t['slot'], t['addr'], t['w'], t['h'], t['fmt']))
+                               t['slot'], t['addr'], t['w'], t['h'], t['fmt'],
+                               t['dim'], t['depth']))
         print('wrote %s' % args.csv)
     return 0
 
