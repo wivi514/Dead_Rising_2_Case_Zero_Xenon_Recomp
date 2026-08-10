@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 261 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 265 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -148,7 +148,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 261-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 265-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -596,7 +596,7 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-08 (phase C part 21):
+Where the port is, as of 2026-08-10 (phase C part 27):
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch
@@ -689,11 +689,30 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   Round-2 captures (`Xenia logs/R2_world/`, seven self-contained single-frame traces, read
   with `tools/xtr_draw_bindings.py`) then established: our shader coverage is complete
   (357/357); the ground draw matches hardware on shader, textures, texture CONTENTS and
-  render state, so the defect is in shading or in the VERTEX DATA (the one input never
-  compared); and **our cube declines fire on a shader-versus-constant disagreement hardware
-  never shows** — 414 of 414 cube-declared draws in the capture agree perfectly, while we
-  decline ~14,670 fetches a run for disagreeing, which is the mechanism behind the white
-  glass and window.
+  render state; and our cube declines fire on a shader-versus-constant disagreement
+  hardware never shows.
+  **PART 27 CLOSED THE LAST INPUT AND THE ANSWER IS THAT THE GROUND DEFECT IS IN THE
+  SHADING.** `tools/xtr_draw_vertices.py` reads hardware's own vertex streams and shader
+  constants for a named draw; the 25,234-vertex ground draw agrees on **all five vertex
+  attributes to the printed digit** and on every constant the capture can reconstruct. The
+  recorded "two texcoords decoding identically" anomaly **is what hardware does too**, and
+  item 00f's "drawn twice with mask=F" lead was **TILING** — the two draws' scissors are
+  `0,0 640x720` and `640,0 640x720` (gotcha 265). Read our translated
+  `ps_ad65b98593f95926` against the capture's disassembly of it next.
+  **On the cube declines, part 27 kept the conclusion and replaced the measurement**:
+  "414 of 414" counted only slots already reading cube, so it could not have found a
+  disagreement (gotcha 264) — `tools/xtr_cube_agreement.py` asks it per declared fetch slot
+  and gets 0 of 13,203. The disagreement is ours, it is **9 enumerated (shader, slot,
+  texture) cases**, and at those draws our slot 4 holds an **exact duplicate of slot 3**
+  where the captures show hardware holding a real 128x128 DXT1 cube map for the same shader
+  pair. **The magnitude was off by 10x and had a second, larger cause**: on the outdoor
+  route the dummy is served to 3,210 of 1,903,592 cube fetches, **2,182 because the guest
+  never set that slot at all** and 1,028 for the disagreement.
+  **AND THE `.xtr` TOOLS WERE MISSING `LOAD_ALU_CONSTANT`** — 620 packets against 36
+  `SET_CONSTANT`s in one capture, so every constant they reported for hardware was a zero
+  that meant nothing (gotcha 262), and 81 of those 620 read memory the trace does not
+  carry, which the tools now report as `UNRECOVERABLE` rather than as a stale value
+  (gotcha 263).
 * **OUTDOOR PICTURE CLAIMS ARE POSSIBLE AS ERA AGGREGATES AND IMPOSSIBLE AS MATCHED
   FRAMES — measured in part 26, and the route was never the problem.** Two arms are
   comparable only where `drawFingerprint` AND `cameraFingerprint` agree; run that filter on

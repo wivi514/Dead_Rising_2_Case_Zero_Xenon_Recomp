@@ -2132,3 +2132,53 @@ From phase C part 18 (the frame rate — and none of it was work):
     410 of 410 did, so the function was right and the difference had to be in the data.
     **When a comparison says everything differs, verify the comparator against data whose
     answer you already know before believing it.**
+
+262. **A REPLAY THAT IGNORES A PACKET TYPE REPORTS ABSENCE, AND THE TITLE'S DOMINANT PATH
+    IS NOT ALWAYS THE OBVIOUS ONE.** Three of this project's `.xtr` tools decoded
+    `SET_CONSTANT` and `SET_CONSTANT2` and silently dropped `LOAD_ALU_CONSTANT` (opcode
+    0x2F), which loads a constant block out of guest MEMORY rather than carrying it in the
+    packet. In `w1_spawn.xtr` the title issues **620 `LOAD_ALU_CONSTANT` against 36
+    `SET_CONSTANT`** — so the tools reconstructed almost none of the ALU constant file and
+    every constant they printed for hardware was a zero that meant nothing. The runtime's
+    own `pm4.cpp` had handled 0x2F since phase 4; the oracle tools were written later and
+    from the same mental model, not from the same code. **Census the opcodes a capture
+    actually contains before trusting a replay of it** — it is four lines and it is the
+    only thing that distinguishes "the guest never wrote that" from "we never read it".
+
+263. **A CAPTURE IS NOT OMNISCIENT, AND AN UNRECONSTRUCTIBLE REGISTER MUST SAY SO RATHER
+    THAN KEEP ITS STALE VALUE.** With 0x2F handled, **81 of `w1_spawn`'s 620 constant
+    loads read an address the trace never recorded** — the title cycles its constant
+    buffers through many addresses and Xenia records only the ranges it saw sampled. The
+    natural implementation leaves the previous value in the register, which prints a
+    plausible number that is some earlier draw's leftover and reads as hardware's answer.
+    **What exposed it was an IMPOSSIBLE value, not a suspicious one**: the ground pixel
+    shader uses `c255.w` as its literal 1.0 (`min r0.x, r1.x, c255.w`, `subsc r1.z,
+    c255.w, r1.x`) and the replay said c255 was `(0,0,0,0)`, a value the shader could not
+    have run with. The fix is to mark the range UNKNOWN on a load whose source bytes are
+    missing and print `UNRECOVERABLE`. **Ask of every value an oracle gives you: could the
+    guest have run with this?** — a stale-value bug that lands on a plausible number is
+    invisible, and only the impossible one announces the whole class.
+
+264. **A FILTER THAT SELECTS ON THE PROPERTY UNDER TEST CANNOT FIND A VIOLATION OF IT.**
+    Part 26 reported "414 of 414 cube-declared draws on hardware read stack depth 5 and
+    dimension 3 — no disagreements at all" and concluded that our ~14,670 declined cube
+    fetches a run are a disagreement we manufacture. The conclusion was right; the
+    measurement could not have produced any other answer. It selected draws where a
+    cube-declaring shader was bound and then counted the fetch constants that ALREADY read
+    cube — and a disagreeing slot reads 2D, so it was outside the population by
+    construction. The question has to be asked per DECLARED FETCH SLOT, from the shader's
+    own sidecar, exactly as the runtime asks it (`tools/xtr_cube_agreement.py`): 0 of
+    13,203. Same answer, and now it is one a defect could have failed.
+    **Before quoting an N-of-N agreement, write down what the disagreeing case would look
+    like and check your filter would have admitted it.** This is gotcha 25 with a
+    denominator instead of a grep.
+
+265. **THE SAME MESH DRAWN TWICE IN A FRAME WITH THE SAME STATE IS THIS TITLE'S TILING,
+    NOT TWO PASSES.** Item 00f's last surviving lead for the white ground was that its
+    mesh is drawn twice with `mask=F`, same vertex shader and same textures, and that one
+    of the two might be meant to combine with the other rather than overwrite it.
+    `CZ_VK_DRAW_PROBE` prints the scissor, and the two draws carry `scissor 0,0 640x720`
+    and `scissor 640,0 640x720` — the left and right 640-wide halves this title renders in
+    (the CLAUDE.md note about tiles, arrived at from the other end). **A per-draw census
+    that does not print the SCISSOR makes every tiled title look like it double-draws**,
+    and the duplicate is the single most inviting wrong lead a census can offer.
