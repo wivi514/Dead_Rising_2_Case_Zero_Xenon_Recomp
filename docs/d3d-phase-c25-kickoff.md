@@ -66,10 +66,34 @@ question is open and belongs to the operator.
    **the operator run only settles this if it goes outside.**
    **Put `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on that run** — never
    under `/tmp`, which is a tmpfs and is why eleven cache entries have no microcode left.
-3. **A harness that can reach an admissible outdoor frame.** Every drift-honest filter
-   throws away everything above ~1,800 draws. Until that changes, no headless picture claim
-   about reflections, shadows, or anything outdoors is possible. This blocks items 3, 4 and
-   6 as much as it blocks item 00.
+3. **A harness that can reach an admissible outdoor frame — AND THE OPERATOR HAS GIVEN THE
+   ROUTE.** Every drift-honest filter throws away everything above ~1,800 draws, so no
+   headless picture claim about reflections, shadows or anything outdoors is possible. This
+   blocks items 3, 4 and 6 as much as item 00. **Do not extend the 57-step stick recipe;
+   use the title's own DebugJump screen**, which the operator describes as:
+
+   > title screen -> **START** to the main menu -> **F2 once** opens the debug menu ->
+   > **DOWN once** to `Case 0-2`, which drops Chuck **outside, near the military camp** ->
+   > select it -> skip the tutorial after loading -> then either set **AutoChuck** to
+   > explore, or leave the character standing still, whichever the test needs.
+
+   **Why this is the right shape and not just a shortcut:** it replaces 57 fixed 8-second
+   stick steps against a drifting boot with a handful of discrete menu presses to a NAMED
+   destination, which is what would let two arms land in the same place — and matched draw
+   sets are the entire admissibility problem. Standing still is even better: a stationary
+   camera should make `cameraFingerprint` match across arms for long stretches.
+
+   **The one gap, and it is small.** F2 is a KEYBOARD key: `ReadKeyboard` in
+   `runtime/host/window.cpp:358` sets `g_debugJumpPressed` on the F2 edge, and a headless
+   run (`CZ_NO_WINDOW=1`) has no keyboard. The seam already exists —
+   `Host_ConsumeDebugJumpPressed()` is exported in `window.h` and the flag is a plain
+   `std::atomic<bool>`, not an SDL object — so the work is (a) a `Host_RequestDebugJump()`
+   setter, and (b) an `F2` token in `CZ_FAKE_PRESS_SEQ`'s parser
+   (`runtime/kernel/imports.cpp:3831`) that calls it instead of setting a pad button.
+   Everything after F2 is ordinary D-pad and A, which the arm already speaks. Needs
+   `CZ_DEBUG_MENU=1`. **VERIFY rather than assume that the consumer runs headlessly** —
+   the DebugJump screen is the game's own (it should not need the host overlay), but that
+   is a claim to test with a counter, not to trust (gotcha 151).
 4. **The eleven sidecars with no `tfetchDims`** — `tools/shader_dim_census.py` names them;
    one samples a cube map and is therefore still unbound. A run that loads one recovers it.
 5. **The binned frame-time A/B still owed for `CZ_VK_FRAMES_IN_FLIGHT=2`** (part 23). Read

@@ -29,6 +29,14 @@ Next, in order:
    3. **A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.** Every drift-honest filter
       discards every frame above ~1,800 draws, which is exactly where an environment map
       matters. Until then no headless picture claim about reflections is possible.
+      **The route is the title's own DebugJump screen and the operator has given it**:
+      START to the main menu, F2 once, DOWN once to `Case 0-2` — which drops Chuck outside
+      near the military camp — select, skip the tutorial, then AutoChuck or stand still.
+      Discrete presses to a NAMED destination instead of 57 drifting stick steps, and a
+      stationary camera should hold `cameraFingerprint` matched across arms for long
+      stretches. The only work is teaching `CZ_FAKE_PRESS_SEQ` an `F2` token: the flag is a
+      plain atomic behind `Host_ConsumeDebugJumpPressed()`, so it needs a setter and a
+      parser case, not a keyboard. Full detail in `d3d-phase-c25-kickoff.md` item 3.
 
    See "what part 25 did" at the end of this item.
 
