@@ -166,6 +166,31 @@ real colour address:
 python3 tools/xtr_resolve_census.py "Xenia logs/gpu_B1_boot/58410A8D_stream.xtr"
 ```
 
+Ask a capture what HARDWARE bound to a draw, and compare it with what we bound. Three
+tools, all reading a single-frame `.xtr` (which is self-contained — gotcha 259 — so any
+of them works on any of `Xenia logs/R2_world/`'s seven):
+```
+python3 tools/xtr_draw_bindings.py <t.xtr> [--min-verts N] [--csv o.csv]
+                                   [--dump-texture ADDR --out DIR]
+python3 tools/xtr_cube_agreement.py <t.xtr>          # per DECLARED fetch slot
+python3 tools/xtr_draw_vertices.py  <t.xtr> --vs <hash> [--ps <hash>] [--min-verts N]
+```
+`xtr_draw_bindings` is the per-draw shader pair, every fetch constant it could sample
+(address, extent, format, tiling, dimension, stack depth) and — uniquely — THE BYTES, so
+a texture hardware really read can be written out and compared with our upload.
+`xtr_cube_agreement` asks the shader-versus-constant dimension question the way
+`bindTextures` asks it, per fetch slot the sidecar declares, which is the form that can
+actually report a disagreement (gotcha 264). `xtr_draw_vertices` prints hardware's vertex
+STREAMS and ALU CONSTANTS for a named draw in the same shape `CZ_VK_DRAW_PROBE` prints
+ours, so the two transcripts read side by side.
+
+**All three replay `LOAD_ALU_CONSTANT`, and they must**: this title issues 620 of those
+against 36 `SET_CONSTANT`s in one frame, so a replay without it reconstructs almost none
+of the ALU constant file (gotcha 262). 81 of the 620 read memory the capture does not
+carry, and `xtr_draw_vertices` prints `UNRECOVERABLE` for those registers rather than the
+stale value (gotcha 263) — **which is the difference between "hardware's answer" and
+"some earlier draw's leftover".**
+
 Disassemble the guest image. **Reach for this before reading `ppc/`** — a recompiled
 function is a translation, and most questions ("what writes this field", "which branch
 does this predicate take", "how many arguments does this call site really pass") are

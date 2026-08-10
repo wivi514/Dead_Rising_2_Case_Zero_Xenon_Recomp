@@ -1373,6 +1373,90 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 27 (2026-08-10) — the ground draw's last input, and a replay that could
+## not see the guest's constants
+
+Two open items were worked and both produced an answer; one of them also produced a
+defect in this project's own oracle tooling that had been quietly limiting every
+capture comparison.
+
+**ITEM 0 — THE VERTEX DATA FOR THE GROUND DRAW. CLOSED, AND IT MATCHES.** `tools/
+xtr_draw_vertices.py` decodes hardware's vertex streams out of a single-frame trace in
+the same shape `CZ_VK_DRAW_PROBE` prints ours, sharing the vertex fetch decode, the
+endian unswap and the per-format component count with `xenos.h` and `vk_renderer.cpp` on
+purpose. For the 25,234-vertex ground draw (`vs_36eef2c94b4a065c` /
+`ps_ad65b98593f95926`) all five attributes agree to the printed digit over the first six
+vertices — position `-23.79100, 3.10100, 25.04500`, texcoord `0.11789, 0.49056`, and the
+three packed ones bit for bit.
+
+**And the anomaly that motivated the whole comparison is not an anomaly.** The two float2
+attributes at different fetch slots and different dword offsets that decode identically —
+`loc4` from slot 94 and `loc6` from slot 93+1 — do exactly the same thing on hardware. The
+guest genuinely duplicates that texture coordinate into two streams. The lead closes by
+showing the mechanism is real and shared, which is a better close than failing to find it.
+
+**The shader CONSTANTS were compared too, which part 26's input list had also missed**,
+and they match wherever the capture can answer: `pc(1)`, `pc(22)`, `pc(45)`, `pc(46)`
+identical, `pc(14)` a world position that differs with the camera as it must. `pc(0).w`
+is 1.0 on hardware and 0.0697 for us, but the ground pixel shader never reads `c0`.
+
+**So every comparable input to the white ground now matches hardware** — shader pair,
+vertex count, bindings, texture contents, render state, vertex data, recoverable
+constants — and **the defect is in the SHADING.** The next step is reading our translated
+`ps_ad65b98593f95926` against the capture's own disassembly of it, which the round-2
+shader dump contains.
+
+**AND ITEM 00f's LAST LEAD IS REFUTED: the ground mesh drawn twice is TILING.** The probe
+prints the scissor and the two draws read `0,0 640x720` and `640,0 640x720` — this
+title's left and right halves, which `CLAUDE.md` already records from the other end.
+There is no second pass to combine (gotcha 265).
+
+**ITEM 0b — THE CUBE DISAGREEMENT. THE CONCLUSION SURVIVES; THE MEASUREMENT BEHIND IT DID
+NOT, AND THE MAGNITUDE WAS OFF BY 10x.**
+
+* **Part 26's "414 of 414, no disagreements" could not have found one.** It selected draws
+  where a cube-declaring shader was bound and then counted the constants that ALREADY read
+  cube; a disagreeing slot reads 2D and was outside the population by construction.
+  `tools/xtr_cube_agreement.py` asks it per declared fetch slot, out of the same sidecar
+  arrays `bindTextures` binds from: **0 of 13,203 fetches disagree.** Same answer, now
+  falsifiable (gotcha 264).
+* **The disagreement is ours, and now positively identified.** `CZ_VK_DIM_DISAGREE`
+  enumerates the whole population of a 400 s outdoor run: **9 distinct (shader, slot,
+  texture) cases over two textures.** The slot-4 ones are `vs_2f13eecec64e508e` with
+  `ps_3da9454d30a3a225`, `ps_ad2d8362c47d9e45` and `ps_71d569a46634d72a` — **and those
+  exact pairs appear in the captures binding a real 128x128 DXT1 cube map at slot 4**
+  (`0E751000`, dimension 3, stack depth 6). Our 32-slot dump at those draws shows slot 4
+  holding an **exact duplicate of slot 3**. It is not the decode: the same dump reads
+  `s6 06805000` as dim 3 depth 6 correctly.
+* **The share is 0.05%, and the decline had a second, larger cause nobody had named.** On
+  the outdoor route `cube fetch got the dummy` is **3,210 of 1,903,592 cube fetches**, and
+  it now splits exactly: **2,182 because the constant at that slot is not a texture at all**
+  (the guest never set it) and **1,028 for the dimension disagreement**. Nothing
+  unattributed. Part 26's 14,670 was a pre-cube-snapshot binary and should not be
+  re-quoted.
+
+**AND THE TOOLING DEFECT, which is the part that transfers.** All three `.xtr` tools
+decoded `SET_CONSTANT` and `SET_CONSTANT2` and silently dropped **`LOAD_ALU_CONSTANT`
+(0x2F), which is how this title sets nearly all its shader constants — 620 packets against
+36 `SET_CONSTANT`s in `w1_spawn.xtr`.** The runtime's own `pm4.cpp` has handled it since
+phase 4; the oracle tools were written later from the same mental model rather than from
+the same code (gotcha 262). With it handled, **81 of those 620 loads read memory the trace
+does not carry**, so some registers are genuinely unrecoverable and the tool now says
+`UNRECOVERABLE` instead of printing the stale value (gotcha 263). **What exposed the whole
+class was an impossible value, not a suspicious one**: the ground pixel shader uses
+`c255.w` as its literal 1.0 and the replay said `c255` was `(0,0,0,0)`.
+
+`pc(253..255)` are therefore the only inputs to the ground draw still unknown, and
+`ps_ad65b98593f95926` does read all three — a capture carrying the constant-buffer memory
+would close the input list completely.
+
+**Gates:** `--smoke` OK; `tools/shader_dim_census.py` exit 0 over all 410 shaders with the
+ucode parse and the SPIR-V agreeing on every one; `no translated shader` = 0.
+Not re-run and owed: the A5 kernel-call diff, `truncated=0`, the PM4 capture oracles and
+the capture-E picture correlation — no renderer behaviour changed this part (both runtime
+edits are counters and a diagnostic), but they are owed before any claim that rests on
+them.
+
 ## Phase C part 26 (2026-08-10) — the rendered cube map, and a filter that was never
 ## going to report anything
 

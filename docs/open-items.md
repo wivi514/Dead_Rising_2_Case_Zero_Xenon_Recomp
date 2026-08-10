@@ -404,16 +404,51 @@ Next, in order:
    | a ground texture that decodes flat | the new uniform-texture counter finds 9 in a run, **none of them the ground's** |
 
    **WHERE IT MUST THEREFORE BE.** The inputs are all correct, so the defect is in the
-   SHADING or in render state this runtime ignores. One concrete lead, visible in every
+   SHADING or in render state this runtime ignores. ~~One concrete lead, visible in every
    census and not yet followed: the ground mesh is drawn **twice with `mask=F`** in the same
-   frame, same vertex shader and same textures, and in some frames the two draws carry
-   DIFFERENT pixel shaders (`ad65b98593f95926` and `57d441f53fc93ad7`) — plus three more
-   times with `mask=0`. Both colour draws decode to `blend=00010001`, i.e. `src*ONE +
-   dst*ZERO`, an opaque replace. If one of those passes is meant to combine with the other
-   rather than overwrite it, the surviving pass is whatever was drawn last, which is exactly
-   a flat lighting term over a correctly textured one. Read the two pixel shaders against
-   each other, and read `RB_COLORCONTROL`/`RB_BLENDCONTROL` for both draws, before
-   theorising further.
+   frame, same vertex shader and same textures... If one of those passes is meant to combine
+   with the other rather than overwrite it, the surviving pass is whatever was drawn
+   last.~~ **REFUTED IN PART 27, AND IT WAS TILING.** `CZ_VK_DRAW_PROBE` prints the
+   scissor, and the two draws of the ground mesh carry `scissor 0,0 640x720` and
+   `scissor 640,0 640x720` — this title's left and right 640-wide halves, which CLAUDE.md
+   already records from the other end. There is no second pass to combine (gotcha 265).
+   The `mask=0` draws remain unexplained and are the depth/shadow prepasses.
+
+   **PART 27 CLOSED THE LAST INPUT, AND EVERY COMPARABLE ONE NOW MATCHES.** The vertex
+   data was the input part 26 could not compare; `tools/xtr_draw_vertices.py` decodes
+   hardware's streams out of `w1_spawn.xtr` in the same shape `CZ_VK_DRAW_PROBE` prints
+   ours, and for the 25,234-vertex ground draw all five attributes agree to the printed
+   digit over the first six vertices:
+
+   | attribute | hardware | ours |
+   |---|---|---|
+   | loc0 POSITION fmt57 slot95 stride3 | `-23.79100, 3.10100, 25.04500` | identical |
+   | loc4 fmt37 slot94 stride2 off0 | `0.11789, 0.49056` | identical |
+   | loc5 fmt16 slot93 stride4 off0 | `FEA017E2` | identical |
+   | loc6 fmt37 slot93 stride4 off1 | `0.11789, 0.49056` | identical |
+   | loc7 fmt25 slot93 stride4 off3 | `4BB10240` | identical |
+
+   **And the recorded anomaly is not one.** loc4 and loc6 decoding identically — two float2
+   attributes from two different streams carrying the same values — is what HARDWARE does
+   too. The guest genuinely duplicates that texture coordinate into both streams. That
+   closes the lead by showing the mechanism is real and shared, not by failing to find it.
+
+   **The SHADER CONSTANTS were compared too**, which part 26's list also missed, and they
+   match wherever the capture can answer: `pc(1)`, `pc(22)`, `pc(45)`, `pc(46)` identical;
+   `pc(14)` is a world position and differs with the camera, as it must; `pc(0).w` reads
+   1.0 on hardware and 0.0697 for us but the ground pixel shader never reads `c0`.
+   `pc(253..255)` are **UNRECOVERABLE from this capture** — 81 of `w1_spawn`'s 620
+   `LOAD_ALU_CONSTANT` packets read memory the trace does not carry, and the tool now says
+   so instead of printing the stale value (gotcha 263). Those three are the only inputs
+   still unknown, and `c253/c254/c255` ARE read by `ps_ad65b98593f95926`, so **a capture
+   that carries the constant-buffer memory would close the input list completely.**
+
+   **SO THE GROUND DEFECT IS IN THE SHADING.** Every input that can be compared matches:
+   shader pair, vertex count, bindings, texture contents, render state, vertex data, and
+   the recoverable constants. The next step is to read our translated
+   `ps_ad65b98593f95926` against the capture's own disassembly of it —
+   `~/DR2CZ-troubleshooting/r2-shaders/shader_D007C18389DF0E55.ucode.frag`, 187 lines,
+   located by hashing the dword-swapped `.ucode.bin` (gotcha 261).
 
    **NEXT, in order**
    0. **The character cube fetches that are declined** — 0.28%, visible on the crowd, and
@@ -481,6 +516,45 @@ Next, in order:
    both confirmed dummy-samplers by the magenta test — and it means the fix is upstream of
    the decline rather than in what the decline chooses. Hardware also binds real, square
    environment maps in those slots throughout: 32x32 and 128x128 DXT1, 64x64 and 4x4 8888.
+
+   **PART 27: THE CONCLUSION SURVIVES, THE MEASUREMENT BEHIND IT DID NOT, AND THE
+   MAGNITUDE WAS OFF BY 10x.** Three corrections, all measured:
+
+   * **"414 of 414" could not have found a disagreement.** It selected draws where a
+     cube-declaring shader was bound and then counted the constants that ALREADY read
+     cube; a disagreeing slot reads 2D and was outside the population by construction
+     (gotcha 264). `tools/xtr_cube_agreement.py` asks it the way the runtime asks it —
+     per fetch slot the shader's own sidecar declares — and gets **0 of 13,203 fetches
+     disagreeing** on the gas-station frame. Same conclusion, now falsifiable.
+   * **The disagreement IS ours, and now there is a positive identification.** The
+     runtime's `CZ_VK_DIM_DISAGREE` census enumerates the whole population of a 400 s
+     outdoor run: **9 distinct (shader, slot, texture) cases over two textures** —
+     `01330000` (4x4 `k_8_8_8_8`) at slot 1 or 3, and `10C38000` (128x128 DXT1) at slot 4.
+     The slot-4 cases carry `vs_2f13eecec64e508e` with `ps_3da9454d30a3a225`,
+     `ps_ad2d8362c47d9e45` or `ps_71d569a46634d72a` — **and those exact shader pairs
+     appear in the captures with a real cube constant at slot 4** (`0E751000`, 128x128
+     DXT1, dimension 3, stack depth 6). So hardware has a cube there and we do not.
+   * **What we have there instead is an exact duplicate of slot 3.** The full 32-slot
+     dump at one of those draws reads `s3 10C38000 128x128 dim=1` and `s4 10C38000
+     128x128 dim=1` — the same descriptor twice, where hardware's s3 and s4 are two
+     different textures. That is the 00f "binds the same texture twice" observation seen
+     from the register file. It is **not** a decode error: the same decode reads
+     `s6 06805000 64x64 dim=3 depth=6` correctly in the same dump.
+   * **The share is 0.05%, not 0.28%, and the decline had a second cause nobody had
+     named.** On the outdoor route, `cube fetch got the dummy` is **3,210 of 1,903,592
+     cube fetches (0.17%)** and now splits exactly: **2,182 because the fetch constant at
+     that slot is NOT A TEXTURE at all** (type != 2 — the guest never set it) and **1,028
+     for the dimension disagreement**. 2,182 + 1,028 = 3,210, so nothing is unattributed.
+     Part 26's 14,670 was a pre-cube-snapshot binary and should not be re-quoted.
+     **The larger cause is the unset slot, and it was invisible because the "not a
+     texture" counter was shared with every 2D fetch.**
+
+   **What is still owed here** is why the guest binds slot 3's texture (or nothing) into a
+   slot hardware gives a cube map. Both remaining candidates are guest-side rather than
+   renderer-side: the environment map that material wants was never created in our
+   runtime, or it was created and the engine's own bind was skipped. `01330000` is the
+   4x4 already on file as "uploaded BLACK, guest memory NON-ZERO NOW" (item 00 point 2),
+   so the two are plausibly one defect in this title's texture creation.
 
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six

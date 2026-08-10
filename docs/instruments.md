@@ -541,6 +541,32 @@ CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answe
                    plausible wrong image. Needs `CZ_VK_STATS=N` to print.
                    **Reusable verbatim for Case West**, and for any field whose value is
                    predicted by an independent oracle
+CZ_VK_DIM_DISAGREE=N  WHICH SHADERS DISAGREE WITH THEIR OWN FETCH CONSTANTS ABOUT THE
+                   DIMENSION, and about which texture. The cross-check added with
+                   `CZ_VK_DIM_CENSUS` says a disagreement HAPPENED and declines that
+                   fetch to the 1x1 white dummy; this says who, where and what. Two
+                   outputs, and the second is the one to read:
+                   * the first N disagreements printed as they happen, each with the six
+                     raw dwords of the offending slot AND the whole 32-slot fetch
+                     constant file as we hold it at that draw — which is what separates
+                     "our register file lost a constant" from "our decode misreads a
+                     case", because a lost constant leaves the slot reading as some
+                     neighbour's texture and a decode error leaves a slot somewhere that
+                     does read cube;
+                   * an UNBOUNDED census at `CZ_VK_STATS` time, keyed on (pixel shader,
+                     slot, texture address). The first version had only the capped print
+                     and every one of its 25 lines was the same shader at the same slot
+                     on two frames, which reads as "there is one case" and is equally
+                     consistent with the cap having been reached inside one draw batch
+                     (gotcha 109).
+                   **What it found in part 27**: 9 distinct cases over a 400 s outdoor
+                   run, two textures, and slot 4 holding an EXACT DUPLICATE of slot 3
+                   where the captures show hardware holding a real 128x128 DXT1 cube map
+                   for the same shader pair. Needs `CZ_VK_STATS=N` to print the census.
+                   The companion on the capture side is `tools/xtr_cube_agreement.py`:
+                   a shader that disagrees here and agrees there is our register file,
+                   and one that appears in no capture is a case hardware has never been
+                   asked about
 CZ_VK_FRAMES_IN_FLIGHT=N  how many frames the CPU may be ahead of the GPU. **Default 2
                    since part 23; `=1` is the pre-part-23 renderer exactly** — submit,
                    block on the fence, read back, present — and is therefore this
