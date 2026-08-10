@@ -1373,6 +1373,92 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 24 (2026-08-09/10) — the title's own debug build, switched back on; and
+## the HUD defect, which was ours
+
+Two independent threads, one of them a retraction of my own table and one a closure of
+open item 00c. Both are recorded here because the *reasons* are more reusable than the
+results.
+
+### The retail executable still contains Blue Castle's whole debug build
+
+* `common\debugmenu\debugmenu.cpp` is still in the image's source-path strings,
+  `cDebugMenu` is still a class, the menu's item tree is intact, `God Mode:ON` is
+  referenced by live code, and **`debugjump.txt` SHIPS** — it is the largest entry in
+  `data/frontend/mainmenu.big`, larger than `title.txt`. None of it was compiled out.
+* 393 boolean tunables gate it. One loader, `sub_824A2470`, resolves each BY NAME and
+  stores the answer as a byte; every consumer gates on a plain `lbz`/`cmplwi`/`beq`. The
+  loader runs ONCE, three hops off the XEX entry point, and nothing rewrites the bytes —
+  so a post-hook is permanent and has no per-frame component. `CZ_DEBUG_MENU=1`.
+* **The OPERATOR built the usable part**, not me: F2 opens the shipped DebugJump screen
+  through the frontend's captured transition manager; F4 opens a host-rendered menu over
+  the genuine retained `cDebugMenu` (retail destroys the populated startup instance before
+  gameplay and it cannot be rebuilt, so `sub_824A8FE0` preserves that one instance).
+  **AutoChuck is the most useful entry** — an AI that completes objectives, so a test no
+  longer needs a human driving. Plus a PP award and a level-50 cap, which also has to
+  suppress the combo-card reward rows above level 5 or receiving one crashes.
+* Negative results kept: the in-game "Quickie Menu v0.21" renderer never draws even with
+  its dispatcher bypassed; zombie spawning through the retained labels produces no actor
+  across `dbgrun20`-`26`; the 64-entry "NPC To Spawn" selector has no surviving consumer;
+  there is no retained vehicle spawn command. Incomplete retail scaffolding, not features.
+
+### My tunable table was off by one, on all 387 flags (gotcha 241)
+
+The loader does not store a lookup's result next to that lookup's name — it stores it
+AFTER the next name is already in `r4`. Pairing each `addi` with the following `stb` named
+every flag after its neighbour. **It survived two checks that could only confirm it**: an
+`lbz` consumer scan finds readers at BOTH candidate addresses because every byte in a
+dense flag struct is a real tunable, and reading back bytes I had written myself was a
+tautology. The fix is a dataflow simulation over the loader. The operator's independently
+derived table was right where mine disagreed with it; only the 8 entries they had copied
+from mine were wrong. This is also the whole explanation for the failed first day: the
+preset never enabled the debug menu, it set `enable_dev_only_debug_tiwwchnt`,
+`debug_on_controller_2_only` and `debug_show_loading_time`.
+
+### Open item 00c closed — and the cause was part 22, our own change
+
+* **The operator's A/B settled it**, after they clarified they HAD fired a weapon in the
+  store-off arm (the single hole that had forced an earlier retraction): store off = clean
+  all run; store on = HUD collapse and ammo flickering 26<->27.
+* **The mechanism is the guard's SAMPLING, not the store.** `StreamGuard` was exact only
+  to 512 bytes and hashed 8 blocks of 64 above that. A HUD is batched into one multi-KB
+  vertex buffer where only the digit quads change; those quads fall outside the sampled
+  windows; the guard reports "unchanged" and the store serves last frame's numbers. It is
+  independent of `CZ_VK_FRAMES_IN_FLIGHT` (the ping-pong is off at 1) and invisible to the
+  census (`GUARD MISSED: 0 of 0` — a zero DENOMINATOR, blind not negative). That
+  combination is why it survived three sessions.
+* **Fix: raise the exact bound to 16 KB** (`CZ_VK_STREAM_GUARD_BYTES=N`, no rebuild to
+  retune; `CZ_VK_STREAM_GUARD_EXACT=1` is the unlimited diagnostic). Exact-everywhere is
+  75x the hashing and +11.9 points of frame time, so it is not shippable.
+* **Cost at the gas-station crowd: zero frame rate.** 6,778 draws/frame, 32.2 ms, 31.0 fps
+  — still the two-vblank floor — with `guard read` 14.15 MB/frame, `record` 19.3%,
+  `outside` 54.2%, while the store avoids 50-61 MB/frame of copying. HUD confirmed correct
+  throughout. Gotcha 243 is that reading: when the platform pins frame time, a CPU COST is
+  as invisible as a CPU saving.
+* **Residual exposure, counted rather than assumed**: 604-624 streams/frame still exceed
+  16 KB and are only sampled, printed on every profile window. Gotcha 242 — a threshold
+  fitted to a census is fitted to the population the INSTRUMENT could reach; 512 came from
+  a census whose recipe never fired a weapon or changed a HUD number.
+
+### A dead end of mine, recorded so it is not rebuilt
+
+I tried to make 00c self-servable by counting frames where the LIFE pips / PP bar / LV
+circle are absent. It reproduces beautifully — 69.0% and 69.4% across two runs of one
+config — and it measures the WRONG THING: `phase5-notes.md` §2152 already records that
+partial HUD is location-dependent (the safehouse has not raised it). Its three-arm result
+said the store was innocent and is retracted. A valid headless metric must watch a HUD
+number CHANGE, not a widget's presence — and `CZ_FAKE_PRESS_SEQ` has no trigger in its
+vocabulary while attack here is RT, which is the real reason no headless recipe has ever
+fired a weapon.
+
+### Also fixed
+
+`XamInputGetState` was returning SUCCESS for every user index after the debug-bridge
+wrapper forced `r3 = 0`, telling the title four pads exist where two do. The bridges make
+guest calls and a guest call clobbers `r3`, so the value does need restoring — just the
+real one.
+
+
 ## Phase C part 22 (2026-08-08) — the cross-frame stream store, and two ways a real win
 ## nearly measured as noise
 
