@@ -265,9 +265,19 @@ CZ_CRASH_TEST=nullcall  call through a zero ctr on purpose, to prove the crash
                    reporter names it. A self-test, not an arm — it announces itself
                    and the crash it causes is deliberate (finding 40)
 CZ_KCALL_WHO=A,B   dump the guest call stack the first time these imports are called
-CZ_AUDIO_TRACE=1   XMA context allocation + every 512th driver frame WITH its peak
+CZ_AUDIO_TRACE=1   XMA context allocation + EVERY driver frame scanned for its peak
                    amplitude, so "the pump runs" and "the game makes sound" stay
-                   separable
+                   separable. Rewritten in part 26, because the first version could not
+                   tell SILENCE from BLINDNESS and the whole audio item turns on that
+                   distinction: it now counts null frames separately from silent ones,
+                   reports the first non-silent frame and the running maximum, prints the
+                   guest ADDRESS of each buffer, and SELF-TESTS the scanner at pump start
+                   on a synthetic frame of big-endian 0.5f — a scan that reads the wrong
+                   byte order reports zeros on any input, which is indistinguishable from
+                   silence (gotcha 30). Reads `null=0 non-silent=0 maxpeak=0.000000` all
+                   the way to gameplay: the mixer hands us real buffers full of zeros
+CZ_VK_NO_CUBE_SNAPSHOT=1  see the renderer section — the control arm for the cube map the
+                   title renders itself
 CZ_AUDIO_FRAME_US=N  the driver frame period (default 5333 = 256 samples @ 48 kHz)
 CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the control
                    arm for every claim about driving the audio callback
@@ -498,15 +508,22 @@ CZ_VK_NO_CUBE=1    bind every CUBE fetch the way the renderer did before part 25
                    which every reflective surface multiplied its specular by pure white.
                    Counted, so an arm that engaged is distinguishable from one that did
                    not (gotcha 151)
+CZ_VK_NO_CUBE_SNAPSHOT=1  decline the cube map the TITLE RENDERS ITSELF to the 1x1 white
+                   dummy — i.e. the part-25 renderer, in the part-26 binary. **The
+                   same-binary control arm for the cube snapshot path.** By default
+                   `06805000` is assembled from the six resolve snapshots at
+                   `06805000 + i * 0x4000` into a six-layer cube image in set 2 and
+                   refreshed by each face's own resolve; with this on, every one of those
+                   fetches reads white again. Both arms are counted, and on a 240 s
+                   DebugJump run the path serves **358,767 of 999,508 cube fetches (35.9%)**
 CZ_VK_CUBE_FROM_GUEST=1  upload a cube map from guest memory even when its address is a
-                   RESOLVE DESTINATION, which by default is declined to the dummy. Exactly
-                   one of this title's cube maps is such an address — `06805000`, 64x64,
-                   which the title renders itself — so the arm flips that one surface
-                   between a BLACK reflection (the zeros actually in guest memory) and a
-                   WHITE one (the dummy). Neither is correct; the correct answer is a cube
-                   snapshot path and is open item 00's remaining half. The arm exists
-                   because which of the two looks closer is an operator question and not
-                   one to settle by argument
+                   RESOLVE DESTINATION. Exactly one of this title's cube maps is such an
+                   address — `06805000`, 64x64, which the title renders itself — so the arm
+                   shows that surface as a BLACK reflection (the zeros actually in guest
+                   memory) against the assembled snapshot cube the renderer now builds. It
+                   predates the snapshot path and is kept because it is the third point of
+                   comparison: black (guest memory), white (`CZ_VK_NO_CUBE_SNAPSHOT`), and
+                   the rendered map
 CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answered by
                    measurement rather than recollection. The shader-declared dimension
                    (from the sidecar) partitions every fetch into classes that must
@@ -891,7 +908,16 @@ CZ_VK_PRIM_RESTART=1   honour 0xFFFF as a strip separator. OFF because the guest
 CZ_VK_RESOLVE_TRACE=N  from frame N: each resolve's destination, extent, copy window,
                    clear bits and the DRAW COUNT of the pass it closes
 CZ_VK_VALIDATION=1 the Khronos validation layer. Slow at ~900 draws a frame, and it has
-                   twice named an API misuse that was being investigated as a renderer bug
+                   twice named an API misuse that was being investigated as a renderer bug.
+                   **It also brings VK_EXT_debug_utils in and NAMES our objects** (part 26),
+                   so a message reads `VkImage 0x235...[resolve snapshot 14A7A000 96x45
+                   slot 32]` rather than a bare handle — which is what turned
+                   `vkCmdDraw-None-09600` from an unidentifiable image into a diagnosis in
+                   one run (gotcha 255). Both the layer and the extension fall back
+                   loudly rather than costing the renderer if absent.
+                   **STANDING GATE: one run per session, quote the tally.** As of part 26
+                   the outdoor route reports 20 x `VkGraphicsPipelineCreateInfo-Input-08733`
+                   and 6 x `VkGraphicsPipelineCreateInfo-topology-08773`, and nothing else
 CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
                    An instrument, not an arm: it fabricates nothing, and it is the
                    witness that a real press reached XamInputGetState. Silent on a
