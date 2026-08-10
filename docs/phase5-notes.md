@@ -4194,6 +4194,112 @@ That is a real cost and it is where it is expected to be: a synchronous submit a
 full readback per frame, plus per-draw constant uploads at ~900 draws a frame. It is
 not a defect to fix before the picture is right; it is a number to re-measure after.
 
+
+---
+
+## 6az. THE RENDERED CUBE MAP, and a filter that could never have reported anything
+
+Part 26. Two things, and the second is the one that changes how this project measures.
+
+### The cube snapshot path — six resolves into six layers, and the layout was measured
+
+§6ay bound the cube maps and left half the volume behind: `06805000` (64x64, `k_8_8_8_8`)
+is an environment map the TITLE RENDERS ITSELF, so its address is a resolve destination and
+guest memory there is zeros. Part 25 declined it to the 1x1 white dummy, which is exactly
+the picture it had had since phase 5.
+
+The fix is a `CubeSnapshot`: one six-layer `VK_IMAGE_VIEW_TYPE_CUBE` image in descriptor
+set 2, filled by copying each face's resolve snapshot into its layer. It is deliberately a
+SECOND view of six snapshots rather than a change to them — other passes sample those same
+addresses as ordinary 2D surfaces in the same frame, and a resolve does not know it is
+writing a cube face. Only a later fetch constant, naming the base address under a shader
+that declares a cube, says so.
+
+**The face layout is the one fact the design turns on, and nothing in this repo had ever
+asked it.** The code derives face *i* as `base + i * faceBytes`, reusing the stride the
+guest-memory cube path already computes — a MODEL — and then prints each derived address
+with whether a resolve snapshot was found there. It could have refuted itself face by face:
+
+```
+CUBE SNAPSHOT 06805000 64x64 stride 00004000 -> set 2 slot 1, faces:
+  face 0 at 06805000: filled from its resolve snapshot
+  face 1 at 06809000 ... face 5 at 06819000: all filled
+```
+
+Six of six. So the engine lays a rendered cube out exactly as it lays a loaded one out,
+which is worth carrying to Case West as a prediction rather than a discovery.
+
+**The refresh is load-bearing, and the counter says so.** Each face's own resolve copies
+into its layer in that resolve's own command buffer — no extra submit, and never staler
+than its source. `resolve: refreshed a face of a rendered CUBE MAP` reads **8,850 in a
+240 s run**: the title re-renders this map continuously, so a cube assembled once at its
+first fetch would have frozen the world's reflection at that instant. That is §6s one
+descriptor set over.
+
+**Volume, with its denominator.** On a 240 s DebugJump run to the military camp,
+`texture: CUBE served from resolve snapshots` is **358,767 of 999,508 cube fetches
+(35.9%)**, every one of which read white before. Part 25's census put this map at 55% of
+cube sampling in the opening hour; that is a different population and the two numbers are
+not one claim (gotcha 242).
+
+### The admissibility filter is unsatisfiable outdoors, and the route is not why
+
+Part 25 handed part 26 one job before measuring anything on the new route: two runs of ONE
+configuration, count the frames sharing `drawFingerprint` AND `cameraFingerprint`. The
+answer, over two 420 s runs of 13,061 and 13,059 frames (`tools/frame_determinism.py`):
+
+| matching | frames | draw counts |
+|---|---|---|
+| by present index, both fingerprints | 422 of 13,056 (3.2%) | 26..**141** |
+| by index, both, >= 1,800 draws | **0** | — |
+| by CONTENT, any index | 446 of 13,061 | max **153** |
+
+And the route is fine — that is the part worth reading twice:
+
+* **12,174 of 13,056 indices are above 1,800 draws in at least one arm** (93% of the run),
+  so the two runs are in the same place at the same moment;
+* their draw counts agree to a **median relative difference of 1.4%** (median |dA - dB| =
+  89 draws against ~6,200).
+
+The runs land together and render very nearly the same amount; they never render the same
+SET. A crowd of animated actors does not produce a bit-identical draw list twice, so exact
+equality selects for stasis — the frames where nothing is happening. `frame_compare.py`'s
+docstring recorded the same failure from the other end in phase 5, where 257 "perfectly
+aligned" frames turned out to be 257 copies of an empty scene. Gotcha 254.
+
+**The replacement, with its noise floor from the same null pair**, over every frame above
+1,800 draws:
+
+| era median | run 1 | run 2 | null |
+|---|---|---|---|
+| mean luma | 56.693 | 57.229 | **0.94%** |
+| distinct colours | 101,128 | 100,364 | **0.76%** |
+| coverage % | 99.671 | 99.675 | 0.004% — saturated, useless |
+
+That is a usable outdoor instrument at last, and it is what this part's cube A/B is read
+with. The prescription was never new (gotcha 38: aggregate over the era, never align within
+it); what was missing was a measured null for the OUTDOOR era, and one null pair supplies
+it.
+
+### Three of the validation layer's five defects, closed
+
+`VkImageMemoryBarrier-image-03320` (20) and `VkImageViewCreateInfo-subResourceRange-01021`
+(4) were both found by reading and both went to zero: a barrier on a depth/stencil format
+must name both aspects, and an image's TYPE must come from its view type rather than from
+its depth extent.
+
+`vkCmdDraw-None-09600` (14) needed a run and, first, NAMES. `VK_EXT_debug_utils` now comes
+in with the layer and every image we create carries one, so the message reads
+`VkImage 0x235...[resolve snapshot 14A7A000 96x45 slot 32]` — and the other thirteen were
+64x22, 32x11, 32x5, 32x2, 32x1 and repeats, i.e. one bloom pyramid, every snapshot created
+mid-frame. The defect was the PUBLISH ORDER: the descriptor was written before the
+fill-and-transition that goes into the frame's command buffer, so for that window a
+descriptor claimed `SHADER_READ_ONLY` on an image still in `UNDEFINED`. Nothing indexed it
+— but with a bindless heap that is an argument, not a guarantee, which is why the layer
+reports it and is right to. Transition in an immediate submit, THEN publish. The snapshot
+VIEW path in the same file already did exactly that, which is why views never appeared in
+the messages: **when one path is quiet and its twin is not, read the quiet one.**
+
 ---
 
 ## 9. Instruments this phase added
