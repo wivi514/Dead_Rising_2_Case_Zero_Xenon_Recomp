@@ -423,11 +423,18 @@ static PendingScreen g_pendingScreen;
 // lands whenever the frontend gets round to it — so "when did it land" is the one number
 // a recipe author needs and it was not in the log. Same units as
 // `CZ_FAKE_START_MS`'s own lines, so the two can be read against each other directly.
+// The epoch is at NAMESPACE SCOPE on purpose. As a function-local static it would be
+// seeded on the FIRST CALL — which is the first screen request — so the first line always
+// printed `at 0s` and the number said nothing at all. A clock that reads zero whenever you
+// look at it is worse than no clock, because it looks like data (gotcha 151 in its
+// quietest form). Static initialisation runs before main, so this is process start to
+// within a few milliseconds, which is the resolution a recipe needs.
+static const auto g_debugEpoch = std::chrono::steady_clock::now();
+
 static long long DebugElapsedSeconds()
 {
-    static const auto start = std::chrono::steady_clock::now();
     return std::chrono::duration_cast<std::chrono::seconds>(
-               std::chrono::steady_clock::now() - start)
+               std::chrono::steady_clock::now() - g_debugEpoch)
         .count();
 }
 

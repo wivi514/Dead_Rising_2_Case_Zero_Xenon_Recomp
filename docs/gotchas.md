@@ -1974,3 +1974,16 @@ From phase C part 18 (the frame rate — and none of it was work):
     an arm, measure the arm against ITSELF, in the same block, on the same machine state —
     then no effect can be quoted except as a ratio.** `docs/measurement.md` had this rule
     for frame time already; it did not have it for pictures, and I did not transfer it.
+250. **A function-local `static` clock is seeded on its FIRST CALL, not at process start —
+    so the first line it stamps always reads zero, and a clock that reads zero whenever you
+    look at it is worse than no clock because it looks like data.** Part 25 added elapsed
+    seconds to the DebugJump log lines for exactly one purpose: a synthetic-input recipe has
+    to place its menu presses after the jump lands, so "when did it land" is the number a
+    recipe author needs. Written as `static const auto start = steady_clock::now();` inside
+    the accessor, the first — and in a short run, only — line printed `at 0s`. Moving the
+    epoch to namespace scope makes static initialisation seed it before `main`, which is
+    process start to within milliseconds. **The general rule: an epoch belongs at the
+    lifetime boundary you are measuring FROM, not at the first place you happen to read
+    it.** Same shape as gotcha 151 in its quietest form — the instrument ran, printed, and
+    reported nothing, and only comparing its number against another clock's (`CZ_FAKE_START_MS`
+    was logging 16 s at the same moment) exposed it.
