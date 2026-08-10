@@ -2027,3 +2027,48 @@ From phase C part 18 (the frame rate — and none of it was work):
     "it arrived and meant something else" before touching the delivery path** — a counter
     at the delivery point answers the first in one run. The operator knew the right button
     immediately; a question would have been cheaper than the experiment.
+254. **An admissibility filter built on EXACT equality is a test for stasis, and on an
+    animated scene its n is zero by construction — the fix is a different statistic, not a
+    better recipe.** Two arms of a picture A/B are comparable only where they rendered the
+    same thing, which this project spells as "the draw fingerprint and the camera
+    fingerprint agree" (gotcha 247). Part 25 measured 13-44 surviving frames of ~300 on the
+    old input recipes, every one under 1,800 draws, and concluded the RECIPE could not
+    reach the outdoor era admissibly. Part 26 built a route that lands in a crowd at 7,300
+    draws and re-measured with two runs of ONE configuration: **422 of 13,056 frames match,
+    none of them above 141 draws, and ZERO of the 12,174 outdoor frames match at all** —
+    the same answer, on a route that demonstrably goes where it was supposed to. The route
+    was never the problem. **A crowd of animated actors does not produce a bit-identical
+    draw list twice**, so exact equality selects for the frames where nothing is happening;
+    `frame_compare.py`'s docstring records the same failure from the other end, where 257
+    "perfectly aligned" frames turned out to be 257 copies of an empty scene. The
+    diagnostic that separates "the arms disagree" from "the filter cannot be satisfied" is
+    the NULL: run the filter on two runs of one configuration first, and if it reports
+    nothing there, it can never report anything. What replaces it is an ERA AGGREGATE with
+    its noise floor measured from that same null pair — here, over 12,000 frames above
+    1,800 draws, medians of mean-luma and distinct-colour count that reproduce to 0.94% and
+    0.76%. Aggregate over the era, never align within it (gotcha 38); what was missing was
+    a measured null for the era, and one null pair supplies it.
+255. **Name your API objects before you chase a message that names one.** For eight parts
+    this project ran without the Vulkan validation layer, and for one part with it: of the
+    five defects it reported, four were identifiable by reading the code and the fifth said
+    only `VkImage 0x2350000000235`. This renderer creates images in five different places,
+    so the handle was not a lead. Enabling `VK_EXT_debug_utils` alongside the layer and
+    calling `vkSetDebugUtilsObjectNameEXT` at each creation site — ~40 lines, free when the
+    layer is off — turned the next run's message into `[resolve snapshot 14A7A000 96x45
+    slot 32]`, and the other thirteen into a halving chain that was recognisably one bloom
+    pyramid. The defect was diagnosed from the names alone. **A validation layer tells you
+    the rule that was broken; only you can tell it which of your objects broke it**, and
+    the cost of teaching it is a few lines at each creation site.
+256. **With a BINDLESS descriptor heap, "nothing indexes that slot yet" is an argument, not
+    a guarantee — write the descriptor LAST.** Case Zero's resolve snapshots were created
+    mid-frame: image, then descriptor, then a fill-and-transition recorded into the frame's
+    own command buffer. The descriptor becomes visible to that whole command buffer at
+    once, including every draw already recorded in it, so between the write and the
+    transition there was a descriptor claiming `SHADER_READ_ONLY` on an image still in
+    `UNDEFINED` — undefined CONTENT for anything that indexed it. Nothing did, because a
+    draw can only learn that slot number from a lookup that would have missed; the layer
+    reported it 14 times anyway, and the layer is right to, because with descriptor
+    indexing neither it nor you can prove which slots a shader reads. The fix is ordering:
+    transition in an immediate submit, THEN publish the descriptor — which the snapshot
+    VIEW path in the same file already did, which is exactly why views never appeared in
+    the messages. When one path in a file is quiet and its twin is not, read the quiet one.
