@@ -129,11 +129,28 @@ question is open and belongs to the operator.
      now repeats the preceding entry, which is why `START` sits in front of it (gotcha 251).
    * A timestamp added to read all this back initially printed `at 0s` every time, because
      a function-local `static` clock seeds on first call (gotcha 250).
-4. **The eleven sidecars with no `tfetchDims`** — `tools/shader_dim_census.py` names them;
-   one samples a cube map and is therefore still unbound. A run that loads one recovers it.
-5. **The binned frame-time A/B still owed for `CZ_VK_FRAMES_IN_FLIGHT=2`** (part 23). Read
+4. **SOUND — the game is silent and the operator has asked for it.** Do NOT start by
+   porting an output device. `runtime/kernel/audio.cpp` already implements the render-driver
+   client and the XMA context array and they RUN — ~27,000 frames submitted in 150 s — but
+   `CZ_AUDIO_TRACE=1` reports `peak=0.0000` on every sampled frame: **the guest is handing
+   us silence**, so an output device would play nothing and the obvious next conclusion
+   would blame the output path. First fix the instrument (peak reads 0.0000 both for a
+   silent frame and for a null one), then decode, then output. Fable 2's
+   `runtime/audio/` is directly liftable — same frame format, 6 planes of 256 — and its
+   `docs/audio-xma.md` is literally titled "why nothing the game mixed was audible".
+   **Its timer trap applies to us verbatim**: our pump is `sleep_for(5333us)`, which Fable 2
+   measured as ~184 frames/s against the 187.5 that 48 kHz needs — a ~2% deficit that
+   starves the device into a stutter easily mistaken for a decode bug. Full item:
+   `docs/open-items.md` 00e.
+
+5. ~~**The eleven sidecars with no `tfetchDims`**~~ **CLOSED at the end of part 25** by two
+   operator runs (the military arrival, then Still Creek end to end): ten of eleven
+   recovered, plus twelve shaders the cache had never held. **Every cube-sampling shader is
+   now bound, 94 of 94**, and the one remaining orphan decorates only sets 0 and 3, so
+   nothing depends on it. Cache is 409 and `shader_dim_census.py` exits 0.
+6. **The binned frame-time A/B still owed for `CZ_VK_FRAMES_IN_FLIGHT=2`** (part 23). Read
    the MEDIAN and the vblank-pinned share, not the mean (237).
-6. The rest of `docs/open-items.md`: shadow cascade (3), mipmaps (4), colour (6), item 12.
+7. The rest of `docs/open-items.md`: shadow cascade (3), mipmaps (4), colour (6), item 12.
 
 **Still deliberately NOT planned: giving `CZ_FAKE_PRESS_SEQ` a trigger.** The button is the
 easy half; a recipe would still have to ACQUIRE a gun and ammo along a long scripted path.

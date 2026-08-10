@@ -204,6 +204,56 @@ Next, in order:
    quote the tally.** It costs nothing and this table is what a silent renderer looks like
    after eight parts of not being able to ask.
 
+00e. **THERE IS NO SOUND, AND THE FIRST QUESTION IS NOT THE OBVIOUS ONE.** Operator
+   request, part 25. The obvious plan — port Fable 2's `audio_out.cpp` and open an SDL
+   device — is probably NOT the first step, and one measurement says why.
+
+   **What already exists here.** `runtime/kernel/audio.cpp` (662 lines) implements the
+   XAudio render-driver client and the XMA context array, and it works: a headless run
+   reports `render driver pump started (5333 us/frame, 256 samples x 6 channels)`,
+   `XMACreateContext -> context 0 at BFFEB000`, and ~27,000 frames submitted in 150 s. The
+   module's own header says what is absent: "There is no audio OUTPUT here and no XMA
+   decoding. Submitted frames are counted and dropped." That is a real null sink, not a
+   fake success (gotcha 5).
+
+   **THE MEASUREMENT (`CZ_AUDIO_TRACE=1`, boot to gameplay via the DebugJump route): every
+   sampled frame has `peak=0.0000`.** 53 sampled frames across ~27,000 submitted. **The
+   guest is handing us silence**, so opening an output device first would produce nothing
+   and the natural next conclusion would be "our output path is broken" — a session lost to
+   the wrong subsystem.
+
+   **CAVEAT, and fix it before trusting the above.** `peak` stays 0.0000 both when the
+   frame is genuinely silent AND when `frame` is null, because the scan sits inside
+   `if (frame)` and the variable is initialised to zero. Exactly-zero across every sample
+   argues for real silence (a wrong pointer or a byte-order error gives nonsense values,
+   not clean zeros) but the instrument cannot currently distinguish them. **One line: count
+   the null-frame case separately.** This is the same blind spot as gotcha 151, in the one
+   place it would send the whole item in the wrong direction.
+
+   **Then, in order:**
+   1. Settle silence-vs-blindness with that counter.
+   2. If genuinely silent, the cause is upstream of the mixer: XMA contexts are allocated
+      but nothing DECODES, so every voice is empty. That is Fable 2's `audio/xma_hw.cpp`
+      (430 lines, the hardware register contract) and `audio/xma_decoder.cpp` (192, ffmpeg)
+      — and `~/GithubRepo/Fable2XenonRecomp/docs/audio-xma.md` is titled "why nothing the
+      game mixed was audible", which is this symptom exactly.
+   3. Output last: `audio/audio_out.cpp` (175 lines) takes planar big-endian float32,
+      6 planes of 256 samples, downmixes to stereo and queues to SDL — **the same frame
+      format this title submits**, so it should drop in.
+
+   **A TRAP THAT APPLIES TO US VERBATIM, TODAY.** `audio-xma.md` has a section called "the
+   pump was timer-driven, and the timer was wrong": `sleep_for(5333us)` overshoots and
+   delivers ~184 frames/s where 48 kHz needs 187.5, and that ~2% deficit starves the device
+   into a periodic stutter. **Our pump is timer-driven at exactly 5333 us.** Fable 2's fix
+   is demand-driven pacing via `Audio_QueuedFrames()`. Expect the stutter on day one and do
+   not diagnose it as a decode bug.
+
+   **Licensing is clear**: Fable 2 is this workspace's own port, so its audio code can be
+   lifted directly — unlike UnleashedRecomp, which is GPLv3 and structural-reference only.
+   Per `docs/reusability.md`, extract only what is proven in BOTH ports and only after the
+   second implementation forces the seam: copy into `runtime/audio/` here first, and leave
+   any shared-library question to Case West.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
