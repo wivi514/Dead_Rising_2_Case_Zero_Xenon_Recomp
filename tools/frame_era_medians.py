@@ -95,9 +95,26 @@ def main():
         for k in COLS:
             base = (b1[k] + b2[k]) / 2.0
             d = abs(v[k] - base) / base if base else float('nan')
-            mult = d / null[k] if null[k] else float('inf')
-            verdict = "INSIDE the null" if mult <= 1.0 else f"{mult:.1f}x the null"
+            # A null of exactly zero is two runs that happened to agree to the printed
+            # precision, NOT a statistic with infinite resolving power. Dividing by it
+            # would print a spectacular multiple of nothing — the denominator error this
+            # project keeps meeting (gotcha 246), in the one place a tool can commit it
+            # on your behalf.
+            if null[k] <= 0.0:
+                verdict = "no null to divide by — two base runs agreed exactly"
+            else:
+                mult = d / null[k]
+                verdict = ("INSIDE the null" if mult <= 1.0 else f"{mult:.1f}x the null")
             print(f"  {k:<18} {v[k]:>12.4f}   {100 * d:>6.2f}% from base   {verdict}")
+
+    # ONE null pair is ONE sample of the noise floor, and on this title the floor itself
+    # moves: two independent pairs measured 0.94% and 0.55% on mean luma and 0.76% and
+    # 0.12% on distinct colours. A multiple quoted against the smaller of those is six
+    # times the multiple quoted against the larger, so an effect under ~3x is not a
+    # result yet — run a third baseline before believing one (gotchas 50/51/86).
+    print("\nNB one null pair is one sample of the floor; on this title independent pairs\n"
+          "   have differed by 6x on distinct colours. Treat anything under ~3x as\n"
+          "   unresolved and run a third baseline run.")
     return 0
 
 
