@@ -3428,6 +3428,31 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 allZero = false;
                 break;
             }
+        // AND UNIFORM, WHICH IS NOT THE SAME QUESTION AND HAD NO COUNTER.
+        //
+        // Part 26 chased a flat (180,180,180) ground for a session with a counter that
+        // could only see BLACK uploads. A texture that decodes to one constant colour —
+        // white, grey, anything — is exactly as broken as one that decodes to zero, and it
+        // produces precisely the symptom being chased: a large surface lit correctly,
+        // shadowed correctly, and carrying no detail at all. Uniformity is tested on the
+        // payload as uploaded, which works for the compressed formats too: a DXT1 image
+        // whose every 8-byte block is identical IS a single-colour image.
+        bool uniform = !pixels.empty();
+        for (size_t i = 8; uniform && i < pixels.size(); i++)
+            if (pixels[i] != pixels[i % 8])
+                uniform = false;
+        if (uniform && !allZero)
+        {
+            Count("texture: uploaded a SINGLE REPEATED BLOCK — one flat colour");
+            static int left = 12;
+            if (left-- > 0)
+                fprintf(stderr,
+                        "[vk] texture %08X %ux%u fmt=%u uploaded UNIFORM: every block is "
+                        "%02X%02X%02X%02X%02X%02X%02X%02X — this surface can only render "
+                        "one flat colour\n",
+                        t.address, t.width, t.height, t.format, pixels[0], pixels[1],
+                        pixels[2], pixels[3], pixels[4], pixels[5], pixels[6], pixels[7]);
+        }
         if (allZero)
         {
             Count("texture: uploaded entirely BLACK (the guest has not written it)");
