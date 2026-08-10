@@ -1564,7 +1564,20 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     img.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImageCreateInfo ci{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-    ci.imageType = depthExtent > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    // THE IMAGE TYPE COMES FROM THE VIEW TYPE, not from the depth extent. It used to be
+    // `depthExtent > 1 ? 3D : 2D`, which is right for every image built out of a guest
+    // surface and WRONG for the 1x1 dummies: `makeDummy(dummy3D, VIEW_TYPE_3D, 1, 1, 1)`
+    // and `makeDummy(dummy1D, VIEW_TYPE_1D, ...)` both pass depth 1, so both got a
+    // VK_IMAGE_TYPE_2D image under a view that Vulkan requires to match. That is
+    // VUID-VkImageViewCreateInfo-subResourceRange-01021, one of the five the validation
+    // layer reported the hour it was installed (open item 00d) — and it had been failing
+    // since phase 5, silently, because the layer was not present to say so.
+    ci.imageType = (viewType == VK_IMAGE_VIEW_TYPE_3D || depthExtent > 1)
+                       ? VK_IMAGE_TYPE_3D
+                       : (viewType == VK_IMAGE_VIEW_TYPE_1D ||
+                          viewType == VK_IMAGE_VIEW_TYPE_1D_ARRAY)
+                             ? VK_IMAGE_TYPE_1D
+                             : VK_IMAGE_TYPE_2D;
     ci.format = format;
     ci.extent = { w, h, depthExtent };
     ci.mipLevels = 1;
@@ -1598,11 +1611,32 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     return true;
 }
 
+// True for the depth formats that carry a stencil aspect as well. Used by Barrier: a
+// LAYOUT is a property of the whole image, so a barrier on one of these must name both
+// aspects even when the caller only cares about depth.
+bool FormatHasStencil(VkFormat f)
+{
+    return f == VK_FORMAT_D16_UNORM_S8_UINT || f == VK_FORMAT_D24_UNORM_S8_UINT ||
+           f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT;
+}
+
 void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
              VkImageAspectFlags aspect)
 {
     if (img.layout == newLayout)
         return;
+    // VUID-VkImageMemoryBarrier-image-03320, 20 of the 32 messages the validation layer
+    // reported in its first session (open item 00d). Without `separateDepthStencilLayouts`
+    // a barrier on a depth/stencil image must name DEPTH **and** STENCIL — the layout
+    // transition applies to the image, not to the aspect the caller happens to be reading.
+    // Two callers pass DEPTH alone quite reasonably (`RefreshSnapshotView` copies only the
+    // depth aspect, and a depth snapshot's view is created with DEPTH alone so it can be
+    // sampled), so the correction belongs HERE rather than at each site: a barrier that
+    // forgets the stencil aspect leaves it in an undeclared layout, which is the same
+    // undefined-content class as `vkCmdDraw-None-09600`, not a cosmetic complaint.
+    if ((aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) &&
+        FormatHasStencil(img.format))
+        aspect |= VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     b.oldLayout = img.layout;
     b.newLayout = newLayout;
