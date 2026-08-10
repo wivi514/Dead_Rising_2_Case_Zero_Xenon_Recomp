@@ -1454,6 +1454,8 @@ struct Renderer
     // CZ_VK_DRAW_CENSUS — the frame whose every draw is being listed, and the file it
     // goes to. Zero means disarmed, which is every frame until F9 is pressed.
     uint64_t drawCensusFrame = 0;
+    uint64_t capturePictureFrame = 0;   // CZ_CAPTURE_KEY: write this frame's picture
+    uint64_t captureSnapFrame = 0;      // ... and its resolve snapshots
     FILE* drawCensusFile = nullptr;
     uint64_t drawCensusLines = 0;
 
@@ -5096,7 +5098,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     psbind = psbind || drawCensus;
     if (drawCensus && !R->drawCensusFile)
     {
-        if (const char* path = Env("CZ_VK_DRAW_CENSUS"))
+        // CZ_CAPTURE_KEY supplies this path too. The arming site and the OPEN site read
+        // the destination independently, and this one read the environment directly — so
+        // a capture armed by CZ_CAPTURE_KEY announced a census, ran the frame, and wrote
+        // no file. Two places deciding where output goes is one place too many.
+        static std::string capturePath;
+        if (capturePath.empty())
+            if (const char* d = Env("CZ_CAPTURE_KEY"))
+                capturePath = std::string(d) + "/capture.census";
+        const char* censusEnv =
+            capturePath.empty() ? Env("CZ_VK_DRAW_CENSUS") : capturePath.c_str();
+        if (const char* path = censusEnv)
         {
             // ONE FILE PER FRAME. The first version wrote to the path as given, so a
             // second F9 destroyed the first press's census — which is exactly what
@@ -5316,9 +5328,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
                 psbindAt += snprintf(
                     psbindLine + psbindAt, sizeof psbindLine - psbindAt,
-                    "  s%u=%08X %ux%u fmt=%u swz=%03X tiled=%u pitchBlk=%u end=%u "
-                    "slot=%u%s%s",
-                    constIdx, t.address, t.width, t.height, t.format, t.swizzle,
+                    // `dim` and `depth` are here so this line and
+                    // `tools/xtr_draw_bindings.py`'s carry the same fields: the capture
+                    // and the runtime describing one draw in one vocabulary is what makes
+                    // the two diffable without a human transcribing columns, and part 27
+                    // did that transcription by hand for every comparison it made.
+                    "  s%u=%08X %ux%u fmt=%u dim=%u depth=%u swz=%03X tiled=%u "
+                    "pitchBlk=%u end=%u slot=%u%s%s",
+                    constIdx, t.address, t.width, t.height, t.format, t.dimension,
+                    t.depth, t.swizzle,
                     t.tiled ? 1u : 0u, t.pitchBlocks, t.endian, slot,
                     slot == 0 ? "(DUMMY)" : "",
                     R->snapshotsSampledThisPass.size() > snapsBefore ? "(snap)" : "");
@@ -7552,6 +7570,31 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // THROUGH rather than parks on can be shorter than 64 frames, and one dump of it is
     // one sample of a transition — the save-slot panel below appeared in exactly one
     // frame of a 180 s boot.
+    // The CZ_CAPTURE_KEY picture, written from the same readback the periodic dump uses.
+    // Separate from the loop below rather than folded into its interval test, because
+    // this one has to fire on EXACTLY the armed frame — the interval test would either
+    // miss it or, if the interval were forced to 1, write every frame of the run.
+    if (R->capturePictureFrame && pres.frame == R->capturePictureFrame)
+    {
+        R->capturePictureFrame = 0;
+        char path[512];
+        snprintf(path, sizeof path, "%s/capture_%06llu.ppm", Env("CZ_CAPTURE_KEY"),
+                 (unsigned long long)pres.frame);
+        if (FILE* f = fopen(path, "wb"))
+        {
+            fprintf(f, "P6\n%u %u\n255\n", width1, height1);
+            for (size_t i = 0; i < bytes; i += 4)
+                fwrite(&R->presentPixels[i], 1, 3, f);
+            fclose(f);
+            fprintf(stderr, "[vk] capture: wrote %s (%ux%u)\n", path, width1, height1);
+        }
+        else
+        {
+            // A capture that silently writes nothing is worse than no capture: the
+            // operator walks away believing the evidence exists (gotchas 25, 151).
+            fprintf(stderr, "[vk] capture: CANNOT WRITE %s — the picture is LOST\n", path);
+        }
+    }
     static const char* dumpDir = Env("CZ_VK_FRAME_DUMP");
     static const uint64_t dumpEvery =
         Env("CZ_VK_FRAME_DUMP_EVERY")
@@ -7792,7 +7835,37 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // screen — and useless the moment one was not. Phase C part 12's defect is on a
     // menu two presses past the title, i.e. at whatever frame the synthetic-input arm
     // happens to land on, and a dependency graph of the wrong frame answers nothing.
-    static const char* snapDir = Env("CZ_VK_SNAP_DUMP");
+    // CZ_CAPTURE_KEY=<dir> — ONE PRESS, ONE PLACE, EVERY ARTIFACT, into one directory.
+    //
+    // The three instruments that answer "what does this surface look like and why" were
+    // three environment variables writing to three places, and two of them fire on a
+    // frame NUMBER rather than on the operator. Standing in front of a defect with a
+    // zombie chewing on you is not the moment to be reading a frame counter out of the
+    // title bar, and the parts of this project that need an operator are the parts that
+    // have to cost them the least (gotcha 190). So this sets all three at once and names
+    // every file after the same frame:
+    //
+    //   capture_<frame>.ppm        the presented picture
+    //   capture_<frame>.census     every draw: shaders, fetch slots, addresses, DIMENSION
+    //   snap_*.ppm                 every resolve snapshot of that frame
+    //
+    // The census columns are deliberately the same fields `tools/xtr_draw_bindings.py`
+    // prints for a Xenia `.xtr`, so ours and hardware's can be read side by side — which
+    // is the whole point, and it is what part 27 had to do by hand.
+    static const char* captureDir = Env("CZ_CAPTURE_KEY");
+    static const bool captureDirReady = [] {
+        if (const char* d = Env("CZ_CAPTURE_KEY"))
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(d, ec);
+            fprintf(stderr, "[vk] CZ_CAPTURE_KEY armed: press F9 to capture the picture, "
+                            "the per-draw census and every resolve snapshot of one frame "
+                            "into %s\n", d);
+        }
+        return true;
+    }();
+    (void)captureDirReady;
+    static const char* snapDir = captureDir ? captureDir : Env("CZ_VK_SNAP_DUMP");
     static const uint64_t snapFrame =
         Env("CZ_VK_SNAP_FRAME") ? strtoull(Env("CZ_VK_SNAP_FRAME"), nullptr, 10) : 600;
     // F9 — the operator's own trigger, consumed here. Asked for from inside the game,
@@ -7804,16 +7877,28 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // an instrument that silently declines is the failure shape this project keeps paying
     // for (gotchas 7, 151).
     const bool snapKey = Host_ConsumeSnapDumpPressed();
+    bool snapKeyNow = snapKey;   // see the CZ_CAPTURE_KEY note at the dump
     // The SAME press also arms the per-draw census for the NEXT frame — next, not this
     // one, because this frame's draws are already recorded by the time a present is
     // reached. One press therefore yields two views of one place: every surface in the
     // frame (the snapshots) and every draw that built it.
-    static const char* censusPath = Env("CZ_VK_DRAW_CENSUS");
+    static std::string captureCensus =
+        captureDir ? std::string(captureDir) + "/capture.census" : std::string();
+    static const char* censusPath =
+        captureDir ? captureCensus.c_str() : Env("CZ_VK_DRAW_CENSUS");
     if (snapKey && censusPath && !R->drawCensusFrame)
     {
         R->drawCensusFrame = R->frame + 1;
-        fprintf(stderr, "[vk] F9: the per-draw census will cover frame %llu -> %s\n",
-                (unsigned long long)R->drawCensusFrame, censusPath);
+        // The PICTURE of the same frame, which is the artifact the other two exist to
+        // explain and the only one that was still on a fixed interval. Armed for the
+        // next frame for the same reason the census is: this frame's draws are already
+        // recorded by the time a present is reached, so a picture taken now and a census
+        // taken next frame would be two different moments described as one.
+        R->capturePictureFrame = R->frame + 1;
+        fprintf(stderr, "[vk] F9: capturing frame %llu -> picture, %llu-draw census and "
+                        "every resolve snapshot\n",
+                (unsigned long long)R->drawCensusFrame,
+                (unsigned long long)R->drawsThisFrame);
     }
     if (snapKey && !snapDir && !censusPath)
     {
@@ -7841,9 +7926,30 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         R->drawCensusLines = 0;
         R->drawCensusFrame = 0;
     }
-    if (snapDir && (R->frame == snapFrame || blackTransition || snapKey))
+    // ONE PRESS MUST MEAN ONE FRAME. The snapshot dump used to fire on the press itself,
+    // i.e. on the frame BEFORE the one the census and the picture cover — so a capture
+    // produced three artifacts labelled as one place and describing two consecutive
+    // frames. In a crowd those are two different pictures, and the whole value of the
+    // capture is that its three views are of the same moment. So under CZ_CAPTURE_KEY the
+    // press arms the dump for the next frame like the other two; the standalone
+    // CZ_VK_SNAP_DUMP path keeps its old immediate behaviour, which several recorded
+    // measurements were taken with.
+    if (captureDir && snapKey)
     {
-        if (snapKey)
+        R->captureSnapFrame = R->frame + 1;
+        snapKeyNow = false;
+    }
+    if (R->captureSnapFrame && R->frame == R->captureSnapFrame)
+    {
+        R->captureSnapFrame = 0;
+        snapKeyNow = true;
+    }
+    // And the fixed-frame dump is OFF under CZ_CAPTURE_KEY: that variable means "the
+    // operator decides when", and 130 files from frame 600 in the capture directory is
+    // noise the operator then has to tell apart from their own press.
+    if (snapDir && ((R->frame == snapFrame && !captureDir) || blackTransition || snapKeyNow))
+    {
+        if (snapKeyNow)
             fprintf(stderr, "[vk] F9: dumping every resolve snapshot of frame %llu\n",
                     (unsigned long long)R->frame);
         // CREATE THE DIRECTORY, and say so if the first file still cannot be written.
