@@ -90,8 +90,45 @@ Next, in order:
    NB it is blind by construction to a fetch pointing at an address that was never that
    texture's home — it only compares bytes at an address we already uploaded from.
 
-00c. **THE UI / AMMO-COUNTER DEFECT — THE STORE IS CONFIRMED AS THE CAUSE (part 22, our
-   own change); WHAT REMAINS IS THE MECHANISM.** The operator reports the HUD
+00c. **THE UI / AMMO-COUNTER DEFECT — CAUSE AND MECHANISM BOTH FOUND. The cross-frame
+   stream store's GUARD was sampling, and a sampled guard cannot see a small edit inside a
+   large UI buffer. `CZ_VK_STREAM_GUARD_EXACT=1` fixes it outright; what is left is making
+   that affordable.**
+
+   **The confirming run (operator, part 24):** store ON, `CZ_VK_STREAM_GUARD_EXACT=1`, over
+   several minutes with both a pistol and an assault rifle. HUD intact throughout — LV/PP,
+   LIFE pips, `$2,000`, `ZOMBREX 0`, `52 KILLED`, `Case 0-2 - Find Zombrex` — and the ammo
+   counter tracked the real value (21) instead of flickering 26<->27. 31.0 fps, the title's
+   own pacing floor.
+
+   So the chain is settled end to end: the store serves a cached buffer when the guard says
+   the guest bytes are unchanged; `StreamGuard` is exact only to 512 bytes and hashes 8
+   blocks of 64 above that; a HUD is batched into one multi-KB vertex buffer in which only
+   the digit quads change; those quads fall outside the sampled windows; the guard reports
+   "unchanged" and the draw gets the previous frame's numbers. It is independent of
+   `CZ_VK_FRAMES_IN_FLIGHT` (the ping-pong is off at 1) and invisible to the census
+   (`GUARD MISSED: 0 of 0` — a zero DENOMINATOR, blind rather than negative), which is
+   exactly why it survived three sessions of looking at it.
+
+   **The 512-byte bound was the whole defect, and note what justified it**: the census
+   found every rewritten stream was exactly 80 bytes, so the bound looked generous. That
+   census could only see streams rewritten between two consecutive frames in a recipe that
+   never changed a HUD number — it measured the population it could reach and the bound was
+   fitted to it. Gotcha 235 is the same shape and this is a second instance.
+
+   **WHAT IS LEFT — cost.** Exact hashing is unbounded in stream size, and the guard runs on
+   EVERY stream every frame because it is how a hit is decided. A crowd frame moves 61-77 MB
+   of stream bytes, so exact could mean hashing all of it rather than ~1 MB. The operator's
+   confirming run was ordinary gameplay, not a crowd, so it does not bound this. Measure
+   `CZ_VK_STREAM_GUARD_EXACT=1` against the default on the outdoor-crowd recipe with
+   `CZ_VK_PROFILE` before choosing between: (a) ship exact unconditionally, (b) raise the
+   exact bound to cover the UI population with margin and keep sampling above it, or
+   (c) build the real invalidation (the `mprotect` design in phase5-notes §6av, written up
+   and never built). Whatever is chosen, the guard cost is charged to `record`, not
+   `streams` (gotcha 238) — re-baseline before attributing anything.
+
+   ~~THE UI / AMMO-COUNTER DEFECT — the store is confirmed as the cause; what remains is the
+   mechanism.~~ The operator reports the HUD
    intermittently collapsing (text overlapping at the top-left, the ammo count absent) and
    the pistol ammo flickering between **26 and 27 every frame regardless of the real
    ammo**, triggered by firing a shot.
