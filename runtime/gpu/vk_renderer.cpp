@@ -7455,8 +7455,30 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     static const char* snapDir = Env("CZ_VK_SNAP_DUMP");
     static const uint64_t snapFrame =
         Env("CZ_VK_SNAP_FRAME") ? strtoull(Env("CZ_VK_SNAP_FRAME"), nullptr, 10) : 600;
-    if (snapDir && (R->frame == snapFrame || blackTransition))
+    // F9 — the operator's own trigger, consumed here. Asked for from inside the game,
+    // standing on a defect, waiting for the frame counter in the title bar to reach a
+    // number chosen before the run started: a fixed `CZ_VK_SNAP_FRAME` is a fine trigger
+    // for a boot-time question and the wrong one for any question about a PLACE. The edge
+    // is consumed unconditionally so a press cannot sit latched and fire on some later
+    // frame, and a press with no destination SAYS SO rather than doing nothing visible —
+    // an instrument that silently declines is the failure shape this project keeps paying
+    // for (gotchas 7, 151).
+    const bool snapKey = Host_ConsumeSnapDumpPressed();
+    if (snapKey && !snapDir)
     {
+        static bool complained = false;
+        if (!complained)
+        {
+            complained = true;
+            fprintf(stderr, "[vk] F9 pressed but CZ_VK_SNAP_DUMP is not set — nothing was "
+                            "dumped. Relaunch with CZ_VK_SNAP_DUMP=<dir>\n");
+        }
+    }
+    if (snapDir && (R->frame == snapFrame || blackTransition || snapKey))
+    {
+        if (snapKey)
+            fprintf(stderr, "[vk] F9: dumping every resolve snapshot of frame %llu\n",
+                    (unsigned long long)R->frame);
         for (const auto& [dest, snap] : R->snapshots)
         {
             const size_t n = size_t(snap.image.width) * snap.image.height * 4;

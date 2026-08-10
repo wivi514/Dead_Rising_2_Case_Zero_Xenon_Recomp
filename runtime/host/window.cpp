@@ -20,9 +20,29 @@ std::atomic<bool> g_debugJumpPressed{false};
 std::atomic<bool> g_debugEnterPressed{false};
 std::atomic<bool> g_debugMenuPressed{false};
 
+// F9 — DUMP EVERY RESOLVE SNAPSHOT OF THE NEXT FRAME, on demand.
+//
+// `CZ_VK_SNAP_DUMP` used to fire only at a fixed frame number (`CZ_VK_SNAP_FRAME`, default
+// 600), which is a fine trigger for a boot-time question and a bad one for any question
+// about a PLACE. The operator asked for this, in the middle of standing on a defect
+// waiting for a frame counter to reach 9000: the person who can see the spot is the only
+// one who knows when the frame is worth dumping, and making them predict it in advance
+// turns a two-minute measurement into a timed errand that misses.
+//
+// Same shape as the three edges above and for the same reason — an atomic, set by the
+// keyboard, consumed elsewhere — so it works from `CZ_FAKE_PRESS_SEQ` too and does not
+// need SDL at the consuming end.
+std::atomic<bool> g_snapDumpPressed{false};
+
 void Host_RequestDebugJump() { g_debugJumpPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugEnter() { g_debugEnterPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_release); }
+void Host_RequestSnapDump() { g_snapDumpPressed.store(true, std::memory_order_release); }
+
+bool Host_ConsumeSnapDumpPressed()
+{
+    return g_snapDumpPressed.exchange(false, std::memory_order_acq_rel);
+}
 
 bool Host_ConsumeDebugJumpPressed()
 {
@@ -385,12 +405,17 @@ HostPadState ReadKeyboard()
     static bool f2WasDown = false;
     static bool f3WasDown = false;
     static bool f4WasDown = false;
+    static bool f9WasDown = false;
     if (g_keyboardFocus)
     {
         const uint8_t* keys = SDL_GetKeyboardState(nullptr);
         const bool f2Down = keys[SDL_SCANCODE_F2] != 0;
         const bool f3Down = keys[SDL_SCANCODE_F3] != 0;
         const bool f4Down = keys[SDL_SCANCODE_F4] != 0;
+        const bool f9Down = keys[SDL_SCANCODE_F9] != 0;
+        if (f9Down && !f9WasDown)
+            g_snapDumpPressed.store(true, std::memory_order_release);
+        f9WasDown = f9Down;
         if (f2Down && !f2WasDown)
             g_debugJumpPressed.store(true, std::memory_order_release);
         f2WasDown = f2Down;

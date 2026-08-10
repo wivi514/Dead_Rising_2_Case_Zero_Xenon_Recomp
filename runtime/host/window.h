@@ -111,6 +111,16 @@ void Host_RequestDebugJump();
 void Host_RequestDebugEnter();
 void Host_RequestDebugMenu();
 
+// F9 — dump every resolve snapshot of the NEXT frame, on demand, into
+// `CZ_VK_SNAP_DUMP`'s directory. The renderer consumes the edge at present time.
+//
+// The fixed `CZ_VK_SNAP_FRAME` trigger it joins is right for a boot-time question and
+// useless for a question about a PLACE: the operator has to predict, before the run
+// starts, which frame number they will be standing on the defect at. This inverts that —
+// the person who can see the spot presses the key.
+void Host_RequestSnapDump();
+bool Host_ConsumeSnapDumpPressed();
+
 // Host-rendered replacement for the retail build's missing blue debug-menu layer.
 // The labels still come from the genuine guest cDebugMenu nodes.
 void Host_DebugMenuSetItems(const std::vector<std::string>& items);
