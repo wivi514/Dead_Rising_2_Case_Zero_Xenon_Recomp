@@ -66,8 +66,24 @@ question is open and belongs to the operator.
    **the operator run only settles this if it goes outside.**
    **Put `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on that run** — never
    under `/tmp`, which is a tmpfs and is why eleven cache entries have no microcode left.
-3. **A harness that can reach an admissible outdoor frame — AND THE OPERATOR HAS GIVEN THE
-   ROUTE.** Every drift-honest filter throws away everything above ~1,800 draws, so no
+3. ~~**A harness that can reach an admissible outdoor frame.**~~ **BUILT AND WORKING —
+   this was prepared before part 26 started, because it blocks items 00, 3, 4 and 6.**
+   The recipe is in `CLAUDE.md`'s Commands section and reaches a crowd by the military
+   camp at **7,431 draws**:
+   ```
+   CZ_DEBUG_MENU=1 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE,NONE,A,NONE,A,NONE,NONE,NONE,NONE
+   ```
+   What part 26 still owes on it is the thing it was built FOR: re-run the cube-map A/B
+   (and the shadow/mipmap/colour ones) on this route and check how many frames now survive
+   the `drawFingerprint`/`cameraFingerprint` filter. Standing still rather than AutoChuck
+   should hold the camera matched across arms for long stretches. **Until that count is
+   quoted, nothing outdoors has been compared yet** — the route existing is not the same as
+   the comparison being admissible.
+
+   The original statement and the operator's route, kept because the reasoning is the
+   reusable part:
+
+   Every drift-honest filter throws away everything above ~1,800 draws, so no
    headless picture claim about reflections, shadows or anything outdoors is possible. This
    blocks items 3, 4 and 6 as much as item 00. **Do not extend the 57-step stick recipe;
    use the title's own DebugJump screen**, which the operator describes as:
@@ -83,17 +99,22 @@ question is open and belongs to the operator.
    sets are the entire admissibility problem. Standing still is even better: a stationary
    camera should make `cameraFingerprint` match across arms for long stretches.
 
-   **The one gap, and it is small.** F2 is a KEYBOARD key: `ReadKeyboard` in
-   `runtime/host/window.cpp:358` sets `g_debugJumpPressed` on the F2 edge, and a headless
-   run (`CZ_NO_WINDOW=1`) has no keyboard. The seam already exists —
-   `Host_ConsumeDebugJumpPressed()` is exported in `window.h` and the flag is a plain
-   `std::atomic<bool>`, not an SDL object — so the work is (a) a `Host_RequestDebugJump()`
-   setter, and (b) an `F2` token in `CZ_FAKE_PRESS_SEQ`'s parser
-   (`runtime/kernel/imports.cpp:3831`) that calls it instead of setting a pad button.
-   Everything after F2 is ordinary D-pad and A, which the arm already speaks. Needs
-   `CZ_DEBUG_MENU=1`. **VERIFY rather than assume that the consumer runs headlessly** —
-   the DebugJump screen is the game's own (it should not need the host overlay), but that
-   is a claim to test with a counter, not to trust (gotcha 151).
+   **What it took, all of it now built and each step found by a run that failed loudly:**
+   * F2 was a keyboard key, so the three debug edges moved OUTSIDE the `CZ_HAVE_SDL`
+     split — they are plain atomics consumed on the guest thread, so only the SOURCE ever
+     needed SDL — and `CZ_FAKE_PRESS_SEQ` learned `F2`/`F3`/`F4`, which pulse an edge
+     rather than emitting pad state, once per interval keyed on the sequence index.
+   * The frontend transition manager is only captured on the first native screen
+     transition, so an early F2 found nothing. The request is now **HELD** and serviced
+     when the manager appears.
+   * The jump therefore lands at an unpredictable moment (27 s on one boot, 131 s on
+     another) and fixed-time menu presses missed it by three seconds. **`WAITJUMP`** parks
+     the sequence until the screen lands, then starts the remaining intervals from there.
+   * The barrier's first version emitted nothing while waiting and **deadlocked** — the
+     manager is captured by a screen change, and a screen change needs a button press. It
+     now repeats the preceding entry, which is why `START` sits in front of it (gotcha 251).
+   * A timestamp added to read all this back initially printed `at 0s` every time, because
+     a function-local `static` clock seeds on first call (gotcha 250).
 4. **The eleven sidecars with no `tfetchDims`** — `tools/shader_dim_census.py` names them;
    one samples a cube map and is therefore still unbound. A run that loads one recovers it.
 5. **The binned frame-time A/B still owed for `CZ_VK_FRAMES_IN_FLIGHT=2`** (part 23). Read

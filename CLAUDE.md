@@ -371,9 +371,36 @@ fixed 8 s interval against a boot whose depth in fixed wall time has always been
 distribution (gotcha 75), so the press counts will drift with load or frame rate. It
 MANUFACTURES progress, so it is never a gate configuration (gotcha 78).
 
-Reach the OUTDOOR WORLD and a CROWD headlessly — Chuck walks out of the safehouse into
-Still Creek and the camera sweeps. **This is the recipe every gameplay-rendering and
-gameplay-performance question needs**, because the one above parks in the safehouse at
+**REACH THE OUTDOOR WORLD AND A CROWD VIA THE TITLE'S OWN DEBUGJUMP SCREEN. This is the
+recipe to use** — it is the operator's route, it is anchored to an EVENT rather than to a
+wall clock, and it lands Chuck by the military camp in a full crowd at **7,431 draws** in
+under half a minute of menu work:
+```
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_FAKE_START_MS=8000 \
+  CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE,NONE,A,NONE,A,NONE,NONE,NONE,NONE \
+  CZ_VK_FRAME_STATS=/tmp/out.txt timeout 420 ./cz_runtime > /tmp/out.log 2>&1)
+awk 'NR>1 && $2>m {m=$2} END {print m}' /tmp/out.txt      # >= 6,000 = it got there
+grep -E "WAITJUMP|requested DebugJump" /tmp/out.log       # the four lines that prove it
+```
+`F2` opens the shipped DebugJump screen (needs `CZ_DEBUG_MENU=1`); `DOWN` once selects
+`Case 0-2`, which spawns outside. **`WAITJUMP` is the load-bearing part**: the DebugJump
+request is HELD until the frontend exists and lands whenever it lands (27 s here, 131 s on
+another boot), so the barrier parks the sequence — repeating the preceding entry, which is
+why `START` precedes it — until the screen is actually up, then starts the remaining
+intervals from that moment. That is what makes this reproducible where a fixed-time recipe
+is a fit to one afternoon (gotchas 75, 251).
+
+**Why this replaces the stick recipe below for anything comparative:** two arms of a
+picture A/B are only comparable where their `drawFingerprint` and `cameraFingerprint`
+agree, and with the stick recipe that filter yields 13-44 frames of ~300, every one under
+1,800 draws — i.e. the outdoor era was never comparable at all (gotcha 247). Add
+`AutoChuck` from the debug menu for coverage, or leave the character standing still, which
+should hold the camera fingerprint matched across arms for long stretches.
+
+The older stick recipe, kept because it walks a DIFFERENT route (out of the safehouse into
+Still Creek, with a camera sweep) and because several recorded measurements were taken on
+it — Chuck walks out of the safehouse into
+Still Creek and the camera sweeps. It parks in the safehouse at
 ~1,900 draws, which is against the title's own two-vblank cap where a CPU saving
 measures as exactly zero (`docs/perf-cpu-plan.md` item 0, which this closes). The extra
 `B` is the safehouse door; a stick entry HOLDS for its whole interval where a button

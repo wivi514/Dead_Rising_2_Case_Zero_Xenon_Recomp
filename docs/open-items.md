@@ -26,17 +26,17 @@ Next, in order:
       **55% of all cube sampling in the game's opening hour is that one map**, which the
       title renders itself and which is white in BOTH arms until this exists. By volume it
       is the larger half of this item.
-   3. **A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.** Every drift-honest filter
-      discards every frame above ~1,800 draws, which is exactly where an environment map
-      matters. Until then no headless picture claim about reflections is possible.
-      **The route is the title's own DebugJump screen and the operator has given it**:
-      START to the main menu, F2 once, DOWN once to `Case 0-2` — which drops Chuck outside
-      near the military camp — select, skip the tutorial, then AutoChuck or stand still.
-      Discrete presses to a NAMED destination instead of 57 drifting stick steps, and a
-      stationary camera should hold `cameraFingerprint` matched across arms for long
-      stretches. The only work is teaching `CZ_FAKE_PRESS_SEQ` an `F2` token: the flag is a
-      plain atomic behind `Host_ConsumeDebugJumpPressed()`, so it needs a setter and a
-      parser case, not a keyboard. Full detail in `d3d-phase-c25-kickoff.md` item 3.
+   3. ~~**A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.**~~ **THE ROUTE IS BUILT**
+      (operator-supplied, implemented at the end of part 25): the title's own DebugJump
+      screen, driven headlessly by `CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,...`
+      with `CZ_DEBUG_MENU=1`. Lands Chuck by the military camp in a full crowd at **7,431
+      draws**, against the ~1,800 ceiling that made every outdoor frame inadmissible. The
+      recipe is in `CLAUDE.md`'s Commands section.
+      **What is NOT yet done is the thing it was built for**: re-run this item's A/B on
+      that route and QUOTE how many frames survive the
+      `drawFingerprint`/`cameraFingerprint` filter. Standing still rather than AutoChuck
+      should hold the camera matched across arms. A route existing is not a comparison
+      being admissible, and until that count is quoted nothing outdoors has been compared.
 
    See "what part 25 did" at the end of this item.
 
