@@ -1419,6 +1419,12 @@ struct Renderer
     // apart to keep that failure legible.
     uint32_t nextCubeSlot = 1;   // slot 0 is the 1x1 white cube dummy
 
+    // CZ_VK_DRAW_CENSUS — the frame whose every draw is being listed, and the file it
+    // goes to. Zero means disarmed, which is every frame until F9 is pressed.
+    uint64_t drawCensusFrame = 0;
+    FILE* drawCensusFile = nullptr;
+    uint64_t drawCensusLines = 0;
+
     // The cube maps the title renders itself, keyed on the BASE face's address, plus the
     // reverse index a resolve needs: face address -> (base address, face number). The
     // second map is what makes the refresh free — a resolve knows only where it wrote,
@@ -4935,19 +4941,63 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                  (unsigned long long)psBind.hash);
         psbind = strstr(psbindEnv, psbindWant) != nullptr;
     }
+    // CZ_VK_DRAW_CENSUS=<file> plus F9 — EVERY draw of ONE frame, with what each one
+    // bound. The same line as `[psbind]` above, without its two preconditions: that you
+    // already know which pixel shader to name, and that only the first distinct 64
+    // bindings are printed.
+    //
+    // Both preconditions are fatal for the question this exists to answer. An operator can
+    // see that a surface is wrong and cannot possibly know its shader hash, and the thing
+    // being looked for — a draw that covers half the screen and binds `slot=0`, the 1x1
+    // white dummy — is one line somewhere in the middle of several thousand. Part 26 got
+    // as far as "the ground is untextured in the scene buffer and no counted dummy path
+    // fired", which is exactly the point where a per-draw list is the only way forward.
+    //
+    // Armed by the F9 edge so the frame dumped is the frame someone is LOOKING at, and it
+    // covers exactly one frame: at ~6,800 draws this writes ~6,800 lines, which is a file
+    // to grep and not a log to read.
+    const bool drawCensus = R->drawCensusFrame && R->frame == R->drawCensusFrame;
+    psbind = psbind || drawCensus;
+    if (drawCensus && !R->drawCensusFile)
+    {
+        if (const char* path = Env("CZ_VK_DRAW_CENSUS"))
+        {
+            R->drawCensusFile = fopen(path, "w");
+            if (R->drawCensusFile)
+                fprintf(R->drawCensusFile,
+                        "# every draw of frame %llu. sN=<fetch slot> then the guest "
+                        "address, extent, format, and the bindless slot it resolved to.\n"
+                        "# slot=0 IS THE 1x1 WHITE DUMMY — a draw that covers a lot of "
+                        "screen and reads it is the thing to look for.\n",
+                        (unsigned long long)R->frame);
+            else
+                fprintf(stderr, "[vk] cannot write CZ_VK_DRAW_CENSUS=%s\n", path);
+        }
+    }
     char psbindLine[512];
     // The pass's WRITE state belongs on this line too. "colour = f(constants,
     // textures)" is only true of a draw that writes its colour at all: an empty
     // RB_COLOR_MASK makes a pipeline that discards every channel, and its output is
     // indistinguishable from a shader that computed black. 43% of this title's draws
     // arrive with an empty mask, so the question is live for every one of them.
-    int psbindAt = psbind ? snprintf(psbindLine, sizeof psbindLine,
-                                     "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
-                                     (unsigned long long)R->frame,
-                                     (unsigned long long)psBind.hash,
-                                     regs[xenos::kRbColorMask] & 0xF,
-                                     regs[xenos::kRbBlendControl0])
-                          : 0;
+    // The census line carries the VERTEX COUNT and the vertex shader as well, because
+    // that is how a surface is identified without being able to click on it: the ground
+    // is a small number of very large draws, and the HUD is a great many tiny ones.
+    int psbindAt =
+        drawCensus
+            ? snprintf(psbindLine, sizeof psbindLine,
+                       "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
+                       "blend=%08X",
+                       (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
+                       (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
+                       regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0])
+        : psbind ? snprintf(psbindLine, sizeof psbindLine,
+                            "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
+                            (unsigned long long)R->frame,
+                            (unsigned long long)psBind.hash,
+                            regs[xenos::kRbColorMask] & 0xF,
+                            regs[xenos::kRbBlendControl0])
+                 : 0;
 
     R->lastTexAddr = 0;
     R->lastTexSlot = 0;
@@ -5120,13 +5170,29 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 at = comma + 1;
             }
         }
-        const char* bindings = strstr(psbindLine, "mask=");
-        std::string key(bindings ? bindings : psbindLine);
-        if (std::find(seenBind.begin(), seenBind.end(), key) == seenBind.end() &&
-            seenBind.size() < 64)
+        // The census wants EVERY draw, so it bypasses the distinct-binding filter that
+        // makes `[psbind]` readable. That filter is what would hide the one line being
+        // looked for: a second draw with the same shader and the same bindings is a
+        // different piece of geometry, and "which draw covers the ground" is precisely a
+        // question about geometry.
+        if (drawCensus)
         {
-            seenBind.push_back(key);
-            fprintf(stderr, "%s\n", psbindLine);
+            if (R->drawCensusFile)
+            {
+                fprintf(R->drawCensusFile, "%s\n", psbindLine);
+                ++R->drawCensusLines;
+            }
+        }
+        else
+        {
+            const char* bindings = strstr(psbindLine, "mask=");
+            std::string key(bindings ? bindings : psbindLine);
+            if (std::find(seenBind.begin(), seenBind.end(), key) == seenBind.end() &&
+                seenBind.size() < 64)
+            {
+                seenBind.push_back(key);
+                fprintf(stderr, "%s\n", psbindLine);
+            }
         }
     }
 
@@ -7464,15 +7530,42 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // an instrument that silently declines is the failure shape this project keeps paying
     // for (gotchas 7, 151).
     const bool snapKey = Host_ConsumeSnapDumpPressed();
-    if (snapKey && !snapDir)
+    // The SAME press also arms the per-draw census for the NEXT frame — next, not this
+    // one, because this frame's draws are already recorded by the time a present is
+    // reached. One press therefore yields two views of one place: every surface in the
+    // frame (the snapshots) and every draw that built it.
+    static const char* censusPath = Env("CZ_VK_DRAW_CENSUS");
+    if (snapKey && censusPath && !R->drawCensusFrame)
+    {
+        R->drawCensusFrame = R->frame + 1;
+        fprintf(stderr, "[vk] F9: the per-draw census will cover frame %llu -> %s\n",
+                (unsigned long long)R->drawCensusFrame, censusPath);
+    }
+    if (snapKey && !snapDir && !censusPath)
     {
         static bool complained = false;
         if (!complained)
         {
             complained = true;
-            fprintf(stderr, "[vk] F9 pressed but CZ_VK_SNAP_DUMP is not set — nothing was "
-                            "dumped. Relaunch with CZ_VK_SNAP_DUMP=<dir>\n");
+            fprintf(stderr, "[vk] F9 pressed but neither CZ_VK_SNAP_DUMP nor "
+                            "CZ_VK_DRAW_CENSUS is set — nothing was dumped\n");
         }
+    }
+    // Close the census at the END of the frame it covered, and say how many draws it saw
+    // — a census whose file exists but is short is otherwise indistinguishable from one
+    // that ran on a frame with nothing in it.
+    if (R->drawCensusFrame && R->frame > R->drawCensusFrame && R->drawCensusFile)
+    {
+        fclose(R->drawCensusFile);
+        R->drawCensusFile = nullptr;
+        // The count is the census's OWN line counter, not `drawsThisFrame` — that has
+        // already been reset by the frame boundary we are standing on, and printing it
+        // here would report zero for a census that worked perfectly.
+        fprintf(stderr, "[vk] draw census written: %llu draws of frame %llu\n",
+                (unsigned long long)R->drawCensusLines,
+                (unsigned long long)R->drawCensusFrame);
+        R->drawCensusLines = 0;
+        R->drawCensusFrame = 0;
     }
     if (snapDir && (R->frame == snapFrame || blackTransition || snapKey))
     {

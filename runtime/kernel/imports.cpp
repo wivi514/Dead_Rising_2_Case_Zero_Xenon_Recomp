@@ -3824,7 +3824,8 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         uint16_t mask;
         int16_t lx, ly, rx, ry;
         bool hold;              // stick entries deflect for the whole interval
-        int hostKey = 0;        // 2/3/4 = pulse the F2/F3/F4 debug edge, no pad state
+        int hostKey = 0;        // 2/3/4 = the F2/F3/F4 debug edges, 9 = F9's frame
+                                // dump/census, all of them pulses with no pad state
         bool barrier = false;   // WAITJUMP: park here until the screen request lands
     };
     // Full deflection is 32767 and the Y axis is positive UP (gotcha 102 — the
@@ -3853,6 +3854,11 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         { "F2", 0, 0,0,0,0, false, 2 },   // the title's shipped DebugJump screen
         { "F3", 0, 0,0,0,0, false, 3 },   // DebugEnter
         { "F4", 0, 0,0,0,0, false, 4 },   // the host-rendered Case Zero debug submenus
+        // F9 — the snapshot dump and the per-draw census, for the frame after the press.
+        // Headless too, and that is not a nicety: the census is how a defect gets an
+        // identity, and a self-test that could only be driven by a human at a window would
+        // make every check of it an operator errand (gotcha 190).
+        { "F9", 0, 0,0,0,0, false, 9 },
         // WAITJUMP — a BARRIER, and the thing that makes an F2 recipe reproducible.
         //
         // Every entry before this one is placed at a fixed wall-clock offset, which is
@@ -4043,6 +4049,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                 case 2: Host_RequestDebugJump(); break;
                 case 3: Host_RequestDebugEnter(); break;
                 case 4: Host_RequestDebugMenu(); break;
+                case 9: Host_RequestSnapDump(); break;
             }
             // Loud, because the whole point of this entry is that its effect appears
             // several seconds later in a completely different subsystem. If the bridge is
