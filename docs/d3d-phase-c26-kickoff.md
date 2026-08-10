@@ -62,10 +62,14 @@ objects.
    CZ_VK_NO_CUBE_SNAPSHOT=1 CZ_VKDRAW=1 ./cz_runtime   # part 25: that map is white
    CZ_VK_NO_CUBE=1 CZ_VKDRAW=1 ./cz_runtime            # pre-part-25: no cube map at all
    ```
-   **Know what the headless answer is before asking** — part 26's era-median A/B is in
-   §6az and in the block below; read it, and ask the operator only what the aggregate
-   cannot see (which SURFACES changed, and whether they look right). Put
-   `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on the run — never under `/tmp`.
+   **Know what the headless answer is before asking.** Six runs, era medians over ~12,170
+   outdoor frames each: default 56.593 / 56.907 / 56.738 median mean-luma, no-snapshot
+   56.291 / 57.086, **no-cube-at-all 59.469**. So removing EVERY cube map is 8x the
+   baseline band with no overlap — the instrument is sensitive outdoors — while removing
+   only the rendered map does not separate at all. **Ask the operator about SURFACES, not
+   the frame**: 35.9% of cube fetches is not 35.9% of the picture (gotcha 257), and a
+   whole-frame median cannot see one 64x64 environment map on scattered reflective patches.
+   Put `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on the run — never under `/tmp`.
 2. **The other five cube maps are LOADED, and one of them uploads BLACK.** `01330000`
    (4x4): `uploaded BLACK, guest memory is NON-ZERO NOW`, i.e. the texture arrived after
    our one and only upload and the fetch-constant cache froze it black. That is a
@@ -119,9 +123,13 @@ Propose the acquisition first.
   what made the third diagnosable at all.
 * **The audio trace rewritten** so silence and blindness are different numbers, with a
   self-test on the scanner. It says SILENCE.
+* **The outdoor cube A/B itself**, six runs in one block: the cube-map CLASS is 8x the
+  noise floor, the single rendered map is below it, and the third baseline is what turned a
+  "12.0x the null" result into no result at all.
 * Gotchas 254 (an exact-equality filter is a test for stasis), 255 (name your objects
   before chasing a message that names one), 256 (with a bindless heap, publish the
-  descriptor AFTER the transition).
+  descriptor AFTER the transition), 257 (a fetch count is not a screen area), 258 (run the
+  third baseline before publishing a multiple of a two-run null).
 
 ## Gates, on the part-26 binary
 
@@ -146,6 +154,10 @@ diff, `truncated=0`, the PM4 capture oracles, the capture-E picture correlation,
 * **When one path in a file is quiet and its twin is not, read the quiet one.** The
   snapshot VIEW path had the publish order right; the snapshot path did not, and the
   difference was the whole of 09600 (256).
+* **A statistic earns "usable" by reproducing across THREE runs.** Median mean-luma did
+  (0.55% over three baselines); median distinct-colour count did not (5.4%, after two-run
+  nulls of 0.76% and 0.12% — a 6x disagreement that was the warning). The 12x result this
+  block nearly published was on the second statistic (258).
 * **A model that prints itself can refute itself.** The cube face stride is a model of the
   guest's layout; printing each derived address with whether a snapshot was found there
   costs six lines and converts an assumption into a measurement (gotcha 244's shape).
