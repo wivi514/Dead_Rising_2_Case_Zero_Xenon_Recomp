@@ -6,14 +6,24 @@ it has cost this project a session three times now.
 
 ## The one-paragraph state of the port
 
-The game boots, renders and plays. A headless run reaches the title, the menus, the
-prologue and live gameplay with no operator, and the outdoor recipe reaches a crowd at
-6,000-9,200 draws a frame. Ordinary gameplay is ~30-31 fps and that is the title's own
-two-vblank pacing floor, not our ceiling. The CPU and GPU overlap (part 23). The HUD /
-ammo defect is fixed (part 24). **Part 25 built open item 00 — cube maps are bound — and
-then spent most of its length discovering that the headless harness cannot see the
-result.** That is the real hand-off: the code is done and verified two-sided; the picture
-question is open and belongs to the operator.
+The game boots, renders and plays. Ordinary gameplay is ~30-31 fps and that is the title's
+own two-vblank pacing floor, not our ceiling. The CPU and GPU overlap (part 23). The HUD /
+ammo defect is fixed (part 24).
+
+**Part 25 bound the cube maps** — 94 of 94 shaders, verified two-sided — **and then spent
+most of its length on what that change can and cannot be shown to do.** The finding is
+narrower than "the harness is blind", which is what an earlier draft of this file said and
+is RETRACTED: a calibrated positive control separates from its null by 12.7x, so the
+instrument is sensitive and binding real cube maps simply changes nothing measurable in the
+safehouse and prologue. Both surviving explanations put the effect OUTDOORS, which no
+admissible comparison could reach — so the last act of the part was building one.
+
+**Three things are better than when this file was first written**, all at the end of the
+part and all worth knowing before planning: the outdoor route now runs **unattended**
+(DebugJump + `CZ_AUTOCHUCK`, item 3); the shader cache is **409 with every cube shader
+bound**, closed by two operator runs; and **the Vulkan validation layer is installed** and
+found five defects in its first session (item 00d), after eight parts in which every `VUID`
+grep returned zero because the layer was absent.
 
 ## READ THIS BEFORE MEASURING ANYTHING
 
@@ -180,9 +190,14 @@ Propose the acquisition first.
 
 ## Gates, on the part-25 binary
 
-`--smoke` OK. `tools/shader_dim_census.py` exit 0, zero disagreements. **Not re-run this
-part and owed before any claim that rests on them**: the A5 kernel-call diff, `truncated=0`,
-the PM4 capture oracles, and the capture-E picture correlation.
+`--smoke` OK. `tools/shader_dim_census.py` exit 0 across all **409** shaders, the ucode
+parse and the translated SPIR-V agreeing on every one. `no translated shader` = 0 on a
+33,737-frame operator session. Vulkan validation: **32 messages, 5 distinct VUIDs**, flat
+from boot to a 9,910-draw peak (item 00d) — a NEW standing gate, quote the tally each
+session.
+
+**Not re-run this part and owed before any claim that rests on them**: the A5 kernel-call
+diff, `truncated=0`, the PM4 capture oracles, and the capture-E picture correlation.
 
 ## The method notes worth carrying
 
