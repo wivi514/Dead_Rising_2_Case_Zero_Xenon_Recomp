@@ -2072,3 +2072,31 @@ From phase C part 18 (the frame rate — and none of it was work):
     transition in an immediate submit, THEN publish the descriptor — which the snapshot
     VIEW path in the same file already did, which is exactly why views never appeared in
     the messages. When one path in a file is quiet and its twin is not, read the quiet one.
+257. **A FETCH COUNT IS NOT A SCREEN AREA, and quoting one as if it were the other will
+    make a measured null look like a broken instrument.** Case Zero's `06805000` is an
+    environment map the title renders itself and it is **35.9% of every cube-map fetch** in
+    an outdoor run — the number part 26 built the whole cube snapshot path on, and rightly.
+    But when the map is declined to a white dummy, the frame's era-median luma does not
+    move outside the run-to-run spread, while declining EVERY cube map moves it eight times
+    the spread. Both facts are true: the sampler is asked for that map constantly, and the
+    surfaces asking are scattered reflective patches covering very little of the screen.
+    **A fetch count measures how often a thing is ASKED FOR; a median over pixels measures
+    how much of the picture MOVED**, and nothing converts between them. The failure mode is
+    the reasoning that follows: a large fetch share plus an invisible aggregate reads as
+    "my instrument is blind", which sends the next session to rebuild the harness instead of
+    to the operator. The way out is a calibration arm that changes the same subsystem
+    WHOLESALE — here, "no cube map at all" — because an instrument that resolves the class
+    but not the member has told you the effect is small, not that it cannot see.
+258. **RUN THE THIRD BASELINE BEFORE PUBLISHING A MULTIPLE OF A TWO-RUN NULL.** Part 26's
+    outdoor cube A/B, on two baseline runs, put one arm at **12.0x the null** on median
+    distinct-colour count — a publishable-looking result with the null measured in the same
+    block, arms alternated, everything this project's rules ask for. The third baseline
+    landed **5.4% away from the other two on that same statistic, whose two-run null had
+    read 0.12%**, and the 12x collapsed into the noise. Two runs give one difference, and
+    one difference cannot distinguish a tight statistic from a bimodal one that happened to
+    land twice on the same side (gotcha 159's shape, in the picture domain rather than the
+    timing one). The tell was available beforehand and was ignored: two independent pairs
+    had already measured that statistic's null at 0.76% and 0.12%, a 6x disagreement, which
+    is the null saying it is not a null yet. **A statistic earns "usable" by reproducing
+    across three runs, not by producing a small number once** — here median mean-luma did
+    (0.55% over three) and median distinct-colour count did not.
