@@ -54,9 +54,53 @@ objects.
   `until ! pgrep cz_runtime` all wake together and silently contaminate every depth and
   timing claim built on them. An operator can also open the game at any moment.
 
+## LATE IN PART 26: AN OPERATOR SESSION AND THE ROUND-2 CAPTURES CHANGED THE PICTURE
+
+Everything above this line was written before the operator drove the game. What followed
+matters more than any of it, so read this section first.
+
+**A whole class of picture defects was reported, measured, and is NOT the cube maps.**
+Large flat-white ground patches, white newspaper boxes and cactus parts, blown-out glass, a
+white bathroom window, a cash register and a door side. **Xenia renders all of them
+correctly**, so they are ours (open item 00f).
+
+**Seven hypotheses for the white ground are refuted, each by a measurement** — tone map,
+missing texture, constant UVs, the white dummy (all four heaps poisoned magenta), the clear
+colour, the EDRAM surface format, a flat-decoding texture. Three of those were mine and
+each cost a run. **Do not re-buy any of them**; the table is in item 00f.
+
+**Then round-2 captures arrived** — seven single-frame F4 traces, one per surface, each
+self-contained (`Xenia_Logs/R2_world/`, read with `tools/xtr_draw_bindings.py`). They
+settle three things, in item 00g:
+
+1. **Our shader coverage is complete** — 357 of 357 already in the cache.
+2. **The white ground matches hardware on every input**: same shader hash, same vertex
+   count, same bindings, same texture CONTENTS (extracted from the trace), same render
+   state. **The defect is in the shading or in the VERTEX DATA** — the one input never
+   compared, and there is already an anomaly on file (two texcoord attributes at different
+   dword offsets decoding identically). The trace carries hardware's vertex buffers.
+3. **Our cube declines fire on a condition hardware never shows.** 414 of 414 cube-declared
+   draws in the capture read stack depth 5 and dimension 3 — perfect agreement — while our
+   runtime serves the white dummy to ~14,670 fetches a run BECAUSE the shader and the
+   constant disagree. That is the white glass and the white bathroom window, and the fix is
+   upstream of the decline.
+
 ## Where part 27 starts, in order
 
-1. **THE OPERATOR'S VERDICT ON THE CUBE MAPS, and it is now a THREE-way question.** Same
+0. **THE VERTEX DATA FOR THE GROUND DRAW, against the capture.** The last uncompared
+   input, with hardware's own buffers sitting in `w1_spawn.xtr` and a specific anomaly to
+   test. `tools/xtr_draw_bindings.py` already reconstructs trace memory; extend it to dump
+   a draw's vertex streams and diff them attribute by attribute against
+   `CZ_VK_DRAW_PROBE`'s decode of ours.
+0b. **WHY WE MANUFACTURE A SHADER-VERSUS-CONSTANT DISAGREEMENT** that hardware does not
+   have. Either our register file loses a fetch constant the guest set, or our dimension
+   decode misreads a case. ~14,670 fetches a run, and it is the confirmed mechanism behind
+   two of the operator's reported surfaces.
+1. ~~**THE OPERATOR'S VERDICT ON THE CUBE MAPS**~~ **DELIVERED — and it is a THREE-way
+   question no longer.** The operator ran all three arms: the ground stays white with every
+   dummy poisoned (so it is not the dummy), the window glass turns magenta (so it IS), and
+   Xenia renders both correctly. The original text follows because its measurement is still
+   the reference for the indoor null: Same
    spot, outdoors, reflective surfaces (a car bonnet, a shop window, the gas-station
    forecourt), three configs on the same binary:
    ```
