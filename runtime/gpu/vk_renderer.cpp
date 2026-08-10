@@ -7599,6 +7599,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         if (snapKey)
             fprintf(stderr, "[vk] F9: dumping every resolve snapshot of frame %llu\n",
                     (unsigned long long)R->frame);
+        // CREATE THE DIRECTORY, and say so if the first file still cannot be written.
+        // Without this the dump announces "dumping every resolve snapshot of frame N",
+        // iterates every surface, and writes NOTHING when the directory is absent — which
+        // is what happened the first time it was pointed at a fresh path, and it looks
+        // exactly like a renderer that had no snapshots to give. `CZ_SHADER_DUMP` had this
+        // same defect and part 25 fixed it there; the fix belongs at every dump site.
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(snapDir, ec);
+        }
+        bool wroteOne = false;
         for (const auto& [dest, snap] : R->snapshots)
         {
             const size_t n = size_t(snap.image.width) * snap.image.height * 4;
@@ -7624,8 +7635,20 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             snprintf(path, sizeof path, "%s/f%06llu_snap_%08X_%ux%u%s.ppm", snapDir,
                      (unsigned long long)R->frame, dest & 0x1FFFFFFF, snap.image.width,
                      snap.image.height, snap.fromDepth ? "_depth" : "");
-            if (FILE* f = fopen(path, "wb"))
+            FILE* f = fopen(path, "wb");
+            if (!f)
             {
+                static bool complained = false;
+                if (!complained)
+                {
+                    complained = true;
+                    fprintf(stderr, "[vk] CZ_VK_SNAP_DUMP cannot write %s — NO snapshots "
+                                    "will be dumped this run\n", path);
+                }
+            }
+            if (f)
+            {
+                wroteOne = true;
                 fprintf(f, "P6\n%u %u\n255\n", snap.image.width, snap.image.height);
                 if (snap.fromDepth)
                 {
@@ -7669,8 +7692,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fclose(f);
             }
         }
-        fprintf(stderr, "[vk] dumped %zu resolve snapshots to %s\n", R->snapshots.size(),
-                snapDir);
+        fprintf(stderr, "[vk] dumped %zu resolve snapshots to %s%s\n",
+                R->snapshots.size(), snapDir,
+                wroteOne ? "" : "  — NONE OF THEM WERE WRITTEN");
     }
 
     static const uint64_t statsEvery =

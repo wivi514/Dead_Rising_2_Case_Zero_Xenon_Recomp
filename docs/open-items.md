@@ -352,7 +352,44 @@ Next, in order:
    * "Four of the six censuses show zero dummy binds." Those censuses each dropped 105-215
      silently TRUNCATED lines, so absence proved nothing (fixed; see the commit).
 
+   **THE RETAKE, AND A POSITIVE CONTROL WITH A ZERO NULL (still part 26).** Three censuses
+   on the fixed binary, headless, zero truncated lines: the dummy pattern is stable and
+   identical in all three frames — 4 draws, `vs=2f13eecec64e508e`, 1,418 vertices, binding
+   `sN` and `sN+1` to the SAME 128x128 texture with the second declined to the dummy.
+
+   Then `CZ_VK_CUBE_POISON=1` against a base arm, both dumped with F9, read as a per-pixel
+   diff on the SCENE buffer rather than by hunting for magenta (gotcha 248 — the sample
+   TINTS, and a semantic detector reads 0.00% where the diff reads plenty):
+
+   | comparison | mean \|RGB\| | pixels differing > 30 |
+   |---|---|---|
+   | within base — the null | **0.0000** | 0.00% |
+   | within poisoned — the null | **0.0000** | 0.00% |
+   | base vs poisoned | **1.4321** | **2.18%** |
+
+   **Two frames 23 seconds apart in one arm are PIXEL-IDENTICAL** standing still at this
+   spot, so the noise floor is exactly zero and 2.18% is unambiguous. **The cube dummy
+   reaches the picture.**
+
+   **AND IT LANDS ON THE CROWD, NOT ON THE REPORTED SURFACES** (`cube_poison_diff_overlay.png`
+   in `~/DR2CZ-troubleshooting/part26-retake/`): every changed pixel is on zombies and
+   pedestrians. The ground, the vans, the tents and the props are untouched. With the
+   counters — `draw: cube fetch got the dummy` **14,670 of 5,242,455 (0.28%)** — that is
+   the whole of it: a small share of CHARACTER cube fetches is declined and reads white.
+   The 1,418-vertex draws are characters; part 26 assumed "props" from the operator's frame
+   and never checked, which is what the overlay corrected.
+
+   **So the operator's white ground and white props are NOT the cube dummy**, and that is
+   now shown by a positive control rather than by an absent counter. They remain open with
+   every earlier hypothesis (post-processing, missing textures, constant UVs, the dummy)
+   refuted.
+
    **NEXT, in order**
+   0. **The character cube fetches that are declined** — 0.28%, visible on the crowd, and
+      the only part of this item with a mechanism. Decide what the honest fallback is: our
+      white dummy maximises a multiplicative reflection term, black would kill it, and
+      replicating the 2D texture across six faces is what the guest's own data supports.
+      Measure the three against the poison overlay's pixels.
    1. Retake the censuses on the fixed binary — `CZ_VK_DRAW_CENSUS` now writes one file per
       frame and marks truncation. The outdoor ones need no operator.
    2. `CZ_VK_CUBE_POISON=1` as the visual control for the prop defect: if the white
