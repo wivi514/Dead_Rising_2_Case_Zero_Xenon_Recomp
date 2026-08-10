@@ -100,6 +100,17 @@ bool Host_ConsumeDebugJumpPressed();
 bool Host_ConsumeDebugEnterPressed();
 bool Host_ConsumeDebugMenuPressed();
 
+// The same three edges, requested WITHOUT a keyboard — what `CZ_FAKE_PRESS_SEQ`'s F2/F3/F4
+// entries call. A headless run has no SDL keyboard, so before this the title's own
+// DebugJump screen was reachable only by a human at a window, which made the one route to
+// the OUTDOOR world operator-only (gotcha 190). The flags are plain atomics and their
+// consumer runs on the guest thread inside `XamInputGetState`, so neither end needs a
+// window; that is why these live outside the CZ_HAVE_SDL split rather than beside the
+// keyboard that used to be their only source.
+void Host_RequestDebugJump();
+void Host_RequestDebugEnter();
+void Host_RequestDebugMenu();
+
 // Host-rendered replacement for the retail build's missing blue debug-menu layer.
 // The labels still come from the genuine guest cDebugMenu nodes.
 void Host_DebugMenuSetItems(const std::vector<std::string>& items);

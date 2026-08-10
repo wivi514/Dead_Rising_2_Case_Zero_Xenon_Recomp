@@ -1,11 +1,42 @@
 #include "window.h"
 
+#include <atomic>
 #include <cstdio>
 
 // CZ_HAVE_SDL is set by CMake when the window is built (the default). The headless
 // build is not a fallback the runtime can fall INTO — it is a configure-time choice
 // (-DCZ_WINDOW=OFF), and it says so on every startup, because "no window" and
 // "window whose input is broken" are indistinguishable from a log otherwise.
+// The three debug edges live OUTSIDE the CZ_HAVE_SDL split, and deliberately.
+//
+// They used to be set only by the keyboard, which meant the title's own DebugJump screen —
+// the one route into the OUTDOOR world without walking there — was reachable only by a
+// human at a window. The flags are plain atomics and their consumer is on the guest thread
+// inside `XamInputGetState`, so neither end has ever needed SDL; only the SOURCE did.
+// Defining them here lets `CZ_FAKE_PRESS_SEQ`'s F2/F3/F4 entries work in a headless run and
+// in a `-DCZ_WINDOW=OFF` build, instead of a stub silently returning false — which is the
+// failure shape this project keeps paying for (gotcha 151).
+std::atomic<bool> g_debugJumpPressed{false};
+std::atomic<bool> g_debugEnterPressed{false};
+std::atomic<bool> g_debugMenuPressed{false};
+
+void Host_RequestDebugJump() { g_debugJumpPressed.store(true, std::memory_order_release); }
+void Host_RequestDebugEnter() { g_debugEnterPressed.store(true, std::memory_order_release); }
+void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_release); }
+
+bool Host_ConsumeDebugJumpPressed()
+{
+    return g_debugJumpPressed.exchange(false, std::memory_order_acq_rel);
+}
+bool Host_ConsumeDebugEnterPressed()
+{
+    return g_debugEnterPressed.exchange(false, std::memory_order_acq_rel);
+}
+bool Host_ConsumeDebugMenuPressed()
+{
+    return g_debugMenuPressed.exchange(false, std::memory_order_acq_rel);
+}
+
 #ifndef CZ_HAVE_SDL
 
 bool Host_WindowInit()
@@ -21,9 +52,6 @@ void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
 void Host_RequestQuit(const char*) {}
 bool Host_PadState(uint32_t, HostPadState&) { return false; }
-bool Host_ConsumeDebugJumpPressed() { return false; }
-bool Host_ConsumeDebugEnterPressed() { return false; }
-bool Host_ConsumeDebugMenuPressed() { return false; }
 void Host_DebugMenuSetItems(const std::vector<std::string>&) {}
 void Host_DebugMenuSetVisible(bool) {}
 bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
@@ -88,9 +116,14 @@ HostPadState g_pads[2] = {
 // is deliberately NOT gated: a pad works whatever window is focused, which is what
 // every other application on the machine does.
 bool g_keyboardFocus = true;
-std::atomic<bool> g_debugJumpPressed{false};
-std::atomic<bool> g_debugEnterPressed{false};
-std::atomic<bool> g_debugMenuPressed{false};
+// g_debugJumpPressed / Enter / Menu are defined at the top of this file, outside the
+// CZ_HAVE_SDL split AND outside this anonymous namespace — the keyboard below is one
+// SOURCE of those edges, no longer the only one. The `::` is load-bearing: an unqualified
+// redeclaration in here would name a NEW internal-linkage object, and the keyboard would
+// then set a flag nobody reads.
+using ::g_debugJumpPressed;
+using ::g_debugEnterPressed;
+using ::g_debugMenuPressed;
 std::mutex g_debugOverlayMutex;
 std::vector<std::string> g_debugOverlayItems;
 std::atomic<bool> g_debugOverlayVisible{false};
@@ -591,20 +624,6 @@ bool Host_PadState(uint32_t userIndex, HostPadState& out)
     return true;
 }
 
-bool Host_ConsumeDebugJumpPressed()
-{
-    return g_debugJumpPressed.exchange(false, std::memory_order_acq_rel);
-}
-
-bool Host_ConsumeDebugEnterPressed()
-{
-    return g_debugEnterPressed.exchange(false, std::memory_order_acq_rel);
-}
-
-bool Host_ConsumeDebugMenuPressed()
-{
-    return g_debugMenuPressed.exchange(false, std::memory_order_acq_rel);
-}
 
 void Host_DebugMenuSetItems(const std::vector<std::string>& items)
 {

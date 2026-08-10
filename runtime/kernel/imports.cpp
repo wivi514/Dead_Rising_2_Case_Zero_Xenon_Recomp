@@ -3796,12 +3796,29 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // of the stick moves Chuck a few centimetres, so a tap-shaped stick would look
     // exactly like a stick that does not work. Buttons keep the tap, so every recipe
     // written against this arm before today still means what it said.
+    //
+    // F2/F3/F4 ARE THE ROUTE OUTDOORS, and they are not pad buttons at all.
+    //
+    // The title's own DebugJump screen jumps straight to a named destination — `Case 0-2`
+    // drops Chuck OUTSIDE, near the military camp — and reaching it by hand is START to the
+    // main menu, F2, DOWN once, select. That replaces 57 fixed 8-second stick steps against
+    // a boot whose depth in wall time is a distribution (gotcha 75), which is why no two
+    // arms of a picture A/B ever landed in the same place: part 25 measured 13-44 admissible
+    // frames of ~300 and every one under 1,800 draws, i.e. the outdoor era was unreachable
+    // for comparison, not merely hard to reach.
+    //
+    // These entries emit NO pad state. They pulse the host's debug edge instead, which
+    // `XamInputGetState` below already consumes on the guest thread — so neither end needs a
+    // window and the whole recipe runs headless. Requires CZ_DEBUG_MENU=1; without it the
+    // bridge is not installed and the press does nothing, which is counted rather than
+    // silent.
     struct NamedButton
     {
         const char* name;
         uint16_t mask;
         int16_t lx, ly, rx, ry;
         bool hold;              // stick entries deflect for the whole interval
+        int hostKey = 0;        // 2/3/4 = pulse the F2/F3/F4 debug edge, no pad state
     };
     // Full deflection is 32767 and the Y axis is positive UP (gotcha 102 — the
     // conversion the real pad path also makes). No deadzone is applied anywhere,
@@ -3825,6 +3842,10 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         { "RSDOWN",  0, 0, 0, 0, -kFull, true },
         { "RSLEFT",  0, 0, 0, -kFull, 0, true },
         { "RSRIGHT", 0, 0, 0,  kFull, 0, true },
+        // Host debug edges — see the note above. No pad state, one pulse per interval.
+        { "F2", 0, 0,0,0,0, false, 2 },   // the title's shipped DebugJump screen
+        { "F3", 0, 0,0,0,0, false, 3 },   // DebugEnter
+        { "F4", 0, 0,0,0,0, false, 4 },   // the host-rendered Case Zero debug submenus
     };
     static const std::vector<NamedButton> sequence = [] {
         std::vector<NamedButton> seq;
@@ -3919,6 +3940,37 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     const bool active =
         started && (entry.hold || (elapsedMs % fakeStartMs) < 150);
 
+    // A HOST DEBUG EDGE FIRES ONCE PER INTERVAL, keyed on the interval INDEX.
+    //
+    // It cannot use the state-transition detector below, because these entries emit an
+    // all-zero pad — exactly like NONE — so that detector sees no change and would never
+    // fire. And it must not fire per poll: the title polls input ~1,100 times a boot per
+    // user, so a level-triggered request would re-open the DebugJump screen on every poll
+    // for the whole 150 ms window and the menu would be unusable. Keying on `idx` makes it
+    // one pulse per sequence entry no matter how often the guest asks.
+    if (active && entry.hostKey)
+    {
+        static std::atomic<size_t> lastFired{ SIZE_MAX };
+        size_t prev = lastFired.load(std::memory_order_relaxed);
+        if (prev != idx && lastFired.compare_exchange_strong(prev, idx))
+        {
+            switch (entry.hostKey)
+            {
+                case 2: Host_RequestDebugJump(); break;
+                case 3: Host_RequestDebugEnter(); break;
+                case 4: Host_RequestDebugMenu(); break;
+            }
+            // Loud, because the whole point of this entry is that its effect appears
+            // several seconds later in a completely different subsystem. If the bridge is
+            // not installed — CZ_DEBUG_MENU unset — the press is consumed and nothing
+            // happens, and this line is the only thing that would distinguish that from a
+            // recipe that never reached the main menu.
+            KLOG("CZ_FAKE_PRESS_SEQ: synthetic %s host debug edge at %llds (interval %zu). "
+                 "Needs CZ_DEBUG_MENU=1 to have any effect.\n", entry.name,
+                 static_cast<long long>(elapsedMs / 1000), idx);
+        }
+    }
+
     const uint16_t outButtons = active ? entry.mask : uint16_t(0);
     const int16_t outLX = active ? entry.lx : int16_t(0);
     const int16_t outLY = active ? entry.ly : int16_t(0);
@@ -3951,6 +4003,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
 void DebugTunables_RequestDebugJump(PPCContext& ctx, uint8_t* base);
 void DebugTunables_RequestDebugEnter(PPCContext& ctx, uint8_t* base);
 void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base);
+void DebugTunables_PumpPendingScreen(PPCContext& ctx, uint8_t* base);
 void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base);
 
 // Rumble. Accepted and discarded: there is no motor, and reporting failure would
@@ -4012,6 +4065,11 @@ PPC_FUNC(__imp__XamInputGetState)
         DebugTunables_RequestDebugEnter(ctx, base);
     if (Host_ConsumeDebugMenuPressed())
         DebugTunables_ToggleFullDebugMenu(ctx, base);
+    // A DebugJump asked for before the frontend existed is held rather than dropped, and
+    // this is where it lands. See the note on RequestFrontendScreen: a synthetic recipe
+    // fires at a fixed wall-clock offset against a boot whose depth in fixed time is a
+    // distribution, so "press it at the right moment" is not something a recipe can do.
+    DebugTunables_PumpPendingScreen(ctx, base);
     DebugTunables_PumpDebugMenu(ctx, base);
 
     ctx.r3.u64 = result;

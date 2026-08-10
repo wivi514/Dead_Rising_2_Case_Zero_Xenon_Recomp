@@ -82,6 +82,7 @@
 // loader, then confirm each with its `lbz` readers.
 #include <cstdint>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -396,13 +397,55 @@ static void ShowProgressionMenu(uint8_t* base)
 // Called from the XInput import after an F2 edge. The manager value is learned from
 // the title's own successful transitions (PressStart -> TitleScreen, etc.), so this
 // does not guess an object address or manufacture a partial frontend object.
+// A request made before the frontend exists is HELD, not dropped.
+//
+// The manager is only captured on the first native screen transition (`sub_827F6D40`
+// below), so a request has to arrive after the title screen has been left. A human at a
+// keyboard just presses F2 again; a SYNTHETIC recipe cannot, because it fires at a fixed
+// wall-clock offset against a boot whose depth in fixed time is a distribution
+// (gotcha 75) — which is the very fragility the DebugJump route exists to escape. So an
+// early request is remembered and serviced the moment the manager appears.
+//
+// Deliberately at most ONE pending request, cleared when it fires: a queue would let a
+// mistimed recipe stack up screen transitions and land somewhere nobody chose. Both the
+// deferral and the eventual firing are logged, because a request that happens seconds
+// later in another subsystem is otherwise indistinguishable from one that was dropped.
+struct PendingScreen
+{
+    uint32_t nameAddress = 0;
+    uint32_t nameLength = 0;
+    const char* name = nullptr;
+};
+static PendingScreen g_pendingScreen;
+
+// Seconds since process start, on every line this file prints about a screen request.
+// A synthetic recipe has to place its menu presses AFTER the jump lands, and the jump
+// lands whenever the frontend gets round to it — so "when did it land" is the one number
+// a recipe author needs and it was not in the log. Same units as
+// `CZ_FAKE_START_MS`'s own lines, so the two can be read against each other directly.
+static long long DebugElapsedSeconds()
+{
+    static const auto start = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
+
 static void RequestFrontendScreen(PPCContext& ctx, uint8_t* base,
                                   uint32_t nameAddress, uint32_t nameLength,
                                   const char* name)
 {
-    if (!g_frontendTransitionManager || !getenv("CZ_DEBUG_MENU"))
+    if (!getenv("CZ_DEBUG_MENU"))
     {
-        fprintf(stderr, "[debug] %s: no captured frontend transition manager yet\n", name);
+        fprintf(stderr, "[debug] %s: ignored, CZ_DEBUG_MENU is not set\n", name);
+        return;
+    }
+    if (!g_frontendTransitionManager)
+    {
+        g_pendingScreen = { nameAddress, nameLength, name };
+        fprintf(stderr, "[debug] %s: no frontend transition manager yet at %llds — "
+                        "request HELD until the first screen transition captures one\n",
+                name, DebugElapsedSeconds());
         return;
     }
 
@@ -415,7 +458,8 @@ static void RequestFrontendScreen(PPCContext& ctx, uint8_t* base,
     ctx.r5.u64 = 0;
     __imp__sub_827F6D40(ctx, base);
     fprintf(stderr, "[debug] requested %s through frontend manager %08X "
-                    "(hash %08X)\n", name, g_frontendTransitionManager, screenHash);
+                    "(hash %08X) at %llds\n", name, g_frontendTransitionManager,
+            screenHash, DebugElapsedSeconds());
 }
 
 void DebugTunables_RequestDebugJump(PPCContext& ctx, uint8_t* base)
@@ -436,6 +480,22 @@ void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base)
     Host_DebugMenuSetVisible(g_debugMenuActive);
     fprintf(stderr, "[debug] F4: host debug-menu renderer %s (%zu retained nodes)\n",
             g_debugMenuActive ? "opened" : "closed", g_debugMenuNodes.size());
+}
+
+// Service a request that arrived before the frontend existed. Called from the same
+// XamInputGetState bridge as everything else here, so it runs on a guest thread with a
+// usable context — which is why it cannot simply be done inside the transition hook that
+// captures the manager, where re-entering the frontend would run a screen change from
+// inside a screen change.
+void DebugTunables_PumpPendingScreen(PPCContext& ctx, uint8_t* base)
+{
+    if (!g_pendingScreen.name || !g_frontendTransitionManager)
+        return;
+    const PendingScreen p = g_pendingScreen;
+    g_pendingScreen = {};
+    fprintf(stderr, "[debug] %s: the manager appeared at %llds — servicing the HELD "
+                    "request now\n", p.name, DebugElapsedSeconds());
+    RequestFrontendScreen(ctx, base, p.nameAddress, p.nameLength, p.name);
 }
 
 void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base)
