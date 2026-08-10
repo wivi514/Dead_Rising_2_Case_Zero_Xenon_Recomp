@@ -3996,23 +3996,25 @@ PPC_FUNC(__imp__XamInputGetState)
 {
     KCALL("__imp__XamInputGetState");
     guestcall::Dispatch<XamInputGetState_x>(ctx, base);
+
+    // The honest answer, captured BEFORE the debug bridges run. Each of them makes
+    // guest calls, and a guest call clobbers r3 — so the return value has to be
+    // restored afterwards rather than assumed. Forcing it to 0 instead would report
+    // SUCCESS for users 2 and 3, i.e. tell the title four pads are connected when
+    // two are, which is the exact shape gotcha 5 forbids: a stub that fakes success.
+    // This game has a ControllerDisconnected screen and polls capabilities ~1,100
+    // times a boot per user, so that is a claim it acts on.
+    const uint64_t result = ctx.r3.u64;
+
     if (Host_ConsumeDebugJumpPressed())
-    {
         DebugTunables_RequestDebugJump(ctx, base);
-        ctx.r3.u64 = 0; // preserve XamInputGetState's successful return value
-    }
     if (Host_ConsumeDebugEnterPressed())
-    {
         DebugTunables_RequestDebugEnter(ctx, base);
-        ctx.r3.u64 = 0;
-    }
     if (Host_ConsumeDebugMenuPressed())
-    {
         DebugTunables_ToggleFullDebugMenu(ctx, base);
-        ctx.r3.u64 = 0;
-    }
     DebugTunables_PumpDebugMenu(ctx, base);
-    ctx.r3.u64 = 0;
+
+    ctx.r3.u64 = result;
 }
 GUEST_FUNCTION_HOOK(__imp__XamInputSetState, XamInputSetState_x)
 GUEST_FUNCTION_HOOK(__imp__XamInputGetKeystrokeEx, XamInputGetKeystrokeEx_x)
