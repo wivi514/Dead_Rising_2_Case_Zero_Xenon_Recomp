@@ -618,9 +618,12 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   **Two things are owed and both are large.** (a) **55% of all cube sampling is ONE map,
   `06805000`, which the title RENDERS ITSELF** — a resolve destination whose pixels never
   reach guest memory, declined to the dummy and white in both arms until a cube snapshot
-  path exists (six resolves into six layers). (b) **The operator's verdict**, because the
-  headless harness has been MEASURED blind to a change of this size: 0.038-0.085 median
-  mean |RGB| against a 0.069 drift floor, where a magenta positive control reads 0.401.
+  path exists (six resolves into six layers). (b) **The operator's verdict.** One serial
+  block, four configs, p90 of the per-frame mean |RGB|: null 2.972, real cubes vs white
+  dummy 3.101, second pairing 2.393, magenta positive control **37.877 — 12.7x the null.**
+  The instrument is NOT blind; **binding real cube maps changes nothing measurable in the
+  safehouse and prologue**, which leaves two explanations that both put the effect
+  OUTDOORS (near-white interior cube maps, or the sampling surfaces not on screen).
 * **NO HEADLESS PICTURE CLAIM ABOUT THE OUTDOOR ERA IS CURRENTLY POSSIBLE.** Two arms are
   comparable only where `drawFingerprint` AND `cameraFingerprint` agree, and on this
   title's synthetic-input recipes that filter yields 13-44 frames of ~300 — **every one of

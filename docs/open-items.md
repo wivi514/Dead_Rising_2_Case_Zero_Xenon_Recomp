@@ -12,12 +12,16 @@ Next, in order:
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in
    priority order:
 
-   1. **THE OPERATOR'S VERDICT.** This is a reflection defect and the surfaces it should
-      change are ones only the operator has named as wrong. It is not a preference for
-      human evidence — **the headless harness has been shown, quantitatively, to be blind
-      to a change of this size**: binding real cube maps moves the picture by 0.038-0.085
-      median mean |RGB| against a drift floor of 0.069, while a positive control sits at
-      0.401 (6x the floor). Same spot, twice, `CZ_VK_NO_CUBE=1` versus default.
+   1. **THE OPERATOR'S VERDICT, and the reason is sharper than "ask a human".** In one
+      serial block, four configs, same recipe and binary, p90 of the per-frame mean |RGB|:
+      null (default vs default) **2.972**, real cubes vs white dummy **3.101**, second
+      pairing **2.393**, and the magenta positive control **37.877 — 12.7x the null, no
+      overlap.** So the instrument is emphatically NOT blind, and **binding real cube maps
+      changes nothing measurable in the safehouse and prologue.** Two live explanations,
+      both of which predict the effect lives OUTDOORS: this era's cube maps are themselves
+      near-white (small DXT1 environment maps, interior scene), or the surfaces sampling
+      them are not on screen indoors. The outdoor era is exactly what item 3 below cannot
+      reach admissibly. Same spot, twice, `CZ_VK_NO_CUBE=1` versus default.
    2. **THE CUBE SNAPSHOT PATH** — six resolves into six layers for `06805000`.
       **55% of all cube sampling in the game's opening hour is that one map**, which the
       title renders itself and which is white in BOTH arms until this exists. By volume it

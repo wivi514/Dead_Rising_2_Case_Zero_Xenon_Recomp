@@ -1373,7 +1373,7 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
-## Phase C part 25 (2026-08-10) — cube maps bound, and the harness measured blind
+## Phase C part 25 (2026-08-10) — cube maps bound, and the effect measured absent indoors
 
 Open item 00, the top picture item since part 23: 92 of the cache's 397 shaders sample
 `TextureCube[]` and every one of them read descriptor index 0 — the 1x1 dummy — on every
@@ -1406,20 +1406,28 @@ a directory that did not exist, which cost a ten-minute recovery run and reporte
 **And then the measurement, which is the part worth reading.** The picture A/B came back
 byte-identical on every admissible frame, and it took four more experiments to learn why:
 
-| | |
-|---|---|
-| admissible pairs (same camera AND draw set) | 13-44 of ~300, **all under 1,800 draws** |
-| drift floor — default vs default | 82/109 frames differ, median 0.069 |
-| real cubes vs white dummy | 82/109 differ, median 0.038-0.085 |
-| positive control — magenta vs white dummy | 80/110 differ, median 0.401 (**6x the floor**) |
-| draws asking for a cube | 746,355; **45% bind a real cube, 55% get the dummy** |
-| of that 55% | **409,911 are ONE map, `06805000`**, which the title renders itself |
+All four configurations in one serial block, same recipe and binary, p90 of the per-frame
+mean |RGB| (the median is 0.0000 for every non-control row):
 
-So: the cube path is live (the poison proves the sample reaches the screen, up to 72% of a
-frame), the change is real, and **the harness cannot see it** — because every drift-honest
-filter discards the outdoor era, and because more than half the potential effect is a
-dynamically-rendered environment map we decline to guess at. The operator's verdict and a
-cube snapshot path are what remain.
+| | frames differing | p90 |
+|---|---|---|
+| **null** — default vs default | 81/111 | **2.972** |
+| real cubes vs white dummy | 81/111 | **3.101** |
+| real cubes vs white dummy, 2nd pairing | 81/111 | **2.393** |
+| **positive control** — magenta vs white dummy | 77/105 | **37.877 (12.7x the null)** |
+
+plus: admissible pairs 13-44 of ~300, **all under 1,800 draws**; 746,355 draws asked for a
+cube, **45% bind a real one and 55% get the dummy**, of which **409,911 are ONE map,
+`06805000`**, which the title renders itself.
+
+So the cube path is live — the control repaints up to 72% of a frame — and **the instrument
+is emphatically not blind, separating that control from the null by 12.7x with no overlap.**
+Against that sensitivity, binding real cube maps changes **nothing measurable** in the
+safehouse and prologue. Two explanations survive and both put the effect outdoors: this
+era's cube maps are near-white, or the surfaces sampling them are not on screen indoors.
+The outdoor era is exactly what no admissible comparison can reach. An earlier framing in
+this session — "the harness is blind to a change of this size" — was written before the
+control was measured properly and is retracted in `phase5-notes.md` §6ay.
 
 **Three gotchas, and they are one error in three disguises** — 246 (a count with no
 denominator, published as "0.03%" and corrected in place), 248 (a positive control read

@@ -3995,25 +3995,38 @@ differ** between real cube maps and the white dummy, and the poison control diff
 
 **It is worthless, because two runs of the SAME configuration differ on 82 of 109 frames
 too.** The whole count is drift (gotcha 75). What separates them is the MAGNITUDE against
-that floor, measured in one serial block on an idle GPU:
+that floor. All four configurations, one serial job, idle GPU, same recipe, same binary:
 
-| comparison, same recipe, same binary | frames differing | median mean \|RGB\| |
-|---|---|---|
-| **drift floor** — default vs default | 82/109 | **0.069** |
-| real cubes vs white dummy | 82/109 | 0.085 |
-| real cubes vs white dummy, second pairing | 80/110 | 0.038 |
-| **positive control** — magenta vs white dummy | 80/110 | **0.401** |
+| comparison | frames differing | median | **p90** | p99 | max |
+|---|---|---|---|---|---|
+| **NULL** — default vs default | 81/111 | 0.0000 | **2.972** | 8.418 | 39.830 |
+| real cubes vs white dummy | 81/111 | 0.0000 | **3.101** | 8.424 | 39.599 |
+| real cubes vs white dummy, 2nd pairing | 81/111 | 0.0000 | **2.393** | 6.956 | 8.539 |
+| **POSITIVE CONTROL** — magenta vs white dummy | 77/105 | 0.4085 | **37.877** | 53.567 | 57.592 |
 
-The positive control sits **6x above** the drift floor; binding real cube maps sits **at or
-below** it. So the honest statement is:
+**Read the p90 column. The instrument is not blind — it separates the positive control from
+the null by 12.7x, cleanly, with no overlap.** And against that sensitivity, binding real
+cube maps produces a p90 of 3.101 where the null is 2.972, with the second pairing at 2.393,
+i.e. *below* the null. Identical frame counts (81/111) across all three non-control rows
+are the same point again: the count is drift and nothing else.
 
-* **the cube path is live** — the poison proves the sample reaches the presented image, on
-  80 of 110 frames and up to 72% of a frame's pixels;
-* **in the only era this harness can reach, the real cube maps are close enough to white
-  that their effect is under the run-to-run noise.** That is consistent with the
-  byte-identical admissible frames rather than in tension with them;
-* **more than half the potential effect is not in play at all**, because 55% of cube
+**So the earlier framing of "the harness is blind" was wrong and is retracted here.** The
+harness detects a 12.7x effect without difficulty. The correct statement is narrower and
+more useful:
+
+* **the cube path is live** — the control repaints up to 72% of a frame, so the sample
+  reaches the presented image with force;
+* **in the safehouse and prologue, replacing the white dummy with this title's real cube
+  maps changes nothing measurable.** Not "too small to see against noise" — nothing, at a
+  sensitivity that would have shown a twelfth of the control;
+* **and more than half the potential effect is not in play at all**, because 55% of cube
   sampling is `06805000`, which is white in BOTH arms until the cube snapshot path exists.
+
+Which leaves exactly two live explanations, and they are the next questions rather than
+this part's conclusions: either this era's cube maps are themselves near-white (plausible —
+they are small DXT1 environment maps and the safehouse is an interior), or the surfaces
+that sample them are not on screen indoors. **Both predict that the outdoor era is where
+the effect lives, and that is precisely the era no admissible comparison can reach.**
 
 **The mistake, twice, in two different disguises.** First I read a positive control with a
 statistic that could not see its own effect ("how much of the frame is magenta" — 0.24%,

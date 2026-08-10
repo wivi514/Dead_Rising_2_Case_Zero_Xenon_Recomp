@@ -57,10 +57,14 @@ question is open and belongs to the operator.
    image registered in set 2. Everything needed to recognise the case already exists and is
    counted; `CZ_VK_CUBE_FROM_GUEST=1` is the arm that keeps the old zeros.
 2. **The operator's verdict on the other 45%.** Reflective surfaces, same spot, twice:
-   `CZ_VKDRAW=1 ./cz_runtime` and `CZ_VK_NO_CUBE=1 CZ_VKDRAW=1 ./cz_runtime`. This is not a
-   preference for human evidence — the harness has been MEASURED blind to a change of this
-   size (0.038-0.085 median against a 0.069 drift floor, where a positive control reads
-   0.401). **Put `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on that run** — never
+   `CZ_VKDRAW=1 ./cz_runtime` and `CZ_VK_NO_CUBE=1 CZ_VKDRAW=1 ./cz_runtime`. **Know what
+   the headless answer already is before asking**: one serial block, four configs, p90 of
+   the per-frame mean |RGB| — null 2.972, real cubes vs white dummy 3.101, second pairing
+   2.393, magenta positive control **37.877, i.e. 12.7x the null with no overlap.** The
+   instrument is NOT blind; binding real cube maps changes **nothing measurable** in the
+   safehouse and prologue. Two explanations survive and both put the effect outdoors, so
+   **the operator run only settles this if it goes outside.**
+   **Put `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` on that run** — never
    under `/tmp`, which is a tmpfs and is why eleven cache entries have no microcode left.
 3. **A harness that can reach an admissible outdoor frame.** Every drift-honest filter
    throws away everything above ~1,800 draws. Until that changes, no headless picture claim
@@ -116,6 +120,9 @@ the PM4 capture oracles, and the capture-E picture correlation.
   The mechanical fix covers all three — **measure the arm against ITSELF first, in the same
   block, and quote ratios.**
 * **Gotcha 247 — an A/B whose admissible n is not stated is not an A/B.**
-* **When a harness is shown blind, say so and hand the question over.** Part 25's most
-  useful output is not the cube path; it is the measurement that says this project cannot
-  currently adjudicate an outdoor picture change without an operator.
+* **"My instrument saw nothing" and "there was nothing to see" are different claims, and
+  only a calibrated control separates them.** Part 25 wrote the first, twice, before
+  measuring the second. The four-config block settled it: the instrument separates a
+  positive control from its null by 12.7x, so the indoor null is a fact about the SCENE,
+  not about the tooling. The remaining blindness is real but narrower and structural — no
+  admissible comparison reaches the outdoor era at all, which is item 3 above.
