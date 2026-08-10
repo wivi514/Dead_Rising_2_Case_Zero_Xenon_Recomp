@@ -46,14 +46,16 @@ phase 5. It is fully specified and needs no operator for part 1.
 2. **The binned frame-time A/B still owed for `CZ_VK_FRAMES_IN_FLIGHT=2`** (part 23). Use
    `tools/frame_perf_bins.py` and read the MEDIAN and the vblank-pinned share, not the
    mean (gotcha 237).
-3. **Give `CZ_FAKE_PRESS_SEQ` a trigger.** Its vocabulary is A/B/X/Y/START/BACK/D-pad/NONE
-   plus four sticks — no RT/LT — and attack in this title is RT
-   (`COMMAND_PLAYER_QUICK_ATTACK` / `HEAVY_ATTACK`). **This is the actual reason no
-   headless recipe has ever fired a weapon**, which is what left 00c needing an operator
-   for three sessions. Add `RT`/`LT` with a held variant; it is a small change in
-   `runtime/kernel/imports.cpp`'s `kButtons` table plus a trigger field.
-4. The rest of `docs/open-items.md` in order: shadow cascade (3), mipmaps (4), colour
+3. The rest of `docs/open-items.md` in order: shadow cascade (3), mipmaps (4), colour
    (6), and item 12 (keyboard-as-user-2 fallback, low priority).
+
+**Considered and deliberately NOT planned: giving `CZ_FAKE_PRESS_SEQ` a trigger.** Its
+vocabulary has no RT/LT and attack here is RT, which is why no headless recipe has ever
+fired a weapon — but adding the button only solves half of it. A recipe still has to
+ACQUIRE a gun and ammo, which is a long scripted path through the world, so the trigger
+alone would not make any weapon test self-servable. The operator does weapon tests
+directly when one is needed. Do not re-propose this as a way to close a weapon-related
+item; propose the acquisition path first, and only then the button.
 
 ## What part 24 delivered
 

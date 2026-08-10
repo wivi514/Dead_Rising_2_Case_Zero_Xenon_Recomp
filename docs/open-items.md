@@ -211,8 +211,11 @@ Next, in order:
    * **The synthetic-input arm cannot fire a weapon, and that is why no headless recipe
      ever has.** `CZ_FAKE_PRESS_SEQ`'s vocabulary is A/B/X/Y/START/BACK/D-pad/NONE plus the
      four sticks — there is no trigger, and attack in this title is RT
-     (`COMMAND_PLAYER_QUICK_ATTACK` / `HEAVY_ATTACK`). Adding `RT`/`LT`, with a held
-     variant, is the small change that makes this defect class self-servable for good.
+     (`COMMAND_PLAYER_QUICK_ATTACK` / `HEAVY_ATTACK`). **Adding the button was considered
+     and deliberately dropped**: it only solves half the problem, because a recipe would
+     still have to ACQUIRE a gun and ammo along a long scripted path through the world.
+     The operator does weapon tests directly. Anyone re-proposing this should solve the
+     acquisition first — the button is the easy half and it buys nothing on its own.
      Never flickers there but reliably does with the store on -> the store is guilty.
      Flickers in both -> the store is innocent and "two fixed values unrelated to the real
      ammo" points upstream of the renderer entirely, at the guest's own HUD state.

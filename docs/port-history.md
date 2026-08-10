@@ -1447,9 +1447,11 @@ circle are absent. It reproduces beautifully — 69.0% and 69.4% across two runs
 config — and it measures the WRONG THING: `phase5-notes.md` §2152 already records that
 partial HUD is location-dependent (the safehouse has not raised it). Its three-arm result
 said the store was innocent and is retracted. A valid headless metric must watch a HUD
-number CHANGE, not a widget's presence — and `CZ_FAKE_PRESS_SEQ` has no trigger in its
+number CHANGE, not a widget's presence. `CZ_FAKE_PRESS_SEQ` also has no trigger in its
 vocabulary while attack here is RT, which is the real reason no headless recipe has ever
-fired a weapon.
+fired a weapon — **but adding the button was considered and dropped**, because a recipe
+would still have to ACQUIRE a gun and ammo along a long scripted path, so the trigger
+alone buys nothing. Weapon tests stay with the operator.
 
 ### Also fixed
 
