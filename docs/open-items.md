@@ -613,3 +613,15 @@ Next, in order:
    nothing is currently lost. On console a relative path resolves against the title's
    own directory, and CLAUDE.md already warns that at least one path here is built at
    runtime (`anm_%s.big`).
+12. **The keyboard is XInput user 2, so a machine with no gamepad cannot drive player 1**
+   (part 24). Deliberate: the title's own controller-2 debug route consumes the keyboard
+   without stealing the gameplay pad, and `runtime/kernel/imports.cpp` states that
+   policy where the pad count is set. The cost is that keyboard-only play, which worked
+   before, no longer does — `Host_PadState(0, ...)` reads the SDL controller alone.
+   Headless is unaffected, because `CZ_FAKE_PRESS_SEQ` is checked ahead of the device
+   for every user index. **Low priority and not blocking anything**: the operator has a
+   pad, and the debug menu depends on the split. The fix, when it is worth doing, is a
+   fallback rather than a revert — route the keyboard to user 0 as well when SDL reports
+   no controller attached, so the split only exists when there is something to split.
+   Say so in the log line either way, because a keyboard that silently stopped driving
+   the game looks exactly like input that broke (gotcha 214).
