@@ -384,6 +384,37 @@ Next, in order:
    every earlier hypothesis (post-processing, missing textures, constant UVs, the dummy)
    refuted.
 
+   **THE ORACLE SAYS THESE ARE OURS.** The operator has played this title on Xenia and
+   reports NONE of these surfaces are wrong there. That is the check nobody had run: every
+   measurement in this item assumed the report described a defect rather than the game's
+   own appearance, on one observer and no oracle. It does describe a defect, and it is in
+   this runtime.
+
+   **EVERY CHEAP EXPLANATION IS NOW REFUTED, each by a measurement rather than an
+   argument** — worth listing, because the value left in this item is not re-buying them:
+
+   | hypothesis | what killed it |
+   |---|---|
+   | tone map / exposure clipping | the white is in the SCENE buffer, whose max is 180, not 255 |
+   | a missing or unbound texture | the ground binds three real DXT1s at real slots plus the shadow cascade twice |
+   | constant texture coordinates | `CZ_VK_DRAW_PROBE` shows UVs varying sensibly across vertices |
+   | the 1x1 white dummy | **all four dummy heaps poisoned magenta — the ground stayed white** |
+   | pixels never written, showing the clear | `RB_COLOR_CLEAR` is **black**; unwritten pixels would be black |
+   | an HDR EDRAM format read as 8-bit | `rtFmt=0` (`k_8_8_8_8`) on 600 of 600 passes |
+   | a ground texture that decodes flat | the new uniform-texture counter finds 9 in a run, **none of them the ground's** |
+
+   **WHERE IT MUST THEREFORE BE.** The inputs are all correct, so the defect is in the
+   SHADING or in render state this runtime ignores. One concrete lead, visible in every
+   census and not yet followed: the ground mesh is drawn **twice with `mask=F`** in the same
+   frame, same vertex shader and same textures, and in some frames the two draws carry
+   DIFFERENT pixel shaders (`ad65b98593f95926` and `57d441f53fc93ad7`) — plus three more
+   times with `mask=0`. Both colour draws decode to `blend=00010001`, i.e. `src*ONE +
+   dst*ZERO`, an opaque replace. If one of those passes is meant to combine with the other
+   rather than overwrite it, the surviving pass is whatever was drawn last, which is exactly
+   a flat lighting term over a correctly textured one. Read the two pixel shaders against
+   each other, and read `RB_COLORCONTROL`/`RB_BLENDCONTROL` for both draws, before
+   theorising further.
+
    **NEXT, in order**
    0. **The character cube fetches that are declined** — 0.28%, visible on the crowd, and
       the only part of this item with a mechanism. Decide what the honest fallback is: our
