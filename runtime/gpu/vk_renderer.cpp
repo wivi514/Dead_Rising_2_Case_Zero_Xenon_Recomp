@@ -2791,6 +2791,19 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                        uint32_t shaderDim)
 {
     ProfScope _p(&g_prof.textures);
+    // THE DENOMINATOR, and it goes FIRST. Every other cube counter here is a share of
+    // this, and a count with no denominator is the shape of claim this project keeps
+    // having to retract: part 25 published "114 of 337,716, 0.03%" off one recipe and a
+    // deeper run of the same binary declined 90,984 with no total to divide by
+    // (gotcha 242).
+    //
+    // It used to sit AFTER the `t.type != 2` early return, so every cube fetch whose slot
+    // the guest never set was missing from the denominator as well as from the numerator —
+    // 207 of them on the operator's route and 2,182 on the headless one. A denominator
+    // that skips exactly the failures it is meant to be a denominator FOR is the same
+    // early-return-shadows-a-counter defect as gotcha 171, one level up.
+    if (shaderDim == 3)
+        Count("texture: CUBE fetch");
     uint64_t key = 1469598103934665603ull;
     for (uint32_t i = 0; i < 6; i++)
     {
@@ -2853,12 +2866,6 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // array and index a descriptor that was never written — undefined, not merely wrong.
     // **This title DOES resolve to a cube map** — see the note at the decline below.
     const bool cubeFetch = shaderDim == 3;
-    // The DENOMINATOR. Every other cube counter here is a share of this, and a count with
-    // no denominator is the shape of claim this project keeps having to retract: part 25
-    // published "114 of 337,716, 0.03%" off one recipe and a deeper run of the same binary
-    // declined 90,984 with no total to divide by (gotcha 242).
-    if (cubeFetch)
-        Count("texture: CUBE fetch");
 
     // THE STANDING CROSS-CHECK, and it costs one compare. The dimension now has two
     // independent sources — the shader's fetch instruction (via the sidecar) and the
@@ -2875,6 +2882,10 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // counter would read 3,431,182 in a ten-minute run, which is a measurement of the arm
     // and not of the decode. An instrument that saturates under its own control arm cannot
     // be read on either side of the A/B.
+    // Set when the shader asks for a cube and the guest describes ONE 2D surface. The six
+    // layers are then all read from the same face rather than from a stride the constant
+    // does not claim exists. See the comment at the assignment below.
+    bool cubeFromOneFace = false;
     static const bool noCubeArm = EnvOn("CZ_VK_NO_CUBE");
     if (t.dimension != shaderDim && !noCubeArm)
     {
@@ -2888,10 +2899,49 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // honest failure and it is also exactly the picture those draws got before part
         // 25, so this cannot make anything worse — but it is COUNTED, so if the share
         // ever grows it is a number and not a mystery.
+        // WHAT HARDWARE DOES HERE IS BIND THE SURFACE ANYWAY, so we build the cube out of
+        // the ONE face the guest described instead of serving a fabricated white texel.
+        //
+        // Part 26 concluded the opposite — that hardware never shows this disagreement, so
+        // we must be manufacturing it and the fix belongs upstream of the decline. That
+        // rested on one capture frame. The operator's own route makes this **2.06% of all
+        // cube fetches** (33,608 of 1,629,525, against 0.05% on the headless route — the
+        // same statistic-fitted-to-the-reachable-population error as gotcha 242), and
+        // re-asking the agreement census on `w1_spawn` instead of `w2_gasstation` finds
+        // hardware doing exactly this on **4 of 5,886 fetches — on the very two shaders
+        // that account for 91% of ours** (`ps_af40b02e26617a15` slot 1 and
+        // `ps_8eddd0fd8de516f0` slot 3, both a 4x4 `k_8_8_8_8` placeholder in a
+        // cube-declared slot). Hardware renders those surfaces correctly, so the guest's
+        // own data is a sufficient input and the decline was the defect.
+        //
+        // Replicating one face is the honest reading of a single-face surface sampled with
+        // cube addressing, and it is what the guest's data supports: a stack depth of 1
+        // says there is one slab there, and reading six would build a cube out of five
+        // slabs of whatever follows it — which is what part 25 correctly refused to do.
+        // The white dummy was never a third option, it was a fabrication, and it maximises
+        // a multiplicative reflection term (open item 00f: the white glass and the
+        // blown-out bathroom window are confirmed dummy-samplers by the magenta test).
+        //
+        // CZ_VK_NO_CUBE_REPLICATE=1 restores the decline — the same-binary control arm,
+        // and the thing to hand an operator for a side-by-side.
+        //
+        // PREDICTS: the white glass, the white bathroom window and the white newspaper
+        // boxes stop being white, the ground band does NOT change (it is not cube-related
+        // and three arms of the operator's own A/B agree it does not move), and
+        // `draw: cube fetch got the dummy` falls by ~33,600 on that route while
+        // `draw: bound a REAL cube map` rises by the same amount.
         if (cubeFetch)
         {
-            Count("texture: CUBE fetch whose constant says otherwise — served the dummy");
-            return 0;
+            static const bool noReplicate = EnvOn("CZ_VK_NO_CUBE_REPLICATE");
+            if (noReplicate)
+            {
+                Count("texture: CUBE fetch whose constant says otherwise — served the "
+                      "dummy (CZ_VK_NO_CUBE_REPLICATE)");
+                return 0;
+            }
+            Count("texture: CUBE fetch whose constant says otherwise — ONE FACE "
+                  "replicated across six");
+            cubeFromOneFace = true;
         }
     }
 
@@ -3235,7 +3285,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // than to the sampler: if the faces come out sheared or offset from each other, the
     // slice stride is the suspect and nothing else in this function is.
     const uint32_t layers = (shaderDim == 3) ? 6 : 1;
-    const uint64_t srcBytes = faceBytes * layers;
+    // THE SOURCE STRIDE IS ZERO WHEN THE SIX FACES ARE ONE FACE. Everything downstream —
+    // the bounds check, the content guard, the untile loop, the dump — is driven by these
+    // two, so this is the whole of the replicate path and there is no second copy of the
+    // untiler. `srcBytes` is what we READ, so it stays at one face: bounding it at six
+    // would fail `GuestRangeOk` on a surface the guest only allocated one of, which is the
+    // very reason declining looked like the safe option.
+    const uint64_t faceSrcStride = cubeFromOneFace ? 0 : faceBytes;
+    const uint64_t srcBytes = faceBytes + faceSrcStride * (layers - 1);
 
     // The rendered cube, now that the stride exists. Note it uses the SAME `faceBytes` the
     // guest-memory path uses, deliberately: if the two ever needed different strides one of
@@ -3273,7 +3330,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // always did with `face` fixed at 0.
     for (uint32_t face = 0; face < layers; face++)
     {
-    const uint8_t* src = base + va + face * faceBytes;
+    const uint8_t* src = base + va + face * faceSrcStride;
     uint8_t* dstFace = pixels.data() + face * faceDstBytes;
 
     if (t.tiled)
