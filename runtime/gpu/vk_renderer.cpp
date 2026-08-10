@@ -486,7 +486,43 @@ uint64_t StreamHash(const uint8_t* p, size_t bytes, uint64_t salt)
 //
 // Cost in a crowd frame: ~2,000 first-touch streams x <=512 B = under 1 MB, against the
 // 61-77 MB of copying it is there to avoid.
-constexpr size_t kGuardBytes = 512;
+// THE EXACT BOUND, AND WHY IT IS NO LONGER 512.
+//
+// 512 was fitted to a census that found every rewritten stream was exactly 80 bytes —
+// but that census could only see streams rewritten between two consecutive frames in a
+// recipe that never changed a HUD number, so the bound was fitted to the population the
+// instrument could reach (gotcha 235, second instance). The streams it could not see
+// are the ones that broke: a HUD is batched into one multi-KB vertex buffer in which
+// only the digit quads change, those quads fall outside the 8x64 sampled windows, and
+// the store serves the previous frame's numbers. That is open item 00c, and the
+// operator confirmed the exact guard fixes it outright across several minutes and two
+// weapons.
+//
+// Exact-everywhere is not the ship-able form. Measured on the outdoor recipe:
+//
+//   guard read   0.41 MB/frame -> 30.70 MB/frame   (75x)
+//   `record`     4.8% -> 16.7% of frame            (+11.9 points, ~3.8 ms)
+//
+// So the bound is raised rather than removed: hash EXACTLY up to kGuardBytes, sample
+// above it. Cost is bounded by (streams/frame x kGuardBytes) — about 1,000 x 16 KB
+// worst case here, against the 26-30 MB/frame of copying the store avoids.
+//
+// 16 KB is deliberately generous rather than tuned. The HUD buffer's true size has not
+// been measured, and the failure mode of a bound that is too small is the defect coming
+// back silently, while the failure mode of one too large is frame time this title's
+// vblank floor absorbed entirely at 2,000 draws (32.0 ms on BOTH arms). Given that
+// asymmetry, guess high. `CZ_VK_STREAM_GUARD_BYTES=N` overrides it without a rebuild so
+// the bound can be tuned against the defect instead of against a model of it, and
+// `CZ_VK_STREAM_GUARD_EXACT=1` still means unlimited.
+//
+// NOT MEASURED: the crowd. The A/B above parked at ~2,000 draws; the recipe peaks near
+// 8,300-8,700 and there is no profile window at that depth. A crowd frame moves 61-77 MB
+// of stream bytes, so if anything is going to hurt it is there — measure before calling
+// this free.
+constexpr size_t kGuardBytesDefault = 16384;
+size_t g_guardBytes = kGuardBytesDefault;
+// Streams that exceeded the bound and were therefore only SAMPLED, cumulative.
+uint64_t g_guardSampled = 0;
 constexpr size_t kGuardBlocks = 8;
 
 // EIGHT BYTES A STEP, not one, and the reason is the dependency chain rather than the
@@ -542,13 +578,18 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
     // itself would hash the same, and size is part of the key only for the streams the
     // key came from — a re-copy into the same slot keeps the slot's size.
     uint64_t h = (1469598103934665603ull ^ bytes) * 1099511628211ull;
-    if (bytes <= kGuardBytes)
+    if (bytes <= g_guardBytes)
     {
         if (readOut)
             *readOut += bytes;
         return GuardFold(h, p, bytes);
     }
-    const size_t block = kGuardBytes / kGuardBlocks;
+    // Above the bound the guard is a SAMPLE and can therefore miss a small edit. Count
+    // the exposure rather than leaving it silent: this is the population that item 00c's
+    // defect lived in, and a bound raised until this counter is zero for the streams that
+    // matter is a bound chosen by measurement instead of by guess.
+    ++g_guardSampled;
+    const size_t block = g_guardBytes / kGuardBlocks;
     // Eight starts spread over [0, bytes - block], the first exactly at 0 and the last
     // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive, and the
     // last block therefore ends on the final byte rather than near it.
@@ -556,7 +597,7 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
     for (size_t b = 0; b < kGuardBlocks; ++b)
         h = GuardFold(h, p + (span * b) / (kGuardBlocks - 1), block);
     if (readOut)
-        *readOut += kGuardBytes;
+        *readOut += g_guardBytes;
     return h;
 }
 
@@ -5819,6 +5860,33 @@ bool InitCommon()
 
     // Announce itself, because an arm nobody can see in the log is an arm that cannot be
     // shown to have engaged (gotcha 151).
+    // The bound, and its two overrides. Announced whenever it is not the default, so an
+    // arm that did not engage cannot be mistaken for one that did (gotcha 151).
+    if (const char* gb = Env("CZ_VK_STREAM_GUARD_BYTES"))
+    {
+        const unsigned long long v = strtoull(gb, nullptr, 10);
+        // Below kGuardBlocks the block arithmetic degenerates; refuse rather than
+        // silently sampling nothing.
+        if (v >= kGuardBlocks)
+        {
+            g_guardBytes = size_t(v);
+            fprintf(stderr, "[vk] CZ_VK_STREAM_GUARD_BYTES=%llu — the store's guard is "
+                            "EXACT up to %llu bytes and samples above it (default %zu)\n",
+                    v, v, kGuardBytesDefault);
+        }
+        else
+        {
+            fprintf(stderr, "[vk] CZ_VK_STREAM_GUARD_BYTES=%llu REFUSED — must be >= %zu; "
+                            "keeping %zu\n", v, kGuardBlocks, g_guardBytes);
+        }
+    }
+    else
+    {
+        fprintf(stderr, "[vk] stream guard exact to %zu bytes, sampled above "
+                        "(CZ_VK_STREAM_GUARD_BYTES=N to change, item 00c)\n",
+                g_guardBytes);
+    }
+
     g_guardExact = EnvOn("CZ_VK_STREAM_GUARD_EXACT");
     if (g_guardExact)
         fprintf(stderr, "[vk] CZ_VK_STREAM_GUARD_EXACT=1 — the cross-frame store's guard "
@@ -6850,6 +6918,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         (unsigned long long)p.staleEvicted,
                         (unsigned long long)p.overflow,
                         frames ? double(p.guardBytes) / double(frames) / 1048576.0 : 0.0);
+                // The exposure the bound leaves behind: streams too large to hash
+                // exactly, which are therefore only sampled and CAN hide a small edit.
+                // This is the population item 00c's defect lived in, so it is reported
+                // rather than assumed to be empty.
+                fprintf(stderr,
+                        "[vkprof] guard exact to %zu B; %llu streams/frame exceeded it "
+                        "and were SAMPLED (a small edit inside one of these is invisible "
+                        "-- item 00c)\n",
+                        g_guardBytes,
+                        (unsigned long long)(frames ? g_guardSampled / frames : 0));
+                g_guardSampled = 0;
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
                         " this window\n",
