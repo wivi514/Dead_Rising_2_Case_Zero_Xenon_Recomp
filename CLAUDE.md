@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 253 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 256 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -148,12 +148,12 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 253-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 256-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
-    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..23}-kickoff.md` are the per-part
+    work.** `d3d-kickoff.md` and `d3d-phase-c{,2..26}-kickoff.md` are the per-part
     hand-offs, each superseding the last; the newest is the live one. A kickoff's most
     valuable section is its list of the parts of that phase that **already exist** and
     would otherwise be rewritten from the plan text — write that section for every phase.
@@ -466,7 +466,9 @@ CZ_VK_PROFILE=N    the frame's CPU time by phase, every N seconds, plus a `pump`
                    EXCLUSIVE of the ones nested inside it as of part 20; it was not
                    before, and numbers from earlier sessions overstate `record` by the
                    whole of `streams` (gotcha 228)**
-CZ_VK_FRAME_STATS=file   one line per presented frame; input to tools/frame_compare.py
+CZ_VK_FRAME_STATS=file   one line per presented frame; input to tools/frame_compare.py,
+                   tools/frame_determinism.py (is a matched comparison possible at
+                   all?) and tools/frame_era_medians.py (the outdoor A/B)
 CZ_VK_FRAME_DUMP=dir     every 64th frame as a PPM — the picture, self-servable
 CZ_VK_SNAP_DUMP=dir      EVERY resolve snapshot of one frame: which PASS went wrong
 CZ_RING_TRACE=1    the ring, the brake's health, and the GPU/CPU hand-off chain counted
@@ -481,6 +483,9 @@ CZ_SHADER_DUMP=dir put this on any run that might reach new ground, including an
                    **NEVER point it under /tmp** — that is a tmpfs and it is why eleven
                    cache entries have no microcode left. Use
                    `~/DR2CZ-troubleshooting/ucode-dumps`
+CZ_VK_NO_CUBE_SNAPSHOT=1  decline the cube map the TITLE RENDERS ITSELF to the white
+                   dummy — the part-25 renderer in the part-26 binary, and the control arm
+                   for the cube snapshot path (35.9% of cube fetches on the outdoor route)
 CZ_VK_NO_CUBE=1    bind cube fetches the pre-part-25 way (into the 2D array, so the shader
                    samples the white dummy). The same-binary control arm for the cube-map
                    work, and the one to hand an operator for a side-by-side
@@ -662,20 +667,31 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   field off** — dword5 bits 9..10, cross-checked against dword2's stack depth reading 5 for
   every cube fetch (gotcha 244). `docs/open-items.md` item 00 and `phase5-notes.md` §6ay;
   three competing theories died in part 23's census and are recorded there.
-  **Two things are owed and both are large.** (a) **55% of all cube sampling is ONE map,
-  `06805000`, which the title RENDERS ITSELF** — a resolve destination whose pixels never
-  reach guest memory, declined to the dummy and white in both arms until a cube snapshot
-  path exists (six resolves into six layers). (b) **The operator's verdict.** One serial
-  block, four configs, p90 of the per-frame mean |RGB|: null 2.972, real cubes vs white
-  dummy 3.101, second pairing 2.393, magenta positive control **37.877 — 12.7x the null.**
-  The instrument is NOT blind; **binding real cube maps changes nothing measurable in the
-  safehouse and prologue**, which leaves two explanations that both put the effect
-  OUTDOORS (near-white interior cube maps, or the sampling surfaces not on screen).
-* **NO HEADLESS PICTURE CLAIM ABOUT THE OUTDOOR ERA IS CURRENTLY POSSIBLE.** Two arms are
-  comparable only where `drawFingerprint` AND `cameraFingerprint` agree, and on this
-  title's synthetic-input recipes that filter yields 13-44 frames of ~300 — **every one of
-  them under 1,800 draws.** Fixing that unblocks items 00, 3, 4 and 6 at once
-  (gotcha 247, `docs/measurement.md`).
+  **THE SECOND HALF LANDED IN PART 26: the cube map the title RENDERS ITSELF is now
+  assembled from its six resolve snapshots** — `06805000`, six faces at
+  `base + i * 0x4000`, copied into a six-layer `VK_IMAGE_VIEW_TYPE_CUBE` image in set 2 and
+  refreshed by each face's own resolve (8,850 face refreshes in 240 s, because the title
+  re-renders it continuously — a one-shot fill would freeze the world's reflection).
+  **The face layout was printed face by face and could have refuted the stride model; six
+  of six filled.** `358,767 of 999,508 cube fetches (35.9%)` on the outdoor route now read
+  it where all of them read the white dummy before. `CZ_VK_NO_CUBE_SNAPSHOT=1` is the arm.
+  **What is still owed is the operator's verdict**, and it is now a three-way question
+  (rendered cube / white / no cube at all). Know the headless answer first: part 25's
+  four-config block put the magenta positive control at **12.7x its null**, so the
+  instrument is NOT blind and binding real cube maps changes nothing measurable in the
+  safehouse and prologue — both surviving explanations put the effect OUTDOORS.
+* **OUTDOOR PICTURE CLAIMS ARE POSSIBLE AS ERA AGGREGATES AND IMPOSSIBLE AS MATCHED
+  FRAMES — measured in part 26, and the route was never the problem.** Two arms are
+  comparable only where `drawFingerprint` AND `cameraFingerprint` agree; run that filter on
+  two runs of ONE configuration on the DebugJump route and it yields **422 of 13,056 frames,
+  none above 141 draws, and 0 of the 12,174 outdoor frames** (`tools/frame_determinism.py`).
+  The route is fine — 93% of its frames are outdoors and two runs' draw counts agree to
+  1.4% — but a crowd of animated actors never renders the same draw list twice, so exact
+  equality selects for stasis (gotcha 254). **The replacement is
+  `tools/frame_era_medians.py`**: era medians over every frame above 1,800 draws, with the
+  null measured from the same pair — **0.94% on mean luma, 0.76% on distinct colours**,
+  while coverage saturates at 99.67% and can report nothing. That is what unblocks items
+  00, 3, 4 and 6 (`docs/measurement.md`).
 * **Ordinary gameplay is ~30 fps and the CPU/GPU now OVERLAP** (part 23): the fence wait
   fell from 31.5% of a crowd frame to 0.2% with `CZ_VK_FRAMES_IN_FLIGHT=2` (default; `=1`
   is the old renderer, same binary). The binned frame-time A/B is still owed.
