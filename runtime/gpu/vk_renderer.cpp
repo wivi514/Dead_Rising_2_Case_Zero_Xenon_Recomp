@@ -4962,7 +4962,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     {
         if (const char* path = Env("CZ_VK_DRAW_CENSUS"))
         {
-            R->drawCensusFile = fopen(path, "w");
+            // ONE FILE PER FRAME. The first version wrote to the path as given, so a
+            // second F9 destroyed the first press's census — which is exactly what
+            // happened the first time anyone used it in anger: an operator pressed F9 at
+            // five defects in five minutes and the fourth overwrote the third before it
+            // had been read. The frame number goes in the name, so pressing it again can
+            // only ever ADD evidence.
+            char named[512];
+            const char* dot = strrchr(path, '.');
+            if (dot && !strchr(dot, '/'))
+                snprintf(named, sizeof named, "%.*s_f%llu%s", int(dot - path), path,
+                         (unsigned long long)R->frame, dot);
+            else
+                snprintf(named, sizeof named, "%s_f%llu", path,
+                         (unsigned long long)R->frame);
+            R->drawCensusFile = fopen(named, "w");
             if (R->drawCensusFile)
                 fprintf(R->drawCensusFile,
                         "# every draw of frame %llu. sN=<fetch slot> then the guest "
@@ -4971,10 +4985,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         "screen and reads it is the thing to look for.\n",
                         (unsigned long long)R->frame);
             else
-                fprintf(stderr, "[vk] cannot write CZ_VK_DRAW_CENSUS=%s\n", path);
+                fprintf(stderr, "[vk] cannot write CZ_VK_DRAW_CENSUS -> %s\n", named);
         }
     }
-    char psbindLine[512];
+    // 2 KB, not 512 bytes, AND A MARKER WHEN IT STILL OVERFLOWS. At 512 a line held
+    // about six fetch slots, and the draws with more than that were silently cut short —
+    // 215 of 2,967 lines in one operator census, every one of them missing its tail. The
+    // census is read by grepping for `DUMMY`, so a truncated line does not look truncated:
+    // it looks like a draw that binds nothing wrong, and "zero draws bind the dummy in
+    // this frame" was about to be reported as a measurement when it was a buffer size
+    // (gotchas 25 and 109 — a capped line is not a count).
+    char psbindLine[2048];
+    bool psbindFull = false;
     // The pass's WRITE state belongs on this line too. "colour = f(constants,
     // textures)" is only true of a draw that writes its colour at all: an empty
     // RB_COLOR_MASK makes a pipeline that discards every channel, and its output is
@@ -5091,6 +5113,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                            : "draw: cube fetch got the dummy");
             reinterpret_cast<uint32_t*>(shared + arrayBase)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
+            if (psbind && psbindAt >= int(sizeof psbindLine) - 96)
+                psbindFull = true;
             if (psbind && psbindAt < int(sizeof psbindLine) - 96)
             {
                 const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
@@ -5175,6 +5199,9 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // looked for: a second draw with the same shader and the same bindings is a
         // different piece of geometry, and "which draw covers the ground" is precisely a
         // question about geometry.
+        if (psbindFull && psbindAt < int(sizeof psbindLine) - 24)
+            snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
+                     "  (LINE TRUNCATED)");
         if (drawCensus)
         {
             if (R->drawCensusFile)
