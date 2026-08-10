@@ -304,15 +304,16 @@ per-slot texture dimension is derivable both from our ucode parse and from DXC's
 `OpDecorate ... DescriptorSet` words, so a disagreement means one of the two decodes is
 wrong. Run it after any cache rebuild; exit 1 is a real defect:
 ```
-python3 tools/shader_dim_census.py             # 300 modules 2D, 93 cube, 0 disagreements
+python3 tools/shader_dim_census.py             # 310 modules 2D, 94 cube, 0 disagreements
 ```
 It also names the sidecars carrying no `tfetchDims` at all — cache entries built before
 part 25 whose microcode is gone. **Keep ucode dumps in `~/DR2CZ-troubleshooting/ucode-dumps`,
-not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and an operator run
-through the military arrival recovered three of them, so the remaining eight are areas
-nobody has replayed rather than anything permanent.
-**The cache is 402 and it has grown on EVERY session that reached new ground.** 335 from
-the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402 — 23 of
+not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and two operator runs
+(the military arrival, then Still Creek end to end) recovered TEN of the eleven. The last,
+`ps_926c15dd20571cf1`, samples only sets 0 and 3 — an ordinary 2D shader, so nothing
+depends on it. A lost dump is a location nobody has replayed, not a permanent loss.
+**The cache is 409 and it has grown on EVERY session that reached new ground.** 335 from
+the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409 — 23 of
 those from two operator play sessions on 2026-08-08 alone, once the whole-frame black
 stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
 as a claim with a shelf life** (gotcha 13): every era of this game that no run has
