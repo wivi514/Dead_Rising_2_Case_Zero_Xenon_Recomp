@@ -70,7 +70,7 @@ colour, the EDRAM surface format, a flat-decoding texture. Three of those were m
 each cost a run. **Do not re-buy any of them**; the table is in item 00f.
 
 **Then round-2 captures arrived** — seven single-frame F4 traces, one per surface, each
-self-contained (`Xenia_Logs/R2_world/`, read with `tools/xtr_draw_bindings.py`). They
+self-contained (`Xenia logs/R2_world/`, read with `tools/xtr_draw_bindings.py`). They
 settle three things, in item 00g:
 
 1. **Our shader coverage is complete** — 357 of 357 already in the cache.

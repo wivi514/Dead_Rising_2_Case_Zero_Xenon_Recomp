@@ -686,7 +686,7 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   measurement: the tone map, a missing texture, constant UVs, the white dummy (all four
   heaps poisoned magenta), the clear colour, the EDRAM surface format, a flat-decoding
   texture. **Do not re-buy any of them.**
-  Round-2 captures (`Xenia_Logs/R2_world/`, seven self-contained single-frame traces, read
+  Round-2 captures (`Xenia logs/R2_world/`, seven self-contained single-frame traces, read
   with `tools/xtr_draw_bindings.py`) then established: our shader coverage is complete
   (357/357); the ground draw matches hardware on shader, textures, texture CONTENTS and
   render state, so the defect is in shading or in the VERTEX DATA (the one input never

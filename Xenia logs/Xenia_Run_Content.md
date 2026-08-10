@@ -218,3 +218,37 @@ Cross-cutting wins this round:
 Held local (undelivered): `cz_B2test/` (1.92 GiB save-load GPU variant). Possible next: A2b
 (gameplay high-freq `.big` order) only if the analyst wants gameplay-era seek order.
 (A2b = gameplay high-freq only if the analyst wants gameplay-era `.big` seek order.)
+
+---
+
+## R2_world — the WORLD captures, round 2 (delivered 2026-08-10)
+
+Seven **single-frame F4 GPU traces**, one per surface this port renders wrongly, each with
+a screenshot, plus the session's whole `dump_shaders` output. Request:
+`docs/xenia-capture-requests-round2.md`. Operator notes, including the deliberate method
+change and its justification: `R2_world/R2_WORLD_CAPTURE_NOTES.md`.
+
+Full game (`license_mask = 1`), 1280x720 native, canary fork `a635ac64f`.
+
+| folder | what it is | trace |
+|---|---|---|
+| `w1_spawn` | the flat-white ground patch — the top defect | 64 MB |
+| `w2_gasstation` | the same white ground, a second instance | 72 MB |
+| `w3_pawnshop` | glass showing a ProtoMan cardboard; changes per session | 67 MB |
+| `w4_bathroom` | Uncle Bill's window, blown white; a confirmed dummy-sampler | 67 MB |
+| `w5_newsboxes_cactus` | white props | 59 MB |
+| `w6_register_door` | cash register + white door side (screenshot is the WHOLE window, crop it) | 72 MB |
+| `w7_slotmachine` | Barnyard Bonanza machines | 60 MB |
+| `w_shaders.zip` | 357 distinct shaders — ALL of them already in our cache | 3 MB |
+
+**Read them with `tools/xtr_draw_bindings.py`**, which names shaders by the same FNV-1a
+hash the runtime and the cache use, so one draw is identifiable in both stacks. A
+single-frame trace is self-contained (an `EdramSnapshot`, then a `MemoryRead` carrying the
+actual sampled bytes of every texture, vertex and index buffer), so it replays standalone
+— **ask for this shape rather than a continuous stream** for any question about a place
+(gotcha 259).
+
+**Screenshots were taken on a return trip AFTER the traces**, so camera and clock differ
+slightly and at w5 a newsstand had fallen over. Use them for "what it should look like" and
+place identification, never for a frame-locked pixel diff — the exact framebuffer for each
+spot is inside its `.xtr`.

@@ -435,7 +435,7 @@ Next, in order:
 
 00g. **THE ROUND-2 CAPTURES, AND WHAT THEY SETTLED.** Seven single-frame F4 traces, one
    per defective surface, delivered 2026-08-10 with a screenshot each and the session's
-   whole `dump_shaders` output. `Xenia_Logs/R2_world/`, notes in
+   whole `dump_shaders` output. `Xenia logs/R2_world/`, notes in
    `R2_WORLD_CAPTURE_NOTES.md`, read with `tools/xtr_draw_bindings.py`.
 
    **A single-frame trace is self-contained** — an `EdramSnapshot`, then a `MemoryRead`
