@@ -2100,3 +2100,35 @@ From phase C part 18 (the frame rate — and none of it was work):
     is the null saying it is not a null yet. **A statistic earns "usable" by reproducing
     across three runs, not by producing a small number once** — here median mean-luma did
     (0.55% over three) and median distinct-colour count did not.
+259. **A SINGLE-FRAME GPU TRACE IS SELF-CONTAINED, AND THAT MAKES IT A BETTER ORACLE THAN A
+    CONTINUOUS STREAM.** Case Zero's round-1 captures were `trace_gpu_stream` — one huge
+    `.xtr` from boot, 1.6 GiB for the boot alone, and a 2 GiB cliff that had to be fixed at
+    source. Round 2 asked for "the same method" and the operator deviated deliberately,
+    taking seven single-frame F4 traces instead. That is strictly better for any question
+    about a PLACE: each file opens with an `EdramSnapshot` and then carries a `MemoryRead`
+    with the actual sampled bytes of every texture, vertex and index buffer the frame
+    touched, so it replays standalone — a texture can be reconstructed without seeking into
+    a stream, each file pairs unambiguously with the spot it was taken at, and 60-75 MB
+    replaces gigabytes. **Ask for per-place single frames unless the question is genuinely
+    about a sequence.** The general form: an artifact that carries its own starting state
+    is worth far more than a larger one that has to be replayed from the beginning.
+260. **NAME THE SAME OBJECT THE SAME WAY ON BOTH SIDES OF AN ORACLE, AND THE COMPARISON
+    STOPS BEING GUESSWORK.** Comparing our renderer against a capture looked hard because
+    the obvious keys do not survive: texture ADDRESSES are per-session allocations (a scan
+    of 186,398 draws of the round-1 gameplay capture found none of the addresses our runtime
+    reports for the same material), and draw indices differ because the two stacks do not
+    issue identical work. What DOES survive is a content hash of the shader microcode —
+    which this runtime already computes at `IM_LOAD` and which the offline translation
+    pipeline computes for the cache. Naming shaders that way in the capture reader made one
+    draw identifiable in both stacks in a single step: same hash, same vertex count, same
+    bindings. **Before building a comparison, find the identifier that is a property of the
+    CONTENT rather than of the session.**
+261. **A DUMP FROM ANOTHER TOOL CAN BE BYTE-SWAPPED, AND THE SELF-TEST IS WHAT TELLS YOU SO.**
+    Xenia's `dump_shaders` writes `.ucode.bin` dword-swapped relative to the guest's
+    big-endian bytes. Hashing them directly made all 357 shaders in a capture look NEW
+    against a 410-shader cache of the same game — a "we are missing the entire world"
+    result that would have justified a large piece of work. The thing that caught it in one
+    step was hashing OUR OWN dumps first and checking they reproduce their own filenames:
+    410 of 410 did, so the function was right and the difference had to be in the data.
+    **When a comparison says everything differs, verify the comparator against data whose
+    answer you already know before believing it.**
