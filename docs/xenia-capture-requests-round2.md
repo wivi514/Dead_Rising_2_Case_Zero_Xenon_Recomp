@@ -1,5 +1,16 @@
 # Xenia ground-truth captures — request round 2 (the WORLD, not the boot)
 
+> **STATUS 2026-08-10: DELIVERED, COMPLETE, AND ALREADY PAID FOR ITSELF.** All seven pairs
+> plus the shader dump are in `Xenia logs/R2_world/`; the inventory entry is in
+> `Xenia logs/Xenia_Run_Content.md` and what they established is open item 00g.
+> **R3 (the roaming trace) was correctly NOT captured** — the anchored pairs were the whole
+> request and R3 remains low value.
+>
+> **The operator deviated from the letter of this request and was right to.** It asked for
+> "the same method as B1/B2", i.e. a continuous `trace_gpu_stream`, which cannot produce
+> seven separately named place-anchored traces in one session. Single-frame F4 traces can,
+> and they are self-contained besides. **Ask for single frames next time** (gotcha 259).
+
 **Written 2026-08-10 (phase C part 26). Round 1's list is `xenia-capture-requests.md` and
 is closed.** This one exists because part 26 established two things on the same day:
 
