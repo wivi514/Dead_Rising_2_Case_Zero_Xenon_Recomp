@@ -418,6 +418,13 @@ struct PendingScreen
 };
 static PendingScreen g_pendingScreen;
 
+// How many screen requests have actually reached the frontend. `CZ_FAKE_PRESS_SEQ`'s
+// WAITJUMP barrier parks on this, so a recipe can say "press DOWN one interval AFTER the
+// DebugJump screen opens" instead of "press DOWN at 136 seconds" — the second is a fit to
+// one afternoon's boot (gotcha 75), and it is what made the first two attempts miss: the
+// jump landed at 131 s and DOWN had already fired at 128 s.
+static std::atomic<uint32_t> g_screenRequestsServiced{ 0 };
+
 // Seconds since process start, on every line this file prints about a screen request.
 // A synthetic recipe has to place its menu presses AFTER the jump lands, and the jump
 // lands whenever the frontend gets round to it — so "when did it land" is the one number
@@ -464,6 +471,7 @@ static void RequestFrontendScreen(PPCContext& ctx, uint8_t* base,
     ctx.r4.u64 = screenHash;
     ctx.r5.u64 = 0;
     __imp__sub_827F6D40(ctx, base);
+    g_screenRequestsServiced.fetch_add(1, std::memory_order_release);
     fprintf(stderr, "[debug] requested %s through frontend manager %08X "
                     "(hash %08X) at %llds\n", name, g_frontendTransitionManager,
             screenHash, DebugElapsedSeconds());
@@ -494,6 +502,12 @@ void DebugTunables_ToggleFullDebugMenu(PPCContext& ctx, uint8_t* base)
 // usable context — which is why it cannot simply be done inside the transition hook that
 // captures the manager, where re-entering the frontend would run a screen change from
 // inside a screen change.
+// The barrier's predicate. Read from the synthetic-input arm on a guest thread.
+uint32_t DebugTunables_ScreenRequestsServiced()
+{
+    return g_screenRequestsServiced.load(std::memory_order_acquire);
+}
+
 void DebugTunables_PumpPendingScreen(PPCContext& ctx, uint8_t* base)
 {
     if (!g_pendingScreen.name || !g_frontendTransitionManager)

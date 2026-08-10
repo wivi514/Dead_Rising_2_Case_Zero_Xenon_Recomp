@@ -3715,6 +3715,11 @@ constexpr uint16_t XINPUT_GAMEPAD_START = 0x0010;
 // The packet number is the other half. XInput's contract is that it changes only when
 // the state changes, so a title can skip re-reading; a constant packet number with a
 // changing button field would hand the guest a press it is entitled to ignore.
+// The WAITJUMP barrier's predicate, defined in cpu/debug_tunables.cpp. Declared here
+// rather than with the other DebugTunables_* forward declarations further down, because
+// this is the one of them the SYNTHETIC INPUT arm reads and it is used above them.
+uint32_t DebugTunables_ScreenRequestsServiced();
+
 static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                                    GuestInputState* state)
 {
@@ -3819,6 +3824,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         int16_t lx, ly, rx, ry;
         bool hold;              // stick entries deflect for the whole interval
         int hostKey = 0;        // 2/3/4 = pulse the F2/F3/F4 debug edge, no pad state
+        bool barrier = false;   // WAITJUMP: park here until the screen request lands
     };
     // Full deflection is 32767 and the Y axis is positive UP (gotcha 102 — the
     // conversion the real pad path also makes). No deadzone is applied anywhere,
@@ -3846,6 +3852,21 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         { "F2", 0, 0,0,0,0, false, 2 },   // the title's shipped DebugJump screen
         { "F3", 0, 0,0,0,0, false, 3 },   // DebugEnter
         { "F4", 0, 0,0,0,0, false, 4 },   // the host-rendered Case Zero debug submenus
+        // WAITJUMP — a BARRIER, and the thing that makes an F2 recipe reproducible.
+        //
+        // Every entry before this one is placed at a fixed wall-clock offset, which is
+        // fine while the target is "whatever screen we are on". It is NOT fine for menu
+        // navigation after a DebugJump, because the jump lands whenever the frontend gets
+        // round to it: measured at 131 s on one run, with DOWN already fired at 128 s and
+        // the whole rest of the recipe consequently walking a screen that was not there.
+        // Pushing the presses later only buys margin against ONE boot's timing (gotcha 75).
+        //
+        // The barrier freezes the sequence clock instead: the recipe parks here, emitting
+        // nothing, until a screen request has actually reached the frontend, and only then
+        // do the remaining entries start their intervals. So DOWN is "one interval after
+        // the screen opens" rather than "at 136 seconds", which is a statement about the
+        // GAME and not about this afternoon.
+        { "WAITJUMP", 0, 0,0,0,0, false, 0, true },
     };
     static const std::vector<NamedButton> sequence = [] {
         std::vector<NamedButton> seq;
@@ -3923,7 +3944,16 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // initial delay; the sequence HOLDS its last entry rather than wrapping, because a
     // wrap would walk back out of the screen it was aimed at and the run would
     // oscillate between two menus with no way to tell from a frame dump.
-    const bool started = elapsedMs > fakeStartMs;
+    // Time spent parked at barriers, subtracted from the clock so a WAITJUMP costs the
+    // recipe nothing but the wait itself. `parkedSince` is -1 when not parked.
+    static std::atomic<long long> parkedTotalMs{ 0 };
+    static std::atomic<long long> parkedSinceMs{ -1 };
+    const long long parkedNow = parkedSinceMs.load(std::memory_order_relaxed);
+    const long long effectiveMs =
+        elapsedMs - parkedTotalMs.load(std::memory_order_relaxed) -
+        (parkedNow >= 0 ? elapsedMs - parkedNow : 0);
+
+    const bool started = effectiveMs > fakeStartMs;
     NamedButton entry{ "START", XINPUT_GAMEPAD_START, 0, 0, 0, 0, false };
     size_t idx = 0;
     if (!sequence.empty())
@@ -3932,13 +3962,66 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         // subtraction below would wrap and select the LAST entry, which is harmless
         // while nothing is emitted and is a spurious transition once it is.
         if (started)
-            idx = std::min(size_t(elapsedMs / fakeStartMs) - 1, sequence.size() - 1);
+            idx = std::min(size_t(effectiveMs / fakeStartMs) - 1, sequence.size() - 1);
         entry = sequence[idx];
     }
 
-    // A tap is 150 ms of the interval; a hold is the whole interval.
+    // The barrier itself. Parking is a property of the ENTRY, so it re-evaluates on every
+    // poll and releases on the first poll after the condition holds.
+    //
+    // WHILE PARKED IT REPEATS THE PRECEDING ENTRY, and that is not a convenience — the
+    // first version emitted nothing while waiting and DEADLOCKED. The frontend transition
+    // manager is only captured when the title actually changes screen, and the title only
+    // changes screen when something presses a button; so a barrier that waits silently is
+    // waiting for an event that only the sequence it has frozen could cause. The run
+    // parked at 24 s and sat there for the remaining six minutes.
+    //
+    // Repeating the preceding entry turns `START,WAITJUMP,DOWN,A` into "press START every
+    // interval until the screen lands, then navigate", which is what a human does and
+    // what the recipe meant. The repeat is a fresh tap each interval on the REAL clock,
+    // because the sequence clock is frozen by definition while parked.
+    bool parked = false;
+    if (entry.barrier)
+    {
+        if (DebugTunables_ScreenRequestsServiced() == 0)
+        {
+            parked = true;
+            if (parkedNow < 0)
+            {
+                parkedSinceMs.store(elapsedMs, std::memory_order_relaxed);
+                KLOG("CZ_FAKE_PRESS_SEQ: WAITJUMP parked at %llds — repeating the "
+                     "preceding entry until a screen request reaches the frontend.\n",
+                     static_cast<long long>(elapsedMs / 1000));
+            }
+            // The preceding real entry, which is what gets repeated. A barrier first in
+            // the sequence has nothing to repeat and simply waits — counted as the
+            // degenerate case rather than silently doing something else.
+            for (size_t back = idx; back-- > 0;)
+                if (!sequence[back].barrier)
+                {
+                    entry = sequence[back];
+                    entry.hostKey = 0;   // never re-pulse a debug edge while waiting
+                    break;
+                }
+        }
+        else if (parkedNow >= 0)
+        {
+            parkedTotalMs.fetch_add(elapsedMs - parkedNow, std::memory_order_relaxed);
+            parkedSinceMs.store(-1, std::memory_order_relaxed);
+            KLOG("CZ_FAKE_PRESS_SEQ: WAITJUMP released at %llds — the screen landed; the "
+                 "rest of the sequence now starts its intervals from here.\n",
+                 static_cast<long long>(elapsedMs / 1000));
+        }
+    }
+
+    // A tap is 150 ms of the interval; a hold is the whole interval. Measured on the
+    // BARRIER-CORRECTED clock, or a recipe would resume mid-tap after a long park.
+    // While parked the sequence clock is frozen, so the tap phase has to come from the
+    // REAL clock or the repeat would be stuck permanently on or permanently off.
+    const long long phaseMs = parked ? elapsedMs : effectiveMs;
     const bool active =
-        started && (entry.hold || (elapsedMs % fakeStartMs) < 150);
+        (started || parked) && !entry.barrier &&
+        (entry.hold || (phaseMs % fakeStartMs) < 150);
 
     // A HOST DEBUG EDGE FIRES ONCE PER INTERVAL, keyed on the interval INDEX.
     //

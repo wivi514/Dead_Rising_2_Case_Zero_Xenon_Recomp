@@ -1987,3 +1987,21 @@ From phase C part 18 (the frame rate — and none of it was work):
     it.** Same shape as gotcha 151 in its quietest form — the instrument ran, printed, and
     reported nothing, and only comparing its number against another clock's (`CZ_FAKE_START_MS`
     was logging 16 s at the same moment) exposed it.
+251. **A barrier that waits for an event only the thing it blocked could have caused is a
+    deadlock, and it presents as a slow run rather than as a hang.** Part 25 added a
+    WAITJUMP token to the synthetic-input arm so a recipe could say "navigate one interval
+    AFTER the DebugJump screen opens" instead of "navigate at 136 seconds" — a fix for real
+    fragility, since the jump landed at 131 s on one boot and the presses had already fired
+    at 128 s. The first version froze the sequence and emitted NOTHING while waiting. It
+    parked at 24 s and sat there for six minutes, because the frontend transition manager
+    is only captured when the title CHANGES SCREEN, and the title only changes screen when
+    something presses a button. The evidence had been on screen an hour earlier and was
+    read as coincidence: the manager appeared three seconds after a DOWN press, i.e. that
+    press caused it. **Before writing a wait, name the thing that will make the condition
+    true and check it is not on the far side of the wait.** The fix here is the general
+    one: a barrier REPEATS the preceding action while waiting, so `START,WAITJUMP,DOWN`
+    means "press START until the screen lands, then navigate" — which is what a human does.
+    Two details that fall out: the repeat must tap on the REAL clock, because the sequence
+    clock is frozen by definition while parked and a frozen phase sticks the tap
+    permanently on or off; and any one-shot edge in the repeated entry must be suppressed
+    so it cannot re-fire every interval.
