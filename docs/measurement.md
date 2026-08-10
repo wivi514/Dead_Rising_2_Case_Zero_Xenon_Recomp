@@ -114,15 +114,26 @@ other end, where 257 "perfectly aligned" frames were 257 copies of an empty scen
 **So outdoors, do not align — AGGREGATE, and take the noise floor from that same null
 pair.** Over the 12,000+ frames above 1,800 draws, two runs of one configuration give:
 
-| era median, frames >= 1,800 draws | run 1 | run 2 | null |
+| era median, frames >= 1,800 draws | 3 baseline runs | spread | usable? |
 |---|---|---|---|
-| mean luma | 56.693 | 57.229 | **0.94%** |
-| distinct colours | 101,128 | 100,364 | **0.76%** |
-| coverage % | 99.671 | 99.675 | 0.004% — saturated outdoors, useless |
+| **mean luma** | 56.593, 56.907, 56.738 | **0.55%** | **yes** |
+| distinct colours | 98,566, 98,448, 103,777 | **5.4%** | **no** |
+| coverage % | 99.669, 99.669, 99.672 | 0.003% | no — saturated outdoors |
 
-That is the outdoor instrument: quote an arm's era median as a multiple of that null, and
-say how many frames each median is over. Two runs give one null; three an arm is better,
-and the same rule as everywhere else applies — run the null in the same serial block.
+That is the outdoor instrument: quote an arm's era median against the BASELINE BAND, and
+say how many frames each median is over.
+
+**Three baseline runs, not two, and the table above is why.** On two baselines the
+distinct-colour null read 0.12% and an arm read *12.0x* it; the third baseline came in 5.4%
+away and the result vanished (gotcha 258). Two independent pairs had already put that
+statistic's null at 0.76% and 0.12% — a 6x disagreement, which is the null saying it is not
+one yet. Mean luma reproduced across all three and is the statistic to use.
+
+**Calibrate with an arm that changes the subsystem WHOLESALE.** `CZ_VK_NO_CUBE=1` (no cube
+map bound at all) moves the median luma to 59.469 against the 56.59-56.91 band — 8x its
+width, no overlap — which is what says the instrument is sensitive outdoors. Without such
+an arm, a small measured effect and a blind instrument look identical, and this project has
+twice mistaken the second for the first.
 And how SHARP the frame is, which is the one thing no aggregate over pixel VALUES can
 report. A blur preserves coverage, mean luminance, distinct colours and the whole
 histogram exactly as a vertical flip does (gotcha 135), so `frame_compare.py` scored

@@ -18,8 +18,10 @@ half.** The matched-frame admissibility filter — two arms are comparable only 
 route is not why.** Two runs of ONE configuration share 0 of 12,174 outdoor frames. The
 route is fine (93% of its frames are outdoors, and two runs' draw counts agree to 1.4%);
 a crowd of animated actors simply never renders the same draw list twice. **The replacement
-is an era aggregate with a measured null** (`tools/frame_era_medians.py`, 0.94% on median
-mean-luma, 0.76% on median distinct colours), and that is what unblocks items 00, 3, 4 and 6.
+is an era aggregate with a measured null** (`tools/frame_era_medians.py`): **median
+mean-luma reproduces to 0.55% over three baseline runs and is the usable statistic; median
+distinct-colour count does NOT (5.4% over the same three) and its two-run nulls were
+flukes** — read gotcha 258 before quoting either. That is what unblocks items 00, 3, 4 and 6.
 
 Three of the validation layer's five defects are closed, and the layer now names our
 objects.
