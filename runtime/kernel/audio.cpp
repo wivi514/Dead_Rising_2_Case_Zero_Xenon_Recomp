@@ -44,6 +44,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <xbox.h>
 
@@ -60,6 +61,10 @@ bool AudioTrace()
     static const bool on = getenv("CZ_AUDIO_TRACE") != nullptr;
     return on;
 }
+
+// Defined with the submit path below; declared here because the pump runs the
+// self-test before it asks the guest for its first frame.
+void AudioScanSelfTest();
 
 // ---------------------------------------------------------------------------
 // The XMA decoder's register aperture
@@ -333,6 +338,8 @@ void RenderDriverPump()
     const int frameUs = env ? std::max(100, atoi(env)) : kDefaultFrameUs;
     KLOG("render driver pump started (%d us/frame, %u samples x %u channels)\n", frameUs,
          kFrameSamples, kFrameChannels);
+    if (AudioTrace())
+        AudioScanSelfTest();
     if (NullDecoderEnabled())
         fprintf(stderr,
                 "[audio] *** CZ_XMA_NULL_DECODER IS ON: every XMA context's input is "
@@ -489,26 +496,113 @@ uint32_t XAudioUnregisterRenderDriverClient_x(uint32_t handle)
 // because of what it answers: "the pump is running" and "the
 // game is actually producing audio" are different claims, and a frame count alone
 // cannot separate them from a mixer that is submitting silence.
+//
+// THE INSTRUMENT WAS REWRITTEN IN PART 26, BECAUSE ITS FIRST VERSION COULD NOT TELL
+// SILENCE FROM BLINDNESS — which is the one distinction the whole audio item turns
+// on. It sampled one frame in 512 and printed a peak that read 0.0000 both when the
+// mixer handed us a silent buffer and when it handed us a NULL pointer, because the
+// scan sat inside `if (frame)` and `peak` was initialised to zero (gotcha 151: an
+// arm with no counter cannot be shown to have engaged). Part 25 read 53 samples of
+// `peak=0.0000` and concluded "the guest is handing us silence"; that conclusion was
+// not yet supported by the instrument that produced it.
+//
+// Three changes, each closing one of those holes:
+//   * EVERY frame is scanned, not one in 512. The cost is ~187 x 6 KB = 1.1 MB/s and
+//     only when the trace is on, against a sampled statistic that could have missed a
+//     sound entirely — 53 of 27,000 frames is 0.2% of the run (gotcha 109).
+//   * The NULL-frame case is counted separately, so "silent" and "there was nothing
+//     there" are different numbers rather than the same zero.
+//   * The scan is SELF-TESTED at pump start on a synthetic buffer whose peak is known
+//     (AudioScanSelfTest below). A scanner that reads the wrong byte order or the
+//     wrong length reports zeros on any input, which is indistinguishable from
+//     silence — so the scanner has to be shown capable of reporting non-silence
+//     before its zeros mean anything (gotcha 30).
+float AudioFramePeak(const be<uint32_t>* frame)
+{
+    float peak = 0.0f;
+    for (uint32_t i = 0; i < kFrameBytes / 4; i++)
+    {
+        const uint32_t bits = frame[i];
+        float s;
+        memcpy(&s, &bits, sizeof(s));
+        const float a = s < 0.0f ? -s : s;
+        if (a > peak)
+            peak = a;
+    }
+    return peak;
+}
+
+// The positive control for AudioFramePeak: a frame of big-endian 0.5f, built the same
+// way the guest's mixer would leave one, scanned by the same code path. If this does
+// not print 0.5000 the scanner is broken and every zero it reports downstream is
+// meaningless.
+void AudioScanSelfTest()
+{
+    std::vector<be<uint32_t>> probe(kFrameBytes / 4, 0u);
+    const float zeroPeak = AudioFramePeak(probe.data());
+
+    const float half = 0.5f;
+    uint32_t bits;
+    memcpy(&bits, &half, sizeof(bits));
+    for (auto& w : probe)
+        w = bits;
+
+    KLOG("audio scan self-test: zero frame peak=%.4f (expect 0.0000), "
+         "loud frame peak=%.4f (expect 0.5000)\n",
+         zeroPeak, AudioFramePeak(probe.data()));
+}
+
 uint32_t XAudioSubmitRenderDriverFrame_x(uint32_t handle, be<uint32_t>* frame)
 {
     const uint64_t n = g_framesSubmitted.fetch_add(1);
-    if (AudioTrace() && (n % 512) == 0)
+    if (AudioTrace())
     {
+        static std::atomic<uint64_t> nullFrames{0};
+        static std::atomic<uint64_t> nonSilent{0};
+        static std::atomic<uint64_t> firstNonSilent{0};
+        static std::atomic<uint32_t> maxPeakBits{0};
+
         float peak = 0.0f;
-        if (frame)
+        if (!frame)
+            nullFrames.fetch_add(1);
+        else
+            peak = AudioFramePeak(frame);
+
+        if (peak > 0.0f)
         {
-            for (uint32_t i = 0; i < kFrameBytes / 4; i++)
-            {
-                const uint32_t bits = frame[i];
-                float s;
-                memcpy(&s, &bits, sizeof(s));
-                const float a = s < 0.0f ? -s : s;
-                if (a > peak)
-                    peak = a;
-            }
+            if (nonSilent.fetch_add(1) == 0)
+                firstNonSilent.store(n);
+            uint32_t bits;
+            memcpy(&bits, &peak, sizeof(bits));
+            // Positive floats compare in the same order as their bit patterns, so a
+            // max over the bits is a max over the values without a CAS on a float.
+            uint32_t prev = maxPeakBits.load();
+            while (bits > prev && !maxPeakBits.compare_exchange_weak(prev, bits))
+                ;
         }
-        KLOG("audio frame %llu handle=%08X peak=%.4f\n",
-             static_cast<unsigned long long>(n), handle, peak);
+
+        if ((n % 512) == 0)
+        {
+            float maxPeak;
+            const uint32_t bits = maxPeakBits.load();
+            memcpy(&maxPeak, &bits, sizeof(maxPeak));
+            // The guest ADDRESS of the buffer is on the line because the self-test can
+            // only prove the scanner reads floats correctly — it cannot prove we are
+            // reading the buffer the mixer wrote. If this address is stable across the
+            // run while the samples stay zero, the mixer is being handed one buffer and
+            // filling it with silence; if it moves, we are following the guest's own
+            // rotation and still finding silence. Either reading is a fact about the
+            // GUEST. A zero here would say the argument never arrived at all.
+            const uint32_t va =
+                frame ? uint32_t(reinterpret_cast<uint8_t*>(frame) - g_memory.base) : 0;
+            KLOG("audio frame %llu handle=%08X buf=%08X peak=%.4f | frames=%llu null=%llu "
+                 "non-silent=%llu (first at %llu) maxpeak=%.6f\n",
+                 static_cast<unsigned long long>(n), handle, va, peak,
+                 static_cast<unsigned long long>(n + 1),
+                 static_cast<unsigned long long>(nullFrames.load()),
+                 static_cast<unsigned long long>(nonSilent.load()),
+                 static_cast<unsigned long long>(firstNonSilent.load()), maxPeak);
+        }
     }
     return STATUS_SUCCESS;
 }
