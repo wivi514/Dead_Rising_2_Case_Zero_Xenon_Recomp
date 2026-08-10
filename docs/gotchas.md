@@ -2005,3 +2005,25 @@ From phase C part 18 (the frame rate — and none of it was work):
     clock is frozen by definition while parked and a frozen phase sticks the tap
     permanently on or off; and any one-shot edge in the repeated entry must be suppressed
     so it cannot re-fire every interval.
+252. **A debug AI that exposes a "state" field may CHANGE IT UNDERNEATH YOU, and the
+    symptom is every setting behaving identically.** Case Zero's AutoChuck takes a state at
+    offset +0x70; part 25 set ITEM PICKER, EXPLORER and MISSION MASTER in turn and all
+    three did the same thing — walk to the objective and wait — so the natural conclusion
+    was that the write was landing in the wrong place or the label table was off by one
+    (gotcha 241's shape). It was neither. A `process_vm_readv` of the LIVE process found 4
+    (MISSION MASTER) after we had written 1 (ITEM PICKER) twice, and we never write 4: the
+    AI promotes itself. **Three separate explanations were argued from plausibility before
+    anyone read the field back** — including two of mine that were confidently wrong.
+    Reading a written field back out of the running process is ~30 lines of ctypes here and
+    it settles in one shot what argument cannot. The fix is to re-assert and COUNT: three
+    overrides across 8,657 frames says the AI decides once, where thousands would have said
+    the field is not the right lever at all, and only the counter distinguishes them.
+253. **The button that OPENS a screen is not the button that closes it, and "press it
+    again" is a guess dressed as symmetry.** Part 25 auto-closed a map screen by injecting
+    BACK, because BACK is what the map is bound to on a 360 pad. BACK *opens* it; the close
+    is B. The injection worked perfectly and the screen never moved, which reads exactly
+    like "the press is not reaching the guest" and sent the next round of debugging at the
+    input path. **When an injected input has no effect, separate "it did not arrive" from
+    "it arrived and meant something else" before touching the delivery path** — a counter
+    at the delivery point answers the first in one run. The operator knew the right button
+    immediately; a question would have been cheaper than the experiment.

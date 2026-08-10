@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 251 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 253 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -148,7 +148,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 251-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 253-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -389,6 +389,23 @@ another boot), so the barrier parks the sequence — repeating the preceding ent
 why `START` precedes it — until the screen is actually up, then starts the remaining
 intervals from that moment. That is what makes this reproducible where a fixed-time recipe
 is a fit to one afternoon (gotchas 75, 251).
+
+**FULLY UNATTENDED, with the AI driving and the map handled** — this is the form to use
+for texture coverage or any long roam:
+```
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_AUTOCHUCK=EXPLORER \
+  CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE \
+  CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps timeout 600 ./cz_runtime > /tmp/o.log 2>&1)
+grep -E "WAITJUMP|EXPLORER engaged|changed the state away|pressing B" /tmp/o.log
+```
+Three things it handles that took a session to find, each measured rather than reasoned:
+**the title's AI rewrites the state you set** (we wrote ITEM PICKER twice; a live read of
+the running process found MISSION MASTER), so `CZ_AUTOCHUCK` re-asserts and counts the
+overrides — 3 in an 8,657-frame run. **The AI opens the MAP by itself** about two minutes
+into a roam and parks the run on it — not our input (a BACK-delivered counter reads 0, and
+`CZ_FAKE_START_MS` bypasses the real pad entirely), so it is closed by hash
+(`06903E1A`/`890DF3E5`, found with `CZ_SCREEN_TRACE=1`). **The close is B, not BACK** —
+BACK is what opens the map. See `docs/instruments.md` for all four variables.
 
 **Why this replaces the stick recipe below for anything comparative:** two arms of a
 picture A/B are only comparable where their `drawFingerprint` and `cameraFingerprint`

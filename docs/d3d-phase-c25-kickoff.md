@@ -73,6 +73,13 @@ question is open and belongs to the operator.
    ```
    CZ_DEBUG_MENU=1 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE,NONE,A,NONE,A,NONE,NONE,NONE,NONE
    ```
+   **And it is now fully unattended**: `CZ_AUTOCHUCK=EXPLORER` hands Chuck to the title's
+   own debug AI, re-asserting the state because the AI rewrites it (measured by reading the
+   live process: we wrote ITEM PICKER, it held MISSION MASTER), and the map the AI opens
+   about two minutes into a roam is detected by screen hash and closed with a B press.
+   Gotchas 252 and 253 are the transferable halves; `docs/instruments.md` has the four
+   variables.
+
    What part 26 still owes on it is the thing it was built FOR: re-run the cube-map A/B
    (and the shadow/mipmap/colour ones) on this route and check how many frames now survive
    the `drawFingerprint`/`cameraFingerprint` filter. Standing still rather than AutoChuck

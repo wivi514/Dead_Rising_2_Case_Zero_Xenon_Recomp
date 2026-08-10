@@ -457,6 +457,39 @@ CZ_VK_TEX_REVALIDATE=1  the repair the guard would justify: re-upload on mismatc
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty
+CZ_AUTOCHUCK=<schedule>  hand Chuck to the title's own debug AI with no menu navigation.
+                   `EXPLORER`, or a SCHEDULE like `ITEM PICKER@0,ZOMBIE KILLER@180` where
+                   @seconds runs from the AI first engaging ON THIS LEVEL (so it means the
+                   same thing however long the boot took). Names are case- and
+                   space-insensitive; 0..6 and OFF also work; anything else is refused with
+                   the list. **Replaces the F4 overlay, which is driven by SDL keyboard
+                   events and is therefore unreachable headlessly** — this drives the same
+                   guest writes the menu item does.
+                   **IT RE-ASSERTS, because the title's AI changes the state underneath
+                   you.** Measured: we wrote ITEM PICKER twice and a live read of the
+                   running process found MISSION MASTER, stable. That is why every state
+                   looked identical from the outside — each one had become MISSION MASTER
+                   and was waiting at the ambulance objective. The override count is logged
+                   (3 in an 8,657-frame run, so the AI decides once rather than fighting
+                   per frame). `CZ_AUTOCHUCK_NO_HOLD=1` is the control arm
+CZ_AUTOCHUCK_CLOSE_HASHES=hex,hex   the screens to close automatically while an AutoChuck
+                   state is held; empty disables. Defaults to `06903E1A,890DF3E5`, which is
+                   THE MAP — measured with CZ_SCREEN_TRACE, because AutoChuck opens it about
+                   two minutes into a roam and parks an unattended run on it. The close is a
+                   **B** press, not BACK: BACK is what OPENS the map, so pressing it again
+                   asks for a screen that is already open. One press per screen rather than
+                   per transition (the map fires two hashes at once), and only while
+                   AutoChuck holds, so a human who opened the map keeps it
+CZ_AUTOCHUCK_CLOSE_DELAY_MS=N   how long to let that screen settle before pressing B
+                   (default 1200) and it is the operator's observation that a close on the
+                   opening frame is not accepted. NB building this window exposed that the
+                   helper it used had SECONDS resolution, so the delay quantised to 0 or
+                   1000 ms — a timing window needs a clock finer than the window
+CZ_SCREEN_TRACE=1  every frontend screen transition the TITLE makes, by hash, with a
+                   timestamp and a FIRST TIME marker. It is how the map was identified:
+                   nothing else in this runtime can see the game changing screen on its own,
+                   and our own DebugJump request bypasses the hook (it calls the impl
+                   directly), so everything this prints is the title acting by itself
 CZ_VK_NO_CUBE=1    bind every CUBE fetch the way the renderer did before part 25: publish
                    its descriptor index into the `Texture2D` array, leaving the
                    `TextureCube` array at zero so the shader samples the 1x1 white dummy.
