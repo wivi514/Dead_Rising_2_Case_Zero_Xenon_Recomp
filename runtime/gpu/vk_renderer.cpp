@@ -6573,11 +6573,42 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         // is read as 8888 here; a target in another format would clear to the wrong
         // colour, which is why the count is separate from the resolve count.
         const uint32_t c = regs[xenos::kRbColorClear];
+        // CZ_VK_CLEAR_POISON=1 — clear the colour target to MAGENTA instead of the guest's
+        // value. The positive control for "these pixels were never written by any draw".
+        //
+        // Part 26's operator report is large ground patches of a single flat colour, and
+        // that colour is EXACTLY (180,180,180) over 39.6% of one frame — 49,195 pixels of
+        // one value with a standard deviation of 3. A constant that precise is not a
+        // texture and not lighting; it is either a clear or a shader writing a constant.
+        // The two look identical in a screenshot and have nothing in common as bugs, so
+        // this separates them: under the arm, every pixel still showing the clear is
+        // magenta and every pixel some draw actually wrote keeps its colour.
+        //
+        // The clear VALUE is printed once per distinct value too, because if the guest's
+        // own clear is 0xB4B4B4 the question is answered without running the arm at all.
+        static const bool clearPoison = EnvOn("CZ_VK_CLEAR_POISON");
+        {
+            static std::vector<uint32_t> seenClear;
+            if (std::find(seenClear.begin(), seenClear.end(), c) == seenClear.end() &&
+                seenClear.size() < 16)
+            {
+                seenClear.push_back(c);
+                fprintf(stderr, "[vk] RB_COLOR_CLEAR = %08X  (a=%u r=%u g=%u b=%u)\n", c,
+                        (c >> 24) & 0xFF, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+            }
+        }
         VkClearColorValue value{};
         value.float32[0] = float((c >> 16) & 0xFF) / 255.0f;
         value.float32[1] = float((c >> 8) & 0xFF) / 255.0f;
         value.float32[2] = float(c & 0xFF) / 255.0f;
         value.float32[3] = float((c >> 24) & 0xFF) / 255.0f;
+        if (clearPoison)
+        {
+            value.float32[0] = 1.0f;
+            value.float32[1] = 0.0f;
+            value.float32[2] = 1.0f;
+            value.float32[3] = 1.0f;
+        }
         Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
         VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -6889,12 +6920,27 @@ bool InitCommon()
         // the CONTENT of those cube maps. Same shape as CZ_VK_TEX_GUARD_POISON
         // (gotcha 30) — a comparison that has never reported a positive proves nothing
         // by reporting a negative.
+        // CZ_VK_DUMMY_POISON=1 poisons ALL FOUR dummies, not just the cube one.
+        //
+        // CZ_VK_CUBE_POISON answers "does a cube fetch reach the picture", and part 26
+        // used it to prove the cube dummy tints the crowd. It cannot answer the question
+        // the ground patches pose, because the ground reads no cube. The 1x1 dummy in
+        // EVERY heap is white, and a white texel times a diffuse term of 0.706 is exactly
+        // the (180,180,180) those patches are — 49,195 pixels of one value with a standard
+        // deviation of 3, against a guest clear colour of BLACK, so they are written by
+        // something rather than left unwritten. The declared-fetch census cannot see this
+        // case: a shader reading a descriptor index the runtime never wrote gets slot 0
+        // silently, because the shared-constant block is memset to zero every draw.
         static const bool cubePoison = EnvOn("CZ_VK_CUBE_POISON");
-        const bool poisoned = cubePoison && type == VK_IMAGE_VIEW_TYPE_CUBE;
+        static const bool allPoison = EnvOn("CZ_VK_DUMMY_POISON");
+        const bool poisoned =
+            allPoison || (cubePoison && type == VK_IMAGE_VIEW_TYPE_CUBE);
         const uint32_t white = poisoned ? 0xFFFF00FFu : 0xFFFFFFFFu;
         if (poisoned)
-            fprintf(stderr, "[vk] CZ_VK_CUBE_POISON: the cube dummy is MAGENTA "
-                            "(0xFFFF00FF), all six faces\n");
+            fprintf(stderr,
+                    "[vk] %s: the set-%u dummy is MAGENTA (0xFFFF00FF), %u layer(s)\n",
+                    allPoison ? "CZ_VK_DUMMY_POISON" : "CZ_VK_CUBE_POISON", setIndex,
+                    layers);
         // ALL SIX FACES, not just the first. The copy below has always had
         // `layerCount = layers`, but only four bytes were ever written into the staging
         // buffer — so faces 1..5 of every 1x1 dummy were filled from whatever the staging
