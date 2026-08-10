@@ -73,6 +73,31 @@ runs per arm:
 ```
 python3 tools/frame_matched_diff.py --a runA1 runA2 --b runB1 runB2
 ```
+**READ ITS PER-PAIR LINES, NOT ITS HEADLINE, and never quote a frame COUNT as an effect
+size.** Part 25 learned both the hard way on one experiment (gotchas 247, 249):
+
+* Its pooled verdict said `cross 4.02 vs floor 1.18 -> ARMS DIFFER (3.41x)`. Three of the
+  four cross pairs underneath were AT OR BELOW both within-arm floors; the fourth was the
+  only pairing of two 620 s runs — which drift furthest — and carried twice the sample
+  count, so the pooled median inherited it. **A median over pooled pairs of unequal n is
+  not a summary of those pairs.**
+* "82 of 109 frames differ" sounds like a result and is not one: **two runs of the SAME
+  configuration differ on 82 of 109 frames.** Only the magnitude against that floor means
+  anything — 0.069 median drift, 0.401 for a positive control (6x), 0.038-0.085 for the
+  change under test (i.e. invisible).
+
+So the picture protocol is the frame-time protocol: **run the null arm FIRST, in the same
+serial block on an idle GPU, and quote every effect as a multiple of it.** And enforce
+admissibility with the per-frame fingerprints rather than by matched index alone — two arms
+are comparable only where `drawFingerprint` AND `cameraFingerprint` agree:
+```
+# of 301 matched dumped frames: 70 share a camera, 44 share camera AND draw set
+awk 'NR>1 {print $1, $4, $5}' /tmp/armA.txt   # frame, drawFingerprint, cameraFingerprint
+```
+**Quote how many frames survived that filter.** On this title's synthetic-input recipes it
+is 13-44, and every one of them is under 1,800 draws — so a filter that is honest about
+drift currently discards the entire outdoor era, and no headless picture claim about
+reflections, shadows or anything else outdoors is possible until that is fixed.
 And how SHARP the frame is, which is the one thing no aggregate over pixel VALUES can
 report. A blur preserves coverage, mean luminance, distinct colours and the whole
 histogram exactly as a vertical flip does (gotcha 135), so `frame_compare.py` scored

@@ -7,12 +7,26 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25. Cube maps are uploaded as six
-   faces and bound into descriptor set 2; `CZ_VK_NO_CUBE=1` is the same-binary control
-   arm. What is still OWED is the operator's verdict on the picture** — this is a
-   reflection defect, and the surfaces it should change (the "unicorn colour" filing
-   cabinet, the dumpster) are ones only the operator has named as wrong. See "what part
-   25 did" at the end of this item.
+00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25, AND ROUGHLY HALF-DONE BY
+   VOLUME.** Cube maps are uploaded as six faces and bound into descriptor set 2;
+   `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in
+   priority order:
+
+   1. **THE OPERATOR'S VERDICT.** This is a reflection defect and the surfaces it should
+      change are ones only the operator has named as wrong. It is not a preference for
+      human evidence — **the headless harness has been shown, quantitatively, to be blind
+      to a change of this size**: binding real cube maps moves the picture by 0.038-0.085
+      median mean |RGB| against a drift floor of 0.069, while a positive control sits at
+      0.401 (6x the floor). Same spot, twice, `CZ_VK_NO_CUBE=1` versus default.
+   2. **THE CUBE SNAPSHOT PATH** — six resolves into six layers for `06805000`.
+      **55% of all cube sampling in the game's opening hour is that one map**, which the
+      title renders itself and which is white in BOTH arms until this exists. By volume it
+      is the larger half of this item.
+   3. **A HARNESS THAT CAN REACH AN ADMISSIBLE OUTDOOR FRAME.** Every drift-honest filter
+      discards every frame above ~1,800 draws, which is exactly where an environment map
+      matters. Until then no headless picture claim about reflections is possible.
+
+   See "what part 25 did" at the end of this item.
 
    The original statement, kept because the census in it is the reusable part:
 

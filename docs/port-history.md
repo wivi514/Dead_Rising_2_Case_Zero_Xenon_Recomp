@@ -1373,6 +1373,66 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 25 (2026-08-10) — cube maps bound, and the harness measured blind
+
+Open item 00, the top picture item since part 23: 92 of the cache's 397 shaders sample
+`TextureCube[]` and every one of them read descriptor index 0 — the 1x1 dummy — on every
+draw since phase 5, because `bindTextures` published every fetch's slot into the
+`Texture2D` array whatever its dimension. All three parts of the specified fix are built.
+The full record is `docs/phase5-notes.md` §6ay; the short version and what it cost:
+
+**Two independent derivations of the dimension, so it is a gate and not a claim.** The
+shader's fetch instruction carries it (word 2, bits 14..15) and `synth_shader_container.py`
+now writes it per SLOT into the sidecar; DXC's `OpDecorate ... DescriptorSet` words in the
+translated SPIR-V carry the same fact through a path containing no code of ours.
+`tools/shader_dim_census.py` compares them and exits 1 on disagreement — 298 modules /
+973 slots 2D, 92 modules / 92 slots cube, zero 1D and zero 3D, agreeing everywhere. Shown
+capable of failing by moving the parse one bit.
+
+**The guest's own dimension field was located by CENSUS, and recollection was wrong.**
+`CZ_VK_DIM_CENSUS=1` partitions every fetch by the shader's independent answer and
+accumulates each class's always-set / always-clear bits: dword5 bits **9..10** (memory said
+7..8), cross-checked against dword2's top six bits reading 5 for every cube fetch — a
+prediction stated before the run from Xenia's published layout. Gotcha 244 is the general
+form and it is the most reusable thing here.
+
+**Three latent instrument defects, each of which would have produced a confident wrong
+answer:** `Barrier`'s hardcoded `layerCount = 1`, already live in `R->dummyCube` since
+phase 5 so five of the dummy's faces were written and sampled in `UNDEFINED`; the dummy
+upload writing four bytes for a six-layer copy; and `CZ_SHADER_DUMP` failing silently into
+a directory that did not exist, which cost a ten-minute recovery run and reported "0 blobs"
+— a fact that reads as "no new shaders" and is not.
+
+**And then the measurement, which is the part worth reading.** The picture A/B came back
+byte-identical on every admissible frame, and it took four more experiments to learn why:
+
+| | |
+|---|---|
+| admissible pairs (same camera AND draw set) | 13-44 of ~300, **all under 1,800 draws** |
+| drift floor — default vs default | 82/109 frames differ, median 0.069 |
+| real cubes vs white dummy | 82/109 differ, median 0.038-0.085 |
+| positive control — magenta vs white dummy | 80/110 differ, median 0.401 (**6x the floor**) |
+| draws asking for a cube | 746,355; **45% bind a real cube, 55% get the dummy** |
+| of that 55% | **409,911 are ONE map, `06805000`**, which the title renders itself |
+
+So: the cube path is live (the poison proves the sample reaches the screen, up to 72% of a
+frame), the change is real, and **the harness cannot see it** — because every drift-honest
+filter discards the outdoor era, and because more than half the potential effect is a
+dynamically-rendered environment map we decline to guess at. The operator's verdict and a
+cube snapshot path are what remain.
+
+**Three gotchas, and they are one error in three disguises** — 246 (a count with no
+denominator, published as "0.03%" and corrected in place), 248 (a positive control read
+with a statistic that could not see its own effect: "how much of the frame is magenta"
+read 0.24% where a per-pixel diff read 80 of 110), 249 (an effect quoted with no null: "82
+of 109 frames differ" where the null also differs on 82 of 109). Plus 245 and 247. The
+mechanical fix for all three is one habit: **measure the arm against itself first, in the
+same block, and quote ratios.**
+
+**An operator opened and closed the game mid-session**, which is exactly the contamination
+this discipline exists for; the drift baseline that overlapped it was discarded and re-run
+in one serial block rather than defended.
+
 ## Phase C part 24 (2026-08-09/10) — the title's own debug build, switched back on; and
 ## the HUD defect, which was ours
 

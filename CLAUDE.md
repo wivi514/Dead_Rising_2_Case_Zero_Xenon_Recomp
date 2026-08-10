@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 248 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 249 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -148,7 +148,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 248-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 249-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -430,7 +430,20 @@ CZ_FAKE_PRESS_SEQ=...    synthetic input. MANUFACTURES PROGRESS — never a gate
 CZ_GUEST_LOG=1     the engine's OWN debug printf (640 callers, gated off in a shipped
                    build — raising those gates is open work, gotcha 215)
 CZ_SHADER_DUMP=dir put this on any run that might reach new ground, including an
-                   operator run: a missing shader is one log line and a silent counter
+                   operator run: a missing shader is one log line and a silent counter.
+                   **NEVER point it under /tmp** — that is a tmpfs and it is why eleven
+                   cache entries have no microcode left. Use
+                   `~/DR2CZ-troubleshooting/ucode-dumps`
+CZ_VK_NO_CUBE=1    bind cube fetches the pre-part-25 way (into the 2D array, so the shader
+                   samples the white dummy). The same-binary control arm for the cube-map
+                   work, and the one to hand an operator for a side-by-side
+CZ_VK_CUBE_POISON=1  the cube dummy becomes MAGENTA — the positive control that showed the
+                   cube sample reaches the presented image (80 of 110 frames, up to 72% of
+                   a frame's pixels). Read it with a per-pixel diff against the unpoisoned
+                   run, NOT by looking for magenta: the sample TINTS, and the semantic
+                   detector read 0.24% where the diff read 80 of 110 (gotcha 248)
+CZ_VK_DIM_CENSUS=1 where the DIMENSION lives in a texture fetch constant, answered by
+                   partitioning fetches on the shader's independent answer (gotcha 244)
 CZ_DEBUG_MENU=1    enables retained debug scaffolding; at the title menu press F2 to
                    open the shipped, operator-confirmed DebugJump testing screen; F4
                    opens the host-rendered Case Zero debug submenus (Left goes back)
@@ -592,18 +605,27 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   never be re-opened. The LOAD needed a fourth — xam ordinal `0x271`,
   `XamContentCreateInternal`, which `kResolvable` refused because A1's list of resolves
   was captured with an empty save root.
-* **CUBE MAPS ARE BOUND AS OF PART 25** — found in part 23, built in part 25. 92 of the
-  cache's 397 shaders sample set 2 (`TextureCube[]`) and every one of them read descriptor
-  index 0, the 1x1 white dummy, on every draw from phase 5 until now. The sidecar now
-  carries each fetch slot's dimension, cube maps upload as six faces into a
-  `VK_IMAGE_VIEW_TYPE_CUBE` view in set 2, and `CZ_VK_NO_CUBE=1` is the same-binary
-  control arm. **The fetch constant's own dimension field was located by CENSUS
-  (`CZ_VK_DIM_CENSUS=1`), not from memory, which had it one field off** — dword5 bits
-  9..10, cross-checked against dword2's stack depth reading 5 for every cube fetch
-  (gotcha 244). `docs/open-items.md` item 00 and `phase5-notes.md` §6ay; three competing
-  theories died in part 23's census and are recorded there so they are not re-bought.
-  **What is still owed is the operator's verdict on the picture**, because the surfaces
-  this should change are ones only they have named as wrong.
+* **CUBE MAPS ARE BOUND AS OF PART 25 — and that is about half the item by volume.**
+  Found in part 23, built in part 25. 92 of the cache's 397 shaders sample set 2
+  (`TextureCube[]`) and every one of them read descriptor index 0, the 1x1 white dummy, on
+  every draw from phase 5 until now. The sidecar now carries each fetch slot's dimension,
+  cube maps upload as six faces into a `VK_IMAGE_VIEW_TYPE_CUBE` view in set 2, and
+  `CZ_VK_NO_CUBE=1` is the same-binary control arm. **The fetch constant's own dimension
+  field was located by CENSUS (`CZ_VK_DIM_CENSUS=1`), not from memory, which had it one
+  field off** — dword5 bits 9..10, cross-checked against dword2's stack depth reading 5 for
+  every cube fetch (gotcha 244). `docs/open-items.md` item 00 and `phase5-notes.md` §6ay;
+  three competing theories died in part 23's census and are recorded there.
+  **Two things are owed and both are large.** (a) **55% of all cube sampling is ONE map,
+  `06805000`, which the title RENDERS ITSELF** — a resolve destination whose pixels never
+  reach guest memory, declined to the dummy and white in both arms until a cube snapshot
+  path exists (six resolves into six layers). (b) **The operator's verdict**, because the
+  headless harness has been MEASURED blind to a change of this size: 0.038-0.085 median
+  mean |RGB| against a 0.069 drift floor, where a magenta positive control reads 0.401.
+* **NO HEADLESS PICTURE CLAIM ABOUT THE OUTDOOR ERA IS CURRENTLY POSSIBLE.** Two arms are
+  comparable only where `drawFingerprint` AND `cameraFingerprint` agree, and on this
+  title's synthetic-input recipes that filter yields 13-44 frames of ~300 — **every one of
+  them under 1,800 draws.** Fixing that unblocks items 00, 3, 4 and 6 at once
+  (gotcha 247, `docs/measurement.md`).
 * **Ordinary gameplay is ~30 fps and the CPU/GPU now OVERLAP** (part 23): the fence wait
   fell from 31.5% of a crowd frame to 0.2% with `CZ_VK_FRAMES_IN_FLIGHT=2` (default; `=1`
   is the old renderer, same binary). The binned frame-time A/B is still owed.

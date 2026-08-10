@@ -1960,3 +1960,17 @@ From phase C part 18 (the frame rate — and none of it was work):
     be recognised. Corollary for injected-colour instruments generally: always keep the
     unpoisoned run and diff against it, because "I can see my marker" is a much weaker
     question than "is this frame different".
+249. **Run the NULL ARM FIRST, in the same block, and quote every effect as a multiple of
+    it — a frame count is not an effect size.** Part 25's cube-map A/B reported "82 of 109
+    frames differ" between the two arms and the positive control reported "80 of 110". Two
+    counts that close read as two effects of the same size. They are not: **two runs of the
+    SAME configuration differ on 82 of 109 frames**, because a synthetic-input recipe
+    drifts (gotcha 75), so the count measures drift and nothing else. Only the magnitude
+    against that floor separates them — median mean |RGB| of 0.069 for drift, 0.401 for the
+    positive control (6x), and 0.038-0.085 for the real change (at or below the floor).
+    This is the third form of one error in a single session: gotcha 246 was a count with no
+    denominator, 248 was a control read with a statistic that could not see it, and this is
+    an effect quoted with no null. **The mechanical fix covers all three: before measuring
+    an arm, measure the arm against ITSELF, in the same block, on the same machine state —
+    then no effect can be quoted except as a ratio.** `docs/measurement.md` had this rule
+    for frame time already; it did not have it for pictures, and I did not transfer it.

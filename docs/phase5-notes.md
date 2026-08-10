@@ -3957,7 +3957,86 @@ magenta", requiring saturated R and B — but a cube sample arrives multiplied b
 term, so it TINTS rather than saturating. That detector read 0.24% and looked like a clean
 negative. The right question was never "is it magenta"; it is "did the frame change at
 all", which is 80 of 110. A positive control has to be read with a statistic that can see
-the effect it is controlling for.
+the effect it is controlling for (gotcha 248).
+
+### The split that explains it: 55% of cube fetches are ONE cube map we decline
+
+The counters on the DEFAULT arm, same safehouse recipe:
+
+| | |
+|---|---|
+| draws that asked for a cube map | **746,355** |
+| ...bound a **REAL** cube map | **336,044 (45.0%)** |
+| ...got the dummy | **410,311 (55.0%)** |
+| of which: the **resolve-destination** decline (`06805000`) | **409,911** |
+| of which: the shader/constant disagreement | 400 |
+| distinct cube maps uploaded | 6 |
+
+So the single dynamically-rendered environment map at `06805000` accounts for **99.9% of
+every dummy a cube fetch still receives**, and for more than half of all cube sampling in
+the game's opening hour. **That makes the cube snapshot path — six resolves into six
+layers — not a loose end but the larger half of this item by volume.** Binding the other
+45% is real, and it is what the operator's verdict is about; the remaining 55% cannot be
+fixed by any amount of decode work, because the pixels are not in guest memory to read.
+
+### The four-run picture A/B is SUPERSEDED and must not be quoted for the shipped renderer
+
+It was run before two behaviour changes landed — `06805000` is declined now, where that
+binary uploaded it black — so it describes a renderer that no longer exists. Its method
+survives (the fingerprint admissibility filter, and the per-pair reading of
+`frame_matched_diff.py`); its numbers do not. The same-recipe replacement is default arm
+versus `CZ_VK_NO_CUBE=1` on the current binary.
+
+### THE FINAL ANSWER, AND A MISTAKE I MADE TWICE ON THE WAY TO IT
+
+The unfiltered comparison on the current binary looked like a result: **82 of 109 frames
+differ** between real cube maps and the white dummy, and the poison control differed on
+80 of 110. Two counts that close look like two effects of the same size, and I said so.
+
+**It is worthless, because two runs of the SAME configuration differ on 82 of 109 frames
+too.** The whole count is drift (gotcha 75). What separates them is the MAGNITUDE against
+that floor, measured in one serial block on an idle GPU:
+
+| comparison, same recipe, same binary | frames differing | median mean \|RGB\| |
+|---|---|---|
+| **drift floor** — default vs default | 82/109 | **0.069** |
+| real cubes vs white dummy | 82/109 | 0.085 |
+| real cubes vs white dummy, second pairing | 80/110 | 0.038 |
+| **positive control** — magenta vs white dummy | 80/110 | **0.401** |
+
+The positive control sits **6x above** the drift floor; binding real cube maps sits **at or
+below** it. So the honest statement is:
+
+* **the cube path is live** — the poison proves the sample reaches the presented image, on
+  80 of 110 frames and up to 72% of a frame's pixels;
+* **in the only era this harness can reach, the real cube maps are close enough to white
+  that their effect is under the run-to-run noise.** That is consistent with the
+  byte-identical admissible frames rather than in tension with them;
+* **more than half the potential effect is not in play at all**, because 55% of cube
+  sampling is `06805000`, which is white in BOTH arms until the cube snapshot path exists.
+
+**The mistake, twice, in two different disguises.** First I read a positive control with a
+statistic that could not see its own effect ("how much of the frame is magenta" — 0.24%,
+against 80-of-110 by per-pixel diff; gotcha 248). Then I read an experiment with no null
+comparison at all and quoted a frame COUNT as if it were an effect size — in the same
+session in which I had just written gotcha 246 about shipping the denominator. **Both are
+the same error: a number with nothing to divide by or compare against.** The habit that
+fixes both is mechanical and cheap — run the null arm FIRST, in the same block, and quote
+every effect as a multiple of it. `docs/measurement.md` already says this for frame time;
+it now says it for pictures.
+
+### What this item still needs, in order
+
+1. **The operator's verdict.** Reflective surfaces, same spot, `CZ_VK_NO_CUBE=1` versus
+   default. It is the only channel that can answer "is it right", and the headless harness
+   has now been shown, quantitatively, to be blind to a change of this size in the era it
+   can reach.
+2. **The cube snapshot path** — six resolves into six layers for `06805000`. By volume it
+   is the larger half of the item.
+3. **A harness that can reach an admissible outdoor frame.** Every filter that is honest
+   about drift discards every frame above ~1,800 draws, which is exactly where an
+   environment map matters. Until that is fixed, no headless picture claim about this
+   title's reflections is possible.
 
 ### One thread left open, with the measurement named
 
