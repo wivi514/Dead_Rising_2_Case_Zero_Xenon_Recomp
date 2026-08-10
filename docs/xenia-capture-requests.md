@@ -17,7 +17,12 @@
 > One thing this document got right and it mattered more than everything else: the
 > **★ trial-mode check**. The first A1 take booted the trial. Finding 1.
 >
-> **THERE IS NO OUTSTANDING CAPTURE REQUEST.** The only candidate is an optional A2b
+> **ROUND 2 IS OPEN AS OF 2026-08-10 — see `xenia-capture-requests-round2.md`.** It asks for
+the WORLD rather than the boot: seven paired screenshot+trace captures at the surfaces the
+operator reported wrong, because part 26 established those are OUR defects (Xenia renders
+them correctly) and refuted every input-side explanation for them.
+
+**Round 1 is closed and nothing in it is outstanding.** The only candidate is an optional A2b
 > (gameplay-era `.big` seek order), and finding 8 explains why it is probably unnecessary.
 
 Written 2026-08-04, before any runtime work. Revised the same day, after reading what the
