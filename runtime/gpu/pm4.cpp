@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cerrno>
 #include <chrono>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -387,6 +389,22 @@ void DumpShader(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t size
         return;
     g_dumpedShaders.push_back(hash);
 
+    // CREATE THE DIRECTORY, AND SAY SO IF A WRITE FAILS. This was a bare `fopen` whose
+    // failure was silent, so a run pointed at a directory that does not exist dumped
+    // NOTHING and reported nothing — and "0 blobs recovered" then reads as "this run
+    // loaded no new shaders", which is a completely different fact. Part 25 lost a
+    // ten-minute recovery run to exactly that. `CZ_VK_FRAME_DUMP` was fixed for this same
+    // defect in an earlier session and its comment says why; this is the instrument that
+    // was missed. Gotcha 25: an instrument that can produce nothing without complaining
+    // is not an instrument.
+    static bool dirReady = false;
+    static bool complained = false;
+    if (!dirReady)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(g_shaderDumpDir, ec);
+        dirReady = true;
+    }
     char path[512];
     snprintf(path, sizeof path, "%s/%s_%016llx.ucode", g_shaderDumpDir,
              type == 0 ? "vs" : "ps", static_cast<unsigned long long>(hash));
@@ -397,6 +415,14 @@ void DumpShader(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t size
         fprintf(stderr, "[imload] dumped %s %016llx (%u dwords) -> %s\n",
                 type == 0 ? "VS" : "PS", static_cast<unsigned long long>(hash),
                 sizeDwords, path);
+    }
+    else if (!complained)
+    {
+        complained = true;
+        fprintf(stderr,
+                "[imload] CZ_SHADER_DUMP cannot write %s — NO microcode will be dumped "
+                "this run (%s)\n",
+                path, strerror(errno));
     }
 }
 

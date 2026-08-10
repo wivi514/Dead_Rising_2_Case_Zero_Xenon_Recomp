@@ -3890,6 +3890,25 @@ safehouse, at ≤1,799 draws, binding real cube maps changes no pixel; and the h
 currently produce an admissible outdoor comparison at all.** That is gotcha 242's shape for
 the third time — a statistic about the one population the instrument could reach.
 
+**`tools/frame_matched_diff.py` printed the opposite headline, and reading its per-pair
+lines is what saved it.** Its aggregate over four runs says `late: cross 4.02 vs noise
+floor 1.18 -> ARMS DIFFER (3.41x the floor)`. The pairs underneath say otherwise:
+
+| pair | late median \|RGB\| | n |
+|---|---|---|
+| within-A (`cubeA` vs `cubeA2`) | 1.18 | 135 |
+| within-B (`cubeB` vs `cubeB2`) | 0.77 | 136 |
+| cross `cubeA2`–`cubeB` | **0.61** | 135 |
+| cross `cubeA2`–`cubeB2` | **0.67** | 135 |
+| cross `cubeA`–`cubeB2` | **1.00** | 136 |
+| cross `cubeA`–`cubeB` | **13.00** | **292** |
+
+Three of the four cross pairs sit AT or BELOW both within-arm floors — indistinguishable.
+The fourth is the only pair of two 620 s runs, which drift furthest from each other, and it
+carries more than twice the sample count of any other pair, so the pooled median inherits
+it. **A median over pooled pairs of unequal n is not a summary of those pairs**, and the
+tool's own detailed lines are the check on its verdict. Quote the per-pair table.
+
 The null is still surprising, because cube fetches are not rare: arm B's control counter
 read **3,521,910 forced-back cube fetches against 53,882,535 draws, i.e. 6.5% of every
 draw in the run**. Two readings fit, and no amount of looking separates them — the cube
