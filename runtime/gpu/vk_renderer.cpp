@@ -361,6 +361,39 @@ struct TexGuardAddr
 };
 std::map<uint32_t, TexGuardAddr> g_texGuardAddrs;
 
+// CZ_VK_DIM_CENSUS=1 — WHERE IS THE DIMENSION IN THE TEXTURE FETCH CONSTANT?
+//
+// The renderer needs the dimension twice over and from two different places. The SHADER
+// says which descriptor heap a slot is sampled from (its fetch instruction picks
+// `tfetch2D` or `tfetchCube`), and part 25 put that in the sidecar. But the GUEST has to
+// say how the image is laid out in memory — a cube map is six faces, and reading one is
+// reading a sixth of it — and that can only come from the fetch constant, whose
+// `dimension` field this renderer never decoded at all: `DecodeTextureFetch` hardcoded
+// `t.dimension = 1`.
+//
+// The bit position is not something to remember. It is something to MEASURE, and this
+// title provides the oracle for free: the shader-declared dimension partitions every
+// fetch into two classes that must differ in exactly the bits of that field. So for each
+// class this accumulates the AND and the OR of all six dwords across every fetch. A bit
+// that is set in every fetch of a class has AND=1; one clear in every fetch has OR=0.
+// The field is where the two classes' always-set / always-clear patterns disagree — and
+// if no two-bit field disagrees cleanly, the dimension is not in the fetch constant here
+// and the shader is the only source, which is an answer too.
+//
+// It also censuses dword2's top six bits, which Xenia's layout says is the stack DEPTH
+// for a stacked or cube surface: the prediction is 5 (six faces, stored minus one) for
+// every cube fetch and 0 for every 2D one. A prediction stated before the run, so the
+// run can refute it (the project's own evidence rule).
+bool g_dimCensus = false;
+struct DimClass
+{
+    uint64_t fetches = 0;
+    uint32_t andMask[6] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u };
+    uint32_t orMask[6] = {};
+    std::map<uint32_t, uint64_t> d2Top;   // dword2 >> 26 -> count
+};
+std::map<uint32_t, DimClass> g_dimClasses;  // shader-declared dimension -> the census
+
 // CZ_VK_STREAM_CENSUS=1|2 — what the per-frame vertex/index stream cache actually does.
 //
 // `streams` is the largest draw-path term in a real crowd (12.3-14.3% of a frame, twice
@@ -793,6 +826,11 @@ struct ShaderMeta
     std::vector<VertexAttribute> attributes; // vertex shaders only
     std::vector<uint32_t> interpolators;
     std::vector<uint32_t> tfetchConsts;
+    // PARALLEL to tfetchConsts: 0 = 1D, 1 = 2D, 2 = 3D, 3 = cube, and it decides which
+    // of the four descriptor-index arrays in the shared constants this slot's index has
+    // to be published into. Empty when the sidecar predates part 25, which the binder
+    // counts rather than papering over — see the note at bindTextures.
+    std::vector<uint32_t> tfetchDims;
 };
 
 // A deliberately small JSON reader for a file this project writes itself.
@@ -871,6 +909,20 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
     meta.isVertex = text.find("\"vs\"") != std::string::npos;
     meta.interpolators = JsonIntArray(text, "interpolators");
     meta.tfetchConsts = JsonIntArray(text, "tfetchConsts");
+    meta.tfetchDims = JsonIntArray(text, "tfetchDims");
+    // A sidecar written before part 25 has no dimensions at all, and one whose arrays
+    // disagree in length is a build-pipeline defect rather than something to index into.
+    // Both cases are dropped to "no dimension information" here, ONCE, so the binder's
+    // fallback is reached deliberately and the message names the shader.
+    if (!meta.tfetchDims.empty() && meta.tfetchDims.size() != meta.tfetchConsts.size())
+    {
+        fprintf(stderr,
+                "[vk] %s: tfetchDims has %zu entries for %zu tfetchConsts — the arrays "
+                "are POSITIONAL; ignoring the dimensions and treating every slot as 2D\n",
+                path.filename().string().c_str(), meta.tfetchDims.size(),
+                meta.tfetchConsts.size());
+        meta.tfetchDims.clear();
+    }
 
     // The attribute array is objects, so it is walked object by object rather than
     // with the flat integer-array reader.
@@ -965,6 +1017,13 @@ struct Image
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     uint32_t width = 0, height = 0;
+    // ARRAY LAYERS, and it is here because `Barrier` needs it. A barrier's
+    // subresourceRange had `layerCount = 1` hardcoded, which is correct for every image
+    // this renderer had until cube maps arrived and then silently wrong: the five faces
+    // past layer 0 would never leave TRANSFER_DST, so the sampler would read them in the
+    // wrong layout. That is undefined behaviour whose most likely presentation is a cube
+    // with one correct face, which reads as a decode bug rather than a barrier one.
+    uint32_t layers = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
@@ -992,6 +1051,10 @@ struct TextureEntry
     uint32_t va = 0;
     uint64_t srcBytes = 0;
     uint64_t guard = 0;
+    // Six for a cube map, one for everything else. Needed on the REFRESH path, which
+    // re-copies into the same image and would otherwise write face 0 and leave the
+    // other five holding their first-upload pixels.
+    uint32_t layers = 1;
 };
 
 // A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
@@ -1315,6 +1378,12 @@ struct Renderer
     // one it meant by its own FORMAT: `k_24_8` and `k_24_8_FLOAT` are depth surfaces.
     std::unordered_map<uint32_t, Snapshot> snapshots;
     uint32_t nextTextureSlot = 1; // slot 0 is the dummy
+    // Descriptor set 2 is its OWN unbounded array of TextureCube views, so it has its own
+    // slot space. Sharing `nextTextureSlot` would work but would waste the sparser heap's
+    // indices against the denser one's exhaustion — and this project has already had the
+    // 2D heap fill mid-session and serve white (gotcha 192), so the two counters are kept
+    // apart to keep that failure legible.
+    uint32_t nextCubeSlot = 1;   // slot 0 is the 1x1 white cube dummy
 
     // Per-frame vertex/index stream cache: one guest buffer resolved once per frame
     // however many draws read it. It records WHERE the bytes are, which since the
@@ -1490,6 +1559,7 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
 {
     img.width = w;
     img.height = h;
+    img.layers = layers;
     img.format = format;
     img.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1539,7 +1609,8 @@ void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = img.image;
-    b.subresourceRange = { aspect, 0, 1, 0, 1 };
+    // ALL the layers, not just the first — see Image::layers.
+    b.subresourceRange = { aspect, 0, 1, 0, img.layers };
     b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -2195,6 +2266,7 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
     const uint32_t d2 = regs[kFetchConstantBase + slot * 6 + 2];
     const uint32_t d3 = regs[kFetchConstantBase + slot * 6 + 3];
     const uint32_t d4 = regs[kFetchConstantBase + slot * 6 + 4];
+    const uint32_t d5 = regs[kFetchConstantBase + slot * 6 + 5];
 
     TextureFetch t{};
     // dword0: type:2, sign_x/y/z/w:2 each, clamp_x/y/z:3 each, pitch:9 @22, tiled:1 @31
@@ -2224,7 +2296,26 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
     // dword4: mip_min_level bits 2..5, mip_max_level bits 6..9
     t.mipMin = (d4 >> 2) & 0xF;
     t.mipMax = (d4 >> 6) & 0xF;
-    t.dimension = 1; // see the note at the call site: dimension is taken from the shader
+    // dword5 bits 9..10: the DIMENSION, in the same encoding the shader uses
+    // (0 = 1D, 1 = 2D, 2 = 3D, 3 = cube). This field was `t.dimension = 1;` with a
+    // comment saying the dimension is taken from the shader, and the shader metadata had
+    // no dimension in it — so it was taken from nowhere, and every cube map in the game
+    // read the 1x1 white dummy for the whole of phase 5 (docs/open-items.md item 00).
+    //
+    // THE BIT POSITION WAS MEASURED, NOT REMEMBERED, and the measurement is worth
+    // repeating for Case West because it costs one run. `CZ_VK_DIM_CENSUS=1` partitions
+    // every fetch by the dimension the SHADER declares — an independent oracle — and
+    // accumulates the AND and the OR of all six dwords per class. Over 842,556 2D and
+    // 47,574 cube fetches exactly two bits separated the classes: dword2 bits 26/28 and
+    // dword5 bit 10. dword5 reads 1 for every 2D fetch and 3 for every cube one, so the
+    // field is bits 9..10; my recollection had said bits 7..8 and was wrong.
+    t.dimension = (d5 >> 9) & 3;
+    // dword2's top six bits are the STACK DEPTH, stored minus one. Predicted before the
+    // run to be 5 for a cube (six faces) and 0 for a 2D surface; the census read exactly
+    // that, 47,574 of 47,574 and 842,556 of 842,556, from a different dword than the one
+    // above — which is what makes the dimension a measurement rather than a fit.
+    if (t.dimension == 3 || ((d2 >> 26) & 0x3F))
+        t.depth = ((d2 >> 26) & 0x3F) + 1;
     return t;
 }
 } // namespace xenos
@@ -2355,7 +2446,13 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
 // the dummy. Cached on the fetch constant's own six dwords: if none of them changed the
 // texture is the same texture, and if any did it is a different one. Keying on the base
 // address alone would be wrong in this title, which reuses addresses.
-uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
+// `shaderDim` is what the SHADER said this slot is (0 = 1D, 1 = 2D, 2 = 3D, 3 = cube),
+// and the returned slot is an index into THAT dimension's descriptor heap. The two
+// cannot be conflated: set 0 holds `Texture2D` views and set 2 holds `TextureCube` ones,
+// so a 2D slot number published into the cube array indexes a descriptor that was never
+// written.
+uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
+                       uint32_t shaderDim)
 {
     ProfScope _p(&g_prof.textures);
     uint64_t key = 1469598103934665603ull;
@@ -2364,6 +2461,13 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         key ^= regs[xenos::kFetchConstantBase + constIdx * 6 + i];
         key *= 1099511628211ull;
     }
+    // THE DIMENSION IS PART OF THE KEY, because the cached value is a slot number and a
+    // slot number only means something against one heap. Two shaders could in principle
+    // sample the same fetch constant as a 2D texture and as a cube; without this the
+    // second one would be served the first one's slot, indexing the wrong descriptor
+    // array. It costs one multiply and removes a whole class of impossible-to-read bug.
+    key ^= shaderDim;
+    key *= 1099511628211ull;
     const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
     if (t.type != 2)
     {
@@ -2397,6 +2501,42 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     //
     // CZ_VK_TEX_CACHE_FIRST=1 restores the old order — the same-binary control arm for
     // every claim about this fix.
+    //
+    // A CUBE FETCH NEVER TAKES THIS PATH. Every snapshot is a 2D image registered in set
+    // 0, so serving one to a cube fetch would publish a set-0 slot number into the cube
+    // array and index a descriptor that was never written — undefined, not merely wrong.
+    // Nothing in this title resolves to a cube map, so the counter is expected to stay at
+    // zero; it exists so that if one ever does, the answer is a number rather than a
+    // crash.
+    const bool cubeFetch = shaderDim == 3;
+
+    // THE STANDING CROSS-CHECK, and it costs one compare. The dimension now has two
+    // independent sources — the shader's fetch instruction (via the sidecar) and the
+    // guest's own fetch constant — and they must agree. They do here, on every one of
+    // 890,130 fetches in the run that established the decode. The shader stays the
+    // AUTHORITY, because it is the shader that indexes a particular descriptor array and
+    // a disagreement resolved the other way would publish a slot into a heap nothing
+    // reads; but a silent disagreement would mean one of the two decodes is wrong, and
+    // that is precisely the kind of thing this project has learned not to leave uncounted
+    // (gotcha 3). The counter names the case rather than the fix.
+    if (t.dimension != shaderDim)
+    {
+        Count("texture: the SHADER and the FETCH CONSTANT disagree about the dimension");
+        // MEASURED: 114 of 337,716 cube-declared fetches in a boot-to-gameplay run
+        // (0.03%) have a fetch constant that says 2D, while the other 337,602 say cube
+        // and carry a stack depth of 5. For those 114 we do not know what the memory
+        // holds, and reading six faces out of a surface the guest describes as one would
+        // build a cube map from five slabs of whatever follows it. Declining is the
+        // honest failure and it is also exactly the picture those draws got before part
+        // 25, so this cannot make anything worse — but it is COUNTED, so if the share
+        // ever grows it is a number and not a mystery.
+        if (cubeFetch)
+        {
+            Count("texture: CUBE fetch whose constant says otherwise — served the dummy");
+            return 0;
+        }
+    }
+
     static const bool cacheFirst = EnvOn("CZ_VK_TEX_CACHE_FIRST");
     if (cacheFirst)
     {
@@ -2407,6 +2547,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             return c->second.slot;
         }
     }
+    if (cubeFetch && R->snapshots.count(t.address & 0x1FFFFFFF))
+    {
+        Count("texture: a CUBE fetch names a resolve snapshot — NOT served, see the note");
+        // NAMED, not just counted. A large count here has two completely different
+        // readings — one cube map at an address that happens to have been resolved to
+        // once, sampled every frame; or the title rendering a DYNAMIC environment map
+        // every frame, which we would be feeding from guest memory that a resolve never
+        // writes — and only the address list separates them.
+        static std::vector<uint32_t> seenCubeSnap;
+        const uint32_t a = t.address & 0x1FFFFFFF;
+        if (std::find(seenCubeSnap.begin(), seenCubeSnap.end(), a) == seenCubeSnap.end())
+        {
+            seenCubeSnap.push_back(a);
+            fprintf(stderr,
+                    "[vk] cube fetch at %08X (%ux%u fmt=%u) names a resolve snapshot; "
+                    "serving guest memory instead\n",
+                    a, t.width, t.height, t.format);
+        }
+    }
+    if (!cubeFetch)
     {
         // Which snapshot of this address the fetch means, when there are two. The
         // guest says so in the fetch constant's own format field: `k_24_8` and
@@ -2643,21 +2803,45 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // rather than a truncated one.
     const uint32_t srcRows = t.tiled ? ((unitH + 31) & ~31u) : unitH;
     const uint32_t srcPitchUnits = t.tiled ? ((pitchUnits + 31) & ~31u) : pitchUnits;
-    const uint64_t srcBytes = uint64_t(srcPitchUnits) * srcRows * bytesPerUnit;
+    const uint64_t faceBytes = uint64_t(srcPitchUnits) * srcRows * bytesPerUnit;
+
+    // A CUBE MAP IS SIX FACES, laid out one after another at the stride a single face
+    // occupies. Everything above this line describes ONE of them: the fetch constant's
+    // width and height are the face's, and its pitch is the face's pitch.
+    //
+    // The stride is `faceBytes` — the tiled footprint of one face, i.e. the pitch
+    // rounded to 32 units by the rows rounded to 32 — and that is a MODEL, not a
+    // quotation. It is the one the 2D path already computes, applied six times, and the
+    // check on it is the census below plus `CZ_VK_TEX_DUMP`, which writes each face out
+    // to be looked at. Say it out loud here so a wrong sky is traced to this line rather
+    // than to the sampler: if the faces come out sheared or offset from each other, the
+    // slice stride is the suspect and nothing else in this function is.
+    const uint32_t layers = (shaderDim == 3) ? 6 : 1;
+    const uint64_t srcBytes = faceBytes * layers;
 
     const uint32_t va = PhysToVa(t.address);
     if (!GuestRangeOk(va, srcBytes))
     {
-        Count("texture: source outside the physical arena");
+        Count(layers == 6 ? "texture: CUBE source outside the physical arena"
+                          : "texture: source outside the physical arena");
         return 0;
     }
 
     // Untile (or copy) into a tightly packed staging image, swapping endianness as the
     // fetch constant asks. The destination is `unitW` wide because that is what the
     // Vulkan image is; the source is read at its own pitch.
-    const uint64_t dstBytes = uint64_t(unitW) * unitH * bytesPerUnit;
+    const uint64_t faceDstBytes = uint64_t(unitW) * unitH * bytesPerUnit;
+    const uint64_t dstBytes = faceDstBytes * layers;
     std::vector<uint8_t> pixels(dstBytes);
-    const uint8_t* src = base + va;
+
+    // The whole untile below is written for one face. Six faces is that loop six times
+    // over, with both cursors advanced by their own stride — so the loop was lifted out
+    // rather than the body being duplicated, and a 2D texture takes exactly the path it
+    // always did with `face` fixed at 0.
+    for (uint32_t face = 0; face < layers; face++)
+    {
+    const uint8_t* src = base + va + face * faceBytes;
+    uint8_t* dstFace = pixels.data() + face * faceDstBytes;
 
     if (t.tiled)
     {
@@ -2687,12 +2871,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
             {
                 const uint32_t unit = Tiled2DOffset(x, y, srcPitchUnits, log2bpu);
                 const uint64_t off = uint64_t(unit) * bytesPerUnit;
-                if (off + bytesPerUnit > srcBytes)
+                // Bounded by ONE FACE, not by the whole source: `src` already points at
+                // this face, so a unit past `faceBytes` would be read out of the next
+                // face and produce a cube whose seams are each other's pixels.
+                if (off + bytesPerUnit > faceBytes)
                 {
                     ++skipped;
                     continue;
                 }
-                CopySwapped(&pixels[(uint64_t(y) * unitW + x) * bytesPerUnit], src + off,
+                CopySwapped(&dstFace[(uint64_t(y) * unitW + x) * bytesPerUnit], src + off,
                             bytesPerUnit, t.endian);
             }
         Count("texture: untiled");
@@ -2715,11 +2902,12 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     else
     {
         for (uint32_t y = 0; y < unitH; y++)
-            CopySwapped(&pixels[uint64_t(y) * unitW * bytesPerUnit],
+            CopySwapped(&dstFace[uint64_t(y) * unitW * bytesPerUnit],
                         src + uint64_t(y) * srcPitchUnits * bytesPerUnit,
                         uint64_t(unitW) * bytesPerUnit, t.endian);
         Count("texture: linear");
     }
+    } // for each cube face
 
     if (g_texCensus)
     {
@@ -2728,7 +2916,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         s.height = t.height;
         s.format = t.format;
         s.uploads++;
-        s.src = src;
+        s.src = base + va;   // the whole source, i.e. all six faces for a cube map
         s.srcBytes = srcBytes;
         bool allZero = true;
         for (uint8_t b : pixels)
@@ -2759,14 +2947,25 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, dumpAddrHex)) &&
         bytesPerUnit == 1)
     {
-        char path[512];
-        snprintf(path, sizeof path, "%s/tex_%08X_%ux%u.pgm", texDumpDir, t.address,
-                 unitW, unitH);
-        if (FILE* f = fopen(path, "wb"))
+        // ONE FILE PER FACE for a cube map, named by face index. A cube written as one
+        // tall strip would be unreadable exactly where it matters — the question a dump
+        // of a cube answers is "is face 3 the same sky as face 2, or is it face 2 shifted
+        // by the slice stride", and that needs six pictures side by side.
+        for (uint32_t face = 0; face < layers; face++)
         {
-            fprintf(f, "P5\n%u %u\n255\n", unitW, unitH);
-            fwrite(pixels.data(), 1, size_t(dstBytes), f);
-            fclose(f);
+            char path[512];
+            if (layers == 6)
+                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u_face%u.pgm", texDumpDir,
+                         t.address, unitW, unitH, face);
+            else
+                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u.pgm", texDumpDir,
+                         t.address, unitW, unitH);
+            if (FILE* f = fopen(path, "wb"))
+            {
+                fprintf(f, "P5\n%u %u\n255\n", unitW, unitH);
+                fwrite(pixels.data() + face * faceDstBytes, 1, size_t(faceDstBytes), f);
+                fclose(f);
+            }
         }
     }
 
@@ -2780,7 +2979,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         // instrument never being satisfied.
         cached->second.va = va;
         cached->second.srcBytes = srcBytes;
-        cached->second.guard = StreamGuard(src, size_t(srcBytes), nullptr);
+        cached->second.guard = StreamGuard(base + va, size_t(srcBytes), nullptr);
         ++g_texGuardStats.reuploaded;
         if (dstBytes <= R->staging.size)
         {
@@ -2790,7 +2989,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
                 Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
                 VkBufferImageCopy copy{};
-                copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
                 copy.imageExtent = { t.width, t.height, 1 };
                 vkCmdCopyBufferToImage(cb, R->staging.buffer, img.image,
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
@@ -2802,20 +3001,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         return cached->second.slot;
     }
 
-    if (R->nextTextureSlot >= g_maxDescriptors)
+    // Set 2 has its own array of TextureCube views and therefore its own slot space; the
+    // two counters are never interchangeable, because a slot number is only meaningful
+    // against the heap it was allocated from.
+    const bool isCube = layers == 6;
+    uint32_t& nextSlot = isCube ? R->nextCubeSlot : R->nextTextureSlot;
+    if (nextSlot >= g_maxDescriptors)
     {
-        Count("texture: bindless heap full");
+        Count(isCube ? "texture: CUBE bindless heap full" : "texture: bindless heap full");
         return 0;
     }
 
     TextureEntry entry;
     entry.key = key;
-    entry.slot = R->nextTextureSlot++;
+    entry.slot = nextSlot++;
+    entry.layers = layers;
     // The content this image is about to be built from, alongside the descriptor it is
     // keyed on. See TextureEntry for why the cache needs both.
     entry.va = va;
     entry.srcBytes = srcBytes;
-    entry.guard = StreamGuard(src, size_t(srcBytes), nullptr);
+    entry.guard = StreamGuard(base + va, size_t(srcBytes), nullptr);
     // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
     // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
     // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
@@ -2835,13 +3040,18 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         if (allZero)
             Count("texture: uploaded entirely BLACK (the guest has not written it)");
     }
+    // Six array layers plus CUBE_COMPATIBLE, viewed as a VK_IMAGE_VIEW_TYPE_CUBE, which
+    // is what set 2's `TextureCube[]` binding requires — a 2D-array view in that heap is
+    // a validation error, not a wrong picture. Vulkan's layer order is +X,-X,+Y,-Y,+Z,-Z
+    // and so is D3D's, so the guest's face order carries across untouched.
     if (!CreateImage(entry.image, t.width, t.height, format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
+                     VK_IMAGE_ASPECT_COLOR_BIT,
+                     isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D, layers, 1,
                      noSwizzle ? VkComponentMapping{} : XenosSwizzle(t.swizzle)))
     {
         Count("texture: image creation failed");
-        --R->nextTextureSlot;
+        --nextSlot;
         return 0;
     }
 
@@ -2849,8 +3059,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     // is counted and dropped rather than silently truncated.
     if (dstBytes > R->staging.size)
     {
-        Count("texture: larger than the staging buffer");
-        --R->nextTextureSlot;
+        Count(isCube ? "texture: CUBE larger than the staging buffer"
+                     : "texture: larger than the staging buffer");
+        --nextSlot;
         return 0;
     }
     ++R->guestTexturesThisPass;
@@ -2860,7 +3071,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
         Barrier(cb, entry.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
         VkBufferImageCopy copy{};
-        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        // One copy for all six faces: the staging buffer holds them tightly packed and
+        // in order, which is exactly what a multi-layer copy expects.
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
         copy.imageExtent = { t.width, t.height, 1 };
         vkCmdCopyBufferToImage(cb, R->staging.buffer, entry.image.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
@@ -2872,7 +3085,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
     ii.imageView = entry.image.view;
     ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    w.dstSet = R->sets[0];
+    w.dstSet = R->sets[isCube ? 2 : 0];
     w.dstBinding = 0;
     w.dstArrayElement = entry.slot;
     w.descriptorCount = 1;
@@ -2882,7 +3095,19 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx)
 
     const uint32_t slot = entry.slot;
     R->textures.emplace(key, std::move(entry));
-    Count("texture: uploaded");
+    if (isCube)
+    {
+        Count("texture: CUBE MAP uploaded (six faces)");
+        static int left = 8;
+        if (left-- > 0)
+            fprintf(stderr,
+                    "[vk] cube %08X %ux%u fmt=%u tiled=%u pitchBlk=%u faceBytes=%llu "
+                    "-> set 2 slot %u\n",
+                    t.address, t.width, t.height, t.format, t.tiled ? 1u : 0u,
+                    t.pitchBlocks, (unsigned long long)faceBytes, slot);
+    }
+    else
+        Count("texture: uploaded");
     return slot;
 }
 
@@ -4326,13 +4551,43 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     R->lastTexAddr = 0;
     R->lastTexSlot = 0;
-    auto bindTextures = [&](const std::vector<uint32_t>& consts) {
-        for (uint32_t constIdx : consts)
+    // WHICH DESCRIPTOR-INDEX ARRAY A SLOT'S INDEX GOES INTO IS THE SHADER'S ANSWER, and
+    // for the whole of phase 5 this lambda gave the same one for every fetch: the
+    // Texture2D array at +0. The shared constants carry four arrays — Texture2D at +0,
+    // Texture3D at +64, TextureCube at +128, Texture1D at +288, matching descriptor sets
+    // 0/1/2/4 — and the block is memset to zero every draw, so a cube fetch read index 0,
+    // which is a defined 1x1 WHITE texel. 92 of this cache's 397 shaders sample a cube
+    // map, so every reflective surface in this game multiplied its specular by white from
+    // the first frame phase 5 ever drew. docs/open-items.md item 00.
+    //
+    // The dimension is per SLOT and comes from the sidecar (part 25). A sidecar written
+    // before that has none, and the fallback is 2D — the old behaviour exactly — but it
+    // is COUNTED, because a silent fallback here is indistinguishable from the defect it
+    // replaces.
+    auto bindTextures = [&](const std::vector<uint32_t>& consts,
+                            const std::vector<uint32_t>& dims) {
+        for (size_t i = 0; i < consts.size(); i++)
         {
+            const uint32_t constIdx = consts[i];
             if (constIdx >= 16)
                 continue;
+            uint32_t dim = 1; // 2D
+            if (dims.size() == consts.size())
+                dim = dims[i];
+            else
+                Count("texture: shader sidecar has no tfetchDims — slot bound as 2D");
+            // CZ_VK_NO_CUBE=1 — bind every cube fetch the way the renderer did before
+            // part 25: publish its slot into the Texture2D array, leaving the cube array
+            // at zero so the shader samples the white dummy. The same-binary control arm
+            // for every claim this change makes about the picture.
+            static const bool noCube = EnvOn("CZ_VK_NO_CUBE");
+            if (noCube && dim == 3)
+            {
+                dim = 1;
+                Count("texture: cube fetch forced back to the 2D array (CZ_VK_NO_CUBE)");
+            }
             const size_t snapsBefore = R->snapshotsSampledThisPass.size();
-            const uint32_t slot = UploadTexture(base, regs, constIdx);
+            const uint32_t slot = UploadTexture(base, regs, constIdx, dim);
             if (!R->lastTexAddr)
             {
                 const xenos::TextureFetch t0 = xenos::DecodeTextureFetch(regs, constIdx);
@@ -4341,7 +4596,35 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 R->lastTexW = t0.width;
                 R->lastTexH = t0.height;
             }
-            reinterpret_cast<uint32_t*>(shared + kSharedTex2D)[constIdx] = slot;
+            if (g_dimCensus)
+            {
+                DimClass& c = g_dimClasses[dim];
+                ++c.fetches;
+                for (uint32_t d = 0; d < 6; d++)
+                {
+                    const uint32_t v =
+                        regs[xenos::kFetchConstantBase + constIdx * 6 + d];
+                    c.andMask[d] &= v;
+                    c.orMask[d] |= v;
+                }
+                ++c.d2Top[regs[xenos::kFetchConstantBase + constIdx * 6 + 2] >> 26];
+            }
+            // The four arrays are 16 uints each and the index is the fetch-constant
+            // slot, so a switch on the dimension is the whole publication step. An
+            // unmapped dimension is COUNTED and falls back to 2D rather than writing
+            // outside the block it was handed.
+            uint32_t arrayBase = kSharedTex2D;
+            switch (dim)
+            {
+                case 0: arrayBase = kSharedTex1D; break;
+                case 1: arrayBase = kSharedTex2D; break;
+                case 2: arrayBase = kSharedTex3D; break;
+                case 3: arrayBase = kSharedTexCube; break;
+                default:
+                    Count("texture: shader declared an unknown dimension — bound as 2D");
+                    break;
+            }
+            reinterpret_cast<uint32_t*>(shared + arrayBase)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
             if (psbind && psbindAt < int(sizeof psbindLine) - 96)
             {
@@ -4357,8 +4640,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
         }
     };
-    bindTextures(ps.tfetchConsts);
-    bindTextures(vs.tfetchConsts);
+    bindTextures(ps.tfetchConsts, ps.tfetchDims);
+    bindTextures(vs.tfetchConsts, vs.tfetchDims);
 
     // CZ_VK_ONLY_TEX / CZ_VK_SKIP_TEX=<hex[,hex...]> — render only, or all but, the
     // draws whose first bound texture is at that guest address.
@@ -6086,6 +6369,7 @@ bool InitCommon()
 
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
+    g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
     g_texGuard = EnvOn("CZ_VK_TEX_GUARD");
     g_texRevalidate = EnvOn("CZ_VK_TEX_REVALIDATE");
     g_texGuardPoison = EnvOn("CZ_VK_TEX_GUARD_POISON");
@@ -7214,6 +7498,53 @@ void VkRenderer_DumpStats()
                     (unsigned long long)s.snapshotTooOld, (unsigned long long)s.maxAge,
                     note);
         }
+    }
+
+    // WHERE THE DIMENSION LIVES IN THE FETCH CONSTANT, read off the two classes the
+    // shader partitions every fetch into. `always1` is the AND, `always0` is the
+    // complement of the OR; a field that encodes the dimension must be inside the bits
+    // where the two classes' patterns differ, and the report prints that disagreement
+    // mask directly so the answer is a bit position rather than an argument.
+    if (g_dimCensus)
+    {
+        static const char* kDimName[4] = { "1D", "2D", "3D", "Cube" };
+        fprintf(stderr, "[vk]   fetch-constant dimension census — dwords per "
+                        "shader-declared dimension:\n");
+        for (const auto& [dim, c] : g_dimClasses)
+        {
+            fprintf(stderr, "[vk]     %-4s  %llu fetches\n",
+                    dim < 4 ? kDimName[dim] : "?", (unsigned long long)c.fetches);
+            for (uint32_t d = 0; d < 6; d++)
+                fprintf(stderr, "[vk]       dword%u always1=%08X always0=%08X\n", d,
+                        c.andMask[d], ~c.orMask[d]);
+            fprintf(stderr, "[vk]       dword2>>26 (the stack depth Xenia's layout "
+                            "predicts is 5 for a cube):");
+            for (const auto& [v, n] : c.d2Top)
+                fprintf(stderr, " %u x%llu", v, (unsigned long long)n);
+            fprintf(stderr, "\n");
+        }
+        // The pairwise disagreement, which is the actual answer. Only computed between
+        // classes that both saw fetches — a class with none has AND=~0 and OR=0, which
+        // would disagree with everything and mean nothing (gotcha 3).
+        for (const auto& [a, ca] : g_dimClasses)
+            for (const auto& [b, cb] : g_dimClasses)
+            {
+                if (a >= b || !ca.fetches || !cb.fetches)
+                    continue;
+                for (uint32_t d = 0; d < 6; d++)
+                {
+                    // Bits one class always sets and the other always clears, either
+                    // way round. Anything else varies within a class and cannot be a
+                    // constant per-dimension field.
+                    const uint32_t sep = (ca.andMask[d] & ~cb.orMask[d]) |
+                                         (cb.andMask[d] & ~ca.orMask[d]);
+                    if (sep)
+                        fprintf(stderr,
+                                "[vk]     %s vs %s: dword%u separates on bits %08X\n",
+                                a < 4 ? kDimName[a] : "?", b < 4 ? kDimName[b] : "?", d,
+                                sep);
+                }
+            }
     }
 
     // The texture-content guard. The question is the operator's: is a draw being served

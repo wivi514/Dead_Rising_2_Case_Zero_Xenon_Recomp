@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 234 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 245 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -148,7 +148,7 @@ it is exactly why that rule is in the conventions.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 234-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 245-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -299,8 +299,18 @@ cache lacks is one log line and a silent counter, not a failure:
 ```
 grep -c "no translated shader" run.log         # must be 0
 ```
-**The cache is 394 and it has grown on EVERY session that reached new ground.** 335 from
-the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394 — the last 23 of
+And the gate on the sidecars themselves, which is **two-sided by construction** — the
+per-slot texture dimension is derivable both from our ucode parse and from DXC's
+`OpDecorate ... DescriptorSet` words, so a disagreement means one of the two decodes is
+wrong. Run it after any cache rebuild; exit 1 is a real defect:
+```
+python3 tools/shader_dim_census.py             # 298 modules 2D, 92 cube, 0 disagreements
+```
+It also names the sidecars carrying no `tfetchDims` at all — cache entries built before
+part 25 whose microcode is gone. **Keep ucode dumps in `~/DR2CZ-troubleshooting/ucode-dumps`,
+not in `/tmp`**, which is a tmpfs: eleven entries are unrecoverable for exactly that reason.
+**The cache is 397 and it has grown on EVERY session that reached new ground.** 335 from
+the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397 — 23 of
 those from two operator play sessions on 2026-08-08 alone, once the whole-frame black
 stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
 as a claim with a shelf life** (gotcha 13): every era of this game that no run has
@@ -582,13 +592,18 @@ Where the port is, as of 2026-08-08 (phase C part 21):
   never be re-opened. The LOAD needed a fourth — xam ordinal `0x271`,
   `XamContentCreateInternal`, which `kResolvable` refused because A1's list of resolves
   was captured with an empty save root.
-* **CUBE MAPS HAVE NEVER BEEN BOUND — the top picture item, found in part 23.** 91 of
-  395 shaders sample set 2 (`TextureCube[]`) and every one reads descriptor index 0, the
-  1x1 white dummy, on every draw, since phase 5. `bindTextures` writes only the 2D index
-  array and `t.dimension` is hardcoded to 2D. Every reflective surface multiplies its
-  specular by white. `docs/open-items.md` item 00 has the census and the three-part fix;
-  three competing theories died in the same census and are recorded there so they are not
-  re-bought.
+* **CUBE MAPS ARE BOUND AS OF PART 25** — found in part 23, built in part 25. 92 of the
+  cache's 397 shaders sample set 2 (`TextureCube[]`) and every one of them read descriptor
+  index 0, the 1x1 white dummy, on every draw from phase 5 until now. The sidecar now
+  carries each fetch slot's dimension, cube maps upload as six faces into a
+  `VK_IMAGE_VIEW_TYPE_CUBE` view in set 2, and `CZ_VK_NO_CUBE=1` is the same-binary
+  control arm. **The fetch constant's own dimension field was located by CENSUS
+  (`CZ_VK_DIM_CENSUS=1`), not from memory, which had it one field off** — dword5 bits
+  9..10, cross-checked against dword2's stack depth reading 5 for every cube fetch
+  (gotcha 244). `docs/open-items.md` item 00 and `phase5-notes.md` §6ay; three competing
+  theories died in part 23's census and are recorded there so they are not re-bought.
+  **What is still owed is the operator's verdict on the picture**, because the surfaces
+  this should change are ones only they have named as wrong.
 * **Ordinary gameplay is ~30 fps and the CPU/GPU now OVERLAP** (part 23): the fence wait
   fell from 31.5% of a crowd frame to 0.2% with `CZ_VK_FRAMES_IN_FLIGHT=2` (default; `=1`
   is the old renderer, same binary). The binned frame-time A/B is still owed.

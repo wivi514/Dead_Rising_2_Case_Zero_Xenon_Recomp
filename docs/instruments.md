@@ -457,6 +457,31 @@ CZ_VK_TEX_REVALIDATE=1  the repair the guard would justify: re-upload on mismatc
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty
+CZ_VK_NO_CUBE=1    bind every CUBE fetch the way the renderer did before part 25: publish
+                   its descriptor index into the `Texture2D` array, leaving the
+                   `TextureCube` array at zero so the shader samples the 1x1 white dummy.
+                   **The same-binary control arm for the cube-map fix** (open item 00),
+                   and the only way to reproduce four sessions' worth of screenshots in
+                   which every reflective surface multiplied its specular by pure white.
+                   Counted, so an arm that engaged is distinguishable from one that did
+                   not (gotcha 151)
+CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answered by
+                   measurement rather than recollection. The shader-declared dimension
+                   (from the sidecar) partitions every fetch into classes that must
+                   differ in exactly the bits of that field, so this accumulates the AND
+                   and the OR of all six dwords per class and prints the bits on which
+                   the classes SEPARATE. Over 842,556 2D and 47,574 cube fetches it named
+                   two: dword5 bit 10 and dword2 bits 26/28. dword5 bits 9..10 read 1 for
+                   every 2D fetch and 3 for every cube one — the TextureDimension
+                   encoding — and dword2's top six bits read 5 for every cube and 0 for
+                   every 2D, which is the stack depth stored minus one, i.e. six faces.
+                   **The second was a prediction stated before the run**, from Xenia's
+                   published layout, so the run could refute it. My recollection had put
+                   the dimension at bits 7..8 and was wrong; nothing but this would have
+                   caught that, because a wrong dimension does not fail, it produces a
+                   plausible wrong image. Needs `CZ_VK_STATS=N` to print.
+                   **Reusable verbatim for Case West**, and for any field whose value is
+                   predicted by an independent oracle
 CZ_VK_FRAMES_IN_FLIGHT=N  how many frames the CPU may be ahead of the GPU. **Default 2
                    since part 23; `=1` is the pre-part-23 renderer exactly** — submit,
                    block on the fence, read back, present — and is therefore this

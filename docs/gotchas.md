@@ -1885,3 +1885,34 @@ From phase C part 18 (the frame rate — and none of it was work):
     hide until some other change lifts the frame off the floor. Quote the headroom
     (`outside`) alongside the phase percentages, because that is what says how much cost
     the floor can still absorb.
+244. **A field whose value another oracle can PREDICT should be located by census, not by
+    recollection.** The renderer needed the texture fetch constant's `dimension` field.
+    From memory it was "dword5, bits 7..8"; it is dword5 bits **9..10**, and nothing in a
+    run would have said so, because a wrong dimension does not fail — it produces a
+    plausible wrong image. What found it in one run: the SHADER independently declares
+    each fetch's dimension, so it partitions every fetch into classes that must differ in
+    exactly the bits of that field. Accumulate the AND and the OR of every dword per
+    class; a bit set in all of one class and clear in all of another is a candidate, and
+    everything else varies within a class and cannot be a constant per-dimension field.
+    Over 842,556 2D and 47,574 cube fetches exactly two dwords separated the classes, and
+    one of the two (dword2's top six bits reading 5 = six faces) had been PREDICTED from
+    published layout before the run, so the run could have refuted the whole reading.
+    **The general shape: whenever two independent sources describe the same fact, one of
+    them is a free oracle for decoding the other, and the decode becomes a measurement
+    with a stated refutation instead of a remembered constant.** Cheap enough to be the
+    default — it is one counter and one report — and it generalises to any bitfield in any
+    guest structure where a second description exists.
+245. **A structure field that is constant everywhere is a defect waiting for the first
+    exception, and the exception arrives as undefined behaviour rather than as a wrong
+    picture.** `Barrier` had `layerCount = 1` hardcoded in its subresource range, which
+    was correct for every image this renderer had created for the whole of phase 5 and
+    became silently wrong the instant one had six layers: five of a cube map's faces would
+    never have left `TRANSFER_DST`. The presentation would have been one correct face and
+    five wrong ones, which reads as a texture-decode bug and would have been investigated
+    as one. **When adding the first instance of a shape a helper has never seen — the
+    first multi-layer image, the first multi-mip one, the first 3D one — read that helper
+    for the dimensions it assumed rather than waiting to see whether the picture is wrong.**
+    The companion half is gotcha 25 in a new place: this project's logs all say
+    `VK_LAYER_KHRONOS_validation is NOT INSTALLED`, so grepping any of them for `VUID`
+    returns zero for the reason that a grep which cannot match is not a clean result.
+    A missing validation layer is a silent removal of every check you think you have.

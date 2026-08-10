@@ -3730,6 +3730,117 @@ is inventing evidence, and it is easy to do because a wrong-looking frame makes 
 surface in it suspect. Ask; do not infer. The same shot's seam at x=640 was a real
 observation precisely because it is a discontinuity no correct render can have.
 
+## 6ay. CUBE MAPS ARE BOUND — and the whole of it was found and checked WITHOUT a run,
+## except for the one field that had to be measured
+
+§6ax established the defect: 91 of 395 shaders sample a cube map, `bindTextures` wrote
+only the `Texture2D` descriptor-index array, and every cube fetch therefore read index 0 —
+the 1x1 white dummy — on every draw since phase 5. Part 25 built the fix. The interesting
+part is not the code; it is that almost every step had an independent oracle, and the one
+step that did not was the one that turned out to be wrong.
+
+### The dimension has TWO independent derivations, so it is a gate rather than a claim
+
+The shader's fetch instruction carries the dimension in word 2, bits 14..15 — XenosRecomp's
+own `TextureFetchInstruction::dimension`, the field the translator switches on when it
+picks `tfetch2D` versus `tfetchCube`. `tools/synth_shader_container.py` now writes it into
+the sidecar as `tfetchDims`, positionally against the sorted `tfetchConsts`, **per slot**:
+one pixel shader here samples slot 3 as a cube and slots 0 and 2 as 2D in three consecutive
+instructions, so a per-module flag would be wrong for two thirds of it.
+
+That same fact is derivable a second time, through a path containing no code of ours: DXC's
+`OpDecorate <id> DescriptorSet n` words in the translated SPIR-V, because the generated
+HLSL binds `Texture2D[]` to space0 and `TextureCube[]` to space2. `tools/shader_dim_census.py`
+compares the two over the whole cache and exits 1 on any disagreement.
+
+| | modules | declared fetch slots |
+|---|---|---|
+| 2D | 298 | 973 |
+| cube | **92** | **92** |
+| 1D, 3D | 0 | 0 |
+
+The two agree on every shader. That also reconfirms §6ax's SPIR-V census from the other
+end — sets 1 and 4 are unused, so the colour-grading LUT is still not a `Texture3D` — and
+it was **shown capable of failing**: moving the parse one bit to 15..16 and rebuilding a
+15-shader subset makes the census flag all 15 (gotcha 30).
+
+Eleven cache entries predate this and have no microcode left on disk, so their sidecars
+carry no `tfetchDims`; the runtime treats them as 2D and counts it, and the census names
+them. Exactly one of the eleven samples a cube map. **/tmp is a tmpfs here, which is why
+those dumps are gone** — the persistent copy is `~/DR2CZ-troubleshooting/ucode-dumps`.
+
+### The one field with no oracle was the one my recollection got wrong
+
+The renderer also needs the *guest's* view of the dimension, because a cube map is six
+faces and reading one is reading a sixth of it. `DecodeTextureFetch` had
+`t.dimension = 1;` with a comment saying the dimension is taken from the shader, and the
+shader metadata had no dimension in it — so it was taken from nowhere.
+
+I could have written down a bit position from memory. It would have been **bits 7..8, and
+it would have been wrong**, and a wrong dimension does not fail: it produces a plausible
+wrong image. So `CZ_VK_DIM_CENSUS=1` measures it instead, using the shader's answer as the
+partition. For each class it accumulates the AND and the OR of all six fetch-constant
+dwords; a bit set in every fetch of a class has AND=1, one clear in every fetch has OR=0,
+and the field must live where the two classes' patterns disagree. Over **842,556 2D and
+47,574 cube fetches**, exactly two dwords separate them:
+
+* **dword5 bits 9..10** — reads **1** for every 2D fetch and **3** for every cube one,
+  which is the `TextureDimension` encoding itself;
+* **dword2 bits 26..31** — reads **5** for every cube fetch and **0** for every 2D one.
+
+The second was a **prediction stated before the run** (Xenia's layout says those bits are
+the stack depth, stored minus one, so a cube must read 5 = six faces). It could have
+refuted the whole reading and it did not. Two dwords, one measured and one predicted,
+agreeing — that is what makes this a measurement rather than a fit.
+
+**Both sources are now cross-checked on every fetch.** They disagree on **114 of 337,716**
+cube-declared fetches (0.03%): a constant saying 2D under a shader saying cube. Those are
+served the dummy and counted, because reading six faces out of a surface the guest
+describes as one would build a cube from five slabs of whatever follows it — and declining
+is exactly the picture those draws already got.
+
+### What the six faces cost, and the one thing that is a model rather than a quotation
+
+The face stride is `faceBytes` — one face's tiled footprint, the pitch rounded to 32 units
+by the rows rounded to 32 — which is the 2D path's own arithmetic applied six times. **That
+is the one part of this with no oracle behind it**, and it is called out in the code so a
+sheared or offset sky is traced to that line rather than to the sampler. The uploads are
+small and plausible: 128x128 DXT1 faces at 8,192 bytes each, one 64x64 `k_8_8_8_8` at
+16,384, a 32x32 and a 4x4 padded up to the 32x32-unit tile minimum.
+
+### A latent barrier defect, found by reading rather than by symptom
+
+`Barrier` had `layerCount = 1` hardcoded in its subresource range. That was correct for
+every image this renderer had ever created and became silently wrong the moment one had six
+layers: faces 1..5 would never have left `TRANSFER_DST`, and the most likely presentation —
+one correct face and five wrong — reads as a decode bug, not a barrier one. Fixed by giving
+`Image` its own `layers` and using it.
+
+**And it was never a future problem — it was already live, in the DUMMY.** `R->dummyCube`
+is a six-layer image and has been since phase 5, so five of its faces were written and
+sampled in `VK_IMAGE_LAYOUT_UNDEFINED` for the whole of it. That means §6ax's "every cube
+fetch reliably reads a defined 1x1 white texel" is **too generous a description of the old
+behaviour**: only the +X face was defined, and the other five were undefined by
+specification, however white they may have looked on this driver. The defect was therefore
+slightly worse than it was written up as, and — more to the point — the bug was sitting in
+the renderer the entire time with no image large enough to expose it.
+
+**And note what did NOT catch it: the validation layer is not installed on this machine.**
+Every log in this session says `VK_LAYER_KHRONOS_validation is NOT INSTALLED`, so a grep for
+`VUID` over any of them returns zero for the reason gotcha 25 exists. Installing it
+(`sudo dnf install vulkan-validation-layers`) is the cheapest outstanding safety net this
+renderer has.
+
+### One thread left open, with the measurement named
+
+`06805000` (64x64, `k_8_8_8_8`) is a cube map at an address this renderer holds a **resolve
+snapshot** for, and it is the only one of them that is. A resolve's pixels are never written
+back into guest memory, so if the title renders that cube dynamically we are feeding it
+zeros. Serving the snapshot is refused — a snapshot is a 2D image in set 0, so its slot
+number is meaningless in set 2 — and counted. The row of `CZ_VK_TEX_CENSUS` for that address
+settles it: all-zero uploads mean a cube snapshot path (six resolves into six layers) is
+owed, and nothing in the decode above is at fault.
+
 ## 7. What is NOT right yet, with the measurement for each
 
 **SUPERSEDED IN PART BY §§6s-6u (session 21).** The table below is the state before the

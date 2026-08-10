@@ -7,7 +7,16 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-00. **CUBE MAPS ARE NEVER BOUND. 91 OF 395 SHADERS SAMPLE ONE AND EVERY ONE OF THEM GETS
+00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25. Cube maps are uploaded as six
+   faces and bound into descriptor set 2; `CZ_VK_NO_CUBE=1` is the same-binary control
+   arm. What is still OWED is the operator's verdict on the picture** — this is a
+   reflection defect, and the surfaces it should change (the "unicorn colour" filing
+   cabinet, the dumpster) are ones only the operator has named as wrong. See "what part
+   25 did" at the end of this item.
+
+   The original statement, kept because the census in it is the reusable part:
+
+   **91 OF 395 SHADERS SAMPLE ONE AND EVERY ONE OF THEM GETS
    THE 1x1 WHITE DUMMY, ON EVERY DRAW, SINCE PHASE 5.** Found in part 23 by census after
    an operator reported wrong textures throughout the game. **This is the top picture item
    and it is fully specified.**
@@ -56,6 +65,54 @@ Next, in order:
       register them in **set 2**, not set 0. `CreateImage` already takes a view type and
       layer count; `R->dummyCube` already exists.
    3. Write `kSharedTexCube[constIdx]`.
+
+   **WHAT PART 25 DID, and what it measured on the way.**
+
+   All three parts are built. `tools/synth_shader_container.py` records the fetch
+   instruction's dimension (word 2, bits 14..15) as `tfetchDims`, positionally against
+   `tfetchConsts`; `bindTextures` switches on it and publishes into one of the four
+   arrays; `UploadTexture` takes the shader's dimension, reads six faces at a stride of
+   one face's tiled footprint, and registers a `VK_IMAGE_VIEW_TYPE_CUBE` view in set 2
+   out of its own slot space (`R->nextCubeSlot`).
+
+   * **`tools/shader_dim_census.py` is the gate, and it is two-sided.** The dimension is
+     derivable twice independently — our ucode bit parse, and DXC's
+     `OpDecorate ... DescriptorSet` words in the translated SPIR-V — and over the rebuilt
+     cache the two agree on every shader: **298 modules / 973 slots 2D, 92 modules /
+     92 slots cube, zero 1D and zero 3D.** Moving the parse one bit makes it flag all 15
+     shaders of a test subset and exit 1, so it has been shown capable of failing.
+   * **The fetch constant's own dimension field was LOCATED BY MEASUREMENT**
+     (`CZ_VK_DIM_CENSUS=1`), not by recollection — which had it at bits 7..8 and was
+     wrong. Partitioning 842,556 2D and 47,574 cube fetches by the shader's answer and
+     accumulating each class's always-set / always-clear bits, exactly two dwords
+     separate them: **dword5 bits 9..10 read 1 for every 2D fetch and 3 for every cube
+     one**, and **dword2's top six bits read 5 for every cube and 0 for every 2D**, which
+     is the stack depth stored minus one, i.e. six faces. The second was a prediction
+     stated before the run from Xenia's published layout, so the run could have refuted it.
+   * **The two sources are cross-checked on every fetch from now on**, and they disagree
+     on **114 of 337,716** cube-declared fetches (0.03%) — a fetch constant saying 2D
+     under a shader saying cube. Those are served the dummy and counted, because reading
+     six faces out of a surface the guest describes as one would build a cube from five
+     slabs of whatever follows it.
+   * **A latent barrier defect was found and fixed on the way**: `Barrier` had
+     `layerCount = 1` hardcoded, correct for every image this renderer had until cube maps
+     arrived. Layers 1..5 would never have left `TRANSFER_DST`, and the likely
+     presentation — one correct face and five wrong ones — reads as a decode bug rather
+     than a barrier one. **It was already live in `R->dummyCube`**, a six-layer image
+     since phase 5, so five of its faces were written and sampled in
+     `VK_IMAGE_LAYOUT_UNDEFINED` the whole time: the claim above that a cube fetch got a
+     "defined white texel" was true of the +X face only.
+     **Note the validation layer is NOT INSTALLED on this machine**
+     (`sudo dnf install vulkan-validation-layers`), so "zero validation errors" in any log
+     here means nothing at all (gotcha 25).
+   * **One open thread: `06805000` (64x64, `k_8_8_8_8`) is a cube map at an address this
+     renderer has a RESOLVE SNAPSHOT for**, and it is the only one of them that is. A
+     resolve's pixels are never written back to guest memory, so if the title is rendering
+     that cube dynamically we are feeding it zeros. Serving a snapshot to a cube fetch is
+     refused (a snapshot is a 2D image in set 0, so its slot number means nothing in set 2)
+     and counted. **The measurement that settles it is one row of `CZ_VK_TEX_CENSUS`:
+     whether `06805000`'s uploads come out all-zero.** If they do, the fix is a cube
+     snapshot path — six resolves into six layers — not anything in the decode above.
 
    **Two of this investigation's own hypotheses died in the same census and are recorded
    so nobody re-buys them:** the colour-grading LUT is NOT a `Texture3D` (zero modules use
