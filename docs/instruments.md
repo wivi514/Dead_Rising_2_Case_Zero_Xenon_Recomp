@@ -465,6 +465,15 @@ CZ_VK_NO_CUBE=1    bind every CUBE fetch the way the renderer did before part 25
                    which every reflective surface multiplied its specular by pure white.
                    Counted, so an arm that engaged is distinguishable from one that did
                    not (gotcha 151)
+CZ_VK_CUBE_FROM_GUEST=1  upload a cube map from guest memory even when its address is a
+                   RESOLVE DESTINATION, which by default is declined to the dummy. Exactly
+                   one of this title's cube maps is such an address — `06805000`, 64x64,
+                   which the title renders itself — so the arm flips that one surface
+                   between a BLACK reflection (the zeros actually in guest memory) and a
+                   WHITE one (the dummy). Neither is correct; the correct answer is a cube
+                   snapshot path and is open item 00's remaining half. The arm exists
+                   because which of the two looks closer is an operator question and not
+                   one to settle by argument
 CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answered by
                    measurement rather than recollection. The shader-declared dimension
                    (from the sidecar) partitions every fetch into classes that must

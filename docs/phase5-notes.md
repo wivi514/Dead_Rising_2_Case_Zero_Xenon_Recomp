@@ -3793,11 +3793,39 @@ the stack depth, stored minus one, so a cube must read 5 = six faces). It could 
 refuted the whole reading and it did not. Two dwords, one measured and one predicted,
 agreeing — that is what makes this a measurement rather than a fit.
 
-**Both sources are now cross-checked on every fetch.** They disagree on **114 of 337,716**
-cube-declared fetches (0.03%): a constant saying 2D under a shader saying cube. Those are
-served the dummy and counted, because reading six faces out of a surface the guest
-describes as one would build a cube from five slabs of whatever follows it — and declining
-is exactly the picture those draws already got.
+**Both sources are now cross-checked on every fetch,** and they do disagree: a constant
+saying 2D under a shader saying cube. Those are served the dummy and counted, because
+reading six faces out of a surface the guest describes as one would build a cube from five
+slabs of whatever follows it — and declining is exactly the picture those draws already got.
+
+**The SHARE, however, is not yet known, and the first number this document carried was
+misleading enough to be worth keeping as an example.** The boot-to-gameplay recipe gave
+114 disagreements against 337,602 agreements — 0.03%, which reads as negligible. The same
+binary on the deeper outdoor recipe declined **90,984**, and there was no total to divide
+by, because nothing counted cube fetches at all. A denominator counter went in afterwards.
+That is gotcha 242 for the third time in this project: **a statistic is fitted to the one
+population the instrument happened to reach**, and "0.03%" was a fact about the safehouse.
+
+### Two of the seven cube maps upload entirely BLACK, for two different reasons
+
+The aggregate "uploaded entirely BLACK" counter sits around 250 in a long run, so a cube
+joining it moves a number nobody would look at twice — and a black cube map is a whole
+surface class losing its reflection, not one 16x16 icon. `CZ_VK_TEX_CENSUS` names them:
+
+| address | extent | census row | reading |
+|---|---|---|---|
+| `06805000` | 64x64 `k_8_8_8_8` | `up 1 (zero 1) <- uploaded BLACK, guest memory STILL zero` | a **resolve destination**: the title renders this environment map itself, so guest memory there is nothing and always was |
+| `01330000` | 4x4 `k_8_8_8_8` | `up 1 (zero 1) <- uploaded BLACK, guest memory is NON-ZERO NOW` | the texture arrived AFTER our one and only upload; the fetch-constant cache froze it black (§6aa's shape) |
+
+The first is now **declined to the dummy** rather than uploaded. Guest memory at a resolve
+destination is known not to hold the texture — that is the Snapshot doctrine, gotcha 113 —
+so uploading the zeros would present "I had nothing" as a black reflection, which is a lie
+dressed as data; and the dummy is also exactly the picture that surface had before part 25,
+so declining cannot make it worse. We cannot serve the snapshot either, because it is a 2D
+image in set 0 whose slot number is meaningless in set 2. **The real fix is a cube snapshot
+path — six resolves into six layers — and it is open item 00's remaining half.**
+`CZ_VK_CUBE_FROM_GUEST=1` keeps the zeros, as the arm for asking an operator which of white
+and black is closer for that surface, which is not a question to settle by argument.
 
 ### What the six faces cost, and the one thing that is a model rather than a quotation
 

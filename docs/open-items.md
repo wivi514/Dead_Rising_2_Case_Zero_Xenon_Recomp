@@ -89,11 +89,28 @@ Next, in order:
      one**, and **dword2's top six bits read 5 for every cube and 0 for every 2D**, which
      is the stack depth stored minus one, i.e. six faces. The second was a prediction
      stated before the run from Xenia's published layout, so the run could have refuted it.
-   * **The two sources are cross-checked on every fetch from now on**, and they disagree
-     on **114 of 337,716** cube-declared fetches (0.03%) — a fetch constant saying 2D
-     under a shader saying cube. Those are served the dummy and counted, because reading
-     six faces out of a surface the guest describes as one would build a cube from five
-     slabs of whatever follows it.
+   * **The two sources are cross-checked on every fetch from now on**, and they do
+     disagree — a fetch constant saying 2D under a shader saying cube. Those are served
+     the dummy and counted, because reading six faces out of a surface the guest describes
+     as one would build a cube from five slabs of whatever follows it.
+     **The share is NOT yet known and the first number written here was misleading.** The
+     boot-to-gameplay recipe gave 114 against 337,602 agreeing (0.03%); the SAME BINARY on
+     the deeper outdoor recipe declined **90,984**, with no total to divide by because
+     nothing was counting cube fetches. A denominator counter was added afterwards
+     (`texture: CUBE fetch`) — this is gotcha 242 again, a statistic fitted to the one
+     population the instrument happened to reach, and it is recorded rather than quietly
+     corrected because it is the third instance.
+   * **TWO of the seven cube maps upload entirely BLACK, and for two different reasons.**
+     `06805000` (64x64) is a **resolve destination** — the title renders that environment
+     map itself, so guest memory there is zero and always was (`uploaded BLACK, guest
+     memory STILL zero`). It is now DECLINED to the dummy rather than uploaded, because
+     presenting zeros as a black reflection is a lie dressed as data, and the dummy is
+     also exactly the picture that surface had before part 25; `CZ_VK_CUBE_FROM_GUEST=1`
+     keeps the zeros as the arm. **The real fix is a cube snapshot path — six resolves
+     into six layers — and it is this item's remaining half.** `01330000` (4x4) is the
+     other and is a different defect entirely: `uploaded BLACK, guest memory is NON-ZERO
+     NOW`, i.e. the texture arrived after our one and only upload and the fetch-constant
+     cache froze it black.
    * **A latent barrier defect was found and fixed on the way**: `Barrier` had
      `layerCount = 1` hardcoded, correct for every image this renderer had until cube maps
      arrived. Layers 1..5 would never have left `TRANSFER_DST`, and the likely

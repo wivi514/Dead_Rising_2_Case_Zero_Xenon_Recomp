@@ -42,11 +42,15 @@ reflection defect and the surfaces it should change are ones only they have name
    colour" filing cabinet, the dumpster and the reflective surfaces are right now.
    `CZ_VK_NO_CUBE=1` is the same-binary control arm — ask for a shot of the same spot
    with and without it.
-2. **`06805000` is a cube map at a resolve destination**, and it is the only one.
-   A resolve's pixels never reach guest memory, so if the title renders that cube
-   dynamically we are feeding it zeros. The measurement is one row of `CZ_VK_TEX_CENSUS`;
-   the fix, if needed, is a cube snapshot path (six resolves into six layers), not
-   anything in the dimension decode.
+2. **A CUBE SNAPSHOT PATH — six resolves into six layers.** `06805000` (64x64) is a cube
+   map at a **resolve destination**, and the census settled what that means: `uploaded
+   BLACK, guest memory STILL zero`. The title renders that environment map itself and we
+   have no way to serve it, because a snapshot is a 2D image in set 0 whose slot number is
+   meaningless in set 2. It is declined to the dummy for now (`CZ_VK_CUBE_FROM_GUEST=1`
+   keeps the zeros as the arm). **This is item 00's remaining half and it is real work,
+   not a loose end.** A second cube, `01330000` (4x4), is black for a different reason —
+   it arrived after our single upload and the fetch-constant cache froze it — and that one
+   is the §6aa shape, not this one.
 3. **The eleven sidecars with no `tfetchDims`** — cache entries whose microcode is gone,
    one of which samples a cube map and is therefore still unbound. `tools/shader_dim_census.py`
    names them. Any run that might load one should carry `CZ_SHADER_DUMP`, and **the dump

@@ -1916,3 +1916,16 @@ From phase C part 18 (the frame rate — and none of it was work):
     `VK_LAYER_KHRONOS_validation is NOT INSTALLED`, so grepping any of them for `VUID`
     returns zero for the reason that a grep which cannot match is not a clean result.
     A missing validation layer is a silent removal of every check you think you have.
+246. **Ship the DENOMINATOR with the counter, or the first number you publish will be a
+    fact about one recipe.** Part 25 added a counter for fetches where the shader and the
+    guest disagreed about a texture's dimension, read 114 against 337,602 agreements on
+    the boot-to-gameplay recipe, and wrote "0.03%" into three documents and a commit
+    message. The SAME BINARY on the deeper outdoor recipe declined 90,984 — and there was
+    no total to divide by, because nothing counted the population at all. The 0.03% was
+    not wrong; it was a fact about the safehouse, published as a fact about the game.
+    This is gotcha 242's shape (a statistic fitted to what the instrument could reach)
+    arriving through a different door, and the fix is mechanical: **whenever you add
+    `Count("X happened")` for a subset, add `Count("X was possible")` in the same commit.**
+    One extra increment on a path that already has one, and it converts every future
+    quotation from an absolute count — which means nothing across recipes — into a share,
+    which means the same thing everywhere.

@@ -2505,10 +2505,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // A CUBE FETCH NEVER TAKES THIS PATH. Every snapshot is a 2D image registered in set
     // 0, so serving one to a cube fetch would publish a set-0 slot number into the cube
     // array and index a descriptor that was never written — undefined, not merely wrong.
-    // Nothing in this title resolves to a cube map, so the counter is expected to stay at
-    // zero; it exists so that if one ever does, the answer is a number rather than a
-    // crash.
+    // **This title DOES resolve to a cube map** — see the note at the decline below.
     const bool cubeFetch = shaderDim == 3;
+    // The DENOMINATOR. Every other cube counter here is a share of this, and a count with
+    // no denominator is the shape of claim this project keeps having to retract: part 25
+    // published "114 of 337,716, 0.03%" off one recipe and a deeper run of the same binary
+    // declined 90,984 with no total to divide by (gotcha 242).
+    if (cubeFetch)
+        Count("texture: CUBE fetch");
 
     // THE STANDING CROSS-CHECK, and it costs one compare. The dimension now has two
     // independent sources — the shader's fetch instruction (via the sidecar) and the
@@ -2522,9 +2526,10 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     if (t.dimension != shaderDim)
     {
         Count("texture: the SHADER and the FETCH CONSTANT disagree about the dimension");
-        // MEASURED: 114 of 337,716 cube-declared fetches in a boot-to-gameplay run
-        // (0.03%) have a fetch constant that says 2D, while the other 337,602 say cube
-        // and carry a stack depth of 5. For those 114 we do not know what the memory
+        // MEASURED: 114 cube-declared fetches in a boot-to-gameplay run have a fetch
+        // constant that says 2D, against 337,602 that say cube and carry a stack depth of
+        // 5 — but the SAME BINARY on the deeper outdoor recipe declined 90,984, which is
+        // why the counter above exists. For these we do not know what the memory
         // holds, and reading six faces out of a surface the guest describes as one would
         // build a cube map from five slabs of whatever follows it. Declining is the
         // honest failure and it is also exactly the picture those draws got before part
@@ -2547,24 +2552,52 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             return c->second.slot;
         }
     }
+    // A CUBE MAP THE TITLE RENDERS ITSELF — declined, because guest memory at a resolve
+    // destination is known NOT to hold the texture.
+    //
+    // Exactly one of this title's cube maps is at an address this renderer holds a resolve
+    // snapshot for: `06805000`, 64x64 `k_8_8_8_8`. The census settles what that means —
+    // `up 1 (zero 1) <- uploaded BLACK, guest memory STILL zero` — so it is a dynamically
+    // rendered environment map, and reading it out of guest memory reads nothing. That is
+    // the Snapshot doctrine restated (gotcha 113): a resolve's pixels are never written
+    // back, so for an address the GPU resolved to, guest memory is whatever the allocator
+    // left.
+    //
+    // We cannot serve the snapshot either — it is a 2D image in set 0 and its slot number
+    // is meaningless in set 2 — so the honest failure is the dummy, which is also exactly
+    // the picture this surface had before part 25. Uploading the zeros instead would
+    // present "I had nothing" as a black reflection, which is a lie dressed as data.
+    // The real fix is a cube snapshot path (six resolves into six layers) and is open
+    // item 00's remaining half.
+    //
+    // `CZ_VK_CUBE_FROM_GUEST=1` keeps the zeros — the same-binary arm for anyone who wants
+    // to see which of white and black is closer for this surface, which is an operator
+    // question and not one to settle by argument.
     if (cubeFetch && R->snapshots.count(t.address & 0x1FFFFFFF))
     {
-        Count("texture: a CUBE fetch names a resolve snapshot — NOT served, see the note");
         // NAMED, not just counted. A large count here has two completely different
         // readings — one cube map at an address that happens to have been resolved to
-        // once, sampled every frame; or the title rendering a DYNAMIC environment map
-        // every frame, which we would be feeding from guest memory that a resolve never
-        // writes — and only the address list separates them.
+        // once, sampled every frame; or many of them — and only the address list separates
+        // them.
         static std::vector<uint32_t> seenCubeSnap;
         const uint32_t a = t.address & 0x1FFFFFFF;
         if (std::find(seenCubeSnap.begin(), seenCubeSnap.end(), a) == seenCubeSnap.end())
         {
             seenCubeSnap.push_back(a);
             fprintf(stderr,
-                    "[vk] cube fetch at %08X (%ux%u fmt=%u) names a resolve snapshot; "
-                    "serving guest memory instead\n",
+                    "[vk] cube fetch at %08X (%ux%u fmt=%u) names a RESOLVE DESTINATION — "
+                    "the title renders this cube map itself and guest memory there is not "
+                    "it\n",
                     a, t.width, t.height, t.format);
         }
+        static const bool cubeFromGuest = EnvOn("CZ_VK_CUBE_FROM_GUEST");
+        if (!cubeFromGuest)
+        {
+            Count("texture: CUBE fetch at a RESOLVE DESTINATION — served the dummy");
+            return 0;
+        }
+        Count("texture: CUBE fetch at a resolve destination, uploaded from guest memory "
+              "anyway (CZ_VK_CUBE_FROM_GUEST)");
     }
     if (!cubeFetch)
     {
@@ -3038,7 +3071,20 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 break;
             }
         if (allZero)
+        {
             Count("texture: uploaded entirely BLACK (the guest has not written it)");
+            // A BLACK CUBE MAP IS ITS OWN CASE, and it gets its own line with its address.
+            // The aggregate above sits at ~250 in a long run, so a cube joining it moves a
+            // number nobody would notice — and a black cube map is a whole surface class
+            // losing its reflection, not one 16x16 icon. `01330000` (4x4) is one:
+            // `uploaded BLACK, guest memory is NON-ZERO NOW`, i.e. the texture arrived
+            // after our single upload and the fetch-constant cache froze it black.
+            if (layers == 6)
+                fprintf(stderr,
+                        "[vk] cube %08X %ux%u fmt=%u uploaded ENTIRELY BLACK — every "
+                        "reflection sampling it is dead\n",
+                        t.address, t.width, t.height, t.format);
+        }
     }
     // Six array layers plus CUBE_COMPATIBLE, viewed as a VK_IMAGE_VIEW_TYPE_CUBE, which
     // is what set 2's `TextureCube[]` binding requires — a 2D-array view in that heap is
