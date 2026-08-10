@@ -90,8 +90,8 @@ Next, in order:
    NB it is blind by construction to a fetch pointing at an address that was never that
    texture's home — it only compares bytes at an address we already uploaded from.
 
-00c. **THE UI / AMMO-COUNTER DEFECT — UNRESOLVED, AND THE ONE THING PART 24 SHOULD SETTLE
-   FIRST BECAUSE IT MAY BE A PART-22 REGRESSION.** The operator reports the HUD
+00c. **THE UI / AMMO-COUNTER DEFECT — THE STORE IS CONFIRMED AS THE CAUSE (part 22, our
+   own change); WHAT REMAINS IS THE MECHANISM.** The operator reports the HUD
    intermittently collapsing (text overlapping at the top-left, the ammo count absent) and
    the pistol ammo flickering between **26 and 27 every frame regardless of the real
    ammo**, triggered by firing a shot.
@@ -107,13 +107,51 @@ Next, in order:
      the only rewritten streams being **30 distinct keys, all exactly 80 bytes** — below
      the guard's 512-byte exact bound, so the guard is exact for everything the recipe can
      see. The recipe walks and looks; it never shoots and never changes a HUD number.
-   * **A sampled-guard miss is therefore unlikely** and should not be assumed: a two-digit
-     counter is a few hundred bytes, also under the exact bound.
+   * **A sampled-guard miss was argued to be unlikely** on the grounds that a two-digit
+     counter is a few hundred bytes, under the 512-byte exact bound. That argument assumes
+     the digits live in a stream of their OWN. If instead they are quads inside one larger
+     UI vertex buffer of a few KB — which is how a HUD is usually batched — the guard
+     samples 8x64 bytes of it and can miss them entirely. **Both readings are live and
+     `CZ_VK_STREAM_GUARD_EXACT=1` separates them in one run**, so do not spend argument on
+     it: if the exact guard is clean the sampling was the mechanism, and if it still breaks
+     the store is guilty by some other route and the 80-byte census reading was right.
    * The candidate that survives: the guest DOUBLE-BUFFERS its UI vertex data across two
      addresses, one entry goes stale, and the display alternates between the true value
      and a stale one every frame. Untested.
-   * **The test that would settle it needs an operator and one variable**: play with
-     `CZ_VK_NO_PERSIST_STREAMS=1`, FIRE SEVERAL ROUNDS, and keep playing a few minutes.
+   * **SETTLED AS FAR AS THE STORE: the operator fired in the store-off arm and the run
+     stayed clean end to end.** That was the one hole in the earlier A/B — the table was
+     retracted because arm 1 might simply never have fired. It did. So both arms had
+     firing, one variable separated them, and the cross-frame stream store (part 22, our
+     own change) is the cause. Still one sample per arm, but it is now an A/B rather than
+     a coincidence.
+   * **THE MECHANISM IS ALMOST CERTAINLY THE GUARD'S SAMPLING, AND THAT IS THE NEXT AND
+     CHEAPEST TEST.** `StreamGuard` is exact only to 512 bytes; above that it hashes 8
+     blocks of 64. A UI vertex buffer of a few KB in which only the digit quads change can
+     therefore hash IDENTICAL, so the store calls it unchanged and serves the previous
+     frame's buffer — which is exactly "26 and 27 regardless of the real ammo". It is
+     independent of `CZ_VK_FRAMES_IN_FLIGHT` because the ping-pong is disabled at 1, which
+     is what killed the earlier ping-pong explanation. And the census is blind to it by
+     construction, which is why `GUARD MISSED` reads `0 of 0` rather than `0 of N`.
+     **`CZ_VK_STREAM_GUARD_EXACT=1` (part 24) is the discriminator**: store ON, guard
+     hashes every byte. Operator run, fire several rounds, play a few minutes.
+       - clean -> the SAMPLING is the bug, not the store. The fix is a better guard for
+         UI-sized streams and part 22's 4.7 ms of a crowd frame stays bought.
+       - still breaks -> the guard is not the mechanism; look at eviction
+         (`staleEvicted`), key collision, or the `alt` twin instead.
+   * **A HEADLESS METRIC THAT DOES NOT WORK, recorded so it is not rebuilt.** Part 24 tried
+     to make this self-servable by counting frames where the LIFE pips / PP bar / LV circle
+     are absent. It reproduces beautifully (69.0% and 69.4% across two runs of the same
+     config) and it is measuring the WRONG THING: `phase5-notes.md:2152` already records
+     that partial HUD is context-dependent — the safehouse has not raised it yet — so the
+     metric tracks where Chuck is standing. Its three-arm result (store off scoring WORSE
+     than the control) is therefore inadmissible and is retracted. The machinery is fine
+     and reusable; the region was the mistake. A valid headless metric must watch a HUD
+     NUMBER CHANGE, not a widget's presence.
+   * **The synthetic-input arm cannot fire a weapon, and that is why no headless recipe
+     ever has.** `CZ_FAKE_PRESS_SEQ`'s vocabulary is A/B/X/Y/START/BACK/D-pad/NONE plus the
+     four sticks — there is no trigger, and attack in this title is RT
+     (`COMMAND_PLAYER_QUICK_ATTACK` / `HEAVY_ATTACK`). Adding `RT`/`LT`, with a held
+     variant, is the small change that makes this defect class self-servable for good.
      Never flickers there but reliably does with the store on -> the store is guilty.
      Flickers in both -> the store is innocent and "two fixed values unrelated to the real
      ammo" points upstream of the renderer entirely, at the guest's own HUD state.

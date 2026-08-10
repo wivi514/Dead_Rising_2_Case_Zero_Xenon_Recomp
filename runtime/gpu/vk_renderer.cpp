@@ -510,8 +510,34 @@ inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
     return h;
 }
 
+// CZ_VK_STREAM_GUARD_EXACT=1 — hash EVERY byte, whatever the stream's size.
+//
+// The sampling below is exact only up to 512 bytes; above that it reads 8 blocks of 64
+// and can therefore miss a small edit in a large stream. That is precisely the shape of
+// the HUD defect in open item 00c: a UI vertex buffer of a few KB in which only the two
+// quads carrying the ammo digits change, and 512 sampled bytes that never land on them.
+// A missed change means the guard calls the stream unchanged and the store serves the
+// PREVIOUS frame's buffer — the old number — which is what "flickers between 26 and 27
+// regardless of the real ammo" looks like when the guest double-buffers its UI.
+//
+// This is the arm that separates "the store is guilty" from "the store's GUARD is
+// guilty", which `CZ_VK_NO_PERSIST_STREAMS=1` cannot: that one disables the store
+// wholesale and costs 4.7 ms of a crowd frame, so it can never be the fix even when it
+// makes the symptom go away. If the symptom goes away HERE, the fix is a better guard
+// for UI-sized streams and the 4.7 ms stays bought.
+//
+// Not the default, because the cost is unbounded in stream size and unmeasured on a
+// crowd frame — establish the picture first, then decide what it is worth.
+bool g_guardExact = false;
+
 uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
 {
+    if (g_guardExact)
+    {
+        if (readOut)
+            *readOut += bytes;
+        return GuardFold((1469598103934665603ull ^ bytes) * 1099511628211ull, p, bytes);
+    }
     // The size is folded in first. Without it a stream that shrinks to a prefix of
     // itself would hash the same, and size is part of the key only for the streams the
     // key came from — a re-copy into the same slot keeps the slot's size.
@@ -5790,6 +5816,14 @@ bool InitCommon()
     static const uint64_t persistMb =
         Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 128;
     R->persistOn = !EnvOn("CZ_VK_NO_PERSIST_STREAMS");
+
+    // Announce itself, because an arm nobody can see in the log is an arm that cannot be
+    // shown to have engaged (gotcha 151).
+    g_guardExact = EnvOn("CZ_VK_STREAM_GUARD_EXACT");
+    if (g_guardExact)
+        fprintf(stderr, "[vk] CZ_VK_STREAM_GUARD_EXACT=1 — the cross-frame store's guard "
+                        "hashes EVERY byte, so it cannot miss a small edit in a large "
+                        "stream. Diagnostic for open item 00c.\n");
 
     // --- CZ_VK_FRAMES_IN_FLIGHT ---------------------------------------------------------
     //
