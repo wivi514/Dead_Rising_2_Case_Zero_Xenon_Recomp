@@ -169,6 +169,41 @@ Next, in order:
    in the whole bank are >= 16. That skip is still a silent drop with no counter and
    should get one, but it is not a defect anyone is seeing.
 
+00d. **FIVE VULKAN VALIDATION DEFECTS, found the hour the layer was installed.** For the
+   whole of phases 5 and C this project ran without `VK_LAYER_KHRONOS_validation`, so every
+   `VUID` grep in every log returned zero for the reason gotcha 25 exists. The operator
+   installed it at the end of part 25 and ONE 12,802-frame session reported all of these:
+
+   | VUID | n | what it is |
+   |---|---|---|
+   | `VkImageMemoryBarrier-image-03320` | 20 | a `D24_UNORM_S8_UINT` barrier whose `aspectMask` is `DEPTH_BIT` only; without `separateDepthStencilLayouts` it must name depth AND stencil |
+   | `VkGraphicsPipelineCreateInfo-Input-08733` | 20 | vertex attribute at Location 15 declared `R32_UINT` where the shader input is `vec4` of `float32` |
+   | `vkCmdDraw-None-09600` | 14 | a sampled image is still `VK_IMAGE_LAYOUT_UNDEFINED` when a draw reads it |
+   | `VkGraphicsPipelineCreateInfo-topology-08773` | 6 | a `POINT_LIST` pipeline whose vertex shader never writes `PointSize` |
+   | `VkImageViewCreateInfo-subResourceRange-01021` | 4 | a `VIEW_TYPE_3D` view created on a `IMAGE_TYPE_2D` image |
+
+   **The last one is ours and is trivially confirmable by reading**: `makeDummy(R->dummy3D,
+   VK_IMAGE_VIEW_TYPE_3D, 1, 1, ...)` passes `depthExtent = 1`, and `CreateImage` only
+   builds a 3D image when `depthExtent > 1` — so it makes a 2D image and asks for a 3D view.
+   It has been failing since phase 5. That is the THIRD latent defect in this one
+   dummy-creation path found in part 25 (the others: `Barrier`'s hardcoded `layerCount = 1`,
+   and a four-byte upload feeding a six-layer copy), and the first two were found by reading
+   rather than by symptom — which is the argument for the layer, not against it.
+
+   **`vkCmdDraw-None-09600` is the one to chase first.** It is the live form of the class
+   the hardcoded `layerCount` produced, so something still reaches a draw untransitioned,
+   and an undefined layout is undefined CONTENT — a wrong picture with no counter anywhere.
+   14 occurrences in one session.
+
+   `Input-08733` is worth reading against gotcha 122 and the `USCALED`/`SSCALED` note in
+   `CLAUDE.md` before assuming it is a defect: an integer delivered into a float input is
+   deliberate here, and this may be the same decision seen from the validation layer's side.
+   Measure before changing it.
+
+   **Standing gate from now on: `CZ_VK_VALIDATION=1` on at least one run per session, and
+   quote the tally.** It costs nothing and this table is what a silent renderer looks like
+   after eight parts of not being able to ask.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when

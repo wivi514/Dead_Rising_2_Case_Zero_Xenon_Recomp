@@ -36,11 +36,15 @@ question is open and belongs to the operator.
 * **Do not pin the GPU clock**; sample it with `tools/gpu_clock_sample.py` (219, retracted
   in part).
 * **Three runs an arm on any crowd frame-time claim**; the floor is 10-13% (229).
-* **THE VULKAN VALIDATION LAYER IS NOT INSTALLED ON THIS MACHINE.** Every log here says
-  `VK_LAYER_KHRONOS_validation is NOT INSTALLED`, so grepping any of them for `VUID`
-  returns zero for the reason gotcha 25 exists. `sudo dnf install vulkan-validation-layers`
-  is the cheapest outstanding safety net this renderer has — part 25 found two real layout
-  bugs by reading, and validation would have caught both instantly.
+* **THE VALIDATION LAYER IS NOW INSTALLED, AND IT FOUND FIVE DEFECTS IN THE FIRST
+  SESSION.** For all of phases 5 and C this repo ran without it, so every `VUID` grep
+  returned zero for the reason gotcha 25 exists. One 12,802-frame operator run reported 32
+  messages across 5 distinct VUIDs — full table and the reading of each in
+  `docs/open-items.md` item 00d. **Chase `vkCmdDraw-None-09600` first** (a sampled image
+  still `UNDEFINED` when a draw reads it, 14 times): an undefined layout is undefined
+  CONTENT, i.e. a wrong picture with no counter anywhere, and it is the live form of the
+  class part 25 fixed by reading. **Put `CZ_VK_VALIDATION=1` on at least one run per
+  session and quote the tally** — it costs nothing.
 * **SERIALISE BACKGROUND RUNS THROUGH ONE JOB.** Several jobs each waiting on
   `until ! pgrep cz_runtime` all wake together and run concurrently, silently contaminating
   every depth and timing claim built on them. And an operator can open the game at any
