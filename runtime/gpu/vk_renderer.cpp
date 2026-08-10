@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1184,6 +1185,9 @@ struct Renderer
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    // Null unless CZ_VK_VALIDATION=1 brought VK_EXT_debug_utils in with the layer. See
+    // NameObject: it is what makes a validation message name one of OUR objects.
+    PFN_vkSetDebugUtilsObjectNameEXT setObjectName = nullptr;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t queueFamily = 0;
     VkPhysicalDeviceMemoryProperties memProps{};
@@ -1551,6 +1555,45 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
     return true;
 }
 
+// Attach a human name to a Vulkan object, so the validation layer prints it instead of a
+// handle. A no-op without CZ_VK_VALIDATION — the function pointer is null then, and the
+// arguments are not even formatted.
+//
+// This exists because of what part 25's first validation session could NOT say. Four of
+// its five defects were identifiable by reading the code; the fifth — a sampled image
+// still VK_IMAGE_LAYOUT_UNDEFINED when a draw reads it — names an image, and this
+// renderer creates images as EDRAM targets, guest textures, resolve snapshots, sized
+// views of snapshots and dummies. A handle distinguishes none of those, and an undefined
+// layout is undefined CONTENT: a wrong picture with no counter anywhere.
+void NameObject(uint64_t handle, VkObjectType type, const char* fmt, ...)
+{
+    if (!R->setObjectName || !handle)
+        return;
+    char name[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(name, sizeof name, fmt, ap);
+    va_end(ap);
+    VkDebugUtilsObjectNameInfoEXT ni{ VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
+    ni.objectType = type;
+    ni.objectHandle = handle;
+    ni.pObjectName = name;
+    R->setObjectName(R->device, &ni);
+}
+
+void NameImage(const Image& img, const char* fmt, ...)
+{
+    if (!R->setObjectName)
+        return;
+    char name[128];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(name, sizeof name, fmt, ap);
+    va_end(ap);
+    NameObject(uint64_t(img.image), VK_OBJECT_TYPE_IMAGE, "%s", name);
+    NameObject(uint64_t(img.view), VK_OBJECT_TYPE_IMAGE_VIEW, "%s view", name);
+}
+
 bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                  VkImageUsageFlags usage, VkImageAspectFlags aspect,
                  VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, uint32_t layers = 1,
@@ -1739,16 +1782,36 @@ bool CreateDevice()
     // very slow at ~2,000 draws a frame, and on when a picture is wrong: this project
     // has twice had a "renderer bug" that was an API misuse the layer names in one line.
     const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
+    // VK_EXT_debug_utils goes with it, and it is the difference between a validation
+    // message that says `VkImage 0x2f7a8c0000000117` and one that says
+    // `snapshot 1439B000 1280x720`. Part 25 installed the layer and got five defects;
+    // four of them were identifiable by reading, and the fifth — `vkCmdDraw-None-09600`,
+    // a sampled image still UNDEFINED when a draw reads it — was not, because this
+    // renderer creates images in five different places and the handle names none of them.
+    // Naming is free, off with the layer, and turns that message into an address.
+    const char* instExts[] = { VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
     const bool wantValidation = EnvOn("CZ_VK_VALIDATION");
     if (wantValidation)
     {
         ici.enabledLayerCount = 1;
         ici.ppEnabledLayerNames = layers;
+        ici.enabledExtensionCount = 1;
+        ici.ppEnabledExtensionNames = instExts;
         fprintf(stderr, "[vk] validation layer requested\n");
     }
     VkResult ir = vkCreateInstance(&ici, nullptr, &R->instance);
+    if (ir == VK_ERROR_EXTENSION_NOT_PRESENT && wantValidation)
+    {
+        // The naming extension is a convenience, not the instrument. Losing it must not
+        // cost the layer — the same rule as the retry below, one level in.
+        fprintf(stderr, "[vk] VK_EXT_debug_utils is absent — validation messages will "
+                        "name raw handles rather than our objects\n");
+        ici.enabledExtensionCount = 0;
+        ir = vkCreateInstance(&ici, nullptr, &R->instance);
+    }
     if (ir == VK_ERROR_LAYER_NOT_PRESENT && wantValidation)
     {
+        ici.enabledExtensionCount = 0;
         // Asking for an absent layer must not cost the renderer. It did: the instance
         // failed, Init returned false, and the run had no renderer at all — while the
         // log said "validation layer requested", which reads as though it was ON. An
@@ -1875,6 +1938,10 @@ bool CreateDevice()
     dci.pQueueCreateInfos = &qi;
     VK_CHECK(vkCreateDevice(R->physical, &dci, nullptr, &R->device), "vkCreateDevice");
     vkGetDeviceQueue(R->device, R->queueFamily, 0, &R->queue);
+    // Resolves to null when the extension was not enabled, which is every run without
+    // CZ_VK_VALIDATION — NameObject is then a branch on a null pointer and nothing else.
+    R->setObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetInstanceProcAddr(R->instance, "vkSetDebugUtilsObjectNameEXT"));
 
     VkCommandPoolCreateInfo pci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -2454,6 +2521,8 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
         Count("texture: snapshot view image creation FAILED");
         return 0;
     }
+    NameImage(view.image, "snapshot view %ux%u slot %u%s", w, h, view.slot,
+              snap.fromDepth ? " DEPTH" : "");
 
     VkDescriptorImageInfo ii{};
     ii.imageView = view.image.view;
@@ -3141,6 +3210,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         --nextSlot;
         return 0;
     }
+    NameImage(entry.image, "texture %08X %ux%u fmt=%u %s slot %u", t.address, t.width,
+              t.height, t.format, isCube ? "CUBE" : "2D", entry.slot);
 
     // Stage through the upload buffer. Sized once at init; a texture larger than it
     // is counted and dropped rather than silently truncated.
@@ -6041,7 +6112,31 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 wr.descriptorCount = 1;
                 wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
                 wr.pImageInfo = &ii;
+                // TRANSITION IT BEFORE ANYTHING CAN SEE THE DESCRIPTOR, in its own
+                // immediate submit. The copy a few lines below already leaves it in
+                // SHADER_READ_ONLY, so this looks redundant — and it is not, because the
+                // copy is recorded into the FRAME's command buffer while the descriptor
+                // becomes visible to that whole command buffer the instant it is written.
+                // Every draw recorded EARLIER in the same frame is bound to the same
+                // bindless heap, and a descriptor claiming SHADER_READ_ONLY on an image
+                // that is still UNDEFINED is undefined CONTENT for anything that indexes
+                // it. Nothing does — a draw can only learn this slot number from a lookup
+                // that would have missed — but "nothing indexes it" is an argument and
+                // this is a guarantee.
+                //
+                // It is also all 14 of `vkCmdDraw-None-09600`, the validation defect part
+                // 25's hand-off said to chase first (open item 00d). The layer named them
+                // once images carried names: six resolve snapshots in a halving chain
+                // (96x45, 64x22, 32x11, 32x5, 32x2, 32x1 — a bloom pyramid) plus their
+                // second and third occurrences, every one created mid-frame.
+                RunImmediate([&](VkCommandBuffer cb) {
+                    Barrier(cb, s.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                      : VK_IMAGE_ASPECT_COLOR_BIT);
+                });
                 vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+                NameImage(s.image, "resolve snapshot %08X %ux%u%s slot %u", baseKey, w, h,
+                          fromDepth ? " DEPTH" : "", s.slot);
                 it = R->snapshots.emplace(key, std::move(s)).first;
                 Count("resolve: snapshot created");
             }
@@ -6204,6 +6299,8 @@ bool InitCommon()
         fprintf(stderr, "[vk] render target creation FAILED\n");
         return false;
     }
+    NameImage(R->color, "EDRAM colour %ux%u", R->targetWidth, edramH);
+    NameImage(R->depth, "EDRAM depth %ux%u", R->targetWidth, edramH);
 
     // A depth snapshot is sampled through the same bindless heap and the same single
     // linear sampler as every other texture, so the device has to be able to filter
@@ -6418,6 +6515,7 @@ bool InitCommon()
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          VK_IMAGE_ASPECT_COLOR_BIT, type, layers, depth))
             return false;
+        NameImage(img, "dummy set %u (%u layers)", setIndex, layers);
         // CZ_VK_CUBE_POISON=1 — make the CUBE dummy opaque MAGENTA instead of white.
         //
         // THE POSITIVE CONTROL, and this instrument exists because the change it tests
