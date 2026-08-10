@@ -51,8 +51,13 @@ for x in "$SYNTH"/*.xshd; do
   # vk_renderer.cpp's viewport note), so adding the invert here would flip the whole
   # frame a second time. Kept as one comment in one place rather than a flag nobody
   # can re-derive: Fable 2 spent a session on exactly this double flip.
+  # CZ_DXC_DEFINES="-D NAME=1 ..." — extra preprocessor defines, so an ARM of the shader
+  # cache can be built from the same emitter and the same microcode into a second
+  # directory, and selected at run time with CZ_SHADER_SPV. That is what makes a shader
+  # change a same-binary A/B rather than a rebuild you cannot go back from.
   if LD_LIBRARY_PATH="$DXCLIB" "$DXC" -T "$target" -HV 2021 \
       -all-resources-bound -spirv -fvk-use-dx-layout -Qstrip_debug \
+      ${CZ_DXC_DEFINES:-} \
       -Fo "$OUT/$n.spv" "$SYNTH/$n.hlsl" > "$SYNTH/$n.dxc.log" 2>&1; then
     cp "$SYNTH/$n.meta.json" "$OUT/"
     ok=$((ok + 1))

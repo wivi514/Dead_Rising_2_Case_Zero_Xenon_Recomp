@@ -218,3 +218,47 @@ negative controls confirming the test discriminates. Vector lowering hides two c
 that are invisible to inspection (the byte reversal, and saturation edges) and both fail
 as silent wrong *values*, so an untested vector case is an unverified one.
 - `vpkd3d128` float16_2 pack (type 3).
+
+## XenosRecomp local patch: `XE_NAN_PAINT`, a NaN detector in the pixel shader epilogue
+
+**Added part 27, and it is an INSTRUMENT rather than a fix** — the emitter always writes
+the block and it compiles only when the define is passed, so the default cache is
+unchanged. Verified: rebuilding the default cache with the patched emitter reproduces
+**409 of 410 modules byte for byte** (the one difference is a shader the shipped cache
+never had — see below).
+
+```hlsl
+#ifdef XE_NAN_PAINT
+#ifndef XE_NAN_PAINT_FORCE
+#define XE_NAN_PAINT_FORCE 0
+#endif
+    if (any(isnan(oC0)) || XE_NAN_PAINT_FORCE)
+        oC0 = float4(1.0, 0.0, 1.0, 1.0);
+#endif
+```
+
+Build an arm with `CZ_DXC_DEFINES` (added to `tools/build_shader_spv.sh`) into its own
+directory and select it at run time with `CZ_SHADER_SPV`, which makes a shader change a
+same-binary A/B:
+
+```
+cp -r assets/shader_spv assets/shader_spv_nanpaint
+CZ_DXC_DEFINES="-D XE_NAN_PAINT=1" tools/build_shader_spv.sh <ucode_dir> assets/shader_spv_nanpaint
+CZ_SHADER_SPV=$PWD/assets/shader_spv_nanpaint ./cz_runtime
+```
+
+**`XE_NAN_PAINT_FORCE=1` is the positive control and it is not optional.** "No magenta"
+is only a result once the detector has been shown able to produce magenta — it is
+otherwise equally consistent with the define not compiling in, `isnan` being folded away
+by DXC, or the painted shaders never being bound in the frame measured. Measured:
+**99.85% of the scene buffer and 100.00% of the presented frame magenta** on the forced
+arm. There is also a static check that costs nothing — `OpIsNan` is opcode 156 with a
+word count of 4, so `9C 00 04 00` appears in every painted module: 317 of 317 pixel
+shaders in the arm, against 190 of 316 in the default cache (XenosRecomp already emits
+`isnan` elsewhere).
+
+**A cache gap found on the way.** Rebuilding from `~/DR2CZ-troubleshooting/ucode-dumps`
+produces `ps_7d6044e7dcaea1f2`, which **the shipped `assets/shader_spv` does not contain**
+— we hold its microcode and never built it. The shipped cache instead carries
+`ps_926c15dd20571cf1`, whose microcode was lost to `/tmp`. Both caches are 410 modules,
+which is why the count never showed it.
