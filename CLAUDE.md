@@ -163,7 +163,10 @@ it is exactly why that rule is in the conventions.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     `perf-cpu-plan.md` (the live performance plan) and `perf-plan-overnight.md` (its
     executed predecessor).
-  - Formats and tooling: `big-archive-format.md` (the cracked `.big` container),
+  - Formats and tooling: `big-archive-format.md` (the cracked `.big` container, **plus
+    two part-27 retractions: the name table is NOT fixed-width outside the shader
+    banks, and 1,671 of 12,481 entries ARE compressed** — read it with
+    `tools/big_list.py` and `tools/big_decompress.cpp`),
     `xtr-decoder.md` (the GPU stream format + the determinism method),
     `xenonrecomp-upstream-bugs.md` (local recompiler patches),
     `bootstrap-2026-08-04.md` (day 1), `xenia-capture-requests.md` (unfulfilled
@@ -356,6 +359,20 @@ another process's memory without ptrace-stopping it, where a `gdb` attach freeze
 game for a second — which during a load test contaminates the very thing being tested.
 Same permission model, no interruption; ~30 lines of `ctypes` and the FNV-1a check is
 identical.
+
+Look inside the game's `.big` archives — 146 of them, 12,481 entries:
+```
+python3 tools/big_list.py --all --find cc_          # search every archive by entry name
+python3 tools/big_list.py <a.big> --extract <name> --out DIR
+./tools/build_big_decompress.sh                     # once; links XenonRecomp's own LZX
+tools/big_decompress <extracted> <out.bct>          # 1,671 entries are compressed
+```
+**`--extract` writes the STORED bytes**, which for a compressed entry is the compressed
+stream and not the asset — it says so when that happens. `big_decompress` checks its own
+output against an oracle (every loose `.bct` on disc opens `05 01 01 E2`) rather than
+asking anyone to eyeball it. Both tools NAME what they could not parse instead of skipping
+it: the first version of `big_list` silently dropped 95 of 146 archives, which would have
+answered "is this asset here" with a confident no.
 
 Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
 build). SDL2 is required rather than optional-with-a-fallback, because a build that
