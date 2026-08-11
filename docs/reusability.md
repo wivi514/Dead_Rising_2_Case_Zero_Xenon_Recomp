@@ -22,6 +22,28 @@ texture detiling (the Xenos address swizzle is an algorithm, not a per-title thi
 endian utilities; 7e3, D24FS8, DXN/DXT conversion; PPC/VMX helpers; the guest memory
 model; XEX/STFS loading.
 
+**The XMA audio path joins tier 1 as of phase A/V, and it is now PROVEN IN BOTH PORTS**
+— which is this document's own bar for extraction, met for the first time by something
+non-graphical. The 64-byte `XMA_CONTEXT_DATA` layout, the `0x7FEA____` little-endian
+register file, the input/output ring protocol (whole 512-sample decode frames, 256-byte
+block offsets, 16-bit big-endian PCM, valid-bit handshake) and the ffmpeg
+`AV_CODEC_ID_XMA2` wrapper are hardware facts, and Fable 2's and Case Zero's
+implementations differ only in where the context array is owned. **Do not extract it
+yet** — that is the rule at the bottom of this file and Case West has not started — but
+this is the first item that would survive the second-implementation test today.
+
+**Carry ONE warning with it, because it is the whole cost of the item here** (gotcha 267):
+the context's three buffer pointers are PHYSICAL addresses, since the APU is a DMA device.
+In a flat recompiler map they are not the addresses the CPU uses, and reading them
+literally yields a page of zeros that decodes to SILENCE rather than to an error — which
+is indistinguishable from the "no audio" symptom you are there to fix. Case Zero's window
+is `virt = 0xA0000000 | phys`; Case West will have the same convention and possibly a
+different base, and the kernel's own `MmGetPhysicalAddress` states it in the opposite
+direction. The generalisation is broader than audio: **any structure the guest fills in
+for HARDWARE rather than for itself** — GPU ring buffers, DMA descriptors, command
+lists — deserves the question "which address space are these pointers in?" before the
+first dereference.
+
 **Tier 2 — XDK-defined, NOT per-game.** The 360 D3D9 surface is defined by the XDK, so
 build the function-signature database **keyed by XDK version** (OOVPA-style patterns)
 and never hardcode per-title addresses. State vector → PSO, render and sampler state

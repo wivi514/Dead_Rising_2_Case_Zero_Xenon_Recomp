@@ -514,6 +514,10 @@ screen's steady ~2,540 and the movie eras' ~194.
 | XMA contexts in use | 0–17+ | A2 |
 | XMA context size / register base | 64 B / `0x7FEA0000` (little-endian) | finding 36 |
 | audio driver frame | 256 samples × 6 ch × f32 planar, 5.333 ms | finding 36 |
+| render-driver callback rate, ours | 187.4–187.6 /s (48 kHz needs 187.5) | phase A/V |
+| XMA context buffer pointers | **PHYSICAL**; virtual alias = `0xA0000000 \| phys` | phase A/V |
+| XMA output ring, first voice | 25 blocks × 256 B = 6,400 B, stereo, 48 kHz | phase A/V |
+| mixer peak, decoder on / off | 0.108854 / 0.000000 | phase A/V |
 | swap resolution | 1280×720 | A5 `VdSwap` params |
 | save file | `save:\DR2P000.DSF`, 303,104 B, one write | A3 |
 | distinct PM4 type-3 opcodes | 21 (identical in B1/B1b/B2) | finding 10d |

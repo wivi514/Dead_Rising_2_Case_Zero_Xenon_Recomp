@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 265 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 268 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -73,8 +73,13 @@ The ten that bite most often, as one-liners. Each is a summary, not the entry:
     single-run claim a coin flip.
 133/127. **One frame of an animated scene is ONE SAMPLE**, and that applies to LOOKING,
     not just to measuring.
-172. **A retirement is only as good as the ORACLE it was measured on.** Re-ask your own
-    earlier A/Bs whenever an upstream defect is fixed.
+172/268. **A retirement is only as good as the ORACLE it was measured on** — and YOUR OWN
+    STUB IS AN ORACLE. Re-ask your earlier A/Bs whenever an upstream defect is fixed. A
+    three-configuration same-binary arm retired "the prologue waits on audio" in part 16;
+    it was true, and a real decoder proved it in phase A/V.
+267. **A guest structure handed to a DMA device holds PHYSICAL addresses**, and in a flat
+    recompiler map those are not the ones the CPU uses. Cost this port its whole audio
+    subsystem for 28 parts. Print the DESTINATION on every file-IO trace.
 190/103. **A gate that needs a human is a capture request in disguise** — extend the arm
     until it is not. 222 is the performance form: ask what the WORST case renders and
     whether your harness can reach it.
@@ -160,6 +165,10 @@ it is exactly why that rule is in the conventions.
   - `phase1-notes.md` / `phase3-notes.md` / **`phase5-notes.md`** — the per-phase records
     of what the runtime work found that neither the plan nor the kickoff predicted, with
     `phase{1,3,5}-kickoff.md` the matching hand-offs and `runtime-plan.md` the phase plan.
+  - **`phase-av-notes.md`** (sound, and the cinematic that was waiting for it) with
+    `phase-av-plan.md` the plan it executed and **`phase-av-kickoff.md` the live
+    hand-off** — it supersedes `d3d-phase-c28-kickoff.md` on "where the port is", while
+    that file remains the authority on the white-surface chain.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     `perf-cpu-plan.md` (the live performance plan) and `perf-plan-overnight.md` (its
     executed predecessor).
@@ -202,9 +211,18 @@ it is exactly why that rule is in the conventions.
     the 244 IAT slots + 13 kernel variables.
   - `kernel/imports.cpp` — the kernel HLE, written in A1's call order.
   - `kernel/audio.{h,cpp}` — the XAudio render-driver client (a guest-thread pump
-    calling the title's callback at 5.333 ms/frame) and the XMA context array +
-    its MMIO register file. Finding 36; every structural claim is quoted from the
-    guest function that states it.
+    calling the title's callback at 5.333 ms/frame, measured at 187.4-187.6/s against
+    the 187.5 that 48 kHz needs), the XMA context array + its MMIO register file, and
+    **the XMA DECODE WALK**. Finding 36; every structural claim is quoted from the
+    guest function that states it, and the context layout is checked against the
+    guest's own arithmetic rather than against Xenia's struct (`dw[8] - dw[7] = 6400
+    = 25 blocks x 256`). **Read the physical-address note before touching a context
+    pointer** — that one thing was the whole audio defect.
+  - `audio/{xma_decoder,audio_out}.{h,cpp}` — phase A/V. ffmpeg's `AV_CODEC_ID_XMA2`
+    (lifted from the Fable 2 port, so the licence is ours) and the SDL device.
+    Deliberately dumb: the title's own mixer sums every voice into the one 5.1 frame
+    it submits, so anything wrong with the SOUND is upstream of `audio_out.cpp` and
+    `CZ_AUDIO_TRACE`'s peak is what tells the two apart.
   - `kernel/content.{h,cpp}` — the save-data layer: the content enumerators, the
     XAM enumerate message (app 0xFE, message 0x0002000E) and the mount that makes
     `save:` a host directory. Its header comment is the derivation of the whole
@@ -374,12 +392,17 @@ asking anyone to eyeball it. Both tools NAME what they could not parse instead o
 it: the first version of `big_list` silently dropped 95 of 146 archives, which would have
 answered "is this asset here" with a confident no.
 
-Build the runtime (needs `clang++`, **SDL2 and Vulkan**; ~90 s on 16 cores for a cold image
-build). SDL2 is required rather than optional-with-a-fallback, because a build that
-silently lost its window would look exactly like a run whose input stopped working;
-`-DCZ_WINDOW=OFF` is how you say "headless on purpose" out loud. Vulkan is required for
-the same reason and is safe to require, because the renderer is off at RUN time unless
-`CZ_VKDRAW=1`:
+Build the runtime (needs `clang++`, **SDL2, Vulkan and ffmpeg**; ~90 s on 16 cores for a
+cold image build). All three are required rather than optional-with-a-fallback, and for
+one reason: **each of them, if it silently went missing, would present as a defect in the
+game rather than as a build problem.** A lost window looks like input that stopped
+working; a lost renderer looks like a black screen; a lost `libavcodec` looks like the
+mute game this port shipped for 28 parts. Requiring them at CONFIGURE time is how those
+stay build messages. It is safe to require all three because each is off at RUN time
+unless asked for — `CZ_VKDRAW=1` for the renderer, `CZ_NO_AUDIO_OUT=1`/`CZ_NO_XMA_DECODE=1`
+to switch audio back off — and `-DCZ_WINDOW=OFF` is how you say "headless on purpose" out
+loud. On Fedora: `sudo dnf install SDL2-devel vulkan-loader-devel vulkan-headers
+ffmpeg-devel`.
 ```
 python3 tools/gen_import_stubs.py                 # after any change to the import set
 cmake -S runtime -B runtime/build -G Ninja
@@ -517,6 +540,12 @@ CZ_GUEST_DIAG=1    **the switch.** One byte, `0x829EC974`, read by 2,013 sites a
                    and zone-LOD decisions readable. A DIAGNOSTIC ARM ONLY: 2,013
                    formatting sites on the frame path, so never quote a frame time
                    from a run with it set (gotcha 7)
+CZ_NO_XMA_DECODE=1 **the control arm for sound.** Contexts allocate, the pump runs,
+                   nothing decodes — the runtime as it was for 28 parts. It is also the
+                   arm that showed the prologue cinematic was waiting on audio
+CZ_NO_AUDIO_OUT=1  the whole pipeline, no device. Separates "the guest produced audio"
+                   from "we played it", and it is what a headless gate run wants
+CZ_XMA_DECODE_LOG=1  per-context decode activity, and REFUSED split from short
 CZ_SHADER_DUMP=dir put this on any run that might reach new ground, including an
                    operator run: a missing shader is one log line and a silent counter.
                    **NEVER point it under /tmp** — that is a tmpfs and it is why eleven
@@ -638,7 +667,26 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-10 (phase C part 28):
+Where the port is, as of 2026-08-11 (phase A/V):
+
+* **THE GAME MAKES SOUND, AND THE PROLOGUE CINEMATIC PLAYS.** Both from one fix.
+  `docs/phase-av-notes.md`; the plan it executed is `docs/phase-av-plan.md`.
+  The XMA decoder is `runtime/audio/xma_decoder.cpp` (ffmpeg, lifted from Fable 2) driven
+  by a context walk in `kernel/audio.cpp`; output is `runtime/audio/audio_out.cpp` (SDL).
+  **The defect underneath was one address**: the XMA context's buffer pointers are
+  PHYSICAL — the APU is a DMA device — and our flat map puts the physical arena in a
+  window at 0xA0000000, so reading them literally gave a page of zeros that decodes to
+  silence and reproduces the symptom exactly. `NtReadFile ... -> 131072 into A2538000`
+  next to `[xma] ctx0 in0=02538000 ... 0 non-zero` is the whole finding (gotcha 267, and
+  a Case West item on day one). `maxpeak` 0.000000 -> 0.108854, non-silent 0 -> 15,991
+  of 18,433.
+  **The prologue cinematic's freeze was that same silence**: same binary, one variable,
+  longest frozen camera run **10,513 frames -> 159** and presented coverage **15.00% ->
+  99.94%**. `CZ_NO_XMA_DECODE=1` and `CZ_NO_AUDIO_OUT=1` are the two control arms.
+  **Part 16 had refuted this with a three-configuration arm and the refutation was wrong**
+  — read gotcha 268 before trusting any negative result taken on a stub.
+
+Where the port was, as of 2026-08-10 (phase C part 28):
 
 * **THE ENGINE NARRATES ITSELF NOW, and it cost one byte** (part 28). `CZ_GUEST_DIAG=1`
   clears `0x829EC974` — read by 2,013 diagnostic and assert sites, written by none, and

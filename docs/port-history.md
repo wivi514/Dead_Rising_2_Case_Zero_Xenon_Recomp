@@ -1373,6 +1373,85 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase A/V (2026-08-11) — the game makes sound, and the prologue cinematic was
+## waiting for it
+
+`docs/phase-av-notes.md` is the full record; `docs/phase-av-plan.md` is the plan it
+executed, now annotated with what the plan got wrong.
+
+**One fix closed two operator requests.** The plan's §2 said the two subsystems might turn
+out to be one job, and led with the single run that separates a STALLED cinematic from an
+INVISIBLE one. That run answered STALLED in seven minutes — `cameraFingerprint` constant
+for **10,527 consecutive frames**, ~1,230 draws, 0.00% coverage, parked at
+`701_chuck_arrives_in_town` exactly as §6ah left it on the part-16 binary. The cinematics
+track the plan had prepared for afterwards was never needed.
+
+**The audio defect was one address, and the decoder alone would not have found it.**
+`runtime/audio/xma_decoder.cpp` is ffmpeg's `AV_CODEC_ID_XMA2`, lifted from the Fable 2
+port; wiring it in produced nothing, and the two-sided instrument said why in one line —
+`ctx0 first packet @02538000: 00 00 00 00 ...`, with an independent `Xma_Validate` at
+rms 0.0000. The input was a page of zeros, and a page of zeros decodes to SILENCE rather
+than to an error, which is why every layer above still looked healthy.
+
+Adding the DESTINATION address to the `NtReadFile` trace closed it:
+
+    NtReadFile('game:\data\audio\music.big', 131072 bytes @ 16666624)
+         -> 131072 into A2538000
+    [xma] ctx0 in0=02538000 64 pkts (131072 bytes): 0 non-zero (0.00%)
+
+**Same page, 0xA0000000 apart.** The XMA decoder is a DMA device, so the title writes
+PHYSICAL addresses into the hardware context; our flat 4 GB map puts the physical arena in
+a window at 0xA0000000, so the two are different offsets and nothing aliases them. The
+guest was right throughout — 16,666,624 is exactly `PressStartPrologue.xma`'s offset in
+`music.big` and 131,072 is exactly the 64 packets the context declares — and
+`MmGetPhysicalAddress_x` had implemented the inverse mapping since phase 1. Gotcha 267,
+and it is a Case West item on day one.
+
+**The result, with its off-state measured on the same binary.** `maxpeak` 0.000000 ->
+**0.108854**, non-silent frames 0 -> **15,991 of 18,433**, an SDL device on pipewire
+holding a steady 27 ms queue. `CZ_NO_XMA_DECODE=1` and `CZ_NO_AUDIO_OUT=1` are the two
+control arms and they are independent.
+
+**Then the cinematic.** Same recipe, same binary, one variable:
+
+| prologue, 400 s | decoder OFF | decoder ON |
+|---|---|---|
+| longest run on one camera | **10,513 of 12,427** | **159 of 12,429** |
+| distinct camera runs | 1,014 | 7,175 |
+| coverage > 0 | 1,864 (**15.00%**) | 12,422 (**99.94%**) |
+| deepest file | #155 | #155 |
+
+Three runs, not two: `CZ_FAKE_PRESS_SEQ` is a fixed-interval arm against a boot whose
+depth in wall time is a distribution (gotcha 75), so the control was run on the pre-commit
+binary and again on the current one with the decoder off. They agree to 0.1%, which is two
+orders of magnitude tighter than the control-to-arm split.
+
+**THE METHOD FINDING, AND IT IS THE ONE TO CARRY.** Part 16 had refuted this hypothesis
+with an arm — `CZ_XMA_NULL_DECODER`, three configurations of one binary, voices always
+playing / never playing / starting-then-finishing with 19 start and 18 stop edges, all
+freezing frame-for-frame identically. §6ah recorded it as "refuted, not merely
+unconfirmed". It was a better-built negative result than most and it retired a true
+hypothesis, because the arm moves **the predicate the title polls** and can reach nothing
+downstream of PCM actually existing. An arm refutes a hypothesis only over the states it
+can reach. The tell was in the arm's own header comment: it "fabricates playback progress
+the real hardware would only make after actually decoding the audio". Gotcha 268 —
+and it widens gotcha 172, because your own stub is an oracle.
+
+**Two smaller retractions.** The pump was never Fable 2's broken `sleep_for` kind; it has
+always been `sleep_until` on an accumulating deadline and measures **187.4-187.6
+callbacks/s** against the 187.5 that 48 kHz needs. What was missing was the counter, not
+the fix, and both `open-items.md` 00e and the plan's step A0 said otherwise. And the
+64-byte context layout was checked against the guest's own arithmetic — `dw[8] - dw[7] =
+6400 = 25 blocks x 256` — rather than taken from a recollection of Xenia's struct.
+
+**Three instrument notes.** A plausibility check that was VACUOUS and the compiler caught
+it (`p < PPC_MEMORY_SIZE` for a `uint32_t` against a 4 GB map is always true — gotcha 30
+as a build warning). A packet budget per tick that is an EVIDENCE guard rather than a
+performance one: without it a decoder returning nothing walks a whole 64-packet buffer in
+one 1 ms tick and retires it, which reads downstream as "the voice finished" and destroys
+the state being measured. And a 5-second report whose filter had to test `decodeCalls` as
+well as frames, or it would have hidden exactly the context it exists to find (gotcha 264).
+
 ## Phase C part 28 (2026-08-10) — the engine's whole diagnostic layer, from one byte;
 ## and an LOD report with no defect yet attached
 
