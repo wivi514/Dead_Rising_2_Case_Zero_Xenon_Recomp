@@ -584,9 +584,24 @@ Next, in order:
    **That is the shape of a CLAMP to the maximum representable pre-exposure value** —
    `min(colour, 1/exposure)` or the equivalent — somewhere upstream in the shared lighting
    path. Next is to find what performs it, and whether hardware clamps to the same place.
-   Note `clamp(rcp(x), FLT_MIN, FLT_MAX)` is XenosRecomp's own rendering of `rcp` and is
-   the first thing to look at, since it manufactures a finite maximum where hardware would
-   have produced an infinity.
+   ~~Note `clamp(rcp(x), FLT_MIN, FLT_MAX)` is XenosRecomp's own rendering of `rcp` and is
+   the first thing to look at.~~ **CHECKED AND ELIMINATED.** Two ways it could have been
+   wrong, and it is neither:
+
+   * **The name lies but the value does not.** `FLT_MIN` is `#define FLT_MIN
+     asfloat(0xff7fffff)` = **-3.4028235e38**, i.e. minus FLT_MAX — not C's smallest
+     positive normal. So the clamp is symmetric and a negative reciprocal keeps its sign.
+     Worth stating out loud: had it carried the C meaning, every `rcp` of a negative
+     number would collapse to +1.2e-38, silently, in **both ports**. It does not.
+   * **The finite maximum does not land on the knee.** `rcp(0)` gives +inf, clamped to
+     +3.4e38. Pushed through the epilogue that is `c' = 0.025 * 3.4e38`, and
+     `sqrt(c' * 0.5)` overflows the 8-bit target to **255**, not 180. A saturated pixel
+     and a knee pixel are different values and the plateau is the knee.
+
+   So the pin at `1/pc(14).w` is not manufactured by the `rcp` clamp. The value feeding the
+   epilogue is a fog LERP — `c = (r2 - pc19) * r0.x + pc19`, with `pc(19)` the fog colour
+   and `r0.x` a fog factor built from `pc(18)` — so the next place to look is `r0.x`, and
+   whether the fog factor is what is pinned.
 
    **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
    part 27 read line by line, is **NOT in the list**. The white ground is painted by one
