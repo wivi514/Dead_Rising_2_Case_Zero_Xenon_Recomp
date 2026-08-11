@@ -4615,3 +4615,27 @@ finding which input carries it is the whole of the next step. Two ways in, both 
 2. **The matched-location comparison the R2 captures can still answer.** `pc(14).w` at a
    draw of a named shader is one more column for `tools/xtr_draw_constants.py`, and the
    operator's route reaches w1_spawn.
+
+### The comparison that is actually owed: 32 constants, of which four have been checked
+
+The ground shader reads **32 distinct pixel constants**, counted straight out of
+hardware's own disassembly of it:
+
+    c1 c14 c15 c16 c18 c19 c20 c21 c22 c23 c24 c27 c28..c39 c40 c41 c42
+    c44 c45 c46 c47 c67 c253 c254 c255
+
+Part 27 compared **four** of them (`c1`, `c22`, `c45`, `c46`) and part 30 added five
+(`c14`, `c18`, `c19`, plus the two literal pools). `c28..c39` is a twelve-register block,
+which is the shape of a matrix palette or a light array; `c40/c41/c42` are three rows
+used with `dp4` against a position, i.e. a shadow-map projection; `c23`, `c27` and `c67`
+are scalar/colour multipliers on the lit term — and `c67.w` in particular multiplies the
+value that becomes `r7`, which is the term the fog LERP and then the tone map consume.
+
+**That block is where an HDR range could live and where nobody has looked.** The ground
+draw's vertex data and its three DXT1 textures already match hardware bit for bit, and
+DXT1 cannot carry a value above 1 on either side, so whatever puts hardware's colour
+above `1/exposure` arrives through a constant. Comparing the remaining 23 is one run of
+`CZ_VK_PSBIND_PC` against one invocation of `tools/xtr_draw_constants.py`, and the only
+care needed is that many of them are camera- and light-dependent, so the comparison has
+to be made at a matched location — the operator's route reaches `w1_spawn`, which is the
+capture that carries the ground draw.
