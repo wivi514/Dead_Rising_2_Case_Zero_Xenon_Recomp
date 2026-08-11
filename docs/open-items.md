@@ -600,8 +600,31 @@ Next, in order:
 
    So the pin at `1/pc(14).w` is not manufactured by the `rcp` clamp. The value feeding the
    epilogue is a fog LERP — `c = (r2 - pc19) * r0.x + pc19`, with `pc(19)` the fog colour
-   and `r0.x` a fog factor built from `pc(18)` — so the next place to look is `r0.x`, and
-   whether the fog factor is what is pinned.
+   and `r0.x` a fog factor built from `pc(18)`.
+
+   **THE FOG FACTOR IS FINE, THE EPILOGUE'S INPUT READS ZERO, AND THAT CONTRADICTS THE
+   FLOOR MEASUREMENT. Recorded unresolved.** `ps_7d2f8f33deec1b65` was hand-instrumented
+   (it is 47% of the plateau on its own, and a per-register probe cannot be emitted
+   generically because the register number is a property of the compilation) to encode two
+   intermediates as a 16-bit log2 fixed point in the painted pixel:
+
+   | probe | reading on plateau pixels |
+   |---|---|
+   | `r0.x`, the FOG FACTOR | **0.90 - 0.91** — entirely sane, no runaway |
+   | `c`, the value ENTERING the epilogue | **<= 1e-20**, i.e. zero (1e-20 is the probe's own clamp floor) |
+
+   With `c = 0` the epilogue gives `r1 = saturate(1) = 1`, `c' = 0.75`,
+   `max(0.75, 1.0) = 1.0`, `1.0 - 1*1 = 0`, `sqrt(0) = 0` — **BLACK, not 180**. And that
+   `max` would be taking its FLOOR, where `XE_FLOOR_PAINT` measured 1,628 green (no floor)
+   against 1 magenta.
+
+   **Two of this session's own measurements disagree, and the likely reason is that they
+   are different POPULATIONS**: the floor paint instrumented all 48 plateau shaders, the
+   fog probe exactly one. 1,628 green pixels drawn mostly by the other 47 says nothing
+   about this shader's max. **Do not resolve this by preferring either number.** The next
+   step is the floor paint restricted to `ps_7d2f8f33deec1b65` alone, which is the same
+   single-shader cache trick already built — and until that runs, the claim that the
+   colour is "pinned at `1/pc(14).w`" is unsupported and should not be quoted.
 
    **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
    part 27 read line by line, is **NOT in the list**. The white ground is painted by one
