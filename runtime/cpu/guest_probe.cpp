@@ -1694,15 +1694,93 @@ void XmaProbeReport()
         if (!Audio_XmaContextInUse(i))
             continue;
         const uint32_t va = arrayVa + i * Audio_XmaContextSize();
-        const uint32_t d0 = PPC_LOAD_U32(va + 0);
-        const uint32_t d1 = PPC_LOAD_U32(va + 4);
-        const uint32_t d2 = PPC_LOAD_U32(va + 8);
-        const uint32_t d3 = PPC_LOAD_U32(va + 12);
+        uint32_t d[16];
+        for (int w = 0; w < 16; w++)
+            d[w] = PPC_LOAD_U32(va + w * 4);
+        // ALL SIXTEEN, because the four that used to print here were the four whose
+        // meaning we already knew, and a decoder needs the pointer dwords. Which
+        // dword holds input_buffer_0_ptr is a HARDWARE fact this project has never
+        // measured — it was going to be taken from the Fable 2 port's copy of
+        // Xenia's struct, which is a recollection, not evidence (gotcha 3 in its
+        // other direction: believing a layout nobody checked here). A guest address
+        // is instantly recognisable in a hex dump; a bitfield is not. So dump the
+        // context and let the addresses name their own dwords.
         fprintf(stderr,
-                "[xma]   ctx%u @%08X d0=%08X d1=%08X d2=%08X d3=%08X  "
-                "inputValid=%u%u loopCount=%u pkts0=%u\n",
-                i, va, d0, d1, d2, d3, (d0 >> 20) & 1, (d0 >> 21) & 1, (d0 >> 12) & 0xFF,
-                d0 & 0xFFF);
+                "[xma]   ctx%u @%08X inputValid=%u%u loopCount=%u pkts0=%u\n"
+                "[xma]     %08X %08X %08X %08X %08X %08X %08X %08X\n"
+                "[xma]     %08X %08X %08X %08X %08X %08X %08X %08X\n",
+                i, va, (d[0] >> 20) & 1, (d[0] >> 21) & 1, (d[0] >> 12) & 0xFF,
+                d[0] & 0xFFF, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8],
+                d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+
+        // WHAT IS ACTUALLY IN THE BUFFERS.
+        //
+        // Phase A/V wired a real XMA2 decoder and it produced nothing, and the
+        // reason was one line of hex: the first packet of the title's first voice
+        // is `00 00 00 00 ...`. The guest had declared 64 valid packets at an
+        // address holding no XMA data. That is a second silence, one level below
+        // the one open item 00e measured, and it is invisible to every counter
+        // that talks about contexts rather than about bytes.
+        //
+        // So scan the declared buffers. This lives in the PROBE rather than in the
+        // decoder because the decoder consumes and RETIRES an input buffer within
+        // a few milliseconds of seeing it, which destroys the evidence it is being
+        // asked about — with `CZ_NO_XMA_DECODE=1` this is a purely passive reading
+        // of what the guest wrote.
+        // A context's buffer pointers are PHYSICAL — the APU is a DMA device — and in
+        // our flat map physical `P` is the cached-view alias `0xA0000000 | P`. The
+        // first version of this scan read the untranslated address and reported
+        // "0 non-zero" on a buffer the title had just filled, which is the finding
+        // this comment exists to stop being re-made (kernel/audio.cpp says it in
+        // full). Both addresses print, because the pair IS the evidence.
+        auto phys2virt = [](uint32_t p) { return p >= 0xA0000000u ? p : (0xA0000000u | (p & 0x1FFFFFFFu)); };
+        auto scan = [&](const char* name, uint32_t physPtr, uint32_t packets) {
+            if (!physPtr || !packets)
+                return;
+            const uint32_t ptr = phys2virt(physPtr);
+            const uint64_t bytes = uint64_t(packets) * 2048;
+            if (uint64_t(ptr) + bytes > uint64_t(PPC_MEMORY_SIZE))
+            {
+                fprintf(stderr, "[xma]     %s=%08X x%u pkts: OUT OF RANGE\n", name, ptr,
+                        packets);
+                return;
+            }
+            const uint8_t* p = g_memory.base + ptr;
+            uint64_t nonZero = 0;
+            int64_t first = -1;
+            for (uint64_t b = 0; b < bytes; b++)
+                if (p[b])
+                {
+                    if (first < 0)
+                        first = int64_t(b);
+                    nonZero++;
+                }
+            fprintf(stderr,
+                    "[xma]     %s=%08X (phys %08X) %u pkts (%llu bytes): %llu non-zero "
+                    "(%.2f%%), first at %lld\n",
+                    name, ptr, physPtr, packets, (unsigned long long)bytes,
+                    (unsigned long long)nonZero, 100.0 * double(nonZero) / double(bytes),
+                    (long long)first);
+        };
+        scan("in0", d[5], d[0] & 0xFFF);
+        scan("in1", d[6], d[1] & 0xFFF);
+
+        // And the OUTPUT ring, which is the thing the title's own mixer reads. A
+        // non-zero input with a zero output is our decoder failing; both zero is
+        // the guest never producing audio in the first place. The two have the same
+        // symptom and completely different owners.
+        const uint32_t outPtr = phys2virt(d[7]);
+        const uint32_t outBytes = ((d[0] >> 22) & 0x1F) * 256;
+        if (outPtr && outBytes && uint64_t(outPtr) + outBytes <= uint64_t(PPC_MEMORY_SIZE))
+        {
+            const uint8_t* p = g_memory.base + outPtr;
+            uint32_t nonZero = 0;
+            for (uint32_t b = 0; b < outBytes; b++)
+                if (p[b])
+                    nonZero++;
+            fprintf(stderr, "[xma]     out=%08X %u bytes: %u non-zero (%.2f%%)\n", outPtr,
+                    outBytes, nonZero, 100.0 * double(nonZero) / double(outBytes));
+        }
     }
 }
 } // namespace

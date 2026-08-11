@@ -593,9 +593,16 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
         iosb->Information = uint32_t(got);
     }
     if (FileTrace())
-        KLOG("NtReadFile('%s', %u bytes @ %lld) -> %zu (apc=%08X event=%08X)\n",
+        // The DESTINATION address is on this line because a read that reports the
+        // right byte count into the wrong place is indistinguishable from a correct
+        // one otherwise — and phase A/V needed exactly that: the title reads 131,072
+        // bytes of PressStartPrologue.xma while the XMA context's declared input
+        // buffer stays all-zero, and only the destination says whether those are the
+        // same memory.
+        KLOG("NtReadFile('%s', %u bytes @ %lld) -> %zu into %08X (apc=%08X event=%08X)\n",
              file->guestPath.c_str(), length,
-             byteOffset ? (long long)byteOffset->get() : -1LL, got, apcRoutine, event);
+             byteOffset ? (long long)byteOffset->get() : -1LL, got,
+             uint32_t(buffer - g_memory.base), apcRoutine, event);
 
     // Both notifications are owed even though the read completed synchronously.
     // Whichever the caller supplied is the one it is waiting on; this title uses the

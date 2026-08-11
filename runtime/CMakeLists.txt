@@ -148,6 +148,8 @@ add_executable(cz_runtime
     kernel/file_imports.cpp
     kernel/vfs.cpp
     kernel/audio.cpp
+    audio/xma_decoder.cpp            # phase A/V; ffmpeg's XMA2, one per XMA context
+    audio/audio_out.cpp              # phase A/V; stubs itself out without CZ_HAVE_SDL
     kernel/content.cpp
     kernel/xex_imports.cpp
     gpu/vd.cpp
@@ -177,6 +179,16 @@ if(NOT Vulkan_FOUND)
         "  Debian:  sudo apt install libvulkan-dev")
 endif()
 target_link_libraries(cz_runtime PRIVATE Vulkan::Vulkan)
+
+# ffmpeg (libavcodec) — the XMA2 decoder for guest audio, phase A/V. REQUIRED, for
+# the third time and the same reason as SDL2 and Vulkan: the game's own mixer reads
+# PCM that only a decoder can write, so a build that quietly lost the codec produces
+# a silent game that is indistinguishable from the defect this replaced. Refusing at
+# CONFIGURE time is how "no sound" stays a build message instead of a mystery.
+# Headers live under /usr/include/ffmpeg on Fedora; pkg-config supplies the paths.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
+target_link_libraries(cz_runtime PRIVATE PkgConfig::FFMPEG)
 
 target_include_directories(cz_runtime PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap

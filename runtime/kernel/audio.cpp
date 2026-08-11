@@ -28,14 +28,23 @@
 // nothing downstream of it ever ran, and why the fix here is to make the call
 // genuinely succeed rather than to stop it lying.
 //
-// WHAT THIS IS NOT
-// ----------------
-// There is no audio OUTPUT here and no XMA decoding. Submitted frames are counted
-// and dropped. That is a real null sink, not a fake success: the contract of
-// XAudioSubmitRenderDriverFrame is "the driver has taken this buffer", and a
-// driver that takes a buffer and discards it is a thing that exists. Decoding XMA
-// (the contexts allocated below describe compressed streams the hardware decoder
-// would consume) and mixing to a host device are phase 5.
+// WHAT THIS IS NOT — CORRECTED IN PHASE A/V, AND THE OLD TEXT KEPT BECAUSE IT WAS
+// TRUE FOR NINE PARTS
+// -------------------------------------------------------------------------------
+// This block used to read: "There is no audio OUTPUT here and no XMA decoding.
+// Submitted frames are counted and dropped. That is a real null sink, not a fake
+// success ... Decoding XMA and mixing to a host device are phase 5." That was an
+// honest description of a null sink and it was the right thing to ship at the
+// time — but it is also the exact shape of a subsystem that cannot report its own
+// absence, and it took a two-sided instrument to establish that the silence was
+// upstream of it rather than in it (open item 00e).
+//
+// Both halves exist now:
+//   * `XmaDecodeThread` below decodes each context's XMA2 input into its PCM output
+//     ring, which is the link the title's own mixer reads from;
+//   * `runtime/audio/audio_out.cpp` queues the mixed 5.1 frame to an SDL device.
+// `CZ_NO_XMA_DECODE=1` and `CZ_NO_AUDIO_OUT=1` restore the two old behaviours
+// independently on the same binary, which is what makes either one measurable.
 #include "audio.h"
 
 #include <atomic>
@@ -48,6 +57,8 @@
 
 #include <xbox.h>
 
+#include "../audio/audio_out.h"
+#include "../audio/xma_decoder.h"
 #include "../cpu/guest_thread.h"
 #include "guestcall.h"
 #include "heap.h"
@@ -310,6 +321,510 @@ void NullDecoderConsume(int frameUs)
     }
 }
 
+// ---------------------------------------------------------------------------
+// THE XMA DECODER
+// ---------------------------------------------------------------------------
+//
+// This is the half of the audio path that was missing, and it is why the game is
+// mute. The chain is:
+//
+//   guest fills a context's INPUT buffer with 2 KB XMA2 packets
+//     -> HARDWARE decodes them and writes 16-bit big-endian PCM into the
+//        context's OUTPUT ring
+//     -> the title's own software mixer reads that ring, mixes every voice, and
+//        hands one 5.1 float frame to XAudioSubmitRenderDriverFrame
+//
+// Every link but the middle one already worked here, which is exactly why the
+// symptom was so quiet: the mixer ran at the right cadence, submitted 74,753
+// frames in one 400 s run, and every sample of every one of them was zero
+// (`non-silent=0 maxpeak=0.000000`). A mixer mixing nothing looks identical to a
+// mixer that is broken. Open item 00e is the measurement that separated them.
+//
+// WE DO NOT DECODE ON THE KICK. The title arms a context by setting a bit in the
+// write-only register bitmap at 0x7FEA1A80 (quoted at the top of this file), and
+// our address space is one flat mapping with no MMIO trapping — the store lands in
+// ordinary RAM. Worse, the guest's arm loop writes every context's bit to the SAME
+// dword in a tight loop, so a poller would routinely observe one kick where three
+// happened. So we drive each context from ITS OWN STATE instead: input valid, an
+// output ring, and room in it. That is strictly more forgiving than the hardware
+// and cannot miss an edge, because it is not looking at edges.
+//
+// THE CONTEXT LAYOUT IS CHECKED, NOT ASSUMED. The bitfields below come from the
+// 360's XMA_CONTEXT_DATA, and two of them this project derived independently from
+// THIS title's own code (dword0 bits 20/21 are the input-valid flags — sub_8285EFE0
+// reads exactly those; dword0's low 12 bits are input buffer 0's packet count).
+// The rest — in particular WHICH dwords hold the three buffer pointers — is
+// hardware documentation, i.e. a recollection until something here checks it. So
+// `LayoutLooksSane` below tests the pointer dwords against the guest address space
+// before the first decode and declines LOUDLY rather than decoding garbage. A
+// wrong layout must not be able to present as silence, because silence is the
+// symptom we are trying to remove (gotcha 5, and gotcha 30's rule that an
+// instrument has to be able to fail).
+constexpr uint32_t kXmaBytesPerPacket = 2048;
+constexpr uint32_t kXmaBitsPerPacket = kXmaBytesPerPacket * 8;
+constexpr uint32_t kXmaOutputBlockBytes = 256;  // the output ring's granularity
+constexpr uint32_t kXmaSamplesPerFrame = 512;   // one XMA decode frame, per channel
+
+// The 2-bit sample_rate field's encoding.
+constexpr int kXmaSampleRates[4] = { 24000, 32000, 44100, 48000 };
+
+// XMA_CONTEXT_DATA as sixteen big-endian dwords. Written out as explicit shifts
+// rather than as a bitfield struct, because a bitfield's packing would have to
+// match the 360 compiler's on a big-endian target — and because this way the
+// layout is legible in the diff that gets it wrong.
+struct XmaCtx
+{
+    uint32_t dw[16];
+
+    // DWORD 0: input_buffer_0_packet_count:12, loop_count:8 (+12),
+    //          input_buffer_0_valid:1 (+20), input_buffer_1_valid:1 (+21),
+    //          output_buffer_block_count:5 (+22), output_buffer_write_offset:5 (+27)
+    uint32_t in0Packets() const { return dw[0] & 0xFFF; }
+    bool in0Valid() const { return (dw[0] >> 20) & 1; }
+    bool in1Valid() const { return (dw[0] >> 21) & 1; }
+    uint32_t outBlocks() const { return (dw[0] >> 22) & 0x1F; }
+    uint32_t outWriteOffset() const { return (dw[0] >> 27) & 0x1F; }
+
+    // DWORD 1: input_buffer_1_packet_count:12, loop_subframe_start:2 (+12),
+    //          loop_subframe_end:3 (+14), loop_subframe_skip:3 (+17),
+    //          subframe_decode_count:4 (+20), subframe_skip_count:3 (+24),
+    //          sample_rate:2 (+27), is_stereo:1 (+29), unk:1, output_buffer_valid:1
+    uint32_t in1Packets() const { return dw[1] & 0xFFF; }
+    uint32_t sampleRateId() const { return (dw[1] >> 27) & 3; }
+    bool isStereo() const { return (dw[1] >> 29) & 1; }
+    bool outValid() const { return (dw[1] >> 31) & 1; }
+
+    uint32_t inReadOffsetBits() const { return dw[2] & 0x3FFFFFF; }  // BITS, not bytes
+    bool currentBuffer() const { return (dw[4] >> 31) & 1; }
+    uint32_t in0Ptr() const { return dw[5]; }
+    uint32_t in1Ptr() const { return dw[6]; }
+    uint32_t outPtr() const { return dw[7]; }
+    uint32_t outReadOffset() const { return dw[9] & 0x1F; }
+
+    void setIn0Valid(bool v) { dw[0] = (dw[0] & ~(1u << 20)) | (uint32_t(v) << 20); }
+    void setIn1Valid(bool v) { dw[0] = (dw[0] & ~(1u << 21)) | (uint32_t(v) << 21); }
+    void setOutWriteOffset(uint32_t o)
+    {
+        dw[0] = (dw[0] & ~(0x1Fu << 27)) | ((o & 0x1F) << 27);
+    }
+    void setOutValid(bool v) { dw[1] = (dw[1] & ~(1u << 31)) | (uint32_t(v) << 31); }
+    void setInReadOffsetBits(uint32_t b) { dw[2] = (dw[2] & ~0x3FFFFFFu) | (b & 0x3FFFFFF); }
+    void setCurrentBuffer(bool v) { dw[4] = (dw[4] & ~(1u << 31)) | (uint32_t(v) << 31); }
+};
+
+// Host-side state for one context: the decoder and whatever PCM it has produced
+// that has not been handed to the guest yet.
+struct XmaHostCtx
+{
+    XmaDecoder* dec = nullptr;
+    int decChannels = 0;
+    int decRate = 0;
+    std::vector<float> pcm;
+    size_t pcmPos = 0;
+    bool announced = false;
+    uint64_t packets = 0;
+    uint64_t frames = 0;
+    uint64_t starves = 0;
+    float peak = 0.0f;
+    // "The ring got no audio" has two completely different causes and they were
+    // indistinguishable in the first version of this: libavcodec REFUSED the packet
+    // (wrong format, wrong extradata, not XMA2 at that address), or it accepted it
+    // and returned fewer samples than a whole decode frame. The first is a defect
+    // here; the second is normal on the first packet or two while the decoder
+    // primes. Counting them apart is the difference between "our decoder is wrong"
+    // and "the guest has not streamed enough yet".
+    uint64_t decodeCalls = 0;
+    uint64_t decodeRefused = 0;
+    uint64_t samplesOut = 0;
+    bool probed = false;
+};
+
+XmaHostCtx g_xmaHost[kXmaContextCount];
+std::atomic<bool> g_xmaDecodeRunning{ false };
+std::atomic<uint64_t> g_xmaFramesDecoded{ 0 };
+uint32_t g_xmaMaxPeakBits = 0;
+
+bool XmaDecodeLog()
+{
+    static const bool on = getenv("CZ_XMA_DECODE_LOG") != nullptr;
+    return on;
+}
+
+// CZ_NO_XMA_DECODE=1 is the SAME-BINARY CONTROL ARM for the whole of this section:
+// contexts are still allocated, the register file is still published, the pump
+// still runs — nothing decodes. That is the runtime as it was before this part, so
+// every "you can now hear X" claim has an off-state measured on the same build
+// (gotcha 7).
+bool XmaDecodeDisabled()
+{
+    static const bool off = getenv("CZ_NO_XMA_DECODE") != nullptr;
+    return off;
+}
+
+// PPC_LOAD_U32/PPC_STORE_U32 expand to expressions referring to a local `base`,
+// which the recompiled functions have as a parameter and we do not; naming it here
+// keeps the macro usable and the byte-swapping in one place.
+inline uint32_t XmaLoadBE(uint32_t va)
+{
+    uint8_t* base = g_memory.base;
+    return PPC_LOAD_U32(va);
+}
+
+void XmaReadCtx(uint32_t va, XmaCtx& c)
+{
+    for (int w = 0; w < 16; w++)
+        c.dw[w] = XmaLoadBE(va + w * 4);
+}
+
+void XmaWriteDword(uint32_t addr, int w, uint32_t v)
+{
+    uint8_t* base = g_memory.base;
+    PPC_STORE_U32(addr + w * 4, v);
+}
+
+// THE CONTEXT'S THREE BUFFER POINTERS ARE PHYSICAL ADDRESSES, NOT VIRTUAL ONES,
+// AND THAT IS THE WHOLE DEFECT THIS SECTION EXISTS TO NOT HAVE.
+//
+// The XMA decoder is a DMA device: it addresses physical memory, so a title writes
+// physical addresses into the context and the console's MMU makes them the same
+// bytes the CPU sees through a cached virtual alias. Our address space is one flat
+// 4 GB map where the physical arena is a WINDOW at 0xA0000000 (kernel/memory.h:
+// three views of one memfd at 0xA0000000/0xC0000000/0xE0000000), so a physical
+// address and its virtual alias are two different offsets into `base` and nothing
+// aliases them for us.
+//
+// Measured, not reasoned. The title's first voice is the title-screen music:
+//
+//   NtReadFile('game:\data\audio\music.big', 131072 bytes @ 16666624)
+//        -> 131072 into A2538000
+//   [xma] ctx0 in0=02538000 64 pkts (131072 bytes): 0 non-zero (0.00%)
+//
+// Same page, two addresses, 0xA0000000 apart — and 16,666,624 is exactly
+// `PressStartPrologue.xma`'s offset in the archive while 131,072 is exactly 64
+// packets. The guest was doing everything right and reading the file into the
+// buffer it had told the hardware about; we were looking at the wrong copy of it.
+// A decoder pointed at the untranslated address reads a page of zeros, decodes
+// silence, and reproduces the exact symptom it was written to fix.
+//
+// This is the same convention MmGetPhysicalAddress_x already implements in the
+// other direction (`address >= 0xA0000000 ? address & 0x1FFFFFFF : address`), so
+// the two are inverses and neither is a guess.
+constexpr uint32_t kPhysicalWindow = 0xA0000000;
+constexpr uint32_t kPhysicalMask = 0x1FFFFFFF;
+
+inline uint32_t XmaPhysToVirtual(uint32_t phys)
+{
+    // Already a virtual alias? Leave it. Nothing in this title does that today, but
+    // an XMA context filled by some other path should not be corrupted by a blind
+    // OR, and the check costs one compare.
+    if (phys >= kPhysicalWindow)
+        return phys;
+    return kPhysicalWindow | (phys & kPhysicalMask);
+}
+
+// Is this a plausible guest buffer pointer? Takes the PHYSICAL value as the guest
+// wrote it, and judges the address we would actually touch.
+//
+// THE FIRST VERSION OF THIS WAS VACUOUS and the compiler said so: `p <
+// PPC_MEMORY_SIZE` is always true for a uint32_t against a 4 GB map, so the test
+// could not have rejected anything (gotcha 30 — a check that has never failed has
+// not been shown capable of failing, and this one was provably incapable). The
+// failable form tests the two things a MIS-ASSIGNED dword actually looks like: a
+// bitfield or a small count, which is below the physical arena's floor once
+// translated, and a misaligned value, where every buffer the XMA hardware is
+// handed is at least dword-aligned.
+bool XmaPlausiblePtr(uint32_t phys, uint32_t bytes)
+{
+    if (!phys || (phys & 3))
+        return false;
+    const uint64_t v = XmaPhysToVirtual(phys);
+    return v + bytes <= uint64_t(PPC_MEMORY_SIZE);
+}
+
+// Checked once per context, the first time it goes live, and it is allowed to
+// REFUSE. A context whose declared pointers are not addresses means the dword
+// assignment above is wrong for this title, and decoding from it would produce
+// noise or silence — both of which look like the defect we are fixing.
+bool XmaLayoutLooksSane(unsigned i, uint32_t va, const XmaCtx& c)
+{
+    const bool cur = c.currentBuffer();
+    const uint32_t inPtr = cur ? c.in1Ptr() : c.in0Ptr();
+    const bool inOk = XmaPlausiblePtr(inPtr, kXmaBytesPerPacket);
+    const bool outOk = XmaPlausiblePtr(c.outPtr(), c.outBlocks() * kXmaOutputBlockBytes);
+    if (inOk && outOk)
+        return true;
+    fprintf(stderr,
+            "[xma] ctx%u DECLINED: the context layout does not hold here — in%d=%08X "
+            "out=%08X blocks=%u. Decoding was skipped rather than guessed. Raw:\n"
+            "[xma]   %08X %08X %08X %08X %08X %08X %08X %08X\n"
+            "[xma]   %08X %08X %08X %08X %08X %08X %08X %08X\n",
+            i, cur ? 1 : 0, inPtr, c.outPtr(), c.outBlocks(), c.dw[0], c.dw[1], c.dw[2],
+            c.dw[3], c.dw[4], c.dw[5], c.dw[6], c.dw[7], c.dw[8], c.dw[9], c.dw[10],
+            c.dw[11], c.dw[12], c.dw[13], c.dw[14], c.dw[15]);
+    (void)va;
+    return false;
+}
+
+// Decode one 2 KB packet of the context's CURRENT input buffer. Returns false when
+// there is nothing more to decode, having performed the buffer retirement the
+// hardware would perform — which is the transition sub_8285EFE0 is watching for,
+// and the thing `CZ_XMA_NULL_DECODER` had to fake because nothing here did it.
+bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
+{
+    const bool cur = c.currentBuffer();
+    const uint32_t inPtr = cur ? c.in1Ptr() : c.in0Ptr();
+    const uint32_t count = cur ? c.in1Packets() : c.in0Packets();
+    const bool valid = cur ? c.in1Valid() : c.in0Valid();
+    if (!valid || !inPtr || !count)
+        return false;
+
+    const uint32_t packet = c.inReadOffsetBits() / kXmaBitsPerPacket;
+    if (packet >= count)
+    {
+        // The buffer is consumed. Invalidate it and swap to the other one, exactly
+        // as the hardware does: the guest refills the retired buffer and re-flags it.
+        if (cur)
+            c.setIn1Valid(false);
+        else
+            c.setIn0Valid(false);
+        c.setCurrentBuffer(!cur);
+        c.setInReadOffsetBits(0);
+        XmaWriteDword(va, 0, c.dw[0]);
+        XmaWriteDword(va, 2, c.dw[2]);
+        XmaWriteDword(va, 4, c.dw[4]);
+        return false;
+    }
+
+    const int channels = c.isStereo() ? 2 : 1;
+    const int rate = kXmaSampleRates[c.sampleRateId()];
+    if (!hc.dec || hc.decChannels != channels || hc.decRate != rate)
+    {
+        Xma_Destroy(hc.dec);
+        hc.dec = Xma_Create(channels, rate);
+        hc.decChannels = channels;
+        hc.decRate = rate;
+        hc.pcm.clear();
+        hc.pcmPos = 0;
+        if (!hc.dec)
+            return false;
+    }
+
+    const uint32_t srcPhys = inPtr + packet * kXmaBytesPerPacket;
+    if (!XmaPlausiblePtr(srcPhys, kXmaBytesPerPacket))
+        return false;
+    const uint32_t src = XmaPhysToVirtual(srcPhys);
+    if (hc.pcmPos)
+    {
+        hc.pcm.erase(hc.pcm.begin(), hc.pcm.begin() + hc.pcmPos);
+        hc.pcmPos = 0;
+    }
+
+    // The first packet of a context, dumped and independently validated, because a
+    // decoder that returns nothing is silent in exactly the way the bug is. The
+    // header bytes say whether this is XMA2 at all; `Xma_Validate` says what
+    // libavcodec makes of a run of packets, INDEPENDENTLY of the ring plumbing
+    // around it. Without this pair, "0 frames decoded" cannot be attributed.
+    if (!hc.probed && XmaDecodeLog())
+    {
+        hc.probed = true;
+        const uint8_t* p = g_memory.base + src;
+        fprintf(stderr,
+                "[xma] ctx%u first packet @%08X: %02X %02X %02X %02X %02X %02X %02X %02X "
+                "%02X %02X %02X %02X\n",
+                i, src, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10],
+                p[11]);
+        Xma_Validate(p, kXmaBytesPerPacket * (count > 16 ? 16 : count),
+                     c.isStereo() ? 2 : 1, kXmaSampleRates[c.sampleRateId()]);
+    }
+
+    const int got = Xma_DecodePacket(hc.dec, g_memory.base + src, kXmaBytesPerPacket, hc.pcm);
+    hc.decodeCalls++;
+    if (got < 0)
+        hc.decodeRefused++;
+    else
+        hc.samplesOut += uint64_t(got);
+    hc.packets++;
+
+    c.setInReadOffsetBits((packet + 1) * kXmaBitsPerPacket);
+    XmaWriteDword(va, 2, c.dw[2]);
+    return true;
+}
+
+// Move decoded PCM into the guest's output ring as 16-bit BIG-ENDIAN samples.
+//
+// The hardware writes whole DECODE FRAMES — 512 samples per channel — and never a
+// partial one, and the ring's offsets are in 256-byte blocks (4 blocks mono, 8
+// stereo). Writing a sub-frame amount leaves the mixer reading a frame that is half
+// this decode and half the last one, which is a buzz rather than silence and would
+// be diagnosed as a decoder fidelity problem.
+void XmaFillOutput(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
+{
+    const uint32_t blocks = c.outBlocks();
+    if (!blocks || !XmaPlausiblePtr(c.outPtr(), blocks * kXmaOutputBlockBytes))
+        return;
+    const uint32_t outPtr = XmaPhysToVirtual(c.outPtr());
+
+    const uint32_t channels = c.isStereo() ? 2u : 1u;
+    const uint32_t frameSamples = kXmaSamplesPerFrame * channels;
+    const uint32_t frameBlocks = (frameSamples * 2) / kXmaOutputBlockBytes;
+    if (!frameBlocks || frameBlocks > blocks)
+        return;
+
+    uint32_t write = c.outWriteOffset() % blocks;
+    const uint32_t read = c.outReadOffset() % blocks;
+    // Equal offsets mean EMPTY here: the hardware fills until it catches the read
+    // offset, then drops output_buffer_valid and waits for the guest to drain.
+    uint32_t freeBlocks = (write == read) ? blocks : ((read - write + blocks) % blocks);
+    const uint32_t ringBytes = blocks * kXmaOutputBlockBytes;
+
+    // A BOUND ON PACKETS PER TICK, and it is not a performance guard.
+    //
+    // Without it, a decoder that returns nothing walks the entire input buffer in a
+    // single 1 ms tick — 64 packets, ~2.7 s of audio — and then retires it, which
+    // reads downstream as "the voice finished" and destroys the evidence. The first
+    // run of this code did exactly that: 64 packets consumed, zero samples produced,
+    // buffer retired, and the only symptom was `0f/starve2`. One XMA2 packet carries
+    // ~2,048 samples per channel and a decode frame is 512, so any healthy decoder
+    // needs at most one packet per frame; 8 is generous and still stops a runaway.
+    unsigned packetBudget = 8;
+
+    bool wrote = false;
+    while (freeBlocks >= frameBlocks)
+    {
+        while (hc.pcm.size() - hc.pcmPos < frameSamples)
+        {
+            if (!packetBudget--)
+                goto done;
+            if (!XmaDecodeOnePacket(i, va, hc, c))
+                goto done;
+        }
+
+        for (uint32_t s = 0; s < frameSamples; s++)
+        {
+            float f = hc.pcm[hc.pcmPos + s];
+            f = f < -1.0f ? -1.0f : (f > 1.0f ? 1.0f : f);
+            const int16_t v = int16_t(f * 32767.0f);
+            const uint32_t byteOff = (write * kXmaOutputBlockBytes + s * 2) % ringBytes;
+            uint8_t* dst = g_memory.base + outPtr + byteOff;
+            dst[0] = uint8_t(uint16_t(v) >> 8);   // big-endian, as the mixer reads it
+            dst[1] = uint8_t(uint16_t(v) & 0xFF);
+            const float a = f < 0 ? -f : f;
+            if (a > hc.peak)
+                hc.peak = a;
+        }
+        hc.pcmPos += frameSamples;
+        write = (write + frameBlocks) % blocks;
+        freeBlocks -= frameBlocks;
+        hc.frames++;
+        g_xmaFramesDecoded.fetch_add(1, std::memory_order_relaxed);
+        wrote = true;
+    }
+done:
+    if (!wrote)
+    {
+        // The guest had room and we produced nothing: its streaming is behind, or
+        // the ring is too small for a whole frame. Counted, because a stutter has to
+        // be attributable rather than guessed at.
+        if (freeBlocks >= frameBlocks)
+            hc.starves++;
+        return;
+    }
+
+    c.setOutWriteOffset(write);
+    XmaWriteDword(va, 0, c.dw[0]);
+    if (write == read)
+    {
+        c.setOutValid(false);   // ring full: the guest drains it and re-flags
+        XmaWriteDword(va, 1, c.dw[1]);
+    }
+}
+
+void XmaDecodeThread()
+{
+    uint64_t tick = 0;
+    bool declined[kXmaContextCount] = {};
+    while (g_xmaDecodeRunning.load())
+    {
+        std::this_thread::sleep_for(std::chrono::microseconds(1000));
+
+        std::lock_guard<std::mutex> lock(g_xmaMutex);
+        if (!g_xmaContextArray)
+            continue;
+        for (unsigned i = 0; i < kXmaContextCount; i++)
+        {
+            if (!g_xmaContextUsed[i] || declined[i])
+                continue;
+            const uint32_t va = g_xmaContextArray + i * kXmaContextSize;
+            XmaCtx c{};
+            XmaReadCtx(va, c);
+            if (!c.outPtr() || !c.outBlocks())
+                continue;
+            if (!c.in0Valid() && !c.in1Valid())
+                continue;
+            if (!c.outValid())
+                continue;
+            if (!g_xmaHost[i].announced)
+            {
+                if (!XmaLayoutLooksSane(i, va, c))
+                {
+                    declined[i] = true;
+                    continue;
+                }
+                g_xmaHost[i].announced = true;
+                if (XmaDecodeLog())
+                    fprintf(stderr,
+                            "[xma] ctx%u live: in0=%08X(%u pkts,v%d) in1=%08X(%u pkts,v%d) "
+                            "out=%08X blocks=%u stereo=%d rate=%d\n",
+                            i, c.in0Ptr(), c.in0Packets(), c.in0Valid(), c.in1Ptr(),
+                            c.in1Packets(), c.in1Valid(), c.outPtr(), c.outBlocks(),
+                            c.isStereo(), kXmaSampleRates[c.sampleRateId()]);
+            }
+            XmaFillOutput(i, va, g_xmaHost[i], c);
+            uint32_t bits;
+            memcpy(&bits, &g_xmaHost[i].peak, sizeof(bits));
+            if (bits > g_xmaMaxPeakBits)
+                g_xmaMaxPeakBits = bits;
+        }
+
+        // Per-context activity every 5 s: which voices decoded and how loud. That is
+        // what tells a speech line from a voice that is playing silence.
+        if (XmaDecodeLog() && ++tick % 5000 == 0)
+        {
+            char line[512];
+            size_t o = 0;
+            unsigned live = 0;
+            for (unsigned i = 0; i < kXmaContextCount && o < sizeof(line) - 40; i++)
+            {
+                if (!g_xmaContextUsed[i])
+                    continue;
+                live++;
+                // `decodeCalls` is in this predicate deliberately: without it the
+                // line hides exactly the context this instrument exists to find —
+                // one that is being asked to decode and refusing (gotcha 264, a
+                // filter that selects on the property under test).
+                if (!g_xmaHost[i].frames && !g_xmaHost[i].starves &&
+                    !g_xmaHost[i].decodeCalls)
+                    continue;
+                o += snprintf(line + o, sizeof(line) - o,
+                              " %u:%lluf/pk%.2f/starve%llu/pkt%llu/refused%llu/smp%llu", i,
+                              (unsigned long long)g_xmaHost[i].frames, g_xmaHost[i].peak,
+                              (unsigned long long)g_xmaHost[i].starves,
+                              (unsigned long long)g_xmaHost[i].decodeCalls,
+                              (unsigned long long)g_xmaHost[i].decodeRefused,
+                              (unsigned long long)g_xmaHost[i].samplesOut);
+                g_xmaHost[i].frames = 0;
+                g_xmaHost[i].starves = 0;
+                g_xmaHost[i].peak = 0.0f;
+                g_xmaHost[i].decodeCalls = 0;
+                g_xmaHost[i].decodeRefused = 0;
+                g_xmaHost[i].samplesOut = 0;
+            }
+            fprintf(stderr, "[xma] %u ctx allocated, active:%s\n", live,
+                    o ? line : " (none decoded)");
+        }
+    }
+}
+
 // The client callback, on its own guest thread.
 //
 // It needs a GuestThreadContext for the same reason the graphics interrupt pump
@@ -345,6 +860,23 @@ void RenderDriverPump()
                 "[audio] *** CZ_XMA_NULL_DECODER IS ON: every XMA context's input is "
                 "retired without being decoded. THIS FABRICATES PLAYBACK PROGRESS — "
                 "it is a measurement arm and must not be on for a gate run. ***\n");
+
+    // THE PUMP'S RATE IS A NUMBER, NOT AN INTENTION.
+    //
+    // Each render callback produces exactly 256 samples, so the callback rate IS the
+    // output sample rate: 48 kHz demands 187.5/s. Fable 2's port slept a fixed
+    // `sleep_for(5333us)` and measured 183-185/s, and that ~2% deficit drains the
+    // device queue on a cycle and stutters everything continuously — a defect that
+    // sounds exactly like a broken decoder, which is why `docs/audio-xma.md` records
+    // it as a trap rather than as a fix.
+    //
+    // Ours has always been `sleep_until` on an accumulating deadline rather than
+    // `sleep_for`, so it does not have that defect — but nobody had ever printed the
+    // number, and both `docs/open-items.md` 00e and the phase A/V plan describe this
+    // pump as the broken kind. A rate nobody measured is a rate nobody knows
+    // (gotcha 13). This line is one `if` per frame off the hot path and it settles it.
+    uint64_t rateFrames = 0;
+    auto rateSince = std::chrono::steady_clock::now();
 
     // Sleep BEFORE the first callback, not after it. A render driver asks for a
     // frame when its frame clock ticks, never because a client just registered, and
@@ -401,6 +933,26 @@ void RenderDriverPump()
         {
             KLOG("render driver callback terminated its thread — pump stopping\n");
             return;
+        }
+
+        // The callback has now called XAudioSubmitRenderDriverFrame (or declined to,
+        // which is itself the thing this counts). Rate over a whole second, so a
+        // single late wake-up cannot be read as a deficit.
+        if (AudioTrace() && ++rateFrames >= 512)
+        {
+            const auto t = std::chrono::steady_clock::now();
+            const double secs =
+                std::chrono::duration<double>(t - rateSince).count();
+            if (secs >= 1.0)
+            {
+                fprintf(stderr,
+                        "[audio] pump rate %.1f callbacks/s (48 kHz at %u samples "
+                        "needs %.1f), queued=%d frames\n",
+                        rateFrames / secs, kFrameSamples, 48000.0 / kFrameSamples,
+                        Audio_Out_QueuedFrames());
+                rateFrames = 0;
+                rateSince = t;
+            }
         }
     }
 }
@@ -555,6 +1107,13 @@ void AudioScanSelfTest()
 uint32_t XAudioSubmitRenderDriverFrame_x(uint32_t handle, be<uint32_t>* frame)
 {
     const uint64_t n = g_framesSubmitted.fetch_add(1);
+
+    // The whole of the output path: this frame is everything the title's mixer
+    // wants you to hear, already summed. Downmix and queue it. Deliberately BEFORE
+    // the trace block, so `CZ_AUDIO_TRACE` cannot change what is played.
+    if (frame)
+        Audio_Out_SubmitFrame(frame);
+
     if (AudioTrace())
     {
         static std::atomic<uint64_t> nullFrames{0};
@@ -700,7 +1259,17 @@ void XMAReleaseContext_x(uint32_t context)
         KLOG("XMAReleaseContext(%08X): not one of ours — ignoring\n", context);
         return;
     }
-    g_xmaContextUsed[(context - g_xmaContextArray) / kXmaContextSize] = false;
+    const uint32_t index = (context - g_xmaContextArray) / kXmaContextSize;
+    g_xmaContextUsed[index] = false;
+
+    // Tear the decoder down with the context. Not housekeeping: a decoder carries
+    // the stream's state, so a context reused for a DIFFERENT voice that inherited
+    // the previous stream's decoder would decode the new packets against the old
+    // history — which is noise, and noise sounds like a broken decoder rather than
+    // like a leak.
+    Xma_Destroy(g_xmaHost[index].dec);
+    g_xmaHost[index] = XmaHostCtx{};
+    memset(g_memory.base + context, 0, kXmaContextSize);
 }
 
 } // namespace
@@ -736,6 +1305,38 @@ void Audio_Init()
             "to the decoder register at %08X\n",
             kXmaContextCount, kXmaContextSize, g_xmaContextArray, phys,
             kXmaContextArrayRegister);
+
+    // The decoder. Three ways it can legitimately not start, and each of them says
+    // so, because a silent game with no line in the log is the exact failure this
+    // whole item was about.
+    if (XmaDecodeDisabled())
+    {
+        fprintf(stderr, "[audio] XMA decode disabled (CZ_NO_XMA_DECODE) — the control "
+                        "arm: contexts allocate, nothing decodes, the game is mute\n");
+        return;
+    }
+    if (NullDecoderEnabled())
+    {
+        // Mutually exclusive by construction. The null arm exists to move the guest's
+        // state machine WITHOUT decoding, so running it alongside a real decoder would
+        // retire packets the decoder had not read and produce a third behaviour that
+        // is neither arm — and it fabricates progress, so it must win nothing silently.
+        fprintf(stderr, "[audio] CZ_XMA_NULL_DECODER is set, so the REAL decoder is not "
+                        "starting. Unset it to hear anything.\n");
+        return;
+    }
+    if (!Xma_CodecAvailable())
+    {
+        fprintf(stderr, "[audio] libavcodec has no XMA2 decoder — the game will be mute. "
+                        "This is a build/packaging problem, not a guest one.\n");
+        return;
+    }
+
+    g_xmaDecodeRunning.store(true);
+    std::thread(XmaDecodeThread).detach();
+    fprintf(stderr, "[audio] XMA decoder running (poll 1 ms over %u contexts); "
+                    "CZ_NO_XMA_DECODE=1 is the control arm\n",
+            kXmaContextCount);
 }
 
 uint32_t Audio_XmaContextArray() { return g_xmaContextArray; }
