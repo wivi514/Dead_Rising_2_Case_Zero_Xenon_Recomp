@@ -4846,3 +4846,86 @@ time of day — which is the whole of part 27's observation.
 literal pools are per shader (§6ba), so `c67.w` and `c24` in the other 47 emitting
 shaders are scaled too. A FALL in the count is evidence; its exact magnitude is not
 attributable to the ground shader alone.
+
+## 6bc. THREE QUARTERS OF THE SHADOW ATLAS IS EMPTY, AND THE REASON IS THAT THIS TITLE
+## PACKS ITS CASCADES BY OFFSETTING THE ADDRESS AND NOT THE SCISSOR (part 31)
+
+Found while closing out §6bb: the shadow atlas is the one input to the ground draw that
+the R2 captures cannot settle by comparison, because we render it rather than load it.
+It can be settled by comparison after all — the capture carries hardware's copy of it as
+a `MemoryRead`, and hardware's own resolve census says how it was built.
+
+### The measurement, both sides
+
+Ours, from `CZ_VK_SNAP_DUMP` on frame 3000 of the outdoor DebugJump route. Four
+4096x1024 depth snapshots, at `1439B000`, `143BB000`, `143DB000`, `143FB000` —
+0x20000 apart:
+
+    nonzero 13.281% in every one of the four
+    columns with any content: 1024 of 4096 (columns 0..1023)
+    rows with any content:    1024 of 1024
+
+Hardware's, `tools/xtr_draw_bindings.py --dump-texture 1812F000` out of `w1_spawn`,
+which is the surface the ground draw binds at `s3`, `s5` AND `s7`:
+
+    16,777,216 bytes = 4096 x 1024 x 4, i.e. D24S8
+    depth == 0        3.522%
+    depth == 0xFFFFFF 0.444%
+    the dominant bucket is high byte 255 (41%), with a broad spread over 249..254
+
+**Ours is 86.7% zero; hardware's is 3.5% zero.** One quarter of our atlas carries a
+shadow map and three quarters carry nothing.
+
+### Why, and it is not what the renderer was accused of
+
+`tools/xtr_resolve_census.py` on `w1_spawn` prints the title's own resolves:
+
+      dest      surface        region              sources
+      1812F000  1280x720   0,0 .. 1280,720   DEPTH=1 colour0=1
+      1814F000  4096x1024  0,0 .. 1024,1024  DEPTH=1
+      1816F000  4096x1024  0,0 .. 1024,1024  DEPTH=1
+      1818F000  4096x1024  0,0 .. 1024,1024  DEPTH=1
+
+**Our renderer resolves exactly what hardware resolves, to exactly the same addresses,
+with exactly the same regions.** The command processor is right. What differs is what
+happens next.
+
+Each cascade declares a **4096-wide destination surface** and copies a **1024x1024
+region at the origin**, and the four are told apart by their destination ADDRESS being
+pre-offset by 0x20000. That offset is an X offset in Xenos tiled address space, and the
+arithmetic is exact: a 32bpp macro tile is 32x32 texels = 4096 bytes, a 4096-wide
+surface is 128 tiles per tile row, so +1024 texels in X is +32 tiles is
+**32 x 4096 = 131,072 = 0x20000**. The four cascades sit side by side in ONE
+4096x1024 atlas at x = 0, 1024, 2048, 3072, and the shader fetches the base address and
+samples across the whole width.
+
+This renderer already knows that idiom. `DoResolve` computes
+
+    baseKey = dest - macroTileOffset(wx, wy, surfW)
+
+precisely so that the two 640-wide halves of a tiled frame land in one image — the
+comment above it works that case out in full. **But it derives the offset from the
+WINDOW SCISSOR, and the cascade resolves leave the scissor at (0,0).** So
+`macroTileOffset(0, 0, 4096)` is 0, the subtraction is a no-op, and the four cascades
+become four disjoint 4096x1024 snapshots each holding its own quarter. A fetch of
+`1439B000` finds the first snapshot and reads zero everywhere past column 1023.
+
+The title has two ways of saying "this copy goes to a sub-region of a larger surface" —
+move the scissor, or pre-offset the address — and this renderer only understands the
+first. The frame tiles use both, which is why that case worked and hid this one.
+
+### What this does and does not explain
+
+It is the mechanism behind `docs/open-items.md` item 3, which has carried the operator's
+*"no shadows anywhere"* since part 15 and part 15's measurement of an atlas that is
+partly empty. That item's three candidate readings can now be retired: it is not a
+pixel-extent factor of two, the cascade is not "several smaller maps packed into one
+surface" in any way the renderer needed to guess at, and the uncleared region is
+certainly sampled.
+
+**It does not explain the white surfaces, and the sign says so.** An empty region of a
+shadow map reads depth 0, and the consumer's test is `sgt r8, r8, r0.x` — lit where the
+sample exceeds the reference — so a zero sample reads as OCCLUDED. Three quarters of the
+atlas returning zero makes the picture darker, not brighter. Recorded here rather than
+folded into item 00f: it is a real defect with a hardware-verified mechanism, and it
+belongs to item 3.

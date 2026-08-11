@@ -1459,6 +1459,20 @@ struct Renderer
     FILE* drawCensusFile = nullptr;
     uint64_t drawCensusLines = 0;
 
+    // CZ_VK_EXPOSURE_TRACE — this frame's spread of the title's own exposure scalar,
+    // `pc(14).w`. It exists because part 31 made that number load-bearing and there was
+    // no way to read it for a NAMED frame: `CZ_VK_PSBIND` prints it, but it dedupes on
+    // a key that includes the constants and caps at 64 lines, so a scalar that drifts by
+    // 1e-4 a frame spends the whole budget in the first few hundred frames and says
+    // nothing about the frame a snapshot was taken on.
+    //
+    // Min AND max, not a single value: the tone curve reads `x = colour * pc(14).w`, and
+    // whether one exposure is in force for the whole frame or several are decides
+    // whether a whole-frame histogram can be inverted at all.
+    float expMin = 0.0f;
+    float expMax = 0.0f;
+    uint32_t expDraws = 0;
+
     // The cube maps the title renders itself, keyed on the BASE face's address, plus the
     // reverse index a resolve needs: face address -> (base address, face number). The
     // second map is what makes the refresh free — a resolve knows only where it wrote,
@@ -5049,6 +5063,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
 
+        // The exposure this draw will use, recorded BEFORE any arm perturbs it, so the
+        // trace reports what the GUEST asked for rather than what an experiment did.
+        {
+            const float e = F32(regs[xenos::kAluConstantBase + psBase * 4 + 14 * 4 + 3]);
+            if (R->expDraws == 0)
+                R->expMin = R->expMax = e;
+            else
+            {
+                R->expMin = std::min(R->expMin, e);
+                R->expMax = std::max(R->expMax, e);
+            }
+            ++R->expDraws;
+        }
+
         // CZ_VK_PS_CONST_SCALE="14.w=4,18.y=0.5" — multiply chosen PIXEL constant
         // components by a factor, after the copy and before any draw reads them.
         //
@@ -7727,6 +7755,32 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // question a renderer A/B asks is "did this frame change", and for that a small
     // vector of aggregates over the same content is enough — while a per-pixel dump at
     // 30 frames a second is 100 MB a run nobody reads.
+    // CZ_VK_EXPOSURE_TRACE=<file> — one line per frame: how many draws set an exposure
+    // and the range of values they set. Written here, at the present, so its frame
+    // numbers are the same ones CZ_VK_SNAP_FRAME and CZ_VK_FRAME_STATS use.
+    static FILE* expFile = nullptr;
+    static bool expTried = false;
+    if (!expTried)
+    {
+        expTried = true;
+        if (const char* path = Env("CZ_VK_EXPOSURE_TRACE"))
+        {
+            expFile = fopen(path, "w");
+            if (expFile)
+                fprintf(expFile, "# frame draws expMin expMax\n");
+            else
+                fprintf(stderr, "[vk] cannot write CZ_VK_EXPOSURE_TRACE=%s\n", path);
+        }
+    }
+    if (expFile)
+    {
+        fprintf(expFile, "%llu %u %.6f %.6f\n", (unsigned long long)R->frame,
+                R->expDraws, double(R->expMin), double(R->expMax));
+        // Reset unconditionally, including when the file could not be opened, so the
+        // counters never accumulate across frames in a run that is not tracing.
+    }
+    R->expDraws = 0;
+
     static FILE* statsFile = nullptr;
     static bool statsTried = false;
     if (!statsTried)
