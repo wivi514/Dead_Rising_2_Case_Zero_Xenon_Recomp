@@ -1373,6 +1373,68 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 30 (2026-08-11) — the white plateau's tone curve gets numbers, and two steps of
+## the chain are retired
+
+Part 27 built an eight-step chain to the white surfaces without ever reading a value in
+the tone curve it was reasoning about. Part 30 read them, and the reading costs the chain
+two of its steps while confirming a third from an independent direction. **The surfaces
+are not fixed.** What changed is that the item is now pointed at a specific, enumerated
+population instead of at an inference.
+
+* **`tools/xtr_draw_constants.py`** — hardware's pixel-shader ALU constants for a named
+  draw, with per-register provenance (`set` / `unset` / `UNRECOVERABLE`, gotcha 263).
+  Part 27 asked `w1_spawn`, got `UNRECOVERABLE` for the three registers that decide the
+  whole curve, and wrote down that a new capture was needed. **Five of the other six
+  captures answer**, from data on disk for weeks — 68 draws, identical values (gotcha
+  274, and the same shape as gotchas 3 and 264 from a third direction).
+* **The curve.** With `x = colour * pc(14).w`, every one of the 48 emitting shaders ends
+  in `out^2 = (max(0.25x + 0.75, 1.0) - saturate(1-x)^2) * 0.5`, which is 0 at `x=0`,
+  exactly **180** at `x=1`, and 255 only at `x=5`. Part 27's knee arithmetic
+  (`sqrt(K1*K2) = sqrt(0.5)`) is confirmed against the constants themselves.
+* **A prediction, pre-registered and refuted.** "Our `A` term reads 0" was the only
+  assignment reproducing all five of part 27's observations at once. It reads 0.25 —
+  hardware's — on all 55 distinct bindings of the biggest emitter, as do `B`, `K1`, `K2`,
+  the fog distances and the fog colour. The run confirmed something better than the
+  prediction was: the literal pool is **per shader** and ours carries each shader's own,
+  `ps_ad65b98593f95926` reading the same four numbers one register lower than
+  `ps_7d2f8f33deec1b65`.
+* **The emitter is exonerated on the ground shader specifically.** Part 29's named next
+  step — read our translation against the capture's own disassembly — done, and they are
+  instruction for instruction identical through the whole program, all six `_sat`
+  modifiers included. The clamp is on an INPUT.
+* **Two retractions, in place.** 180 is `sqrt(0.5)` from the shader's trailing `sqrt`,
+  not "a literal 0.5 in a `k_8_8_8_8_GAMMA` surface" — there is no gamma encode to look
+  for. And "these surfaces are not shaded at all" is not supported by the plateau: the
+  curve's derivative vanishes at `x=1`, so a 10% spread in the colour quantises to ONE
+  8-bit value (gotcha 273). A third over-claim was withdrawn before anyone could quote
+  it — "nothing in five of seven frames exceeds 180" is arithmetic, not evidence, because
+  those five are the operator's night captures.
+* **What is owed, enumerated.** The ground shader reads **32 pixel constants and nine
+  have been compared.** `c28..c39` is a twelve-register block shaped like a light array,
+  `c40/c41/c42` are the `dp4` rows of a shadow projection, `c23`/`c27`/`c67` multiply the
+  term the fog LERP consumes. Since the vertex data and all three DXT1 textures already
+  match hardware bit for bit, and DXT1 cannot carry a value above 1 on either side,
+  hardware's extra range arrives through a constant.
+* **`CZ_VK_PS_CONST_SCALE`** — the arm that separates "the colour varies and the curve is
+  flat here" from "the colour is pinned", by moving the surfaces to a part of the curve
+  whose derivative does not vanish.
+
+**And two things that were not the white surfaces.**
+
+* **A harness defect: since phase A/V, every headless run WITH SOUND ignored `timeout`.**
+  `SDL_HINT_NO_SIGNAL_HANDLERS` sat below the `CZ_NO_WINDOW` early return, and the audio
+  device is a second, independent SDL entry point. Exit 124 at 20 s with
+  `CZ_NO_AUDIO_OUT=1`, still alive at 180 s without it; fixed and verified with the same
+  two-arm test. The symptom is a longer SUCCESSFUL run, which nothing reports (gotcha
+  272), and it was found only because an A/B block visibly failed to advance.
+* **The XMA decoder costs no frame time**, closing part 29's item 0b. Three runs an arm,
+  alternated, decoder shown to engage on the route first, null measured within the
+  control arm: every bin medians 32.0 ms in both arms, largest mean difference 0.2%
+  against a 0.6% null, `>33 ms` share 1.05-1.12% with the decoder and 0.99-1.17% without.
+  Quoted with its bound — the workload is pinned at the two-vblank floor in both arms, so
+  it says the decoder does not push frames off the cap, not that it is free.
+
 ## Part 29, second half (2026-08-11) — FIXED, by one field in a packet header
 
 The diagnosis in the first half was right and its conclusion about the ROOT was wrong.
