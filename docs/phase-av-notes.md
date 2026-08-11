@@ -475,3 +475,52 @@ recorded that way rather than folded into the win.
 a consistency check, never an oracle. Gotcha 271: a format field that is zero in every
 asset you have played is untested, not absent — and an unexplained structural oddity in
 your subject is the bug, waiting.
+
+## PART 30: THE FRAME-RATE QUESTION THE DECODER LEFT OPEN IS ANSWERED — NO COST
+
+Phase A/V's second operator question, restated in `part29-kickoff.md` as item 0b: *is the
+frame rate unchanged with the decoder in?* It had never been measured, and part 29 noted
+it now mattered more, because the decoder used to wedge after one buffer and now streams a
+24 MB asset through three contexts for five minutes.
+
+**Protocol.** One binary, one variable: arm `a` shipped, arm `b` `CZ_NO_XMA_DECODE=1`
+(contexts allocate, the pump runs, nothing decodes). Audio OUTPUT is on in both, so the
+only difference is the decode work. Route: the DebugJump outdoor roam with
+`CZ_AUTOCHUCK=EXPLORER`, 420 s, **three runs an arm, alternated a/b/a/b/a/b** so machine
+drift is shared (gotcha 229). The decoder was first shown to ENGAGE on this route rather
+than assumed to: 31,930 non-silent mixer frames of 36,865, `maxpeak` 1.076, 4,927 decode
+log lines in a 200 s probe run.
+
+**Admissibility.** The six runs presented 13,051 / 13,054 / 13,056 / 13,057 / 13,056 /
+13,054 frames — within 0.05% of each other — and both arms reach the crowd (per-run peak
+7,947-9,476 draws). Binned by draw count, so a 6,000-draw frame is compared with a
+6,000-draw frame whenever in the run it arrived.
+
+**The null first.** Two runs of arm `a` against the third: every bin's median 32.0 ms,
+means within 0.6%, pinned share 95-100%.
+
+**The result.** Nothing. Every bin, both arms, median **32.0 ms**; largest mean difference
+**0.2%** against a null whose largest was 0.6%; pinned share equal to the percentage
+point. The distribution tails, over frames above 4,000 draws:
+
+| run | median | p95 | p99 | > 33 ms | > 40 ms |
+|---|---|---|---|---|---|
+| a1 / a2 / a3 (decoder in) | 32.00 | 33.00 | 34.00 | 1.115% / 1.047% / 1.090% | 0.290% / 0.175% / 0.186% |
+| b1 / b2 / b3 (no decode) | 32.00 | 33.00 | 33-34 | 1.149% / 0.991% / 1.169% | 0.214% / 0.191% / 0.162% |
+
+The arms' ranges overlap completely on every column, and arm `b` holds the highest `>33ms`
+share of the six runs.
+
+**What this does and does not say.** It says the decoder does not cost frame rate: a
+build with sound runs at exactly the same 31 fps as one without, and nobody needs to
+qualify a frame-rate number by whether audio was on. It does **not** say the decoder is
+free in absolute CPU terms — the whole workload is pinned at this title's own two-vblank
+floor (97-99% of frames within 1 ms of a 16 ms multiple, in both arms), so the
+measurement's sensitivity is bounded by the slack below that floor. A cost smaller than
+the slack is invisible here and would stay invisible until something else lifts the frame
+off the cap. That is the honest bound, and it is the one the question needed.
+
+**And the run that produced this found a defect in the harness rather than in the
+decoder** — see the `timeout` commit. The first attempt at this block ran arm `a` for ten
+minutes against a 420 s recipe, because a headless run with sound was ignoring `timeout`.
+Every number above is from the fixed binary.
