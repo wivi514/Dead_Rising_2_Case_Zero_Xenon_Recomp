@@ -1373,6 +1373,71 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 31 (2026-08-11) — the shadow atlas is fixed, and the white plateau's model is
+## retired
+
+**The comparison part 30 left owed, finished.** All seven R2 captures answer for the
+ground shader `ps_ad65b98593f95926` — part 27's "`w1_spawn` cannot" is true only of
+`c253..c255`, whose `LOAD_ALU_CONSTANT` reads memory the trace does not carry. Every one
+of the 32 constants that is not a function of the camera is **hardware's to the printed
+digit**, and the run proved it was in hardware's own lighting state without being asked
+to: `pc(21)`, a point light's WORLD POSITION, reads
+`(-149.4081, 6.2343, -106.2974, 0.7400)` against hardware's
+`(-149.408096, 6.234319, -106.297379, 0.740000)`. The registered prediction — that
+`c20`, `c24` or `c67` would disagree, with a non-zero `c20.x` sending the shader down an
+unlit path — is refuted. The constants are exonerated as a class.
+
+**THE SHADOW ATLAS DEFECT, open since part 15, is found and fixed.** The one input to
+that draw nobody had compared was the shadow map, because we render it rather than load
+it — and it turned out to be comparable anyway: the capture carries the consumer's copy
+as a `MemoryRead`, and `xtr_resolve_census.py` prints the title's own resolve
+destinations. Ours was **86.7% zero**, hardware's **3.5%**. The title packs four
+1024x1024 cascades into one 4096x1024 atlas by pre-offsetting `RB_COPY_DEST_BASE` by
+0x20000 each while leaving the window scissor at the origin, and 0x20000 is exactly
++1024 texels in X in Xenos tiled address space (a 32bpp macro tile is 4096 bytes; a
+4096-wide surface is 128 tiles per row; +32 tiles). `DoResolve` un-offset the SCISSOR
+form of that idiom and derived the offset from the scissor, so for the cascades the
+subtraction was a no-op and the four became four disjoint snapshots. Fixed by deriving
+the destination offset from the address as well, with source and destination offsets
+separated. **53.125% non-zero across all 4,096 columns and ONE atlas, against 13.281%
+across columns 0..1023 and FOUR atlases under `CZ_VK_NO_ADDR_TILE_FOLD=1`** — and
+`13.281% x 4 = 53.125%` exactly. 17,355 folds against zero. No frame cost.
+
+**THE WHITE PLATEAU IS NOT THE TONE CURVE AT `x = 1`, which is what parts 27, 28, 30 and
+the first half of 31 all assumed.** Four whole-frame arms on the outdoor route, read off
+the scene buffer with the new `tools/snap_plateau.py`:
+
+| arm | px at exactly rgb(180,180,180) | px at grey 181/182/183 |
+|---|---|---|
+| null | 1,348 | 0 / 0 / 0 |
+| `67.w=0` (the additive `tf1^2 * 4`) | 961 | 0 / 0 / 0 |
+| `24.xyz=0` (the sun) | 721 | 0 / 0 / 0 |
+| `1.xyz=0` (all multiplicative; **61.5% of the frame black**) | 893 | 0 / 0 / 0 |
+| `14.w=0.25` (**mean luma 35.07 -> 18.30**) | 1,093, and **zero at 119** | 0 / 0 / 0 |
+
+The counts are inadmissible across runs (gotcha 254) and the prediction they were meant
+to test is unsupported rather than refuted. **The invariant is the finding**, because it
+is a within-frame property: the peak never moves off 180 and nothing is ever above it —
+through an arm that removes two thirds of the picture, and through an arm that quarters
+the exposure that curve multiplies by. 119 is where the curve sends `x = 1` at quartered
+exposure and **not one pixel of 921,600 landed there**. A value produced by that curve
+cannot be invariant under scaling its exposure, so these pixels are not its output.
+`180 = 255 * sqrt(0.5)` is now the coincidence to explain.
+
+**What survives, re-measured on DAYLIGHT rather than the night captures part 30
+withdrew:** the plateau is a hard pin — 1,348 px at exactly 180, zero at grey 181-183,
+and only 45 px of 921,600 above 180 in all three channels, in a frame with mean luma 36.3
+and 63,398 distinct colours.
+
+**New instruments:** `CZ_VK_EXPOSURE_TRACE` (frame 3000 is 6,116 draws all within
+0.214622..0.214647, so one exposure is in force per frame — assumed for four parts, now
+measured), `CZ_VK_NO_ADDR_TILE_FOLD`, `tools/snap_plateau.py`, and `psbindLine` 2048 ->
+8192 with an explicit truncation marker.
+
+**Gates:** `--smoke` OK; `truncated=0`; A5 **exit 0, 3 permutation windows, 0 real**;
+`shader_dim_census.py` exit 0; both PM4 capture oracles exit 0; no new Vulkan validation
+messages. Gotchas 275-277.
+
 ## Part 30 (2026-08-11) — the white plateau's tone curve gets numbers, and two steps of
 ## the chain are retired
 
