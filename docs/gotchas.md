@@ -2465,3 +2465,55 @@ From phase C part 18 (the frame rate — and none of it was work):
      the property under test) and this one. New ground truth is the most expensive thing
      available here and it was very nearly requested to answer a question five files
      already answered.
+
+275. **A RESOLVE DESTINATION CAN NAME A SUB-REGION BY ITS ADDRESS INSTEAD OF BY ITS
+     SCISSOR, AND A RENDERER THAT ONLY UNDERSTANDS ONE OF THE TWO LOSES THE OTHER
+     SILENTLY.** Case Zero packs four 1024x1024 shadow cascades into one 4096x1024 atlas.
+     Each resolves a 1024x1024 region **with the window scissor at the origin**, and the
+     four are told apart only by `RB_COPY_DEST_BASE` being pre-offset by 0x20000 — which
+     in Xenos tiled address space is exactly +1024 texels in X (a 32bpp macro tile is
+     32x32 texels = 4096 bytes, a 4096-wide surface is 128 tiles per tile row, so +32
+     tiles = 0x20000). This renderer already un-offset the SCISSOR form of the idiom, for
+     the frame's two 640-wide tiles, and derived the offset FROM the scissor — so for the
+     cascades the subtraction was a no-op, the four became four disjoint snapshots, and a
+     fetch of the base address read zero past column 1023. **86.7% of our shadow atlas was
+     empty where hardware's, dumped from the same capture, is 3.5% empty.** The failure is
+     silent in the worst way: the snapshot is the right size, it is populated, and it is
+     served — it is simply a quarter of the picture, and the consumer has no way to say so.
+     The general form: **when a guest can express "part of a bigger surface" two ways,
+     implementing one of them makes the other look like a surface of its own.** Ask which
+     ways a destination can carry an offset before concluding a map is half empty for a
+     reason inside the map.
+     The other half of this is that it was CHECKABLE all along and the check took ten
+     minutes: the capture carries the consumer's copy of the atlas as a `MemoryRead`, and
+     `xtr_resolve_census.py` prints the title's own resolve destinations and regions. A
+     surface you RENDER is not automatically a surface you cannot compare (gotcha 172's
+     rule, pointed the other way).
+
+276. **WHEN THREE OR FOUR SUCCESSIVE ARMS ALL REPORT "UNMOVED", THE INSTRUMENT CLASS IS
+     THE FINDING — STOP PERTURBING INPUTS AND CHANGE WHAT YOU ARE MEASURING.** Part 31
+     zeroed the sun colour, zeroed an additive term, zeroed the entire multiplicative path
+     of every shader reading a given constant (blacking out 61.5% of the frame), and
+     quartered the exposure (halving the scene's mean luma) — and the pixels under
+     investigation sat at exactly the same 8-bit value through all four. Each individual
+     result reads as "not this one, try the next"; the four TOGETHER say something the
+     individual results do not, which is that **the pixels are not downstream of any input
+     to the pass being perturbed.** Four parts of this project were spent inside one
+     instrument class. The tell is that every arm engages hugely and moves everything
+     except the thing being investigated.
+     Corollary on what to reach for instead: a whole-frame arm can only say "this input
+     does not reach those pixels". Naming the DRAW needs a per-draw instrument — a census
+     of one frame, or removing one draw and diffing — and no amount of refining the
+     whole-frame arm converges on it.
+
+277. **AN ARITHMETIC COINCIDENCE THAT FITS TO THREE DIGITS IS A HYPOTHESIS, AND IT KEEPS
+     ITS STATUS UNTIL A MECHANISM IS MEASURED — NOT UNTIL A BETTER COINCIDENCE TURNS UP.**
+     `180/255 = 0.70588` and `sqrt(0.5) = 0.70711`. That fit carried four parts of work.
+     Part 27 read it as a gamma encode; part 30 retracted the gamma and re-derived the
+     same 180 from the shader's own trailing `sqrt` and its own constants — a second,
+     independent derivation, which felt like confirmation. Part 31 then showed the pixels
+     are invariant under scaling the exposure that curve multiplies by, so **they are not
+     outputs of that curve at all** and both derivations were explaining a number rather
+     than a picture. Two independent derivations of the same value are still not evidence
+     that the value came from there. The question that would have caught it four parts
+     earlier is the cheap one: **what would move these pixels, and does it?**
