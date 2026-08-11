@@ -519,6 +519,28 @@ void Shutdown(const char* why)
 
 bool Host_WindowInit()
 {
+    // Leave SIGINT/SIGTERM alone. SDL would otherwise install handlers that turn them
+    // into an SDL_QUIT event, which sounds like an improvement and is not: every gate
+    // run in this project is `timeout N ./cz_runtime`, and routing SIGTERM through our
+    // event loop makes process termination depend on that loop still being alive. The
+    // whole point of a gate is that it terminates the same way whatever the runtime is
+    // doing.
+    //
+    // THIS SITS ABOVE THE HEADLESS EARLY RETURN, and that is the whole of part 30's
+    // fix. It used to sit below, next to `SDL_Init`, which was correct for as long as
+    // the window was the only thing in this runtime that touched SDL. Phase A/V added a
+    // second, independent entry point — `Audio_Out_Init` calls
+    // `SDL_InitSubSystem(SDL_INIT_AUDIO)` from a guest thread — so a `CZ_NO_WINDOW=1`
+    // run returned here before the hint was ever set and then let the audio device
+    // install the handlers this comment exists to prevent. The effect was that every
+    // headless run with sound IGNORED `timeout` and ran until something killed it:
+    // measured at `timeout 20` as exit 124 at 20 s with `CZ_NO_AUDIO_OUT=1` and still
+    // alive at 180 s without it. Setting a hint is idempotent and costs nothing, so it
+    // belongs at the first point in the process that is guaranteed to run before any
+    // SDL call — `main()` calls this at line 310 and does not spawn the guest thread
+    // until line 338.
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+
     if (getenv("CZ_NO_WINDOW"))
     {
         fprintf(stderr, "[host] CZ_NO_WINDOW=1 — headless: no window, no present, and "
@@ -527,13 +549,8 @@ bool Host_WindowInit()
         return false;
     }
 
-    // Leave SIGINT/SIGTERM alone. SDL would otherwise install handlers that turn them
-    // into an SDL_QUIT event, which sounds like an improvement and is not: every gate
-    // run in this project is `timeout N ./cz_runtime`, and routing SIGTERM through our
-    // event loop makes process termination depend on that loop still being alive. The
-    // whole point of a gate is that it terminates the same way whatever the runtime is
-    // doing.
-    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+    // The signal-handler hint is set at the top of this function, above the headless
+    // early return, so that a run with no window still gets it — see the comment there.
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
     {
