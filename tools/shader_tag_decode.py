@@ -75,12 +75,28 @@ def main():
 
     hits = collections.Counter()
     total = 0
+    # Vectorised, because an operator session is dozens of 1280x720 frames and a
+    # per-pixel Python loop over 54 million of them is minutes of nothing. numpy is
+    # optional: the loop stays as the fallback so the tool never fails to run.
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
     for f in args.frames:
         w, h, px = read_ppm(f)
         total += w * h
-        for o in range(0, len(px) - 2, 3):
-            if px[o + 1] == 255:
-                hits[(px[o], px[o + 2])] += 1
+        if np is not None:
+            a = np.frombuffer(px, dtype=np.uint8)[:w * h * 3].reshape(-1, 3)
+            m = a[a[:, 1] == 255]
+            if len(m):
+                key = (m[:, 0].astype(np.uint32) << 8) | m[:, 2]
+                v, c = np.unique(key, return_counts=True)
+                for k, n in zip(v.tolist(), c.tolist()):
+                    hits[(k >> 8, k & 255)] += n
+        else:
+            for o in range(0, len(px) - 2, 3):
+                if px[o + 1] == 255:
+                    hits[(px[o], px[o + 2])] += 1
 
     named, unknown = [], []
     for (r, b), n in hits.items():

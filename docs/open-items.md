@@ -498,6 +498,47 @@ Next, in order:
    is dead — the output is a constant that does not vary with lighting, time of day,
    location or camera.
 
+   **THE OPERATOR'S TAG-PAINT SESSION NAMED THEM: 48 PIXEL SHADERS, ONE SHARED EPILOGUE.**
+   59 captures roaming the map with `assets/shader_spv_tagpaint`, decoded with
+   `tools/shader_tag_decode.py` over the scene buffers — 1.5 M painted pixels, 48 shaders
+   named, one 16-bit tag collision correctly flagged AMBIGUOUS, and a noise floor of a
+   single pair (pure white, 107,571 px) correctly separated from the tags.
+
+   | px painted | shader |
+   |---|---|
+   | 703,376 | `ps_7d2f8f33deec1b65` |
+   | 170,051 | `ps_e2c3ca8c13351984` |
+   | 144,217 | `ps_861d32db6c0f0556` |
+   | 136,450 | `ps_d4609f2df48bcc48` |
+   | ...44 more, 66,142 down to 23 | |
+
+   **48 shaders is not 48 defects.** Their disassemblies end in the same four
+   instructions, with only the constant SLOTS differing — the compiler allocates the
+   literal pool per shader:
+
+       max  r0.xyz, r0.xyz, K1        ; K1 = c255.w / c254.w / c255.y ...
+       mad  r0.xyz, -r1, r1, r0.xyz   ; -= r1*r1
+       mul  r0.xyz, r0.xyz, K2        ; K2 = c254.z / c255.x ...
+       sqrt oC0.rgb = sqrt(|r0.xyz|)
+
+   So the plateau is that epilogue's **FLOOR**: with `r1 = 0` and the colour under `K1`,
+   the output is `sqrt(K1 * K2)` — a constant, independent of everything the shader
+   computed above it. On the ground shader `K1 = 1.0` and `K2 = 0.5`, so
+   `sqrt(0.5) = 0.70711 = 180/255`. **The same 180 at seven locations across 48 materials
+   is one shared idiom hitting its floor**, which is why no per-material theory ever fit.
+
+   **This moves the item out of Case Zero's materials and into the TRANSLATION LAYER.**
+   One epilogue, two registers, and the question is why `r1` collapses to 0 while the
+   colour sits below the floor. If it is XenosRecomp's rendering of that idiom — the
+   `mad_sat`, the `max`, or the `r_abs` — **it is a Fable 2 defect too**, and that port
+   has the same emitter.
+
+   **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
+   part 27 read line by line, is **NOT in the list**. The white ground is painted by one
+   of the other 48 — most likely the 703 K-pixel leader — so the shader I was reading was
+   the right *idiom* and the wrong *module*. The epilogue is shared, so the reading
+   transfers; the attribution did not.
+
    **NEXT, in order**
    0. **The character cube fetches that are declined** — 0.28%, visible on the crowd, and
       the only part of this item with a mechanism. Decide what the honest fallback is: our
