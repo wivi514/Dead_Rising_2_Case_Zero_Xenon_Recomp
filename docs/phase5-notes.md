@@ -4569,14 +4569,20 @@ Two consequences, and they pull in opposite directions:
   shaded value is invisible at the join, so a flat 180 is equally consistent with a
   normally-shaded surface sitting at full exposure. What part 27 measured is that the
   output is constant; the input need not be.
-* **The real anomaly is the other statistic in the same table, and it is a HARD one.** In
-  five of the seven captured frames **nothing anywhere in the 1280x720 buffer exceeds
-  180**, and 181 needs only `x = 1.008`. So no pixel of those frames is more than 1%
-  above full exposure while 6-15% of them sit within 10% of it. That is a **clamp at
-  `x = 1`**, which is part 28's `c = 1/pc(14).w` arrived at from the picture instead of
-  from a paint probe — the probe result that originally produced it was uninformative,
-  since `0.25x + 0.75 >= 0.75` can only fall below its floor of 1.0 for `x < 1` and the
-  probe never distinguished "below" from "equal".
+* **The anomaly that survives is the OTHER one, and it is not the frame maximum.** The
+  first draft of this section argued from "in five of seven frames nothing in the buffer
+  exceeds 180, and 181 needs only `x = 1.008`" and called it a clamp. **Withdrawn before
+  it was quoted anywhere: those five are the operator's NIGHT captures** (`DISABLE TIME
+  OF DAY`, 90% of the slot-machine frame below luma 40). In a night scene the only thing
+  at full exposure is the defect itself, so "the maximum is the defect's own value" is
+  arithmetic, not evidence. Two of the seven do reach 255.
+
+  What does survive is part 27's measurement that these surfaces are **not modulated by
+  lighting or by time of day** — they sit at `x` in [0.905, 1.008] in a pitch-black room.
+  That is still `c` tracking `1/pc(14).w`, i.e. part 28's statement, and it is now reached
+  from the picture rather than from a paint probe: the probe asked whether
+  `0.25x + 0.75` falls below its floor of 1.0, which it can only do for `x < 1`, so it
+  could not have distinguished "below" from "equal" for the population it was aimed at.
 
 ### Where the clamp is NOT: the shader
 

@@ -613,6 +613,22 @@ CZ_VK_CUBE_FROM_GUEST=1  upload a cube map from guest memory even when its addre
                    predates the snapshot path and is kept because it is the third point of
                    comparison: black (guest memory), white (`CZ_VK_NO_CUBE_SNAPSHOT`), and
                    the rendered map
+CZ_VK_PS_CONST_SCALE="14.w=4,18.y=0.5"   multiply chosen PIXEL shader ALU constant
+                   components by a factor, applied to the per-draw copy after it is made
+                   and before any draw reads it. Added in part 30 as a MAGNIFYING GLASS
+                   for the white-surface item, and the reasoning generalises: the tone
+                   curve every material shader ends in has a vanishing derivative at
+                   `x = colour * pc(14).w = 1`, so a 10% spread in the colour quantises to
+                   ONE 8-bit value there and the picture cannot tell a pinned colour from
+                   a shaded one (gotcha 273). `14.w=4` moves the same surfaces to a part
+                   of the curve where that spread is ~7 levels: a plateau that stays a
+                   single spike is pinned, one that spreads was being hidden by the curve.
+                   It SCALES rather than sets, because this title's exposure is scene
+                   adaptive and reads 0.2 to 1.0 across draws of one run — a fixed value
+                   would manufacture the very uniformity the arm tests for. Every clause
+                   it parses is echoed at start-up and every clause it cannot parse is
+                   named; the draw counter `a PIXEL constant was scaled` is how the arm is
+                   shown to have engaged
 CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answered by
                    measurement rather than recollection. The shader-declared dimension
                    (from the sidecar) partitions every fetch into classes that must

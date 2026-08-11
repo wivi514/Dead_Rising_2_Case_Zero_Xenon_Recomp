@@ -948,10 +948,12 @@ Next, in order:
    form "term X is too large" is dead.~~ Too strong: the curve's derivative vanishes at
    `x = 1`, so **180 is the whole band `x` in [0.9055, 1.0080]** and a flat 180 is equally
    consistent with a normally-shaded surface sitting at full exposure. What survives, and
-   it is the sharper fact, is the OTHER column of the table above: in five of seven frames
-   nothing in the buffer exceeds 180, and 181 needs only `x = 1.008`. **No pixel is more
-   than 1% above full exposure while 6-15% sit within 10% of it — the lit colour is
-   clamped at `1/exposure`.** That is part 28's `c = 1/pc(14).w`, now reached from the
+   it is the sharper fact, is that these surfaces sit in the band `x` in [0.905, 1.008]
+   **at night, in a pitch-black room, unmodulated by lighting or time of day**. (The
+   frame MAXIMUM being 180 in five of seven captures is NOT additional evidence and was
+   briefly written up as if it were: those five are the `DISABLE TIME OF DAY` captures,
+   where the defect is by construction the brightest thing in the frame.) The lit colour
+   tracking `1/exposure` is part 28's `c = 1/pc(14).w`, now reached from the
    picture rather than from a paint probe that could not have reported otherwise (the
    probe asked whether `0.25x + 0.75` falls below 1.0, which it can only do for `x < 1`).
 
