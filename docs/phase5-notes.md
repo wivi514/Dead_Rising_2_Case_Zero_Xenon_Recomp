@@ -5097,3 +5097,48 @@ it cannot answer.
 One caution for whoever does it, from §6bd: a plateau count compared across two runs is
 not a measurement, because frame N of one run is not frame N of another (gotcha 254).
 Within ONE frame, "these pixels vanished when that draw did" is sound.
+
+### THE OPERATOR'S VERDICT: THE FIX REACHES THE PICTURE, AND A SECOND DEFECT REMAINS
+
+Four operator screenshots at one crowd spot in Case 0-2, two arms of one binary, taken
+within half an hour of each other. Files and the full index in
+`~/DR2CZ-troubleshooting/part31/operator-shadow-ab/`.
+
+**Fold ON**: *"you can see much wider — the spot where shadows are is actually in front of
+the camera"*, and from the other side of the truck *"also much better, still way far from
+intended behaviour, but much better."* **Fold OFF**: a smaller lit patch that jumps around
+the frame — right edge in one shot, the lower-left crowd in the next.
+
+So this is the third of the three outcomes the A/B was set up to distinguish: the resolve
+fix works, and a separate defect remains beyond it.
+
+**The improvement fits the mechanism quantitatively**, which is what makes it a
+measurement rather than an impression. The title's split distances are
+`pc(46) = (8, 12, 32, 7)`. With only cascade 0 populated, a pixel past roughly **8 m**
+samples an empty region, reads depth 0, and `sgt r8, r8, r0.x` calls it occluded. With all
+four populated the shadow term is real out to the third split at roughly **32 m**. A lit
+footprint growing from ~8 m to ~32 m is exactly "much wider". What is left — "still way
+far from intended" — is the geometry past the last split, where the distance fade
+`c44.w` (line 81, `mul_sat r3.w, r3.w, c44.w`) and the `tf5` term are supposed to force
+the surface back to fully lit. **That is the next question, and it is a different one from
+the atlas.**
+
+### A CORRECTION, in place
+
+On the strength of the two fold-OFF shots ALONE, before any fold-ON file existed on disk,
+this session wrote that the camera-dependent patch was "present on both arms, so the
+resolve fix is neither the cause of this symptom nor its cure, and the defect is
+downstream in the lookup". **That was wrong.** The two arms differ in the EXTENT of the
+lit region, not in whether a camera-dependent region exists at all, and the comparison was
+being made against a remembered pair of images rather than against files. Two shots at two
+different cameras were enough to establish "a moving lit patch exists here" and not enough
+to establish "the arms are the same"; the wrong property was being compared, and the
+conclusion was stated more strongly than the evidence carried. Gotcha 50/51/86 covers the
+remembered-control half of this. The half it does not cover is the new one:
+
+**A symptom that survives an arm is not the same as a symptom the arm does not affect.**
+Both arms show a camera-dependent lit region, so "the symptom is present in both" is true
+and useless; what separates them is how far it extends. Before concluding an arm changed
+nothing, name the property that would have changed if it had worked — here, the RADIUS of
+the shadowed footprint, which follows directly from the split distances — and check that
+one.
