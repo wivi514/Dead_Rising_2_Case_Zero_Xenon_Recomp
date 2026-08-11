@@ -262,3 +262,34 @@ produces `ps_7d6044e7dcaea1f2`, which **the shipped `assets/shader_spv` does not
 — we hold its microcode and never built it. The shipped cache instead carries
 `ps_926c15dd20571cf1`, whose microcode was lost to `/tmp`. Both caches are 410 modules,
 which is why the count never showed it.
+
+## XenosRecomp local patch: `XE_VALUE_PAINT`, "did a shader write this value?"
+
+Same shape as `XE_NAN_PAINT` and same build path — emitted always, compiled only when
+defined, `CZ_DXC_DEFINES` into its own cache, `CZ_SHADER_SPV` to select it. Paints GREEN
+so both can run together.
+
+```
+CZ_DXC_DEFINES="-D XE_VALUE_PAINT=0.7071068" tools/build_shader_spv.sh <ucode> <dir>
+```
+
+**Its positive control needs no extra define**: a large `XE_VALUE_PAINT_EPS` admits every
+pixel. Measured at `EPS=10.0`: **99.73% of the scene buffer and 100.00% of the presented
+frame green.**
+
+**What it settled in part 27.** Case Zero's white patches are exactly rgb(180,180,180) in
+the scene buffer at every location, and 255*sqrt(0.5) = 180.3. Since the same value
+appears on surfaces with different materials, shaders and constants, the prior question
+was whether any material shader emits it at all, or whether it arrives from the resolve or
+the EDRAM path. Six captures an arm on the DebugJump route:
+
+| arm | px at exactly (180,180,180) | green |
+|---|---|---|
+| default cache | **3,242** | 0 |
+| `XE_VALUE_PAINT=0.7071068` | **0** | **3,982** |
+
+**The conversion is total** — not one plateau pixel survives — so the value is
+`oC0.rgb ~ 0.7071` written by the material pixel shaders themselves. The resolve and the
+EDRAM path are eliminated. (The two totals differ because the frames differ between runs;
+this is a presence/absence test, not a matched count, and the arms cannot be frame-matched
+outdoors — gotcha 254.)
