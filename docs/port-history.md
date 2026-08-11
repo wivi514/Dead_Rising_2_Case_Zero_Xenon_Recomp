@@ -1452,6 +1452,78 @@ one 1 ms tick and retires it, which reads downstream as "the voice finished" and
 the state being measured. And a 5-second report whose filter had to test `decodeCalls` as
 well as frames, or it would have hidden exactly the context it exists to find (gotcha 264).
 
+## Phase A/V, second half (2026-08-11) — the operator plays it, and the cinematic
+## turns out to ping-pong
+
+The audio half above landed and the operator was handed the build. Everything below came
+out of that session, and two of the four findings are corrections to claims made earlier
+the same night.
+
+**"No sound" was not ours.** Pipewire held the `cz_runtime` sink input at `Mute: yes`, at
+100% volume on the correct sink, because wireplumber remembers per-application state and
+this application had never produced audio before. `pactl list sink-inputs` is the check,
+and it is now in the hand-off — an hour of debugging our output path was available here
+and was not spent.
+
+**THE PROLOGUE CINEMATIC PING-PONGS.** Operator report: it plays, and the instant Rebecca
+Chang speaks the scene runs forward ~1 s, backward ~1 s, and repeats, with the subtitle
+re-appearing on every forward pass. **It was already in data captured hours earlier and
+had been read past.** The arm run has 7,175 camera runs over only **1,170 distinct**
+fingerprints, many recurring exactly 463 times, and the sequence is a clean palindrome of
+~26 runs. `docs/open-items.md` 00j.
+
+**The correction that matters more than the finding**: the A/V result had quoted "longest
+frozen camera run 10,513 -> 159" as the cinematic being fixed. That number is real, and
+`1,170 distinct over 7,175 runs` was in the same file and says the scene is LOOPING. The
+statistic that answered the question being asked got read; the one sitting next to it did
+not. **"Not frozen" and "playing" are different claims and only one had been measured.**
+That is now a gate anyone can run — `tools/frame_loopiness.py`, which needs BOTH
+`runs/distinct` and `runs/frames` because a frozen camera also scores ~1 on the first:
+
+    gameplay, healthy    1.09 / 0.65      prologue ping-pong  6.13 / 0.58
+    prologue frozen      1.01 / 0.08
+
+**Three explanations built and eliminated, each with its own measurement.**
+
+1. *Our output ring.* `XmaFillOutput` treated `write == read` as EMPTY at the top and FULL
+   at the bottom — one state, two opposite meanings, twenty lines apart. Real, and
+   **refuted**: repaired properly, `distinct` did not move by one (1170 -> 1170). Reverted,
+   because keeping a behaviour change motivated by a refuted hypothesis is not a trade
+   worth making — and because the repair's own "is the ring full" test turned out to be
+   VACUOUS, being exactly the fill loop's exit condition. That is the second tautological
+   predicate of the day; the first was a `uint32_t < 4 GB` bounds check the compiler
+   caught.
+2. *The audio stopping.* The operator noticed sound dies when the loop starts, which it
+   does — permanently, 0 non-silent frames across the remaining 62,000. **Ordered by one
+   grep on an existing log**: the stall precedes the silence by ~5.5 s, i.e. the scene
+   stops advancing, never fires its next audio event, and the queued dialogue plays out.
+   Downstream. Do not chase it.
+3. *The "end sync point".* `CZ_GUEST_DIAG` made the engine name its own condition —
+   `WAITING: end sync point not received yet!` at `0x824A10D4`, on the failing side of a
+   branch whose success side is the cinematic's `Update(delta)`. Compelling, and the line
+   fires **once** in 7,778 looping frames, which was flagged as a caveat rather than
+   buried. `CZ_CINE_PROBE=1` then counted it: **ten entries in a 400 s run**, an even
+   received/not-received split, and the containing function stops being called entirely
+   while the loop continues. So the sync point is at most an event near the START of the
+   loop, not the condition sustaining it.
+
+**What survives is unevidenced and is labelled as such.** The title runs a PID controller
+on cinematic audio latency (`Cine.Audio P-gain`/`I-gain`/`D-gain`/`MV`/`Cor Latency`, in
+`cinematicmanager.cpp`'s region). It was named as "the mechanism" mid-session on the
+strength of a string table and the shape of an oscillation; that was a stronger claim than
+the evidence carried and it is demoted in place. Nothing shows the controller is running.
+**The next move is to stop guessing at consumers: a palindrome means some clock
+DECREMENTS, so find what writes the cinematic time each frame.**
+
+**Two instruments, and one lesson about instruments.** `tools/xma_live_sample.py` reads a
+running process's XMA contexts via `process_vm_readv` — no ptrace stop, so an operator
+sitting in a live defect is never interrupted; it is what showed the mono dialogue voices
+toggling `output_buffer_valid` ~94 times in 8 s while the stereo music voice never did.
+And `CZ_CINE_PROBE` **reported from inside the function it counted**, so it went silent
+exactly when that function stopped — which was the answer. It stayed readable only because
+frames were visibly advancing elsewhere. Gotcha 269: an instrument must not share a
+liveness dependency with its subject.
+
 ## Phase C part 28 (2026-08-10) — the engine's whole diagnostic layer, from one byte;
 ## and an LOD report with no defect yet attached
 

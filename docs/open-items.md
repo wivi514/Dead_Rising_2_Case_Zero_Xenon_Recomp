@@ -318,7 +318,9 @@ Next, in order:
    needed TWO numbers: `runs/distinct` alone scores a FROZEN camera at 1.01, which
    would have called the pre-audio prologue healthy. Read it with `runs/frames`
    (gameplay 1.09 / 0.65; ping-pong 6.13 / 0.58; frozen 1.01 / 0.08).
-   `scratchpad .../loopiness.py`, trivially rewritten.
+   **`tools/frame_loopiness.py`** — it prints both numbers and a verdict, and it
+   classifies all three states correctly on the four runs that exist (LOOPING, LOOPING,
+   FROZEN, advancing), which is the positive control for the gate itself.
 
    **THE ENGINE NAMES THE CONDITION ITSELF, and this supersedes the PID reading as the
    leading explanation.** `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the prologue prints:
