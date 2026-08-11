@@ -320,6 +320,57 @@ Next, in order:
    (gameplay 1.09 / 0.65; ping-pong 6.13 / 0.58; frozen 1.01 / 0.08).
    `scratchpad .../loopiness.py`, trivially rewritten.
 
+   **THE ENGINE NAMES THE CONDITION ITSELF, and this supersedes the PID reading as the
+   leading explanation.** `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the prologue prints:
+
+       [guest] WAITING: end sync point not received yet!
+       [guest] ((((((((((((((((((((((((((((((( ForceClearAnimSyncPartner()
+
+   The site is `0x824A10D4`, and reading its guard is what makes this load-bearing
+   rather than suggestive — the print sits on the FAILING side of a branch whose
+   success side, at `0x824A10E0`, is a virtual call taking a float in `f1`
+   (`lwz r11,0(r31)` / `lwz r11,8(r11)` / `bctrl` with `fmr f1,f31`), i.e. the
+   cinematic's `Update(delta)`. **So while the end sync point is missing, the
+   cinematic's update is SKIPPED.** The predicate is `sub_8249EEA8`; the surrounding
+   system is an animation sync-point cache with types, callbacks and user pointers
+   (`mSyncPointCache[type].mCallback == callback && ...`, asserted at `0x82084370`,
+   used at `0x82581B00`).
+
+   **And the operator confirms the audio half from the other side: "cinematic audio
+   works at the start and stops right when it starts ping-ponging."** The log agrees to
+   the second. Audio output does not degrade — it STOPS, completely and permanently:
+
+       frame  9216  nonsilent=6758  +488
+       frame 12288  nonsilent=7678  +472
+       frame 16384  nonsilent=7678  +0      <- and +0 for the remaining 62,000 frames
+
+   Frame 12,300 x 5.333 ms = 65.6 s; the cinematic era starts at video frame ~1,925
+   ~= 62 s. **The guest's mixer stops mixing** — this is not our output path, and our
+   decoder keeps filling rings normally throughout (`refused0`, ~494 frames/5 s).
+
+   So the shape of the defect is now: a cinematic waiting on a sync point it never
+   receives, with the mixer going silent at the same instant, and the scene
+   ping-ponging while its update is skipped. Whether the missing sync point is
+   *caused* by the audio stopping or is a *co-symptom* of the same stall is the next
+   question, and the two are distinguishable — `sub_8249EEA8` is the predicate, so
+   probing what it reads answers it directly.
+
+   **The PID reading is demoted, not discarded.** `Cine.Audio Cor Latency` and its
+   gains are real and are in this manager, but the engine's own message points at an
+   ANIMATION sync point, and nothing yet ties the oscillation to the controller. Do not
+   quote the PID as the mechanism without evidence that it is running.
+
+   **Next, in order, all cheap:** probe `sub_8249EEA8`'s inputs with `CZ_ARG_PROBE`
+   (the worked example that closed finding 27); find who DELIVERS a sync point and
+   whether an audio completion is one of its types; and check whether the mixer's
+   silence begins before or after the first `WAITING` line, which orders cause and
+   effect and is one `grep -n` on a run that already exists.
+
+   **What is now certainly true and worth stating plainly:** this is a GUEST-side stall
+   that our audio work exposed, not a rendering defect and not our output path.
+
+   **The older PID-input note, kept because it is still a live thread:**
+
    **So the next step is the PID's INPUT, not our ring.** Read what `0x82475880`'s
    function computes as `Cor Latency` and compare it against what our decoder makes
    true; `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the prologue is the cheap first look,
