@@ -54,6 +54,13 @@ Everything from parts 26-28's lists stands. Part 29 adds three:
   `CZ_FAKE_PRESS_SEQ` ending in `NONE` leaves Chuck standing still and one camera pose
   is then correct. Read draws beside it. (This caught the author of part 29 calling a
   mid-run file healthy.)
+* **WHEN TWO COMPONENTS YOU BUILT AGREE, YOU HAVE MEASURED YOUR OWN CONSISTENCY, NOT THE
+  GROUND TRUTH.** Part 29 recorded "the clip ended" because the guest's reported position
+  agreed with our decoder's output to 448 sample-frames. Both numbers were right and the
+  conclusion was wrong: the clip is 316 s and we stream 4.9 s of it. The asset was one
+  `CZ_FILE_TRACE=1` away. The discriminator had even been identified and written down —
+  the error was recording the likelier branch as a finding instead of leaving it open
+  until the third party answered. **An oracle has to be something you did not write.**
 * **NAME WHICH FACT YOU MEAN BEFORE ORDERING TWO EVENTS.** "The audio stopping" was one
   phrase covering two things with opposite orderings: the position the guest *reports*
   stops first and is upstream of the stall; audible output stops ~5.5 s later and is
@@ -76,7 +83,8 @@ not a gate.
 
 ## WHERE TO START
 
-0. **WHY DOES `SamplesPlayed` STOP? — the live item, and the chain to it is fully read.**
+0. **WHY DOES THE GUEST STOP STREAMING THE CINEMATIC AUDIO? — the live item.** The chain
+   from the symptom down to it is fully read and every link is measured:
 
        sub_82759170   the cinematic asks the audio system — message ReqID 0x106, "Time"
        sub_827213C8   the audio system looks the voice up in [sys+0xA8], returns entry+8
@@ -88,21 +96,24 @@ not a gate.
    voice pins there while still reporting itself playing, so `sub_8270F768` never takes
    the wall-clock branch that would let the cinematic carry on.
 
-   A diagnostic run says **the clip ENDED, it was not starved**: the three dialogue
-   contexts (5/6/7, `stereo=1`, 48 kHz) decode 5.03/5.04/**4.92** s and stop, our decoder
-   stays healthy for the rest of the run (`refused0`, ctx0 still ~508k samples/window),
-   and the guest's mixer output plateaus at driver frame ~12,288. It could only appear
-   now: before phase A/V nothing decoded, so no voice ever reached the end of a stream.
+   **The discriminator has been RUN and the answer is that we stream 1.1% of the clip.**
+   `CZ_FILE_TRACE=1` names the asset: `game:\data\audio\cinematics.big` entry
+   **`39694.xma`, 24,377,344 bytes**, read from its exact start. Summing `frame_count`
+   over all 11,903 XMA2 packet headers gives 89,007 frames of 512 samples =
+   **316.5 s (5:16) as three interleaved 2-channel streams** — 5.1 audio, which the
+   operator's ~5:10 confirms and which explains why contexts 5, 6 and 7 share the input
+   buffer `02584000` (three stereo contexts is how the 360 decodes six channels).
 
-   **RUN THE DISCRIMINATOR FIRST, because the two stories have opposite fixes.** Our
-   decode length agreeing with the frozen position is equally consistent with "the clip
-   is 4.91 s and only the end-of-stream handshake is broken" and with "our decode stops
-   early and the clip is longer". The ASSET settles it: `CZ_FILE_TRACE=1` on the
-   prologue names the file the dialogue is read from, then `tools/big_list.py` gives the
-   entry's true length.
+       music.big        47 reads, 128 KB each, alternating two buffers, FOREVER
+       cinematics.big    ONE 128 KB read into A2584000, one into A25AA000, then nothing
 
-   Worth a look, not worth a conclusion: contexts 2, 5, 6 and 7 all report
-   `in0=02584000`, the same input buffer address. `CZ_XMA_PROBE` over time answers it.
+   We decode the first buffer's **4.916 s of a 316 s clip**. Music double-buffers
+   correctly on the same machinery for the whole run, so **the difference between those
+   two streams is the defect.** Start there: which context fields the title polls for
+   each, and whether our decode walk leaves the cinematic contexts in a state the music
+   context never reaches. **A retire/refill rule written for one context per buffer is
+   wrong for 5.1 by construction** — three contexts share `02584000` — and
+   `kernel/audio.cpp` is where to check that first.
 
    **The free gate for the whole item is unchanged and needs no operator**:
    `tools/frame_loopiness.py` on a prologue run, reading the QUARTERS. A fix takes the

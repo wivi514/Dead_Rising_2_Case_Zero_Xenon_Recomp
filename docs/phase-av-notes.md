@@ -322,6 +322,59 @@ because "mode 0 makes it play" is exactly the wrong lesson to take from that row
 plays that many and stops while still reporting itself playing, so the wall-clock
 fallback never takes over either. **That is the part-30 question.**
 
+### RETRACTED: the clip did NOT end — we stream 1.6% of it
+
+**This section originally concluded that the dialogue clip ran to its end and only the
+end-of-stream handshake was broken. That was wrong, the operator refuted it in one
+sentence ("the clip is around 5 min 10 s"), and the asset then confirmed the refutation
+to within six seconds.** The original reasoning and the measurement that misled are kept
+below the correction, because the shape of the error is the transferable part.
+
+**What the asset says.** `CZ_FILE_TRACE=1` names the file: the cinematic's audio is
+`game:\data\audio\cinematics.big` entry **`39694.xma`, 24,377,344 bytes**, read from
+its exact start (offset 3,307,520). Summing the `frame_count` field of all 11,903 XMA2
+packet headers gives 89,007 frames of 512 samples:
+
+    1 stream  (2 ch)  ->  949.4 s = 15.82 min
+    2 streams (4 ch)  ->  474.7 s =  7.91 min
+    3 streams (6 ch)  ->  316.5 s =  5.27 min   <- 5 min 16 s
+
+The operator's stopwatch says ~5 min 10 s, so **the clip is 5:16 and it is 5.1 audio
+carried as three interleaved 2-channel XMA2 streams**. That independently explains the
+loose end this part had flagged as "worth a look, not worth a conclusion": contexts 5, 6
+and 7 all report `in0=02584000`, the *same* input buffer, because three stereo XMA
+contexts is how the 360 decodes six channels from one packet stream. Two unrelated routes
+— the shared buffer and the packet arithmetic matching a stopwatch — agree.
+
+**So the real defect is upstream of the handshake: the guest stops STREAMING.** The file
+trace is unambiguous about the asymmetry:
+
+    music.big        47 reads, 128 KB each, alternating A2538000 / A255E000, forever
+    cinematics.big    ONE 128 KB read into A2584000, one into A25AA000, then nothing
+
+262,144 bytes of 24,377,344 — **1.1% of the stream ever reaches memory**, and we decode
+the first buffer's 4.916 s of a 316 s clip. Music double-buffers correctly for the whole
+run on the same machinery, which is what makes this a specific defect and not "streaming
+is broken".
+
+**What was actually measured, and why it was over-read.** The dialogue contexts decode
+5.03/5.04/4.92 s and stop; `SamplesPlayed` pins at 4.906667 s, 448 sample-frames behind
+what we decoded; our decoder stays healthy (`refused0`, ctx0 still ~508k samples per 5 s
+window) and the guest's mixer plateaus at driver frame ~12,288. Every one of those
+numbers is still true. The error was in the step from "the voice played exactly what we
+decoded" to "so the clip ended": **agreement between our own output and the guest's
+position says only that the two sides agree with each other, and neither of them is the
+asset.** The asset was one `CZ_FILE_TRACE=1` away and had not been asked.
+
+That is the general form, and it is worth a gotcha: **when two components you built agree,
+you have measured your own consistency, not the ground truth.** The discriminator was
+correctly identified and written down as the next step — the mistake was recording the
+likelier branch as the finding rather than leaving it open until the asset answered.
+
+---
+
+**The original section, kept for the record:**
+
 ### And a diagnostic run narrows it further: the clip ENDED
 
 `CZ_AUDIO_TRACE=1 CZ_XMA_DECODE_LOG=1` alongside the clock probe, on the prologue:
@@ -335,8 +388,10 @@ fallback never takes over either. **That is the part-30 question.**
 * the guest's mixer output goes to `peak=0.0000` and `non-silent` plateaus permanently
   at driver frame ~12,288 (65.5 s), i.e. the same era.
 
-So this is **not** a voice starved part-way through its stream. The clip ran to its end,
-our side delivered all of it, and then nothing told the title the stream was over — the
+~~So this is **not** a voice starved part-way through its stream. The clip ran to its end,
+our side delivered all of it, and then nothing told the title the stream was over~~
+**RETRACTED — see above. It IS starved part-way: 4.916 s of a 316 s clip.** What follows
+still describes the state the voice is left in — the
 voice stays in the state-2/3 "playing" branch of `sub_8270F768` forever with
 `SamplesPlayed` pinned at the clip's last sample, so the wall-clock fallback that would
 have let the cinematic carry on never fires.

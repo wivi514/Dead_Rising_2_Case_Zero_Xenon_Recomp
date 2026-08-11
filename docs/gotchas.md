@@ -2321,3 +2321,43 @@ From phase C part 18 (the frame rate — and none of it was work):
      The general form: an instrument must not share a liveness dependency with its
      subject. It applies to any hook-and-report counter, any per-frame statistic printed
      from the frame path, and any log line emitted by the subsystem it describes.
+
+270. **WHEN TWO COMPONENTS YOU BUILT AGREE WITH EACH OTHER, YOU HAVE MEASURED YOUR OWN
+     CONSISTENCY, NOT THE GROUND TRUTH. AN ORACLE HAS TO BE SOMETHING YOU DID NOT
+     WRITE.**
+
+     Part 29 established that the prologue cinematic's clock is driven by a PID tracking
+     an audio stream position, and that the position freezes at 4.906667 s. Chasing why,
+     it found that our own XMA decoder had produced 235,968 sample-frames for that voice
+     while the guest's `SamplesPlayed` had pinned at 235,520 — **448 frames apart, out of
+     a quarter of a million.** That agreement is genuinely informative: it says the voice
+     played everything we handed it and nothing was lost between the two.
+
+     It was then read as "so the clip ended", and recorded as a finding. It is 1.6% of
+     the clip. The asset is `39694.xma`, 24,377,344 bytes, and summing the `frame_count`
+     field of its 11,903 XMA2 packet headers gives **316.5 seconds** — which the
+     operator's stopwatch (~5 min 10 s) then confirmed to within six seconds. The guest
+     reads 262,144 of those bytes, once, and never asks for more, while `music.big`
+     double-buffers correctly for the whole session on the same machinery.
+
+     Both numbers in the agreement were correct. Both came from code in this repository —
+     our decoder, and our reading of the guest's state through our own probe. Neither had
+     ever been compared against the thing being described. **Two of your own components
+     agreeing is a consistency check; it cannot be an oracle, however tight the agreement
+     and however many digits match.** The tighter the agreement, the more persuasive the
+     wrong conclusion.
+
+     What makes this worth a number rather than an apology: **the discriminator had
+     already been identified and written into the hand-off** — "whether 4.91 s is the
+     clip's true length or where our decode stops has two opposite fixes, and
+     `CZ_FILE_TRACE=1` plus `tools/big_list.py` tells them apart". The failure was not
+     missing the question. It was **recording the likelier branch as the finding instead
+     of leaving the item open until the third party answered**, when answering it cost
+     one environment variable and one command.
+
+     The rule, and it composes with 172 ("an untrusted path is not an oracle") and 268
+     ("your own stub is an oracle, and it refutes less than you think"): before writing
+     down a conclusion about what the guest's data *is*, name the third party that could
+     refute it — the asset on disc, a Xenia trace, the operator — and ask whether you
+     have actually asked it. If the answer is "no, but my two measurements agree", you
+     have a hypothesis, not a finding.

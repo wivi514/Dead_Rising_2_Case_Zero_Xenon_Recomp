@@ -319,7 +319,24 @@ Next, in order:
    voice plays exactly that many and stops, while still reporting itself playing — so
    the wall-clock fallback never takes over either.
 
-   **A diagnostic run narrows it: the clip ENDED, it was not starved.** With
+   **THE GUEST STOPS STREAMING THE CINEMATIC AUDIO AFTER ONE BUFFER — 1.1% of it.**
+   `CZ_FILE_TRACE=1` names the asset: `game:\data\audio\cinematics.big` entry
+   **`39694.xma`, 24,377,344 bytes**, read from its exact start. Summing the
+   `frame_count` field of all 11,903 XMA2 packet headers gives 89,007 frames of 512
+   samples = **316.5 s (5 min 16 s) as three interleaved 2-channel streams**, i.e. 5.1
+   audio — which the operator's ~5:10 confirms and which independently explains why
+   contexts 5, 6 and 7 all sit on the same input buffer `02584000`. The file trace shows
+   the asymmetry plainly:
+
+       music.big        47 reads, 128 KB each, alternating two buffers, FOREVER
+       cinematics.big    ONE 128 KB read into A2584000, one into A25AA000, then nothing
+
+   262,144 bytes of 24,377,344 ever reach memory. We decode the first buffer's **4.916 s
+   of a 316 s clip**, `SamplesPlayed` pins 448 sample-frames behind that, and the whole
+   chain above follows. Music double-buffers correctly on the same machinery for the
+   whole run, so this is a specific defect, not "streaming is broken".
+
+   **RETRACTED, from earlier in this same part: "the clip ENDED, it was not starved."** With
    `CZ_AUDIO_TRACE=1 CZ_XMA_DECODE_LOG=1` beside the clock probe, the three dialogue
    contexts (5/6/7, `stereo=1`, 48 kHz) decode across two 5-second windows and never
    appear again; their totals as stereo-interleaved seconds are **5.03, 5.04, 4.92**
@@ -331,18 +348,21 @@ Next, in order:
    the cinematic carry on never fires. It could only appear now: before phase A/V
    nothing decoded, so no voice ever reached the end of a stream.
 
-   **THE DISCRIMINATOR TO RUN FIRST, because the two stories have opposite fixes.** Our
-   decode length agreeing with the frozen position is equally consistent with "the clip
-   is 4.91 s and only the end-of-stream handshake is broken" and with "our decode stops
-   early and the clip is longer". The asset settles it, not us: `CZ_FILE_TRACE=1` on
-   this run names the file, then `tools/big_list.py` gives the entry's true length. Do
-   that before touching `kernel/audio.cpp`.
+   That conclusion was drawn from our decoded length agreeing with the guest's reported
+   position — and **agreement between two components we built measures our own
+   consistency, not the ground truth.** The asset was one `CZ_FILE_TRACE=1` away and had
+   not been asked. The discriminator had been correctly identified and written down; the
+   error was recording the likelier branch as a finding instead of leaving it open.
 
-   Worth a look, not worth a conclusion: contexts 2, 5, 6 and 7 all report
-   `in0=02584000`, the same input buffer address.
-
-   **The next move, and it is the first thing part 30 should do:** find why
-   `SamplesPlayed` stops. The title's own mixer maintains it, and part 28 already
+   **The next move, and it is the first thing part 30 should do: find why the guest
+   stops issuing reads for this stream while it keeps issuing them for music.** Both are
+   128 KB double-buffered XMA streams on the same machinery, one runs for the whole
+   session and one stops after the first fill, so the difference between them is the
+   defect. Start by diffing what the title does for the two: which context fields it
+   polls, and whether our decode walk leaves the cinematic contexts in a state the
+   music context never reaches. Note the three-contexts-one-buffer arrangement — a
+   retire/refill rule written for one context per buffer is wrong for 5.1 by
+   construction, and `kernel/audio.cpp` is where to check that first. The title's own mixer maintains it, and part 28 already
    measured that mixer going silent in the same era. Note the ordering nuance this
    part exposes: "audio" is TWO facts here — the position the guest reports (stops
    first, upstream of the stall) and audible output (stops later, downstream, as the

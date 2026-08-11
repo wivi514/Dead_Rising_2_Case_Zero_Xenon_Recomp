@@ -683,13 +683,22 @@ Where the port is, as of 2026-08-11 (part 29):
   `CZ_CINE_AUDIO_MODE=0|1|2` is the arm and every setting is a path the TITLE
   implements: **LOOPING / FROZEN / no-loop**, with mode 1 predicted before it was run.
   **The PID is the mechanism of the symptom, not the defect** — do not touch the gains.
-  The live question is one level up: `SamplesPlayed` stops at exactly 235,520 samples
-  (= 1,840 XMA subframes) while the voice still reports itself playing, so the
-  wall-clock fallback never fires. A diagnostic run says the clip ENDED rather than
-  starved (the three dialogue contexts decode 5.03/5.04/4.92 s and stop, our decoder
-  stays healthy). **Run the discriminator first** — whether 4.91 s is the clip's true
-  length or where our decode stops has two opposite fixes, and `CZ_FILE_TRACE=1` plus
-  `tools/big_list.py` tells them apart.
+  **The live question is one level up, and it is that THE GUEST STOPS STREAMING THE
+  CINEMATIC AUDIO AFTER ONE BUFFER.** The asset is `audio/cinematics.big` entry
+  `39694.xma`, 24,377,344 bytes; summing `frame_count` over its 11,903 XMA2 packet
+  headers gives **316.5 s (5:16) as three interleaved 2-channel streams** — 5.1 audio,
+  confirmed by the operator's ~5:10 and explaining why contexts 5/6/7 share one input
+  buffer. `CZ_FILE_TRACE=1` shows `music.big` read 47 times in alternating 128 KB
+  buffers forever, and `cinematics.big` read **once into each of two buffers and never
+  again** — 1.1% of the stream. We decode the first buffer's 4.916 s of a 316 s clip;
+  `SamplesPlayed` pins 448 sample-frames behind that and everything above follows.
+  Music double-buffers correctly on the same machinery, so **the difference between the
+  two streams is the defect**, and a retire/refill rule written for one context per
+  buffer is wrong for 5.1 by construction.
+  **RETRACTED mid-part: "the clip ENDED rather than starved."** It was inferred from our
+  decoder's output agreeing with the guest's reported position to 448 frames — two of our
+  own components agreeing, which is a consistency check and cannot be an oracle
+  (gotcha 270). The asset was one `CZ_FILE_TRACE=1` away and had not been asked.
 * **The 00j gate was diluted 6x and every recorded reading has it.** `runs/distinct`
   over a whole prologue run reads 6.14 because ~1,870 menu frames contribute 1,010 of
   the 1,170 distinct poses; the cinematic era alone is **38.27** and steady state is
