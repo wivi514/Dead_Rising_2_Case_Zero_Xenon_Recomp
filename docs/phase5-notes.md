@@ -4639,3 +4639,105 @@ above `1/exposure` arrives through a constant. Comparing the remaining 23 is one
 care needed is that many of them are camera- and light-dependent, so the comparison has
 to be made at a matched location — the operator's route reaches `w1_spawn`, which is the
 capture that carries the ground draw.
+
+## 6bb. THE GROUND SHADER'S OTHER 23 CONSTANTS: hardware's values, the dataflow that
+## uses them, and a prediction registered before the run (part 31)
+
+§6ba ended by naming the owed comparison: the ground shader `ps_ad65b98593f95926` reads
+**32 distinct pixel constants** and nine had been compared. This section reads the other
+23 off hardware, works out from the shader's own disassembly which of them can carry a
+value above 1.0, and states what our runtime is expected to disagree about **before the
+run that tests it**.
+
+### All seven captures answer, not five
+
+Part 27 recorded that `w1_spawn` cannot supply the ground draw's constants. It cannot
+supply `c253..c255` — those three arrive by a `LOAD_ALU_CONSTANT` whose source memory the
+trace does not carry, and `tools/xtr_draw_constants.py` prints them as `UNRECOVERABLE`
+rather than as zeros (gotcha 263). Every other register it wants is `set`, and all seven
+captures carry the draw. `w1_spawn` is the one to read, because it is the capture whose
+screenshot shows the defect at its worst ("white ground, turned around").
+
+Hardware, `w1_spawn`, draw #0, `ps_ad65b98593f95926`, 25,234 indices:
+
+    pc(  1)    1.000000    1.000000    1.000000    1.000000
+    pc( 14) -120.441513    5.201186  -77.814049    0.331368     camera xyz + EXPOSURE
+    pc( 15)   -0.030648   -0.173998    0.984269    0.000000     a unit direction
+    pc( 16)    1.000000    0.000000    0.000000    0.000000
+    pc( 18)   15.000000    0.004000    0.250000    1.000000     fog: start, 1/range, min
+    pc( 19)    0.260000    0.400000    0.980000    1.000000     fog colour
+    pc( 20)    0.000000    0.000000    0.000000    0.000000     SHADING-PATH SELECTOR
+    pc( 21) -149.408096    6.234319 -106.297379    0.740000     a point light's position
+    pc( 22)    0.388236    1.043922    0.741961    6.866384     that light's COLOUR + range
+    pc( 23)   -0.371391    0.557086    0.742781    0.400000     a unit direction (sun)
+    pc( 24)    3.300000    1.500000    1.000000    0.000000     SUN COLOUR — all above 1
+    pc( 27)   -0.009998    0.999750    0.019995    1.000000     a unit direction
+    pc( 28)   -0.015843   -0.008015   -0.001910   -1.889862  \
+    pc( 29)    0.022816   -0.058226    0.055078    7.405762   |
+    pc( 30)    0.005855   -0.008782   -0.011710    0.840724   |  three 4x4 shadow-cascade
+    pc( 31)    0.000000    0.000000    0.000000    1.000000   |  matrices, `dp4`d against
+    pc( 32)   -0.010082   -0.005100   -0.001216   -0.907196   |  the world position
+    pc( 33)    0.019557   -0.049908    0.047210    6.165527   |
+    pc( 34)    0.005533   -0.008299   -0.011066    0.863456   |  (c28..c31, c32..c35,
+    pc( 35)    0.000000    0.000000    0.000000    1.000000   |   c36..c39 — the guess
+    pc( 36)   -0.004107   -0.002078   -0.000495    0.102814   |   that c28..c39 was "a
+    pc( 37)    0.007605   -0.019409    0.018359    2.353027   |   light array" was wrong)
+    pc( 38)    0.004139   -0.006208   -0.008278    0.903830   |
+    pc( 39)    0.000000    0.000000    0.000000    1.000000  /
+    pc( 40)   -0.020821   -0.000195   -0.000683   -1.684784  \  a fourth projection, used
+    pc( 41)   -0.004072   -0.002539    0.124908    9.221191   |  with tf5 — the far/static
+    pc( 42)    0.000003   -0.000279   -0.000006    1.000202  /   shadow term
+    pc( 44)    0.000244    0.000977   18.000000    0.071429
+    pc( 45)    3.000000    6.000000    0.350000    1.000000     cascade split distances
+    pc( 46)    8.000000   12.000000   32.000000    7.000000     cascade split distances
+    pc( 47)    0.001000    0.002000    0.003000 3583.531006     per-cascade depth bias
+    pc( 67)   10.000000    0.000000    1.000000    4.000000     .w = 4.0 — see below
+    pc(253)  UNRECOVERABLE     (the literal pool; §6ba already showed ours matches)
+    pc(254)  UNRECOVERABLE
+    pc(255)  UNRECOVERABLE
+
+### Where a value above 1.0 can enter, read off the disassembly
+
+The colour the epilogue consumes is `r6.xyz`, and there are exactly three ways it is
+written. Everything below is a line number in
+`~/DR2CZ-troubleshooting/r2-shaders/shader_D007C18389DF0E55.ucode.frag`.
+
+* Lines 18-20 seed `r6.xyz` with the **albedo** from `tf0`, and lines 101-103 replace it
+  with the lit colour:
+
+        102:  mad r1.xyz_, r6.xyzz, r0.wzyy, r7.xyzz     // albedo * light + r7
+        103:  mul r1.xyz_, r1.zyxx, c1.zyxx              // * c1.rgb   (= 1,1,1)
+
+* **`r7` is an ADDITIVE term and it is scaled by `c67.w = 4.0`** (line 21,
+  `mul r7.xyz_, r0.wzyy, c67.wwww`, where `r0.wzy` is the `tf1` fetch squared at line 20).
+  A DXT1 texel cannot exceed 1, and squaring it cannot either — but `x^2 * 4` reaches
+  **4.0**. This is the largest single source of range in the shader.
+* **The diffuse light is scaled by `c24 = (3.3, 1.5, 1.0)`** (line 75,
+  `mul r0._yzw, r0.wwww, c24.zzyx`), then shadowed and added to the `tf2` ambient at line
+  88. A warm sun whose red channel is 3.3.
+* **`c22.xyz = (0.388, 1.044, 0.742)`** is a point light's colour, added at line 100, and
+  its green channel is above 1.
+* **`c20` chooses the path.** Lines 103/104/107 are `setp_gt r0._, c20.x` / `c20.y` /
+  `c20.z`, and with hardware's `c20 = (0,0,0,0)` all three fail, which lands on the
+  ordinary lit path at line 109. **A non-zero `c20.x` jumps straight to `L26` and leaves
+  `r6` holding the raw albedo** — unlit, unshadowed, and unmodulated by the sun colour or
+  by anything the time of day changes.
+
+So the three constants that can carry hardware's extra range are `c67.w`, `c24.xyz` and
+`c22.xyz`, and one constant — `c20` — can remove the shading entirely.
+
+### PRE-REGISTERED PREDICTION (written and committed before the run)
+
+> At least one of `c20`, `c24` and `c67` disagrees with hardware in our runtime, and
+> `c20.x > 0` is the single assignment that reproduces part 27's measurement that these
+> surfaces are not modulated by lighting or by time of day.
+
+If instead all 32 registers match to the printed digit, the constants are exonerated as a
+class, and what is left as an input to this draw is the **interpolated vertex registers**
+and the **contents of `tf3`/`tf5`, which are the shadow maps WE render** — the only inputs
+to this draw that part 27 did not compare, because they are not loaded from memory.
+
+**One caveat is registered with the prediction**: `c14`, `c15`, `c21`, `c23`, `c27` and
+`c28..c42` are camera-, light- and time-of-day-dependent, so a disagreement in those is
+not by itself a defect. `c1`, `c16`, `c18`, `c19`, `c20`, `c22.w`, `c24`, `c44`, `c45`,
+`c46`, `c47` and `c67` look like tuning values and should match wherever the run stands.

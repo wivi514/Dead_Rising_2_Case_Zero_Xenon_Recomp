@@ -5208,7 +5208,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // it looks like a draw that binds nothing wrong, and "zero draws bind the dummy in
     // this frame" was about to be reported as a measurement when it was a buffer size
     // (gotchas 25 and 109 — a capped line is not a count).
-    char psbindLine[2048];
+    // 8192, not 2048: part 31 asks this line for the ground shader's THIRTY-TWO declared
+    // pixel constants at once (~45 chars each), and they have to be on ONE line for the
+    // same reason the bindings do — a second draw is a different piece of geometry. At
+    // 2048 the constant loop would have stopped silently around register 20, which is
+    // the same failure the comment above describes, one field over.
+    char psbindLine[8192];
     bool psbindFull = false;
     // The pass's WRITE state belongs on this line too. "colour = f(constants,
     // textures)" is only true of a draw that writes its colour at all: an empty
@@ -5455,8 +5460,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const char* list = Env("CZ_VK_PSBIND_PC");
             std::string spec = list ? list : "255";
             size_t at = 0;
-            while (at < spec.size() && psbindAt < int(sizeof psbindLine) - 64)
+            bool pcTruncated = false;
+            while (at < spec.size())
             {
+                if (psbindAt >= int(sizeof psbindLine) - 64)
+                {
+                    // A constant list cut short reads as a shorter list, not as an
+                    // error, and the reader then concludes the shader does not use the
+                    // registers that fell off the end. Say it out loud (gotcha 109).
+                    pcTruncated = true;
+                    break;
+                }
                 const size_t comma = spec.find(',', at);
                 const uint32_t r = uint32_t(strtoul(spec.c_str() + at, nullptr, 10));
                 if (r < 256)
@@ -5472,6 +5486,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     break;
                 at = comma + 1;
             }
+            if (pcTruncated && psbindAt < int(sizeof psbindLine) - 32)
+                psbindAt += snprintf(psbindLine + psbindAt,
+                                     sizeof psbindLine - psbindAt,
+                                     "  (PC LIST TRUNCATED)");
         }
         // The census wants EVERY draw, so it bypasses the distinct-binding filter that
         // makes `[psbind]` readable. That filter is what would hide the one line being
