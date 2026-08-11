@@ -66,6 +66,44 @@ zero painted), XenosRecomp's `rcp` clamp (`FLT_MIN` is -FLT_MAX, and +3.4e38 giv
 180), and an emitter defect in the epilogue (the HLSL is one-to-one with the microcode, so
 **nothing for Fable 2 to inherit**).
 
+## LATE IN PART 27: THE ASSET LAYER, AND THE GRADING CHAIN END TO END
+
+Written after the section above, from an operator question — *did we extract all the
+`.big` files, and is that why things are white?* The answer is no, and chasing it properly
+produced four things worth keeping.
+
+**1. The extraction is complete and the file layer is clean.** 256 of 256, zero missing,
+zero wrong size, 146 of 146 archives, zero case mismatches. The 304 not-founds a run
+produces are the title probing for Dead Rising 2 content this cut-down package never
+shipped — and Xenia launches the SAME package, so a file absent here is absent there.
+
+**2. Not-founds are now CLASSIFIED**, in `runtime/kernel/file_imports.cpp`, because 304
+expected misses hid any real one: PROBE (parent empty or absent) 300, SIBLING (parent
+holds files — where a missed extraction would land) 4, REGRESSED (opened OK earlier in
+this run) 0. SIBLING and REGRESSED print immediately, not at exit — most runs here die to
+`timeout`.
+
+**3. `tools/big_list.py` + `tools/big_decompress.cpp` read the archives**, and corrected
+`docs/big-archive-format.md` twice: the name table is NOT fixed-width outside the shader
+banks (95 of 146 archives failed that check), and **1,671 of 12,481 entries are
+COMPRESSED** — `size` is stored, `size2` uncompressed, the stream is BE-framed chunked LZX
+inside a LE container. Both retractions are the same shape as the 40-byte-stride error the
+doc already recorded: **a structural constant derived from one family of files is a
+property of that family until a second family says otherwise.**
+
+**4. The colour-grading chain works, and item 6 has a mechanism for the first time.** The
+15 grades ship LZX-compressed as 32-cubed LUTs unrolled into 1024x32 tiled strips (about
+five distinct looks — `cc_01 == cc_04`, `cc_07..cc_13` are one). The runtime binds one to
+`ps_114c4965eaabd54c`, one draw a frame, and the content is an **exact byte match** to a
+disc LUT (mean |delta| 0.00 against a field 16 to 110 apart). The index **tracks the
+clock**: frozen gives `cc_03`, running gives `cc_01`.
+**What is NOT established** is whether that is the index hardware picks — the capture
+cannot say, because hardware's LUT address is a resolve destination there too and the
+bytes the trace carries are monotone under no layout, i.e. not a LUT. And **we snap to one
+grade exactly while the title keeps THREE LUT surfaces**, which is the shape of a
+cross-fade; if hardware blends and we snap, colour is right at each band's endpoints and
+wrong between — which is what "colour is flat" describes. No evidence either way yet.
+
 ## Where part 28 starts
 
 0. **WHAT PINS `c` AT `1/pc(14).w`.** One value, one shader, one instruction to find. The
