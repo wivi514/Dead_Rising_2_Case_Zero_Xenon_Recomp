@@ -2517,3 +2517,27 @@ From phase C part 18 (the frame rate — and none of it was work):
      than a picture. Two independent derivations of the same value are still not evidence
      that the value came from there. The question that would have caught it four parts
      earlier is the cheap one: **what would move these pixels, and does it?**
+
+278. **A SYMPTOM THAT SURVIVES AN ARM IS NOT A SYMPTOM THE ARM DOES NOT AFFECT — NAME THE
+     PROPERTY THAT WOULD HAVE CHANGED BEFORE CONCLUDING NOTHING DID.** Part 31 fixed the
+     shadow atlas, then read two screenshots of the CONTROL arm, saw the same qualitative
+     symptom the operator had reported on the fixed build — a lit region that moves around
+     the frame with the camera — and wrote that the fix was "neither the cause nor the
+     cure". The operator's own fold-ON shots half an hour later said the opposite: *"much
+     wider, the spot where shadows are is actually in front of the camera."* Both arms have
+     a camera-dependent lit region, so "the symptom is present in both" was true and
+     useless. What separated them was its **extent**, and the mechanism predicted exactly
+     that: with only one of four cascades populated, a pixel past the first split distance
+     (8 m, from the title's own `pc(46)`) samples an empty region and reads as occluded;
+     with all four, the shadow term is real out to the third split at 32 m.
+     **The discipline is to state, before looking, which measurable property the fix
+     should move** — here a radius that falls straight out of constants already read — and
+     to check that one rather than asking "does it still look wrong". A defect that is
+     40% fixed looks exactly like a defect that is 0% fixed if the only question asked is
+     whether it is gone.
+     Two aggravating factors worth copying into any port's habits: the comparison was
+     being made against a REMEMBERED pair of images because the arm's own screenshots had
+     not been saved to disk yet (gotcha 50/51/86, and the reason the screenshot tooling
+     got fixed the same afternoon), and two shots at two different cameras is enough to
+     establish "a moving region exists here" and never enough to establish "the two arms
+     are the same".

@@ -92,13 +92,25 @@ Everything from parts 26-30's lists stands. Part 31 adds three, in `docs/gotchas
    ones). One caution from §6bd: a plateau count compared across two RUNS is not a
    measurement (gotcha 254); within one frame, "these pixels vanished when that draw did"
    is sound.
-2. **ASK THE OPERATOR WHETHER SHADOWS APPEAR NOW.** Item 3's map is right for the first
-   time, and part 15's standing instruction — *do not judge the shadow lookup until the
-   map is right* — has only just become satisfiable. Three configs on the same binary:
-   default, `CZ_VK_NO_ADDR_TILE_FOLD=1`, and whatever the operator remembers. The named
-   thing to look for is the power-line shadow across the Still Creek forecourt.
-   Know the headless answer first: it does NOT change the white surfaces (2,074 px at 180
-   before and after), and the sign says why — a zero depth sample reads as OCCLUDED.
+2. ~~**ASK THE OPERATOR WHETHER SHADOWS APPEAR NOW.**~~ **ASKED AND ANSWERED THE SAME
+   DAY — the fix reaches the picture, and a SECOND defect is now the item.** Four operator
+   screenshots at one Case 0-2 crowd spot, both arms of one binary, in
+   `~/DR2CZ-troubleshooting/part31/operator-shadow-ab/`. Fold ON: *"much wider — the spot
+   where shadows are is actually in front of the camera"*, and *"still way far from
+   intended behaviour, but much better."* Fold OFF: a smaller lit patch that jumps around
+   the frame.
+   **The remaining defect is beyond the last cascade split, and it is well posed.** The
+   split distances are `pc(46) = (8, 12, 32, 7)`; the fix takes the real shadow term from
+   ~8 m to ~32 m, which is the improvement. Past the last split, line 81's
+   `mul_sat r3.w, r3.w, c44.w` (with `pc(44) = (0.000244, 0.000977, 18, 0.071429)`) and
+   the `tf5` term are supposed to fade the surface back to FULLY LIT. Work out what ours
+   does there — that is a different question from the atlas, and `c40..c42` plus `tf5`
+   are the inputs.
+   It does NOT change the white surfaces (2,074 px at 180 before and after), and the sign
+   says why — a zero depth sample reads as OCCLUDED.
+   **Read gotcha 278 before judging the next shadow change**: this session called the fix
+   a null on two control-arm screenshots, because both arms show a camera-dependent lit
+   region and only its EXTENT separates them.
 3. The rest of `docs/open-items.md`, and `docs/perf-cpu-plan.md`'s largest item — the
    CPU/GPU overlap work (gotcha 231), still the biggest performance term.
 
