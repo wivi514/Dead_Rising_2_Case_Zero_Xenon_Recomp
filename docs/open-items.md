@@ -1430,6 +1430,45 @@ Next, in order:
    smear is NOT the untiler (0 skips in 925 textures) and NOT a shadow
    (`CZ_VK_NO_DEPTH_FETCH=1` leaves it).
 6. **The last picture difference: colour is flat and green-shifted** (§6ad item 2).
+
+   **PART 27: THE GRADING LUT IS REAL, IT IS APPLIED, AND THE INDEX RESPONDS TO THE
+   CLOCK.** The whole chain was walked end to end for the first time.
+
+   * The 15 grades ship as `cc_01..cc_15.bct` inside `data/streamedassets.big`, LZX
+     compressed. `tools/big_list.py --extract` plus `tools/big_decompress` recovers them;
+     each is **131,120 bytes = a 48-byte header + a 32-cubed RGBA LUT unrolled into a
+     1024x32 strip**, and TILED (see `docs/big-archive-format.md`).
+   * **They are not 15 distinct grades.** By content: `cc_01 == cc_04`, and
+     `cc_07..cc_13` are one grade — roughly five distinct looks across the fifteen slots.
+   * **The runtime binds one**, `1024x32` at slot 4, to `ps_114c4965eaabd54c`, exactly one
+     draw a frame. The title renders its live LUT into three surfaces (`14338000`,
+     `14359000`, `1437A000`) which hold identical bytes while no transition is running.
+   * **The content served is an EXACT byte match to a disc LUT — mean |delta| 0.00** —
+     against a field where the runner-up is 16 away and the furthest is 110, so the match
+     is a measurement and not a coincidence.
+   * **And the index tracks the clock**: with `DISABLE TIME OF DAY` the bound LUT is
+     **`cc_03`**; with the clock running it is **`cc_01`**, stable over five samples across
+     two minutes. Freezing the clock changes the chosen grade, which is what says the
+     selection is driven by time-of-day state rather than being a constant.
+
+   **WHAT IS STILL NOT ESTABLISHED, and the capture cannot settle it.** Whether the index
+   we pick is the index HARDWARE picks at the same in-game time. `w1_spawn` (7:53 am)
+   binds its LUT at `180CC000`, which is a RESOLVE DESTINATION there as well — so the
+   trace's `MemoryRead` carries whatever the allocator left, not the resolved pixels
+   (gotcha 113). Read tiled it is 16 of 31 monotone on the neutral diagonal; read linear,
+   15-18 of 31. **A LUT is monotone in every channel under the right layout, and this is
+   monotone under none, so those bytes are not a LUT** and the best disc match is a
+   meaningless 55.6. The capture is not omniscient — the same lesson as gotcha 263, in a
+   different subsystem.
+
+   **One thread worth stating without over-reading it:** our served LUT matches a disc LUT
+   EXACTLY, i.e. we snap to one grade with no blending, and the title keeps THREE LUT
+   surfaces, which is the shape of a cross-fade. If hardware blends between adjacent
+   grades and we snap, colour would be right at the endpoints of each time band and wrong
+   in between — which is the sort of thing "colour is flat" describes. **There is no
+   evidence either way yet**; establishing it needs a capture taken during a transition,
+   or the guest code that writes those three surfaces.
+
    Much improved by part 14 and not closed. The tone map's LUT is what §6s proved this
    frame depends on completely.
 7. **The conservative screen extent is still a placeholder** (part 11). Both tiles
