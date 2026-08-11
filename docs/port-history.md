@@ -1373,6 +1373,56 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 29, second half (2026-08-11) — FIXED, by one field in a packet header
+
+The diagnosis in the first half was right and its conclusion about the ROOT was wrong.
+The operator refuted it in one sentence — "the clip is around 5 min 10 s" — and reading
+the asset that sentence forced open answered everything at once.
+
+**The asset.** `audio/cinematics.big` entry `39694.xma`, 24,377,344 bytes. Its 11,903
+packet headers sum to 89,007 frames of 512 samples = **316.5 s as three interleaved
+streams**, matching the operator's stopwatch. Three streams because the 360 decodes 5.1
+as several 2-channel streams sharing one packet stream, one XMA context per pair —
+**which is why the prologue's contexts 5, 6 and 7 all pointed at input buffer
+`02584000`.** This project had noticed that twice and written it down twice as "worth a
+look, not worth a conclusion". It was the bug's fingerprint.
+
+**The defect.** The XMA2 packet header carries `packet_skip` — how far to step to reach
+the next packet OF THE SAME STREAM. Our walk advanced by one. Byte-correct for mono and
+stereo, which is every other asset this title plays and where `skip` is always 0, so it
+survived 29 parts. Wrong for 5.1, where each context then decodes the other streams'
+packets as its own. One 128 KB buffer is 64 packets carrying 519 frames = **1.845 s of
+programme**; the skip chain from packet 0 reaches **20 of those 64**; we produced
+**4.916 s** per context. 2.66x too much audio, so each output ring filled about three
+times faster than the title's mixer drained it, the whole 5.1 voice group wedged after
+one buffer, `SamplesPlayed` stopped, and the PID clock tracked a frozen input.
+
+**The result.** Cinematic-era `runs/distinct` **120 -> 1.00 in every quarter**; the audio
+clock **4.906667 s frozen -> 310.7 s of a 316.5 s track**; `audio/cinematics.big` read
+**2 -> 201** times. An operator session then played **four** cinematics to completion with
+sound — the prologue, one more, the safehouse exit and the combo-weapon award, which
+awards the weapon — with `CZ_CINE_TIME` recording exactly three playback segments running
+0.00 -> 310.68, 0.00 -> 60.26 and 0.00 -> 17.53 s across 21,172 frames that never looped.
+`open-items.md` 1 closes with it: no cinematic is known to fail.
+
+**A second defect, fixed separately and recorded as having changed nothing visible.** The
+walk retired a spent input buffer by unconditionally switching to buffer 1, which this
+title never uses (136 context dumps, `in1Ptr` 0 in every one; it re-arms buffer 0 in place
+and swaps only the pointer). That parked a context on a buffer that does not exist,
+unrecoverably. `ctx7` was caught in it. Necessary and correct; moved the gate by zero.
+
+**Knock-on:** the shader cache grew **411 -> 417**. A cinematic that plays binds six pixel
+shaders no run had ever reached, and the session logged `no translated shader` six times.
+Gotcha 13 on this project's own claim — "the shader cache is complete" expired because an
+unrelated audio defect got fixed.
+
+**Two ledger entries, both of which cost real time.** 270: two components you built
+agreeing is a consistency check and never an oracle — our decoder's output matched the
+guest's reported position to 448 sample-frames out of 235,968, and that agreement was read
+as "the clip ended". 271: a format field that is zero in every asset you have played is
+untested, not absent; and an unexplained structural oddity in your subject is the bug,
+waiting.
+
 ## Part 29 (2026-08-11) — the cinematic loop is a CONTROL loop, and the defect moved
 ## one level up into the audio pipeline
 
