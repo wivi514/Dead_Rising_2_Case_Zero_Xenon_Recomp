@@ -2232,3 +2232,67 @@ From phase C part 18 (the frame rate — and none of it was work):
      the oracle it was measured on, and here the oracle is fine while OUR arm is the
      contaminated one. It also outranks acting on the result: do not build the candidate
      fix for a defect an unusable comparison failed to confirm.
+
+267. **A GUEST STRUCTURE HANDED TO A DMA DEVICE HOLDS PHYSICAL ADDRESSES, AND IN A FLAT
+     RECOMPILER MAP THOSE ARE NOT THE ADDRESSES THE CPU USES.** This silenced Case Zero
+     for twenty-eight parts and it will silence Case West unless someone checks.
+
+     The 360's XMA decoder is a DMA device: the title writes PHYSICAL addresses into the
+     hardware's context structure, and on the console the MMU makes them the same bytes
+     the CPU reaches through a cached virtual alias. A static recompiler's address space
+     is one flat 4 GB map in which the physical arena is a WINDOW — here at 0xA0000000 —
+     so the physical address and its virtual alias are two different offsets into `base`
+     and *nothing aliases them*. Read the structure's pointer literally and you get a
+     page of zeros.
+
+     The failure mode is what makes it expensive: **a zero page decodes to silence, not to
+     an error.** Every layer above looks healthy — the pump runs at the right cadence, the
+     mixer submits its frames, the decoder accepts its packets — and the symptom is
+     indistinguishable from "the game produced no audio", which is where three sessions of
+     this project's audio work were aimed.
+
+     What found it was one field on one log line. The trace said
+
+         NtReadFile('game:\data\audio\music.big', 131072 bytes @ 16666624)
+              -> 131072 into A2538000
+         [xma] ctx0 in0=02538000 64 pkts (131072 bytes): 0 non-zero (0.00%)
+
+     and the two addresses are 0xA0000000 apart. **A read that reports the right byte
+     count into the wrong place is indistinguishable from a correct one unless the trace
+     prints its DESTINATION** — that is the transferable half, and it is one `%08X` on
+     every file-IO trace you will ever write.
+
+     Corroboration was free and worth taking: 16,666,624 is exactly the offset of
+     `PressStartPrologue.xma` in `music.big`, and 131,072 is exactly the 64 packets the
+     context declares. When the guest's numbers line up that precisely with an asset, the
+     guest is not the one that is wrong.
+
+     **The general rule: for any structure the guest fills in for HARDWARE rather than for
+     itself — audio contexts, GPU ring buffers, DMA descriptors, command lists — ask which
+     address space its pointers are in before dereferencing one.** The kernel usually
+     already states the convention in the opposite direction; here
+     `MmGetPhysicalAddress_x` was three lines long and had implemented the exact inverse
+     (`address >= 0xA0000000 ? address & 0x1FFFFFFF : address`) since phase 1.
+
+268. **A STUB THAT FAKES A STATE MACHINE REFUTES LESS THAN A REAL IMPLEMENTATION, AND IT
+     CAN RETIRE A TRUE HYPOTHESIS.** `CZ_XMA_NULL_DECODER` is a decoder that consumes its
+     input and produces nothing, built so voices could start and stop without one. Part 16
+     ran all three of its configurations against the prologue's frozen cinematic — always
+     playing, never playing, and plays-then-ends with 19 start / 18 stop edges — got a
+     frame-for-frame identical freeze in each, and recorded the hypothesis as **"refuted,
+     not merely unconfirmed"**. It was the strongest form of negative result this project
+     knows how to produce, and it was wrong: with a REAL decoder the freeze disappears
+     (10,527 frozen frames -> 159, 15% of frames covered -> 99.94%).
+
+     The arm moved the *predicate the title polls* — the input-buffer-valid bits. It could
+     not move what the cinematic was actually waiting on, which is downstream of PCM
+     existing. **An arm refutes a hypothesis only over the states it can actually reach**,
+     and a null implementation reaches the states its author thought were load-bearing.
+     Both polarities of a predicate is not the same as the whole mechanism.
+
+     So: when a null/fake arm returns a negative, write down *what it cannot do* next to
+     the conclusion, and re-ask the question when the real thing lands (gotcha 172, whose
+     scope this widens — a retirement is only as good as the oracle it was measured on,
+     and your own stub is an oracle). The cheap tell here was available at the time: the
+     arm's own documentation said it "fabricates progress the real hardware would only
+     make after actually decoding the audio", which names the gap exactly.

@@ -252,7 +252,33 @@ Next, in order:
    quote the tally.** It costs nothing and this table is what a silent renderer looks like
    after eight parts of not being able to ask.
 
-00e. **THERE IS NO SOUND, AND THE FIRST QUESTION IS NOT THE OBVIOUS ONE.** Operator
+00e. ~~**THERE IS NO SOUND**~~ **CLOSED IN PHASE A/V — THE GAME MAKES SOUND.**
+   `maxpeak=0.108854` and 15,991 of 18,433 frames non-silent on a plain boot, against
+   `0.000000` and 0 with `CZ_NO_XMA_DECODE=1` on the same binary. An SDL device opens on
+   pipewire and holds a steady 27 ms queue.
+
+   **This item's ordering was right and is why the diagnosis was two lines.** Step 3 said
+   output LAST; step 2 said the cause is upstream of the mixer; the caveat about telling
+   silence from blindness is what made either statement trustworthy. Following that order
+   meant the decoder went in before any device, so when it produced nothing there was
+   exactly one place to look.
+
+   **What was actually wrong was neither of the two things this item predicted.** The
+   decoder was necessary but not sufficient: the XMA context's buffer pointers are
+   PHYSICAL addresses (the APU is a DMA device) and our flat map puts the physical arena
+   in a window at 0xA0000000, so reading them literally gives a page of zeros — which
+   decodes to silence and reproduces the symptom exactly. Found by printing the
+   DESTINATION of `NtReadFile`. `docs/phase-av-notes.md` §3, gotcha 267, and it is a Case
+   West item on day one.
+
+   **The trap this item warned about does not apply to us** — our pump has always been
+   `sleep_until` on an accumulating deadline, not Fable 2's `sleep_for`, and it measures
+   187.4-187.6 callbacks/s against the 187.5 that 48 kHz needs. The warning below is
+   retracted; what was missing was the counter, not the fix.
+
+   The original item follows, because its reasoning is the reason this went quickly.
+
+00e-original. **THERE IS NO SOUND, AND THE FIRST QUESTION IS NOT THE OBVIOUS ONE.** Operator
    request, part 25. The obvious plan — port Fable 2's `audio_out.cpp` and open an SDL
    device — is probably NOT the first step, and one measurement says why.
 
@@ -1181,7 +1207,27 @@ Next, in order:
    bindless heap was exhausted and the scene filled with WHITE dummies, the frame washed
    out, so exposure demonstrably tracks scene content. `CZ_VK_SNAP_DUMP` dumps that
    luminance chain and is the direct check.
-1d. **The prologue-vs-later cinematic split may be a CLOCK problem, untested.** The two
+1d. ~~**The prologue-vs-later cinematic split may be a CLOCK problem**~~ **CLOSED IN
+   PHASE A/V: IT WAS AUDIO, AND THE ENTRY BELOW THAT SAYS "not audio" IS THE ONE THAT WAS
+   WRONG.** Wiring a real XMA decoder takes the prologue's longest frozen camera run from
+   **10,513 frames to 159** and presented coverage from **15.00% to 99.94%**, with
+   `CZ_NO_XMA_DECODE=1` as the same-binary control and a second control run confirming the
+   pair is not `CZ_FAKE_PRESS_SEQ` drift (the two controls agree to 0.1%).
+   `docs/phase-av-notes.md` §4.
+
+   **Read the retraction, not just the result.** Part 16's "not audio" was not a guess: it
+   was `CZ_XMA_NULL_DECODER` run in three configurations of one binary — voices always
+   playing, never playing, and starting-then-finishing with 19 start / 18 stop edges — all
+   freezing identically. The arm moved the predicate the title POLLS and could reach
+   nothing downstream of PCM existing, so it refuted a smaller hypothesis than the one it
+   was pointed at. Gotcha 268; `docs/phase5-notes.md` §6ah (i) is corrected in place.
+
+   The clock hypothesis was never tested and is now moot for the prologue.
+   `CZ_DETERMINISTIC_CLOCK=1` still exists if a LATER cinematic misbehaves.
+   Everything else part 16 retired — no deadlock, not our synthetic input, no missing
+   import, not the renderer — still stands. The original text follows.
+
+1d-original. **The prologue-vs-later cinematic split may be a CLOCK problem, untested.** The two
    failure modes are opposites — frozen at the first frame, or (apparently) jumping past
    the end — which is what a timeline driven by an unclamped wall-clock delta does either
    side of a long load. `CZ_DETERMINISTIC_CLOCK=1` advances the guest clock a fixed
@@ -1251,7 +1297,13 @@ Next, in order:
    data behind them. Nothing here is a substitute for the save round trip, which already
    works — a backed-up `CZ_SAVE_DIR` is the checkpoint mechanism available today.
 
-2. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
+2. ~~**THE PROLOGUE**~~ **CLOSED IN PHASE A/V — it was the missing XMA decoder.** See 1d
+   above and `docs/phase-av-notes.md` §4. Of the three lines this item proposed, the
+   cheapest one — raise the engine's own debug gates — became one env var in part 28
+   (`CZ_GUEST_DIAG=1`) and is still the right first move for any "what does the title
+   think it is doing" question; it just was not needed here. The original follows.
+
+2-original. **THE PROLOGUE — the search space is now much smaller** (see part 16 above). It is
    not audio, not a deadlock, not our synthetic input, not a missing import and not the
    renderer, all with arms to show for it. Three lines, cheapest first: **raise the
    engine's debug-log gates** so the title says what state it is in (`CZ_GUEST_LOG` is

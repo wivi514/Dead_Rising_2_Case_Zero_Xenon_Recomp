@@ -1994,6 +1994,24 @@ of the first cinematic.**
 
 ### (i) It is not audio — refuted across all three configurations
 
+> **THIS SECTION IS WRONG AND PHASE A/V PROVED IT. IT IS AUDIO.** Kept verbatim below
+> because *how* a three-configuration same-binary refutation retired a true hypothesis is
+> more valuable than the conclusion was. With a REAL XMA decoder — ffmpeg, wired in phase
+> A/V — the prologue's longest frozen camera run goes from **10,513 frames to 159** and
+> presented coverage from **15.00% to 99.94%**, measured with `CZ_NO_XMA_DECODE=1` as the
+> same-binary control on the same recipe (`docs/phase-av-notes.md` §4).
+>
+> The error is not in the runs below; every number in them is real. It is in what the arm
+> could reach. `CZ_XMA_NULL_DECODER` moves the **predicate the title polls** — the
+> input-buffer-valid bits sub_8285EFE0 reads — and nothing downstream of PCM actually
+> existing. Both polarities of a predicate is not the whole mechanism, and a null
+> implementation only reaches the states its author thought were load-bearing. The arm's
+> own header comment said as much at the time: it "fabricates playback progress the real
+> hardware would only make after actually decoding the audio". Gotcha 268.
+>
+> The other three negative results in §6ah — no deadlock, not our synthetic input, the
+> guest really is asking for black — are untouched by this and still stand.
+
 Part 15's evidence was 55,808 driver frames of peak amplitude exactly 0.0000. That is
 a fact about our OUTPUT, which no guest code can observe, so it could not have been
 more than a suspicion. The image states the real mechanism, and it is a good one:
@@ -2108,6 +2126,14 @@ at least one path here is built at runtime (`anm_%s.big`), so the gap will bite
 eventually.
 
 ## 6ai. GAMEPLAY IS REACHABLE — and the prologue freeze is "cinematics never end"
+
+> **PHASE A/V CLOSED THE PROLOGUE HALF OF THIS: the cinematic was waiting on AUDIO**, and
+> wiring a real XMA decoder unfreezes it (10,513 frozen frames -> 159; coverage 15.00% ->
+> 99.94%, same-binary arm). The reading below — that the teardown is fine and what is
+> missing is whatever *triggers* it — was exactly right, and the trigger turns out to be
+> downstream of the audio stream actually producing PCM. `docs/phase-av-notes.md` §4.
+> The section's own title was already retracted separately in `docs/open-items.md` 1:
+> most cinematics never failed.
 
 Phase C part 16, operator session on the part-16 binary (real controller, windowed,
 `CZ_VKDRAW=1`, no arms). This is the single most informative hour this port has had,

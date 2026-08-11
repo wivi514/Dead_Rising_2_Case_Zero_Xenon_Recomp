@@ -274,13 +274,36 @@ CZ_AUDIO_TRACE=1   XMA context allocation + EVERY driver frame scanned for its p
                    guest ADDRESS of each buffer, and SELF-TESTS the scanner at pump start
                    on a synthetic frame of big-endian 0.5f — a scan that reads the wrong
                    byte order reports zeros on any input, which is indistinguishable from
-                   silence (gotcha 30). Reads `null=0 non-silent=0 maxpeak=0.000000` all
-                   the way to gameplay: the mixer hands us real buffers full of zeros
+                   silence (gotcha 30). ~~Reads `null=0 non-silent=0
+                   maxpeak=0.000000` all the way to gameplay: the mixer hands us real
+                   buffers full of zeros.~~ **THAT WAS TRUE UNTIL PHASE A/V AND IS NOT
+                   NOW**: with the XMA decoder wired it reads `non-silent=15991 of
+                   18433, maxpeak=0.108854` on a plain boot to the title screen. The
+                   line also carries the PUMP RATE now — 187.4-187.6 callbacks/s
+                   against the 187.5 that 256-sample frames at 48 kHz need, which
+                   retires the "our pump has Fable 2's 2% deficit" note below
 CZ_VK_NO_CUBE_SNAPSHOT=1  see the renderer section — the control arm for the cube map the
                    title renders itself
 CZ_AUDIO_FRAME_US=N  the driver frame period (default 5333 = 256 samples @ 48 kHz)
 CZ_NO_AUDIO_PUMP=1 register the client but never invoke its callback — the control
                    arm for every claim about driving the audio callback
+CZ_NO_XMA_DECODE=1 **the control arm for sound.** Contexts still allocate, the register
+                   file is still published, the pump still runs, nothing decodes — i.e.
+                   the runtime exactly as it was for the port's first 28 parts. Every
+                   claim of the form "you can now hear X" needs this off-state measured
+                   on the SAME binary, and it is what established that the prologue
+                   cinematic's freeze was audio: 10,527 frames on one camera fingerprint
+                   with it set, 159 without
+CZ_NO_AUDIO_OUT=1  keep the whole pipeline — pump, decode, mix — and open no device.
+                   Separates "the guest produced audio" from "we played it", and it is
+                   what a headless gate run wants: a machine with no sound card must not
+                   be a different code path from a desktop with one
+CZ_XMA_DECODE_LOG=1  per-context decode activity every 5 s, plus each context's format
+                   when it goes live and a hex dump + independent `Xma_Validate` of its
+                   first packet. The counters are `Nf/pkP/starveS/pktC/refusedR/smpS`,
+                   and REFUSED is split from short deliberately: libavcodec rejecting a
+                   packet and libavcodec returning fewer samples than a decode frame
+                   are different defects with the same silence
 CZ_FAKE_START_MS=N synthetic press every N ms. A MEASUREMENT ARM, NOT A
                    FEATURE — it manufactures progress, so it announces itself on
                    every press and must NEVER be on for a gate run (gotcha 78).
@@ -320,7 +343,17 @@ CZ_XMA_PROBE=1     the guest's own audio state, on a 5 s clock: the IsPlaying
                    instrument that turned "there is no XMA decoder" from a statement
                    about our silence into one about what the GUEST observes: nothing
                    here ever clears an input-valid bit, so every voice the title has
-                   started is still playing for the life of the process
+                   started is still playing for the life of the process.
+                   **Phase A/V widened it to ALL SIXTEEN dwords and added a CONTENT
+                   SCAN of the declared buffers**, which is what found the defect:
+                   `in0=A2538000 (phys 02538000) 64 pkts (131072 bytes): 0 non-zero`
+                   next to `NtReadFile(...) -> 131072 into A2538000` is the whole
+                   finding on two lines. Pair it with `CZ_NO_XMA_DECODE=1` when you
+                   want the reading to be passive — the decoder retires an input
+                   buffer within milliseconds of seeing it, which destroys the
+                   evidence this scan is asked about. The dword assignment is not
+                   taken on faith either: the guest's own arithmetic confirms it,
+                   `dw[8] - dw[7] = 6400 = 25 blocks x 256`
 CZ_XMA_NULL_DECODER=1  AN ARM, NOT A FEATURE: a decoder that consumes its input and
                    produces nothing, so voices can finish. Announces itself on every
                    run and must never be on for a gate run. It is what REFUTED the

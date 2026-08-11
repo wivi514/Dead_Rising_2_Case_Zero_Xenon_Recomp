@@ -166,3 +166,28 @@ and camera fingerprint both move; and — whichever way §2 resolves — **findi
 player" framing corrected in the ledger**, because the next port of this engine (Case
 West, same studio, same cinematic scripts) will read that sentence and go looking for a
 decoder that does not exist.
+
+---
+
+# EXECUTED, 2026-08-11. Outcome: `docs/phase-av-notes.md`.
+
+This plan is kept as written because it was right about the thing that mattered and its
+§2 was the whole part. Read the notes for what happened; three corrections to the plan
+itself belong here, where a future reader meets them:
+
+* **§2's hypothesis is CONFIRMED.** "A cinematic may be STALLED waiting on audio ... it
+  would be fixed by the audio work rather than by anything in the renderer" — that is
+  exactly what happened. The §2 run answered STALLED in seven minutes, the audio work
+  fixed it, and the cinematics track (§4, C1-C4) was never needed. Doing audio first and
+  cinematics second was indeed doing one job.
+* **§3's A0 is RETRACTED.** Our pump was never Fable 2's `sleep_for` kind; it has always
+  been `sleep_until` on an accumulating deadline and measures 187.4-187.6 callbacks/s.
+  What was missing was the counter, which is now on the `CZ_AUDIO_TRACE` line.
+* **§5's list of wasted-part traps held up**, and the one that earned its place was
+  "opening an output device first". Following A1-before-A2 is why the diagnosis was two
+  log lines instead of a session: the decoder went in, produced nothing, and there was
+  exactly one place left to look.
+
+What §2 could not have known, and what a next reader should take: the hypothesis it
+proposed had been formally refuted in part 16 with a three-configuration same-binary arm.
+Writing it down anyway was correct. See gotcha 268.
