@@ -811,6 +811,50 @@ Next, in order:
    could not have matched and its negative result means nothing (gotcha 25). Answering it
    needs `docs/big-archive-format.md` and a real TOC reader.
 
+00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
+   defect but built the instrument that can.** *"I have to be really close to an object
+   to show their near LOD."* Part 28, ~1 hour.
+
+   **What the engine's own vocabulary says LOD IS here.** Every `lod` string in the image
+   (54 of them, the complete set) is about STREAMING, not about a distance curve: a
+   `cLODController` array parsed per zone beside the occluders and model instances,
+   `ForceLODTexForStreamingWorld`, `WAITING: cLevel - wait_for_tex_lod`, a `UseLOD` bool in
+   the PROP schema (next to `Unmoveable`, `Durability`, `MergedFilename`), and a per-zone
+   choice between `COMMON_TEXTURE.tex` and `COMMON_TEXTURE_LOD.tex`. There is no
+   LOD-distance scalar named anywhere in the executable. **So this is a question about the
+   streaming system's promotion rate, and it should not be chased as a distance
+   comparison.** 989 `*_LOD.tex` entries ship across the archives.
+
+   **Measured, with `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the DebugJump outdoor route:**
+   * The per-zone LOD decision RUNS and is mixed, which is what working looks like — of 7
+     zones loaded, **3 took `COMMON_TEXTURE.tex` and 4 took `COMMON_TEXTURE_LOD.tex`**.
+   * **No streaming failure of any kind fired.** No `Queue is full in MoveLoadRequest()`,
+     no `Out of memory in the load & decomp heap!`, and neither `cZone::UpdatePriorities()`
+     assert (`mForceLowLOD`, `mNumVolumes`). The run's errors were unrelated
+     (`[cNavMesh::LoadFrom] Failed to load nm_prologue_menu.txt`).
+   * Heap headroom is healthy and shrinks smoothly: the zombie vertex-buffer heap runs
+     5,742,568 -> 2,221,880 largest-free in ~330 KB steps with no floor hit.
+   * The title asks for **447 MB up front and gets it** (`[heap] big
+     MmAllocatePhysicalMemoryEx: 447 MB -> A0000000`), so this is not a starved allocator.
+   * The per-level streaming vertex-buffer heap is a fixed 24-entry table at `0x82042EB8`,
+     **25-65 MB by level id** — guest data, identical on hardware.
+
+   **So nothing here is yet shown to be OURS, and the honest state is that the mechanism is
+   unlocated.** The one candidate that WOULD be ours and has not been tested:
+   `KeSetBasePriorityThread` is a no-op and `KeQueryBasePriorityThread` returns
+   THREAD_PRIORITY_NORMAL for every thread (`runtime/kernel/imports.cpp:1463`). The title
+   creates ~47 threads including a `DecompressThreadLoop`; on the 360 those carry explicit
+   priorities and hardware-thread affinity. A decompression thread scheduled level with the
+   render thread promotes late, which is *exactly* "it loads, but only when I am close".
+   Cheap test: honour the priority as a host nice level or a thread-pool weighting, and
+   read the same `Largest free ... delta` and `[LOAD] took` lines either side.
+
+   **BEFORE ANY OF THAT, ASK THE ORACLE** (the standing rule, and it can retire the whole
+   item in one line): does Xenia show the same pop-in distance at the same spot? DR2-family
+   titles are known for aggressive LOD on real hardware, so "faithful" is a live answer and
+   it is one screenshot pair to settle. Nothing above distinguishes a faithful port of an
+   aggressive streaming system from a port whose streaming runs slow.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when

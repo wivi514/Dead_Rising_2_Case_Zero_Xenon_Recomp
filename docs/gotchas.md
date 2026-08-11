@@ -1736,6 +1736,9 @@ From phase C part 18 (the frame rate — and none of it was work):
      a shipped build leaves at zero — so silence from a category is evidence about
      its FLAG, never about the category (gotcha 25 again). Look for this FIRST in any
      port of a PC-hosted engine.
+     **CORRECTED IN PART 28 — "a debug byte per category" was wrong, and it was wrong
+     in the direction that made this look expensive.** See gotcha 266: it is ONE byte
+     for the whole engine, and it is a kill switch rather than an unset flag.
 210. **When a picture defect resists, count the boundary instead of looking at it.** The
      shadow cascade's "48.7% pure zero" had been a picture for a phase. Counting the
      populated region per row gave three exact numbers — 512, 720, and a 64-wide strip at
@@ -2182,3 +2185,28 @@ From phase C part 18 (the frame rate — and none of it was work):
     (the CLAUDE.md note about tiles, arrived at from the other end). **A per-draw census
     that does not print the SCISSOR makes every tiled title look like it double-draws**,
     and the duplicate is the single most inviting wrong lead a census can offer.
+
+266. **A "DEBUG FLAG THE SHIPPED BUILD LEFT UNSET" IS OFTEN A KILL SWITCH THE SHIPPED
+     BUILD TURNED ON — AND THE DIFFERENCE IS ONE SCAN.** Gotcha 215 recorded this
+     engine's 640-caller log sink and explained its silence as "a debug byte per
+     category that a shipped build leaves at zero", making the fix sound like a hunt
+     across hundreds of independent flags. That framing survived unexamined for
+     thirteen parts and it was wrong twice over. A scan of `.text` for `lis`-resolved
+     byte references finds **one** address, `0x829EC974`, read by **2,013 sites and
+     written by none**, every site the identical shape — and the image ships that byte
+     as **1**, with the branch `bne <skip>`. So the polarity is inverted from the
+     guess: the layer is not waiting to be switched on, it was switched OFF, and
+     clearing one byte re-enables all 2,013. `CZ_GUEST_LOG=1` alone printed **0 lines**
+     over an 11,168-line run; with the byte cleared the same route printed **1,239**,
+     which is the null and the positive control of the same measurement.
+     **The transferable part is the method, and it is cheap: for any global you suspect
+     gates diagnostics, count its READERS and its WRITERS separately.** A byte with
+     thousands of readers and zero writers is a build-time constant, and its value in
+     the image tells you the polarity without reading a single call site. Reasoning
+     about which flags a release build "would have" left unset is guessing at a fact
+     the binary states outright.
+     **Two bytes, not one.** Many of the 2,013 are the assert formatter, whose path
+     continues into a `twui` trap guarded by a SECOND byte (`0x82AC3EAD`, 592 readers,
+     2 writers). Clear the log gate alone and previously-silent asserts become fatal.
+     Setting the trap byte is not hiding anything — the assert still prints, with its
+     file and line; suppressing the trap is what makes the message reachable at all.

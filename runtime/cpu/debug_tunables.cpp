@@ -885,9 +885,117 @@ void PumpDebugFlagsFromEnvironment(uint8_t* base)
         }
 }
 
+// CZ_GUEST_DIAG=1 — the engine's ENTIRE diagnostic layer, switched back on by one byte.
+//
+// WHY THIS EXISTS
+// ---------------
+// `CZ_GUEST_LOG` (runtime/cpu/guest_probe.cpp) hooks the engine's log sink and has
+// always printed almost nothing. Its own header explains why with a guess — "most of
+// the interesting call sites are gated on a debug byte that a shipped build leaves at
+// zero" — and gotcha 215 records raising those gates as open work, as though it were a
+// hunt across hundreds of independent flags.
+//
+// It is ONE byte, and the polarity is the other way round. A scan of .text for
+// `lis`-resolved byte references finds `0x829EC974` read by **2,013 sites and written by
+// none**, every one of them the identical shape:
+//
+//     lbz     r11, -0x368c(r29)     ; r29 = 0x829F0000, so 0x829EC974
+//     cmplwi  r11, 0
+//     bne     <skip>                ; NONZERO skips
+//     ...                           ; build the message
+//     bl      0x827877C8            ; the vsnprintf that feeds sub_828223A0
+//
+// and the image ships that byte as **0x01**. So this is not a debug flag that a release
+// build failed to set; it is a release-build KILL SWITCH that silences the whole layer,
+// and clearing it re-enables all 2,013 at once. Nothing in the guest ever writes it, so
+// there is no fight to lose — but it is pumped rather than poked once for the same reason
+// CZ_DEBUG_FLAGS is, and for the counter (gotcha 151).
+//
+// WHY THE SECOND BYTE
+// -------------------
+// Many of those 2,013 sites are the assert formatter, and the assert path continues:
+//
+//     lbz     r10, 0x3ead(r10)      ; 0x82AC3EAD
+//     cmplwi  r10, 0
+//     bne     <survive>
+//     ...
+//     twui    r0, 0x16              ; TRAP
+//
+// so with the log byte cleared, an assert that was previously a silent no-op becomes a
+// fatal trap. `0x82AC3EAD` is the "report it, do not die" byte (592 readers), and the
+// guest writes it in exactly two places, which is why this is pumped. Setting it is not
+// hiding a failure: the assert still PRINTS, with its file and line, through the sink
+// CZ_GUEST_LOG already reads. Silencing the trap is what makes the message reachable.
+//
+// WHAT IT IS FOR
+// --------------
+// Asked to explain why world geometry only reaches its near LOD at close range, the
+// useful evidence is the engine's own: `Queue is full in MoveLoadRequest() priority=%d!`,
+// `Out of memory in the load & decomp heap!`, `WAITING: cLevel - wait_for_tex_lod = %c`,
+// and the two `cZone::UpdatePriorities()` asserts (`mForceLowLOD`, `mNumVolumes`). All
+// four are behind this byte. Pair it with CZ_GUEST_LOG=1, which is the sink — this arm
+// alone prints nothing, because it only decides whether the messages are FORMATTED.
+//
+// IT IS A DIAGNOSTIC ARM, NEVER A GATE CONFIGURATION. Two thousand formatting sites on
+// the frame path cost real time, and gotcha 7 applies: a probe expensive enough to stall
+// the game manufactures the behaviour it reports. Quote frame numbers from a run WITHOUT
+// this set.
+static void PumpGuestDiagnosticsFromEnvironment(uint8_t* base)
+{
+    static const bool on = getenv("CZ_GUEST_DIAG") != nullptr;
+    if (!on)
+        return;
+
+    constexpr uint32_t kSuppressLog = 0x829EC974;   // 1 = silence, and it ships as 1
+    constexpr uint32_t kAssertsFatal = 0x82AC3EAD;  // 0 = trap on assert
+
+    static uint64_t reasserts = 0;
+    static bool announced = false;
+    if (!announced)
+    {
+        announced = true;
+        fprintf(stderr,
+                "[debug] CZ_GUEST_DIAG: clearing the release log gate at %08X (was %u; "
+                "2,013 call sites read it, none write it) and setting %08X so asserts "
+                "print instead of trapping. Needs CZ_GUEST_LOG=1 to see anything — this "
+                "arm only decides whether the engine FORMATS its messages. Costs frame "
+                "time; do not measure performance with it on.\n",
+                kSuppressLog, PPC_LOAD_U8(kSuppressLog), kAssertsFatal);
+    }
+
+    if (PPC_LOAD_U8(kSuppressLog) != 0)
+    {
+        PPC_STORE_U8(kSuppressLog, 0);
+        ++reasserts;
+    }
+    if (PPC_LOAD_U8(kAssertsFatal) == 0)
+    {
+        PPC_STORE_U8(kAssertsFatal, 1);
+        ++reasserts;
+    }
+    // Two writes are expected: the first pump sets both. Anything beyond that means the
+    // title is writing them back, which is a finding rather than a nuisance — the scan
+    // said the log byte has no writers at all.
+    //
+    // Reported on CHANGE, not on value: the first version tested `reasserts == 2`, which
+    // is true on every subsequent pump as well and put the same line in the log tens of
+    // thousands of times. A counter's log line has to fire on the edge (gotcha 151 wants
+    // the number, not the noise).
+    static uint64_t reported = 0;
+    if (reasserts != reported && (reasserts <= 2 || (reasserts % 1000) == 0))
+    {
+        reported = reasserts;
+        fprintf(stderr,
+                "[debug] CZ_GUEST_DIAG: %llu writes so far (2 = set once as expected; "
+                "more means the title is clearing them back)\n",
+                (unsigned long long)reasserts);
+    }
+}
+
 void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
 {
     PumpDebugFlagsFromEnvironment(base);
+    PumpGuestDiagnosticsFromEnvironment(base);
     PumpAutoChuckFromEnvironment(ctx, base);
 }
 

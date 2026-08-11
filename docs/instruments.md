@@ -338,9 +338,30 @@ CZ_GUEST_LOG=1     the ENGINE'S OWN debug printf. sub_827877C8 is a vsnprintf wi
                    hooking that one function makes the title narrate itself. It
                    prints nothing today and that is checked, not assumed — the strong
                    PPC_FUNC is in the object file, so it is the CALL SITES that are
-                   gated, each on a debug byte a shipped build leaves at zero.
-                   Raising those flags is the open work (gotcha 215). `game:\cl.txt`
+                   gated. **PAIR IT WITH `CZ_GUEST_DIAG=1`, which is the switch** —
+                   alone it still prints only the ungated errors. `game:\cl.txt`
                    is NOT the switch: sub_82482E50 reads it as a CHANGELIST NUMBER
+CZ_GUEST_DIAG=1    **the engine's whole diagnostic layer, switched back on by one
+                   byte.** `0x829EC974` is read by 2,013 sites and written by none,
+                   every one `lbz / cmplwi 0 / bne skip / bl sub_827877C8`, and the
+                   image ships it as **1** — a release KILL SWITCH, not an unset flag,
+                   which is gotcha 215 corrected by gotcha 266. This clears it, and
+                   sets `0x82AC3EAD` (592 readers, 2 writers) so the assert sites it
+                   un-silences PRINT their file and line instead of reaching their
+                   `twui` trap. Pumped rather than poked once, so a title that wrote
+                   them back would show as a count above 2.
+                   **The null and the positive control are the same run twice**: the
+                   DebugJump outdoor route with `CZ_GUEST_LOG=1` alone gives 0 `[guest]`
+                   lines of 11,168; adding this gives 1,239. What it unlocks that
+                   nothing else here can reach: `<> LoadZoneCommonTextureSet : zone=N,
+                   filename=COMMON_TEXTURE{,_LOD}.tex` (the per-zone LOD decision),
+                   `Largest free in zombie vertex buffer heap is N, delta -N`,
+                   `Queue is full in MoveLoadRequest() priority=%d!`, `Out of memory in
+                   the load & decomp heap!`, `[LOAD] <X> took N seconds`, and the two
+                   `cZone::UpdatePriorities()` asserts.
+                   **A DIAGNOSTIC ARM, NEVER A GATE CONFIGURATION** — two thousand
+                   formatting sites on the frame path cost real time, so gotcha 7
+                   applies and no frame number may be quoted from a run with it set
 CZ_PM4_CONST_WATCH=<hex>[-<hex>]  a per-register value HISTOGRAM for one shader
                    constant register or a range of them, on a 15 s clock. Not a
                    sample: the sampling version read the same registers wrong twice in

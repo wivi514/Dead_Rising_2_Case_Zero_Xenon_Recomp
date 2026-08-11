@@ -505,8 +505,18 @@ CZ_RING_TRACE=1    the ring, the brake's health, and the GPU/CPU hand-off chain 
 CZ_FILE_TRACE=1    every open/read, including the not-founds
 CZ_WAIT_TRACE=1    name any infinite wait that outlasts 5 s, with guest callers
 CZ_FAKE_PRESS_SEQ=...    synthetic input. MANUFACTURES PROGRESS — never a gate run
-CZ_GUEST_LOG=1     the engine's OWN debug printf (640 callers, gated off in a shipped
-                   build — raising those gates is open work, gotcha 215)
+CZ_GUEST_LOG=1     the engine's OWN debug printf (640 callers). The sink — pair it
+                   with CZ_GUEST_DIAG or it prints only the ungated errors
+CZ_GUEST_DIAG=1    **the switch.** One byte, `0x829EC974`, read by 2,013 sites and
+                   written by none, shipped as 1: a release KILL SWITCH, not the
+                   "flag per category a shipped build left at zero" that gotcha 215
+                   guessed and gotcha 266 corrects. Clearing it (plus `0x82AC3EAD` so
+                   the un-silenced asserts print rather than trap) takes the outdoor
+                   route from **0 `[guest]` lines of 11,168 to 1,239** — null and
+                   positive control in one pair of runs. It is what makes the streaming
+                   and zone-LOD decisions readable. A DIAGNOSTIC ARM ONLY: 2,013
+                   formatting sites on the frame path, so never quote a frame time
+                   from a run with it set (gotcha 7)
 CZ_SHADER_DUMP=dir put this on any run that might reach new ground, including an
                    operator run: a missing shader is one log line and a silent counter.
                    **NEVER point it under /tmp** — that is a tmpfs and it is why eleven
