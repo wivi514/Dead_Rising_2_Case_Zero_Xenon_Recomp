@@ -348,12 +348,23 @@ Next, in order:
    ~= 62 s. **The guest's mixer stops mixing** — this is not our output path, and our
    decoder keeps filling rings normally throughout (`refused0`, ~494 frames/5 s).
 
-   So the shape of the defect is now: a cinematic waiting on a sync point it never
-   receives, with the mixer going silent at the same instant, and the scene
-   ping-ponging while its update is skipped. Whether the missing sync point is
-   *caused* by the audio stopping or is a *co-symptom* of the same stall is the next
-   question, and the two are distinguishable — `sub_8249EEA8` is the predicate, so
-   probing what it reads answers it directly.
+   **AND THE ORDER IS SETTLED — the audio stopping is a CONSEQUENCE, not a cause.**
+   One grep on the run that already existed, which is why it was worth writing the
+   question down as an orderable one:
+
+   | log line | event |
+   |---|---|
+   | **21184** | first `WAITING: end sync point not received yet!` |
+   | 21479 | audio still rising, non-silent 6756 |
+   | 22175 | audio still rising, 7189 |
+   | **22398** | last rise, 7676 — silence from here on |
+
+   The stall precedes the silence by ~1,200 log lines and 1,024 driver frames (~5.5 s),
+   which is the already-queued dialogue playing out. The scene stops advancing, so it
+   never fires its next audio event, and the mixer runs dry. **Do not chase the silence
+   — it is downstream.** (Note what this does NOT say: the decoder still enabled all
+   the progress there is, since with `CZ_NO_XMA_DECODE=1` the cinematic never starts at
+   all. Audio got the scene moving; a sync point stops it.)
 
    **The PID reading is demoted, not discarded.** `Cine.Audio Cor Latency` and its
    gains are real and are in this manager, but the engine's own message points at an
