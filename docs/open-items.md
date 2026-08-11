@@ -252,6 +252,73 @@ Next, in order:
    quote the tally.** It costs nothing and this table is what a silent renderer looks like
    after eight parts of not being able to ask.
 
+00j. **CINEMATICS PING-PONG ONCE A CHARACTER SPEAKS — and the mechanism is the
+   title's own PID CONTROLLER on audio latency.** Operator report on the phase A/V
+   binary, and the first defect that only exists BECAUSE there is now sound.
+
+   **The symptom, from the operator:** the prologue cinematic plays, and the moment
+   Rebecca Chang starts speaking the scene advances ~1 s, runs BACKWARD ~1 s, forward
+   again, forever. The subtitle re-appears on each forward pass. Skipping to the next
+   cinematic reproduces it after about the same delay.
+
+   **Reproduced headlessly, in data already captured** (`cine2.txt`, the phase A/V arm
+   run) — this needs no operator: 12,429 frames, **7,175 camera runs over only 1,170
+   distinct camera fingerprints**, with many values recurring *exactly 463 times*. A
+   scene that plays normally has runs ~= distinct. Dumping the sequence shows a clean
+   **palindrome**, ~26 runs (~0.87 s) per cycle, 463 cycles:
+
+       243a fb9e 0e25 fd9d 3709 24b4 a812 ccd5 79fc a0a0 79fc ccd5 75c9 24b4 3709 fd9d 0e25 fb9e 243a ...
+
+   So the gate for a fix is free and automatic: **`camera runs / distinct cameras`
+   should fall to ~1**. It reads 6.1 today.
+
+   **The mechanism, from the image.** The cinematic manager
+   (`c:\bcg\deadrisingprologue\source\common\cinematic\cinematicmanager.cpp`,
+   named at `0x82063030`) registers six tunables:
+
+       82062FAB  Cine.Audio MV (ms)            <- manipulated variable
+       82062FC0/FD8/FF0  Cine.Audio D-gain / I-gain / P-gain (ms)
+       82063078  Cine.Audio Cor Latency (ms)   <- read at 0x82475880
+       82063094  Cine.Audio Abs Latency (ms)
+
+   **The cinematic slews its own playback RATE to track the audio stream's latency** —
+   which is what the script's `cCineAudioEvent ... AudioEventName "sync:39791"` and its
+   `sync:`-named camera track mean. A smooth symmetric oscillation that begins exactly
+   when a synced stream starts is what that loop does on a bad latency measurement, and
+   a PID output can go NEGATIVE, which is the scene running backwards.
+
+   **What the live process says** (sampled at 50 Hz with `process_vm_readv`, no ptrace
+   stop, while the operator was stuck in the loop):
+   * four MONO 48 kHz dialogue voices appear when speech starts (ctx4-7), alongside the
+     stereo music voice (ctx0);
+   * their `output_buffer_valid` (dw[1] bit 31) **toggles ~94 times in 8 s (~12 Hz)**;
+   * ctx0's never toggles at all;
+   * every voice's `input_buffer_read_offset` advances monotonically — the streams are
+     going forward, so it is the SYNC that reverses, not the audio.
+
+   **A real defect in our fill logic, found while reading that, and the first thing to
+   fix — but note it is a HYPOTHESIS for this item, not a demonstrated cause.**
+   `XmaFillOutput` in `kernel/audio.cpp` treats `write == read` as **EMPTY** at the top
+   (`freeBlocks = blocks`) and as **FULL** at the bottom (`setOutValid(false)`). One
+   state, two opposite meanings, in one function. Whatever the title computes its
+   latency from, a ring whose fullness we report ambiguously is a bad input to a control
+   loop. The standard repair is to never let `write` catch `read` — reserve one frame of
+   slack so `write == read` unambiguously means empty.
+   **State the prediction before building it**: the dialogue voices' `output_buffer_valid`
+   stops toggling at 12 Hz, and `runs/distinct` falls from 6.1 toward 1.
+
+   **Do not assume the ambiguity is the whole answer.** The oscillation period is ~0.87 s
+   and the ring handshake is ~12 Hz, two orders apart, so something integrates in
+   between — which is exactly what an I-gain does. If the ring fix does not close it,
+   the next step is to read what `0x82475880`'s function computes as `Cor Latency` and
+   compare it against what our decoder makes true, and `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1`
+   on the prologue is the cheap first look because the manager is a printf-heavy module.
+
+   **Workaround for anyone who just wants to play past it:** the title ships a
+   `skip_cinematics` debug flag at **0x82A57D38** (bound by dataflow; reader at
+   0x8247A898). It is not in `debug_tunables.cpp`'s curated table yet; adding it is ten
+   minutes.
+
 00e. ~~**THERE IS NO SOUND**~~ **CLOSED IN PHASE A/V — THE GAME MAKES SOUND.**
    `maxpeak=0.108854` and 15,991 of 18,433 frames non-silent on a plain boot, against
    `0.000000` and 0 with `CZ_NO_XMA_DECODE=1` on the same binary. An SDL device opens on
