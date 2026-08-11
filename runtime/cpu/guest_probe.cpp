@@ -1955,3 +1955,225 @@ PPC_FUNC(sub_824A0FC0)
     if (CineProbeTick())
         CineProbeReport();
 }
+
+// ---------------------------------------------------------------------------
+// CZ_CINE_TIME=<file> — the cinematic's own CLOCK, one line per frame it is asked for
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS. `open-items.md` 00j is a prologue cinematic that ping-pongs: the
+// camera walks forward ~1 s, back ~1 s, forever. Three consumer-side explanations were
+// bought and refuted (our output ring, the audio stopping, the animation end sync
+// point). The remaining instruction in the hand-off was the right one and is not a
+// guess: **a palindrome means some clock DECREMENTS, so find what writes the
+// cinematic's time.** This probe is that value, read at its source.
+//
+// WHAT WAS FOUND STATICALLY, because reading it is what makes the columns mean
+// something. `sub_82475718` IS the cinematic clock — it returns, in f1, the time the
+// scene is to be played at, and `sub_82478FC8` calls it twice per cinematic update.
+// Its body is a three-way switch on a MODE word in the config block it is handed:
+//
+//     mode 0 (or anything else) -> return cfg[0]          the raw scene time; no audio
+//     mode 1                    -> return audioPos        slave straight to the stream
+//     mode 2                    -> return PID(audioPos)   <- sub_824741D8
+//
+// and `sub_824741D8` is a textbook PID, which the image names itself: its tail plots
+// four values through the engine's debug-graph API under the strings
+// `Cine.Audio P-gain / I-gain / D-gain / MV (ms)` (0x82062FF0/FD8/FC0/FAC). Decoded:
+//
+//     err  = (cfg[0] - audioPos) - this[0x28]      error, outside a deadband cfg[0x18]
+//     MV   = P*err + I*integral + D*(err - prevErr)
+//     this[0x28] += MV                             <- the accumulated CORRECTION
+//     return cfg[0] - this[0x28]                   <- the time handed back
+//
+// **That last line is the whole reason this probe exists.** The returned time is a
+// setpoint MINUS an accumulator that a control loop drives. Nothing in it is monotonic.
+// If the accumulator overshoots, the time the cinematic is played at goes DOWN, and the
+// scene runs backwards — which is the reported symptom, exactly, and with the right
+// shape (smooth, symmetric, and starting when a synced stream starts).
+//
+// So the columns are chosen to make that refutable rather than illustrative:
+//
+//   msec      host steady clock, ms since the probe's first line
+//   mode      cfg[4]. **If this is never 2 the PID is not the mechanism and this whole
+//             reading is dead** — which is the single most valuable thing the file can
+//             say, and it says it in one column
+//   playing   sub_82758CC8 — did the stream report itself playing this frame
+//   audioPos  sub_82759170 — the stream position the loop is tracking, i.e. what OUR
+//             decoder makes true. The PID's input
+//   ret       f1 on return: the time the scene is played at. **This is the value whose
+//             non-monotonicity is the defect.** Diff it and the palindrome is arithmetic
+//   setpoint  cfg[0], the uncorrected scene time. Monotonic if the caller is healthy
+//   acc       this[0x28], the accumulated correction
+//   prevErr   this[0x2c]
+//   integ     this[0x34]
+//   pid       1 if sub_824741D8 actually ran this frame
+//
+// `ret` and `setpoint` together are also the discriminator this probe cannot be talked
+// out of: if `setpoint` oscillates too, the correction is innocent and the caller is
+// the defect; if `setpoint` climbs while `ret` ping-pongs, it is the correction.
+//
+// ON GOTCHA 269, WHICH THIS PROBE IS SHAPED BY. The previous cinematic probe reported
+// from inside the function it counted, so it went silent exactly when its subject
+// stopped — and only luck (frames visibly advancing) made that readable. This one
+// cannot avoid being driven by its subject either: the value only exists when the
+// guest asks for it. What it does instead is stamp every line with a host clock and
+// write to a FILE, so the run's independent clock — `CZ_VK_FRAME_STATS`, written by the
+// graphics pump regardless — can be laid beside it. A gap in this file next to
+// continuing frames is then a measurement ("not called for 4 s"), not an absence of
+// data. Pair the two files; never read this one alone.
+//
+// Cost when off: one `getenv`-backed bool test on four functions, none on a draw path.
+extern "C" PPC_FUNC(__imp__sub_82475718);
+extern "C" PPC_FUNC(__imp__sub_824741D8);
+extern "C" PPC_FUNC(__imp__sub_82758CC8);
+extern "C" PPC_FUNC(__imp__sub_82759170);
+
+namespace {
+
+// The guest is big-endian and these are all `lfs`/`stfs` singles. PPC_LOAD_U32 does the
+// byte swap; the bit-cast is the remaining half. Reading them as host floats directly
+// would be silently wrong on every value that is not a byte-palindrome.
+float GuestF32(uint8_t* base, uint32_t addr)
+{
+    const uint32_t bits = PPC_LOAD_U32(addr);
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+FILE* CineTimeFile()
+{
+    static FILE* f = [] () -> FILE* {
+        const char* path = getenv("CZ_CINE_TIME");
+        if (!path || !*path)
+            return nullptr;
+        FILE* h = (strcmp(path, "-") == 0) ? stderr : fopen(path, "w");
+        if (!h)
+        {
+            fprintf(stderr, "[cinetime] cannot open '%s' — probe is OFF\n", path);
+            return nullptr;
+        }
+        fprintf(h, "# msec mode playing audioPos ret setpoint acc prevErr integ pid\n");
+        return h;
+    }();
+    return f;
+}
+
+// CZ_CINE_AUDIO_MODE=0|1|2 — THE SAME-BINARY ARM FOR 00j, and the reason it is worth
+// having is that every one of its settings is a path the TITLE ITSELF implements.
+// sub_82475718 switches on cfg[4], which both call sites copy out of the read-only
+// global 0x829DC320 (one reader each, no writer anywhere in the image; shipped as 2):
+//
+//     0  return the raw scene time              — no audio sync at all
+//     1  return the audio stream position       — slave the scene straight to the stream
+//     2  return PID(audio position)             — SHIPPED, and the suspect
+//
+// So this is not a synthetic behaviour bolted onto the guest; it is the guest's own
+// three-way switch, driven from outside. That matters for admissibility: an arm that
+// invents a code path can only ever refute itself, where this one either removes the
+// correction and the palindrome goes with it, or removes the correction and the
+// palindrome stays — and the second answer would kill the PID reading outright.
+//
+// -1 (unset) means "leave the guest alone", so a run with neither this nor
+// CZ_CINE_TIME set takes the original function with one predictable branch in front.
+int CineAudioModeOverride()
+{
+    static const int mode = [] {
+        const char* v = getenv("CZ_CINE_AUDIO_MODE");
+        if (!v || !*v)
+            return -1;
+        const int m = atoi(v);
+        fprintf(stderr, "[cinetime] forcing Cine.Audio sync mode %d "
+                        "(shipped is 2 = PID)\n", m);
+        return m;
+    }();
+    return mode;
+}
+
+// Values sub_82475718 reads through calls whose returns it does not keep anywhere we
+// can see afterwards. Both callees have exactly ONE caller in the image (checked with
+// tools/guest_callers.py), so there is no interleaving to disambiguate and a plain
+// global is honest here — this is not a general-purpose stash.
+float g_cineAudioPos = 0.0f;
+int g_cineAudioPlaying = -1;   // -1 = the getter was not reached this frame
+int g_cinePidRan = 0;
+
+} // namespace
+
+// sub_82758CC8 — "is the cinematic's audio stream playing". Called only from the clock.
+PPC_FUNC(sub_82758CC8)
+{
+    __imp__sub_82758CC8(ctx, base);
+    if (CineTimeFile())
+        g_cineAudioPlaying = (int)(ctx.r3.u32 & 0xFF);
+}
+
+// sub_82759170 — the stream position in seconds, in f1. The PID's input.
+PPC_FUNC(sub_82759170)
+{
+    __imp__sub_82759170(ctx, base);
+    if (CineTimeFile())
+        g_cineAudioPos = (float)ctx.f1.f64;
+}
+
+// sub_824741D8 — the PID. Only its "did it run" bit is taken here; every value it
+// touches is a member of the object the caller still holds, so they are read there.
+PPC_FUNC(sub_824741D8)
+{
+    __imp__sub_824741D8(ctx, base);
+    if (CineTimeFile())
+        g_cinePidRan = 1;
+}
+
+// sub_82475718 — the cinematic clock itself. One line per call.
+PPC_FUNC(sub_82475718)
+{
+    FILE* out = CineTimeFile();
+    const int forced = CineAudioModeOverride();
+    if (!out && forced < 0)
+    {
+        __imp__sub_82475718(ctx, base);
+        return;
+    }
+
+    // r3/r4 are argument registers and the callee is free to clobber both, so the two
+    // object pointers have to be taken BEFORE the call. Reading them afterwards is the
+    // kind of mistake that yields plausible numbers off whatever happened to be left.
+    const uint32_t self = ctx.r3.u32;
+    const uint32_t cfg = ctx.r4.u32;
+
+    // THE ARM. Both call sites build this config block on their own stack and copy the
+    // mode out of a read-only global (0x829DC320, shipped as 2), so writing it here —
+    // after the block is built and before the switch reads it — reaches every path and
+    // cannot be stomped by a later re-initialisation. See CineAudioModeOverride().
+    if (forced >= 0)
+        PPC_STORE_U32(cfg + 4, (uint32_t)forced);
+
+    g_cineAudioPlaying = -1;
+    g_cinePidRan = 0;
+    g_cineAudioPos = 0.0f;
+
+    __imp__sub_82475718(ctx, base);
+
+    if (!out)
+        return;
+
+    static const auto t0 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+
+    fprintf(out, "%.1f %d %d %.6f %.6f %.6f %.6f %.6f %.6f %d\n",
+            ms,
+            (int)PPC_LOAD_U32(cfg + 4),
+            g_cineAudioPlaying,
+            g_cineAudioPos,
+            (float)ctx.f1.f64,
+            GuestF32(base, cfg + 0),
+            GuestF32(base, self + 0x28),
+            GuestF32(base, self + 0x2C),
+            GuestF32(base, self + 0x34),
+            g_cinePidRan);
+    // Flushed per line on purpose: these runs end on a `timeout` SIGTERM, and a probe
+    // whose last buffer never reaches disk loses exactly the tail that matters.
+    fflush(out);
+}
