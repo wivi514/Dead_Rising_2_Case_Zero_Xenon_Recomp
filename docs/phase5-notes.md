@@ -4814,3 +4814,35 @@ observation part 27 recorded and could not explain.
 `docs/open-items.md` item 3 has been carrying an independent report of exactly that since
 part 15: *"no shadows anywhere"*, and a cascade map measured half empty. The two items
 are now one item.
+
+### DECOMPOSING THE COLOUR: which of the three terms carries the range
+
+The epilogue's input `r6.xyz` has exactly three sources, and `CZ_VK_PS_CONST_SCALE` can
+zero each one independently without a rebuild:
+
+| term | line | constant | arm |
+|---|---|---|---|
+| additive, `tf1^2 * 4` | 21 | `c67.w` | `67.w=0` |
+| diffuse sun, `(3.3, 1.5, 1.0)` | 75 | `c24.xyz` | `24.x=0,24.y=0,24.z=0` |
+| everything multiplicative | 103 | `c1.xyz` | `1.x=0,1.y=0,1.z=0` |
+
+**PRE-REGISTERED PREDICTION, written before the runs exist.**
+
+> `67.w=0` collapses the plateau — the count of scene-buffer pixels at exactly
+> `rgb(180,180,180)` falls by more than half — and `24.x=0,24.y=0,24.z=0` does not.
+
+The reasoning is the plateau's own neutrality. `(180,180,180)` is three EQUAL channels,
+and §6ba's table shows the 8-bit output still varies with `x` around the join (179 at
+0.9, 181 at 1.05, 191 at 1.5). An asymmetric multiplier like the `(3.3, 1.5, 1.0)` sun
+cannot put three channels on the same 8-bit value unless it is scaled by something that
+is itself near zero — so the sun is not what is holding these pixels at 180. `r7` is the
+only term in the shader that is additive, neutral by construction (`tf1` squared) and
+able to exceed 1.0 (`x4`). If `tf1` were serving white in our runtime, `r7` would be
+exactly `4.0` in all three channels, `x = 4.0 * 0.2 = 0.8` at the exposure we measure,
+and the surface would sit right at the flat part of the curve regardless of lighting or
+time of day — which is the whole of part 27's observation.
+
+**A caveat registered with the prediction:** `CZ_VK_PS_CONST_SCALE` is global, and the
+literal pools are per shader (§6ba), so `c67.w` and `c24` in the other 47 emitting
+shaders are scaled too. A FALL in the count is evidence; its exact magnitude is not
+attributable to the ground shader alone.
