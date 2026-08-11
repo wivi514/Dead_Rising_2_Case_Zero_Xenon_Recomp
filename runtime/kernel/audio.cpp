@@ -436,6 +436,14 @@ struct XmaHostCtx
     uint64_t decodeCalls = 0;
     uint64_t decodeRefused = 0;
     uint64_t samplesOut = 0;
+    // How often we told the guest "ring full". This is the direct measure of the
+    // handshake that open-items 00j is about: a live 50 Hz sample caught it firing
+    // ~94 times in 8 s on every dialogue voice and never on the music voice, and the
+    // prediction for the ring fix is that this rate collapses. Counting it here
+    // means the claim is checkable from a headless log instead of needing an
+    // operator stuck in the defect (gotcha 151 — an arm with no counter cannot be
+    // shown to have engaged).
+    uint64_t ringFull = 0;
     bool probed = false;
 };
 
@@ -672,10 +680,42 @@ void XmaFillOutput(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
 
     uint32_t write = c.outWriteOffset() % blocks;
     const uint32_t read = c.outReadOffset() % blocks;
-    // Equal offsets mean EMPTY here: the hardware fills until it catches the read
-    // offset, then drops output_buffer_valid and waits for the guest to drain.
-    uint32_t freeBlocks = (write == read) ? blocks : ((read - write + blocks) % blocks);
     const uint32_t ringBytes = blocks * kXmaOutputBlockBytes;
+
+    // A REAL AMBIGUITY, AND A REFUTED HYPOTHESIS. READ BOTH BEFORE CHANGING THIS.
+    //
+    // `write == read` means EMPTY here and FULL twenty lines below. That is one state
+    // with two opposite meanings, it is genuinely wrong, and two offsets can only
+    // encode `blocks` fill levels so the collision is structural. It was also the
+    // leading candidate for open-items 00j — the cinematic that plays forward ~1 s,
+    // backward ~1 s, forever, from the moment a character speaks — because a live
+    // 50 Hz sample of the stuck process caught `output_buffer_valid` toggling ~94
+    // times in 8 s on every mono dialogue voice and never once on the stereo music
+    // voice, and because the amount of audio buffered IS the latency this title feeds
+    // to a PID controller that slews cinematic playback rate (`Cine.Audio P-gain` /
+    // `I-gain` / `D-gain` / `Cor Latency`).
+    //
+    // IT IS NOT THE CAUSE. Repaired properly — reserve one slot so `write` can never
+    // land on `read`, making "equal" unambiguously empty — and measured on the
+    // prologue against the same recipe, the loop did not move at all:
+    //
+    //     before   runs/distinct 6.13   distinct 1170
+    //     after    runs/distinct 6.14   distinct 1170
+    //
+    // An identical `distinct` is the same scene revisiting the same pose set the same
+    // way. So the ring handshake is not what the PID is reacting to, and the repair
+    // was reverted rather than kept: it also made the "full" signal fire on every
+    // fill instead of ~12 times a second, because the post-loop test it needed
+    // (`freeBlocks <= frameBlocks`) is exactly the loop's own exit condition and
+    // therefore vacuous — the same shape of mistake as a bounds check that cannot
+    // fail. Keeping a behaviour change that is motivated by a refuted hypothesis and
+    // measured to make one number worse is not a trade this file makes.
+    //
+    // The ambiguity is still real and still worth fixing one day, on its own
+    // evidence: the damage it can do is overwriting up to three frames (~32 ms) of
+    // audio the mixer has not played, which is a click and not a loop. Fix it with
+    // its own prediction and its own arm, not as a rider on something else.
+    uint32_t freeBlocks = (write == read) ? blocks : ((read - write + blocks) % blocks);
 
     // A BOUND ON PACKETS PER TICK, and it is not a performance guard.
     //
@@ -732,8 +772,10 @@ done:
 
     c.setOutWriteOffset(write);
     XmaWriteDword(va, 0, c.dw[0]);
+
     if (write == read)
     {
+        hc.ringFull++;          // the `full` column of CZ_XMA_DECODE_LOG
         c.setOutValid(false);   // ring full: the guest drains it and re-flags
         XmaWriteDword(va, 1, c.dw[1]);
     }
@@ -806,18 +848,20 @@ void XmaDecodeThread()
                     !g_xmaHost[i].decodeCalls)
                     continue;
                 o += snprintf(line + o, sizeof(line) - o,
-                              " %u:%lluf/pk%.2f/starve%llu/pkt%llu/refused%llu/smp%llu", i,
+                              " %u:%lluf/pk%.2f/starve%llu/pkt%llu/refused%llu/smp%llu/full%llu", i,
                               (unsigned long long)g_xmaHost[i].frames, g_xmaHost[i].peak,
                               (unsigned long long)g_xmaHost[i].starves,
                               (unsigned long long)g_xmaHost[i].decodeCalls,
                               (unsigned long long)g_xmaHost[i].decodeRefused,
-                              (unsigned long long)g_xmaHost[i].samplesOut);
+                              (unsigned long long)g_xmaHost[i].samplesOut,
+                              (unsigned long long)g_xmaHost[i].ringFull);
                 g_xmaHost[i].frames = 0;
                 g_xmaHost[i].starves = 0;
                 g_xmaHost[i].peak = 0.0f;
                 g_xmaHost[i].decodeCalls = 0;
                 g_xmaHost[i].decodeRefused = 0;
                 g_xmaHost[i].samplesOut = 0;
+                g_xmaHost[i].ringFull = 0;
             }
             fprintf(stderr, "[xma] %u ctx allocated, active:%s\n", live,
                     o ? line : " (none decoded)");

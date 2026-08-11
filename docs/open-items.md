@@ -296,8 +296,39 @@ Next, in order:
    * every voice's `input_buffer_read_offset` advances monotonically — the streams are
      going forward, so it is the SYNC that reverses, not the audio.
 
-   **A real defect in our fill logic, found while reading that, and the first thing to
-   fix — but note it is a HYPOTHESIS for this item, not a demonstrated cause.**
+   **THE RING HYPOTHESIS WAS BUILT, TESTED AND REFUTED. Do not re-buy it.** The repair
+   was made properly (reserve one slot so `write` can never land on `read`, making
+   "equal" unambiguously empty) and measured on the prologue with the same recipe:
+
+   | | runs/distinct | distinct | ring-full rate |
+   |---|---|---|---|
+   | before | 6.13 | **1170** | ~12/s |
+   | after  | 6.14 | **1170** | ~99/s |
+
+   An IDENTICAL `distinct` is the same scene revisiting the same pose set the same way
+   — the loop did not move at all. The change was reverted; the ambiguity below is real
+   and is now documented in `kernel/audio.cpp` with this measurement beside it, to be
+   fixed one day on its own evidence and with its own arm (the damage it can do is
+   overwriting ~32 ms of unplayed audio, which is a click, not a loop).
+
+   **Two method notes from getting it wrong.** The repair needed a post-loop "is the
+   ring full" test, and the one it used — `freeBlocks <= frameBlocks` — is exactly the
+   loop's own EXIT condition, so it was vacuous and fired on every fill; that is the
+   same shape as a bounds check that cannot fail, met twice in one part. And the gate
+   needed TWO numbers: `runs/distinct` alone scores a FROZEN camera at 1.01, which
+   would have called the pre-audio prologue healthy. Read it with `runs/frames`
+   (gameplay 1.09 / 0.65; ping-pong 6.13 / 0.58; frozen 1.01 / 0.08).
+   `scratchpad .../loopiness.py`, trivially rewritten.
+
+   **So the next step is the PID's INPUT, not our ring.** Read what `0x82475880`'s
+   function computes as `Cor Latency` and compare it against what our decoder makes
+   true; `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the prologue is the cheap first look,
+   because the cinematic manager is a printf-heavy module and nobody has run it there
+   yet. Note the timescales while doing it: the oscillation is ~0.87 s and the ring
+   handshake ~12 Hz, two orders apart, so something integrates in between — which is
+   what an I-gain does.
+
+   **The original hypothesis, kept because the ambiguity it names is genuine:**
    `XmaFillOutput` in `kernel/audio.cpp` treats `write == read` as **EMPTY** at the top
    (`freeBlocks = blocks`) and as **FULL** at the bottom (`setOutValid(false)`). One
    state, two opposite meanings, in one function. Whatever the title computes its
