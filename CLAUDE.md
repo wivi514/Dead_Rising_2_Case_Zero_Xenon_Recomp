@@ -168,7 +168,7 @@ it is exactly why that rule is in the conventions.
   - **`phase-av-notes.md`** (sound, the cinematic that was waiting for it, and part
     29's diagnosis of the loop that followed) with `phase-av-plan.md` the plan it
     executed, `phase-av-kickoff.md` the phase hand-off and `part29-kickoff.md` its
-    successor. **`part30-kickoff.md` is the LIVE one** and supersedes all of them on
+    successor. **`part31-kickoff.md` is the LIVE one** and supersedes all of them on
     "where the port is". `d3d-phase-c28-kickoff.md` records how the white-surface chain
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
@@ -670,7 +670,39 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 30):
+Where the port is, as of 2026-08-11 (part 31):
+
+* **THE WHITE PLATEAU IS NOT THE TONE CURVE AT `x = 1`, AND FOUR PARTS OF WORK WERE
+  PROSECUTED UNDER THAT READING.** Four whole-frame arms leave the pixels at exactly
+  `rgb(180,180,180)` untouched: the sun `c24`, the additive `c67.w` term, the whole
+  multiplicative path `c1.xyz` — which blacks out **61.5%** of the frame — and, decisively,
+  `CZ_VK_PS_CONST_SCALE="14.w=0.25"`, which engaged on 11,835,619 draws, took the scene
+  buffer from mean luma **35.07 to 18.30**, and put **zero** pixels on 119, where that
+  curve sends `x = 1` at quartered exposure. A value produced by that curve cannot be
+  invariant under scaling its exposure. **`180 = 255 * sqrt(0.5)` is now the coincidence
+  to explain, not the explanation** (gotcha 277), and the next step is a PER-DRAW
+  instrument — `CZ_VK_DRAW_CENSUS` plus `CZ_VK_SKIP_TEX` — because four arms in a row
+  reporting "unmoved" is a fact about the instrument class (gotcha 276).
+  `docs/phase5-notes.md` §6be, `open-items.md` 00f.
+* **THE SHADOW ATLAS IS FIXED — `open-items.md` item 3, open since part 15.** The title
+  packs four 1024x1024 cascades into one 4096x1024 atlas by pre-offsetting
+  `RB_COPY_DEST_BASE` by 0x20000 each while leaving the scissor at the origin, and 0x20000
+  is exactly +1024 texels in X in tiled address space. `DoResolve` understood the SCISSOR
+  form of that idiom and not the ADDRESS form, so three quarters of every shadow lookup
+  read zero. **Ours was 86.7% empty; hardware's copy of the same surface, dumped from the
+  capture, is 3.5% empty.** Now 53.125% non-zero across all 4,096 columns against 13.281%
+  across 1,024 with `CZ_VK_NO_ADDR_TILE_FOLD=1`, and `13.281% x 4 = 53.125%` exactly.
+  **A surface you RENDER is still comparable** (gotcha 275) — the check took ten minutes
+  and had been available since part 26.
+* **THE GROUND SHADER'S 32 CONSTANTS ARE HARDWARE'S, and the constants are exonerated as
+  a class.** Every register that is not a function of the camera matches to the printed
+  digit, including `pc(21)` — a point light's WORLD POSITION — which is how the run proved
+  it was in hardware's own lighting state without being asked to. All seven R2 captures
+  answer; part 27's "`w1_spawn` cannot" was true only of `c253..c255`.
+* Exposure is now readable per frame (`CZ_VK_EXPOSURE_TRACE`): ONE value is in force
+  across a whole frame, to five digits. That had been assumed for four parts.
+
+Where the port was, as of 2026-08-11 (part 30):
 
 * **THE WHITE-SURFACE CHAIN HAS NUMBERS IN IT NOW, AND TWO OF ITS STEPS ARE GONE.** The
   tone curve every one of the 48 emitting shaders ends in is
