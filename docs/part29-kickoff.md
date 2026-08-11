@@ -103,15 +103,22 @@ not a gate.
    chain. **This is a Case West item on day one**, alongside gotcha 267's physical
    addresses.
 
-0b. **THE TWO OPERATOR QUESTIONS FROM PHASE A/V, still unanswered.**
-   * **Do the other cinematics play through?** Part 29 measured the prologue only. The
-     combo-weapon award is the cheapest single check, and a cinematic that completes
-     would show the ping-pong is prologue-specific — or, given the mechanism, that the
-     other cinematics simply have no `sync:` audio event.
-   * **Is the frame rate unchanged with the decoder in?** Still unmeasured.
-     `CZ_NO_XMA_DECODE=1` is the arm; three runs an arm, alternated, null first, read
-     medians and the pinned-to-16 ms share (gotchas 229, 237). Budget an hour.
-1. **THE WHITE SURFACES — still the top RENDERING defect, untouched by parts 28 and 29.**
+0b. ~~**THE TWO OPERATOR QUESTIONS FROM PHASE A/V.**~~ **ONE ANSWERED, ONE STILL OPEN.**
+   * ~~Do the other cinematics play through?~~ **YES — four confirmed on the fixed build
+     in one operator session:** the prologue, one more, the walk out of the safehouse,
+     and **the combo-weapon award, which awards the weapon**. That was the last cinematic
+     with any recorded failure against it (`open-items.md` 1), so **the population of
+     known-failing cinematics is now empty.** Say that as "none known to fail", not "all
+     of them work" — the session did not visit every cinematic in the game.
+   * **Is the frame rate unchanged with the decoder in? STILL UNMEASURED, and it now
+     matters more**, because the decoder does strictly more work than when the question
+     was asked: it used to wedge after one buffer and now streams a 24 MB asset through
+     three contexts for five minutes. `CZ_NO_XMA_DECODE=1` is the arm; three runs an arm,
+     alternated, null comparison first, and read medians and the pinned-to-16 ms share
+     rather than means (gotchas 229, 237). Budget an hour. **Do this before anyone quotes
+     a frame rate from a build with audio in it.**
+
+1. **THE WHITE SURFACES — NOW THE TOP DEFECT IN THE PORT, untouched by parts 28 and 29.**
    `d3d-phase-c28-kickoff.md`'s eight-step chain is the live state and its item 0 is the
    next instruction: what pins `c` at `1/pc(14).w`. Read our translated
    `ps_ad65b98593f95926` against the capture's disassembly of it. Note the knock-on:

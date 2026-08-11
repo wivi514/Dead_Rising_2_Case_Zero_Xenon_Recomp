@@ -1552,7 +1552,15 @@ Next, in order:
    skips a cinematic; the Zombrex tutorial's second page needs D-pad LEFT then B. Every
    gameplay item below is now self-servable.
 
-1. ~~**CINEMATICS NEVER END**~~ **RETRACTED THE SAME NIGHT IT WAS WRITTEN.** Later in
+1. ~~**CINEMATICS NEVER END**~~ **CLOSED IN PART 29 — no cinematic is known to fail.**
+   The one confirmed remaining failure was the PROLOGUE's, and 00j fixed it. On the fixed
+   build, one operator session played **four** through to completion with sound: the
+   prologue, one more, the walk out of the safehouse, and the **combo-weapon award, which
+   awards the weapon**. State it as "none known to fail" rather than "all work" — the
+   session did not visit every cinematic in the game. The original retraction trail is
+   kept below because it is a worked example of a claim generalised from two failures.
+
+   **RETRACTED THE SAME NIGHT IT WAS WRITTEN.** Later in
    the same operator session, cinematics played through and returned control cleanly —
    the Katey Zombrex grab, and the bike-frame delivery to the safehouse. The claim was
    generalised from two failures and is false as stated. What is actually true:
