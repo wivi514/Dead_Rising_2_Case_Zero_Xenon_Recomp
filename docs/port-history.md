@@ -1373,6 +1373,90 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 28 (2026-08-10) — the engine's whole diagnostic layer, from one byte;
+## and an LOD report with no defect yet attached
+
+Two operator requests, in the order they arrived.
+
+**1. A plan for audio and cinematics — `docs/phase-av-plan.md`.** Planned as ONE part
+because the assets say the two subsystems are coupled: a cinematic script carries
+`cCineAudioEvent audio_stream` with `AudioEventName = "sync:39791"`, and our audio path
+completes nothing, so a scene gated on an audio event that never finishes is a black
+screen. The plan leads with the test that separates the two readings, because a STALLED
+cinematic and an INVISIBLE one are the same picture and completely different counters
+(draws/frame, `cameraFingerprint`, whether the era ends after the script's `Duration`) —
+one run, no new code. Audio order is fixed by the measurement already in hand: the guest
+hands us buffers full of zeros, so XMA decode before any output device, and before that
+the pump's fixed `sleep_for(5333us)` needs a deadline (Fable 2 measured that shape at
+~184 frames/s against the 187.5 that 48 kHz needs, and a 2% deficit stutters exactly like
+a broken decoder).
+
+**Finding 7 corrected while there.** The no-Bink half stands; the "in-house Movie Player
+Object" half was misleading. `cinematics.big` is 29 `.txt` SCRIPTS and
+`data/anim/cinematic/*.big` is animation data, so **a cinematic is an in-engine scripted
+scene played through the ordinary renderer and there is no codec to write**. Corrected in
+the ledger and in CLAUDE.md, because Case West is the same engine and would have read that
+sentence and gone hunting for a decoder that does not exist.
+
+**2. "LOD seems really broken — I have to be really close for the near LOD."**
+
+**First, what LOD IS in this engine, because the word misleads.** All 54 `lod` strings in
+the image — the complete set — are about STREAMING, not a distance curve: a
+`cLODController` array parsed per zone beside the occluders and model instances,
+`ForceLODTexForStreamingWorld`, `WAITING: cLevel - wait_for_tex_lod`, a `UseLOD` bool in
+the PROP schema (it sits between `Durability` and `Unmoveable`), and a per-zone choice
+between `COMMON_TEXTURE.tex` and `COMMON_TEXTURE_LOD.tex`. **There is no LOD-distance
+scalar named anywhere in the executable**, and 989 `*_LOD.tex` entries ship across the
+archives. So this is a question about the streaming system's promotion rate and must not
+be chased as a distance comparison.
+
+**The instrument, which is the part worth keeping.** The useful evidence is the engine's
+own, and `CZ_GUEST_LOG` had always printed nothing. Gotcha 215 explained that as "a debug
+byte per category that a shipped build leaves at zero" — a hunt across hundreds of flags.
+That framing survived thirteen parts unexamined and was wrong twice. A scan of `.text` for
+`lis`-resolved byte references finds **one** address, `0x829EC974`, read by **2,013 sites
+and written by none**, every site the identical `lbz / cmplwi 0 / bne skip / bl
+sub_827877C8` — and the image ships it as **1**. The polarity is inverted from the guess:
+the layer was switched OFF, and clearing one byte re-enables all 2,013.
+
+`CZ_GUEST_DIAG=1` clears it and sets `0x82AC3EAD` (592 readers, 2 writers) so the assert
+sites it un-silences PRINT their file and line instead of reaching their `twui` trap —
+suppressing the trap is what makes the message reachable, and the assert still prints.
+Pumped rather than poked once; it reads exactly 2 writes, which is the scan's prediction.
+**Null and positive control are the same route twice:** `CZ_GUEST_LOG=1` alone gives 0
+`[guest]` lines of 11,168; adding this gives 1,239.
+
+**What the engine then said, and none of it is a smoking gun.** The per-zone LOD decision
+runs and is MIXED — of 7 zones loaded, 3 took `COMMON_TEXTURE.tex` and 4 took
+`COMMON_TEXTURE_LOD.tex`, which is what working looks like. **No streaming failure of any
+kind fired**: no `Queue is full in MoveLoadRequest()`, no `Out of memory in the load &
+decomp heap!`, neither `cZone::UpdatePriorities()` assert. Heap headroom shrinks smoothly
+(zombie VB heap 5,742,568 -> 2,221,880 largest-free in ~330 KB steps, no floor hit). The
+title asks for 447 MB up front and gets it. The per-level streaming VB heap is a fixed
+24-entry table at `0x82042EB8`, 25-65 MB by level id — guest data, identical on hardware.
+
+**So the item is OPEN with no mechanism, and that is recorded as such** (`open-items.md`
+00i). The one candidate that would be OURS and is untested: `KeSetBasePriorityThread` is a
+no-op and `KeQueryBasePriorityThread` returns NORMAL for every thread
+(`runtime/kernel/imports.cpp:1463`), while the title creates ~47 threads including a
+`DecompressThreadLoop` that on the 360 carries an explicit priority and hardware-thread
+affinity. A decompression thread scheduled level with the render thread promotes late,
+which is exactly "it loads, but only when I am close." **Before building that, ask the
+oracle** — DR2-family titles are aggressively streamed on real hardware, so "faithful" is
+a live answer and nothing measured here distinguishes it from slow streaming.
+
+**Method notes.** Gotcha 266 is the transferable half and it is cheap: for any global
+suspected of gating diagnostics, count its READERS and its WRITERS separately — thousands
+of readers and zero writers is a build-time constant whose value states the polarity, and
+reasoning about which flags a release build "would have" left unset is guessing at a fact
+the binary says outright. Gotcha 215 is corrected in place rather than deleted. And the
+first version of the arm's own counter printed on `reasserts == 2`, which is true on every
+subsequent pump too and put one line in the log tens of thousands of times — a counter's
+log line has to fire on the EDGE.
+
+**Gates:** `--smoke` OK. Runtime change is one diagnostic arm in `debug_tunables.cpp`,
+inert unless `CZ_GUEST_DIAG` is set; nothing on the render or PM4 path.
+
 ## Phase C part 27, second half (2026-08-10) — the white patches get a value, a
 ## population and an instruction
 

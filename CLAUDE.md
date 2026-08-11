@@ -638,7 +638,22 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-10 (phase C part 27):
+Where the port is, as of 2026-08-10 (phase C part 28):
+
+* **THE ENGINE NARRATES ITSELF NOW, and it cost one byte** (part 28). `CZ_GUEST_DIAG=1`
+  clears `0x829EC974` — read by 2,013 diagnostic and assert sites, written by none, and
+  shipped as 1. It is a release KILL SWITCH, not the "flag per category a shipped build
+  left at zero" that gotcha 215 guessed for thirteen parts (gotcha 266 corrects it). With
+  `CZ_GUEST_LOG=1` the outdoor route goes from **0 `[guest]` lines of 11,168 to 1,239**.
+  **Reach for it first on any question of the form "what does the title think it is
+  doing"** — zone streaming, load timings, heap headroom and the engine's own asserts are
+  all behind it. Diagnostic arm only; never quote a frame time from a run with it set.
+* **LOD PATCHES IN LATE — operator report, OPEN, no mechanism yet** (`open-items.md` 00i).
+  LOD here is STREAMING, not a distance curve: no LOD-distance scalar is named anywhere in
+  the executable. First pass found the per-zone decision working (3 zones full, 4 LOD), no
+  streaming failure of any kind, healthy heaps and the full 447 MB granted. The one
+  untested candidate that would be ours is `KeSetBasePriorityThread` being a no-op; **the
+  Xenia oracle question outranks it and has not been asked.**
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch

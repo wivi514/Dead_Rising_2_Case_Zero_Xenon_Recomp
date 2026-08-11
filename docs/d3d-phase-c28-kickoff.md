@@ -104,6 +104,34 @@ grade exactly while the title keeps THREE LUT surfaces**, which is the shape of 
 cross-fade; if hardware blends and we snap, colour is right at each band's endpoints and
 wrong between — which is what "colour is flat" describes. No evidence either way yet.
 
+## WHAT PART 28 HAS ALREADY DONE — read this before picking up anything below
+
+This file was written at the END of part 27, before part 28 ran. Part 28 then went
+sideways onto two operator requests, so most of the list below is still untouched — but
+two things exist now that did not when it was written, and rebuilding either would be
+pure waste.
+
+* **`docs/phase-av-plan.md`** — the plan for sound and for cinematics that render, as ONE
+  part, because a cinematic script carries an audio event (`sync:39791`) and our audio
+  path completes nothing. It opens with the one run that separates a STALLED cinematic
+  from an INVISIBLE one. **Finding 7 was corrected as part of it**: a cinematic is an
+  in-engine scripted scene, not a video, and there is no codec to write.
+* **`CZ_GUEST_DIAG=1` — the engine narrates itself now.** This supersedes item 1's
+  assumption that the title is opaque, and it retires the "raise the gates" work gotcha
+  215 described. One byte, `0x829EC974`, read by 2,013 sites and written by none, shipped
+  as 1: a release kill switch, not an unset flag. Clearing it (plus `0x82AC3EAD` so the
+  un-silenced asserts print rather than trap) takes the outdoor route from **0 `[guest]`
+  lines of 11,168 to 1,239**. `docs/gotchas.md` 266; 215 is corrected in place.
+  **Reach for it FIRST on any item below where the question is "what does the title
+  think it is doing"** — items 0, 0b and 3 all qualify, and it costs one env var. It is a
+  DIAGNOSTIC ARM only: 2,013 formatting sites on the frame path, so no frame time may be
+  quoted from a run with it set.
+* **A new open item, `00i` — LOD pops in far too late**, from an operator report. Open,
+  no mechanism, and the first pass found no defect: the per-zone LOD decision runs and is
+  mixed, no streaming failure fires, heaps are healthy, the title gets its 447 MB. The
+  untested candidate that would be ours is `KeSetBasePriorityThread` being a no-op. **The
+  oracle question outranks all of it** and has not been asked.
+
 ## Where part 28 starts
 
 0. **WHAT PINS `c` AT `1/pc(14).w`.** One value, one shader, one instruction to find. The
