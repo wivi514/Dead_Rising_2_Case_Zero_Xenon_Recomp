@@ -75,6 +75,41 @@ which is a result, where either arm alone would have been a coin flip.
 
 ---
 
+## 0z. PART 30: EVERY DRAW BIN ON THE OUTDOOR ROUTE IS NOW AT THE PACING FLOOR, WHICH
+## CHANGES WHAT THIS PLAN CAN MEASURE
+
+Six 420 s DebugJump runs on the current default binary (they were the arms of the XMA
+decoder A/B, so all six share this renderer configuration and pool as one sample of it):
+
+| draws | 0-999 | 1000-1999 | 2000-2999 | 3000-3999 | 4000-4999 | 5000-5999 | 6000-6999 | 7000-7999 | 8000-8999 |
+|---|---|---|---|---|---|---|---|---|---|
+| median ms | 32.0 | 32.0 | 32.0 | 32.0 | 32.0 | 32.0 | **32.0** | **32.0** | **32.0** |
+| pinned to 16 ms | 99% | 99% | 99% | 99% | 99% | 98% | 97% | 89-94% | 86-97% |
+
+**Every bin is the title's own two-vblank cap, out to 8,999 draws.** The table this plan
+was written against — 46.0 ms at 4,000-4,999, 49.7 at 5,000-5,999, 52.8 at 6,000-6,999 —
+is from part 20, before the cross-frame stream store (§6av, part 22) and the CPU/GPU
+overlap (§6aw, part 23).
+
+**Two honest caveats, because this is one measurement and it is easy to over-read:**
+
+1. **It is not a matched comparison with part 20's table.** Those numbers were taken on
+   the older STICK recipe, which walks a different route (safehouse -> junkyard) than the
+   DebugJump one these were taken on. A frame with 6,000 draws in one place is not
+   guaranteed to be the same work as 6,000 draws in another. Re-running the stick recipe
+   on this binary is the comparison, and it has not been run.
+2. **It does not close item 4** (the binned A/B owed for `CZ_VK_FRAMES_IN_FLIGHT=2`).
+   Both arms here are the current default, so this is a measurement of where the binary
+   sits, not of what moved it.
+
+**What it does mean is immediate and practical: a CPU saving measured on this route now
+has almost no room to show.** The plan's own §3 says not to optimise anything measured at
+the ~1,930-draw pacing cap; that warning now covers the entire route. Any further item in
+this plan needs either a workload that is genuinely above the floor — and none is known
+on this title — or a metric that is not frame time, such as the profiler's per-phase
+milliseconds, which still measure real CPU whether or not the frame is capped. Quote
+`CZ_VK_PROFILE`, not frame rate, for anything below.
+
 ## 0. ~~FIRST, AND IT BLOCKS EVERYTHING ELSE~~ **DONE (part 19): the recipe is in
 ## `CLAUDE.md` and it reaches 6,400-8,100 draws a frame**
 
