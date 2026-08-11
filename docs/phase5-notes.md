@@ -4411,3 +4411,112 @@ carry deliberately are §4 (the fetch-slot index convention, which is a property
 hardware and not of this title) and §5 (the resolve-destination identity, which is a
 property of this *engine's* renderer and is very likely identical in Case West, right
 down to the downsample pyramid).
+
+## 6ba. THE WHITE PLATEAU HAS A TONE CURVE NOW, AND THE CURVE SAYS 180 IS OUR CEILING
+## AND HARDWARE'S MIDPOINT (part 30)
+
+Part 28's hand-off left the item at one instruction: *what pins `c` at `1/pc(14).w`*. That
+question presumes the constants around `c` are the ones hardware uses. Nobody had read
+them. This section reads them, and the presumption does not survive.
+
+### The emitter is exonerated for a second time, now on the ground shader specifically
+
+Part 29's hand-off named the next step as reading our translated `ps_ad65b98593f95926`
+against the capture's own disassembly (`~/DR2CZ-troubleshooting/r2-shaders/
+shader_D007C18389DF0E55.ucode.frag`). Done, and they are **instruction for instruction
+identical** through the whole epilogue — hardware's lines 111-126 are our `case 26/27/28`
+with the same constant slots in the same operand positions:
+
+| hardware ucode | our HLSL |
+|---|---|
+| `dp3 r0.x, r4.zxyy, r4.zxyy` | `r0.x = dot(r4.zxy, r4.zxy);` |
+| `add r0._yzw, r6.xxyz, -c19.xxyz` | `r0.yzw = r6.xyz + -pc(19).xyz;` |
+| `mad_sat r1.xyz_, -r0.xyzz, c14.wwww, c255.wwww` | `r1.xyz = saturate(-r0.xyz * pc(14).www + pc(255).www);` |
+| `mul r0.xyz_, r0.xyzz, c253.yyyy` | `r0.xyz = r0.xyz * pc(253).yyy;` |
+| `mad r0.xyz_, r0.xyzz, c14.wwww, c253.xxxx` | `r0.xyz = r0.xyz * pc(14).www + pc(253).xxx;` |
+| `max r0.xyz_, r0.xyzz, c255.wwww` | `r0.xyz = max(r0.xyz, pc(255).www);` |
+| `mad r0.xyz_, -r1.xyzz, r1.xyzz, r0.xyzz` | `r0.xyz = -r1.xyz * r1.xyz + r0.xyz;` |
+| `mul r0.xyz_, r0.xyzz, c254.zzzz` | `r0.xyz = r0.xyz * pc(254).zzz;` |
+| `sqrt` x3, `max oC0, r2.yzwx` | the same |
+
+So the shading defect is not in the translation. It is in what those constants hold.
+
+### Hardware's constants, read for the first time
+
+`tools/xtr_draw_constants.py` (new; the replay loop of `xtr_draw_bindings.py` with a
+different read-out and per-register provenance). Part 27 asked this of `w1_spawn` alone,
+got `UNRECOVERABLE`, and recorded that the capture cannot answer. **It cannot answer
+there.** Asked of the other six captures it answers on five — a capture is a population,
+and an absence in one member is not an absence in the set (the same shape as gotcha 264).
+
+For `ps_7d2f8f33deec1b65`, the biggest emitter (703,376 painted px), identical on all 68
+recoverable draws across five captures:
+
+    pc(252) = (0.75, 0.333333, -2.0, 0.25)
+    pc(254) = (0.85, 0.15, 0.0, 1.0)
+    pc(255) = (0.5, 0.0, 0.0, 0.0)
+
+That shader's epilogue allocates the same curve into different slots than the ground
+shader's, which is what part 27 meant by "differing only in which constant slots the
+compiler allocated" — `A = pc(252).w`, `B = pc(252).x`, `K1 = pc(254).w`, `K2 = pc(255).x`
+here; `A = pc(253).y`, `B = pc(253).x`, `K1 = pc(255).w`, `K2 = pc(254).z` on the ground.
+**Read a slot number off one shader and look it up in another's constants and you get
+nonsense** — the first pass of this analysis did exactly that and briefly "found" a tone
+map that outputs black.
+
+### The curve
+
+With `x = c * pc(14).w`, the colour after exposure:
+
+    out^2 = (max(A*x + B, K1) - saturate(K1 - x)^2) * K2
+
+and hardware's numbers `A=0.25, B=0.75, K1=1.0, K2=0.5` give
+
+| x | out | 8-bit |
+|---|---|---|
+| 0 | 0 | 0 |
+| 1 | sqrt(0.5) = 0.7071 | **180** |
+| 5 | 1.0 | 255 |
+
+**180 is hardware's value at exactly full exposure, not a ceiling** — above `x = 1` the
+curve keeps climbing, slowly, and only reaches 255 at five times exposure. This confirms
+part 27's knee arithmetic from the constants themselves (`sqrt(K1*K2) = sqrt(0.5)`), and
+it **retracts part 27's gamma explanation**: 180 is not "a literal 0.5 written into a
+`k_8_8_8_8_GAMMA` surface", it is `sqrt(0.5)` written into an ordinary UNORM surface by
+this `sqrt` at the end of the shader. No gamma encode is involved and none needs looking
+for.
+
+### What that does to part 28's question, and the prediction it replaces it with
+
+Part 27's step 8 read `XE_FLOOR_PAINT`'s zero magenta as "no max takes its floor,
+therefore `c' >= K1`, therefore `c = 1/pc(14).w`". Under hardware's constants that
+inference is sound, and it is also **impossible as a description of the picture**: it
+requires `c * E = 1` to the last bit over 141,564 contiguous pixels of varying texture and
+lighting. Nothing in the epilogue clamps `x` to 1. So the constants in force in OUR
+runtime are not hardware's.
+
+**PRE-REGISTERED PREDICTION, stated before the run that tests it.** One value refutes or
+confirms it, and it is the only assignment that reproduces every observation part 27
+recorded:
+
+> Our `A` term reads **0** — `pc(253).y` for `ps_ad65b98593f95926`, `pc(252).w` for
+> `ps_7d2f8f33deec1b65` — with `B <= K1`, while `K1` and `K2` are correct.
+
+Because with `A = 0` the curve becomes `out^2 = (K1 - saturate(K1-x)^2) * K2`, which is 0
+at `x=0`, climbs normally, and then **pins at exactly `sqrt(K1*K2) = 180` for every `x >= 1`
+and never exceeds it.** That single fact produces, with nothing else added:
+
+* the patches being **one exact colour** rather than a bright surface (52,840 px at
+  exactly 180, next colour above luma 150 has two pixels);
+* the scene buffer's **max being exactly 180** in five of seven captured frames;
+* the surfaces **not being modulated by lighting or time of day** — every over-exposed
+  pixel lands on the same number whatever it was lit by;
+* dark and mid-tone surfaces still looking **right**, because below `x = 1` the two curves
+  differ by at most `A*x/2K2`;
+* and the tone map faithfully **amplifying 180 to 255**, which is what part 27 measured.
+
+If instead our `A` and `B` match hardware's, the prediction is refuted, the plateau must
+come from `c` itself, and part 28's question stands unchanged.
+
+The instrument needs no build: `CZ_VK_PSBIND=<hash>` with `CZ_VK_PSBIND_PC=252,253,254,255`
+already prints exactly these registers per distinct binding, and has since part 26.
