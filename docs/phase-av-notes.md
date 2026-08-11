@@ -140,6 +140,19 @@ The camera moves, the scene is presented, and the black era is gone. **The prolo
 cinematic was waiting on audio**, which is what `docs/phase-av-plan.md` §2 proposed in its
 first paragraph and what part 16 believed it had refuted.
 
+> **CORRECTION, from the operator session an hour later: "the scene is presented" is
+> right and "the cinematic plays" was TOO STRONG.** It now runs forward ~1 s, backward
+> ~1 s, and repeats — see `open-items.md` 00j, which also gives the mechanism (the
+> title's own PID controller on audio latency).
+>
+> **The evidence was in the table above the whole time and I read past it.** 7,175 camera
+> runs over only **1,170 distinct** fingerprints is a 6.1x recurrence; a scene that plays
+> normally has runs ~= distinct. I checked the statistic that answered the question I was
+> asking — is the camera frozen — and not the one sitting in the same column that says
+> whether it is *advancing*. "Not frozen" and "playing" are different claims and only one
+> of them was measured. The audio finding is unaffected: the freeze really was the
+> silence, and `CZ_NO_XMA_DECODE=1` still separates the two arms cleanly.
+
 Three runs, not two, and the third is what makes the pair admissible. `CZ_FAKE_PRESS_SEQ`
 is a fixed-interval arm against a boot whose depth in wall time is a distribution
 (gotcha 75), so a single control could have differed by drift rather than by the variable.
