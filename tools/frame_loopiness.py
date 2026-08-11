@@ -37,15 +37,41 @@ stable for a given loop (1170/1170/1169/1173 across four runs on two binaries), 
 makes it a sharp before/after: a fix that does not move `distinct` did not touch the
 loop.
 
+WHY IT ALSO PRINTS QUARTERS, ADDED IN PART 29 AFTER THE WHOLE-FILE NUMBER MISLED
+--------------------------------------------------------------------------------
+A whole-file score AVERAGES OVER ERAS, and on this title the eras are wildly unalike:
+a prologue run spends ~1,870 frames in menus and intro before the cinematic starts.
+Measured on the very run that established the mechanism:
+
+    whole run              frames=12443  runs=7179  distinct=1170  runs/distinct= 6.14
+    before the cinematic   frames= 1869  runs=1016  distinct=1010  runs/distinct= 1.01
+    THE CINEMATIC ERA      frames=10573  runs=6162  distinct= 161  runs/distinct=38.27
+
+The defect is a factor of **38**, and the number this project has been quoting for it
+is **6.14** — because the 1,010 healthy menu poses inflate `distinct` while
+contributing barely any of the runs. Every one of the four recorded 00j readings has
+that dilution in it.
+
+This matters in the direction that hurts: a partial fix that halved the loop would
+move the whole-file ratio from 6.14 to ~3.6 and could be read as "nearly fixed", and a
+fix that cleaned up the menus while leaving the cinematic alone would move it too. So
+the quarters are printed unconditionally. They are a crude era split — no knowledge of
+where the cinematic starts is needed, which is the point — and a run whose quarters
+disagree is a run whose single number means nothing. `--from`/`--to` narrow it exactly
+once you know the boundary.
+
 USAGE
     python3 tools/frame_loopiness.py <CZ_VK_FRAME_STATS file> [more files...]
+    python3 tools/frame_loopiness.py --from 1870 run.txt      # frame index window
+    python3 tools/frame_loopiness.py --from 1870 --to 12000 run.txt
 """
 
 import sys
 
 
-def loopiness(path):
-    runs, prev, frames, seq = 0, None, 0, []
+def cameras(path, lo, hi):
+    """The cameraFingerprint column, in order, over the [lo, hi) row window."""
+    out = []
     with open(path) as fh:
         for i, line in enumerate(fh):
             if i == 0 or not line.strip():        # header / blank
@@ -53,37 +79,64 @@ def loopiness(path):
             fields = line.split()
             if len(fields) < 5:                   # truncated final line of a killed run
                 continue
-            frames += 1
-            cam = fields[4]                       # cameraFingerprint
-            if cam != prev:
-                runs += 1
-                seq.append(cam)
-            prev = cam
-    distinct = len(set(seq))
-    return frames, runs, distinct
+            out.append(fields[4])                 # cameraFingerprint
+    return out[lo:hi if hi is not None else len(out)]
+
+
+def loopiness(cams):
+    runs = sum(1 for a, b in zip([None] + cams, cams) if a != b)
+    return len(cams), runs, len(set(cams))
+
+
+def verdict(frames, runs, distinct):
+    """FROZEN, LOOPING or advancing — and it takes BOTH numbers to tell them apart.
+
+    A frozen camera scores runs/distinct ~= 1.01, the same as a healthy one; only
+    runs/frames separates them. Reading either alone calls one failure mode healthy.
+    """
+    ratio = runs / max(distinct, 1)
+    density = runs / max(frames, 1)
+    if density < 0.15:
+        return "FROZEN", ratio, density
+    if ratio > 1.5:
+        return "LOOPING", ratio, density
+    return "advancing", ratio, density
+
+
+def report(label, cams):
+    frames, runs, distinct = loopiness(cams)
+    if not frames:
+        print(f"{label:22s} (no frame rows)")
+        return
+    name, ratio, density = verdict(frames, runs, distinct)
+    print(f"{label:22s} frames={frames:6d} runs={runs:6d} distinct={distinct:5d} "
+          f"runs/distinct={ratio:6.2f} runs/frames={density:5.2f}  {name}")
 
 
 def main(argv):
-    if len(argv) < 2:
+    lo, hi, paths = 0, None, []
+    it = iter(argv[1:])
+    for a in it:
+        if a == "--from":
+            lo = int(next(it))
+        elif a == "--to":
+            hi = int(next(it))
+        else:
+            paths.append(a)
+    if not paths:
         print(__doc__)
         return 2
-    for path in argv[1:]:
-        frames, runs, distinct = loopiness(path)
-        if not frames:
-            print(f"{path}: no frame rows")
-            continue
-        # A verdict, because the whole point is that the raw numbers mislead.
-        ratio = runs / max(distinct, 1)
-        density = runs / max(frames, 1)
-        if density < 0.15:
-            verdict = "FROZEN"
-        elif ratio > 1.5:
-            verdict = "LOOPING"
-        else:
-            verdict = "advancing"
-        print(f"{path.split('/')[-1]:16s} frames={frames:6d} runs={runs:6d} "
-              f"distinct={distinct:5d} runs/distinct={ratio:5.2f} "
-              f"runs/frames={density:5.2f}  {verdict}")
+    for path in paths:
+        cams = cameras(path, lo, hi)
+        report(path.split("/")[-1], cams)
+        # Unconditional era split. A single number over a run that changes character
+        # halfway is an average of two different scenes, and on this title that
+        # average has understated the live defect by 6x — see the header.
+        n = len(cams)
+        if n >= 400 and hi is None and lo == 0:
+            q = n // 4
+            for k in range(4):
+                report(f"    quarter {k + 1}", cams[k * q:(k + 1) * q if k < 3 else n])
     return 0
 
 
