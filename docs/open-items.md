@@ -288,8 +288,28 @@ Next, in order:
 
    `audio/cinematics.big` is read **201** times where it was read twice, and the run
    leaves the prologue into gameplay (draws 1,354-2,123 across the session, against 1,238
-   forever). Ten contexts decode concurrently late in the run, `refused=0`. **Operator on
-   the live build: "First cinematic played to completion and sound seemed all good."**
+   forever). Ten contexts decode concurrently late in the run, `refused=0`.
+
+   **AND THE OPERATOR SESSION IS THE STRONGEST EVIDENCE IN THE ITEM**, because it is a
+   human watching and a machine recording the same thing. Three cinematics played to
+   completion by eye and ear — the prologue, one more, and the walk out of the safehouse —
+   and `CZ_CINE_TIME` recorded exactly three playback segments, each running from zero to
+   its end:
+
+       segment 1   audio clock  0.00 -> 310.68 s     (of a 316.5 s track)
+       segment 2   audio clock  0.00 ->  60.26 s
+       segment 3   audio clock  0.00 ->  17.53 s
+
+   over 21,172 frames scoring `runs/distinct` **1.00-1.01 in every quarter, advancing** —
+   no looping anywhere in the session. The clock restarting at 0.00 three times is the
+   shape a working cinematic system has and the frozen build could never produce.
+
+   **A knock-on worth expecting elsewhere: the cache grew 411 -> 417.** A cinematic that
+   plays binds six pixel shaders no run had ever reached, and the session logged
+   `no translated shader` six times before they were translated in. Nothing new appeared
+   for the second or third cinematic (`no translated shader` stayed at 6 unique for the
+   whole session, and the dump-vs-cache name diff is clean), but **every era this port
+   opens for the first time is a shader gap nobody has counted** (gotcha 13).
 
    **The second commit, which was necessary and changed nothing visible.** The walk
    retired a spent input buffer by unconditionally switching to the other one. This title
