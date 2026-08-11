@@ -1373,6 +1373,70 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 29 (2026-08-11) — the cinematic loop is a CONTROL loop, and the defect moved
+## one level up into the audio pipeline
+
+The part-28 hand-off left one instruction for the ping-pong and it was the right one: a
+palindrome means some clock decrements, so find what writes the cinematic's time. Doing
+exactly that took a day of candidate-chasing off the board.
+
+**The lead was invisible to a tool that answered "0".** Asked who touched the cinematic
+manager's singleton, `gdis --find-uses` printed **0 site(s)** — for a global read on the
+frame path. It reconstructed `lis`+`addi` pairs only, i.e. it could see code that takes
+an address and not code that dereferences one, which is what the compiler emits for a
+global it is about to load. It is 301 sites. Gotcha 25 in its purest form, and the
+control cost one command.
+
+**What writes the time.** `sub_82475718`, whose return `sub_82478FC8` stores straight
+into `[cine+0x1698]`. It switches on a mode word the image ships as **2**: `0` raw scene
+time, `1` the audio stream position, `2` `PID(audio position)`. `sub_824741D8` is that
+PID and did not have to be guessed at — its own tail plots four values through the
+engine's debug-graph API under `Cine.Audio P-gain / I-gain / D-gain / MV (ms)`, the
+module naming its own control law. It returns **setpoint minus an accumulator**, a value
+with no monotonicity anywhere in it, which is the whole defect class.
+
+**The measurement found something better than "the controller oscillates."**
+`CZ_CINE_TIME` on the prologue: mode 2 on all 2,212 lines and the PID ran on 2,208;
+`setpoint` climbs linearly to 122.7 s; **`audioPos` freezes at 4.906667 s after four
+seconds and never moves again**; `ret` hunts 4.91 <-> 5.27 s. The controller is tracking
+an input that has stopped and integrating against an error it cannot close. **The PID is
+the mechanism of the symptom and not the defect** — which is the difference between
+tuning a gain and fixing an audio pipeline. The probe's columns were chosen so it could
+have come out otherwise: `mode` never reading 2 would have killed the explanation, and an
+oscillating `setpoint` would have moved the defect to the caller.
+
+**The camera palindrome IS that clock, joined rather than asserted.** Interpolating `ret`
+onto every frame of the same run, the median spread of `ret` within one
+`cameraFingerprint` is **0.0052 s**; the same statistic at deliberately wrong alignments
+reads 0.042-0.377 s. The null comes from the same data, so nothing is assumed.
+
+**The arm, and every setting is a path the title implements.** `CZ_CINE_AUDIO_MODE`:
+mode 2 **LOOPING** (15 poses, runs/distinct 120), mode 1 **FROZEN** at the stuck position
+for 338 s, mode 0 no loop and the run reaches gameplay. Mode 1 was predicted in the commit
+before it was run. **Mode 0 is confounded and is not a fix** — with no sync the first call
+site hands over an uninitialised ~138,181 s scene time and the cinematic ends immediately.
+
+**Where the defect is now.** Five named functions down: `SamplesPlayed / sampleRate`,
+from a struct shaped exactly like `XAUDIO2_VOICE_STATE`. `4.906667 x 48000 = 235,520`
+samples exactly `= 1,840 XMA subframes of 128`. A diagnostic run says the clip **ENDED**
+rather than starved — the three dialogue contexts decode 5.03/5.04/**4.92** s and stop
+while our decoder stays healthy — so the stream ran out and nothing told the title, and
+the voice sits in the "playing" branch forever with the wall-clock fallback never firing.
+It could only appear now: before phase A/V nothing decoded, so no voice ever reached the
+end of a stream. The one thing NOT settled is whether 4.91 s is the clip's true length or
+where our decode stops, and those have opposite fixes.
+
+**Two corrections.** The recorded `runs/distinct = 6.13` for this defect is **diluted 6x**
+— menus 1.01, cinematic era 38.27, steady state 15 poses at 120 — and
+`tools/frame_loopiness.py` prints era quarters now; it caught this part's own author
+reading a mid-run file and calling mode 0 healthy. And "the audio stopping" was one phrase
+covering two facts with opposite orderings: the reported position stops first and is
+upstream, audible output stops ~5.5 s later and is downstream.
+
+**Gates:** `--smoke` OK. The repro reproduces exactly (6.14 / 0.58 / 1169 against the
+recorded 6.13 / 0.58 / 1170) and reproduces again on the probe binary, so the instrument
+does not perturb its subject. Nothing outside `runtime/cpu` and `tools/` changed.
+
 ## Phase A/V (2026-08-11) — the game makes sound, and the prologue cinematic was
 ## waiting for it
 
