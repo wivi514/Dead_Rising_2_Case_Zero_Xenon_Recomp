@@ -167,9 +167,11 @@ it is exactly why that rule is in the conventions.
     `phase{1,3,5}-kickoff.md` the matching hand-offs and `runtime-plan.md` the phase plan.
   - **`phase-av-notes.md`** (sound, the cinematic that was waiting for it, and part
     29's diagnosis of the loop that followed) with `phase-av-plan.md` the plan it
-    executed, `phase-av-kickoff.md` the phase hand-off and **`part29-kickoff.md` the
-    live one** — it supersedes both on "where the port is", while
-    `d3d-phase-c28-kickoff.md` remains the authority on the white-surface chain.
+    executed, `phase-av-kickoff.md` the phase hand-off and `part29-kickoff.md` its
+    successor. **`part30-kickoff.md` is the LIVE one** and supersedes all of them on
+    "where the port is". `d3d-phase-c28-kickoff.md` records how the white-surface chain
+    was built, but **two of its eight steps are retired and its item 0 is answered** —
+    read `phase5-notes.md` §6ba before following anything in it.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     `perf-cpu-plan.md` (the live performance plan) and `perf-plan-overnight.md` (its
     executed predecessor).
@@ -668,7 +670,38 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 29):
+Where the port is, as of 2026-08-11 (part 30):
+
+* **THE WHITE-SURFACE CHAIN HAS NUMBERS IN IT NOW, AND TWO OF ITS STEPS ARE GONE.** The
+  tone curve every one of the 48 emitting shaders ends in is
+  `out^2 = (max(0.25x + 0.75, 1) - saturate(1-x)^2) * 0.5` with `x = colour * pc(14).w`,
+  and **our constants are hardware's to the digit** — a pre-registered prediction that
+  they were not, refuted. So **180 is the value at exactly full exposure**, not a ceiling
+  and not a gamma artifact: it is `sqrt(0.5)` written by the shader's own trailing `sqrt`.
+  Our translation of `ps_ad65b98593f95926` is **instruction-for-instruction identical** to
+  the capture's own disassembly, so the clamp is on an INPUT. Two retractions in place —
+  the `k_8_8_8_8_GAMMA` reading of 180, and "these surfaces are not shaded at all" (the
+  curve's derivative vanishes at `x=1`, so a 10% spread quantises to one 8-bit value).
+  **What is owed is enumerated: the ground shader reads 32 pixel constants and nine have
+  been compared.** `tools/xtr_draw_constants.py` reads hardware's;
+  `CZ_VK_PS_CONST_SCALE="14.w=4"` is the arm that separates a pinned colour from one the
+  curve is hiding. `docs/phase5-notes.md` §6ba, `open-items.md` 00f.
+* **A CAPTURE THAT CANNOT ANSWER IS ONE CAPTURE, NOT THE SET.** Part 27 asked `w1_spawn`
+  for the constants, got `UNRECOVERABLE`, and recorded that a new capture was needed; five
+  of the other six answer, from data on disk for weeks (gotcha 274).
+* **`timeout` WORKS AGAIN FOR HEADLESS RUNS WITH SOUND.** Since phase A/V it did not:
+  `SDL_HINT_NO_SIGNAL_HANDLERS` sat below the `CZ_NO_WINDOW` early return and the audio
+  device is a second SDL entry point, so every such run overran its recipe silently —
+  the symptom is a LONGER successful run, which nothing reports (gotcha 272). Any per-run
+  duration quoted from an audio-enabled headless run between phase A/V and part 30 is
+  suspect.
+* **THE XMA DECODER COSTS NO FRAME TIME.** Three runs an arm, alternated, null first:
+  every draw-count bin medians 32.0 ms in both arms, largest mean difference 0.2% against
+  a 0.6% null. Bound: the workload is pinned at the two-vblank floor in both arms, so this
+  says the decoder does not push frames off the cap. A frame rate quoted from a build with
+  audio no longer needs qualifying.
+
+Where the port was, as of 2026-08-11 (part 29):
 
 * **CINEMATICS PLAY TO COMPLETION WITH SOUND — operator-confirmed on two of them, and
   the fix was one field.** `open-items.md` 00j is CLOSED. The XMA packet walk advanced one
