@@ -15,6 +15,9 @@ prosecuted under since part 27**. It did not fix the white surfaces either. What
 was rule out, by measurement, every remaining input to the pass everyone has been looking
 at — which is worth more than another candidate, because it says the search has been in
 the wrong place and names the kind of instrument that can find the right one.
+**The shadow fix then got an operator verdict the same evening and it is POSITIVE**, which
+also produced this part's most useful mistake: the fix was called a null on two
+control-arm screenshots before that (gotcha 278).
 
 ## WHAT PART 31 DID — do not rebuild any of this
 
@@ -59,6 +62,38 @@ Full record: `docs/phase5-notes.md` §6bb, §6bc, §6bd, §6be.
   compressed — the distinction the item turns on, which `snap_dump_stats.py` cannot make).
   `psbindLine` also went 2048 -> 8192 and now says `(PC LIST TRUNCATED)`.
 
+## THE OPERATOR SESSION (2026-08-11 evening) — verdict, and a mistake worth reading
+
+Four screenshots at one Case 0-2 crowd spot, both arms of one binary, all four saved in
+`~/DR2CZ-troubleshooting/part31/operator-shadow-ab/` with an `INDEX.md` that carries the
+verdict AND the correction.
+
+* **Fold ON**: *"you can see much wider — the spot where shadows are is actually in front
+  of the camera"*, and from the other side of the truck *"also much better, still way far
+  from intended behaviour, but much better."*
+* **Fold OFF** (`CZ_VK_NO_ADDR_TILE_FOLD=1`): a smaller lit patch that jumps around the
+  frame — right edge in one shot, the lower-left crowd in the next.
+
+**The improvement fits the mechanism numerically**, which is what makes it a measurement:
+split distances are `pc(46) = (8, 12, 32, 7)`, so one populated cascade gives a real shadow
+term to ~8 m and four give it to ~32 m.
+
+**AND THIS SESSION CALLED THE FIX A NULL FIRST.** On the two fold-OFF shots alone, with no
+fold-ON file yet on disk, it wrote that the symptom was "present on both arms, so the fix
+is neither cause nor cure". Both arms DO have a camera-dependent lit region; only its
+EXTENT separates them. **Gotcha 278** — a defect that is 40% fixed looks exactly like one
+that is 0% fixed if the only question asked is "does it still look wrong".
+
+**Operator tooling changed on this machine and it affects every future session.** Spectacle
+was in copy-to-clipboard mode with no auto-save, so each capture lived alone in a
+throwaway `/tmp/Spectacle.XXXXXX/` that vanished with the window — it had already cost this
+project nine screenshots. It now auto-saves to `~/Pictures/Screenshots-rolling/` and a
+systemd user path unit trims that folder to the **10 newest**. Config in
+`~/.config/spectaclerc` (backup: `spectaclerc.bak-part31`), script at
+`~/.local/bin/prune-screenshots-rolling.sh`, units `screenshot-prune.{path,service}`.
+**The rolling folder is a BUFFER, not an archive** — copy anything that matters into
+`~/DR2CZ-troubleshooting/` before ten more shots push it out.
+
 ## READ THIS BEFORE MEASURING ANYTHING
 
 Everything from parts 26-30's lists stands. Part 31 adds three, in `docs/gotchas.md`:
@@ -77,8 +112,24 @@ Everything from parts 26-30's lists stands. Part 31 adds three, in `docs/gotchas
   Two independent derivations of 180 (part 27's gamma, part 30's trailing `sqrt`) still
   were not evidence that the pixels came from there. The cheap question that would have
   caught it four parts earlier: *what would move these pixels, and does it?*
+* **278 — a symptom that SURVIVES an arm is not a symptom the arm does not AFFECT.** Name
+  the measurable property the fix should move, and the direction, BEFORE looking at the
+  picture — ideally a number falling out of constants already read. This part learned it
+  the expensive way on its own shadow fix, twice compounded: by comparing against a
+  remembered image instead of a saved one, and by treating two shots at two different
+  cameras as evidence that two arms were the same.
 
 ## WHERE TO START
+
+**0. THE SHADOW TAIL PAST THE LAST CASCADE SPLIT — new, well posed, and the only item with
+a fresh operator verdict pointing straight at it.** The fix took the real shadow term from
+~8 m to ~32 m; the operator's *"still way far from intended"* is everything beyond that.
+Past the last split, line 81's `mul_sat r3.w, r3.w, c44.w` — with
+`pc(44) = (0.000244, 0.000977, 18, 0.071429)` — and the `tf5` term through its `c40..c42`
+projection are supposed to fade a distant surface back to **fully lit**; line 87
+(`mad r0.x, r3.w, 1-shadow, shadow`) is where that fade is applied. Find out what ours does
+there. Hardware's side is free (`tools/xtr_draw_constants.py`), it is measurable headlessly,
+and it is a different question from the atlas. **Recommended first.**
 
 1. **THE WHITE SURFACES, with a per-draw instrument. Do not build another whole-frame
    arm — the four above are the argument that it cannot answer.** The question is now
@@ -92,6 +143,10 @@ Everything from parts 26-30's lists stands. Part 31 adds three, in `docs/gotchas
    ones). One caution from §6bd: a plateau count compared across two RUNS is not a
    measurement (gotcha 254); within one frame, "these pixels vanished when that draw did"
    is sound.
+   **THE ONE THING TO ASK THE OPERATOR FOR:** a `CZ_CAPTURE_KEY` frame at a spot where the
+   white ground is LARGE. Headless outdoor frames carry 0.15-0.23% plateau; their part-27
+   captures run to 15.36%. That single frame is worth more than a day of headless
+   measuring, and it is the thing blocking this item rather than any missing analysis.
 2. ~~**ASK THE OPERATOR WHETHER SHADOWS APPEAR NOW.**~~ **ASKED AND ANSWERED THE SAME
    DAY — the fix reaches the picture, and a SECOND defect is now the item.** Four operator
    screenshots at one Case 0-2 crowd spot, both arms of one binary, in
@@ -127,6 +182,9 @@ Run and clean:
 * No new Vulkan validation messages on a 260 s renderer run.
 * Six renderer runs presented 5,883-6,206 frames at 7,315-7,403 peak draws, and the
   fold arm is within that band both ways, so the renderer is healthy on the outdoor route.
+* **A 44,310-frame OPERATOR session on the fixed build**: `no translated shader` = 0, and
+  the ucode dumps still match the cache at 417/417, so live Case 0-2 gameplay reached no
+  shader this cache lacks.
 
 * Both PM4 capture oracles on B1: `pm4_packet_lengths.py` **exit 0** (0 disagreeing) and
   `pm4_indirect_walks.py` **exit 0**.
