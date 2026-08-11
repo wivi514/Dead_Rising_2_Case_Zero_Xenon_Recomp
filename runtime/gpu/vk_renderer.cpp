@@ -6670,8 +6670,9 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     auto macroTileOffset = [](uint32_t x, uint32_t y, uint32_t pitch) -> uint32_t {
         return ((x >> 5) + (y >> 5) * (std::max(pitch, 32u) >> 5)) * 4096u;
     };
-    const uint32_t baseKey =
-        (dest - macroTileOffset(wx, wy, surfW)) & 0x1FFFFFFF;
+    // Not const: the address-offset fold below may retarget it to the surface this
+    // copy is a sub-region OF, once the copy extent is known.
+    uint32_t baseKey = (dest - macroTileOffset(wx, wy, surfW)) & 0x1FFFFFFF;
 
     // THE SNAPSHOT IS THE SIZE OF THE DESTINATION SURFACE, not of our EDRAM.
     //
@@ -6706,6 +6707,84 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         Count("resolve: copy region clipped by the EDRAM stand-in's size");
     copyW = std::min(copyW, availW);
     copyH = std::min(copyH, availH);
+
+    // WHERE THE COPY LANDS IN THE SNAPSHOT, which is not always where it was read from.
+    //
+    // The scissor says where in the EDRAM the pass rendered; it is the SOURCE offset and
+    // always right. The DESTINATION offset is where in the destination surface those
+    // pixels belong, and this title has TWO ways of saying that — move the scissor, or
+    // pre-offset RB_COPY_DEST_BASE. The `baseKey` subtraction above understands the
+    // first. This understands the second, and until part 31 nothing did.
+    //
+    // The case that needs it is the SHADOW ATLAS (§6bc). Four cascades share one
+    // 4096x1024 surface; each resolves a 1024x1024 region with the scissor at the
+    // origin, and they are told apart only by a destination address 0x20000 apart. In
+    // Xenos tiled address space that is exactly +1024 texels in X: a 32bpp macro tile is
+    // 32x32 texels = 4096 bytes, a 4096-wide surface is 128 tiles per tile row, so
+    // +32 tiles = 32 * 4096 = 0x20000. Without this the four become four disjoint
+    // snapshots each holding its own quarter, the consumer fetches the base address, and
+    // three quarters of every shadow lookup reads zero. Measured: our atlas was 86.7%
+    // zero where hardware's, dumped from the same capture, is 3.5%.
+    uint32_t dstX = copyX;
+    uint32_t dstY = copyY;
+    static const bool noAddrFold = EnvOn("CZ_VK_NO_ADDR_TILE_FOLD");
+    // Only when the copy does not cover the surface's width can a horizontal offset
+    // exist at all, and only when the scissor is at the origin is the address the thing
+    // carrying it — otherwise `baseKey` has already accounted for it and folding again
+    // would double-count.
+    if (!noAddrFold && copyW < surfW && wx == 0 && wy == 0 && surfW >= 32 && copyW)
+    {
+        const uint32_t tilesPerRow = surfW >> 5;
+        bool found = false;
+        uint32_t bestBase = 0, bestX = 0, bestY = 0;
+        for (const auto& [k, s] : R->snapshots)
+        {
+            // Same kind of surface, same extent, at a LOWER address: those three
+            // together are what make "this is a sub-region of that" a decode rather
+            // than a guess. Two unrelated surfaces of identical shape 0x20000 apart
+            // would still fold, so the arm above exists and the fold is counted.
+            if (((k & kSnapshotDepthBit) != 0) != fromDepth)
+                continue;
+            const uint32_t b = k & 0x1FFFFFFF;
+            if (b >= baseKey || s.image.width != w || s.image.height != h)
+                continue;
+            const uint32_t delta = baseKey - b;
+            if (delta & 0xFFF)          // not a whole number of macro tiles
+                continue;
+            // A sub-region has to be inside the allocation. Without this the decode
+            // relies on the `ty + copyH > surfH` test below to reject far-apart
+            // surfaces of the same shape, which it does — but by arithmetic accident
+            // rather than by saying what it means. `0684B000` and `1439B000` are both
+            // 1280x720 in this title and 0xD150000 apart, and the frame's first tile
+            // (scissor at the origin, 640 of 1280 wide) asks this question of them
+            // every frame.
+            if (uint64_t(delta) >= uint64_t(surfW) * surfH * 4)
+                continue;
+            const uint32_t tile = delta >> 12;
+            const uint32_t tx = (tile % tilesPerRow) << 5;
+            const uint32_t ty = (tile / tilesPerRow) << 5;
+            if (tx + copyW > surfW || ty + copyH > surfH)
+                continue;
+            // Nearest base below, so a surface that is itself a sub-region of a bigger
+            // one folds into its immediate parent rather than the earliest match.
+            if (!found || b > bestBase)
+            {
+                found = true;
+                bestBase = b;
+                bestX = tx;
+                bestY = ty;
+            }
+        }
+        if (found && (bestX || bestY))
+        {
+            baseKey = bestBase;
+            dstX = bestX;
+            dstY = bestY;
+            Count("resolve: destination address folded into an existing surface as a "
+                  "tile offset");
+        }
+    }
+
     if (w && h && copyW && copyH)
     {
         const uint32_t key = baseKey | (fromDepth ? kSnapshotDepthBit : 0u);
@@ -6823,16 +6902,18 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                               : VK_IMAGE_ASPECT_COLOR_BIT);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     aspect);
-            // Copy the TILE, at its own position in both images. Source and destination
-            // offsets are the same because our EDRAM is full-screen-sized and the
-            // window offset is deliberately not applied to the geometry (see the
+            // Copy the TILE, at its own position in each image. For a scissor-offset
+            // tile the two offsets are the same, because our EDRAM is full-screen-sized
+            // and the window offset is deliberately not applied to the geometry (see the
             // scissor note in DoDraw), so a tile sits at its true screen position in
-            // both.
+            // both. For an ADDRESS-offset sub-region they differ: the pass rendered at
+            // the EDRAM origin and the pixels belong somewhere else in the destination
+            // surface, which is what `dstX`/`dstY` carry.
             VkImageCopy copy{};
             copy.srcSubresource = { aspect, 0, 0, 1 };
             copy.srcOffset = { int32_t(copyX), int32_t(copyY), 0 };
             copy.dstSubresource = { aspect, 0, 0, 1 };
-            copy.dstOffset = { int32_t(copyX), int32_t(copyY), 0 };
+            copy.dstOffset = { int32_t(dstX), int32_t(dstY), 0 };
             copy.extent = { copyW, copyH, 1 };
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

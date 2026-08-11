@@ -4929,3 +4929,62 @@ sample exceeds the reference — so a zero sample reads as OCCLUDED. Three quart
 atlas returning zero makes the picture darker, not brighter. Recorded here rather than
 folded into item 00f: it is a real defect with a hardware-verified mechanism, and it
 belongs to item 3.
+
+## 6bd. THE TERM DECOMPOSITION REFUTES ITS OWN PREDICTION, AND WHAT SURVIVES IS BETTER
+## THAN WHAT IT WAS LOOKING FOR (part 31)
+
+Four runs of the outdoor DebugJump route, `CZ_VK_SNAP_DUMP` on frame 3000, read with the
+new `tools/snap_plateau.py` against the 1280x720 scene colour `0684B000`.
+
+| arm | px at exactly rgb(180,180,180) | px at 181/182/183 grey | frame at rgb(0,0,0) |
+|---|---|---|---|
+| null | 1,348 (0.146%) | **0 / 0 / 0** | 2.28% |
+| `67.w=0` — the additive `tf1^2 * 4` | 961 | **0 / 0 / 0** | 2.24% |
+| `24.x=0,24.y=0,24.z=0` — the sun | 721 | **0 / 0 / 0** | 1.82% |
+| `1.x=0,1.y=0,1.z=0` — everything multiplicative | 893 | **0 / 0 / 0** | **61.54%** |
+
+**Read the counts as inadmissible and the invariant as the finding.** Frame 3000 of one
+run is not frame 3000 of another — that is gotcha 254, and it applies to a pixel count as
+much as to a fingerprint — so 1,348 against 961 is a difference between two cameras and
+no null was measured for it. The prediction registered above ("`67.w=0` collapses the
+plateau, `24.*=0` does not") is therefore **not supported**, and it is not refuted in the
+strong sense either: the experiment as designed could not have supported it.
+
+What IS admissible is what every arm agrees on, because it is a within-frame property:
+
+* **The peak sits at exactly 180 in all four arms**, and
+* **not one pixel of 921,600 lands on grey 181, 182 or 183, in any arm.**
+
+The last arm makes that a real result rather than a null one. `c1.xyz = 0` zeroes the
+multiplicative path of every shader that reads `pc(1)` and takes the frame from 2.28%
+black to **61.54% black** — the single most destructive thing this project has done to a
+frame on purpose — and the plateau at 180 comes through it untouched, still with nothing
+above it.
+
+**So the exactly-180 pixels are not the ground shader's colour terms.** They survive
+zeroing its sun, its additive term and its entire multiplicative path. Either they are
+written by a different shader, or by a path in which `pc(1)`, `pc(24)` and `pc(67)` are
+not what they are in `ps_ad65b98593f95926` — which the per-shader literal pool (§6ba)
+makes entirely ordinary.
+
+### What the invariant is worth on its own
+
+§6ba's curve is invertible, and it says `out = 180` if and only if `x = 1` **exactly**:
+
+    out^2 = (max(0.25x + 0.75, 1) - saturate(1 - x)^2) * 0.5 = 0.5
+      x >= 1 kills the saturate, so the max must be 1, so 0.25x + 0.75 <= 1, so x <= 1
+      x <  1 makes the max 1, so 1 - (1-x)^2 = 1, so x = 1 — a contradiction
+
+and "nothing at 181" says **no pixel in the frame has `x > 1`**. That is a ceiling on
+`colour * pc(14).w` across the whole scene, holding through an arm that removed two
+thirds of the picture. It also retires the doubt §6ba raised about part 27's frame
+maximum: that argument was withdrawn because the seven captures behind it were NIGHT
+captures where the only thing at full exposure is the defect itself. This frame is not a
+night capture — it is a daylight street with mean luma 36.3 and 63,398 distinct colours —
+and it still has a hard ceiling at exactly `x = 1`.
+
+The next question is therefore whether `x` is a product at all on those pixels, and that
+is a question about the peak's LOCATION rather than its population — which is immune to
+the frame-matching problem, because it is read inside one frame. `CZ_VK_PS_CONST_SCALE`
+with `14.w=0.25` predicts the peak moves to exactly **119** if `x = c * pc(14).w` holds
+there, and stays at 180 if the register being scaled is not that shader's exposure.
