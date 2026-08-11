@@ -348,6 +348,35 @@ Next, in order:
    ~= 62 s. **The guest's mixer stops mixing** — this is not our output path, and our
    decoder keeps filling rings normally throughout (`refused0`, ~494 frames/5 s).
 
+   **RESOLVED BY COUNTER, AND IT IS A NEGATIVE: THE END SYNC POINT IS NOT HOLDING THE
+   LOOP.** `CZ_CINE_PROBE=1` counts the predicate `sub_8249EEA8` (whose zero return IS
+   the branch condition — `bl / clrlwi. r11,r3,0x18 / beq`) and entries to
+   `sub_824A0FC0`, the function containing both that call and the print. Over a
+   windowed run sitting in the ping-pong:
+
+       [cine] sub_824A0FC0 ticks=1  | end-sync-point asked=4  NOT-received=2 received=2
+       [cine] sub_824A0FC0 ticks=10 | end-sync-point asked=15 NOT-received=8 received=7
+
+   ...and then nothing, for the rest of the run, while frames kept advancing at ~31 fps.
+   **Ten entries in total and an even received/not-received split.** The branch is not
+   hit continuously, the predicate is not stuck, and the containing function stops being
+   called entirely while the scene keeps ping-ponging. The positive control is inside
+   the same line — `received=7` proves the counter can report the other answer, so a
+   zero would have meant something (gotcha 30).
+
+   **So the sync point is at most an event near the START of the loop, not the condition
+   sustaining it**, which is the second of the two readings the caveat below offered.
+   Whatever moves the camera back and forth is elsewhere, and `sub_824A0FC0` is not it.
+   Do not spend another session on the sync-point path without new evidence.
+
+   **A PROBE THAT REPORTS FROM INSIDE THE FUNCTION IT COUNTS GOES SILENT EXACTLY WHEN
+   THE INTERESTING THING HAPPENS.** This one only stayed readable because frames were
+   visibly advancing while it said nothing, so "no report" could be read as "not
+   called". That was luck, not design. Drive a probe's reporting from a clock that runs
+   regardless — the graphics pump — or its most important state is the one it cannot
+   express.
+
+   **The superseded caveat, which pointed the right way:**
    **CAVEAT ON THE WAITING LINE, AND IT IS MINE TO FLAG: IT FIRES EXACTLY ONCE.**
    Over a 15-minute windowed run with the diagnostic layer on and the scene
    ping-ponging throughout, `WAITING: end sync point not received yet!` appears **1**

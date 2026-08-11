@@ -1837,3 +1837,121 @@ PPC_FUNC(sub_82864808)
     if (XmaProbeTick())
         XmaProbeReport();
 }
+
+// ---------------------------------------------------------------------------
+// CZ_CINE_PROBE=1 — is the cinematic CONTINUOUSLY waiting for its end sync point,
+// or does it pass that branch once?
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS. `CZ_GUEST_DIAG` made the prologue narrate its own stall:
+//
+//     [guest] WAITING: end sync point not received yet!
+//
+// printed at 0x824A10D4, on the FAILING side of a branch whose success side
+// (0x824A10E0) is a virtual call taking a float in f1 — the cinematic's
+// Update(delta). So a missing sync point means the cinematic is not advanced.
+//
+// That reading has a hole, and the hole is why this file gained a probe instead of a
+// conclusion: over 7,778 frames of continuous ping-ponging the line printed **once**.
+// A branch taken every frame would print thousands of times. Either the print site
+// latches and the wait is continuous, or the path is taken once and something else
+// sustains the loop — which would make the sync point an event at the START of the
+// loop rather than the condition holding it. Different defect, different fix.
+//
+// A print cannot answer that (it is the thing under suspicion). A counter can.
+//
+// WHAT IS HOOKED, AND WHY IT IS NOT 0x824A10D4. That address is mid-function, and the
+// hook seam in this port replaces whole functions — there is nowhere to attach. Two
+// real function boundaries bracket it instead:
+//
+//   sub_8249EEA8  the predicate itself. The caller does
+//                     bl sub_8249EEA8 / clrlwi. r11,r3,0x18 / beq <WAITING path>
+//                 so a return of ZERO *is* the branch condition. Counting its calls
+//                 and its zero-returns measures the wait directly, at its source.
+//   sub_824A0FC0  the function containing both the call and the print (verified: no
+//                 blr between 0x824A0FC0 and 0x824A10D4). Its entry count is the
+//                 denominator — how often the containing tick ran at all.
+//
+// THE POSITIVE CONTROL IS BUILT IN, and it has to be (gotcha 30). Reporting only
+// "not received" would leave a stuck counter and a stuck predicate identical. Both
+// outcomes are counted, so the RECEIVED count during the healthy part of the
+// cinematic is the proof the instrument can report the other answer. If received
+// stays 0 for the whole run, treat the instrument as unproven, not the predicate as
+// stuck.
+//
+// Cost when off: one `getenv`-backed bool test on two functions. Neither is on the
+// per-draw path.
+extern "C" PPC_FUNC(__imp__sub_8249EEA8);
+extern "C" PPC_FUNC(__imp__sub_824A0FC0);
+
+namespace {
+
+std::atomic<uint64_t> g_cineTicks{ 0 };        // sub_824A0FC0 entries
+std::atomic<uint64_t> g_cineSyncCalls{ 0 };    // sub_8249EEA8 calls
+std::atomic<uint64_t> g_cineSyncMissing{ 0 };  // ... returning 0 = "not received yet"
+
+bool CineProbeEnabled()
+{
+    static const bool on = getenv("CZ_CINE_PROBE") != nullptr;
+    return on;
+}
+
+// Its own 5 s clock, deliberately separate from the XMA probe's: this instrument has
+// to be usable on a run with no audio arms set at all.
+bool CineProbeTick()
+{
+    using clock = std::chrono::steady_clock;
+    static std::mutex m;
+    static clock::time_point next{};
+    std::lock_guard<std::mutex> lock(m);
+    const auto now = clock::now();
+    if (now < next)
+        return false;
+    next = now + std::chrono::seconds(5);
+    return true;
+}
+
+void CineProbeReport()
+{
+    const uint64_t ticks = g_cineTicks.load(std::memory_order_relaxed);
+    const uint64_t calls = g_cineSyncCalls.load(std::memory_order_relaxed);
+    const uint64_t missing = g_cineSyncMissing.load(std::memory_order_relaxed);
+    fprintf(stderr,
+            "[cine] sub_824A0FC0 ticks=%llu | end-sync-point asked=%llu "
+            "NOT-received=%llu received=%llu\n",
+            (unsigned long long)ticks, (unsigned long long)calls,
+            (unsigned long long)missing, (unsigned long long)(calls - missing));
+}
+
+} // namespace
+
+// sub_8249EEA8 -> 0 when the end sync point has NOT arrived. See the block above.
+PPC_FUNC(sub_8249EEA8)
+{
+    if (!CineProbeEnabled())
+    {
+        __imp__sub_8249EEA8(ctx, base);
+        return;
+    }
+    __imp__sub_8249EEA8(ctx, base);
+    g_cineSyncCalls.fetch_add(1, std::memory_order_relaxed);
+    // The caller tests only the low byte (`clrlwi. r11,r3,0x18`), so this must too —
+    // reading the full word would count a high-byte-only value as "received" where
+    // the guest reads it as zero.
+    if ((ctx.r3.u32 & 0xFF) == 0)
+        g_cineSyncMissing.fetch_add(1, std::memory_order_relaxed);
+}
+
+// sub_824A0FC0 — the tick containing both the predicate call and the WAITING print.
+PPC_FUNC(sub_824A0FC0)
+{
+    if (!CineProbeEnabled())
+    {
+        __imp__sub_824A0FC0(ctx, base);
+        return;
+    }
+    g_cineTicks.fetch_add(1, std::memory_order_relaxed);
+    __imp__sub_824A0FC0(ctx, base);
+    if (CineProbeTick())
+        CineProbeReport();
+}
