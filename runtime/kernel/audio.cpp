@@ -589,13 +589,39 @@ bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
     const uint32_t packet = c.inReadOffsetBits() / kXmaBitsPerPacket;
     if (packet >= count)
     {
-        // The buffer is consumed. Invalidate it and swap to the other one, exactly
-        // as the hardware does: the guest refills the retired buffer and re-flags it.
+        // The buffer is consumed. Invalidate it, and swap to the other one ONLY IF THE
+        // OTHER ONE IS ACTUALLY VALID.
+        //
+        // The unconditional swap this used to do is what killed the cinematic audio
+        // after 4.9 seconds of a 316-second clip (open-items 00j). XMA_CONTEXT_DATA has
+        // two input buffers and the hardware alternates them, so "retire this one and
+        // move to the other" reads like the obvious transcription. **This title never
+        // uses buffer 1.** Censused over a whole prologue run: 136 context dumps, and
+        // `in1Ptr` is 0 in every single one while `in1Valid` is never set on any
+        // context. It streams by re-arming buffer 0 IN PLACE, swapping only the pointer
+        // — ctx0's alternates A2538000 / A255E000 forever while `currentBuffer` stays 0.
+        //
+        // So the swap moved the context to a buffer that does not exist, and nothing
+        // could ever move it back: the walk reads `currentBuffer` at its top to decide
+        // which buffer to look at, sees buffer 1, finds it invalid, and returns false
+        // for the rest of the process. The guest can re-arm buffer 0 as often as it
+        // likes and we will not look at it. `ctx7` was caught in exactly that state —
+        // `valid=00 cur=1 readPacket=0`, unchanged across 28 consecutive dumps — while
+        // its two sibling contexts sat at packet 61 and 63 of 64 with full output rings,
+        // which is what a 5.1 mixer waiting on a dead third stream looks like.
+        //
+        // Staying put is also what the hardware does. The buffer-switch is conditional
+        // on the other buffer being flagged; with a single-buffer producer the decoder
+        // parks on the buffer it has and resumes when the guest re-flags it, which is
+        // precisely the transition sub_8285EFE0 polls for. For a genuine double-buffered
+        // stream this is a no-op, because there the other buffer IS valid.
+        const bool otherValid = cur ? c.in0Valid() : c.in1Valid();
         if (cur)
             c.setIn1Valid(false);
         else
             c.setIn0Valid(false);
-        c.setCurrentBuffer(!cur);
+        if (otherValid)
+            c.setCurrentBuffer(!cur);
         c.setInReadOffsetBits(0);
         XmaWriteDword(va, 0, c.dw[0]);
         XmaWriteDword(va, 2, c.dw[2]);
