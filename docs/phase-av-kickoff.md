@@ -11,11 +11,17 @@ arms and not to be re-bought".
 
 ## The one-paragraph state of the port
 
-The game boots, renders, plays, **and now makes sound**. Phase A/V wired ffmpeg's XMA2
-decoder to the title's own hardware context array and an SDL device to its mixer, and the
-same fix unfroze the prologue cinematic — which had been the port's oldest open blocker,
-open since part 15. The renderer's white-surface defect is untouched and is now clearly
-the top item.
+The game boots, renders, plays, **and now makes sound** — operator-confirmed by ear.
+Phase A/V wired ffmpeg's XMA2 decoder to the title's own hardware context array and an SDL
+device to its mixer, and the same fix unfroze the prologue cinematic, the port's oldest
+open blocker, open since part 15.
+
+**"Unfroze" is the exact word and not a synonym for "fixed".** The prologue no longer sits
+black on one camera for 10,513 frames; it now RENDERS, and it ping-pongs — forward ~1 s,
+backward ~1 s, forever, from the moment a character speaks. That is a new defect
+(`open-items.md` 00j) which only exists because there is now audio, it is item 0 below,
+and three of its candidate explanations are already eliminated. The renderer's
+white-surface defect is untouched and remains the top RENDERING item.
 
 ## WHAT PHASE A/V DID — do not rebuild any of this
 
