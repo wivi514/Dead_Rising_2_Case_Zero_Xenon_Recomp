@@ -348,6 +348,21 @@ Next, in order:
    ~= 62 s. **The guest's mixer stops mixing** — this is not our output path, and our
    decoder keeps filling rings normally throughout (`refused0`, ~494 frames/5 s).
 
+   **CAVEAT ON THE WAITING LINE, AND IT IS MINE TO FLAG: IT FIRES EXACTLY ONCE.**
+   Over a 15-minute windowed run with the diagnostic layer on and the scene
+   ping-ponging throughout, `WAITING: end sync point not received yet!` appears **1**
+   time and `ForceClearAnimSyncPartner()` **2**. A cinematic permanently parked on that
+   branch, with the code path running per frame, would print it thousands of times.
+   So either the print site latches, or **the path is taken once and the ping-pong is
+   sustained by something else**. Nothing here distinguishes those, and the second
+   reading would make the sync point an event at the START of the loop rather than the
+   condition holding it — a materially different defect. **Establish which before
+   building anything on it**: the guard at `0x824A10BC`/`0x824A10D0` shows no latch, so
+   the cheap check is a hook on `0x824A10D4` that COUNTS rather than prints.
+
+   Corroborating the loop's determinism across all three runs: `distinct` is 1170,
+   1170 and 1169 on two different binaries. The same fixed pose set every time.
+
    **AND THE ORDER IS SETTLED — the audio stopping is a CONSEQUENCE, not a cause.**
    One grep on the run that already existed, which is why it was worth writing the
    question down as an orderable one:
