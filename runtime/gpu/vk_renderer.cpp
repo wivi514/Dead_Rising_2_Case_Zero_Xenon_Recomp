@@ -5048,6 +5048,71 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
         for (uint32_t i = 0; i < 256 * 4; i++)
             dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+
+        // CZ_VK_PS_CONST_SCALE="14.w=4,18.y=0.5" — multiply chosen PIXEL constant
+        // components by a factor, after the copy and before any draw reads them.
+        //
+        // WHY THIS EXISTS. The white-surface item (open-items 00f) ends at a tone curve
+        // whose constants are now known to be correct on both sides, so the remaining
+        // question is about the COLOUR arriving at it: `x = colour * pc(14).w` sits at
+        // exactly full exposure on the white surfaces and never above it anywhere in the
+        // frame. The output cannot distinguish "the colour varies and the curve is flat
+        // here" from "the colour is pinned", because `d(out)/dx` vanishes at `x = 1` —
+        // a 10% spread in the colour quantises to ONE 8-bit value there (gotcha 273).
+        //
+        // Scaling the exposure moves the surfaces to a part of the curve where it does
+        // not vanish: at `x = 4` the same 10% spread is about seven 8-bit levels. So the
+        // arm is a magnifying glass on the input, not a change anyone wants to keep —
+        // a plateau that stays a single spike under 4x is a pinned colour, and one that
+        // spreads is an ordinary shaded surface the curve was hiding.
+        //
+        // It scales rather than sets, deliberately: this title's exposure is scene
+        // adaptive and differs per draw (0.2 to 1.0 in one run), so a fixed value would
+        // flatten a real signal into a constant and manufacture the very uniformity the
+        // arm exists to test for.
+        struct PsConstScale { uint32_t index, comp; float factor; };
+        static const std::vector<PsConstScale> psConstScale = []
+        {
+            std::vector<PsConstScale> out;
+            const char* spec = Env("CZ_VK_PS_CONST_SCALE");
+            if (!spec)
+                return out;
+            for (const char* p = spec; *p;)
+            {
+                char* end = nullptr;
+                const uint32_t index = uint32_t(strtoul(p, &end, 10));
+                // Announce every rejected clause rather than skipping it. An arm that
+                // silently parses to nothing is an arm that cannot be shown to have
+                // engaged, and this one's whole output is "the picture changed".
+                uint32_t comp = 4;
+                if (end && *end == '.')
+                    comp = uint32_t(std::string("xyzw").find(end[1]));
+                const char* eq = (end && *end) ? strchr(end, '=') : nullptr;
+                if (index < 256 && comp < 4 && eq)
+                {
+                    out.push_back({index, comp, strtof(eq + 1, nullptr)});
+                    fprintf(stderr, "[vk] CZ_VK_PS_CONST_SCALE: pc(%u).%c *= %g\n", index,
+                            "xyzw"[comp], double(out.back().factor));
+                }
+                else
+                {
+                    fprintf(stderr, "[vk] CZ_VK_PS_CONST_SCALE: cannot parse \"%s\" — "
+                                    "expected <0..255>.<xyzw>=<factor>\n", p);
+                }
+                const char* comma = strchr(p, ',');
+                if (!comma)
+                    break;
+                p = comma + 1;
+            }
+            return out;
+        }();
+        if (!psConstScale.empty())
+        {
+            float* f = reinterpret_cast<float*>(dst);
+            for (const PsConstScale& s : psConstScale)
+                f[s.index * 4 + s.comp] *= s.factor;
+            Count("draw: a PIXEL constant was scaled by CZ_VK_PS_CONST_SCALE");
+        }
         memset(shared, 0, kSharedSize);
     }
 
