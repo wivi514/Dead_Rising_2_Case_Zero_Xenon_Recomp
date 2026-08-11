@@ -4520,3 +4520,92 @@ come from `c` itself, and part 28's question stands unchanged.
 
 The instrument needs no build: `CZ_VK_PSBIND=<hash>` with `CZ_VK_PSBIND_PC=252,253,254,255`
 already prints exactly these registers per distinct binding, and has since part 26.
+
+### THE PREDICTION IS REFUTED. Our constants are hardware's, to the digit
+
+`CZ_VK_PSBIND=7d2f8f33deec1b65,ad65b98593f95926` with
+`CZ_VK_PSBIND_PC=14,18,19,252,253,254,255`, outdoor DebugJump route, 64 distinct
+bindings:
+
+| | hardware (5 captures, 68 draws) | ours (55 distinct bindings) |
+|---|---|---|
+| `ps_7d2f8f33deec1b65` `pc(252)` | 0.75, 0.333333, -2.0, **0.25** | 0.7500, 0.3333, -2.0000, **0.2500** |
+| `pc(254)` | 0.85, 0.15, 0.0, **1.0** | 0.8500, 0.1500, 0.0000, **1.0000** |
+| `pc(255)` | **0.5**, 0.0, 0.0, 0.0 | **0.5000**, 0.0000, 0.0000, 0.0000 |
+| `pc(18)` fog | 15.0, 0.004, 0.25, 1.0 | 15.0000, 0.0040, 0.2500, 1.0000 |
+| `pc(19)` fog colour | 0.26, 0.40, 0.98, 1.0 | 0.2600, 0.4000, 0.9800, 1.0000 |
+
+So `A = 0.25`, `B = 0.75`, `K1 = 1.0`, `K2 = 0.5` in this runtime as well. The predicted
+zero is not there and the mechanism it proposed is dead.
+
+**The run also confirms the per-shader literal pool independently, which is worth more
+than the refutation.** `ps_ad65b98593f95926` reads its terms one register lower, and our
+own constant file holds exactly that shifted pool:
+
+    ps_7d2f8f33deec1b65   pc252=(0.75, 0.3333, -2, 0.25)  pc253=(2, 0.001, -1, 1.5)
+                          pc254=(0.85, 0.15, 0, 1)        pc255=(0.5, 0, 0, 0)
+    ps_ad65b98593f95926   pc252=(0, 0, 0, 0)              pc253=(0.75, 0.25, 0, 0)
+                          pc254=(2, 0.001, 0.5, -2)       pc255=(0.85, 0.15, 0, 1)
+
+The ground shader's `A = pc(253).y = 0.25`, `B = pc(253).x = 0.75`, `K2 = pc(254).z =
+0.5`, `K1 = pc(255).w = 1.0` — the same four numbers, in the slots that shader's own
+disassembly reads them from. Both pools are right, and the two disagree about which
+register holds what, which is why a slot number lifted from one shader and looked up in
+another's constants produces nonsense.
+
+### What the refutation leaves, and it sharpens part 27 rather than restoring it
+
+With the real constants the curve is quantifiably flat near full exposure. The 8-bit
+value **180 is not a single value of `x`; it is the band `x` in [0.9055, 1.0080]** —
+because `d(out^2)/dx = (1-x)` on the lower branch and vanishes at the join:
+
+| x | 0 | 0.25 | 0.5 | 0.75 | 0.9 | **1.0** | 1.05 | 1.5 | 3 | 5 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 8-bit | 0 | 119 | 156 | 175 | 179 | **180** | 181 | 191 | 221 | 255 |
+
+Two consequences, and they pull in opposite directions:
+
+* **Part 27's "these surfaces are not shaded at all" is too strong.** A 10% spread in the
+  shaded value is invisible at the join, so a flat 180 is equally consistent with a
+  normally-shaded surface sitting at full exposure. What part 27 measured is that the
+  output is constant; the input need not be.
+* **The real anomaly is the other statistic in the same table, and it is a HARD one.** In
+  five of the seven captured frames **nothing anywhere in the 1280x720 buffer exceeds
+  180**, and 181 needs only `x = 1.008`. So no pixel of those frames is more than 1%
+  above full exposure while 6-15% of them sit within 10% of it. That is a **clamp at
+  `x = 1`**, which is part 28's `c = 1/pc(14).w` arrived at from the picture instead of
+  from a paint probe — the probe result that originally produced it was uninformative,
+  since `0.25x + 0.75 >= 0.75` can only fall below its floor of 1.0 for `x < 1` and the
+  probe never distinguished "below" from "equal".
+
+### Where the clamp is NOT: the shader
+
+Six `_sat` modifiers in hardware's disassembly of the ground shader, six `saturate()` in
+our translation of it, on the same six instructions (`mul_sat r0.x, r1.z, r0.x`;
+`muls_prev_sat`; `mul_sat r3.w, r3.w, c44.w`; `mul_sat r5.w, r9.y, r5.w`; the fog factor;
+the tone map's `mad_sat`). There is no clamp in our translation that hardware does not
+have, and the epilogue is instruction-identical. The clamp is on an INPUT to the shader,
+not inside it.
+
+### The next measurement, named
+
+Our own exposure `pc(14).w` reads **1.0** on a large share of draws where hardware reads
+**0.331** (w1_spawn) and **0.298** (w7_slotmachine). This title's exposure is scene
+adaptive, so those are not matched comparisons and cannot be quoted as a defect — but the
+ratio is the one the clamp predicts. If our lit colour is capped near 1.0 where hardware's
+reaches ~3, an auto-exposure that targets a fixed mean would settle at ~1.0 for us and
+~0.33 for hardware, and the two disagreements would be one disagreement.
+
+So the question for part 31 is **what caps the lit colour at 1.0**, and it is a question
+about the shader's inputs. The ground draw's vertex data and its three DXT1 textures are
+already known to match hardware bit for bit, and DXT1 cannot carry a value above 1 on
+either side — so the HDR range on hardware has to arrive through something else, and
+finding which input carries it is the whole of the next step. Two ways in, both cheap:
+
+1. **An exposure arm.** Overriding `pc(14).w` at bind time distinguishes the two worlds in
+   one run: if `x` is a genuine product, halving the exposure moves the patches off 180
+   and reveals detail in them; if `c` is pinned at `1/E` by something upstream, they do
+   not move at all.
+2. **The matched-location comparison the R2 captures can still answer.** `pc(14).w` at a
+   draw of a named shader is one more column for `tools/xtr_draw_constants.py`, and the
+   operator's route reaches w1_spawn.
