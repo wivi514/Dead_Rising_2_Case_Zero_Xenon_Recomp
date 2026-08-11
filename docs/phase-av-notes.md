@@ -209,3 +209,165 @@ the gap. Gotcha 268.
 * **`starve1-2` per 5 s per context** is small but not zero. It means the guest had ring
   space and we produced nothing that tick. Attributable rather than mysterious, which is
   why the counter exists.
+
+---
+
+# Part 29 — the cinematic loop, and it is a control loop
+
+Run 2026-08-11. The part-28 hand-off left one instruction for this defect and it was the
+right one: *a palindrome means some clock DECREMENTS, so find what writes the cinematic's
+time each frame.* This part did exactly that and the answer turned out to be a PID
+controller the title ships switched on.
+
+Full item, with the arm table and the corrections: `docs/open-items.md` 00j.
+
+## 1. The lead was invisible to a tool, and the tool said "0"
+
+The first question — who touches the cinematic manager's singleton at `0x82A46294` —
+was put to `tools/gdis.py --find-uses` and came back **`0 site(s)`**. For a global that
+is read on the frame path.
+
+The scanner reconstructed `lis`+`addi`/`ori` pairs only, i.e. it could see code that
+takes an address and not code that *dereferences* one, and dereferencing is what the
+compiler emits for a global it is about to load:
+
+    lis  r9,  0x82A4
+    lwz  r31, 0x6294(r9)        <- the reference, folded into the memory operand
+
+It is 301 sites. Every D-form load/store is matched now and the mnemonic prints with each
+hit, because for a data address the interesting question is almost always *who writes
+it*, and two `stw` sites out of 301 is a five-second answer once they are labelled.
+
+This is gotcha 25 in its purest form and it is worth stating as a rule for the next port:
+**a scanner's zero is a statement about the scanner until you have shown it can match the
+shape you are asking about.** The control cost one command — re-run it on an address
+whose `lis`+`addi` site is already on screen.
+
+## 2. What writes the cinematic's time
+
+`sub_82475718`, and `sub_82478FC8` stores its return straight into `[cine+0x1698]`. It
+switches on a mode word (global `0x829DC320`, shipped as **2**):
+
+    0  raw scene time · 1  the audio stream position · 2  PID(audio position)
+
+`sub_824741D8` is the PID. It does not have to be *guessed* to be a PID: its own tail
+plots four values through the engine's debug-graph API under the strings `Cine.Audio
+P-gain / I-gain / D-gain / MV (ms)`, which is the module naming its own control law. It
+accumulates `P*err + I*integral + D*(err - prevErr)` and returns **`setpoint minus that
+accumulator`** — a value with no monotonicity anywhere in it.
+
+That last line is the whole defect class. A scene time that is a setpoint minus a
+controller's output runs backwards whenever the controller overshoots.
+
+## 3. The measurement, and what it found was not what was expected
+
+`CZ_CINE_TIME=<file>` logs the clock at its source. The expectation going in was
+"controller oscillates". The file says something better:
+
+| | |
+|---|---|
+| `mode` | 2 on all 2,212 lines; the PID ran on 2,208 |
+| `setpoint` | climbs linearly, forever — 0.06 -> 122.7 s |
+| `audioPos` | **freezes at 4.906667 s after 4 s and never moves again** |
+| `ret` | hunts 4.91 <-> 5.27 s, period ~11 s |
+
+The controller is not misbehaving. It is tracking an input that has stopped, integrating
+against an error it cannot close, and dragging the scene back and forth across it. **The
+PID is the mechanism of the symptom and not the defect**, and the distinction is the
+difference between tuning a gain and fixing an audio pipeline.
+
+The columns were chosen so this could have come out the other way, which is the only
+reason the reading is worth anything: `mode` never reading 2 would have killed the PID
+explanation outright, and `setpoint` oscillating would have moved the defect to the
+caller. Both were live possibilities when the probe was written.
+
+## 4. The camera palindrome IS this clock — joined, not asserted
+
+Interpolate `ret` onto every frame of the same run and ask how tightly one
+`cameraFingerprint` pins it: median within-camera spread **0.0052 s**. The same statistic
+at deliberately wrong alignments reads **0.042 to 0.377 s**, 8x to 72x worse. The null is
+built from the same data, so no second run and no assumption about the offset is doing
+any work.
+
+## 5. The arm, and why all three settings are the title's own
+
+`CZ_CINE_AUDIO_MODE=0|1|2` writes the mode into the config block the guest just built.
+Every setting is a code path the title implements — the arm invents nothing, which is
+what makes a negative result from it mean something.
+
+| arm | cinematic era | what it establishes |
+|---|---|---|
+| 2 — shipped | **LOOPING**, 15 poses, runs/distinct **120** | the defect |
+| 1 — scene time := audio position | **FROZEN** at 4.906667 for 338 s | the input really is stuck |
+| 0 — no audio sync | no loop; the run reaches gameplay | the correction is what loops |
+
+Mode 1 was **predicted in the commit before it was run**: hand the scene the frozen
+position directly and it must freeze rather than oscillate. It did, for 338 seconds.
+
+**Mode 0 is confounded and is not a fix.** With no audio sync the first call site hands
+over an uninitialised scene time of ~138,181 s, so the cinematic ends immediately; mode
+2's `if (input == 0) return 0` guard is what normally protects against that. Recorded
+because "mode 0 makes it play" is exactly the wrong lesson to take from that row.
+
+## 6. Where the defect actually is now
+
+    sub_82759170   the cinematic asks the audio system — message ReqID 0x106, field "Time"
+    sub_827213C8   the audio system looks the voice up in [sys+0xA8] and returns entry+8
+    sub_82721530   which it refreshes every tick from sub_8270F768(voice)
+    sub_8270F768   voice state 2/3 -> sub_82764C48; otherwise a wall clock
+    sub_82764C48   **SamplesPlayed / sampleRate**, from a struct shaped exactly like
+                   XAUDIO2_VOICE_STATE (SamplesPlayed at +8)
+
+`4.906667 x 48000 = 235,520` samples exactly `= 1,840 XMA subframes of 128`. The voice
+plays that many and stops while still reporting itself playing, so the wall-clock
+fallback never takes over either. **That is the part-30 question.**
+
+### And a diagnostic run narrows it further: the clip ENDED
+
+`CZ_AUDIO_TRACE=1 CZ_XMA_DECODE_LOG=1` alongside the clock probe, on the prologue:
+
+* the three dialogue contexts (5, 6, 7 — `stereo=1`, 48 kHz) decode across exactly two
+  5-second windows and then **never appear in the active list again**. Totals, as
+  stereo-interleaved seconds: **5.03, 5.04, 4.92**. The frozen `Time` is **4.906667**;
+  ctx7 agrees to 0.014 s.
+* our decoder is healthy throughout and stays so: `refused0`, `starve1-2`, ctx0 (the
+  music) still producing ~508,000 samples per 5 s window for the rest of the run.
+* the guest's mixer output goes to `peak=0.0000` and `non-silent` plateaus permanently
+  at driver frame ~12,288 (65.5 s), i.e. the same era.
+
+So this is **not** a voice starved part-way through its stream. The clip ran to its end,
+our side delivered all of it, and then nothing told the title the stream was over — the
+voice stays in the state-2/3 "playing" branch of `sub_8270F768` forever with
+`SamplesPlayed` pinned at the clip's last sample, so the wall-clock fallback that would
+have let the cinematic carry on never fires.
+
+**It could only appear now.** Before phase A/V nothing decoded, so no voice ever reached
+the end of a stream and this handshake was never exercised.
+
+**The one thing NOT settled, and the discriminator for part 30.** Our decoder's output
+length agreeing with the frozen position is consistent with two different stories: the
+clip really is ~4.91 s and only the end-of-stream handshake is broken, or our decode
+stops early at ~4.91 s and the clip is longer. They are told apart by the ASSET, not by
+us — put `CZ_FILE_TRACE=1` on this run to name the file the dialogue is read from, then
+`tools/big_list.py` for the entry's true length. Do that before touching
+`kernel/audio.cpp`, because the two stories have opposite fixes.
+
+**One observation worth a look and not worth a conclusion:** contexts 2, 5, 6 and 7 all
+report `in0=02584000` — the same input buffer address. That may be the title reusing one
+streaming buffer for sequential lines, or it may be four voices genuinely pointed at one
+buffer. `CZ_XMA_PROBE`'s per-context dump over time answers it and nothing here does.
+
+## 7. Two corrections this part owes
+
+* **The recorded `runs/distinct = 6.13` for this defect is diluted 6x**, and every
+  previous reading of it has the dilution. A prologue run spends ~1,870 frames in menus
+  first, contributing 1,010 of the 1,170 distinct poses and almost none of the runs.
+  Whole run 6.14 · menus 1.01 · **cinematic era 38.27** · steady state 15 poses at 120.
+  `tools/frame_loopiness.py` prints quarters unconditionally now. It caught the author of
+  this part reading a mid-run file and calling mode 0 healthy, which is the positive
+  control for the change.
+* **"Audio" was one word covering two facts with opposite orderings.** The position the
+  guest *reports* stops first and is upstream of the stall; audible output stops ~5.5 s
+  later and is downstream, as the already-queued dialogue plays out. Part 28's "do not
+  chase the silence — it is downstream" is right about the second and wrong if applied to
+  the first, which is where the defect lives.

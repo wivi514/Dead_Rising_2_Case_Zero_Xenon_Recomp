@@ -252,9 +252,120 @@ Next, in order:
    quote the tally.** It costs nothing and this table is what a silent renderer looks like
    after eight parts of not being able to ask.
 
-00j. **CINEMATICS PING-PONG ONCE A CHARACTER SPEAKS — and the mechanism is the
-   title's own PID CONTROLLER on audio latency.** Operator report on the phase A/V
-   binary, and the first defect that only exists BECAUSE there is now sound.
+00j. **CINEMATICS PING-PONG ONCE A CHARACTER SPEAKS. THE MECHANISM IS SETTLED AS OF
+   PART 29, AND THE DEFECT HAS MOVED: it is the title's own PID controller on audio
+   latency, running exactly as shipped, against an AUDIO STREAM POSITION THAT STOPS
+   ADVANCING AT 4.906667 s.** Operator report on the phase A/V binary, and the first
+   defect that only exists BECAUSE there is now sound.
+
+   **READ THIS BLOCK FIRST; everything below it is the trail that got here, kept
+   because three of its refutations are still worth not re-buying.**
+
+   The chain, every link measured rather than argued:
+
+   1. `sub_82475718` IS the cinematic's clock. `sub_82478FC8` calls it twice per
+      cinematic update and stores its return **straight into the scene's time** at
+      `[cine+0x1698]`. That is the "what writes the cinematic's time each frame" the
+      part-28 hand-off asked for, and it was found by asking `gdis --find-uses` who
+      touched the manager's singleton — a query that had been returning **0 sites**
+      because the scanner could not match `lis`+`lwz`. It is 301. See the tool commit.
+   2. It is a three-way switch on a mode word, read from the read-only global
+      `0x829DC320`, **shipped as 2**:
+      `0` raw scene time · `1` the audio stream position · `2` `PID(audio position)`.
+   3. `sub_824741D8` is that PID, and the image names it itself — its tail plots four
+      values through the debug-graph API under `Cine.Audio P-gain / I-gain / D-gain /
+      MV (ms)`. Decoded: `MV = P*err + I*integral + D*(err-prevErr)`, accumulated into
+      `[pid+0x28]`, and it **returns `setpoint - accumulator`**. Nothing in it is
+      monotonic. Gains as shipped: P 0.025, I 0.005, D 0.0001, deadband 5 ms.
+   4. `CZ_CINE_TIME=<file>` logs that value at its source. On the prologue, 2,212
+      lines, **mode 2 on every one and the PID ran on 2,208**:
+
+          setpoint climbs linearly forever      0.06 -> 122.7 s
+          audioPos FREEZES at 4.906667 s        after 4 s, and never moves again
+          ret = setpoint - acc                  hunts 4.91 <-> 5.27, period ~11 s
+
+   5. **The camera is a function of that clock, and the join proves it rather than
+      asserting it.** Interpolating `ret` onto every frame of the same run, the median
+      spread of `ret` within one `cameraFingerprint` is **0.0052 s**; at deliberately
+      wrong alignments the same statistic reads 0.042-0.377 s. So the camera
+      palindrome IS the clock's palindrome.
+   6. **The three-way arm settles causality**, and every setting is a path the title
+      itself implements (`CZ_CINE_AUDIO_MODE=0|1|2`, same binary, same recipe):
+
+      | arm | cinematic era | reading |
+      |---|---|---|
+      | 2 — shipped, PID | **LOOPING**, 15 poses, runs/distinct **120** | the defect |
+      | 1 — scene time := audio position | **FROZEN** at 4.906667 for 338 s | the input really is stuck |
+      | 0 — no audio sync | no loop; the scene ends and the run reaches gameplay | the correction is what loops |
+
+      Mode 1 is the sharp one and it was **predicted before it was run**: hand the
+      scene the frozen position directly and it should freeze, not oscillate. It did.
+      Mode 0 is confounded and must not be read as a fix — with no audio sync the
+      first call site hands over an uninitialised scene time of ~138,181 s, so the
+      cinematic ends immediately. Mode 2's `if (input == 0) return 0` guard is what
+      normally protects against that.
+
+   **SO THE DEFECT IS NOW ONE LEVEL UP AND IT IS OURS: why does the audio stream
+   position stop at 4.906667 s?** The chain to it is fully read:
+
+       sub_82759170   cinematic asks the audio system, message ReqID 0x106, field "Time"
+       sub_827213C8   audio system looks the voice up in [sys+0xA8], returns entry+8
+       sub_82721530   refreshes every entry each tick from sub_8270F768(voice)
+       sub_8270F768   voice state 2/3 -> sub_82764C48; otherwise a wall clock
+       sub_82764C48   **SamplesPlayed / sampleRate** — two virtual calls whose result
+                      struct is XAUDIO2_VOICE_STATE-shaped (SamplesPlayed at +8)
+
+   4.906667 s x 48000 = **235,520 samples exactly = 1,840 XMA subframes of 128**. The
+   voice plays exactly that many and stops, while still reporting itself playing — so
+   the wall-clock fallback never takes over either.
+
+   **A diagnostic run narrows it: the clip ENDED, it was not starved.** With
+   `CZ_AUDIO_TRACE=1 CZ_XMA_DECODE_LOG=1` beside the clock probe, the three dialogue
+   contexts (5/6/7, `stereo=1`, 48 kHz) decode across two 5-second windows and never
+   appear again; their totals as stereo-interleaved seconds are **5.03, 5.04, 4.92**
+   against a frozen `Time` of **4.906667**. Our decoder stays healthy for the rest of
+   the run (`refused0`, ctx0 still producing ~508k samples per window) while the
+   guest's mixer output plateaus at driver frame ~12,288. So the stream ran to its end,
+   we delivered all of it, and **nothing told the title it was over** — the voice sits
+   in the state-2/3 "playing" branch forever and the wall-clock fallback that would let
+   the cinematic carry on never fires. It could only appear now: before phase A/V
+   nothing decoded, so no voice ever reached the end of a stream.
+
+   **THE DISCRIMINATOR TO RUN FIRST, because the two stories have opposite fixes.** Our
+   decode length agreeing with the frozen position is equally consistent with "the clip
+   is 4.91 s and only the end-of-stream handshake is broken" and with "our decode stops
+   early and the clip is longer". The asset settles it, not us: `CZ_FILE_TRACE=1` on
+   this run names the file, then `tools/big_list.py` gives the entry's true length. Do
+   that before touching `kernel/audio.cpp`.
+
+   Worth a look, not worth a conclusion: contexts 2, 5, 6 and 7 all report
+   `in0=02584000`, the same input buffer address.
+
+   **The next move, and it is the first thing part 30 should do:** find why
+   `SamplesPlayed` stops. The title's own mixer maintains it, and part 28 already
+   measured that mixer going silent in the same era. Note the ordering nuance this
+   part exposes: "audio" is TWO facts here — the position the guest reports (stops
+   first, upstream of the stall) and audible output (stops later, downstream, as the
+   already-queued ~5.5 s plays out). The old note "do not chase the silence, it is
+   downstream" is right about the second and wrong if applied to the first.
+
+   **A MEASUREMENT CORRECTION THIS PART OWES: the recorded `runs/distinct = 6.13` for
+   this defect is diluted 6x and every previous reading has it.** A prologue run spends
+   ~1,870 frames in menus before the cinematic, contributing 1,010 of the 1,170
+   distinct poses and almost none of the runs. Split by era on the same file:
+   whole run **6.14**, menus **1.01**, cinematic era **38.27**, and in steady state,
+   by quarters, **15 distinct poses at ratio 120**. `tools/frame_loopiness.py` now
+   prints quarters unconditionally, because a partial fix would move 6.14 toward 1 and
+   read as "nearly fixed". **Quote the quarters, not the whole-file number** — and note
+   the gate cannot tell a stalled scene from a PARKED PLAYER, which is what quarters
+   3-4 of the mode-0 arm are (`CZ_FAKE_PRESS_SEQ` ends in `NONE`, so Chuck stands
+   still and one camera pose is correct behaviour). Read draws beside it.
+
+   ---
+
+   **The trail below is superseded on the mechanism but keeps three refutations that
+   are still live: the output-ring ambiguity, the end sync point, and the audio
+   stopping. Do not re-buy any of them.**
 
    **The symptom, from the operator:** the prologue cinematic plays, and the moment
    Rebecca Chang starts speaking the scene advances ~1 s, runs BACKWARD ~1 s, forward
