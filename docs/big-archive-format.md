@@ -195,3 +195,43 @@ colour-correction LUT**, and there are 15 of them (`cc_01`..`cc_15`) in
 our cache sample descriptor set 1 (`Texture3D`), so if the title uses these it must unroll
 the cube into a 2D strip — which is the usual 360 technique and is consistent with both
 facts at once.
+
+### Decompressed, and what `cc_03.bct` actually contains
+
+`tools/big_decompress.cpp` links XenonRecomp's own `lzxDecompress` — the one the
+recompiler uses on this title's XEX — rather than vendoring a second decoder, and checks
+its output against an oracle instead of asking anyone to eyeball it: every loose `.bct` on
+disc begins `05 01 01 E2`, so the tool tries both plausible chunk framings and accepts
+only the one whose output carries that magic at the entry's declared `size2`. The
+per-chunk framing wins: each chunk opens `0xFF`, then a BE u16 uncompressed length and a
+BE u16 compressed length, then an independent LZX stream.
+
+The `.bct` header's bytes 4..7 are the extent as two BE u16: `04 00 00 20` = **1024 x 32**,
+and 1024*32*4 = 131,072 = the payload. So the 32-cubed LUT is stored **unrolled into a
+1024x32 2D strip** — which is why part 25's census found zero shaders sampling descriptor
+set 1 (`Texture3D`) and both facts are true at once.
+
+**AND IT IS TILED.** Read linearly the LUT's neutral diagonal is not monotone under ANY of
+the six axis assignments (17 of 31 steps, all six identical). Untiled with the runtime's
+own `Tiled2DOffset`, every one of them reads **31 of 31**. A shipped 360 texture is tiled;
+that is obvious in hindsight and was not obvious while the numbers looked merely noisy.
+
+**The axis order needs an ASYMMETRIC probe.** After untiling all six assignments score
+31/31, because the neutral ramp `r = g = b` is symmetric under permuting the axes — the
+test that proved the untiling cannot settle the layout. The PRIMARIES do: only
+`x = r + 32b, y = g` sends red to red, green to green and blue to blue.
+
+`cc_03` is then readable as a grade:
+
+| in | out |
+|---|---|
+| black | 0, 0, 0 |
+| mid grey (123) | R76 G91 B117 |
+| white | 255, 255, 255 |
+| pure red | R147 G70 B78 |
+| pure green | R32 G168 B89 |
+| pure blue | R19 G27 B102 |
+
+Endpoints preserved, midtones pulled down hard (R -48, G -33, B -5 at the middle) with the
+blue lifted above identity in the highlights, and the primaries desaturated — a cool,
+crushed-midtone night grade.
