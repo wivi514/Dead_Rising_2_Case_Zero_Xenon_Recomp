@@ -618,13 +618,34 @@ Next, in order:
    `max` would be taking its FLOOR, where `XE_FLOOR_PAINT` measured 1,628 green (no floor)
    against 1 magenta.
 
-   **Two of this session's own measurements disagree, and the likely reason is that they
-   are different POPULATIONS**: the floor paint instrumented all 48 plateau shaders, the
-   fog probe exactly one. 1,628 green pixels drawn mostly by the other 47 says nothing
-   about this shader's max. **Do not resolve this by preferring either number.** The next
-   step is the floor paint restricted to `ps_7d2f8f33deec1b65` alone, which is the same
-   single-shader cache trick already built — and until that runs, the claim that the
-   colour is "pinned at `1/pc(14).w`" is unsupported and should not be quoted.
+   **Two of this session's own measurements disagree.** The first guess was that they are
+   different POPULATIONS — the floor paint instrumented all 48 plateau shaders, the fog
+   probe exactly one. **That was checked and it is NOT the explanation.** The floor paint
+   restricted to `ps_7d2f8f33deec1b65` alone, five frames:
+
+   | | px |
+   |---|---|
+   | MAGENTA — a real max took its floor | **0** |
+   | GREEN — no max took its floor | **1,157** |
+   | still (180,180,180) — the other 47 shaders | 5,068 |
+
+   Same answer on the one shader. So the two instruments genuinely contradict each other on
+   the same pixels, and one of them is wrong.
+
+   **IT IS THE HAND PROBE, AND THE REASON IS STRUCTURAL RATHER THAN A PREFERENCE.** The
+   translated shader is a `switch` over exec blocks inside a loop, so a block can execute
+   MORE THAN ONCE per pixel. `xe_floor` accumulates with `f = f || ...` — monotonic and
+   order-independent, so no later iteration can undo what an earlier one saw. `xe_c = r0.x`
+   is last-write-wins, so on a shader that re-enters the block it records whichever
+   iteration ran last, which need not be the one that fell through to the epilogue.
+   **A last-write probe and an accumulating flag are not interchangeable instruments on
+   looping control flow**, and only the accumulating one is safe here.
+
+   So the floor reading stands: no max took its floor, therefore `c' >= K1`, therefore
+   `c = 1/pc(14).w`. The `xe_c ~ 0` reading is an artifact of the probe's own semantics and
+   the fog-factor reading (0.90, from the same probe, same block) inherits the same doubt —
+   it is *plausible* and it is not *established*. Re-probing needs an accumulating form:
+   min and max of the value across all iterations, not the last one.
 
    **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
    part 27 read line by line, is **NOT in the list**. The white ground is painted by one
