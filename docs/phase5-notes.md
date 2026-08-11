@@ -4741,3 +4741,76 @@ to this draw that part 27 did not compare, because they are not loaded from memo
 `c28..c42` are camera-, light- and time-of-day-dependent, so a disagreement in those is
 not by itself a defect. `c1`, `c16`, `c18`, `c19`, `c20`, `c22.w`, `c24`, `c44`, `c45`,
 `c46`, `c47` and `c67` look like tuning values and should match wherever the run stands.
+
+### THE PREDICTION IS REFUTED, AND THE ONE CONSTANT LEFT STANDING IS THE EXPOSURE
+
+Outdoor DebugJump route, `CZ_VK_PSBIND=ad65b98593f95926` with all 35 registers on one
+line. `c20`, `c24` and `c67` are hardware's exactly, so the mechanism the prediction
+proposed is dead: the shader takes the lit path, the sun colour carries its full
+`(3.3, 1.5, 1.0)` and the additive term keeps its `x4`.
+
+**The comparison found a matched lighting state without being asked to, and the match is
+better evidence than the route was.** At frame 2037 of the run our `pc(21)` — the world
+position of a point light — reads `(-149.4081, 6.2343, -106.2974, 0.7400)` against
+hardware's `(-149.408096, 6.234319, -106.297379, 0.740000)`. A light's world position is
+a fingerprint of the scene's lighting state, and ours is hardware's to every printed
+digit. `pc(22)`, `pc(23)`, `pc(24)`, `pc(44)`, `pc(45)`, `pc(46)` and `pc(47)` agree with
+it: same zone, same time of day, same light set. The camera is 40 m away, which is why
+`pc(14).xyz`, `pc(15)` and the twelve shadow-cascade registers differ — those follow the
+view.
+
+| register | hardware `w1_spawn` | ours, frame 2037 | |
+|---|---|---|---|
+| `pc(1)` | 1, 1, 1, 1 | 1, 1, 1, 1 | = |
+| `pc(14).xyz` | -120.44, 5.20, -77.81 | -106.39, 8.40, -114.75 | camera |
+| **`pc(14).w`** | **0.331368** | **0.2000** | **DIFFERS** |
+| `pc(15)` | -0.031, -0.174, 0.984 | 0.508, -0.150, -0.849 | view direction |
+| `pc(16)` | 1, 0, 0, 0 | 1, 0, 0, 0 | = |
+| `pc(18)` | 15, 0.004, 0.25, 1 | 15, 0.0040, 0.2500, 1 | = |
+| `pc(19)` | 0.26, 0.40, 0.98, 1 | 0.2600, 0.4000, 0.9800, 1 | = |
+| `pc(20)` | 0, 0, 0, 0 | 0, 0, 0, 0 | = |
+| `pc(21)` | -149.408096, 6.234319, -106.297379, 0.74 | -149.4081, 6.2343, -106.2974, 0.7400 | **=** |
+| `pc(22)` | 0.388236, 1.043922, 0.741961, 6.866384 | 0.3882, 1.0439, 0.7420, 6.8664 | = |
+| `pc(23)` | -0.371391, 0.557086, 0.742781, 0.4 | -0.3714, 0.5571, 0.7428, 0.4000 | = |
+| `pc(24)` | 3.3, 1.5, 1.0, 0 | 3.3000, 1.5000, 1.0000, 0.0000 | = |
+| `pc(27)` | -0.009998, 0.999750, 0.019995, 1 | -0.0100, 0.9998, 0.0200, 1.0000 | = |
+| `pc(28..42)` | cascade matrices | different | camera |
+| `pc(44)` | 0.000244, 0.000977, 18, 0.071429 | 0.0002, 0.0010, 18.0000, 0.0714 | = |
+| `pc(45)` | 3, 6, 0.35, 1 | 3.0000, 6.0000, 0.3500, 1.0000 | = |
+| `pc(46)` | 8, 12, 32, 7 | 8.0000, 12.0000, 32.0000, 7.0000 | = |
+| `pc(47)` | 0.001, 0.002, 0.003, 3583.531 | 0.0010, 0.0020, 0.0030, 3583.4331 | = |
+| `pc(67)` | 10, 0, 1, 4 | 10.0000, 0.0000, 1.0000, 4.0000 | = |
+| `pc(253..255)` | UNRECOVERABLE here | §6ba compared them elsewhere | = |
+
+**Every constant this draw reads that is not a function of the camera is hardware's, and
+the only one that is neither camera-dependent nor equal is the exposure.** The item's
+"23 unchecked constants" are checked; the constants are exonerated as a class.
+
+### What the exposure number does and does not say
+
+Our `pc(14).w` moves — 1.0000 at the menu, 0.4000, then 0.2000 with a monotone creep to
+0.2040 over the ~450 frames the instrument's 64-line cap covers. So the title's
+auto-exposure is running in our runtime; it is not stuck at a compiled-in default.
+
+**And the sign is the wrong way round for exposure to be the cause.** `x = c * E`, so a
+LOWER exposure moves a surface DOWN the tone curve, not up. Ours being 0.200 where
+hardware's is 0.331 means the controller is pulling harder than hardware's is — which is
+what a controller does when the scene it measures is too bright. Read as arithmetic: our
+plateau sits at `x ≈ 1`, so our pre-exposure colour is `c ≈ 1/0.200 = 5.0`, while the
+same surface on hardware, correctly shaded at the same lighting state, must be below
+`1/0.331 = 3.0`. **Our colour into the epilogue is at least 1.7x hardware's, and the
+exposure disagreement is the symptom of that, not its cause.**
+
+That leaves exactly one class of input to this draw uncompared, and it is not a constant:
+`tf3` and `tf5`, the **shadow atlas** — `1812F000` on hardware and `1439B000` in ours,
+both 4096x1024 `k_24_8`, bound at three slots (`s3`, `s5`, `s7`) by the same draw. It is
+the only input the R2 captures cannot settle by comparison, because we render it rather
+than load it. And it is the term that gates the sun: line 85 `dp4 r0.x, r9.xywz, r8.wzxy`
+reduces four depth comparisons to a lit factor in [0,1], line 88 multiplies the
+`(3.3, 1.5, 1.0)` sun by it. **A shadow atlas that reads "nothing occludes" delivers full
+sunlight to every surface, including one in a pitch-black room** — which is the
+observation part 27 recorded and could not explain.
+
+`docs/open-items.md` item 3 has been carrying an independent report of exactly that since
+part 15: *"no shadows anywhere"*, and a cascade map measured half empty. The two items
+are now one item.
