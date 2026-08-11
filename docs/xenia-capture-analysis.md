@@ -256,6 +256,16 @@ needed**, and the renderer plan does not depend on cracking `.vo`.
 
 ## 7. No Bink. The movie path is in-house.
 
+> **PARTIALLY CORRECTED 2026-08-10 (part 27), and the correction matters for Case West.**
+> The no-Bink half stands. The "Movie Player Object" half is misleading: reading the
+> archives with `tools/big_list.py` shows `data/cinematics/cinematics.big` is **29 `.txt`
+> cinematic SCRIPTS** (`cCinematic` / `cCineAnim cameras` / `cCineZombieAnim` /
+> `cCineParticleEvent` / `cCineHUDEvent` / `cCineAudioEvent`) and
+> `data/anim/cinematic/*.big` are **animation archives**. **A cinematic is an in-engine
+> scripted scene — camera and actor animation played through the ordinary renderer — not a
+> video.** There is no codec to write and no payload format to reverse. See
+> `docs/phase-av-plan.md`.
+
 Both template ports hook `BinkDoFrame` — RAD's decoder linked into the XEX — and the
 runtime plan had a whole phase for it. **Case Zero contains no Bink and no `.bik` files.**
 Cinematics stream through an in-house "Movie Player Object" that loads `.big` cinematic

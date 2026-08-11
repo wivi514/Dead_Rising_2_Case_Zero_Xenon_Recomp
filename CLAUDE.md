@@ -579,8 +579,11 @@ renderer improvement without a same-binary A/B aggregated over an era.
   with the microcode the guest actually submits. The renderer input instead comes from
   Xenia's `dump_shaders`: 455 microcode blob files = **335 distinct shaders** (A1's
   120 are a strict subset of A2's 335), all translated in phase 5.
-- **No Bink** (finding 7). Movies stream through an in-house "Movie Player Object"
-  reading `.big` cinematic archives. Grep `.big`, never `.bik`.
+- **No Bink** (finding 7). Grep `.big`, never `.bik`. **And "movie" is the wrong word:
+  part 27 read the archives and a cinematic is an IN-ENGINE SCRIPTED SCENE** — 29 `.txt`
+  scripts in `data/cinematics/cinematics.big` naming a camera animation, actor animations,
+  particles, a HUD event and one audio event, with the animation data in
+  `data/anim/cinematic/*.big`. There is no codec to write. `docs/phase-av-plan.md`.
 
 ## Ground truth in hand (round 1, delivered 2026-08-04 — COMPLETE)
 
