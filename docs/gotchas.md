@@ -2399,3 +2399,69 @@ From phase C part 18 (the frame rate — and none of it was work):
      Composes with 270: the operator's one sentence ("the clip is around 5 min 10 s")
      refuted a wrong conclusion and, once the asset was finally read, the packet headers
      gave both the true duration and the interleaving in the same pass.
+
+272. **A PROCESS-WIDE POLICY SET BY ONE SUBSYSTEM STOPS HOLDING THE MOMENT A SECOND
+     SUBSYSTEM GAINS ITS OWN ENTRY POINT TO THE SAME LIBRARY — and the failure is silent
+     because the policy has no observer.** This port tells SDL not to install signal
+     handlers, so that `timeout N ./cz_runtime` — every gate run here — terminates the
+     process whatever the runtime is doing. The hint sat next to `SDL_Init` in the window
+     module, which was correct for as long as the window was the only thing that touched
+     SDL. Phase A/V then gave the audio device its own `SDL_InitSubSystem(SDL_INIT_AUDIO)`
+     call, reached from a guest thread, on a path where the window module had already
+     returned early (`CZ_NO_WINDOW=1`). From that commit on, **every headless run with
+     sound ignored `timeout`**: measured as exit 124 at 20 s with `CZ_NO_AUDIO_OUT=1` and
+     still alive at 180 s without it, same binary, one variable.
+
+     **What makes this class expensive is that the symptom is a LONGER SUCCESSFUL RUN.**
+     There is no error, no log line and no non-zero exit — a 420 s recipe simply produces
+     ten minutes of frames, so every per-run statistic taken from it silently covers more
+     wall time than the recipe says, and a comparison between an audio arm and a
+     no-audio arm compares different durations while looking perfectly matched. It was
+     found only because a human noticed an A/B block was not advancing.
+
+     **The rule:** initialisation-order policy belongs at the first point in the process
+     guaranteed to run before any use of the library, not next to the first use anyone
+     wrote. And when a subsystem acquires a second entry point to something global, the
+     question to ask is not "does the new path work" but "which invariants did the old
+     path own that nobody re-established". Compose with 5: a policy with no counter
+     cannot be shown to be in force, and this one had none for two parts.
+
+273. **A THRESHOLD PROBE CANNOT TELL "BELOW" FROM "EQUAL", AND A CURVE'S FLAT SPOT MAKES
+     A VARYING INPUT LOOK LIKE A CONSTANT.** Two ways the same tone-map plateau misled
+     this project for three parts, both worth carrying because both look like results.
+
+     `XE_FLOOR_PAINT` asked, per pixel, whether a `max(expr, K)` took its floor, and
+     reported zero. That was read as "therefore `expr > K`, therefore the colour is
+     pinned". But with the constants finally read off hardware, `expr = 0.25x + 0.75` and
+     `K = 1.0`, so `expr < K` requires `x < 1` — and the surfaces under test sit at
+     `x = 1`, where `expr == K` exactly. **The probe returned the same answer for the
+     hypothesis and its negation.** Before believing a threshold probe, substitute the
+     constants and check that both outcomes are reachable for the population you pointed
+     it at (compose with 264, and with 30).
+
+     The second half: the same shader's output is `sqrt` of a curve whose derivative
+     vanishes at `x = 1`, so a **10% spread in the input quantises to one 8-bit value**.
+     52,840 pixels at exactly `rgb(180,180,180)` was recorded as "a plateau, not a bright
+     surface — these are not shaded at all", and it supports no such thing: a normally
+     shaded surface sitting at full exposure produces exactly that picture. **Where a
+     transfer function is flat, an output histogram measures the function, not the
+     input.** Differentiate the curve before reading a spike in its output as a constant
+     in its input.
+
+274. **AN ORACLE THAT CANNOT ANSWER IS A FACT ABOUT THAT MEMBER, NOT ABOUT THE
+     POPULATION.** Part 27 asked one of seven single-frame captures for the pixel-shader
+     constants behind the white-surface defect, got `UNRECOVERABLE` for the three
+     registers that decide the whole tone curve (the loads read memory the trace does not
+     carry — gotcha 263), and recorded the conclusion as *a capture that carries the
+     constant-buffer memory would close the input list*, i.e. as a request for new ground
+     truth. The same question asked of the other six captures answers on **five** of
+     them, from data already on disk for weeks. Sixty-eight draws, identical values, and
+     the answer retired an eight-step chain of inference.
+
+     **The rule is one line: when an oracle says "I cannot tell you", ask the other
+     members before asking for a new oracle.** A capture set, a log set, a dump directory
+     and a shader bank are all populations, and this project has now made the same
+     mistake from three directions — 3 (a scanner's zero), 264 (a filter that selects on
+     the property under test) and this one. New ground truth is the most expensive thing
+     available here and it was very nearly requested to answer a question five files
+     already answered.
