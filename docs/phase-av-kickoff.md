@@ -21,9 +21,15 @@ the top item.
 
 Full record: `docs/phase-av-notes.md`. Short form:
 
-* **Sound works.** `runtime/audio/xma_decoder.cpp` (ffmpeg `AV_CODEC_ID_XMA2`, lifted from
-  the Fable 2 port), `runtime/audio/audio_out.cpp` (SDL), and the context walk in
+* **Sound works, and the OPERATOR HAS CONFIRMED IT BY EAR.**
+  `runtime/audio/xma_decoder.cpp` (ffmpeg `AV_CODEC_ID_XMA2`, lifted from the Fable 2
+  port), `runtime/audio/audio_out.cpp` (SDL), and the context walk in
   `kernel/audio.cpp`. `maxpeak` 0.000000 -> 0.108854; non-silent 0 -> 15,991 of 18,433.
+  **If a future session hears nothing, check the MIXER before the code**: the first
+  operator test reported silence and the cause was pipewire holding the `cz_runtime`
+  sink input at `Mute: yes`, at 100% volume on the correct sink, because wireplumber
+  remembers per-application state and this application had never made a sound before.
+  `pactl list sink-inputs` is the one-line check.
 * **The defect underneath was one address.** XMA context buffer pointers are PHYSICAL
   (the APU is a DMA device); our flat map puts the physical arena in a window at
   0xA0000000. Reading them literally gave a page of zeros, which decodes to silence and
@@ -33,7 +39,11 @@ Full record: `docs/phase-av-notes.md`. Short form:
   coverage 15.00% -> 99.94%.
 * **New arms:** `CZ_NO_XMA_DECODE=1`, `CZ_NO_AUDIO_OUT=1`, `CZ_XMA_DECODE_LOG=1`, and
   `CZ_XMA_PROBE` widened to all 16 context dwords plus a buffer CONTENT scan.
-* **Gotcha 268**, which is the method finding and outranks the fix in transferable value.
+* **Gotchas 267, 268 and 269** — the physical-address trap, "your own stub is an oracle",
+  and "a probe that reports from inside the function it counts goes silent exactly when
+  the interesting thing happens". The last one bit on the very run that produced it.
+* **`CZ_CINE_PROBE=1`** — counts the cinematic sync-point predicate and its containing
+  tick, with the positive control on the same line.
 
 ## READ THIS BEFORE MEASURING ANYTHING
 
@@ -69,21 +79,40 @@ an argument, not a gate.
 
 ## WHERE TO START
 
-0. **THE OPERATOR SHOULD PLAY IT.** This is the highest-value next action and it is not a
-   measurement I can make. Three questions only an operator can answer, and the first one
-   outranks everything else on this list:
-   * **Does it sound right?** Speech intelligible, music not stuttering or noisy, effects
-     positioned sensibly. A wrong `is_stereo` or `sample_rate` bit in the context decode
-     would be *audible* and is invisible to every counter here — noise, not silence, is
-     the failure mode to listen for, and it would be loudest in cinematic dialogue.
-   * **Do the cinematics all play through now?** Phase A/V measured the PROLOGUE.
-     `open-items.md` 1's retraction says Katey Zombrex, the bike-frame delivery and the
-     combo weapon already completed on the part-19 binary, so the failing population may
-     now be empty — but that is an inference. And **the combo weapon should now be
-     AWARDED without skipping**, which is the cheapest single check of the whole item.
-   * **Is the frame rate unchanged?** The decoder is a 1 ms poll thread doing real DSP
-     work on a machine whose crowd frames are already CPU-bound. Nothing here measured it,
-     and `CZ_NO_XMA_DECODE=1` is the arm. See item 2.
+0. **THE CINEMATIC PING-PONG — `open-items.md` 00j, and it is the live item.** Operator
+   report on this binary: the prologue cinematic plays, and the moment a character speaks
+   the scene runs forward ~1 s, BACKWARD ~1 s, and repeats forever. It reproduces with no
+   operator and the gate is free — `runs / distinct` on the `cameraFingerprint` column,
+   6.13 against a healthy 1.09, with `runs / frames` beside it to tell "looping" from
+   "frozen" (see the item; reading one without the other scores a frozen camera as
+   healthy). **`distinct` reads 1170/1170/1169/1173 across four runs on two binaries** —
+   the same fixed pose set every time, so this is deterministic and cheap to test.
+
+   **Three explanations are already eliminated, each with a measurement. Do not re-buy
+   them:** our output-ring `write == read` ambiguity (built, predicted, run, refuted, and
+   reverted — `distinct` did not move by one); the audio stopping (proved DOWNSTREAM, the
+   stall precedes the silence by ~5.5 s); and the "end sync point" wait the engine itself
+   narrates (counted with `CZ_CINE_PROBE=1` — ten entries in a 400 s run, an even
+   received/not-received split, and the containing function stops being called entirely
+   while the loop continues).
+
+   **What survives:** the title's own `Cine.Audio` PID controller (`P-gain`/`I-gain`/
+   `D-gain`/`MV`/`Cor Latency`, all in `cinematicmanager.cpp`'s region) is real and
+   unevidenced — nothing shows it is even running. **The honest next move is not another
+   consumer-side guess: the palindrome means some clock DECREMENTS, so find what writes
+   the cinematic's time each frame.** That is a findable value, not an inference from a
+   string table.
+
+0b. **THE OTHER TWO OPERATOR QUESTIONS, still unanswered.**
+   * **Do the cinematics all play through now?** Phase A/V measured the PROLOGUE, which
+     now loops rather than freezing. `open-items.md` 1's retraction says Katey Zombrex,
+     the bike-frame delivery and the combo weapon already completed on the part-19
+     binary. **The combo weapon being AWARDED without skipping is the cheapest single
+     check**, and it is now more interesting than before, because a cinematic that
+     completes would show the ping-pong is prologue-specific.
+   * **Is the frame rate unchanged?** The decoder is a 1 ms poll thread doing real DSP on
+     a machine whose crowd frames are already CPU-bound. Still unmeasured;
+     `CZ_NO_XMA_DECODE=1` is the arm. See item 2.
 1. **THE WHITE SURFACES — still the top rendering defect and untouched by this part.**
    `d3d-phase-c28-kickoff.md`'s eight-step chain is the live state, and its item 0 is the
    next instruction: what pins `c` at `1/pc(14).w`. Read

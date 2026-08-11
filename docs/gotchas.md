@@ -2296,3 +2296,28 @@ From phase C part 18 (the frame rate — and none of it was work):
      and your own stub is an oracle). The cheap tell here was available at the time: the
      arm's own documentation said it "fabricates progress the real hardware would only
      make after actually decoding the audio", which names the gap exactly.
+
+269. **A PROBE THAT REPORTS FROM INSIDE THE FUNCTION IT COUNTS GOES SILENT EXACTLY WHEN
+     THE INTERESTING THING HAPPENS.** The cheapest way to add a counter to a guest
+     function is to hook it, tick a 5-second clock at the end of the hook, and print
+     when the clock fires. That is what `CZ_CINE_PROBE` did, and it is wrong in one
+     specific and very likely case: *the function stops being called*. The counter then
+     stops reporting, and "no output" is ambiguous between "not called", "called but no
+     report due yet", and "the instrument is broken" — which is gotcha 151's blind spot
+     wearing a different hat, because the arm has a counter and still cannot say what
+     happened.
+
+     Here it happened on the first run: `sub_824A0FC0` was entered ten times and then
+     never again, which was THE ANSWER, and the probe's way of expressing that answer
+     was to fall silent. It stayed readable only because the frame counter was visibly
+     advancing in another instrument at the same moment, so "no report" could be read as
+     "not called". That is luck, not design.
+
+     **Drive a probe's reporting from a clock that runs regardless of the thing being
+     measured** — in this runtime that is the graphics pump, which ticks whatever the
+     guest is doing. Then "called 0 times in the last 5 s" is a printed line rather than
+     an absence, and absence goes back to meaning the instrument is off.
+
+     The general form: an instrument must not share a liveness dependency with its
+     subject. It applies to any hook-and-report counter, any per-frame statistic printed
+     from the frame path, and any log line emitted by the subsystem it describes.
