@@ -628,7 +628,32 @@ CZ_VK_PS_CONST_SCALE="14.w=4,18.y=0.5"   multiply chosen PIXEL shader ALU consta
                    would manufacture the very uniformity the arm tests for. Every clause
                    it parses is echoed at start-up and every clause it cannot parse is
                    named; the draw counter `a PIXEL constant was scaled` is how the arm is
-                   shown to have engaged
+                   shown to have engaged.
+                   **PART 31 USED IT AND GOT A REFUTATION, so read what it can say
+                   before reaching for it.** `14.w=0.25` engaged on 11,835,619 draws and
+                   took the scene buffer from mean luma 35.07 to 18.30, and the white
+                   plateau did not move off 180 by a single pixel. A whole-frame input
+                   perturbation can say "this input does not reach those pixels"; it
+                   cannot say which draw does (`docs/phase5-notes.md` §6be)
+CZ_VK_EXPOSURE_TRACE=file  one line per frame: `frame draws expMin expMax`, the spread of
+                   the title's own exposure scalar `pc(14).w` over the draws of that
+                   frame, recorded BEFORE any arm perturbs it. It exists because
+                   `CZ_VK_PSBIND` — the only other way to read that number — dedupes on a
+                   key containing the constants and caps at 64 lines, so a scalar that
+                   drifts by 1e-4 a frame spends the whole budget in the first few hundred
+                   frames and can say nothing about the frame a snapshot was taken on.
+                   MIN AND MAX rather than one value: whether one exposure is in force for
+                   a whole frame decides whether a whole-frame histogram is invertible at
+                   all, and that had been assumed for four parts. It is not (frame 3000 of
+                   the outdoor route: 6,116 draws, 0.214622 to 0.214647)
+CZ_VK_NO_ADDR_TILE_FOLD=1  the same-binary control arm for part 31's resolve fix. Off, a
+                   resolve whose destination ADDRESS is a macro-tile offset into a larger
+                   surface becomes its own snapshot; on the default path it folds into
+                   that surface at the decoded (x, y). This title packs four shadow
+                   cascades into one 4096x1024 atlas that way, and the arm is what makes
+                   the fix measurable: `1439B000` reads 53.125% non-zero across all 4,096
+                   columns with the fold and 13.281% across columns 0..1023 without, one
+                   atlas against four (`docs/phase5-notes.md` §6bc)
 CZ_VK_DIM_CENSUS=1  WHERE THE DIMENSION LIVES IN A TEXTURE FETCH CONSTANT, answered by
                    measurement rather than recollection. The shader-declared dimension
                    (from the sidecar) partitions every fetch into classes that must

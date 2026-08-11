@@ -756,7 +756,32 @@ Next, in order:
    a cash register, a door side and a gas-station sign. Six `CZ_VK_DRAW_CENSUS` frames are
    in `~/DR2CZ-troubleshooting/part26-operator/`.
 
-   **ESTABLISHED**
+   **READ THIS FIRST — PART 31 RETIRED THE MODEL EVERYTHING BELOW IS WRITTEN IN.**
+   Parts 27, 28, 30 and the first half of 31 all read the plateau as *the shared tone
+   curve evaluated at `x = colour * pc(14).w = 1`*. It is not. Four whole-frame arms in a
+   row leave the pixels at exactly `rgb(180,180,180)` untouched, and the fourth is
+   decisive: `CZ_VK_PS_CONST_SCALE="14.w=0.25"` engaged on 11,835,619 draws and took the
+   scene buffer from mean luma 35.07 to 18.30, and **zero pixels landed on 119**, which is
+   where that curve sends `x = 1` when the exposure is quartered. They stayed on 180. A
+   value produced by that curve cannot be invariant under scaling its exposure. The other
+   three arms — the sun `c24`, the additive `c67.w` term, and the whole multiplicative
+   path `c1.xyz` (an arm that blacks out 61.5% of the frame) — say the same about the
+   ground shader's colour terms. `docs/phase5-notes.md` §6bd and §6be.
+
+   So `180 = 255 * sqrt(0.5)` is the coincidence to explain, not the explanation, and
+   **the next step is a per-draw instrument rather than another whole-frame arm**: dump
+   `CZ_VK_DRAW_CENSUS` on a frame with a large plateau and skip candidate draws with
+   `CZ_VK_SKIP_TEX` until the 180 pixels go. Do not re-buy any of the four arms above.
+
+   Two things below are confirmed rather than retired, both re-measured in part 31 on a
+   DAYLIGHT frame rather than the night captures part 30 withdrew: the plateau is a hard
+   pin (1,348 px at exactly 180 and **zero** at grey 181, 182 or 183, in a frame with mean
+   luma 36.3 and 63,398 distinct colours), and the 32 pixel constants the ground draw
+   reads are hardware's — every one that is not a function of the camera, including
+   `pc(21)`, a point light's world position, to the printed digit (§6bb). The constants
+   are exonerated as a class.
+
+   **ESTABLISHED (in the retired model — read the paragraph above first)**
    * **It is not the tone map.** The white is already in the SCENE buffer (`0684B000`)
      before any post pass, and that buffer's maximum is **180**, not 255 — so nothing is
      clipping. The presented frame is the same picture, graded.
@@ -1811,7 +1836,30 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. **THE SHADOW CASCADE IS STILL HALF EMPTY, and part 15 halved the question.** The
+3. ~~**THE SHADOW CASCADE IS STILL HALF EMPTY**~~ **— MECHANISM FOUND AND FIXED IN
+   PART 31, and none of the three readings below was right.** The atlas is 4096x1024 and
+   holds FOUR 1024x1024 cascades side by side; the title tells them apart by
+   pre-offsetting `RB_COPY_DEST_BASE` by 0x20000 each, which in Xenos tiled address space
+   is exactly +1024 texels in X (a 32bpp macro tile is 4096 bytes, a 4096-wide surface is
+   128 tiles per row, +32 tiles = 0x20000). `DoResolve` un-offset the SCISSOR form of that
+   idiom and not the ADDRESS form, so the four became four disjoint snapshots and a fetch
+   of the base address read zero past column 1023. Ours was **86.7% zero**; hardware's
+   copy of the same surface, dumped out of `w1_spawn` with
+   `xtr_draw_bindings.py --dump-texture 1812F000`, is **3.5% zero with all four X bands
+   populated**. Fixed, with `CZ_VK_NO_ADDR_TILE_FOLD=1` as the control arm: 53.125%
+   non-zero across all 4,096 columns against 13.281% across 1,024, one atlas against four,
+   17,355 folds against none, and `13.281% x 4 = 53.125%` exactly.
+   `docs/phase5-notes.md` §6bc.
+   **What is still owed is the PICTURE.** The atlas is right now; whether the shadow
+   LOOKUP is has not been tested, and part 15's instruction — *do not judge the lookup
+   until the map is right* — has only just become satisfiable. Ask the operator whether
+   shadows appear, and note it will NOT have fixed the white surfaces: filling the empty
+   region leaves the plateau exactly where it was (2,074 px at 180 before and after), and
+   the sign says why — a zero depth sample reads as OCCLUDED, so an empty region darkens.
+
+   The original statement, kept for its measurements:
+
+   **THE SHADOW CASCADE IS STILL HALF EMPTY, and part 15 halved the question.** The
    operator's top report on the running build is "no shadows anywhere". Part 15 counted
    the empty region's exact boundaries — rows 0..511 fully populated, rows 512..719 in a
    64-wide strip at x=960..1023, nothing below 720 — fixed the one boundary that was
