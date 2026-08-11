@@ -560,9 +560,33 @@ Next, in order:
    when its input sits exactly on the knee.**
 
    **So the defect is UPSTREAM of the epilogue**: something pins the colour reaching it at
-   exactly `1/pc(14).w`. The epilogue is only where that becomes a flat grey. Next is to
-   paint by the PRE-epilogue value rather than the output — the same `XE_VALUE_PAINT`
-   machinery one instruction earlier.
+   exactly `1/pc(14).w`. The epilogue is only where that becomes a flat grey.
+
+   **AND THAT IS NOW MEASURED, NOT INFERRED.** Two readings fitted the plateau and produced
+   the same output, so nothing downstream could separate them: either the colour sits
+   exactly ON the operator's knee (`c' == K1`, the max a TIE), or it is BELOW the knee with
+   the `-r1*r1` term dead (`c' < K1`, the max taking its FLOOR). The discriminator has to
+   be recorded where the max happens, so `XE_FLOOR_PAINT` instruments every `max` whose
+   operands differ — `max(a, a)` is this compiler's `mov` and would saturate the flag —
+   and paints MAGENTA if any took its floor, GREEN if none did:
+
+   | | px |
+   |---|---|
+   | GREEN — no max took its floor | **1,628** |
+   | MAGENTA — a real max took its floor | **1** |
+   | left at (180,180,180) | 0 |
+
+   **So `c' == K1` exactly.** With `c' = 0.025c + 0.75` and `K1 = 1.0`, that is
+   **`c = 10.0`, which is exactly `1/pc(14).w`** — the colour arriving at the epilogue is
+   pinned at the reciprocal of the exposure constant. Not stale, not NaN, not a floor: a
+   value that lands precisely where the operator's two branches meet.
+
+   **That is the shape of a CLAMP to the maximum representable pre-exposure value** —
+   `min(colour, 1/exposure)` or the equivalent — somewhere upstream in the shared lighting
+   path. Next is to find what performs it, and whether hardware clamps to the same place.
+   Note `clamp(rcp(x), FLT_MIN, FLT_MAX)` is XenosRecomp's own rendering of `rcp` and is
+   the first thing to look at, since it manufactures a finite maximum where hardware would
+   have produced an infinity.
 
    **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
    part 27 read line by line, is **NOT in the list**. The white ground is painted by one
