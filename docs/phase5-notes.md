@@ -4988,3 +4988,46 @@ is a question about the peak's LOCATION rather than its population — which is 
 the frame-matching problem, because it is read inside one frame. `CZ_VK_PS_CONST_SCALE`
 with `14.w=0.25` predicts the peak moves to exactly **119** if `x = c * pc(14).w` holds
 there, and stays at 180 if the register being scaled is not that shader's exposure.
+
+### THE FIX, AND ITS CONTROL ARM
+
+`DoResolve` now derives the destination offset from the ADDRESS as well as from the
+scissor. When a copy does not cover its destination surface's width and the scissor sits
+at the origin, it looks for an existing snapshot of the same kind and extent at a lower
+address whose byte delta decodes to a whole number of macro tiles inside the surface, and
+folds this copy into that snapshot at the decoded `(x, y)`. Source and destination offsets
+are now separate: the scissor still says where in the EDRAM the pass rendered.
+
+The delta bound (`delta < surfW * surfH * 4`) is not decoration. `0684B000` and
+`1439B000` are both 1280x720 in this title and 0xD150000 apart, and the frame's first
+tile — scissor at the origin, 640 of 1280 wide — asks this question of that pair every
+frame. Without the bound the pair is rejected only by the `ty + copyH > surfH` test, i.e.
+by arithmetic accident rather than by saying what it means.
+
+Measured on the outdoor DebugJump route, frame 3000, same binary both ways:
+
+| | `1439B000` 4096x1024 depth | separate 4096x1024 depth snapshots | folds |
+|---|---|---|---|
+| **fold on (default)** | **53.125% non-zero, all 4,096 columns** | **1** | 17,355 |
+| `CZ_VK_NO_ADDR_TILE_FOLD=1` | 13.281% non-zero, columns 0..1023 | 4 | 0 |
+
+**The arithmetic is exact and that is what makes it a mechanism**: `13.281% x 4 =
+53.125%`, so each cascade is individually 53.1% populated and the fix puts all four where
+one was. Every band is filled — the same per-band check that found hardware's four
+cascades finds ours now at 53.12% in each of the four.
+
+It costs nothing measurable: 6,206 presented frames and 7,339 peak draws with the fold
+against 6,103 and 7,403 without, and no new Vulkan validation messages.
+
+**And it does not touch the white surfaces, which was the prediction.** Frame 3000 of the
+fixed run still carries 2,074 pixels at exactly `rgb(180,180,180)` and still not one at
+grey 181. The sign argument said an empty shadow region reads as OCCLUDED and therefore
+darkens; filling it in leaves the plateau exactly where it was.
+
+### One number this run establishes that nothing else could
+
+`CZ_VK_EXPOSURE_TRACE` (new) reports, at frame 3000, **6,116 draws with `pc(14).w` between
+0.214622 and 0.214647**. So a single exposure is in force across the whole frame, to five
+digits — which is what makes a whole-frame histogram invertible at all, and it had been
+assumed rather than measured. At `E = 0.2146`, a pixel at the plateau has a pre-exposure
+colour of `c = 1/E = 4.66`.
