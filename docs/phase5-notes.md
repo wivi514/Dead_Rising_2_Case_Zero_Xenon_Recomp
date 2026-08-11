@@ -5031,3 +5031,69 @@ darkens; filling it in leaves the plateau exactly where it was.
 digits — which is what makes a whole-frame histogram invertible at all, and it had been
 assumed rather than measured. At `E = 0.2146`, a pixel at the plateau has a pre-exposure
 colour of `c = 1/E = 4.66`.
+
+## 6be. THE PLATEAU IS NOT THE TONE CURVE AT x=1. THE EXPOSURE ARM SAYS SO, AND IT
+## RETIRES THE MODEL PARTS 27-31 WERE ALL BUILT ON (part 31)
+
+This was the hand-off's step 1a and it was expected to be a refinement. It is a
+refutation, and of the framework rather than of a detail.
+
+`CZ_VK_PS_CONST_SCALE="14.w=0.25"`, outdoor DebugJump route, snapshot at frame 3000.
+
+**The arm engaged, hard, and it is not in doubt.** 11,835,619 draws had a pixel constant
+scaled. The scene buffer's mean luma falls from **35.07 to 18.30** and its distinct
+colour count from **62,704 to 19,841**. Whatever else is true, quartering `pc(14).w`
+darkened most of this frame.
+
+**The plateau did not move.**
+
+| | scene mean | px at exactly rgb(180,180,180) | px at rgb(119,119,119) |
+|---|---|---|---|
+| default | 35.07 | 2,074 | — |
+| `14.w=0.25` | **18.30** | **1,093** | **0** |
+
+119 is not an arbitrary target. §6ba's curve maps `x = 0.25` to exactly 119, so pixels
+sitting at `x = 1` whose exposure register is quartered must land there. **Zero of them
+do**, and only one pixel in the whole 921,600 lands on 118. They stayed on 180.
+
+### What that kills
+
+Every part since 27 has read the plateau as *the shared tone curve evaluated at `x = 1`*
+— part 27's paint probe, part 28's "what pins `c` at `1/pc(14).w`", part 30's constant
+comparison, and §6bb/§6bd above. The arithmetic behind it is still correct: `out = 180`
+if and only if `x = 1` exactly, and `255 * sqrt(K1*K2) = 180.3`. **What is refuted is
+that these pixels are an output of that curve at all.** They are immune to:
+
+* the sun colour `c24` (§6bd),
+* the additive `tf1^2 * c67.w` term (§6bd),
+* the entire multiplicative path `c1.xyz`, an arm that blacks out 61.5% of the frame
+  (§6bd),
+* and now the exposure `pc(14).w` itself, an arm that halves the scene's mean luma.
+
+A value produced by `sqrt((max(A*c*E + B, K1) - saturate(K1 - c*E)^2) * K2)` cannot be
+invariant under scaling `E`. So either these pixels come from a shader that does not
+read `pc(14).w` as its exposure, or — far more economically — **they do not go through
+the tone curve at all**, and 180 is arriving from somewhere else that happens to sit at
+the same number.
+
+That the number matches `255 * sqrt(0.5)` so exactly is now the thing to explain rather
+than the explanation. It has been treated as a derivation for four parts; it is a
+coincidence until a draw is named.
+
+### What the next step is, and it is a different KIND of measurement
+
+Every instrument this item has used so far perturbs an INPUT and reads the whole frame.
+Four of them in a row have now returned "the plateau is unmoved", which is as much as
+that class of instrument can say. The question left is **which draw paints those
+pixels**, and that needs a per-draw instrument rather than a per-frame one.
+
+`CZ_VK_DRAW_CENSUS` already lists every draw of one frame with its shader, its bindings
+and its constants, and `CZ_VK_ONLY_TEX`/`CZ_VK_SKIP_TEX` can remove one texture's draws
+from a frame and diff the picture. Between them the population is enumerable: dump the
+census for a frame with a large plateau, then skip candidates until the 180 pixels go.
+**Do not build another whole-frame arm for this** — the four above are the argument that
+it cannot answer.
+
+One caution for whoever does it, from §6bd: a plateau count compared across two runs is
+not a measurement, because frame N of one run is not frame N of another (gotcha 254).
+Within ONE frame, "these pixels vanished when that draw did" is sound.
