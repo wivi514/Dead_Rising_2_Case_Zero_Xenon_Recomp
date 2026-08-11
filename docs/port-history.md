@@ -1373,6 +1373,54 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Phase C part 27, second half (2026-08-10) — the white patches get a value, a
+## population and an instruction
+
+Everything above was written before the operator drove the game. What followed took the
+white-patch item from seven refuted hypotheses to a chain of eight measurements.
+
+**The two instruments that made it possible were both asked for by the operator**:
+`CZ_CAPTURE_KEY` (one F9 -> picture + census + all 67 resolve snapshots of one frame) and
+`CZ_DEBUG_FLAGS` (the title's own debug bools by menu label, held on by the pump). The
+second mattered more than it sounds: `DISABLE TIME OF DAY` put the world at night, and a
+surface that does not vary with the light stops hiding in a lit scene. The daytime
+captures had contained the same plateau all along and it read as "a bright bit of ground".
+
+**The chain, each step with its own control:** the patches are exactly rgb(180,180,180) in
+the scene buffer at all seven locations; they are not modulated by lighting (90% of the
+slot-machine frame below luma 40, the cabinets at 255); the tone map is the amplifier and
+not the cause (96.1% of the presented white was already >=150, max exactly 180); the
+MATERIAL SHADERS write it (`XE_VALUE_PAINT`, 3,242 -> 0, positive control 99.73%); 48
+shaders emit it (`XE_SHADER_TAG` over the operator's 59 captures, `ps_7d2f8f33deec1b65`
+alone 47%); they share ONE epilogue; 180 is that epilogue's KNEE and is the same for any
+exposure; and no max takes its floor there, so the colour arriving is pinned at
+`1/pc(14).w`.
+
+**Four hypotheses died, each by measurement:** the cube dummy (the fix engaged and the
+surfaces stayed white), a NaN (positive control 99.85%, zero painted), XenosRecomp's `rcp`
+clamp (`FLT_MIN` is -FLT_MAX, and +3.4e38 gives 255 not 180), and an emitter defect in the
+epilogue (the HLSL is one-to-one with the microcode — **nothing for Fable 2 to inherit**).
+
+**Three of the day's false results were the same error**: comparing two populations built
+by different membership rules (gotcha 264). The 414-of-414 cube census counted only slots
+already reading cube; the binding diff compared our declared slots against hardware's
+whole fetch file; the floor paint was first read as if a 48-shader measurement said
+something about one shader.
+
+**And the day ended on a contradiction between two of its own instruments, resolved
+structurally rather than by preference.** The translated shaders are a `switch` over exec
+blocks inside a loop, so a block can run more than once per pixel: `f = f || ...`
+accumulates and is safe, `x = <value>` records whichever iteration was last and is not.
+The hand probe was the unreliable one.
+
+**Also this part:** `CZ_DXC_DEFINES` + `CZ_SHADER_SPV` make a shader change a same-binary
+A/B; the `.xtr` tools learned `LOAD_ALU_CONSTANT` (620 packets to `SET_CONSTANT`'s 36, so
+they had been reporting hardware's constants as zeros) and learned to say UNRECOVERABLE
+where the capture cannot answer; a cube fetch over a single 2D surface now replicates that
+face instead of serving white; and `ps_7d6044e7dcaea1f2` was found missing from the shader
+cache — microcode we had held for sessions, invisible because 410 dumps and 410 modules
+were different sets.
+
 ## Phase C part 27 (2026-08-10) — the ground draw's last input, and a replay that could
 ## not see the guest's constants
 
