@@ -298,6 +298,33 @@ CZ_NO_AUDIO_OUT=1  keep the whole pipeline — pump, decode, mix — and open no
                    Separates "the guest produced audio" from "we played it", and it is
                    what a headless gate run wants: a machine with no sound card must not
                    be a different code path from a desktop with one
+CZ_CINE_TIME=<file>  **the cinematic's own CLOCK, one line per frame the guest asks
+                   for it.** sub_82475718 returns the time the scene is played at, and
+                   sub_82478FC8 stores it straight into [cine+0x1698]; that function is a
+                   three-way switch on a mode the image ships as 2 = PID(audio position),
+                   the PID being sub_824741D8, which the image names itself by plotting
+                   `Cine.Audio P-gain / I-gain / D-gain / MV (ms)` in its own tail.
+                   Columns: msec mode playing audioPos ret setpoint acc prevErr integ pid.
+                   They are chosen to be REFUTABLE: `mode` never reading 2 kills the PID
+                   explanation outright, and `setpoint` oscillating moves the defect to
+                   the caller. On the prologue it reads mode 2 throughout, a setpoint
+                   climbing linearly, `audioPos` FROZEN at 4.906667 s, and `ret` hunting
+                   4.91 <-> 5.27 — which is open-items 00j. **Pair it with
+                   CZ_VK_FRAME_STATS and never read it alone**: the value only exists when
+                   the guest asks for it, so the probe is driven by its own subject
+                   (gotcha 269); every line carries a host clock precisely so a gap next
+                   to continuing frames is a measurement rather than an absence of data
+CZ_CINE_AUDIO_MODE=0|1|2  **the same-binary arm for 00j, and every setting is a path the
+                   TITLE implements** — it writes the mode into the config block the guest
+                   has just built, so it invents no code path and cannot be stomped.
+                   0 = raw scene time, no audio sync · 1 = scene time := the audio stream
+                   position · 2 = the shipped PID. Measured on the prologue: mode 2
+                   LOOPING at 15 poses and runs/distinct 120, mode 1 **FROZEN** at the
+                   stuck position for 338 s, mode 0 no loop and the run reaches gameplay.
+                   **Mode 0 is not a fix and must not be read as one** — with no sync the
+                   first call site hands over an uninitialised ~138,181 s scene time and
+                   the cinematic ends immediately; mode 2's `if (input == 0) return 0` is
+                   what normally protects against that
 CZ_XMA_DECODE_LOG=1  per-context decode activity every 5 s, plus each context's format
                    when it goes live and a hex dump + independent `Xma_Validate` of its
                    first packet. The counters are `Nf/pkP/starveS/pktC/refusedR/smpS`,

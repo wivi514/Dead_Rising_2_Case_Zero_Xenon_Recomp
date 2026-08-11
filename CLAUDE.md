@@ -165,10 +165,11 @@ it is exactly why that rule is in the conventions.
   - `phase1-notes.md` / `phase3-notes.md` / **`phase5-notes.md`** — the per-phase records
     of what the runtime work found that neither the plan nor the kickoff predicted, with
     `phase{1,3,5}-kickoff.md` the matching hand-offs and `runtime-plan.md` the phase plan.
-  - **`phase-av-notes.md`** (sound, and the cinematic that was waiting for it) with
-    `phase-av-plan.md` the plan it executed and **`phase-av-kickoff.md` the live
-    hand-off** — it supersedes `d3d-phase-c28-kickoff.md` on "where the port is", while
-    that file remains the authority on the white-surface chain.
+  - **`phase-av-notes.md`** (sound, the cinematic that was waiting for it, and part
+    29's diagnosis of the loop that followed) with `phase-av-plan.md` the plan it
+    executed, `phase-av-kickoff.md` the phase hand-off and **`part29-kickoff.md` the
+    live one** — it supersedes both on "where the port is", while
+    `d3d-phase-c28-kickoff.md` remains the authority on the white-surface chain.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     `perf-cpu-plan.md` (the live performance plan) and `perf-plan-overnight.md` (its
     executed predecessor).
@@ -667,7 +668,36 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (phase A/V):
+Where the port is, as of 2026-08-11 (part 29):
+
+* **THE CINEMATIC PING-PONG IS DIAGNOSED AND THE DEFECT HAS MOVED — it is a CONTROL
+  LOOP, running as shipped, against an audio position that stops.** `open-items.md` 00j;
+  the record is `docs/phase-av-notes.md` part 29. `sub_82475718` is the cinematic's
+  clock and `sub_82478FC8` stores its return into the scene's time at `[cine+0x1698]`;
+  it switches on a mode the image ships as **2 = PID(audio position)**, the PID being
+  `sub_824741D8`, which names itself by plotting `Cine.Audio P-gain / I-gain / D-gain /
+  MV (ms)`. It returns **setpoint minus an accumulator**, so the scene's time can go
+  down. Measured with `CZ_CINE_TIME`: mode 2 throughout, the PID running, `setpoint`
+  climbing linearly, and **`audioPos` frozen at 4.906667 s**. The camera palindrome IS
+  that clock — within-pose spread of `ret` **0.0052 s** against a 0.042-0.377 s null.
+  `CZ_CINE_AUDIO_MODE=0|1|2` is the arm and every setting is a path the TITLE
+  implements: **LOOPING / FROZEN / no-loop**, with mode 1 predicted before it was run.
+  **The PID is the mechanism of the symptom, not the defect** — do not touch the gains.
+  The live question is one level up: `SamplesPlayed` stops at exactly 235,520 samples
+  (= 1,840 XMA subframes) while the voice still reports itself playing, so the
+  wall-clock fallback never fires. A diagnostic run says the clip ENDED rather than
+  starved (the three dialogue contexts decode 5.03/5.04/4.92 s and stop, our decoder
+  stays healthy). **Run the discriminator first** — whether 4.91 s is the clip's true
+  length or where our decode stops has two opposite fixes, and `CZ_FILE_TRACE=1` plus
+  `tools/big_list.py` tells them apart.
+* **The 00j gate was diluted 6x and every recorded reading has it.** `runs/distinct`
+  over a whole prologue run reads 6.14 because ~1,870 menu frames contribute 1,010 of
+  the 1,170 distinct poses; the cinematic era alone is **38.27** and steady state is
+  **15 poses at 120**. `tools/frame_loopiness.py` prints era quarters now. Quote those,
+  and read draws beside them — the gate cannot tell a stalled scene from a parked
+  player.
+
+Where the port was, as of 2026-08-11 (phase A/V):
 
 * **THE GAME MAKES SOUND, AND THE PROLOGUE CINEMATIC PLAYS.** Both from one fix.
   `docs/phase-av-notes.md`; the plan it executed is `docs/phase-av-plan.md`.
