@@ -443,7 +443,15 @@ CZ_NO_WINDOW=1     no window, no present seam, no pad — XamInputGetState answe
 CZ_VKDRAW=1        phase 5's renderer. OFF by default, so the same binary is also the
                    phase 3 binary — the control arm for every renderer claim
 CZ_SHADER_DUMP=dir one file per distinct microcode blob at IM_LOAD, named by the hash
-                   the renderer looks up. The input to tools/build_shader_spv.sh
+                   the renderer looks up. The input to tools/build_shader_spv.sh.
+                   **DO NOT ASK WHICH FILES ARE NEW BY MTIME.** It rewrites every blob it
+                   sees, so after a long session almost the whole directory looks freshly
+                   written — 250 files inside a 15-minute window on the part-29 operator
+                   run, of which NONE were new. The two signals that actually
+                   discriminate are the `no translated shader` counter (count UNIQUE
+                   lines, not total — one missing shader logs once per bind) and a NAME
+                   diff of the dump directory against `assets/shader_spv`. A check that
+                   cannot tell "new" from "rewritten" is not a clean result (gotcha 25)
 CZ_SHADER_SPV=dir  override the shader cache location
 CZ_VK_STATS=N      the renderer's named-counter block every N frames. Every path that
                    declines to draw something has a counter, because a renderer that
