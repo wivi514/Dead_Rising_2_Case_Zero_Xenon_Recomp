@@ -55,9 +55,14 @@ for x in "$SYNTH"/*.xshd; do
   # cache can be built from the same emitter and the same microcode into a second
   # directory, and selected at run time with CZ_SHADER_SPV. That is what makes a shader
   # change a same-binary A/B rather than a rebuild you cannot go back from.
+  # Each module learns its OWN identity: the low 16 bits of the hash its filename already
+  # carries. Costs nothing when unused (a define no emitted code reads), and it is what
+  # lets an instrument paint a colour a decoder can turn back into a shader NAME instead
+  # of a human inferring which material a green patch belonged to.
+  tag=$(( 0x${n#*_} & 0xFFFF ))
   if LD_LIBRARY_PATH="$DXCLIB" "$DXC" -T "$target" -HV 2021 \
       -all-resources-bound -spirv -fvk-use-dx-layout -Qstrip_debug \
-      ${CZ_DXC_DEFINES:-} \
+      -D "XE_SHADER_TAG=$tag" ${CZ_DXC_DEFINES:-} \
       -Fo "$OUT/$n.spv" "$SYNTH/$n.hlsl" > "$SYNTH/$n.dxc.log" 2>&1; then
     cp "$SYNTH/$n.meta.json" "$OUT/"
     ok=$((ok + 1))

@@ -293,3 +293,22 @@ the EDRAM path. Six captures an arm on the DebugJump route:
 EDRAM path are eliminated. (The two totals differ because the frames differ between runs;
 this is a presence/absence test, not a matched count, and the arms cannot be frame-matched
 outdoors — gotcha 254.)
+
+### `XE_SHADER_TAG` — the paint carries the shader's identity
+
+`tools/build_shader_spv.sh` now passes `-D XE_SHADER_TAG=<low 16 bits of the hash>` to
+every module, taken from the filename it already has. It costs nothing when nothing reads
+it, and the default cache is still reproduced **410 of 410 byte for byte** with it always
+passed. `XE_VALUE_PAINT` writes `(hi, 255, lo)` instead of flat green, so a painted frame
+names the shaders instead of merely counting them.
+
+`tools/shader_tag_decode.py` reads the scene-buffer PPMs back. Green 255 occurs naturally,
+so it selects on the marker, groups the payload, and **prints the pairs that resolve to no
+shader as the noise floor rather than discarding them** — a decoder that silently drops
+what it cannot explain is how a wrong reading survives. 16 bits collide about 1.3 times
+over 411 shaders, so a tag with more than one candidate is reported AMBIGUOUS with all
+names rather than resolved by picking the first.
+
+Headless self-test, three frames of the DebugJump route: **seven shaders named**, largest
+`ps_4d2ac8618715bdbe` at 815 px, with the noise floor a single pair — pure white
+`R=255 B=255`, 400 px — correctly separated.
