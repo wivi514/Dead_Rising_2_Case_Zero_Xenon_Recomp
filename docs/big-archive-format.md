@@ -142,3 +142,56 @@ The original claim was generalised from the seven shader banks, which is where t
 was cracked — the same shape as the 40-byte-stride error the section above already
 records, one level up. **A structural constant derived from one family of files in a
 container is a property of that family until a second family says otherwise.**
+
+## Retraction 2 (part 27): entries ARE compressed, and `size2` is the uncompressed length
+
+The Layout section says of the index entry's `size`/`size2` pair:
+
+> `size` and `size2` being equal everywhere is the signature of an
+> uncompressed-but-compressible container... **Do not assume they are always equal** — a
+> loader that reads only one of them will work on Case Zero and break on the first archive
+> that compresses anything.
+
+**The warning was right and the observation was wrong, in Case Zero itself.** The original
+survey was the seven shader banks, which store everything. Over all 146 archives:
+
+| | entries |
+|---|---|
+| stored (`size == size2`) | 10,810 |
+| **COMPRESSED (`size != size2`)** | **1,671** |
+
+in 9 archives — `streamedassets.big` (1110 of 1110), `models/npcs.big` (185), `cine_props.big`
+(91), `preload4.big` (86), `frontend/ingame.big` (80), `frontend/fecmn.big` (62),
+`datafile.big` (37), `models/zombies.big` (12). **`size` is the STORED length and `size2`
+is the UNCOMPRESSED length.**
+
+### The compressed stream
+
+Parsed exactly on `cc_03.bct` — 71,580 of 71,580 bytes consumed, five chunks, nothing left
+over, which is the check that a guessed layout is right:
+
+```
+0x00   4   uncompressed size, BIG-endian   (131,120 — equals the entry's size2)
+0x04   4   window size, BIG-endian         (0x8000 = 32 KB)
+then, repeated until the entry ends:
+       4   compressed chunk length, BIG-endian
+       n   the chunk, which opens 0xFF — an Xbox LZX / XMemCompress block
+```
+
+Note the ENDIANNESS FLIP: the container's header and index are little-endian (the Layout
+section says so twice), and the compressed stream inside an entry is big-endian. Both are
+true at once and a reader that picks one for the whole file gets a plausible-looking size
+and nonsense chunks.
+
+**Decompression is not implemented.** `tools/big_list.py --extract` writes the compressed
+stream and SAYS that is what it wrote, rather than producing a file that looks like a
+`.bct`, is named like one, and is not one.
+
+### What `cc_03.bct` turned out to be
+
+`size2` = **131,120 = a 48-byte `.bct` header + 32*32*32*4**, i.e. a **32-cubed RGBA
+colour-correction LUT**, and there are 15 of them (`cc_01`..`cc_15`) in
+`streamedassets.big`. Relevant to open item 6: part 25 established that **zero** shaders in
+our cache sample descriptor set 1 (`Texture3D`), so if the title uses these it must unroll
+the cube into a 2D strip — which is the usual 360 technique and is consistent with both
+facts at once.

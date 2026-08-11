@@ -138,13 +138,25 @@ def main():
                 if needle not in e['name'].lower():
                     continue
                 hits += 1
-                print('%-52s %-16s %9d bytes  @%#x  hash %08X'
+                print('%-52s %-16s %9d bytes  @%#x  hash %08X%s'
                       % (os.path.relpath(p), e['name'], e['size'], e['offset'],
-                         e['hash']))
+                         e['hash'],
+                         '  COMPRESSED -> %d' % e['size2']
+                         if e['size'] != e['size2'] else ''))
                 if args.extract:
                     with open(p, 'rb') as f:
                         f.seek(e['offset'])
                         blob = f.read(e['size'])
+                    # SAY SO when what lands on disk is not the asset. 1,671 of this
+                    # package's 12,481 entries are compressed, and writing one out under
+                    # its own name without a word would hand the next reader a file that
+                    # looks like a .bct, is named like a .bct, and is not one.
+                    if e['size'] != e['size2']:
+                        print('    NOTE: this entry is COMPRESSED (%d -> %d). What is '
+                              'written out is the compressed stream, not the asset: a BE '
+                              'u32 uncompressed size, a BE u32 32 KB window, then '
+                              '[BE u32 length][LZX block] chunks each opening 0xFF.'
+                              % (e['size'], e['size2']))
                     os.makedirs(args.out, exist_ok=True)
                     dst = os.path.join(args.out, e['name'] or ('%08X.bin' % e['hash']))
                     open(dst, 'wb').write(blob)
@@ -154,8 +166,10 @@ def main():
                   % (os.path.relpath(p), info['count'],
                      info['width'] or -1, info['data_start']))
             for e in entries[:args.limit]:
-                print('    %-16s %9d bytes  @%#x  hash %08X'
-                      % (e['name'], e['size'], e['offset'], e['hash']))
+                print('    %-16s %9d bytes  @%#x  hash %08X%s'
+                      % (e['name'], e['size'], e['offset'], e['hash'],
+                         '  COMPRESSED -> %d' % e['size2']
+                         if e['size'] != e['size2'] else ''))
             if len(entries) > args.limit:
                 print('    ... and %d more' % (len(entries) - args.limit))
 
