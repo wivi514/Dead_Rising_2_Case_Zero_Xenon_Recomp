@@ -121,3 +121,24 @@ input. See `docs/xenia-capture-analysis.md` finding 6.
 - What `sc` / `sd` / `ss` hold (`vs`/`vd`/`ps`/`pd` are evidently vertex/pixel shader and
   declaration banks).
 - Whether any archive in the game ships compressed payloads (`size != size2`).
+
+## Retraction (part 27): the name table is NOT fixed-width outside the shader banks
+
+The section above says names are "fixed-width entries, NUL-padded... 12 bytes wide in the
+shader banks; the width is not in the header, it is `(data_start - names_offset) /
+entry_count`, so compute it rather than hardcoding 12". Computing rather than hardcoding
+was right and did not go far enough: **the width is not a property of the format at all.**
+
+`tools/big_list.py` enforced that divisibility as a parse check on its first run and **95
+of 146 archives failed it** — `charvocals.big` has 9,843 bytes of names over 985 entries,
+`datafile.big` 686 over 37. Their names are simply variable-length.
+
+**Read to the NUL from each entry's own `name_offset`.** That handles both: the shader
+banks are the case where every name happens to be padded to a common stride, and nothing
+needs to know what that stride is. With the change all 146 archives parse and yield
+**12,481 entries**.
+
+The original claim was generalised from the seven shader banks, which is where the format
+was cracked — the same shape as the 40-byte-stride error the section above already
+records, one level up. **A structural constant derived from one family of files in a
+container is a property of that family until a second family says otherwise.**
