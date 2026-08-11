@@ -527,11 +527,42 @@ Next, in order:
    `sqrt(0.5) = 0.70711 = 180/255`. **The same 180 at seven locations across 48 materials
    is one shared idiom hitting its floor**, which is why no per-material theory ever fit.
 
-   **This moves the item out of Case Zero's materials and into the TRANSLATION LAYER.**
-   One epilogue, two registers, and the question is why `r1` collapses to 0 while the
-   colour sits below the floor. If it is XenosRecomp's rendering of that idiom — the
-   `mad_sat`, the `max`, or the `r_abs` — **it is a Fable 2 defect too**, and that port
-   has the same emitter.
+   ~~**This moves the item into the TRANSLATION LAYER**, and if it is XenosRecomp's
+   rendering of the idiom it is a Fable 2 defect too.~~ **CHECKED AND RETRACTED THE SAME
+   DAY.** The generated HLSL for `ps_7d2f8f33deec1b65` renders the epilogue one-to-one
+   against the microcode, with no reinterpretation to be wrong about:
+
+       r1.xyz = saturate(-r0.xyz * pc(14).www + pc(254).www);
+       r0.xyz = r0.xyz * pc(252).www;
+       r0.xyz = r0.xyz * pc(14).www + pc(252).xxx;
+       r0.xyz = max(r0.xyz, pc(254).www);
+       r0.xyz = -r1.xyz * r1.xyz + r0.xyz;
+       r0.xyz = r0.xyz * pc(255).xxx;
+       oC0.rgb = sqrt(abs(r0.xyz));
+
+   **So there is no emitter defect here and nothing for Fable 2 to inherit.** Worth having
+   asked — the emitter is shared and a defect in it would have been two ports' worth of
+   picture — but it costs one command to check and the answer is no.
+
+   **AND 180 IS THIS OPERATOR'S KNEE, WHICH IS WHY IT IS THE SAME EVERYWHERE.** Probed on
+   the top offender: `pc(14).w = 0.1`, `pc(252) = (0.75, ., ., 0.25)`, `pc(254).w = 1.0`,
+   `pc(255).x = 0.5`. Substituting, with `c` the colour arriving at the epilogue:
+
+       r1  = saturate(1 - 0.1c)          ->  0 at c = 10
+       c'  = 0.025c + 0.75               ->  1 at c = 10
+       out = sqrt((max(c',1) - r1*r1) * 0.5)
+
+   **Both branches meet at exactly `c = 1/pc(14).w`**, and there the output is
+   `sqrt(K1*K2) = sqrt(0.5) = 180/255` — for ANY exposure, because the constants are
+   chosen to keep the curve continuous at the knee. That is why the plateau is the same
+   180 in daylight and at night, at seven locations, through 48 shaders: **it is not a
+   clamp and not a constant the shader writes, it is the one value this operator produces
+   when its input sits exactly on the knee.**
+
+   **So the defect is UPSTREAM of the epilogue**: something pins the colour reaching it at
+   exactly `1/pc(14).w`. The epilogue is only where that becomes a flat grey. Next is to
+   paint by the PRE-epilogue value rather than the output — the same `XE_VALUE_PAINT`
+   machinery one instruction earlier.
 
    **One honest correction:** `ps_ad65b98593f95926`, the ground draw's pixel shader that
    part 27 read line by line, is **NOT in the list**. The white ground is painted by one
