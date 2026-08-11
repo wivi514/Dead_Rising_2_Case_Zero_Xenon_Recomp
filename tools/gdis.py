@@ -112,22 +112,61 @@ def main():
     return 0
 
 
+# D-form memory access opcodes: EA = (rA) + sign_extend(d). These are the OTHER way a
+# 32-bit address reaches the pipeline, and the one the compiler prefers when the address
+# is a global it is about to dereference rather than pass along.
+#
+# Deliberately excluded: the DS-form 64-bit pair (opcodes 58/62, ld/std), whose
+# displacement is the top 14 bits of the low half rather than all 16. This image is
+# 32-bit PPC user code and does not use them; including them would need a different
+# mask and would silently mis-decode if it ever matched.
+D_FORM_MEM = {
+    32: "lwz",  33: "lwzu", 34: "lbz",  35: "lbzu",
+    36: "stw",  37: "stwu", 38: "stb",  39: "stbu",
+    40: "lhz",  41: "lhzu", 42: "lha",  43: "lhau",
+    44: "sth",  45: "sthu",
+    48: "lfs",  49: "lfsu", 50: "lfd",  51: "lfdu",
+    52: "stfs", 53: "stfsu", 54: "stfd", 55: "stfdu",
+}
+
+
 def find_uses(data, base, target, context):
-    """Every `lis`+`addi`/`ori` pair in the image that materialises `target`.
+    """Every site in the image that materialises `target` — as a VALUE or as an ADDRESS.
 
     A 32-bit constant never appears as one instruction on PowerPC, so grepping the
     image for its bytes finds data references and misses every code reference. This
-    reconstructs the pair instead: `lis rX, hi` followed within a short window by an
-    `addi`/`ori` on the same register. The window is deliberately short — the two
+    reconstructs the pair instead: `lis rX, hi` followed within a short window by the
+    instruction carrying the low half. The window is deliberately short — the two
     halves are almost always adjacent, and widening it turns a precise answer into a
     list of coincidences.
+
+    TWO SHAPES, AND FOR A LONG TIME THIS ONLY KNEW ONE. The original version matched
+    `addi`/`ori` alone, i.e. only the case where the address is computed into a
+    register and then used. But a global the compiler is about to LOAD OR STORE never
+    gets its address materialised at all — the low half is folded into the memory
+    operand:
+
+        lis  r9,  0x82A4
+        lwz  r31, 0x6294(r9)        <- the reference to 0x82A46294, invisible to addi/ori
+
+    Part 29 asked this scanner who touched `0x82A46294`, the global holding the object
+    whose cinematic Update() is called every frame, and got **"0 sites"** — for a
+    global that is read on the frame path. A zero from a scanner that cannot match the
+    dominant spelling is a detection failure, not a fact (gotchas 3 and 25), and here
+    it would have retired the only live lead in the item.
+
+    Note the two spellings report differently and that is on purpose: an `addi` hit
+    means "code took this ADDRESS" (or built this constant), a memory-operand hit means
+    "code READ or WROTE this location", and for a data address the second is the
+    question almost always being asked. The mnemonic is printed in the header so a
+    `stw`/`stfs` site — the writer, which is usually what you are hunting — can be
+    picked out of a long read list by eye.
     """
     hi, lo = (target >> 16) & 0xFFFF, target & 0xFFFF
-    # addi sign-extends its immediate, so the high half the compiler emits is one
-    # greater when the low half has bit 15 set. Both spellings have to be searched or
-    # every address ending above 0x8000 goes silently unfound.
+    # addi and a D-form displacement both sign-extend their immediate, so the high half
+    # the compiler emits is one greater when the low half has bit 15 set. Both spellings
+    # have to be searched or every address ending above 0x8000 goes silently unfound.
     hi_addi = (hi + 1) & 0xFFFF if lo & 0x8000 else hi
-    m = md()
     hits = 0
     for off in range(0, len(data) - 4, 4):
         word = struct.unpack_from(">I", data, off)[0]
@@ -143,21 +182,30 @@ def find_uses(data, base, target, context):
             nxt = struct.unpack_from(">I", data, off + k * 4)[0]
             op, ra = nxt >> 26, (nxt >> 16) & 0x1F
             src = (nxt >> 21) & 0x1F
+            kind = None
             if op == 14 and ra == rt and (nxt & 0xFFFF) == lo and imm == hi_addi:
-                pass                                # addi rD, rT, lo
+                kind = "addi"                       # addi rD, rT, lo
             elif op == 24 and src == rt and (nxt & 0xFFFF) == lo and imm == hi:
-                pass                                # ori  rD, rT, lo
+                kind = "ori"                        # ori  rD, rT, lo
+            elif op in D_FORM_MEM and ra == rt and (nxt & 0xFFFF) == lo \
+                    and imm == hi_addi:
+                kind = D_FORM_MEM[op]               # lwz/stw/... lo(rT)
             else:
                 continue
             addr = base + off
             hits += 1
-            print(f"--- {addr:08X}")
+            print(f"--- {addr:08X}  [{kind}]")
             for a, raw, text in disasm(data, base, addr - context * 4,
                                        context * 2 + k + 1):
                 mark = ">>" if a in (addr, addr + k * 4) else "  "
                 print(f" {mark} {a:08X}  {raw:08X}  {text}")
-            break
-    print(f"\n{hits} site(s) build {target:08X}")
+            # An `addi`/`ori` consumes the pair, but ONE `lis` commonly feeds several
+            # accesses to neighbouring globals (and to the same global, read then
+            # written). Keep scanning the window for those instead of reporting the
+            # first and stopping — the store is frequently not the first hit.
+            if kind in ("addi", "ori"):
+                break
+    print(f"\n{hits} site(s) reference {target:08X}")
 
 
 if __name__ == "__main__":
