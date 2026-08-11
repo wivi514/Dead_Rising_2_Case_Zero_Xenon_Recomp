@@ -426,3 +426,52 @@ buffer. `CZ_XMA_PROBE`'s per-context dump over time answers it and nothing here 
   later and is downstream, as the already-queued dialogue plays out. Part 28's "do not
   chase the silence — it is downstream" is right about the second and wrong if applied to
   the first, which is where the defect lives.
+
+
+---
+
+## Part 29, second half — FIXED, and the fingerprint had been on screen twice
+
+The operator refuted "the clip ended" in one sentence, and reading the asset that
+sentence forced open answered everything at once.
+
+**`39694.xma`, the prologue's audio.** 24,377,344 bytes; its 11,903 packet headers sum to
+89,007 frames of 512 samples = **316.5 s as three interleaved streams**, against the
+operator's ~5 min 10 s. Three streams because the 360 decodes 5.1 as several 2-channel
+streams sharing one packet stream, one XMA context per pair — **which is why contexts 5, 6
+and 7 all pointed at input buffer `02584000`.** This project noticed that twice and wrote
+it down twice as "worth a look, not worth a conclusion". It was the bug's fingerprint.
+
+**The defect.** The packet header's `packet_skip` says how far to step to reach the next
+packet of the same stream. Our walk advanced by one. Correct for mono and stereo — music,
+SFX and one-shot voice lines are all single-stream, `skip` is 0 throughout, and the code
+path is byte-identical before and after. Wrong for 5.1, where each context then decodes
+every other stream's packets as its own. One 128 KB buffer is 64 packets carrying 519
+frames = **1.845 s of programme**; the skip chain from packet 0 reaches **20 of those 64**;
+we were producing **4.916 s** per context. 2.66x too much audio, so each ring filled about
+three times faster than the mixer drained it, the whole voice group wedged after one
+buffer, `SamplesPlayed` stopped, and the PID clock tracked a frozen input.
+
+**The result.** The gate for 00j, on the prologue:
+
+| | cinematic era | audio clock |
+|---|---|---|
+| before | runs/distinct **120**, 15 poses, LOOPING | frozen at 4.906667 s |
+| after | runs/distinct **1.00** every quarter, 9,688 poses, advancing | **310.7 s** of 316.5 |
+
+`audio/cinematics.big` read **201** times against 2; the run leaves the prologue into
+gameplay; ten contexts decode concurrently with `refused=0`. **Operator on the live build:
+the first cinematic played to completion with sound, and so did the second.**
+
+**A second, separate defect found on the way and fixed on its own evidence.** The walk
+retired a spent input buffer by unconditionally switching to the other one. This title
+never uses buffer 1 — 136 context dumps over a whole run, `in1Ptr` 0 in every one — so the
+switch parked the context on a buffer that does not exist, unrecoverably, because the walk
+reads `currentBuffer` to decide where to look. `ctx7` was caught in it (`valid=00 cur=1`,
+28 consecutive dumps). Necessary, correct, and it moved the gate by nothing on its own —
+recorded that way rather than folded into the win.
+
+**Two lessons, both now in the ledger.** Gotcha 270: two components you built agreeing is
+a consistency check, never an oracle. Gotcha 271: a format field that is zero in every
+asset you have played is untested, not absent — and an unexplained structural oddity in
+your subject is the bug, waiting.

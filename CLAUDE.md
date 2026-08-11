@@ -670,35 +670,28 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 
 Where the port is, as of 2026-08-11 (part 29):
 
-* **THE CINEMATIC PING-PONG IS DIAGNOSED AND THE DEFECT HAS MOVED — it is a CONTROL
-  LOOP, running as shipped, against an audio position that stops.** `open-items.md` 00j;
-  the record is `docs/phase-av-notes.md` part 29. `sub_82475718` is the cinematic's
-  clock and `sub_82478FC8` stores its return into the scene's time at `[cine+0x1698]`;
-  it switches on a mode the image ships as **2 = PID(audio position)**, the PID being
-  `sub_824741D8`, which names itself by plotting `Cine.Audio P-gain / I-gain / D-gain /
-  MV (ms)`. It returns **setpoint minus an accumulator**, so the scene's time can go
-  down. Measured with `CZ_CINE_TIME`: mode 2 throughout, the PID running, `setpoint`
-  climbing linearly, and **`audioPos` frozen at 4.906667 s**. The camera palindrome IS
-  that clock — within-pose spread of `ret` **0.0052 s** against a 0.042-0.377 s null.
-  `CZ_CINE_AUDIO_MODE=0|1|2` is the arm and every setting is a path the TITLE
-  implements: **LOOPING / FROZEN / no-loop**, with mode 1 predicted before it was run.
-  **The PID is the mechanism of the symptom, not the defect** — do not touch the gains.
-  **The live question is one level up, and it is that THE GUEST STOPS STREAMING THE
-  CINEMATIC AUDIO AFTER ONE BUFFER.** The asset is `audio/cinematics.big` entry
-  `39694.xma`, 24,377,344 bytes; summing `frame_count` over its 11,903 XMA2 packet
-  headers gives **316.5 s (5:16) as three interleaved 2-channel streams** — 5.1 audio,
-  confirmed by the operator's ~5:10 and explaining why contexts 5/6/7 share one input
-  buffer. `CZ_FILE_TRACE=1` shows `music.big` read 47 times in alternating 128 KB
-  buffers forever, and `cinematics.big` read **once into each of two buffers and never
-  again** — 1.1% of the stream. We decode the first buffer's 4.916 s of a 316 s clip;
-  `SamplesPlayed` pins 448 sample-frames behind that and everything above follows.
-  Music double-buffers correctly on the same machinery, so **the difference between the
-  two streams is the defect**, and a retire/refill rule written for one context per
-  buffer is wrong for 5.1 by construction.
-  **RETRACTED mid-part: "the clip ENDED rather than starved."** It was inferred from our
-  decoder's output agreeing with the guest's reported position to 448 frames — two of our
-  own components agreeing, which is a consistency check and cannot be an oracle
-  (gotcha 270). The asset was one `CZ_FILE_TRACE=1` away and had not been asked.
+* **CINEMATICS PLAY TO COMPLETION WITH SOUND — operator-confirmed on two of them, and
+  the fix was one field.** `open-items.md` 00j is CLOSED. The XMA packet walk advanced one
+  packet at a time; a 2 KB XMA2 packet's header carries **`packet_skip`**, the number of
+  packets to step over to reach the next packet OF THE SAME STREAM. That is a no-op for
+  mono and stereo — this title's music, SFX and one-shot voice lines, where it is always
+  0 — and wrong for 5.1, which the 360 decodes as **several interleaved 2-channel streams
+  in one packet stream, one XMA context per pair**. That is why the prologue's contexts 5,
+  6 and 7 all pointed at input buffer `02584000`, an oddity this project noticed twice and
+  never explained. Each of them was decoding the others' packets: **4.916 s produced from
+  a buffer holding 1.845 s, 2.66x**, so the rings filled ~3x faster than the title's mixer
+  drained them and the whole voice group wedged after one buffer. Gate on the prologue:
+  cinematic-era `runs/distinct` **120 -> 1.00 in every quarter**, the scene's audio clock
+  **4.906667 s frozen -> 310.7 s of a 316.5 s track**, `audio/cinematics.big` read
+  **2 -> 201** times. A second, separate defect was fixed on the way and is recorded as
+  having moved the gate by nothing on its own: the walk retired a spent input buffer by
+  unconditionally switching to buffer 1, which this title never uses (136 context dumps,
+  `in1Ptr` 0 in every one), parking the context unrecoverably.
+  **Both are Case West items on day one**, with gotcha 267's physical addresses.
+  The mechanism underneath the symptom was the title's own **`Cine.Audio` PID** on audio
+  latency (`sub_824741D8`, shipped mode 2), which returns *setpoint minus an accumulator*
+  and so hunts backwards when its input stops. `CZ_CINE_TIME` and `CZ_CINE_AUDIO_MODE`
+  remain as the instrument and the arm; the gains are shipped values and were never wrong.
 * **The 00j gate was diluted 6x and every recorded reading has it.** `runs/distinct`
   over a whole prologue run reads 6.14 because ~1,870 menu frames contribute 1,010 of
   the 1,170 distinct poses; the cinematic era alone is **38.27** and steady state is

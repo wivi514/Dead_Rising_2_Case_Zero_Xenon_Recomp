@@ -2361,3 +2361,41 @@ From phase C part 18 (the frame rate — and none of it was work):
      refute it — the asset on disc, a Xenia trace, the operator — and ask whether you
      have actually asked it. If the answer is "no, but my two measurements agree", you
      have a hypothesis, not a finding.
+
+271. **A FORMAT FIELD THAT IS ZERO IN EVERY ASSET YOU HAVE PLAYED IS NOT A FIELD YOU HAVE
+     IMPLEMENTED. AND AN UNEXPLAINED STRUCTURAL ODDITY IN YOUR SUBJECT IS THE BUG,
+     WAITING.**
+
+     The XMA2 packet header carries `packet_skip` — how many packets to step over to
+     reach the next packet **of the same stream**. This port's decode walk advanced by
+     one packet, and that was correct for every asset it had ever decoded: music, sound
+     effects and one-shot voice lines are mono or stereo, single-stream, and `packet_skip`
+     is zero in all of them. The walk was byte-for-byte right for 29 parts.
+
+     Then something played 5.1. The 360 decodes six channels as several **interleaved
+     2-channel streams sharing one packet stream**, one XMA context per pair. Walking `+1`
+     made every context in the group decode the other streams' packets as its own —
+     2.66x too much audio, measured — which filled each output ring about three times
+     faster than the title's mixer drained it, wedged the whole voice group after a single
+     buffer, and presented as a cinematic that ping-ponged forever. Four sessions of
+     candidate explanations sat on top of that.
+
+     **The general form:** when you transcribe a hardware format, the fields that are
+     constant across your corpus are the ones you have not tested, and a corpus of "every
+     asset the port has played so far" is exactly the corpus that hides them. Grep the
+     asset for the field's distribution before believing the simple case is the only case
+     — here `packet_skip` reads 0/1/2/3 across 11,903 packets, which is thirty seconds of
+     Python and would have said "this is interleaved" outright.
+
+     **The second half is sharper, and it is about attention rather than coverage.** The
+     fingerprint of this bug was on screen twice, in writing, before it was found:
+     contexts 5, 6 and 7 all reported the *same* input buffer address. It was recorded
+     both times as "worth a look, not worth a conclusion" and left. Three decoders on one
+     buffer has exactly one sensible explanation, and it is the one that names the defect.
+     **An unexplained structural oddity in the thing you are debugging is a lead with a
+     shelf life, and when it recurs it has stopped being an oddity.** Write down what
+     would explain it, not just that it is odd.
+
+     Composes with 270: the operator's one sentence ("the clip is around 5 min 10 s")
+     refuted a wrong conclusion and, once the asset was finally read, the packet headers
+     gave both the true duration and the interleaving in the same pass.

@@ -252,11 +252,58 @@ Next, in order:
    quote the tally.** It costs nothing and this table is what a silent renderer looks like
    after eight parts of not being able to ask.
 
-00j. **CINEMATICS PING-PONG ONCE A CHARACTER SPEAKS. THE MECHANISM IS SETTLED AS OF
-   PART 29, AND THE DEFECT HAS MOVED: it is the title's own PID controller on audio
-   latency, running exactly as shipped, against an AUDIO STREAM POSITION THAT STOPS
-   ADVANCING AT 4.906667 s.** Operator report on the phase A/V binary, and the first
-   defect that only exists BECAUSE there is now sound.
+00j. ~~**CINEMATICS PING-PONG ONCE A CHARACTER SPEAKS.**~~ **FIXED IN PART 29, AND
+   OPERATOR-CONFIRMED: the prologue cinematic plays to completion with sound.** Two
+   commits, one of which mattered. Kept in full because the trail retired five candidate
+   explanations and the last one was found by an operator sentence, not by the port.
+
+   **The fix.** A 2 KB XMA2 packet header is
+   `frame_count:6 | frame_offset_in_bits:15 | packet_metadata:3 | packet_skip:8`, and
+   `packet_skip` is how many packets to step over to reach the next packet **of the same
+   stream**. Our decode walk advanced by one packet. That is exactly right for mono and
+   stereo — this title's music, SFX and one-shot voice lines are all of those, `skip` is
+   0 throughout them, and the code path is byte-identical before and after. It is wrong
+   for 5.1: the 360 decodes six channels as several interleaved 2-channel streams in one
+   packet stream, one XMA context per pair, which is why contexts 5, 6 and 7 all point at
+   input buffer `02584000` — an arrangement this project had noticed twice, called odd,
+   and left unexplained. Walking `+1` made each context decode every other stream's
+   packets as its own.
+
+   **The magnitude, measured off the asset.** `39694.xma`'s 11,903 packet headers sum to
+   89,007 frames of 512 samples = **316.5 s as three streams**, which the operator's
+   stopwatch (~5 min 10 s) confirms. One 128 KB buffer is 64 packets carrying 519 frames
+   = **1.845 s of programme**, and the skip chain from packet 0 visits 0, 4, 8, 12 ...
+   reaching **20 of those 64**. We produced **4.916 s** per context from it — 2.66x too
+   much audio. Each context therefore filled its 25-block output ring about three times
+   faster than the title's mixer drained it; after one buffer the whole 5.1 group was
+   ring-full and wedged, `SamplesPlayed` stopped, and the cinematic's PID clock was left
+   tracking a frozen input.
+
+   **The result, on the free gate:**
+
+   | | cinematic era | audio clock reached |
+   |---|---|---|
+   | before | runs/distinct **120**, 15 camera poses, LOOPING | 4.906667 s, frozen |
+   | after | runs/distinct **1.00** every quarter, 9,688 poses, advancing | **310.7 s** of 316.5 |
+
+   `audio/cinematics.big` is read **201** times where it was read twice, and the run
+   leaves the prologue into gameplay (draws 1,354-2,123 across the session, against 1,238
+   forever). Ten contexts decode concurrently late in the run, `refused=0`. **Operator on
+   the live build: "First cinematic played to completion and sound seemed all good."**
+
+   **The second commit, which was necessary and changed nothing visible.** The walk
+   retired a spent input buffer by unconditionally switching to the other one. This title
+   never uses buffer 1 — censused over a whole run, 136 context dumps, `in1Ptr` 0 in every
+   one and `in1Valid` never set; it re-arms buffer 0 in place and swaps only the pointer.
+   So the switch moved a context to a buffer that does not exist and nothing could move it
+   back, because the walk reads `currentBuffer` to decide where to look. `ctx7` was caught
+   in exactly that state, `valid=00 cur=1`, unchanged across 28 dumps. Fixed by switching
+   only when the other buffer is valid, which is what the hardware does and a no-op for a
+   real double-buffered stream. On its own it did not move the gate.
+
+   ---
+
+   **The trail, kept for its refutations.**
 
    **READ THIS BLOCK FIRST; everything below it is the trail that got here, kept
    because three of its refutations are still worth not re-buying.**

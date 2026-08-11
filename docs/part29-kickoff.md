@@ -10,10 +10,11 @@ cost this project a session three times.
 
 ## The one-paragraph state of the port
 
-The game boots, renders, plays and makes sound. The prologue cinematic's ping-pong
-(`open-items.md` 00j) is **diagnosed, not fixed**: the mechanism is settled with
-measurements and a three-way arm, and the defect has moved one level up into the audio
-pipeline, where part 30 should start. The renderer's white surfaces are untouched.
+The game boots, renders, plays and makes sound, **and cinematics now play to completion
+with audio — operator-confirmed on two of them.** `open-items.md` 00j is CLOSED: the
+ping-pong was our XMA packet walk ignoring `packet_skip`, so every context of a 5.1 group
+decoded the other streams' packets as its own and wedged the voice group after one buffer.
+The renderer's white surfaces are untouched and are now the top open defect.
 
 ## WHAT PART 29 DID — do not rebuild any of this
 
@@ -69,8 +70,13 @@ Everything from parts 26-28's lists stands. Part 29 adds three:
 
 ## Gates, on this binary
 
-* `--smoke` OK; the recompilation is untouched (nothing outside `runtime/cpu` and
-  `tools/` changed).
+* `--smoke` OK; the recompilation is untouched (nothing outside `runtime/cpu`,
+  `runtime/kernel/audio.cpp` and `tools/` changed).
+* **The shader cache grew 411 -> 417** on the operator's session: the cinematic era, now
+  that it actually plays, binds six pixel shaders no run had ever reached, and the run
+  logged `no translated shader` six times before they were translated in. Gotcha 13 again
+  — "the cache is complete" had a shelf life and the thing that expired it was fixing an
+  unrelated defect. `tools/shader_dim_census.py` exit 0, 417 modules, 0 disagreements.
 * The 00j repro reproduces exactly on the current binary: **6.14 / 0.58 / distinct 1169**
   against the recorded 6.13 / 0.58 / 1170, and the probe binary reproduces it again
   (6.14 / 0.58 / 1170) — so **the instrument does not perturb its subject**.
@@ -83,50 +89,19 @@ not a gate.
 
 ## WHERE TO START
 
-0. **WHY DOES THE GUEST STOP STREAMING THE CINEMATIC AUDIO? — the live item.** The chain
-   from the symptom down to it is fully read and every link is measured:
+0. ~~**THE CINEMATIC PING-PONG.**~~ **CLOSED — see `open-items.md` 00j for the full
+   record.** Two commits: walking each XMA stream's own `packet_skip` chain (the fix), and
+   only switching input buffers when the other is valid (necessary, moved the gate by
+   nothing on its own). Gate before/after on the prologue: cinematic-era `runs/distinct`
+   **120 -> 1.00 in every quarter**, audio clock **4.906667 s frozen -> 310.7 s of a
+   316.5 s track**, `audio/cinematics.big` read **2 -> 201** times. Operator: both the
+   first and second cinematics played to completion with sound.
 
-       sub_82759170   the cinematic asks the audio system — message ReqID 0x106, "Time"
-       sub_827213C8   the audio system looks the voice up in [sys+0xA8], returns entry+8
-       sub_82721530   which refreshes every entry each tick from sub_8270F768(voice)
-       sub_8270F768   voice state 2/3 -> sub_82764C48; ELSE a wall clock
-       sub_82764C48   SamplesPlayed / sampleRate, from an XAUDIO2_VOICE_STATE-shaped struct
-
-   `4.906667 x 48000 = 235,520` samples exactly `= 1,840 XMA subframes of 128`. The
-   voice pins there while still reporting itself playing, so `sub_8270F768` never takes
-   the wall-clock branch that would let the cinematic carry on.
-
-   **The discriminator has been RUN and the answer is that we stream 1.1% of the clip.**
-   `CZ_FILE_TRACE=1` names the asset: `game:\data\audio\cinematics.big` entry
-   **`39694.xma`, 24,377,344 bytes**, read from its exact start. Summing `frame_count`
-   over all 11,903 XMA2 packet headers gives 89,007 frames of 512 samples =
-   **316.5 s (5:16) as three interleaved 2-channel streams** — 5.1 audio, which the
-   operator's ~5:10 confirms and which explains why contexts 5, 6 and 7 share the input
-   buffer `02584000` (three stereo contexts is how the 360 decodes six channels).
-
-       music.big        47 reads, 128 KB each, alternating two buffers, FOREVER
-       cinematics.big    ONE 128 KB read into A2584000, one into A25AA000, then nothing
-
-   We decode the first buffer's **4.916 s of a 316 s clip**. Music double-buffers
-   correctly on the same machinery for the whole run, so **the difference between those
-   two streams is the defect.** Start there: which context fields the title polls for
-   each, and whether our decode walk leaves the cinematic contexts in a state the music
-   context never reaches. **A retire/refill rule written for one context per buffer is
-   wrong for 5.1 by construction** — three contexts share `02584000` — and
-   `kernel/audio.cpp` is where to check that first.
-
-   **The free gate for the whole item is unchanged and needs no operator**:
-   `tools/frame_loopiness.py` on a prologue run, reading the QUARTERS. A fix takes the
-   steady-state quarters from `runs/distinct ~= 120` to `~= 1` with `runs/frames` well
-   above 0.15.
-
-   **Four explanations are refuted with measurements. Do not re-buy them:** our
-   output-ring `write == read` ambiguity (built, predicted, run, refuted, reverted); the
-   audible audio stopping (downstream, ~5.5 s later); the animation "end sync point" the
-   engine narrates (counted — ten entries in a 400 s run, an even split, and the
-   containing function stops being called while the loop continues); and **PID
-   mistuning** — the gains are shipped values and the controller is behaving correctly
-   for a frozen input, so do not touch P/I/D.
+   **What to carry forward rather than re-derive:** 5.1 on this hardware is several
+   interleaved 2-channel streams in ONE packet stream with one XMA context per pair, so
+   several contexts legitimately share an input buffer and each must follow its own skip
+   chain. **This is a Case West item on day one**, alongside gotcha 267's physical
+   addresses.
 
 0b. **THE TWO OPERATOR QUESTIONS FROM PHASE A/V, still unanswered.**
    * **Do the other cinematics play through?** Part 29 measured the prologue only. The
