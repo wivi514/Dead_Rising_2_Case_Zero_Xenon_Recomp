@@ -11,7 +11,8 @@ cost this project a session three times.
 ## The one-paragraph state of the port
 
 The game boots, renders, plays and makes sound, **and cinematics now play to completion
-with audio — operator-confirmed on two of them.** `open-items.md` 00j is CLOSED: the
+with audio — four operator-confirmed in one session, including the combo-weapon award,
+which awards the weapon. No cinematic is known to fail.** `open-items.md` 00j is CLOSED: the
 ping-pong was our XMA packet walk ignoring `packet_skip`, so every context of a 5.1 group
 decoded the other streams' packets as its own and wedged the voice group after one buffer.
 The renderer's white surfaces are untouched and are now the top open defect.
