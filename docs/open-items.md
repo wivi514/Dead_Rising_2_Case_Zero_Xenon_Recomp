@@ -913,20 +913,54 @@ Next, in order:
      ("the white is already in the scene buffer, whose maximum is 180") was describing this
      plateau without recognising it as one.
 
-   **THE ARITHMETIC, AND THE PREDICTION IT MAKES.** 180/255 = 0.70588, and sqrt(0.5) =
+   ~~**THE ARITHMETIC, AND THE PREDICTION IT MAKES.** 180/255 = 0.70588, and sqrt(0.5) =
    0.70711, i.e. **255 * sqrt(0.5) = 180.3**. A shader writing a literal **0.5** into a
-   surface encoded with **gamma 2.0** lands on exactly 180. sRGB does not fit — it would
-   give 188 — so if this is the mechanism it is the Xenos `k_8_8_8_8_GAMMA` encode and not
-   a general sRGB one. **Predicts: the pixel shaders for these surfaces write a constant
-   0.5 down a path our translation takes and hardware does not**, and that the same draws
-   on hardware write a shaded value. Refutable by reading
-   `ps_ad65b98593f95926` (the ground) against the capture's own disassembly, and by
-   `CZ_VK_DRAW_PROBE` on a slot-machine draw.
+   surface encoded with **gamma 2.0** lands on exactly 180... if this is the mechanism it
+   is the Xenos `k_8_8_8_8_GAMMA` encode.~~ **RETRACTED IN PART 30 — the arithmetic is
+   right and the gamma is imaginary.** 180 is `255 * sqrt(0.5)` because the shader's last
+   instruction is a `sqrt` and the value under it is `0.5`; the surface is an ordinary
+   UNORM one and no gamma encode is involved. Both halves of the prediction were then
+   tested and both failed: our translation of `ps_ad65b98593f95926` is **instruction for
+   instruction identical** to the capture's own disassembly of it
+   (`~/DR2CZ-troubleshooting/r2-shaders/shader_D007C18389DF0E55.ucode.frag`), including
+   all six `_sat` modifiers, and no constant `0.5` is written anywhere — the 0.5 is
+   `K1*K2` from the tone curve's own constants.
 
-   **What this retires:** everything that depends on the surfaces being *shaded too
-   brightly*. They are not shaded at all. Any hypothesis of the form "term X is too large"
-   is dead — the output is a constant that does not vary with lighting, time of day,
-   location or camera.
+   **PART 30 READ THE CONSTANTS, AND 180 IS HARDWARE'S VALUE AT FULL EXPOSURE.**
+   `tools/xtr_draw_constants.py` recovers the pixel-shader ALU constants from five of the
+   seven captures (part 27 asked only `w1_spawn`, got `UNRECOVERABLE`, and recorded that
+   the capture cannot answer — it cannot answer *there*). The epilogue every one of the 48
+   shaders shares is, with `x = colour * exposure`:
+
+       out^2 = (max(A*x + B, K1) - saturate(K1 - x)^2) * K2
+       hardware: A = 0.25, B = 0.75, K1 = 1.0, K2 = 0.5   (68 draws, five captures)
+       ours:     A = 0.25, B = 0.75, K1 = 1.0, K2 = 0.5   (64 distinct bindings)
+
+   | x | 0 | 0.5 | 0.9 | **1.0** | 1.05 | 1.5 | 3 | 5 |
+   |---|---|---|---|---|---|---|---|---|
+   | 8-bit | 0 | 156 | 179 | **180** | 181 | 191 | 221 | 255 |
+
+   The constants are ours as well as hardware's, so the tone curve is not the defect. The
+   literal pool is **per shader** and both pools are correct here: `ps_ad65b98593f95926`
+   reads the same four numbers one register lower than `ps_7d2f8f33deec1b65` does.
+
+   **What this retires, corrected.** ~~They are not shaded at all. Any hypothesis of the
+   form "term X is too large" is dead.~~ Too strong: the curve's derivative vanishes at
+   `x = 1`, so **180 is the whole band `x` in [0.9055, 1.0080]** and a flat 180 is equally
+   consistent with a normally-shaded surface sitting at full exposure. What survives, and
+   it is the sharper fact, is the OTHER column of the table above: in five of seven frames
+   nothing in the buffer exceeds 180, and 181 needs only `x = 1.008`. **No pixel is more
+   than 1% above full exposure while 6-15% sit within 10% of it — the lit colour is
+   clamped at `1/exposure`.** That is part 28's `c = 1/pc(14).w`, now reached from the
+   picture rather than from a paint probe that could not have reported otherwise (the
+   probe asked whether `0.25x + 0.75` falls below 1.0, which it can only do for `x < 1`).
+
+   **And the clamp is not in the shader** — six `_sat` in hardware's disassembly, six
+   `saturate()` in ours, on the same six instructions. It is on an input. The next step is
+   named at the end of `docs/phase5-notes.md` §6ba: an exposure arm (`pc(14).w` overridden
+   at bind time) separates "a genuine product at full exposure" from "`c` pinned at `1/E`
+   by something upstream" in one run, and our `pc(14).w` reading 1.0 where hardware reads
+   0.298-0.331 is the ratio that clamp would predict.
 
    **THE OPERATOR'S TAG-PAINT SESSION NAMED THEM: 48 PIXEL SHADERS, ONE SHARED EPILOGUE.**
    59 captures roaming the map with `assets/shader_spv_tagpaint`, decoded with
