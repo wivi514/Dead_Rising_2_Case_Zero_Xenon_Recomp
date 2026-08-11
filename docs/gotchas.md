@@ -2210,3 +2210,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      2 writers). Clear the log gate alone and previously-silent asserts become fatal.
      Setting the trap byte is not hiding anything — the assert still prints, with its
      file and line; suppressing the trap is what makes the message reachable at all.
+
+267. **AN ORACLE CAN ONLY SETTLE A DEFECT SUBTLER THAN THE LOUDEST DEFECT ON YOUR OWN
+     ARM.** Asked whether this port's LOD pops in too late, the operator did the right
+     thing and looked at the same distance in Xenia — and reported that it does not
+     obviously change there, *but that hardware's transitions are far less visible because
+     hardware's textures are not broken.* That second clause is the whole finding. An LOD
+     swap is perceived as a change in SURFACE DETAIL, and our arm's open white-patch defect
+     replaces surface detail on world geometry with a flat `rgb(180,180,180)`. So a swap
+     hardware makes invisibly reads as loud on ours, and one hardware makes visibly is
+     indistinguishable from the plateau: the comparison cannot return a wrong answer,
+     it cannot return an answer at all. **A confounded oracle reading is not a null
+     result**, and filing it as one ("we checked, Xenia looks the same") converts an
+     unanswered question into a closed one — the most expensive kind of documentation
+     error, because nothing downstream ever re-opens it.
+     **The rule: before asking the oracle, name the loudest UNFIXED defect on the channel
+     you are about to read, and check the effect you are hunting is larger than it.** If it
+     is not, the item is PARKED with a stated unblock condition, not refuted. This is the
+     A/B admissibility rule (CLAUDE.md) reached from the picture side rather than the
+     draw-set side, and the same discipline as gotcha 172 — a retirement is only as good as
+     the oracle it was measured on, and here the oracle is fine while OUR arm is the
+     contaminated one. It also outranks acting on the result: do not build the candidate
+     fix for a defect an unusable comparison failed to confirm.

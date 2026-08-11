@@ -648,12 +648,16 @@ Where the port is, as of 2026-08-10 (phase C part 28):
   **Reach for it first on any question of the form "what does the title think it is
   doing"** — zone streaming, load timings, heap headroom and the engine's own asserts are
   all behind it. Diagnostic arm only; never quote a frame time from a run with it set.
-* **LOD PATCHES IN LATE — operator report, OPEN, no mechanism yet** (`open-items.md` 00i).
-  LOD here is STREAMING, not a distance curve: no LOD-distance scalar is named anywhere in
-  the executable. First pass found the per-zone decision working (3 zones full, 4 LOD), no
-  streaming failure of any kind, healthy heaps and the full 447 MB granted. The one
-  untested candidate that would be ours is `KeSetBasePriorityThread` being a no-op; **the
-  Xenia oracle question outranks it and has not been asked.**
+* **LOD POPS IN LATE — operator report, and it is PARKED BEHIND THE WHITE SURFACES**
+  (`open-items.md` 00i). LOD here is STREAMING, not a distance curve: no LOD-distance
+  scalar is named anywhere in the executable. The first pass found the per-zone decision
+  working (3 zones full, 4 LOD), no streaming failure of any kind, healthy heaps and the
+  full 447 MB granted. **The oracle was asked and could not decide it**: hardware's LOD
+  swaps are far less visible because hardware's textures are not broken, so while item 00f
+  flattens world surfaces to `rgb(180,180,180)` the two arms are not comparable on this
+  axis. **Re-ask only after 00f/00g, and do not build the one candidate fix
+  (`KeSetBasePriorityThread` is a no-op) before then** — it would target an unproven defect
+  and be measured against a picture that cannot report whether it worked.
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch

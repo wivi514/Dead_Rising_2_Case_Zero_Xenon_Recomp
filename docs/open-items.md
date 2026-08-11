@@ -849,11 +849,25 @@ Next, in order:
    Cheap test: honour the priority as a host nice level or a thread-pool weighting, and
    read the same `Largest free ... delta` and `[LOAD] took` lines either side.
 
-   **BEFORE ANY OF THAT, ASK THE ORACLE** (the standing rule, and it can retire the whole
-   item in one line): does Xenia show the same pop-in distance at the same spot? DR2-family
-   titles are known for aggressive LOD on real hardware, so "faithful" is a live answer and
-   it is one screenshot pair to settle. Nothing above distinguishes a faithful port of an
-   aggressive streaming system from a port whose streaming runs slow.
+   **THE ORACLE WAS ASKED, AND THE ANSWER IS THAT THE QUESTION IS NOT YET ANSWERABLE —
+   THIS ITEM IS PARKED, NOT REFUTED.** The operator checked the same distance in Xenia and
+   reported that it does not obviously change there, **but that hardware's LOD transitions
+   are far less VISIBLE because hardware's textures are not broken.** That is the correct
+   reading of their own observation and it is not a null result: an LOD swap is seen as a
+   change in surface detail, so on our arm — where item 00f's flat `rgb(180,180,180)`
+   plateaus already destroy surface detail on world geometry — a swap that hardware makes
+   invisibly is loud, and one that hardware makes visibly is indistinguishable from the
+   plateau. **The two arms are not comparable on this axis** (the A/B admissibility rule in
+   CLAUDE.md, arrived at from the picture side instead of the draw-set side). Recorded
+   2026-08-10 so nobody re-runs the comparison expecting it to decide anything.
+
+   **UNBLOCK CONDITION, stated so this is a dependency and not a shrug: 00f/00g first.**
+   Re-ask this only once world surfaces render their real materials. Then it is one
+   screenshot pair, and the two live answers are still (a) faithful — DR2-family titles are
+   aggressively streamed on real hardware — or (b) our streaming promotes late, whose only
+   named candidate is the `KeSetBasePriorityThread` no-op above. **Do not build the thread
+   priority work before then**: it would be a fix aimed at a defect nobody has yet shown
+   exists, measured against a picture that cannot report whether it worked.
 
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
