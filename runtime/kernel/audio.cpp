@@ -679,7 +679,47 @@ bool XmaDecodeOnePacket(unsigned i, uint32_t va, XmaHostCtx& hc, XmaCtx& c)
         hc.samplesOut += uint64_t(got);
     hc.packets++;
 
-    c.setInReadOffsetBits((packet + 1) * kXmaBitsPerPacket);
+    // ADVANCE ALONG THIS STREAM'S OWN PACKET CHAIN, NOT ONE PACKET AT A TIME.
+    //
+    // A 2 KB XMA2 packet begins with a big-endian header:
+    //
+    //     frame_count:6 | frame_offset_in_bits:15 | packet_metadata:3 | packet_skip:8
+    //
+    // and `packet_skip` is how many packets to step over to reach the next packet
+    // BELONGING TO THE SAME STREAM. It is only ever zero on a single-stream file, which
+    // is why walking `packet + 1` looked right for so long: it is exactly correct for
+    // mono and stereo assets, and this title's music, SFX and one-shot voice lines are
+    // all of those.
+    //
+    // Multichannel is not. The 360 decodes 5.1 as SEVERAL INTERLEAVED 2-CHANNEL STREAMS
+    // in one packet stream, one XMA context per pair — which is why the prologue
+    // cinematic's contexts 5, 6 and 7 all point at the same input buffer 02584000, an
+    // arrangement that had been noted here as odd and left unexplained. Walking `+1`
+    // makes every one of those contexts decode every OTHER stream's packets as if they
+    // were its own.
+    //
+    // The cost is measured, not estimated. `39694.xma`, the prologue's audio, is
+    // 24,377,344 bytes and its 11,903 packet headers sum to 89,007 frames of 512
+    // samples = 316.5 s as three streams, which the operator's stopwatch (~5 min 10 s)
+    // confirms. One 128 KB input buffer is 64 packets carrying 519 frames — **1.845 s
+    // of programme**. Following the skip chain from packet 0 visits
+    // 0, 4, 8, 12 ... and reaches only **20 of those 64 packets**. Walking `+1` we
+    // produced **4.916 s** per context from that buffer: 2.66x too much audio, made of
+    // three streams' packets jumbled together.
+    //
+    // That is what jams the cinematic. Each context fills its 25-block output ring
+    // roughly three times faster than the title's mixer drains it, so after one buffer
+    // every voice in the 5.1 group is ring-full and wedged, `SamplesPlayed` stops, and
+    // the cinematic's PID clock is left tracking a frozen input (open-items 00j).
+    //
+    // The chain is self-describing, so this needs no knowledge of how many streams the
+    // file has: the guest sets each context's initial read offset to its own first
+    // packet, and each header says where that stream continues. Skip values in this
+    // asset are 0-3 with no terminator, and a skip that steps past the buffer end lands
+    // on the exhaustion test above, which is the correct outcome.
+    const uint8_t* const hdr = g_memory.base + src;
+    const uint32_t packetSkip = hdr[3];
+    c.setInReadOffsetBits((packet + packetSkip + 1) * kXmaBitsPerPacket);
     XmaWriteDword(va, 2, c.dw[2]);
     return true;
 }
