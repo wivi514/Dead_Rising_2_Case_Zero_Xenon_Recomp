@@ -60,7 +60,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -144,6 +146,138 @@ FileHandle* Resolve(uint32_t handle)
     if (!IsKernelObject(handle) || !IsLiveKernelHandle(handle))
         return nullptr;
     return dynamic_cast<FileHandle*>(GetKernelObject(handle));
+}
+
+// ============================================================================
+// NOT-FOUND ACCOUNTING — because a real miss is one line in a flood of expected ones.
+//
+// A no-input outdoor run asks for 304 distinct files that do not exist, and every one of
+// them is legitimate: Case Zero is a cut-down Dead Rising 2, so its engine probes for the
+// full title's content and falls back. `data/anim/weapon` misses 66 files and has exactly
+// one on disk (`allweapons.big`), which is the fallback working. Nothing is wrong.
+//
+// The problem is what that does to the ONE miss that would matter. A path we should have
+// resolved and did not — a mount that failed, a translation that dropped a component, an
+// asset we never extracted — prints exactly the same line as the 304, so it is invisible.
+// The log has always said this ("counted and logged sparsely so a WRONG not-found is
+// still visible"), and sparse logging is not what makes it visible; classification is.
+//
+// Three classes, and only the last two are ours:
+//
+//   PROBE      the parent directory holds nothing, or does not exist. The title is asking
+//              for content this package never shipped. Expected, counted, silent.
+//   SIBLING    the parent directory EXISTS AND HAS FILES IN IT. The title is asking for a
+//              sibling of things we do have, which is where a missed extraction or a
+//              mistranslated name would land. Suspicious; named in the summary.
+//   REGRESSED  we opened this exact path successfully earlier in the same run and now
+//              cannot. That cannot be the title's content being absent, so it is a defect
+//              in the VFS, the mount, or a handle. LOUD, immediately, every time.
+//
+// The classification runs ONCE per distinct path and is cached: the scan is a directory
+// listing, and a title that probes the same missing bank every frame must not pay for it.
+namespace {
+
+std::mutex g_missMutex;
+std::map<std::string, uint64_t> g_missCounts;      // guest path -> times missed
+std::map<std::string, int> g_missClass;            // guest path -> 0 probe, 1 sibling
+std::set<std::string> g_openedOk;                  // paths that HAVE opened this run
+
+std::string MissKey(const std::string& guestPath)
+{
+    std::string k = guestPath;
+    for (char& c : k)
+        c = char(tolower((unsigned char)(c == '\\' ? '/' : c)));
+    return k;
+}
+
+// Called on every successful open, so REGRESSED can be detected at all. Cheap: one
+// insertion into a set that tops out at the few hundred paths this title opens.
+void NoteOpened(const std::string& guestPath)
+{
+    std::lock_guard<std::mutex> lock(g_missMutex);
+    g_openedOk.insert(MissKey(guestPath));
+}
+
+// Returns true if the miss is worth shouting about.
+bool NoteMiss(const std::string& guestPath)
+{
+    const std::string key = MissKey(guestPath);
+    std::lock_guard<std::mutex> lock(g_missMutex);
+    ++g_missCounts[key];
+    if (g_openedOk.count(key))
+    {
+        KLOG("[file] **REGRESSED**: '%s' opened successfully earlier in this run and now "
+             "does not resolve. That is not the title probing for absent content — it is "
+             "ours.\n", guestPath.c_str());
+        return true;
+    }
+    auto known = g_missClass.find(key);
+    if (known != g_missClass.end())
+        return false;
+    // Classify once. The parent is taken from the TRANSLATED path so this asks about the
+    // host directory the file would live in, not about the guest's spelling.
+    int cls = 0;
+    const std::string host = VfsTranslate(guestPath);
+    const size_t slash = host.find_last_of('/');
+    if (!host.empty() && slash != std::string::npos)
+    {
+        std::error_code ec;
+        const std::string dir = host.substr(0, slash);
+        if (std::filesystem::is_directory(dir, ec))
+            for (const auto& e : std::filesystem::directory_iterator(dir, ec))
+            {
+                (void)e;
+                cls = 1;      // the directory exists and is not empty
+                break;
+            }
+    }
+    g_missClass[key] = cls;
+    // SIBLING prints ONCE, immediately, rather than waiting for a summary at exit. Most
+    // runs of this title are killed by `timeout`, so an exit-time report is a report
+    // nobody receives -- and the actionable classes have to survive that.
+    if (cls == 1)
+        KLOG("[file] SIBLING MISS: '%s' -- its directory exists and holds files, so this "
+             "is not the title probing for content we never shipped. Check the "
+             "extraction and the name translation.\n", guestPath.c_str());
+    return cls == 1;
+}
+
+} // namespace
+
+void FileImports_ReportMisses()
+{
+    std::lock_guard<std::mutex> lock(g_missMutex);
+    if (g_missCounts.empty())
+        return;
+    uint64_t total = 0, probeN = 0, sibN = 0, sibHits = 0;
+    for (const auto& [p, n] : g_missCounts)
+    {
+        total += n;
+        if (g_missClass[p] == 1) { ++sibN; sibHits += n; }
+        else ++probeN;
+    }
+    fprintf(stderr,
+            "[file] not-found summary: %llu opens missed over %zu distinct paths — "
+            "%llu PROBE (parent empty or absent; the title asking for content this "
+            "package never shipped), %llu SIBLING (%llu opens) in a directory that DOES "
+            "hold files, which is where a missed extraction would land\n",
+            (unsigned long long)total, g_missCounts.size(),
+            (unsigned long long)probeN, (unsigned long long)sibN,
+            (unsigned long long)sibHits);
+    if (!sibN)
+        return;
+    // Only the suspicious class is listed, most-missed first. Printing all 304 is what
+    // the raw log already does and is why nobody reads it.
+    std::vector<std::pair<uint64_t, std::string>> rows;
+    for (const auto& [p, n] : g_missCounts)
+        if (g_missClass[p] == 1)
+            rows.emplace_back(n, p);
+    std::sort(rows.rbegin(), rows.rend());
+    for (size_t i = 0; i < rows.size() && i < 24; i++)
+        fprintf(stderr, "[file]     %6llu x  %s\n",
+                (unsigned long long)rows[i].first, rows[i].second.c_str());
+    if (rows.size() > 24)
+        fprintf(stderr, "[file]     ... and %zu more\n", rows.size() - 24);
 }
 
 // The one place a host errno becomes an NTSTATUS. Kept separate so the mapping is
@@ -244,7 +378,8 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
             // WRONG not-found (a path we should have resolved) is still visible.
             static std::atomic<int> misses{ 0 };
             const int n = misses.fetch_add(1);
-            if (n < 32 || FileTrace() || !ChattyDevice(guestPath))
+            const bool loud = NoteMiss(guestPath);
+            if (loud || n < 32 || FileTrace() || !ChattyDevice(guestPath))
                 KLOG("NtCreateFile('%s') -> not found\n", guestPath.c_str());
             return OpenStatusFor(guestPath);
         }
@@ -276,6 +411,10 @@ uint32_t NtCreateFile_x(be<uint32_t>* handleOut, uint32_t desiredAccess,
     if (!file)
         return STATUS_NO_MEMORY;
     file->guestPath = guestPath;
+    // Recorded so a later miss on the SAME path can be told apart from the title
+    // probing for content that was never shipped. That distinction is the whole
+    // value of the not-found summary.
+    NoteOpened(guestPath);
     file->hostPath = hostPath;
     file->isDirectory = directory;
     file->writable = wantsWrite;

@@ -759,6 +759,58 @@ Next, in order:
    4x4 already on file as "uploaded BLACK, guest memory NON-ZERO NOW" (item 00 point 2),
    so the two are plausibly one defect in this title's texture creation.
 
+00h. **THE ASSET EXTRACTION IS COMPLETE, AND THE 304 NOT-FOUNDS ARE THE TITLE PROBING FOR
+   CONTENT THIS PACKAGE NEVER SHIPPED.** Asked in part 27 — could a missing `.big` be why
+   surfaces are white?
+
+   * **Extraction: 256 of 256 files, zero missing, zero wrong size, all 146 `.big`
+     archives present, 816.5 MB.** (The first run of this check reported "234 missing" and
+     was MY bug — it keyed the disk side on basenames and the listing side on full paths.
+     The tell was that it also reported zero wrong sizes, and 234 missing files with no
+     size mismatches is not a plausible extraction failure.)
+   * **Zero case mismatches.** Not one requested path exists on disk under a different
+     case, so our VFS is not failing a case-sensitive lookup — the plausible port defect.
+   * **The misses are probe-then-fallback**, which is what a cut-down Dead Rising 2 looks
+     like: `data/anim/weapon` misses 66 files and has exactly one on disk
+     (`allweapons.big`); `data/audio` misses 60 `fx_*.big` and ships the combined
+     `streamfx.big`.
+   * **And it cannot be a difference from hardware anyway: Xenia launches the SAME STFS
+     package**, so the emulator sees the identical 256 files and misses the identical
+     paths. A file absent from the package is absent on both sides.
+
+   **THE COUNTER THAT MAKES THE ONE REAL MISS VISIBLE** is now in
+   `runtime/kernel/file_imports.cpp`. 304 expected misses drown any genuine one, so each
+   distinct path is classified ONCE and cached:
+
+   | class | meaning | on a no-input outdoor run |
+   |---|---|---|
+   | PROBE | the parent directory is empty or absent — content never shipped | 300 |
+   | SIBLING | the parent EXISTS AND HOLDS FILES, so a missed extraction would land here | **4** |
+   | REGRESSED | we opened this exact path earlier IN THIS RUN and now cannot | **0** |
+
+   SIBLING and REGRESSED print immediately rather than at exit, because most runs of this
+   title are killed by `timeout` and an exit-time report is a report nobody receives. The
+   four survivors are `cl.txt`, `capcom.txt`, `serial.bin` (dev files at populated paths)
+   and `fx_cicadas.big`. **304 -> 4, and zero regressions: the file layer is clean.**
+
+   **THE TWO GRADING TEXTURES, and they are not ours.** `data/misc/textures/cc_03.bct` and
+   `sun.bct` are both colour-grading assets, which is why they were worth chasing:
+
+   * `cc_%02d.bct` is built at RUNTIME (`va 8208A1D0`) — numbered **colour-correction
+     LUTs**, and `cc_03` is index 3. The package ships **13 `.bct` files and not one
+     `cc_*`**.
+   * `sun.bct` (`va 82088A5F`) sits inside the post-FX parameter table, between
+     `contrast_midpoint`/`contrast`/`saturation` and `vignette_alpha/tint/radius/power`.
+
+   So the title asks for numbered grading LUTs and a sun texture, as LOOSE files, and does
+   not get them — **on Xenia exactly as here**. Relevant to item 6 (colour grading) as a
+   fact about the title rather than a defect in the port. **Whether they also live inside
+   a `.big` is UNKNOWN and the obvious grep cannot answer it**: searching the archives for
+   `cc_0` returns zero, and so does searching them for `meat`, `zombie` and `chuck` —
+   names that are certainly in there. The archives do not store plain text, so that search
+   could not have matched and its negative result means nothing (gotcha 25). Answering it
+   needs `docs/big-archive-format.md` and a real TOC reader.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
