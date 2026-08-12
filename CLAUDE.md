@@ -670,7 +670,34 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 33):
+Where the port is, as of 2026-08-11 (part 34):
+
+* **THE 4x MSAA Y FACTOR IS THE DEFAULT — part 32's item 0, shipped, and the shadow
+  cascade's two known defects are both fixed and on by default.** A Xenos 4x surface is
+  a 2x2 sample grid — twice as tall in samples as well as twice as wide — and for 25
+  parts only X had the factor at the window-coordinate site. The reconciliation that
+  unblocked it (§6bh): a clear rect is in the CLEAR declaration's own pixel space, so
+  both axes scale by the draw's OWN declared sample factors — no rule needs the render
+  declaration at clear time, and the Y over-clear past a shorter surface is the same
+  approximation the X factor has always applied to the 640x360 post surface.
+  `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` is the same-binary control arm (the part-33
+  renderer); the part-32 arm variable is retired. Gates: atlas **46.8750% -> 0.0038%
+  zero, 512 -> 1024 covered rows** (§6bf's numbers to four decimals); no other surface
+  regressed; outdoor era medians **distinct colours +8.30% at 5.2x the null**
+  (registered prediction, commit e10df05); validation tally unchanged; capture-E
+  **+0.958 identity**; A5 **exit 0, 3 permutation, 0 real**; `truncated=0`; both PM4
+  oracles exit 0. **Owed: the operator's three-way verdict at one crowd spot** (default
+  / no-Y / `CZ_VK_NO_ADDR_TILE_FOLD=1`), property = the EXTENT and CONTINUITY of the
+  shadowed region — the control arms have a hard camera-locked boundary across the
+  world; the default should have none.
+* **§6ba's EXPOSURE QUESTION IS DOWNGRADED TO CLOSED-PENDING-A-MATCHED-LOCATION.**
+  `CZ_VK_EXPOSURE_TRACE` on all three outdoor runs: every arm identical (the shadow
+  change does not move the controller), frame 3000 reads 0.211 (part 31: 0.2146), era
+  range **0.200-0.354**, mean 0.2755 — and hardware's **0.298 / 0.331** sit INSIDE that
+  adaptive range. "Ours pinned where hardware reads 0.33" is not a property of the
+  fixed renderer. The free completion: the trace beside an operator F9 at `w1_spawn`.
+
+Where the port was, as of 2026-08-11 (part 33):
 
 * **THE WHITE-SURFACE PLATEAU IS SOLVED — open item 00f, open since part 26, and the
   largest picture defect in the port.** The exact-`rgb(180,180,180)` surfaces were the

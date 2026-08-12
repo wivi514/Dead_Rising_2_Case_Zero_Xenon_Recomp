@@ -1373,6 +1373,54 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 34 (2026-08-11) — the 4x MSAA Y factor ships as the default, and the exposure
+## question dissolves
+
+Part 32's item 0, executed. Full record `docs/phase5-notes.md` §6bh.
+
+* **The Y factor for 4x MSAA window coordinates is the DEFAULT**, with
+  `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` the same-binary control arm and the part-32 arm
+  variable retired. The reconciliation that unblocked it: a clear rect is in the CLEAR
+  declaration's own pixel space, so both axes scale by the draw's OWN declared sample
+  factors — no rule needs the render declaration at clear time, and the Y over-clear
+  past a shorter surface is the same approximation the X factor has always applied to
+  the 640x360 post surface.
+* **Gates**: title-boot atlas 46.8750% -> 0.0038% zero, 512 -> 1024 covered rows
+  (§6bf's arm numbers to four decimals, arms differing by the env var alone); no other
+  surface regressed — the scene and post chain gain luma and colours, the direction a
+  live shadow term predicts; outdoor era medians distinct colours **+8.30% at 5.2x the
+  null** (registered prediction, commit e10df05); validation tally unchanged (zero
+  08733, the 6 pre-existing topology-08773); capture-E +0.958 identity (statistically
+  the recorded +0.9597 — the fixes do not live on a 2D title card); both PM4 oracles
+  exit 0; A5 kernel diff and `truncated=0` re-run clean.
+* **§6ba's owed exposure re-measure came back "no discrepancy left"**: all three arms
+  identical, frame 3000 reads 0.211 (part 31: 0.2146), era range 0.200-0.354 with mean
+  0.2755 — and hardware's 0.298/0.331 sit INSIDE that adaptive range. Owed: only a
+  matched-location comparison, free on the next operator session.
+* **Owed to the operator**: the three-way shadow verdict at one crowd spot (default /
+  no-Y / no-fold), extent and continuity of the shadowed region as the named property.
+
+## Part 33 (2026-08-11) — the white plateau was NaN, the NaN was a vertex-input type
+## mismatch (entry written in part 34; the part-33 session recorded itself only in
+## §6bg and its kickoff)
+
+Item 00f, open since part 26, closed both ways in a day. Full record
+`docs/phase5-notes.md` §6bg; gotchas 281-283.
+
+* The exact-`rgb(180,180,180)` surfaces were the shared tone epilogue evaluated at
+  `x = NaN` — `max(NaN,K1)=K1`, `saturate(NaN)=0` land every NaN on `sqrt(K1*K2)` =
+  180/255, invariant under every constant, which is why four whole-frame arms read
+  "unmoved". The NaN entered at the VERTEX FETCH: fmt16 `k_10_11_11` packed normals,
+  TEXCOORD-wrapped as float4, bound `R32_UINT` — a VUID-08733 type mismatch delivering
+  packed bits AS floats since phase 5. One `CZ_VK_VALIDATION=1` run named it.
+* Fixed in XenosRecomp (`XeUnpack_10_11_11`, static format branch) + runtime (fmt16 ->
+  `R32_SFLOAT`): plateau 1,092 px -> 0, scene mean luma 35.5 -> 44.7, distinct colours
+  80k -> 112k, 08733 10 -> 0. The NaN footprint was 17x the visible plateau, so every
+  fmt16 mesh had garbage normals since phase 5 — the parked picture items were told to
+  re-ask on this renderer.
+* **The operator confirmed it the same day: seven for seven part-27 locations, scene
+  plateau ZERO in every one** (`~/DR2CZ-troubleshooting/part33-operator/`).
+
 ## Part 32 (2026-08-11) — the cascade's other half, and a hardware oracle that was a
 ## photograph
 

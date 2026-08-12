@@ -1857,23 +1857,39 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. **THE SHADOW CASCADE — TWO DEFECTS, ONE FIXED AND SHIPPED, ONE FOUND AND SITTING
-   BEHIND AN ARM (part 32).** The atlas is 4096x1024 and holds four 1024x1024 cascades;
-   part 31 fixed the ADDRESS FOLD that made them four disjoint snapshots, and the operator
-   confirmed the improvement. **Part 32 found that half of every cascade band is still
-   ZERO, and a zero depth sample reads as OCCLUDED** — 46.8750% of every band, rows
-   512..1023 minus a 64-column sliver, identical in four bands rendered from four
-   different light frusta. The geometry is submitted for all of it (`CZ_VK_DEPTH_ALWAYS`:
-   46.875% -> 1.86% zero); the bottom half is rejected by a depth test against the zero
-   the EDRAM image was created with, because nothing ever clears it.
+3. **THE SHADOW CASCADE — BOTH KNOWN DEFECTS FIXED AND SHIPPED; WHAT REMAINS IS THE
+   OPERATOR'S VERDICT (part 34).** The atlas is 4096x1024 and holds four 1024x1024
+   cascades; part 31 fixed the ADDRESS FOLD that made them four disjoint snapshots, and
+   **part 34 shipped the 4x MSAA Y factor as the default** (part 32 found it, part 34
+   reconciled the scene-tile objection and flipped it — `phase5-notes.md` §6bf and §6bh).
+   Atlas on this binary: **0.0038% zero, 1024/1024 covered rows**, against 46.8750% /
+   512 with `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` (the control arm, the part-33 renderer).
+   Outdoor era medians: distinct colours **+8.30% at 5.2x the null**, the direction a
+   graded shadow term predicts, on top of part 32's independent +14.17% at 40x.
+   **Owed: the operator's three-way verdict at one crowd spot, camera unmoved** —
+   default / `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` / `CZ_VK_NO_ADDR_TILE_FOLD=1`. The
+   property to name first (gotcha 278): the EXTENT and CONTINUITY of the shadowed
+   region — with either control arm there is a hard camera-locked boundary across the
+   world; with the default there should be none. And the eventual exact form is still a
+   stand-in at SAMPLE resolution in both axes with downsampling resolves; the shipped
+   per-axis factor is the one-site approximation of it.
+
+   The part-32 statement, kept for its measurements:
+
+   **Part 32 found that half of every cascade band was ZERO, and a zero depth sample
+   reads as OCCLUDED** — 46.8750% of every band, rows 512..1023 minus a 64-column
+   sliver, identical in four bands rendered from four different light frusta. The
+   geometry is submitted for all of it (`CZ_VK_DEPTH_ALWAYS`: 46.875% -> 1.86% zero);
+   the bottom half is rejected by a depth test against the zero the EDRAM image was
+   created with, because nothing ever clears it.
    **The cause is that a 4x MSAA surface is twice as TALL in samples as well as twice as
-   wide, and only X has ever had the factor.** The title's two clear rects for the cascade
+   wide, and only X ever had the factor.** The title's two clear rects for the cascade
    — `(0,0)-(480,512)` on a 520-pitch 4x surface and `(960,0)-(1024,1024)` — tile the map
    EXACTLY when both axes are scaled and cover 53.125% of it when only X is.
-   `CZ_VK_MSAA_WINDOW_SCALE_Y=1` takes the atlas to **0.0038% zero** with the title-screen
-   picture unmoved. **It is off by default because the SCENE tile's 4x clear wants X
-   scaled and Y not**, and that has to be reconciled first — see `phase5-notes.md` §6bf
-   for the exact table and the likely reconciliation.
+   It was held behind an arm because the SCENE tile's 4x clear appeared to want X
+   scaled and Y not — reconciled in §6bh: a clear rect is in the CLEAR declaration's own
+   pixel space, and doubling Y over-clears past a shorter surface exactly as the X
+   factor always has, the same approximation applied consistently.
    **AND THE HARDWARE YARDSTICK BELOW IS RETRACTED.** "Hardware's copy of the same
    surface, 3.5% zero with all four X bands populated" is 16 MB of the PREVIOUS FRAME'S
    COMPOSITED SCENE — the HUD is legible in it. A `.xtr` cannot supply any surface the GPU

@@ -5600,3 +5600,97 @@ headless number.**
 | 4738 | w5_newsboxes | 16,692 (1.81%) | **0** |
 | 6017 | w6_register_door | 63,562 (6.90%) | **0** |
 | 6312 | w7_slotmachine | 52,840 (5.73%) | **0** |
+
+## 6bh. THE 4x MSAA Y FACTOR IS THE DEFAULT — part 32's item 0 shipped, and the exposure
+## question rode along (part 34)
+
+Part 32 derived the mechanism (§6bf: a Xenos 4x surface is a 2x2 sample grid, twice as
+tall in samples as well as twice as wide) and measured the arm; part 34 makes it the
+behaviour. `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` is the same-binary control arm — the
+part-33-and-earlier renderer — and the part-32 arm variable `CZ_VK_MSAA_WINDOW_SCALE_Y`
+is retired rather than left as a second spelling of the default.
+
+### The reconciliation that unblocked it, stated once
+
+§6bf's blocker was that the SCENE tile's 4x clear `(0,0)-(320,720)` appears to want X
+scaled and Y not, and its counter-example killed the candidate rule "scale by (clear
+declaration's factor) / (render declaration's factor)" — a rule that would anyway need
+the render declaration at clear time, which is unknowable. The rule that ships is
+simpler and needs no lookahead: **a draw's window coordinates are in its OWN
+declaration's pixel space, so they scale by its own declared sample factors, both
+axes** (1x = (1,1), 2x = (1,2), 4x = (2,2), and our stand-in is at sample resolution
+in X). Under it:
+
+* cascade clear, 4x: `(480,512) -> (960,1024)` — tiles the map exactly with the 1x
+  sliver rect. The defect this ships to fix.
+* scene tile clear, 4x: `(320,720) -> (640,1440)`, clipped at the stand-in's 1024 rows.
+  X covers the full tile (part 9's fix, unchanged); Y OVER-clears past the tile's 720
+  rows into the shared stand-in — **which is exactly what the X factor has always done
+  to the 640x360 post surface** (its 4x clear becomes 1280 wide on a 640-wide surface,
+  §6bf's own counter-example, harmless for the whole life of the renderer). The
+  over-clear is one approximation applied consistently to both axes now, instead of
+  X-only; every gate below is the measurement that it stays harmless.
+* the exact form remains a stand-in at SAMPLE resolution in BOTH axes with
+  downsampling resolves — larger, still open, and nothing here forecloses it.
+
+### The gates, all on one binary, arms differing by the env var alone
+
+**Title boot, frame-600 snap dump.** The atlas reproduces §6bf's arm numbers to four
+decimal places, which is the engagement proof (the counter dump does not survive a
+`timeout` kill, so the differential IS the counter):
+
+| arm | atlas 1439B000 zero | covered rows |
+|---|---|---|
+| `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` | 46.8750% (every band) | 512 / 1024 |
+| default | **0.0038%** | **1024 / 1024** |
+
+**Every other surface in the dump, compared across arms**: no surface lost coverage,
+none went flat. The scene buffers and the whole post-reduction ladder gain mean luma
+(+7 to +9) and distinct colours (+12-18%) — the direction a shadow term that stops
+calling half of every cascade "occluded" predicts. NB part 32 recorded the arm's
+title picture as "unmoved"; that was measured on the pre-part-33 renderer, whose fmt16
+normals were garbage. On the fixed renderer the shadow term visibly contributes, so
+"unmoved" is superseded, not contradicted.
+
+**Outdoor era medians** (DebugJump route, three 420 s runs alternated null/arm/null,
+`frame_era_medians.py`, every frame >= 1,800 draws; the three runs reached matched
+depth — 12,138 / 12,130 / 12,114 era frames — unlike part 32's block):
+
+| statistic | base1 | base2 | null floor | arm | vs base |
+|---|---|---|---|---|---|
+| coveragePct | 99.6750 | 99.6721 | 0.00% | 99.6801 | inside the null |
+| meanLuma | 67.76 | 70.08 | 3.37% | 74.50 | +8.10%, 2.4x — unresolved |
+| distinctColours | 148,717 | 146,355 | 1.60% | **159,784** | **+8.30%, 5.2x the null** |
+
+Distinct colours is again the statistic that resolves (part 32: +14.17% at 40x its own
+0.35% null, on the pre-fmt16 renderer), and it moves the way a graded shadow term
+predicts. The registered prediction in commit e10df05 named that direction before the
+block ran. Note the baselines themselves say what part 33 did to this scene: era-median
+distinct colours was ~68k in part 26's baselines and is ~147k now.
+
+### §6ba's owed exposure re-measure: the discrepancy no longer describes this renderer
+
+`CZ_VK_EXPOSURE_TRACE` rode on all three outdoor runs. All three arms read identically —
+the shadow change does not move the controller:
+
+    frame ~3000:      0.211 in every arm   (part 31 recorded 0.2146 on the same route)
+    era 2000..12000:  mean 0.2755, range 0.200 .. 0.354   (~10,000 frames per arm)
+    within-frame spread: ~2e-5 — one exposure per frame, re-confirmed
+
+Hardware's two point measurements — **0.331368** (`w1_spawn`) and **0.298**
+(`w7_slotmachine`) — sit INSIDE our adaptive range. So "ours reads 1.0 / pinned low
+where hardware reads 0.33" is not a property of the fixed renderer: the controller
+adapts across the same regime hardware occupies. What would settle it entirely is a
+MATCHED-LOCATION comparison (the trace beside an operator F9 at `w1_spawn`), which can
+ride along with the next operator session for free. Until then §6ba's question is
+downgraded from "a discrepancy to explain" to "no remaining evidence of disagreement".
+
+### What is owed after this
+
+* **The operator's shadow verdict**, now a cleaner three-way on one binary at one crowd
+  spot, camera unmoved: default / `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` (half of every
+  cascade occluded) / `CZ_VK_NO_ADDR_TILE_FOLD=1` (the pre-part-31 renderer). Name the
+  property first (gotcha 278): the EXTENT and CONTINUITY of the shadowed region — with
+  the control arms there is a hard camera-locked boundary across the world; with the
+  default there should be none.
+* The sample-resolution stand-in, as the eventual exact form of all of this.
