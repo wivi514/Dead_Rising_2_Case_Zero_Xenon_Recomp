@@ -27,9 +27,15 @@ BPP = {  # format -> (bits per texel, block-compressed)
 
 def main():
     cap_dir, out_sub = sys.argv[1], sys.argv[2]
-    censuses = sorted(glob.glob(f'{cap_dir}/capture_f*.census'),
-                      key=lambda p: int(re.search(r'f(\d+)', p).group(1)))
-    census = censuses[-1]
+    # NEWEST BY MODIFICATION TIME, NOT BY FRAME NUMBER. The frame counter restarts at
+    # zero every launch, so across two sessions in one capture directory the highest
+    # frame number is not the latest press -- part 36 lost an operator's F9 that way,
+    # re-dumping the previous session's frame and reporting success for it. An explicit
+    # census path as argv[3] overrides the choice entirely.
+    if len(sys.argv) > 3:
+        census = sys.argv[3]
+    else:
+        census = max(glob.glob(f'{cap_dir}/capture_f*.census'), key=os.path.getmtime)
     frame = re.search(r'f(\d+)', census).group(1)
     out = f'{cap_dir}/{out_sub}_f{frame}'
     os.makedirs(out, exist_ok=True)
