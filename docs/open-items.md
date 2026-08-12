@@ -1836,7 +1836,32 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. ~~**THE SHADOW CASCADE IS STILL HALF EMPTY**~~ **— MECHANISM FOUND AND FIXED IN
+3. **THE SHADOW CASCADE — TWO DEFECTS, ONE FIXED AND SHIPPED, ONE FOUND AND SITTING
+   BEHIND AN ARM (part 32).** The atlas is 4096x1024 and holds four 1024x1024 cascades;
+   part 31 fixed the ADDRESS FOLD that made them four disjoint snapshots, and the operator
+   confirmed the improvement. **Part 32 found that half of every cascade band is still
+   ZERO, and a zero depth sample reads as OCCLUDED** — 46.8750% of every band, rows
+   512..1023 minus a 64-column sliver, identical in four bands rendered from four
+   different light frusta. The geometry is submitted for all of it (`CZ_VK_DEPTH_ALWAYS`:
+   46.875% -> 1.86% zero); the bottom half is rejected by a depth test against the zero
+   the EDRAM image was created with, because nothing ever clears it.
+   **The cause is that a 4x MSAA surface is twice as TALL in samples as well as twice as
+   wide, and only X has ever had the factor.** The title's two clear rects for the cascade
+   — `(0,0)-(480,512)` on a 520-pitch 4x surface and `(960,0)-(1024,1024)` — tile the map
+   EXACTLY when both axes are scaled and cover 53.125% of it when only X is.
+   `CZ_VK_MSAA_WINDOW_SCALE_Y=1` takes the atlas to **0.0038% zero** with the title-screen
+   picture unmoved. **It is off by default because the SCENE tile's 4x clear wants X
+   scaled and Y not**, and that has to be reconciled first — see `phase5-notes.md` §6bf
+   for the exact table and the likely reconciliation.
+   **AND THE HARDWARE YARDSTICK BELOW IS RETRACTED.** "Hardware's copy of the same
+   surface, 3.5% zero with all four X bands populated" is 16 MB of the PREVIOUS FRAME'S
+   COMPOSITED SCENE — the HUD is legible in it. A `.xtr` cannot supply any surface the GPU
+   produces inside the traced frame (gotcha 280); `xtr_draw_bindings.py --dump-texture`
+   now exits 2 rather than writing those bytes. The target is 100%, not 96.5%.
+
+   The part-31 statement, kept for its measurements:
+
+   ~~**THE SHADOW CASCADE IS STILL HALF EMPTY**~~ **— MECHANISM FOUND AND FIXED IN
    PART 31, and none of the three readings below was right.** The atlas is 4096x1024 and
    holds FOUR 1024x1024 cascades side by side; the title tells them apart by
    pre-offsetting `RB_COPY_DEST_BASE` by 0x20000 each, which in Xenos tiled address space
