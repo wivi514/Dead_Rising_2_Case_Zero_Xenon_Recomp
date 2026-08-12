@@ -5371,3 +5371,44 @@ the empty half a defect rather than dead space: a pixel whose `v` exceeds 0.5 sa
 and `sgt r8, r8, r0.x` calls it occluded. **A camera-dependent boundary running across the
 world at a fixed distance, moving as the camera moves — which is the operator's report on
 the fold-ON build, word for word.**
+
+### The reconciliation candidate for the scene tile, and the counter-example that stops it
+
+The blocker on making `CZ_VK_MSAA_WINDOW_SCALE_Y` the default is that two 4x clear rects
+want different things in Y. The four surfaces, from `CZ_VK_RECT_TRACE=0` beside
+`CZ_VK_VIEWPORT_TRACE=1`, with the CLEAR's declaration and the RENDER's:
+
+| surface | clear draw declares | clear rect | render draws declare | our EDRAM holds it as |
+|---|---|---|---|---|
+| shadow cascade | pitch 520, **4x** | `(0,0)-(480,512)` | pitch 1040, **1x** | 1024 x 1024 |
+| scene tile | pitch 320, **4x** | `(0,0)-(320,720)` | pitch 640, **2x** | 640 x 720 |
+| 640x360 post | pitch 640, **4x** | `(0,0)-(640,360)` | pitch 640, 1x and 4x | 640 x 360 |
+| 320x180 post | pitch 320, **4x** | `(0,0)-(320,176)` | pitch 320, 1x and 4x | 320 x 180 |
+
+**The title re-declares the same EDRAM as 4x purely to clear it** — a 4x clear writes four
+samples per pixel, so the rect is half-size in both axes — and then renders with a
+different declaration. That is why a clear rect is never the surface's own extent.
+
+The candidate rule follows: scale a window coordinate by *(the clear declaration's sample
+factor) / (the render declaration's sample factor)*, per axis, with Xenos sample factors
+1x = (1,1), 2x = (1,2), 4x = (2,2).
+
+* cascade: X 2/1 = 2, Y 2/1 = **2**. Gives `(0,0)-(960,1024)`. Correct.
+* scene tile: X 2/1 = 2, Y 2/2 = **1**. Gives `(0,0)-(640,720)`. Correct.
+
+Two for two, and it explains why X has always needed the factor unconditionally.
+
+**The counter-example is the 640x360 post surface**, whose clear rect is already
+`(0,0)-(640,360)` — the full extent — while its declaration is 4x. Under any rule that
+doubles X for a 4x clear, that becomes 1280x360 on a 640-wide surface. It is harmless
+today (our EDRAM is 1280 wide and shared, and the resolve copies only 640x360), which is
+exactly why it has never been noticed — but it means the rule above is not yet the rule.
+
+**And the deeper statement, which is what part 33 should decide first: our EDRAM stand-in
+is at SAMPLE resolution in X and PIXEL resolution in Y.** That asymmetry is not a model,
+it is the accumulated consequence of adding the X factor in part 9 and never the Y one.
+Every case above is a symptom of it. The two ways out are to make the stand-in
+consistently sample-resolution in both axes — which means a taller image and a resolve
+that downsamples — or to carry the per-axis factor explicitly at every window-coordinate
+site. The first is correct and larger; the second is what
+`CZ_VK_MSAA_WINDOW_SCALE_Y` is a one-surface probe of.
