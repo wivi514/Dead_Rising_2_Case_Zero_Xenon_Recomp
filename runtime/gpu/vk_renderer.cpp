@@ -2016,6 +2016,33 @@ bool CreateDevice()
     f2.features.fillModeNonSolid = VK_TRUE;
     f2.features.depthClamp = VK_TRUE;
     f2.features.textureCompressionBC = VK_TRUE;
+    // CZ_VK_ROBUST=1 — bound out-of-range buffer reads instead of undefined behaviour.
+    // A Xenos vfetch past a stream's declared size returns ZERO (the fetch-constant
+    // contract, already quoted at XeVfetchDep); a Vulkan vertex-attribute fetch past the
+    // bound range without robustBufferAccess returns arbitrary bump-arena bytes, and an
+    // FP32 attribute (fmt 37/57 — this title's texcoords and normals ride in those)
+    // decodes ~0.8% of arbitrary bytes as NaN.
+    //
+    // BUT KNOW WHAT THIS ARM CAN AND CANNOT TEST (part 33, and it is gotcha 279's
+    // shape): every stream is sub-allocated from ONE arena VkBuffer and
+    // vkCmdBindVertexBuffers carries no size, so the robust bound is the WHOLE ARENA —
+    // a fetch past its own stream but inside the arena is exactly as undefined-in-effect
+    // as before. The plateau reading unchanged under this arm (890 px vs a 1,092
+    // baseline) therefore says NOTHING about per-stream overruns; CZ_VK_RANGE_CENSUS is
+    // the instrument that can. What this arm does bound is reads past the arena itself.
+    if (Env("CZ_VK_ROBUST"))
+    {
+        VkPhysicalDeviceFeatures2 have{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+        vkGetPhysicalDeviceFeatures2(R->physical, &have);
+        if (have.features.robustBufferAccess)
+        {
+            f2.features.robustBufferAccess = VK_TRUE;
+            fprintf(stderr, "[vk] CZ_VK_ROBUST: robustBufferAccess ENABLED\n");
+        }
+        else
+            fprintf(stderr, "[vk] CZ_VK_ROBUST asked, but the device does not report "
+                            "robustBufferAccess — running WITHOUT it\n");
+    }
 
     const float prio = 1.0f;
     VkDeviceQueueCreateInfo qi{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
@@ -6117,6 +6144,22 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     uint32_t binding = 0;
     bool streamsOk = true;
+    // CZ_VK_RANGE_CENSUS=1 — per indexed draw, the two questions the part-33 NaN chain
+    // left: (1) do this draw's INDEX VALUES reach vertices past the fetch constant's
+    // declared size — the guard above bounds indxOffset + indexCount, which is the
+    // number of indices, not the vertices they name — and (2) do the IN-RANGE bytes of
+    // any float-format attribute already decode to NaN. On Xenos an out-of-range vfetch
+    // returns zero; our streams live in one shared arena buffer, so even
+    // robustBufferAccess cannot bound them (the binding's range is the whole arena),
+    // and an overrun reads a neighbouring stream's bytes as this draw's floats.
+    // A DIAGNOSTIC ARM: it walks every index and every vertex of every draw (gotcha 7).
+    static const bool rangeCensus = [] {
+        const char* e = getenv("CZ_VK_RANGE_CENSUS");
+        return e && *e && *e != '0';
+    }();
+    struct RangeAttr { uint32_t strideDw, offsetDw, format; uint64_t bytes; const uint8_t* p; };
+    RangeAttr rangeAttrs[32];
+    uint32_t rangeAttrCount = 0;
     for (const VertexAttribute& a : vs.attributes)
     {
         if (a.location < 0 || a.indirect)
@@ -6253,12 +6296,110 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             streamsOk = false;
             break;
         }
+        if (rangeCensus && a.strideDwords && rangeAttrCount < 32)
+            rangeAttrs[rangeAttrCount++] = { a.strideDwords, a.offsetDwords,
+                                             uint32_t(a.format), bytes, loc.bytes() };
         NoteVertexBind(binding, loc.handle(), offset);
         vkCmdBindVertexBuffers(R->cmd, binding, 1, &loc.buf->buffer, &offset);
         ++binding;
     }
     if (!streamsOk)
         return;
+    // The evaluation half of CZ_VK_RANGE_CENSUS, shared by the indexed branch
+    // (maxIdx = largest index VALUE) and the auto-index branch (maxIdx = count-1):
+    // the reachable-vertex question is the same, only the source of maxIdx differs.
+    auto RangeCensusEval = [&](uint32_t maxIdx) {
+            const uint32_t lastV = uint32_t(int64_t(maxIdx) + indxOffset);
+            bool over = false, nan = false;
+            uint64_t nanVerts = 0;
+            uint32_t overFmt = 0, nanFmt = 0;
+            uint64_t overBy = 0;
+            for (uint32_t k = 0; k < rangeAttrCount; k++)
+            {
+                const RangeAttr& at = rangeAttrs[k];
+                uint32_t attrDw = 1;
+                switch (at.format)
+                {
+                case xenos::kFmt_32_32_FLOAT:          attrDw = 2; break;
+                case xenos::kFmt_32_32_32_FLOAT:       attrDw = 3; break;
+                case xenos::kFmt_32_32_32_32_FLOAT:    attrDw = 4; break;
+                case xenos::kFmt_32_32:                attrDw = 2; break;
+                case xenos::kFmt_32_32_32_32:          attrDw = 4; break;
+                case xenos::kFmt_16_16_16_16:
+                case xenos::kFmt_16_16_16_16_FLOAT:    attrDw = 2; break;
+                default:                               attrDw = 1; break;
+                }
+                const uint64_t need =
+                    (uint64_t(lastV) * at.strideDw + at.offsetDw + attrDw) * 4;
+                if (need > at.bytes)
+                {
+                    over = true;
+                    overFmt = at.format;
+                    overBy = std::max(overBy, need - at.bytes);
+                }
+                // In-range NaN scan, float formats only — these bytes go into the
+                // shader as IEEE floats with no conversion to hide behind. FP16 formats
+                // are floats too: a NaN half in a 16_16_16_16_FLOAT attribute expands to
+                // a NaN float in the shader, and the first census missed them.
+                uint32_t floats = 0, halves = 0;
+                if (at.format == xenos::kFmt_32_FLOAT) floats = 1;
+                else if (at.format == xenos::kFmt_32_32_FLOAT) floats = 2;
+                else if (at.format == xenos::kFmt_32_32_32_FLOAT) floats = 3;
+                else if (at.format == xenos::kFmt_32_32_32_32_FLOAT) floats = 4;
+                else if (at.format == xenos::kFmt_16_FLOAT) halves = 1;
+                else if (at.format == xenos::kFmt_16_16_FLOAT) halves = 2;
+                else if (at.format == xenos::kFmt_16_16_16_16_FLOAT) halves = 4;
+                if ((floats || halves) && at.p)
+                {
+                    const uint64_t availV =
+                        at.bytes / 4 >= at.offsetDw + attrDw
+                            ? (at.bytes / 4 - at.offsetDw - attrDw) / at.strideDw + 1
+                            : 0;
+                    const uint64_t scanV = std::min<uint64_t>(availV, uint64_t(lastV) + 1);
+                    for (uint64_t v = 0; v < scanV; v++)
+                    {
+                        const uint8_t* fp = at.p + (v * at.strideDw + at.offsetDw) * 4;
+                        bool vNan = false;
+                        for (uint32_t c = 0; c < floats; c++)
+                        {
+                            uint32_t bits;
+                            memcpy(&bits, fp + c * 4, 4);
+                            if ((bits & 0x7F800000u) == 0x7F800000u && (bits & 0x7FFFFFu))
+                                vNan = true;
+                        }
+                        for (uint32_t c = 0; c < halves; c++)
+                        {
+                            uint16_t bits;
+                            memcpy(&bits, fp + c * 2, 2);
+                            if ((bits & 0x7C00u) == 0x7C00u && (bits & 0x3FFu))
+                                vNan = true;
+                        }
+                        if (vNan)
+                        {
+                            nan = true;
+                            nanFmt = at.format;
+                            ++nanVerts;
+                        }
+                    }
+                }
+            }
+            Count("rangecensus: indexed draw walked");
+            if (over) Count("rangecensus: index values reach past a stream");
+            if (nan)  Count("rangecensus: NaN bytes IN RANGE in a float attribute");
+            static int printed = 0;
+            if ((over || nan) && printed < 40)
+            {
+                ++printed;
+                fprintf(stderr,
+                        "[range] frame=%llu vs=%016llx idx=%u maxIdx=%u base=%d "
+                        "%s%s overFmt=%u overBy=%llu nanFmt=%u nanVerts=%llu\n",
+                        (unsigned long long)R->frame,
+                        (unsigned long long)vsBind.hash, draw.indexCount, maxIdx,
+                        int(indxOffset), over ? "OVERRUN " : "", nan ? "NAN-IN-RANGE " : "",
+                        overFmt, (unsigned long long)overBy, nanFmt,
+                        (unsigned long long)nanVerts);
+            }
+    };
 
     // CZ_VK_DRAW_PROBE=<vsHash> — for the first few draws with that vertex shader,
     // print the constants and the vertex data it will actually read.
@@ -6590,6 +6731,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const StreamLoc loc = UploadStream(base, draw.indexVa, bytes, endian, 1);
         if (!loc.ok())
             return;
+        // The CZ_VK_RANGE_CENSUS read-out. The index copy is little-endian by here, so
+        // the walk is a plain array scan; 0xFFFF/0xFFFFFFFF is primitive restart and is
+        // not a vertex.
+        if (rangeCensus && rangeAttrCount)
+        {
+            const uint8_t* ip = loc.bytes();
+            uint32_t maxIdx = 0;
+            for (uint32_t i = 0; i < draw.indexCount; i++)
+            {
+                const uint32_t v = draw.index32
+                    ? reinterpret_cast<const uint32_t*>(ip)[i]
+                    : reinterpret_cast<const uint16_t*>(ip)[i];
+                if (v != (draw.index32 ? 0xFFFFFFFFu : 0xFFFFu) && v > maxIdx)
+                    maxIdx = v;
+            }
+            RangeCensusEval(maxIdx);
+        }
         const VkIndexType itype =
             draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
         NoteIndexBind(loc.handle(), loc.at, itype);
@@ -6599,6 +6757,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     else
     {
+        // Auto-index reaches vertices [indxOffset, indxOffset + count); the census
+        // question is identical, with maxIdx implicit.
+        if (rangeCensus && rangeAttrCount && draw.indexCount)
+            RangeCensusEval(draw.indexCount - 1);
         vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
         COUNT("draw: auto-index");
     }
