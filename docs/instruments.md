@@ -994,7 +994,35 @@ CZ_VK_NO_MSAA_WINDOW_SCALE=1  map window coordinates one-to-one on a 4x MSAA sur
 CZ_VK_NO_DEPTH_TEST=1  draw everything regardless of depth. An ARM, never a fix: it is
                    the only cheap way to separate "this geometry was never submitted"
                    from "this geometry was submitted and rejected by depth left over
-                   from another pass", which look identical in a snapshot
+                   from another pass", which look identical in a snapshot.
+                   **USELESS ON A DEPTH-ONLY PASS, AND ITS ANSWER THERE IS THE WRONG ONE.**
+                   Vulkan ties depth WRITES to the depth TEST, so with the test disabled
+                   the attachment is not written at all and the surface comes out EMPTY —
+                   which is the symptom this arm exists to rule out. Use
+                   `CZ_VK_DEPTH_ALWAYS` for anything that resolves DEPTH (gotcha 279)
+CZ_VK_DEPTH_ALWAYS=1  keep the depth test enabled and force the comparison to ALWAYS.
+                   The arm `CZ_VK_NO_DEPTH_TEST` cannot be: it makes the same
+                   "submitted or rejected" distinction and KEEPS the writes. Part 32's
+                   shadow-cascade result is its worked example — the atlas goes from
+                   46.875% zero to 1.86%, which is what proved the cascade's missing half
+                   was rejected rather than never drawn
+CZ_VK_DEPTH_CLEAR_FAR=1  clear depth to 1.0 whatever RB_DEPTH_CLEAR says. A DIAGNOSTIC
+                   ARM (it ignores a register the guest writes), and the positive control
+                   that named the shadow cascade's input: the atlas goes 46.875% zero ->
+                   0.0113%. This title leaves RB_DEPTH_CLEAR at 00000000 for nearly every
+                   pass, and a LESS test against 0 rejects every fragment
+CZ_VK_SCOPED_CLEAR=1  clear only the region the pass rendered, not the whole EDRAM
+                   stand-in — closer to what a Xenos copy block does, which clears the
+                   tiles of the CURRENT surface. Off by default because it was measured
+                   and it moves nothing (phase5-notes §6bf: 46.8750% zero in both arms,
+                   to four decimals), so it is not the shadow defect
+CZ_VK_RECT_TRACE=<surfacePitch>  the CORNERS of every distinct rect-list clear on one
+                   EDRAM surface, named by its RB_SURFACE_INFO pitch (1040 is this
+                   title's shadow cascade, 640 a scene tile). A rect-list draw at the
+                   head of a pass IS the guest's clear, and the only way to know what it
+                   clears is to read its three corners and the synthesised fourth. NB the
+                   arena copy is already LITTLE-endian — swapping again reads every
+                   corner as 0.0, which looks exactly like "the title clears nothing"
 CZ_VK_PASS_DRAWS=N     how many of a pass's draws the resolve trace lists (default 4),
                    each with the draw's TEXTURE address. Four says what KIND of pass it
                    is; it cannot say what a 115-draw UI compose did, which is where every

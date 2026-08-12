@@ -3879,6 +3879,24 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         (!noDepthTest && ((key.depthControl >> 1) & 1)) ? VK_TRUE : VK_FALSE;
     ds.depthWriteEnable = ((key.depthControl >> 2) & 1) ? VK_TRUE : VK_FALSE;
     ds.depthCompareOp = XenosCompareOp((key.depthControl >> 4) & 7);
+    // CZ_VK_DEPTH_ALWAYS=1 — the arm that CZ_VK_NO_DEPTH_TEST above cannot be.
+    //
+    // Vulkan ties depth WRITES to the depth TEST: with `depthTestEnable` false the
+    // attachment is not written at all, whatever `depthWriteEnable` says. So on a
+    // DEPTH-ONLY pass — this title's shadow cascades are exactly that — the no-test arm
+    // does not "draw everything regardless of depth", it produces an entirely empty
+    // buffer. Part 32 ran it expecting to separate "never submitted" from "submitted and
+    // rejected" and got 100% zero, which is the very symptom under investigation: the
+    // arm's failure mode is indistinguishable from the defect it was aimed at.
+    //
+    // Keeping the test enabled and forcing the comparison to ALWAYS makes the same
+    // distinction and keeps the writes. If a region fills under this arm and not under
+    // the null, the geometry WAS submitted and the depth already in the buffer rejected
+    // it — which for a region nothing ever cleared means it is being tested against the
+    // zero the image was created with.
+    static const bool depthAlways = EnvOn("CZ_VK_DEPTH_ALWAYS");
+    if (depthAlways)
+        ds.depthCompareOp = VK_COMPARE_OP_ALWAYS;
     ds.minDepthBounds = 0.0f;
     ds.maxDepthBounds = 1.0f;
 
@@ -5838,13 +5856,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                  "[vkvp] vte=%02X xs=%.1f xo=%.1f ys=%.1f yo=%.1f -> viewport "
                  "%.1f,%.1f %.1fx%.1f  scissor %d,%d %ux%u  winoff=%08X "
                  "posScale=%.5f,%.5f posOffset=%.2f,%.2f surfacePitch=%u msaa=%u "
-                 "surfaceInfo=%08X",
+                 "surfaceInfo=%08X depthControl=%02X",
                  vte & 0x3F, xs, xo, ys, yo, viewport.x, viewport.y, viewport.width,
                  viewport.height, scissor.offset.x, scissor.offset.y,
                  scissor.extent.width, scissor.extent.height,
                  regs[xenos::kPaScWindowOffset], posScale[0], posScale[1], posOffset[0],
                  posOffset[1], regs[xenos::kRbSurfaceInfo] & 0x3FFF,
-                 (regs[xenos::kRbSurfaceInfo] >> 16) & 3, regs[xenos::kRbSurfaceInfo]);
+                 (regs[xenos::kRbSurfaceInfo] >> 16) & 3, regs[xenos::kRbSurfaceInfo],
+                 regs[xenos::kRbDepthControl] & 0xFF);
         if (std::find(seen.begin(), seen.end(), line) == seen.end() && seen.size() < 64)
         {
             seen.push_back(line);
@@ -6113,6 +6132,72 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         if (rectSynth && a.strideDwords)
         {
+            // CZ_VK_RECT_TRACE=<surfacePitch> — the CORNERS of every distinct clear
+            // rect on one EDRAM surface, printed once per distinct rect.
+            //
+            // A rect-list draw at the head of a pass IS the guest's clear, and the only
+            // way to know what it clears is to read its three corners. Part 32 needed
+            // this for the shadow cascade: the cascade's depth buffer comes out half
+            // empty, the geometry is provably submitted for all of it (CZ_VK_DEPTH_ALWAYS
+            // fills it), so the question is which rectangles the title actually asked to
+            // be cleared — and that is data, not something to infer from the result.
+            static const char* const rectTraceEnv = Env("CZ_VK_RECT_TRACE");
+            if (rectTraceEnv &&
+                (regs[xenos::kRbSurfaceInfo] & 0x3FFF) ==
+                    uint32_t(strtoul(rectTraceEnv, nullptr, 10)))
+            {
+                const uint8_t* p = loc.bytes();
+                float c[3][2] = {};
+                bool ok = p != nullptr;
+                for (uint32_t k = 0; ok && k < 3; k++)
+                {
+                    const uint64_t at =
+                        (uint64_t(rectCorner[k]) * a.strideDwords + a.offsetDwords) * 4;
+                    if (at + 8 > bytes) { ok = false; break; }
+                    // The arena copy is ALREADY little-endian — the stream uploader
+                    // swaps on the way in. Byte-swapping again here read every corner as
+                    // 0.0, which reads as "the title asks for nothing to be cleared" and
+                    // is the opposite of what the data says.
+                    memcpy(&c[k][0], p + at, 8);
+                }
+                if (ok)
+                {
+                    static std::vector<std::string> seenRect;
+                    // OCCURRENCES AS WELL AS DISTINCT RECTS, and the distinction is the
+                    // whole question. "One distinct clear rect" and "one clear rect a
+                    // frame" are different facts: the first is consistent with the title
+                    // issuing sixteen strips that all look alike, the second says it
+                    // issues one. Part 32 needed the second to conclude that the cascade
+                    // passes clear nothing of their own.
+                    static int rectOccurrences = 0;
+                    if (rectOccurrences < 40)
+                    {
+                        ++rectOccurrences;
+                        fprintf(stderr,
+                                "[vkrect] occurrence frame=%llu (%.1f,%.1f)-(%.1f,%.1f) "
+                                "idx=%u,%u,%u\n",
+                                (unsigned long long)R->frame, c[0][0], c[0][1], c[2][0],
+                                c[2][1], rectCorner[0], rectCorner[1], rectCorner[2]);
+                    }
+                    char line[256];
+                    snprintf(line, sizeof line,
+                             "[vkrect] loc=%d fmt=%u off=%u stride=%u idx=%u,%u,%u  "
+                             "(%.2f,%.2f) (%.2f,%.2f) (%.2f,%.2f)  -> BL (%.2f,%.2f)  "
+                             "depthControl=%02X vte=%02X",
+                             a.location, a.format, a.offsetDwords, a.strideDwords,
+                             rectCorner[0], rectCorner[1], rectCorner[2],
+                             c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1],
+                             c[0][0] + c[2][0] - c[1][0], c[0][1] + c[2][1] - c[1][1],
+                             regs[xenos::kRbDepthControl] & 0xFF,
+                             regs[xenos::kPaClVteCntl] & 0x3F);
+                    if (std::find(seenRect.begin(), seenRect.end(), line) ==
+                            seenRect.end() && seenRect.size() < 64)
+                    {
+                        seenRect.push_back(line);
+                        fprintf(stderr, "%s\n", line);
+                    }
+                }
+            }
             // The synthesised four-corner stream is always in the per-frame arena, even
             // when its source is in the cross-frame store — it is built from THIS draw's
             // corner indices, so it is not shared and must not be persisted.
@@ -6594,8 +6679,16 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             ? int(strtol(Env("CZ_VK_RESOLVE_TRACE_PASSES"), nullptr, 10))
             : 20;
     static int passesLeft = tracePasses;
-    if (EnvOn("CZ_VK_RESOLVE_TRACE") && passesLeft > 0 &&
-        R->frame >= uint64_t(strtoul(Env("CZ_VK_RESOLVE_TRACE"), nullptr, 10)))
+    // Kept as a value rather than tested inline, because the DERIVED copy geometry is
+    // printed further down — after the fold has had its say — and the two lines have to
+    // be about the same pass. The registers alone were never enough: part 32 spent an
+    // hour deciding whether a 1024x1024 cascade was being clipped, and every input the
+    // trace printed said it was not. What is missing from a register dump is the
+    // DECISION the renderer made from them.
+    const bool traceThisPass =
+        EnvOn("CZ_VK_RESOLVE_TRACE") && passesLeft > 0 &&
+        R->frame >= uint64_t(strtoul(Env("CZ_VK_RESOLVE_TRACE"), nullptr, 10));
+    if (traceThisPass)
     {
         --passesLeft;
         {
@@ -6784,6 +6877,19 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                   "tile offset");
         }
     }
+
+    // THE DECISION, printed next to the registers it came from. `avail` is the EDRAM
+    // stand-in's extent, and it is the term that silently truncates a copy: a pass may
+    // legitimately ask for more rows than our EDRAM has, and the only symptom is a
+    // snapshot that is the right SIZE and partly empty — which reads downstream as a
+    // shadow map full of zeros, i.e. as fully occluded rather than as missing.
+    if (traceThisPass)
+        fprintf(stderr,
+                "[vkresolve]     -> snapshot %08X%s %ux%u  copy %ux%u from EDRAM(%u,%u) "
+                "to dst(%u,%u)  avail %ux%u  clr c=%d d=%d depthClear=%08X\n",
+                baseKey, fromDepth ? "(depth)" : "", w, h, copyW, copyH, copyX, copyY,
+                dstX, dstY, availW, availH, int(clearColor), int(clearDepth),
+                regs[xenos::kRbDepthClear]);
 
     if (w && h && copyW && copyH)
     {
@@ -7027,15 +7133,88 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         VkClearDepthStencilValue value{};
         value.depth = float(regs[xenos::kRbDepthClear] >> 8) / float(0xFFFFFF);
         value.stencil = regs[xenos::kRbDepthClear] & 0xFF;
+        // CZ_VK_DEPTH_CLEAR_FAR=1 — clear depth to 1.0 whatever RB_DEPTH_CLEAR says.
+        // A DIAGNOSTIC ARM: it asks whether the cascade's empty half is empty because
+        // the buffer it is tested against was cleared to 0 (this title leaves
+        // RB_DEPTH_CLEAR at 00000000 for nearly every pass, and our clear covers the
+        // whole EDRAM stand-in). If the atlas fills under this arm, the clear VALUE is
+        // the whole story; if it does not, the zeros come from somewhere else.
+        static const bool clearFar = EnvOn("CZ_VK_DEPTH_CLEAR_FAR");
+        if (clearFar)
+            value.depth = 1.0f;
+        // The VALUE, once per distinct one, for the same reason the colour clear prints
+        // its own: a depth buffer that starts at the wrong end is not a wrong picture,
+        // it is a pass whose every fragment fails the test — and the symptom of that is
+        // an EMPTY surface, which reads as "the geometry was never submitted".
+        {
+            static std::vector<uint32_t> seenDepthClear;
+            const uint32_t dc = regs[xenos::kRbDepthClear];
+            if (std::find(seenDepthClear.begin(), seenDepthClear.end(), dc) ==
+                    seenDepthClear.end() &&
+                seenDepthClear.size() < 16)
+            {
+                seenDepthClear.push_back(dc);
+                fprintf(stderr, "[vk] RB_DEPTH_CLEAR = %08X  (depth %.6f, stencil %u)\n",
+                        dc, value.depth, value.stencil);
+            }
+        }
         Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         VkImageSubresourceRange range{
             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1
         };
-        vkCmdClearDepthStencilImage(R->cmd, R->depth.image,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1,
-                                    &range);
-        Count("resolve: depth cleared");
+        // CZ_VK_SCOPED_CLEAR=1 — clear only the region THIS pass rendered, not the whole
+        // EDRAM stand-in.
+        //
+        // On Xenos a copy block's clear bits clear the tiles of the CURRENT SURFACE. Our
+        // EDRAM is one 1280x1024 image shared by every pass, so clearing all of it makes
+        // a 64x64 post-chain pass wipe the 1024x1024 shadow cascade — and it wipes it to
+        // RB_DEPTH_CLEAR, which this title leaves at 00000000 for almost every pass. A
+        // depth buffer at 0 with a LESS test rejects every fragment, so the cascade comes
+        // out empty, and a shadow lookup that reads 0 reads as OCCLUDED. Part 32 measured
+        // exactly that: 46.875% of every cascade band is zero, and forcing the compare to
+        // ALWAYS (CZ_VK_DEPTH_ALWAYS) fills it, so the geometry was always being
+        // submitted and always being rejected.
+        //
+        // An ARM until it is measured, because it cuts both ways: a pass that legitimately
+        // expects the whole surface cleared now gets only its scissor's worth.
+        static const bool scopedClear = EnvOn("CZ_VK_SCOPED_CLEAR");
+        if (scopedClear && copyW && copyH)
+        {
+            VkClearRect rect{};
+            rect.rect.offset = { int32_t(copyX), int32_t(copyY) };
+            rect.rect.extent = { copyW, copyH };
+            rect.baseArrayLayer = 0;
+            rect.layerCount = 1;
+            // vkCmdClearAttachments needs a render pass; outside one the region form is
+            // a clear of the image with a scissor, which Vulkan has no direct call for —
+            // so this does it inside a rendering scope over just that rectangle.
+            VkRenderingAttachmentInfo depthAtt{
+                VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
+            };
+            depthAtt.imageView = R->depth.view;
+            depthAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAtt.clearValue.depthStencil = value;
+            Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+            VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+            ri.renderArea = { { int32_t(copyX), int32_t(copyY) }, { copyW, copyH } };
+            ri.layerCount = 1;
+            ri.pDepthAttachment = &depthAtt;
+            ri.pStencilAttachment = &depthAtt;
+            vkCmdBeginRendering(R->cmd, &ri);
+            vkCmdEndRendering(R->cmd);
+            Count("resolve: depth cleared (scoped to the pass)");
+        }
+        else
+        {
+            vkCmdClearDepthStencilImage(R->cmd, R->depth.image,
+                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1,
+                                        &range);
+            Count("resolve: depth cleared");
+        }
     }
 }
 
