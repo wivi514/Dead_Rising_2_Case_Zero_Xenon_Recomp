@@ -5445,3 +5445,134 @@ property to name first is the EXTENT and the CONTINUITY of the shadowed region: 
 fold alone, the shadow term is real to the third split at ~32 m and half of every cascade
 still reads as occluded, so the boundary should be a hard camera-locked line across the
 world; with both, it should not exist.
+
+## 6bg. THE WHITE PLATEAU IS SOLVED. IT WAS NaN, THE NaN WAS OURS, AND THE ENTRY POINT
+## WAS A VERTEX-INPUT TYPE MISMATCH ON PACKED NORMALS (part 33)
+
+Open item 00f, reported part 26, prosecuted under a wrong model for parts 27-31,
+correctly re-posed by part 31's exposure arm, closed here. The whole chain is
+same-binary or same-cache arms on the outdoor DebugJump route, scene-buffer snapshot
+(`0684B000`) at frame 3000, ~5,800-6,300 draws a frame.
+
+### The hypothesis §6be asked for, and the instrument class it needed
+
+§6be ended with: the plateau pixels are immune to four whole-frame constant arms, so
+either they come from a shader that does not read `pc(14).w`, or they do not go through
+the tone curve at all — and the next instrument must be per-draw, not per-frame. The
+third possibility, the one that is actually true: **they go through the tone curve at
+`x = NaN`.** On the host GPU `max(NaN, K1)` returns `K1` and `saturate(K1 - NaN)`
+returns 0, so the shared epilogue
+
+    out^2 = (max(A*x + B, K1) - saturate(K1 - x)^2) * K2
+
+evaluates to exactly `sqrt(K1*K2)` = `sqrt(0.5)` = **180/255 for any NaN input** — and a
+NaN is invariant under scaling ANY upstream constant, which is precisely the four
+"unmoved" results. The `255 * sqrt(0.5)` coincidence §6be demoted is restored as a
+derivation, with `x = NaN` in place of `x = 1`.
+
+**Why every earlier NaN probe read clean, and this is gotcha 281:** part 27's
+`XE_NAN_PAINT` tests `isnan(oC0)` at the END of the shader — downstream of the very
+`max`/`saturate` pair that launders the NaN into a finite 0.7071. Its zero-magenta
+result was read as "the value never was a NaN"; it could not have said that. The
+detector has to sit at the OPERANDS of the laundering instruction, which is what the
+`xe_max` hook already instrumented for `XE_FLOOR_PAINT` — one predicate swap away.
+
+### The measurement chain, in order, one run each
+
+| arm | cache defines | plateau 180 | magenta | green |
+|---|---|---|---|---|
+| baseline | (default) | **1,092** | 0 | 0 |
+| NaN-at-max | `XE_VALUE_PAINT=0.70711 XE_FLOOR_PAINT XE_FLOOR_IS_NAN` | **0** | **1,187** | 0 |
+| floor-predicate control | `XE_VALUE_PAINT=0.70711 XE_FLOOR_PAINT` | 0 | 0 | **976** |
+| NaN-at-input | `XE_NAN_IN_PAINT` | 0 | **20,563** | 0 |
+| input + VS-kill | `XE_NAN_IN_PAINT XE_NAN_VS_KILL_IN` | **0** | **0** | 0 |
+
+Readings, each one sentence:
+
+* **Every plateau pixel is NaN-fed and none is honest**: the plateau vanishes entirely
+  into magenta, zero pixels legitimately compute the 0.707 band (green 0), zero remain
+  at 180 (so none are stale either — three worlds separated in one frame).
+* **The flag responds to its predicate, not to its plumbing**: the same hook with the
+  original `(b > a)` predicate paints the same population GREEN — a NaN operand fails
+  `<` and `>` alike, so a stuck flag would have shown magenta both times (gotcha 279's
+  check, passed).
+* **The NaN ARRIVES at the pixel shader**: `XE_NAN_IN_PAINT` samples the
+  interpolator-fed GPRs at entry, before any PS arithmetic — and its footprint is
+  **17x the visible plateau** (2.23% of the frame), hard-edged quads and mesh chunks on
+  barriers, zombies, props and buildings. The 180 plateau is only the slice of NaN-fed
+  pixels the epilogue happens to pin; the rest were wrong in unremarkable colours.
+* **The NaN is in the vertex data the VS consumes**: culling every triangle whose
+  declared float inputs arrive NaN (`XE_NAN_VS_KILL_IN`) takes magenta 20,563 -> 0 and
+  the plateau to 0, scene otherwise normal.
+
+### Two null results that pointed the right way, and one broken arm caught in time
+
+* **`CZ_VK_RANGE_CENSUS`** (new): per draw, walk the index VALUES (the existing guard
+  bounds `indxOffset + indexCount`, which is the number of indices, not the vertices
+  they name) against each stream's declared size, and scan every float-format
+  attribute's in-range bytes — FP32 and FP16 — for NaN patterns. **786,861 draws:
+  zero overruns, zero NaN bytes.** The streams were clean; the NaN was being minted at
+  the fetch.
+* **`CZ_VK_ROBUST=1`** (new) enables `robustBufferAccess` — and was recognised as a
+  NO-TEST before its null was recorded as evidence: every stream is sub-allocated from
+  ONE arena VkBuffer and `vkCmdBindVertexBuffers` carries no size, so the robust bound
+  is the whole arena and a per-stream overrun is invisible to it (gotcha 279's shape
+  again — "defect absent" and "arm cannot see" print the same string).
+* The VS-kill force control (`XE_NAN_VS_KILL_IN_FORCE`) was never run; the kill arm's
+  reading is instead corroborated by the fix landing exactly where it pointed.
+
+### The validation layer names it in one run
+
+`CZ_VK_VALIDATION=1`, outdoor route: **10 pipelines fail
+`VUID-VkGraphicsPipelineCreateInfo-Input-08733`** — a `VK_FORMAT_R32_UINT` attribute
+feeding a shader input typed `vec4 of float32`, at locations 4..15 (the TEXCOORD
+range). Format census over the 416 sidecars: the only R32_UINT source in this title is
+**fmt16, `k_10_11_11` — the packed normal — declared in 37 vertex shaders**, always
+under a TEXCOORD usage.
+
+**The mechanism, end to end.** Fable 2 wraps packed normals in NORMAL usage, which the
+emitter declares `uint4` and decodes via `tfetchR11G11B10` — types match, everything
+works, and that is the design the `case 16: return VK_FORMAT_R32_UINT` mapping was
+written for. **This title wraps them as TEXCOORD, whose input is `float4`.** A
+`R32_UINT` attribute against a `float4` input is undefined per the spec; what the
+driver actually delivered was the packed dword's BITS as a float. Any normal whose
+dword has bits 30..23 all ones reads as NaN — a fraction of ordinary normal directions
+— and the rest read as huge finite garbage. Per-vertex, so triangle-hard edges; across
+37 vertex shaders, so every material class; laundered to one exact colour by the
+epilogue all 48 pixel shaders share, so one plateau value everywhere. Hardware decodes
+the same bytes with its fetch hardware and never sees any of it.
+
+### The fix, and what it measured
+
+Emitter (`XeUnpack_10_11_11` + the read-site format branch, XenosRecomp 4621beb): a
+declared fmt16 element under a float-typed usage is unpacked in-shader from
+`asuint(input.x)`, by the fetch instruction's own static format field — no spec
+constant. Runtime (7889e99): fmt16 binds `R32_SFLOAT`, a plain 32-bit load that
+delivers the bits intact and type-matched. 35 of 416 modules change.
+
+| | baseline | fix |
+|---|---|---|
+| px at exactly rgb(180,180,180) | 1,092 | **0** |
+| scene mean luma | 35.49 | **44.70** |
+| distinct colours | ~80,558 | **111,956** |
+| scene max | 255 | 189 |
+
+And the picture: the crowd's blotchy flat-lit patches are gone, the pale-pink cast on
+distant zombies is gone, barriers and signs shade like their neighbours. **The plateau
+was only the tip: every fmt16 mesh has had garbage normals since phase 5.** Gates
+re-run on the fixed cache: `--smoke` OK, `shader_dim_census` exit 0 (the ucode parse
+and the SPIR-V agree on every shader), `no translated shader` = 0.
+
+### What this dissolves elsewhere, recorded here so the next reader stops paying for it
+
+* §6ba's closing question — "what caps the lit colour at 1.0" — is dissolved, not
+  answered: nothing did. The plateau was never on the curve, so `c = 1/E` was never a
+  constraint the shading had to satisfy. The exposure discrepancy (ours 1.0 where
+  hardware reads 0.298-0.331) should be RE-MEASURED now that the scene it adapts to is
+  lit with real normals; it may simply close.
+* Part 27's "these surfaces are not shaded at all", §6ba's "`x` in [0.9055, 1.0080]"
+  band, and part 28's "one shared idiom hitting its floor at `x = 1`" all described the
+  laundering accurately and attributed it to the wrong input.
+* The open items whose evidence was contaminated by whole-frame whiteness — LOD/00i,
+  NPC part meshes, the operator's three-way shadow verdict — should be re-asked on this
+  renderer.

@@ -453,6 +453,32 @@ CZ_SHADER_DUMP=dir one file per distinct microcode blob at IM_LOAD, named by the
                    diff of the dump directory against `assets/shader_spv`. A check that
                    cannot tell "new" from "rewritten" is not a clean result (gotcha 25)
 CZ_SHADER_SPV=dir  override the shader cache location
+CZ_VK_ROBUST=1     enable robustBufferAccess at device creation. KNOW WHAT IT CANNOT
+                   TEST (part 33, gotcha 279's shape): every vertex/index stream is
+                   sub-allocated from ONE arena VkBuffer and the bind carries no size,
+                   so the robust bound is the whole arena — a fetch past its own stream
+                   but inside the arena is exactly as undefined-in-effect as before. Its
+                   null on the white plateau (890 px vs a 1,092 baseline) says nothing
+                   about per-stream overruns; it bounds only reads past the arena itself
+CZ_VK_RANGE_CENSUS=1  per draw: walk the index VALUES against every bound stream's
+                   declared size (the standing guard bounds indxOffset + indexCount,
+                   which is the number of indices, not the vertices they name), and scan
+                   each float-format attribute's in-range bytes — FP32 and FP16 — for
+                   NaN patterns. Capped [range] lines name the draw; totals need
+                   CZ_VK_STATS. A DIAGNOSTIC ARM: it touches every index and vertex of
+                   every draw and visibly slows the run (gotcha 7). Part 33: 786,861
+                   draws, zero overruns, zero in-range NaNs — which is what moved the
+                   white-plateau question from the streams to the FETCH, where the
+                   validation layer then named the type mismatch
+XE_FLOOR_IS_NAN / XE_NAN_IN_PAINT / XE_NAN_VS_KILL_IN   the part-33 NaN-tracing family,
+                   built via CZ_DXC_DEFINES into their own caches and selected with
+                   CZ_SHADER_SPV; each has a _FORCE positive control. In order: flag a
+                   NaN OPERAND at any differing-operand max (upstream of the laundering
+                   that makes isnan(oC0) blind — gotcha 281); paint any pixel whose
+                   INTERPOLANTS arrive NaN (the arriving-vs-manufactured split); cull
+                   any triangle whose declared float vertex inputs arrive NaN (the
+                   data-vs-VS-arithmetic split). docs/xenonrecomp-upstream-bugs.md has
+                   the build lines and the part-33 readings for all three
 CZ_VK_STATS=N      the renderer's named-counter block every N frames. Every path that
                    declines to draw something has a counter, because a renderer that
                    draws 80% of a frame looks exactly like one that draws all of it

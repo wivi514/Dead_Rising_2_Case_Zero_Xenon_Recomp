@@ -2587,3 +2587,47 @@ From phase C part 18 (the frame rate — and none of it was work):
      the target to measure against is not another emulator's number but **the surface's
      own definition** — a shadow map's unwritten region must read FAR, so the yardstick is
      100% coverage, not somebody's 96.5%.
+
+281. **`min`, `max` AND `saturate` LAUNDER NaN INTO A FINITE CONSTANT, SO A NaN DETECTOR
+     DOWNSTREAM OF THEM READS CLEAN — PUT IT AT THE OPERANDS.** On host GPUs
+     `max(NaN, K)` returns `K` and `saturate(NaN)` returns 0, so any expression of the
+     shape `(max(x, K1) - saturate(K1 - x)^2) * K2` maps EVERY NaN input to the same
+     finite output — for Case Zero's shared tone epilogue, exactly
+     `sqrt(0.5) = rgb(180,180,180)`, the white-surface plateau. Part 27's `XE_NAN_PAINT`
+     tested `isnan(oC0)` at the end of the shader, got zero magenta, and the result was
+     recorded as "the value never was a NaN"; the value was a NaN, and the detector was
+     downstream of the laundering it was meant to catch. Moving the same test to the
+     max's OPERANDS (`XE_FLOOR_IS_NAN`) painted every plateau pixel in one run.
+     The corollary that makes such a NaN findable at all: a laundered NaN is INVARIANT
+     UNDER EVERY UPSTREAM CONSTANT — four whole-frame arms (sun, additive, multiplicative,
+     exposure) all reading "unmoved" is not four eliminated candidates, it is the NaN
+     signature. And a comparison predicate cannot see one either: `NaN > K` and
+     `NaN < K` are both false, so a flag defined as `(b > a)` reports the SAME thing for
+     "the floor was not taken" and "the operand was NaN" — which is also what makes the
+     predicate swap its own control (same population, opposite colours).
+
+282. **RUN THE VULKAN VALIDATION LAYER BEFORE THEORISING ABOUT A PICTURE DEFECT — A
+     PIPELINE TYPE MISMATCH IS UNDEFINED VALUES THAT PRESENT AS A SHADING BUG.** Binding
+     a `R32_UINT` vertex attribute against a `float4` shader input violates
+     VUID-VkGraphicsPipelineCreateInfo-Input-08733; nothing fails, and what the driver
+     delivers is the raw bits reinterpreted as float — NaN whenever bits 30..23 are all
+     ones, plausible garbage otherwise, per vertex, so the symptom is hard-edged patches
+     on correctly-shaped geometry. Case Zero spent parts 26-31 measuring that symptom
+     with picture instruments while one `CZ_VK_VALIDATION=1` run would have printed the
+     defective pipelines by location. The mismatch class to expect from a recompiler: an
+     emitter that types inputs by USAGE (TexCoord = float4) meeting a runtime that
+     formats attributes by FETCH FORMAT (packed normal = raw uint) — two correct tables,
+     joined on the wrong key. This title wraps packed 10_11_11 normals as TEXCOORD;
+     Fable 2 wraps them as NORMAL (uint4), which is why the combination was never seen
+     before Case Zero.
+
+283. **ROBUSTNESS BOUNDS THE BUFFER, NOT YOUR SUB-ALLOCATION.** When every stream is
+     sub-allocated from one arena VkBuffer, `robustBufferAccess` clamps reads to the
+     ARENA — an index that runs past its own stream but lands inside the arena is exactly
+     as wrong as without robustness, and a "no change under the robust arm" result says
+     nothing about per-stream overruns (gotcha 279's shape: the arm's blind spot prints
+     the same string as the defect's absence). Vertex bindings carry no size in plain
+     `vkCmdBindVertexBuffers`. The instrument that CAN answer is a CPU-side census that
+     walks the index VALUES against each stream's declared size — and note the standing
+     guard's trap: bounding `indxOffset + indexCount` bounds the number of indices, not
+     the vertices they name.

@@ -670,7 +670,31 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 32):
+Where the port is, as of 2026-08-11 (part 33):
+
+* **THE WHITE-SURFACE PLATEAU IS SOLVED — open item 00f, open since part 26, and the
+  largest picture defect in the port.** The exact-`rgb(180,180,180)` surfaces were the
+  shared tone epilogue evaluated at **`x = NaN`**: `max(NaN,K1)=K1` and `saturate(NaN)=0`
+  make every NaN input land on `sqrt(K1*K2)` = 180/255, invariant under every constant —
+  which is why parts 27-31's four whole-frame arms all read "unmoved" (gotcha 281: the
+  laundering happens INSIDE the epilogue, so `isnan(oC0)` was blind by construction).
+  The NaN entered at the VERTEX FETCH: this title wraps its fmt16 `k_10_11_11` packed
+  normals as TEXCOORD (float4 input) while the runtime bound the attribute `R32_UINT` —
+  a pipeline type mismatch (VUID 08733, 10 pipelines, 37 vertex shaders) that delivered
+  the packed dword's bits AS floats: NaN wherever bits 30..23 are set, garbage normals
+  on every fmt16 mesh otherwise, since phase 5. **One `CZ_VK_VALIDATION=1` run would
+  have named it in part 26** (gotcha 282). Fixed in XenosRecomp (`XeUnpack_10_11_11`,
+  read-site format branch) + runtime (fmt16 -> `R32_SFLOAT`): plateau **1,092 px -> 0**,
+  scene mean luma 35.5 -> 44.7, distinct colours 80k -> 112k, validation 08733 10 -> 0,
+  and the crowd's blotchy flat-lit patches are gone. The measurement chain (five paint
+  arms, a 786,861-draw range census, and the no-test robust arm caught before its null
+  was believed) is `docs/phase5-notes.md` §6bg. **Owed: the operator's verdict on their
+  route, and a re-measure of the exposure discrepancy (ours 1.0 vs hardware 0.33) now
+  that auto-exposure adapts to a correctly lit scene — §6ba's question may simply
+  close.** The NaN-input footprint was 17x the visible plateau, so LOD/00i, NPC part
+  meshes and the shadow three-way should all be re-asked on this renderer.
+
+Where the port was, as of 2026-08-11 (part 32):
 
 * **HALF OF EVERY SHADOW CASCADE IS ZERO, AND A ZERO DEPTH SAMPLE READS AS OCCLUDED.**
   The atlas is **46.8750% zero in every band** — rows 512..1023 minus a 64-column sliver —

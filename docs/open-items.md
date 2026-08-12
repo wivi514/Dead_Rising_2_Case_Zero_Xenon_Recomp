@@ -756,6 +756,25 @@ Next, in order:
    a cash register, a door side and a gas-station sign. Six `CZ_VK_DRAW_CENSUS` frames are
    in `~/DR2CZ-troubleshooting/part26-operator/`.
 
+   **SOLVED IN PART 33 — `docs/phase5-notes.md` §6bg is the record, and everything below
+   is history of the investigation.** The plateau was the shared tone epilogue evaluated
+   at **`x = NaN`** (`max(NaN,K1) = K1`, `saturate(NaN) = 0`, so `out = sqrt(K1*K2)` =
+   exactly 180/255, invariant under every constant arm — which is why parts 27-31's four
+   whole-frame arms all read "unmoved"). The NaN entered in the VERTEX FETCH: this title
+   wraps its fmt16 `k_10_11_11` packed normals as TEXCOORD, whose shader input is
+   `float4`, while the runtime bound the attribute `R32_UINT` — a pipeline type mismatch
+   (`VUID-VkGraphicsPipelineCreateInfo-Input-08733`, 10 pipelines, 37 vertex shaders)
+   that delivered the packed dword's bits AS a float: NaN wherever bits 30..23 are all
+   ones, garbage lighting on every fmt16 mesh otherwise. Fixed by XenosRecomp 4621beb
+   (in-shader `XeUnpack_10_11_11` for float-usage fmt16 elements) + runtime 7889e99
+   (fmt16 binds `R32_SFLOAT`): plateau **1,092 px -> 0** at the same route and frame,
+   scene mean luma 35.5 -> 44.7, distinct colours 80k -> 112k, and the crowd's blotchy
+   flat-lit patches are gone. **Still owed: the operator's confirmation on their route,
+   and a re-measure of the exposure discrepancy (ours 1.0 vs hardware 0.298-0.331) now
+   that the scene auto-exposure adapts to a correctly lit world.** The cube-decline prop
+   defect (the `s3`/`s4` duplicate served the dummy) is a SEPARATE defect and remains
+   open below.
+
    **READ THIS FIRST — PART 31 RETIRED THE MODEL EVERYTHING BELOW IS WRITTEN IN.**
    Parts 27, 28, 30 and the first half of 31 all read the plateau as *the shared tone
    curve evaluated at `x = colour * pc(14).w = 1`*. It is not. Four whole-frame arms in a

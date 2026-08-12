@@ -221,6 +221,14 @@ as silent wrong *values*, so an untested vector case is an unverified one.
 
 ## XenosRecomp local patch: `XE_NAN_PAINT`, a NaN detector in the pixel shader epilogue
 
+**PART 33 CAVEAT, and it is gotcha 281: this detector sits DOWNSTREAM of the tone
+epilogue's `max`/`saturate`, which launder a NaN into a finite `sqrt(K1*K2)` before
+`oC0` is written.** Its zero-magenta result was read in part 27 as "the value never was
+a NaN"; it could not have said that, and the value WAS a NaN — the white plateau was
+NaN-fed vertex normals, found the moment the detector moved to the max's OPERANDS
+(`XE_FLOOR_IS_NAN`, below). This instrument still answers "is `oC0` itself NaN", which
+is a different and narrower question than "did a NaN reach this shader".
+
 **Added part 27, and it is an INSTRUMENT rather than a fix** — the emitter always writes
 the block and it compiles only when the define is passed, so the default cache is
 unchanged. Verified: rebuilding the default cache with the patched emitter reproduces
@@ -312,3 +320,43 @@ names rather than resolved by picking the first.
 Headless self-test, three frames of the DebugJump route: **seven shaders named**, largest
 `ps_4d2ac8618715bdbe` at 815 px, with the noise floor a single pair — pure white
 `R=255 B=255`, 400 px — correctly separated.
+
+## XenosRecomp local patches (part 33): the NaN-tracing family, and the fmt16 fix
+
+Full narrative: `docs/phase5-notes.md` §6bg. All three instruments are emitted always
+and compile only under their defines; the default cache rebuilt byte-for-byte (416 of
+416) after each emitter change, which is the standing gate.
+
+**`XE_FLOOR_IS_NAN`** (with `XE_FLOOR_PAINT` + `XE_VALUE_PAINT`) — repoints the
+`xe_max` hook's predicate from `(b > a)` to `isnan(a) || isnan(b)`: the max's OPERANDS
+are the last place a NaN is visible before `max(NaN,K1) = K1` and `saturate(NaN) = 0`
+launder it. Magenta = value-band pixel whose max saw NaN; green = one whose max did
+not. The predicate swap doubles as its own control: the same population painted magenta
+under `isnan` and green under `(b > a)` proves the flag follows the predicate.
+`XE_FLOOR_IS_NAN_FORCE=1` is the positive control.
+
+```
+CZ_DXC_DEFINES='-D XE_VALUE_PAINT=0.70711 -D XE_FLOOR_PAINT=1 -D XE_FLOOR_IS_NAN=1' \
+    tools/build_shader_spv.sh ~/DR2CZ-troubleshooting/ucode-dumps assets/shader_spv_nanpaint
+```
+
+**`XE_NAN_IN_PAINT`** — samples the interpolator-fed GPRs once at pixel-shader entry
+(`xe_nanin`, its own flag so the `xe_max` hook stays inert) and paints magenta
+unconditionally: the footprint of ARRIVING NaNs, as distinct from manufactured ones.
+Part 33: 20,563 px on the outdoor route — 17x the visible plateau.
+
+**`XE_NAN_VS_KILL_IN`** — in every vertex shader, if any declared float input arrives
+NaN, `oPos = NaN` culls the triangle. Separates NaN in the vertex DATA from NaN made by
+VS arithmetic; it cannot see dependent (`XeVfetchDep`) fetches. Part 33: with it on,
+the input-paint's magenta went 20,563 -> 0 and the plateau to 0.
+
+**The FIX: `XeUnpack_10_11_11` + the read-site format branch (4621beb), runtime
+fmt16 -> `R32_SFLOAT` (7889e99).** A fmt16 `k_10_11_11` element declared under a
+float-typed usage (this title wraps every packed normal as TEXCOORD; Fable 2 uses
+NORMAL, which the uint4 + `tfetchR11G11B10` path already covered) reached a `float4`
+input from a `R32_UINT` attribute — `VUID-VkGraphicsPipelineCreateInfo-Input-08733`,
+undefined values, in practice the packed dword's bits as a float: NaN wherever bits
+30..23 are all ones. The fix delivers the bits through a type-matched `R32_SFLOAT`
+fetch and unpacks in-shader by the fetch instruction's own static format field.
+**Upstream-relevant**: any title wrapping packed normals in a float-typed usage hits
+this; the upstream emitter only handles the uint4 usages.
