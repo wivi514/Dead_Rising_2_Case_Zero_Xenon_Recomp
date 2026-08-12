@@ -305,6 +305,7 @@ def main():
 
     print('draws: %d   distinct shader pairs: %d'
           % (len(draws), len({(d[2].get('vs'), d[2].get('ps')) for d in draws})))
+    stale = False
     if want:
         print('dumped %d copies of texture %08X to %s' % (dumped, want, args.out))
         # THE GATE. A trace's memory records are snapshots with a TIME, and this tool
@@ -336,9 +337,6 @@ def main():
                       'They are NOT hardware\'s copy of the surface, and the capture '
                       'cannot supply it: a surface the GPU produces inside the traced '
                       'frame is never snapshotted again. ***')
-        if stale:
-            return 2
-
     shown = 0
     for i, n, names, tex, prim in sorted(draws, key=lambda d: -d[1]):
         if n < args.min_verts or shown >= 12:
@@ -361,7 +359,10 @@ def main():
                                t['slot'], t['addr'], t['w'], t['h'], t['fmt'],
                                t['dim'], t['depth']))
         print('wrote %s' % args.csv)
-    return 0
+    # The staleness gate exits non-zero AFTER the rest of the output, so a caller who
+    # wanted the census as well still gets it. A warning buried in a long listing is a
+    # warning people learn to skip; an exit code is one a script cannot.
+    return 2 if stale else 0
 
 
 if __name__ == '__main__':
