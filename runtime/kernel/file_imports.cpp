@@ -113,12 +113,50 @@ struct FileHandle final : KernelObject
     bool writable = false;
     uint64_t size = 0;
 
+    // The seek and the read below it are TWO C-library calls, and NT's contract for a
+    // positional NtReadFile is ONE atomic operation. This title's loader is an async
+    // APC file system streaming one archive through one handle from several threads at
+    // once, so two in-flight reads could interleave seek/read and each collect the
+    // other's bytes — a coherent payload in the wrong buffer (a tanker wearing a
+    // pickup's atlas), a format-mismatched one as banded garbage (part 35's striped
+    // materials), and a different outcome on every reload. The mutex makes each
+    // positional IO atomic again; `inFlight` measures how often it actually mattered,
+    // because a fix for a race nobody hits is a comment, not a fix.
+    std::mutex io;
+    std::atomic<uint32_t> inFlight{0};
+
     ~FileHandle() override
     {
         if (fp)
             fclose(fp);
     }
 };
+
+// Overlapping positional IOs observed (reads or writes entering while another IO on
+// the SAME handle is mid-flight) — the census that says whether the race above is
+// real on this title. Printed on first occurrence and every 1024th after, because an
+// end-of-run report does not survive the standard recipe's timeout kill (gotcha 284).
+static std::atomic<uint64_t> g_fileIoOverlaps{0};
+
+// CZ_FILE_RACY=1 — skip the per-handle IO lock: the pre-part-35 file layer, and the
+// same-binary control arm for every claim about wrong or garbage streamed textures.
+static bool FileRacy()
+{
+    static const bool racy = [] {
+        const char* v = getenv("CZ_FILE_RACY");
+        return v && *v && *v != '0';
+    }();
+    return racy;
+}
+
+static void NoteFileIoOverlap(FileHandle* file)
+{
+    const uint64_t n = g_fileIoOverlaps.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n == 1 || (n & 1023) == 0)
+        fprintf(stderr, "[file] positional-IO OVERLAP #%llu on '%s'%s\n",
+                (unsigned long long)n, file->guestPath.c_str(),
+                FileRacy() ? " (CZ_FILE_RACY=1: NOT serialized)" : " (serialized)");
+}
 
 std::atomic<uint32_t> g_opens{ 0 };
 
@@ -576,6 +614,12 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     if (!buffer)
         return STATUS_INVALID_PARAMETER;
 
+    if (file->inFlight.fetch_add(1, std::memory_order_acquire) > 0)
+        NoteFileIoOverlap(file);
+    std::unique_lock<std::mutex> ioLock(file->io, std::defer_lock);
+    if (!FileRacy())
+        ioLock.lock();
+
     // A null byteOffset means "continue from the file pointer"; NT also spells
     // "current position" as the sentinel 0xFFFFFFFFFFFFFFFE.
     if (byteOffset)
@@ -586,6 +630,7 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     }
 
     const size_t got = fread(buffer, 1, length, file->fp);
+    file->inFlight.fetch_sub(1, std::memory_order_release);
     const uint32_t status = got == 0 && length != 0 ? STATUS_END_OF_FILE : STATUS_SUCCESS;
     if (iosb)
     {
@@ -649,6 +694,12 @@ uint32_t NtWriteFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
         return STATUS_ACCESS_DENIED;
     }
 
+    if (file->inFlight.fetch_add(1, std::memory_order_acquire) > 0)
+        NoteFileIoOverlap(file);
+    std::unique_lock<std::mutex> ioLock(file->io, std::defer_lock);
+    if (!FileRacy())
+        ioLock.lock();
+
     if (byteOffset)
     {
         const uint64_t offset = *byteOffset;
@@ -658,6 +709,7 @@ uint32_t NtWriteFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
 
     const size_t put = fwrite(buffer, 1, length, file->fp);
     fflush(file->fp);
+    file->inFlight.fetch_sub(1, std::memory_order_release);
     const uint32_t status = put == length ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
     const off_t end = ftello(file->fp);
     if (end > 0 && uint64_t(end) > file->size)
@@ -762,6 +814,11 @@ uint32_t NtSetInformationFile_x(uint32_t handle, XIO_STATUS_BLOCK* iosb, be<uint
     if (infoClass == 0x0E && info && length >= 8 && file->fp) // FilePositionInformation
     {
         const uint64_t pos = (uint64_t(info[0]) << 32) | info[1];
+        // Same lock as the read/write paths: a position set that lands between another
+        // thread's seek and its read moves that read to this position.
+        std::unique_lock<std::mutex> ioLock(file->io, std::defer_lock);
+        if (!FileRacy())
+            ioLock.lock();
         fseeko(file->fp, off_t(pos), SEEK_SET);
         if (iosb)
         {
