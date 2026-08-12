@@ -670,7 +670,34 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 34):
+Where the port is, as of 2026-08-12 (part 35):
+
+* **THE WRONG-TEXTURE REPORTS COLLAPSED INTO ONE ITEM, AND IT IS FULLY
+  EVIDENCE-BOUNDED: open-items 0s, THE STRIPED-MATERIAL CLASS.** One streamed quality
+  level of an asset renders as black/white banded garbage (the tanker close up, Dick
+  the survivor at distance, the pawnshop's window boards). An operator session plus
+  live-process texture dumps taken seconds after each F9 (`tools/live_texdump.py`,
+  gotcha 285) established: guest memory GENUINELY holds the garbage at blotch time,
+  and **every reader of the bytes is measured innocent** — five theories died in one
+  session (the shadow term; a VFS positional-IO race, fixed on principle in d65874d
+  with its prediction honestly retracted, overlap counter 0; a stale texture cache,
+  content guard 4 of 92,730,622 hits; the snapshot age fallback; one retracted
+  misattribution). The affected textures include CPU-composed impostor sheets that
+  exist nowhere on disc and are never resolve destinations. **The next move is named
+  (gotcha 286): trace the WRITER** — and the oracle arrived the same night:
+  **`Xenia logs/R3_world/`**, four frame-locked single-frame traces at exactly the
+  four defect sites, hardware clean at every one, each trace carrying the bytes the
+  sheets SHOULD hold. `docs/phase5-notes.md` §6bi; `docs/part35-kickoff.md` is the
+  LIVE hand-off.
+* **Item 3d (NPC part meshes) is CLOSED** — Dick renders whole on two binaries; the
+  missing parts were the shader-cache gap, exactly as the item's re-test note
+  predicted. **Item 00i (LOD placeholder pop) is captured** (flat colour panels ->
+  full siding, reload_test 30631/30807) and one deliberate Xenia look from a verdict.
+* **NtReadFile/NtWriteFile are atomic per handle now** (d65874d) — NT's contract,
+  previously seek-then-read on a shared FILE*. `CZ_FILE_RACY=1` is the control arm.
+  Credited with nothing visible; kept on correctness.
+
+Where the port was, as of 2026-08-11 (part 34):
 
 * **THE 4x MSAA Y FACTOR IS THE DEFAULT — part 32's item 0, shipped, and the shadow
   cascade's two known defects are both fixed and on by default.** A Xenos 4x surface is

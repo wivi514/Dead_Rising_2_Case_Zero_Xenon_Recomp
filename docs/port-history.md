@@ -1373,6 +1373,42 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 35 (2026-08-12) — the operator re-asks the parked picture items; five theories
+## die; the striped-material class gets its writer hunt and its oracle in one night
+
+An operator-driven session (the most productive picture hunt of the port) plus the
+same-night delivery of round-3 hardware traces. Full records: `docs/phase5-notes.md`
+§6bi, `~/DR2CZ-troubleshooting/part35-item1-operator/`, `Xenia logs/R3_world/`.
+
+* **Item 3d (NPC part meshes) CLOSED**: Dick renders whole on two binaries — the
+  missing parts were the shader-cache gap, as the item's own re-test note predicted.
+* **Item 00i captured**: the same shop as flat colour panels at street-across distance
+  and full siding close (reload_test 30631/30807); one deliberate Xenia look owed.
+* **Item 0s created — the striped-material class**, with the evidence bounded from
+  both sides. Guest memory genuinely holds the banded garbage at blotch time (live
+  dumps seconds after each F9 — `tools/live_texdump.py`, gotcha 285), and five
+  reader-side theories died by measurement: the shadow term (atlas 0.0006% zero at
+  the blotch frame, patches stick under a strafe); a VFS positional-IO race (fixed on
+  principle in d65874d — seek-then-read was never atomic as NT requires — but the
+  overlap counter read 0 across two sessions and the commit's registered prediction
+  is retracted in §6bi); "the tanker wears a pickup's atlas" (misattribution — a real
+  pickup was in frame); the snapshot age fallback (cannot fire, no age limit); the
+  texture cache freezing changed content (content guard: 4 stale of 92,730,622 hits,
+  4 re-uploaded). The affected textures include CPU-composed impostor sheets — odd
+  extents, DXT5, 4-vertex quads — that exist nowhere on disc and are never resolve
+  destinations. **Every reader is exonerated; part 36 traces the writer**
+  (gotcha 286), with the resolve-to-guest-memory writeback gap the standing suspect
+  for the sources.
+* **R3_world landed the same night**: four single-frame `.xtr` traces with
+  FRAME-LOCKED screenshots (the operator's fork now captures the guest framebuffer at
+  the F4 press) at exactly the four defect sites. Hardware clean at all four — and
+  hardware's tanker is CREAM, so the skin recorded as "changed after a reload" was
+  the correct one. Each trace carries the bytes the sheets should hold: the writer
+  hunt's ground truth, in hand before the hunt.
+* Gotchas 284 (an end-of-run report does not survive the recipe's timeout kill —
+  prove engagement differentially), 285 (a live-process dump has a time), 286 (stop
+  instrumenting readers, trace the writer).
+
 ## Part 34 (2026-08-11) — the 4x MSAA Y factor ships as the default, and the exposure
 ## question dissolves
 
