@@ -2631,3 +2631,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      walks the index VALUES against each stream's declared size — and note the standing
      guard's trap: bounding `indxOffset + indexCount` bounds the number of indices, not
      the vertices they name.
+
+284. **AN END-OF-RUN REPORT DOES NOT SURVIVE THE STANDARD RECIPE'S `timeout` KILL — prove
+     an arm engaged DIFFERENTIALLY, or the engagement check reads zero on every gate
+     run.** Case Zero's renderer dumps its `g_stats` counters at clean shutdown; every
+     headless recipe ends in `timeout`, which kills the process before the dump, so
+     `grep "window Y also scaled"` returned 0 on a run whose arm demonstrably engaged.
+     The counter was fine, the exit path never ran — the same blind spot as gotcha 151
+     (an arm with no counter cannot be shown to have engaged) wearing the opposite
+     disguise: an arm WITH a counter that is never printed. Two repairs, either
+     sufficient: report on a clock that runs regardless (the per-N-seconds profile line
+     is the house pattern), or gate on the arm's EFFECT with arms differing by one
+     variable — part 34's atlas going 46.8750% -> 0.0038% zero between two otherwise
+     identical runs IS the engagement proof, and a stronger one than any counter.
