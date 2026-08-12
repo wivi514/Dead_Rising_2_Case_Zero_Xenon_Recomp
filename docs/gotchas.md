@@ -2665,3 +2665,24 @@ From phase C part 18 (the frame rate — and none of it was work):
      whoever COMPOSED the bytes. The instrument changes accordingly: not another arm on
      the sampling path, but a write watch on the page (who stores to it, from where) or
      the engine's own narration of the system that builds the asset.
+
+287. **A JUNK SCORE IS NOT A PICTURE — DECODE AND LOOK BEFORE BELIEVING THAT MEMORY
+     HOLDS GARBAGE.** Part 35's scorer flagged the odd-extent DXT5 "impostor sheets"
+     as black/white banded junk and the whole striped-material item was framed as "the
+     CPU composes garbage into them; trace the writer". Part 36 decoded one (two-minute
+     script, tiled layout + the alpha plane) and it is a coherent billboard alpha-cutout
+     — WHITE colour endpoints with the content in ALPHA, which is exactly what a
+     greyscale-with-extremes heuristic must flag. Worse, the bytes were BYTE-IDENTICAL
+     (md5) to the bytes hardware sampled for the same material in the R3 trace, which
+     exonerates the writer in one measurement — the strongest exoneration there is,
+     available the whole time for the cost of one decode. The kickoff even carried the
+     warning ("triage only; decode and LOOK before claiming") and the hunt was scoped
+     off the score anyway. A scorer's verdict licenses a LOOK, never a hunt.
+
+288. **CONTENT-HASH MATCHING AGAINST A HARDWARE FRAME EXONERATES ONLY THE MATCHES.**
+     Matching every texture our blotch frame bound against every byte-carrying fetch in
+     the same-site R3 trace: 226 of 459 byte-identical — 226 textures proven correct in
+     one census. But the 233 unmatched are NOT 233 suspects: the two frames differ in
+     camera, time and streaming state, so render targets, post surfaces and any asset
+     the other frame didn't bind can never match. An unmatched entry is "unadjudicated",
+     not "wrong" — the census narrows the field, it does not name the defect.

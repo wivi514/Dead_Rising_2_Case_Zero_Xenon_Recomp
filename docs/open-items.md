@@ -39,6 +39,36 @@ Next, in order:
    the guard, but uncounted against the picture); the flat-colour placeholder uploads
    (the far-LOD look of item 00i, possibly the game's own behaviour).
 
+   **PART 36 REFRAMED THIS ITEM — the writer hunt as scoped is DEAD, and two of its
+   premises are retracted** (`docs/phase5-notes.md` §6bj; gotchas 287-288):
+   * **"Guest memory genuinely holds the garbage" is RETRACTED for the sheets.** Our
+     live-dumped 400x240 and 1024x64 DXT5 sheets at blotch time are **byte-identical
+     (md5) to the bytes hardware sampled** for the same material in the R3 tanker
+     trace. Decoded tiled (`tools/tex_decode.py`), they are coherent billboard
+     alpha-cutouts: white colour endpoints, content in ALPHA — exactly what the
+     junk-scorer must flag and exactly what the part-35 kickoff's own warning said to
+     check. There is no junk in them and therefore no writer to hunt for them.
+   * **"Hardware draws no impostor sheets there" is refuted**: the full tanker.xtr
+     census reads 3,514 DXT5 + 3,040 DXN fetches (112/53 distinct), including the
+     odd-extent sheet class. The earlier "3 DXT5, 0 DXN" was a filtered first pass.
+   * The "weird" 110AD000 512x512 DXT1 dump ALSO decodes coherently (tiled+swap16):
+     a structured white-slat/boards texture, real content, not noise — but its bytes
+     appear NOWHERE in hardware's tanker frame (728 textures, 4K-prefix search), and
+     the same address is bound as 4x4 in one frame and 512x512 in another. **The live
+     question is now WHICH texture the blotched surface actually samples and whether
+     that content is a real asset bound at the wrong quality level** — wrong-binding,
+     not composed-junk, fits every observation (stable, UV-stuck, one level per asset,
+     varies per boot).
+   * Next: (1) name the DRAW painting the blotched tanker pixels in capture_f43675
+     (the operator PPM localizes it; the census has every draw's fetches), decode ITS
+     s0 with `tex_decode.py`, and compare against hardware's tanker draw (e.g. draw
+     4184, verts=18193, s0=11995000 512x512 DXT1 in tanker.xtr); (2) settle whether
+     the 16 small colour resolves hardware issues in the frame (64x64 x9, 128x64 x4,
+     128x128, 512x256 — NOT in our 61-entry resolve set) appear in our PM4 stream,
+     since resolve write-back to guest memory is still a live one-way arrow for the
+     OTHER sub-defects; (3) the content-match census (226 of 459 textures
+     byte-identical, gotcha 288) is the triage list to shrink, not a suspect list.
+
 00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25, AND ROUGHLY HALF-DONE BY
    VOLUME.** Cube maps are uploaded as six faces and bound into descriptor set 2;
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in

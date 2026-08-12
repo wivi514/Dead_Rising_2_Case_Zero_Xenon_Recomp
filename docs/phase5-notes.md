@@ -5779,3 +5779,73 @@ the question is who composes them and from what. Two cheap routes, in order:
 streaming decisions and may name the impostor/composite system outright — and a write
 watch on one sheet's page when its fetch first appears (the `guest_probe` machinery is
 the worked example), which names the composing function's address for `gdis`.
+
+## 6bj. Part 36: the striped-material "junk sheets" are correct to the byte, and the
+## writer hunt is closed before it started
+
+Part 35 ended with item 0s framed as "the CPU composes junk into runtime impostor
+sheets; every reader is exonerated; trace the writer" — and the same night's R3
+captures carried the oracle to test that framing against. Part 36 ran the comparison
+FIRST, as the kickoff ordered, and the framing did not survive it.
+
+### The measurements, in the order they killed premises
+
+1. **The tanker.xtr fetch census** (`xtr_draw_bindings --csv`, 53,870 fetch rows):
+   fmt 20 (DXT5) = 3,514 fetches / 112 distinct textures; fmt 49 (DXN) = 3,040 / 53.
+   The kickoff's "only 3 DXT5 and 0 DXN, hardware may not draw impostor sheets" was a
+   filtered first pass. Hardware binds the whole odd-extent DXT5 sheet class at the
+   tanker site — 512x240, 400x240, 360x160, 1024x64, 88x88 — on 4..8-vertex quads,
+   exactly the class part 35 called ours-only. The "LOD tier our runtime wrongly
+   lingers in" branch is dead.
+
+2. **Byte comparison against the oracle.** Our live-dumped sheets at blotch time
+   (part 35's `tanker_blotch_f43675/`, seconds after the F9) versus the bytes
+   hardware's GPU sampled in the R3 trace (`--dump-texture`):
+
+   | material | ours (guest addr) | hardware (guest addr) | verdict |
+   |---|---|---|---|
+   | 400x240 DXT5 sheet | 036DA000 | 0746E000 | **md5 IDENTICAL** |
+   | 1024x64 DXT5 sheet | 036FB000 | 0748F000 | **md5 IDENTICAL** |
+
+   Different addresses (streaming allocation differs per boot), identical content.
+   **The memory the blotch-frame fetches named holds hardware's own bytes.** For these
+   textures there is no bad writer — and no writer hunt.
+
+3. **Decode and LOOK** (`tools/tex_decode.py`, written for this; gotcha 287). Under
+   the correct interpretation — tiled, pitch from the fetch constant, DXT5 — the
+   400x240 sheet is a coherent foliage-billboard ALPHA CUTOUT: colour endpoints white,
+   the tree silhouette in the alpha channel. The junk-scorer flagged it because
+   greyscale-with-extremes is its trigger, and a cutout sheet is exactly that. The
+   part-35 kickoff carried this warning verbatim and the item was scoped off the score
+   anyway. Also decoded: part 35's `texdump_clean_10017000` (the GAS-station atlas,
+   confirming the decoder against a known-good) and `texdump_weird_110AD000` — which
+   is NOT noise either: a structured white-slat/boards texture with clean edges.
+
+4. **Where the weird texture stands.** Its bytes appear nowhere in hardware's tanker
+   frame (all 728 byte-carrying fetches searched by 4K prefix), and our own captures
+   bind the same address as a 4x4 in reload_test f2601 and a 512x512 in f24288 —
+   streaming reuse of the page. So it is either a real asset legitimately absent from
+   hardware's frame, or real-asset content sitting at a wrongly-assigned quality level.
+   **Wrong-BINDING (a real asset at the wrong streamed quality slot), not composed
+   junk, now fits every recorded observation**: stable, stuck to the surface
+   (UV-mapped), painted by the scene pass, one quality level per asset, which level
+   varies per boot with streaming order.
+
+5. **The content-match census** (gotcha 288): of the 459 textures our blotch frame
+   dumped, **226 are byte-identical to a texture hardware's frame carries**. The 233
+   others are unadjudicated, not suspect — the two frames differ in camera, time and
+   streaming state, so render targets and differently-streamed assets can never match.
+
+6. **The engine does not narrate a compositor.** The outdoor DebugJump route with
+   `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1`: 1,209 `[guest]` lines, zero matches for
+   impostor/billboard/composite. Route 1 of the part-35 plan is exhausted.
+
+### What survives of item 0s
+
+The blotch is real (operator, two renderers, R3 four-for-four says hardware is clean).
+But the mechanism is upstream question marks around WHICH texture the blotched surface
+samples, not around byte corruption: the one texture class we can pair cross-platform
+is correct to the byte. The reframed next moves are in the item. Hardware's 16 small
+colour resolves in the frame (64x64 x9, 128x64 x4, 128x128, 512x256 — none in our
+61-entry resolve census) remain the standing lead for the OTHER sub-defects, and
+resolve write-back to guest memory remains never-implemented on our side.
