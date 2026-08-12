@@ -5412,3 +5412,36 @@ consistently sample-resolution in both axes — which means a taller image and a
 that downsamples — or to carry the per-axis factor explicitly at every window-coordinate
 site. The first is correct and larger; the second is what
 `CZ_VK_MSAA_WINDOW_SCALE_Y` is a one-surface probe of.
+
+### The outdoor picture, as an era aggregate
+
+The atlas number is a within-run property and is decisive; the PICTURE needs
+`tools/frame_era_medians.py`, because matched frames are unsatisfiable outdoors
+(gotcha 254). Two null runs of the outdoor DebugJump route as the baseline pair, the arm
+as the third, every frame above 1,800 draws:
+
+| statistic | base1 | base2 | null | arm | vs base |
+|---|---|---|---|---|---|
+| coveragePct | 98.3988 | 98.3691 | 0.03% | 98.4016 | 0.02% — inside the null |
+| meanLuma | 62.97 | 55.94 | **11.83%** | 56.13 | 5.59% — inside the null |
+| distinctColours | 68,614 | 68,371 | 0.35% | **78,201** | **+14.17%, 40.0x the null** |
+
+**Distinct colours is the statistic that resolves, and it moves in the direction a working
+shadow term predicts**: a graded shadow replaces flat-lit surfaces with a spread of values,
+where a broken one clamps whole regions to one. 40x a 0.35% floor is well past the tool's
+own "under ~3x is unresolved" guidance and past the 6x by which independent null pairs have
+been seen to differ.
+
+`meanLuma` cannot resolve it here and the reason is in the table: this null pair's own
+floor is **11.83%**, against the 0.94% part 26 measured. The two baseline runs did not
+reach the same places (7,833 and 9,303 frames above 1,800 draws, and the arm only 4,043),
+so the era each one aggregates is different. That is a fact about this pair of runs, not
+about the arm — and it is why the reading quoted is the one whose null is tight.
+
+**What is still owed is the operator**, and it is now a well-posed three-way question:
+null, `CZ_VK_MSAA_WINDOW_SCALE_Y=1`, and `CZ_VK_NO_ADDR_TILE_FOLD=1` (the pre-part-31
+renderer), at one crowd spot with the camera not moved between shots. Per gotcha 278 the
+property to name first is the EXTENT and the CONTINUITY of the shadowed region: with the
+fold alone, the shadow term is real to the third split at ~32 m and half of every cascade
+still reads as occluded, so the boundary should be a hard camera-locked line across the
+world; with both, it should not exist.
