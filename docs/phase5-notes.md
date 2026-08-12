@@ -5294,3 +5294,46 @@ first resolve to it. Run against the three DXT1 textures part 27 compared for th
 draw it prints *"the trace issues no RESOLVE to this address, so the bytes are guest
 memory the title uploaded — a sound oracle"* and exits 0, so **part 27's texture
 comparison is unaffected by this retraction**; the scope is surfaces the GPU produces.
+
+### THE MECHANISM, AND IT IS ONE LINE: a 4x MSAA surface is twice as tall too
+
+The open link above closed the same session. Part 15 recorded the title's clear rects as
+`(0,0)-(480,512)` and `(960,0)-(1024,1024)` and observed that "those do not cover a
+1024x1024 map and nothing this renderer does causes it". Both halves of that are wrong,
+and `CZ_VK_RECT_TRACE=0` — every rect on every surface, with the surface's pitch and MSAA
+mode printed beside it — says why:
+
+    pitch=1040 msaa=0  (960,0) (1024,0) (1024,1024)  -> BL (960,1024)   depthControl=76
+    pitch= 520 msaa=2  (  0,0) ( 480,0) ( 480, 512)  -> BL (  0, 512)   depthControl=76
+    pitch= 640 msaa=2  (  0,0) ( 640,0) ( 640, 360)  -> BL (  0, 360)   depthControl=76
+    pitch= 320 msaa=2  (  0,0) ( 320,0) ( 320, 720)  -> BL (  0, 720)   depthControl=77
+
+The `(0,0)-(480,512)` rect is on a **520-pitch, 4x MSAA** surface — and 520 x 2 = 1040,
+which is the cascade's own sample pitch. Xenos 4x MSAA is a **2x2** sample grid, so a 4x
+surface is twice as wide AND twice as tall in samples; our EDRAM stand-in is at sample
+resolution. Scale both axes and the rect becomes `(0,0)-(960,1024)`, which with
+`(960,0)-(1024,1024)` tiles the 1024x1024 cascade **exactly**. Scale only X — which is all
+this renderer has ever done — and the union is `[0,960]x[0,512] ∪ [960,1024]x[0,1024]`,
+557,056 of 1,048,576 texels, **53.125%**. That is not a number that had to be fitted: it
+is the observed coverage, to four decimal places, derived from the guest's own two
+rectangles.
+
+`CZ_VK_MSAA_WINDOW_SCALE_Y=1`, on a plain boot at frame 600:
+
+| arm | atlas zero | covered rows | frame mean luma | black | distinct colours |
+|---|---|---|---|---|---|
+| null | 46.8750% | 512 / 1024 | 29.08 | 61.58% | 19,172 |
+| `CZ_VK_MSAA_WINDOW_SCALE_Y=1` | **0.0038%** | 1000 / 1024 | 29.04 | 61.58% | 19,175 |
+| `CZ_VK_DEPTH_CLEAR_FAR=1` (diagnostic) | 0.0113% | 1000 / 1024 | 29.05 | 61.58% | — |
+
+**The one-line change reproduces the diagnostic arm's result by honouring the guest's own
+clear rects instead of ignoring a register**, and the title-screen picture does not move.
+
+**It is an ARM and not the default yet, and the reason is in the table above.** The scene
+tile's 4x clear is `(0,0)-(320,720)` on a tile that is 640 samples wide and 720 rows tall:
+X wants the factor and Y appears not to. Two 4x surfaces asking for different things is
+two data points, not a model. The most likely reconciliation is that the scene tile's
+720 is already a SAMPLE count while the cascade's 512 is a pixel count — which would mean
+the discriminator is not the MSAA mode alone — and that has to be established before this
+becomes the behaviour. What is not in doubt is the cascade: two rectangles that tile a
+1024x1024 map exactly under one rule and cover 53.125% of it under the other.

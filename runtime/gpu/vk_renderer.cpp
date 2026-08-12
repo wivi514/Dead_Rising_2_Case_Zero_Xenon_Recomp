@@ -5693,6 +5693,29 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             posScale[0] *= 2.0f;
             Count("draw: window coordinates scaled for a 4x MSAA surface");
         }
+        // CZ_VK_MSAA_WINDOW_SCALE_Y=1 — scale Y for a 4x surface as well as X.
+        //
+        // Xenos 4x MSAA is a 2x2 sample grid, so a 4x surface is twice as wide AND twice
+        // as tall in samples; our EDRAM stand-in is at sample resolution, so on that
+        // reading BOTH axes need the factor and only X has ever had it. The case that
+        // says so is the SHADOW CASCADE's clear, which part 15 recorded as
+        // `(0,0)-(480,512)` and part 32 located on a 520-pitch 4x surface: 480 x 2 = 960
+        // and 512 x 2 = 1024, and the title's other clear rect on that surface is
+        // `(960,0)-(1024,1024)`. The two together tile the 1024x1024 cascade EXACTLY —
+        // but only if Y is doubled too, and without it the union is the 53.125% this
+        // renderer produces.
+        //
+        // An ARM rather than the default because the SCENE tile's 4x clear is
+        // `(0,0)-(320,720)` on a 640-sample-wide tile, where X wants the factor and Y
+        // apparently does not — two 4x surfaces asking for different things is not a
+        // model, it is two data points, and the second one has to be explained before
+        // this becomes the behaviour.
+        static const bool msaaScaleY = EnvOn("CZ_VK_MSAA_WINDOW_SCALE_Y");
+        if (msaaScaleY && !noMsaaScale && msaa == 2)
+        {
+            posScale[1] *= 2.0f;
+            Count("draw: window Y also scaled for a 4x MSAA surface");
+        }
         // ...and the TILE ORIGIN, for the same reason the viewport path does NOT need
         // it. A window coordinate is relative to the EDRAM surface, and hardware moves
         // a tile's geometry into that surface with PA_SC_WINDOW_OFFSET (-640 for this
@@ -6142,9 +6165,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // fills it), so the question is which rectangles the title actually asked to
             // be cleared — and that is data, not something to infer from the result.
             static const char* const rectTraceEnv = Env("CZ_VK_RECT_TRACE");
+            // A pitch of 0 means EVERY surface. Naming one pitch is right when the
+            // question is "what does this pass clear"; it is wrong when the question is
+            // "where does that rect live", and part 32 needed the second — a clear rect
+            // recorded in part 15 as the cascade's turned out to be on another surface
+            // entirely, which is only visible if the trace prints the pitch.
             if (rectTraceEnv &&
-                (regs[xenos::kRbSurfaceInfo] & 0x3FFF) ==
-                    uint32_t(strtoul(rectTraceEnv, nullptr, 10)))
+                (strtoul(rectTraceEnv, nullptr, 10) == 0 ||
+                 (regs[xenos::kRbSurfaceInfo] & 0x3FFF) ==
+                     uint32_t(strtoul(rectTraceEnv, nullptr, 10))))
             {
                 const uint8_t* p = loc.bytes();
                 float c[3][2] = {};
@@ -6181,9 +6210,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     }
                     char line[256];
                     snprintf(line, sizeof line,
-                             "[vkrect] loc=%d fmt=%u off=%u stride=%u idx=%u,%u,%u  "
+                             "[vkrect] pitch=%u msaa=%u loc=%d fmt=%u off=%u "
+                             "stride=%u idx=%u,%u,%u  "
                              "(%.2f,%.2f) (%.2f,%.2f) (%.2f,%.2f)  -> BL (%.2f,%.2f)  "
                              "depthControl=%02X vte=%02X",
+                             regs[xenos::kRbSurfaceInfo] & 0x3FFF,
+                             (regs[xenos::kRbSurfaceInfo] >> 16) & 3,
                              a.location, a.format, a.offsetDwords, a.strideDwords,
                              rectCorner[0], rectCorner[1], rectCorner[2],
                              c[0][0], c[0][1], c[1][0], c[1][1], c[2][0], c[2][1],
