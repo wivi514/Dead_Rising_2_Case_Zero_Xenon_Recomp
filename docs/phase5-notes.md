@@ -5972,3 +5972,59 @@ are the remaining piece for restoring a SHOT rather than a place.
 This supersedes the memory hunt as the primary route. `tools/live_findpos.py` stays
 because it is the general instrument (and it is what proved the controller object
 innocent), but a shipped debug command beats a heuristic scan.
+
+## 6bm. Wiring the console's two player primitives into the runtime: the read works
+## without calling anything, and the write is not safe from our hook (part 36)
+
+§6bl read `setplayerpos` and `getplayerinfo` out of the image. This is what happened
+when both were executed rather than parsed. The five-step lookup is shared and is
+**safe**; what differs is what each does with the object.
+
+### The read needs no guest call at all
+
+The virtual `getplayerinfo` dispatches (vtable+0x18 -> `0x82483718`) is seven
+instructions — `lwz r11,0x1C(r4)` / `0x20` / `0x24`, stored to the out-pointer. **The
+player's world position IS `obj + 0x1C`.** So the runtime reads the three floats
+directly: no call, no scratch buffer, no borrowed thread, and nothing that can fault.
+
+That is not an optimisation, it is the fix. CALLING the virtual crashed:
+
+| arm (same recipe, 420 s) | faults | log lines |
+|---|---|---|
+| control, pumps disabled | 0 | 31,994 |
+| armed, read by direct field access | **0** | **32,295** |
+| armed, with a teleport requested | 2 | 1,593 (died) |
+
+The first armed version, which called the virtual and also clobbered the *live* guest
+context, faulted where the control did not — two separate defects found by the same
+control arm. The context one is real and general: **these pumps run inside the
+`XamInputSetState` hook, so `ctx` is a live thread's register file, and setting
+r3/r4/ctr on it to make a call corrupts whatever the hooked function held there.**
+Copy the context. AutoChuck gets away with not copying because it fires once per state
+change; anything that runs every poll will not.
+
+**A vtable index is only meaningful for the class it was read from.** The chain hands
+back more than one kind of actor, so the runtime checks the object's vtable is
+`0x8205D440` — the class the disassembly came from — and DECLINES otherwise instead of
+dispatching into whatever `+0x18` means for some other class. The lookup also validates
+that a vtable pointer lands inside the image before dispatching through it.
+
+Measured, gameplay, via the DebugJump route: **player at (-106.08, 6.57, -115.89)**,
+stable across 144 samples. `CZ_POSE_TRACE=1` prints it once a second;
+`CZ_POSE_TRACE=lookup` stops after the lookup (the bisection knob that separated the
+chain from the call). The F9 pose now carries `player_pos` with the age of the reading.
+
+### The write is a real function and our hook is the wrong place to call it
+
+`setplayerpos`'s setter (vtable+0x84 -> `0x8243A1F0`) calls `0x82439F90` and then writes
+the position at `this+0x620` — note that is a DIFFERENT field from the `+0x1C` the
+getter reads, so the two are not a matched pair and poking `+0x1C` would not teleport
+anything. Called from the input hook it faults inside guest code (the table above).
+The console runs that command from the game's own safe point and we do not have that
+point yet.
+
+`CZ_TELEPORT_FILE=<path>` (one line, `x y z`) is built and refuses to fire without
+`CZ_TELEPORT_UNSAFE=1`, printing why. **Finding the safe call site is the next task**,
+and the candidates are: a hook on a per-frame guest function that runs on the thread
+owning actor state, or the title's own console/command queue, which would let the game
+schedule it exactly as a typed command.

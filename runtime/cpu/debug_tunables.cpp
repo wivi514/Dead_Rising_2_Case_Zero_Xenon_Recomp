@@ -88,6 +88,7 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
+#include <sys/stat.h>
 #include <string>
 #include <vector>
 
@@ -992,11 +993,358 @@ static void PumpGuestDiagnosticsFromEnvironment(uint8_t* base)
     }
 }
 
+// ===================================================================================
+// THE PLAYER'S POSITION, THROUGH THE TITLE'S OWN DEBUG-CONSOLE PATH
+//
+// This retail image keeps its debug console (gotcha 266's shape again), and two of its
+// commands -- `setplayerpos` and `getplayerinfo` -- reach the player object by an
+// identical five-step lookup, which is what makes the lookup trustworthy rather than a
+// reading of one function. Both were disassembled in part 36; `docs/phase5-notes.md`
+// §6bl has the transcript. Everything below is that path, executed rather than parsed.
+//
+// WHY NOT JUST WRITE THE POSITION FIELD. The write path makes a `vtable[0x28]` call
+// BEFORE storing, and the store itself is a virtual `vtable[0x84]`. Whatever those do
+// -- physics, streaming, zone bookkeeping -- a memory poke skips, and the cost of
+// skipping it is a defect that shows up somewhere else entirely and gets investigated
+// as its own thing. Calling the title's path costs one indirect call and cannot have
+// that class of bug.
+//
+// The scratch is one guest allocation, reused: these calls take an out-pointer (the
+// read) and a vec3 pointer (the write), and both must be GUEST addresses.
+static uint32_t g_posScratch = 0;
+
+// The last position read, for the F9 pose to print from the render thread -- which
+// must NOT make guest calls itself. The timestamp travels with it so a stale value
+// announces itself instead of looking like a fresh one (gotcha 13 at frame scale).
+static std::atomic<float> g_playerPos[3] = {};
+static std::atomic<long long> g_playerPosAtMs{-1};
+
+static void CallGuestAt(PPCContext& ctx, uint8_t* base, uint32_t addr)
+{
+    ctx.ctr.u64 = addr;
+    PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+}
+
+// The five steps both commands share:
+//   mgr  = *(u32*)0x82A57428
+//   sess = 0x82483230(mgr, 1)
+//   t    = sess->vtable[0x10]()
+//   list = *(u32*)(t + 0x7C)
+//   obj  = 0x8247B020(list, index)
+// IS A LEVEL ACTUALLY RUNNING? The lookup below happily returns an object during the
+// prologue and the menus, and calling a virtual on it there faults inside guest code —
+// measured, not feared: the same recipe with these pumps armed faults twice where the
+// control arm with them disabled faults zero times. So gate on the signal AutoChuck
+// already trusts for exactly this question (the debug controller's object), which is
+// the project's established "the level exists" predicate rather than a new guess.
+static bool LevelIsRunning(uint8_t* base)
+{
+    return g_gameDebugController && PPC_LOAD_U32(g_gameDebugController + 0x30) != 0;
+}
+
+static uint32_t LookupPlayerObject(PPCContext& ctx, uint8_t* base, uint32_t index)
+{
+    if (!LevelIsRunning(base))
+        return 0;
+    // EVERY STEP IS TRACED ONCE, because when this chain faults the crash report names
+    // a guest address several calls deep and says nothing about WHICH step handed it a
+    // bad pointer. Rate-limited to one line per distinct outcome.
+    const bool trace = getenv("CZ_POSE_TRACE") != nullptr;
+    static uint32_t lastTrace[5] = {};
+    uint32_t step[5] = {};
+    const uint32_t mgr = PPC_LOAD_U32(0x82A57428);
+    step[0] = mgr;
+    if (!mgr)
+        return 0;
+    ctx.r3.u64 = mgr;
+    ctx.r4.u64 = 1;
+    CallGuestAt(ctx, base, 0x82483230);
+    const uint32_t sess = uint32_t(ctx.r3.u64);
+    step[1] = sess;
+    if (!sess)
+        return 0;
+    const uint32_t sessVt = PPC_LOAD_U32(sess);
+    step[2] = sessVt;
+    // A VTABLE POINTER MUST POINT AT THE IMAGE. During a transition this object exists
+    // but its vtable slot holds a heap pointer or garbage, and dispatching through it
+    // is the fault this chain produced: signal 11 at guest 0, several calls deep.
+    if (sessVt < 0x82000000 || sessVt >= 0x82B40000)
+        return 0;
+    ctx.r3.u64 = sess;
+    const uint32_t getT = PPC_LOAD_U32(sessVt + 0x10);
+    if (getT < 0x82150000 || getT >= 0x829C3554)
+        return 0;
+    CallGuestAt(ctx, base, getT);
+    const uint32_t t = uint32_t(ctx.r3.u64);
+    step[3] = t;
+    if (!t)
+        return 0;
+    const uint32_t list = PPC_LOAD_U32(t + 0x7C);
+    step[4] = list;
+    if (!list)
+        return 0;
+    ctx.r3.u64 = list;
+    ctx.r4.u64 = index;
+    CallGuestAt(ctx, base, 0x8247B020);
+    const uint32_t obj = uint32_t(ctx.r3.u64);
+    if (trace && memcmp(step, lastTrace, sizeof step) != 0)
+    {
+        memcpy(lastTrace, step, sizeof step);
+        // THE OBJECT'S OWN VTABLE IS THE TEST OF WHETHER IT IS AN OBJECT. A wrong
+        // pointer out of this chain is not null — the console's own "player not found"
+        // check would not catch it either — so print what it points at and let an
+        // out-of-image vtable say so out loud.
+        const uint32_t objVt = obj ? PPC_LOAD_U32(obj) : 0;
+        fprintf(stderr, "[debug] player lookup: mgr=%08X sess=%08X vt=%08X t=%08X "
+                        "list=%08X obj=%08X objVt=%08X%s\n", step[0], step[1], step[2],
+                step[3], step[4], obj, objVt,
+                (objVt >= 0x82000000 && objVt < 0x82B40000)
+                    ? "" : "   <- NOT AN IMAGE VTABLE: this is not a live object");
+    }
+    return obj;                        // 0 is the console's "error:player not found"
+}
+
+static bool EnsurePosScratch()
+{
+    if (g_posScratch)
+        return true;
+    // The out-vector at +0 and the write vector at +0x40. No stack here on purpose —
+    // the guest calls run on the borrowed thread's own stack.
+    void* p = g_heap.Alloc(0x100);
+    if (!p)
+        return false;
+    std::memset(p, 0, 0x100);
+    g_posScratch = g_memory.MapVirtual(p);
+    return g_posScratch != 0;
+}
+
+// getplayerinfo's read, WITHOUT MAKING A CALL AT ALL.
+//
+// The virtual it dispatches (vtable+0x18 -> 0x82483718) is seven instructions:
+//
+//     lwz r11,0x1C(r4) ; lwz r10,0x20(r4) ; lwz r9,0x24(r4)
+//     stw r11,0(r3)    ; stw r10,4(r3)    ; stw r9,8(r3)    ; blr
+//
+// — it copies three floats out of the object. So the position IS `obj + 0x1C`, and
+// reading it needs no guest call, no scratch buffer and no borrowed thread.
+//
+// That matters because CALLING it faulted. Every function in the chain is present in
+// the recompilation (checked), the object had a real image vtable, and the getter
+// itself cannot fault — so the object at the faulting moment was a DIFFERENT CLASS,
+// whose +0x18 is some other method taking other arguments. A vtable index is only
+// meaningful for the class it was read from, and this chain can hand back more than
+// one kind of actor. Hence the guard below: the layout is trusted only for the exact
+// vtable the disassembly came from, and anything else is declined out loud rather than
+// dispatched into blindly.
+static constexpr uint32_t kKnownPlayerVtable = 0x8205D440;
+
+static bool ReadPlayerPos(PPCContext& ctx, uint8_t* base, uint32_t index, float out[3])
+{
+    const uint32_t obj = LookupPlayerObject(ctx, base, index);
+    if (!obj)
+        return false;
+    const uint32_t vt = PPC_LOAD_U32(obj);
+    if (vt != kKnownPlayerVtable)
+    {
+        static uint32_t saidFor = 0;
+        if (saidFor != vt)
+        {
+            saidFor = vt;
+            fprintf(stderr, "[debug] player object %08X has vtable %08X, not the class "
+                            "this layout was read from (%08X) — position DECLINED "
+                            "rather than guessed\n", obj, vt, kKnownPlayerVtable);
+        }
+        return false;
+    }
+    for (int i = 0; i < 3; i++)
+    {
+        const uint32_t bits = PPC_LOAD_U32(obj + 0x1C + uint32_t(i) * 4);
+        std::memcpy(&out[i], &bits, 4);
+    }
+    return true;
+}
+
+// setplayerpos's write: vtable[0x28]() first -- the title's own order -- then
+// vtable[0x84](obj, &vec3).
+static bool WritePlayerPos(PPCContext& ctx, uint8_t* base, uint32_t index,
+                           float x, float y, float z)
+{
+    if (!EnsurePosScratch())
+        return false;
+    const uint32_t obj = LookupPlayerObject(ctx, base, index);
+    if (!obj)
+        return false;
+    const uint32_t vt = PPC_LOAD_U32(obj);
+    if (vt != kKnownPlayerVtable)
+    {
+        fprintf(stderr, "[debug] teleport DECLINED: player object %08X has vtable %08X, "
+                        "not %08X — the vtable indices below are only valid for that "
+                        "class\n", obj, vt, kKnownPlayerVtable);
+        return false;
+    }
+    if (!EnsurePosScratch())
+        return false;
+    const uint32_t vec = g_posScratch + 0x40;
+    const float v[3] = {x, y, z};
+    for (int i = 0; i < 3; i++)
+    {
+        uint32_t bits;
+        std::memcpy(&bits, &v[i], 4);
+        PPC_STORE_U32(vec + uint32_t(i) * 4, bits);
+    }
+    ctx.r3.u64 = obj;
+    CallGuestAt(ctx, base, PPC_LOAD_U32(vt + 0x28));
+    ctx.r3.u64 = obj;
+    ctx.r4.u64 = vec;
+    CallGuestAt(ctx, base, PPC_LOAD_U32(vt + 0x84));
+    return true;
+}
+
+// CZ_TELEPORT_FILE=<path> — one line, `x y z` (optionally `x y z player`), applied when
+// the file's mtime changes. A FILE and not an environment variable for the same reason
+// the texture filter is one: the coordinates worth teleporting to come from a .pose
+// captured INSIDE the boot you are looking at, and by then the process has long since
+// read its environment. This is what makes an operator's F9 a place you can return to.
+static void PumpTeleportFromFile(PPCContext& ctx, uint8_t* base)
+{
+    static const char* path = getenv("CZ_TELEPORT_FILE");
+    if (!path)
+        return;
+    // SAY THAT IT IS ARMED, once. The first version of this printed only on a
+    // successful teleport, so "nothing happened" could not be told from "the pump never
+    // ran" — which is exactly what happened during its first test, and cost three runs
+    // to notice (gotcha 151).
+    static bool announced = false;
+    if (!announced)
+    {
+        announced = true;
+        fprintf(stderr, "[debug] CZ_TELEPORT_FILE armed: write `x y z` into %s to move "
+                        "the player through the title's own setplayerpos path\n", path);
+    }
+    static long long lastMtime = -2;
+    struct stat st{};
+    const long long now = (stat(path, &st) == 0) ? (long long)st.st_mtime : -1;
+    if (now == lastMtime)
+        return;
+    lastMtime = now;
+    if (now < 0)
+        return;
+    FILE* f = fopen(path, "rb");
+    if (!f)
+        return;
+    // THE WRITE IS NOT SAFE YET, AND THIS SAYS SO RATHER THAN CRASHING THE OPERATOR.
+    //
+    // `setplayerpos`'s setter (vtable+0x84 -> 0x8243A1F0) is a real function -- it calls
+    // 0x82439F90 and then writes the position at this+0x620 -- and calling it from the
+    // XamInputSetState hook, which is where these pumps run, faults inside guest code.
+    // Measured: armed with a teleport request the run dies at 1,593 lines where the
+    // duration-matched control reaches 31,994. The console runs that command from the
+    // game's own safe point; we do not have that point yet, and finding it is the next
+    // task. Until then this refuses unless someone asks for the crash explicitly.
+    static const bool allowUnsafe = getenv("CZ_TELEPORT_UNSAFE") != nullptr;
+    if (!allowUnsafe)
+    {
+        fprintf(stderr, "[debug] teleport REFUSED: the setter is not safe to call from "
+                        "this hook (it faults; see phase5-notes §6bm). Set "
+                        "CZ_TELEPORT_UNSAFE=1 to try it anyway.\n");
+        return;
+    }
+    float x = 0, y = 0, z = 0;
+    unsigned index = 0;
+    const int got = fscanf(f, "%f %f %f %u", &x, &y, &z, &index);
+    fclose(f);
+    if (got < 3)
+    {
+        fprintf(stderr, "[debug] CZ_TELEPORT_FILE: '%s' does not read as `x y z` — "
+                        "IGNORED (a teleport that silently did nothing would look "
+                        "exactly like one the game refused)\n", path);
+        return;
+    }
+    PPCContext call = ctx;                  // see PumpPlayerPosCache: never the caller's
+    float before[3] = {0, 0, 0};
+    const bool had = ReadPlayerPos(call, base, index, before);
+    if (!WritePlayerPos(call, base, index, x, y, z))
+    {
+        fprintf(stderr, "[debug] teleport to (%.2f, %.2f, %.2f): NO PLAYER OBJECT — "
+                        "is a level running?\n", x, y, z);
+        return;
+    }
+    float after[3] = {0, 0, 0};
+    const bool ok = ReadPlayerPos(call, base, index, after);
+    // READ BACK. The engine may clamp, drop to ground, or refuse a point inside
+    // geometry, and "the call returned" is not "the player moved" — only the second
+    // read can tell those apart (gotcha 30's shape: show the thing can fail).
+    fprintf(stderr, "[debug] teleport player %u: (%.2f, %.2f, %.2f) -> asked "
+                    "(%.2f, %.2f, %.2f) -> now (%.2f, %.2f, %.2f)%s\n",
+            index, had ? before[0] : 0.f, had ? before[1] : 0.f, had ? before[2] : 0.f,
+            x, y, z, ok ? after[0] : 0.f, ok ? after[1] : 0.f, ok ? after[2] : 0.f,
+            ok ? "" : "  (read-back FAILED)");
+}
+
+// Keep the cached position fresh for the pose capture, cheaply: one virtual call per
+// pump, and only when something is actually going to read it.
+static void PumpPlayerPosCache(PPCContext& ctx, uint8_t* base)
+{
+    // Armed by an F9 capture too, because the READ is measured safe: the same recipe
+    // run for 420 s with this on gives 0 guest faults over 32,295 log lines against the
+    // control's 0 over 31,994 — matched duration, matched depth. That check exists
+    // because an EARLIER version of this path, which made a virtual call instead of
+    // reading the field, crashed the run at line 1,593 of the same recipe. The lesson
+    // is in the read itself: it makes no guest call at all.
+    if (!getenv("CZ_CAPTURE_KEY") && !getenv("CZ_POSE_TRACE"))
+        return;
+    float p[3];
+    // A PRIVATE CONTEXT AND A PRIVATE STACK, never the caller's.
+    //
+    // The pump is invoked from a hook inside guest code, so `ctx` is a live thread's
+    // register file: setting r3/r4/ctr on it to make a call corrupts whatever the
+    // hooked function was holding there. The existing AutoChuck write gets away with
+    // it because it fires once per state change; this runs every poll, and the first
+    // version of it produced a NULL dereference several calls deep in guest code that
+    // two runs of the same recipe on the previous binary did not. Copy the context,
+    // give it its own stack out of our scratch, and the borrowed thread is untouched.
+    // The stack is deliberately the borrowed thread's OWN: a call pushes BELOW the
+    // current frame, which is free space by construction, where a hand-made stack in
+    // our scratch would grow down into the very vectors it is passing.
+    PPCContext call = ctx;
+    if (!ReadPlayerPos(call, base, 0, p))
+        return;
+    for (int i = 0; i < 3; i++)
+        g_playerPos[i].store(p[i], std::memory_order_release);
+    g_playerPosAtMs.store(DebugElapsedMs(), std::memory_order_release);
+    if (getenv("CZ_POSE_TRACE"))
+    {
+        static long long lastPrint = -100000;
+        const long long now = DebugElapsedMs();
+        if (now - lastPrint >= 1000)
+        {
+            lastPrint = now;
+            fprintf(stderr, "[debug] player at (%.2f, %.2f, %.2f)\n", p[0], p[1], p[2]);
+        }
+    }
+}
+
+// The pose capture's player half, read from the RENDER thread — so it serves the
+// cached value rather than making a guest call, and prints how old it is.
+extern "C" int CZ_DebugPlayerPos(float out[3], long long* ageMs)
+{
+    const long long at = g_playerPosAtMs.load(std::memory_order_acquire);
+    if (at < 0)
+        return 0;
+    for (int i = 0; i < 3; i++)
+        out[i] = g_playerPos[i].load(std::memory_order_acquire);
+    if (ageMs)
+        *ageMs = DebugElapsedMs() - at;
+    return 1;
+}
+
 void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
 {
     PumpDebugFlagsFromEnvironment(base);
     PumpGuestDiagnosticsFromEnvironment(base);
     PumpAutoChuckFromEnvironment(ctx, base);
+    PumpPlayerPosCache(ctx, base);
+    PumpTeleportFromFile(ctx, base);
 }
 
 // True while a BACK should be injected to close a screen AutoChuck opened. Read from the

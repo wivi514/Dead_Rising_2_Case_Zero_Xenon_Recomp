@@ -698,6 +698,11 @@ inline uint32_t PhysToVa(uint32_t addr) { return kPhysArenaBase | (addr & 0x1FFF
 // guest pointer and guest memory access. Declared rather than headered because that
 // translation unit has no header and one function does not justify inventing one.
 extern "C" uint32_t CZ_DebugWritePlayerObject(FILE* f, uint32_t bytes);
+// The player's world position, read through the title's own `getplayerinfo` path on a
+// GUEST thread and cached; this returns the cache plus its age, because the render
+// thread must not make guest calls. Age travels with the value so a stale one cannot
+// pass for fresh.
+extern "C" int CZ_DebugPlayerPos(float out[3], long long* ageMs);
 
 bool GuestRangeOk(uint32_t va, uint64_t bytes)
 {
@@ -8322,6 +8327,20 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // memory access and the pointer itself; GuestRangeOk here would be the
             // wrong check anyway, since it validates only the physical texture arena
             // and a game object is an ordinary virtual address.
+            // THE POSITION ITSELF, which is the whole point of the pose: read via
+            // the guest's own getplayerinfo path (obj->vtable[0x18]), not inferred
+            // from the object dump below. The dump stays because it is what named
+            // this field's neighbours, and because an unexplained struct is worth
+            // keeping while the layout is still being learned.
+            float pos[3];
+            long long ageMs = -1;
+            if (CZ_DebugPlayerPos(pos, &ageMs))
+                fprintf(f, "player_pos %.4f %.4f %.4f   # read %lld ms before this "
+                           "capture, via getplayerinfo's vtable[0x18]\n",
+                        pos[0], pos[1], pos[2], ageMs);
+            else
+                fprintf(f, "# player_pos UNAVAILABLE — no level running, or the "
+                           "lookup failed\n");
             const uint32_t obj = CZ_DebugWritePlayerObject(f, 2048);
             fclose(f);
             fprintf(stderr, "[vk] capture: wrote %s (camera + player object %08X)\n",
