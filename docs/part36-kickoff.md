@@ -38,19 +38,33 @@ the wrong streamed quality level). `docs/phase5-notes.md` §6bj; gotchas 287-288
   `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` gives 1,209 [guest] lines, zero mentioning
   impostor/billboard/composite.
 
+## THE OPERATOR SESSION LANDED THE PAIR — read §6bk before step 1
+
+`~/DR2CZ-troubleshooting/part36-operator/`: 13 F9 captures, 9 with live texture
+dumps, one boot. **`capture_002048` is the tanker CLOSE and blotched (dark olive,
+hard-edged patches); `capture_005614` is the SAME tanker at street distance rendering
+the correct cream skin** — both states of one asset, with censuses and dumps. Also
+established there: the close-up's textures are md5-identical to hardware's for ~45 of
+~50 pairable draws (including the body/cab albedo), the shadow atlas is 0.0003% zero
+in the blotched frame, and only 22 hardware textures above 32 KB are absent from our
+frame (none a tanker skin). **Do not pair draws by vertex count across the two frames**
+— it yields 115 false differences because crowd actors share meshes (§6bk).
+
 ## WHERE TO START
 
-1. **Item 0s, reframed — name the blotched draw.** Use the operator PPM
-   `capture_043675.ppm` to localize the blotched tanker pixels, find the draw(s)
-   covering them in `capture_f43675.census`, decode their s0 textures with
-   `tex_decode.py` (census gives extent/fmt/pitchBlk; dumps are already in
-   `tanker_blotch_f43675/`). Compare against hardware's tanker-body draw in
-   tanker.xtr (candidate: draw 4184 verts=18193 s0=11995000 512x512 DXT1 — dump it
-   with `--dump-texture`). Two outcomes: our blotched surface samples a texture whose
-   content differs from hardware's for the same surface → find which .big read filled
-   it (CZ_FILE_TRACE + address); or it samples a DIFFERENT texture → the material
-   system picked a wrong quality slot, and the question moves to why (this is where
-   "one level per asset per boot, varies per boot" points).
+1. **Item 0s, reframed — name the blotched draw, with `CZ_VK_ONLY_TEX`.** The arm
+   already exists: `CZ_VK_ONLY_TEX=<addr>` renders only draws binding that texture,
+   `CZ_VK_SKIP_TEX` the complement — pick candidates from `capture_f2048.census` and
+   let the picture identify the blotched surface. Both are read once per process, so
+   the arm needs a fresh launch; **first check whether two runs of the headless
+   DebugJump recipe give the same census addresses**, because if streaming addresses
+   move between boots the filter must become runtime-readable (a file or a key) to be
+   usable in the boot that shows the defect. Once the draw is named, decode its s0
+   with `tex_decode.py` and compare against hardware's tanker-body draw in tanker.xtr
+   (draw 4184, verts=18193, s0=11995000 512x512 DXT1). Two outcomes: its content
+   differs from hardware's for the same surface → find the `.big` read that filled it
+   (CZ_FILE_TRACE + address); or it samples a DIFFERENT texture → the material system
+   picked a wrong quality slot, which is where "one level per asset per boot" points.
 2. **The resolve write-back lead**: hardware's tanker frame issues 16 small colour
    resolves (64x64 x9, 128x64 x4, 128x128, 512x256) that are NOT in our 61-entry
    resolve census. Check whether our PM4 stream carries them on the outdoor route

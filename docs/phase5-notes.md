@@ -5849,3 +5849,56 @@ is correct to the byte. The reframed next moves are in the item. Hardware's 16 s
 colour resolves in the frame (64x64 x9, 128x64 x4, 128x128, 512x256 — none in our
 61-entry resolve census) remain the standing lead for the OTHER sub-defects, and
 resolve write-back to guest memory remains never-implemented on our side.
+
+## 6bk. Part 36, operator session: BOTH quality levels of the tanker captured in one
+## boot, and the texture bytes are correct in both
+
+An operator session on the part-36 binary (13 F9 captures, 9 with live texture dumps,
+`~/DR2CZ-troubleshooting/part36-operator/`) landed the pair the reframed item needs.
+
+### The pair
+
+| capture | what the picture shows | draws | dump |
+|---|---|---|---|
+| `capture_002048` | tanker CLOSE — **dark olive-green with hard-edged blotches** (the defect) | 782 textures | `texdump_f2048` |
+| `capture_005614` | same tanker at STREET DISTANCE — **correct cream/tan skin**, matching hardware's R3 screenshot | 698 textures | `texdump_f5614` |
+
+Two states of one asset, one boot, both with a full per-draw census and a live
+texture dump taken seconds after the press. This is the first time the item has had
+its correct and incorrect states side by side from the SAME process.
+
+### What the pair already rules out
+
+* **The texture bytes are hardware's, at the defect site, up close.** Pairing every
+  large draw in `capture_f2536` (an earlier close-up at the same spot) against
+  `tanker.xtr` by (vertex count, pixel shader) and md5-ing every bound texture:
+  **~45 of ~50 pairable draws match hardware on every slot**, including the 25,234-vert
+  and 18,193-vert body/cab draws. The 512x512 albedo those draws sample decodes to a
+  legible atlas (rusted door, planks, cable runs) that is **md5-identical to hardware's
+  `11995000`**. §6bj's byte-level exoneration was not specific to the impostor sheets.
+* **The shadow atlas is healthy in the blotched frame**: 0.0003% zero, all four
+  cascade bands full. Part 35's refutation of the shadow term reproduces on this boot.
+* **Nothing sizable is missing.** Of hardware's 730 fetched textures, only 22 above
+  32 KB are absent from our close-up frame, and decoding the DXT1 candidates shows
+  they are decal/AO atlases and a blob-shadow mask — no tanker skin among them.
+
+### The method that did NOT work, recorded so it is not re-run
+
+Pairing draws by (verts, vs, ps) ACROSS the near and far frames and flagging slots
+whose content differs yields **115 "differences"** that are almost entirely
+legitimate: the crowd's zombies share meshes and vertex counts while wearing
+different clothing textures, so a vertex count is not an object identity across two
+frames of a live scene (the same class of error as gotcha 254's fingerprint matching).
+This list cannot be triaged by eye and should not be treated as a suspect set.
+
+### The instrument part 37 needs, and it already exists
+
+**`CZ_VK_ONLY_TEX=<addr>` renders only the draws that bind a given texture** (and
+`CZ_VK_SKIP_TEX` its complement) — that is the pixel-attribution the identification
+needs: pick a candidate address out of the blotch frame's census, and the picture says
+whether it is the blotched surface. Two caveats to settle first: both are read once
+per process (`static ... Env(...)`), so the arm needs a fresh launch, and streaming
+addresses may differ between boots — so check whether two runs of the headless
+DebugJump recipe produce the same census addresses before relying on one boot's.
+If they do not, the cheap fix is to make the filter re-readable at runtime (a file or
+a key) so an operator can toggle it in the boot that shows the defect.
