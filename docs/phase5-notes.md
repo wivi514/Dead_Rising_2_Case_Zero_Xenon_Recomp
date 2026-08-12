@@ -5943,6 +5943,32 @@ discover by writing memory directly. And **`getplayerinfo`/`playerinfo` is the m
 READ**, which is the cheaper half of the pose problem — it will name the position's
 offset for free, and it is the next thing to disassemble.
 
-This also supersedes the memory hunt as the primary route. `tools/live_findpos.py`
-stays because it is the general instrument (and it is what proved the controller object
+### `getplayerinfo` is the matching READ, and it shares the whole lookup
+
+Dispatched at **`0x825C033C`**, body at `0x825C0374`. It needs only `argc >= 2`
+(`getplayerinfo <player>`) and reaches the object by exactly the same chain, which is
+what makes the chain trustworthy — two independent commands walk it identically:
+
+```
+mgr    = *(u32*)0x82A57428
+sess   = call 0x82483230(mgr, 1)
+t      = sess->vtable[0x10]()
+list   = *(u32*)(t + 0x7C)
+obj    = call 0x8247B020(list, index)      // null -> "error:player not found"
+```
+
+Then the two halves diverge, and both are single virtual calls on the player object:
+
+| | call | note |
+|---|---|---|
+| READ | `obj->vtable[0x18](&out)` | PPC struct return: the hidden out-pointer is r3 and `this` is r4. The vec3 lands at `0x50/0x54/0x58(r1)` and the handler formats those three floats — so **position is x,y,z at +0x00,+0x04,+0x08 of the returned struct** |
+| WRITE | `obj->vtable[0x28]()` then `obj->vtable[0x84](obj, &vec3)` | the `0x28` call runs first in the title's own path and is kept for that reason: it is exactly the kind of step a hand-written memory poke omits and then spends a session rediscovering |
+
+So the pose problem is solved in the guest's own terms and needs no struct-offset
+archaeology: read with `vtable[0x18]`, write with `vtable[0x84]`, get the object with
+the five-step lookup above. `setcampos` / `setcamorient` are the camera equivalents and
+are the remaining piece for restoring a SHOT rather than a place.
+
+This supersedes the memory hunt as the primary route. `tools/live_findpos.py` stays
+because it is the general instrument (and it is what proved the controller object
 innocent), but a shipped debug command beats a heuristic scan.
