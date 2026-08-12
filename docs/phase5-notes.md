@@ -5716,3 +5716,66 @@ part held: both controls show the artifact, the default shows none, and the oper
 called it without prompting. **Open item 3's picture question is closed both ways.**
 The exposure trace at the capture read 0.376 at 2,521 draws — a regime check only, since
 this spot is not one of hardware's two captured places.
+
+## 6bi. THE STRIPED-MATERIAL CLASS: five theories dead in one session, and the reader
+## chain is exonerated — the writer is part 36's target (part 35)
+
+The operator re-asked the parked picture items on the part-34 renderer and found the
+real open defect class: **one streamed quality level of an asset renders as black/white
+banded garbage** — the tanker up close, Dick the survivor at distance, the pawnshop's
+boarded windows, the green building close up. Stable, stuck to the surface (operator
+strafe test: the patches do not slide), painted by the scene pass, one level per asset
+per boot (which level varies between boots).
+
+### What was closed on the way
+
+* **Item 3d (NPC part meshes) is CLOSED**: Dick renders whole in every capture on two
+  binaries. The missing-parts symptom was the shader-cache gap, as the item's own
+  "re-test before investigating" note predicted. What he has instead is this class.
+* **Item 00i's picture is captured**: the same shop as flat colour panels at
+  street-across distance and full siding up close (reload_test 30631/30807). The one
+  look owed is Xenia's promotion distance.
+* A garbled-subtitle-text sighting (f24288) is noted as its own thread.
+
+### The five refutations, each by its own instrument
+
+1. **The shadow term** — the atlas at the blotch frame is a healthy light-space render
+   (0.0006% zero), and the patches stick to the surface under a strafe.
+2. **A positional-IO race in our VFS** (the session's first theory, commit d65874d):
+   NT makes a positional read atomic and ours was seek-then-read. The fix is correct
+   and stays, but the overlap counter read **0 across two sessions** while the class
+   showed — the title serializes its own IO. The lock fixed nothing visible.
+   The commit's registered prediction failed and is retracted here.
+3. **"The tanker wears a pickup's atlas"** — RETRACTED as misattribution: the 5,486-vert
+   draw sampling the pickup atlas is an actual pickup parked in frame, on both binaries.
+4. **Snapshot-too-old fallback** — cannot fire; `SnapshotMaxAge` defaults to no limit.
+5. **The texture cache freezing content that later changed** — the part-23 content
+   guard, re-run with revalidation on the outdoor route: **92,730,622 cache hits
+   checked, 4 stale (0.00%), 4 re-uploaded.** The cache serves what memory holds.
+
+### What is measured and stands
+
+* At blotch time, **guest memory at the sampled address genuinely holds the banded
+  content** — dumped live (`process_vm_readv` seconds after the operator's F9, standing
+  still; a dump minutes later reads recycled memory and means nothing). The renderer is
+  faithful; the bytes were wrong before any GPU work touched them.
+* The affected textures include **runtime-composed impostor/billboard sheets**: odd
+  extents (360x160, 400x240, 1024x64), DXT5, drawn as 4-vertex quads. No impostor
+  entries exist on disc (`big_list --find imposter`: 0) and **no impostor-sized surface
+  is ever a resolve destination** (the 61-entry resolve census is the known
+  scene/post/LUT/cube set) — so the sheets are composed by the CPU, from sources not
+  yet named, and the junk is composed INTO them.
+* The texture census's enumerated sub-defects on this route: **245 addresses uploaded
+  while guest memory was all-zero** (the part-25 `01330000` class — mostly benign in
+  practice, since the guard shows their entries are not re-hit with changed bytes),
+  **231 colour fetches served by a DEPTH resolve snapshot**, and the
+  single-repeated-block flat-colour uploads (the far-LOD placeholder look).
+
+### The next step, named
+
+**Trace the WRITER of one junk sheet.** Everything that reads the bytes is exonerated;
+the question is who composes them and from what. Two cheap routes, in order:
+`CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the outdoor route — the engine narrates its
+streaming decisions and may name the impostor/composite system outright — and a write
+watch on one sheet's page when its fetch first appears (the `guest_probe` machinery is
+the worked example), which names the composing function's address for `gdis`.

@@ -2644,3 +2644,24 @@ From phase C part 18 (the frame rate — and none of it was work):
      is the house pattern), or gate on the arm's EFFECT with arms differing by one
      variable — part 34's atlas going 46.8750% -> 0.0038% zero between two otherwise
      identical runs IS the engagement proof, and a stronger one than any counter.
+
+285. **A LIVE-PROCESS MEMORY DUMP HAS A TIME, exactly like a capture's memory records
+     (280).** Dumping the texture a defect sampled MINUTES after the operator's F9 reads
+     whatever the streaming heap holds NOW — recycled content that decodes as plausible
+     garbage and supports any theory you brought to it. Part 35's first dumps were taken
+     late and nearly convicted the wrong subsystem. The working protocol: the operator
+     presses F9 and STANDS STILL, and the dump fires within seconds, keyed off the F9's
+     own census. Same permission model as gdb, no ptrace stop, and the census supplies
+     address + extent + format so the dump is self-describing.
+
+286. **WHEN EVERY READER OF THE BYTES IS EXONERATED, STOP INSTRUMENTING READERS AND
+     TRACE THE WRITER.** Part 35 killed five theories about who mis-READ a streamed
+     texture — the shadow term (atlas healthy, patches stick to the surface), a VFS
+     seek/read race (overlap counter: 0 across two sessions), a stale texture cache
+     (content guard: 4 of 92.7M hits), a snapshot age fallback (cannot fire), and one
+     misattributed draw — and the bytes were still garbage IN GUEST MEMORY at sample
+     time. Every refutation was worth having, but the fifth should have prompted the
+     pivot the first one already licensed: the defect is upstream of every reader, in
+     whoever COMPOSED the bytes. The instrument changes accordingly: not another arm on
+     the sampling path, but a write watch on the page (who stores to it, from where) or
+     the engine's own narration of the system that builds the asset.

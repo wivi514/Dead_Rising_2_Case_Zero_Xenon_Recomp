@@ -7,6 +7,38 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0s. **THE STRIPED-MATERIAL CLASS — the top picture item as of part 35, fully
+   evidence-bounded, and the next move is named: TRACE THE WRITER.** One streamed
+   quality level of an asset renders as black/white banded garbage — the tanker up
+   close, Dick at distance, the pawnshop's window boards — stable, stuck to the
+   surface (operator strafe test), painted by the scene pass, a different level on
+   different boots. `docs/phase5-notes.md` §6bi is the full record; captures and
+   live-process texture dumps in `~/DR2CZ-troubleshooting/part35-item1-operator/`.
+   **Five theories died by measurement in one session — do not re-buy any**: the
+   shadow term (atlas 0.0006% zero at the blotch frame, patches stick under strafe);
+   a VFS positional-IO race (fixed on principle in d65874d, overlap counter 0 across
+   two sessions, prediction retracted); "the tanker wears a pickup's atlas"
+   (misattribution — that draw is a real pickup); the snapshot age fallback (cannot
+   fire, no age limit); the texture cache freezing changed content (content guard:
+   **4 stale of 92,730,622 hits**, 0.00%).
+   **What stands**: guest memory at the sampled address GENUINELY holds the garbage at
+   blotch time (live dumps seconds after the operator's F9 — gotcha 285 for why the
+   timing matters); the affected textures include runtime-composed impostor/billboard
+   sheets (odd extents, DXT5, 4-vertex quads) that exist nowhere on disc and are never
+   resolve destinations — so the CPU composes them, from sources not yet named, and
+   composes junk. Every reader is exonerated; the defect is in the writer (gotcha 286).
+   **Next, in order**: (1) `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the outdoor route — the
+   engine narrates its streaming and may name the compositor outright; (2) a write
+   watch on one sheet's page when its fetch first appears, naming the composing
+   function for `gdis`; (3) read that function's SOURCES — if it reads something our
+   runtime never writes (a resolve's guest-memory copy is the standing suspect class:
+   Xenos resolves write to memory, ours never do), the one-way arrow from part 25's
+   "resolve pixels are never written back" note finally has its victim.
+   Sub-defects enumerated by the same census, unclaimed: 231 colour fetches served by
+   a DEPTH resolve snapshot; 245 all-zero-at-upload frozen entries (mostly benign per
+   the guard, but uncounted against the picture); the flat-colour placeholder uploads
+   (the far-LOD look of item 00i, possibly the game's own behaviour).
+
 00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25, AND ROUGHLY HALF-DONE BY
    VOLUME.** Cube maps are uploaded as six faces and bound into descriptor set 2;
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in
@@ -1381,6 +1413,16 @@ Next, in order:
    priority work before then**: it would be a fix aimed at a defect nobody has yet shown
    exists, measured against a picture that cannot report whether it worked.
 
+   **PART 35: THE UNBLOCK CONDITION IS MET AND THE PICTURE IS CAPTURED.** On the
+   part-34 renderer the pop is cleanly visible and photographed: the same shop as flat
+   colour panels at street-across distance and full siding closer
+   (`part35-item1-operator/reload_test`, captures 30631/30807). The far state is FLAT
+   COLOUR (single-repeated-block uploads in the texture census — possibly the game's
+   own placeholder), not broken texture. **What remains is exactly one Xenia look**:
+   walk the same street and say whether hardware still shows flat panels at that
+   distance. Same distance -> faithful, close 00i; textured earlier -> our streaming
+   promotes late and the `KeSetBasePriorityThread` no-op is the first candidate.
+
 00b. **THE TEXTURE CACHE IS NOT THE WRONG-TEXTURE MECHANISM — MEASURED AND RETIRED.**
    Part 23's opening hypothesis was that the cache, keyed on the fetch constant's six
    dwords (a DESCRIPTOR) and never invalidated, serves a previous occupant's image when
@@ -1987,24 +2029,21 @@ Next, in order:
    filing a game-logic bug.
    NB the guest clock IS advancing (save screens read `Day 1 - 07:08 AM` then
    `07:58 AM`), so a stopped case timer is not simply a stopped clock.
-3d. **NPC PART MESHES GO MISSING, DIFFERENT PARTS ON DIFFERENT CHARACTERS.** Dick
-   renders as a head and one hand; Fausto has no legs; Gemini has no hair (her dark
-   arms are GLOVES and correct). These characters are assembled from separate part
-   meshes — the boot loads `childface`, `childhand`, `childupperbdy`, `childfullbody`
-   as distinct files — so the thing to look for is what a missing part has in common
-   with the other missing parts, not what is wrong with a given character. Hair in
-   particular is normally its own alpha-tested material, which is a natural candidate
-   for a shader or blend-state gap.
-   **Distance matters**: Dick was INVISIBLE at range and became head-and-hand on
-   approach, which is the same "approaching asks for a new resource and whatever we
-   lack goes missing silently" signature as the white buildings (3b) and the black
-   areas (item 0's shader misses).
-   **UNRESOLVED WHETHER THIS IS A CACHE MISS.** The session that found it ran 351
-   shaders while 370 were on disk, and every one of the 16 shaders it reported missing
-   is now translated — so some of these parts may already be fixed. Re-test on a fresh
-   launch BEFORE investigating: if the parts come back, it was the cache; if they do
-   not, it is a real material/geometry defect and Gemini's correctly-rendered body is
-   the control sitting next to it.
+3d. ~~**NPC PART MESHES GO MISSING**~~ **CLOSED IN PART 35 — the re-test the item asked
+   for was run and the parts are back.** Dick renders whole (head, hands, legs, body)
+   in every capture on two binaries
+   (`~/DR2CZ-troubleshooting/part35-item1-operator/`). The missing parts were the
+   shader-cache gap, exactly as the "re-test on a fresh launch BEFORE investigating"
+   note predicted — every one of the 16 shaders that session lacked is translated now.
+   What Dick shows INSTEAD is the striped-material class (item 0s below): his far-LOD
+   material renders as banded garbage while his near material is clean, or vice versa
+   depending on the boot.
+
+   The original statement, kept because its method note (look for what missing parts
+   share, not what is wrong with one character) is right the next time parts go
+   missing: Dick rendered as a head and one hand; Fausto had no legs; Gemini no hair.
+   Assembled from separate part meshes (`childface`, `childhand`, `childupperbdy`,
+   `childfullbody`).
 3c. **The pause menu is sheared and broken in STILL CREEK and perfect in the
    SAFEHOUSE.** Same menu, same shaders, different world state — so it arrives with its
    own control, which is rare. The paper becomes a trapezoid with stray white polygons
