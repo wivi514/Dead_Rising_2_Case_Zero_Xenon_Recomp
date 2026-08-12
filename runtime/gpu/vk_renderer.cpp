@@ -694,6 +694,11 @@ inline uint32_t PhysToVa(uint32_t addr) { return kPhysArenaBase | (addr & 0x1FFF
 // register file hands us goes through this: a fetch constant left over from a previous
 // frame can name anything at all, and a memcpy from it is a host segfault attributed
 // to our renderer rather than to the stale register it came from.
+// The pose capture's player half — defined in cpu/debug_tunables.cpp, which owns the
+// guest pointer and guest memory access. Declared rather than headered because that
+// translation unit has no header and one function does not justify inventing one.
+extern "C" uint32_t CZ_DebugWritePlayerObject(FILE* f, uint32_t bytes);
+
 bool GuestRangeOk(uint32_t va, uint64_t bytes)
 {
     return bytes && va >= kPhysArenaBase && uint64_t(va) + bytes <= kPhysArenaEnd;
@@ -1515,6 +1520,11 @@ struct Renderer
     // CONTENT, which is exactly what tools/xtr_determinism.py does to the capture pair.
     uint64_t drawFingerprint = 0;
     uint64_t cameraFingerprint = 0;
+    // The constants the fingerprint above HASHES, kept rather than only summarised.
+    // A hash can say two frames differ; only the values can say where the camera was,
+    // and reproducing a shot is the whole point of the pose capture (see the .pose
+    // writer at the F9 block). 16 float4 = the view-projection plus the world matrices.
+    uint32_t camConsts[64] = {};
     uint64_t verticesThisFrame = 0;
     // Draws recorded since the last resolve, i.e. the size of the pass that resolve is
     // closing. This is the number that separates "the pass rendered nothing because it
@@ -5510,19 +5520,72 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // an identity: skip one address, look at what vanished. That turns "the save-slot
     // boxes are black" into "the save-slot boxes are texture 0364B000", which is a
     // question with an answer.
+    //
+    // CZ_VK_TEX_FILTER_FILE=<path> is the same two arms, RE-READ WHILE THE GAME RUNS.
+    // The env forms are latched once per process, which is unusable for the defect this
+    // was built for: the striped-material class picks a different streamed quality level
+    // on every boot, so the address to isolate is only known from a census taken INSIDE
+    // the boot that shows it, and by then the process has already read its environment.
+    // The file holds one line, `only=<hex[,hex...]>` or `skip=<hex[,hex...]>` (empty
+    // file or missing = no filtering), and is re-read when its mtime changes — one stat
+    // per frame, not per draw, so it costs nothing on the draw path. It is what lets an
+    // operator standing in front of the blotch have textures isolated under them.
     {
         static const char* onlyTex = Env("CZ_VK_ONLY_TEX");
         static const char* skipTex = Env("CZ_VK_SKIP_TEX");
-        if (onlyTex || skipTex)
+        static const char* filterFile = Env("CZ_VK_TEX_FILTER_FILE");
+        static std::string fileOnly, fileSkip;
+        if (filterFile)
+        {
+            // ONCE PER FRAME, NOT PER DRAW. `frame` advances in Host_Present, so this
+            // stats the file a few hundred times a minute rather than a few hundred
+            // thousand — and a filter that cost frame time would change the picture it
+            // is being used to read (gotcha 7).
+            static uint64_t lastFrame = ~0ull;
+            static int64_t lastMtime = -1;
+            if (R->frame != lastFrame)
+            {
+                lastFrame = R->frame;
+                std::error_code ec;
+                const auto mt = std::filesystem::last_write_time(filterFile, ec);
+                const int64_t now = ec ? -1 : mt.time_since_epoch().count();
+                if (now != lastMtime)
+                {
+                    lastMtime = now;
+                    fileOnly.clear();
+                    fileSkip.clear();
+                    if (FILE* f = fopen(filterFile, "rb"))
+                    {
+                        char line[512];
+                        while (fgets(line, sizeof line, f))
+                        {
+                            char* nl = strpbrk(line, "\r\n");
+                            if (nl) *nl = 0;
+                            if (!strncmp(line, "only=", 5)) fileOnly = line + 5;
+                            else if (!strncmp(line, "skip=", 5)) fileSkip = line + 5;
+                        }
+                        fclose(f);
+                    }
+                    // ANNOUNCE EVERY CHANGE. A filter that silently failed to parse
+                    // looks exactly like a texture that is not drawn — the arm would
+                    // fail AS the symptom it is used to find (gotcha 279).
+                    fprintf(stderr, "[vk] tex filter reloaded: only='%s' skip='%s'\n",
+                            fileOnly.c_str(), fileSkip.c_str());
+                }
+            }
+        }
+        const char* onlyEff = !fileOnly.empty() ? fileOnly.c_str() : onlyTex;
+        const char* skipEff = !fileSkip.empty() ? fileSkip.c_str() : skipTex;
+        if (onlyEff || skipEff)
         {
             char hex[16];
             snprintf(hex, sizeof hex, "%08X", R->lastTexAddr);
-            if (onlyTex && !strstr(onlyTex, hex))
+            if (onlyEff && !strstr(onlyEff, hex))
             {
                 Count("draw: filtered out (CZ_VK_ONLY_TEX)");
                 return;
             }
-            if (skipTex && strstr(skipTex, hex))
+            if (skipEff && strstr(skipEff, hex))
             {
                 Count("draw: filtered out (CZ_VK_SKIP_TEX)");
                 return;
@@ -6806,7 +6869,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // view-projection and the world matrices every scene shader reads.
         uint64_t h = 0xCBF29CE484222325ull;
         for (uint32_t i = 0; i < 16 * 4; i++)
+        {
             h = mix(h, regs[xenos::kAluConstantBase + i]);
+            R->camConsts[i] = regs[xenos::kAluConstantBase + i];
+        }
         R->cameraFingerprint = h;
     }
 
@@ -8181,6 +8247,52 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // operator walks away believing the evidence exists (gotchas 25, 151).
             fprintf(stderr, "[vk] capture: CANNOT WRITE %s — the picture is LOST\n", path);
         }
+
+        // ...AND THE POSE, so the shot can be taken again.
+        //
+        // Every picture finding in this port has been anchored to "the operator walked
+        // somewhere and pressed F9", which is not a reproducible experiment: nothing
+        // headless can return to that spot, and the striped-material class picks a
+        // different quality level on each boot, so the second visit is a different
+        // measurement. What makes a shot repeatable is the CAMERA and the PLAYER, so
+        // both are recorded beside the picture.
+        //
+        // Both are written RAW — the 16 float4 vertex constants the camera fingerprint
+        // hashes (view-projection and world matrices) and the head of the player's game
+        // object. Deriving an eye position or naming a position field here would be
+        // guessing at a layout; two .pose files taken in different places name those
+        // fields by what CHANGED, and that analysis belongs in a tool that can be fixed
+        // without a rebuild (tools/pose_read.py).
+        snprintf(path, sizeof path, "%s/capture_%06llu.pose", Env("CZ_CAPTURE_KEY"),
+                 (unsigned long long)pres.frame);
+        if (FILE* f = fopen(path, "w"))
+        {
+            fprintf(f, "# frame %llu  cameraFingerprint %016llx  drawFingerprint %016llx\n",
+                    (unsigned long long)pres.frame,
+                    (unsigned long long)R->cameraFingerprint,
+                    (unsigned long long)R->drawFingerprint);
+            fprintf(f, "# vc[i] = vertex ALU constant i (16 float4: VP + world matrices)\n");
+            for (uint32_t i = 0; i < 64; i += 4)
+            {
+                float v[4];
+                for (uint32_t k = 0; k < 4; k++)
+                {
+                    const uint32_t bits = R->camConsts[i + k];
+                    memcpy(&v[k], &bits, 4);
+                }
+                fprintf(f, "vc%-2u %.6f %.6f %.6f %.6f\n", i / 4, v[0], v[1], v[2], v[3]);
+            }
+            // The object dump lives in debug_tunables.cpp, which already owns guest
+            // memory access and the pointer itself; GuestRangeOk here would be the
+            // wrong check anyway, since it validates only the physical texture arena
+            // and a game object is an ordinary virtual address.
+            const uint32_t obj = CZ_DebugWritePlayerObject(f, 2048);
+            fclose(f);
+            fprintf(stderr, "[vk] capture: wrote %s (camera + player object %08X)\n",
+                    path, obj);
+        }
+        else
+            fprintf(stderr, "[vk] capture: CANNOT WRITE %s — the pose is LOST\n", path);
     }
     static const char* dumpDir = Env("CZ_VK_FRAME_DUMP");
     static const uint64_t dumpEvery =

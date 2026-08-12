@@ -2041,3 +2041,49 @@ PPC_FUNC(sub_824A8FE0)
     }
     __imp__sub_824A8FE0(ctx, base);
 }
+
+// ===================================================================================
+// THE POSE ANCHOR — what the F9 capture needs to make a shot reproducible.
+//
+// WHY THIS EXISTS. Every picture claim in this port has been anchored to "the operator
+// walked somewhere and pressed F9", which no headless run can reproduce and no second
+// session can revisit: the striped-material class picks a different quality level per
+// boot, so "go back to the tanker" is not the same experiment twice. A shot is
+// reproducible only if the CAMERA and the PLAYER can be restored, so the capture has to
+// record them.
+//
+// This exposes the player's game object to the renderer's F9 path. It is the same
+// pointer `CZ_AUTOCHUCK` drives the AI through (`g_gameDebugController + 0x30`), which
+// is the one object in this engine we have already proven we can find and write.
+// The renderer dumps its bytes; which offsets hold the position is decided OFFLINE by
+// diffing two captures taken in different places, not guessed here (gotcha 214's shape:
+// bind a field by what changes with the thing, not by what looks plausible).
+extern "C" uint32_t CZ_DebugPlayerObject()
+{
+    uint8_t* base = g_memory.base;
+    return g_gameDebugController ? PPC_LOAD_U32(g_gameDebugController + 0x30) : 0;
+}
+
+// Write the head of the player object into an already-open .pose file, and return the
+// object address so the caller can report it. Values are printed as BOTH the raw dword
+// and the float it would be: a position may be stored either way, and the offline diff
+// that names the fields should not need a second capture session to find out.
+extern "C" uint32_t CZ_DebugWritePlayerObject(FILE* f, uint32_t bytes)
+{
+    uint8_t* base = g_memory.base;
+    const uint32_t obj = CZ_DebugPlayerObject();
+    fprintf(f, "player_object %08X\n", obj);
+    fprintf(f, "controller %08X\n", g_gameDebugController);
+    if (!obj)
+    {
+        // SAY SO. A pose file that is silently missing its player half reads exactly
+        // like a player who happened to be at the origin (gotchas 25, 151).
+        fprintf(f, "# no player object yet (no level running?) — NOT dumped\n");
+        return 0;
+    }
+    for (uint32_t off = 0; off < bytes; off += 4)
+        fprintf(f, "obj+%04X %08X %.6f\n", off, PPC_LOAD_U32(obj + off),
+                [&] { const uint32_t b = PPC_LOAD_U32(obj + off); float v;
+                      memcpy(&v, &b, 4); return v; }());
+    return obj;
+}
