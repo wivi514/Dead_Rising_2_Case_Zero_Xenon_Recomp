@@ -252,3 +252,25 @@ actual sampled bytes of every texture, vertex and index buffer), so it replays s
 slightly and at w5 a newsstand had fallen over. Use them for "what it should look like" and
 place identification, never for a frame-locked pixel diff — the exact framebuffer for each
 spot is inside its `.xtr`.
+
+## R3_world/ (2026-08-12) — round-3 single-frame traces at part 35's four defect sites
+
+Delivered the same night part 35 found the striped-material class (open-items 0s), one
+paired `<name>.xtr` + `<name>.png` per site, plus `r3_shaders.zip` (331 distinct guest
+shaders). Full method notes in `R3_world/R3_CAPTURE_NOTES.md`.
+
+**NEW this round: the PNG is frame-locked** — the operator's fork now takes Xenia's own
+guest-framebuffer screenshot at the F4 press, so each PNG is the trace's own frame
+(round 2's return-trip screenshot caveat is gone; these ARE usable for pixel questions).
+
+| spot | what it answers | verdict from the PNG alone |
+|---|---|---|
+| `tanker` | the close-range blotches | hardware's cab is clean CREAM — the cream skin our runtime showed once after a reload was the CORRECT one; the grey-green blotch state is the garbage |
+| `survivor_dick` | Dick's striped distance material | hardware clean at the same range |
+| `green_building` | the close-up mottling | hardware clean |
+| `pawnshop` | the checkered window boards | hardware's boards are plain wood |
+
+**Four for four: hardware is clean, the class is ours** — and each `.xtr` carries the
+MemoryRead bytes of every texture hardware sampled, i.e. the ground truth for what the
+CPU-composed sheets SHOULD hold. That is item 0s's writer-hunt oracle, in hand before
+the hunt starts.
