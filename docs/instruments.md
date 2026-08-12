@@ -1037,15 +1037,22 @@ CZ_VK_DEPTH_CLEAR_FAR=1  clear depth to 1.0 whatever RB_DEPTH_CLEAR says. A DIAG
                    that named the shadow cascade's input: the atlas goes 46.875% zero ->
                    0.0113%. This title leaves RB_DEPTH_CLEAR at 00000000 for nearly every
                    pass, and a LESS test against 0 rejects every fragment
-CZ_VK_MSAA_WINDOW_SCALE_Y=1  scale window coordinates in Y as well as X on a 4x MSAA
-                   surface. Xenos 4x is a 2x2 sample grid, so a 4x surface is twice as
-                   wide AND twice as tall in samples, and only X has ever had the factor.
-                   The shadow cascade's two clear rects — (0,0)-(480,512) on a 520-pitch
-                   4x surface and (960,0)-(1024,1024) — tile its 1024x1024 map EXACTLY
-                   under this rule and cover 53.125% of it without: atlas 46.8750% zero
-                   -> 0.0038%, title-screen picture unmoved. An ARM until the SCENE
-                   tile's 4x clear, which wants X scaled and Y not, is reconciled
-                   (phase5-notes §6bf)
+CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1  map window Y one-to-one on a 4x MSAA surface — the
+                   part-33-and-earlier renderer, and the same-binary control arm for the
+                   Y factor that became the DEFAULT in part 34. Xenos 4x is a 2x2 sample
+                   grid, so a 4x surface is twice as wide AND twice as tall in samples,
+                   and only X had the factor for 25 parts. The shadow cascade's two clear
+                   rects — (0,0)-(480,512) on a 520-pitch 4x surface and
+                   (960,0)-(1024,1024) — tile its 1024x1024 map EXACTLY under the
+                   both-axes rule and cover 53.125% of it under X-only: atlas 46.8750%
+                   zero -> 0.0038% (reproduced to four decimals on the part-34 binary).
+                   The part-32 arm variable `CZ_VK_MSAA_WINDOW_SCALE_Y` is RETIRED — the
+                   behaviour it enabled is the default and the variable is no longer
+                   read. The scene-tile reconciliation that unblocked shipping it is
+                   phase5-notes §6bf/§6bh: a clear rect is in the CLEAR declaration's
+                   pixel space, and doubling Y over-clears past a shorter surface into
+                   the shared stand-in exactly as the X factor always has — the same
+                   approximation, measured harmless the same way
 CZ_VK_SCOPED_CLEAR=1  clear only the region the pass rendered, not the whole EDRAM
                    stand-in — closer to what a Xenos copy block does, which clears the
                    tiles of the CURRENT surface. Off by default because it was measured

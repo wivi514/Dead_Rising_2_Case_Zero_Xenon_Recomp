@@ -5732,25 +5732,35 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             posScale[0] *= 2.0f;
             Count("draw: window coordinates scaled for a 4x MSAA surface");
         }
-        // CZ_VK_MSAA_WINDOW_SCALE_Y=1 — scale Y for a 4x surface as well as X.
+        // Y is scaled for a 4x surface as well as X — THE DEFAULT since part 34.
         //
         // Xenos 4x MSAA is a 2x2 sample grid, so a 4x surface is twice as wide AND twice
-        // as tall in samples; our EDRAM stand-in is at sample resolution, so on that
-        // reading BOTH axes need the factor and only X has ever had it. The case that
-        // says so is the SHADOW CASCADE's clear, which part 15 recorded as
-        // `(0,0)-(480,512)` and part 32 located on a 520-pitch 4x surface: 480 x 2 = 960
-        // and 512 x 2 = 1024, and the title's other clear rect on that surface is
-        // `(960,0)-(1024,1024)`. The two together tile the 1024x1024 cascade EXACTLY —
-        // but only if Y is doubled too, and without it the union is the 53.125% this
-        // renderer produces.
+        // as tall in samples; our EDRAM stand-in is at sample resolution in X, so both
+        // axes take the draw's OWN declared sample factor. The case that forced it is
+        // the SHADOW CASCADE's clear, `(0,0)-(480,512)` on a 520-pitch 4x surface:
+        // doubled in both axes it tiles the 1024x1024 cascade EXACTLY with the title's
+        // other rect `(960,0)-(1024,1024)`; doubled in X only, the union is the 53.125%
+        // coverage part 32 measured, and the rejected half read as always-occluded.
         //
-        // An ARM rather than the default because the SCENE tile's 4x clear is
-        // `(0,0)-(320,720)` on a 640-sample-wide tile, where X wants the factor and Y
-        // apparently does not — two 4x surfaces asking for different things is not a
-        // model, it is two data points, and the second one has to be explained before
-        // this becomes the behaviour.
-        static const bool msaaScaleY = EnvOn("CZ_VK_MSAA_WINDOW_SCALE_Y");
-        if (msaaScaleY && !noMsaaScale && msaa == 2)
+        // Part 32 held this back because the SCENE tile's 4x clear `(0,0)-(320,720)`
+        // seemed to want X and not Y. The reconciliation (§6bf): the title re-declares
+        // a surface as 4x purely to clear it, so a clear rect is in the CLEAR
+        // declaration's pixel space, not the render's — the scene tile renders 2x
+        // (Y-doubled in samples already), so its 4x clear's Y-doubled rect covers the
+        // same rows, just expressed differently. Doubling Y here OVER-clears past the
+        // tile's rows into the shared stand-in (rows 720..1024) exactly as the X factor
+        // has always over-cleared the 640x360 post surface to 1280 wide — the same
+        // approximation, harmless for the same reason (measured: title screen unmoved,
+        // cascade atlas 46.875% -> ~0.004% zero). The exact form is a stand-in at
+        // sample resolution in BOTH axes with downsampling resolves; until then the
+        // per-axis factor is carried here, at the one window-coordinate site.
+        //
+        // CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1 is the same-binary control arm (the part-33
+        // renderer). The part-32 arm variable CZ_VK_MSAA_WINDOW_SCALE_Y is RETIRED and
+        // no longer read: setting it asks for what is now the default, and reading two
+        // variables for one axis invites the contradictory pair.
+        static const bool noMsaaScaleY = EnvOn("CZ_VK_NO_MSAA_WINDOW_SCALE_Y");
+        if (!noMsaaScaleY && !noMsaaScale && msaa == 2)
         {
             posScale[1] *= 2.0f;
             Count("draw: window Y also scaled for a 4x MSAA surface");
