@@ -75,19 +75,37 @@ def decompress(payload, enc, declen):
 
 
 class Memory:
-    """The guest memory the trace carries, as {base: bytes} sorted for lookup."""
+    """The guest memory the trace carries, as {base: bytes} sorted for lookup.
+
+    EVERY CHUNK CARRIES THE WALK POSITION IT ARRIVED AT, and reads can report it.
+    A trace's memory records are SNAPSHOTS taken at a moment, not a live view: Xenia
+    dumps the bytes behind a resource the first time the GPU reads it, and never again.
+    So for an address the title RESOLVES INTO during the traced frame, the only snapshot
+    is the one taken BEFORE the resolve — i.e. the previous frame's contents.
+
+    That cost part 32 the whole of §6bc's hardware oracle. `--dump-texture 1812F000`
+    on `w1_spawn` returns 16 MB that reads as a shadow-cascade atlas 96.5% populated,
+    and is in fact the previous frame's COMPOSITED SCENE — the HUD text is legible in
+    it. Detiled and viewed, "8 KILLED" is readable across the middle of the "atlas".
+    The number was quoted as hardware's shadow map for a whole part.
+    """
 
     def __init__(self):
         self.chunks = []
 
-    def add(self, base, data):
-        self.chunks.append((base, base + len(data), data))
+    def add(self, base, data, seq=None):
+        self.chunks.append((base, base + len(data), data, seq))
 
     def read(self, addr, length):
-        for lo, hi, d in reversed(self.chunks):     # later writes win
+        for lo, hi, d, _ in reversed(self.chunks):  # later writes win
             if lo <= addr and addr + length <= hi:
                 return d[addr - lo:addr - lo + length]
         return None
+
+    def sources(self, addr, length):
+        """Every chunk that could serve this read, newest last, as (seq, base, len)."""
+        return [(seq, lo, hi - lo) for lo, hi, _, seq in self.chunks
+                if lo <= addr and addr + length <= hi]
 
 
 def decode_fetch(regs, slot):
@@ -150,12 +168,21 @@ def main():
     draws = []
     want = int(args.dump_texture, 16) if args.dump_texture else None
     dumped = 0
+    seq = 0
+    # Every RESOLVE destination the trace issues, and the walk position of the FIRST
+    # one. A dumped texture whose address is in here was PRODUCED inside the traced
+    # frame, so any memory snapshot taken before that position is the previous frame's
+    # contents at that address, not the surface the draw sampled.
+    resolve_dests = {}
+    dump_provenance = []
 
     for off, cmd in xtr.walk(data, len(data)):
+        seq += 1
         if cmd in (xtr.CMD_MEMORY_READ, xtr.CMD_MEMORY_WRITE):
             base, enc, elen, dlen = struct.unpack_from('<IIII', data, off + 4)
             try:
-                mem.add(base, decompress(data[off + 20:off + 20 + elen], enc, dlen))
+                mem.add(base, decompress(data[off + 20:off + 20 + elen], enc, dlen),
+                        seq)
             except Exception as e:                    # a bad record must not kill the walk
                 print('  [memory record at %08X undecodable: %s]' % (base, e),
                       file=sys.stderr)
@@ -246,6 +273,14 @@ def main():
                     code = mem.read(b[0], b[1] * 4)
                     if code:
                         names[label] = '%s_%016x' % (label, fnv1a(code))
+            # A RESOLVE is a draw issued while RB_MODECONTROL's edram_mode is 6
+            # (kCopy) — the same test tools/xtr_resolve_census.py makes. Recorded here
+            # only so the texture dump can say whether the bytes it is about to write
+            # predate the resolve that produced them.
+            if (regs.get(0x2208, 0) & 7) == 6:            # RB_MODECONTROL, 6 = kCopy
+                d = regs.get(0x2319, 0) & 0xFFFFFFFC     # RB_COPY_DEST_BASE
+                if d:
+                    resolve_dests.setdefault(d, seq)
             tex = [t for t in (decode_fetch(regs, s) for s in range(32)) if t]
             draws.append((len(draws), idx_count, names, tex, prim))
             if want:
@@ -257,17 +292,52 @@ def main():
                         # carries it perfectly.
                         bpp = {18: 0.5, 19: 1.0, 20: 1.0, 6: 4.0, 2: 1.0,
                                22: 4.0, 26: 8.0}.get(t['fmt'], 4.0)
-                        blob = mem.read(t['addr'], int(t['w'] * t['h'] * bpp))
+                        length = int(t['w'] * t['h'] * bpp)
+                        blob = mem.read(t['addr'], length)
                         if blob:
                             p = os.path.join(args.out, 'tex_%08X_%ux%u_f%u.bin'
                                              % (t['addr'], t['w'], t['h'], t['fmt']))
                             open(p, 'wb').write(blob)
                             dumped += 1
+                            dump_provenance.append(
+                                (t['addr'], length, t['w'], t['h'], t['fmt'],
+                                 mem.sources(t['addr'], length)))
 
     print('draws: %d   distinct shader pairs: %d'
           % (len(draws), len({(d[2].get('vs'), d[2].get('ps')) for d in draws})))
     if want:
         print('dumped %d copies of texture %08X to %s' % (dumped, want, args.out))
+        # THE GATE. A trace's memory records are snapshots with a TIME, and this tool
+        # serves whichever one happens to contain the range. If the address is also a
+        # RESOLVE DESTINATION in the same trace and every covering snapshot predates the
+        # first resolve to it, the bytes just written are what was at that address
+        # BEFORE the surface was produced — a different picture entirely, and one that
+        # looks perfectly plausible. Exit 2 rather than a warning, because the failure
+        # mode is a confident wrong number: §6bc quoted 16 MB of the previous frame's
+        # composited scene as hardware's shadow atlas.
+        stale = False
+        for addr, length, w, h, fmt, srcs in dump_provenance[-1:]:
+            made_at = resolve_dests.get(addr)
+            newest = max((q for q, _, _ in srcs if q is not None), default=None)
+            print('  %08X %ux%u fmt=%u: %d memory snapshot(s) cover it%s'
+                  % (addr, w, h, fmt, len(srcs),
+                     '' if newest is None else ', newest at walk position %d' % newest))
+            if made_at is None:
+                print('  and the trace issues no RESOLVE to this address, so the bytes '
+                      'are guest memory the title uploaded — a sound oracle.')
+                continue
+            print('  BUT the trace RESOLVES INTO %08X, first at walk position %d.'
+                  % (addr, made_at))
+            if newest is not None and newest < made_at:
+                stale = True
+                print('  *** EVERY SNAPSHOT PREDATES THAT RESOLVE. The bytes written '
+                      'are what was at this address BEFORE the surface was produced — '
+                      'in this title, typically the previous frame\'s composited scene. '
+                      'They are NOT hardware\'s copy of the surface, and the capture '
+                      'cannot supply it: a surface the GPU produces inside the traced '
+                      'frame is never snapshotted again. ***')
+        if stale:
+            return 2
 
     shown = 0
     for i, n, names, tex, prim in sorted(draws, key=lambda d: -d[1]):
