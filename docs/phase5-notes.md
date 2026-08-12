@@ -5902,3 +5902,47 @@ addresses may differ between boots — so check whether two runs of the headless
 DebugJump recipe produce the same census addresses before relying on one boot's.
 If they do not, the cheap fix is to make the filter re-readable at runtime (a file or
 a key) so an operator can toggle it in the boot that shows the defect.
+
+## 6bl. The game can already move Chuck: `setplayerpos` is in the shipped image, and
+## this is its call sequence (part 36)
+
+The pose work started by hunting the player's position in memory and got nowhere useful
+— the object `CZ_AUTOCHUCK` steers is a controller (0 of 512 dwords move across the
+map), and scanning for coordinates near the camera finds crowds and navmesh arrays but
+cannot single out the player. The operator asked the right question: *doesn't the game
+already have something to grab Chuck's position?* It does. This is the retail image
+with its debug layer intact (the same fact gotcha 266 records for the log kill switch),
+and it ships a debug CONSOLE with a command table:
+
+```
+setcamorient  setcampos  getremoteplayid  setallremoteplaypos  setplayerpos
+playerinfo  getplayerinfo  zombieinfo  getactivezombiei...
+```
+
+`setplayerpos` is dispatched by string compare at **`0x825C049C`** (the table's names
+live at `0x8208C3D8..`), and its body at **`0x825C04D4`** reads as follows — this is the
+whole primitive, so it can be replicated without a console:
+
+| step | code | meaning |
+|---|---|---|
+| `argc >= 5` | `cmplwi r27,5` | `setplayerpos <player> <x> <y> <z>` |
+| `atoi(argv[1])` | `bl 0x82810BC8` | player index -> r31 |
+| `atof(argv[2..4])` | `bl 0x82810210` x3 | X, Y, Z (note the handler reads them in the order argv[4], argv[3], argv[2]) |
+| stack vec3 | `stfs` to `0x158/0x15C/0x160(r1)` | the position, three floats |
+| `lwz r3, 0x7428(0x82A50000)` | global **`0x82A57428`** | the manager the player hangs off |
+| `bl 0x82483230` with r4=1 | | resolve session/manager |
+| `vtable[0x10]()` | `bctrl` | |
+| `lwz r3, 0x7C(r3)` then `bl 0x8247B020` with r4 = index | | **get the player object** |
+| `vtable[0x28]()` | `bctrl` | |
+| `vtable[0x84](obj, &vec3)` | `bctrl` | **SET POSITION** |
+
+Two things follow. **The teleport should call the title's own path** rather than poking
+a field: the virtual setter is what handles collision, streaming and whatever else the
+engine attaches to a move, and every one of those would be a separate defect to
+discover by writing memory directly. And **`getplayerinfo`/`playerinfo` is the matching
+READ**, which is the cheaper half of the pose problem — it will name the position's
+offset for free, and it is the next thing to disassemble.
+
+This also supersedes the memory hunt as the primary route. `tools/live_findpos.py`
+stays because it is the general instrument (and it is what proved the controller object
+innocent), but a shipped debug command beats a heuristic scan.
