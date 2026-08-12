@@ -1226,3 +1226,57 @@ labels are incomplete retail scaffolding, not a feature this overlay claims to r
 scene list because the two games share an engine, but `data/models/environment` holds
 only `prologue`, `prologue_menu`, `prologue_menu2`, `prologue_safehouse` and
 `safehouse`. A jump anywhere else has no data behind it.
+
+## The pose capture and the live texture filter (part 36)
+
+```
+CZ_VK_TEX_FILTER_FILE=<path>   CZ_VK_ONLY_TEX / CZ_VK_SKIP_TEX, RE-READ WHILE RUNNING
+```
+One line, `only=<hex[,hex...]>` or `skip=<hex[,hex...]>`; empty or missing = no
+filtering. Re-read when its mtime changes, once per FRAME (not per draw), and every
+reload prints `[vk] tex filter reloaded: only='...' skip='...'` — a filter that silently
+failed to parse would look exactly like a texture that is not drawn, which is an arm
+failing AS its own symptom (gotcha 279).
+
+**Why the file exists when the env vars already did:** the env forms are latched once
+per process, and the striped-material class picks a different streamed quality level on
+every boot, so the address worth isolating is only known from a census taken INSIDE the
+boot that shows the defect. By then the process has read its environment. The file lets
+an operator standing in front of the blotch have textures isolated under them.
+
+Shown capable of failing: `only=DEADBEEF` (matching nothing) takes the title screen from
+mean luma **103.4 to 0.0** at the same frame count.
+
+**And the addresses are worth filtering by, because they are STABLE across boots**:
+between two operator sessions at the same spot, 703 of 712 shared addresses (98.7%) held
+byte-identical content, and only 4 of 628 shared contents lived at a different address.
+A census taken in one boot names textures usable in the next.
+
+```
+CZ_CAPTURE_KEY=<dir>           F9 now also writes capture_<frame>.pose
+```
+Beside the picture and the census: the 16 float4 vertex ALU constants at the frame's
+first draw (the view-projection and world matrices the camera fingerprint hashes) and
+the head of the player game object, with the controller address.
+
+Read it with **`tools/pose_read.py`** (one file = camera candidates; two files = also the
+object offsets that changed). Everything is written RAW deliberately — deciding which
+window is the view matrix, or which offset is a position, is a LAYOUT question, and a
+layout decided in the runtime cannot be corrected without a rebuild while a layout
+decided in a tool can.
+
+What is established so far:
+* `vc12..vc14` is a genuine view matrix on a scene frame — its three rows come out
+  **orthonormal to four decimals**, so `eye = -R^T t` is an identity rather than a fit,
+  and `vc15` is parameters (it reads `1.571` ≈ π/2), not a fourth row.
+* **A frame's FIRST draw may be a SHADOW pass**, whose "camera" is the light frustum —
+  one capture solved to a camera 36 units BELOW ground. Treat a pose whose eye is
+  implausible as the light's, not as a broken solve, and prefer a scene draw.
+* **The object `CZ_AUTOCHUCK` steers is not the transform holder**: 0 of its first 512
+  dwords changed across a map-crossing move. It is a controller.
+* `tools/live_findpos.py` hunts the position in the live process without ptrace-stopping
+  it: `near <x> <y> <z> [radius]` needs no motion (scan for coordinates close to the
+  pose's camera), the sampling mode needs the player to WALK. Its first run found
+  contiguous arrays of `(x, y, height)` triples with height pinned at **3.373** —
+  actors standing on flat ground, clustered around the camera, which independently
+  confirms the eye solve lands in real world coordinates.
