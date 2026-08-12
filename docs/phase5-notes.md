@@ -5576,3 +5576,27 @@ and the SPIR-V agree on every shader), `no translated shader` = 0.
 * The open items whose evidence was contaminated by whole-frame whiteness — LOD/00i,
   NPC part meshes, the operator's three-way shadow verdict — should be re-asked on this
   renderer.
+
+### THE OPERATOR'S VERDICT, same day: seven for seven, closed
+
+The operator toured all seven part-27 locations on the fixed renderer and F9-captured
+each one (`~/DR2CZ-troubleshooting/part33-operator/`, assigned and indexed). Scene-buffer
+plateau — pixels at exactly `rgb(180,180,180)` — is **ZERO in all seven** frames, against
+15,822-141,564 at the same places in part 27; presented-frame saturated white is a flat
+~1,920 px in every frame, which is the HUD text. (Part 27's captures were night runs
+under `DISABLE TIME OF DAY`, so the comparison is presence/absence of the pin, not
+matched luminance — and the pin is binary.) The reported objects read correct in the
+pictures: the cactus is green, the slot cabinets are textured with lit screens in an
+ordinarily-lit room, the register is dark metal, the pawnshop sign and ground shade like
+their surroundings. **Item 00f is closed with the operator's confirmation, not just the
+headless number.**
+
+| frame | location | part 27 px@180 | part 33 |
+|---|---|---|---|
+| 3344 | w1_spawn | 141,564 (15.36%) | **0** |
+| 5075 | w2_gasstation | 53,256 (5.78%) | **0** |
+| 4271 | w3_pawnshop | 114,381 (12.41%) | **0** |
+| 6738 | w4_bathroom | 15,822 (1.72%) | **0** |
+| 4738 | w5_newsboxes | 16,692 (1.81%) | **0** |
+| 6017 | w6_register_door | 63,562 (6.90%) | **0** |
+| 6312 | w7_slotmachine | 52,840 (5.73%) | **0** |

@@ -688,11 +688,14 @@ Where the port is, as of 2026-08-11 (part 33):
   scene mean luma 35.5 -> 44.7, distinct colours 80k -> 112k, validation 08733 10 -> 0,
   and the crowd's blotchy flat-lit patches are gone. The measurement chain (five paint
   arms, a 786,861-draw range census, and the no-test robust arm caught before its null
-  was believed) is `docs/phase5-notes.md` §6bg. **Owed: the operator's verdict on their
-  route, and a re-measure of the exposure discrepancy (ours 1.0 vs hardware 0.33) now
-  that auto-exposure adapts to a correctly lit scene — §6ba's question may simply
-  close.** The NaN-input footprint was 17x the visible plateau, so LOD/00i, NPC part
-  meshes and the shadow three-way should all be re-asked on this renderer.
+  was believed) is `docs/phase5-notes.md` §6bg. **The operator confirmed it the same
+  day: all seven part-27 white-surface locations toured and captured on the fixed
+  renderer, scene-buffer plateau ZERO in every one**
+  (`~/DR2CZ-troubleshooting/part33-operator/`). Owed: a re-measure of the exposure
+  discrepancy (ours 1.0 vs hardware 0.33) now that auto-exposure adapts to a correctly
+  lit scene — §6ba's question may simply close. The NaN-input footprint was 17x the
+  visible plateau, so LOD/00i, NPC part meshes and the shadow three-way should all be
+  re-asked on this renderer.
 
 Where the port was, as of 2026-08-11 (part 32):
 

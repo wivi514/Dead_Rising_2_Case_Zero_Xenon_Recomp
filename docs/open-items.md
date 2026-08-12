@@ -769,11 +769,13 @@ Next, in order:
    (in-shader `XeUnpack_10_11_11` for float-usage fmt16 elements) + runtime 7889e99
    (fmt16 binds `R32_SFLOAT`): plateau **1,092 px -> 0** at the same route and frame,
    scene mean luma 35.5 -> 44.7, distinct colours 80k -> 112k, and the crowd's blotchy
-   flat-lit patches are gone. **Still owed: the operator's confirmation on their route,
-   and a re-measure of the exposure discrepancy (ours 1.0 vs hardware 0.298-0.331) now
-   that the scene auto-exposure adapts to a correctly lit world.** The cube-decline prop
-   defect (the `s3`/`s4` duplicate served the dummy) is a SEPARATE defect and remains
-   open below.
+   flat-lit patches are gone. **THE OPERATOR'S CONFIRMATION IS IN, same day: all seven
+   part-27 locations toured and captured on the fixed renderer, scene-buffer plateau
+   ZERO in every one** (`~/DR2CZ-troubleshooting/part33-operator/`, table at the end of
+   §6bg). Still owed: a re-measure of the exposure discrepancy (ours 1.0 vs hardware
+   0.298-0.331) now that the scene auto-exposure adapts to a correctly lit world. The
+   cube-decline prop defect (the `s3`/`s4` duplicate served the dummy) is a SEPARATE
+   defect and remains open below.
 
    **READ THIS FIRST — PART 31 RETIRED THE MODEL EVERYTHING BELOW IS WRITTEN IN.**
    Parts 27, 28, 30 and the first half of 31 all read the plateau as *the shared tone

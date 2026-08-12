@@ -68,13 +68,13 @@ Everything from parts 26-32's lists stands, plus:
 
 ## WHERE TO START
 
-0. **ASK THE OPERATOR TO PLAY.** Two things at once: their verdict on the white
-   surfaces at the seven part-27 locations (spawn, gas station, pawnshop, register,
-   slot machines, bathroom, newsboxes — the `DISABLE TIME OF DAY` night trick makes
-   them unmissable if any survive), and the part-32 three-way shadow verdict
-   (`CZ_VK_MSAA_WINDOW_SCALE_Y=1` vs null vs `CZ_VK_NO_ADDR_TILE_FOLD=1`) which was
-   already owed and is now on a much better-lit renderer. Wire `CZ_SHADER_DUMP` to
-   `~/DR2CZ-troubleshooting/ucode-dumps` as always.
+0. ~~ASK THE OPERATOR TO PLAY for the white-surface verdict.~~ **DELIVERED, same day:
+   the operator toured all seven part-27 locations on the fixed renderer — scene-buffer
+   plateau ZERO in every one** (`~/DR2CZ-troubleshooting/part33-operator/`, assigned
+   and indexed; verdict table at the end of §6bg). Item 00f is closed both ways.
+   **Still owed from this slot: the part-32 three-way shadow verdict**
+   (`CZ_VK_MSAA_WINDOW_SCALE_Y=1` vs null vs `CZ_VK_NO_ADDR_TILE_FOLD=1`) at one crowd
+   spot, camera unmoved between shots — now on a much better-lit renderer.
 1. **RE-MEASURE THE EXPOSURE DISCREPANCY** (§6ba's open question): `CZ_VK_PSBIND` for
    `pc(14).w` on the outdoor route. If our auto-exposure now settles near hardware's
    0.3 the §6ba question closes for free; if it stays at 1.0 there is a second defect
