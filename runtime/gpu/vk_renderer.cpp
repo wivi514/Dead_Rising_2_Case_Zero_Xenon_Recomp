@@ -791,7 +791,19 @@ VkFormat XenosVertexFormat(uint32_t fmt, bool isSigned, bool isInteger)
         // k_10_11_11 packed normals are decoded IN the shader, which takes the raw
         // dword — so the input must deliver the untouched 32 bits, not a normalized
         // format that would pre-decode them wrongly.
-        case 16: return VK_FORMAT_R32_UINT;
+        //
+        // R32_SFLOAT, not R32_UINT, because of what the SHADER-side input is typed as.
+        // This title wraps every packed normal in a TEXCOORD usage, whose input variable
+        // is float4; binding R32_UINT against that is a pipeline type mismatch
+        // (VUID-VkGraphicsPipelineCreateInfo-Input-08733, ten pipelines on the outdoor
+        // route) whose practical effect was the packed dword's bits read AS a float —
+        // NaN whenever bits 30..23 are all ones. Those NaNs, laundered by the tone
+        // epilogue's max/saturate into exactly rgb(180,180,180), were the white-surface
+        // plateau (open-items 00f). An SFLOAT attribute is a plain 32-bit load, the bits
+        // arrive intact, and the emitter's XeUnpack_10_11_11 recovers them with asuint —
+        // see XenosRecomp shader_common.h. If a title ever declares fmt16 under a uint4
+        // usage (Fable 2 wraps normals as NORMAL), that path wants R32_UINT again.
+        case 16: return VK_FORMAT_R32_SFLOAT;
         case 7:
             if (isInteger)
                 return VK_FORMAT_R32_UINT;
