@@ -168,7 +168,7 @@ it is exactly why that rule is in the conventions.
   - **`phase-av-notes.md`** (sound, the cinematic that was waiting for it, and part
     29's diagnosis of the loop that followed) with `phase-av-plan.md` the plan it
     executed, `phase-av-kickoff.md` the phase hand-off and `part29-kickoff.md` its
-    successor. **`part31-kickoff.md` is the LIVE one** and supersedes all of them on
+    successor. **`part32-kickoff.md` is the LIVE one** and supersedes all of them on
     "where the port is". `d3d-phase-c28-kickoff.md` records how the white-surface chain
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
@@ -670,7 +670,35 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-11 (part 31):
+Where the port is, as of 2026-08-11 (part 32):
+
+* **HALF OF EVERY SHADOW CASCADE IS ZERO, AND A ZERO DEPTH SAMPLE READS AS OCCLUDED.**
+  The atlas is **46.8750% zero in every band** — rows 512..1023 minus a 64-column sliver —
+  on two routes and two frames, in four bands rendered from four different light frusta,
+  so it is structural. The geometry is submitted for all of it (`CZ_VK_DEPTH_ALWAYS`:
+  46.875% -> **1.86%**); the bottom half is REJECTED against the zero the EDRAM image was
+  created with. **The cause is that a Xenos 4x MSAA surface is twice as TALL in samples as
+  well as twice as wide, and only X has ever had the factor**: the title's two clear rects
+  for the cascade — `(0,0)-(480,512)` on a 520-pitch 4x surface and `(960,0)-(1024,1024)` —
+  tile the 1024x1024 map EXACTLY when both axes are scaled and cover **53.125%** of it when
+  only X is, which is the observed coverage to four decimals.
+  `CZ_VK_MSAA_WINDOW_SCALE_Y=1` -> **0.0038% zero**, title-screen picture unmoved. It is
+  an ARM, not the default, because the SCENE tile's 4x clear wants X scaled and Y not, and
+  that has to be reconciled first. `docs/phase5-notes.md` §6bf, `open-items.md` item 3.
+* **THE HARDWARE ORACLE PART 31's SHADOW WORK WAS MEASURED AGAINST IS RETRACTED.** The
+  16 MB `xtr_draw_bindings.py --dump-texture 1812F000` returns from `w1_spawn` is the
+  PREVIOUS FRAME'S COMPOSITED SCENE — detile it and the game's HUD is legible, *"8
+  KILLED"*. A `.xtr`'s memory records are snapshots with a time, so a capture **cannot**
+  supply any surface the GPU produces inside the traced frame (gotcha 280, correcting
+  gotcha 275's second half). The address-fold fix stands; the "hardware's is 96.5% full"
+  yardstick never existed. The tool exits 2 on that dump now and prints *"a sound oracle"*
+  otherwise; part 27's ground-texture comparison is unaffected.
+* **`CZ_VK_NO_DEPTH_TEST` CANNOT ANSWER A DEPTH-PASS QUESTION AND ANSWERS THE OPPOSITE.**
+  Vulkan ties depth WRITES to the depth TEST, so on a depth-only pass the arm empties the
+  buffer — the very symptom it exists to rule out (gotcha 279). `CZ_VK_DEPTH_ALWAYS` is
+  the replacement.
+
+Where the port was, as of 2026-08-11 (part 31):
 
 * **THE WHITE PLATEAU IS NOT THE TONE CURVE AT `x = 1`, AND FOUR PARTS OF WORK WERE
   PROSECUTED UNDER THAT READING.** Four whole-frame arms leave the pixels at exactly

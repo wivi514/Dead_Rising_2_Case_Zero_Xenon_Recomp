@@ -1373,6 +1373,55 @@ sizes it at a session. Measuring first and stopping is what the plan asked for, 
 0.0016% mismatch is exactly the fact that would have been discovered late and expensively
 by writing the cache first.
 
+## Part 32 (2026-08-11) — the cascade's other half, and a hardware oracle that was a
+## photograph
+
+**Part 31's hand-off recommended the shadow tail past the last cascade split. It is not
+there.** Our translation of that fade is instruction-for-instruction the guest's, and the
+arithmetic works out. The remaining shadow defect is one layer up: **half of every cascade
+band holds zero, and a zero depth sample reads as OCCLUDED.**
+
+The atlas is **46.8750% zero in every band** — rows 0..511 populated across every column,
+rows 512..1023 only in the last 64 — on two routes and two frames, in four bands rendered
+from four different light frusta by 108/87/221/35 draws. 15/32 exactly is not scene
+content. Three arms, in order:
+
+* `CZ_VK_DEPTH_ALWAYS=1` -> **1.86% zero**. The geometry is submitted for the whole
+  1024x1024 and the bottom half is REJECTED, against the zero the image was created with.
+  (`CZ_VK_NO_DEPTH_TEST`, the arm that exists for this, returns 100% zero on a depth-only
+  pass because Vulkan ties depth writes to the depth test — gotcha 279.)
+* `CZ_VK_DEPTH_CLEAR_FAR=1` -> **0.0113% zero**. The input is the clear VALUE.
+* `CZ_VK_SCOPED_CLEAR=1` -> **46.8750%**, a registered prediction refuted to four
+  decimals: the region is not wiped by another pass, it is never cleared by anybody.
+
+**Then the derivation.** `CZ_VK_RECT_TRACE=0` prints every rect-list clear with its
+surface pitch and MSAA mode, and locates the rect part 15 recorded as the cascade's:
+`(0,0)-(480,512)` on a **520-pitch 4x MSAA** surface, beside `(960,0)-(1024,1024)` on the
+1040-pitch one. 520 x 2 = 1040 is the cascade's own sample pitch, and Xenos 4x is a 2x2
+sample grid. Scale both axes and the two rects tile 1024x1024 EXACTLY; scale X only —
+which is all this renderer has ever done — and the union is 557,056 of 1,048,576 =
+**53.125%**, the observed coverage. `CZ_VK_MSAA_WINDOW_SCALE_Y=1` -> **0.0038% zero** with
+the title-screen picture unmoved. Left off by default: the scene tile's 4x clear wants X
+scaled and Y not, and two 4x surfaces asking for different things is two data points.
+
+**THE RETRACTION, and it is the part worth copying to another port.** §6bc measured our
+atlas against "hardware's copy of the same surface, 3.5% zero", dumped from `w1_spawn`
+with `xtr_draw_bindings.py --dump-texture 1812F000`. Those 16 MB are the **previous
+frame's composited scene** — detiled, the game's own HUD is legible in the "shadow map".
+A `.xtr`'s memory records are snapshots with a time: Xenia dumps the bytes behind a
+resource the first time the GPU reads it and never again, so for any address the title
+resolves into during the traced frame the only snapshot predates the surface. There is one
+chunk covering `1812F000`, at walk position 39; the first resolve into it is at 3522.
+Gotcha 280 corrects gotcha 275's second half. The fix it was quoted alongside stands — it
+rests on register values and an operator verdict — but the yardstick never existed, and
+the right target was the surface's own definition all along: a shadow map's unwritten
+region must read FAR, so 100%.
+
+The tool gates itself now: it reports how many snapshots cover the range and when they
+arrived, whether the address is a resolve destination, and **exits 2** when every snapshot
+predates the first resolve. Checked both ways — part 27's ground-texture comparison prints
+*"a sound oracle"* and is unaffected.
+
 ## Part 31 (2026-08-11) — the shadow atlas is fixed, and the white plateau's model is
 ## retired
 
