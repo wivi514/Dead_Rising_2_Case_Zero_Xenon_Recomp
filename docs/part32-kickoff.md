@@ -134,12 +134,18 @@ put it there.
 
 ## Gates, on this binary
 
+Re-run at the end of part 32, all clean:
+
 * `--smoke` OK.
+* `CZ_RING_TRACE=1` boot: **`truncated=0`**.
+* A5 kernel-call diff with `--include-high-frequency`: **exit 0, 3 permutation windows,
+  0 real** — the recorded baseline, unchanged.
+* Both PM4 capture oracles on B1: `pm4_packet_lengths.py` **exit 0** (0 disagreeing) and
+  `pm4_indirect_walks.py` **exit 0**.
+* `tools/shader_dim_census.py`: **exit 0**, 97 cube modules, `ps_926c15dd20571cf1` still
+  the only sidecar without `tfetchDims`.
 * `tools/xtr_draw_bindings.py --self-test`: **416 reproduce their filename, 0 do not**.
 * Renderer runs on the outdoor DebugJump route complete and present normally in both arms.
 
-**Not re-run and owed before any claim resting on them**: the A5 kernel-call diff, the
-`CZ_RING_TRACE` `truncated=0` gate, the PM4 capture oracles, `shader_dim_census.py`, the
-capture-E picture correlation and the shader-cache name diff. Part 32 touched the
-renderer's clear path and its window-coordinate mapping behind arms that are off by
-default, so the recorded baselines should still hold — but they were not re-measured.
+**Not re-run and owed before any claim resting on them**: the capture-E picture
+correlation and the shader-cache name diff — the same two part 31 left owed.
