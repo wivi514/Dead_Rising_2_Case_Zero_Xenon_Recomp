@@ -2445,3 +2445,18 @@ at matched indices.
 
 **Also fixed:** `CZ_VK_FRAME_DUMP` silently wrote nothing when its directory did not exist,
 which is indistinguishable from a renderer that drew nothing (gotcha 236).
+
+## Part 36 (2026-08-12) — the R3 oracle unmakes item 0s's framing
+
+The comparison the part-35 kickoff ordered as step one was run first and reframed the
+item: the "junk" impostor sheets are **byte-identical to hardware's sampled bytes**
+(400x240 and 1024x64, md5), decode to coherent billboard alpha-cutouts
+(`tools/tex_decode.py`, new), and the "3 DXT5 / 0 DXN in hardware's frame" concern
+was a filtered pass over a census that really reads 3,514 / 3,040. Five checks in one
+session: the fetch-format census, the byte pairing, the decode-and-look, a 4K-prefix
+search proving the "weird" 110AD000 slats texture absent from hardware's frame, and a
+content-match census (226 of 459 our-frame textures byte-identical to hardware's).
+The engine's own narration (1,209 [guest] lines) names no compositor. Item 0s is now
+a wrong-binding question; the writer hunt is closed unfired. Gotchas 287-288;
+`phase5-notes.md` §6bj; `part36-kickoff.md` is the live hand-off. Docs + one tool
+only — no runtime change, part 34's gates stand.

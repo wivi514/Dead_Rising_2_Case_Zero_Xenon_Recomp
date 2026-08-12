@@ -670,7 +670,27 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 35):
+Where the port is, as of 2026-08-12 (part 36):
+
+* **ITEM 0s IS REFRAMED: THE "JUNK SHEETS" ARE CORRECT TO THE BYTE, AND THE WRITER
+  HUNT IS CLOSED BEFORE IT STARTED.** Part 36 ran the R3-oracle comparison first, as
+  ordered: our live-dumped 400x240 and 1024x64 impostor sheets at blotch time are
+  **md5-identical to the bytes hardware's GPU sampled** for the same material in
+  `tanker.xtr`, and decoded properly (`tools/tex_decode.py`, new) they are coherent
+  billboard alpha-cutouts — white colour endpoints, content in ALPHA, exactly what
+  part 35's junk-scorer was guaranteed to misflag (gotcha 287; the kickoff's own
+  warning said to decode and LOOK first). The kickoff's "hardware binds only 3 DXT5,
+  0 DXN" was a filtered pass — the full census is 3,514/3,040, hardware draws the
+  whole sheet class. Item 0s is now a WRONG-BINDING question (a real asset at the
+  wrong streamed quality level — the "weird" 110AD000 texture is structured real
+  content absent from hardware's frame), with the blotched-draw identification as
+  step one and hardware's 16 small colour resolves (never in our resolve set;
+  resolve write-back still unimplemented) as the standing lead for the remaining
+  sub-defects. `docs/phase5-notes.md` §6bj; **`docs/part36-kickoff.md` is the LIVE
+  hand-off.** Content-match census: 226 of 459 blotch-frame textures byte-identical
+  to hardware's frame; the unmatched are unadjudicated, not suspects (gotcha 288).
+
+Where the port was, as of 2026-08-12 (part 35):
 
 * **THE WRONG-TEXTURE REPORTS COLLAPSED INTO ONE ITEM, AND IT IS FULLY
   EVIDENCE-BOUNDED: open-items 0s, THE STRIPED-MATERIAL CLASS.** One streamed quality
