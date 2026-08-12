@@ -13,8 +13,11 @@ default**, which is the shadow-cascade fix shipping — the atlas reads 0.0038% 
 all 1024 rows covered (was 46.8750% / 512), the outdoor picture moves the way a graded
 shadow term predicts (distinct colours +8.30% at 5.2x the null), and nothing else
 regressed. It also delivered §6ba's owed exposure re-measure — **there is no exposure
-discrepancy left to explain** — and re-ran every gate part 33 left owed. What the shadow
-work needs now is not code but **the operator's three-way verdict**.
+discrepancy left to explain** — and re-ran every gate part 33 left owed. **The
+operator's three-way verdict landed the same day: the default is "perfect" in their
+words, both control arms show the black false-occlusion blotches on the same truck, and
+open item 3 is CLOSED both ways** (§6bh's verdict table,
+`~/DR2CZ-troubleshooting/part34-operator/`). The shadow work is done.
 
 ## WHAT PART 34 DID — do not rebuild any of this
 
@@ -68,17 +71,17 @@ Everything from parts 26-33's lists stands, plus:
 
 ## WHERE TO START
 
-0. **THE OPERATOR, one session, two questions riding together.** LAUNCH IT FOR THEM
-   (the memory note is right: wire the instruments, let them drive):
-   * **The three-way shadow verdict** at one Case 0-2 crowd spot, camera unmoved
-     between shots, F9 each time (`CZ_CAPTURE_KEY=<dir>` per arm):
-     default / `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` / `CZ_VK_NO_ADDR_TILE_FOLD=1`.
-     Name the property first (gotcha 278): the EXTENT and CONTINUITY of the shadowed
-     region — both control arms should show a hard camera-locked boundary across the
-     world; the default should show none.
-   * **The exposure matched-location reading**: `CZ_VK_EXPOSURE_TRACE=<file>` on the
-     default arm, F9 at the `w1_spawn` spot, read the trace at the capture frame
-     against hardware's 0.331368. Closes §6ba entirely.
+0. ~~**THE OPERATOR, one session, two questions riding together.**~~ **DELIVERED, same
+   day.** The three-way shadow verdict is in and open item 3 is closed both ways: the
+   default is *"perfect"* in the operator's words (atlas 0.0006% zero at the capture);
+   both control arms show hard-edged black false-occlusion blotches on the same truck
+   at the same framing (46.875% / 75% atlas zero). One refinement recorded in §6bh: at
+   close range the control defect presents as BLOTCHES on nearby geometry rather than
+   the camera-locked boundary line — same defect, distance-dependent presentation.
+   The exposure reading rode along as a REGIME check (0.376 at the capture, inside the
+   band hardware occupies) — the spot was not one of hardware's two captured places, so
+   the strictly matched comparison remains available for free on any future session
+   that passes `w1_spawn`, and nothing now hangs on it.
 1. **Re-ask the parked picture items on this renderer** (unchanged from part 33's
    list): LOD/00i (explicitly parked behind 00f), NPC part meshes (3d), mipmaps, the
    colour-grading LUT, and the cube-decline defect (the `s3`/`s4` duplicate — separate,

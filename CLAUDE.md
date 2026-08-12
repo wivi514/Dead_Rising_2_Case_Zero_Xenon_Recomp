@@ -686,10 +686,11 @@ Where the port is, as of 2026-08-11 (part 34):
   regressed; outdoor era medians **distinct colours +8.30% at 5.2x the null**
   (registered prediction, commit e10df05); validation tally unchanged; capture-E
   **+0.958 identity**; A5 **exit 0, 3 permutation, 0 real**; `truncated=0`; both PM4
-  oracles exit 0. **Owed: the operator's three-way verdict at one crowd spot** (default
-  / no-Y / `CZ_VK_NO_ADDR_TILE_FOLD=1`), property = the EXTENT and CONTINUITY of the
-  shadowed region — the control arms have a hard camera-locked boundary across the
-  world; the default should have none.
+  oracles exit 0. **The operator's three-way verdict landed the same day and CLOSES
+  open item 3**: one Case 0-2 crowd spot, F9 per arm — the default is *"perfect"* in
+  their words (atlas 0.0006% zero at the capture); both control arms show hard-edged
+  black false-occlusion blotches on the same truck (46.875% / 75% atlas zero). §6bh's
+  verdict table; `~/DR2CZ-troubleshooting/part34-operator/`.
 * **§6ba's EXPOSURE QUESTION IS DOWNGRADED TO CLOSED-PENDING-A-MATCHED-LOCATION.**
   `CZ_VK_EXPOSURE_TRACE` on all three outdoor runs: every arm identical (the shadow
   change does not move the controller), frame 3000 reads 0.211 (part 31: 0.2146), era

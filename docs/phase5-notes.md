@@ -5694,3 +5694,25 @@ downgraded from "a discrepancy to explain" to "no remaining evidence of disagree
   the control arms there is a hard camera-locked boundary across the world; with the
   default there should be none.
 * The sample-resolution stand-in, as the eventual exact form of all of this.
+
+### THE OPERATOR'S VERDICT, same day: the three-way closes
+
+Three F9 captures at one Case 0-2 crowd spot, same session state ("39 KILLED" in every
+frame), same framing, one launch per arm, arms differing by one env var
+(`~/DR2CZ-troubleshooting/part34-operator/`, indexed). The operator on arm 1: **"First
+one looked perfect."** The atlas at each capture confirms the arms were what they
+claimed, and the pictures carry the contrast the verdict rests on:
+
+| arm | atlas at capture | the picture |
+|---|---|---|
+| default | **0.0006% zero, 1024/1024 rows** | clean shading, soft contact shadows, no false occlusion |
+| `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` | 46.8750%, 512/1024 | hard-edged black false-occlusion blotches across the truck and ground |
+| `CZ_VK_NO_ADDR_TILE_FOLD=1` | 75.0000%, 0/1024 covered | the same class of blotches, differently placed |
+
+One refinement against the registered property: at this close-range camera the control
+arms present as BLOTCHY FALSE OCCLUSION on nearby geometry rather than as the
+camera-locked boundary line (which is the same defect seen at distance). The decisive
+part held: both controls show the artifact, the default shows none, and the operator
+called it without prompting. **Open item 3's picture question is closed both ways.**
+The exposure trace at the capture read 0.376 at 2,521 draws — a regime check only, since
+this spot is not one of hardware's two captured places.

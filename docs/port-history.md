@@ -1397,8 +1397,12 @@ Part 32's item 0, executed. Full record `docs/phase5-notes.md` §6bh.
   identical, frame 3000 reads 0.211 (part 31: 0.2146), era range 0.200-0.354 with mean
   0.2755 — and hardware's 0.298/0.331 sit INSIDE that adaptive range. Owed: only a
   matched-location comparison, free on the next operator session.
-* **Owed to the operator**: the three-way shadow verdict at one crowd spot (default /
-  no-Y / no-fold), extent and continuity of the shadowed region as the named property.
+* **The operator's three-way verdict landed the same day and closed open item 3**: one
+  Case 0-2 crowd spot, F9 per arm — default *"perfect"* (atlas 0.0006% zero at the
+  capture), both control arms showing hard-edged black false-occlusion blotches on the
+  same truck (46.875% / 75% atlas zero). At close range the control defect presents as
+  blotches on nearby geometry rather than the boundary line — same defect,
+  distance-dependent presentation. `no translated shader` 0 in all three arms.
 
 ## Part 33 (2026-08-11) — the white plateau was NaN, the NaN was a vertex-input type
 ## mismatch (entry written in part 34; the part-33 session recorded itself only in

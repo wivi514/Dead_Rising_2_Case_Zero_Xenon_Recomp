@@ -1857,22 +1857,27 @@ Next, in order:
    and note the profile-signature question is separate. This also CLOSES part 12's black
    panels: they are the save's thumbnail, and black is correct for a slot with no valid
    content.
-3. **THE SHADOW CASCADE — BOTH KNOWN DEFECTS FIXED AND SHIPPED; WHAT REMAINS IS THE
-   OPERATOR'S VERDICT (part 34).** The atlas is 4096x1024 and holds four 1024x1024
-   cascades; part 31 fixed the ADDRESS FOLD that made them four disjoint snapshots, and
-   **part 34 shipped the 4x MSAA Y factor as the default** (part 32 found it, part 34
-   reconciled the scene-tile objection and flipped it — `phase5-notes.md` §6bf and §6bh).
+3. ~~**THE SHADOW CASCADE**~~ **CLOSED IN PART 34, BOTH WAYS — both known defects fixed,
+   shipped as the default, and operator-confirmed against both control arms in one
+   session.** The atlas is 4096x1024 and holds four 1024x1024 cascades; part 31 fixed
+   the ADDRESS FOLD that made them four disjoint snapshots, and **part 34 shipped the
+   4x MSAA Y factor as the default** (part 32 found it, part 34 reconciled the
+   scene-tile objection and flipped it — `phase5-notes.md` §6bf and §6bh).
    Atlas on this binary: **0.0038% zero, 1024/1024 covered rows**, against 46.8750% /
    512 with `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` (the control arm, the part-33 renderer).
    Outdoor era medians: distinct colours **+8.30% at 5.2x the null**, the direction a
    graded shadow term predicts, on top of part 32's independent +14.17% at 40x.
-   **Owed: the operator's three-way verdict at one crowd spot, camera unmoved** —
-   default / `CZ_VK_NO_MSAA_WINDOW_SCALE_Y=1` / `CZ_VK_NO_ADDR_TILE_FOLD=1`. The
-   property to name first (gotcha 278): the EXTENT and CONTINUITY of the shadowed
-   region — with either control arm there is a hard camera-locked boundary across the
-   world; with the default there should be none. And the eventual exact form is still a
-   stand-in at SAMPLE resolution in both axes with downsampling resolves; the shipped
-   per-axis factor is the one-site approximation of it.
+   **The operator's three-way verdict landed the same day** — one Case 0-2 crowd spot,
+   same framing, F9 per arm (`~/DR2CZ-troubleshooting/part34-operator/`): the default
+   is *"perfect"* in their words with atlas 0.0006% zero at the capture; both control
+   arms show hard-edged black false-occlusion blotches on the same truck (46.875% and
+   75% atlas zero respectively). §6bh's verdict table. NB at close range the control
+   defect presents as BLOTCHES on nearby geometry, not the camera-locked boundary line
+   — same defect, distance-dependent presentation.
+   **What survives of this item is not a defect but a form**: the EDRAM stand-in at
+   SAMPLE resolution in both axes with downsampling resolves is the exact version of
+   the shipped per-axis factor. Build it when a defect is traced to the over-clear
+   class, not before.
 
    The part-32 statement, kept for its measurements:
 
