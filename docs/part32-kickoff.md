@@ -37,6 +37,11 @@ Full record: `docs/phase5-notes.md` §6bf. Open item 3 is rewritten.
     a register, and it is the candidate FIX.
   * A registered prediction, **refuted**: scoping each clear to the pass's own region
     (`CZ_VK_SCOPED_CLEAR=1`) leaves the atlas at 46.8750% to four decimals.
+  * On the OUTDOOR route the same arm takes the atlas to **0.0000% zero**, and the
+    picture moves: era medians over every frame above 1,800 draws put **distinct colours
+    +14.17%, 40.0x its 0.35% null** — the direction a graded shadow term predicts.
+    Coverage is inside the null and meanLuma cannot resolve it (this null pair's own
+    floor is 11.83%, because the two baselines reached different places).
 * **THE DERIVATION, because it is what makes this a measurement.** `CZ_VK_RECT_TRACE=0`
   prints every rect-list clear with its surface pitch and MSAA mode. The cascade's two
   are `(0,0)-(480,512)` on a **520-pitch 4x** surface and `(960,0)-(1024,1024)` on the
@@ -84,14 +89,23 @@ Everything from parts 26-31's lists stands. Part 32 adds two, in `docs/gotchas.m
 
 **0. RECONCILE THE SCENE TILE'S 4x CLEAR AND SHIP `CZ_VK_MSAA_WINDOW_SCALE_Y` AS THE
 DEFAULT. Recommended first — the work is done and this is what is between it and the
-picture.** The blocker is one table row: the cascade's 4x clear is `(0,0)-(480,512)` and
-wants Y scaled; the scene tile's 4x clear is `(0,0)-(320,720)` on a tile 640 samples wide
-and 720 rows tall, and appears not to. The likely reconciliation is that the scene's 720
-is already a SAMPLE count where the cascade's 512 is a pixel count — i.e. the
-discriminator is not the MSAA mode alone. `CZ_VK_RECT_TRACE=0` prints every rect with its
-pitch and mode and is the whole input; the scene tile's surface height is the missing
-term. **Do not ship it on the cascade result alone** — the scene tile clear is the pass
-whose half-covered version cost part 9 a session.
+picture.** **The analysis is done and §6bf's last two sections carry it** — read those
+before writing any code. In short: the title re-declares the same EDRAM as 4x purely to
+CLEAR it (four samples per pixel, so the rect is half-size in both axes) and then renders
+with a different declaration, so the candidate rule is to scale a window coordinate by
+*(clear declaration's sample factor) / (render declaration's sample factor)* per axis,
+with 1x = (1,1), 2x = (1,2), 4x = (2,2). Cascade: X 2, Y 2. Scene tile: X 2, Y 1. Two for
+two, and it explains why X has always needed the factor unconditionally.
+**The counter-example that stops it is the 640x360 post surface**, whose 4x clear rect is
+already the full 640x360 extent; any rule doubling X makes it 1280 wide on a 640-wide
+surface. Harmless today and therefore never noticed.
+**And the statement underneath, which is the thing to decide first: our EDRAM stand-in is
+at SAMPLE resolution in X and PIXEL resolution in Y.** That is not a model, it is the
+consequence of adding the X factor in part 9 and never the Y one. Either make it
+consistently sample-resolution (a taller image and a downsampling resolve — correct and
+larger) or carry the per-axis factor explicitly everywhere.
+**Do not ship it on the cascade result alone** — the scene tile clear is the pass whose
+half-covered version cost part 9 a session.
 
 1. **ASK THE OPERATOR FOR A THREE-WAY SHADOW VERDICT once 0 lands** — null,
    `CZ_VK_MSAA_WINDOW_SCALE_Y=1`, and `CZ_VK_NO_ADDR_TILE_FOLD=1` (the pre-part-31
