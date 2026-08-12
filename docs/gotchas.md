@@ -2541,3 +2541,49 @@ From phase C part 18 (the frame rate — and none of it was work):
      got fixed the same afternoon), and two shots at two different cameras is enough to
      establish "a moving region exists here" and never enough to establish "the two arms
      are the same".
+
+279. **AN ARM WHOSE FAILURE MODE IS THE SYMPTOM IT WAS BUILT TO RULE OUT WILL CONFIRM
+     THE WRONG ANSWER, CONFIDENTLY.** Part 32 needed to separate "this geometry was never
+     submitted" from "it was submitted and rejected by stale depth" for a shadow-cascade
+     pass, and this runtime has an arm for exactly that: `CZ_VK_NO_DEPTH_TEST=1`, whose
+     comment says it "draws everything regardless of depth". It came back with the depth
+     surface **100% zero** — i.e. "nothing was submitted", which is the opposite of the
+     truth. Vulkan ties depth WRITES to the depth TEST: with `depthTestEnable` false the
+     attachment is not written at all, whatever `depthWriteEnable` says. On a colour pass
+     that arm does what it claims; on a DEPTH-ONLY pass it empties the buffer, and an
+     empty buffer is precisely the symptom being investigated.
+     The replacement is one line — keep the test enabled and force the comparison to
+     ALWAYS (`CZ_VK_DEPTH_ALWAYS=1`) — and it gave 46.875% zero -> 1.86%.
+     **The transferable rule: before believing an arm, ask what it would print if the
+     defect were absent AND what it would print if the arm itself were broken. If those
+     two are the same string, the arm cannot answer.** This is gotcha 30's "a test that
+     has never failed" from the other side: here the arm always "fails", and its failure
+     is indistinguishable from a finding. The cheap guard is a positive control on the arm
+     — run it somewhere the answer is already known — which is the same discipline
+     `measure-the-arm-against-itself-first` states for magnitudes.
+
+280. **A CAPTURE'S MEMORY RECORDS ARE SNAPSHOTS WITH A TIME, SO A CAPTURE CANNOT SUPPLY
+     ANY SURFACE THE GPU PRODUCES INSIDE THE TRACED FRAME.** This corrects the second half
+     of gotcha 275, which said a surface you RENDER is still comparable because the capture
+     carries the consumer's copy of it. That is true only when the address is not itself a
+     resolve destination in the same trace.
+     Xenia's `.xtr` dumps the bytes behind a resource the first time the GPU reads it, and
+     never again. Part 31 dumped this title's shadow atlas from `w1_spawn` at `1812F000`,
+     found it 96.5% populated against our 13.3%, and quoted that gap for a whole part.
+     There is exactly ONE memory chunk covering that address, taken at walk position 39;
+     the first resolve INTO it is at walk position 3522. The bytes are what was there
+     BEFORE the atlas was produced — and because the title reuses that address for the
+     composited scene, what was there is a photograph of the previous frame. Detiled, the
+     game's own HUD is legible in the "shadow map": *8 KILLED*.
+     **A dense, plausible, wrong oracle is worse than none**, because it converts a
+     real defect into a solved one. The gate is mechanical and costs nothing: while
+     walking the trace, record every `RB_COPY_DEST_BASE` issued under `RB_MODECONTROL`
+     edram_mode 6, and when dumping bytes for an address, refuse — exit non-zero — if
+     every covering snapshot predates the first resolve to it.
+     `tools/xtr_draw_bindings.py --dump-texture` does this now and prints *"a sound
+     oracle"* for the ordinary case, which is what keeps the gate readable rather than a
+     warning people learn to skip.
+     The corollary for the port: when the only oracle for an intermediate surface is gone,
+     the target to measure against is not another emulator's number but **the surface's
+     own definition** — a shadow map's unwritten region must read FAR, so the yardstick is
+     100% coverage, not somebody's 96.5%.

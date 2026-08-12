@@ -5142,3 +5142,155 @@ and useless; what separates them is how far it extends. Before concluding an arm
 nothing, name the property that would have changed if it had worked — here, the RADIUS of
 the shadowed footprint, which follows directly from the split distances — and check that
 one.
+
+## 6bf. THE OTHER HALF OF EVERY SHADOW CASCADE IS REJECTED BY A DEPTH TEST AGAINST A
+## BUFFER CLEARED TO ZERO — and §6bc's hardware oracle is retracted (part 32)
+
+Part 31 fixed the shadow atlas's ADDRESS FOLD and the operator confirmed the improvement
+("much wider... still way far from intended behaviour"). This section is what "still way
+far" is. It is not the distance fade past the last cascade split, which was part 31's
+guess and is what the hand-off recommended looking at: our translation of that fade is
+instruction-for-instruction the guest's, and the arithmetic works out. It is that **half
+of every cascade band holds zero, and a zero depth sample reads as OCCLUDED.**
+
+### The measurement, and it is structural rather than scene-dependent
+
+`CZ_VK_SNAP_DUMP` on the outdoor DebugJump route, frame 3000, and on a plain boot at
+frame 600 — the same numbers both times, and the same in all four bands:
+
+    atlas 1439B000, 4096x1024 depth:  46.8750% zero
+      band 0 (x    0.. 1023):  46.8750% zero
+      band 1 (x 1024.. 2047):  46.8750% zero
+      band 2 (x 2048.. 3071):  46.8750% zero
+      band 3 (x 3072.. 4095):  46.8750% zero
+      rows   0.. 511: fully populated, every column
+      rows 512..1023: populated ONLY in the last 64 columns of each band
+
+**46.875% is 15/32 exactly, and it is identical in four bands rendered from four
+different light frusta by 108, 87, 221 and 35 draws.** Scene content cannot do that. The
+covered region is `[0,960]x[0,512] ∪ [960,1024]x[0,1024]` per band = 557,056 of 1,048,576
+texels = 53.125%, which is the number part 31 recorded as the fix's result and read as
+success.
+
+Looked at as an image, band 2 is a perfectly good light-space depth render — street
+lamps, trees, buildings, the power line — cut off dead at row 511 with no taper. A clean
+horizontal edge mid-scene is a clip, not the end of the geometry.
+
+### It is not missing geometry: the arm that says so, and the arm that could not
+
+`CZ_VK_DEPTH_ALWAYS=1` keeps the depth test enabled and forces the comparison to ALWAYS:
+
+| arm | atlas zero | fully covered rows |
+|---|---|---|
+| null | 46.8750% | 512 / 1024 |
+| `CZ_VK_DEPTH_ALWAYS=1` | **1.8645%** | 533 / 1024 |
+
+So the cascade's geometry is submitted for the whole 1024x1024 and the bottom half is
+**rejected by the depth test**. Since nothing ever writes there, the value it is tested
+against is the zero the EDRAM depth image was created with, and `LESS` against 0 can
+never pass. (The cascade draws are `RB_DEPTHCONTROL = 0x16`: z_enable, z_write,
+zfunc = 1 = LESS.)
+
+**`CZ_VK_NO_DEPTH_TEST=1`, the arm that exists for exactly this question, cannot answer
+it and answers the opposite.** Vulkan ties depth WRITES to the depth TEST: with
+`depthTestEnable` false the attachment is not written at all, whatever `depthWriteEnable`
+says. On a depth-only pass that turns "draw everything regardless of depth" into "write
+nothing", and the atlas came back **100% zero** — which is the symptom under
+investigation, reported by the instrument meant to rule it out. Gotcha 279.
+
+### What the zero is: the clear VALUE, established by a positive control
+
+`CZ_VK_DEPTH_CLEAR_FAR=1` ignores `RB_DEPTH_CLEAR` and clears depth to 1.0:
+
+| arm | atlas zero |
+|---|---|
+| null | 46.8750% |
+| `CZ_VK_DEPTH_CLEAR_FAR=1` | **0.0113%** |
+
+The cascade fills completely. So the input is the depth CLEAR VALUE, and this title
+leaves `RB_DEPTH_CLEAR` at `00000000` for nearly every pass — only the two scene-tile
+resolves carry `FFFFFF00`. Our renderer applies each clear to the WHOLE 1280x1024 EDRAM
+stand-in; hardware's copy block clears the tiles of the surface that pass was rendering
+into.
+
+`CZ_VK_DEPTH_CLEAR_FAR` is a diagnostic arm, not the fix — it ignores a register the
+guest writes. What it establishes is that the remaining shadow defect is entirely
+upstream of the lookup, in the state the cascade pass starts from.
+
+### A registered prediction, refuted
+
+> Scoping each resolve's clear to the region that pass rendered (`CZ_VK_SCOPED_CLEAR=1`)
+> will stop small post-chain passes from wiping the cascade's region, and the atlas will
+> fill well beyond 53.125%.
+
+    null    46.8750% zero, 512/1024 rows, frame mean luma 29.10
+    scoped  46.8750% zero, 512/1024 rows, frame mean luma 29.12
+
+**Unmoved to four decimal places.** So the zeros in the cascade's bottom half are not put
+there by an over-broad clear from another pass; that region is simply never cleared to
+anything by anybody, and it holds the zero the image was created with. The arm is kept
+because scoping is still closer to what hardware does, but it is off by default and it
+is not this defect.
+
+### What the title's own clear actually asks for
+
+`CZ_VK_RECT_TRACE=<surfacePitch>` prints the corners of every rect-list clear on one
+EDRAM surface. On the cascade surface (`RB_SURFACE_INFO` pitch 1040 — 1024 rounded up to
+a multiple of 80) there is exactly **one distinct rect, issued three times a frame**:
+
+    (960.0,0.0) (1024.0,0.0) (1024.0,1024.0)  -> BL (960.0,1024.0)  depthControl=76 vte=00
+
+`depthControl = 0x76` is z_enable + z_write + zfunc 7 (ALWAYS) — a clear draw — and it
+covers **x in [960,1024] over the full height**, which is exactly the 64-column sliver
+that is the only populated part of our bottom half. The four cascade PASSES issue no
+clear rect of their own at all.
+
+So the sliver is accounted for. What is not yet accounted for is why rows 0..511 are
+populated across every column when the frame's last depth clear before the cascades
+writes 0 to the whole image — on that reading the atlas should be 6.25% populated, not
+53.125%. **That is the one open link in the chain, and it needs an instrument this
+runtime does not have: what the EDRAM depth image holds AT the cascade pass, over its
+full 1280x1024 extent, rather than the 1024x1024 window the resolve copies.** The
+resolve trace now prints its derived copy geometry and both clear values, which is where
+that instrument should grow.
+
+### THE RETRACTION: §6bc's hardware-side atlas measurement is an artifact
+
+§6bc reported "ours is 86.7% zero; hardware's copy of the same surface, dumped from the
+capture, is 3.5% zero with all four bands populated", from
+`tools/xtr_draw_bindings.py --dump-texture 1812F000` on `w1_spawn`.
+
+**That 16 MB is not hardware's shadow atlas. It is the previous frame's composited
+scene.** Detile it as a 1280x720 8888 surface and the game's own HUD is legible in it —
+"8 KILLED" across the middle, "Find Katey Zombrex" at the left. Of course it is 96.5%
+non-zero: it is a photograph.
+
+The mechanism is simple and it generalises. A `.xtr`'s memory records are SNAPSHOTS with
+a time: Xenia dumps the bytes behind a resource the first time the GPU reads it. There is
+exactly **one** chunk covering `1812F000` in `w1_spawn`, taken at walk position 39, and
+the first resolve INTO `1812F000` is at walk position 3522. The snapshot predates the
+surface. A capture therefore **cannot** supply hardware's copy of any surface the GPU
+produces inside the traced frame, and the title reuses `1812F000` for both the cascade
+atlas and the scene, so the one snapshot it does carry is the scene.
+
+Gotcha 275's second half — *"a surface you RENDER is still comparable, because the
+capture carries the consumer's copy of it"* — is **wrong as stated** and is corrected
+here: it holds only when the address is not itself a resolve destination in the same
+trace. Gotcha 280.
+
+**What survives, and it is most of §6bc.** The address-fold fix rests on register values,
+not on that dump: the resolves declare a 4096-wide destination surface while copying a
+1024x1024 region at the origin, at addresses 0x20000 apart; 0x20000 is exactly +1024
+texels in X for a 4096-wide 32bpp tiled surface; and the fetch declares one 4096x1024
+surface at the base. The operator's verdict is independent of it too. What does not
+survive is the yardstick — "hardware's is 96.5% full" was never measured, so 53.125% was
+never a shortfall against a known target. **It is a shortfall against 100%, which is what
+this section measures instead.**
+
+`tools/xtr_draw_bindings.py --dump-texture` now gates itself: it reports how many memory
+snapshots cover the range and when they arrived, says whether the address is a resolve
+destination in the same trace, and **exits 2** when every covering snapshot predates the
+first resolve to it. Run against the three DXT1 textures part 27 compared for the ground
+draw it prints *"the trace issues no RESOLVE to this address, so the bytes are guest
+memory the title uploaded — a sound oracle"* and exits 0, so **part 27's texture
+comparison is unaffected by this retraction**; the scope is surfaces the GPU produces.
