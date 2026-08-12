@@ -53,6 +53,21 @@ Full record: `docs/phase5-notes.md` §6bi; captures + live dumps in
 * The junk-scorer used in part 35 flags any greyscale-with-extremes texture — every
   neutral AO/lightmap scores as "junk". Triage only; decode and LOOK before claiming.
 
+## THE ORACLE ARRIVED THE SAME NIGHT — read this before starting the hunt
+
+**`Xenia logs/R3_world/`**: four single-frame `.xtr` traces with FRAME-LOCKED
+guest-framebuffer screenshots (a fork improvement this round) at exactly the four
+defect sites — tanker, Dick, green building, pawnshop. **Four for four, hardware is
+clean, the class is convicted as ours at every site.** Each trace carries hardware's
+own sampled bytes for every texture in the frame — the ground truth for what the
+CPU-composed sheets SHOULD hold, in hand before the hunt starts. One reframe recorded
+in the index: hardware's tanker is CREAM — the "another texture after reload" part 35
+saw was the CORRECT skin, and the usual grey-green state is the garbage. Also note the
+first `xtr_draw_bindings` pass on `tanker.xtr` listed only 3 DXT5 and 0 DXN fetches,
+against dozens in our frames at the same spot — either hardware draws no impostor
+sheets there (they may be a LOD tier our runtime wrongly lingers in) or the parse
+needs care; settle that early, it may reshape the whole item.
+
 ## WHERE TO START
 
 1. **Item 0s, the writer hunt**: `CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` on the outdoor
@@ -61,9 +76,11 @@ Full record: `docs/phase5-notes.md` §6bi; captures + live dumps in
    appears (the `guest_probe` machinery is the worked example) to name the composing
    function for `gdis`. Then read that function's SOURCES — the standing suspect is
    a resolve's guest-memory copy, which hardware writes and we never do (part 25's
-   "resolve pixels are never written back" note).
-2. **The Xenia one-look for 00i** (promotion distance of the flat-panel shop) — ask
-   the operator; retires or convicts in one screenshot.
+   "resolve pixels are never written back" note). Read our sheets against hardware's
+   R3 bytes for the same material as the first step of all of it.
+2. **The Xenia one-look for 00i** (promotion distance of the flat-panel shop) — the
+   R3 screenshots show textured buildings at street-across range, but none is the
+   exact 30631 spot; one deliberate look still owed.
 3. **The census's unclaimed sub-defects** (in item 0s): 231 colour fetches served by
    a DEPTH resolve snapshot; the garbled subtitle text (f24288).
 4. The rest of `docs/open-items.md` (cube-decline s3/s4 duplicate, mipmaps, LUT
