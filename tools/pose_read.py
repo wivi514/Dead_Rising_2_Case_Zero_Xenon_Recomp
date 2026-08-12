@@ -36,7 +36,11 @@ import re
 
 
 def load(path):
-    vc, obj, meta = {}, {}, {}
+    """Returns (vc, bvc, obj, meta). `vc` is the frame's FIRST draw — usually the shadow
+    pass, whose view matrix is the LIGHT's — and `bvc` is the frame's BIGGEST draw, the
+    scene camera. Prefer bvc; vc is kept because a pose written before part 36's fix has
+    only that, and because the light's frustum is itself worth reading."""
+    vc, bvc, obj, meta = {}, {}, {}, {}
     for line in open(path):
         if line.startswith('#'):
             m = re.search(r'cameraFingerprint (\w+)', line)
@@ -46,7 +50,9 @@ def load(path):
         p = line.split()
         if not p:
             continue
-        if p[0].startswith('vc'):
+        if p[0].startswith('bvc'):
+            bvc[int(p[0][3:])] = [float(x) for x in p[1:5]]
+        elif p[0].startswith('vc'):
             vc[int(p[0][2:])] = [float(x) for x in p[1:5]]
         elif p[0].startswith('obj+'):
             obj[int(p[0][4:], 16)] = (int(p[1], 16), float(p[2]))
@@ -54,7 +60,7 @@ def load(path):
             meta['obj'] = p[1]
         elif p[0] == 'controller':
             meta['controller'] = p[1]
-    return vc, obj, meta
+    return vc, bvc, obj, meta
 
 
 def solve3(a, b):
@@ -87,6 +93,36 @@ def eye_from(rows):
     return solve3(a, b)
 
 
+def view_eye(vc, first=12):
+    """The eye of a world->view matrix stored as three rows at vc[first..first+2].
+
+    This is the reading that survived measurement: on a scene frame those three rows
+    come out orthonormal to four decimals, so `eye = -R^T t` is an identity, not a fit,
+    and the norms below are the check that says whether this pose is one of those.
+    Returns (eye, row_norms, forward) or None.
+    """
+    if any((first + i) not in vc for i in range(3)):
+        return None
+    R = [vc[first + i][:3] for i in range(3)]
+    t = [vc[first + i][3] for i in range(3)]
+    norms = [round(sum(v * v for v in row) ** 0.5, 4) for row in R]
+    eye = [-sum(R[r][c] * t[r] for r in range(3)) for c in range(3)]
+    forward = [-R[2][c] for c in range(3)]
+    return eye, norms, forward
+
+
+def report_eye(label, vc):
+    r = view_eye(vc)
+    if not r:
+        print(f'  {label}: no vc12..vc14 in this pose')
+        return
+    eye, norms, fwd = r
+    ok = all(abs(n - 1.0) < 0.01 for n in norms)
+    print(f'  {label}: eye=({eye[0]:.2f}, {eye[1]:.2f}, {eye[2]:.2f})  '
+          f'fwd=({fwd[0]:.3f}, {fwd[1]:.3f}, {fwd[2]:.3f})  row_norms={norms}'
+          + ('' if ok else '   <- NOT orthonormal: this is not a view matrix'))
+
+
 def camera_candidates(vc):
     out = []
     for start in range(0, 13):
@@ -106,9 +142,14 @@ def camera_candidates(vc):
 
 
 def main():
-    vc, obj, meta = load(sys.argv[1])
+    vc, bvc, obj, meta = load(sys.argv[1])
     print(f'{sys.argv[1]}: player_object={meta.get("obj")} '
           f'controller={meta.get("controller")} camfp={meta.get("camfp")}')
+    report_eye('first-draw view (usually the SHADOW pass — the LIGHT)', vc)
+    if bvc:
+        report_eye('biggest-draw view (the SCENE camera — use this one)', bvc)
+    else:
+        print('  (no bvc: pose written before the scene-camera fix)')
     cands = camera_candidates(vc)
     print(f'  camera eye candidates ({len(cands)}):')
     for start, how, e in cands:
@@ -120,7 +161,7 @@ def main():
 
     if len(sys.argv) < 3:
         return
-    vc2, obj2, meta2 = load(sys.argv[2])
+    vc2, bvc2, obj2, meta2 = load(sys.argv[2])
     print(f'\n{sys.argv[2]}: player_object={meta2.get("obj")}')
     cands2 = camera_candidates(vc2)
     for start, how, e in cands2:

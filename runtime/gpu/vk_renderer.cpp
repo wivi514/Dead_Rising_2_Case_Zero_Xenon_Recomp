@@ -1525,6 +1525,10 @@ struct Renderer
     // and reproducing a shot is the whole point of the pose capture (see the .pose
     // writer at the F9 block). 16 float4 = the view-projection plus the world matrices.
     uint32_t camConsts[64] = {};
+    // The same constants from the frame's LARGEST draw — the scene camera, where
+    // camConsts is whatever the first draw used (the shadow pass's light).
+    uint32_t camConstsBig[64] = {};
+    uint32_t camBigVerts = 0;
     uint64_t verticesThisFrame = 0;
     // Draws recorded since the last resolve, i.e. the size of the pass that resolve is
     // closing. This is the number that separates "the pass rendered nothing because it
@@ -4272,6 +4276,11 @@ void BeginFrame()
     }
     R->streamCache.clear();
     R->drawsThisFrame = 0;
+    // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
+    // of the whole RUN, so a .pose would carry a camera from some frame minutes earlier
+    // while looking exactly like this frame's — a stale value that announces nothing
+    // (the failure shape gotcha 13 is about, at frame scale).
+    R->camBigVerts = 0;
     // A fresh command buffer binds nothing. This must be here and nowhere else: a
     // stale `bound` across a vkResetCommandBuffer would skip binds that ARE needed,
     // and the symptom would be a draw rendering with the previous frame's pipeline.
@@ -6875,6 +6884,25 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         R->cameraFingerprint = h;
     }
+    // ...AND AGAIN FROM THE FRAME'S BIGGEST DRAW, which is a different matrix.
+    //
+    // The frame's FIRST draw is the SHADOW pass, so the view matrix above is the
+    // LIGHT's, not the player's: solving it put one capture's eye 36 units below
+    // ground, and a memory scan for world coordinates near that point found nothing
+    // where the same scan around a scene camera finds the crowd. The fingerprint does
+    // not care (it only has to differ when the view differs) but the POSE does, and a
+    // pose that records the light is a shot nobody can retake.
+    //
+    // The biggest draw of a frame is the ground or a large scene mesh — never a shadow
+    // cascade's geometry pass in practice, and never the UI, which is small quads. It
+    // is a heuristic, so both matrices are written to the .pose and the reader decides:
+    // an eye below the world is the light's, whatever produced it.
+    if (draw.indexCount > R->camBigVerts)
+    {
+        R->camBigVerts = draw.indexCount;
+        for (uint32_t i = 0; i < 16 * 4; i++)
+            R->camConstsBig[i] = regs[xenos::kAluConstantBase + i];
+    }
 
     // CZ_VK_PASS_DRAWS=N — how many of a pass's draws the resolve trace lists. Four
     // says what KIND of pass it is; it cannot say what a 115-draw UI compose did, which
@@ -8271,16 +8299,24 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     (unsigned long long)pres.frame,
                     (unsigned long long)R->cameraFingerprint,
                     (unsigned long long)R->drawFingerprint);
-            fprintf(f, "# vc[i] = vertex ALU constant i (16 float4: VP + world matrices)\n");
-            for (uint32_t i = 0; i < 64; i += 4)
+            fprintf(f, "# vc[i]  = constants at the frame's FIRST draw (usually the SHADOW "
+                       "pass: its view matrix is the LIGHT's)\n");
+            fprintf(f, "# bvc[i] = constants at the frame's BIGGEST draw (%u verts) — the "
+                       "SCENE camera. Prefer these.\n", R->camBigVerts);
+            for (int which = 0; which < 2; which++)
             {
-                float v[4];
-                for (uint32_t k = 0; k < 4; k++)
+                const uint32_t* src = which ? R->camConstsBig : R->camConsts;
+                for (uint32_t i = 0; i < 64; i += 4)
                 {
-                    const uint32_t bits = R->camConsts[i + k];
-                    memcpy(&v[k], &bits, 4);
+                    float v[4];
+                    for (uint32_t k = 0; k < 4; k++)
+                    {
+                        const uint32_t bits = src[i + k];
+                        memcpy(&v[k], &bits, 4);
+                    }
+                    fprintf(f, "%s%-2u %.6f %.6f %.6f %.6f\n", which ? "bvc" : "vc",
+                            i / 4, v[0], v[1], v[2], v[3]);
                 }
-                fprintf(f, "vc%-2u %.6f %.6f %.6f %.6f\n", i / 4, v[0], v[1], v[2], v[3]);
             }
             // The object dump lives in debug_tunables.cpp, which already owns guest
             // memory access and the pointer itself; GuestRangeOk here would be the
