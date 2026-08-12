@@ -5337,3 +5337,37 @@ two data points, not a model. The most likely reconciliation is that the scene t
 the discriminator is not the MSAA mode alone — and that has to be established before this
 becomes the behaviour. What is not in doubt is the cascade: two rectangles that tile a
 1024x1024 map exactly under one rule and cover 53.125% of it under the other.
+
+### And the empty half IS sampled — hardware's own cascade matrix says so
+
+Part 15's third reading of the half-empty cascade was *"the uncleared region is never
+sampled and the shadows fail elsewhere"*, and it was the one it said to test first because
+it is free. It is now testable from the capture rather than from our runtime, because
+§6bb read hardware's `c28..c31` — cascade 0's world-to-atlas projection — off `w1_spawn`.
+The shader's fetch coordinate for that cascade is `(dot(c28,(p,1)), dot(c29,(p,1)))` and
+`c31 = (0,0,0,1)`, so it is orthographic and there is no divide:
+
+    c28 = (-0.015843, -0.008015, -0.001910, -1.889862)     ->  |grad u| = 0.017857
+    c29 = ( 0.022816, -0.058226,  0.055078,  7.405762)     ->  |grad v| = 0.083333
+
+So `u` spans 0..1 over **56.0 m** of world and `v` over **12.0 m**. A shadow map's texel
+density is near-isotropic by construction, and only one reading of the atlas makes it so:
+
+| what u and v are normalised over | texels/m in u | in v | anisotropy |
+|---|---|---|---|
+| u over 4096, v over 1024 | 73.1 | 85.3 | **1.17x** |
+| u over 4096, v over **512** | 73.1 | 42.7 | 1.71x |
+| u over 1024, v over 1024 | 18.3 | 85.3 | 4.67x |
+
+**`v` is normalised over the full 1024 rows**, so the shader samples the half we leave
+empty; and `u` is normalised over the full 4096, which is part 31's fold arrived at from
+the consumer's side rather than the producer's. Under that reading one cascade's footprint
+is **14.0 m x 12.0 m** — square, and the right size for a first split at 8 m and a second
+at 12 m (`pc(46) = (8, 12, 32, 7)`). Under the 1024-wide reading it would be 56 m x 12 m,
+which no cascade scheme produces.
+
+That retires part 15's third reading with hardware's own constants, and it is what makes
+the empty half a defect rather than dead space: a pixel whose `v` exceeds 0.5 samples zero
+and `sgt r8, r8, r0.x` calls it occluded. **A camera-dependent boundary running across the
+world at a fixed distance, moving as the camera moves — which is the operator's report on
+the fold-ON build, word for word.**
