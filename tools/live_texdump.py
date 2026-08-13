@@ -55,13 +55,30 @@ def main():
 
     seen, ok, fail = set(), 0, 0
     for line in open(census):
-        for m in re.finditer(r's\d+=([0-9A-Fa-f]{8}) (\d+)x(\d+)(?:x\d+)? fmt=(\w+)', line):
+        for m in re.finditer(r's\d+=([0-9A-Fa-f]{8}) (\d+)x(\d+)(?:x\d+)? fmt=(\w+)'
+                             r'(?:.*?tiled=(\d+) pitchBlk=(\d+))?', line):
             addr, w, h, fmt = int(m.group(1), 16), int(m.group(2)), int(m.group(3)), m.group(4)
             if addr in seen or fmt not in BPP:
                 continue
             seen.add(addr)
             bits, blocked = BPP[fmt]
-            size = max(w, 4) * max(h, 4) * bits // 8 if blocked else w * h * bits // 8
+            # SIZE BY THE TILED FOOTPRINT, not by w*h*bpp. A tiled Xenos surface is
+            # stored in 32x32-unit macro tiles, so both its pitch and its row count
+            # round up to 32 units — exactly the rule the runtime's own untiler uses.
+            # Sizing at w*h short-reads every tiled texture whose height is not a
+            # multiple of the tile, and a short dump does not announce itself: it
+            # decodes as a texture whose right-hand blocks are missing, which reads as
+            # a decode defect. Part 39's 256x64 sign was dumped at 8 KB of 16 KB on
+            # BOTH sides of a cross-platform md5 pairing; the pairing held only because
+            # both tools truncated identically.
+            unit = 4 if blocked else 1
+            uw, uh = (w + unit - 1) // unit, (h + unit - 1) // unit
+            tiled = m.group(5) != '0' if m.group(5) else True
+            pitch = int(m.group(6)) * 32 // unit if m.group(6) and m.group(6) != '0' \
+                else ((uw + 31) & ~31)
+            if tiled:
+                pitch, uh = (pitch + 31) & ~31, (uh + 31) & ~31
+            size = pitch * uh * unit * unit * bits // 8
             if size == 0 or size > 8 << 20:
                 continue
             data = read(base + 0xA0000000 + addr, size)
