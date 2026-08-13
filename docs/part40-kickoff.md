@@ -65,17 +65,21 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
    declines and counts. The oracle method is worked out and cheap: pull the chain out of
    an R4 trace (a raw memory read + `tools/tex_decode.py`) and accept an offset only when
    the mean holds while distinct colours fall — §6bq's table has verified data points to
-   fit against. The runtime already has the matching guard: `mip: level DIVERGES from the
-   level above` counts any level whose DXT endpoint luma is more than 32 off the level
-   above it, so a wrong offset announces itself instead of painting a distant surface the
-   wrong colour.
+   fit against. The runtime already has the matching guard: `mip: level REJECTED —
+   diverges from the level above` drops any level whose DXT endpoint luma is more than 32
+   off the level above it, so a wrong offset announces itself instead of painting a
+   distant surface the wrong colour. Its count is DETERMINISTIC (254 in every run), which
+   makes it a usable regression test: derive a rule, and watch that number fall.
 3. **Item 0t is now a CAPTURE REQUEST**: one single-frame F4 trace **standing at a
    shard tree** (the operator's `capture_f28446` location). `ps_c9ca4f73ba93d023` is
    absent from R4's 261-shader bank, so R4 cannot answer it. Add it to
    `docs/xenia-capture-requests.md` and ask.
-4. **The guard-cost frame-time A/B** for the part-38 revalidate default — still owed,
+4. **DO NOT RUN ANYTHING CPU-HEAVY BESIDE A MEASUREMENT RUN.** Part 39 lost one arm run
+   to a stats census overlapping it and nearly lost two more to gate scripts. A 400 s
+   headless run is a wall-clock experiment on a shared machine; the analysis waits.
+5. **The guard-cost frame-time A/B** for the part-38 revalidate default — still owed,
    still three runs an arm, medians and pinned-share not means (gotcha 237).
-5. `docs/perf-cpu-plan.md`'s CPU/GPU overlap — still the largest performance item.
+6. `docs/perf-cpu-plan.md`'s CPU/GPU overlap — still the largest performance item.
 
 ## READ THIS BEFORE MEASURING ANYTHING
 
@@ -99,7 +103,10 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
 * `--smoke` OK after every change (run, green).
 * `CZ_VK_VALIDATION=1` on the outdoor route after the mip change: **no new messages** —
   the only ones are the pre-existing `topology-08773` point-size trio.
-* **OWED and NOT re-run in part 39**: A5 kernel-call gate, both PM4 capture oracles,
-  `truncated=0`, the capture-E identity correlation, and the shader-cache name diff.
-  None of part 39's changes touch the CP, the kernel or the shader cache, but the
-  standing gates should be re-run before any claim rests on them.
+* Re-run in part 39 and green: **both PM4 capture oracles** (24,527,474 packet lengths
+  agreeing, 0 disagreeing; every indirect buffer's address and size matching),
+  **`shader_dim_census.py`** (319 modules 2D / 97 cube, 0 disagreements) and
+  **`find_unlowered_switches.py`** (0 defects, 2 benign thunks).
+* **OWED and NOT re-run in part 39**: the A5 kernel-call gate, `truncated=0` and the
+  capture-E identity correlation. None of part 39's changes touch the CP, the kernel or
+  the shader cache, but re-run them before any claim rests on them.
