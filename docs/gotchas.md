@@ -2801,3 +2801,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      brand-new counter as "did not fire" when it had simply never been dumped. Install
      the handler for SIGTERM and SIGINT, not only for the graceful path. Generally:
      enumerate the ways the process can END, not the ways it can finish.
+
+298. **"DISTINCT COLOURS" REWARDS ALIASING, so a fix that removes aliasing scores WORSE
+     on it while being more correct.** Part 39 registered the prediction that uploading
+     the guest's mip chain would RAISE the outdoor era-median distinct-colour count,
+     because "distant surfaces gain detail" sounds like more colour variety. It fell —
+     and falling is the right direction: sampling an unfiltered level 0 at high
+     minification manufactures colour variety out of aliasing, and a properly filtered
+     mip removes it. The statistic was measuring the defect as though it were signal.
+     **The check that saved it was a reference we did not write**: hardware's own R4
+     frames read meanLuma **58.6** and distinct colours **127,574** where ours read
+     75.9 / 147,119 without mips and 74.6 / 143,803 with them, so the change moves BOTH
+     statistics toward hardware. Before registering a prediction on an aggregate, ask
+     which DIRECTION the correct answer lies in — and where possible register it against
+     the oracle's value rather than against "more" or "less".
+
+299. **A `CZ_VK_FRAME_STATS` FILE BEING APPENDED TO IS NOT A RUN, AND IT DOES NOT SAY
+     SO.** Part 39 read one arm's stats file while its run was still writing, got 7,896
+     era frames instead of 8,279, and computed a within-arm null of **2.81%** on mean
+     luma. Complete, the same pair reads **0.06%** — a 47x difference in the noise floor,
+     from a file that parsed cleanly and looked like a finished run. That inflated null
+     then swallowed the effect and the A/B read "INSIDE the null" when it is in fact
+     9x its floor. **Check the run has EXITED before reading its stats** (the process is
+     gone / the counter dump is in the log — gotcha 297 is why that dump now exists on
+     the `timeout` path), and treat an era frame count well below its sibling's as the
+     tell.
+
+300. **A NULL MEASURED FROM ONE PAIR IS A PROPERTY OF THAT PAIR, AND TWO ARMS NEED NOT
+     HAVE THE SAME NULL.** `frame_era_medians.py` takes exactly two null runs and one
+     arm, so at three runs an arm somebody PICKS which pair supplies the floor — and the
+     pick can decide the answer. Compute the WITHIN-arm spread of EVERY arm and require
+     the between-arm difference to clear the WORST of them; `tools/frame_arm_spread.py`
+     does exactly that and refuses to choose. Sibling of gotcha 159 and of 50/51/86.
