@@ -153,6 +153,28 @@ def decode_fetch(regs, slot):
     }
 
 
+def tiled_footprint(t, bpp):
+    """How many bytes this texture actually OCCUPIES, which is not w*h*bpp.
+
+    A tiled Xenos surface is stored in 32x32-unit macro tiles, so both its pitch and
+    its row count are rounded up to 32 units — the same rule
+    runtime/gpu/vk_renderer.cpp's untiler applies. Sizing a dump at `w * h * bpp`
+    therefore SHORT-READS every tiled texture whose height is not a multiple of the
+    tile: part 39's 256x64 DXT1 sign wrote 8 KB of a 16 KB footprint and rendered the
+    right half magenta, which reads as a decode failure rather than a truncated dump.
+    (The md5 pairing it was used for still held, because our own live_texdump.py sizes
+    itself the same wrong way and both sides truncated identically — but that is luck,
+    not a property of the method, and live_texdump.py wants the same fix.)
+    """
+    unit = 4 if t['fmt'] in (18, 19, 20, 26) else 1        # DXT block edge, in texels
+    uw = (t['w'] + unit - 1) // unit
+    uh = (t['h'] + unit - 1) // unit
+    pitch = t['pitch'] * 32 // unit if t['pitch'] else ((uw + 31) & ~31)
+    if not t['tiled']:
+        return int(pitch * uh * bpp * unit * unit)
+    return int(((pitch + 31) & ~31) * ((uh + 31) & ~31) * bpp * unit * unit)
+
+
 ALPHA_FUNCS = ('NEVER', 'LESS', 'EQUAL', 'LEQUAL', 'GREATER', 'NOTEQUAL', 'GEQUAL',
                'ALWAYS')
 
@@ -333,7 +355,7 @@ def main():
                         # carries it perfectly.
                         bpp = {18: 0.5, 19: 1.0, 20: 1.0, 6: 4.0, 2: 1.0,
                                22: 4.0, 26: 8.0}.get(t['fmt'], 4.0)
-                        length = int(t['w'] * t['h'] * bpp)
+                        length = tiled_footprint(t, bpp)
                         blob = mem.read(t['addr'], length)
                         if blob:
                             p = os.path.join(args.out, 'tex_%08X_%ux%u_f%u.bin'
