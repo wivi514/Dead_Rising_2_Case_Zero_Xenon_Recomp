@@ -12,10 +12,10 @@ phase 5: **the guest's mip chain**. A Xenos fetch constant names a second addres
 mip levels 1..n; we uploaded one level and sampled it at every distance. Hardware
 declares chains up to nine levels deep on the majority of its fetches. The chain is
 built, its layout verified against hardware's own bytes, the packed tail declined and
-counted, `CZ_VK_NO_MIPS=1` the control arm. The three-runs-an-arm A/B resolves on mean
-luma (−1.35%) toward hardware's own value and is visibly less aliased, but does **not**
-show item 00i fixed — the packed tail, where the deepest minification lives, is still
-declined. Item 00i's level-0 input was exonerated by an md5-identical content pairing
+counted, `CZ_VK_NO_MIPS=1` the control arm. The A/B was run twice and the first result
+turned out to be a bug the guard then caught, so the chain stands on correctness alone
+and does **not** show item 00i fixed — the packed tail, where the deepest minification
+lives, is still declined. Item 00i's level-0 input was exonerated by an md5-identical content pairing
 against R4 first, which is what pointed here. Item 0t's suspect (ALPHA-TO-MASK) is
 **refuted** across 40,703 hardware draws and the item now needs one capture, not an
 investigation.
@@ -53,14 +53,16 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
    corrupt data (the two chains verified by hand both have a 32-block-wide level 1, so
    neither could have shown it). Derive the packed-mip pitch/offset rule for exactly
    those shapes, and the guard becomes the regression test for it.
-   The A/B as it stands: mean luma **−1.35% against a 0.65% worst within-arm spread
-   (RESOLVED)**, distinct colours −3.50% against 7.91% (unresolved), both moving toward
-   hardware's own 58.6 / 127,574, visibly less speckle on minified surfaces — **but that
-   block ran on the binary that BOUND all 254 bad levels**, so part of the darkening is
-   wrongly-dark mips. Arm A was re-run on the rejecting binary (`mipA4/5/6`); read those
-   against `mipB/B2/B3`, which are unaffected. **And no distant building panel regained
-   its siding either way**, so the chain is a correctness win and NOT yet shown to be
-   item 00i's mechanism.
+   **The A/B is done twice and says nothing about 00i.** First block (bad levels bound):
+   mean luma −1.35%, resolved, agreeing with hardware's darker frames. Re-run with them
+   rejected: **+0.36%, UNRESOLVED** — sign flipped, magnitude gone, so the first result
+   was the bug and not the feature (gotcha 301). Distinct colours −5.45% against a 7.91%
+   within-arm spread, also unresolved. Runs: `mipA5/A6/A7` against `mipB/B2/B3`. **The
+   chain stands on correctness alone and no distant building panel regained its siding**,
+   which is why the tail is item 1 rather than a nicety: we upload only down to the first
+   sub-tile level and reject the chain outright on 254 textures, so the deepest
+   minification — the range item 00i is about — still has no level at all.
+
 2. **HOW TO DO IT.** Levels below one tile share a tile at sub-tile offsets this code
    declines and counts. The oracle method is worked out and cheap: pull the chain out of
    an R4 trace (a raw memory read + `tools/tex_decode.py`) and accept an offset only when

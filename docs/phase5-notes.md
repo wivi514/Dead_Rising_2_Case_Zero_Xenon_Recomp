@@ -6409,24 +6409,10 @@ removes it. So the statistic was scoring the defect as though it were signal, an
 "gains detail" was the wrong verbal model for what a mip chain does to an aggregate
 (gotcha 298).
 
-**What settles the direction is the oracle, not the aggregate.** Hardware's own eight R4
-frames read **meanLuma 58.6 / distinct colours 127,574** (medians) against our
-75.9 / 149,030 without mips and 74.9 / 143,819 with them. The change moves **both**
-statistics toward hardware. That is a directional era-level comparison across different
-viewpoints and with our HUD in frame, not a matched measurement — but the sign is
-consistent on both statistics and on both sides of the null.
-
-**And it is visible.** Cropping the far half of one capture from each arm (different
-frames — ONE SAMPLE, gotcha 133): the no-mip arm's road surface, van roof and Chuck's
-hair are conspicuously speckled where the mip arm's are smooth. That is aliasing being
-removed, which is exactly what the chain is for.
-
-**What this does NOT show is that item 00i is fixed.** Nothing in the pair says a
-distant building panel regained its siding, and the packed tail — the levels below one
-tile, which is where the deepest minification lives — is still declined. The honest
-verdict: **the mip chain is a correctness fix that measurably and visibly improves
-minified surfaces and moves the frame toward hardware; whether it is 00i's mechanism is
-still open, and finishing the packed tail is the next thing that could decide it.**
+**AND THE TABLE ABOVE IS RETRACTED TOO. It measured a BUG, not the feature** — see the
+next section: those three runs bound 254 mip levels that are not the textures they were
+attached to, and rejecting them removes the whole effect. The block is kept here because
+the retraction is the finding.
 
 ### The guard caught the rule, and the A/B above is QUALIFIED because of it
 
@@ -6468,3 +6454,39 @@ the wrong reason, moving toward hardware's darker frames for the wrong reason to
 is re-run on the rejecting binary; the control arm is unaffected, since
 `CZ_VK_NO_MIPS=1` never enters the block. Read the re-run's numbers, not the first
 block's.
+
+
+### The A/B RE-RUN on the rejecting binary — and the first block's result was the bug
+
+Arm A re-run three times on the binary that rejects divergent levels; arm B is the same
+three control runs, untouched, because `CZ_VK_NO_MIPS=1` never enters the block.
+
+| statistic | mips ON, rejecting (3 runs) | mips OFF (3 runs) | between | worst within-arm spread | verdict |
+|---|---|---|---|---|---|
+| meanLuma | 76.179 | 75.908 | **+0.36%** | 1.28% | unresolved |
+| distinctColours | 140,907 | 149,030 | −5.45% | 7.91% | unresolved |
+
+**Mean luma went from −1.35% (resolved, 2.1x its floor) to +0.36% (unresolved) — the
+sign flipped and the magnitude collapsed.** So the darkening the first block measured
+was not correct filtering at all: it was 254 wrongly-dark levels being bound, one
+chained texture in seven. The oracle agreement that made it look right — "it moves
+toward hardware's darker frames" — was moving toward the right answer for the wrong
+reason, which is the most dangerous shape a measurement can take (gotcha 301).
+
+**The honest verdict on the mip chain, as implemented:**
+
+* It is **correct**: the guest declares levels 1..n at a second address, hardware samples
+  them, and this renderer was discarding them. That does not need an A/B to justify.
+* Its effect on outdoor era statistics is **not resolvable at three runs an arm**. Both
+  statistics are inside their arms' own noise.
+* **Item 00i is untouched by it.** Nothing here says a distant building panel regained
+  its siding.
+* The "visibly less speckle" crop pair above was taken on the PRE-REJECTION binary and is
+  therefore also suspect; a fresh look is owed. 1,560 textures still carry levels, so the
+  observation may well survive — but it has not been re-taken.
+
+Why so little effect from something so structural: we upload only down to the first
+sub-tile level, and reject the chain entirely on 254 textures. **The packed tail — where
+the deepest minification lives, and therefore where a distant building actually needs a
+level — is still declined.** That is the next thing to build, and the guard's 254 (a
+deterministic count, identical in every run) is the regression test for it.

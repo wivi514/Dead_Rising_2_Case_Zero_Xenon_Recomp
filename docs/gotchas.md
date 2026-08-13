@@ -2847,7 +2847,12 @@ From phase C part 18 (the frame rate — and none of it was work):
      wrong PITCH, not corrupt data. Both hand-verified chains happened to have a level 1
      exactly 32 blocks wide, so neither could have shown it.
      **The part that matters: the A/B had already been run on the binary that bound those
-     levels**, so its resolved −1.35% mean-luma shift was partly wrongly-dark mips — a
-     change moving TOWARD the oracle for the wrong reason. Without the guard the number
-     would have been quoted as the fix working. Build the invariant check into the code
-     the same day you build the feature, and re-run the A/B when it fires.
+     levels, and re-running it with them rejected did not qualify the result — it ERASED
+     it.** Mean luma went from **−1.35% at 2.1x its floor (resolved)** to **+0.36%
+     (unresolved)**: the sign flipped and the magnitude collapsed, so the entire measured
+     effect was the bug rather than the feature. Worse, the bug had an alibi — it moved
+     the frame TOWARD hardware's darker reference, so the oracle agreed with it. **A
+     result that matches the oracle for the wrong reason is the most dangerous shape a
+     measurement takes**, and nothing in the A/B could have separated the two. Build the
+     invariant check into the code the same day you build the feature, and re-run every
+     number when it fires.

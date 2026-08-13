@@ -1470,17 +1470,19 @@ Next, in order:
    declined and counted — with **`CZ_VK_NO_MIPS=1` as the same-binary control arm**.
    1,815 textures take a chain on the outdoor route.
 
-   **THE A/B IS DONE (three runs an arm) AND IT DOES NOT CLOSE THIS ITEM.** Era medians:
-   mean luma **−1.35% against a 0.65% worst within-arm spread — RESOLVED**; distinct
-   colours −3.50% against a 7.91% spread — unresolved. Both move TOWARD hardware, whose
-   own eight R4 frames read meanLuma **58.6** and distinct colours **127,574** where ours
-   read 75.9 / 149,030 without mips. And it is visible: the no-mip arm's road, van roof
-   and hair are conspicuously speckled where the mip arm's are smooth — aliasing being
-   removed. **But nothing shows a distant building panel regaining its siding**, so the
-   mip chain is a correctness fix that improves minified surfaces and is NOT yet shown to
-   be this item's mechanism. The registered prediction (distinct colours would RISE) was
-   retracted: filtering REDUCES colour variety, so that statistic was scoring the defect
-   as signal (gotcha 298). `docs/phase5-notes.md` §6bq.
+   **THE A/B IS DONE — TWICE — AND IT DOES NOT CLOSE THIS ITEM.** The first block
+   (three runs an arm) read mean luma −1.35% against a 0.65% floor and looked RESOLVED,
+   moving toward hardware's darker frames. It was measuring a BUG: the divergence guard
+   shipped with the feature found **254 of 1,818 chained textures holding a level that is
+   not that texture**, and re-running arm A with those rejected took mean luma to
+   **+0.36% (unresolved)** — sign flipped, magnitude gone. Distinct colours −5.45%
+   against a 7.91% within-arm spread, also unresolved. **So the mip chain, as
+   implemented, produces no era-statistic change resolvable at three runs an arm**, it is
+   justified on correctness alone (the guest declared data we discarded), and it does not
+   demonstrate anything about this item. Gotchas 298 (the registered prediction had the
+   wrong sign — filtering REDUCES distinct colours) and 301 (a bug that moves the metric
+   toward the oracle is the most dangerous shape a measurement takes).
+   `docs/phase5-notes.md` §6bq.
 
    **STILL OWED HERE:** the packed-mip tail (levels below one tile share a tile at
    sub-tile offsets), which is where the *deepest* minification lives and therefore

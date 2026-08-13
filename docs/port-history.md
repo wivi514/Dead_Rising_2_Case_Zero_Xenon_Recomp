@@ -2551,12 +2551,13 @@ counted rather than guessed, and `CZ_VK_NO_MIPS=1` as the same-binary control ar
 1,815 textures take a chain on the outdoor route, and a divergence guard built with it
 immediately caught the rule's limit: **254 of 1,818 chains had a level that is not that
 texture** (a wrong pitch on levels narrower than a macro tile), so the guard rejects
-rather than counts. The first A/B (three runs an arm) **resolves
-on mean luma, −1.35% against a 0.65% worst within-arm spread**, moves both era statistics
-toward hardware's own R4 frames, and visibly de-speckles minified surfaces — but it does
-**not** show item 00i fixed, and the registered prediction was retracted with its sign
-inverted: filtering REDUCES distinct colours, so that statistic had been scoring the
-defect as signal (gotcha 298).
+rather than counts. The A/B was run twice, and the first
+result was the bug rather than the feature: with those levels bound it read mean luma
+−1.35% (resolved, and agreeing with hardware's darker frames); with them rejected it
+reads **+0.36%, unresolved**, and distinct colours −5.45% against a 7.91% spread. The
+chain is therefore justified on correctness alone and **item 00i is untouched by it**.
+The registered prediction was retracted twice over — once for its sign (filtering REDUCES
+distinct colours, gotcha 298) and once for its subject (gotcha 301).
 
 **Item 0t, the shard trees: the suspect is refuted.** RB_COLORCONTROL read across all
 eight R4 traces — **40,703 draws** — enables neither the alpha test nor **ALPHA-TO-MASK**
