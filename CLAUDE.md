@@ -670,7 +670,27 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 36):
+Where the port is, as of 2026-08-12 (part 36, second half — the reproducibility layer):
+
+* **AN F9 CAPTURE NOW RECORDS WHERE YOU WERE STANDING, AND TEXTURES CAN BE ISOLATED
+  WHILE AN OPERATOR PLAYS.** Every picture finding in this port had been anchored to
+  "the operator walked somewhere and pressed F9", which nothing can reproduce. The
+  capture now writes `capture_<frame>.pose` beside the picture: the player's world
+  position, read through the shipped debug console's own path (**the position is
+  `obj + 0x1C`**, reached by a five-step lookup `setplayerpos` and `getplayerinfo`
+  share), plus the camera constants. Read it with `tools/pose_read.py`.
+  `CZ_VK_TEX_FILTER_FILE` isolates or hides a texture **live, no relaunch**, which the
+  latched env vars could never do for a defect that picks a different quality level per
+  boot — and **streaming addresses are stable across boots** (703 of 712 shared
+  addresses held identical content between two sessions), so a census from one boot
+  names textures usable in the next. **A teleport is diagnosed but unfinished**: the
+  crash was the wrong THREAD (the engine's per-thread context lives in TLS slot 8 and no
+  input-polling thread has it — gotcha 289), fixed by hooking the accessor itself; but
+  the actor's position fields are OUTPUTS the engine rewrites every frame (gotcha 290),
+  so the working placement path is DebugJump's own spawn code, not `setplayerpos`.
+  `docs/phase5-notes.md` §6bk-§6bn; **`docs/part37-kickoff.md` is the LIVE hand-off.**
+
+Where the port was, as of 2026-08-12 (part 36, first half):
 
 * **ITEM 0s IS REFRAMED: THE "JUNK SHEETS" ARE CORRECT TO THE BYTE, AND THE WRITER
   HUNT IS CLOSED BEFORE IT STARTED.** Part 36 ran the R3-oracle comparison first, as

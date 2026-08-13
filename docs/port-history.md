@@ -2460,3 +2460,19 @@ The engine's own narration (1,209 [guest] lines) names no compositor. Item 0s is
 a wrong-binding question; the writer hunt is closed unfired. Gotchas 287-288;
 `phase5-notes.md` §6bj; `part36-kickoff.md` is the live hand-off. Docs + one tool
 only — no runtime change, part 34's gates stand.
+
+## Part 36, second half (2026-08-12) — the reproducibility layer, and a teleport chased
+## to its real cause
+
+An operator session produced both quality levels of the tanker in one boot, and the
+capture layer grew the thing every picture finding has lacked: a POSE. F9 now records
+the player's world position (via the shipped debug console's own lookup — the position
+is `obj + 0x1C`) and the camera matrix. `CZ_VK_TEX_FILTER_FILE` isolates textures live
+while an operator plays; streaming addresses were measured stable across boots, which
+is what makes a one-boot census reusable. The teleport was built, crashed, and was
+diagnosed to the instruction: the engine's per-thread context lives in TLS slot 8, no
+input-polling thread has it, and our pumps live in the input imports — so it was the
+wrong thread rather than the wrong moment (gotcha 289). Hooking the context accessor
+itself fixed the crash; the player still does not move because the actor's position
+fields are outputs the engine rewrites each frame (gotcha 290). DebugJump's own spawn
+code is the named lead. `phase5-notes.md` §6bk-§6bn; `part37-kickoff.md` is live.
