@@ -1341,6 +1341,13 @@ CZ_VK_DRAW_ID=1    with CZ_CAPTURE_KEY and F9: the next recorded frame is render
                    The frame's `capture_*.ppm` is NOT a picture on such a run (the post
                    chain is draws too, so it paints indices over everything) and the log
                    says so when it writes it.
+                   `--palette out.png` writes the map with one distinct colour per draw.
+                   USE IT rather than brightening the raw file: indices are all near-black,
+                   so a brightness stretch collides neighbouring ones and invents flat
+                   regions — that artifact read as "one draw covers half the screen" where
+                   the numbers said 633. The palette view is legible enough to pick a tree
+                   canopy out of by eye, which matters because a CZ_VK_DRAW_ID run produces
+                   no photograph of the frame.
                    Counter: `draw: painted its INDEX (CZ_VK_DRAW_ID)` — if that reads 0,
                    the pass did not run and anything read off the dumps is a coincidence
                    (gotcha 304).

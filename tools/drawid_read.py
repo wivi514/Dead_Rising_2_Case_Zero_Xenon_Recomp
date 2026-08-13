@@ -85,12 +85,40 @@ def main():
     ap.add_argument('--rect')
     ap.add_argument('--top', type=int, default=12)
     ap.add_argument('--picture-size')
+    ap.add_argument('--palette', help='write the map as a PNG with one distinct colour '
+                                      'per draw — the readable view')
     a = ap.parse_args()
 
     w, h, px = read_ppm(a.map)
     lines = census_lines(a.census)
     print('%s: %ux%u ID map%s' % (a.map, w, h,
                                   ', census %d draws' % len(lines) if lines else ''))
+
+    # THE MAP IS ITS OWN PICTURE, and this is how you look at it. Raw indices are all
+    # near-black (draw 4,043 is rgb(204,15,0)), so a naive brightness stretch makes
+    # neighbouring indices collide and invents flat regions that are not there — I read
+    # "one draw covers the right half of the screen" off exactly that artifact before
+    # checking the numbers, which said 633 draws. Hashing the index to a colour cannot
+    # collide that way, and the result is legible enough to pick a tree canopy out of by
+    # eye, which is the whole point: on a CZ_VK_DRAW_ID run there is no photograph.
+    if a.palette:
+        try:
+            from PIL import Image
+        except ImportError:
+            sys.exit('--palette needs Pillow')
+        img = Image.new('RGB', (w, h))
+        pix = img.load()
+        for yy in range(h):
+            for xx in range(w):
+                o = (yy * w + xx) * 3
+                v = px[o] | (px[o + 1] << 8) | (px[o + 2] << 16)
+                if not v:
+                    pix[xx, yy] = (0, 0, 0)
+                    continue
+                k = (v * 2654435761) & 0xFFFFFFFF
+                pix[xx, yy] = ((k >> 16) & 255, (k >> 8) & 255, k & 255)
+        img.save(a.palette)
+        print('  wrote %s — one colour per draw' % a.palette)
 
     sx = sy = 1.0
     if a.picture_size:
