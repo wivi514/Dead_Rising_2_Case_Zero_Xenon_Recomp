@@ -6388,3 +6388,42 @@ is **absent from R4's 261-shader bank**, so R4 cannot say how hardware draws *th
 material — R4 is the Big Buck area and the operator's shard trees are elsewhere. The
 next round-5 ask is a single-frame trace **standing at a shard tree**, which turns this
 from a hunt into the same read that just closed the alpha-to-mask branch.
+
+### The mip A/B, three runs an arm — and the registered prediction was WRONG IN SIGN
+
+Alternated block, `CZ_VK_NO_MIPS=1` the control, era medians over every frame above
+1,800 draws, read with the new `tools/frame_arm_spread.py` (which prints every run and
+compares the between-arm difference against the WORST within-arm spread, instead of
+letting the choice of null pair decide the answer — gotcha 300):
+
+| statistic | mips ON (3 runs) | mips OFF (3 runs) | between | worst within-arm spread | verdict |
+|---|---|---|---|---|---|
+| meanLuma | 74.881 | 75.908 | **−1.35%** | 0.65% | **RESOLVED** |
+| distinctColours | 143,819 | 149,030 | −3.50% | 7.91% | unresolved |
+| coveragePct | 99.677 | 99.679 | 0.00% | — | saturated, reports nothing |
+
+**The prediction registered in the commit — that distinct colours would RISE — is
+retracted, and its sign was the interesting part.** Sampling an unfiltered level 0 at
+high minification manufactures colour variety out of ALIASING; a correctly filtered mip
+removes it. So the statistic was scoring the defect as though it were signal, and
+"gains detail" was the wrong verbal model for what a mip chain does to an aggregate
+(gotcha 298).
+
+**What settles the direction is the oracle, not the aggregate.** Hardware's own eight R4
+frames read **meanLuma 58.6 / distinct colours 127,574** (medians) against our
+75.9 / 149,030 without mips and 74.9 / 143,819 with them. The change moves **both**
+statistics toward hardware. That is a directional era-level comparison across different
+viewpoints and with our HUD in frame, not a matched measurement — but the sign is
+consistent on both statistics and on both sides of the null.
+
+**And it is visible.** Cropping the far half of one capture from each arm (different
+frames — ONE SAMPLE, gotcha 133): the no-mip arm's road surface, van roof and Chuck's
+hair are conspicuously speckled where the mip arm's are smooth. That is aliasing being
+removed, which is exactly what the chain is for.
+
+**What this does NOT show is that item 00i is fixed.** Nothing in the pair says a
+distant building panel regained its siding, and the packed tail — the levels below one
+tile, which is where the deepest minification lives — is still declined. The honest
+verdict: **the mip chain is a correctness fix that measurably and visibly improves
+minified surfaces and moves the frame toward hardware; whether it is 00i's mechanism is
+still open, and finishing the packed tail is the next thing that could decide it.**

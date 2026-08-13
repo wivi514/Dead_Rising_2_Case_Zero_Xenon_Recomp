@@ -686,8 +686,14 @@ declared and then discarded for the whole of phase 5):
   frame declares one on **69.6%** of fetches. The layout was verified level by level against hardware's own bytes (same
   mean, steadily fewer distinct colours) rather than reasoned about; the **packed tail**
   is declined and counted, never guessed. `CZ_VK_NO_MIPS=1` is the same-binary control
-  arm; 1,815 textures take a chain on the outdoor route. Gotcha 295 is the transferable
-  half: **for every field a decoder parses, grep for a READER.** §6bq.
+  arm; 1,815 textures take a chain on the outdoor route. **The A/B (three runs an arm)
+  resolves on mean luma — −1.35% against a 0.65% worst within-arm spread — and moves
+  BOTH era statistics toward hardware's own R4 frames (58.6 / 127,574 against our
+  75.9 / 149,030 without mips), with visibly less speckle on minified surfaces. It does
+  NOT show item 00i fixed**: no distant panel regained its siding, and the packed tail is
+  still declined. Gotcha 295 is the transferable half: **for every field a decoder
+  parses, grep for a READER** — and 298: **"distinct colours" rewards ALIASING**, so the
+  registered prediction had its sign wrong. §6bq.
 * **Item 00i's level-0 input is EXONERATED** — the Big Buck sign draw's texture bytes
   are **md5-identical** to hardware's from a different boot at a different address — and
   `mip_min_level` is **0 on all 328,164 hardware fetches**, refuting "streaming raises an

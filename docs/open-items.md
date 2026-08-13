@@ -1468,10 +1468,19 @@ Next, in order:
    nothing read them; `CreateImage` hardcoded `mipLevels = 1`. Part 39 implements the
    chain — layout verified level by level against hardware's own bytes, packed tail
    declined and counted — with **`CZ_VK_NO_MIPS=1` as the same-binary control arm**.
-   1,815 textures take a chain on the outdoor route. **Whether that closes THIS item is
-   the open question**: the registered prediction is that distant surfaces gain filtered
-   detail, and if the era medians are unmoved then missing mips is not 00i's mechanism
-   and the change stands as a correctness fix only. `docs/phase5-notes.md` §6bq.
+   1,815 textures take a chain on the outdoor route.
+
+   **THE A/B IS DONE (three runs an arm) AND IT DOES NOT CLOSE THIS ITEM.** Era medians:
+   mean luma **−1.35% against a 0.65% worst within-arm spread — RESOLVED**; distinct
+   colours −3.50% against a 7.91% spread — unresolved. Both move TOWARD hardware, whose
+   own eight R4 frames read meanLuma **58.6** and distinct colours **127,574** where ours
+   read 75.9 / 149,030 without mips. And it is visible: the no-mip arm's road, van roof
+   and hair are conspicuously speckled where the mip arm's are smooth — aliasing being
+   removed. **But nothing shows a distant building panel regaining its siding**, so the
+   mip chain is a correctness fix that improves minified surfaces and is NOT yet shown to
+   be this item's mechanism. The registered prediction (distinct colours would RISE) was
+   retracted: filtering REDUCES colour variety, so that statistic was scoring the defect
+   as signal (gotcha 298). `docs/phase5-notes.md` §6bq.
 
    **STILL OWED HERE:** the packed-mip tail (levels below one tile share a tile at
    sub-tile offsets), which is where the *deepest* minification lives and therefore

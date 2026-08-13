@@ -2548,8 +2548,12 @@ renderer existed. The chain is now uploaded, its layout verified level by level 
 hardware's own bytes rather than reasoned about — same mean, steadily fewer distinct
 colours, decoded out of the trace and looked at — with the PACKED TAIL declined and
 counted rather than guessed, and `CZ_VK_NO_MIPS=1` as the same-binary control arm.
-1,815 textures take a chain on the outdoor route. Whether it closes 00i is a registered
-prediction against an era-median A/B, not a claim.
+1,815 textures take a chain on the outdoor route. The A/B (three runs an arm) **resolves
+on mean luma, −1.35% against a 0.65% worst within-arm spread**, moves both era statistics
+toward hardware's own R4 frames, and visibly de-speckles minified surfaces — but it does
+**not** show item 00i fixed, and the registered prediction was retracted with its sign
+inverted: filtering REDUCES distinct colours, so that statistic had been scoring the
+defect as signal (gotcha 298).
 
 **Item 0t, the shard trees: the suspect is refuted.** RB_COLORCONTROL read across all
 eight R4 traces — **40,703 draws** — enables neither the alpha test nor **ALPHA-TO-MASK**
