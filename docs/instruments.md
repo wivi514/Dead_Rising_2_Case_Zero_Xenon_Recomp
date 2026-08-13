@@ -1306,7 +1306,22 @@ CZ_VK_NO_ALPHA_TEST=1   disable the RB_COLORCONTROL alpha test (the pre-part-38 
                    (shared constants +272). Any OTHER enabled compare func is counted
                    by name ("alpha test func X UNEMULATED") and left un-emulated.
                    NB: the shard-tree foliage is NOT this — it never fired the RB
-                   alpha test; the suspect is ALPHA-TO-MASK (bit 4), unbuilt, with
-                   hardware's register state at the foliage draws in R4_world as the
-                   oracle. §6bp.
+                   alpha test. **Part 39 read hardware's own RB_COLORCONTROL across
+                   all eight R4 traces (40,703 draws) and it enables NEITHER the alpha
+                   test NOR ALPHA-TO-MASK anywhere**, so the bit-4 suspect §6bp named
+                   is refuted and the emulation should not be built. §6bq.
+```
+
+## Mip levels (part 39)
+
+```
+CZ_VK_NO_MIPS=1    upload level 0 alone — the pre-part-39 renderer, and the same-binary
+                   control arm for the mip chain. The default now reads dword5's
+                   separate MIP ADDRESS and uploads levels 1..n from it, so a minified
+                   surface selects a filtered level instead of sampling full-resolution
+                   texels at whatever rate the rasteriser lands on. Levels below one
+                   tile (the PACKED TAIL) are declined and counted, never guessed;
+                   cube-map chains likewise. Counters: `mip: chain uploaded`,
+                   `mip: PACKED TAIL DECLINED`, `mip: CUBE chain not uploaded`.
+                   1,815 textures take a chain on the outdoor DebugJump route. §6bq.
 ```

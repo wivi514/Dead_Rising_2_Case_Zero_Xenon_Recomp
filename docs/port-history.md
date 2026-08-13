@@ -2524,3 +2524,45 @@ converting item 00i from "possibly the game's streaming" to OURS-with-oracle and
 promoting it to top picture item. Also fixed: the window-close exit path now dumps
 the renderer counters (gotcha 294 — an evening's alpha census was lost to it).
 `phase5-notes.md` §6bp; gotchas 293-294; `part39-kickoff.md` is live.
+
+## Part 39 (2026-08-12, same day) — the mip chain: an input the renderer declared and
+## then threw away for the whole of phase 5
+
+Part 38 handed over two picture items cornered against `Xenia logs/R4_world/`. Both were
+worked, and both moved — one by finding a mechanism, the other by killing its suspect.
+
+**Item 00i, the flat-panel LOD look.** The content pairing the kickoff asked for
+(gotcha 291: by CONTENT, never by vertex count) landed on the Big Buck shopfront's
+153-vertex sign draw, and the bytes hardware's sampler read are **md5-identical** to
+ours from a different boot at a different streamed address. So the level-0 input is
+exonerated, and with it two of the kickoff's three candidates: the white dummy is bound
+once in most of the eight F9 frames, and `mip_min_level` is **0 on all 106,910 hardware
+fetches**, refuting "the streaming system raises an LOD clamp we ignore".
+
+What the same census found instead is that `mip_max_level` runs to **nine**, that
+**12,758 of 48,247 fetches in one hardware frame carry a separate mip-chain address**,
+and that `xenos::DecodeTextureFetch` had been parsing those fields since phase 5 while
+**no line of the renderer read them** and `CreateImage` hardcoded `mipLevels = 1`
+(gotcha 295). Every minified surface in this game has been sampling level 0 since the
+renderer existed. The chain is now uploaded, its layout verified level by level against
+hardware's own bytes rather than reasoned about — same mean, steadily fewer distinct
+colours, decoded out of the trace and looked at — with the PACKED TAIL declined and
+counted rather than guessed, and `CZ_VK_NO_MIPS=1` as the same-binary control arm.
+1,815 textures take a chain on the outdoor route. Whether it closes 00i is a registered
+prediction against an era-median A/B, not a claim.
+
+**Item 0t, the shard trees: the suspect is refuted.** RB_COLORCONTROL read across all
+eight R4 traces — **40,703 draws** — enables neither the alpha test nor **ALPHA-TO-MASK**
+anywhere, so the emulation the item asked for would have been built against a mode this
+title does not use. Nor is it a shader `kill`: 1 of R4's 208 pixel shaders has one,
+where our own bank reports 324 of 324 because XenosRecomp emits its alpha-test clip
+unconditionally (gotcha 296 — a saturated count is a question about the generator). The
+item now needs one thing: a round-5 trace **standing at a shard tree**, because that
+material is absent from R4's bank.
+
+Also: SIGTERM and SIGINT now dump the renderer counters. Gotcha 294 fixed the
+window-close path and left the headless twin open — every recipe here ends a run with
+`timeout`, so the arm carrying the interesting counters was the one that never printed
+them (gotcha 297).
+
+`phase5-notes.md` §6bq; gotchas 295-297; `part40-kickoff.md` is live.

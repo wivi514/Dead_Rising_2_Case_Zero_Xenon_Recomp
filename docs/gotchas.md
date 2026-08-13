@@ -2766,3 +2766,38 @@ From phase C part 18 (the frame rate — and none of it was work):
      one exit path most likely to carry interesting counters was the one that dropped
      them. One call before `_Exit` fixes it; the check is to enumerate every
      process-exit site and ask which reports run on each.
+
+295. **A DECODED FIELD THAT NOTHING READS IS INDISTINGUISHABLE FROM A FIELD THAT DOES
+     NOT EXIST — and the way it presents is "the hardware must not use this."** The
+     Xenos texture fetch constant names TWO addresses: dword1's base, which holds mip
+     level 0 and nothing else, and dword5's separate MIP ADDRESS, which holds levels
+     1..n. `DecodeTextureFetch` had parsed `mipMin`/`mipMax` since phase 5 and no line
+     of the renderer read either, `CreateImage` hardcoded `mipLevels = 1`, and no
+     census on either side printed a mip column — so for thirty-four parts the whole
+     mip chain was invisible, and every discussion of distant surfaces proceeded as
+     though the guest had supplied one level. It took one column added to two censuses
+     to find that hardware declares a chain on the majority of its fetches, up to nine
+     levels deep. **The check: for every field a decoder parses, grep for a READER.**
+     A parsed-and-unread field is worse than an unparsed one, because its presence in
+     the struct reads as support.
+
+296. **AN INSTRUMENT THAT REPORTS 100% IS USUALLY REPORTING ON ITS EMITTER, NOT ON ITS
+     SUBJECT.** "How many of our pixel shaders contain a discard?" returned **324 of
+     324** — which looks like a decisive answer about materials and is a fact about
+     XenosRecomp: every translated pixel shader carries the same
+     `SPEC_CONSTANT_ALPHA_TEST` clip unconditionally, live only when the pipeline key
+     sets the alpha-test bit. The comparable question asked of hardware's own microcode
+     (R4's 208 dumped pixel shaders, grepped for `kill`) returns **1**. Same question,
+     two orders of magnitude apart, because one side was counting scaffolding. The
+     sibling of gotcha 25: a grep that cannot MISS is as uninformative as one that
+     cannot match, and a saturated count should be read as a question about the
+     generator before it is read as a finding.
+
+297. **THE SIGNAL EVERY RECIPE USES TO END A RUN WAS THE ONE EXIT PATH WITH NO REPORT.**
+     Gotcha 294 fixed the window-close path and left its headless twin open: every
+     headless recipe in this project ends with `timeout`, which is SIGTERM, whose
+     default action is to die silently — so the arm that carries the counters worth
+     reading was the one arm that never printed them, and part 39 initially read a
+     brand-new counter as "did not fire" when it had simply never been dumped. Install
+     the handler for SIGTERM and SIGINT, not only for the graceful path. Generally:
+     enumerate the ways the process can END, not the ways it can finish.

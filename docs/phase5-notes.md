@@ -6262,3 +6262,126 @@ single-frame traces of the same approach on hardware. **Hardware shows fully tex
 buildings at every distance** — the HARDWARE sign legible from far down the street.
 Item 00i is no longer "possibly the game's own streaming": it is our defect, with
 eight paired oracles to chase it against, and it is now the top picture item.
+
+## 6bq. Part 39: the mip chain, which the renderer had declared and discarded since
+##      phase 5 — and the refutation of item 0t's suspect
+
+Part 38 handed over two picture items cornered with hardware ground truth: item 00i
+(the flat-panel LOD look, eight paired R4 traces) and item 0t (the shard trees,
+ALPHA-TO-MASK suspected). Part 39 worked both against `Xenia logs/R4_world/`.
+
+### The content pairing item 00i asked for, and what it exonerated
+
+The kickoff's instruction was to pair one far building's draw between our F9 census
+(`part38-operator/arm1b_revalidate/`) and the matching R4 trace **by texture CONTENT,
+never by vertex count** (gotcha 291). The pair that carried across is the Big Buck
+shopfront's 153-vertex sign draw, `vs_2f13eecec64e508e` + `ps_aa7b6dcff7437b20`, whose
+four bound textures have the same extents on both sides (256x64, 128x32, 128x32, 16x4)
+— and the bytes settle it:
+
+| | hardware (`Big_buck_hardware_store_01`, addr `15689000`) | ours (`texdump_f10986`, addr `0E04D000`) |
+|---|---|---|
+| md5 of the 8 KB the sampler read | `b06f8bdd8957a7a1f2cf3edf27e0a2de` | `b06f8bdd8957a7a1f2cf3edf27e0a2de` |
+
+Different boot, different platform, different streamed address, **identical bytes**. So
+the level-0 input to the far-building draws is not the defect. (Both dumps size
+themselves `w*h*bpp`, which for a TILED surface is short of the pitch-and-rows-rounded
+footprint — here 8 KB of 16 KB. The two sides truncate identically so the comparison
+holds, but neither tool is dumping a whole tiled texture and that is worth fixing.)
+
+Two candidate mechanisms from the kickoff died in the same pass:
+
+* **"a fetch slot we read as unset"** — the 1x1 white dummy is bound **once** in six of
+  the eight F9 frames and 39-61 times in the other two, out of 3,260-6,523 draws. Not a
+  building-scale path.
+* **"the streaming system raises the LOD clamp and we ignore it"** — a plausible reading
+  of `ForceLODTexForStreamingWorld` and `wait_for_tex_lod`, and **refuted**:
+  `mip_min_level` is **0 on all 106,910 texture fetches across three R4 traces**. The
+  guest never disclaims level 0 here.
+
+### What the same census found instead: a whole declared input the renderer discards
+
+`mip_max_level` is not zero. Across R4's traces **13,078 of 48,247 fetches in one frame
+alone declare a chain**, up to **nine levels**, and 12,758 carry a **separate mip-chain
+address** — dword5's `mip_address`, a field this project had never decoded. Our own
+census of an outdoor frame says the same from our side: **8,688 of 12,491 fetches
+(69.6%) declare `mipMax >= 1`.**
+
+`xenos::DecodeTextureFetch` had parsed `mipMin`/`mipMax` since phase 5 and **no line of
+the renderer read either**; `CreateImage` hardcoded `mipLevels = 1`. So every minified
+surface in this game has been sampling full-resolution texels at whatever rate the
+rasteriser landed on, for the whole of phase 5 (gotcha 295: a parsed-and-unread field
+reads as support).
+
+### The mip layout, measured against hardware's own bytes rather than reasoned about
+
+dword5's layout is fixed by the dimension field at bits 9..10 that part 25 located by
+census: that puts `packed_mips` at 11 and the 20-bit page-aligned mip address at 12..31.
+Decoding hardware's chains out of the trace and LOOKING at them (`tools/tex_decode.py`,
+the part-36 habit) confirms each clause:
+
+| texture | level | where | what it decodes to |
+|---|---|---|---|
+| `15689000` 256x64 DXT1, `mip=0..4`, chain at `1568D000` | 1 | chain + 0 | a clean half-size copy: same plank, same knots |
+| `115D1000` 512x512 DXT1, `mip=0..7`, chain at `115F1000` | 0/1/2/3/4 | base / +0 / +32768 / +40960 / +49152 | mean **247.4 / 247.3 / 247.3 / 247.3 / 247.1**, distinct colours **179 / 123 / 85 / 53 / 31** |
+
+Same mean, steadily fewer distinct colours, is what a mip chain looks like and what a
+wrong offset does not. So: **level 1 begins at `mipAddress` exactly; each later level
+begins at the accumulated TILED footprint of the levels before it (its own pitch rounded
+to 32 units by its own rows rounded to 32); and a level's pitch comes from ITS OWN width,
+not from the base level's `pitchBlocks`.**
+
+**Where it stops, and it stops loudly.** The 256x64 chain does *not* continue at +8192 —
+its tail is packed into one tile at sub-tile offsets this code does not know how to
+compute. The rule taken is therefore: accumulate while every preceding level is a full
+tile, take the first sub-tile level (verified correct on both textures above), and
+**decline everything below it, counted by name** rather than guessed (gotcha 5). A
+guessed low mip is a wrong colour on a distant surface — indistinguishable from the
+defect being fixed.
+
+Built in `UploadTexture`: per-level untile into the same staging image, one
+`VkBufferImageCopy` region per level, `Image::levels` so `Barrier` covers the whole
+range (the trap cube maps set in part 25, one subresource axis over). The sampler
+already had `mipmapMode = LINEAR` and `maxLod = VK_LOD_CLAMP_NONE`, so nothing there
+changed. **`CZ_VK_NO_MIPS=1` is the same-binary control arm — the pre-part-39 renderer.**
+
+On the outdoor DebugJump route: **1,815 textures take a chain** (of ~2,267 uploaded),
+1,815 hit the packed-tail decline, 6 cube chains declined (a cube's chain is six chains
+and the mip face stride is a second model on top of the base level's — not attempted).
+
+**REGISTERED PREDICTION, before the A/B:** distant textured surfaces gain filtered
+detail rather than aliased level-0 texels, and the era-median distinct-colour count
+moves measurably against the `CZ_VK_NO_MIPS=1` arm at its own null. **If the picture is
+unmoved, missing mips is NOT item 00i's mechanism** and this stands only as a
+correctness fix — which it is either way, because the guest declared the data and we
+were throwing it away.
+
+### Item 0t: ALPHA-TO-MASK is REFUTED, and so is the alpha test as foliage's mechanism
+
+The kickoff said to read RB_COLORCONTROL at hardware's foliage draws before building
+anything. Done, across **all eight R4 traces, 40,703 draws**:
+
+| trace | draws | distinct RB_COLORCONTROL | alpha test enabled (bit 3) | ALPHA_TO_MASK (bit 4) |
+|---|---|---|---|---|
+| hw01..hw08 | 5806 / 6092 / 6205 / 6657 / 4675 / 4640 / 3664 / 2964 | 5-6 values each | **0** | **0** |
+
+Hardware sets neither bit anywhere in this area. So part 38's alpha-test wiring is
+correct and inert here — which is exactly why the trees were unchanged — and **the
+suspect the item named is dead.** The values present are `00018004/5/6`, `00010000` and
+`00019804`: a compare function is programmed but the enable bit never is.
+
+Nor is it a shader `kill`: of R4's **208 dumped pixel shaders exactly one** contains a
+`kill` instruction (`shader_D6198686761E8FF5`, our `ps_dc4cb6371ac4d3f8`, which our
+cache already has). Asking the same question of our own bank returns **324 of 324**,
+which is a fact about XenosRecomp's unconditional `SPEC_CONSTANT_ALPHA_TEST` clip and
+not about materials (gotcha 296).
+
+Hardware's blend modes at these draws: `00010001` (opaque) 5,109 draws, `07060706`
+(SRC_ALPHA / INV_SRC_ALPHA) 666, `01000100` 28, `01060106` 3. Our shard-tree draws
+(`ps_c9ca4f73ba93d023`, capture_f28446) are `blend=00010001` — opaque.
+
+**What is owed, and it is a capture request, not an inference:** `ps_c9ca4f73ba93d023`
+is **absent from R4's 261-shader bank**, so R4 cannot say how hardware draws *that*
+material — R4 is the Big Buck area and the operator's shard trees are elsewhere. The
+next round-5 ask is a single-frame trace **standing at a shard tree**, which turns this
+from a hunt into the same read that just closed the alpha-to-mask branch.

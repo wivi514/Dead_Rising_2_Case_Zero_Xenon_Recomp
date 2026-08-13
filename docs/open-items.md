@@ -99,7 +99,25 @@ Next, in order:
    resolves / resolve write-back lead, and the 231 depth-fed colour fetches.
 
 0t. **THE SHARD TREES — foliage renders leaf cards as solid plates; the cutout never
-   happens.** Operator captures `part38-operator/arm1_default/capture_f28446` (near
+   happens.**
+
+   **PART 39: THE SUSPECT IS REFUTED AND THE ITEM NOW NEEDS ONE CAPTURE, NOT AN
+   INVESTIGATION.** RB_COLORCONTROL read across all eight R4 traces — **40,703 draws** —
+   says hardware enables neither the alpha test (bit 3) nor **ALPHA-TO-MASK (bit 4)**
+   anywhere in that area. So the emulation this item asked for would have been built
+   against a mode the title does not use, and part 38's alpha-test wiring is correct and
+   simply inert here (which is why the trees did not change). Nor is it a shader `kill`:
+   exactly **1 of R4's 208 pixel shaders** has one, and the 324-of-324 our own bank
+   reports is XenosRecomp's unconditional clip, not a material census (gotcha 296).
+   Hardware's blends at these draws are 5,109 opaque / 666 SRC_ALPHA / 31 other; our
+   shard-tree draws are opaque too.
+   **THE NEXT STEP IS A ROUND-5 CAPTURE REQUEST: one single-frame F4 trace STANDING AT A
+   SHARD TREE.** `ps_c9ca4f73ba93d023` — the shard-tree material — is **absent from R4's
+   261-shader bank**, because R4 is the Big Buck area and the trees the operator captured
+   are elsewhere. With a trace at the right place this becomes the same one-column read
+   that just closed the alpha-to-mask branch. `docs/phase5-notes.md` §6bq.
+
+   Operator captures `part38-operator/arm1_default/capture_f28446` (near
    trees as angular shards, black backfaces) and every outdoor frame since phase 5 in
    hindsight. The leaf material (e.g. ps_c9ca4f73ba93d023, DXT5 albedo + DXN normal)
    needs its alpha channel to discard pixels. Part 38 built the RB_COLORCONTROL ALPHA
@@ -1433,6 +1451,34 @@ Next, in order:
 00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
    defect but built the instrument that can.** *"I have to be really close to an object
    to show their near LOD."* Part 28, ~1 hour.
+
+   **PART 39 DID THE CONTENT PAIRING AND IT EXONERATED THE LEVEL-0 INPUT.** The Big Buck
+   shopfront's 153-vertex sign draw pairs across platforms on shader and on all four
+   texture extents, and the bytes the two samplers read are **md5-identical**
+   (`b06f8bdd…`, hardware `15689000` vs our `0E04D000` — different boot, different
+   address, same content). Two of the kickoff's three candidates died with it: the white
+   dummy is bound **once** in most of the eight F9 frames (not a building-scale path),
+   and `mip_min_level` is **0 on all 106,910 hardware fetches**, so the streaming system
+   is not raising an LOD clamp we ignore.
+
+   **WHAT THE SAME CENSUS FOUND IS A WHOLE DECLARED INPUT WE DISCARD: THE MIP CHAIN.**
+   `mip_max_level` runs to **9**, and **12,758 of 48,247 fetches in one hardware frame
+   carry a separate mip-chain address** (dword5); our own outdoor frame declares a chain
+   on **69.6%** of fetches. `DecodeTextureFetch` had parsed the fields since phase 5 and
+   nothing read them; `CreateImage` hardcoded `mipLevels = 1`. Part 39 implements the
+   chain — layout verified level by level against hardware's own bytes, packed tail
+   declined and counted — with **`CZ_VK_NO_MIPS=1` as the same-binary control arm**.
+   1,815 textures take a chain on the outdoor route. **Whether that closes THIS item is
+   the open question**: the registered prediction is that distant surfaces gain filtered
+   detail, and if the era medians are unmoved then missing mips is not 00i's mechanism
+   and the change stands as a correctness fix only. `docs/phase5-notes.md` §6bq.
+
+   **STILL OWED HERE:** the packed-mip tail (levels below one tile share a tile at
+   sub-tile offsets), which is where the *deepest* minification lives and therefore
+   where a far building most needs its level. If the A/B moves at all, finishing the
+   tail is the obvious follow-on and the oracle method is already worked out — decode
+   hardware's chain out of the trace and check the mean holds while distinct colours
+   fall.
 
    **PART 38: THE OWED ONE-LOOK IS ANSWERED AND THE DEFECT IS OURS — this is now the
    TOP PICTURE ITEM.** The operator captured the Big Buck approach on our side (9 F9s,

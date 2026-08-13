@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 269 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 297 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -673,7 +673,33 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 38 — the operator evening: the random-texture
+Where the port is, as of 2026-08-12 (part 39 — the mip chain, an input the renderer
+declared and then discarded for the whole of phase 5):
+
+* **THE GUEST'S MIP CHAIN IS UPLOADED NOW, AND IT WAS NEVER READ BEFORE.** A Xenos
+  fetch constant names TWO addresses: dword1's base holds level 0 alone, dword5's
+  `mip_address` holds levels 1..n. `DecodeTextureFetch` parsed `mipMin`/`mipMax` from
+  phase 5 onward, **nothing read them**, and `CreateImage` hardcoded `mipLevels = 1` —
+  so every minified surface in the game sampled full-resolution texels at whatever rate
+  the rasteriser landed on. Hardware declares chains **up to nine levels deep on
+  12,758 of 48,247 fetches** in one R4 frame; our own outdoor frame declares one on
+  **69.6%**. The layout was verified level by level against hardware's own bytes (same
+  mean, steadily fewer distinct colours) rather than reasoned about; the **packed tail**
+  is declined and counted, never guessed. `CZ_VK_NO_MIPS=1` is the same-binary control
+  arm; 1,815 textures take a chain on the outdoor route. Gotcha 295 is the transferable
+  half: **for every field a decoder parses, grep for a READER.** §6bq.
+* **Item 00i's level-0 input is EXONERATED** — the Big Buck sign draw's texture bytes
+  are **md5-identical** to hardware's from a different boot at a different address — and
+  `mip_min_level` is **0 on all 106,910 hardware fetches**, refuting "streaming raises an
+  LOD clamp we ignore". Whether the mip chain closes 00i is a registered prediction
+  against an era-median A/B, not yet a claim.
+* **Item 0t's suspect is REFUTED**: across all eight R4 traces (**40,703 draws**)
+  hardware enables neither the alpha test nor **ALPHA-TO-MASK**. Do not build the
+  emulation. The item now needs one round-5 trace **standing at a shard tree**.
+* SIGTERM/SIGINT dump the renderer counters — gotcha 294's headless twin (gotcha 297).
+* **`docs/part40-kickoff.md` is the LIVE hand-off.**
+
+Where the port was, as of 2026-08-12 (part 38 — the operator evening: the random-texture
 class fixed, two defects cornered with hardware ground truth):
 
 * **THE TEXTURE CACHE REVALIDATES BY DEFAULT — the "random texture on everything up
