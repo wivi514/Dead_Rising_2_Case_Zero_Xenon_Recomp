@@ -41,7 +41,17 @@ def main():
     os.makedirs(out, exist_ok=True)
 
     pid = int(os.popen('pgrep -x cz_runtime').read().split()[0])
-    log = open(sorted(glob.glob(f'{cap_dir}/*.log') + glob.glob(f'{cap_dir}/../reload_test.log') + glob.glob(f'{cap_dir}/session.log'), key=os.path.getmtime)[-1]).read(65536)
+    # THE LOG IS USUALLY NOT IN THE CAPTURE DIRECTORY. Every operator launch script this
+    # project has written points CZ_CAPTURE_KEY at a SUBdirectory and redirects the log
+    # beside it (`$D/arm1_mips` + `$D/arm1.log`), so a glob rooted at the capture dir
+    # finds nothing and this died with an IndexError on the newest-log line — which reads
+    # as a broken tool at the exact moment an operator is standing still waiting for it.
+    # Search the capture dir, then its parent, and say plainly what was not found.
+    logs = (glob.glob(f'{cap_dir}/*.log') + glob.glob(f'{cap_dir}/../*.log'))
+    if not logs:
+        sys.exit(f'no .log in {cap_dir} or its parent — the guest base is printed there '
+                 f'("runtime: guest memory at 0x..."), so the dump cannot be addressed')
+    log = open(sorted(logs, key=os.path.getmtime)[-1]).read(65536)
     base = int(re.search(r'guest memory at (0x[0-9a-f]+)', log).group(1), 16)
 
     libc = ctypes.CDLL('libc.so.6', use_errno=True)

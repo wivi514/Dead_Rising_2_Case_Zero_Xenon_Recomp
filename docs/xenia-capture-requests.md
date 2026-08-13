@@ -337,3 +337,22 @@ prints RB_COLORCONTROL, RB_ALPHA_REF, RB_BLENDCONTROL0 and RB_DEPTHCONTROL per d
 and the shader dump says whether hardware's foliage microcode kills. That is the same
 one-column read that closed the alpha-to-mask branch, applied to the place that
 actually has the defect.
+
+### R5 IS WITHDRAWN — R4 ALREADY ANSWERS IT (part 39, same night)
+
+The operator's street sweep produced a mid-distance shard tree with a per-draw census,
+and the material is **`ps_790283523afcaf20`**, not `ps_c9ca4f73ba93d023`. That shader IS
+in R4's bank, with **1,408 hardware draws across the eight traces**. The request above
+was keyed to the shader from the part-38 tree frame and was therefore asking for ground
+truth we already hold.
+
+**The lesson, and it is the reusable half:** before requesting a capture for a material,
+identify the material from a CENSUS at the defect rather than from the last frame that
+happened to show the symptom. A shader hash carried over from an earlier capture is a
+guess about which draw you are looking at.
+
+What R4 then says, at those 1,408 draws: **no alpha test, no alpha-to-mask**, and a
+blend split of 118 blended / 58 opaque per frame that **our frame reproduces exactly**
+(176 draws, 118/58). The leaf albedo is `md5 6f621715…`, **byte-identical** between our
+live process and hardware's trace. So state and inputs agree and the divergence is
+downstream of both. See `docs/open-items.md` 0t.

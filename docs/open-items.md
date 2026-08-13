@@ -111,11 +111,33 @@ Next, in order:
    reports is XenosRecomp's unconditional clip, not a material census (gotcha 296).
    Hardware's blends at these draws are 5,109 opaque / 666 SRC_ALPHA / 31 other; our
    shard-tree draws are opaque too.
-   **THE NEXT STEP IS A ROUND-5 CAPTURE REQUEST: one single-frame F4 trace STANDING AT A
-   SHARD TREE.** `ps_c9ca4f73ba93d023` — the shard-tree material — is **absent from R4's
-   261-shader bank**, because R4 is the Big Buck area and the trees the operator captured
-   are elsewhere. With a trace at the right place this becomes the same one-column read
-   that just closed the alpha-to-mask branch. `docs/phase5-notes.md` §6bq.
+   **PART 39, OPERATOR SESSION: NO CAPTURE IS NEEDED — R4 ALREADY HELD IT, AND THE ITEM
+   IS NOW BOUNDED ON EVERY INPUT.** The operator swept the main street with ~28 F9s and
+   caught a mid-distance shard tree with its census. The material is
+   **`ps_790283523afcaf20`**, NOT `ps_c9ca4f73ba93d023` — that second hash came from the
+   part-38 tree frame and sent the capture request after ground truth we already had
+   (R5 is withdrawn; see `xenia-capture-requests.md`). `ps_790283523afcaf20` has **1,408
+   hardware draws across the eight R4 traces**, and against them:
+
+   | | hardware (R4) | ours (capture_f3289) |
+   |---|---|---|
+   | alpha test / alpha-to-mask | neither, ever | neither |
+   | blend split per frame | 118 blended / 58 opaque | **118 / 58, exactly** |
+   | leaf albedo 512x512 DXT1 | `md5 6f621715…` | **`md5 6f621715…` identical** |
+
+   And hardware's own PNG at that distance shows **soft, fine, individually-visible
+   leaves with sky through them** where ours shows hard orange plates with black
+   backfaces — so the defect is ours, at a matched distance, with a picture oracle.
+
+   **Where that leaves it:** the cutout is real and present in the input — the albedo has
+   **5,230 of 16,384 blocks (31.9%) in DXT1 punch-through form**, which is the leaf
+   silhouette, and the DXT5 companion carries a full 0..255 alpha range in every block.
+   We map DXT1 to `BC1_RGBA_UNORM_BLOCK` (punch-through honoured) with an identity
+   swizzle. So state, geometry and inputs all agree with hardware and **the divergence is
+   in the shading or in how the sampled alpha reaches the blend** — read our translated
+   `ps_790283523afcaf20` against the capture's own disassembly of it, which is the method
+   that worked for the ground shader in part 30. Evidence:
+   `~/DR2CZ-troubleshooting/part39-operator/`. `docs/phase5-notes.md` §6bq.
 
    Operator captures `part38-operator/arm1_default/capture_f28446` (near
    trees as angular shards, black backfaces) and every outdoor frame since phase 5 in
