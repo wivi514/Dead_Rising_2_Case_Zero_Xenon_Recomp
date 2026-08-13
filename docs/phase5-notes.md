@@ -6485,6 +6485,11 @@ reason, which is the most dangerous shape a measurement can take (gotcha 301).
   therefore also suspect; a fresh look is owed. 1,560 textures still carry levels, so the
   observation may well survive — but it has not been re-taken.
 
+Evidence kept outside the repo: `~/DR2CZ-troubleshooting/part39-mip-ab/` — the six
+frame-stats files the verdict rests on, the divergence census, the crop pair, and an
+INDEX naming what was discarded and why (one run overlapped the census; three predate the
+rejection fix).
+
 Why so little effect from something so structural: we upload only down to the first
 sub-tile level, and reject the chain entirely on 254 textures. **The packed tail — where
 the deepest minification lives, and therefore where a distant building actually needs a
