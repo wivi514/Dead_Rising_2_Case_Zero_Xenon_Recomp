@@ -6028,3 +6028,83 @@ point yet.
 and the candidates are: a hook on a per-frame guest function that runs on the thread
 owning actor state, or the title's own console/command queue, which would let the game
 schedule it exactly as a typed command.
+
+## 6bn. The teleport: the crash is a THREAD-LOCAL, and the position fields are
+## downstream of something else (part 36)
+
+§6bm shipped the read and fenced off the write. This is the write, chased to the end.
+It does not work yet, and every step of why is a measurement.
+
+### The crash was never the marshalling, the state, or a race
+
+Three candidates were killed in order:
+
+* **Marshalling.** The vector is read back out of guest memory through the guest's own
+  accessors before any call: `vec@88475060 reads back (-86.1500, 6.5700, -115.8500)`,
+  the object is `B925ABE0`, its vtable `8205D440` (the class the disassembly came from),
+  and the two call targets are the addresses from the image. Asked and answered.
+* **A race.** The fault is byte-identical on every attempt — same host pc, same guest
+  chain, same `r3 = 0`. A race varies; this does not.
+* **Game state.** It faults at gameplay, standing still, with a level running.
+
+**What it actually is:** `addr2line` on the raw host pc lands on guest `0x82639288`, at
+`lwz r11, 0(r3)` immediately after `bl 0x825F9CF0` — and that callee is three
+instructions:
+
+```
+lwz r11, 0(r13)   ;  li r10, 8  ;  lwzx r3, r10, r11  ;  blr
+```
+
+r13 is the PCR, so it reads **thread-local slot 8**, and its caller dereferences the
+result unchecked. That slot is the engine's per-thread context: **4,581 call sites read
+it and exactly 4 write it**, all in the CRT thread-startup region. On the threads our
+pumps run on it is zero, so the getter returns NULL and the next load faults.
+
+**The pumps live inside the input imports, and no input-polling thread has that
+context** — censused, both threads reaching the hook report slot 8 = 0 at first sight.
+So no amount of choosing a better moment inside that hook can work; it is the wrong
+THREAD, permanently.
+
+### The fix for the crash: hook the accessor itself
+
+`PPC_FUNC(sub_825F9CF0)` — the getter — is where a queued teleport is applied. Any
+thread executing it is by definition a thread with the context, so the qualification
+test and the call site are the same thing, which is the only version that cannot be
+wrong about the thread. The request is queued by the file pump and drained there; the
+hooked function's own r3 is saved and restored around the detour, or its 4,581 callers
+would receive our last callee's return value.
+
+**Result: the calls now run to completion on an engine thread with no fault.** The
+crash is solved.
+
+### But the player does not move, and the reason is upstream
+
+Dumping the four fields immediately after the setter returns, at real gameplay:
+
+```
+obj+001C = (-106.08, 6.57, -115.89)      <- the getter's field
+obj+0250 = (-106.08, 6.57, -115.89)      <- written by 0x82439F90
+obj+0620 = (-106.09, 6.57, -115.89)      <- written by the setter
+obj+0638 = (-106.08, 6.57, -115.89)      <- written by the setter
+```
+
+All four hold the ORIGINAL position, and `+0x620` differs from the others in the last
+digit — so the engine is rewriting these fields continuously from somewhere else. They
+are outputs, not inputs. The same conclusion arrived at from the other direction:
+writing all four directly (FIELD mode, no calls at all) makes the read-back report the
+new position for one instant and the next sample reports the old one.
+
+**So the authoritative position is upstream of this actor's fields** — the physics body
+(this engine is Havok) or a controller that drives them.
+
+### Where to look next, and the strong lead
+
+**The game teleports the player successfully every time DebugJump spawns a level**, so
+the working code exists in the image and is reachable: follow `DebugJump` /
+`cSpawnPoint` / `LevelSpawnPoint` to whatever it calls to place the actor, and use that.
+`cMissionTeleportPlayer` (`missionteleportplayer.cpp` is named in the image) is the
+second candidate and is literally a mission asset for teleporting the player.
+
+Also worth knowing before the next attempt: `setplayerpos` may itself be intended for a
+paused or specific state — it was never verified to work on hardware, and "the console
+has a command" is not "the command does what its name says from any state".

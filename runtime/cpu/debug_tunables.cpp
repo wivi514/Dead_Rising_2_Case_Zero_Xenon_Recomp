@@ -1012,6 +1012,9 @@ static void PumpGuestDiagnosticsFromEnvironment(uint8_t* base)
 // The scratch is one guest allocation, reused: these calls take an out-pointer (the
 // read) and a vec3 pointer (the write), and both must be GUEST addresses.
 static uint32_t g_posScratch = 0;
+// A teleport asked for on a thread that cannot make the calls, kept until one can.
+static bool g_teleportPending = false;
+static float g_teleportWant[3] = {};
 
 // The last position read, for the F9 pose to print from the render thread -- which
 // must NOT make guest calls itself. The timestamp travels with it so a stale value
@@ -1166,6 +1169,52 @@ static bool ReadPlayerPos(PPCContext& ctx, uint8_t* base, uint32_t index, float 
 
 // setplayerpos's write: vtable[0x28]() first -- the title's own order -- then
 // vtable[0x84](obj, &vec3).
+// IS THIS THREAD ONE THE ENGINE CAN BE CALLED ON?
+//
+// The teleport's notification chain reaches `0x825F9CF0`, which is three instructions:
+//
+//     lwz r11, 0(r13)  ;  li r10, 8  ;  lwzx r3, r10, r11  ;  blr
+//
+// — r13 is the PCR, so that is a read of THREAD-LOCAL slot 8, and its caller
+// dereferences the result without checking. On the thread our pumps run on that slot
+// is ZERO, so the call returns NULL and the next `lwz r11, 0(r3)` faults. That is the
+// whole crash: identical on every attempt, at the same host pc, with r3 = 0. Not the
+// marshalling (the vector reads back correctly), not a race (a race would vary), not
+// the game state — the wrong THREAD.
+//
+// So ask the question directly instead of guessing at safe moments: a thread whose
+// slot 8 is populated is one the engine has initialised for this kind of work.
+static bool ThreadCanCallEngine(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t tlsBase = PPC_LOAD_U32(uint32_t(ctx.r13.u64));
+    if (!tlsBase)
+        return false;
+    return PPC_LOAD_U32(tlsBase + 8) != 0;
+}
+
+// WHICH THREADS REACH THIS HOOK, AND DO ANY OF THEM QUALIFY? One line per distinct
+// PCR, printed once. Without this the answer to "is there a thread we could call the
+// engine from" is a guess about which import the main thread favours; with it, it is a
+// list. Armed by CZ_POSE_TRACE so it costs nothing in an ordinary run.
+static void CensusCallingThread(PPCContext& ctx, uint8_t* base)
+{
+    if (!getenv("CZ_POSE_TRACE"))
+        return;
+    static uint32_t seen[8] = {};
+    static int nseen = 0;
+    const uint32_t pcr = uint32_t(ctx.r13.u64);
+    for (int i = 0; i < nseen; i++)
+        if (seen[i] == pcr)
+            return;
+    if (nseen < 8)
+        seen[nseen++] = pcr;
+    const uint32_t tlsBase = PPC_LOAD_U32(pcr);
+    const uint32_t slot8 = tlsBase ? PPC_LOAD_U32(tlsBase + 8) : 0;
+    fprintf(stderr, "[debug] hook thread: pcr=%08X tls=%08X slot8=%08X -> %s\n",
+            pcr, tlsBase, slot8,
+            slot8 ? "CAN call the engine" : "cannot (the teleport would fault here)");
+}
+
 static bool WritePlayerPos(PPCContext& ctx, uint8_t* base, uint32_t index,
                            float x, float y, float z)
 {
@@ -1191,6 +1240,98 @@ static bool WritePlayerPos(PPCContext& ctx, uint8_t* base, uint32_t index,
         uint32_t bits;
         std::memcpy(&bits, &v[i], 4);
         PPC_STORE_U32(vec + uint32_t(i) * 4, bits);
+    }
+    // READ THE VECTOR BACK OUT OF GUEST MEMORY BEFORE CALLING ANYTHING.
+    //
+    // "Are the coordinates reaching the guest correctly" is a question about byte order
+    // and layout, and it is answerable without running the call that crashes: store,
+    // then load through the same guest accessors the title would use, and print what
+    // came back. If these three numbers are the ones asked for, the marshalling is
+    // right and the fault is elsewhere — which is a different investigation.
+    {
+        float back[3];
+        for (int i = 0; i < 3; i++)
+        {
+            const uint32_t bits = PPC_LOAD_U32(vec + uint32_t(i) * 4);
+            std::memcpy(&back[i], &bits, 4);
+        }
+        fprintf(stderr, "[debug] teleport marshalling: obj=%08X vt=%08X vec@%08X reads "
+                        "back (%.4f, %.4f, %.4f); calling vtable+0x28 (%08X) then "
+                        "vtable+0x84 (%08X)\n", obj, vt, vec, back[0], back[1], back[2],
+                PPC_LOAD_U32(vt + 0x28), PPC_LOAD_U32(vt + 0x84));
+    }
+    // CZ_TELEPORT_DRYRUN=1 stops here: everything except the two calls. It is how the
+    // marshalling above can be checked on a run that is guaranteed not to crash.
+    if (getenv("CZ_TELEPORT_DRYRUN"))
+    {
+        fprintf(stderr, "[debug] teleport DRY RUN — no calls made\n");
+        return true;
+    }
+
+    // FIELD MODE (the default): store what the setter stores, and make none of its
+    // calls. This is the opposite trade from the one §6bm argued for, and it is here
+    // because the call chain is now understood rather than feared.
+    //
+    // `setplayerpos`'s setter is short: one call to 0x82439F90, then plain stores of the
+    // vector to this+0x620.. and this+0x638... The callee stores it again at this+0x250..
+    // and then makes TWO VIRTUAL CALLS — vtable[0x24] and vtable[0x94] — which are the
+    // "the actor moved" notifications into other subsystems. Those are what crash from
+    // our hook: the fault is a NULL `this` at `lwz r11,0x23AC(r3)` three frames down,
+    // identical on every attempt, so a manager those notifications reach is not
+    // reachable from where we call.
+    //
+    // What that costs, stated plainly rather than discovered later: nothing is told that
+    // the player moved, so collision cells, streaming and anything else keyed on
+    // position may lag until the engine's own update recomputes them. For putting the
+    // camera back on a defect that is likely fine, and the read-back below reports what
+    // actually stuck.
+    static const bool callMode = [] {
+        const char* m = getenv("CZ_TELEPORT_MODE");
+        return m && !strcmp(m, "call");
+    }();
+    if (callMode)
+    {
+        // Hand it to the engine-thread hook rather than trying here: this thread is an
+        // input thread and never qualifies (see the note on sub_825F9CF0).
+        g_teleportWant[0] = x;
+        g_teleportWant[1] = y;
+        g_teleportWant[2] = z;
+        g_teleportPending = true;
+        fprintf(stderr, "[debug] teleport QUEUED for the next engine thread that asks "
+                        "for its context\n");
+        return true;
+    }
+    if (false && !ThreadCanCallEngine(ctx, base))
+    {
+        // NOT an error and not a refusal to try — the request stays pending, because
+        // the pump runs on more than one thread and one of them may qualify. Saying so
+        // once is what separates "we never got a chance" from "we tried and it failed".
+        static bool said = false;
+        if (!said)
+        {
+            said = true;
+            fprintf(stderr, "[debug] teleport: this thread's TLS slot 8 is empty, so the "
+                            "engine's notification path would fault here — HOLDING the "
+                            "request for a thread that qualifies\n");
+        }
+        g_teleportPending = true;
+        return false;
+    }
+    if (!callMode)
+    {
+        const uint32_t xb = PPC_LOAD_U32(vec + 0), yb = PPC_LOAD_U32(vec + 4),
+                       zb = PPC_LOAD_U32(vec + 8);
+        for (uint32_t off : {0x1Cu, 0x250u, 0x620u, 0x638u})
+        {
+            PPC_STORE_U32(obj + off + 0, xb);
+            PPC_STORE_U32(obj + off + 4, yb);
+            PPC_STORE_U32(obj + off + 8, zb);
+        }
+        fprintf(stderr, "[debug] teleport FIELD MODE: wrote +0x1C, +0x250, +0x620 and "
+                        "+0x638 (the fields setplayerpos writes); made NO calls, so no "
+                        "subsystem was notified (CZ_TELEPORT_MODE=call for the real "
+                        "path, which faults from this hook)\n");
+        return true;
     }
     ctx.r3.u64 = obj;
     CallGuestAt(ctx, base, PPC_LOAD_U32(vt + 0x28));
@@ -1340,6 +1481,7 @@ extern "C" int CZ_DebugPlayerPos(float out[3], long long* ageMs)
 
 void DebugTunables_PumpAutoChuck(PPCContext& ctx, uint8_t* base)
 {
+    CensusCallingThread(ctx, base);
     PumpDebugFlagsFromEnvironment(base);
     PumpGuestDiagnosticsFromEnvironment(base);
     PumpAutoChuckFromEnvironment(ctx, base);
@@ -2434,4 +2576,72 @@ extern "C" uint32_t CZ_DebugWritePlayerObject(FILE* f, uint32_t bytes)
                 [&] { const uint32_t b = PPC_LOAD_U32(obj + off); float v;
                       memcpy(&v, &b, 4); return v; }());
     return obj;
+}
+
+// ===================================================================================
+// APPLYING A TELEPORT ON A THREAD THE ENGINE CAN BE CALLED FROM
+//
+// The pumps run inside the input imports, and NO thread that polls input has the
+// engine's per-thread context: censused, both threads reaching that hook report TLS
+// slot 8 = 0. That slot is read by 4,581 call sites in this image and written by only
+// four, all in the CRT thread-startup region — it is the engine's "current context for
+// this thread", installed when the game creates a thread of its own. Engine work does
+// not happen on the threads that poll input, so no input hook can ever qualify, and
+// waiting for one is waiting forever.
+//
+// So the teleport is applied from a hook on the ACCESSOR ITSELF. `sub_825F9CF0` is the
+// three-instruction getter for that slot, so any thread executing it is by definition a
+// thread with the context — the qualification test and the call site become the same
+// thing, which is the only version of this that cannot be wrong about the thread.
+//
+// The cost is a load and a branch on a hot function; it is guarded by a plain bool that
+// is false in every run that has not asked for a teleport.
+extern "C" PPC_FUNC(__imp__sub_825F9CF0);
+PPC_FUNC(sub_825F9CF0)
+{
+    __imp__sub_825F9CF0(ctx, base);
+    if (!g_teleportPending)
+        return;
+    // r3 now holds the context this thread was asked for. Zero means the slot is empty
+    // even here, and calling on would fault exactly as before.
+    if (!ctx.r3.u64)
+        return;
+    g_teleportPending = false;
+    const uint64_t saved = ctx.r3.u64;
+    PPCContext call = ctx;
+    float before[3] = {0, 0, 0};
+    const bool had = ReadPlayerPos(call, base, 0, before);
+    const bool ok = WritePlayerPos(call, base, 0, g_teleportWant[0], g_teleportWant[1],
+                                   g_teleportWant[2]);
+    float after[3] = {0, 0, 0};
+    const bool readBack = ReadPlayerPos(call, base, 0, after);
+    // WHICH FIELDS ACTUALLY CHANGED. The read above cannot answer that: it reads
+    // +0x1C, and the setter writes +0x620/+0x638 (and its callee +0x250), so "unchanged"
+    // there is consistent both with a write that never happened and with one that has
+    // not been propagated yet. Print the fields themselves.
+    {
+        const uint32_t obj2 = LookupPlayerObject(call, base, 0);
+        if (obj2)
+            for (uint32_t off : {0x1Cu, 0x250u, 0x620u, 0x638u})
+            {
+                float v[3];
+                for (int i = 0; i < 3; i++)
+                {
+                    const uint32_t bits = PPC_LOAD_U32(obj2 + off + uint32_t(i) * 4);
+                    std::memcpy(&v[i], &bits, 4);
+                }
+                fprintf(stderr, "[debug]   obj+%04X = (%.2f, %.2f, %.2f)\n", off,
+                        v[0], v[1], v[2]);
+            }
+    }
+    fprintf(stderr, "[debug] teleport applied on an engine thread (pcr %08X): "
+                    "(%.2f, %.2f, %.2f) -> asked (%.2f, %.2f, %.2f) -> now "
+                    "(%.2f, %.2f, %.2f)%s\n",
+            uint32_t(ctx.r13.u64), had ? before[0] : 0.f, had ? before[1] : 0.f,
+            had ? before[2] : 0.f, g_teleportWant[0], g_teleportWant[1],
+            g_teleportWant[2], readBack ? after[0] : 0.f, readBack ? after[1] : 0.f,
+            readBack ? after[2] : 0.f, ok ? "" : "   (the write FAILED)");
+    // The hooked function's own return value must survive our detour, or every one of
+    // its 4,581 callers gets our last callee's r3 instead of their context.
+    ctx.r3.u64 = saved;
 }
