@@ -351,9 +351,11 @@ not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and two ope
 (the military arrival, then Still Creek end to end) recovered TEN of the eleven. The last,
 `ps_926c15dd20571cf1`, samples only sets 0 and 3 — an ordinary 2D shader, so nothing
 depends on it. A lost dump is a location nobody has replayed, not a permanent loss.
-**The cache is 411 and it has grown on EVERY session that reached new ground.** 335 from
-the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409, 411 — 23 of
-those from two operator play sessions on 2026-08-08 alone, once the whole-frame black
+**The cache is 430 and it has grown on EVERY session that reached new ground.** 335 from
+the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409, 411,
+419, 424, 430 — 23 of those from two operator play sessions on 2026-08-08 alone, and
+**11 more from part 39's operator evening, of which THREE were never reported missing by
+any run and only the name-diff gate found them**, once the whole-frame black
 stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
 as a claim with a shelf life** (gotcha 13): every era of this game that no run has
 entered is a shader gap nobody has counted, and the counter is one log line.
