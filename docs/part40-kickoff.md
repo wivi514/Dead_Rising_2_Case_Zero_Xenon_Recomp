@@ -28,7 +28,8 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
 * **The mip chain uploads by default.** `CZ_VK_NO_MIPS=1` restores the pre-part-39
   renderer. Counters: `mip: chain uploaded` (1,815 textures on the outdoor route),
   `mip: PACKED TAIL DECLINED`, `mip: CUBE chain not uploaded` (6), and
-  `mip: level DIVERGES from the level above` — the guard on the offset rule.
+  `mip: level REJECTED — diverges from the level above`, the guard on the offset rule,
+  **which fires 8 times on the outdoor route and drops those levels**.
 * **`tools/frame_arm_spread.py`** — compare two arms without picking which pair supplies
   the null (gotcha 300). Use it instead of `frame_era_medians.py` for any 3-runs-an-arm
   block.
@@ -44,14 +45,20 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
 
 ## WHERE TO START
 
-1. **THE PACKED MIP TAIL — the mip A/B is DONE and it points here.** Three runs an arm:
-   mean luma **−1.35% against a 0.65% worst within-arm spread (RESOLVED)**, distinct
-   colours −3.50% against 7.91% (unresolved), both moving toward hardware's own
-   58.6 / 127,574, and visibly less speckle on minified surfaces. **But no distant
-   building panel regained its siding**, so the chain is a correctness win and NOT yet
-   shown to be item 00i's mechanism. The levels we still decline — everything below one
-   tile — are exactly where the deepest minification lives, so finishing them is the
-   move that could decide 00i either way.
+1. **THE PACKED MIP TAIL, and the guard has already told you where the rule breaks.**
+   The divergence guard fires on 8 outdoor textures, every one with a level 1 NARROWER
+   than a macro tile, every one reading ~1/3 of its base's luma — a wrong PITCH, not
+   corrupt data (the two chains verified by hand both have a 32-block-wide level 1, so
+   neither could have shown it). Derive the packed-mip pitch/offset rule for exactly
+   those shapes, and the guard becomes the regression test for it.
+   The A/B as it stands: mean luma **−1.35% against a 0.65% worst within-arm spread
+   (RESOLVED)**, distinct colours −3.50% against 7.91% (unresolved), both moving toward
+   hardware's own 58.6 / 127,574, visibly less speckle on minified surfaces — **but that
+   block ran on the binary that BOUND the eight bad levels**, so part of the darkening is
+   wrongly-dark mips. Arm A was re-run on the rejecting binary (`mipA4/5/6`); read those
+   against `mipB/B2/B3`, which are unaffected. **And no distant building panel regained
+   its siding either way**, so the chain is a correctness win and NOT yet shown to be
+   item 00i's mechanism.
 2. **HOW TO DO IT.** Levels below one tile share a tile at sub-tile offsets this code
    declines and counts. The oracle method is worked out and cheap: pull the chain out of
    an R4 trace (a raw memory read + `tools/tex_decode.py`) and accept an offset only when
