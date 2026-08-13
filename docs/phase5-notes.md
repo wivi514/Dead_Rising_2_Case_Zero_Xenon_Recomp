@@ -6427,3 +6427,40 @@ tile, which is where the deepest minification lives — is still declined. The h
 verdict: **the mip chain is a correctness fix that measurably and visibly improves
 minified surfaces and moves the frame toward hardware; whether it is 00i's mechanism is
 still open, and finishing the packed tail is the next thing that could decide it.**
+
+### The guard caught the rule, and the A/B above is QUALIFIED because of it
+
+The divergence counter built alongside the chain (endpoint luma of a level against the
+level above it, the same invariant the layout was confirmed with) was expected to read
+zero and turn "two textures by hand" into a census. **It read eight**, and the eight are
+not noise:
+
+```
+mip 0D49D000  32x128 fmt=20 level 1: endpoint luma 42.8 vs 138.0   (0.310)
+mip 0E69E000 256x32  fmt=18 level 1: endpoint luma 37.6 vs 111.9   (0.336)
+mip 0E698000 256x32  fmt=18 level 1: endpoint luma 33.4 vs 101.4   (0.329)
+mip 0D8F4000  64x32  fmt=18 level 1: endpoint luma 27.9 vs  89.2   (0.313)
+mip 0D7E7000  64x32  fmt=18 level 1: endpoint luma 24.5 vs  81.1   (0.302)
+mip 0D8F8000  32x32  fmt=18 level 1: endpoint luma 38.5 vs 118.0   (0.326)
+mip 0D877000  32x32  fmt=18 level 1: endpoint luma 44.5 vs 137.7   (0.323)
+mip 0D89A000  32x64  fmt=18 level 1: endpoint luma 48.6 vs 145.4   (0.334)
+```
+
+Every ratio is **≈ 1/3**, which is a signature and not a scatter: we are reading a
+sparse sample of a tightly packed level at a pitch it does not have, so most of what
+lands in the level is unwritten. All eight have a level 1 narrower than a macro tile —
+and the two chains verified by hand both have a level 1 exactly 32 blocks wide, so
+neither could have shown this. That is the whole argument for building the guard
+(gotcha 30: a test that has never failed has not been shown capable of failing; this one
+failed the first time it ran, on data its author believed was fine).
+
+**The guard therefore REJECTS rather than counts**: the level is dropped, the chain
+stops, the texture keeps the levels that passed.
+
+**Which qualifies the A/B in the section above.** Those three runs were taken on the
+binary that BOUND the eight bad levels, so an unknown part of the −1.35% mean luma is
+wrongly-dark mips rather than correct filtering — a change that darkens the scene for
+the wrong reason, moving toward hardware's darker frames for the wrong reason too. Arm A
+is re-run on the rejecting binary; the control arm is unaffected, since
+`CZ_VK_NO_MIPS=1` never enters the block. Read the re-run's numbers, not the first
+block's.

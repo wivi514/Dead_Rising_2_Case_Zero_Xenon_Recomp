@@ -2833,3 +2833,18 @@ From phase C part 18 (the frame rate — and none of it was work):
      pick can decide the answer. Compute the WITHIN-arm spread of EVERY arm and require
      the between-arm difference to clear the WORST of them; `tools/frame_arm_spread.py`
      does exactly that and refuses to choose. Sibling of gotcha 159 and of 50/51/86.
+
+301. **A GUARD BUILT TO CONFIRM A RULE IS ONLY WORTH BUILDING IF IT CAN REFUTE IT — AND
+     THE ONE THAT REFUTED IT SAVED A MEASUREMENT, NOT JUST A PICTURE.** Part 39's mip
+     layout was verified by hand against two of hardware's chains and then shipped with
+     a cheap runtime check: does each level's average match the level above it? The
+     expectation was zero hits, turning "two textures" into a census. It read EIGHT, all
+     with the same signature — level 1 at almost exactly **1/3** of its base's luma, on
+     every texture whose level 1 is narrower than a macro tile. A consistent ratio is a
+     wrong PITCH, not corrupt data. Both hand-verified chains happened to have a level 1
+     exactly 32 blocks wide, so neither could have shown it.
+     **The part that matters: the A/B had already been run on the binary that bound those
+     levels**, so its resolved −1.35% mean-luma shift was partly wrongly-dark mips — a
+     change moving TOWARD the oracle for the wrong reason. Without the guard the number
+     would have been quoted as the fix working. Build the invariant check into the code
+     the same day you build the feature, and re-run the A/B when it fires.
