@@ -2,6 +2,7 @@
 
 #include "pm4.h"
 #include "pump_stats.h"
+#include "drawid_ps_spv.h"
 #include "xenos.h"
 #include "../host/window.h"
 
@@ -1038,6 +1039,11 @@ struct PipelineKey
     // creation. 1 = the clip is compiled in. The THRESHOLD stays per-draw (shared
     // constants +272), so one pipeline serves every ref value.
     uint32_t alphaTest;
+    // THE DRAW-ID PASS (part 39). 1 = this draw's fragment stage is replaced by
+    // drawid_ps.hlsl, which writes the draw's own index instead of its colour. It is a
+    // pipeline dimension for the same reason alphaTest is: the fragment module and the
+    // blend state are baked at creation. Off by default and on for exactly one frame.
+    uint32_t drawIdPass;
 
     bool operator<(const PipelineKey& o) const
     {
@@ -1466,6 +1472,18 @@ struct Renderer
 
     std::map<uint64_t, ShaderMeta> shaders;
     std::map<PipelineKey, VkPipeline> pipelines;
+    // The draw-ID pass: the substitute fragment module, and the frame it is armed for
+    // (0 = disarmed, which is every frame unless CZ_VK_DRAW_ID is set and F9 pressed).
+    VkShaderModule drawIdModule = VK_NULL_HANDLE;
+    // ARMED AS A FLAG, NOT AS A FRAME NUMBER, and that is the whole lesson of building
+    // this: `R->frame` is incremented by the SWAP, so the draws of a frame are recorded
+    // while the counter still holds the previous frame's value. Arming "frame + 1" from
+    // the present path therefore named a number the draw path never saw, and the pass
+    // silently never ran — for three test runs, while its output was being read as if it
+    // were a map. A flag consumed by the first draw that sees it cannot be off by one.
+    bool drawIdArmed = false;      // set by F9, cleared when the frame is presented
+    bool drawIdActive = false;     // set by the draw path: THIS recorded frame is the map
+    uint64_t drawIdRanOnFrame = 0;
     std::unordered_map<uint64_t, TextureEntry> textures;
     // By resolve destination, with bit 31 of the key set for a DEPTH resolve.
     //
@@ -2198,7 +2216,10 @@ bool CreateDescriptorPlumbing()
     VkPushConstantRange pcr{};
     pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcr.offset = 0;
-    pcr.size = 24; // three uint64 device addresses
+    // 32, not 24: three uint64 device addresses plus the DRAW INDEX the draw-ID pass
+    // reads at offset 24 (and four bytes of padding). The translated shaders declare
+    // only the first 24 and are unaffected — a larger range is not a larger block.
+    pcr.size = 32;
     VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     pli.setLayoutCount = 5;
     pli.pSetLayouts = R->setLayouts;
@@ -4222,7 +4243,18 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // Blending "off" on Xenos is ONE/ZERO/ADD, which is what a disabled blend does —
     // so rather than track a separate enable bit, enable blending whenever the factors
     // are not the identity. Cheaper to reason about and impossible to get out of step.
-    cb.blendEnable = !(cb.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+    // BLENDING OFF for the ID pass: an ID is a number, and a blended number is a
+    // different number.
+    //
+    // THE COLOUR WRITE MASK IS DELIBERATELY *NOT* TOUCHED, and the first version of this
+    // forced it open — which was wrong in a way the instrument itself revealed. The
+    // depth-only prepass draws this title issues carry `mask=0`; with the mask forced
+    // open they painted their indices over 31.5% of the map and the top three "visible"
+    // draws were all draws that write no colour at all. An ID map is a map of what was
+    // PAINTED, so a draw that writes no colour must write no ID (gotcha 30: the check
+    // that catches this is looking at the instrument's own first output and asking
+    // whether it could be wrong).
+    cb.blendEnable = !key.drawIdPass && !(cb.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
                        cb.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO &&
                        cb.srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE &&
                        cb.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO)
@@ -4250,7 +4282,12 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = ps.module;
+    // THE DRAW-ID PASS substitutes its own fragment stage. Everything else about the
+    // pipeline is left exactly as the draw would normally have it — same vertex shader,
+    // same vertex input, same depth test and write, same cull — so the ID image has the
+    // SAME VISIBILITY as the picture it is explaining. Change any of that and the map
+    // stops describing the frame it is supposed to describe.
+    stages[1].module = key.drawIdPass ? R->drawIdModule : ps.module;
     stages[1].pName = "main";
 
     // g_SpecConstants (constant_id 0) on the FRAGMENT stage. Only the alpha-test bit is
@@ -4264,7 +4301,7 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     specInfo.pMapEntries = &specMap;
     specInfo.dataSize = sizeof specValue;
     specInfo.pData = &specValue;
-    if (key.alphaTest)
+    if (key.alphaTest && !key.drawIdPass)
         stages[1].pSpecializationInfo = &specInfo;
 
     const VkFormat colorFormat = R->color.format;
@@ -5241,6 +5278,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     key.psHash = psBind.hash;
     key.topology = uint32_t(topology);
     key.blendControl = regs[xenos::kRbBlendControl0];
+    // CZ_VK_DRAW_ID: for ONE armed frame every draw paints its own index. See
+    // tools/drawid_ps.hlsl for why this exists and tools/drawid_read.py for reading it.
+    key.drawIdPass = R->drawIdArmed ? 1u : 0u;
+    if (key.drawIdPass)
+        R->drawIdActive = true;
+    // AN ARM WITH NO COUNTER CANNOT BE SHOWN TO HAVE ENGAGED (gotcha 151). The first
+    // version of this instrument had none, and its first output was read for twenty
+    // minutes as if it were a map before a same-address comparison against a normal run
+    // showed the two were IDENTICAL — the pass had never run.
+    if (key.drawIdPass)
+        Count("draw: painted its INDEX (CZ_VK_DRAW_ID)");
     // CZ_VK_FORCE_COLORMASK=1 — treat every draw as writing all four channels.
     //
     // The arm for "is RB_COLOR_MASK really at 0x2104, and is an empty mask really what
@@ -6393,12 +6441,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     else
         ++R->skips.sets;
 
-    const uint64_t pushConstants[3] = { uint64_t(R->arena.address + vsConstAt),
-                                        uint64_t(R->arena.address + psConstAt),
-                                        uint64_t(R->arena.address + sharedAt) };
+    // The three constant-buffer addresses, then THE DRAW INDEX at offset 24 for the
+    // draw-ID pass. The index is pushed on every draw, armed or not: it costs four bytes
+    // in a call that is already being made, and a value that is only correct when an
+    // instrument is enabled is a trap for the next person to use it.
+    struct { uint64_t vs, ps, shared; uint32_t drawIndex, pad; } pushConstants = {
+        uint64_t(R->arena.address + vsConstAt),
+        uint64_t(R->arena.address + psConstAt),
+        uint64_t(R->arena.address + sharedAt),
+        uint32_t(R->drawsThisFrame), 0 };
     vkCmdPushConstants(R->cmd, R->pipeLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 24,
-                       pushConstants);
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
+                       &pushConstants);
 
     // CZ_VK_STATE_PROBE=1 — the distinct values of the state registers this renderer
     // ASSUMES rather than reads. Each of these is a place where a wrong assumption
@@ -8112,6 +8166,23 @@ bool InitCommon()
     if (vkCreateSampler(R->device, &si, nullptr, &R->pointSampler) != VK_SUCCESS)
         return false;
 
+    // The draw-ID fragment module, embedded rather than loaded (see drawid_ps.hlsl). It
+    // is created unconditionally and costs a few hundred bytes: an instrument that has
+    // to be enabled at BUILD time is one nobody has when they need it.
+    {
+        VkShaderModuleCreateInfo smi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        smi.codeSize = sizeof kDrawIdPixelShaderSpv;
+        smi.pCode = kDrawIdPixelShaderSpv;
+        if (vkCreateShaderModule(R->device, &smi, nullptr, &R->drawIdModule) != VK_SUCCESS)
+        {
+            // Not fatal: the renderer works without the instrument, and saying so is
+            // better than refusing to start because a diagnostic failed to compile.
+            R->drawIdModule = VK_NULL_HANDLE;
+            fprintf(stderr, "[vk] the draw-ID shader module failed to create — "
+                            "CZ_VK_DRAW_ID will not work this run\n");
+        }
+    }
+
     // The dummies. Slot 0 of every heap is a defined 1x1 white texel, so a shader that
     // samples a slot the runtime could not fill reads white rather than an unbound
     // descriptor — undefined behaviour even when the result is discarded.
@@ -8603,7 +8674,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             for (size_t i = 0; i < bytes; i += 4)
                 fwrite(&R->presentPixels[i], 1, 3, f);
             fclose(f);
-            fprintf(stderr, "[vk] capture: wrote %s (%ux%u)\n", path, width1, height1);
+            fprintf(stderr, "[vk] capture: wrote %s (%ux%u)%s\n", path, width1, height1,
+                    R->drawIdRanOnFrame == pres.frame
+                        ? " — NOT A PICTURE: CZ_VK_DRAW_ID painted this frame's draw "
+                          "indices, so read the drawid_* snapshot instead"
+                        : "");
         }
         else
         {
@@ -9006,6 +9081,23 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         // recorded by the time a present is reached, so a picture taken now and a census
         // taken next frame would be two different moments described as one.
         R->capturePictureFrame = R->frame + 1;
+        // CZ_VK_DRAW_ID=1 — THE CENSUS FRAME ITSELF paints draw indices instead of
+        // colours, and it must be the same frame: a draw index is only meaningful
+        // against the draw list it was numbered in. The first version armed the NEXT
+        // frame so that one press could yield both a picture and a map, and the very
+        // first read showed why that is wrong — the top "visible" draws resolved to
+        // census lines with `mask=0`, draws that write no colour at all, because index
+        // 254 of one frame is not index 254 of the next. One frame, one numbering.
+        //
+        // The cost is that this press yields no usable PICTURE (the post chain is made
+        // of draws too, so it paints its own indices over everything). That is said out
+        // loud below rather than left for someone to discover in the file.
+        if (EnvOn("CZ_VK_DRAW_ID") && R->drawIdModule)
+        {
+            R->drawIdArmed = true;
+            fprintf(stderr, "[vk] F9: the next recorded frame will be a DRAW-ID map "
+                            "(read it with tools/drawid_read.py)\n");
+        }
         fprintf(stderr, "[vk] F9: capturing frame %llu -> picture, %llu-draw census and "
                         "every resolve snapshot\n",
                 (unsigned long long)R->drawCensusFrame,
@@ -9058,8 +9150,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // And the fixed-frame dump is OFF under CZ_CAPTURE_KEY: that variable means "the
     // operator decides when", and 130 files from frame 600 in the capture directory is
     // noise the operator then has to tell apart from their own press.
-    if (snapDir && ((R->frame == snapFrame && !captureDir) || blackTransition || snapKeyNow))
+    // THE DRAW-ID FRAME DUMPS ITS SNAPSHOTS TOO, and it must: the ID image only exists
+    // in the SCENE COLOUR, before the post chain. The presented picture cannot carry it,
+    // because the post passes are draws as well and would paint their own indices over
+    // the whole screen — so the map has to be read off the resolve, and this is the
+    // dump that writes resolves out.
+    const bool drawIdNow = R->drawIdActive;
+    if (drawIdNow)
     {
+        R->drawIdArmed = false;
+        R->drawIdActive = false;
+        R->drawIdRanOnFrame = R->frame;
+    }
+    if (snapDir && ((R->frame == snapFrame && !captureDir) || blackTransition ||
+                    snapKeyNow || drawIdNow))
+    {
+        if (drawIdNow)
+            fprintf(stderr, "[vk] DRAW-ID: frame %llu rendered %llu draws as indices; its "
+                            "resolve snapshots ARE the ID map\n",
+                    (unsigned long long)R->frame, (unsigned long long)R->drawsThisFrame);
         if (snapKeyNow)
             fprintf(stderr, "[vk] F9: dumping every resolve snapshot of frame %llu\n",
                     (unsigned long long)R->frame);
@@ -9096,7 +9205,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // than one frame, and a chain that silently overwrote the transition frame
             // with the one after it would destroy the only frame worth having.
             char path[512];
-            snprintf(path, sizeof path, "%s/f%06llu_snap_%08X_%ux%u%s.ppm", snapDir,
+            // The ID frame's files are named apart so a directory of snapshots cannot
+            // be misread: an ID map looks like a garish colour noise image, and mistaking
+            // one for a picture is exactly the sort of confusion this instrument exists
+            // to end.
+            snprintf(path, sizeof path, "%s/%sf%06llu_snap_%08X_%ux%u%s.ppm", snapDir,
+                     drawIdNow ? "drawid_" : "",
                      (unsigned long long)R->frame, dest & 0x1FFFFFFF, snap.image.width,
                      snap.image.height, snap.fromDepth ? "_depth" : "");
             FILE* f = fopen(path, "wb");

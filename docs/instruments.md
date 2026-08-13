@@ -1325,3 +1325,30 @@ CZ_VK_NO_MIPS=1    upload level 0 alone — the pre-part-39 renderer, and the sa
                    `mip: PACKED TAIL DECLINED`, `mip: CUBE chain not uploaded`.
                    1,815 textures take a chain on the outdoor DebugJump route. §6bq.
 ```
+
+## The draw-ID pass (part 39) — which draw painted that pixel?
+
+```
+CZ_VK_DRAW_ID=1    with CZ_CAPTURE_KEY and F9: the next recorded frame is rendered with
+                   every draw painting its OWN INDEX instead of its colour, and that
+                   frame's resolve snapshots are dumped as `drawid_f<frame>_snap_*.ppm`.
+                   The scene surface among them IS the map — pick it as the one whose
+                   distinct values are all valid draw indices (tools/drawid_read.py
+                   reports that). Read it with:
+                     tools/drawid_read.py <drawid_snap.ppm> --census capture_fNNNN.census
+                                          [--at X,Y | --rect X,Y,W,H] [--top N]
+                   The census is written for the SAME frame, so indices line up exactly.
+                   The frame's `capture_*.ppm` is NOT a picture on such a run (the post
+                   chain is draws too, so it paints indices over everything) and the log
+                   says so when it writes it.
+                   Counter: `draw: painted its INDEX (CZ_VK_DRAW_ID)` — if that reads 0,
+                   the pass did not run and anything read off the dumps is a coincidence
+                   (gotcha 304).
+
+                   WHY IT EXISTS: every picture defect in this port had been attributed to
+                   a draw by inference from shader/texture signatures, and that inference
+                   was wrong twice in two sessions — the second time it selected a HAIR
+                   material and a whole investigation was built on it (gotchas 291, 302).
+                   Blending is forced off; mask, depth and cull are left exactly as the
+                   draw had them so the map has the same visibility as the picture (305).
+```

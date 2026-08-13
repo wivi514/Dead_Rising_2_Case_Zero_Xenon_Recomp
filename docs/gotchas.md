@@ -2877,3 +2877,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      operator caught this immediately ("it's impossible that the GPU sees them exactly the
      same") and was right. When a cross-platform diff of guest-set state comes back
      identical, that is the null result you should have predicted, not evidence.
+
+304. **A FRAME COUNTER INCREMENTED BY THE SWAP MAKES "ARM THE NEXT FRAME" NAME A NUMBER
+     THE DRAW PATH NEVER SEES.** The draw-ID pass was armed from the present path as
+     `drawIdFrame = R->frame + 1`, exactly as the existing capture and census arms are.
+     `++R->frame` happens at the SWAP, so the draws of a frame are recorded while the
+     counter still holds the previous frame's value: the flag was compared against a
+     number that had already been skipped past by the time any draw looked. The pass
+     never ran, for three consecutive test runs, **while its output was being read as if
+     it were a map** — the surface it "produced" turned out to be an ordinary buffer whose
+     small values happened to look like plausible draw indices. What settled it was
+     dumping the same address from a run with the instrument OFF and finding the two
+     images IDENTICAL. Arm with a FLAG consumed by the first draw that sees it; a flag
+     cannot be off by one. And put a counter on the arm (gotcha 151) — "0 draws painted
+     an index" would have said this in the first run instead of the fourth.
+
+305. **A DIAGNOSTIC THAT REPLACES WHAT A DRAW WRITES MUST NOT CHANGE WHICH DRAWS WRITE.**
+     The first draw-ID pass forced the colour write mask open so the index could not be
+     partially written. That let this title's depth-only prepass draws (`mask=0`, 38.6% of
+     all draws) paint indices over 31.5% of the map, and the three "biggest visible draws"
+     it reported were all draws that write no colour at all. An ID map is a map of what was
+     PAINTED: substitute the fragment shader, disable blending, and leave every other piece
+     of state — mask, depth test, depth write, cull — exactly as the draw had it.
