@@ -310,3 +310,30 @@ zombie crowd. The visual target for the renderer. Note the frame index if you ca
   Wrath's 48-byte reader read it as zero functions and 762,193 resyncs, i.e. as an inert
   flag, when it was actually the most detailed oracle available. Worth remembering it
   exists; not worth capturing until there is a divergence to chase with it.
+
+## R5 (requested part 39, 2026-08-12) — ONE trace standing at a SHARD TREE
+
+**Why this is the whole ask.** Item 0t (foliage renders leaf cards as solid angular
+shards, the cutout never happens) had ALPHA-TO-MASK as its suspect, and part 39
+**refuted it from data already on disk**: across all eight `R4_world` traces — 40,703
+draws — hardware enables neither RB_COLORCONTROL bit 3 (alpha test) nor bit 4
+(alpha-to-mask). Nor is it a shader `kill`: exactly 1 of R4's 208 dumped pixel shaders
+has one.
+
+**What R4 cannot answer, and why.** The shard-tree material — our
+`ps_c9ca4f73ba93d023`, DXT5 albedo + DXN normal — is **absent from R4's 261-shader
+bank**. R4 is the Big Buck hardware store; the operator's tree capture
+(`part38-operator/arm1_default/capture_f28446`) is somewhere else. So the register
+state that would answer "how does hardware cut these leaves out" has simply never been
+captured at the right place.
+
+**The request:** one single-frame F4 GPU trace **standing where capture_f28446 was
+taken**, in front of the trees, with the usual `dump_shaders` on and the frame-locked
+PNG. Same form as R3/R4 — no new capability needed. One trace is enough; this is a
+register read, not a survey.
+
+**What it decides, either way.** With the trace in hand, `tools/xtr_draw_bindings.py`
+prints RB_COLORCONTROL, RB_ALPHA_REF, RB_BLENDCONTROL0 and RB_DEPTHCONTROL per draw,
+and the shader dump says whether hardware's foliage microcode kills. That is the same
+one-column read that closed the alpha-to-mask branch, applied to the place that
+actually has the defect.
