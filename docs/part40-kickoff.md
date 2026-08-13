@@ -29,7 +29,8 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
   renderer. Counters: `mip: chain uploaded` (1,815 textures on the outdoor route),
   `mip: PACKED TAIL DECLINED`, `mip: CUBE chain not uploaded` (6), and
   `mip: level REJECTED — diverges from the level above`, the guard on the offset rule,
-  **which fires 8 times on the outdoor route and drops those levels**.
+  **which fires on 254 of 1,818 chained textures on the outdoor route and drops
+  those levels** (it PRINTS only eight — the rest are in the counter).
 * **`tools/frame_arm_spread.py`** — compare two arms without picking which pair supplies
   the null (gotcha 300). Use it instead of `frame_era_medians.py` for any 3-runs-an-arm
   block.
@@ -46,15 +47,16 @@ b8b856f, 6a24b9e, adeabe9, d21cfcf and the wrap-ups.
 ## WHERE TO START
 
 1. **THE PACKED MIP TAIL, and the guard has already told you where the rule breaks.**
-   The divergence guard fires on 8 outdoor textures, every one with a level 1 NARROWER
-   than a macro tile, every one reading ~1/3 of its base's luma — a wrong PITCH, not
+   The divergence guard fires on **254 of 1,818 chained textures** (it prints eight),
+   every printed one with a level 1 NARROWER than a macro tile and reading ~1/3 of its
+   base's luma — a wrong PITCH, not
    corrupt data (the two chains verified by hand both have a 32-block-wide level 1, so
    neither could have shown it). Derive the packed-mip pitch/offset rule for exactly
    those shapes, and the guard becomes the regression test for it.
    The A/B as it stands: mean luma **−1.35% against a 0.65% worst within-arm spread
    (RESOLVED)**, distinct colours −3.50% against 7.91% (unresolved), both moving toward
    hardware's own 58.6 / 127,574, visibly less speckle on minified surfaces — **but that
-   block ran on the binary that BOUND the eight bad levels**, so part of the darkening is
+   block ran on the binary that BOUND all 254 bad levels**, so part of the darkening is
    wrongly-dark mips. Arm A was re-run on the rejecting binary (`mipA4/5/6`); read those
    against `mipB/B2/B3`, which are unaffected. **And no distant building panel regained
    its siding either way**, so the chain is a correctness win and NOT yet shown to be

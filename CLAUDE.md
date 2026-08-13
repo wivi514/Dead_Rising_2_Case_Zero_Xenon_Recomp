@@ -686,7 +686,9 @@ declared and then discarded for the whole of phase 5):
   frame declares one on **69.6%** of fetches. The layout was verified level by level against hardware's own bytes (same
   mean, steadily fewer distinct colours) rather than reasoned about; the **packed tail**
   is declined and counted, never guessed. `CZ_VK_NO_MIPS=1` is the same-binary control
-  arm; 1,815 textures take a chain on the outdoor route. **The A/B (three runs an arm)
+  arm; 1,815 textures take a chain on the outdoor route. A divergence guard shipped with
+  it caught the rule's limit at once — **254 of 1,818 chains held a level that is not that
+  texture**, so it REJECTS rather than counts (gotcha 301). **The first A/B (three runs an arm)
   resolves on mean luma — −1.35% against a 0.65% worst within-arm spread — and moves
   BOTH era statistics toward hardware's own R4 frames (58.6 / 127,574 against our
   75.9 / 149,030 without mips), with visibly less speckle on minified surfaces. It does

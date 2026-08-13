@@ -2838,9 +2838,12 @@ From phase C part 18 (the frame rate — and none of it was work):
      THE ONE THAT REFUTED IT SAVED A MEASUREMENT, NOT JUST A PICTURE.** Part 39's mip
      layout was verified by hand against two of hardware's chains and then shipped with
      a cheap runtime check: does each level's average match the level above it? The
-     expectation was zero hits, turning "two textures" into a census. It read EIGHT, all
-     with the same signature — level 1 at almost exactly **1/3** of its base's luma, on
-     every texture whose level 1 is narrower than a macro tile. A consistent ratio is a
+     expectation was zero hits, turning "two textures" into a census. It read **254 of 1,818 chained
+     textures** — and the EIGHT lines it prints are a capped sample, which the first
+     write-up of the finding recorded as the count (gotcha 109 again, in the same hour it
+     was quoted). All eight printed share one signature — level 1 at almost exactly
+     **1/3** of its base's luma, on every texture whose level 1 is narrower than a macro
+     tile. A consistent ratio is a
      wrong PITCH, not corrupt data. Both hand-verified chains happened to have a level 1
      exactly 32 blocks wide, so neither could have shown it.
      **The part that matters: the A/B had already been run on the binary that bound those

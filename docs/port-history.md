@@ -2548,7 +2548,10 @@ renderer existed. The chain is now uploaded, its layout verified level by level 
 hardware's own bytes rather than reasoned about — same mean, steadily fewer distinct
 colours, decoded out of the trace and looked at — with the PACKED TAIL declined and
 counted rather than guessed, and `CZ_VK_NO_MIPS=1` as the same-binary control arm.
-1,815 textures take a chain on the outdoor route. The A/B (three runs an arm) **resolves
+1,815 textures take a chain on the outdoor route, and a divergence guard built with it
+immediately caught the rule's limit: **254 of 1,818 chains had a level that is not that
+texture** (a wrong pitch on levels narrower than a macro tile), so the guard rejects
+rather than counts. The first A/B (three runs an arm) **resolves
 on mean luma, −1.35% against a 0.65% worst within-arm spread**, moves both era statistics
 toward hardware's own R4 frames, and visibly de-speckles minified surfaces — but it does
 **not** show item 00i fixed, and the registered prediction was retracted with its sign

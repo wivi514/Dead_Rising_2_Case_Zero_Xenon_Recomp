@@ -6432,8 +6432,10 @@ still open, and finishing the packed tail is the next thing that could decide it
 
 The divergence counter built alongside the chain (endpoint luma of a level against the
 level above it, the same invariant the layout was confirmed with) was expected to read
-zero and turn "two textures by hand" into a census. **It read eight**, and the eight are
-not noise:
+zero and turn "two textures by hand" into a census. **It read 254 of 1,818 chained
+textures — 14% — and the eight lines it PRINTS are a capped sample, not the count**
+(gotcha 109, which this very nearly got recorded as: the first write-up of this section
+said "eight"). The sample:
 
 ```
 mip 0D49D000  32x128 fmt=20 level 1: endpoint luma 42.8 vs 138.0   (0.310)
@@ -6448,7 +6450,8 @@ mip 0D89A000  32x64  fmt=18 level 1: endpoint luma 48.6 vs 145.4   (0.334)
 
 Every ratio is **≈ 1/3**, which is a signature and not a scatter: we are reading a
 sparse sample of a tightly packed level at a pitch it does not have, so most of what
-lands in the level is unwritten. All eight have a level 1 narrower than a macro tile —
+lands in the level is unwritten. All eight printed have a level 1 narrower than a macro
+tile —
 and the two chains verified by hand both have a level 1 exactly 32 blocks wide, so
 neither could have shown this. That is the whole argument for building the guard
 (gotcha 30: a test that has never failed has not been shown capable of failing; this one
@@ -6457,9 +6460,10 @@ failed the first time it ran, on data its author believed was fine).
 **The guard therefore REJECTS rather than counts**: the level is dropped, the chain
 stops, the texture keeps the levels that passed.
 
-**Which qualifies the A/B in the section above.** Those three runs were taken on the
-binary that BOUND the eight bad levels, so an unknown part of the −1.35% mean luma is
-wrongly-dark mips rather than correct filtering — a change that darkens the scene for
+**Which qualifies the A/B in the section above, and not slightly.** Those three runs
+were taken on the binary that BOUND all 254 of those levels — one chained texture in
+seven — so a substantial part of the −1.35% mean luma is wrongly-dark mips rather than
+correct filtering — a change that darkens the scene for
 the wrong reason, moving toward hardware's darker frames for the wrong reason too. Arm A
 is re-run on the rejecting binary; the control arm is unaffected, since
 `CZ_VK_NO_MIPS=1` never enters the block. Read the re-run's numbers, not the first
