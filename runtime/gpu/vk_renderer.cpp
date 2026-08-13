@@ -1085,6 +1085,12 @@ struct Image
     // wrong layout. That is undefined behaviour whose most likely presentation is a cube
     // with one correct face, which reads as a decode bug rather than a barrier one.
     uint32_t layers = 1;
+    // MIP LEVELS, here for exactly the reason `layers` is: `Barrier` names a
+    // subresource RANGE, and a range that stops at level 0 leaves every level below it
+    // in TRANSFER_DST while the sampler reads it. The presentation of that would be a
+    // texture that is correct until the camera backs away from it, which reads as an
+    // LOD bug rather than a barrier one — the same trap cube maps set in part 25.
+    uint32_t levels = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
@@ -1726,11 +1732,13 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                  VkImageUsageFlags usage, VkImageAspectFlags aspect,
                  VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, uint32_t layers = 1,
                  uint32_t depthExtent = 1,
-                 VkComponentMapping components = VkComponentMapping{})
+                 VkComponentMapping components = VkComponentMapping{},
+                 uint32_t levels = 1)
 {
     img.width = w;
     img.height = h;
     img.layers = layers;
+    img.levels = levels;
     img.format = format;
     img.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1751,7 +1759,7 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                              : VK_IMAGE_TYPE_2D;
     ci.format = format;
     ci.extent = { w, h, depthExtent };
-    ci.mipLevels = 1;
+    ci.mipLevels = levels;
     ci.arrayLayers = layers;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1777,7 +1785,7 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     vi.viewType = viewType;
     vi.format = format;
     vi.components = components;
-    vi.subresourceRange = { aspect, 0, 1, 0, layers };
+    vi.subresourceRange = { aspect, 0, levels, 0, layers };
     VK_CHECK(vkCreateImageView(R->device, &vi, nullptr, &img.view), "vkCreateImageView");
     return true;
 }
@@ -1814,8 +1822,9 @@ void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = img.image;
-    // ALL the layers, not just the first — see Image::layers.
-    b.subresourceRange = { aspect, 0, 1, 0, img.layers };
+    // ALL the layers AND all the levels, not just the first — see Image::layers and
+    // Image::levels.
+    b.subresourceRange = { aspect, 0, img.levels, 0, img.layers };
     b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -2552,6 +2561,13 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
     // dword4: mip_min_level bits 2..5, mip_max_level bits 6..9
     t.mipMin = (d4 >> 2) & 0xF;
     t.mipMax = (d4 >> 6) & 0xF;
+    // dword5 bits 11 and 12..31: packed_mips, and THE MIP CHAIN'S OWN ADDRESS. Both sit
+    // immediately above the dimension field measured below, and that adjacency is what
+    // makes them readable at all: dimension at 9..10 fixes the rest of the dword's
+    // layout, so packed_mips lands at 11 and the 20-bit page-aligned mip address at
+    // 12..31, exactly as the base address sits at 12..31 of dword1.
+    t.packedMips = ((d5 >> 11) & 1) != 0;
+    t.mipAddress = (d5 >> 12) << 12;
     // dword5 bits 9..10: the DIMENSION, in the same encoding the shader uses
     // (0 = 1D, 1 = 2D, 2 = 3D, 3 = cube). This field was `t.dimension = 1;` with a
     // comment saying the dimension is taken from the shader, and the shader metadata had
@@ -3479,6 +3495,125 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     }
     } // for each cube face
 
+    // THE MIP CHAIN, levels 1..n — the input this renderer declared and then discarded
+    // for the whole of phase 5 (part 39).
+    //
+    // A Xenos fetch constant names TWO addresses. `t.address` holds level 0 and nothing
+    // else; `t.mipAddress` holds levels 1..t.mipMax. Uploading a one-level image and
+    // leaving the sampler's mipmapMode at LINEAR is not "no mipmapping is needed here",
+    // it is "there is no level below 0 to select", so every minified surface in the game
+    // has been sampling full-resolution texels at whatever rate the rasteriser happened
+    // to land on. Item 00i — buildings that read as flat panels until you walk up to
+    // them, which the R4 hardware traces show fully textured at every distance — is the
+    // symptom that sent us looking, and the fetch constants say hardware has a chain
+    // here on the majority of its fetches.
+    //
+    // WHERE EACH LEVEL LIVES, and every clause of this was checked against hardware's
+    // own bytes rather than reasoned about (docs/phase5-notes.md 6bq):
+    //   * level 1 starts at `mipAddress` exactly;
+    //   * each subsequent level starts at the accumulated TILED FOOTPRINT of the levels
+    //     before it — its own pitch rounded up to 32 units by its own rows rounded up to
+    //     32, which for a level smaller than one tile is a whole tile;
+    //   * a level's pitch is derived from ITS OWN width, not from the base level's
+    //     `pitchBlocks`, which describes level 0 only.
+    // Decoded out of the R4 trace, level 1 of a 256x64 sign and levels 1..2 of a 512x512
+    // wall are clean half- and quarter-size copies of their base — same mean colour,
+    // steadily fewer distinct colours, which is what a mip chain looks like and what a
+    // wrong offset does not.
+    //
+    // WHERE IT STOPS, and it stops LOUDLY. `packedMips` says the tail of the chain —
+    // the levels smaller than a tile — shares one tile at sub-tile offsets this code
+    // does not know how to compute. The first sub-tile level is still at the accumulated
+    // offset (verified on both textures above), so it is taken; everything below it is
+    // DECLINED AND COUNTED rather than guessed at, because a guessed low mip is a wrong
+    // colour on a distant surface, which is indistinguishable from the defect being
+    // fixed (gotcha 5).
+    //
+    // CZ_VK_NO_MIPS=1 uploads level 0 alone — the pre-part-39 renderer, same binary.
+    static const bool noMips = EnvOn("CZ_VK_NO_MIPS");
+    std::vector<VkBufferImageCopy> copies;
+    {
+        VkBufferImageCopy c0{};
+        c0.bufferOffset = 0;
+        c0.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
+        c0.imageExtent = { t.width, t.height, 1 };
+        copies.push_back(c0);
+    }
+    uint32_t levelCount = 1;
+    if (!noMips && layers == 1 && t.mipAddress && t.mipMax >= 1)
+    {
+        const uint32_t mipVa = PhysToVa(t.mipAddress);
+        uint64_t chainOff = 0;      // byte offset of the level being read, from mipAddress
+        for (uint32_t level = 1; level <= t.mipMax && level < 16; level++)
+        {
+            const uint32_t lw = std::max(1u, t.width >> level);
+            const uint32_t lh = std::max(1u, t.height >> level);
+            const uint32_t luW = (lw + blockDim - 1) / blockDim;
+            const uint32_t luH = (lh + blockDim - 1) / blockDim;
+            const uint32_t lPitch = t.tiled ? ((luW + 31) & ~31u) : luW;
+            const uint32_t lRows = t.tiled ? ((luH + 31) & ~31u) : luH;
+            const uint64_t lFootprint = uint64_t(lPitch) * lRows * bytesPerUnit;
+            if (!GuestRangeOk(mipVa + uint32_t(chainOff), lFootprint))
+            {
+                Count("mip: level source outside the physical arena");
+                break;
+            }
+            // Append this level's untiled pixels to the same staging image the base
+            // level went into; the copy regions below name where each one starts.
+            const uint64_t lDstBytes = uint64_t(luW) * luH * bytesPerUnit;
+            const size_t at = pixels.size();
+            pixels.resize(at + size_t(lDstBytes));
+            const uint8_t* lsrc = base + mipVa + chainOff;
+            uint8_t* ldst = pixels.data() + at;
+            if (t.tiled)
+            {
+                uint32_t log2bpu = 0;
+                while ((1u << log2bpu) < bytesPerUnit)
+                    ++log2bpu;
+                for (uint32_t y = 0; y < luH; y++)
+                    for (uint32_t x = 0; x < luW; x++)
+                    {
+                        const uint64_t off =
+                            uint64_t(Tiled2DOffset(x, y, lPitch, log2bpu)) * bytesPerUnit;
+                        if (off + bytesPerUnit > lFootprint)
+                            continue;
+                        CopySwapped(&ldst[(uint64_t(y) * luW + x) * bytesPerUnit],
+                                    lsrc + off, bytesPerUnit, t.endian);
+                    }
+            }
+            else
+            {
+                for (uint32_t y = 0; y < luH; y++)
+                    CopySwapped(&ldst[uint64_t(y) * luW * bytesPerUnit],
+                                lsrc + uint64_t(y) * lPitch * bytesPerUnit,
+                                uint64_t(luW) * bytesPerUnit, t.endian);
+            }
+            VkBufferImageCopy c{};
+            c.bufferOffset = at;
+            c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
+            c.imageExtent = { lw, lh, 1 };
+            copies.push_back(c);
+            levelCount = level + 1;
+            chainOff += lFootprint;
+            // The packed tail begins at the first level smaller than a tile. That level
+            // itself is at the accumulated offset; the ones below it are not.
+            if (luW < 32 || luH < 32)
+            {
+                if (level < t.mipMax)
+                    Count("mip: PACKED TAIL DECLINED — levels below a tile not uploaded");
+                break;
+            }
+        }
+        Count(levelCount > 1 ? "mip: chain uploaded" : "mip: chain declared but no level taken");
+    }
+    else if (!noMips && layers == 6 && t.mipMax >= 1)
+    {
+        // A cube map's chain is six chains, and the face stride for the mip levels is a
+        // second model on top of the one the base level already assumes. Not attempted,
+        // and counted so the omission is a number rather than a silence.
+        Count("mip: CUBE chain not uploaded");
+    }
+
     if (g_texCensus)
     {
         TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
@@ -3551,18 +3686,25 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         cached->second.srcBytes = srcBytes;
         cached->second.guard = StreamGuard(base + va, size_t(srcBytes), nullptr);
         ++g_texGuardStats.reuploaded;
-        if (dstBytes <= R->staging.size)
+        if (pixels.size() <= R->staging.size)
         {
-            memcpy(R->staging.mapped, pixels.data(), dstBytes);
+            memcpy(R->staging.mapped, pixels.data(), pixels.size());
             Image& img = cached->second.image;
+            // A REFRESH WRITES EVERY LEVEL THE IMAGE HAS, not just the base. The cached
+            // image was built with whatever level count its first upload could locate,
+            // and a re-upload that refilled level 0 alone would leave the levels below
+            // it holding the bytes the recycled address used to carry — which is
+            // precisely the stale-texture class part 38 closed, reintroduced one mip
+            // down where nothing close up would ever show it.
+            std::vector<VkBufferImageCopy> use(
+                copies.begin(),
+                copies.begin() + std::min<size_t>(copies.size(), img.levels));
             RunImmediate([&](VkCommandBuffer cb) {
                 Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
-                VkBufferImageCopy copy{};
-                copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
-                copy.imageExtent = { t.width, t.height, 1 };
                 vkCmdCopyBufferToImage(cb, R->staging.buffer, img.image,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       uint32_t(use.size()), use.data());
                 Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
             });
@@ -3656,7 +3798,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT,
                      isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D, layers, 1,
-                     noSwizzle ? VkComponentMapping{} : XenosSwizzle(t.swizzle)))
+                     noSwizzle ? VkComponentMapping{} : XenosSwizzle(t.swizzle),
+                     levelCount))
     {
         Count("texture: image creation failed");
         --nextSlot;
@@ -3667,7 +3810,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
 
     // Stage through the upload buffer. Sized once at init; a texture larger than it
     // is counted and dropped rather than silently truncated.
-    if (dstBytes > R->staging.size)
+    if (pixels.size() > R->staging.size)
     {
         Count(isCube ? "texture: CUBE larger than the staging buffer"
                      : "texture: larger than the staging buffer");
@@ -3675,18 +3818,17 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         return 0;
     }
     ++R->guestTexturesThisPass;
-    memcpy(R->staging.mapped, pixels.data(), dstBytes);
+    memcpy(R->staging.mapped, pixels.data(), pixels.size());
 
     RunImmediate([&](VkCommandBuffer cb) {
         Barrier(cb, entry.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
-        VkBufferImageCopy copy{};
-        // One copy for all six faces: the staging buffer holds them tightly packed and
-        // in order, which is exactly what a multi-layer copy expects.
-        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
-        copy.imageExtent = { t.width, t.height, 1 };
+        // One region per mip level, and the base level's region names all six faces of a
+        // cube: the staging buffer holds them tightly packed and in order, which is
+        // exactly what a multi-layer copy expects.
         vkCmdCopyBufferToImage(cb, R->staging.buffer, entry.image.image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               uint32_t(copies.size()), copies.data());
         Barrier(cb, entry.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
     });
@@ -5563,11 +5705,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     // and the runtime describing one draw in one vocabulary is what makes
                     // the two diffable without a human transcribing columns, and part 27
                     // did that transcription by hand for every comparison it made.
+                    // mip=lo..hi and mipAddr are here for the same reason, and were added
+                    // in part 39: the guest names a SEPARATE mip-chain address and a
+                    // level clamp, this renderer uploads exactly one level, and until
+                    // both censuses printed the fields nobody on either side could say
+                    // how much of the chain was being thrown away.
                     "  s%u=%08X %ux%u fmt=%u dim=%u depth=%u swz=%03X tiled=%u "
-                    "pitchBlk=%u end=%u slot=%u%s%s",
+                    "pitchBlk=%u end=%u mip=%u..%u mipAddr=%08X slot=%u%s%s",
                     constIdx, t.address, t.width, t.height, t.format, t.dimension,
                     t.depth, t.swizzle,
-                    t.tiled ? 1u : 0u, t.pitchBlocks, t.endian, slot,
+                    t.tiled ? 1u : 0u, t.pitchBlocks, t.endian, t.mipMin, t.mipMax,
+                    t.mipAddress, slot,
                     slot == 0 ? "(DUMMY)" : "",
                     R->snapshotsSampledThisPass.size() > snapsBefore ? "(snap)" : "");
             }

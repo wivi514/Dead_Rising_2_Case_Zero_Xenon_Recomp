@@ -145,6 +145,14 @@ struct TextureFetch
     bool tiled;
     uint32_t dimension;  // 0 = 1D, 1 = 2D, 2 = 3D, 3 = cube
     uint32_t mipMin, mipMax;
+    // THE SECOND ADDRESS. A Xenos fetch constant names the base level and the rest of
+    // the mip chain SEPARATELY: `address` above holds level 0 only, and this holds
+    // levels 1..mipMax. It is zero on a texture with no chain, so a renderer that never
+    // read it — this one, until part 39 — cannot tell "no mips exist" from "mips exist
+    // and I am ignoring them". `packedMips` says the levels below the tile size share
+    // one tile rather than each starting on their own 4 KB boundary.
+    uint32_t mipAddress;
+    bool packedMips;
     uint32_t filterMin, filterMag, filterMip; // 0 = point, 1 = linear
     uint32_t clampX, clampY, clampZ;
     uint32_t pitchBlocks; // dword4 bits 22:31, in blocks of 32 texels
