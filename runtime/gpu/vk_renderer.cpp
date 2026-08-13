@@ -7977,8 +7977,21 @@ bool InitCommon()
         g_dimDisagree = true;
         g_dimDisagreeLeft = atoi(n);       // how many get printed as they happen
     }
-    g_texGuard = EnvOn("CZ_VK_TEX_GUARD");
-    g_texRevalidate = EnvOn("CZ_VK_TEX_REVALIDATE");
+    // GUARD + REVALIDATE ARE THE DEFAULT AS OF PART 38. The cache previously uploaded a
+    // texture ONCE per (address, extent, format) and served it forever, which is wrong
+    // the moment streaming recycles an address — and an operator session recycles them
+    // constantly: the tanker wore a BRICK WALL, and "almost everything up close wears a
+    // random texture" (the operator's words) the longer the session ran. Part 35's
+    // "4 stale of 92M hits" that justified leaving the repair off was measured on a
+    // 400 s headless run at one location — a fact about that route, not about play
+    // (the gotcha-50 family). A full operator session on the repair: every prop
+    // correct, no reported slowdown. CZ_VK_NO_TEX_REVALIDATE=1 is the same-binary
+    // control arm that brings the random-texture defect back.
+    {
+        static const bool noRevalidate = EnvOn("CZ_VK_NO_TEX_REVALIDATE");
+        g_texGuard = !noRevalidate || EnvOn("CZ_VK_TEX_GUARD");
+        g_texRevalidate = !noRevalidate;
+    }
     g_texGuardPoison = EnvOn("CZ_VK_TEX_GUARD_POISON");
     if (g_texGuardPoison)
         fprintf(stderr, "[vk] texture guard POISONED — the changed share must now read "
