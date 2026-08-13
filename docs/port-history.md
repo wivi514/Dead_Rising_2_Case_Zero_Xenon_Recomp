@@ -2536,11 +2536,11 @@ worked, and both moved — one by finding a mechanism, the other by killing its 
 153-vertex sign draw, and the bytes hardware's sampler read are **md5-identical** to
 ours from a different boot at a different streamed address. So the level-0 input is
 exonerated, and with it two of the kickoff's three candidates: the white dummy is bound
-once in most of the eight F9 frames, and `mip_min_level` is **0 on all 106,910 hardware
+once in most of the eight F9 frames, and `mip_min_level` is **0 on all 328,164 hardware
 fetches**, refuting "the streaming system raises an LOD clamp we ignore".
 
 What the same census found instead is that `mip_max_level` runs to **nine**, that
-**12,758 of 48,247 fetches in one hardware frame carry a separate mip-chain address**,
+**88,689 of 328,164 hardware fetches (27.0%) carry a separate mip-chain address**,
 and that `xenos::DecodeTextureFetch` had been parsing those fields since phase 5 while
 **no line of the renderer read them** and `CreateImage` hardcoded `mipLevels = 1`
 (gotcha 295). Every minified surface in this game has been sampling level 0 since the

@@ -1458,13 +1458,13 @@ Next, in order:
    (`b06f8bdd…`, hardware `15689000` vs our `0E04D000` — different boot, different
    address, same content). Two of the kickoff's three candidates died with it: the white
    dummy is bound **once** in most of the eight F9 frames (not a building-scale path),
-   and `mip_min_level` is **0 on all 106,910 hardware fetches**, so the streaming system
+   and `mip_min_level` is **0 on all 328,164 hardware fetches**, so the streaming system
    is not raising an LOD clamp we ignore.
 
    **WHAT THE SAME CENSUS FOUND IS A WHOLE DECLARED INPUT WE DISCARD: THE MIP CHAIN.**
-   `mip_max_level` runs to **9**, and **12,758 of 48,247 fetches in one hardware frame
-   carry a separate mip-chain address** (dword5); our own outdoor frame declares a chain
-   on **69.6%** of fetches. `DecodeTextureFetch` had parsed the fields since phase 5 and
+   `mip_max_level` runs to **9**, and **88,689 of 328,164 fetches across all eight R4
+   traces (27.0%) carry a separate mip-chain address** (dword5); our own outdoor frame
+   declares a chain on **69.6%** of fetches. `DecodeTextureFetch` had parsed the fields since phase 5 and
    nothing read them; `CreateImage` hardcoded `mipLevels = 1`. Part 39 implements the
    chain — layout verified level by level against hardware's own bytes, packed tail
    declined and counted — with **`CZ_VK_NO_MIPS=1` as the same-binary control arm**.

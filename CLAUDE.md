@@ -681,16 +681,16 @@ declared and then discarded for the whole of phase 5):
   `mip_address` holds levels 1..n. `DecodeTextureFetch` parsed `mipMin`/`mipMax` from
   phase 5 onward, **nothing read them**, and `CreateImage` hardcoded `mipLevels = 1` —
   so every minified surface in the game sampled full-resolution texels at whatever rate
-  the rasteriser landed on. Hardware declares chains **up to nine levels deep on
-  12,758 of 48,247 fetches** in one R4 frame; our own outdoor frame declares one on
-  **69.6%**. The layout was verified level by level against hardware's own bytes (same
+  the rasteriser landed on. Hardware carries a mip-chain address on **88,689 of 328,164 fetches (27.0%) across
+  all eight R4 traces**, declaring chains up to **nine levels** deep; our own outdoor
+  frame declares one on **69.6%** of fetches. The layout was verified level by level against hardware's own bytes (same
   mean, steadily fewer distinct colours) rather than reasoned about; the **packed tail**
   is declined and counted, never guessed. `CZ_VK_NO_MIPS=1` is the same-binary control
   arm; 1,815 textures take a chain on the outdoor route. Gotcha 295 is the transferable
   half: **for every field a decoder parses, grep for a READER.** §6bq.
 * **Item 00i's level-0 input is EXONERATED** — the Big Buck sign draw's texture bytes
   are **md5-identical** to hardware's from a different boot at a different address — and
-  `mip_min_level` is **0 on all 106,910 hardware fetches**, refuting "streaming raises an
+  `mip_min_level` is **0 on all 328,164 hardware fetches**, refuting "streaming raises an
   LOD clamp we ignore". Whether the mip chain closes 00i is a registered prediction
   against an era-median A/B, not yet a claim.
 * **Item 0t's suspect is REFUTED**: across all eight R4 traces (**40,703 draws**)

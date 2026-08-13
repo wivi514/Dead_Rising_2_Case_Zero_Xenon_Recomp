@@ -6299,14 +6299,14 @@ Two candidate mechanisms from the kickoff died in the same pass:
   building-scale path.
 * **"the streaming system raises the LOD clamp and we ignore it"** — a plausible reading
   of `ForceLODTexForStreamingWorld` and `wait_for_tex_lod`, and **refuted**:
-  `mip_min_level` is **0 on all 106,910 texture fetches across three R4 traces**. The
+  `mip_min_level` is **0 on all 328,164 texture fetches across all eight R4 traces**. The
   guest never disclaims level 0 here.
 
 ### What the same census found instead: a whole declared input the renderer discards
 
-`mip_max_level` is not zero. Across R4's traces **13,078 of 48,247 fetches in one frame
-alone declare a chain**, up to **nine levels**, and 12,758 carry a **separate mip-chain
-address** — dword5's `mip_address`, a field this project had never decoded. Our own
+`mip_max_level` is not zero. Across **all eight R4 traces, 88,689 of 328,164 fetches
+(27.0%) carry a separate MIP-CHAIN ADDRESS** — dword5's `mip_address`, a field this
+project had never decoded — declaring chains up to **nine levels** deep. Our own
 census of an outdoor frame says the same from our side: **8,688 of 12,491 fetches
 (69.6%) declare `mipMax >= 1`.**
 
