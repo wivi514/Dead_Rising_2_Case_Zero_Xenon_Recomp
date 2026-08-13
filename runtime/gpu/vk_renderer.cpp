@@ -3588,6 +3588,46 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                                 lsrc + uint64_t(y) * lPitch * bytesPerUnit,
                                 uint64_t(luW) * bytesPerUnit, t.endian);
             }
+            // IS THERE ACTUALLY A LEVEL HERE? Count the blocks that came back non-empty.
+            //
+            // This replaces the extent rule the first implementation stopped on — "break
+            // at the first level narrower than a macro tile" — which threw away levels
+            // that are demonstrably present, and they are the ones distant geometry needs
+            // most. Read out of hardware's own chains, a 512x512 DXT1's levels 1..4 sit at
+            // the ACCUMULATED FULL-TILE offsets this loop already computes, and each tile
+            // contains exactly that level's block count — 4096, 1024, 256, 64 — with the
+            // luma holding (83.7, 82.2, 80.1, 76.0, 71.0) and distinct blocks falling
+            // monotonically. Two independent textures agree clause for clause. Level 5 is
+            // where the genuinely packed tail starts, and there the count stops matching:
+            // one chain reads 27 blocks where 16 are expected, another 533.
+            //
+            // So the terminator is THE DATA, not the extent. A level whose tile comes back
+            // mostly empty is padding or somebody else's, and it ends the chain. That is
+            // self-limiting per texture, which a fixed extent threshold cannot be — the
+            // packed tail begins at a different level depending on how the guest laid the
+            // texture out, so this asks each chain where its own tail starts.
+            //
+            // It runs BEFORE the divergence guard below deliberately: a mostly-empty tile
+            // also reads as "diverges from the level above", and calling that a rule
+            // violation would hide an ordinary end-of-chain behind an alarm.
+            {
+                size_t nonEmpty = 0;
+                for (size_t o = 0; o + bytesPerUnit <= size_t(lDstBytes); o += bytesPerUnit)
+                {
+                    bool zero = true;
+                    for (uint32_t k = 0; k < bytesPerUnit; k++)
+                        if (ldst[o + k]) { zero = false; break; }
+                    if (!zero)
+                        ++nonEmpty;
+                }
+                if (nonEmpty * 2 < size_t(luW) * luH)
+                {
+                    Count("mip: PACKED TAIL REACHED — level mostly empty, chain ends here");
+                    pixels.resize(at);
+                    break;
+                }
+            }
+
             // IS THIS LEVEL PLAUSIBLY THE SAME PICTURE, one octave down?
             //
             // The offset rule above was verified by hand against exactly TWO of
@@ -3602,9 +3642,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // distinct colours. For DXT1/DXT5 the two RGB565 colour ENDPOINTS of each
             // block are that average cheaply — the 2-bit indices are near-uniform noise
             // and would swamp a plain byte mean, which is why this reads endpoints and
-            // not bytes. Divergence is COUNTED, not rejected: a counter that reads zero
-            // over a whole route turns "two textures by hand" into a census, and a
-            // counter that reads non-zero names the shapes the rule does not cover.
+            // not bytes. It REJECTS (see below); it began life as a counter, and the
+            // first thing it counted was a real defect.
             if (t.format == xenos::kFmt_DXT1 || t.format == xenos::kFmt_DXT4_5)
             {
                 const uint32_t blockBytes = (t.format == xenos::kFmt_DXT1) ? 8u : 16u;
@@ -3663,14 +3702,6 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             copies.push_back(c);
             levelCount = level + 1;
             chainOff += lFootprint;
-            // The packed tail begins at the first level smaller than a tile. That level
-            // itself is at the accumulated offset; the ones below it are not.
-            if (luW < 32 || luH < 32)
-            {
-                if (level < t.mipMax)
-                    Count("mip: PACKED TAIL DECLINED — levels below a tile not uploaded");
-                break;
-            }
         }
         Count(levelCount > 1 ? "mip: chain uploaded" : "mip: chain declared but no level taken");
     }
