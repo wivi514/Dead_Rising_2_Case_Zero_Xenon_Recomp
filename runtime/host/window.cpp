@@ -87,6 +87,8 @@ bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
 
 #include <SDL.h>
 
+#include "../gpu/vk_renderer.h"
+
 namespace {
 
 // XInput's button bits. Written out rather than included from anywhere, because the
@@ -508,6 +510,13 @@ void PublishPad(uint32_t userIndex, const HostPadState& fresh)
 void Shutdown(const char* why)
 {
     fprintf(stderr, "[host] %s — closing the window and exiting.\n", why);
+    // The renderer's counter dump, BEFORE _Exit, or an operator session's counters
+    // simply vanish — part 38 lost a whole evening's alpha-mode census this way: the
+    // stats block only ran from paths that returned through main, and the window-close
+    // path never did. Reading counters is safe here (the guest threads only ever
+    // increment them), and the one session that most needs the numbers — a long
+    // operator play session — is exactly the one that ends by closing the window.
+    ::VkRenderer_DumpStats();
     fflush(nullptr);
     // _Exit, not exit: guest threads are still running recompiled code against guest
     // memory, and running static destructors underneath them would turn an ordinary
