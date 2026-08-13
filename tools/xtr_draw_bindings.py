@@ -134,8 +134,40 @@ def decode_fetch(regs, slot):
         # the capture is the only thing that can say whether hardware has one too.
         'dim': (d[5] >> 9) & 3 if d[5] is not None else None,
         'depth': ((d[2] >> 26) & 0x3F) + 1,
+        # THE MIP CHAIN, which this project had never read from either side. A Xenos
+        # fetch constant names TWO addresses: dword1's base address, which holds level 0
+        # only, and dword5's separate MIP ADDRESS, which holds levels 1..n. Which of
+        # those levels the sampler may use is clamped by dword4's mip_min_level /
+        # mip_max_level. A streaming title raises mip_min_level while the big levels are
+        # still on disc, so a fetch whose mipMin is above zero is the guest SAYING "do
+        # not read level 0, it is not resident" — and a renderer that uploads one level
+        # and ignores the clamp reads exactly the memory the guest just disclaimed.
+        # These four fields sit beside `dim` because they share dword5's layout:
+        # dimension at bits 9..10 (measured in part 25) puts packed_mips at 11 and the
+        # mip address at 12..31, which is the layout that makes both readings consistent.
+        'mipMin': (d[4] >> 2) & 0xF if d[4] is not None else None,
+        'mipMax': (d[4] >> 6) & 0xF if d[4] is not None else None,
+        'mipAddr': ((d[5] >> 12) << 12) if d[5] is not None else None,
+        'packedMips': (d[5] >> 11) & 1 if d[5] is not None else None,
         'dwords': d,
     }
+
+
+ALPHA_FUNCS = ('NEVER', 'LESS', 'EQUAL', 'LEQUAL', 'GREATER', 'NOTEQUAL', 'GEQUAL',
+               'ALWAYS')
+
+
+def describe_colorcontrol(cc, aref):
+    """RB_COLORCONTROL in words. Bits 0..2 compare func, 3 alpha-test enable, 4
+    alpha-to-mask enable — the same decode runtime/gpu/vk_renderer.cpp makes, so a
+    hardware draw and one of ours can be read in one vocabulary."""
+    bits = []
+    if cc & 0x8:
+        bits.append('ALPHATEST=%s ref=%.3f'
+                    % (ALPHA_FUNCS[cc & 7], struct.unpack('<f', struct.pack('<I', aref))[0]))
+    if cc & 0x10:
+        bits.append('ALPHA_TO_MASK')
+    return 'RB_COLORCONTROL=%08X%s' % (cc, ('  ' + ' '.join(bits)) if bits else '')
 
 
 def main():
@@ -282,7 +314,16 @@ def main():
                 if d:
                     resolve_dests.setdefault(d, seq)
             tex = [t for t in (decode_fetch(regs, s) for s in range(32)) if t]
-            draws.append((len(draws), idx_count, names, tex, prim))
+            # RB_COLORCONTROL, verbatim, because it is the register that says how a
+            # cutout happens. Part 38 built the ALPHA TEST (bits 0..2 the compare func,
+            # bit 3 the enable) and the shard-tree foliage did not change, which leaves
+            # ALPHA-TO-MASK (bit 4) as the suspect — and the only way to tell a suspect
+            # from a theory is to read what hardware had set at those very draws.
+            # Carried raw rather than pre-decoded so a reading nobody has thought of yet
+            # is still recoverable from the CSV.
+            draws.append((len(draws), idx_count, names, tex, prim,
+                          regs.get(0x2205, 0), regs.get(0x210E, 0),
+                          regs.get(0x2201, 0), regs.get(0x2200, 0)))
             if want:
                 for t in tex:
                     if t['addr'] == want:
@@ -338,26 +379,33 @@ def main():
                       'cannot supply it: a surface the GPU produces inside the traced '
                       'frame is never snapshotted again. ***')
     shown = 0
-    for i, n, names, tex, prim in sorted(draws, key=lambda d: -d[1]):
+    for i, n, names, tex, prim, cc, aref, bl, dc in sorted(draws, key=lambda d: -d[1]):
         if n < args.min_verts or shown >= 12:
             continue
         shown += 1
-        print('  draw %-5d verts=%-6d prim=%u vs=%s ps=%s'
-              % (i, n, prim, names.get('vs', '?'), names.get('ps', '?')))
+        print('  draw %-5d verts=%-6d prim=%u vs=%s ps=%s  %s'
+              % (i, n, prim, names.get('vs', '?'), names.get('ps', '?'),
+                 describe_colorcontrol(cc, aref) +
+                 '  RB_BLENDCONTROL0=%08X RB_DEPTHCONTROL=%08X' % (bl, dc)))
         for t in tex[:8]:
-            print('      s%-2d %08X %4ux%-4u fmt=%-3u dim=%s depth=%u tiled=%u pitchBlk=%u'
+            print('      s%-2d %08X %4ux%-4u fmt=%-3u dim=%s depth=%u tiled=%u pitchBlk=%u '
+                  'mip=%s..%s mipAddr=%08X packed=%s'
                   % (t['slot'], t['addr'], t['w'], t['h'], t['fmt'], t['dim'],
-                     t['depth'], t['tiled'], t['pitch']))
+                     t['depth'], t['tiled'], t['pitch'], t['mipMin'], t['mipMax'],
+                     t['mipAddr'] or 0, t['packedMips']))
 
     if args.csv:
         with open(args.csv, 'w') as f:
-            f.write('draw,verts,vs,ps,slot,addr,w,h,fmt,dim,depth\n')
-            for i, n, names, tex, prim in draws:
+            f.write('draw,verts,vs,ps,slot,addr,w,h,fmt,dim,depth,'
+                    'mipMin,mipMax,mipAddr,packedMips,colorControl,alphaRef,'
+                    'blendControl0,depthControl\n')
+            for i, n, names, tex, prim, cc, aref, bl, dc in draws:
                 for t in tex:
-                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d,%s,%d\n'
+                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d,%s,%d,%s,%s,%08X,%s,%08X,%08X,%08X,%08X\n'
                             % (i, n, names.get('vs', ''), names.get('ps', ''),
                                t['slot'], t['addr'], t['w'], t['h'], t['fmt'],
-                               t['dim'], t['depth']))
+                               t['dim'], t['depth'], t['mipMin'], t['mipMax'],
+                               t['mipAddr'] or 0, t['packedMips'], cc, aref, bl, dc))
         print('wrote %s' % args.csv)
     # The staleness gate exits non-zero AFTER the rest of the output, so a caller who
     # wanted the census as well still gets it. A warning buried in a long listing is a
