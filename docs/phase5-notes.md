@@ -6284,10 +6284,13 @@ four bound textures have the same extents on both sides (256x64, 128x32, 128x32,
 | md5 of the 8 KB the sampler read | `b06f8bdd8957a7a1f2cf3edf27e0a2de` | `b06f8bdd8957a7a1f2cf3edf27e0a2de` |
 
 Different boot, different platform, different streamed address, **identical bytes**. So
-the level-0 input to the far-building draws is not the defect. (Both dumps size
-themselves `w*h*bpp`, which for a TILED surface is short of the pitch-and-rows-rounded
-footprint — here 8 KB of 16 KB. The two sides truncate identically so the comparison
-holds, but neither tool is dumping a whole tiled texture and that is worth fixing.)
+the level-0 input to the far-building draws is not the defect. (Both dumps sized themselves `w*h*bpp`, which for a TILED surface is short of the
+pitch-and-rows-rounded footprint — here 8 KB of 16 KB. The comparison holds because both
+sides truncated identically, but that is luck rather than a property of the method, so
+**both tools were fixed in this part**: at the full 16 KB footprint the sign decodes with
+zero missing blocks and mean **170.0**, which is its own level 1's **170.1** — the
+same-mean invariant now holds between a base level and its chain, and it could not
+before.)
 
 Two candidate mechanisms from the kickoff died in the same pass:
 
