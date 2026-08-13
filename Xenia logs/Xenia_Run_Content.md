@@ -274,3 +274,12 @@ guest-framebuffer screenshot at the F4 press, so each PNG is the trace's own fra
 MemoryRead bytes of every texture hardware sampled, i.e. the ground truth for what the
 CPU-composed sheets SHOULD hold. That is item 0s's writer-hunt oracle, in hand before
 the hunt starts.
+
+## R4_world/ (2026-08-12, round 4 — the Big Buck approach, eight viewpoints)
+Eight single-frame F4 traces + frame-locked PNGs of the Big Buck hardware store area,
+capture order 01 (oldest) -> 08 (newest), walking closer; `r4_shaders.zip` (261 distinct)
+and `R4_CAPTURE_NOTES.md`. Requested as the item-00i "one deliberate look" and it
+ANSWERS IT: hardware shows fully textured buildings at every distance — the flat-color
+panel look at range is OUR defect. The PNGs also show hardware's foliage as proper
+alpha cutouts (the shard-tree comparison), and each .xtr carries full register state
+at the foliage draws — the oracle for the alpha-mode question (RB_COLORCONTROL).

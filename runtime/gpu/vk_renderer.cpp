@@ -1032,6 +1032,12 @@ struct PipelineKey
     uint32_t depthControl;
     uint32_t modeControl;
     uint32_t primRestart;
+    // RB_COLORCONTROL's alpha test, as a pipeline dimension because the generated
+    // shaders implement it behind a SPECIALIZATION constant (SPEC_CONSTANT_ALPHA_TEST
+    // -> clip(oC0.w - g_AlphaThreshold)), and a spec constant is baked at pipeline
+    // creation. 1 = the clip is compiled in. The THRESHOLD stays per-draw (shared
+    // constants +272), so one pipeline serves every ref value.
+    uint32_t alphaTest;
 
     bool operator<(const PipelineKey& o) const
     {
@@ -4006,6 +4012,20 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     stages[1].module = ps.module;
     stages[1].pName = "main";
 
+    // g_SpecConstants (constant_id 0) on the FRAGMENT stage. Only the alpha-test bit is
+    // driven today; every other bit stays 0, which is byte-identical to the pre-part-38
+    // default (no VkSpecializationInfo at all == every spec constant at its declared
+    // default of 0), so pipelines without alpha test are unchanged.
+    const uint32_t specValue = key.alphaTest ? 0x2u /* SPEC_CONSTANT_ALPHA_TEST */ : 0u;
+    const VkSpecializationMapEntry specMap{ 0, 0, sizeof(uint32_t) };
+    VkSpecializationInfo specInfo{};
+    specInfo.mapEntryCount = 1;
+    specInfo.pMapEntries = &specMap;
+    specInfo.dataSize = sizeof specValue;
+    specInfo.pData = &specValue;
+    if (key.alphaTest)
+        stages[1].pSpecializationInfo = &specInfo;
+
     const VkFormat colorFormat = R->color.format;
     VkPipelineRenderingCreateInfo rci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
     rci.colorAttachmentCount = 1;
@@ -4992,6 +5012,37 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     key.depthControl = regs[xenos::kRbDepthControl] & 0xFF;
     key.modeControl = regs[0x2208] & 7;
 
+    // ALPHA TEST (part 38). RB_COLORCONTROL bits 0..2 are the compare func
+    // (0 NEVER, 1 LESS, 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL, 6 GEQUAL, 7 ALWAYS),
+    // bit 3 the enable. The shaders' clip(oC0.w - ref) keeps w >= ref, which IS GEQUAL
+    // and is GREATER everywhere but exact equality — both map to the same clip. Every
+    // OTHER enabled func is counted BY NAME and left un-emulated rather than guessed
+    // (gotcha 5); this title's cutout foliage/fences want GEQUAL. Without this bit the
+    // leaf-card trees rendered as solid shards — the operator's part-38 report.
+    {
+        static const bool noAlphaTest = EnvOn("CZ_VK_NO_ALPHA_TEST");
+        const uint32_t cc = regs[xenos::kRbColorControl];
+        if (!noAlphaTest && (cc & 0x8))
+        {
+            const uint32_t func = cc & 0x7;
+            if (func == 4 || func == 6)
+            {
+                key.alphaTest = 1;
+                Count("draw: alpha test (GREATER/GEQUAL) enabled");
+            }
+            else if (func != 7)
+            {
+                static const char* kFuncNames[8] = { "NEVER", "LESS", "EQUAL", "LEQUAL",
+                                                     "GREATER", "NOTEQUAL", "GEQUAL",
+                                                     "ALWAYS" };
+                char msg[64];
+                snprintf(msg, sizeof msg, "draw: alpha test func %s UNEMULATED",
+                         kFuncNames[func]);
+                Count(msg);
+            }
+        }
+    }
+
     // PRIMITIVE RESTART — OFF, and that is a measurement rather than an omission.
     //
     // Xenos can pack many strips into one draw separated by a reset index
@@ -5734,6 +5785,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] = swapped;
     }
+
+    // g_AlphaThreshold — RB_ALPHA_REF, verbatim. Written unconditionally (one store);
+    // only pipelines whose spec constant compiled the clip in ever read it.
+    reinterpret_cast<uint32_t*>(shared + kSharedAlphaThreshold)[0] =
+        regs[xenos::kRbAlphaRef];
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)
