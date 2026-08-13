@@ -3629,15 +3629,31 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 const double cur = endpointLuma(ldst, size_t(lDstBytes));
                 if (prev >= 0 && cur >= 0 && std::fabs(prev - cur) > 32.0)
                 {
-                    Count("mip: level DIVERGES from the level above — offset rule suspect");
+                    // AND IT REJECTS, because the guard found real failures the moment
+                    // it ran: eight textures on the outdoor route whose level 1 reads
+                    // about a THIRD of its base's luma, every one of them a surface
+                    // whose level 1 is narrower than a tile. A consistent factor rather
+                    // than noise says we are reading a sparse scatter of a tightly
+                    // packed level at the wrong pitch — i.e. the accumulation rule does
+                    // not describe these shapes, exactly as `packedMips` warns. Binding
+                    // them anyway would paint distant small-textured surfaces too dark,
+                    // which is the defect class this change exists to fix.
+                    //
+                    // Dropping the level and stopping the chain is the conservative
+                    // answer: this texture keeps the levels that passed, and the ones
+                    // below are declined like any other packed tail.
+                    Count("mip: level REJECTED — diverges from the level above");
                     static int left = 8;
                     if (left-- > 0)
                         fprintf(stderr,
                                 "[vk] mip %08X %ux%u fmt=%u level %u: endpoint luma "
                                 "%.1f vs %.1f one level up — this level is probably not "
-                                "this texture. chain=%08X off=%llu\n",
+                                "this texture, dropping it and the rest of the chain. "
+                                "chain=%08X off=%llu\n",
                                 t.address, t.width, t.height, t.format, level, cur, prev,
                                 t.mipAddress, (unsigned long long)chainOff);
+                    pixels.resize(at);
+                    break;
                 }
             }
             VkBufferImageCopy c{};
