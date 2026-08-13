@@ -142,6 +142,45 @@ Next, in order:
    not a distance curve. That is the next thing to test, and it must be tested by
    identifying the tree's draws FIRST.
 
+   **THE DRAW-ID PASS WAS BUILT AND THE TREE IS NOW IDENTIFIED BY MEASUREMENT.** One
+   operator F9 at a shard tree, `CZ_VK_DRAW_ID=1`, and the canopy region resolves to
+   exactly TWO draws:
+
+   | share of the canopy | draw | shader | textures |
+   |---|---|---|---|
+   | **57.1%** | 1306 | `ps_1f93b74b9a4fa389` | **NONE — it binds no texture at all** |
+   | 40.7% | 1204 | `ps_790283523afcaf20` | `0A2E4000` DXT1 + DXT5 + DXN, the foliage set |
+
+   **The untextured draw covers the MAJORITY of the tree**, and an untextured draw paints
+   flat polygons — which is what a shard is. That is the first mechanism-shaped fact this
+   item has ever had.
+
+   **It is not a translation defect.** `ps_1f93b74b9a4fa389` is 72 bytes of microcode and
+   hardware's own disassembly of the same hash contains **no `tfetch` either** — it writes
+   `oC0` from constants (`mul r0.w, c48.x, c255.x` / `mad_sat oC0.xy, ...`). Our
+   `tfetchConsts: []` is correct. Hardware sets seven fetch constants at those draws, but
+   the shader reads none of them: the `.xtr` tool lists every fetch constant that is SET,
+   not the ones a shader uses, and that distinction matters here.
+
+   So the question is now sharp and answerable: **hardware draws this same untextured
+   shader 41 times in the same area and its trees still look leafy, so where does that
+   draw's output GO on hardware?** The shader writes a 2-channel-plus-zeros pattern that
+   looks like an auxiliary target (velocity / a G-buffer channel), not a colour — and if
+   hardware routes it to a different render target while we paint it into the scene
+   colour, that is the defect, and it would explain the flat plates exactly. The next
+   step is to read the render-target state (`RB_MODECONTROL`, `RB_COLOR_INFO`,
+   `RB_SURFACE_INFO`) at those draws on BOTH sides.
+
+   **A CORRECTION TO THE RETRACTION ABOVE:** `0A2E4000` — which I decoded as "hair" and
+   used to void the whole earlier identification — IS bound on the tree canopy, by the
+   draw that owns 40.7% of it. So the signature-based pick of `ps_790283523afcaf20` was
+   evidently on the tree after all, and my reading of its texture as a character material
+   was an eyeball error on a sheet of brown strands that is as likely twigs or leaf
+   clusters. What the retraction got RIGHT stands: identifying it by signature was
+   unjustified, and the guest-register comparison proved nothing. What it got wrong was
+   concluding the material was unrelated. Both errors have the same cure, which is this
+   instrument.
+
    **THE INSTRUMENT THIS NEEDS, and its absence is why two sessions have guessed:** there
    is no way to point at a pixel and be told which DRAW painted it. Every identification
    so far has been inference from shader/texture/extent signatures, and it has now been
