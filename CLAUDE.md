@@ -119,13 +119,16 @@ census has not been repeated here (one pass over our 336 shaders would settle it
   fetches** (identity on 32-bit) that compensates the 8-in-32 pair transposition, and
   XenosRecomp already honours it on both the declared and `XeVfetchDep` paths.
 
-**That third one is a live lead here, not just trivia.** It is the most plausible
-explanation for phase 5 §6n, where disabling this port's own 16-bit texcoord unswizzle
-(`g_SwappedTexcoords`, 616,417 draws a boot) had **no measurable effect on the picture**
-— if the shader already compensates via its destination swizzle, our mask is
-compensating a second time or not at all. §6n recorded the null result honestly and
-could not explain it; this is the explanation to test. Refutation by compensation, and
-it is exactly why that rule is in the conventions.
+**That third one was a live lead here and PART 37 CONFIRMED IT — it was the whole
+striped-material class (item 0s).** The shader's destination swizzle IS the complete
+correction: our `CopySwapped` leaves 16-bit pairs in exactly the state the real fetch
+pipe hands the shader, so `g_SwappedTexcoords` was compensating A SECOND TIME, and
+lightmap UVs (16_16 TEXCOORD2 fetches) arrived transposed — baked prop shadows painted
+as hard-edged black blotches on the tanker, Dick's far LOD and the pawnshop boards.
+§6n's frame-wide null was honest and blind: the damage is localized to lightmapped
+props. The mask now defaults to ZERO; `CZ_VK_TEXCOORD_SWAP=1` is the control arm.
+`docs/phase5-notes.md` §6bo, gotchas 291-292. For Case West: publish NO texcoord swap
+mask; trust the microcode's own swizzles.
 
 ## Layout
 
@@ -670,7 +673,24 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 36, second half — the reproducibility layer):
+Where the port is, as of 2026-08-12 (part 37 — the striped-material class is solved):
+
+* **ITEM 0s'S BLOTCH MECHANISM IS FOUND, FIXED, AND ON BY DEFAULT.** The
+  black/white-banded "striped material" garbage (tanker close-up, Dick at distance,
+  pawnshop boards) was never in any texture: the runtime's own 16-bit texcoord
+  unswizzle mask double-corrected fetches whose microcode already carries the
+  compensating `.yx` destination swizzle, so baked-LIGHTMAP UVs arrived transposed and
+  the lightmap's black prop-shadow shapes painted the surfaces. Mask now defaults to
+  zero (= hardware semantics; the fix), `CZ_VK_TEXCOORD_SWAP=1` repaints the blotch as
+  the same-binary control arm. Named by content-ID of the tanker draw (all of whose
+  inputs are md5-identical to hardware's), semantics read from Xenia's own disassembly
+  of the same microcode, verified by matched-index F9 A/B at the reproduced site — the
+  blotch site IS the Case 0-2 DebugJump spawn, so the whole loop ran headlessly.
+  `docs/phase5-notes.md` §6bo; gotchas 291 (identify draws by CONTENT, not vertex
+  count) and 292 (model the full state chain before adding a runtime correction).
+  **`docs/part38-kickoff.md` is the LIVE hand-off.**
+
+Where the port was, as of 2026-08-12 (part 36, second half — the reproducibility layer):
 
 * **AN F9 CAPTURE NOW RECORDS WHERE YOU WERE STANDING, AND TEXTURES CAN BE ISOLATED
   WHILE AN OPERATOR PLAYS.** Every picture finding in this port had been anchored to

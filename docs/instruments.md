@@ -1128,7 +1128,14 @@ CZ_VK_NO_FLIP_Y=1  render with a positive-height viewport, i.e. the pre-fix vert
                    MIRRORED frame. The arm for the flip that made the title screen
                    appear; note no numeric instrument in this project can tell the two
                    arms apart (gotcha 135)
-CZ_VK_NO_TEXCOORD_SWAP=1   suppress the 16-bit texcoord unswizzle mask
+CZ_VK_TEXCOORD_SWAP=1  republish the pre-part-37 16-bit texcoord unswizzle mask — the
+                   control arm for the striped-material fix (phase5-notes §6bo). The
+                   mask DOUBLE-corrected pairs whose microcode already carries the
+                   compensating .yx destination swizzle, which transposed lightmap UVs
+                   and painted the item-0s blotches; the default is now mask = 0
+                   (hardware semantics). This arm repaints the tanker blotch on demand.
+CZ_VK_NO_TEXCOORD_SWAP=1   accepted, now a NO-OP (it names the current default), kept
+                   so recorded recipes keep meaning what they meant
 CZ_VK_PRIM_RESTART=1   honour 0xFFFF as a strip separator. OFF because the guest
                    declares VGT_MAX_VTX_INDX=65535, i.e. 0xFFFF is a LEGAL index
 CZ_VK_RESOLVE_TRACE=N  from frame N: each resolve's destination, extent, copy window,

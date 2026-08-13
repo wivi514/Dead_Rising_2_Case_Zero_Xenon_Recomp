@@ -2711,3 +2711,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      the same thread. Do not read a DIFFERENT field to verify a write (the getter here
      reads +0x1C while the setter writes +0x620, so "unchanged" was consistent with both
      success and failure and proved neither).
+
+291. **PAIRING DRAWS ACROSS PLATFORMS BY VERTEX COUNT IDENTIFIES A MESH, NOT AN
+     OBJECT — content-ID the textures instead.** Part 37 needed "the tanker's draw" in
+     two frames of the same scene from two renderers. Pairing by (verts, shaders) twice
+     produced confident wrong answers: first the zone's street-clutter chunk (present
+     in both frames because it is the same street), then an NPC's HEAD whose atlas was
+     byte-identical on both platforms for the honest reason that the same NPC stood in
+     both frames. What worked: decode the hardware frame's large textures, find the
+     target BY LOOKING (a truck skin is unmistakable), then md5 the content into the
+     other frame's dump to get the address, and let the census name the draw that binds
+     it. A vertex count is a mesh identity; meshes are shared and scenes overlap. The
+     part-36 warning (§6bk) said this about near/far pairs of ONE run; it is just as
+     true across platforms, and it cost two wrong attributions before it was applied.
+
+292. **A CORRECTION FOR YOUR OWN COPY PIPELINE CAN DOUBLE-CORRECT WHAT THE GUEST'S
+     SHADER ALREADY COMPENSATES — model the whole chain state-by-state before adding
+     one.** The striped-material class (item 0s, three parts of work) was the
+     runtime's own 16-bit-texcoord unswizzle mask: the 8-in-32 dword reverse leaves a
+     16_16 pair transposed, but that is exactly the state the real Xenos fetch hands
+     the shader, and the Xenos COMPILER already emits a compensating .yx destination
+     swizzle on ~87% of such fetches (known since the Fable 2 census, translated
+     faithfully all along). The mask corrected the pair a second time, so lightmap UVs
+     arrived (V,U) and baked prop shadows painted hard-edged black camo over the
+     tanker, Dick's far LOD and the pawnshop boards. Two aggravations worth the
+     ledger: the mask was JUSTIFIED originally by a metric later retracted as noise
+     (§6h -> §6k), and the correct arm (§6n's mask-off run) had already been measured
+     and dismissed as "no effect" because whole-frame statistics cannot see a defect
+     localized to a few dozen lightmapped draws. When your emulation of a hardware
+     stage matches the hardware's OUTPUT state, the guest's own compensations are
+     complete and every runtime-side "fix" after that point is a defect. The
+     four-line state table (guest bytes -> hw fetch -> shader swizzle) settles it on
+     paper; run it before publishing any endianness/swizzle correction.

@@ -69,6 +69,25 @@ Next, in order:
      OTHER sub-defects; (3) the content-match census (226 of 459 textures
      byte-identical, gotcha 288) is the triage list to shrink, not a suspect list.
 
+   **PART 37: THE MECHANISM IS FOUND, THE FIX IS DEFAULT, AND THE BLOTCH CLASS IS
+   CLOSED PENDING THE TOUR** (`docs/phase5-notes.md` §6bo; gotchas 291-292). The
+   blotched draw was named by content-ID (hardware's `14790000` truck skin = our
+   `109FC000`; the draw is verts=5896 vs_fa161b0fde7aa4d5/ps_c3ae0ec7855c4a18) and
+   every input it reads is byte-identical to hardware's. The defect was OURS and
+   upstream of the draw: `g_SwappedTexcoords` double-corrected 16-bit texcoord
+   attributes whose microcode already carries the compensating .yx destination
+   swizzle, so the material's baked-LIGHTMAP UV (16_16, TEXCOORD2) arrived transposed
+   and the lightmap's black prop-shadow shapes painted the surface — the "stripes"
+   were never in any texture. Mask now defaults to zero (= hardware semantics);
+   `CZ_VK_TEXCOORD_SWAP=1` is the control arm that repaints the blotch. Verified by
+   same-binary A/B at the reproduced site (headless — the blotch site IS the Case 0-2
+   spawn), same F9 index, blotch -> clean. The §6bk "body/cab draw" attribution is
+   retracted (street clutter, gotcha 291). **Still open in this item:** the 16 small
+   colour resolves / resolve write-back (sub-defect lead unchanged); the 231 depth-fed
+   colour fetches; and one look each at Dick-at-distance and the pawnshop boards on
+   the fixed renderer to confirm the class closes (the mechanism predicts they do:
+   both are lightmapped-material surfaces).
+
 00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25, AND ROUGHLY HALF-DONE BY
    VOLUME.** Cube maps are uploaded as six faces and bound into descriptor set 2;
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in

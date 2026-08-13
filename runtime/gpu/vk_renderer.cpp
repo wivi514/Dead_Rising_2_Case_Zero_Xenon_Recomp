@@ -5682,42 +5682,57 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
     }
 
-    // g_SwappedTexcoords — one bit per TEXCOORD semantic, and it is a correction for
-    // something THIS RUNTIME does rather than something the guest does.
+    // g_SwappedTexcoords — one bit per TEXCOORD semantic that the generated
+    // `tfetchTexcoord` uses to apply an EXTRA .yxwz unswizzle. THE MASK IS ZERO NOW,
+    // ON PURPOSE, and the reasoning is worth the paragraph because this exact spot has
+    // flip-flopped twice (§6h set it, part 37 zeroed it — phase5-notes §6bo):
     //
-    // Vertex data is copied out of guest memory by dword-swapping the whole stream
-    // (CopySwapped with the fetch constant's endian code, which is 8-in-32 here). For
-    // 32-bit components that is exactly right. For SIXTEEN-bit components it also
-    // transposes the two halves of every dword, so a 16_16 attribute arrives as YX and
-    // a 16_16_16_16 as YXWZ. XenosRecomp's generated `tfetchTexcoord` un-transposes it
-    // when the matching bit is set here, and we were leaving the mask at zero — so
-    // every 16-bit vertex attribute in the title had its components swapped, silently.
+    // CopySwapped's 8-in-32 dword reverse leaves a 16-bit pair (a) per-component
+    // little-endian, which Vulkan wants, and (b) TRANSPOSED in order — which is
+    // byte-for-byte the state the real Xenos fetch pipe hands the shader after its own
+    // endian stage. The Xenos shader compiler knows that, which is why ~87% of 16-bit
+    // vfetches in this title's microcode carry a compensating yx/yxwz DESTINATION
+    // swizzle (the Fable 2 census, confirmed live here). XenosRecomp translates that
+    // swizzle faithfully, so the shader's own code is already the complete correction:
+    // with the mask at zero, our result equals hardware's for every fetch, swizzled or
+    // not. With a mask bit SET, the pair is corrected TWICE — i.e. transposed again —
+    // which painted baked-lightmap prop shadows across the tanker, Dick's far LOD and
+    // the pawnshop boards (the item-0s striped-material class): the lightmap UV is a
+    // 16_16 TEXCOORD2 read through a yx-swizzled vfetch. §6h's "63.8% -> 81.3%"
+    // justification for the mask was measured on the animated-title-camera metric §6k
+    // later retracted; §6n's null (mask off = no measurable frame-wide change) was
+    // true because the damage is localized to lightmapped props, which no whole-frame
+    // statistic can see.
+    //
+    // CZ_VK_TEXCOORD_SWAP=1 republishes the old mask — the same-binary control arm
+    // that repaints the blotches. (CZ_VK_NO_TEXCOORD_SWAP is accepted and now a no-op,
+    // so old recipes keep meaning what they meant.)
     //
     // The semantic index comes from the Vulkan location, because that is what the
     // container synthesizer keyed both sides on: TEXCOORD0..3 are locations 4..7 and
     // TEXCOORD4..23 are locations 12..31 (its USAGE_LOCATION table).
     {
+        static const bool oldMask = EnvOn("CZ_VK_TEXCOORD_SWAP");
         uint32_t swapped = 0;
-        for (const VertexAttribute& a : vs.attributes)
+        if (oldMask)
         {
-            if (a.location < 4 || a.indirect)
-                continue;
-            const bool sixteenBit = a.format == 25 || a.format == 26 || a.format == 31 ||
-                                    a.format == 32;
-            if (!sixteenBit)
-                continue;
-            const uint32_t texcoord =
-                a.location < 12 ? uint32_t(a.location - 4) : uint32_t(a.location - 8);
-            if (texcoord < 32)
-                swapped |= 1u << texcoord;
+            for (const VertexAttribute& a : vs.attributes)
+            {
+                if (a.location < 4 || a.indirect)
+                    continue;
+                const bool sixteenBit = a.format == 25 || a.format == 26 ||
+                                        a.format == 31 || a.format == 32;
+                if (!sixteenBit)
+                    continue;
+                const uint32_t texcoord =
+                    a.location < 12 ? uint32_t(a.location - 4) : uint32_t(a.location - 8);
+                if (texcoord < 32)
+                    swapped |= 1u << texcoord;
+            }
+            if (swapped)
+                COUNT("draw: 16-bit texcoord DOUBLE-unswizzle republished (control arm)");
         }
-        // CZ_VK_NO_TEXCOORD_SWAP=1 restores the old always-zero mask, so the change is
-        // measurable in the same binary rather than asserted.
-        static const bool disable = EnvOn("CZ_VK_NO_TEXCOORD_SWAP");
-        reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] =
-            disable ? 0u : swapped;
-        if (swapped)
-            COUNT("draw: 16-bit texcoord unswizzle published");
+        reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] = swapped;
     }
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.

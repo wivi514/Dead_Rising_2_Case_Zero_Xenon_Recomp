@@ -6108,3 +6108,93 @@ second candidate and is literally a mission asset for teleporting the player.
 Also worth knowing before the next attempt: `setplayerpos` may itself be intended for a
 paused or specific state — it was never verified to work on hardware, and "the console
 has a command" is not "the command does what its name says from any state".
+
+## 6bo. Part 37: THE STRIPED-MATERIAL CLASS IS SOLVED — the blotch was our own
+## texcoord unswizzle correcting a correction the shader already makes
+
+Item 0s, the top picture item since part 35, closed by a same-binary A/B at the
+reproduced defect site. The whole investigation ran headlessly; no operator was needed.
+
+### The chase, in order, because two of its steps retract part-36 attributions
+
+1. **The part-36 "body/cab draws" were never the tanker.** §6bk paired the 25,234- and
+   18,193-vert draws with hardware by (verts, ps) and called them the truck. Decoding
+   their s0 atlas (rusted GAZ door, planks, POWER CABLES, a headlight lens) says street
+   props; the same 25,234-vert mesh renders at `w1_spawn` — it is the zone's street
+   clutter chunk, present in both frames because it is the same STREET. Everything §6bk
+   measured about those draws (byte-identical textures, healthy atlas) is true — of the
+   street, not the truck. Cross-platform pairing by vertex count then landed my first
+   candidate on a 7,938-vert draw whose s0 decodes to a MAN'S HEAD (an NPC standing in
+   both frames, byte-identical on both platforms for the honest reason). Gotcha 291.
+
+2. **The truck was found by CONTENT, not by pairing.** Decode hardware's large textures
+   from `tanker.xtr` and LOOK: `14790000` 1024x1024 DXT1 is unmistakably the tanker
+   (cream cab, grille, wheels). Its bytes exist in our blotch-frame dump at `109FC000`
+   — md5-identical — and exactly one draw binds it: **verts=5896,
+   vs_fa161b0fde7aa4d5 / ps_c3ae0ec7855c4a18** (hardware draw 1163/3699, our f2048 draw
+   1202/3759). Every input the shader declares (sidecar: slots 0,1,2,4) is
+   byte-identical to hardware: s0 the skin, s1 `109CC000` = hardware's `14760000`
+   (md5), s2/s4 the shadow atlas (healthy). Constants pc255 match the material class.
+   Hardware's extra register-file slots (s3 4x4 BLACK `050C4000`, s5, s6) are unread by
+   this shader — leftovers, not the difference.
+
+3. **The shader says what the layers ARE.** Xenia's own disassembly of the same
+   microcode (`r3_shaders.zip` `shader_135E5B34D16CF41E`, matched to our
+   `ps_c3ae0ec7855c4a18` by byteswapped-md5 of the ucode): s1 is sampled at
+   INTERPOLATOR 1 — a second UV channel — and its (squared) value joins the lighting
+   sum next to the sun term, gated by a spotlight cone/attenuation block whose light
+   POSITION constant (`pc(14)` = -104.4, 4.8, -121.3) is the tanker's own floodlight.
+   **s1 is a baked LIGHTMAP** — decoded, it is white (lit) with hard black shapes
+   (props' baked shadows). The shader also does a fully manual 4-tap PCF on the shadow
+   atlas (getCompTexLOD2D / setTexLOD / point taps at ±0.5 texel / getWeights2D),
+   which our translation reproduces faithfully — audited on the way, not the defect.
+
+4. **The vertex shader names the defective input.** `vs_fa161b0fde7aa4d5` reads UV0 as
+   32_32_FLOAT (untouched) and the lightmap UV as **fmt 25 = 16_16 at TEXCOORD2**,
+   through `tfetchTexcoord(g_SwappedTexcoords, iTexCoord2, 2).yx` — the `.yx` being the
+   microcode's OWN destination swizzle, the compensation the Fable 2 census found on
+   ~87% of 16-bit fetches. Chain accounting: CopySwapped's 8-in-32 dword reverse leaves
+   the 16-bit pair per-component little-endian and pair-TRANSPOSED — byte-for-byte the
+   state the real fetch pipe hands the shader, whose `.yx` then corrects it. Our mask
+   corrected it a SECOND time: `(V,U) -> .yxwz -> .yx -> (V,U)`. **The lightmap was
+   sampled with U and V exchanged**, painting its baked prop shadows as giant
+   hard-edged black patches wherever a lightmapped material was on screen.
+
+5. **Reproduction and the A/B.** The blotch site is AT the Case 0-2 DebugJump spawn
+   (operator pose `-102.2, 3.2, -123.8`; spawn `-106.1, 6.6, -115.9`), so the standard
+   headless recipe + F9 (which works headlessly, by design) reproduces it: run 2's
+   sweep shows the tanker cylinder in full camo-blotch, census confirming the same
+   material and the same streaming addresses as the operator boot (stability holding
+   across a third boot). Run 3, same binary, `CZ_VK_NO_TEXCOORD_SWAP=1`: **same frame
+   index, same camera, blotches GONE** — the cylinder shades like hardware's. The two
+   crops are the item's closing evidence; era medians are NOT quoted because the two
+   runs' camera paths diverge (gotcha 254 applies; the matched-index F9 crop is the
+   admissible comparison).
+
+### Why the mask existed, and the two prior findings this corrects in place
+
+* §6h added the mask and measured "63.8% -> 81.3% non-black" — on the animated
+  title-camera coverage metric that §6k RETRACTED for exactly this kind of claim. The
+  justification was noise wearing the shape of a finding.
+* §6n then measured the mask's removal as "no effect" frame-wide and could not explain
+  it; CLAUDE.md carried the destination-swizzle compensation as the "live lead". Both
+  halves resolve at once: the mask's effect is real, harmful, and LOCALIZED to
+  lightmapped props — invisible to any whole-frame statistic, decisive at the F9 crop.
+
+### What changed
+
+`vk_renderer.cpp`: the published mask is now **zero** (hardware semantics; the shader's
+own swizzles are the whole correction). `CZ_VK_TEXCOORD_SWAP=1` republishes the old
+mask as the same-binary control arm (repaints the blotches on demand);
+`CZ_VK_NO_TEXCOORD_SWAP` remains accepted as a no-op so recorded recipes keep meaning
+what they meant.
+
+### What this closes and what it re-opens
+
+Closes the striped-material mechanism for every surface whose defect is the lightmap
+layer: the tanker up close, and by the same mechanism the class members recorded in
+part 35 (Dick's far LOD, the pawnshop boards) — each still owed one look on the fixed
+renderer. The part-35/36 sub-defects that were never this mechanism stay open in item
+0s: hardware's 16 small colour resolves (resolve write-back still unimplemented), the
+231 colour fetches served by a depth snapshot, and the billboard-sheet quality-level
+question (the sheets themselves are correct to the byte, §6bj).
