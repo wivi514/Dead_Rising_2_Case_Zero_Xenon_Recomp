@@ -111,33 +111,43 @@ Next, in order:
    reports is XenosRecomp's unconditional clip, not a material census (gotcha 296).
    Hardware's blends at these draws are 5,109 opaque / 666 SRC_ALPHA / 31 other; our
    shard-tree draws are opaque too.
-   **PART 39, OPERATOR SESSION: NO CAPTURE IS NEEDED — R4 ALREADY HELD IT, AND THE ITEM
-   IS NOW BOUNDED ON EVERY INPUT.** The operator swept the main street with ~28 F9s and
-   caught a mid-distance shard tree with its census. The material is
-   **`ps_790283523afcaf20`**, NOT `ps_c9ca4f73ba93d023` — that second hash came from the
-   part-38 tree frame and sent the capture request after ground truth we already had
-   (R5 is withdrawn; see `xenia-capture-requests.md`). `ps_790283523afcaf20` has **1,408
-   hardware draws across the eight R4 traces**, and against them:
+   **PART 39 RETRACTION — THE MATERIAL BELOW WAS MISIDENTIFIED AND EVERY CONCLUSION
+   DRAWN FROM IT IS VOID.** I picked the "tree" draws out of an operator census by a
+   FORMAT SIGNATURE (draws binding a DXT5 + DXN pair, 176 of them, `ps_790283523afcaf20`
+   on texture `0A2E4000`) and never decoded the texture. Decoded, `0A2E4000` is **HAIR** —
+   brown strands, a character material. So the whole chain built on it is withdrawn: the
+   md5 pairing, the "blend split 118/58 matches exactly", the vertex-histogram match, and
+   the conclusion that state and inputs agree and the fault must be in the shading. None
+   of it was about trees. This is gotcha 291 again, one level up: I paired by a SIGNATURE
+   instead of by CONTENT, which is the same error the tanker taught, and the fix is the
+   same — DECODE AND LOOK before building an argument on a texture (gotcha 287).
 
-   | | hardware (R4) | ours (capture_f3289) |
-   |---|---|---|
-   | alpha test / alpha-to-mask | neither, ever | neither |
-   | blend split per frame | 118 blended / 58 opaque | **118 / 58, exactly** |
-   | leaf albedo 512x512 DXT1 | `md5 6f621715…` | **`md5 6f621715…` identical** |
+   **ALSO RETRACTED: "hardware and we agree on the render state".** That comparison read
+   the registers THE GUEST SET on both platforms. It is the same game, so those agree by
+   construction and the check could never have found anything. What matters is what each
+   RENDERER does with them, which was not examined. Any "state matches" claim in this
+   port made by diffing guest registers across the two platforms needs re-reading in that
+   light.
 
-   And hardware's own PNG at that distance shows **soft, fine, individually-visible
-   leaves with sky through them** where ours shows hard orange plates with black
-   backfaces — so the defect is ours, at a matched distance, with a picture oracle.
+   **WHAT SURVIVES, and it is little:** hardware's own frames show soft, fine, leafy trees
+   at the distance where ours shows hard plates, so the defect is ours at a matched
+   distance with a picture oracle. Nothing else about the tree material is established.
 
-   **Where that leaves it:** the cutout is real and present in the input — the albedo has
-   **5,230 of 16,384 blocks (31.9%) in DXT1 punch-through form**, which is the leaf
-   silhouette, and the DXT5 companion carries a full 0..255 alpha range in every block.
-   We map DXT1 to `BC1_RGBA_UNORM_BLOCK` (punch-through honoured) with an identity
-   swizzle. So state, geometry and inputs all agree with hardware and **the divergence is
-   in the shading or in how the sampled alpha reaches the blend** — read our translated
-   `ps_790283523afcaf20` against the capture's own disassembly of it, which is the method
-   that worked for the ground shader in part 30. Evidence:
-   `~/DR2CZ-troubleshooting/part39-operator/`. `docs/phase5-notes.md` §6bq.
+   **WHAT THE EVIDENCE NOW SUGGESTS, stated as a hypothesis and not a finding:** the
+   shard shapes have long straight polygon edges, and the buildings at the same distances
+   go flat-panelled at the same time. One mechanism would explain both — **we draw the
+   LOW-LOD asset where hardware draws the full one**. The archives carry explicit LOD
+   variants for exactly these objects (`z01_ash_tree_LOD.tex`, `z01_maple_tree_LOD.tex`,
+   `z01_street_lamp_LOD.tex`), and item 00i's own analysis found LOD here is STREAMING,
+   not a distance curve. That is the next thing to test, and it must be tested by
+   identifying the tree's draws FIRST.
+
+   **THE INSTRUMENT THIS NEEDS, and its absence is why two sessions have guessed:** there
+   is no way to point at a pixel and be told which DRAW painted it. Every identification
+   so far has been inference from shader/texture/extent signatures, and it has now been
+   wrong twice. A draw-ID pass — render each draw's index to a side buffer, dump it beside
+   the F9 picture — converts "which draw is that tree" from an argument into a lookup.
+   Build that before the next attempt.
 
    Operator captures `part38-operator/arm1_default/capture_f28446` (near
    trees as angular shards, black backfaces) and every outdoor frame since phase 5 in

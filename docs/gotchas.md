@@ -2856,3 +2856,24 @@ From phase C part 18 (the frame rate — and none of it was work):
      measurement takes**, and nothing in the A/B could have separated the two. Build the
      invariant check into the code the same day you build the feature, and re-run every
      number when it fires.
+
+302. **IDENTIFYING A MATERIAL BY ITS FORMAT SIGNATURE INSTEAD OF ITS CONTENT IS GOTCHA 291
+     ONE LEVEL UP, AND IT COSTS A WHOLE INVESTIGATION.** Part 39 needed the shard-tree
+     material, selected the draws that bind a DXT5+DXN pair (176 of them, one shader, one
+     512x512 DXT1 albedo), and built an entire case on it: byte-identical to hardware, an
+     exactly matching blend split, matching vertex histograms, therefore "state and inputs
+     agree and the fault is in the shading". Decoded at the end — because the operator said
+     the trees were still broken — that albedo is **HAIR**. Every conclusion was about a
+     character material. **DECODE AND LOOK before you build an argument on a texture**
+     (gotcha 287 said this; 291 said pair by content, not by a proxy). A signature is a
+     hypothesis about identity, and it needs the same confirmation as any other.
+
+303. **COMPARING THE REGISTERS THE GUEST SET, ACROSS TWO PLATFORMS RUNNING THE SAME GAME,
+     PROVES NOTHING — THEY AGREE BY CONSTRUCTION.** The same part-39 pass reported that
+     hardware and this runtime "agree on the alpha test, alpha-to-mask and blend mode" at
+     the disputed draws. Of course they do: both numbers come from one title's own command
+     stream. The comparison that means something is between what the guest ASKED and what
+     each renderer DID — our pipeline state, our sampler, our translated shader. The
+     operator caught this immediately ("it's impossible that the GPU sees them exactly the
+     same") and was right. When a cross-platform diff of guest-set state comes back
+     identical, that is the null result you should have predicted, not evidence.
