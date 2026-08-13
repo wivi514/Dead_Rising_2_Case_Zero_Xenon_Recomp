@@ -2476,3 +2476,26 @@ wrong thread rather than the wrong moment (gotcha 289). Hooking the context acce
 itself fixed the crash; the player still does not move because the actor's position
 fields are outputs the engine rewrites each frame (gotcha 290). DebugJump's own spawn
 code is the named lead. `phase5-notes.md` §6bk-§6bn; `part37-kickoff.md` is live.
+
+## Part 37 (2026-08-12) — the striped-material class SOLVED: our unswizzle mask was
+## correcting a correction the shader already makes
+
+Item 0s's mechanism, found offline and closed with a headless same-binary A/B. The
+chase first burned two wrong cross-platform draw pairings (the "body/cab draws" of
+§6bk are street clutter; a verts-matched candidate was an NPC's head — gotcha 291),
+then identified the tanker draw by CONTENT: decode hardware's textures, find the truck
+skin by looking, md5 it into our dump, let the census name the draw. Every input that
+draw reads is byte-identical to hardware's; Xenia's own disassembly of the shader
+showed s1 is a baked LIGHTMAP read through a second UV channel — a 16_16 TEXCOORD
+fetched with the microcode's compensating .yx destination swizzle. Our
+g_SwappedTexcoords mask corrected the pair a SECOND time (CopySwapped already leaves
+16-bit pairs in hardware's post-fetch state), so lightmap UVs arrived transposed and
+the lightmap's black prop shadows painted the surfaces. The blotch site turned out to
+BE the Case 0-2 DebugJump spawn, so reproduction, A/B and confirmation all ran with no
+operator: mask-on blotched, mask-off clean at the matched F9 index, new-default binary
+clean. Mask now defaults to zero; CZ_VK_TEXCOORD_SWAP=1 is the control arm. §6h's
+metric-noise justification and §6n's frame-wide null both resolved in place. Gates:
+--smoke OK; A5 exit 0 (3 permutation, 0 real); E2 identity +0.9594 (standing +0.9597).
+Also advanced: cMissionTeleportPlayer's trigger disassembled (posts event 0x6A via
+0x82188488, record layout known) — parked, since the spawn reaches the site.
+`phase5-notes.md` §6bo; gotchas 291-292; `part38-kickoff.md` is live.
