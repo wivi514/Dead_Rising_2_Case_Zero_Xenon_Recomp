@@ -2686,3 +2686,28 @@ From phase C part 18 (the frame rate — and none of it was work):
      camera, time and streaming state, so render targets, post surfaces and any asset
      the other frame didn't bind can never match. An unmatched entry is "unadjudicated",
      not "wrong" — the census narrows the field, it does not name the defect.
+
+289. **A GUEST CALL MADE FROM A KERNEL-IMPORT HOOK RUNS ON A THREAD THE ENGINE NEVER
+     PREPARED.** Part 36 called the title's own `setplayerpos` path from the pumps that
+     live inside `XamInputGetState`, and it faulted identically every time: the chain
+     reads the engine's per-thread context out of **TLS slot 8** (4,581 call sites read
+     it, 4 write it, all in CRT thread-startup) and dereferences it unchecked, and no
+     input-polling thread has it. Choosing a better MOMENT inside such a hook cannot
+     help — it is the wrong thread, always. The fix generalises: **hook the accessor for
+     the context itself and do the work there**, because any thread executing that
+     accessor is by definition a thread that has it, which makes the qualification test
+     and the call site the same object. Restore the hooked function's own return value
+     around the detour, or every one of its callers gets your callee's r3.
+     Corollary for diagnosis: `addr2line` on the RAW host pc (gotcha 57) named the
+     faulting guest instruction in one step, and the three-instruction callee it sat
+     after was the whole answer.
+
+290. **A FIELD THE ENGINE REWRITES EVERY FRAME IS AN OUTPUT — WRITING IT CANNOT MOVE
+     ANYTHING.** The player's four position fields were written both by the title's own
+     setter and directly, and dumped immediately afterwards: all four still held the old
+     value, and one of them differed from the others in the last digit, which is the
+     tell — the engine was updating them continuously from upstream (a Havok body). The
+     check that settles it costs one print: dump the fields right after the write, on
+     the same thread. Do not read a DIFFERENT field to verify a write (the getter here
+     reads +0x1C while the setter writes +0x620, so "unchanged" was consistent with both
+     success and failure and proved neither).
