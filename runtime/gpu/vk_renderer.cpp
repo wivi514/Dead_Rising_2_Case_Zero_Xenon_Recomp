@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -3755,12 +3756,24 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     }
 
     // CZ_VK_TEX_DUMP=<dir> plus CZ_VK_TEX_DUMP_ADDR=<hex[,hex]> — write the UNTILED
-    // bytes of those textures as a greyscale PGM, once per upload.
+    // bytes of those textures out, once per upload: a greyscale PGM for an 8-bit
+    // texture, and a raw .bin of the block payload for everything else.
     //
     // It is the only way to separate "our untiling scrambled this texture" from "the
     // texture is fine and the draw samples it wrong", and those are different
     // subsystems. A font atlas is the ideal subject: a human can tell a sheet of
     // glyphs from a sheet of noise instantly, which no aggregate over it can.
+    //
+    // THE .bin PATH IS PART 40's, AND THE GAP IT CLOSES IS WHY IT IS WORTH A COMMENT.
+    // For its whole life this instrument was gated on `bytesPerUnit == 1`, i.e. it could
+    // only ever dump an 8-bit texture — and this title is DXT almost everywhere (of the
+    // 23-frame outdoor census, every foliage, building and character texture is fmt 18 or
+    // 20). So the one instrument whose stated purpose is "did our untiling scramble this"
+    // was blind to the formats that carry the picture, and part 39 answered a tree
+    // question by INFERENCE from a screenshot because of it. The block payload is
+    // untiled and endian-swapped by the loop above exactly as the sampler will see it,
+    // which is what makes the dump decodable offline by tools/tex_decode.py with neither
+    // --tiled nor --swap16 — those two are for raw guest memory, and this is not that.
     static const char* texDumpDir = Env("CZ_VK_TEX_DUMP");
     static const char* texDumpAddr = Env("CZ_VK_TEX_DUMP_ADDR");
     // Formatted here rather than at the top of the function: this is the one call site
@@ -3769,29 +3782,49 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     char dumpAddrHex[16] = {};
     if (texDumpDir && texDumpAddr)
         snprintf(dumpAddrHex, sizeof dumpAddrHex, "%08X", t.address);
-    if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, dumpAddrHex)) &&
-        bytesPerUnit == 1)
+    if (texDumpDir && (!texDumpAddr || strstr(texDumpAddr, dumpAddrHex)))
     {
         // ONE FILE PER FACE for a cube map, named by face index. A cube written as one
         // tall strip would be unreadable exactly where it matters — the question a dump
         // of a cube answers is "is face 3 the same sky as face 2, or is it face 2 shifted
         // by the slice stride", and that needs six pictures side by side.
+        //
+        // The name carries the TEXEL extent and the format for a .bin, because that is
+        // what a decoder needs and neither is recoverable from the byte count alone: a
+        // 16 KB DXT5 payload is 256x64 or 128x128 or 512x16, and guessing wrong produces
+        // a plausible picture of the wrong thing (gotcha 302's failure mode exactly).
+        // The PGM keeps the UNIT extent it always had, since that is its own geometry.
         for (uint32_t face = 0; face < layers; face++)
         {
             char path[512];
+            const char* faceSuffix = (layers == 6) ? "_face" : "";
+            char faceNum[16] = {};
             if (layers == 6)
-                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u_face%u.pgm", texDumpDir,
-                         t.address, unitW, unitH, face);
+                snprintf(faceNum, sizeof faceNum, "%u", face);
+            if (bytesPerUnit == 1)
+                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u%s%s.pgm", texDumpDir,
+                         t.address, unitW, unitH, faceSuffix, faceNum);
             else
-                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u.pgm", texDumpDir,
-                         t.address, unitW, unitH);
-            if (FILE* f = fopen(path, "wb"))
+                snprintf(path, sizeof path, "%s/tex_%08X_%ux%u_fmt%u%s%s.bin", texDumpDir,
+                         t.address, t.width, t.height, t.format, faceSuffix, faceNum);
+            // LEVEL 0 ONLY, and bounded. `pixels` grew a mip chain in part 39, so the
+            // face stride no longer spans the buffer and an unbounded write here would
+            // spill the chain into the file — a dump that decodes as a texture with
+            // garbage past the first level, which is exactly the kind of artifact this
+            // instrument exists to rule out rather than create.
+            const uint64_t at = uint64_t(face) * faceDstBytes;
+            const uint64_t n = (at + faceDstBytes <= pixels.size())
+                                   ? faceDstBytes
+                                   : (at < pixels.size() ? pixels.size() - at : 0);
+            if (FILE* f = n ? fopen(path, "wb") : nullptr)
             {
-                fprintf(f, "P5\n%u %u\n255\n", unitW, unitH);
-                fwrite(pixels.data() + face * faceDstBytes, 1, size_t(faceDstBytes), f);
+                if (bytesPerUnit == 1)
+                    fprintf(f, "P5\n%u %u\n255\n", unitW, unitH);
+                fwrite(pixels.data() + at, 1, size_t(n), f);
                 fclose(f);
             }
         }
+        Count("texture: dumped for CZ_VK_TEX_DUMP");
     }
 
     // The refresh arm: same image, same slot, new pixels. No allocation, so it can run
@@ -5870,6 +5903,85 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     };
     bindTextures(ps.tfetchConsts, ps.tfetchDims);
     bindTextures(vs.tfetchConsts, vs.tfetchDims);
+
+    // CZ_VK_TEX_DUMP=<dir> plus CZ_VK_TEX_DUMP_PS=<pixel shader hash> — write out the raw
+    // guest bytes of every texture the draws using that SHADER sample, once per address.
+    //
+    // WHY BY SHADER AND NOT BY ADDRESS (part 40). The address form of this instrument is
+    // unusable for anything the streaming system owns. Part 39 identified the foliage
+    // material from an operator capture, took its six texture addresses, replayed the
+    // route headlessly with CZ_VK_TEX_DUMP_ADDR pointed at them — and got back a picture
+    // of BARBED WIRE. A guest address is a fact about one boot's streaming heap; the
+    // shader hash is a fact about the material and is stable across boots by
+    // construction, because it is a hash of the microcode. So the shader is the handle
+    // that survives the trip from "the operator saw this" to "reproduce it headlessly",
+    // and it is the one this project keeps needing (gotchas 291, 302 are both the same
+    // error: naming a draw by something that is not its identity).
+    //
+    // The bytes are written TILED, exactly as they sit in guest memory, because that is
+    // what can be checked against a hardware capture's own MemoryRead without either side
+    // having decoded anything first. Decode offline with tools/tex_decode.py --tiled
+    // --swap16 --pitchblk, all three of which the filename carries.
+    static const char* texDumpDirPs = Env("CZ_VK_TEX_DUMP");
+    static const char* texDumpPs = Env("CZ_VK_TEX_DUMP_PS");
+    if (texDumpDirPs && texDumpPs)
+    {
+        char psHex[24];
+        snprintf(psHex, sizeof psHex, "%016llx", (unsigned long long)psBind.hash);
+        if (strstr(texDumpPs, psHex))
+        {
+            for (uint32_t constIdx : ps.tfetchConsts)
+            {
+                const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
+                // A dumped address is remembered so a material drawn 700 times in a frame
+                // writes 6 files and not 4,200 — and so the file on disk is the FIRST
+                // sighting, which is the one the census line beside it describes.
+                static std::set<uint32_t> dumped;
+                if (!t.address || t.width == 0 || t.height == 0 ||
+                    !dumped.insert(t.address).second)
+                    continue;
+                // The tiled footprint, the same rule the untiler uses: pitch and rows
+                // both round up to 32 units. Sizing at width*height short-reads every
+                // tiled surface whose extent is not a multiple of the tile, and a short
+                // dump does not announce itself — it decodes as a texture with its
+                // right-hand blocks missing, which reads as a decode defect (gotcha 296).
+                uint32_t bpu = 1, unit = 1;
+                switch (t.format)
+                {
+                    case xenos::kFmt_DXT1: bpu = 8; unit = 4; break;
+                    case xenos::kFmt_DXT2_3:
+                    case xenos::kFmt_DXT4_5: bpu = 16; unit = 4; break;
+                    case xenos::kFmt_8_8_8_8: bpu = 4; break;
+                    case xenos::kFmt_8: bpu = 1; break;
+                    default: continue;   // never guess a stride; say nothing instead
+                }
+                const uint32_t uw = (t.width + unit - 1) / unit;
+                const uint32_t uh = (t.height + unit - 1) / unit;
+                uint32_t pitch = t.pitchBlocks ? t.pitchBlocks * 32 / unit : uw;
+                uint32_t rows = uh;
+                if (t.tiled)
+                {
+                    pitch = (pitch + 31) & ~31u;
+                    rows = (rows + 31) & ~31u;
+                }
+                const uint64_t bytes = uint64_t(pitch) * rows * bpu;
+                const uint32_t va = PhysToVa(t.address);
+                if (bytes == 0 || bytes > (8u << 20) || !GuestRangeOk(va, bytes))
+                    continue;
+                char path[512];
+                snprintf(path, sizeof path,
+                         "%s/psdump_%s_%08X_%ux%u_fmt%u_tiled%u_pitchblk%u_end%u.bin",
+                         texDumpDirPs, psHex, t.address, t.width, t.height, t.format,
+                         t.tiled ? 1u : 0u, t.pitchBlocks, t.endian);
+                if (FILE* f = fopen(path, "wb"))
+                {
+                    fwrite(base + va, 1, size_t(bytes), f);
+                    fclose(f);
+                    Count("texture: dumped for CZ_VK_TEX_DUMP_PS");
+                }
+            }
+        }
+    }
 
     // CZ_VK_ONLY_TEX / CZ_VK_SKIP_TEX=<hex[,hex...]> — render only, or all but, the
     // draws whose first bound texture is at that guest address.

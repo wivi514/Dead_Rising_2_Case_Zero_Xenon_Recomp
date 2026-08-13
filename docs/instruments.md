@@ -908,10 +908,36 @@ CZ_VK_TEX_REFRESH=<hex[,hex]>  re-read those textures' pixels on EVERY fetch, in
                    cached a texture the guest is still writing" — and on the garbled
                    glyph atlas it engages 2,250 times and changes nothing
 CZ_VK_TEX_DUMP=dir + CZ_VK_TEX_DUMP_ADDR=<hex[,hex]>  the UNTILED bytes of a texture as
-                   a greyscale PGM. It separates "our untiling scrambled this" from "the
-                   texture is fine and the draw samples it wrong", which are different
-                   subsystems — and a human can tell a page of glyphs from a page of
-                   noise instantly, which no aggregate over it can
+                   a greyscale PGM for an 8-bit format, and as a raw `.bin` of the block
+                   payload for everything else. It separates "our untiling scrambled
+                   this" from "the texture is fine and the draw samples it wrong", which
+                   are different subsystems — and a human can tell a page of glyphs from
+                   a page of noise instantly, which no aggregate over it can.
+                   **The .bin half is part 40's and it closed a hole this instrument had
+                   from birth**: it was gated on a one-byte unit, i.e. it could dump only
+                   8-bit textures, and this title is DXT nearly everywhere — so the one
+                   instrument whose job is "did we scramble this texture" was blind to
+                   every format that carries the picture. Decode with
+                   `tools/tex_decode.py --fmt <n>` (the dump is already untiled and
+                   endian-swapped, so NOT --tiled and NOT --swap16). With no
+                   CZ_VK_TEX_DUMP_ADDR it dumps every uploaded texture, which is ~900
+                   files on the outdoor route and is the cheapest way to eyeball the
+                   whole bank at once
+CZ_VK_TEX_DUMP=dir + CZ_VK_TEX_DUMP_PS=<ps hash[,hash]>  the raw guest bytes of every
+                   texture the draws using that PIXEL SHADER sample, once per address,
+                   written TILED exactly as guest memory holds them (so they can be
+                   diffed against a capture's own MemoryRead with neither side having
+                   decoded first). Decode with `tools/tex_decode.py --tiled --swap16
+                   --pitchblk N` — the filename carries the extent, the format, the
+                   tiled flag, the pitch and the endian.
+                   **THE SHADER IS THE HANDLE THAT SURVIVES A REBOOT AND THE ADDRESS IS
+                   NOT.** Part 39 named the foliage material from an operator capture,
+                   took its six texture addresses, replayed the route headlessly with
+                   CZ_VK_TEX_DUMP_ADDR pointed at them, and got back a picture of BARBED
+                   WIRE: a guest address is a fact about one boot's streaming heap, while
+                   the shader hash is a hash of the microcode and is the same in every
+                   boot. This is the variable to reach for whenever a defect was seen by
+                   an operator and has to be reproduced by a headless run
 CZ_VK_RESOLVE_TRACE=1  each resolve's destination, SOURCE (colour or DEPTH), extent and
                    clear bits, against the front buffer VdSwap named. The trace that
                    found finding 5 below
