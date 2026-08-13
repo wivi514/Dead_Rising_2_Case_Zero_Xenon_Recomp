@@ -3588,6 +3588,58 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                                 lsrc + uint64_t(y) * lPitch * bytesPerUnit,
                                 uint64_t(luW) * bytesPerUnit, t.endian);
             }
+            // IS THIS LEVEL PLAUSIBLY THE SAME PICTURE, one octave down?
+            //
+            // The offset rule above was verified by hand against exactly TWO of
+            // hardware's chains. That is enough to believe it and not enough to ship it
+            // silently: a wrong offset serves a neighbouring texture's bytes as a mip
+            // level, and the symptom — a distant surface in the wrong colour — is
+            // indistinguishable from the defect this whole change is aimed at, so it
+            // would be invisible in exactly the measurement meant to judge it.
+            //
+            // The check is the same INVARIANT the layout was confirmed with (§6bq): a
+            // correct level holds the same average as the level above it, with fewer
+            // distinct colours. For DXT1/DXT5 the two RGB565 colour ENDPOINTS of each
+            // block are that average cheaply — the 2-bit indices are near-uniform noise
+            // and would swamp a plain byte mean, which is why this reads endpoints and
+            // not bytes. Divergence is COUNTED, not rejected: a counter that reads zero
+            // over a whole route turns "two textures by hand" into a census, and a
+            // counter that reads non-zero names the shapes the rule does not cover.
+            if (t.format == xenos::kFmt_DXT1 || t.format == xenos::kFmt_DXT4_5)
+            {
+                const uint32_t blockBytes = (t.format == xenos::kFmt_DXT1) ? 8u : 16u;
+                const uint32_t endpointAt = (t.format == xenos::kFmt_DXT1) ? 0u : 8u;
+                auto endpointLuma = [&](const uint8_t* p, size_t bytes) {
+                    double sum = 0;
+                    size_t n = 0;
+                    for (size_t off = 0; off + blockBytes <= bytes; off += blockBytes)
+                        for (uint32_t e = 0; e < 2; e++)
+                        {
+                            const uint32_t c565 = p[off + endpointAt + e * 2] |
+                                                  (p[off + endpointAt + e * 2 + 1] << 8);
+                            sum += ((c565 >> 11) & 31) * (255.0 / 31) * 0.299 +
+                                   ((c565 >> 5) & 63) * (255.0 / 63) * 0.587 +
+                                   (c565 & 31) * (255.0 / 31) * 0.114;
+                            ++n;
+                        }
+                    return n ? sum / double(n) : -1.0;
+                };
+                const size_t prevAt = copies.back().bufferOffset;
+                const double prev = endpointLuma(pixels.data() + prevAt, at - prevAt);
+                const double cur = endpointLuma(ldst, size_t(lDstBytes));
+                if (prev >= 0 && cur >= 0 && std::fabs(prev - cur) > 32.0)
+                {
+                    Count("mip: level DIVERGES from the level above — offset rule suspect");
+                    static int left = 8;
+                    if (left-- > 0)
+                        fprintf(stderr,
+                                "[vk] mip %08X %ux%u fmt=%u level %u: endpoint luma "
+                                "%.1f vs %.1f one level up — this level is probably not "
+                                "this texture. chain=%08X off=%llu\n",
+                                t.address, t.width, t.height, t.format, level, cur, prev,
+                                t.mipAddress, (unsigned long long)chainOff);
+                }
+            }
             VkBufferImageCopy c{};
             c.bufferOffset = at;
             c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
