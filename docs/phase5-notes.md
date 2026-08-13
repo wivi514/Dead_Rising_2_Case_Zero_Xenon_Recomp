@@ -6198,3 +6198,67 @@ renderer. The part-35/36 sub-defects that were never this mechanism stay open in
 0s: hardware's 16 small colour resolves (resolve write-back still unimplemented), the
 231 colour fetches served by a depth snapshot, and the billboard-sheet quality-level
 question (the sheets themselves are correct to the byte, §6bj).
+
+## 6bp. Part 38 (same day): the operator evening — the random-texture class was the
+## texture cache never refreshing, two new defects cornered, and R4 delivered
+
+One two-arm operator session (part-37 default binary, then +revalidate/+alpha-test),
+13 F9s with live texdumps in arm 1, ~14 in the retest arm; evidence in
+`~/DR2CZ-troubleshooting/part38-operator/`, hardware ground truth in
+`Xenia logs/R4_world/`.
+
+### The class-closure tour confirmed the part-37 fix — and found the next defect
+
+Dick at distance and the pawnshop boards render CLEAN on the fixed renderer (both
+predicted by the lightmap-UV mechanism). The tanker cab was clean too — but the TANK
+CYLINDER wore, in capture_016970, an unmistakable BRICK WALL texture, and the operator
+reported the general form: "almost everything up close wears a random texture", worse
+the longer the session ran.
+
+### The random-texture mechanism, pinned by one live dump
+
+The cylinder is its own draw (5,941 verts, same material family). Guest memory at its
+s0 address held a coherent PICKUP TRUCK atlas at dump time — a real asset, NOT brick.
+The screen showed content the address did not hold: OUR texture cache uploads once per
+(address, extent, format) and never refreshes, so any streaming-recycled address
+serves its FIRST occupant forever. Part 35's justification for leaving the repair off
+("4 stale of 92,730,622 hits") was measured on a 400 s headless run at one location —
+a fact about that route (gotcha 293). A long play session recycles addresses
+constantly, and "which prop is wrong" depends on streaming order — which is also the
+last unexplained residue of item 0s ("one quality level per asset, varies per boot"):
+the wrongly-bound level was a stale cache entry, and the "weird 110AD000" white-slat
+dump of §6bj is retro-explained as an address mid-recycle.
+
+**The field test:** the retest arm ran `CZ_VK_TEX_GUARD=1 CZ_VK_TEX_REVALIDATE=1` for
+a full evening across the map: every prop correct up close (tanker cylinder olive and
+proper at point-blank — capture_006155), boarded storefronts crisp, no reported
+slowdown. **Guard+revalidate are now the DEFAULT; `CZ_VK_NO_TEX_REVALIDATE=1` is the
+same-binary control arm that brings the random textures back.** A headless frame-time
+A/B of the guard's cost is owed but was not allowed to block a correctness default
+(the operator session is the field evidence; the pacing floor absorbed it).
+
+### The shard trees: alpha test built, and it is NOT what the foliage uses
+
+The operator's tree F9 (capture_f28446) shows leaf cards as solid angular shards —
+the cutout never happens. The translated shaders have carried an alpha-test path
+forever (SPEC_CONSTANT_ALPHA_TEST -> clip(oC0.w - g_AlphaThreshold)) with nothing
+driving it: part 38 wired RB_COLORCONTROL (enable bit 3, funcs GREATER/GEQUAL -> the
+clip; other enabled funcs counted BY NAME, never guessed) into a new pipeline-key bit
++ fragment-stage specialization constant, and RB_ALPHA_REF into shared+272 per draw.
+It engages without regression — and the trees are UNCHANGED, so the foliage does not
+use the RB alpha test. The suspect is ALPHA-TO-MASK (Xenos alpha-to-coverage,
+RB_COLORCONTROL bit 4, natural on a 4x MSAA surface); the arm-1b exit counters that
+would have said so were LOST because the window-close path skipped the stats dump
+(fixed: `Shutdown` now calls `VkRenderer_DumpStats()` before `_Exit` — gotcha 294).
+The loss does not matter much: R4's traces carry hardware's full register state at
+the foliage draws, which answers the mode question offline.
+
+### R4 closes the 00i question: the flat-panel distance look is OURS
+
+The operator walked the Big Buck approach in OUR renderer (9 F9s, flat-color building
+panels at range snapping to full texture up close, "almost everything in the game
+behaves like this") and then delivered `R4_world/` the same night: eight frame-locked
+single-frame traces of the same approach on hardware. **Hardware shows fully textured
+buildings at every distance** — the HARDWARE sign legible from far down the street.
+Item 00i is no longer "possibly the game's own streaming": it is our defect, with
+eight paired oracles to chase it against, and it is now the top picture item.

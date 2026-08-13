@@ -2743,3 +2743,26 @@ From phase C part 18 (the frame rate — and none of it was work):
      complete and every runtime-side "fix" after that point is a defect. The
      four-line state table (guest bytes -> hw fetch -> shader swizzle) settles it on
      paper; run it before publishing any endianness/swizzle correction.
+
+293. **A REPAIR GATED ON A CENSUS IS GATED ON THAT CENSUS'S ROUTE — a cache-staleness
+     rate measured on a short fixed run says nothing about a play session.** The
+     texture cache's revalidate repair existed since part 35 and stayed off because
+     its own census read "4 stale of 92,730,622 hits" — measured on a 400 s headless
+     run standing near one location, where streaming barely recycles an address. A
+     real operator session recycles addresses all evening, and the stale share became
+     "almost everything up close wears a random texture" (a tanker wearing a brick
+     wall; guest memory at the address holding a THIRD asset by dump time). The
+     gotcha-50 family says a rate is a fact about its afternoon; this is the sharper
+     form: a rate is a fact about its WORKLOAD, and a repair whose defect scales with
+     session length and area coverage must be censused on the workload that shows it
+     — or shipped on correctness with the off-arm kept, which is what part 38 did.
+
+294. **AN EXIT PATH THAT SKIPS THE STATS DUMP TURNS A WHOLE SESSION'S COUNTERS INTO
+     NOTHING — audit every way the process ends.** The renderer's counter dump ran
+     only on paths that returned through main; the window-close path called
+     `std::_Exit` directly (correctly — guest threads are live) and a full operator
+     evening's alpha-mode census vanished with it. The counters exist precisely for
+     the runs a human drives, and a human ends a session by closing the window: the
+     one exit path most likely to carry interesting counters was the one that dropped
+     them. One call before `_Exit` fixes it; the check is to enumerate every
+     process-exit site and ask which reports run on each.

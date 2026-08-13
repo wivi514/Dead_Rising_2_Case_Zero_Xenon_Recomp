@@ -88,6 +88,32 @@ Next, in order:
    the fixed renderer to confirm the class closes (the mechanism predicts they do:
    both are lightmapped-material surfaces).
 
+   **PART 38 CLOSED THE RESIDUE'S LARGEST MEMBER TOO: the per-boot "wrong quality
+   level" randomness was the TEXTURE CACHE, and the repair is now the default.** The
+   once-only upload cache served a streaming-recycled address's FIRST occupant forever
+   (the tanker cylinder wore a brick wall; guest memory held a pickup atlas by dump
+   time — three occupants of one address in one session). Guard+revalidate default on,
+   `CZ_VK_NO_TEX_REVALIDATE=1` the control arm; operator-confirmed across a full
+   evening (§6bp, gotcha 293). The class-closure tour also confirmed Dick and the
+   pawnshop clean (part-37 mechanism). What remains of 0s: the 16 small colour
+   resolves / resolve write-back lead, and the 231 depth-fed colour fetches.
+
+0t. **THE SHARD TREES — foliage renders leaf cards as solid plates; the cutout never
+   happens.** Operator captures `part38-operator/arm1_default/capture_f28446` (near
+   trees as angular shards, black backfaces) and every outdoor frame since phase 5 in
+   hindsight. The leaf material (e.g. ps_c9ca4f73ba93d023, DXT5 albedo + DXN normal)
+   needs its alpha channel to discard pixels. Part 38 built the RB_COLORCONTROL ALPHA
+   TEST (enable bit 3, GREATER/GEQUAL -> the shaders' long-dormant
+   SPEC_CONSTANT_ALPHA_TEST clip, RB_ALPHA_REF -> shared+272) — it engages without
+   regression and the trees are UNCHANGED, so foliage does not use the RB alpha test.
+   **Suspect: ALPHA-TO-MASK** (RB_COLORCONTROL bit 4, Xenos alpha-to-coverage on the
+   4x MSAA surface), unbuilt. **The oracle is already on disk**: R4's traces carry
+   hardware's full register state at the foliage draws — read RB_COLORCONTROL there
+   first (a small xtr-tool extension), and only then build the emulation (as a
+   threshold/dither discard, since we have no real MSAA). Hardware's PNGs show the
+   target: soft leafy cutouts. `CZ_VK_NO_ALPHA_TEST=1` is the arm for what part 38
+   did build. §6bp.
+
 00. ~~**CUBE MAPS ARE NEVER BOUND.**~~ **BUILT IN PART 25, AND ROUGHLY HALF-DONE BY
    VOLUME.** Cube maps are uploaded as six faces and bound into descriptor set 2;
    `CZ_VK_NO_CUBE=1` is the same-binary control arm. Three things are owed and they are in
@@ -1407,6 +1433,24 @@ Next, in order:
 00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
    defect but built the instrument that can.** *"I have to be really close to an object
    to show their near LOD."* Part 28, ~1 hour.
+
+   **PART 38: THE OWED ONE-LOOK IS ANSWERED AND THE DEFECT IS OURS — this is now the
+   TOP PICTURE ITEM.** The operator captured the Big Buck approach on our side (9 F9s,
+   flat-color building panels at range snapping to full texture only up close, and
+   "almost everything in the game behaves like this"), then delivered
+   `Xenia logs/R4_world/` the same night: EIGHT frame-locked single-frame traces of
+   the same approach on hardware. **Hardware shows fully textured buildings at every
+   distance** — the HARDWARE sign is legible from far down the street. So the flat
+   look at range is not the game's streaming policy; it is our runtime, with eight
+   paired oracles (each .xtr carries the textures hardware sampled for the far
+   buildings). Note the part-28 analysis below predates the part-37/38 fixes (the
+   lightmap-UV transposition and the stale texture cache BOTH corrupted this exact
+   evidence class), so its "no streaming failure" reading stands but its visual
+   comparisons should not be re-quoted. The next move: pair one far building's draw
+   between our F9 census (`part38-operator/arm1b_revalidate/`, frames 9965-10986) and
+   the R4 trace for the same viewpoint, by texture CONTENT (gotcha 291), and see what
+   hardware binds where we draw flat color — a missing texture level, an unset fetch
+   slot, or a constant.
 
    **What the engine's own vocabulary says LOD IS here.** Every `lod` string in the image
    (54 of them, the complete set) is about STREAMING, not about a distance curve: a

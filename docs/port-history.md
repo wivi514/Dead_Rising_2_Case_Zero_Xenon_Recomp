@@ -2499,3 +2499,28 @@ metric-noise justification and §6n's frame-wide null both resolved in place. Ga
 Also advanced: cMissionTeleportPlayer's trigger disassembled (posts event 0x6A via
 0x82188488, record layout known) — parked, since the spawn reaches the site.
 `phase5-notes.md` §6bo; gotchas 291-292; `part38-kickoff.md` is live.
+
+## Part 38 (2026-08-12, same day) — the operator evening: the random-texture class
+## fixed at its root, and two defects cornered with same-night hardware ground truth
+
+A two-arm operator session did in one evening what the backlog had scheduled across
+parts. The part-37 class-closure tour confirmed Dick and the pawnshop clean; the
+tanker instead produced the NEXT defect: its cylinder wearing a brick wall, and
+"almost everything up close wears a random texture". One live dump pinned the
+mechanism — the screen showed content guest memory no longer held — and the defect
+was OUR texture cache uploading once per address and never refreshing while
+streaming recycles addresses all session. The part-35 repair (guard + revalidate)
+was promoted to default after the operator field-tested it across a full evening,
+with `CZ_VK_NO_TEX_REVALIDATE=1` the control arm (gotcha 293: the census that had
+kept it off was a fact about a short headless route). The shard trees were reported,
+chased to the missing Xenos ALPHA TEST, which was built (pipeline-key bit + spec
+constant + RB_ALPHA_REF; unknown funcs counted by name) — and honestly recorded as
+NOT the foliage's mechanism: the trees are unchanged, alpha-to-mask is the suspect,
+and hardware's register state at the foliage draws is on disk (item 0t). The
+operator then walked the Big Buck approach on our side (flat building panels at
+range, 9 F9s) and delivered R4_world the same night — eight frame-locked hardware
+traces of the same approach showing fully textured buildings at every distance,
+converting item 00i from "possibly the game's streaming" to OURS-with-oracle and
+promoting it to top picture item. Also fixed: the window-close exit path now dumps
+the renderer counters (gotcha 294 — an evening's alpha census was lost to it).
+`phase5-notes.md` §6bp; gotchas 293-294; `part39-kickoff.md` is live.

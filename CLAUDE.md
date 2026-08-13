@@ -673,7 +673,31 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 37 — the striped-material class is solved):
+Where the port is, as of 2026-08-12 (part 38 — the operator evening: the random-texture
+class fixed, two defects cornered with hardware ground truth):
+
+* **THE TEXTURE CACHE REVALIDATES BY DEFAULT — the "random texture on everything up
+  close" class is fixed and operator-confirmed.** The once-only upload cache served a
+  streaming-recycled address's first occupant forever (a tanker wearing a BRICK WALL;
+  guest memory holding a pickup atlas by dump time). Part 35's "4 stale of 92M" was a
+  short-route census (gotcha 293). `CZ_VK_NO_TEX_REVALIDATE=1` is the control arm.
+  This also retro-explains item 0s's per-boot "wrong quality level" lottery. §6bp.
+* **The part-37 class-closure tour confirmed**: Dick at distance and the pawnshop
+  boards clean on the fixed renderer.
+* **The RB alpha test is built and driven** (pipeline-key bit + spec constant +
+  RB_ALPHA_REF per draw; unknown funcs counted, never guessed) — and the SHARD TREES
+  are NOT it: foliage never fires the RB alpha test. Suspect ALPHA-TO-MASK (bit 4);
+  hardware's register state at the foliage draws is in `Xenia logs/R4_world/`.
+  New item 0t. `CZ_VK_NO_ALPHA_TEST=1` is the arm for what was built.
+* **Item 00i IS OURS AND IS NOW THE TOP PICTURE ITEM**: the operator walked the Big
+  Buck approach on our renderer (flat-color building panels at range) and delivered
+  `R4_world/` the same night — eight frame-locked hardware traces of the same walk,
+  fully textured buildings at every distance. Eight paired oracles for the fix.
+* Window-close now dumps the renderer counters (gotcha 294 — a whole session's
+  census was lost to the one exit path a human actually uses).
+* **`docs/part39-kickoff.md` is the LIVE hand-off.**
+
+Where the port was, as of 2026-08-12 (part 37 — the striped-material class is solved):
 
 * **ITEM 0s'S BLOTCH MECHANISM IS FOUND, FIXED, AND ON BY DEFAULT.** The
   black/white-banded "striped material" garbage (tanker close-up, Dick at distance,

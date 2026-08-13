@@ -574,11 +574,19 @@ CZ_VK_TEX_GUARD_POISON=1  the POSITIVE control: perturbs only the COMPUTED guard
                    cannot report a positive proves nothing by reporting a negative
                    (gotcha 30), and this project has shipped a comparison that could only
                    ever read 100% (gotcha 234) — so both ends need exercising
-CZ_VK_TEX_REVALIDATE=1  the repair the guard would justify: re-upload on mismatch into the
-                   SAME image and SAME bindless slot, which is exact and allocation-free
-                   because the dimensions are part of the key. Correct, and NOT the fix for
-                   the wrong textures — it repaired all 1,968 stale hits of an operator
-                   session without changing any of the visible defects
+CZ_VK_TEX_REVALIDATE=1  **THE DEFAULT since part 38** (the flag remains accepted): re-upload
+                   on mismatch into the SAME image and SAME bindless slot, exact and
+                   allocation-free because the dimensions are part of the key. The part-35
+                   note "repaired all 1,968 stale hits without changing any visible defect"
+                   was TRUE OF THAT SESSION's defects (the lightmap-UV blotches, fixed in
+                   part 37 — never stale-cache); the part-38 operator evening showed the
+                   class this IS the fix for: streaming recycles addresses all session and
+                   the once-only cache dressed the tanker in a brick wall ("almost
+                   everything up close wears a random texture"). Field-tested a full
+                   evening: every prop correct, no reported slowdown. §6bp, gotcha 293.
+CZ_VK_NO_TEX_REVALIDATE=1  the same-binary control arm: the pre-part-38 once-only cache,
+                   which brings the random-texture class back. A headless frame-time A/B
+                   of the guard's cost is owed; do not quote one from an operator session
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty
@@ -1287,3 +1295,18 @@ What is established so far:
   contiguous arrays of `(x, y, height)` triples with height pinned at **3.373** —
   actors standing on flat ground, clustered around the camera, which independently
   confirms the eye solve lands in real world coordinates.
+
+## Alpha test (part 38)
+
+```
+CZ_VK_NO_ALPHA_TEST=1   disable the RB_COLORCONTROL alpha test (the pre-part-38 renderer).
+                   The default now drives the shaders' built-in
+                   SPEC_CONSTANT_ALPHA_TEST clip from RB_COLORCONTROL bit 3 + funcs
+                   GREATER/GEQUAL, with RB_ALPHA_REF as the per-draw threshold
+                   (shared constants +272). Any OTHER enabled compare func is counted
+                   by name ("alpha test func X UNEMULATED") and left un-emulated.
+                   NB: the shard-tree foliage is NOT this — it never fired the RB
+                   alpha test; the suspect is ALPHA-TO-MASK (bit 4), unbuilt, with
+                   hardware's register state at the foliage draws in R4_world as the
+                   oracle. §6bp.
+```
