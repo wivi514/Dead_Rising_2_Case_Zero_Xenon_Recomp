@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <csignal>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -33,6 +34,7 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "gpu/vk_renderer.h"
 #include "host/window.h"
 #include "kernel/audio.h"
 #include "kernel/content.h"
@@ -166,6 +168,27 @@ int main(int argc, char** argv)
     // vtable slot involved — and the crash this was written for happens in ~2 runs in
     // 10, which is the worst case for attaching a debugger after the fact.
     CzInstallCrashReporter();
+
+    // THE RENDERER'S COUNTERS, ON THE WAY OUT OF A HEADLESS RUN. Part 38 found that
+    // closing the window skipped the counter dump and cost an operator evening's census
+    // (gotcha 294); the headless half of that hole was still open. EVERY recipe in this
+    // project ends a headless run with `timeout`, which is SIGTERM, and SIGTERM's
+    // default action is to die silently — so the arm with the interesting numbers was
+    // the one arm that never printed them, and the census had to be reconstructed from
+    // per-draw logs every time. SDL's own signal handlers are disabled here already, so
+    // this is the only handler in the process.
+    //
+    // _Exit rather than a graceful unwind for the same reason Shutdown() uses it: guest
+    // threads are still executing recompiled code against guest memory, and running
+    // static destructors underneath them would turn an ordinary exit into a crash.
+    for (int sig : { SIGTERM, SIGINT })
+        signal(sig, [](int s) {
+            fprintf(stderr, "\n[host] signal %d — dumping renderer counters and exiting.\n",
+                    s);
+            ::VkRenderer_DumpStats();
+            fflush(nullptr);
+            std::_Exit(128 + s);
+        });
 
     // Before any guest code runs: `mftb` is lowered to __rdtsc() scaled by this
     // calibration, and an uncalibrated timebase divides by zero (gotcha 1).
