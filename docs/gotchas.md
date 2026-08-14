@@ -2974,3 +2974,19 @@ From phase C part 18 (the frame rate — and none of it was work):
      effect reversed / a DIFFERENT mechanism moved the number), and only a picture or
      a mechanism-level instrument can pick the prong. Pair every aggregate metric
      verdict with one matched-viewpoint LOOK before acting on it.
+
+311. **BEFORE TRUSTING NUMBERS READ OUT OF A TRACE'S MEMORY RECORD, RENDER THE
+     RECORD AS A PICTURE.** Part 41 read "hardware's scene depth" out of an R4
+     memory record, measured values 0.0-0.35, and built three encoding theories on
+     them — the record, rendered as an image, was the PREVIOUS FRAME'S COMPOSITED
+     SCENE in greyscale with the HUD text legible ("20 KILLED"). Gotcha 280's rule
+     (a trace cannot carry a surface produced inside the traced frame) had already
+     been learned on the shadow atlas; this is its second disguise: the pre-frame
+     record at the address existed and decoded without error, so nothing FAILED —
+     the bytes were simply a different surface (the address is colour-aliased,
+     gotcha 203). The two-minute picture test (gotcha 287) is what caught it, and
+     it caught it AFTER an hour of arithmetic that a picture would have prevented.
+     Corollary for the provenance guard built in part 32: "no resolve to this
+     address in the trace" does NOT certify a record as a sound oracle when the
+     title resolves there every frame — it certifies the OPPOSITE: the in-frame
+     product is missing and the record is whatever lived there before.
