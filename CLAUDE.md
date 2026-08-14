@@ -675,7 +675,38 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-12 (part 39 — the mip chain, an input the renderer
+Where the port is, as of 2026-08-13 (part 40 — the shard trees SOLVED, and the cause
+was one wrong register index):
+
+* **RB_COLORCONTROL IS 0x2202, NOT 0x2205 — and the whole shard-tree class (item 0t)
+  falls out of that one constant.** `xenos.h` guessed the per-RT blend controls
+  contiguous at 0x2201..0x2204; the real map interleaves them
+  (0x2201/0x2205/0x2209/0x220D) with COLORCONTROL at 0x2202, settled by histogramming
+  both indices over an R4 trace (0x2202's values carry the 0xAA alpha-to-mask offset
+  signature; 0x2205 never sets the enable bit). Consequences unwound: part 38's alpha
+  test NEVER FIRED (its counter read zero in every log, unread), and part 39's
+  "hardware never enables the alpha test in 40,703 draws" measured the WRONG REGISTER
+  — the truth is **4,975 of 40,703 (12.2%)**: foliage, fences, hair, horizon sheets,
+  and 1,787 draws of the shadow-caster shader whose whole body is "sample alpha, clip
+  against RB_ALPHA_REF". With the index fixed the trees have cutout leaves and lost
+  their dark plates (the caster now clips leaf holes into the shadow map instead of
+  stamping the solid quads whose projected shadows WERE the plates). Same-binary arm:
+  `CZ_VK_NO_ALPHA_TEST=1`. §6bs, gotcha 308, `open-items.md` 0t.
+* **The path there is reusable:** a headless viewpoint FACING the trees (DebugJump
+  spawn + two RSLEFT camera holds + synthetic F9 — F9 works in `CZ_FAKE_PRESS_SEQ`),
+  then a three-arm A/B in which `CZ_VK_NO_DEPTH_FETCH=1` lit the plates (darkness =
+  the shadow term) while still showing opaque cards (cutout separately missing), and
+  the F9 atlas snapshot showing the solid diamond cards the caster stamped.
+* **`CZ_VK_TEX_DUMP` can finally see DXT textures** (it was gated to 8-bit formats
+  for its whole life — blind to nearly every texture in this game), and
+  `CZ_VK_TEX_DUMP_PS=<hash>` dumps a material's textures keyed by SHADER, which
+  survives a reboot where a guest address does not (part 39's foliage addresses,
+  replayed by address, decoded as BARBED WIRE — gotcha 306).
+* Left counted, not guessed: alpha func EQUAL (the two-pass cutout's core redraw) and
+  A2M-without-test are un-emulated; item 00i (building LOD/streaming pop) is
+  untouched by all of this and stays the top remaining picture item.
+
+Where the port was, as of 2026-08-12 (part 39 — the mip chain, an input the renderer
 declared and then discarded for the whole of phase 5):
 
 * **THE GUEST'S MIP CHAIN IS UPLOADED NOW, AND IT WAS NEVER READ BEFORE.** A Xenos

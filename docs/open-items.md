@@ -224,6 +224,28 @@ Next, in order:
    camp fence), and F9 can be pressed headlessly too, so census + pose + picture +
    snapshots + ID map are all available unattended. This item no longer needs an operator.
 
+   **PART 40 — SOLVED, PENDING THE OPERATOR'S TOUR. The whole item was one wrong
+   register index.** `xenos.h` read RB_COLORCONTROL at 0x2205 (which is
+   RB_BLENDCONTROL1); it is 0x2202. So part 38's alpha test never fired (its counter
+   read zero in every log, unread), and part 39's "hardware enables neither the alpha
+   test nor alpha-to-mask across 40,703 draws" was a census of the wrong register —
+   at 0x2202 hardware enables the test on **4,975 of 40,703 draws (12.2%)**: the
+   foliage, the fences, the hair, the horizon sheets, and 1,787 draws of the
+   shadow-caster shader `ps_34524bb64374d20e`, whose whole body is "sample the
+   material's alpha, clip against RB_ALPHA_REF" — an alpha-tested shadow map. With
+   the index fixed, the same-binary A/B at the headless treecam viewpoint
+   (`CZ_VK_NO_ALPHA_TEST=1` = the old renderer) shows the shard plates GONE: lit,
+   textured, cutout canopies. Both halves of the defect were the same missing test —
+   the cards had no cutout in the scene, and the caster stamped solid quads into the
+   shadow atlas whose projected shadows were the plates themselves. The decomposition
+   that got there (worth keeping for the method): `CZ_VK_NO_DEPTH_FETCH=1` lit the
+   plates, proving the darkness was the shadow term; the same arm still showed opaque
+   cards, proving the cutout was separately missing; the atlas snapshot showed the
+   solid diamond cards the caster stamped. `docs/phase5-notes.md` §6bs, gotcha 308.
+   Remaining, counted not guessed: func EQUAL (the two-pass core redraw, ref 1.0) and
+   A2M-without-test are un-emulated; GREATER-at-ref-0 differs from our GEQUAL-shaped
+   clip only at alpha exactly 0 on blended draws.
+
    **THE NEXT MEASUREMENT, NAMED:** this material's PIXEL CONSTANTS have never been
    compared against hardware. `oC0.w = pc(1).w * s0.a`, and a `pc(1).w` above 1 saturates
    the alpha and turns every leaf card into the opaque plate we see; `oC0.rgb` branches on

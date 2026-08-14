@@ -2927,3 +2927,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      zero on every one**. If a parser for the thing already exists in the project,
      import it; a structural approximation of a parse is only admissible when its
      over-acceptance is bounded, and "it found a self-test plant" bounds nothing.
+
+308. **A REGISTER INDEX IS A DECODE, AND A REFUTATION MEASURED ON THE WRONG REGISTER
+     REFUTES NOTHING.** Case Zero's `xenos.h` placed RB_COLORCONTROL at 0x2205 by
+     assuming the four per-RT blend controls sit contiguously at 0x2201..0x2204; the
+     real map interleaves them (0x2201/0x2205/0x2209/0x220D) with COLORCONTROL at
+     0x2202. Everything downstream inherited the error in both directions at once:
+     the runtime's alpha test (part 38) read 0x2205 and never fired on anything, and
+     the analysis tool read 0x2205 across 40,703 hardware draws and concluded
+     "hardware never enables the alpha test" — a refutation that closed item 0t's
+     correct explanation for a whole part. Three defenses, all cheap: (a) **cross-check
+     any hand-built register map against a sibling port's** before building on it —
+     Fable 2 had 0x2202, and one grep would have surfaced the disagreement; (b) an
+     emulation that "changed nothing" has a COUNTER, and a counter that reads zero in
+     every log is telling you the feature never engaged (gotcha 151's shape, worn by a
+     shipped feature rather than an arm); (c) a register can be identified
+     EMPIRICALLY — RB_COLORCONTROL's value carries the 0xAA alpha-to-mask offset
+     signature in its top byte on every draw, and histogramming both candidate indices
+     over one hardware trace settled it in a minute. The tell that finally broke it:
+     hardware writing a meaningful RB_ALPHA_REF (0.502) on draws whose test read
+     "disabled" — state nobody sets for a feature nobody uses.

@@ -2559,7 +2559,10 @@ chain is therefore justified on correctness alone and **item 00i is untouched by
 The registered prediction was retracted twice over — once for its sign (filtering REDUCES
 distinct colours, gotcha 298) and once for its subject (gotcha 301).
 
-**Item 0t, the shard trees: the suspect is refuted.** RB_COLORCONTROL read across all
+**Item 0t, the shard trees: the suspect is refuted.** *(PART 40 RETRACTION: this
+refutation read register 0x2205, which is RB_BLENDCONTROL1, not RB_COLORCONTROL —
+at the correct 0x2202 hardware enables the alpha test on 12.2% of those same draws,
+and the suspect was right all along. Gotcha 308.)* RB_COLORCONTROL read across all
 eight R4 traces — **40,703 draws** — enables neither the alpha test nor **ALPHA-TO-MASK**
 anywhere, so the emulation the item asked for would have been built against a mode this
 title does not use. Nor is it a shader `kill`: 1 of R4's 208 pixel shaders has one,
@@ -2574,3 +2577,19 @@ window-close path and left the headless twin open — every recipe here ends a r
 them (gotcha 297).
 
 `phase5-notes.md` §6bq; gotchas 295-297; `part40-kickoff.md` is live.
+
+## Part 40 (2026-08-13) — the shard trees solved: RB_COLORCONTROL was at the wrong index
+
+Read all 23 of part 39's draw-ID maps (named the foliage material by footprint shape;
+retracted the "hair correction" and the untextured-draw finding against hardware),
+extended `CZ_VK_TEX_DUMP` to compressed formats and added the shader-keyed
+`CZ_VK_TEX_DUMP_PS` (gotcha 306: an address does not survive a reboot), exonerated the
+foliage textures (alpha planes perfect), refuted the mip/exp_adjust/texcoord-swap
+theories (gotcha 307: the over-accepting scanner), built a headless viewpoint facing
+the trees, and ran the three-arm A/B whose `CZ_VK_NO_DEPTH_FETCH` arm split the defect
+in two (darkness = shadow term; cutout separately missing). The caster shader's
+alpha-sampling body plus hardware's RB_ALPHA_REF=0.502 on "disabled" tests broke the
+case: `kRbColorControl` was 0x2205 (RB_BLENDCONTROL1); it is 0x2202. Part 38's test
+had never fired; part 39's refutation measured the wrong register (hardware: 12.2% of
+draws alpha-tested). Fixed in xenos.h + the .xtr tool; trees now cut out and lit;
+title gate +0.947; gotcha 308. Commits 449bb5c, 81906f5, f865579, ed46db7.

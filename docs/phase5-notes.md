@@ -6588,3 +6588,68 @@ out of an R4 trace with `tools/xtr_draw_constants.py` and put them beside ours. 
 `ps_8452bb656149204e` appears in **none** of the eight R4 traces, so this needs either a
 foliage shader the two sides share or a round-5 trace standing at one of the main-road
 trees.
+
+---
+
+## §6bs — part 40, the answer: RB_COLORCONTROL was read at the wrong register index, and the shard trees fall out of one constant
+
+§6br ended with "the next measurement is the pixel constants". It never got there —
+the mechanism fell out of a three-arm A/B first, and the cause sits above every
+constant: **`xenos.h` had `kRbColorControl = 0x2205`, and RB_COLORCONTROL is 0x2202.**
+
+### The chain that found it
+
+1. **A headless viewpoint facing the trees.** The Case 0-2 spawn + two RSLEFT camera
+   entries points the camera down the street with three shard trees in the top of
+   frame. No operator needed, F9 pressed synthetically.
+2. **Three arms:** base / `CZ_VK_NO_DEPTH_FETCH=1` / `CZ_VK_PS_CONST_SCALE=1.w=0.25`.
+   The no-depth-fetch arm transformed the trees — golden, leafy, textured — so the
+   DARKNESS was the shadow term: the foliage shader four-taps the shadow atlas
+   (a manual PCF in the microcode) and the canopy read occluded. But the same arm
+   still showed **opaque cards** — no cutout between leaves — where hardware shows sky
+   through the canopy. Two defects.
+3. **The atlas snapshot** (healthy, 0.00-0.01% zero per cascade) shows the trees as
+   **solid diamond cards** in cascades 1-2 — the caster stamps un-cutout quads, and
+   those quads' shadows are exactly the shard shapes.
+4. **The caster pixel shader is the tell.** The 1,048 mask=0 caster draws bind
+   `ps_34524bb64374d20e`, whose entire body is: sample the material's ALPHA, write it
+   out, `clip(oC0.w - g_AlphaThreshold)` under `SPEC_CONSTANT_ALPHA_TEST`. A caster
+   samples alpha for one reason only — an alpha-tested shadow map. Yet part 39 had
+   "measured" that hardware never enables the alpha test, and our own counter for it
+   read zero in every log.
+5. **The prepass draws carry `RB_ALPHA_REF = 0.502`** — a meaningful cutout threshold
+   on a supposedly disabled test. That smell broke the deadlock: the Fable 2 port
+   (whose alpha test is picture-validated) reads RB_COLORCONTROL at **0x2202**; ours
+   read **0x2205**.
+6. **Settled by histogram, not by authority:** per-draw values of 0x2202 over R4
+   trace 01 all carry the 0xAA alpha-to-mask sample-offset signature in the top byte,
+   with enable+GREATER (0x0C) on 316 draws, GEQUAL, EQUAL, and GREATER+A2M (0x1C);
+   0x2205's values never set bit 3 anywhere. 0x2205 is RB_BLENDCONTROL1 — the per-RT
+   blend controls interleave at 0x2201/0x2205/0x2209/0x220D, which is the layout
+   mistake the original map made.
+
+### What the fix does
+
+Across all eight R4 traces, hardware runs **4,975 of 40,703 draws (12.2%) with the
+alpha test enabled** — the foliage, the fences, the hair sheets, the horizon
+backdrops, and 1,787 shadow-caster draws. On our side the test now fires on ~3.07M
+draws over a five-minute run. The same-binary A/B at the treecam viewpoint
+(`CZ_VK_NO_ALPHA_TEST=1` = the old renderer): the dark shard plates are GONE — lit,
+textured, cutout canopies. Both defects close at once, because the caster now clips
+leaf holes into the shadow map instead of stamping solid quads.
+
+Gates: title screen +0.947 against capture E2 (its usual level for an animated
+background); `no translated shader` = 0.
+
+### Left open, counted rather than guessed
+
+* **Func EQUAL, 1.15M draws/run** (hardware: 176 in trace 01, `ps_34524bb64374d20e`
+  ref=1.0 blended — the two-pass cutout's core-redraw pass). Un-emulated;
+  XenosRecomp's clip is GEQUAL-shaped and cannot express EQUAL. Visual cost should be
+  limited to slightly softer cutout edges.
+* **GREATER at ref=0.0** (321 draws, blended): our `clip(w - ref)` is >= where
+  hardware is >, which differs only at alpha exactly 0 — invisible on a blended draw,
+  and the casters use ref=0.502 where it matters.
+* **A2M without the test**: counted, zero observed so far.
+* The §6br program (foliage pixel-constant comparison) is superseded — no constant was
+  ever wrong.
