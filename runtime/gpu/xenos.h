@@ -42,10 +42,24 @@ constexpr uint32_t kVgtIndxOffset = 0x2102;
 
 constexpr uint32_t kRbDepthControl = 0x2200; // see the bit layout in DepthState()
 constexpr uint32_t kRbBlendControl0 = 0x2201;
-constexpr uint32_t kRbBlendControl1 = 0x2202;
-constexpr uint32_t kRbBlendControl2 = 0x2203;
-constexpr uint32_t kRbBlendControl3 = 0x2204;
-constexpr uint32_t kRbColorControl = 0x2205;
+// RB_COLORCONTROL IS 0x2202, NOT 0x2205 — and the wrong index cost this port the
+// alpha test twice over (part 40). The original map here guessed BLENDCONTROL0..3
+// contiguous at 0x2201..0x2204 with COLORCONTROL after them; the real layout
+// interleaves the per-RT blend controls (0x2201, 0x2205, 0x2209, 0x220D — matching
+// the RB_COLOR{,1,2,3}_INFO spacing), with COLORCONTROL at 0x2202. Settled
+// empirically, not from a header: histogram register 0x2202 per draw over R4 trace 01
+// and every value carries the 0xAA alpha-to-mask sample-offset signature in its top
+// byte with alpha-test enable (bit 3) SET on 520 draws — GREATER (0x0C), GEQUAL
+// (0x0E), EQUAL (0x0A) and GREATER+ALPHA_TO_MASK (0x1C) — while 0x2205's values
+// (00018004..6) never set bit 3 anywhere. The Fable 2 port reads 0x2202 and its
+// alpha test was picture-validated. Consequences of the wrong index, recorded so the
+// history reads correctly: part 38 wired the alpha test to 0x2205 so it never fired
+// on anything, and part 39 "refuted" the foliage alpha test by reading 0x2205 across
+// 40,703 hardware draws — a measurement of the wrong register (open-items 0t).
+constexpr uint32_t kRbColorControl = 0x2202;
+constexpr uint32_t kRbBlendControl1 = 0x2205;
+constexpr uint32_t kRbBlendControl2 = 0x2209;
+constexpr uint32_t kRbBlendControl3 = 0x220D;
 constexpr uint32_t kRbColorMask = 0x2104;    // 4 bits per render target
 constexpr uint32_t kRbStencilRefMask = 0x210D;
 constexpr uint32_t kRbAlphaRef = 0x210E;

@@ -5334,13 +5334,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     key.depthControl = regs[xenos::kRbDepthControl] & 0xFF;
     key.modeControl = regs[0x2208] & 7;
 
-    // ALPHA TEST (part 38). RB_COLORCONTROL bits 0..2 are the compare func
-    // (0 NEVER, 1 LESS, 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL, 6 GEQUAL, 7 ALWAYS),
-    // bit 3 the enable. The shaders' clip(oC0.w - ref) keeps w >= ref, which IS GEQUAL
-    // and is GREATER everywhere but exact equality — both map to the same clip. Every
-    // OTHER enabled func is counted BY NAME and left un-emulated rather than guessed
-    // (gotcha 5); this title's cutout foliage/fences want GEQUAL. Without this bit the
-    // leaf-card trees rendered as solid shards — the operator's part-38 report.
+    // ALPHA TEST (part 38, LIVE AS OF PART 40). RB_COLORCONTROL bits 0..2 are the
+    // compare func (0 NEVER, 1 LESS, 2 EQUAL, 3 LEQUAL, 4 GREATER, 5 NOTEQUAL,
+    // 6 GEQUAL, 7 ALWAYS), bit 3 the enable, bit 4 ALPHA_TO_MASK. The shaders'
+    // clip(oC0.w - ref) keeps w >= ref, which IS GEQUAL and is GREATER everywhere but
+    // exact equality — both map to the same clip. Every OTHER enabled func is counted
+    // BY NAME and left un-emulated rather than guessed (gotcha 5).
+    //
+    // "As of part 40" because for the whole of parts 38-39 this block read register
+    // 0x2205, which is RB_BLENDCONTROL1, so it NEVER fired — see kRbColorControl in
+    // xenos.h for the evidence that settled the index. With the right register,
+    // hardware's R4 traces enable this test exactly where the picture said it was
+    // missing: the leaf-card foliage, the chain-link fences, and the shadow-caster
+    // pass whose pixel shader samples the material's alpha for no other purpose.
+    //
+    // ALPHA_TO_MASK on a single-sampled target is NOT emulated as such: the draws
+    // hardware sets it on (0x1C) also set the alpha test, so the clip covers them;
+    // a draw with A2M alone would be counted below, never silently approximated.
     {
         static const bool noAlphaTest = EnvOn("CZ_VK_NO_ALPHA_TEST");
         const uint32_t cc = regs[xenos::kRbColorControl];
@@ -5363,6 +5373,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 Count(msg);
             }
         }
+        else if (!noAlphaTest && (cc & 0x10))
+            Count("draw: ALPHA-TO-MASK without alpha test — UNEMULATED");
     }
 
     // PRIMITIVE RESTART — OFF, and that is a measurement rather than an omission.

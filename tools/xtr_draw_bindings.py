@@ -337,14 +337,18 @@ def main():
                     resolve_dests.setdefault(d, seq)
             tex = [t for t in (decode_fetch(regs, s) for s in range(32)) if t]
             # RB_COLORCONTROL, verbatim, because it is the register that says how a
-            # cutout happens. Part 38 built the ALPHA TEST (bits 0..2 the compare func,
-            # bit 3 the enable) and the shard-tree foliage did not change, which leaves
-            # ALPHA-TO-MASK (bit 4) as the suspect — and the only way to tell a suspect
-            # from a theory is to read what hardware had set at those very draws.
-            # Carried raw rather than pre-decoded so a reading nobody has thought of yet
-            # is still recoverable from the CSV.
+            # cutout happens. Carried raw rather than pre-decoded so a reading nobody
+            # has thought of yet is still recoverable from the CSV.
+            #
+            # 0x2202, NOT 0x2205 (part 40). This tool shipped reading 0x2205 — which is
+            # RB_BLENDCONTROL1 — and part 39's item-0t refutation ("hardware enables
+            # neither the alpha test nor alpha-to-mask across 40,703 draws") was a
+            # census of that wrong register. At 0x2202 every value carries the 0xAA
+            # alpha-to-mask offset signature in its top byte, and the R4 traces enable
+            # the alpha test on hundreds of draws per frame — the foliage cutout part 38
+            # went looking for. See kRbColorControl in runtime/gpu/xenos.h.
             draws.append((len(draws), idx_count, names, tex, prim,
-                          regs.get(0x2205, 0), regs.get(0x210E, 0),
+                          regs.get(0x2202, 0), regs.get(0x210E, 0),
                           regs.get(0x2201, 0), regs.get(0x2200, 0)))
             if want:
                 for t in tex:
