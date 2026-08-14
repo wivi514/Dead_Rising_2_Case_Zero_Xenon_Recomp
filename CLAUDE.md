@@ -702,9 +702,16 @@ was one wrong register index):
   `CZ_VK_TEX_DUMP_PS=<hash>` dumps a material's textures keyed by SHADER, which
   survives a reboot where a guest address does not (part 39's foliage addresses,
   replayed by address, decoded as BARBED WIRE — gotcha 306).
-* Left counted, not guessed: alpha func EQUAL (the two-pass cutout's core redraw) and
-  A2M-without-test are un-emulated; item 00i (building LOD/streaming pop) is
-  untouched by all of this and stays the top remaining picture item.
+* **Parts 40's second half added two more cutout fixes**: strict GREATER (ref + 1/512
+  — the foliage cuts out OPAQUE cards at ref 0.0 and the emitted clip is >=-shaped)
+  and EQUAL@1.0 emulated exactly (ref - 1/512; the shadow-caster cutout, 174 draws,
+  which was blacking canopy interiors). A2M-without-test stays counted; EQUAL below
+  ref 1.0 stays counted.
+* **THE FAR FIELD IS THE OPEN FRONT, and `docs/part41-kickoff.md` is THE DISTANCE
+  PLAN and the LIVE hand-off**: anisotropic filtering (never enabled), the packed mip
+  tail (still declined), item 00i's streaming pop (now pairable against the 81-capture
+  ~1 m-spaced operator walk in `~/DR2CZ-troubleshooting/part40-operator/verify/`),
+  A2M feathering at distance, then edge fringes/exposure/fog.
 
 Where the port was, as of 2026-08-12 (part 39 — the mip chain, an input the renderer
 declared and then discarded for the whole of phase 5):
