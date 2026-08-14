@@ -678,8 +678,13 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 Where the port is, as of 2026-08-14 (part 41, second session — the far-field
 complaint is LOCATED: it is the DoF COMPOSITE, and the scene under it is sharp):
 
-* **THE OPERATOR'S "everything but ground goes bad with distance" IS THE POST
-  CHAIN, NOT SAMPLING** — their 20 F9 captures bisect it: the resolved scene
+* **CORRECTED BY THE OPERATOR: their complaint is the FLAT-TEXTURE class (00i),
+  not softness** — buildings/objects render with NO surface pattern at range
+  (their captures 003053/003368). 00i is back on top; the census tracker failed
+  to pair faces across the walk, so the next move is CZ_VK_DRAW_ID at a
+  reproduced flat-building view, then the binding comparison against R4 at
+  matched distance. What the session ALSO found (secondary, own evidence):
+  **the far-field SOFTNESS is the post chain, not sampling** — their 20 F9 captures bisect it: the resolved scene
   surface is crisp at every distance, the DoF composite (lerp by the blur
   surface's alpha) is what the player sees. Our real scene depth (0.83..1.0)
   saturates the game's own CoC formula by ~50 m; hardware runs the SAME shader,

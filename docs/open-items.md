@@ -7,8 +7,12 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0u. **THE FAR FIELD IS MANUFACTURED SOFT BY THE DoF COMPOSITE — the top picture
-   item as of part 41, and the scene underneath it is SHARP.** Operator: "pretty
+0u. **THE FAR FIELD IS MANUFACTURED SOFT BY THE DoF COMPOSITE — and the OPERATOR
+   SAYS THIS IS NOT THEIR COMPLAINT.** Their correction, verbatim: "I did not say
+   the ground looked bad I said everything except the ground looks bad" — meaning
+   the FLAT-TEXTURE class (item 00i), which outranks this item. This one stays
+   open on its own evidence (the scene underneath the composite is SHARP and the
+   presented frame is not): Operator: "pretty
    much everything that isn't ground" degrades with distance on the part-41
    renderer. The F9 snapshots bisect it exactly: the resolved scene (1439B000) is
    crisp at every distance, the post composite (00E48000 = the presented frame)
