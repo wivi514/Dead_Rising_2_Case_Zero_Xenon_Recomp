@@ -6780,3 +6780,91 @@ log (nfs creates no samplers; ntl takes zero tail levels).
 **Owed next**: the operator's far-field look (their mandate started this part),
 kickoff items 3 (00i pairing on the 81-capture walk), 4 (A2M dither at
 distance), 5 (clamp modes / edge fringes), and 1b's clamp half.
+
+## §6bu — part 41, second session: the far-field softness is the DoF COMPOSITE, the scene underneath is SHARP, and the hardware contradiction that stops a fix tonight
+
+The operator's verdict on the part-41 defaults: aniso works, but "everything that
+isn't ground" still degrades hard with distance. Twenty F9 captures with poses and
+censuses landed in `~/DR2CZ-troubleshooting/part41-operator/default/`. This section
+is the anatomy of what they showed.
+
+### The pipeline bisection: the softness enters at the post chain
+
+The F9 capture's own resolve snapshots bracket it exactly (frame 2904, mid-street):
+
+* `1439B000` (the resolved scene) and `0684B000` (scene-era, pre-exposure): **SHARP
+  AT EVERY DISTANCE** — the CASINO sign legible, distant poles crisp. The part-41
+  samplers and mip work are vindicated; nothing upstream of post is losing detail.
+* `00E48000` (the post composite, = the presented frame minus HUD): the mid/far
+  field is uniformly soft. The blur enters between those two surfaces.
+
+### The DoF chain, read from our own census + the translated microcode
+
+Census draws 6783/6784/6813 of frame 2904 (`capture_f2904.census`), shaders
+translated from the ucode bank:
+
+* draw 6783 `ps_e7066eaabb79a885` (scene + depth-as-fmt22):
+  `CoC = saturate(pc49.z * (rcp(z*pc86.z + pc86.w) * (z*pc85.z + pc85.w) - pc49.x))`
+  written to the 640x360 downsample's ALPHA.
+* draw 6784 `ps_166bbb9722e9c3ca` (downsample + blurred + depth-as-FMT6): a
+  poisson-disc gather, depth-edge-aware via EIGHT reads of the depth surface
+  DECLARED AS 8_8_8_8 — the 360 byte-split trick, `.z` channel = one byte of the
+  packed 24-bit depth. **Our runtime serves that fetch the float-depth image**
+  (the "231 colour fetches served by a DEPTH resolve snapshot" class part 36
+  counted and left unclaimed — it has a victim now).
+* draw 6813 `ps_8375f611aba84bc4`: `oC0 = lerp(sceneFullRes, blur640, blur.a)` —
+  the presented image. The whole question is the alpha.
+
+Hardware's constants for the prepass, stable across R4 traces 01/04/08
+(`xtr_draw_constants.py`): pc49=(0,50,0.02,0), pc85=(0,0,0,1),
+pc86=(0,0,-9.999001,10) — i.e. `viewZ = 1/(10 - 9.999*z)` (a near=0.1/far~1001
+linearization) and `CoC = saturate(viewZ/50)`.
+
+**Our depth input to that formula is measured**: the depth snapshot dumps print raw
+24-bit ranges 0.83..1.00 (operator log), and the snapshot IS scene depth (the
+street silhouettes are visible in the dump). Perspective-bunched z near 1.0 makes
+`viewZ` explode: z=0.998 (about 50 m) gives CoC=1.0, z=0.99 (about 10 m) gives 0.2.
+**That curve is exactly the operator's complaint** — near sharp, everything else
+increasingly mush, ground rescued separately by aniso.
+
+### A retraction, in place, before it cost anything
+
+An earlier read of "hardware's depth bytes" from R4 trace 01 (memory record at
+`0A978000`) measured values 0.0-0.35 and spawned three encoding theories. Rendered
+as a PICTURE (the two-minute check, gotcha 287), that record is the PREVIOUS
+FRAME'S COMPOSITED SCENE in greyscale — "20 KILLED" is legible. Gotcha 280 in a
+second disguise: the DoF reads depth resolved INSIDE the frame, which a trace
+cannot carry, and the pre-frame record at that address was a colour aliasing. All
+conclusions drawn from those bytes are void. What survives from hardware: the
+CONSTANTS (above), `RB_DEPTH_INFO` bit16=0 on all 5,831 draws (the depth surfaces
+are **D24S8 UNORM** — no 20e4-float domain gap; also `xenos.h`'s comment for that
+bit is wrong and says "16-bit vs 24_8"), `PA_CL_VPORT_ZSCALE/ZOFFSET = 1/0 identity
+on every draw, and the depth resolve running every frame (8 per frame to the
+right-tile-offset address, the §6be idiom).
+
+### THE OPEN CONTRADICTION, stated so nobody ships a half-derived fix
+
+Same shader, same constants, same unorm depth domain, identity viewport on both
+sides — the naive math says HARDWARE should also blur at 40-60 m (CoC 0.8-1.0),
+and hardware's R4 PNGs show a legible store sign at that range. So a compensating
+term exists on hardware that we have not located. The candidates, in checking
+order, all with tools already proven:
+
+1. **The gather pass's OTHER constants** (pc48.w, pc82.x, pc96..101, pc252..255)
+   — the final alpha is `saturate(max(saturate(reconstructedZ*pc82.x), sqrt(...)*pc48.w))`,
+   so a zero in pc82.x/pc48.w kills the blur REGARDLESS of the prepass CoC.
+   Read hardware's via `xtr_draw_constants.py --ps 166bbb9722e9c3ca`; read OURS at
+   the same draw (instrument needed, or CZ_VK_PSBIND extension).
+2. **The fmt6 byte-trick depth reads** (8 of them in the gather) — on hardware
+   they return packed depth BYTES; we serve float-depth-in-R, so every
+   depth-edge weight in the gather is garbage on our side. This alone could be
+   the whole difference if the weights normally SUPPRESS blur.
+3. The alpha's journey from 6784's output to 6813's s1 (`148B0000`) — which pass
+   writes it last, on both sides.
+
+### What this is NOT
+
+Not the mip chain, not the samplers, not the textures, not streaming, not item
+00i's flat panels (a separate binding question this class was masking) — the
+scene surface has full detail at every distance. One fix at the post chain
+recovers the whole far field at once.
