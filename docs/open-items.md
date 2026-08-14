@@ -7,6 +7,23 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0u. **THE FAR FIELD IS MANUFACTURED SOFT BY THE DoF COMPOSITE — the top picture
+   item as of part 41, and the scene underneath it is SHARP.** Operator: "pretty
+   much everything that isn't ground" degrades with distance on the part-41
+   renderer. The F9 snapshots bisect it exactly: the resolved scene (1439B000) is
+   crisp at every distance, the post composite (00E48000 = the presented frame)
+   is not. The chain is three draws (census f2904: 6783/6784/6813): a prepass
+   writing CoC = saturate((1/(10-9.999*z))/50) into the 640x360 downsample's
+   alpha, a poisson gather that reads depth AS 8_8_8_8 bytes (we serve it our
+   float-depth image — part 36's counted-unclaimed class, 231 fetches), and a
+   composite lerp(scene, blur, blur.a). Our z (real scene depth, 0.83..1.0)
+   saturates the CoC by ~50 m. **THE CONTRADICTION THAT BLOCKS A FIX: hardware
+   runs the same shader with the same constants (R4 01/04/08 agree) over the same
+   D24S8 unorm domain and its 40-60 m storefronts are legible.** The compensating
+   term is unlocated; three candidates are enumerated in phase5-notes §6bu and
+   the worked plan is docs/part42-kickoff.md. Do not "fix" this by clamping CoC
+   or hacking the constants — name the hardware term first (gotcha 5).
+
 0s. **THE STRIPED-MATERIAL CLASS — the top picture item as of part 35, fully
    evidence-bounded, and the next move is named: TRACE THE WRITER.** One streamed
    quality level of an asset renders as black/white banded garbage — the tanker up
