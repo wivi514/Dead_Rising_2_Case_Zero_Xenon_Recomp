@@ -3568,12 +3568,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // wrong offset does not.
     //
     // WHERE IT STOPS, and it stops LOUDLY. `packedMips` says the tail of the chain —
-    // the levels smaller than a tile — shares one tile at sub-tile offsets this code
-    // does not know how to compute. The first sub-tile level is still at the accumulated
-    // offset (verified on both textures above), so it is taken; everything below it is
-    // DECLINED AND COUNTED rather than guessed at, because a guessed low mip is a wrong
-    // colour on a distant surface, which is indistinguishable from the defect being
-    // fixed (gotcha 5).
+    // the levels of texel extent <= 16 — shares one tile at sub-tile offsets. From
+    // part 39 to part 41 those were declined wholesale; part 41 DERIVED the square
+    // DXT offsets from hardware's own bytes (the block comment at the tail check in
+    // the loop below carries the census), so square DXT1/DXT5 tail levels down to
+    // 4x4 texels are taken now. Everything the census could not derive — non-square
+    // tails, other formats, sub-block levels — is still DECLINED AND COUNTED rather
+    // than guessed at, because a guessed low mip is a wrong colour on a distant
+    // surface, which is indistinguishable from the defect being fixed (gotcha 5).
     //
     // CZ_VK_NO_MIPS=1 uploads level 0 alone — the pre-part-39 renderer, same binary.
     static const bool noMips = EnvOn("CZ_VK_NO_MIPS");
@@ -3599,6 +3601,44 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             const uint32_t lPitch = t.tiled ? ((luW + 31) & ~31u) : luW;
             const uint32_t lRows = t.tiled ? ((luH + 31) & ~31u) : luH;
             const uint64_t lFootprint = uint64_t(lPitch) * lRows * bytesPerUnit;
+            // THE PACKED TAIL (part 41, item 2). Levels of texel extent <= 16 share
+            // ONE tile at the accumulated offset, each at a block offset inside it.
+            // The offsets were BRUTE-FORCED against hardware's own bytes, not taken
+            // from a remembered table (tools/packed_mip_derive.py over all eight R4
+            // traces): a square level of width W blocks sits at block (W, 0) — the
+            // 16-texel level at (4,0), 8 at (2,0), 4 at (1,0) — with 7,466 of 7,515
+            // informative votes agreeing across DXT1 and DXT5. What the census could
+            // NOT derive is declined and counted exactly as the whole tail was
+            // before: non-square tail levels (9 votes, inconsistent), formats other
+            // than DXT1/DXT5 (never sampled by the scorer), and sub-block levels
+            // (below 4 texels the offset cannot be block-aligned at all).
+            // CZ_VK_NO_MIP_TAIL=1 is the tail-only same-binary arm: isTail never
+            // fires, so the walk reads the tail tile at (0,0) and advances past it,
+            // which is byte-for-byte the part-39/40 behaviour (the chain then ends
+            // on the mostly-empty or divergence check below). CZ_VK_NO_MIPS=1
+            // remains the whole-feature arm.
+            static const bool noTail = EnvOn("CZ_VK_NO_MIP_TAIL");
+            const bool isTail = !noTail && t.tiled && std::max(lw, lh) <= 16u;
+            uint32_t tailBlockX = 0;
+            if (isTail)
+            {
+                if (t.format != xenos::kFmt_DXT1 && t.format != xenos::kFmt_DXT4_5)
+                {
+                    Count("mip: packed tail UNDERIVED for this format — chain ends");
+                    break;
+                }
+                if (lw != lh)
+                {
+                    Count("mip: packed tail NON-SQUARE — underived, chain ends");
+                    break;
+                }
+                if (lw < 4)
+                {
+                    Count("mip: sub-block tail level — chain ends");
+                    break;
+                }
+                tailBlockX = luW;
+            }
             if (!GuestRangeOk(mipVa + uint32_t(chainOff), lFootprint))
             {
                 Count("mip: level source outside the physical arena");
@@ -3619,8 +3659,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 for (uint32_t y = 0; y < luH; y++)
                     for (uint32_t x = 0; x < luW; x++)
                     {
+                        // tailBlockX shifts a packed-tail level to its derived
+                        // position inside the shared tile; 0 for unpacked levels.
                         const uint64_t off =
-                            uint64_t(Tiled2DOffset(x, y, lPitch, log2bpu)) * bytesPerUnit;
+                            uint64_t(Tiled2DOffset(tailBlockX + x, y, lPitch,
+                                                   log2bpu)) * bytesPerUnit;
                         if (off + bytesPerUnit > lFootprint)
                             continue;
                         CopySwapped(&ldst[(uint64_t(y) * luW + x) * bytesPerUnit],
@@ -3747,7 +3790,17 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             c.imageExtent = { lw, lh, 1 };
             copies.push_back(c);
             levelCount = level + 1;
-            chainOff += lFootprint;
+            // The engagement evidence: a tail level that passed both guards and is
+            // in the upload. Without this the whole change is invisible in a log
+            // (gotcha 151 — and 308's alpha-test counter sat at zero for two parts
+            // because nobody could read a counter that did not exist).
+            if (isTail)
+                Count("mip: packed tail level TAKEN");
+            // Tail levels SHARE their tile, so the walk must not advance past it —
+            // advancing per level was exactly what made the pre-part-41 read land on
+            // empty blocks and end every chain at "PACKED TAIL REACHED".
+            if (!isTail)
+                chainOff += lFootprint;
         }
         Count(levelCount > 1 ? "mip: chain uploaded" : "mip: chain declared but no level taken");
     }
