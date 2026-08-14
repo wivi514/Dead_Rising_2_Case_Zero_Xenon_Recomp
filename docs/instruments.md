@@ -1364,6 +1364,34 @@ CZ_VK_NO_MIPS=1    upload level 0 alone — the pre-part-39 renderer, and the sa
                    cube-map chains likewise. Counters: `mip: chain uploaded`,
                    `mip: PACKED TAIL DECLINED`, `mip: CUBE chain not uploaded`.
                    1,815 textures take a chain on the outdoor DebugJump route. §6bq.
+CZ_VK_NO_MIP_TAIL=1  part 41: the tail-only arm. The default now DECODES the packed
+                   tail for square DXT levels down to 4x4 texels — offsets derived
+                   from 7,466/7,515 hardware votes (tools/packed_mip_derive.py, §6bt):
+                   a level of width W blocks sits at block (W,0) in the shared tile.
+                   This arm reproduces the part-39/40 walk byte-for-byte (tail read
+                   at (0,0), chain ends on the guards). Engagement counter:
+                   `mip: packed tail level TAKEN` — 1,877 on the boot route.
+                   Non-square/non-DXT/sub-block tails stay declined and counted.
+```
+
+## Per-fetch samplers (part 41)
+
+```
+CZ_VK_NO_FETCH_SAMPLERS=1  the part-40 renderer, same binary: every fetch reads
+                   sampler 0 (one global trilinear REPEAT sampler). The default
+                   honours the fetch constant's own mag/min/mip/aniso fields
+                   (dword3 bits 19..27, confirmed two-sidedly against 621 R4
+                   fetches) with one VkSampler per distinct spec in the set-3
+                   heap. The shadow atlas gets the point/point/point/no-aniso
+                   sampler hardware asks for; the world's albedo gets 4:1/8:1.
+                   Engagement evidence: one `[vk] sampler #N` line per spec.
+                   DO NOT re-try global aniso: it speckles the shadow term
+                   (§6bt — hardware fetches the shadow atlas with aniso=0/point).
+CZ_VK_ANISO=N      cap the per-fetch aniso degree. =0 keeps per-fetch FILTERS while
+                   disabling aniso entirely — the arm that separates the two halves
+                   of the change. Default cap 16 (the device limit bounds it anyway;
+                   this title never asks above 8:1). Address CLAMP modes are NOT yet
+                   honoured — a separate experiment (part41-kickoff item 5).
 ```
 
 ## The draw-ID pass (part 39) — which draw painted that pixel?
