@@ -6653,3 +6653,95 @@ background); `no translated shader` = 0.
 * **A2M without the test**: counted, zero observed so far.
 * The §6br program (foliage pixel-constant comparison) is superseded — no constant was
   ever wrong.
+
+## §6bt — part 41, the distance part: global aniso refuted by the shadow sampler, per-fetch samplers built, and the packed mip tail decoded
+
+Part 41 executes `docs/part41-kickoff.md` (the distance plan). Three results in the
+first session, two of them landed as defaults and one landed as a retraction worth
+recording in full.
+
+### The global-aniso experiment, refuted the same hour it ran (item 1a -> 1b)
+
+The plan's step 1a — `anisotropyEnable` on the one linear sampler, 16x, global —
+was committed with a registered prediction (4f3a0e3) and refuted by its very first
+matched F9 capture: the ON arm renders dense dark red/black speckle across walls,
+fences, characters and props at the treecam viewpoint. RETRACTED IN PLACE; the
+commit is reverted by d5b8fdc.
+
+The mechanism was named by hardware before any code moved: histogramming dword3
+bits 25..27 over all 621 distinct fetch constants in R4 trace 01:
+
+* the field reads ONLY 0, 3, 4 — valid ANISO_FILTER enum values, so the bit
+  position (after mag:2 min:2 mip:2 at 19..24) is confirmed against an independent
+  decode;
+* the world's albedo textures ask for 4:1 (179 textures) and 8:1 (321); 121 ask
+  for none; NOTHING asks for 16:1;
+* **the 4096x1024 shadow atlas fetch asks for aniso=0 AND mag/min/mip all POINT.**
+
+So a global aniso sampler anisotropically filters the shadow-map depth lookups —
+averaging depth values across a long grazing footprint before the shader's manual
+comparison — and the speckle is that comparison flickering per pixel. Hardware
+never sees it because the aniso degree is per fetch constant. (A second divergence
+fell out for free: we had been LINEAR-filtering the shadow atlas since phase 5
+where hardware asks for POINT.)
+
+Two measurement lessons, both now in the record:
+
+* The registered metric read the regression WRONG-WAY-ROUND: the prediction said
+  "sharpness rises", and the speckled arm read **-19%** (4.351 vs 5.313/5.389,
+  within-null spread 1.4%, outdoor era, 287-349 frames/run). Without the matched
+  F9 eyeball that drop reads as "aniso did nothing useful", not "aniso broke the
+  shadow term". A metric can flag a defect while mislabeling it; the picture named
+  the mechanism (the speckle is visibly the shadow term) in one look.
+* The failed arm was still the right experiment to run first: one 7-minute run
+  bought the mechanism, the field position, and the correct design.
+
+### Per-fetch samplers (d5b8fdc) — the plan's 1b, now the default
+
+One `VkSampler` per distinct (mag, min, mip, aniso) spec decoded from the fetch
+constant, created on first sight, written into the set-3 update-after-bind heap,
+and published per slot where the index had been hardcoded 0 since phase 5. The
+first boot creates exactly the census's four specs — trilinear/no-aniso,
+trilinear/8:1, trilinear/4:1, and point/point/point/no-aniso (the shadow atlas) —
+which is the engagement evidence and the two-sided check in one log line each.
+Address modes stay REPEAT deliberately: the clamp fields are kickoff item 5's
+experiment (the cyan edge fringes) with their own prediction.
+
+Arms: `CZ_VK_NO_FETCH_SAMPLERS=1` = the part-40 renderer (everything reads sampler
+0, plain trilinear REPEAT — same binary). `CZ_VK_ANISO=N` caps the degree; `=0`
+keeps per-fetch filters while disabling aniso, separating the change's two halves.
+`CZ_VK_NO_ANISO` never existed in a lasting binary and is NOT an arm.
+
+### The packed mip tail (409777d) — item 2, decoded from 7,515 hardware votes
+
+`tools/packed_mip_derive.py` (9f84cfe) carries no remembered table. It walks every
+packed-mips DXT texture all eight R4 traces hold bytes for, validates the unpacked
+chain with part 39's accumulation rule, decodes the shared tail tile to TEXELS
+once, and brute-forces every block-aligned offset per tail level against the 2x
+box downsample of the level above, scored on luma AND alpha. (The first draft
+scored DXT endpoint luma only and went blind exactly where the tail matters — a
+4x4 level is one block, and one block's two endpoints have no variance. Gotcha
+287's shape, caught in the first shakeout.)
+
+The answer, at 7,466 of 7,515 informative votes across DXT1 and DXT5: **a square
+packed level of width W blocks sits at block (W, 0) in the shared tile** — the
+16-texel level at (4,0), the 8 at (2,0), the 4 at (1,0). Equivalently: texel
+offset = the level's own texel width. Non-square tails are too rare in this
+title's traces to derive (9 votes, inconsistent) and stay declined-and-counted,
+as do non-DXT formats and sub-block levels.
+
+The runtime walk now shifts tail reads by the derived offset and stops advancing
+`chainOff` across the shared tile — advancing per level is exactly what made the
+old read land on empty blocks and end every chain at "PACKED TAIL REACHED". Both
+part-39 guards still run per tail level. `mip: packed tail level TAKEN` reads
+1,877 on the boot route where it was structurally zero for parts 39-40;
+`CZ_VK_NO_MIP_TAIL=1` reproduces the part-39/40 walk byte-for-byte, same binary.
+
+### The state of the kickoff's own items
+
+* Item 1a: refuted as shipped-default; superseded by 1b (done, default).
+* Item 1b filters+aniso: DONE; clamps deferred to their own experiment.
+* Item 2: DONE pending the era-median A/B (running as this is written).
+* `verify/capture_002863` adjudicated: part-40's fixes hold on the big canopies;
+  the small orange tree's hard triangular shards at range are item 4's signature.
+* Items 3, 4, 5: untouched.
