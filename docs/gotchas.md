@@ -2899,3 +2899,31 @@ From phase C part 18 (the frame rate — and none of it was work):
      it reported were all draws that write no colour at all. An ID map is a map of what was
      PAINTED: substitute the fragment shader, disable blending, and leave every other piece
      of state — mask, depth test, depth write, cull — exactly as the draw had it.
+
+306. **A GUEST ADDRESS IS A FACT ABOUT ONE BOOT; A SHADER HASH IS A FACT ABOUT THE
+     MATERIAL.** Part 39 identified the foliage material from an operator capture and
+     wrote down its six texture addresses. Part 40 replayed the same route headlessly
+     with `CZ_VK_TEX_DUMP_ADDR` pointed at them and decoded the result: **barbed wire**.
+     The streaming heap hands the same address to a different asset in a different boot,
+     so every address a capture yields has a shelf life measured in one process
+     lifetime. A pixel- or vertex-shader hash is a hash of the microcode and is
+     identical in every boot, which makes it the only handle that survives the trip from
+     "the operator saw this" to "reproduce it headlessly". Build the instrument that
+     keys on it (`CZ_VK_TEX_DUMP_PS`, `CZ_VK_ONLY_VS`), and note that the earlier
+     finding that streaming addresses were *stable* across boots (part 36, 703 of 712)
+     was measured between two runs of the same route on the same day — it is not a
+     licence to carry an address across a route change.
+
+307. **AN OVER-ACCEPTING SCANNER PRODUCES A HISTOGRAM, NOT A CENSUS, AND THE HISTOGRAM
+     WILL LOOK LIKE A FINDING.** Asking whether Case Zero's microcode declares a
+     non-zero vertex-fetch `exp_adjust`, part 40 first scanned every dword triple for a
+     vfetch-shaped word pair — opcode 0, the architecturally-required bit 19, a known
+     format — and got **234 non-zero of 607**, with a plausible-looking spread of values.
+     It was noise: the scan accepts ALU words by construction, and the docstring said so
+     while the number was being read as evidence. Re-run through
+     `tools/synth_shader_container.py`'s own control-flow walk — the parser the shader
+     cache is actually built with, so every instruction it reads is one the translator
+     reads — the answer is **345 vertex fetches across 99 vertex shaders, exp_adjust
+     zero on every one**. If a parser for the thing already exists in the project,
+     import it; a structural approximation of a parse is only admissible when its
+     over-acceptance is bounded, and "it found a self-test plant" bounds nothing.

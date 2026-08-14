@@ -1293,6 +1293,20 @@ between two operator sessions at the same spot, 703 of 712 shared addresses (98.
 byte-identical content, and only 4 of 628 shared contents lived at a different address.
 A census taken in one boot names textures usable in the next.
 
+**READ THAT WITH ITS SCOPE (part 40).** Those two sessions were the same route on the
+same day. Carry an address to a DIFFERENT route or a different day and it can name a
+different asset entirely: part 39's six foliage-texture addresses, replayed headlessly,
+returned a picture of BARBED WIRE. For anything that has to survive the trip from "the
+operator saw this" to "reproduce it headlessly", key on the SHADER hash — it is a hash
+of the microcode and cannot drift (`CZ_VK_TEX_DUMP_PS`, `CZ_VK_ONLY_VS`). Gotcha 306.
+
+**AND F9 CAN BE PRESSED HEADLESSLY.** `CZ_FAKE_PRESS_SEQ` takes an `F9` entry (host key
+9), so `CZ_CAPTURE_KEY` plus `...,F9,NONE,NONE` yields the whole capture — picture,
+census, pose and every resolve snapshot — from a run with no window and no operator.
+With `CZ_VK_DRAW_ID=1` that is the complete point-at-a-pixel loop, unattended. Put the
+`F9` late in the sequence and leave entries after it: the census is armed for the frame
+AFTER the press, so a sequence that ends on the press can exit before it is written.
+
 ```
 CZ_CAPTURE_KEY=<dir>           F9 now also writes capture_<frame>.pose
 ```

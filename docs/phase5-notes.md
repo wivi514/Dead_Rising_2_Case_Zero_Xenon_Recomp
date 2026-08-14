@@ -6495,3 +6495,96 @@ sub-tile level, and reject the chain entirely on 254 textures. **The packed tail
 the deepest minification lives, and therefore where a distant building actually needs a
 level — is still declined.** That is the next thing to build, and the guard's 254 (a
 deterministic count, identical in every run) is the regression test for it.
+
+---
+
+## §6br — the shard trees, part 40: the material is named by content, and its texture is innocent
+
+Part 39 built the draw-ID pass and the operator delivered 23 frame-locked ID maps of a
+walk down the main road, each with its census, its pose and its resolve snapshots. This
+is what reading all 23 of them established, plus the headless work that followed.
+
+### The map is its own picture, and the first read of it was wrong twice
+
+The raw ID map is near-black (draw 4,043 is `rgb(204,15,0)`), so the obvious way to look
+at it — stretch the brightness — makes neighbouring indices collide and invents flat
+regions. Read that way, one map appeared to show a single draw covering the right half of
+the screen; the numbers said **633 distinct draws** in the same rectangle.
+`tools/drawid_read.py --palette` hashes the index to a colour instead, and the result is
+legible enough to pick a canopy out of by eye. On a `CZ_VK_DRAW_ID` run there is no
+photograph, so the map has to serve as one.
+
+The second wrong read was mine and is worth recording next to it: part 39 found an
+untextured shader owning 57% of a canopy in ONE tree frame and called it "the first
+mechanism-shaped fact". Across the 22 walk frames that shader owns **0.00% in nineteen of
+them** (mean 0.83%). One frame is one sample — gotcha 133 again, on the very finding that
+was supposed to be the breakthrough.
+
+### The foliage material, identified by the shape it covers
+
+`ps_8452bb656149204e` + `vs_716ff2d14e06fa52`, alpha-blended (`07060706`), 12 draws and
+4.78% of frame 018379. It is identified by **masking its screen footprint and looking at
+the shape**: a tree canopy of overlapping quads at top-left, plus a second, distant tree
+as a grid of quads. Not by a texture-format signature — that method picked a HAIR
+material last session (gotcha 302). A second foliage material, `ps_e2c3ca8c13351984`,
+was found the same way.
+
+The zombie material `0A2E4000` (512x512 DXT1, 717 draws, 0.17% visible) is what the
+format signature had selected. It is the crowd, and it is fine.
+
+### What the defect actually is
+
+Hardware (`R4_world/Big_buck_hardware_store_0{1,6}.png`, frame-locked to their traces)
+renders these trees as dense, individually cut-out golden leaves on a textured trunk.
+Ours renders **large flat facets with hard polygon edges**, dark brown to black, carrying
+almost no leaf detail. Whatever the mechanism, it is not subtle and it is on every tree in
+all 28 frames of the operator's walk.
+
+**It reproduces headlessly.** The Case 0-2 DebugJump spawn looks out through the camp
+fence at trees showing exactly the same shards, so the tree question is no longer an
+operator-only experiment. Recipe: the documented DebugJump sequence with no AutoChuck.
+
+### Four explanations refuted
+
+* **The leaf texture is broken.** Refuted. `CZ_VK_TEX_DUMP_PS` (new, see below) pulled the
+  foliage material's own textures out of a headless run: a 256x256 DXT5 **leaf sheet**, a
+  128x256 DXT1 **bark** strip and a 256x512 DXT5 **branch card**. All decode cleanly
+  through our own untiler, and the DXT5 **alpha planes are perfect** — the leaf sheet's
+  alpha is a per-leaf cutout mask, the branch card's is a clean branch silhouette. The
+  bytes the sampler sees are right.
+* **The mip chain.** Refuted. The operator's three mip arms — `arm1_mips`,
+  `arm2_nomips`, `arm3_fullmips` — show the same shard tree at the same place. With
+  `CZ_VK_NO_MIPS` there is only level 0, so a deep-mip average cannot be the flattener.
+* **`exp_adjust` on the texcoord fetch.** Refuted, and this one is worth the detail. The
+  field is parsed by XenosRecomp and read by **nothing** — one occurrence in the whole
+  source tree, its own declaration — which is gotcha 295's pattern exactly, and
+  CLAUDE.md's "exp_adjust is zero everywhere" was measured on the FABLE 2 bank and never
+  repeated here. Re-run through `tools/synth_shader_container.py`'s own control-flow
+  walk: **345 vertex fetches across 99 vertex shaders, exp_adjust ZERO on every one.**
+  The do-not-chase entry now holds for this title too. (A first, structural scan said
+  234 non-zero of 607 and was junk — gotcha 307.)
+* **The 16-bit texcoord swap (part 37's `g_SwappedTexcoords`).** Not applicable, by
+  construction rather than by A/B: the foliage vertex shader fetches its UV as
+  **fmt 37 = `k_32_32_FLOAT`**, a plain float2. The swap mask only touches 16-bit pairs.
+  (An A/B on `CZ_VK_TEXCOORD_SWAP` was run first and was **inadmissible** — neither arm
+  had a tree in frame. Recorded so it is not mistaken for a null.)
+
+The foliage vertex shader's three inputs are the whole attribute set: `POSITION0`
+(fmt 57, float3), `TEXCOORD0` (fmt 37, float2 UV), `TEXCOORD1` (fmt 16, `k_10_11_11`
+packed normal — part 33's path). No normal semantic, no colour, no second UV.
+
+### What is still open
+
+Texture right, alpha right, UV format trivial, mips irrelevant, blend state translated
+correctly (`blendEnable` is on for anything that is not ONE/ZERO). The remaining suspects
+are the pixel shader's own arithmetic and its constants: `oC0.w = pc(1).w * s0.a`, and
+`oC0.rgb` runs through a branch chain on `pc(20).xyz` before the shared tone epilogue. A
+`pc(1).w` above 1 saturates the alpha and turns every leaf card into an opaque quad,
+which is the observed symptom exactly — and this material's constants have never been
+compared against hardware the way the ground shader's were in part 31.
+
+**The next measurement is named**: get hardware's `pc(1)` and `pc(20)` for a foliage draw
+out of an R4 trace with `tools/xtr_draw_constants.py` and put them beside ours. Note that
+`ps_8452bb656149204e` appears in **none** of the eight R4 traces, so this needs either a
+foliage shader the two sides share or a round-5 trace standing at one of the main-road
+trees.
