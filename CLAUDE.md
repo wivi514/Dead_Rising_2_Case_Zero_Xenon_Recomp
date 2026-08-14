@@ -675,7 +675,23 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-14 (part 41, first session — the far field: per-fetch
+Where the port is, as of 2026-08-14 (part 41, second session — the far-field
+complaint is LOCATED: it is the DoF COMPOSITE, and the scene under it is sharp):
+
+* **THE OPERATOR'S "everything but ground goes bad with distance" IS THE POST
+  CHAIN, NOT SAMPLING** — their 20 F9 captures bisect it: the resolved scene
+  surface is crisp at every distance, the DoF composite (lerp by the blur
+  surface's alpha) is what the player sees. Our real scene depth (0.83..1.0)
+  saturates the game's own CoC formula by ~50 m; hardware runs the SAME shader,
+  constants and depth format yet stays legible at 40-60 m — **that compensating
+  term is UNLOCATED and blocks any fix** (do not clamp CoC; name the term).
+  `docs/part42-kickoff.md` is the LIVE hand-off; §6bu the full anatomy, including
+  the retraction of an hour of arithmetic done on a memory record that turned out
+  to be the previous frame's PICTURE (gotcha 311 — 280's second disguise).
+* One certain sub-defect either way: the DoF gather reads depth AS 8_8_8_8 bytes
+  and we serve the float image (part 36's counted-unclaimed 231-fetch class).
+
+Where the port was, as of 2026-08-14 (part 41, first session — the far field: per-fetch
 samplers and the packed mip tail, both default):
 
 * **PER-FETCH SAMPLERS ARE THE DEFAULT (d5b8fdc) — the fetch constant's own
