@@ -181,6 +181,56 @@ Next, in order:
    concluding the material was unrelated. Both errors have the same cure, which is this
    instrument.
 
+   **PART 40 — THE CORRECTION ABOVE IS ITSELF WITHDRAWN, AND THE ORIGINAL READING WAS
+   RIGHT: `0A2E4000` IS HAIR.** Hardware's `ps_34524bb64374d20e`/`ps_790283523afcaf20`
+   pair — the same pair, 296 blended draws in R4 trace 01 — binds `0E078000`, and dumped
+   out of the trace and decoded it is unmistakably a **hair sheet**: long brown strands
+   in tuft-shaped islands on a transparent field. So that shader pair is the crowd's hair
+   on both platforms, our material mapping agrees with hardware's for it, and it is not
+   foliage. Reading a 256-pixel thumbnail as "as likely twigs" was the error; the fix,
+   again, is to decode at full size and look (gotcha 287).
+
+   **THE UNTEXTURED-DRAW FINDING DOES NOT GENERALISE.** `ps_1f93b74b9a4fa389` owns 17.46%
+   of the screen in that ONE tree frame and **0.00% in nineteen of the 22 walk frames**
+   (mean 0.83%). One frame is one sample (gotcha 133), and it was called "the first
+   mechanism-shaped fact this item has ever had" on the strength of it. The render-target
+   question above is still worth asking, but it is no longer the tree's explanation.
+
+   **THE FOLIAGE MATERIAL, IDENTIFIED BY THE SHAPE IT COVERS AND NOT BY A SIGNATURE:**
+   `ps_8452bb656149204e` + `vs_716ff2d14e06fa52`, alpha-blended `07060706`, and a second,
+   `ps_e2c3ca8c13351984`. Masking the first material's footprint in frame 018379's ID map
+   draws a tree: a canopy of overlapping quads at top-left plus a distant tree as a grid
+   of quads, 4.78% of the frame over 12 draws.
+
+   **AND ITS TEXTURES ARE INNOCENT.** `CZ_VK_TEX_DUMP_PS` (part 40, keyed on the shader
+   hash because an address does not survive a reboot — gotcha 306) pulled the material's
+   own textures out of a headless run: a **256x256 DXT5 leaf sheet**, a **128x256 DXT1
+   bark** strip and a **256x512 DXT5 branch card**. All decode cleanly through our own
+   untiler, and the **DXT5 alpha planes are perfect** — the leaf sheet's alpha is a
+   per-leaf cutout mask, the branch card's a clean branch silhouette. The bytes the
+   sampler sees are correct, so "the leaf texture is broken" is refuted.
+
+   **THREE MORE REFUTED.** The **mip chain**: the operator's `arm1_mips`/`arm2_nomips`/
+   `arm3_fullmips` show the same shard tree in the same place, and with no mips there is
+   only level 0 to sample. **`exp_adjust`**: parsed by XenosRecomp and read by nothing
+   (gotcha 295's pattern), CLAUDE.md's "zero everywhere" measured on the Fable 2 bank and
+   never repeated here — `tools/expadjust_census.py` repeats it through
+   `synth_shader_container.py`'s own CF walk and gets **345 vertex fetches over 99 vertex
+   shaders, zero on every one**. **Part 37's 16-bit texcoord swap**: not applicable, the
+   foliage UV is **fmt 37, a plain float2**. (A `CZ_VK_TEXCOORD_SWAP` A/B run before that
+   was checked is INADMISSIBLE — neither arm had a tree in frame.)
+
+   **THE DEFECT REPRODUCES HEADLESSLY** at the Case 0-2 DebugJump spawn (trees behind the
+   camp fence), and F9 can be pressed headlessly too, so census + pose + picture +
+   snapshots + ID map are all available unattended. This item no longer needs an operator.
+
+   **THE NEXT MEASUREMENT, NAMED:** this material's PIXEL CONSTANTS have never been
+   compared against hardware. `oC0.w = pc(1).w * s0.a`, and a `pc(1).w` above 1 saturates
+   the alpha and turns every leaf card into the opaque plate we see; `oC0.rgb` branches on
+   `pc(20).xyz` before the shared tone epilogue. Neither foliage shader appears in ANY of
+   the eight R4 traces, so this needs a round-5 trace standing at a main-road tree —
+   `docs/phase5-notes.md` §6br.
+
    **THE INSTRUMENT THIS NEEDS, and its absence is why two sessions have guessed:** there
    is no way to point at a pixel and be told which DRAW painted it. Every identification
    so far has been inference from shader/texture/extent signatures, and it has now been
