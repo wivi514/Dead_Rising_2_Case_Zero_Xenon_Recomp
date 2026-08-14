@@ -1634,6 +1634,16 @@ Next, in order:
    hardware's chain out of the trace and check the mean holds while distinct colours
    fall.
 
+   **PART 41 PAID THAT DEBT: the tail is DECODED (409777d, §6bt).** Square DXT tail
+   levels down to 4x4 texels upload now at offsets brute-forced from 7,466/7,515
+   hardware votes (`tools/packed_mip_derive.py` over all eight R4 traces — a level of
+   width W blocks sits at block (W,0) in the shared tile). `mip: packed tail level
+   TAKEN` = 1,877 on the boot route; `CZ_VK_NO_MIP_TAIL=1` is the tail-only arm. In
+   the same part, per-fetch samplers landed (d5b8fdc): the world's albedo now filters
+   at the 4:1/8:1 aniso the fetch constants ask for, which is the OTHER half of
+   "distance is mush". Whether the pair closes this item's flat-panel look is the
+   running era-median A/B plus an operator look — not yet a claim.
+
    **PART 38: THE OWED ONE-LOOK IS ANSWERED AND THE DEFECT IS OURS — this is now the
    TOP PICTURE ITEM.** The operator captured the Big Buck approach on our side (9 F9s,
    flat-color building panels at range snapping to full texture only up close, and
