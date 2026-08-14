@@ -168,6 +168,12 @@ struct TextureFetch
     uint32_t mipAddress;
     bool packedMips;
     uint32_t filterMin, filterMag, filterMip; // 0 = point, 1 = linear
+    // dword3 bits 25..27. 0 = disabled, 1..5 = max 1/2/4/8/16 : 1. Position confirmed
+    // two-sidedly in part 41: over 621 distinct hardware fetches the field reads only
+    // 0/3/4 (valid enum values), the shadow atlas reads 0 with point filters, and the
+    // world's albedo textures read 3..4 — which is also why a GLOBAL aniso sampler is
+    // wrong (it speckled the shadow term the moment it was tried).
+    uint32_t filterAniso;
     uint32_t clampX, clampY, clampZ;
     uint32_t pitchBlocks; // dword4 bits 22:31, in blocks of 32 texels
 };

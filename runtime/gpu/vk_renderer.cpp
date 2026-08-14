@@ -1470,9 +1470,16 @@ struct Renderer
     VkSampler linearSampler = VK_NULL_HANDLE;
     VkSampler pointSampler = VK_NULL_HANDLE;
     // 0 = the device has no samplerAnisotropy feature (checked at device creation);
-    // otherwise the device's maxSamplerAnisotropy limit, read so the sampler never
+    // otherwise the device's maxSamplerAnisotropy limit, read so a sampler never
     // asks for more than the device names.
     float anisoLimit = 0.0f;
+    // Part 41 item 1b: per-fetch samplers. Key = the fetch constant's own
+    // mag/min/mip/aniso fields (dword3 bits 19..27); value = the sampler's index in
+    // the set-3 heap. Index 0 stays the plain trilinear REPEAT sampler, which is
+    // both the fallback and the pre-part-41 behaviour. Samplers live for the
+    // process, like every other sampler here.
+    std::map<uint32_t, uint32_t> samplerBySpec;
+    uint32_t samplerCount = 1;
     Image dummy2D, dummy3D, dummyCube, dummy1D;
 
     std::map<uint64_t, ShaderMeta> shaders;
@@ -2604,6 +2611,7 @@ TextureFetch DecodeTextureFetch(const uint32_t* regs, uint32_t slot)
     t.filterMag = (d3 >> 19) & 3;
     t.filterMin = (d3 >> 21) & 3;
     t.filterMip = (d3 >> 23) & 3;
+    t.filterAniso = (d3 >> 25) & 7;
     // dword4: mip_min_level bits 2..5, mip_max_level bits 6..9
     t.mipMin = (d4 >> 2) & 0xF;
     t.mipMax = (d4 >> 6) & 0xF;
@@ -5297,6 +5305,94 @@ void NoteIndexBind(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
     R->bound.indexBuffer = buffer;
 }
 
+// Part 41 item 1b: the sampler a fetch ASKS FOR, by descriptor index in set 3.
+//
+// Until part 41 every fetch published sampler index 0 — one global trilinear REPEAT
+// sampler — a stated simplification that was measured wrong two ways in one session:
+// aniso applied globally speckles the shadow term (hardware fetches the 4096x1024
+// shadow atlas with aniso=0 and POINT filters), and trilinear applied globally is
+// why the ground goes to mush at distance (hardware fetches the world's albedo
+// textures at 4:1 and 8:1 — 500 of 621 distinct textures in the R4 census carry a
+// non-zero aniso field). So the fetch constant's own fields are honoured, one
+// VkSampler per distinct spec, created on first sight and cached for the process.
+//
+// Address modes stay REPEAT in this change ON PURPOSE: the clamp fields are a
+// separate experiment (the cyan edge fringes, part41-kickoff item 5) with its own
+// prediction, and bundling them here would make the two inseparable.
+//
+// CZ_VK_NO_FETCH_SAMPLERS=1 is the whole-feature arm (every fetch reads sampler 0,
+// the part-40 renderer, same binary). CZ_VK_ANISO=N caps the degree; =0 keeps the
+// per-fetch FILTERS while disabling aniso, which separates the two halves of this
+// change for diagnosis.
+static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
+{
+    static const bool off = EnvOn("CZ_VK_NO_FETCH_SAMPLERS");
+    if (off)
+        return 0;
+    const uint32_t d3 = regs[xenos::kFetchConstantBase + constIdx * 6 + 3];
+    const uint32_t key = (d3 >> 19) & 0x1FF;          // mag:2 min:2 mip:2 aniso:3
+    auto it = R->samplerBySpec.find(key);
+    if (it != R->samplerBySpec.end())
+        return it->second;
+    if (R->samplerCount >= g_maxDescriptors)
+    {
+        Count("sampler: set-3 heap FULL — fetch served the default");
+        return 0;
+    }
+    const uint32_t mag = (d3 >> 19) & 3;
+    const uint32_t mn = (d3 >> 21) & 3;
+    const uint32_t mip = (d3 >> 23) & 3;
+    const uint32_t an = (d3 >> 25) & 7;
+    // Filter values 2 (basemap) and 3 (keep) never appear in the R4 census — the
+    // 621 distinct hardware fetches read 0 or 1 on all three fields. If a run
+    // produces one it is COUNTED and filtered as linear, never guessed at silently.
+    if (mag > 1 || mn > 1 || mip > 1)
+        Count("sampler: filter field above LINEAR — treated as linear");
+    if (an > 5)
+        Count("sampler: aniso field above 16:1 — treated as disabled");
+    VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    si.magFilter = mag == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    si.minFilter = mn == 0 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    si.mipmapMode = mip == 0 ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+                             : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.maxLod = VK_LOD_CLAMP_NONE;
+    static const int cap = Env("CZ_VK_ANISO") ? atoi(Env("CZ_VK_ANISO")) : 16;
+    if (an >= 2 && an <= 5 && cap > 0 && R->anisoLimit > 0.0f)
+    {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = std::min(std::min(float(1u << (an - 1)), float(cap)),
+                                    R->anisoLimit);
+    }
+    VkSampler s = VK_NULL_HANDLE;
+    if (vkCreateSampler(R->device, &si, nullptr, &s) != VK_SUCCESS)
+    {
+        Count("sampler: vkCreateSampler FAILED — fetch served the default");
+        return 0;
+    }
+    const uint32_t idx = R->samplerCount++;
+    VkDescriptorImageInfo ii{};
+    ii.sampler = s;
+    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    w.dstSet = R->sets[3];
+    w.dstBinding = 0;
+    w.dstArrayElement = idx;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    w.pImageInfo = &ii;
+    vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+    R->samplerBySpec[key] = idx;
+    // One line per DISTINCT spec for the process — a handful, and each is the
+    // engagement evidence the census can be checked against.
+    fprintf(stderr, "[vk] sampler #%u: mag=%u min=%u mip=%u anisoField=%u -> "
+                    "maxAniso %.0f\n",
+            idx, mag, mn, mip, an,
+            si.anisotropyEnable ? si.maxAnisotropy : 0.0f);
+    return idx;
+}
+
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
@@ -5973,7 +6069,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 Count(slot ? "draw: bound a REAL cube map"
                            : "draw: cube fetch got the dummy");
             reinterpret_cast<uint32_t*>(shared + arrayBase)[constIdx] = slot;
-            reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] = 0;
+            reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] =
+                SamplerIndexForFetch(regs, constIdx);
             if (psbind && psbindAt >= int(sizeof psbindLine) - 96)
                 psbindFull = true;
             if (psbind && psbindAt < int(sizeof psbindLine) - 96)
@@ -8399,36 +8496,19 @@ bool InitCommon()
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.maxLod = VK_LOD_CLAMP_NONE;
-    // Part 41 item 1a: anisotropic filtering, global. Every fetch publishes sampler
-    // index 0 and index 0 is this sampler, so "created with aniso" IS "every sampled
-    // texture filters aniso" — the engagement evidence is the one line printed below,
-    // there is no per-draw counter to go unread (gotcha 308's shape does not apply to
-    // a creation-time property). Default 16x clamped to the device limit;
-    // CZ_VK_ANISO=N picks another degree; CZ_VK_NO_ANISO=1 is the same-binary control
-    // arm (the pre-part-41 trilinear renderer).
-    float anisoUsed = 0.0f;
-    if (R->anisoLimit > 0.0f && !Env("CZ_VK_NO_ANISO"))
-    {
-        anisoUsed = 16.0f;
-        if (const char* e = Env("CZ_VK_ANISO"))
-            anisoUsed = float(std::max(1, atoi(e)));
-        anisoUsed = std::min(anisoUsed, R->anisoLimit);
-        si.anisotropyEnable = VK_TRUE;
-        si.maxAnisotropy = anisoUsed;
-    }
-    if (anisoUsed > 0.0f)
-        fprintf(stderr, "[vk] anisotropic filtering ON at %.0fx (device limit %.0fx); "
-                        "CZ_VK_NO_ANISO=1 is the control arm\n",
-                anisoUsed, R->anisoLimit);
-    else
-        fprintf(stderr, "[vk] anisotropic filtering OFF (%s)\n",
-                R->anisoLimit > 0.0f ? "CZ_VK_NO_ANISO" : "device has no support");
+    // Sampler 0 is PLAIN TRILINEAR, deliberately and permanently. Part 41's first
+    // attempt put 16x aniso here, reasoning "every fetch publishes index 0, so this
+    // is where aniso goes" — and the very first capture showed dark speckle across
+    // the whole frame, because index 0 also serves the SHADOW ATLAS lookups, which
+    // hardware fetches with aniso=0 and point filters. The per-fetch sampler cache
+    // (SamplerIndexForFetch) is where the fetch constant's own filter fields are
+    // honoured; this sampler remains the fallback and the CZ_VK_NO_FETCH_SAMPLERS
+    // arm's whole world.
+    fprintf(stderr, "[vk] per-fetch samplers %s (aniso device limit %.0fx)\n",
+            Env("CZ_VK_NO_FETCH_SAMPLERS") ? "OFF (CZ_VK_NO_FETCH_SAMPLERS)" : "ON",
+            R->anisoLimit);
     if (vkCreateSampler(R->device, &si, nullptr, &R->linearSampler) != VK_SUCCESS)
         return false;
-    // The point sampler stays non-aniso on purpose: NEAREST is asked for exactly when
-    // texel identity matters, and an anisotropic footprint would average texels.
-    si.anisotropyEnable = VK_FALSE;
-    si.maxAnisotropy = 0.0f;
     si.magFilter = VK_FILTER_NEAREST;
     si.minFilter = VK_FILTER_NEAREST;
     if (vkCreateSampler(R->device, &si, nullptr, &R->pointSampler) != VK_SUCCESS)
