@@ -2947,3 +2947,30 @@ From phase C part 18 (the frame rate — and none of it was work):
      over one hardware trace settled it in a minute. The tell that finally broke it:
      hardware writing a meaningful RB_ALPHA_REF (0.502) on draws whose test read
      "disabled" — state nobody sets for a feature nobody uses.
+
+309. **A GLOBAL RESOURCE SERVES EVERY SEMANTIC AT ONCE — set a per-thing property
+     globally and you set it on the thing that cannot tolerate it.** Part 41 enabled
+     16:1 anisotropic filtering on Case Zero's one global sampler, reasoning "every
+     fetch publishes sampler index 0, so index 0 is where aniso goes". The very first
+     capture showed dark speckle across the whole frame: index 0 also serves the
+     SHADOW ATLAS lookups, and anisotropically averaging depth values before a manual
+     depth comparison makes the comparison flicker per pixel. Hardware was never in
+     danger of this because the property is PER FETCH CONSTANT — and the census that
+     settled it (histogram dword3 bits 25..27 over 621 distinct fetches) showed the
+     title asking for 4:1/8:1 on albedo and aniso=0 with POINT filters on the shadow
+     atlas. The fix was never "tune the global value"; it was to stop the value being
+     global. Transferable form: before promoting any per-resource field to a global
+     default, enumerate the consumers of the global and ask which one the new value
+     breaks — a depth-comparison path is the usual victim.
+
+310. **A METRIC CAN FLAG A DEFECT WHILE MISLABELING IT — read a surprising drop as
+     "something broke", not "the change did nothing".** The global-aniso arm's
+     registered prediction was "sharpness rises"; the speckled arm read -19%
+     (4.351 vs 5.313/5.389, null 1.4%). The metric was not blind — it moved 13x its
+     noise floor — but its LABEL was wrong-way-round: without the matched-F9 eyeball,
+     a large drop on a "should rise" prediction reads as "aniso is ineffective or
+     mildly harmful, drop the item", when the truth was "aniso broke an unrelated
+     subsystem". A refuted prediction is a fork with three prongs (effect absent /
+     effect reversed / a DIFFERENT mechanism moved the number), and only a picture or
+     a mechanism-level instrument can pick the prong. Pair every aggregate metric
+     verdict with one matched-viewpoint LOOK before acting on it.
