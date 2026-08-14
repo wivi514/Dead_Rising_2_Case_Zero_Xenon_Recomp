@@ -1469,6 +1469,10 @@ struct Renderer
 
     VkSampler linearSampler = VK_NULL_HANDLE;
     VkSampler pointSampler = VK_NULL_HANDLE;
+    // 0 = the device has no samplerAnisotropy feature (checked at device creation);
+    // otherwise the device's maxSamplerAnisotropy limit, read so the sampler never
+    // asks for more than the device names.
+    float anisoLimit = 0.0f;
     Image dummy2D, dummy3D, dummyCube, dummy1D;
 
     std::map<uint64_t, ShaderMeta> shaders;
@@ -2081,6 +2085,26 @@ bool CreateDevice()
     f2.features.fillModeNonSolid = VK_TRUE;
     f2.features.depthClamp = VK_TRUE;
     f2.features.textureCompressionBC = VK_TRUE;
+    // ANISOTROPIC FILTERING (part 41 item 1). Xenos filters up to 16:1 and the fetch
+    // constants carry a per-texture aniso field; until part 41 both samplers were
+    // plain trilinear, so every grazing-angle surface — the whole road at distance —
+    // went to mush well before the horizon. The feature is enabled whenever the
+    // device has it (the sampler decides whether to USE it, which is where
+    // CZ_VK_NO_ANISO acts); asked for blindly it would fail device creation on a
+    // device that lacks it, so it is checked first and its absence is a named
+    // configuration fact, not a silent picture change.
+    {
+        VkPhysicalDeviceFeatures haveF{};
+        vkGetPhysicalDeviceFeatures(R->physical, &haveF);
+        if (haveF.samplerAnisotropy)
+        {
+            f2.features.samplerAnisotropy = VK_TRUE;
+            R->anisoLimit = props.limits.maxSamplerAnisotropy;
+        }
+        else
+            fprintf(stderr, "[vk] device lacks samplerAnisotropy — distance "
+                            "filtering stays trilinear on this device\n");
+    }
     // CZ_VK_ROBUST=1 — bound out-of-range buffer reads instead of undefined behaviour.
     // A Xenos vfetch past a stream's declared size returns ZERO (the fetch-constant
     // contract, already quoted at XeVfetchDep); a Vulkan vertex-attribute fetch past the
@@ -8322,8 +8346,36 @@ bool InitCommon()
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.maxLod = VK_LOD_CLAMP_NONE;
+    // Part 41 item 1a: anisotropic filtering, global. Every fetch publishes sampler
+    // index 0 and index 0 is this sampler, so "created with aniso" IS "every sampled
+    // texture filters aniso" — the engagement evidence is the one line printed below,
+    // there is no per-draw counter to go unread (gotcha 308's shape does not apply to
+    // a creation-time property). Default 16x clamped to the device limit;
+    // CZ_VK_ANISO=N picks another degree; CZ_VK_NO_ANISO=1 is the same-binary control
+    // arm (the pre-part-41 trilinear renderer).
+    float anisoUsed = 0.0f;
+    if (R->anisoLimit > 0.0f && !Env("CZ_VK_NO_ANISO"))
+    {
+        anisoUsed = 16.0f;
+        if (const char* e = Env("CZ_VK_ANISO"))
+            anisoUsed = float(std::max(1, atoi(e)));
+        anisoUsed = std::min(anisoUsed, R->anisoLimit);
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = anisoUsed;
+    }
+    if (anisoUsed > 0.0f)
+        fprintf(stderr, "[vk] anisotropic filtering ON at %.0fx (device limit %.0fx); "
+                        "CZ_VK_NO_ANISO=1 is the control arm\n",
+                anisoUsed, R->anisoLimit);
+    else
+        fprintf(stderr, "[vk] anisotropic filtering OFF (%s)\n",
+                R->anisoLimit > 0.0f ? "CZ_VK_NO_ANISO" : "device has no support");
     if (vkCreateSampler(R->device, &si, nullptr, &R->linearSampler) != VK_SUCCESS)
         return false;
+    // The point sampler stays non-aniso on purpose: NEAREST is asked for exactly when
+    // texel identity matters, and an anisotropic footprint would average texels.
+    si.anisotropyEnable = VK_FALSE;
+    si.maxAnisotropy = 0.0f;
     si.magFilter = VK_FILTER_NEAREST;
     si.minFilter = VK_FILTER_NEAREST;
     if (vkCreateSampler(R->device, &si, nullptr, &R->pointSampler) != VK_SUCCESS)
