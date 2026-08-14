@@ -6745,3 +6745,38 @@ part-39 guards still run per tail level. `mip: packed tail level TAKEN` reads
 * `verify/capture_002863` adjudicated: part-40's fixes hold on the big canopies;
   the small orange tree's hard triangular shards at range are item 4's signature.
 * Items 3, 4, 5: untouched.
+
+### §6bt addendum — the three-arm A/B verdict (same binary d5b8fdc, 9 runs, alternated)
+
+Treecam route, arms def (samplers+tail) / `CZ_VK_NO_FETCH_SAMPLERS` /
+`CZ_VK_NO_MIP_TAIL`, three runs each, null from the def pair. All nine runs
+landed outdoors (6,618-7,404 max draws); both arms proved their engagement in the
+log (nfs creates no samplers; ntl takes zero tail levels).
+
+* **Per-fetch samplers: CONFIRMED.** Outdoor-era median sharpness def
+  5.492/5.539/5.551 vs nfs 5.341/5.398/5.437 — **no overlap at three runs an
+  arm**, +2.6% at the medians, the registered direction. The matched F9s agree:
+  no speckle anywhere on def, and the far grass slope and fence mesh hold texture
+  where nfs washes out. Era medians: meanLuma inside/near the null on every arm
+  (no away-from-hardware move), distinctColours unresolved (def3 alone sits 5.6x
+  the null from its own siblings — the within-arm spread swamps the statistic,
+  §6bq's shape).
+* **The packed tail: correctness-justified, era-unresolved, direction right.**
+  ntl (no tail) reads slightly SHARPER (5.537-5.693) than def — which is the
+  aliasing-scores-as-gradient effect: without deep mips the far field samples
+  too-detailed levels and shimmers. Counters, identical across all three def
+  runs: **4,463-4,475 tail levels TAKEN, 73 REJECTED by the divergence guard,
+  302 chains still ending mostly-empty** — the rule uploads what it fits and the
+  guards still refuse what it does not. One registered clause was MIS-SPECIFIED
+  and is retracted as written: "the REJECTED class shrinks" assumed part 39's
+  254 rejections happened at tail levels; the old walk never scored a tail level
+  (ntl REJECTED = 0 on this route), so the def arm's 73 is a NEW count of
+  square-rule misfits, not a residue of an old one.
+* The failed global-aniso arm's numbers, for the record: sharpness 4.351 vs
+  5.313/5.389 nulls (-19% — the metric flagged the speckle but as a DROP, which
+  without the eyeball reads as "ineffective" rather than "broke the shadow
+  term").
+
+**Owed next**: the operator's far-field look (their mandate started this part),
+kickoff items 3 (00i pairing on the 81-capture walk), 4 (A2M dither at
+distance), 5 (clamp modes / edge fringes), and 1b's clamp half.
