@@ -5362,6 +5362,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 key.alphaTest = 1;
                 Count("draw: alpha test (GREATER/GEQUAL) enabled");
             }
+            else if (func == 2 && F32(regs[xenos::kRbAlphaRef]) >= 1.0f)
+            {
+                // EQUAL at ref = 1.0 — "keep only the fully solid texels". The clip is
+                // >=-shaped, but nothing an alpha channel produces exceeds 1.0, so
+                // >= (1 - half an 8-bit step) IS equality here; the threshold write
+                // below supplies that value. This is the caster flavor of the foliage
+                // cutout (174 of our shadow-pass draws, ref always exactly 1.0 in
+                // hardware's traces too) and the two-pass core redraw. EQUAL at any
+                // LOWER ref cannot be spelled with one >= clip and stays counted below.
+                key.alphaTest = 1;
+                Count("draw: alpha test EQUAL@1.0 (emulated as >= 1-eps)");
+            }
             else if (func != 7)
             {
                 static const char* kFuncNames[8] = { "NEVER", "LESS", "EQUAL", "LEQUAL",
@@ -5902,8 +5914,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     // level clamp, this renderer uploads exactly one level, and until
                     // both censuses printed the fields nobody on either side could say
                     // how much of the chain was being thrown away.
+                    "  cc=%08X ar=%.3f"
                     "  s%u=%08X %ux%u fmt=%u dim=%u depth=%u swz=%03X tiled=%u "
                     "pitchBlk=%u end=%u mip=%u..%u mipAddr=%08X slot=%u%s%s",
+                    // RB_COLORCONTROL and RB_ALPHA_REF beside every texture binding
+                    // (part 40): the register that decides whether a cutout happens was
+                    // not in the census, so every alpha-test question had to be answered
+                    // by cross-referencing a hardware trace instead of by reading the
+                    // line. Repeated per fetch slot like everything else on the line —
+                    // redundant, greppable.
+                    regs[xenos::kRbColorControl], F32(regs[xenos::kRbAlphaRef]),
                     constIdx, t.address, t.width, t.height, t.format, t.dimension,
                     t.depth, t.swizzle,
                     t.tiled ? 1u : 0u, t.pitchBlocks, t.endian, t.mipMin, t.mipMax,
@@ -6205,10 +6225,29 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         reinterpret_cast<uint32_t*>(shared + kSharedSwappedTexcoords)[0] = swapped;
     }
 
-    // g_AlphaThreshold — RB_ALPHA_REF, verbatim. Written unconditionally (one store);
-    // only pipelines whose spec constant compiled the clip in ever read it.
-    reinterpret_cast<uint32_t*>(shared + kSharedAlphaThreshold)[0] =
-        regs[xenos::kRbAlphaRef];
+    // g_AlphaThreshold — RB_ALPHA_REF, with func GREATER made STRICT (part 40).
+    //
+    // The shaders' emitted test is `clip(oC0.w - g_AlphaThreshold)`, which keeps
+    // w >= threshold. For func GEQUAL that is exact. For func GREATER it differs at
+    // exactly w == ref — and this title leans on that difference with its whole
+    // weight: the leaf-card foliage draws OPAQUE with GREATER at ref = 0.0, meaning
+    // "discard the alpha-0 background, keep every lit leaf texel". A >= 0 clip keeps
+    // the background too, and the canopy renders as solid sheets of leaf pattern —
+    // the operator's "still shards" report, five minutes after the register fix made
+    // the test fire at all. Publishing ref + half an 8-bit step (1/512) turns the
+    // emitted >= into the strict > for every value an 8-bit-sourced alpha can take,
+    // without touching the shared XenosRecomp emitter. GEQUAL keeps the exact ref.
+    {
+        const uint32_t cc = regs[xenos::kRbColorControl];
+        float thr = F32(regs[xenos::kRbAlphaRef]);
+        if ((cc & 0x8) && (cc & 0x7) == 4)
+            thr += 1.0f / 512.0f;
+        // EQUAL@1.0 (see the pipeline-key block): >= (ref - eps) is equality when
+        // nothing can exceed ref. Same half-8-bit-step epsilon as the strict GREATER.
+        else if ((cc & 0x8) && (cc & 0x7) == 2 && thr >= 1.0f)
+            thr -= 1.0f / 512.0f;
+        reinterpret_cast<float*>(shared + kSharedAlphaThreshold)[0] = thr;
+    }
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)
