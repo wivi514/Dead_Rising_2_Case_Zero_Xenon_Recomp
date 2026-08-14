@@ -675,7 +675,36 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-13 (part 40 — the shard trees SOLVED, and the cause
+Where the port is, as of 2026-08-14 (part 41, first session — the far field: per-fetch
+samplers and the packed mip tail, both default):
+
+* **PER-FETCH SAMPLERS ARE THE DEFAULT (d5b8fdc) — the fetch constant's own
+  mag/min/mip/aniso fields, honoured for the first time since phase 5.** The world's
+  albedo filters at the 4:1/8:1 the title asks for; the shadow atlas gets the
+  point/point/point/no-aniso sampler hardware asks for. Confirmed by a three-arm
+  same-binary A/B: outdoor sharpness +2.6% with NO overlap at three runs an arm, no
+  era regression. `CZ_VK_NO_FETCH_SAMPLERS=1` is the part-40 arm; `CZ_VK_ANISO=N`
+  caps the degree. **The GLOBAL-aniso form was tried first and is REFUTED BY
+  PICTURE — do not re-buy it**: 16x on sampler 0 speckles the whole frame dark,
+  because sampler 0 also serves the shadow-map lookups and hardware fetches that
+  atlas with aniso=0/POINT (621-fetch census, §6bt). The sharpness metric read the
+  regression as a -19% DROP — a metric can flag a defect while mislabeling it; the
+  matched F9 eyeball named the mechanism in one look.
+* **THE PACKED MIP TAIL IS DECODED (409777d) — part 39's standing decline, paid.**
+  No remembered table: `tools/packed_mip_derive.py` brute-forced the offsets from
+  hardware's own bytes over all eight R4 traces — a square packed level of width W
+  blocks sits at block (W,0) in the shared tile, 7,466 of 7,515 informative votes,
+  both DXT formats. ~4,468 tail levels upload per outdoor run (73 guard-rejected,
+  302 mostly-empty — everything underived still declines and counts).
+  `CZ_VK_NO_MIP_TAIL=1` is the tail-only part-39/40 arm. Era statistics unresolved
+  (like the chain itself in part 39); justified on correctness.
+* **`docs/part41-kickoff.md` remains the LIVE plan** — items still open: the
+  operator's far-field verdict (their mandate started this part), 00i pairing on
+  the 81-capture walk (item 3), A2M dither at distance (item 4), clamp modes /
+  edge fringes (item 5 + 1b's clamp half). `docs/phase5-notes.md` §6bt is the full
+  record of this session.
+
+Where the port was, as of 2026-08-13 (part 40 — the shard trees SOLVED, and the cause
 was one wrong register index):
 
 * **RB_COLORCONTROL IS 0x2202, NOT 0x2205 — and the whole shard-tree class (item 0t)
