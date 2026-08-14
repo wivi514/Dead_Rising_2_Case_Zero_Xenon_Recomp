@@ -1,4 +1,34 @@
-# Part 42 kickoff — THE DOF COMPOSITE: the one pass standing between the sharp scene and the presented frame
+# Part 42 kickoff — THE FLAT-TEXTURE CLASS FIRST (the operator's actual complaint), then the DoF composite
+
+**RE-RANKED at the end of part 41 session 2, on the operator's own correction**: *"I
+did not say the ground looked bad I said everything except the ground looks bad"* —
+and what they mean is FLAT TEXTURES on buildings/objects at range (item 00i), not
+softness. The DoF work below is real and stays, but it is SECOND. Do not conflate
+the two again: a blurred brick wall still shows brick; the complaint class shows NO
+PATTERN AT ALL (capture_003053's two-story building, capture_003368's slab, in
+`~/DR2CZ-troubleshooting/part41-operator/default/`).
+
+## ITEM 00i FIRST — the flat-texture pairing, now with the pointing instrument
+
+What part 41 session 2 established for this item:
+* The 20-capture censuses carry tiny textures (8x8, 16x16) bound to world draws
+  at range (e.g. 0ED9A000:8x8, 0F9BA000:16x16) — candidates for the flat look.
+* Census-only draw correspondence across the walk FAILED (619 keys alias across
+  distinct objects; the multiset tracker cannot isolate one building face).
+* Therefore: use `CZ_VK_DRAW_ID=1` + `CZ_CAPTURE_KEY` + F9 headlessly at a
+  reproduced flat-building view (DebugJump spawn IS on the walked street; camera
+  holds reach the 003053 building). The draw-ID map names the flat face's draw;
+  its census row names the bound texture and extent.
+* Then the two-sided question: what does HARDWARE bind for the same face at the
+  same distance (R4 CSVs, `--min-verts 0`)? Bigger extent -> OUR streaming
+  promotion is late (candidates: file-IO latency; the KeSetBasePriorityThread
+  no-op part 28 deliberately left unbuilt) -> fix and A/B. Same extent -> the
+  title's design, and the real divergence is elsewhere (mesh LOD selection?).
+* Warning for the comparison: the DoF blur (below) sits ON TOP of these pixels
+  in the presented frame. Judge flatness on the SCENE snapshot (1439B000), which
+  is pre-post-chain — or the comparison measures the blur, not the binding.
+
+## SECOND: the DoF composite (the far-field softness)
 
 Written at the end of part 41 session 2 (2026-08-14). **This is the LIVE hand-off**,
 superseding `part41-kickoff.md` on "what to do next" (that plan's items 3-5 are
