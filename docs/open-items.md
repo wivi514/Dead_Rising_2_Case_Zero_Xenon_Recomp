@@ -1616,7 +1616,27 @@ Next, in order:
    could not have matched and its negative result means nothing (gotcha 25). Answering it
    needs `docs/big-archive-format.md` and a real TOC reader.
 
-00i. **REOPENED THE SAME DAY — the operator's matched capture refutes the
+00i. **PART 45: THE MENU HALF IS SOLVED, AND IT WAS NEVER A TEXTURE-LEVEL OR
+   MIP QUESTION — our own synth tool dropped interpolants after PARTIAL
+   register writes, so 217 of 333 pixel shaders sampled their diffuse (and
+   often two more textures) at ONE TEXEL.** The fourth-addendum menu-lab plan
+   ran to completion: the GAS ball draw was named by draw-ID (not inference),
+   all four texture slots came back byte-identical to B1's memory records,
+   the UVs identical on every sampled vertex, every recoverable constant
+   equal, the dummies refuted by poison — and the generated HLSL then showed
+   `r0 = 0.0` where the microcode's `tfetch2D r0.__xy` had only written .zw
+   and the diffuse is fetched at r0.xy. Fixed in
+   `tools/synth_shader_container.py` (per-component liveness, commit
+   fdda6f3); the menu ball is RED on the new cache and the E3 correlation
+   gate flips +0.687→+0.710 (fail→pass). Full record: `phase5-notes.md`
+   §6by; gotcha 316. The old cache is `assets/shader_spv_pre45`
+   (CZ_SHADER_SPV selects it — the same-binary control arm).
+   **The OUTDOOR flat-at-range half is being re-measured on the fixed cache
+   before any further overshoot work** (gotcha 172: part 44's mip-tint
+   readings were taken through world shaders that are in the 217). Historical
+   head below, kept for the elimination it records.
+
+   (superseded by the part-45 head) 00i. **REOPENED THE SAME DAY — the operator's matched capture refutes the
    closure's attribution: the flat Big Buck buildings bind FULL-SIZE textures
    (8 tiny-on-big draws of 1,760 in their capture 4), so the flat look at
    range is NOT the thumbnail class at all, on either platform.** The B2 rate

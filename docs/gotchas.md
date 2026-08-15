@@ -3042,3 +3042,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      computation — it was in the state the two sessions brought to it. Before
      reading any A-vs-B where either side carries accumulated state
      (streaming, caches, promotion), write down how each arm GOT there.
+
+316. **A PARTIAL WRITE IS NOT A WRITE — dataflow over an ISA with write masks
+     must track COMPONENTS, not registers.** Case Zero's synth container tool
+     derived "which PS registers are interpolator inputs" as read-before-write
+     over a flat set of register numbers, so a `tfetch2D r0.__xy` (destination
+     swizzle KEEPS .xy, writes only .zw) removed r0 from the inputs sixteen
+     instructions before the shader sampled its diffuse at r0.xy. The
+     translated HLSL zero-initialised the register, the surface sampled ONE
+     TEXEL forever, and the class — 217 of 333 pixel shaders — presented as
+     flat-colour props and facades that survived SEVEN input-side refutations
+     across three parts, because every input really was correct. Two
+     corollaries paid for separately: the idle scalar co-issue slot is
+     RetainPrev (50), not Adds (0), so "opcode nonzero" is the wrong presence
+     test and would drop a real `adds` feeding a `*_prev`; and the old
+     analysis never tracked scalar co-issue DESTINATION writes at all, so its
+     input lists carried spurious registers whose only writer was the scalar
+     pipe. Transcribe operand component semantics from the translator's own
+     printer rather than re-deriving them — the two ends cannot then disagree.

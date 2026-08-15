@@ -3107,3 +3107,31 @@ PROMOTION-DENIAL defect, and the DoF "hardware contradiction" mostly dissolved):
   destination mask emitted `r0. = ...;` and had been the bank's only
   translation failure. `docs/xenonrecomp-upstream-bugs.md`.
 
+### (moved 2026-08-15, part 45 close-out) Where the port was, as of 2026-08-14 (part 43 — the zone texture-set decision is
+fully named, OUR EXECUTION OF IT IS CORRECT, and item 00i waits on capture R5):
+
+* **ITEM 00i INVERTED: the engine ITSELF picks LOD at the spawn, on inputs
+  verified live.** The whole chain is named (`phase5-notes.md` §6bw):
+  `sub_82270870` picks `COMMON_TEXTURE_LOD.tex` iff the zone's LOD-capable
+  flag (rec+0x90C, from the two files' sizes at setup) AND every volume in
+  the zone's list is farther than its threshold from the camera `[g+0x40]`
+  (per-level boost tables; level 14 = none; force byte 0x82A57BD7 = 0).
+  `CZ_ZONE_TEX_PROBE=1` printed every input at decision time and predicted
+  part 42's narration line for line; `tools/zone_lod_live.py` reproduces the
+  verdict on a live process. Zones 1/2/3/7 are all-far by 31-107 m at the
+  spawn, the camera is ALREADY at the spawn when the burst runs, and the
+  ordering hypothesis is dead (menu/origin cameras yield MORE LOD zones).
+  **The LOD file IS the thumbnail set by design** (27 KB vs 1.3 MB). The
+  decision runs ONCE per zone load; no promotion trigger found statically,
+  and no headless roam has crossed a LOD threshold to test it live. **The R4
+  traces cannot adjudicate this — they are a WARM-session sweep at Big Buck.**
+  Capture **R5** is filed (one fresh DebugJump stand-still F4 at the spawn,
+  no patching): flat street → 00i collapses to a state-comparison artifact;
+  full street → suspects in order: volume skip-bits, volume data, an unfound
+  reload path. **Build no fix before R5** (gotcha 5 — every candidate fakes
+  the decision). (Its hand-off is superseded: `docs/part45-kickoff.md` is
+  the LIVE one.)
+* Instrument-log gotcha paid for: the probe's first version printed a
+  directory object as %s, salted the log with NULs, and plain grep read the
+  whole probe as absent for two runs — `grep -a` / `tr -d '\0'` before
+  believing a zero from an instrument's own log (gotcha 25's self-made form).

@@ -7580,3 +7580,102 @@ region / wrong content / missing layer", with the E3 picture as the visible
 gate. If ours and hardware's level-0 bytes MATCH for every slot of the ball
 draw, the divergence moved into shading constants for that draw, and the same
 trace supplies those too.
+
+## 6by. Part 45: THE MENU LAB CONVICTS OUR OWN SYNTH TOOL — a PARTIAL write is not a
+## write, and 217 pixel shaders had been sampling their diffuse at ONE TEXEL
+
+The fourth addendum's plan ran exactly as written, and the byte-level adjudication
+came back ALL-MATCH — which is the branch that says "the divergence is in the
+shading", and this time the shading was audited to the instruction.
+
+### The elimination, in order, one measurement each
+
+* **The ball draw was NAMED, not inferred** (gotcha 302 honoured): a headless
+  `CZ_VK_DRAW_ID` F9 at the menu, `drawid_read.py` on the scene surface at the
+  ball's pixels — draw 1606, 1,229 verts, `vs_d338876a58c8c0ed` /
+  `ps_eb170d16fe949e52`, four DXT1 slots + the rendered cube at s4. The 19%
+  neighbour is the GAS-letter decal (a different pair, and it renders correctly —
+  which becomes a clue below).
+* **All four texture slots are BYTE-IDENTICAL to hardware.** B1 carries the same
+  draw (66918 etc., same extents, same slot layout); `xtr_draw_bindings.py
+  --dump-texture` for each of hardware's addresses vs our
+  `CZ_VK_TEX_DUMP_PS=eb170d16fe949e52` tiled psdumps: four md5 matches of four
+  (131,072 B / 32,768 B files). The staleness gate is moot for a dump that equals
+  our own upload byte-for-byte. Decoded, s0 IS the red disc with the rust streaks
+  and the white band; s1 the normal map; s2 a grayscale mask; s3 the baked-shadow
+  atlas. The red was in our memory, uploaded, and never reached the screen.
+* **The UVs are equal to the printed digit** — `xtr_draw_vertices.py` on B1 vs
+  `CZ_VK_DRAW_PROBE` live: all 24 sampled verts of loc4 identical, and the menu
+  camera is deterministic enough that vc0-vc10 match to four decimals too.
+* **Every recoverable constant is equal**: c1, c14, c16-c20, c23, c24, c67 all
+  match; our literal bank c253=(0.5,0.3333,0.75,2.0), c254=(1,1.5,-1,0.25),
+  c255=0 is exactly the shape the microcode's normal-z reconstruction needs
+  (`sqrt(c254.x - (x²+y²) + c255.x)` with scale c253.w=2, bias c254.z=-1), so
+  the pc255=0 that looked alarming beside the DoF gather's open question is the
+  CORRECT value here — hardware's copy is LOAD_ALU-sourced and unrecoverable
+  from B1, but a literal bank this coherent is not a zero-init.
+* **The dummies are refuted for this surface**: `CZ_VK_DUMMY_POISON=1` (all four
+  heaps magenta, engagement printed per set) leaves the ball cream, pixel for
+  pixel.
+
+### The conviction
+
+With every input equal and the output different, the divergence is inside the
+translated module — and reading the generated HLSL against the disassembly names
+it in one screen: the PS initialises `r1, r4..r7` from `iTexCoord1,4,5,6,7` and
+**zero-initialises r0, r2, r3** — the DIFFUSE UV, the mask UV and the atlas UV.
+`tools/synth_shader_container.py`'s liveness kept `written` as a flat set of
+register NUMBERS, so instruction 10's `tfetch2D r0.__xy, r1.xy, tf1` — a fetch
+whose destination swizzle KEEPS .xy and writes only .zw — removed r0 from the
+interpolator inputs, sixteen instructions before `tfetch2D r1, r0.xy, tf0` reads
+the components the fetch had preserved. Same story for r3 (written .zw at 14) and
+r2 (written .w at 16). The translated shader sampled its diffuse at a CONSTANT
+UV (0,0) — one texel of gray galvanised panel, squared, lit by the correctly
+wired normal map, fogged and tone-mapped: a flat cream ball whose panel seams
+come from the normal map, on a surface whose texture bytes were perfect. The
+GAS-letter decal drew correctly because ITS shader's UV register is never
+partially pre-written.
+
+### The fix and its census
+
+Per-component read-before-write, with every operand's component set transcribed
+from XenosRecomp's own operand printer (`shader_recompiler.cpp`): vector source
+lane sets by opcode family (dot family fixed-count, others = write mask with the
+.x fallback), src3 shared between the 3-source vector opcodes and the scalar
+co-issue (operand A at `((swz>>6)+3)&3`, B at `swz&3`, present iff the opcode is
+not RetainPrev=50 — Adds is 0, so "nonzero opcode" would drop a real adds
+feeding a `*_prev`), fetch destination swizzle 7 = Keep = not a write, scalar
+co-issue DESTINATION writes tracked at all (the old analysis ignored them
+entirely), predicated writes not counted as definite.
+
+Census over the 434-microcode bank: **265 of 333 pixel shaders change; 217 gain
+at least one interpolant** (1-5 each, the defect class), the rest lose only
+spurious entries the old src3/scalar blindness had invented (verified on
+`ps_ad65b98593f95926`: its "input 6" was three scalar co-issue writes the old
+tracker could not see). Zero vertex shaders change.
+
+### The gates, and the picture
+
+* dim census on the new cache: 328 2D + 97 cube modules, zero disagreements.
+* `no translated shader` = 0 on every run below; the lost-microcode entry
+  `ps_926c15dd20571cf1` is carried over unchanged (its ucode is gone; documented
+  name-diff exception since part 27).
+* **The registered prediction held**: on the new cache the menu ball is RED with
+  the rust streaks and the white band — E3's ball, at the same fixed camera.
+  Full-frame diff vs the old cache: 7.6% of pixels moved >8 luma, localised to
+  the affected materials.
+* **The standing E3 correlation gate flips from fail to pass**: +0.687 (below
+  the +0.70 threshold, "NO MATCH") on the old cache to **+0.710 ("LAYOUT
+  AGREES")** on the new one, same frame, same reference.
+* The old cache is preserved at `assets/shader_spv_pre45` and selectable with
+  `CZ_SHADER_SPV` — the whole fix is a same-binary A/B.
+
+### What this reopens, on purpose
+
+Every shading-side measurement taken through the old cache has gotcha-172
+exposure. The ones worth re-asking first: the residual white PROPS of part 26
+(newspaper boxes, register, sign — a one-texel sample of an atlas corner is very
+often white, so this class plausibly explains what §6bg's NaN fix left behind),
+and the whole part-44 selection-overshoot signature, whose mip-tint readings
+were taken on world shaders that are in the 217. Item 00i's outdoor half is
+re-measured on the new cache before any further overshoot work.

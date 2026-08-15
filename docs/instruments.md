@@ -479,6 +479,11 @@ XE_FLOOR_IS_NAN / XE_NAN_IN_PAINT / XE_NAN_VS_KILL_IN   the part-33 NaN-tracing 
                    any triangle whose declared float vertex inputs arrive NaN (the
                    data-vs-VS-arithmetic split). docs/xenonrecomp-upstream-bugs.md has
                    the build lines and the part-33 readings for all three
+assets/shader_spv_pre45   not an env var but the same arm shape: the pre-part-45 cache
+                   (component-blind interpolant liveness — 217 pixel shaders sampling
+                   their diffuse at one texel, §6by / gotcha 316), preserved whole and
+                   selected with CZ_SHADER_SPV. The same-binary control for every
+                   picture claim the part-45 fix makes
 CZ_VK_STATS=N      the renderer's named-counter block every N frames. Every path that
                    declines to draw something has a counter, because a renderer that
                    draws 80% of a frame looks exactly like one that draws all of it

@@ -675,10 +675,40 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
+Where the port is, as of 2026-08-15 (part 45 — the white-surface / flat-prop class
+SOLVED at its root: our own synth tool was dropping PS interpolants after PARTIAL
+register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
+
+* **ITEM 00i's MENU HALF (and with it the flat-prop class) IS SOLVED, and the
+  defect was OURS, in `tools/synth_shader_container.py`'s liveness.** The
+  part-45 menu lab ran the fourth addendum's plan to completion: the GAS ball
+  draw named by CZ_VK_DRAW_ID (draw 1606, vs_d338876a58c8c0ed /
+  ps_eb170d16fe949e52); hardware's texture bytes for all four slots dumped
+  out of B1 and **byte-identical to ours** (four md5 matches — the red disc
+  was in our memory all along); UVs equal on every sampled vertex; every
+  recoverable constant equal; dummies refuted by poison. The generated HLSL
+  then showed `r0 = 0.0; r2 = 0.0; r3 = 0.0` where the microcode PARTIALLY
+  writes those registers (`tfetch2D r0.__xy` keeps .xy!) before sampling the
+  diffuse at r0.xy — the old analysis kept `written` as a flat register set.
+  Per-component read-before-write (commit fdda6f3, encodings transcribed from
+  XenosRecomp's own operand printer): **265 of 333 pixel shaders change, 217
+  gain interpolants; the menu ball is RED; the E3 correlation gate flips
+  +0.687 (fail) → +0.710 (pass).** Old cache kept at
+  `assets/shader_spv_pre45` (CZ_SHADER_SPV = same-binary control arm). Full
+  record `phase5-notes.md` §6by; gotcha 316; open-items 00i head updated.
+* **Every shading-side measurement through the old cache now has gotcha-172
+  exposure.** The outdoor flat-at-range half of 00i is being re-measured on
+  the fixed cache first; part 44's mip-tint overshoot readings were taken
+  through world shaders that are in the 217, so no overshoot work resumes
+  until the fixed-cache spawn/Big Buck pictures are read. Part 26's residual
+  white PROPS (newspaper boxes, register, sign — what §6bg's NaN fix left
+  behind) plausibly fall to this fix; the operator pass will say.
+
+Where the port was, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
 MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):
 
-* **ITEM 00i, LIVE STATE: a mip-selection overshoot in the scene pass, ~2
+* **ITEM 00i, PART-44 STATE (superseded by part 45's root cause above for the
+  menu half; outdoor half under re-measure): a mip-selection overshoot in the scene pass, ~2
   octaves too deep globally.** The "closed as faithful" verdict (now in
   `docs/port-history.md`'s status-block archive) was retracted the same day: the operator recreated the R4 walk and their
   matched capture shows the flat buildings bind FULL-SIZE textures (8
@@ -698,37 +728,8 @@ MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):
   §6bf/§6bh). The menu retraction and the level-machine reverse-engineering
   below STAND.
 
-Where the port was, as of 2026-08-14 (part 43 — the zone texture-set decision is
-fully named, OUR EXECUTION OF IT IS CORRECT, and item 00i waits on capture R5):
-
-* **ITEM 00i INVERTED: the engine ITSELF picks LOD at the spawn, on inputs
-  verified live.** The whole chain is named (`phase5-notes.md` §6bw):
-  `sub_82270870` picks `COMMON_TEXTURE_LOD.tex` iff the zone's LOD-capable
-  flag (rec+0x90C, from the two files' sizes at setup) AND every volume in
-  the zone's list is farther than its threshold from the camera `[g+0x40]`
-  (per-level boost tables; level 14 = none; force byte 0x82A57BD7 = 0).
-  `CZ_ZONE_TEX_PROBE=1` printed every input at decision time and predicted
-  part 42's narration line for line; `tools/zone_lod_live.py` reproduces the
-  verdict on a live process. Zones 1/2/3/7 are all-far by 31-107 m at the
-  spawn, the camera is ALREADY at the spawn when the burst runs, and the
-  ordering hypothesis is dead (menu/origin cameras yield MORE LOD zones).
-  **The LOD file IS the thumbnail set by design** (27 KB vs 1.3 MB). The
-  decision runs ONCE per zone load; no promotion trigger found statically,
-  and no headless roam has crossed a LOD threshold to test it live. **The R4
-  traces cannot adjudicate this — they are a WARM-session sweep at Big Buck.**
-  Capture **R5** is filed (one fresh DebugJump stand-still F4 at the spawn,
-  no patching): flat street → 00i collapses to a state-comparison artifact;
-  full street → suspects in order: volume skip-bits, volume data, an unfound
-  reload path. **Build no fix before R5** (gotcha 5 — every candidate fakes
-  the decision). (Its hand-off is superseded: `docs/part45-kickoff.md` is
-  the LIVE one.)
-* Instrument-log gotcha paid for: the probe's first version printed a
-  directory object as %s, salted the log with NULs, and plain grep read the
-  whole probe as absent for two runs — `grep -a` / `tr -d '\0'` before
-  believing a zero from an instrument's own log (gotcha 25's self-made form).
-
-**Older per-part status blocks (parts 28-42 and the superseded mid-part-44
-closure) moved to `docs/port-history.md` on 2026-08-15** — CLAUDE.md keeps
+**Older per-part status blocks (parts 28-43 and the superseded mid-part-44
+closure) moved to `docs/port-history.md` (2026-08-15)** — CLAUDE.md keeps
 only the live part and one part back, per the 2026-08-08 split's rule.
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
