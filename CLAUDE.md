@@ -697,12 +697,16 @@ register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
   `assets/shader_spv_pre45` (CZ_SHADER_SPV = same-binary control arm). Full
   record `phase5-notes.md` §6by; gotcha 316; open-items 00i head updated.
 * **Every shading-side measurement through the old cache now has gotcha-172
-  exposure.** The outdoor flat-at-range half of 00i is being re-measured on
-  the fixed cache first; part 44's mip-tint overshoot readings were taken
-  through world shaders that are in the 217, so no overshoot work resumes
-  until the fixed-cache spawn/Big Buck pictures are read. Part 26's residual
-  white PROPS (newspaper boxes, register, sign — what §6bg's NaN fix left
-  behind) plausibly fall to this fix; the operator pass will say.
+  exposure, and the first re-measures ran the same day** (§6by addendum): the
+  fixed-cache spawn gains the QUARANTINE bus lettering + van panel detail
+  (part-26 white-prop members visibly fixed; the operator tour will finish
+  the list), and **the mip-tint overshoot signature REPRODUCES on the clean
+  bank** — a real, separate mechanism. Contact points at one fixed view:
+  `CZ_VK_ANISO=0` is ~1 octave deeper (aniso engages and buys its octave),
+  `CZ_VK_NO_FETCH_SAMPLERS=1` deeper still — neither arm shallows, so the
+  sampler terms are exonerated and the residual +1..2-octave global shift has
+  no named cause. `docs/part46-kickoff.md` (the LIVE hand-off) leads with the
+  operator verdict session and the R4_04 implied-LOD hard number.
 
 Where the port was, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
 MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):

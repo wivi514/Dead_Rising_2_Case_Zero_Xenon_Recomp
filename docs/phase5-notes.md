@@ -7679,3 +7679,27 @@ often white, so this class plausibly explains what §6bg's NaN fix left behind),
 and the whole part-44 selection-overshoot signature, whose mip-tint readings
 were taken on world shaders that are in the 217. Item 00i's outdoor half is
 re-measured on the new cache before any further overshoot work.
+
+### §6by addendum — the overshoot on the CLEAN bank: signature reproduced, sampler terms exonerated
+
+Re-measured same day on the fixed cache (gotcha 172), DebugJump spawn
+stand-still F9, one fixed view, arms differing by one env var:
+
+* **Default**: part 44's signature reproduces — trucks solid L1 at ~2 m, vans
+  L1/L2 at 5-10 m, ground L1 at mid-distance. The overshoot is real and
+  separate from the interpolant defect. (Calibration: these fetches declare
+  LINEAR mip filtering, so a SOLID code color needs LOD ≥ ~1 — the solid vans
+  are a genuine ≥ +1-octave shift, not trilinear bleed.)
+* **tint + `CZ_VK_ANISO=0`**: ~1 octave deeper everywhere — aniso ENGAGES in
+  the default and buys its octave back. Not "aniso failing to engage".
+* **tint + `CZ_VK_NO_FETCH_SAMPLERS=1`**: deeper still (Chuck's skin at L1 at
+  arm's length). Neither arm SHALLOWS: the per-fetch sampler machinery is
+  helping, not causing.
+
+With the derivative environment audited as matched (viewport-path raster =
+1280×720 = hardware's pixel grid; MSAA window scaling touches only
+window-coordinate draws), the residual +1..2-octave global shift has no named
+cause. The next discriminator is the hard number: hardware's implied LOD for
+a projection-NAMED wall draw out of R4_04's own vertex streams
+(`part46-kickoff.md` item 1). Captures:
+`~/DR2CZ-troubleshooting/part45/{tintcap_fixed,tint_aniso0,tint_nofetch}`.
