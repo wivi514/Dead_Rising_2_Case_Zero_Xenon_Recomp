@@ -675,7 +675,37 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-14 (part 41, second session — the far-field
+Where the port is, as of 2026-08-14 (part 42 — the flat-texture class is a
+PROMOTION-DENIAL defect, and the DoF "hardware contradiction" mostly dissolved):
+
+* **ITEM 00i IS CORNERED: a streaming PROMOTION-DENIAL decision, not a rate.**
+  Verified pre-post-chain (the 003053 building is patternless in the SCENE
+  surface); the flat class is a handful of shared world atlases stuck at 8×8/16×16
+  (53 big draws from TWO addresses in one frame); hardware binds tiny-on-big
+  **0 times across all eight R4 traces** where we do it in 44/82 walk frames; and
+  **standing still for 2.3 minutes promotes NOTHING** — which refutes the rate
+  class outright (file-IO latency, and the `KeSetBasePriorityThread` no-op that
+  had been the named candidate since part 28 — do not build it for this item).
+  The defect is a distance/screen-size threshold or pool budget whose INPUT
+  differs on our runtime. Next: the engine's own narration at the stand-still
+  spot, then `gdis` on `cLODController`/`wait_for_tex_lod`. §6bv.
+* **ITEM 0u IS DOWNGRADED — the composite behaves as designed on BOTH platforms.**
+  Our constants match hardware's to the digit (`CZ_VK_PSBIND_PC` — the
+  instrument already existed); the worked alpha math gives ~95% blur at 50 m on
+  both sides; the gather radius is ~0 on both sides (blur640 ≈ the half-res
+  downsample); and **hardware's own R4 PNGs are soft at range** — part 41's
+  "legible storefront" was signage contrast read against OUR flat walls, i.e.
+  00i wearing 0u's clothes. Remaining residues: the fmt6 byte-split depth
+  serving (edge weights only) and the gather's pc255.x (ours 0, hardware
+  unrecoverable — loads from CPU-written `032B6000`, NOT a resolve destination;
+  `xtr_draw_constants.py` now prints load provenance).
+* **The cache gate paid again: 430 → 435.** Four dumped-but-never-built shaders
+  (only the name-diff gate can see them) plus `vs_c8e86dffb37149dd`, which
+  exposed and fixed a XenosRecomp emitter bug — a vfetch with an EMPTY
+  destination mask emitted `r0. = ...;` and had been the bank's only
+  translation failure. `docs/xenonrecomp-upstream-bugs.md`.
+
+Where the port was, as of 2026-08-14 (part 41, second session — the far-field
 complaint is LOCATED: it is the DoF COMPOSITE, and the scene under it is sharp):
 
 * **CORRECTED BY THE OPERATOR: their complaint is the FLAT-TEXTURE class (00i),

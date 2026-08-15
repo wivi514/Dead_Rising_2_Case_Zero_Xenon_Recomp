@@ -6868,3 +6868,117 @@ Not the mip chain, not the samplers, not the textures, not streaming, not item
 00i's flat panels (a separate binding question this class was masking) — the
 scene surface has full detail at every distance. One fix at the post chain
 recovers the whole far field at once.
+
+## §6bv — part 42: the flat-texture class is a PROMOTION-DENIAL defect measured four ways, and the DoF "hardware contradiction" mostly dissolves
+
+Part 42 ran the part-42 kickoff in its stated order: item 00i first, the DoF
+composite second. Both moved decisively, and each one's answer reshaped the other.
+
+### 00i: the complaint verified on the SCENE surface, then censused two-sided
+
+The kickoff's warning was to judge flatness on the scene snapshot, not the
+presented frame. Done first, and the complaint is REAL AND PRE-POST-CHAIN:
+in the operator's `capture_003053` the two-story building's walls are flat
+tan/olive panels with NO surface pattern **in `1439B000` itself** — crisp
+edges, legible PAWN sign, blank albedo — while the zombies and props beside it
+carry full detail. So the flat class is not the DoF blur, exactly as the
+operator said.
+
+The census then named the mechanism without needing the draw-ID pointer:
+
+* In `capture_f3053`, **53 draws of ≥200 verts (up to 3,575 verts) bind an
+  8×8 or 16×16 texture as s0** on the world shader `ps_34524bb64374d20e` —
+  and all 53 come from just TWO texture addresses (`0ED9A000` 8×8,
+  `11DB9000`). The flat buildings are a handful of SHARED WORLD ATLASES
+  stuck at thumbnail quality, not a zone-wide state and not a per-object
+  lottery.
+* Two-sided, at the shader level: across **all eight R4 hardware traces**
+  (the same street, eight distances, 40,703 draws) the same shader binds a
+  ≤16×16 s0 on a ≥200-vert draw **zero times** — its s0 population is
+  512×512 (586 draws in trace 01 alone) down to 256×64. On OUR side, 44 of
+  the 81-capture walk's frames and 14 of part 41's 20 carry the tiny-bound
+  class (912 and 516 draws). Hardware's smallest-for-this-shader is 8×32,
+  twice, on tiny meshes.
+* Part 39's close-up exoneration (512×512 md5-identical to hardware) still
+  stands, so promotion WORKS near. The defect is WHO GETS PROMOTED.
+
+### The stand-still experiment: promotion never comes, so the rate class is dead
+
+A fixed-camera, fixed-position headless run (DebugJump spawn, 20 F9s at 16 s
+intervals) held the SAME three tiny-bound textures at thumbnail quality for
+**13 consecutive censuses over ~2.3 minutes** — not one promotion, while the
+walk evidence shows those same materials promote instantly on approach. A
+rate-limited streamer (file-IO latency, a starved decompression thread — the
+`KeSetBasePriorityThread` no-op that has been the named candidate since part
+28) would fill in while the player stands still; a threshold or budget
+decision does exactly this. **The priority no-op is refuted as the mechanism
+of item 00i — do not build it for this item.** What decides promotion is a
+DISTANCE/SCREEN-SIZE THRESHOLD or a POOL BUDGET whose input differs on our
+runtime, and the next probe is the engine's own narration (`CZ_GUEST_DIAG`)
+at the stand-still spot, plus the `cLODController` / `wait_for_tex_lod`
+vocabulary in the image.
+
+### 0u: the constants are exonerated to the digit, and the contradiction thins to two residues
+
+Step 0/1 of the kickoff's plan, both sides:
+
+* Hardware's gather constants (`xtr_draw_constants.py`, traces 01/04/08
+  agree): pc48=(10,0.005,3,10), pc82=(2,0.2,0.001,0), pc96/97 the poisson
+  weights, pc98..101 the 1/1280, 1/720 tap steps. **The blur is NOT
+  constant-gated on hardware** — the kickoff's "if pc82.x or pc48.w is 0"
+  branch is closed.
+* OURS at the same draws — and the kickoff's "instrument needed" was wrong,
+  **`CZ_VK_PSBIND_PC` has existed since part 31**: every recoverable register
+  matches hardware to the printed digit (pc48/49/82/85/86/96/97). pc81 reads
+  (−1,0,10.84,90.84) against hardware's (−1,0,12.89,92.89) — the same 80-wide
+  far-blur band at a focus-dependent offset, not a defect.
+* The alpha math, worked with real values on both sides:
+  `alpha = saturate(2 × saturate((viewZ − pc81.z)/80))` — **0.98 at 50 m on
+  ours, 0.93 on hardware.** The composite shows ~95% blur surface at range on
+  BOTH platforms.
+* The gather's tap radius collapses to ~zero on BOTH sides: it is
+  `±(pc253.zw/pc48.x) × (s1.yx×pc252.w + pc252.z)` and s1 (`14A82000`)
+  measures mean (0.502, 0.516) — neutral — on our side, with pc252/253/254
+  carrying a static sevenths pattern. So blur640 ≈ the half-res downsample,
+  which is what the surface dumps had already shown.
+* **Hardware's own R4 PNGs are soft at range.** The distant HARDWARE-store
+  sign and far crowd in `Big_buck_hardware_store_01.png` show exactly the
+  soft far field the math predicts. §6bu's "its 40-60 m storefront is
+  legible" was read against OUR flat-textured walls: high-contrast signage
+  survives a 95% half-res lerp; a patternless wall has nothing to survive it.
+  **The unlocated compensating term mostly does not exist — the far-field
+  categorical difference was item 00i wearing item 0u's clothes.**
+
+Two residues keep 0u open at reduced priority:
+
+1. **The fmt6 byte-split depth serving** (the gather's 8 depth-edge taps) is
+   still wrong-for-sure and still owed — it shapes the tap WEIGHTS at depth
+   edges (halo suppression), not the field-wide blur.
+2. **pc255.x at the gather is 0 on our side and unrecoverable from the
+   trace** — the depth-compare threshold for those taps. With ours at 0
+   every tap passes as "same layer". Unknown whether hardware differs.
+
+### The 252..255 provenance question, asked and answered
+
+`tools/xtr_draw_constants.py` now carries the LOAD SOURCE ADDRESS in every
+UNRECOVERABLE marker (the natural next question of gotcha 263's honesty).
+The gather's pc252..255 load from guest `032B6000` — and
+`xtr_resolve_census.py` says that is **not a resolve destination** in any R4
+trace, so the "the GPU computes the DoF block and we never write resolves
+back" theory is REFUTED for this block: it is CPU-written, our PM4 load path
+is correct (PhysToVa applied), and our register file's values are the guest's
+own.
+
+### The cache gate paid again, and an emitter bug fell out
+
+The part-27 name-diff gate found **four dumped shaders absent from the live
+cache** (`ps_57ba544a00f605a5`, `ps_73deb51969d6438d`, `vs_80b9611a08d9ae9a`,
+`vs_cb7c5eb41489a916` — none ever reported missing by any run) and one dump
+that FAILED translation: `vs_c8e86dffb37149dd`, eight vfetches whose
+destination mask names no component (the "full" half of a full+mini pair,
+present only for the slot/stride the minis inherit). XenosRecomp emitted
+`r0. = XeVfetchDep(...).;` — DXC-invalid. Fixed in the emitter (skip the
+assignment, keep the 0/1 lanes and the slot/stride recording); the shader
+translates and the cache is **435**, dim-census gate clean. The failure had
+been invisible because build_shader_spv.sh reports per-shader failures only
+to whoever reads the batch output.

@@ -360,3 +360,33 @@ undefined values, in practice the packed dword's bits as a float: NaN wherever b
 fetch and unpacks in-shader by the fetch instruction's own static format field.
 **Upstream-relevant**: any title wrapping packed normals in a float-typed usage hits
 this; the upstream emitter only handles the uint4 usages.
+
+## XenosRecomp: a vfetch with an empty destination mask emits invalid HLSL (part 42, 597855c in the XenosRecomp repo)
+
+### Symptom
+
+`build_shader_spv.sh` reports one DXC failure in an otherwise-clean bank:
+`vs_c8e86dffb37149dd` (dumped during part 41's operator evening) dies with
+eight copies of
+
+```
+r0. = XeVfetchDep(95u, r0.w, 0u, 6u, 0, 6u, 0u, 0u).;
+      ^ error: expected unqualified-id
+```
+
+### Cause
+
+A `vfetch_full` whose destination swizzle names no register component (every
+lane keep/0/1) writes no fetched data back — it exists only to carry the fetch
+slot and stride that its following `vfetch_mini`s inherit. The emitter printed
+the assignment head (`rN.`), the empty component list, and the trailing empty
+swizzle unconditionally.
+
+### Fix
+
+In `recompile(VertexFetchInstruction&)`: if no destination lane is X..W, emit
+nothing but the 0/1 lanes (`printDstSwizzle01`) and keep the predication
+brackets balanced. The slot/stride recording for mini-fetch inheritance
+happens before the check, so the minis still resolve. **Upstream-relevant**:
+any title whose compiler leaves a pure-prefetch vfetch_full in the microcode
+hits this; it is data-dependent, so a bank can be clean for months first.

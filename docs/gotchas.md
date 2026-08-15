@@ -2990,3 +2990,30 @@ From phase C part 18 (the frame rate — and none of it was work):
      address in the trace" does NOT certify a record as a sound oracle when the
      title resolves there every frame — it certifies the OPPOSITE: the in-frame
      product is missing and the record is whatever lived there before.
+
+312. **A STATIONARY HOLD IS THE EXPERIMENT THAT SPLITS A RATE DEFECT FROM A
+     THRESHOLD DEFECT — run it before building any "make it faster" fix.** Part
+     42, item 00i: the flat-texture class had a named rate candidate on the board
+     for 14 parts (the `KeSetBasePriorityThread` no-op starving a decompression
+     thread) and a plausible sibling (file-IO latency). One fixed-camera,
+     fixed-position run — 20 F9s at 16 s intervals — showed the same three
+     thumbnail-quality textures unpromoted across 13 censuses and 2.3 minutes,
+     while the walk evidence shows them promoting instantly on approach. A
+     rate-limited system fills in when demand stops moving; a threshold or
+     budget decision holds forever. Every "it loads late" symptom has both
+     readings, the fixes are disjoint, and the discriminating run costs ten
+     minutes with no code written.
+
+313. **WHEN TWO DEFECTS SHARE PIXELS, DECIDE WHICH ONE OWNS THE DAMAGE BEFORE
+     READING ANY CROSS-PLATFORM COMPARISON.** Part 41 compared our far field
+     against hardware's and recorded a blocking contradiction: same DoF shader,
+     same constants, yet hardware's 40-60 m storefront "legible" where ours is
+     mush. Part 42 dissolved most of it: the comparison had read TEXTURE damage
+     (item 00i's patternless walls — nothing survives a 95% half-res lerp) as
+     BLUR damage (item 0u), because both classes land on the same distant
+     pixels. High-contrast signage survives the same lerp on hardware, which is
+     all "legible" was. The A/B admissibility rule (two arms must render the
+     same thing) has a cross-ITEM form: a platform comparison for defect A is
+     admissible only where defect B is absent or equal on both sides — and the
+     part-28 LOD verdict ("hardware's transitions are invisible because its
+     textures are not broken") was the same lesson pointing the other way.

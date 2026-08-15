@@ -7,26 +7,30 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0u. **THE FAR FIELD IS MANUFACTURED SOFT BY THE DoF COMPOSITE — and the OPERATOR
-   SAYS THIS IS NOT THEIR COMPLAINT.** Their correction, verbatim: "I did not say
-   the ground looked bad I said everything except the ground looks bad" — meaning
-   the FLAT-TEXTURE class (item 00i), which outranks this item. This one stays
-   open on its own evidence (the scene underneath the composite is SHARP and the
-   presented frame is not): Operator: "pretty
-   much everything that isn't ground" degrades with distance on the part-41
-   renderer. The F9 snapshots bisect it exactly: the resolved scene (1439B000) is
-   crisp at every distance, the post composite (00E48000 = the presented frame)
-   is not. The chain is three draws (census f2904: 6783/6784/6813): a prepass
-   writing CoC = saturate((1/(10-9.999*z))/50) into the 640x360 downsample's
-   alpha, a poisson gather that reads depth AS 8_8_8_8 bytes (we serve it our
-   float-depth image — part 36's counted-unclaimed class, 231 fetches), and a
-   composite lerp(scene, blur, blur.a). Our z (real scene depth, 0.83..1.0)
-   saturates the CoC by ~50 m. **THE CONTRADICTION THAT BLOCKS A FIX: hardware
-   runs the same shader with the same constants (R4 01/04/08 agree) over the same
-   D24S8 unorm domain and its 40-60 m storefronts are legible.** The compensating
-   term is unlocated; three candidates are enumerated in phase5-notes §6bu and
-   the worked plan is docs/part42-kickoff.md. Do not "fix" this by clamping CoC
-   or hacking the constants — name the hardware term first (gotcha 5).
+0u. **THE DoF COMPOSITE — DOWNGRADED IN PART 42: the "hardware contradiction"
+   mostly dissolved, and what remains is two bounded residues.** Part 41's
+   framing ("hardware runs the same shader/constants yet its 40-60 m storefront
+   is legible — a compensating term is unlocated") was measured in part 42 and
+   came apart: (a) OUR constants match hardware's on every recoverable register
+   to the printed digit (`CZ_VK_PSBIND_PC` — the instrument already existed;
+   pc81 differs only as the focus-dependent placement of the same 80-wide
+   band); (b) the worked alpha math gives ~95% blur at 50 m on BOTH platforms
+   (`saturate(2×(viewZ−pc81.z)/80)`); (c) the gather's tap radius is ~ZERO on
+   both sides (s1 measures neutral 0.5, so blur640 ≈ the half-res downsample);
+   (d) **hardware's own R4 PNGs are soft at range** — the "legible storefront"
+   was high-contrast signage surviving a 95% half-res lerp, read against OUR
+   patternless flat-textured walls, i.e. item 00i wearing this item's clothes.
+   `docs/phase5-notes.md` §6bv. What stays open, at reduced priority:
+   * the fmt6 byte-split depth serving (the gather's 8 depth-edge taps read
+     depth AS 8_8_8_8 bytes and we serve the float image — part 36's
+     231-fetch class). Shapes edge weights/halos, not the field-wide blur.
+     Still the right fix to build, with its own arm and counter.
+   * pc255.x at the gather (the taps' depth-compare threshold) is 0 on our
+     side and UNRECOVERABLE from the traces (loads from CPU-written
+     `032B6000` — NOT a resolve destination, that theory is refuted; the
+     provenance-printing `xtr_draw_constants.py` now names such addresses).
+   Do not clamp CoC or hack constants; the composite is behaving as designed
+   on both platforms.
 
 0s. **THE STRIPED-MATERIAL CLASS — the top picture item as of part 35, fully
    evidence-bounded, and the next move is named: TRACE THE WRITER.** One streamed
@@ -1615,6 +1619,27 @@ Next, in order:
 00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
    defect but built the instrument that can.** *"I have to be really close to an object
    to show their near LOD."* Part 28, ~1 hour.
+
+   **PART 42: THE MECHANISM IS CORNERED — A PROMOTION-DENIAL DECISION, NOT A RATE.**
+   Four measurements (`docs/phase5-notes.md` §6bv):
+   * The complaint verified PRE-POST-CHAIN: the 003053 building's walls are
+     patternless in the scene surface itself, so this is not the DoF composite.
+   * The flat class is a handful of SHARED WORLD ATLASES stuck at thumbnail
+     quality: 53 big draws (up to 3,575 verts) in one frame from just TWO
+     addresses (8×8 `0ED9A000`, `11DB9000`), shader `ps_34524bb64374d20e`.
+   * Two-sided at the shader level: hardware binds a ≤16×16 s0 on a ≥200-vert
+     draw of that shader **0 times across all eight R4 traces**; our side does
+     it in 44 of 82 walk frames (912 draws) and 14 of 20 part-41 frames (516).
+   * **Stand-still, fixed camera: the same three tiny-bound textures never
+     promote across 13 censuses / 2.3 minutes.** A rate defect (IO latency, the
+     `KeSetBasePriorityThread` no-op) would fill in while stationary —
+     **REFUTED as this item's mechanism, do not build it for this item.** The
+     defect is a distance/screen-size THRESHOLD or a POOL BUDGET whose input
+     differs on our runtime. Next: the engine's own narration
+     (`CZ_GUEST_DIAG=1 CZ_GUEST_LOG=1` at the stand-still spot — first run's
+     log at `/tmp/part42_diag.log`, part 42), then `gdis` on the
+     `cLODController` / `wait_for_tex_lod` / `ForceLODTexForStreamingWorld`
+     sites to name the wanted-level function and its inputs.
 
    **PART 39 DID THE CONTENT PAIRING AND IT EXONERATED THE LEVEL-0 INPUT.** The Big Buck
    shopfront's 153-vertex sign draw pairs across platforms on shader and on all four
