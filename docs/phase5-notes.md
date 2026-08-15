@@ -6982,3 +6982,42 @@ assignment, keep the 0/1 lanes and the slot/stride recording); the shader
 translates and the cache is **435**, dim-census gate clean. The failure had
 been invisible because build_shader_spv.sh reports per-shader failures only
 to whoever reads the batch output.
+
+### §6bv addendum — the engine names the mechanism itself, and one flag theory dies in one live read
+
+The `CZ_GUEST_DIAG` run at the stand-still spot narrates the whole thing:
+
+```
+LoadZoneCommonTextureSet : zone = 0, filename = COMMON_TEXTURE.tex
+LoadZoneCommonTextureSet : zone = 1, filename = COMMON_TEXTURE_LOD.tex
+LoadZoneCommonTextureSet : zone = 2, filename = COMMON_TEXTURE_LOD.tex
+LoadZoneCommonTextureSet : zone = 3, filename = COMMON_TEXTURE_LOD.tex
+LoadZoneCommonTextureSet : zone = 5, filename = COMMON_TEXTURE.tex
+LoadZoneCommonTextureSet : zone = 7, filename = COMMON_TEXTURE_LOD.tex
+LoadZoneCommonTextureSet : zone = 8, filename = COMMON_TEXTURE.tex
+```
+
+**The flat-texture class IS the per-zone COMMON_TEXTURE vs COMMON_TEXTURE_LOD
+choice**: the spawn's zone reads the full set (which is why everything near
+looks right), the street-building zones read the thumbnail set. It reconciles
+every measurement in this part — a handful of shared atlases (the zone's
+common set), no per-texture promotion while stationary (the choice is made at
+zone load), promotion on approach (the zone's set upgrades when the player
+gets close), and hardware fully-textured at range (ITS decision loads the
+full set for the street zones). Part 28 recorded "3 full, 4 LOD" as *what
+working looks like* — true locally, but nobody could compare the DECISION
+against hardware then. Now the eight R4 traces do.
+
+One candidate died the cheap way first: `ForceLODTexForStreamingWorld` is a
+name-resolved config flag (the §-style registry at `sub_82773298`; the
+pipelined store puts its byte at `0x82A57BD7`), and a `process_vm_readv` of
+the RUNNING diag process reads the whole flag block `0x82A57BD0..DF` as
+zeros. The flag is off on our side; it is not the mechanism. (Method note:
+one live read beats an afternoon of theorizing about a flag — the same move
+that closed part 36's AutoChuck question.)
+
+Next (part 43): the branch that picks the filename. `gdis --find-uses` on the
+`LoadZoneCommonTextureSet` format string names the caller; the inputs to its
+LOD-or-full branch (zone distance? a budget? `cZone::UpdatePriorities`'s
+`mForceLowLOD`?) are the item's remaining unknown, and each is one more live
+read against the running process at the stand-still spot.
