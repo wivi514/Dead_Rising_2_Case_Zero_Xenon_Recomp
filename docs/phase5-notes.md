@@ -7021,3 +7021,149 @@ Next (part 43): the branch that picks the filename. `gdis --find-uses` on the
 LOD-or-full branch (zone distance? a budget? `cZone::UpdatePriorities`'s
 `mForceLowLOD`?) are the item's remaining unknown, and each is one more live
 read against the running process at the stand-still spot.
+
+## §6bw — part 43: the zone texture-set decision is fully named, our inputs are live and correct, and the engine itself picks LOD at the spawn
+
+Part 43 executed the part-43 kickoff's step 1-2 and the answer inverts the
+item's framing: **the decision is not diverging on our side — the engine's own
+math, run on live, verified-correct inputs, chooses `COMMON_TEXTURE_LOD.tex`
+for zones 1/2/3/7 from the DebugJump spawn.** Every input was named, printed
+at decision time, and re-evaluated live; the choice reproduces exactly across
+three runs and a live re-computation.
+
+### The chain, named function by function
+
+* **`sub_82270870`** (only caller: `sub_82271550` ← `sub_82272128`, the
+  streaming update; one call site in the whole image, plus the dispatch table)
+  is "load zone N's common texture set". Its LOD branch at `82270C38..C70`:
+  pick `COMMON_TEXTURE_LOD.tex` **iff `rec+0x90C` is set AND
+  `sub_821C4F28([rec+0x910]) == 1`**; otherwise loop the full set
+  (`COMMON_TEXTURE.tex` + any numbered `COMMON_TEXTURE<n>.tex`, count probed
+  into `rec+0x938` by an exists-loop that patches the digit at position 14).
+  `sub_8226F650` is the narrator ("<> LoadZoneCommonTextureSet…", format
+  string at `0x82020910`); `sub_82269388` / request-handler `sub_8226F0E8`
+  are the IO continuation, and `sub_822696D0` is the per-asset load-completion
+  callback ("CallbackLoadRequest").
+* **`rec+0x90C` ("LOD-capable")** is written at zone setup (`8222AF18` inside
+  `sub_8222AD80`): set iff `COMMON_TEXTURE.tex`'s size satisfies
+  `0 < size < 0x280000` AND `COMMON_TEXTURE_LOD.tex` exists in the zone
+  archive. Zones whose full set is empty (zones 4/6/9 map to
+  `prologue_z05/07/10.big`, all 0 bytes) get flag 0 — which is why part 42's
+  narration had no lines for them, a cross-check that cost nothing.
+* **`rec+0x910`** is the zone's VOLUME LIST (`sub_8217F848(this+0x83CC)`):
+  count at `+0x120`, elements at `[+0x124]`, stride 0xD0. Per element: a
+  sphere (x,y,z,r) at `+0x80`, a skip bit (u32 `+0x90` bit 0 — set forces
+  "near", i.e. FULL), a threshold float at `+0xA8`.
+* **`sub_821C4F28`** returns 1 (→ LOD) iff EVERY volume is far, caching the
+  verdict at `volObj+0x22C`. **`sub_82175040`** is the per-volume vote:
+  `dist = |cam − sphere.xyz| − 0.01 − sphere.r` (`sub_821551C0`, camera-point
+  radius 0.01 from `0x821027F4`), far iff `dist > threshold`, with the
+  threshold boosted `× table2[level]` when it is under `table1[level]`
+  (`sub_82373DC0/82373E00`, tables at `0x82042C18`/`0x82042D68`, level from
+  `[g+0x34F5C]`, debug-override byte `0x82A58623` shipped 0). The camera is
+  `[0x82A46294]+0x40..0x48`; the force byte `0x82A57BD7`
+  (`ForceLODTexForStreamingWorld`) short-circuits every vote to "far".
+* **`COMMON_TEXTURE_LOD.tex` IS the thumbnail set by design**: zone 1's LOD
+  file is 27,734 bytes against a 1,297,584-byte full set (z03: 5,060 vs
+  231,788). The 8×8/16×16 atlases of part 42 are not a broken read of a good
+  file; they are the file.
+
+### The instrument pair, and what it measured
+
+`CZ_ZONE_TEX_PROBE=1` (new, `runtime/cpu/guest_probe.cpp`) prints every input
+above on each `sub_82270870` entry plus its own prediction of the branch;
+`tools/zone_lod_live.py` (new) re-evaluates the decision against a RUNNING
+process's camera via `process_vm_readv`. The probe's predictions matched part
+42's narration line for line — menu zone 0 FULL (+ its `COMMON_TEXTURE1.tex`
+second set), level zones 0/5/8 FULL, 1/2/3/7 LOD — so the model of the branch
+is confirmed against the engine's own mouth, not just read from disassembly.
+
+Measured, DebugJump stand-still route, three runs:
+
+* The level-load burst runs at ~46.3 s with the camera **already at the spawn**
+  `(-106.09, 6.57, -115.89)` — not stale, not the menu's `(2.57, 0.00, 6.88)`,
+  which the menu-era decisions correctly used. Level = 14, whose boost table
+  entry is 9999/×1.0 (no boost); force = 0; every skip bit = 0.
+* Zones 1/2/3/7 are all-far by real margins: nearest volume 31–107 m beyond
+  its threshold (zone 1: +107.4, zone 2: +41.3, zone 3: +75.7, zone 7: +31.0).
+  Zones 0/5/8 have near volumes (min margins −63.5/−18.2/−55.3) → FULL.
+* A live re-evaluation while standing (same spot, minutes later) returns the
+  identical verdict per zone. The camera word is live (it tracked the
+  menu→spawn transition) and simply does not move while standing.
+
+### What this does to item 00i
+
+The defect is NOT "our runtime computes the decision wrong": inputs live,
+constants exact, math reproduced, choice deterministic. What remains is a
+STATE question against hardware, and the R4 capture notes reframe it:
+**the eight R4 traces are a standing sweep AT Big Buck taken after the
+operator walked there** — a WARM session, in which every zone whose volumes
+the player had come near was already promoted to full. A fresh-jump state
+(ours) and a warm walked state (theirs) are not matched arms (gotcha 50's
+shape, in streaming-state form).
+
+Two sub-questions now separate the item:
+
+1. **Does OUR runtime re-run the decision on approach** (zone reload as the
+   player nears its volumes)? Measured this part with the probe on a 10-minute
+   EXPLORER roam — see below.
+2. **What does HARDWARE narrate at the matched state** (fresh DebugJump,
+   stand still)? Not self-servable: needs one Xenia run with the part-28 diag
+   bytes patched (`0x829EC974=0`, `0x82AC3EAD=1`) and the seven
+   `LoadZoneCommonTextureSet` lines from its log. If hardware also says
+   1/2/3/7 = LOD, item 00i's "flat at range from a fresh jump" is the engine's
+   own design and the comparison collapses; if it says FULL, a dynamic input
+   (the skip bits, the volume data, or a promotion path we never run) is the
+   remaining suspect list, in that order.
+
+### A gotcha paid for on the way
+
+The probe's first version printed `rec+0x69C` — a directory OBJECT — as `%s`,
+salting the log with NULs; plain `grep` then treated the whole file as binary
+and reported the probe absent, and TWO runs were misread as "the hook never
+fired" (an hour spent verifying link-time symbol override that was never
+broken — the machine-level call target check at least settled that the alias
+seam handles C++-mangled weak aliases fine). `grep -a` / `tr -d '\0'`
+recovered 263 sitting probe lines. Gotcha 25's self-made form: when an
+instrument you wrote reports zero through a text pipeline, check what bytes
+the instrument itself put in the file before concluding anything.
+
+### The promotion question, measured as far as it can be from this side
+
+* A 9.5-minute EXPLORER roam with the probe live produced **ZERO re-decisions
+  after the level-load burst** — but `tools/zone_lod_watch.py` (new; samples a
+  live process every N s: position, the per-zone state table at
+  `this+0x841C`, and the would-be verdict per zone) shows the roam stayed in a
+  ~60 m pocket around the spawn and NEVER entered any LOD zone's threshold.
+  So "no promotion on approach" is NOT proven — the arm never engaged
+  (gotcha 151). A no-AutoChuck run does not move at all (the title's MISSION
+  MASTER state exists but does not drive Chuck headlessly), so the directed
+  approach test still needs either an operator or a steered stick recipe
+  (zone 7's nearest volumes sit ~west of the spawn at x≈−180..−206,
+  z≈−115..−127, 31–47 m beyond threshold).
+* The state table semantics fell out of the writers: entry+0 is the state
+  (`sub_82271550` loads the first zone found in state 0; the loader leaves
+  2 or 3; the load-completion callback `sub_822696D0` writes 3), entry+4 is
+  the has-texture-set flag (cleared at setup when the full file is 0 bytes —
+  zones 4/6/9). **No writer of state 0 outside initialization was found**, so
+  as far as static reading goes the texture-set choice is once-per-zone-load;
+  per-volume GEOMETRY streaming (`sub_8226A0B8`, 0xD0-stride volume list) is
+  a separate system underneath it.
+* **The ordering hypothesis is dead**: recomputing the decision from the menu
+  camera `(2.57, 0.00, 6.88)` and from the origin makes MORE zones LOD
+  (5 and 8 join), not fewer. No camera position outside town yields
+  hardware's all-full street, so "hardware decided before/after the teleport"
+  explains nothing.
+
+### Where item 00i stands after part 43
+
+Our side is exonerated up to its inputs: the branch, its constants, its
+tables, its camera and its volume data all verified live, and the engine
+itself picks LOD at the spawn. Hardware's all-full R4 street is either a warm
+session state (zone sets loaded/reloaded when the player was near) or a
+dynamic input we cannot see from here (the skip bits are first on that list).
+**The discriminating capture is R5** (`docs/xenia-capture-requests.md`): one
+fresh-DebugJump stand-still F4 at the spawn — no patching, one press. Until
+it lands, do NOT build a fix: every candidate (force the full set, widen
+thresholds, fake the skip bits) would be faking the decision, the exact thing
+gotcha 5 and the part-43 kickoff prohibit.

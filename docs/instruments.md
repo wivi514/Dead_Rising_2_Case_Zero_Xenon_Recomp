@@ -1427,3 +1427,28 @@ CZ_VK_DRAW_ID=1    with CZ_CAPTURE_KEY and F9: the next recorded frame is render
                    Blending is forced off; mask, depth and cull are left exactly as the
                    draw had them so the map has the same visibility as the picture (305).
 ```
+
+## CZ_ZONE_TEX_PROBE — the zone texture-set decision, printed input by input (part 43)
+
+`CZ_ZONE_TEX_PROBE=1` hooks `sub_82270870` ("load zone N's common texture set",
+the ONLY site that chooses `COMMON_TEXTURE.tex` vs `COMMON_TEXTURE_LOD.tex`)
+and prints, on entry: the camera `[g+0x40]`, the level index and its
+threshold-boost table entries, the force byte `0x82A57BD7`, the zone's
+LOD-capable flag (`rec+0x90C`), and every volume in the zone's list — sphere,
+skip bit, threshold, computed distance, far/near vote — plus the probe's own
+prediction of the branch. The prediction is falsifiable against the
+`CZ_GUEST_DIAG` narration of the same run (they matched line for line in part
+43, which is what makes the model of the branch a measurement rather than a
+reading). Diagnostic arm only; costs one predictable branch when off.
+
+Companions, both `process_vm_readv` (no ptrace stop, safe while an operator
+plays):
+* `tools/zone_lod_live.py <pid> <world> --base <guestbase>` — re-evaluate the
+  decision for every zone against the camera position of RIGHT NOW.
+* `tools/zone_lod_watch.py <pid> <world> <base> [interval] [count]` — sample
+  position + per-zone streaming state (`this+0x841C`) + would-be verdicts on a
+  cadence; the control that proves whether a roam ever actually crossed a
+  threshold (gotcha 151's counter, built in).
+
+The world pointer is printed by the probe itself (`rec=` of slot 0); the guest
+base is the `runtime: guest memory at 0x…` line.

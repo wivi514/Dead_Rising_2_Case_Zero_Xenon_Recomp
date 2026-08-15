@@ -1616,7 +1616,27 @@ Next, in order:
    could not have matched and its negative result means nothing (gotcha 25). Answering it
    needs `docs/big-archive-format.md` and a real TOC reader.
 
-00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
+00i. **LOD POPS IN FAR TOO LATE — PART 43: OUR SIDE IS EXONERATED UP TO ITS
+   INPUTS; the fork now waits on capture R5 (one fresh-spawn F4).** The decision
+   is fully named (`docs/phase5-notes.md` §6bw): `sub_82270870` picks
+   `COMMON_TEXTURE_LOD.tex` iff the zone is LOD-capable (flag at rec+0x90C,
+   written at setup from the two files' sizes) AND every volume in the zone's
+   list (rec+0x910, 0xD0-stride spheres + thresholds) is farther than its
+   threshold from the camera `[g+0x40]`, thresholds boosted by per-level tables
+   (level 14 = no boost). `CZ_ZONE_TEX_PROBE=1` prints every input at decision
+   time and predicted part 42's narration line for line; `tools/zone_lod_live.py`
+   re-evaluates it on a live process. Measured: the decision runs ONCE per zone
+   load, at ~46 s, with the camera ALREADY at the spawn; zones 1/2/3/7 are
+   all-far by 31-107 m; the LOD file IS the thumbnail set by design (27 KB vs
+   1.3 MB); no promotion trigger found statically, and no roam has yet crossed
+   a LOD threshold to test it live (the EXPLORER pocket is ~60 m). The R4
+   traces are a WARM-session sweep at Big Buck and cannot adjudicate a fresh
+   state. **Do not build any fix before R5 lands** — forcing full sets, faking
+   skip bits or widening thresholds would all be faking the decision (gotcha 5).
+
+   The part-42 record, kept because its measurements stand:
+
+   (superseded head) 00i. **LOD POPS IN FAR TOO LATE — operator report, OPEN, and the first pass found no
    defect but built the instrument that can.** *"I have to be really close to an object
    to show their near LOD."* Part 28, ~1 hour.
 

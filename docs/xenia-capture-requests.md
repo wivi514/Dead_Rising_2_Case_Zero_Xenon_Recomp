@@ -356,3 +356,38 @@ blend split of 118 blended / 58 opaque per frame that **our frame reproduces exa
 (176 draws, 118/58). The leaf albedo is `md5 6f621715…`, **byte-identical** between our
 live process and hardware's trace. So state and inputs agree and the divergence is
 downstream of both. See `docs/open-items.md` 0t.
+
+## R5 (part 43): ONE matched-state capture at the fresh DebugJump spawn — settles item 00i's remaining fork
+
+**The ask, in one line: DebugJump to Case 0-2, do not move, press F4 once at the
+spawn, deliver the trace + its frame-locked PNG.**
+
+No memory patching, no new instrument, one capture. Full game as always
+(`license_mask = 1`), same fork and settings as R4.
+
+**What it decides.** Part 43 named every input of the per-zone
+`COMMON_TEXTURE.tex` vs `COMMON_TEXTURE_LOD.tex` choice and verified ours are
+live and correct at the spawn (`docs/phase5-notes.md` §6bw): the engine's own
+math picks the thumbnail set for zones 1/2/3/7 from there, deterministically,
+by margins of 31–107 m — and the choice is made ONCE per zone load, with no
+promotion trigger we could find or provoke. The eight R4 traces cannot
+adjudicate this because they are a standing sweep AT Big Buck taken after a
+walk — a WARM session, in which zone texture sets may have been (re)loaded
+with the player near them. Fresh jump vs warm walk are unmatched arms.
+
+* If the fresh-spawn hardware frame shows the same patternless far buildings
+  (and its trace binds ≤16×16 s0 atlases on ≥200-vert draws of
+  `ps_34524bb64374d20e`), our runtime is CORRECT, item 00i's flat-at-range is
+  the engine's own fresh-state behaviour, and the item collapses to "compare
+  like states before comparing pictures".
+* If the fresh-spawn hardware frame is fully textured (0 tiny-on-big, as in
+  R4), a real input divergence exists at hardware's zone load, and the suspect
+  list is ordered: the per-volume skip bit (u32 at elem+0x90 bit 0 — set
+  forces FULL; all zero on our side), the volume spheres/thresholds
+  themselves, then a zone-reload mechanism we have not found.
+
+**Optional second capture, same session, if cheap:** after the F4 at the
+spawn, walk to Big Buck (the R4 route), F4 again anywhere mid-walk. If the
+spawn frame was flat and the mid-walk frame is full, hardware DOES promote on
+approach and the reload trigger is the thing to find next; if both are flat
+until some event, that event is the mechanism.
