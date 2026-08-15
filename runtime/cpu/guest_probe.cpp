@@ -47,6 +47,7 @@
 // behaviour it reports, and this code runs inside the per-frame render path).
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -2176,4 +2177,113 @@ PPC_FUNC(sub_82475718)
     // Flushed per line on purpose: these runs end on a `timeout` SIGTERM, and a probe
     // whose last buffer never reaches disk loses exactly the tail that matters.
     fflush(out);
+}
+
+// ---------------------------------------------------------------------------------
+// Part 43, item 00i — the per-zone COMMON_TEXTURE vs COMMON_TEXTURE_LOD decision.
+//
+// sub_82270870 is cZone-streaming's "load this zone's common texture set". Its LOD
+// branch (0x82270C38..C70) picks COMMON_TEXTURE_LOD.tex iff the zone's byte flag at
+// rec+0x90C is set AND sub_821C4F28(rec+0x910) == 1, where the latter walks the
+// zone's volume list and returns 1 only if EVERY volume is far from the camera:
+// sub_82175040 computes dist = |cam - sphere(e+0x80).xyz| - 0.01 - sphere.w and
+// treats the volume as far when dist > threshold(e+0xA8), the threshold boosted by
+// the per-level tables at 0x82042C18/0x82042D68 when it is under ~25-30.
+//
+// So the decision SNAPSHOTS the camera position at zone-load time. This probe prints
+// every input of that computation on entry — camera, per-volume spheres, thresholds,
+// distances — plus its own prediction of the branch, which the CZ_GUEST_DIAG
+// narration of the same run can then confirm or refute (gotcha 30: an instrument
+// must be able to disagree with something).
+//
+// Behind its own env var rather than CZ_ARG_PROBE because it is useful alone on an
+// otherwise-quiet run; costs one predictable branch when off.
+extern "C" PPC_FUNC(__imp__sub_82270870);
+
+PPC_FUNC(sub_82270870)
+{
+    static const bool zoneProbeOn = getenv("CZ_ZONE_TEX_PROBE") != nullptr;
+    if (zoneProbeOn)
+    {
+        const uint32_t self = ctx.r3.u32;
+        const uint32_t zone = ctx.r4.u32;
+
+        static const auto t0 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+
+        const uint32_t g = PPC_LOAD_U32(0x82A46294);
+        const float camX = GuestF32(base, g + 0x40);
+        const float camY = GuestF32(base, g + 0x44);
+        const float camZ = GuestF32(base, g + 0x48);
+        const uint32_t level = PPC_LOAD_U32(g + 0x34F5C);
+        const uint8_t force = PPC_LOAD_U8(0x82A57BD7);
+
+        // zone id -> record: slot table at this+0x834C, records strided 0x3F0.
+        const uint32_t slot = PPC_LOAD_U32(self + 0x834C + 4 * zone);
+        const uint32_t rec = self + slot * 0x3F0;
+        const uint8_t flag = PPC_LOAD_U8(rec + 0x90C);
+        const uint32_t volObj = PPC_LOAD_U32(rec + 0x910);
+
+        // Per-level threshold boost, as sub_82373DC0/82373E00 read it (the debug
+        // override byte at 0x82A58623 is reported rather than honoured: it ships 0).
+        const float boostBelow = (level < 16) ? GuestF32(base, 0x82042C18 + 4 * level) : 0.f;
+        const float boostMul = (level < 16) ? GuestF32(base, 0x82042D68 + 4 * level) : 1.f;
+
+        char zname[33] = { 0 };
+        for (int i = 0; i < 32; i++)
+        {
+            zname[i] = (char)PPC_LOAD_U8(rec + 0x69C + i);
+            if (!zname[i]) break;
+        }
+
+        fprintf(stderr,
+                "[zonetex] %.1fms zone=%u slot=%u rec=%08X name=%s flag90C=%u vol=%08X "
+                "cam=(%.2f,%.2f,%.2f) level=%u force=%u boost(<%.1f x%.1f)\n",
+                ms, zone, slot, rec, zname, flag, volObj, camX, camY, camZ, level,
+                force, boostBelow, boostMul);
+
+        if (volObj)
+        {
+            const uint32_t count = PPC_LOAD_U32(volObj + 0x120);
+            const uint32_t elems = PPC_LOAD_U32(volObj + 0x124);
+            uint32_t nNear = 0, nFar = 0, nSkip = 0;
+            for (uint32_t i = 0; i < count && i < 256; i++)
+            {
+                const uint32_t e = elems + i * 0xD0;
+                const float x = GuestF32(base, e + 0x80);
+                const float y = GuestF32(base, e + 0x84);
+                const float z = GuestF32(base, e + 0x88);
+                const float r = GuestF32(base, e + 0x8C);
+                const uint32_t skip = PPC_LOAD_U32(e + 0x90) & 1;
+                float thr = GuestF32(base, e + 0xA8);
+                if (thr < boostBelow) thr *= boostMul;
+                const float dx = camX - x, dy = camY - y, dz = camZ - z;
+                const float d = sqrtf(dx * dx + dy * dy + dz * dz) - 0.01f - r;
+                // sub_82175040: skip-bit -> "near" (forces full); else far iff
+                // thr - d < ~0, i.e. d > thr.
+                const bool far = !skip && (thr - d < 1.3e-11f);
+                if (skip) nSkip++;
+                else if (far) nFar++;
+                else nNear++;
+                if (i < 24)
+                    fprintf(stderr,
+                            "[zonetex]   vol[%u] c=(%.1f,%.1f,%.1f) r=%.1f thr=%.1f "
+                            "d=%.1f %s%s\n",
+                            i, x, y, z, r, thr, d, skip ? "SKIP->full" : "",
+                            !skip ? (far ? "far" : "NEAR->full") : "");
+            }
+            const bool predictLod = force || (flag && nNear == 0 && nSkip == 0 && count > 0);
+            fprintf(stderr,
+                    "[zonetex]   count=%u near=%u far=%u skip=%u -> predict %s\n",
+                    count, nNear, nFar, nSkip,
+                    predictLod ? "COMMON_TEXTURE_LOD.tex" : "COMMON_TEXTURE.tex");
+        }
+        else
+        {
+            fprintf(stderr, "[zonetex]   vol=NULL -> predict COMMON_TEXTURE.tex\n");
+        }
+        fflush(stderr);
+    }
+    __imp__sub_82270870(ctx, base);
 }
