@@ -1042,8 +1042,26 @@ Next, in order:
    second implementation forces the seam: copy into `runtime/audio/` here first, and leave
    any shared-library question to Case West.
 
-00k. **THE UI TEXT LAYER IS STALE — operator-reported, pre-existing, and it
-   ACCUMULATES WITH SESSION LENGTH.** Reported at part 45's operator session with
+00k. **THE UI TEXT LAYER IS STALE — MECHANISM CONFIRMED (part 45): it is the
+   cross-frame stream store's GUARD, i.e. item 00c recurring above the 16 KB
+   bound that fixed it. What remains is the FIX, and it has a cost to solve
+   for.** A matched operator A/B settles it (§6bz addendum 2): the STATUS
+   screen's KEY ITEMS tab, same save state, one env var apart — default guard
+   renders the ATTRIBUTES tab's labels and none of its own content; with
+   `CZ_VK_STREAM_GUARD_EXACT=1` it renders `Still Creek Map / Zombrex / Shed
+   Key` correctly. **The fix cannot simply be "always exact": that arm read
+   63.76 MB/frame in the guard against the default's 9.28**, which feeds
+   straight into the performance regression of item 00l. Options to measure:
+   raise the bound (free to try — `CZ_VK_STREAM_GUARD_BYTES=N`, no rebuild),
+   or make exactness a property of the stream KIND rather than its size, since
+   the store already distinguishes declared binding / index buffer / dependent
+   fetch. **The frame-to-frame variation is explained by the guard too** — 8
+   sampled blocks of 64 bytes catch an edit only when one lands on it — so
+   part 45's TEAR reading is RETRACTED and `CZ_VK_FRAMES_IN_FLIGHT=1` is NOT
+   the arm to run.
+   Original characterisation follows.
+
+   **Operator-reported, pre-existing, and it ACCUMULATES WITH SESSION LENGTH.** Reported at part 45's operator session with
    32 F9 captures (`~/DR2CZ-troubleshooting/part45-operator/ui_fixed/`), on the
    FIXED shader cache, and confirmed by the operator as long-standing rather than
    new. Symptoms, all three together: colour changes MID-WORD (`Whee|l`,

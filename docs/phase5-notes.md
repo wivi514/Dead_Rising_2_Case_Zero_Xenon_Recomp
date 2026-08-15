@@ -7856,3 +7856,40 @@ guard arm would not fix the picture.
 
 The two arms are cheap and mutually exclusive in what they implicate, so run
 both before building anything (gotcha 5).
+
+### §6bz addendum 2 — CONFIRMED BY A MATCHED OPERATOR A/B: it is the STORE'S GUARD, and the tear reading of addendum 1 is RETRACTED
+
+The operator played the `CZ_VK_STREAM_GUARD_EXACT=1` arm and took one capture,
+which is all it needed: **the STATUS screen's KEY ITEMS tab, same save state as
+the default-guard session** (identical left panel — level 1, 13,250 PP,
+$21,700, 130 kills), one environment variable apart.
+
+| arm | the KEY ITEMS tab |
+|---|---|
+| default (exact to 16 KB, sampled above) | renders the ATTRIBUTES tab's labels — `ATTACK / SPEED / LIFE / ITEM STOCK / THROW…` — plus a garbled `ombrex.` fragment, and none of its own content |
+| `CZ_VK_STREAM_GUARD_EXACT=1` | `Still Creek Map` (selected, yellow) / `Zombrex` / `Shed Key`, with `A detailed map to Still Creek.` — correct, complete, one colour per run |
+
+`~/DR2CZ-troubleshooting/part45-operator/ui_fixed/capture_004665.ppm` against
+`ui_guardexact/capture_002676.ppm`. **The cross-frame stream store's GUARD is
+the mechanism** — item 00c (part 24, the ammo counter) recurring at a buffer
+size above the 16 KB bound that fixed it, exactly as this code's own comment
+predicted it would.
+
+**RETRACTION, in place.** Addendum 1 read the frame-to-frame variation as a
+TORN buffer and named `CZ_VK_FRAMES_IN_FLIGHT=1` as the next arm. That is
+wrong, and the guard explains the variation better: the sampled guard reads 8
+blocks of 64 bytes, so it catches an edit only when a sampled block happens to
+land on changed bytes — sometimes it does and the run re-copies, sometimes it
+does not and the old bytes are served. Different fragments therefore update on
+different frames with no concurrency involved at all. The observation stands;
+the inference from it does not.
+
+**What the fix has to be, and the number that constrains it.** Not "always
+exact": the operator's arm read **63.76 MB/frame in the guard against the
+default's 9.28 MB/frame**, and that lands squarely in the performance
+regression they reported the same evening (open item 00l). The fix is a guard
+that is exact for the streams in this class without paying for it on the
+crowd's big geometry — raise the bound and measure, or make exactness a
+property of the stream KIND (the store already splits declared binding / index
+buffer / dependent fetch) rather than of its size. Measure the candidates the
+way `docs/measurement.md` says, because this one has a real cost on the frame.

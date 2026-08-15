@@ -1,4 +1,4 @@
-# Part 46 kickoff — trees first, then the performance regression; the flat class is FIXED and operator-confirmed
+# Part 46 kickoff — trees first, then the performance regression (which now owns the UI guard fix too); the flat class is FIXED and operator-confirmed
 
 Written at the end of part 45 (2026-08-15). **This is the LIVE hand-off**,
 superseding `part45-kickoff.md`. Read `docs/phase5-notes.md` §6by **and its two
@@ -87,21 +87,27 @@ Everything else in this document is background for those two, or is parked.
    measures this title's vblank pacing floor and not your change (gotchas
    237/238, `docs/measurement.md`). Noise floor is 10-13% at one run a side.
    Quote `tools/gpu_clock_sample.py` rather than assuming the clock.
-3. **THE UI TEXT LAYER (open item 00k, §6bz + addendum)** — characterised this
-   part, not fixed, and **the operator's verdict on the arm left running is
-   AMBIGUOUS and must be re-asked** (see Open questions below).
+3. **THE UI TEXT LAYER (open item 00k, §6bz + addenda) — MECHANISM CONFIRMED,
+   the FIX is what is owed, and it is entangled with item 2.** A matched
+   operator A/B (STATUS / KEY ITEMS tab, same save, one env var apart) settles
+   it: the default guard renders the ATTRIBUTES tab's labels, and
+   `CZ_VK_STREAM_GUARD_EXACT=1` renders the tab's real contents. It is the
+   cross-frame store's GUARD — item 00c above the 16 KB bound that fixed it.
+   **But "always exact" is not the fix**: that arm read 63.76 MB/frame in the
+   guard against 9.28, which is exactly the kind of cost item 2 is about, so
+   design and measure them TOGETHER. Try raising the bound first
+   (`CZ_VK_STREAM_GUARD_BYTES=N`, no rebuild), then making exactness a
+   property of the stream KIND. **Part 45's TEAR reading is RETRACTED and
+   `CZ_VK_FRAMES_IN_FLIGHT=1` is NOT the arm.**
    Symptoms: colour changes mid-word, glyphs missing, and the PREVIOUS screen's
    text persisting; static text in the same frames is perfect. The text layer
    is ONE dynamic vertex buffer sub-allocated per run by `VGT_INDX_OFFSET`
    (§6ab), so one bad copy garbles every run at once.
-   **The stale text is NOT frozen — it VARIES frame to frame** (three captures
-   of one screen, 3.5-4.3% apart, a different fragment surviving each), which
-   points at a TORN buffer rather than a cache, and predicts the defect scales
-   with how far our command processor LAGS the guest. Arms, in order:
-   `CZ_VK_FRAMES_IN_FLIGHT=1` (pre-part-23, removes a frame of lag) and
-   `CZ_VK_STREAM_GUARD_EXACT=1` (separates the store from the store's GUARD).
-   Eliminated already: draws are not dropped (both bounds counters ZERO across
-   54.7M draws) and the ALU constant window is read per draw.
+   The frame-to-frame variation (three captures of one screen, 3.5-4.3% apart)
+   is the guard too: 8 sampled blocks of 64 bytes catch an edit only when one
+   lands on it, so different fragments update on different frames.
+   Eliminated: draws are not dropped (both bounds counters ZERO across 54.7M
+   draws) and the ALU constant window is read per draw.
    **THE HEADLESS REPRO THE OPERATOR HANDED US, and it is the cheap check for
    this whole class**: press START at the title screen and a card appears for a
    second or two **completely EMPTY** — trim drawn, not one glyph inside.
@@ -117,14 +123,10 @@ Everything else in this document is background for those two, or is parked.
 
 ## Open questions to put to the operator FIRST
 
-* **Did the `CZ_VK_STREAM_GUARD_EXACT=1` arm change the UI text?** They said
-  *"I tested a bunch of things and everything works fine"* while that arm was
-  the live session, but took no captures on it, and the sentence equally reads
-  as "no other defects besides the trees". **Recorded as UNVERIFIED on
-  purpose** — if it did fix the text, the fix is a better guard for UI-sized
-  streams and the store's 4.7 ms stays bought; if it did not, the tear
-  hypothesis stands. One question at the start of the next session settles it;
-  do not write either into the ledger before asking.
+* ~~Did the `CZ_VK_STREAM_GUARD_EXACT=1` arm change the UI text?~~
+  **ANSWERED, and by a picture rather than a sentence**: the operator's arm
+  session left one capture and it is decisive (§6bz addendum 2). Nothing to
+  ask.
 * Cheap and still owed from any operator session: an F9 at the gas station on
   both cache arms (part 45's run 2 took none), and the part-26 white-prop tour
   (newspaper boxes, cash register, gas-station sign, bathroom window), which no

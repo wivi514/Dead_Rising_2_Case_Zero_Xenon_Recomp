@@ -710,8 +710,17 @@ last few days' fixes.**):
   part 44's captures too — and is named: `ps_69a5c3be9359b87c` /
   `ps_8602b5fd69289893` at `cc=AA00001C` (alpha test GREATER + ALPHA_TO_MASK,
   56 draws), i.e. part 41's parked A2M item, now top of the picture list.
-* **A SECOND OPERATOR COMPLAINT IS OPEN AND CHARACTERISED: the UI TEXT LAYER
-  IS STALE** (open item 00k, `phase5-notes.md` §6bz + addendum). Colour changes
+* **A SECOND OPERATOR COMPLAINT IS SOLVED TO ITS MECHANISM: the UI TEXT LAYER
+  IS STALE BECAUSE OF THE STREAM STORE'S GUARD** — item 00c (part 24's ammo
+  counter) recurring above the 16 KB bound that fixed it. A matched operator
+  A/B decides it: the STATUS screen's KEY ITEMS tab, same save, one env var
+  apart — default renders the ATTRIBUTES tab's labels, and
+  `CZ_VK_STREAM_GUARD_EXACT=1` renders `Still Creek Map / Zombrex / Shed Key`
+  correctly (`phase5-notes.md` §6bz addendum 2). **The FIX is still owed and
+  "always exact" is not it**: that arm reads 63.76 MB/frame in the guard
+  against 9.28, so it is designed and measured together with the performance
+  item below. Part 45's TEAR reading is RETRACTED.
+* **(characterisation, still accurate) the UI TEXT LAYER symptoms** (open item 00k, `phase5-notes.md` §6bz + addendum). Colour changes
   MID-WORD, glyphs go missing, and the PREVIOUS screen's text persists (the
   SKILLS tab renders ATTRIBUTES' labels; pause-menu items stay painted over
   gameplay) while STATIC text in the same frames is perfect. Pre-existing, not
