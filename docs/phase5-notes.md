@@ -7258,3 +7258,27 @@ there). Measured response, all headless:
   hardware's full street (and the FIX becomes making our sessions carry
   the same state, or nothing at all); if nothing re-decides even across a
   case transition, candidate (b)/(c) is next.
+
+### §6bw third addendum — the R4 session was a LOADED SAVE at the tanker, and even that position's math says LOD: the save's carried state is the last input standing
+
+The operator: the R4 Xenia session loaded a save made at the TANKER save
+point (the one proposed after the case 0-1 → 0-2 transition), from their
+R1-era normal playthrough — so the session was Case 0-2 from its first
+frame. The tanker is `(-118, 3.2, -105)` (the R3 tanker trace's own camera),
+and the fresh-decision math THERE still says LOD for zones 1/2/3/7
+(+21..+77 m margins). An identical load on our side would produce the flat
+street. Therefore the save (or the case state it restores) must change an
+input of the decision. The candidate that fits the shape exactly: the
+per-volume skip-bit (`elem+0x90` bit 0 — set forces "near" → FULL SET
+regardless of distance; all zero in every fresh state we have ever read).
+Case/mission progression setting those bits (areas activated by the story),
+saved and restored, would reproduce hardware's full-everywhere and our
+flat-everywhere from the same code. A static hunt for the bit's writer is
+noisy (1,293 stores to +0x90-shaped offsets); the discriminating experiment
+is to LOAD THE OPERATOR'S XENIA SAVE on our runtime with the probe: if the
+burst flips the street zones to FULL, the carrier is proven and nothing in
+the runtime is broken — then one live diff of the volume records between a
+fresh and a save-loaded process names the exact field. The save is an
+XContent package in Xenia's content tree for title 58410A8D;
+`tools/extract_stfs.py` unpacks it and the DSF goes to
+`assets/save/DR2P000.DSF/DR2P000.DSF`.
