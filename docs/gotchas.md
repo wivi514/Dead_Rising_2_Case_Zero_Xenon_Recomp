@@ -3017,3 +3017,28 @@ From phase C part 18 (the frame rate — and none of it was work):
      admissible only where defect B is absent or equal on both sides — and the
      part-28 LOD verdict ("hardware's transitions are invisible because its
      textures are not broken") was the same lesson pointing the other way.
+
+314. **AN INSTRUMENT THAT PRINTS GUEST BYTES CAN POISON ITS OWN LOG'S
+     SEARCHABILITY — grep the file binary-safe before believing the
+     instrument absent.** Part 43's zone probe printed a directory OBJECT as
+     %s; the NULs it emitted made grep treat the whole log as a binary file,
+     and two runs were read as "the hook never fired" — an hour went into
+     verifying link-time symbol override that was never broken, while 263
+     probe lines sat in the file. `grep -a` / `tr -d '\0'` first. This is
+     gotcha 25 (a grep that cannot match is not a clean result) in the form
+     where YOUR OWN instrument is what broke the match — and the double
+     lesson: never print guest memory as %s without sanitizing it, because
+     the failure lands not in the line that printed it but in every later
+     search over the file.
+
+315. **A STATE COMPARISON NEEDS MATCHED HISTORIES, NOT JUST MATCHED
+     POSITIONS.** Item 00i's "hardware is fully textured where we are flat"
+     was measured between a FRESH DebugJump (ours) and a warm session that
+     had WALKED to the capture point (hardware's R4 sweep) — and the decision
+     under test runs once per zone load and snapshots the camera, so the two
+     arms' histories, not their positions, determine the outcome. Part 42's
+     four-way corner survived every check on our side (part 43 verified every
+     input live) precisely because the divergence was never in the
+     computation — it was in the state the two sessions brought to it. Before
+     reading any A-vs-B where either side carries accumulated state
+     (streaming, caches, promotion), write down how each arm GOT there.
