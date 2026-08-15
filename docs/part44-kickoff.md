@@ -1,4 +1,22 @@
-# Part 44 kickoff — item 00i waits on R5; the 0u residues are the workable front
+# Part 44 kickoff — item 00i is a SET-APPLY defect: the full texture set loads and never reaches the descriptors
+
+**FINAL REFRAME (end of part 43, after three operator corrections):** the flat
+class exists in the MAIN MENU (56 tiny-on-big draws, twelve of them
+`ps_34524bb64374d20e` reading an 8x8 at `0D875000`), where the zone texture-set
+decision provably chose FULL and both set files provably loaded. **The decision
+is exonerated as the cause; the defect is downstream: the decompressed set
+payload never rewrites the material texture descriptors, which stay at their
+8x8/16x16 creation state.** Everything below about the decision chain remains
+valid reverse-engineering and the position analysis of R4/R3 remains the proof
+that hardware holds full-size atlases — but part 44's hunt is the SET-APPLY
+pipeline: NtReadFile extents for the set file -> the decompress pump
+`sub_82177358` (probe calls + completion) -> the asset-type-3 completion
+(`CallbackLoadRequest`, `sub_82269388`) -> whatever walks the set and rewrites
+fetch descriptors, and where that silently dies on our runtime. §6bw fourth
+addendum has the census; the B1 stream (menu frames, hardware) is the oracle
+for the same draws if needed. Also open: the operator's sledgehammer-pickup
+FREEZE (signal-15, not a fault — next session carries CZ_WAIT_TRACE=1).
+
 
 Written at the end of part 43 (2026-08-14). **This is the LIVE hand-off**,
 superseding `part43-kickoff.md`. Read `docs/phase5-notes.md` §6bw first — part
