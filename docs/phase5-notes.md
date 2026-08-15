@@ -7213,3 +7213,48 @@ Also reported by the operator this session, filed not chased: **ambient
 occlusion only visible very close to buildings/objects** — plausibly the
 same far-LOD mesh switch (LOD shells sampling the common set carry no baked
 AO), so it may ride along with this item's fix. Lower priority than 00i.
+
+### §6bw second addendum — normal play batch-loads too, the mask cannot unload main zones, and the divergence narrows to "what re-runs the decision on hardware mid-session"
+
+The operator's second correction: their flat-building captures came from NORMAL
+PLAY on our runtime (and their R4 Xenia session was normal play — no debug menu
+there). Measured response, all headless:
+
+* **Our normal play batch-loads exactly like the jump.** The stick recipe
+  (prologue → safehouse → Still Creek) runs ONE 11-zone burst at ~43 s with
+  the camera at the case start `(-266.35, 3.24, -31.75)` — zones 2/5/7/8
+  decide LOD there — and NO re-decision for the rest of a 10-minute run that
+  reached the outdoor world (8,975 draws). The operator's normal-play flat
+  street is reproduced and explained.
+* **Loading the save is the same state**: `START,DOWN,A,...` reads
+  `DR2P000.DSF` and the burst runs at the SAME safehouse camera — Case Zero's
+  save point is the safehouse, so "hardware loaded a save mid-town" is dead.
+* **The zone-interest mask cannot reload the street zones.** The enqueuer
+  (`sub_8226CB60`, called every streaming update before the queue processor)
+  enqueues on mask-bit set when `zoneInfo+0x6C == 0` and UNLOADS
+  (`state 3 → 2`, `sub_8226B818`) on bit-clear — the reload path exists —
+  but zones 0-8 carry ALL-ONES membership (`zoneInfo+0x68 = 0xFFFFFFFF`),
+  so no mask value can ever unload them within a level session. Only
+  special zones (9: bit0, 10: bit1) toggle. Live-watched over a roam
+  (`zone_lod_watch.py --mask`): mask words `0000000e 00000001 ffff0001
+  00010001` static throughout, all states pinned at 3. (Word 0 of that
+  block IS the "level id" the boost getters index — 14 jump / 17 menu / 18
+  normal play; table entries 14 AND 18 both give ×1.0, so the boost is a
+  non-factor on every route. The probe's 16-entry cap should read 24.)
+* Consequence: hardware's full street CANNOT be explained by any single
+  fresh batch decision (safehouse math also says street = LOD) nor by
+  mask-driven reload. **Something re-ran the zone loads on hardware
+  mid-session with the player elsewhere.** Remaining candidates, in order:
+  (a) full level reloads at natural CASE TRANSITIONS (each case start
+  re-decides everything from the case spawn — the DebugJump entries are
+  exactly these spawns, and entry 2 lands at `(-271.7, -64)` where zone 1
+  flips full); (b) mission-script zone loads (`immediately = 1` — every
+  narration we have ever seen is `immediately = 0`); (c) an unfound path.
+* **The discriminating experiment is an operator session on OUR runtime**:
+  natural play from new game through the first case transition and into
+  town, with `CZ_ZONE_TEX_PROBE=1` — the probe prints every re-decision
+  with its camera. Same code on both platforms: if transitions re-decide
+  on ours, they re-decide on hardware, and the transition position explains
+  hardware's full street (and the FIX becomes making our sessions carry
+  the same state, or nothing at all); if nothing re-decides even across a
+  case transition, candidate (b)/(c) is next.
