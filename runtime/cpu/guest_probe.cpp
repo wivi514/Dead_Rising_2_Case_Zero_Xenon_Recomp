@@ -2230,11 +2230,15 @@ PPC_FUNC(sub_82270870)
         const float boostBelow = (level < 16) ? GuestF32(base, 0x82042C18 + 4 * level) : 0.f;
         const float boostMul = (level < 16) ? GuestF32(base, 0x82042D68 + 4 * level) : 1.f;
 
-        char zname[33] = { 0 };
-        for (int i = 0; i < 32; i++)
+        // rec+0x69C is a directory OBJECT, not a char*: the first version printed it
+        // as %s and salted every log line with NULs and newlines, which turned grep
+        // binary-mode and made the whole probe read as absent (gotcha 25, self-made).
+        // Sanitize to printable ASCII; it still shows a name when one is in there.
+        char zname[17] = { 0 };
+        for (int i = 0; i < 16; i++)
         {
-            zname[i] = (char)PPC_LOAD_U8(rec + 0x69C + i);
-            if (!zname[i]) break;
+            uint8_t c = PPC_LOAD_U8(rec + 0x69C + i);
+            zname[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
         }
 
         fprintf(stderr,
