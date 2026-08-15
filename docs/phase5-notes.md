@@ -7282,3 +7282,45 @@ fresh and a save-loaded process names the exact field. The save is an
 XContent package in Xenia's content tree for title 58410A8D;
 `tools/extract_stfs.py` unpacks it and the DSF goes to
 `assets/save/DR2P000.DSF/DR2P000.DSF`.
+
+### §6bw fourth addendum — THE DECISION IS EXONERATED AS THE CAUSE: the flat class exists in the MAIN MENU, where the decision chose FULL and the full file loaded
+
+The operator: the flat class shows even on the main menu's gas sign, on every
+boot. Verified headlessly in one run (synthetic F9 at the title screen,
+`CZ_CAPTURE_KEY`): the menu frame carries **56 draws of ≥200 verts binding a
+≤16×16 s0**, twelve of them the world shader `ps_34524bb64374d20e` reading an
+**8×8 atlas at `0D875000`** on meshes up to 2,131 verts — in the ONE state
+where every link of the decision chain is known good: zone 0 decided FULL
+(near giant volumes, probe-confirmed), `COMMON_TEXTURE.tex` (2.4 MB) and
+`COMMON_TEXTURE1.tex` both narrated as loading, and the "Avoid loading TOO
+big file(s)" path read and found benign (sizes over 0x240000 just pump the
+decompressor `size/0x240000` extra times — hardware runs the same line).
+
+**Item 00i's cause is therefore DOWNSTREAM of the texture-set choice: the
+set's payload never reaches the texture descriptors.** The atlases exist at
+8×8/16×16 — plausibly their creation-time minimal state — and the apply/
+commit step that should promote each descriptor to its full extent after the
+set file decompresses never lands. The LOD-vs-full decision work (this
+part) stands as correct reverse-engineering, and the position analysis of
+the R4/R3 traces stands as proof hardware holds full-size atlases — but the
+decision only ever selected WHICH file fails to apply. Everything measured
+(fresh/jump/normal-play/save states all flat; hardware full everywhere;
+"promotion works up close" = the separate per-object texture system) is
+consistent with a single broken set-apply on our side.
+
+Part 44's hunt, in order: (1) the set-load pipeline end to end on ours —
+the `NtReadFile` extents against the zone archive (does the whole 2.4 MB
+arrive), the decompress pump `sub_82177358` (probe: calls, completion), the
+asset-type-3 completion (`CallbackLoadRequest ... mStatus = 2` —
+`sub_82269388`) and whatever walks the decompressed set and REWRITES the
+material fetch descriptors; (2) find where it silently dies; (3) the fix at
+that input. The B1 boot-title hardware stream can supply the menu-frame
+oracle (same draws, hardware's s0 extents) if needed.
+
+Also from the operator session (natural play, case 0-1): the probe shows the
+same two bursts (menu + safehouse at 138 s) and nothing after — and the
+session ended in a FREEZE (not a fault: signal-15 dump, input/audio still
+pumping) right after grabbing a sledgehammer outside the safehouse. Filed:
+next operator session should carry `CZ_WAIT_TRACE=1` so a freeze names its
+wait. Log preserved at
+`~/DR2CZ-troubleshooting/part43-operator-zone-session.log`.
