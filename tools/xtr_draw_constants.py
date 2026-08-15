@@ -169,10 +169,16 @@ def main():
                 else:
                     # The load HAPPENED on hardware; we simply cannot say with what.
                     # Marking the destinations rather than leaving the previous value
-                    # is the whole point (gotcha 263).
+                    # is the whole point (gotcha 263). The SOURCE ADDRESS is carried in
+                    # the marker: an unrecoverable register's next question is always
+                    # "what memory was that, and who writes it" — part 42 asked it of
+                    # the DoF passes' pc(252..255), where the answer decides whether
+                    # the title computes those constants on the GPU (a resolve
+                    # destination) or the CPU (our runtime's own memory to inspect).
                     unrec_loads += 1
                     for i in range(size):
-                        write(base_reg + idx + i, 0, UNREC)
+                        write(base_reg + idx + i, 0,
+                              '%s@%08X' % (UNREC, src + 4 * i))
         elif opcode == 0x27 and count >= 3:
             bound[word(1) & 3] = (word(1) & ~3, word(2) & 0xFFFF)
         elif opcode == 0x2B and count >= 3:
