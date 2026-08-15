@@ -7823,3 +7823,36 @@ which is cheap because they reproduce it in about two minutes of play:
 `CZ_VK_STREAM_GUARD_EXACT=1` is the one that separates "the store" from "the store's
 GUARD" — the distinction that decides whether the fix costs 4.7 ms of a crowd frame or
 nothing.
+
+### §6bz addendum — the stale text is NOT FROZEN, it VARIES FRAME TO FRAME, which points at a TEAR rather than a cache
+
+Three consecutive F9 captures of ONE screen (the CASE FILE, operator captures
+004267/004298/004340) differ from each other by 3.5-4.3% of pixels, and the
+difference is in the TEXT: the visible fragments are
+
+    "…Bike Parts" / "Unknow"          then
+    "…Bike Parts" / "ON: Unknown"     then
+    "B" / "Part(s)" / "ON:"
+
+— a DIFFERENT partial subset of the same strings each time. A cache serving one
+stale copy would garble identically every frame; this does not.
+
+**So the better reading is a TORN buffer**: we copy the guest's text vertex
+buffer while the guest is still writing it, and get part new / part old. That
+reproduces all three symptoms at once — a run whose glyph quads are half-written
+loses glyphs, the surviving half sits at the previous layout's positions under
+this draw's colour constant (the mid-word colour split), and runs the guest has
+stopped emitting persist wherever their old bytes were not yet overwritten.
+
+**What it predicts, and what to test next.** A tear needs the reader and the
+writer to overlap, so it should scale with how far our command processor LAGS
+the guest — which is exactly what grows over a session and what a fresh short
+run does not have. `CZ_VK_FRAMES_IN_FLIGHT=1` (the pre-part-23 renderer, same
+binary) is therefore the arm to run after the guard arm, and it has a date
+attached: part 23 made 2 the default, and the operator reports this defect as
+long-standing rather than new. Note this also demotes the cross-frame store: a
+store that faithfully caches a TORN copy is a victim, not the cause, and its
+guard arm would not fix the picture.
+
+The two arms are cheap and mutually exclusive in what they implicate, so run
+both before building anything (gotcha 5).
