@@ -686,9 +686,12 @@ PROMOTION-DENIAL defect, and the DoF "hardware contradiction" mostly dissolved):
   **standing still for 2.3 minutes promotes NOTHING** — which refutes the rate
   class outright (file-IO latency, and the `KeSetBasePriorityThread` no-op that
   had been the named candidate since part 28 — do not build it for this item).
-  The defect is a distance/screen-size threshold or pool budget whose INPUT
-  differs on our runtime. Next: the engine's own narration at the stand-still
-  spot, then `gdis` on `cLODController`/`wait_for_tex_lod`. §6bv.
+  **The engine then named it itself** (§6bv addendum): the flat class IS the
+  per-zone `COMMON_TEXTURE.tex` vs `COMMON_TEXTURE_LOD.tex` choice — our runtime
+  loads zones 1/2/3/7 as LOD at the spawn where hardware's street is fully
+  textured. `ForceLODTexForStreamingWorld` refuted by a live read (0x82A57BD7=0).
+  Next: the branch that picks the filename, then fix ITS INPUT (never the
+  branch). **`docs/part43-kickoff.md` is the LIVE hand-off.**
 * **ITEM 0u IS DOWNGRADED — the composite behaves as designed on BOTH platforms.**
   Our constants match hardware's to the digit (`CZ_VK_PSBIND_PC` — the
   instrument already existed); the worked alpha math gives ~95% blur at 50 m on
