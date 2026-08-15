@@ -42,9 +42,40 @@ inverted twice.
   save vs same save. Their two flat-building reports (menu gas sign, Big Buck
   approach) both reproduce on hardware in the matching state.
 
+## SAME-DAY REWRITE — 00i REOPENED, and the mechanism is cornered to a MIP-SELECTION OVERSHOOT
+
+The operator refused the closure, recreated the R4 walk on our renderer, and
+was right (§6bx second/third addenda — read both): the flat buildings bind
+FULL-SIZE textures (8 tiny draws of 1,760 at the matched view), so the
+thumbnail story was the wrong mechanism. The chase then established, same day:
+mips are the mechanism (`CZ_VK_NO_MIPS=1` restores the buildings, tail arm
+does not, scene surface carries the flatness); the mip DATA is correct (guest
+chains AND uploaded staging bytes verified level by level); every LOD input
+matches hardware (tfetch bias 0×1,846; fetch-constant bias 0×56,111; filters
+and aniso equal and ENGAGED); and the new `CZ_VK_MIP_TINT=1` instrument shows
+a ~2-octave global overshoot (L1 at two meters, L2 at ten, fence anchor: L2
+where texel math says 0.5). E5 proves hardware-fresh is crisp. The defect is
+ours, in the scene pass's LOD/derivative environment or in the still-unnamed
+wall-texture fetch state.
+
 ## The plan
 
-1. **The sledgehammer FREEZE is the top item** (part-43 operator session:
+0. **Item 00i, reopened — the selection-overshoot hunt:**
+   * `CZ_VK_DRAW_ID` at the operator's matched Big Buck view (pose in
+     `part44-operator/capture_008693.pose`): NAME the wall draw and its
+     texture (every candidate so far was picked by inference — gotcha 302).
+   * Compute hardware's implied LOD for that draw from the R4_04 trace's
+     vertex streams (UVs + screen extent) and diff against the tint reading —
+     the octave delta becomes a hard number.
+   * Audit the scene pass's derivative environment: the MSAA window-scale
+     interplay (§6bf/§6bh) is the one global term that could scale every
+     gradient; check what pixel grid the scene REALLY rasterizes at vs the
+     guest's window-transform expectations.
+   * The mip-tint contact points: tint + `CZ_VK_ANISO=0` and tint +
+     `CZ_VK_NO_FETCH_SAMPLERS=1` at one fixed view quantify each sampler
+     term's share of the overshoot.
+
+1. **The sledgehammer FREEZE is the operator-session item** (part-43 operator session:
    signal-15, not a fault — input/audio still pumping, right after grabbing
    a sledgehammer outside the safehouse in natural play). Next operator
    session carries `CZ_WAIT_TRACE=1` so the freeze names its wait; log at

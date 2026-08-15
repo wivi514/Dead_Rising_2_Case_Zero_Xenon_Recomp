@@ -7508,3 +7508,46 @@ renders a surface as one flat color exactly at distance while it stays
 detailed up close — which is the operator's ORIGINAL wording of this item
 from part 28. Arms in flight: `CZ_VK_NO_MIP_TAIL=1` (tail off, chain on),
 then `CZ_VK_NO_MIPS=1` (level 0 only), F9 at the matched Big Buck view.
+
+### §6bx third addendum — the flat class is a MIP-SELECTION OVERSHOOT in the scene pass: ~2 octaves too deep everywhere, data and every LOD input verified matched
+
+The reopened hunt ran the full elimination (all same-day, operator A/B plus
+headless instruments):
+
+* **The mechanism is mips**: `CZ_VK_NO_MIPS=1` restores building detail at the
+  operator's matched Big Buck view; `CZ_VK_NO_MIP_TAIL=1` changes nothing.
+  The flatness is present in the SCENE surface (pre-post-chain), confirming
+  part 42's pre-post reading and clearing the DoF composite.
+* **The mip DATA is correct.** Guest chains decode as clean downscales for
+  every texture checked (fence 512×256 levels 1–3, foliage 256×256 levels
+  1–3, the HARDWARE sign 128×512 level 2 — an eyeballed "wrong texture" there
+  was refuted by a brute-force scorer: our offset wins at error 106 against
+  ~2,300 for every alternative). The UPLOADED staging bytes equal the guest
+  chain (CZ_VK_TEX_DUMP grew per-level dumping to prove it). An early
+  live-dump "all-black level 4" was the gotcha-285 trap (dump taken after the
+  operator moved on) plus my own wrong pitch flag — both retracted in place.
+* **Every LOD input matches hardware.** tfetch instruction census over the
+  435-shader bank: lod_bias 0 on 1,846 of 1,846, mip/aniso "use fetch
+  constant" throughout. Fetch-constant census over R4_04's register state:
+  lod_bias (dword4 bits 12..21) 0 on 56,111 of 56,111 bound constants;
+  filters linear, aniso 3–4 on world textures — exactly what our decoder
+  reads and our per-fetch samplers honor (samplerAnisotropy enabled, limit
+  read; the aniso tint A/B shows an octave shift, so it ENGAGES).
+* **`CZ_VK_MIP_TINT=1` (new instrument)** paints every uploaded chain level a
+  solid code color (L1 red … L6 cyan): the spawn view shows truck beds at
+  TWO METERS solid red (L1), vans at ten solid green (L2), and the spawn
+  fence L2 where its texel density computes to LOD ≈ 0.5 — a ~2-octave
+  overshoot on ordinary surfaces, which at 40–80 m compounds to L4–L6 =
+  the flat-color class. E5 (round-1, FRESH hardware, case 0-1) shows the
+  same street crisp: the divergence is real, ours, and now has a measured
+  signature.
+
+What is NOT yet named is the overshoot's cause: with data correct and every
+bias/filter field matched, the remaining suspects are (a) the identity of the
+wall textures' own fetch state at the matched view (still inferred, never
+draw-ID'd — gotcha 302's warning stands), and (b) the derivative environment
+of the scene pass (the MSAA window-scale interplay with UV interpolation is
+the one global term that could scale every gradient; §6bf/§6bh). Part 45's
+first move: CZ_VK_DRAW_ID at the matched view to name the wall draw, then
+compute hardware's implied LOD for that exact draw from the R4 trace's vertex
+streams and put a hard number on the octave delta.

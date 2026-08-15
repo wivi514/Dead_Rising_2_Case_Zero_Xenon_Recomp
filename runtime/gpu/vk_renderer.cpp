@@ -3840,6 +3840,51 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             s.zeroUploads++;
     }
 
+    // CZ_VK_MIP_TINT=1 — replace every uploaded chain level's blocks with a solid
+    // colour code (L1 red, L2 green, L3 blue, L4 yellow, L5 magenta, L6 cyan, deeper
+    // white), level 0 untouched. The picture then names the mip level every surface
+    // samples, which no amount of reasoning about gradients can (part 44: data
+    // verified correct at every level, all bias fields zero on both platforms, and
+    // the flat-at-range class still there — the next fact needed is WHICH level the
+    // flat wall actually reads). Diagnostic arm only; DXT1/DXT5 formats only, others
+    // left untinted and counted.
+    static const bool mipTint = EnvOn("CZ_VK_MIP_TINT");
+    if (mipTint && (t.format == xenos::kFmt_DXT1 || t.format == xenos::kFmt_DXT4_5))
+    {
+        static const uint16_t kC565[7] = { 0xF800, 0x07E0, 0x001F, 0xFFE0,
+                                           0xF81F, 0x07FF, 0xFFFF };
+        for (size_t ci = 1; ci < copies.size(); ci++)
+        {
+            const VkBufferImageCopy& c = copies[ci];
+            if (c.imageSubresource.mipLevel == 0)
+                continue;
+            const uint16_t col =
+                kC565[std::min<uint32_t>(c.imageSubresource.mipLevel - 1, 6)];
+            const uint32_t luW2 = (c.imageExtent.width + blockDim - 1) / blockDim;
+            const uint32_t luH2 = (c.imageExtent.height + blockDim - 1) / blockDim;
+            const uint64_t bytes = uint64_t(luW2) * luH2 * bytesPerUnit;
+            if (c.bufferOffset + bytes > pixels.size())
+                continue;
+            uint8_t* p = pixels.data() + c.bufferOffset;
+            for (uint64_t o = 0; o + bytesPerUnit <= bytes; o += bytesPerUnit)
+            {
+                uint8_t* b = p + o;
+                if (bytesPerUnit == 16)
+                {
+                    b[0] = b[1] = 0xFF;                  // solid alpha
+                    memset(b + 2, 0, 6);
+                    b += 8;
+                }
+                b[0] = uint8_t(col & 0xFF);
+                b[1] = uint8_t(col >> 8);
+                b[2] = uint8_t(col & 0xFF);
+                b[3] = uint8_t(col >> 8);
+                memset(b + 4, 0, 4);                     // indices -> colour 0
+            }
+        }
+        Count("texture: mip levels TINTED (CZ_VK_MIP_TINT)");
+    }
+
     // CZ_VK_TEX_DUMP=<dir> plus CZ_VK_TEX_DUMP_ADDR=<hex[,hex]> — write the UNTILED
     // bytes of those textures out, once per upload: a greyscale PGM for an 8-bit
     // texture, and a raw .bin of the block payload for everything else.
@@ -3910,6 +3955,31 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             }
         }
         Count("texture: dumped for CZ_VK_TEX_DUMP");
+        // Part 44: ALSO write each uploaded chain level, one file per level, named
+        // with its own texel extent. The flat-at-range hunt needs to see the bytes
+        // the SAMPLER sees at each level — the guest chain was verified correct for
+        // every texture checked, so the remaining data suspect is this staging
+        // buffer, and only a dump of it can clear (or convict) the upload.
+        for (size_t ci = 1; ci < copies.size(); ci++)
+        {
+            const VkBufferImageCopy& c = copies[ci];
+            if (c.imageSubresource.baseArrayLayer != 0 || c.imageSubresource.mipLevel == 0)
+                continue;
+            const uint32_t lw = c.imageExtent.width, lh = c.imageExtent.height;
+            const uint32_t luW2 = (lw + blockDim - 1) / blockDim;
+            const uint32_t luH2 = (lh + blockDim - 1) / blockDim;
+            const uint64_t bytes = uint64_t(luW2) * luH2 * bytesPerUnit;
+            if (c.bufferOffset + bytes > pixels.size())
+                continue;
+            char path[512];
+            snprintf(path, sizeof path, "%s/tex_%08X_L%u_%ux%u_fmt%u.bin", texDumpDir,
+                     t.address, c.imageSubresource.mipLevel, lw, lh, t.format);
+            if (FILE* f = fopen(path, "wb"))
+            {
+                fwrite(pixels.data() + c.bufferOffset, 1, size_t(bytes), f);
+                fclose(f);
+            }
+        }
     }
 
     // The refresh arm: same image, same slot, new pixels. No allocation, so it can run
