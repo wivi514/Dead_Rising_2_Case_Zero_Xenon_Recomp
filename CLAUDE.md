@@ -675,7 +675,34 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-14 (part 43 — the zone texture-set decision is
+Where the port is, as of 2026-08-15 (part 44 — ITEM 00i IS CLOSED AS FAITHFUL,
+and the part-43 menu reframe is retracted):
+
+* **ITEM 00i CLOSED: fresh hardware shows the flat-at-range class at the same
+  rate we do; the "hardware is full everywhere" oracle was a warm loaded-save
+  session.** Two censuses (`phase5-notes.md` §6bx + addendum): our MENU frame
+  equals B1's title era bind for bind (the 8×8-on-big-meshes draws are
+  `flat_color_gray_cm.bct`, 346 bytes, flat BY DESIGN — part 43's "the defect
+  is the set APPLY" premise failed its never-run control); and B2 — a FRESH
+  hardware session walking into Still Creek, on disk since day one — runs
+  2–3% tiny-on-big through the whole town era with the world shader binding
+  an 8×8 on thousands of draws, persisting to session end (no promotion wave
+  exists fresh). The texture LEVEL MACHINE is fully named and verified healthy
+  on our runtime (name hash, DB entry layout, promote/bind/catch-up walks,
+  levels: 0 = full set payload, 1 = thumbnail); `CZ_SET_APPLY_PROBE=1` prints
+  every gate of it. Operator comparisons must be like-for-like (fresh vs
+  fresh, or same save on both). The one open curiosity: WHAT a save carries
+  that makes a warm session all-full (skip bits the candidate) — nameable by
+  loading the operator's tanker save with the probe, not a defect either way.
+  **Big-trace censuses OOM the stock `xtr_draw_bindings.py` three ways** —
+  the validated lean variant (rolling memory window + streamed CSV,
+  byte-identical on B1) lives in `~/DR2CZ-troubleshooting/part44/`, and a
+  multi-GB CSV must never target /tmp (the tmpfs filled mid-run and every
+  shell command "died" until space was freed). **`docs/part45-kickoff.md` is
+  the LIVE hand-off**; the sledgehammer-pickup FREEZE (signal-15, next
+  operator session carries `CZ_WAIT_TRACE=1`) is the top item.
+
+Where the port was, as of 2026-08-14 (part 43 — the zone texture-set decision is
 fully named, OUR EXECUTION OF IT IS CORRECT, and item 00i waits on capture R5):
 
 * **ITEM 00i INVERTED: the engine ITSELF picks LOD at the spawn, on inputs

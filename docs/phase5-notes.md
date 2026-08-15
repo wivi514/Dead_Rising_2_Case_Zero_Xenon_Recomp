@@ -7437,3 +7437,51 @@ inside a walk (hash → idx, +0x44/refcounts/dest), every registration
 (`sub_82268238`: slot, level, caller), and every walk-scheduled payload op
 (`sub_827D1BC0`, with entry name). The menu-set hash list is compiled in so
 those 35 names print from ANY caller.
+
+### §6bx addendum — B2 DECIDES ITEM 00i: a fresh hardware session binds the thumbnail class at the same rate, and it never promotes. CLOSED AS FAITHFUL
+
+The discriminator named above ran the same day. `tools/xtr_draw_bindings.py`
+could not survive the 8.5 GiB B2 trace (three OOM kills: 43.9 GB RSS with
+every memory record retained, then again with latest-wins-per-base, then the
+accumulated draw list), so part 44 built a validated lean variant
+(`~/DR2CZ-troubleshooting/part44/` carries it with the artifacts): a rolling
+8,192-record memory window (register loads read records shortly after they
+land and Xenia re-records changed memory, so register state survives — proven
+by byte-identical CSV output against the unmodified tool on the whole of B1),
+plus rows streamed to the CSV at draw time. One truncated run (ENOSPC on the
+/tmp tmpfs at 7.04 GB — the CSV now writes to /home) plus one clean run.
+
+The timeline, 24 buckets over the session (boot → New Game → skipped
+cutscenes → safehouse → the Still Creek walk; ≥200-vert draws with an s0):
+
+* Buckets 0–3 (title/menu): tiny-on-big **5.94–6.05%** — B1's title-era
+  numbers reproduced from a different capture, the retraction's control
+  confirmed in passing.
+* Buckets 4–11 (cutscene/safehouse): 1.0–2.0%.
+* Buckets 12–23 (the town): **1.96–3.03% tiny-on-big in every bucket, with
+  the world shader `ps_34524bb64374d20e` itself binding an 8×8 on 1,300–3,900
+  draws per bucket** — the operator's flat-buildings-at-range class, on
+  HARDWARE, on a FRESH session, all the way through the walk. Our own
+  fresh-session frames read 0.2–4.9% on the same census (part-41/42 operator
+  captures re-censused; peak 94 tiny of 1,904 big at the Big Buck approach).
+* Every long-lived tiny texture persists from first bind to the END of the
+  session (a 4×4 alive from draw 67k to 7.65M): **no promotion wave exists on
+  a fresh session** — outcome (b) refuted directly.
+
+**Item 00i is closed as a state-comparison artifact.** The R4 "fully textured
+street at every distance" that anchored parts 42–44 was a warm session from a
+loaded Case 0-2 save; fresh-vs-fresh, hardware shows the operator's complaint
+exactly as our renderer does. The flat-at-range look IS Dead Rising 2: Case
+Zero on a fresh session: far zones stream their `COMMON_TEXTURE_LOD.tex`
+thumbnail sets by the (part-43-verified) distance decision, and the part-44
+level machine applies them correctly on both platforms. What the save carries
+that makes a warm session all-full remains UNNAMED (skip bits stay the leading
+candidate) — but it is a curiosity about the save format now, not a defect:
+the one follow-up that could name it is loading the operator's tanker save on
+our runtime with `CZ_SET_APPLY_PROBE=1`.
+
+Operator guidance that falls out: like-for-like comparisons only — a fresh
+DebugJump/New Game on ours against a fresh session on Xenia, or the same save
+on both. And the part-43 addendum's AO-only-up-close observation plausibly
+rides the same design (LOD shells at range), to be re-checked only if it
+survives a like-for-like look.

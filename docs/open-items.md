@@ -1616,7 +1616,33 @@ Next, in order:
    could not have matched and its negative result means nothing (gotcha 25). Answering it
    needs `docs/big-archive-format.md` and a real TOC reader.
 
-00i. **LOD POPS IN FAR TOO LATE — PART 43: OUR SIDE IS EXONERATED UP TO ITS
+00i. **CLOSED IN PART 44 — FAITHFUL. Fresh hardware binds the same thumbnail
+   class at the same rate; the "hardware is full everywhere" oracle was a
+   WARM LOADED-SAVE session.** Two censuses settled it (`docs/phase5-notes.md`
+   §6bx): (1) the MENU: our F9 census equals B1's title era bind for bind —
+   including the 31 draws of an 8×8 on big meshes, which is
+   `flat_color_gray_cm.bct`, 346 bytes on disc, flat by design; part 43's
+   final "the defect is the set-apply" reframe is RETRACTED (its control was
+   never run). (2) THE TOWN: B2 — a FRESH hardware session walking into Still
+   Creek, on disk since day one — runs a steady **2–3% tiny-on-big through
+   the whole town era, 1,300–3,900 world-shader draws per bucket on an 8×8**,
+   the exact class the operator reported on ours (our frames: 0.2–4.9%), and
+   the tiny textures PERSIST to the end of the session — no promotion wave
+   exists on a fresh session. The R4 traces' zero-tiny street is the loaded
+   Case 0-2 save's carried state (mechanism unproven, save-side; the
+   only remaining follow-up would be loading the operator's tanker save on our
+   runtime with `CZ_SET_APPLY_PROBE=1`, purely to name the carrier). The
+   flat-at-range look on a fresh session is the engine's own design: the far
+   zones' `COMMON_TEXTURE_LOD.tex` thumbnail sets, applied through a texture
+   level machine that part 44 named end to end and verified healthy on our
+   runtime (39 walk-scheduled payload ops → their archive reads; shared
+   atlases promoted live when a full zone references them). Comparisons for
+   the operator must be like-for-like: fresh session vs fresh session, or
+   same save vs same save.
+
+   The part-43 record, kept because its reverse-engineering stands:
+
+   (superseded head) 00i. **LOD POPS IN FAR TOO LATE — PART 43: OUR SIDE IS EXONERATED UP TO ITS
    INPUTS; the fork now waits on capture R5 (one fresh-spawn F4).** The decision
    is fully named (`docs/phase5-notes.md` §6bw): `sub_82270870` picks
    `COMMON_TEXTURE_LOD.tex` iff the zone is LOD-capable (flag at rec+0x90C,

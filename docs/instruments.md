@@ -1452,3 +1452,25 @@ plays):
 
 The world pointer is printed by the probe itself (`rec=` of slot 0); the guest
 base is the `runtime: guest memory at 0x…` line.
+
+## CZ_SET_APPLY_PROBE — the texture level machine, printed gate by gate (part 44)
+
+`CZ_SET_APPLY_PROBE=1` hooks the whole set-apply pipeline
+(`runtime/cpu/guest_probe.cpp`): `sub_82268840` (the promote walk over a
+loaded COMMON_TEXTURE container: prints container + entry count, then every
+DB lookup inside it — hash, index, +0x44 current level, +0x3C/+0x40 refcounts,
++0x38 asset slot), `sub_82268A10` (the type-8 catch-up walk, with its queue
+item's level), `sub_82268238` (the container bind: slot, LEVEL, packed request
+word, caller LR — the level argument becomes a new entry's +0x44),
+`sub_8222CC80` (registration: hash, idx or −1 for create, level) and
+`sub_827D1BC0` (each walk-scheduled payload read op, with the entry's name).
+The 35 menu-set name hashes are compiled in and print from ANY caller, so a
+run shows when each of those textures first exists in the DB.
+
+Built for part 44's set-apply hunt; kept because it is the only instrument
+that can watch the level machine at all, and because its round-2 timeline
+LOOKED like a defect (all 18 zone-set lookups missing, entries created at
+level 0, no payload ever scheduled through the walk) and was in fact the
+machine working as designed — §6bx records that misreading so it is not
+re-bought. Free when off; diagnostic-only when on (fprintf per event on the
+streaming path).
