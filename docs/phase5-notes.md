@@ -7324,3 +7324,116 @@ pumping) right after grabbing a sledgehammer outside the safehouse. Filed:
 next operator session should carry `CZ_WAIT_TRACE=1` so a freeze names its
 wait. Log preserved at
 `~/DR2CZ-troubleshooting/part43-operator-zone-session.log`.
+
+## §6bx — part 44: the set-apply pipeline is fully named, and the MENU HALF OF THE REFRAME IS RETRACTED — hardware's menu binds the identical distribution, tiny draws included
+
+Part 44 executed the part-44 kickoff's hunt ("the decompressed set payload never
+rewrites the material texture descriptors") and the hunt's premise failed its
+control. Two results, in order of importance:
+
+### 1. The fourth addendum's menu evidence is RETRACTED: our menu frame equals hardware's, bind for bind
+
+The B1 boot→title hardware stream — named by the kickoff itself as "the oracle
+for the same draws if needed" and never actually read — was censused with
+`tools/xtr_draw_bindings.py` (min-verts 200) and compared against a fresh
+synthetic-F9 census of our own menu frame. The `ps_34524bb64374d20e` s0
+distribution, title era:
+
+| s0 extent | B1 draws (hardware) | ours |
+|---|---|---|
+| 256×64 | 148 | 148 |
+| 512×256 | 41 | 41 |
+| 128×128 | 37 | 37 |
+| **8×8** | **31** | **31** |
+| 512×256 (2nd tex) | 27 | 27 |
+| 128×128 (2nd) | 20 | 20 |
+| 256×64 (2nd) | 20 | 20 |
+| 32×128 | 17 | 17 |
+| 512×512 | 12 | 12 |
+| (10 more rows) | = | = |
+
+Identical, entry for entry, including the tiny ones — and the tiny-on-big
+census (≥200 verts, s0 ≤16×16) reads 56 on ours against ~60 in hardware's last
+3,000 draws. The addendum's "8×8 atlas at 0D875000 on meshes up to 2,131
+verts" is hardware's 8×8 at 11609000 on the same 2,131-vert mesh (B1 draw
+66520). The texture is `flat_color_gray_cm.bct` — 346 bytes on disc, one DXT
+block plus mips: a flat gray genuinely painted on large meshes by design. The
+menu was never broken, the "56 tiny-on-big menu draws" were always hardware's
+own numbers, and part 43's final reframe ("the defect is the set APPLY; the
+menu proves it") dissolves. The full-size atlases on our menu (512×512 at
+10443000 etc.) show the set payload DOES reach the descriptors on our runtime.
+Gotcha 13's shape again, in its sharpest form yet: an absolute census was read
+as a defect without running the free control sitting on disk.
+
+### 2. The texture level machine, named function by function (kept — this is the reverse-engineering the kickoff asked for, with the apply question answered under it)
+
+The `.tex` set container: header `06 05 04 03`, entry count at +0xC (LE
+words — the tool that wrote it was a PC tool; the guest parses it through its
+own readers), 0x1C-stride records {name-offset, hash32, payload size, format
+word, payload offset}, name table of `.bct` basenames, per-entry payloads that
+begin with the record's format word big-endian. `prologue_menu/prologue_z01`:
+COMMON_TEXTURE.tex = 18 entries / 2.4 MB, COMMON_TEXTURE1.tex = 17.
+
+The machine (all guest code, verified live with `CZ_SET_APPLY_PROBE=1`):
+
+* **Name key**: CRC-shaped hash over the extensionless basename
+  (`sub_8276C768`, init 0x20225, poly 0xEDB88320, LSB-first bits per byte,
+  sign-extended chars; the copy helper `sub_8279EDE0` strips path and
+  extension). `concrete_dirty_rooftop_beige_cm` → 032A3240.
+* **The texture DB** (`[[0x82A46294]]+0x2C`): name-hash map (`sub_8243FE40` →
+  index), entries at [db+0x28], stride 0x4C: name at +4, fs asset-slot index
+  at +0x38, per-level refcounts at +0x3C (level 0) / +0x40 (level 1),
+  **current level at +0x44**, flag byte at +0x48. `sub_82178DD8` = desired
+  level from refcounts (any level-0 ref dominates: full wins), −1 = no change.
+  Level 0 = the FULL payload (zone COMMON_TEXTURE.tex), level 1 = the
+  thumbnail (model-embedded containers / COMMON_TEXTURE_LOD.tex).
+* **Container registry** (`fs = [0x82AC4878]`, slots at fs+0xD70, stride
+  0x6C): `sub_827B8A58` registers a loaded set container and pre-creates
+  per-entry ops; `sub_82268238` (vtable-dispatched, reached via the
+  `sub_822692B8` thunk) is "bind container at level L": pass 1 looks up every
+  entry name and refs hits at L (`sub_8222CC80` with idx), pass 2 CREATES
+  misses (`sub_8222CC80` idx=−1: name, +0x38 = container-entry op, +0x44 = L).
+  When any entry's current level ≠ desired, its tail enqueues a catch-up item
+  (`sub_82206910` → db+0x70 queue → type-8 dispatcher request → `sub_82268A10`
+  walks the container, schedules payloads, writes +0x44 = item level).
+* **Set completion** (`sub_82269388`, from `CallbackLoadRequest` type 3):
+  walks the container with `sub_82268840` — every entry found in the DB with
+  +0x44 ≠ 0 (i.e. currently at thumbnail level) gets its payload read
+  scheduled (`sub_82782480` → `sub_827D1BC0` → `sub_827CF4C0` →
+  `sub_827B8F38`) and +0x44 set to 0 — then registers the container and
+  tail-binds it at **level = the zone's cached LOD verdict** (`[volObj+0x22C]`,
+  0 = full). `sub_8226C800` re-walks a container when a type-1 asset completes
+  with `sub_821788F0(file) == 0`.
+* **Payload reads verified live**: 39 walk-scheduled ops in one run, each
+  followed by its archive read in the file trace. The apply path is healthy on
+  our runtime, which is what the identical menu distribution independently
+  proves.
+
+The round-2 probe timeline that looked like a defect — zone-set walk misses
+all 18 names, the completion resolve creates them at level 0, model resolves
+then ref them at level 1 forever, no payload ever scheduled through the WALK —
+is how the machine is supposed to look on that ordering: an entry created at
+level 0 by the container bind takes its data from the container at object
+creation (the menu's full 512×512 binds are exactly those entries), so nothing
+needed promoting. The walk-promote path serves the opposite ordering (object
+exists at thumbnail level when the full set arrives). Do not re-read that
+timeline as a trap; part 44 did for several hours.
+
+### Where item 00i stands after this
+
+The flat-at-range class OUTDOORS remains the item, and the open question is
+unchanged from §6bw's addenda but now has a decisive unread oracle: **B2 is a
+FRESH hardware session (boot → new game → walk into Still Creek), captured at
+day one and 7.95 GiB** — its timeline separates "fresh hardware binds
+thumbnails at range exactly like ours (faithful; R4-warm's full street is
+session state)" from "hardware promotes on approach mid-session (a reload
+trigger we never run)". The tiny-on-big census over B2's draw timeline is the
+measurement; part 44 runs it next (in flight as this is written).
+
+Instruments added (all free when off): `CZ_SET_APPLY_PROBE=1` — prints every
+`sub_82268840`/`sub_82268A10` walk (container, entry count), every DB lookup
+inside a walk (hash → idx, +0x44/refcounts/dest), every registration
+(`sub_8222CC80`: hash, level, packed request word), every container bind
+(`sub_82268238`: slot, level, caller), and every walk-scheduled payload op
+(`sub_827D1BC0`, with entry name). The menu-set hash list is compiled in so
+those 35 names print from ANY caller.

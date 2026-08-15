@@ -2291,3 +2291,212 @@ PPC_FUNC(sub_82270870)
     }
     __imp__sub_82270870(ctx, base);
 }
+
+// ---------------------------------------------------------------------------------
+// Part 44, item 00i — the SET-APPLY walk. When a zone's COMMON_TEXTURE(.tex) set
+// container finishes loading, sub_82268840 walks its entry table: per entry it
+// CRC32s the name, looks the hash up in the texture database (sub_8243FE40,
+// entries at [db+0x28], stride 0x4C), and — only when the DB entry's flag at +0x44
+// is set — schedules an async payload read toward [entry+0x38], then clears the
+// flag. The flat-texture class is "the payload never rewrites the descriptors", so
+// this probe prints every gate of that walk: entry count, each hash lookup's
+// verdict, the +0x44 flag and the +0x38 destination. Which gate reads 0 is the
+// finding; the probe changes nothing.
+//
+// Behind CZ_SET_APPLY_PROBE=1. The lookup hook prints only inside the walk (a
+// thread-local depth), because sub_8243FE40 is the generic texture-by-hash lookup
+// and fires constantly elsewhere.
+static thread_local int g_setApplyDepth = 0;
+
+extern "C" PPC_FUNC(__imp__sub_82268840);
+PPC_FUNC(sub_82268840)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    if (!on)
+    {
+        __imp__sub_82268840(ctx, base);
+        return;
+    }
+    const uint32_t db = ctx.r3.u32;
+    const uint32_t cont = ctx.r4.u32;
+    // Entry count as sub_8276ad50 reads it: [[cont+4]+0xC], 0 when unopened.
+    const uint32_t obj = PPC_LOAD_U32(cont + 4);
+    const uint32_t count = obj ? PPC_LOAD_U32(obj + 0xC) : 0;
+    fprintf(stderr, "[setapply] walk db=%08X cont=%08X entries=%u\n", db, cont, count);
+    fflush(stderr);
+    g_setApplyDepth++;
+    __imp__sub_82268840(ctx, base);
+    g_setApplyDepth--;
+    fprintf(stderr, "[setapply] walk done cont=%08X\n", cont);
+    fflush(stderr);
+}
+
+// sub_82268A10 is the OTHER walker — driven by type-8 dispatcher requests
+// (sub_8226D4C8), it pops an item from the DB's request queue at db+0x70, walks
+// the request's container and on each HIT schedules the payload read and WRITES
+// entry+0x44 = the item's level (where sub_82268840 requires +0x44 nonzero and
+// clears it). Hooked so a run shows whether this catch-up path ever fires.
+extern "C" PPC_FUNC(__imp__sub_82268A10);
+PPC_FUNC(sub_82268A10)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    if (!on)
+    {
+        __imp__sub_82268A10(ctx, base);
+        return;
+    }
+    const uint32_t db = ctx.r3.u32;
+    const uint32_t cont = ctx.r4.u32;
+    const uint32_t slot = ctx.r5.u32;
+    const uint32_t obj = PPC_LOAD_U32(cont + 4);
+    const uint32_t count = obj ? PPC_LOAD_U32(obj + 0xC) : 0;
+    // The queued item the walk will pop: [db+0x70]'s array at +0x28, stride 0x14,
+    // index r5 (out-of-range reads slot 0, as the guest's own bounds check does).
+    const uint32_t q = db + 0x70;
+    const uint32_t qcap = PPC_LOAD_U32(q + 0x24);
+    const uint32_t qarr = PPC_LOAD_U32(q + 0x28);
+    const uint32_t use = (slot < qcap) ? slot : 0;
+    const uint32_t item = qarr + use * 0x14;
+    const uint16_t level = PPC_LOAD_U16(item + 0xC);
+    const uint8_t force = PPC_LOAD_U8(item + 0xE);
+    fprintf(stderr,
+            "[setapply] A10 walk db=%08X cont=%08X entries=%u slot=%u level=%u force=%u\n",
+            db, cont, count, slot, level, force);
+    fflush(stderr);
+    g_setApplyDepth++;
+    __imp__sub_82268A10(ctx, base);
+    g_setApplyDepth--;
+    fprintf(stderr, "[setapply] A10 walk done cont=%08X\n", cont);
+    fflush(stderr);
+}
+
+// sub_82268238 resolves a loaded asset's texture-name list against the DB and
+// REGISTERS the missing ones (sub_8222CC80), passing its own r5 straight through
+// as the new entry's +0x44 level — the value that gates the set-apply walk. Our
+// runs show every zone texture registering with level 0 (never pending), so the
+// question is who calls this and why r5 is 0; it is only reached indirectly, so
+// the LR is the caller.
+extern "C" PPC_FUNC(__imp__sub_82268238);
+PPC_FUNC(sub_82268238)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    if (on)
+    {
+        fprintf(stderr, "[setapply] resolve db=%08X slot=%u level=%u packed=%08X lr=%08X\n",
+                ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, (uint32_t)ctx.lr);
+        fflush(stderr);
+    }
+    __imp__sub_82268238(ctx, base);
+}
+
+// sub_8222CC80 is the DB registration: idx==-1 allocates a new entry, copies the
+// name, and writes +0x38 = asset-slot, +0x44 = the level argument (r8); existing
+// entries only bump the per-level refcount at +0x3C/+0x40. Printing every call
+// shows which level each zone-set texture was ever registered or re-referenced at.
+extern "C" PPC_FUNC(__imp__sub_8222CC80);
+PPC_FUNC(sub_8222CC80)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    if (!on)
+    {
+        __imp__sub_8222CC80(ctx, base);
+        return;
+    }
+    const uint32_t idx = ctx.r4.u32;
+    const uint32_t slot = ctx.r5.u32;
+    const uint32_t hash = ctx.r6.u32;
+    const uint32_t level = ctx.r8.u32;
+    const uint32_t packed = ctx.r9.u32;
+    __imp__sub_8222CC80(ctx, base);
+    fprintf(stderr,
+            "[setapply] reg hash=%08X idx=%d slot=%u level=%u packed=%08X -> r3=%u\n",
+            hash, (int32_t)idx, slot, level, packed, ctx.r3.u32);
+    fflush(stderr);
+}
+
+// sub_827D1BC0 creates the async payload-read op the walks schedule; printing it
+// inside a walk (depth-gated) pairs each flagged entry with an actual op, so the
+// downstream (read + decompress + descriptor rewrite) can be checked against the
+// file trace instead of assumed.
+extern "C" PPC_FUNC(__imp__sub_827D1BC0);
+PPC_FUNC(sub_827D1BC0)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    if (!on || g_setApplyDepth == 0)
+    {
+        __imp__sub_827D1BC0(ctx, base);
+        return;
+    }
+    const uint32_t entryFile = ctx.r4.u32;
+    char nm[17] = { 0 };
+    for (int i = 0; i < 16; i++)
+    {
+        uint8_t c = PPC_LOAD_U8(ctx.r5.u32 + i);
+        nm[i] = (c >= 0x20 && c < 0x7F) ? (char)c : 0;
+    }
+    __imp__sub_827D1BC0(ctx, base);
+    fprintf(stderr, "[setapply]   op create file=%08X name=%s -> op=%d\n",
+            entryFile, nm, (int32_t)ctx.r3.u32);
+    fflush(stderr);
+}
+
+// The 35 menu-set name hashes (guest CRC over the extensionless basename,
+// init 0x20225, poly 0xEDB88320, LSB-first bits) — COMMON_TEXTURE.tex's 18 and
+// COMMON_TEXTURE1.tex's 17 from prologue_menu/prologue_z01.big. Lookups of these
+// are printed from ANY caller so the run shows when each texture first exists in
+// the DB (a registration path also looks the name up before inserting).
+static bool IsMenuSetHash(uint32_t h)
+{
+    static const uint32_t k[] = {
+        0x032A3240, 0x9B55BC40, 0x329052C0, 0xC387DB20, 0xA295CFC0, 0xF55BF620,
+        0x9449E2C0, 0xE39A17E0, 0x8F788180, 0xE556F640, 0xA95BA3A0, 0x6E5B60E0,
+        0xBCDA2040, 0x2D7F5840, 0xF23DBBA0, 0x159AEE60, 0xA7F5D340, 0x55724AC0,
+        0x9AE0B960, 0x8F36D620, 0xEE24C2C0, 0x4D6D3620, 0xB1039460, 0xFEC10520,
+        0x100F9700, 0xC9BC01C0, 0x1D8EB700, 0xDACF6E80, 0x572CEF00, 0xF4D74980,
+        0x9EC53040, 0x4AD94880, 0xE5F45B40, 0x3CA06EC0, 0xAFEA1CA0,
+    };
+    for (uint32_t v : k)
+        if (v == h)
+            return true;
+    return false;
+}
+
+extern "C" PPC_FUNC(__imp__sub_8243FE40);
+PPC_FUNC(sub_8243FE40)
+{
+    static const bool on = getenv("CZ_SET_APPLY_PROBE") != nullptr;
+    const uint32_t db = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    const uint32_t lr = (uint32_t)ctx.lr;
+    const bool interesting = on && (g_setApplyDepth > 0 || IsMenuSetHash(hash));
+    if (!interesting)
+    {
+        __imp__sub_8243FE40(ctx, base);
+        return;
+    }
+    __imp__sub_8243FE40(ctx, base);
+    const int32_t idx = (int32_t)ctx.r3.u32;
+    if (idx < 0)
+    {
+        fprintf(stderr, "[setapply]   hash=%08X -> MISS (lr=%08X d=%d)\n", hash, lr,
+                g_setApplyDepth);
+    }
+    else
+    {
+        // The walk's own bounds check: idx >= [db+0x24] falls back to entry 0.
+        const uint32_t entries = PPC_LOAD_U32(db + 0x28);
+        const uint32_t cap = PPC_LOAD_U32(db + 0x24);
+        const uint32_t use = ((uint32_t)idx < cap) ? (uint32_t)idx : 0;
+        const uint32_t e = entries + use * 0x4C;
+        const uint32_t flag = PPC_LOAD_U32(e + 0x44);
+        const uint32_t dest = PPC_LOAD_U32(e + 0x38);
+        const uint32_t ref0 = PPC_LOAD_U32(e + 0x3C);
+        const uint32_t ref1 = PPC_LOAD_U32(e + 0x40);
+        const uint32_t b48 = PPC_LOAD_U8(e + 0x48);
+        fprintf(stderr,
+                "[setapply]   hash=%08X -> idx=%d cap=%u flag44=%u dest38=%08X "
+                "ref0=%u ref1=%u b48=%u (lr=%08X d=%d)\n",
+                hash, idx, cap, flag, dest, ref0, ref1, b48, lr, g_setApplyDepth);
+    }
+    fflush(stderr);
+}
