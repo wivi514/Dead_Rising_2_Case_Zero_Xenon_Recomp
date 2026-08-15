@@ -1,13 +1,17 @@
-# Part 45 kickoff — item 00i is CLOSED (faithful); the freeze is the top item
+# Part 45 kickoff — 00i REOPENED as a mip-selection overshoot; the hunt has a measured signature
 
 Written at the end of part 44 (2026-08-15). **This is the LIVE hand-off**,
-superseding `part44-kickoff.md`. Read `docs/phase5-notes.md` §6bx (and its
-addendum) first — part 44 ran the part-44 hunt's control and the premise
-inverted twice.
+superseding `part44-kickoff.md`. Read `docs/phase5-notes.md` §6bx AND ITS
+THREE ADDENDA first — part 44's premise inverted three times, and the
+"CLOSED AS FAITHFUL" verdict recorded below was RETRACTED the same day when
+the operator's matched captures refuted its attribution (see the SAME-DAY
+REWRITE section, which is the live framing; the closure text is kept for
+what its censuses did establish).
 
 ## What part 44 established (do not re-derive)
 
-* **Item 00i is CLOSED AS FAITHFUL.** Two censuses:
+* **(SUPERSEDED SAME-DAY — see the rewrite section below.)** Item 00i was
+  briefly closed as faithful on two censuses:
   * The MENU premise of the part-43 reframe failed its control: our menu F9
     census equals B1's title era **bind for bind** (148/41/37/31/27/20/20/17/
     12 …), including the 31 tiny-on-big draws — `flat_color_gray_cm.bct`,
@@ -105,6 +109,18 @@ wall-texture fetch state.
   census may still be finishing when part 45 starts — its CSV lands at
   `~/DR2CZ-troubleshooting/part44/b2_bindings.csv`; the truncated run's
   numbers in §6bx are from the first 90% of the trace and 23 full buckets.
-* New instruments: `CZ_SET_APPLY_PROBE=1` (see `docs/instruments.md`).
-* Two commits this part: the probe + level machine + menu retraction
-  (857cbe6), then the B2 verdict + closure (this one).
+* New instruments: `CZ_SET_APPLY_PROBE=1` (see `docs/instruments.md`),
+  `CZ_VK_MIP_TINT=1` (each uploaded chain level painted a code color — L1 red,
+  L2 green, L3 blue, L4 yellow, L5 magenta, L6 cyan; the picture names the
+  sampled level per pixel), and `CZ_VK_TEX_DUMP` now writes every uploaded
+  chain level (`tex_<addr>_L<n>_...bin`, decodable with tex_decode.py WITHOUT
+  --tiled/--swap16).
+* Operator-session artifacts: `~/DR2CZ-troubleshooting/part44-operator/`
+  (default-arm walk with capture 4 = the matched Big Buck view + pose,
+  arm_no_tail/ and arm_no_mips/ A/B captures, live texture dumps, session
+  logs). The B2 v4 census died with the machine's OOM kill of the session's
+  background jobs; its truncated CSV + timeline stand in
+  `~/DR2CZ-troubleshooting/part44/`.
+* Commits this part: 857cbe6 (probe + level machine + menu retraction),
+  the closure (retracted same day), the reopening, and the
+  selection-overshoot consolidation (4babffd).
