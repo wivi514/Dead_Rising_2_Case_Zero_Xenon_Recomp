@@ -675,8 +675,31 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-15 (part 44 — ITEM 00i IS CLOSED AS FAITHFUL,
-and the part-43 menu reframe is retracted):
+Where the port is, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
+MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):
+
+* **ITEM 00i, LIVE STATE: a mip-selection overshoot in the scene pass, ~2
+  octaves too deep globally.** The "closed as faithful" verdict below was
+  retracted the same day: the operator recreated the R4 walk and their
+  matched capture shows the flat buildings bind FULL-SIZE textures (8
+  tiny-on-big of 1,760 draws) — the thumbnail class was never the mechanism,
+  and E5 (round-1 screenshot) proves hardware-FRESH is crisp at range. The
+  elimination that followed (§6bx addenda 2–3): `CZ_VK_NO_MIPS=1` restores
+  the buildings at the matched view (tail arm does not; the SCENE surface
+  carries the flatness); the mip DATA is correct (guest chains AND uploaded
+  staging verified level by level); every LOD input matches hardware (tfetch
+  lod_bias 0 on 1,846/1,846; fetch-constant lod_bias 0 on 56,111/56,111
+  bound constants in R4_04; filters/aniso equal, aniso engaged). The new
+  `CZ_VK_MIP_TINT=1` paints each uploaded level a code color and shows L1 at
+  two meters, L2 at ten, the spawn fence at L2 where texel math says 0.5.
+  **`docs/part45-kickoff.md` step 0 is the hunt**: draw-ID the wall at the
+  matched pose, compute hardware's implied LOD from R4_04's vertex streams,
+  audit the scene pass's derivative environment (MSAA window-scale,
+  §6bf/§6bh). The menu retraction and the level-machine reverse-engineering
+  below STAND.
+
+Where the port was, briefly, mid-part 44 (superseded same day — kept for the
+census records):
 
 * **ITEM 00i CLOSED: fresh hardware shows the flat-at-range class at the same
   rate we do; the "hardware is full everywhere" oracle was a warm loaded-save
