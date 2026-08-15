@@ -391,3 +391,28 @@ spawn, walk to Big Buck (the R4 route), F4 again anywhere mid-walk. If the
 spawn frame was flat and the mid-walk frame is full, hardware DOES promote on
 approach and the reload trigger is the thing to find next; if both are flat
 until some event, that event is the mechanism.
+
+
+### R5 addendum (same day): THE TRACES ALREADY HELD MOST OF IT — R5 narrows to one QUESTION, capture optional
+
+The operator pointed out R4's eight far-to-close shots should already answer
+this, and they did (`docs/phase5-notes.md` §6bw addendum): hardware's camera
+positions are recoverable from the traces (`vc12..14` .w of the 25,234-vert
+ground draw, (y,x,z) order), and at ALL ten recovered positions (8x R4 +
+tanker + green_building from R3) the fresh decision math says LOD for zones
+1/2/3/7 by +21..+136 m — yet every frame renders full. Hardware's zone state
+is therefore NOT a fresh batch decision at the capture spot; its zones were
+loaded or re-loaded with the player near them.
+
+**What remains is ONE SENTENCE from the operator, not a capture: how did the
+R4 session enter the level — DebugJump (F2 -> Case 0-2) then walk, or normal
+play / a save?**
+* DebugJump-then-walk -> hardware re-ran zone loads on approach, our runtime
+  never does: the reload trigger is the defect and the hunt has a target.
+* Normal play -> both runtimes are faithful; the flat-at-range is the
+  batch-load state itself, and the fix conversation changes shape (match
+  session states, or reproduce the on-approach loading normal play does).
+
+The R5 capture (fresh-jump stand-still F4) is still welcome as belt-and-
+braces — it would show whether hardware's own DebugJump batch decision
+matches ours — but it is no longer the blocking measurement.

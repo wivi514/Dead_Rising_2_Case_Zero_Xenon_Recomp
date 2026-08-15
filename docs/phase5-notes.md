@@ -7167,3 +7167,49 @@ fresh-DebugJump stand-still F4 at the spawn — no patching, one press. Until
 it lands, do NOT build a fix: every candidate (force the full set, widen
 thresholds, fake the skip bits) would be faking the decision, the exact thing
 gotcha 5 and the part-43 kickoff prohibit.
+
+### §6bw addendum — the R4/R3 traces DID hold the answer, and one more jump proved the mechanism end to end
+
+The operator pushed back on the R5 request — the existing captures should
+answer it — and they were right. Two measurements, both from data already on
+disk plus one five-minute run:
+
+1. **Hardware's camera positions are recoverable from the traces**, and at
+   every one of them the fresh decision math says LOD for zones 1/2/3/7.
+   The ground draw (`vs_36eef2c94b4a065c`/`ps_ad65b98593f95926`, 25,234
+   verts, present in every trace) carries the view state in `vc12..vc14`,
+   whose .w column is the eye directly in (y, x, z) order — verified by its
+   coherence: y is the constant walk height 3.2, and the eight R4 positions
+   trace a ~35 m eastward approach `(-95,-113) → (-63,-129)` exactly matching
+   the far-to-close walk the operator described. (The first solve attempted
+   `-Rᵀt` on those rows and produced out-of-world eyes for five of eight
+   traces — the .w-direct reading is the one that survives the invariant
+   check. The all-eight-identical `vc8..10` column is a model matrix, not the
+   camera.) R3's tanker and green-building traces solve into the same pocket.
+   Per-zone margins at all ten hardware positions: zones 1/2/3/7 all-far by
+   **+21 to +136 m**. Yet the traces bind zero thumbnail atlases and render
+   fully textured — **hardware's zone texture state cannot be the product of
+   a fresh batch decision at any captured position.**
+2. **The jump-elsewhere positive control**: `DOWN,DOWN` on the DebugJump
+   screen spawns at `(-271.7, 3.3, -64.0)` (level id 18, 11 zones) and the
+   burst decisions reshuffle exactly as position dictates — zone 1 flips to
+   FULL (75 near volumes), zones 5/8 flip to LOD. The engine's decision
+   follows the load-time camera everywhere; nothing about our execution is
+   position-dependent-broken.
+
+Consequence: the divergence against hardware is REAL and is now fully
+characterized as a STATE question — hardware's zones were loaded (or
+re-loaded) with the player near them; ours are batch-loaded once from the
+jump spot and never touched again (states pinned at 3 through every roam;
+zero re-decisions in 9.5 min + a directed attempt — synthetic LSUP does not
+move Chuck at the jump spawn, only a real pad does, so the approach test
+remains open). The one-sentence question that replaces capture R5: **how did
+the operator enter the level for the R4 session?** DebugJump-then-walk →
+hardware re-decides zones on approach and our missing reload trigger is the
+defect; normal play → both runtimes faithful, and the flat-at-range IS the
+batch-load state.
+
+Also reported by the operator this session, filed not chased: **ambient
+occlusion only visible very close to buildings/objects** — plausibly the
+same far-LOD mesh switch (LOD shells sampling the common set carry no baked
+AO), so it may ride along with this item's fix. Lower priority than 00i.
