@@ -7485,3 +7485,26 @@ DebugJump/New Game on ours against a fresh session on Xenia, or the same save
 on both. And the part-43 addendum's AO-only-up-close observation plausibly
 rides the same design (LOD shells at range), to be re-checked only if it
 survives a like-for-like look.
+
+### §6bx second addendum — REOPENED THE SAME DAY: the operator's matched capture shows the flat buildings bind FULL-SIZE textures; the flat-at-range look was never the thumbnail class
+
+The operator rejected the closure and recreated the R4 walk on our renderer
+(8 F9 captures, `~/DR2CZ-troubleshooting/part44-operator/`). Their capture 4
+against R4_04's frame-locked PNG: hardware's Big Buck has legible siding,
+brick and the HARDWARE sign; ours has flat single-color building faces. And
+the census of that same capture kills the attribution this whole item has
+carried since part 42: **8 tiny-on-big draws of 1,760** — the flat buildings
+are binding normal-sized textures. The B2 "2–3% tiny-on-big" rate argument
+could not place those binds on building-scale surfaces and never could have
+(rate is not prominence; the closure over-reached exactly there). The menu
+retraction (first half of §6bx) is unaffected — that comparison was
+bind-for-bind at one matched scene and remains correct.
+
+The mechanism now under operator A/B: **mip sampling at range.** A distant
+facade samples its texture's deepest mip levels; since part 41 those levels
+come from the packed-mip-tail decode, which uploads ~4,468 tail levels per
+outdoor run including "302 mostly-empty" ones. A wrong or empty tail level
+renders a surface as one flat color exactly at distance while it stays
+detailed up close — which is the operator's ORIGINAL wording of this item
+from part 28. Arms in flight: `CZ_VK_NO_MIP_TAIL=1` (tail off, chain on),
+then `CZ_VK_NO_MIPS=1` (level 0 only), F9 at the matched Big Buck view.

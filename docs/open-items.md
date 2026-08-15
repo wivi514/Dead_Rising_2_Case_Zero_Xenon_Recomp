@@ -1616,7 +1616,24 @@ Next, in order:
    could not have matched and its negative result means nothing (gotcha 25). Answering it
    needs `docs/big-archive-format.md` and a real TOC reader.
 
-00i. **CLOSED IN PART 44 — FAITHFUL. Fresh hardware binds the same thumbnail
+00i. **REOPENED THE SAME DAY — the operator's matched capture refutes the
+   closure's attribution: the flat Big Buck buildings bind FULL-SIZE textures
+   (8 tiny-on-big draws of 1,760 in their capture 4), so the flat look at
+   range is NOT the thumbnail class at all, on either platform.** The B2 rate
+   argument below could never place hardware's tiny binds on building-scale
+   surfaces (rate is not prominence — the same error class as gotcha 248's
+   semantic detector), and the visible flatness survives with normal-sized
+   textures bound. New mechanism under test (operator A/B in flight):
+   MIP SAMPLING AT RANGE — distant surfaces sample the deepest levels, which
+   since part 41 come from the packed-mip-tail decode ("302 mostly-empty tail
+   levels" upload per run); a wrong/empty tail level flattens a building to
+   one color exactly at distance while it looks fine up close — the
+   operator's original wording of this item. Arms: CZ_VK_NO_MIP_TAIL=1, then
+   CZ_VK_NO_MIPS=1, F9 at the matched view. The CLOSED-AS-FAITHFUL record
+   below stands only for what it measured (bind-size distributions; the menu
+   retraction is untouched and correct).
+
+   (superseded same-day) 00i. **CLOSED IN PART 44 — FAITHFUL. Fresh hardware binds the same thumbnail
    class at the same rate; the "hardware is full everywhere" oracle was a
    WARM LOADED-SAVE session.** Two censuses settled it (`docs/phase5-notes.md`
    §6bx): (1) the MENU: our F9 census equals B1's title era bind for bind —
