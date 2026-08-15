@@ -64,7 +64,14 @@ wall-texture fetch state.
 
 ## The plan
 
-0. **Item 00i, reopened — the selection-overshoot hunt:**
+0. **Item 00i, reopened — START AT THE MENU LAB (§6bx fourth addendum):**
+   the GAS ball is flat AT LEVEL 0 (mip tint proves it; no-mips leaves it
+   identical), so the flat class has a non-mip layer/content term. The menu
+   is a fixed camera with complete hardware ground truth: E3 (picture) and
+   the B1 trace (hardware's texture BYTES for the same draws). Find the ball
+   draw in B1, dump every slot's bytes, diff against a live dump of ours at
+   the menu — byte-level adjudication, no operator needed. Then the
+   selection-overshoot half:
    * `CZ_VK_DRAW_ID` at the operator's matched Big Buck view (pose in
      `part44-operator/capture_008693.pose`): NAME the wall draw and its
      texture (every candidate so far was picked by inference — gotcha 302).

@@ -7551,3 +7551,32 @@ the one global term that could scale every gradient; §6bf/§6bh). Part 45's
 first move: CZ_VK_DRAW_ID at the matched view to name the wall draw, then
 compute hardware's implied LOD for that exact draw from the R4 trace's vertex
 streams and put a hard number on the octave delta.
+
+### §6bx fourth addendum — the MENU IS THE LAB: the GAS ball is flat AT LEVEL 0, so the flat class splits into (at least) a non-mip layer/content divergence, and B1 carries the byte-level oracle
+
+The mip tint run at the MAIN MENU (fixed camera, bind-distribution equal to
+hardware, E3 as the exact hardware picture) splits the mechanism:
+
+* **The GAS ball's body samples LEVEL 0 (untinted) and is still flat cream** —
+  no rust, no red band — and `CZ_VK_NO_MIPS=1` leaves it identical, as it
+  must. E3's ball is red-topped and rust-streaked with white-on-red GAS
+  lettering; ours renders what looks like a different texture region or a
+  missing layer. For THIS surface the defect is not selection and not the
+  chain: it is level-0 content or a second material layer we never deliver.
+  (The "GAS" letters are a separate decal sampling L2 with mips on; they
+  sharpen under no-mips.)
+* The facades at range still show the tint's deep levels (L2–L3 at the
+  menu's distances), so the selection-overshoot signature of the third
+  addendum stands as a separate, possibly co-occurring term.
+
+Why this is the RIGHT next battlefield: the menu needs no operator and no
+pose-matching — one fixed camera, and the B1 boot→title trace carries
+hardware's ACTUAL texture bytes for the same draws (memory records; the
+lean-tool census already enumerates every draw's fetch state). Part 45 step 0
+is therefore: find the ball draw in B1 (shader + extent pin it), dump
+hardware's s0 (and every other slot's) bytes from the trace, compare with a
+live dump of ours at the menu — a pure byte-level adjudication of "wrong
+region / wrong content / missing layer", with the E3 picture as the visible
+gate. If ours and hardware's level-0 bytes MATCH for every slot of the ball
+draw, the divergence moved into shading constants for that draw, and the same
+trace supplies those too.
