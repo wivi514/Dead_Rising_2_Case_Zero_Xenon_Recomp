@@ -677,7 +677,10 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 
 Where the port is, as of 2026-08-15 (part 45 — the white-surface / flat-prop class
 SOLVED at its root: our own synth tool was dropping PS interpolants after PARTIAL
-register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
+register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL.
+**`docs/part46-kickoff.md` is the LIVE hand-off and the operator has set part
+46's order: TREES first, then the PERFORMANCE REGRESSION they report from the
+last few days' fixes.**):
 
 * **ITEM 00i's MENU HALF (and with it the flat-prop class) IS SOLVED, and the
   defect was OURS, in `tools/synth_shader_container.py`'s liveness.** The
@@ -707,6 +710,28 @@ register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
   part 44's captures too — and is named: `ps_69a5c3be9359b87c` /
   `ps_8602b5fd69289893` at `cc=AA00001C` (alpha test GREATER + ALPHA_TO_MASK,
   56 draws), i.e. part 41's parked A2M item, now top of the picture list.
+* **A SECOND OPERATOR COMPLAINT IS OPEN AND CHARACTERISED: the UI TEXT LAYER
+  IS STALE** (open item 00k, `phase5-notes.md` §6bz + addendum). Colour changes
+  MID-WORD, glyphs go missing, and the PREVIOUS screen's text persists (the
+  SKILLS tab renders ATTRIBUTES' labels; pause-menu items stay painted over
+  gameplay) while STATIC text in the same frames is perfect. Pre-existing, not
+  from the fix. 32 captures in `part45-operator/ui_fixed/`. The text layer is
+  ONE dynamic vertex buffer sub-allocated per run (§6ab), so one bad copy
+  garbles every run. Eliminated: dropped draws (both bounds counters ZERO
+  across 54.7M draws) and the ALU constant window. **The garbling VARIES frame
+  to frame**, so the leading reading is a TORN buffer, not a frozen cache —
+  arms `CZ_VK_FRAMES_IN_FLIGHT=1` then `CZ_VK_STREAM_GUARD_EXACT=1`.
+  **The cheap headless check for this whole class, from the operator: press
+  START at the title screen and a card appears for a second or two COMPLETELY
+  EMPTY** (trim drawn, no glyphs) —
+  `part45-operator/ui_fixed/capture_001343.ppm`.
+* **PERFORMANCE: the operator reports a REGRESSION over the last few days'
+  fixes** — unmeasured, and part 46's second item. Suspects in order of
+  introduction: part 41's per-fetch samplers, part 44/45's mip uploads, and
+  part 45's own fix (217 shaders gained interpolants).
+  `assets/shader_spv_pre45` makes that last one a one-variable A/B. Measure
+  with three runs an arm and MEDIANS plus the 16 ms-pinned share, never means
+  (gotchas 237/238).
 * **Every shading-side measurement through the old cache now has gotcha-172
   exposure, and the first re-measures ran the same day** (§6by addendum 1): the
   fixed-cache spawn gains the QUARANTINE bus lettering + van panel detail

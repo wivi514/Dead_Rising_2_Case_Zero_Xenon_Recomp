@@ -1076,6 +1076,37 @@ Next, in order:
    A positive control that ran `CZ_VK_STREAM_GUARD_BYTES=64` against Help & Options
    proved nothing and is recorded as such: that screen is STATIC, so the arm could
    not have failed (gotcha 30).
+   **REFINED, and it changes the leading suspect**: three consecutive captures of
+   ONE screen garble DIFFERENTLY (3.5-4.3% of pixels apart, a different fragment
+   of the same strings surviving each time). A cache serving one stale copy would
+   garble identically, so the better reading is a TORN buffer — copied while the
+   guest is still writing it — which also predicts the observed scaling with
+   session length (a tear needs reader and writer to overlap, and our command
+   processor's LAG is what grows). Arms in order: `CZ_VK_FRAMES_IN_FLIGHT=1`
+   (pre-part-23, removes a frame of lag), then `CZ_VK_STREAM_GUARD_EXACT=1`.
+   **THE CHEAP HEADLESS CHECK FOR THIS CLASS, handed over by the operator**:
+   press START at the title screen and a card appears for a second or two
+   **completely EMPTY** — trim drawn, not one glyph inside
+   (`part45-operator/ui_fixed/capture_001343.ppm`). It needs no play session,
+   unlike every other instance, so it is the first thing to look at whenever this
+   class is suspected.
+   **UNVERIFIED**: an operator session ran on `CZ_VK_STREAM_GUARD_EXACT=1` and
+   they said "everything works fine", but took no captures and the sentence
+   equally reads as "no defects other than the trees". Ask before recording.
+
+00l. **PERFORMANCE REGRESSION over parts 41-45 — operator-reported, unmeasured.**
+   *"The performance degraded with all the fix you did in the last few days."*
+   Part 46's second item, immediately after the trees, by their own ordering.
+   Suspects in order of introduction: part 41's per-fetch samplers; part 44/45's
+   mip-chain and packed-tail uploads; and **part 45's liveness fix, which added
+   interpolants to 217 of 333 pixel shaders** — more varyings means more
+   interpolation and more register pressure, and `assets/shader_spv_pre45` makes
+   that a ONE-VARIABLE same-binary A/B via `CZ_SHADER_SPV`.
+   Measure per `docs/measurement.md`: `CZ_VK_PROFILE` for the phase split, three
+   runs an arm alternated, MEDIANS and the share of frames within 1 ms of a 16 ms
+   multiple — never the mean, which measures this title's vblank pacing floor
+   (gotchas 237/238). Noise floor 10-13% at one run a side; sample the GPU clock
+   with `tools/gpu_clock_sample.py` rather than assuming it.
 
 00f. **WHITE PATCHES ON WORLD SURFACES — an operator session's evidence, and it is at
    least TWO defects.** Reported part 26 and reproducible on every run: large blown-out
