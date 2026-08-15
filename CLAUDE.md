@@ -696,8 +696,19 @@ register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
   +0.687 (fail) → +0.710 (pass).** Old cache kept at
   `assets/shader_spv_pre45` (CZ_SHADER_SPV = same-binary control arm). Full
   record `phase5-notes.md` §6by; gotcha 316; open-items 00i head updated.
+* **THE OPERATOR'S A/B CLOSES THE FLAT-AT-RANGE CLASS TOO** (§6by addendum 2).
+  Two launches, one binary, `CZ_SHADER_SPV` the only difference, their own
+  route: fixed cache — *"the game looks way better now, the building doesn't
+  seem to have issues… almost like OG game"*; pre-45 cache — *"way worse —
+  gas station looks bad and building look FLAT DEPENDING ON DISTANCE."* That
+  is item 00i's original complaint, toggled by the shader cache. **What drove
+  parts 42-44 was substantially this defect.** Their one remaining complaint
+  is the TREE CANOPY (hard black shards), which is PRE-EXISTING — it shows on
+  part 44's captures too — and is named: `ps_69a5c3be9359b87c` /
+  `ps_8602b5fd69289893` at `cc=AA00001C` (alpha test GREATER + ALPHA_TO_MASK,
+  56 draws), i.e. part 41's parked A2M item, now top of the picture list.
 * **Every shading-side measurement through the old cache now has gotcha-172
-  exposure, and the first re-measures ran the same day** (§6by addendum): the
+  exposure, and the first re-measures ran the same day** (§6by addendum 1): the
   fixed-cache spawn gains the QUARANTINE bus lettering + van panel detail
   (part-26 white-prop members visibly fixed; the operator tour will finish
   the list), and **the mip-tint overshoot signature REPRODUCES on the clean
@@ -705,8 +716,10 @@ register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL):
   `CZ_VK_ANISO=0` is ~1 octave deeper (aniso engages and buys its octave),
   `CZ_VK_NO_FETCH_SAMPLERS=1` deeper still — neither arm shallows, so the
   sampler terms are exonerated and the residual +1..2-octave global shift has
-  no named cause. `docs/part46-kickoff.md` (the LIVE hand-off) leads with the
-  operator verdict session and the R4_04 implied-LOD hard number.
+  no named cause — **but it no longer has a visible symptom either**, so the
+  first move on it is re-running part 44's decisive `CZ_VK_NO_MIPS=1` arm on
+  the FIXED cache before quoting that result again. `docs/part46-kickoff.md`
+  is the LIVE hand-off.
 
 Where the port was, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
 MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):

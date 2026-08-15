@@ -1,8 +1,9 @@
-# Part 46 kickoff — the flat class's ROOT is fixed (interpolant liveness); the overshoot survives on a clean bank and is the open half
+# Part 46 kickoff — the flat class is FIXED AT ITS ROOT and the operator confirms it in play; what is left is the tree canopy and an overshoot with no symptom
 
 Written at the end of part 45 (2026-08-15). **This is the LIVE hand-off**,
-superseding `part45-kickoff.md`. Read `docs/phase5-notes.md` §6by first —
-part 45 solved the white/flat-surface class at its root, and every
+superseding `part45-kickoff.md`. Read `docs/phase5-notes.md` §6by **and its
+two addenda** first — part 45 solved the white/flat-surface class at its
+root, the operator's own A/B confirmed it in play (addendum 2), and every
 shading-side measurement taken before it has gotcha-172 exposure.
 
 ## What part 45 established (do not re-derive)
@@ -44,17 +45,25 @@ shading-side measurement taken before it has gotcha-172 exposure.
 
 ## The plan
 
-0. **OPERATOR SESSION FIRST — the fix's picture verdict.** Launch the game on
-   the new default cache and let them drive (they prefer to): the menu ball,
-   the part-26 white-prop tour (newspaper boxes, cash register, gas-station
-   sign, bathroom window), and the R4 Big Buck walk for the flat-at-range
-   look. `CZ_WAIT_TRACE=1` rides along for the part-43 sledgehammer freeze
-   (still unexplained; log to
-   `~/DR2CZ-troubleshooting/part45-operator-session.log`), and
-   `CZ_SHADER_DUMP=~/DR2CZ-troubleshooting/ucode-dumps` as always. If they
-   want the A/B: second launch with
-   `CZ_SHADER_SPV=$PWD/assets/shader_spv_pre45`.
+0. **DONE AT PART 45'S CLOSE — the operator session ran and the verdict is
+   IN.** Two launches, one binary, `CZ_SHADER_SPV` apart. Fixed: *"the game
+   looks way better now, the building doesn't seem to have issues… almost
+   like OG game."* Pre-45: *"way worse — gas station looks bad and building
+   look FLAT DEPENDING ON DISTANCE."* Item 00i's flat-at-range class is
+   substantially closed by the liveness fix (§6by addendum 2). Their ONLY
+   remaining complaint is the tree canopy (item 3 below). Session logs:
+   `~/DR2CZ-troubleshooting/part45-operator-session{,-pre45}.log`; captures
+   in `part45-operator/`. What is still owed from an operator, cheaply, next
+   time they play: an F9 at the gas station on BOTH arms (run 2 took none),
+   and the part-26 white-prop tour, which this session did not walk.
 1. **The overshoot, on the clean bank** (open-items 00i outdoor half):
+   * **DO THIS ONE FIRST: re-run `CZ_VK_NO_MIPS=1` at a matched view on the
+     FIXED cache.** Part 44's "no-mips restores building detail" is the
+     overshoot's ONLY picture-level support and it was measured through the
+     broken shaders. If it no longer restores anything, the overshoot is an
+     instrument reading with no symptom and the item drops down the list —
+     the operator now says the buildings look right with the mip chain
+     untouched. (Part 45 queued this run; see Standing state for its result.)
    * The contact points ran at part 45's close, same view, clean bank:
      **tint+`CZ_VK_ANISO=0` is ~1 octave DEEPER than the default** (ground
      and vans shift red→green at the same distances) — aniso ENGAGES in the

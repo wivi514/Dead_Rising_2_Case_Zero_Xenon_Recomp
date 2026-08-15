@@ -7703,3 +7703,44 @@ cause. The next discriminator is the hard number: hardware's implied LOD for
 a projection-NAMED wall draw out of R4_04's own vertex streams
 (`part46-kickoff.md` item 1). Captures:
 `~/DR2CZ-troubleshooting/part45/{tintcap_fixed,tint_aniso0,tint_nofetch}`.
+
+### §6by addendum 2 — THE OPERATOR'S A/B VERDICT: the FLAT-AT-RANGE CLASS was substantially the liveness defect, not the mip overshoot
+
+Same evening, same binary, two launches differing by `CZ_SHADER_SPV` alone
+(fixed cache / `assets/shader_spv_pre45`), operator driving their own route:
+
+* **Run 1 (fixed): "everything seems fine except the tree… the game looks way
+  better now, the building doesn't seem to have issues", and "run 1 is almost
+  like OG game."**
+* **Run 2 (pre-45): "way worse — gas station looks bad and building look FLAT
+  DEPENDING ON DISTANCE."**
+
+That second sentence is item 00i's original complaint, in the operator's own
+words, reproduced ON DEMAND by switching the shader cache back — and gone on
+the fixed one. **The flat-at-range class that drove parts 42, 43 and 44 was
+substantially our interpolant liveness defect**, not the zone LOD decision
+(part 43 exonerated that on its own evidence) and not, on the picture the
+operator can see, the mip-selection overshoot.
+
+**What this does to part 44's mip conclusion, stated carefully.** The
+overshoot SIGNATURE still reproduces on the clean bank (addendum 1), so the
+tint reading is not an artifact of the broken shaders. But its VISIBLE
+consequence is now unclear: the surfaces whose flatness motivated the whole
+mechanism look right to the operator with the mip chain untouched. Two
+readings survive and part 46 must separate them rather than assume either —
+(a) the overshoot is real and visually minor, its share of the complaint
+having been swamped by the one-texel sampling; or (b) part 44's decisive arm
+(`CZ_VK_NO_MIPS=1` "restores building detail at the matched view") was
+measured through the broken cache and needs re-running before it can be
+quoted at all. **Re-run that arm on the fixed cache FIRST** (gotcha 172, and
+gotcha 30's shape: an arm that has never been re-asked after an upstream fix
+is not evidence about the current renderer). If NO_MIPS no longer restores
+anything, the overshoot loses its only picture-level support and becomes an
+instrument reading in search of a symptom.
+
+**Method note worth keeping** (this is why the fix was findable at all): the
+menu lab's value was that it needed no operator and no pose matching, and it
+produced a byte-level adjudication. But it was the OPERATOR who refused part
+44's closure, and the operator who has now converted "the E3 correlation went
+up" into "this is almost the OG game." Both halves were necessary; neither
+would have closed this alone.

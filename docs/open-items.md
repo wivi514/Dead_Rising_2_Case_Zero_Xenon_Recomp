@@ -1631,10 +1631,21 @@ Next, in order:
    gate flips +0.687→+0.710 (fail→pass). Full record: `phase5-notes.md`
    §6by; gotcha 316. The old cache is `assets/shader_spv_pre45`
    (CZ_SHADER_SPV selects it — the same-binary control arm).
-   **The OUTDOOR flat-at-range half is being re-measured on the fixed cache
-   before any further overshoot work** (gotcha 172: part 44's mip-tint
-   readings were taken through world shaders that are in the 217). Historical
-   head below, kept for the elimination it records.
+   **AND THE OUTDOOR HALF WENT THE SAME WAY — the operator's own A/B closes
+   it, same evening**: two launches of one binary differing only by
+   `CZ_SHADER_SPV`, their own route. Fixed cache: *"the game looks way better
+   now, the building doesn't seem to have issues… almost like OG game."*
+   Pre-45 cache: *"way worse — gas station looks bad and building look FLAT
+   DEPENDING ON DISTANCE."* That is this item's original complaint, switched
+   on and off by the shader cache. **The flat-at-range class was
+   substantially the liveness defect** (§6by addendum 2).
+   **What remains open under this number is only the MIP OVERSHOOT
+   SIGNATURE**, which still reproduces on the clean bank but no longer has a
+   symptom the operator can see. Before any further work on it, re-run part
+   44's decisive arm — `CZ_VK_NO_MIPS=1` at a matched view — on the FIXED
+   cache: it was measured through the broken shaders, and if it no longer
+   restores anything then the overshoot has no picture-level support at all.
+   Historical head below, kept for the elimination it records.
 
    (superseded by the part-45 head) 00i. **REOPENED THE SAME DAY — the operator's matched capture refutes the
    closure's attribution: the flat Big Buck buildings bind FULL-SIZE textures
