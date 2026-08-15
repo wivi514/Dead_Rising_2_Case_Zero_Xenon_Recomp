@@ -1474,3 +1474,20 @@ level 0, no payload ever scheduled through the walk) and was in fact the
 machine working as designed — §6bx records that misreading so it is not
 re-bought. Free when off; diagnostic-only when on (fprintf per event on the
 streaming path).
+
+## CZ_VK_MIP_TINT — which mip level does every pixel sample? (part 44)
+
+`CZ_VK_MIP_TINT=1` replaces every uploaded chain level's blocks with a solid
+colour code at upload time — L1 red, L2 green, L3 blue, L4 yellow, L5 magenta,
+L6 cyan, deeper white; level 0 stays real — so the rendered picture IS the
+per-pixel sampled-level map. DXT1/DXT5 only (others untinted and counted:
+`texture: mip levels TINTED`). Built when part 44 needed the fact no census
+could give: with mip data verified correct and every LOD bias field zero on
+both platforms, WHICH level does a flat wall actually read? It answered twice
+in one day: the spawn scene samples L1 at two metres and L2 at ten (the
+selection-overshoot signature), and the menu GAS ball is flat AT LEVEL 0
+(untinted), which split item 00i into a non-mip content/layer term. Pairs
+with `CZ_VK_ANISO=0` / `CZ_VK_NO_FETCH_SAMPLERS=1` to attribute octaves to
+sampler terms, and with `CZ_VK_NO_MIPS=1` as the whole-feature arm.
+Diagnostic arm only — the picture is deliberately wrong everywhere a chain
+exists.
