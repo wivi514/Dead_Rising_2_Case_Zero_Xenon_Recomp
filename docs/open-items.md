@@ -1042,6 +1042,41 @@ Next, in order:
    second implementation forces the seam: copy into `runtime/audio/` here first, and leave
    any shared-library question to Case West.
 
+00k. **THE UI TEXT LAYER IS STALE — operator-reported, pre-existing, and it
+   ACCUMULATES WITH SESSION LENGTH.** Reported at part 45's operator session with
+   32 F9 captures (`~/DR2CZ-troubleshooting/part45-operator/ui_fixed/`), on the
+   FIXED shader cache, and confirmed by the operator as long-standing rather than
+   new. Symptoms, all three together: colour changes MID-WORD (`Whee|l`,
+   `ATT|ACK`, `Wh|eel: RETURNED`), glyphs missing (`E___ne` for "Engine"), and the
+   PREVIOUS screen's text persisting — the STATUS screen's SKILLS tab renders the
+   ATTRIBUTES tab's labels, and the pause menu's `LEADERBOARDS / ACHIEVEMENTS /
+   QUIT` stay painted over gameplay after it is closed. **Static text in the same
+   frames is perfect**; only text whose content changes is wrong.
+   Since §6ab established that the whole text layer is ONE dynamic vertex buffer
+   sub-allocated per run by `VGT_INDX_OFFSET`, the reading is that the draws are
+   this frame's and the VERTEX DATA is an older copy of that buffer.
+   **Eliminated already** (§6bz): draws are not being dropped (both bounds-check
+   counters read ZERO across 54.7M draws); the ALU constant window is read per
+   draw, not assumed; and **a fresh headless session cannot reproduce ANY of it** —
+   main menu, save-slot, Help & Options, the pause menu itself and the in-game
+   banner all render correctly in short runs, which is a fact about the mechanism
+   (it accumulates) rather than a failure to look.
+   **Leading suspect**: the cross-frame stream store's guard, exact only to 16 KB
+   and sampled above it — the profiler reports 1,785-3,296 streams/frame over the
+   bound at a menu and the store reaching 12,162 entries in 20 s, and a missed edit
+   is then served FOREVER because the guard keeps agreeing. That is item 00c's
+   mechanism at a larger buffer. Not yet a finding: no arm has run against a
+   reproducing instance.
+   **Next, in order**: (1) the picture-free measurement — same route with the
+   default guard and with `CZ_VK_STREAM_GUARD_EXACT=1`, comparing the `stale`
+   counter, since any excess the exact guard catches is an edit the sampled one
+   missed; (2) an operator arm, cheap because they reproduce in ~2 minutes —
+   `CZ_VK_STREAM_GUARD_EXACT=1` separates "the store" from "the store's GUARD",
+   which decides whether the fix costs 4.7 ms of a crowd frame or nothing.
+   A positive control that ran `CZ_VK_STREAM_GUARD_BYTES=64` against Help & Options
+   proved nothing and is recorded as such: that screen is STATIC, so the arm could
+   not have failed (gotcha 30).
+
 00f. **WHITE PATCHES ON WORLD SURFACES — an operator session's evidence, and it is at
    least TWO defects.** Reported part 26 and reproducible on every run: large blown-out
    patches of ground with hard polygon edges (spawn area, gas-station forecourt), fully

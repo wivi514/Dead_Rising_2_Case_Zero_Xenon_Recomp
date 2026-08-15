@@ -7744,3 +7744,82 @@ produced a byte-level adjudication. But it was the OPERATOR who refused part
 44's closure, and the operator who has now converted "the E3 correlation went
 up" into "this is almost the OG game." Both halves were necessary; neither
 would have closed this alone.
+
+## 6bz. Part 45, operator session: THE UI TEXT LAYER IS STALE, IT ACCUMULATES WITH
+## SESSION LENGTH, AND A FRESH HEADLESS RUN CANNOT SEE IT
+
+The operator's second complaint on the fixed cache (the first being the tree canopy,
+which is part 41's parked A2M item). **Pre-existing — they report it has been happening
+for a while, and it is visible in part-44 captures.** 32 F9 captures, fixed cache, one
+labelled directory: `~/DR2CZ-troubleshooting/part45-operator/ui_fixed/`.
+
+### The symptom, characterised
+
+Every affected screen shows the same three things, and the third is the one that names
+the mechanism:
+
+* **Colour changes mid-word**: `Whee|l` (white then green), `ATT|ACK` (green then teal),
+  `Wh|eel: RETURNED` (white then red), `I've| found this part` (red then white).
+* **Glyphs are missing**: `E___ne` for "Engine", with three glyphs simply absent.
+* **The PREVIOUS screen's text persists**: the STATUS screen's SKILLS tab renders the
+  ATTRIBUTES tab's five labels and none of its own; and in gameplay, after the pause
+  menu is closed, `LEADERBOARDS / ACHIEVEMENTS / QUIT` are still painted over the world.
+
+**Static text is perfect in the same frames** — "Chuck Greene", the stats panel, "130
+KILLED", "ZOMBREX", "$21,700", the `B BACK` legend. Only text whose CONTENT changes is
+wrong.
+
+### What that combination means
+
+§6ab established that this title batches its whole text layer into ONE dynamic vertex
+buffer and sub-allocates it per run with `VGT_INDX_OFFSET`. So the draws are the current
+frame's — right count, right colour constant, right screen position — while the VERTEX
+DATA they read is an older copy of that buffer: this frame's colours land on the previous
+layout's glyphs, runs that no longer exist keep being painted, and a run whose glyphs
+moved loses the ones that fell outside the old span. One stale buffer garbles every run
+at once, which is exactly what the captures show.
+
+### Eliminated
+
+* **Draws are not being dropped.** The `VGT_INDX_OFFSET runs past the vertex stream` and
+  `vertex stream outside the physical arena` counters are BOTH ABSENT from the operator's
+  54,676,315-draw session — zero. The missing glyphs are not declined draws.
+* **The ALU constant window is honoured**, not assumed (0/256): 24 draws moved it in that
+  session and the renderer reads `SQ_VS_CONST`/`SQ_PS_CONST` per draw. Wrong-window
+  constants are not the colour splits.
+* **A FRESH HEADLESS SESSION CANNOT REPRODUCE ANY OF IT.** Main menu, save-slot screen,
+  Help & Options (from the title), the PAUSE MENU itself and the in-game case banner all
+  render perfectly in short runs — captures beside the operator's for each. The defect is
+  STATE-DEPENDENT and accumulates over a session; that is a finding about the mechanism,
+  not a failure to look.
+
+### A control that could not fail, recorded as such
+
+The first positive control ran `CZ_VK_STREAM_GUARD_BYTES=64` — a guard EIGHT TIMES
+smaller than the one item 00c was fixed from — against the Help & Options screen, and the
+picture was pixel-identical to the default. That is not evidence: **the screen is static,
+so a stale copy of its buffer is indistinguishable from a fresh one**, and the arm could
+not have produced the symptom whatever the truth. Gotcha 30's shape, made here after
+writing it down elsewhere. A positive control for a STALENESS defect has to run against
+text that CHANGES.
+
+### The leading suspect, and why it is not yet a finding
+
+The cross-frame stream store's guard is exact only to 16 KB and SAMPLES 8x64 bytes above
+it. Measured at the menu, `CZ_VK_PROFILE` reports **1,785-3,296 streams per frame
+exceeding the bound and therefore only sampled**, and the store grows to **12,162 entries
+in 20 seconds**. A missed edit is served forever rather than for one frame, because the
+guard keeps returning the same hash — which matches "the SKILLS tab still shows
+ATTRIBUTES seconds later". This is item 00c's mechanism (part 24, the ammo counter) at a
+larger buffer size, and the guard's own comment predicts this failure in these words.
+
+**But it is a suspect, not a conclusion**: no arm has yet been run against a REPRODUCING
+instance, because the fresh-session repro does not exist. The next two moves, in order:
+(1) the direct measurement that needs no picture — run one route with the default guard
+and again with `CZ_VK_STREAM_GUARD_EXACT=1` and compare the `stale` counter, since any
+excess the exact guard catches is an edit the sampled one missed; (2) an operator arm,
+which is cheap because they reproduce it in about two minutes of play:
+`CZ_VK_NO_PERSIST_STREAMS=1` is the blunt control (store off entirely), and
+`CZ_VK_STREAM_GUARD_EXACT=1` is the one that separates "the store" from "the store's
+GUARD" — the distinction that decides whether the fix costs 4.7 ms of a crowd frame or
+nothing.
