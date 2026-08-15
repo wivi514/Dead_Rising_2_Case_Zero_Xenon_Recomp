@@ -80,8 +80,21 @@ shading-side measurement taken before it has gotcha-172 exposure.
      down once) — the overshoot magnitude may be smaller than it reads.
 2. The 0u residues (DoF fmt6 packed byte view; pc255 re-derivation per
    above), parked since part 42.
-3. Parked from part 41: A2M dither at distance (item 4), clamp modes / cyan
-   fringes (item 5).
+3. **THE TREE SHARDS — the operator's one complaint on the fixed cache, and
+   it now has a name.** Close-up canopies render hard-edged BLACK shards
+   among otherwise-correct leaves
+   (`~/DR2CZ-troubleshooting/part45-operator/capture_006615/006826` + census).
+   Established in the part-45 session: it PRE-DATES the liveness fix
+   (part-44's capture_008693 tree shows the same class; the menu tree is
+   identical on both caches), and the leaf materials are
+   **ps_69a5c3be9359b87c / ps_8602b5fd69289893 at cc=AA00001C — alpha test
+   GREATER + ALPHA_TO_MASK, 56 draws in the capture**. Both shaders GAINED
+   interpolants in part 45 (ps_8602 gained its UV regs 0/1), which is why
+   the leaf texture itself improved; the shards are the remaining term.
+   Leading mechanism: DXT1 punch-through transparent texels decode BLACK,
+   and the A2M half of the cutout is the part-41 parked item 4 — read how
+   `vk_renderer.cpp` treats RB_COLORCONTROL bit 4 before theorising. Also
+   still parked: clamp modes / cyan fringes (part-41 item 5).
 4. The AO-only-up-close observation: re-check like-for-like on the NEW cache
    (its old evidence predates the fix).
 
