@@ -43,6 +43,22 @@ framing.
 
 ## The plan
 
+0. **SAME-DAY ADDENDUM — read §6bw's addendum first: R4/R3 already answered
+   most of R5.** Hardware's camera positions were recovered from the traces;
+   at all ten, zones 1/2/3/7 are all-far (+21..+136 m) yet render full —
+   hardware's state is NOT a fresh batch decision. A DOWN,DOWN jump (spawn
+   -271,-64) reshuffled our verdicts exactly with position (zone 1 FULL,
+   5/8 LOD): the mechanism is proven end to end on our side. **The blocking
+   unknown is now one operator sentence: how did the R4 session enter the
+   level (DebugJump-then-walk, or normal play)?** DebugJump → the zone
+   RELOAD-on-approach trigger exists on hardware and is dead/untriggered on
+   ours (the hunt target); normal play → both faithful, flat-at-range is the
+   batch-load state. Also note: synthetic LSUP does not move Chuck at the
+   jump spawn (only a real pad does) — the directed-approach test needs an
+   operator or a fixed input path. New operator report, filed not chased:
+   AO only visible close to objects (§6bw addendum; plausibly the far-LOD
+   mesh switch, may ride along with 00i's fix).
+
 1. **If R5 has landed: read it first.** Flat spawn street → close 00i as
    state-comparison artifact, note the design, and tell the operator how to
    compare like states. Full spawn street → chase the ordered suspect list
