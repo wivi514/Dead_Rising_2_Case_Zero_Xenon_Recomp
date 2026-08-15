@@ -93,7 +93,23 @@ def parse_ucode(data):
     # slots 0 and 2 as 2D in three consecutive instructions, so a per-module flag would
     # be wrong for two thirds of it.
     tfetch_dims = {}    # fetch-constant index -> 0=1D, 1=2D, 2=3D, 3=cube
-    written = set()
+    # PER-COMPONENT write tracking (part 45). The previous form of this analysis
+    # kept one flat `written` set of REGISTER NUMBERS, so a register whose FIRST
+    # touch was a partial write stopped counting as an interpolator input even
+    # though its other components are read later. The menu GAS ball's pixel shader
+    # is the canonical victim: instruction 10 writes r0.zw (a tfetch destination
+    # swizzle keeps .xy), instruction 14 writes r3.zw, instruction 16 writes r2.w —
+    # and the shader then samples its DIFFUSE at r0.xy, its spec mask at r2.xy and
+    # its decal atlas at r3.xy. The flat analysis dropped interpolants 0/2/3, the
+    # translated HLSL zero-initialised those registers, and every such surface
+    # sampled ONE TEXEL (UV 0,0) forever — the white-surface class of open items
+    # 00f/00g, prosecuted through seven refuted input hypotheses in parts 26-27
+    # while every input really was correct: the defect was this tool's liveness.
+    # A register is an input iff SOME component is read before THAT COMPONENT is
+    # definitely written; predicated writes do not count as definite, because the
+    # not-taken path leaves the interpolant visible (hardware seeds the register
+    # from the param cache either way).
+    written = {}        # reg -> set of components (0..3) definitely written
     # INDIRECT VERTEX FETCH (docs/world-era-fatal-and-selector.md §3s).
     # A vfetch's address is a REGISTER, not necessarily the vertex index.
     # XenosRecomp seeds r0 with the vertex id, so a fetch is "direct" (a real
@@ -105,12 +121,20 @@ def parse_ucode(data):
     # garbage geometry. Record enough for the runtime to gather correctly.
     vid_regs = {0}      # registers currently known to hold the vertex id
     reg_producer = {}   # register -> index into vfetch_slots that last wrote it
-    inputs = set()      # regs read before written (PS interpolator inputs)
+    inputs = set()      # regs with a component read before written (PS interp inputs)
     exports = set()     # VS interpolator export indices (o0..o15)
 
-    def note_read(reg):
-        if reg not in written:
-            inputs.add(reg)
+    def note_read(reg, comps=(0, 1, 2, 3)):
+        if reg in inputs:
+            return
+        have = written.get(reg, ())
+        for c in comps:
+            if c not in have:
+                inputs.add(reg)
+                return
+
+    def note_write(reg, comps):
+        written.setdefault(reg, set()).update(comps)
 
     for (addr, cnt, seq) in sorted(execs):
         for k in range(cnt):
@@ -118,7 +142,19 @@ def parse_ucode(data):
             w0, w1, w2 = dw[base], dw[base + 1], dw[base + 2]
             if (seq >> (k * 2)) & 1:  # fetch
                 fop = bits(w0, 0, 5)
-                note_read(bits(w0, 5, 6))  # src reg
+                # Source-address read, per component: a vfetch address is ONE
+                # component (its 2-bit srcSwizzle names it); a tfetch reads as many
+                # coordinate components as its declared dimension (2D reads .xy —
+                # its 6-bit srcSwizzle is 2 bits per coordinate).
+                if fop == 0:
+                    note_read(bits(w0, 5, 6), (bits(w0, 30, 2),))
+                elif fop == 1:
+                    ncomp = {0: 1, 1: 2, 2: 3, 3: 3}[bits(w2, 14, 2)]
+                    swz = bits(w0, 26, 6)
+                    note_read(bits(w0, 5, 6),
+                              tuple((swz >> (2 * c)) & 3 for c in range(ncomp)))
+                else:
+                    note_read(bits(w0, 5, 6))
                 if fop == 0:
                     # VertexFetchInstruction: constIndex 20..24 + constIndexSelect
                     # 25..26 pick the vertex-buffer slot; w1 has format/signed/num,
@@ -164,22 +200,74 @@ def parse_ucode(data):
                 # Any write kills the vertex id in that register -- including a
                 # fetch writing its own source (seen: `dst=r2 src=r2`).
                 vid_regs.discard(bits(w0, 12, 6))
-                written.add(bits(w0, 12, 6))
+                # The fetch destination swizzle is 3 bits per component; 7 = Keep,
+                # which leaves that component of the register UNTOUCHED (that is
+                # exactly how the ball shader's `tfetch2D r0.__xy` preserves the
+                # interpolant in r0.xy). 0..3 write a fetched component, 4/5 write
+                # the constants 0/1 — all of those DO write. A predicated fetch is
+                # not a definite write.
+                if not bits(w1, 31, 1):
+                    dswz = bits(w1, 0, 12)
+                    note_write(bits(w0, 12, 6),
+                               [c for c in range(4) if ((dswz >> (3 * c)) & 7) != 7])
             else:  # ALU
                 vdst = bits(w0, 0, 6)
+                sdst = bits(w0, 8, 6)
                 export = bits(w0, 15, 1)
+                vmask = bits(w0, 16, 4)
+                smask = bits(w0, 20, 4)
+                predicated = bits(w1, 28, 1)
+                vop = bits(w2, 24, 5)
                 if not export:
                     vid_regs.discard(vdst)
                     reg_producer.pop(vdst, None)
-                for (sel, reg) in ((bits(w2, 31, 1), bits(w2, 16, 8)),
-                                   (bits(w2, 30, 1), bits(w2, 8, 8)),
-                                   (bits(w2, 29, 1), bits(w2, 0, 8))):
-                    if sel:
-                        note_read(reg & 0x3F)
-                if export:
-                    exports.add(vdst)
+                # Vector source reads, precise through the swizzle: operation lane i
+                # reads source component ((swz >> 2i) + i) & 3, over the lanes the
+                # opcode consumes — the dot family (and cube/max4/setp-push/kill)
+                # reads fixed lane counts regardless of the write mask, everything
+                # else reads exactly the masked lanes (XenosRecomp itself falls back
+                # to .x on an empty mask). All transcribed from shader_recompiler.cpp's
+                # operand printer so the two ends cannot disagree.
+                if vop in (15, 18, 19, 28) or 20 <= vop <= 27:  # Dp4/Cube/Max4/Dst/Setp*/Kill*
+                    lanes = (0, 1, 2, 3)
+                elif vop == 16:                                 # Dp3
+                    lanes = (0, 1, 2)
+                elif vop == 17:                                 # Dp2Add (src3 reads .x only)
+                    lanes = (0, 1)
                 else:
-                    written.add(vdst)
+                    lanes = tuple(i for i in range(4) if (vmask >> i) & 1) or (0,)
+                swz1, swz2, swz3 = bits(w1, 16, 8), bits(w1, 8, 8), bits(w1, 0, 8)
+                lane_comps = lambda swz, ls: tuple((((swz >> (2 * i)) + i) & 3)
+                                                   for i in ls)
+                if bits(w2, 31, 1):
+                    note_read(bits(w2, 16, 8) & 0x3F, lane_comps(swz1, lanes))
+                if bits(w2, 30, 1):
+                    note_read(bits(w2, 8, 8) & 0x3F, lane_comps(swz2, lanes))
+                if bits(w2, 29, 1):
+                    # src3 is shared: the VECTOR op reads it only for the 3-source
+                    # opcodes (Mad, the Cnd family, Dp2Add — lane .x there); the
+                    # SCALAR co-issue reads operand A at component ((swz>>6)+3)&3
+                    # and operand B at (swz&3), and is present exactly when the
+                    # opcode is not RetainPrev (50) — the idle-slot marker
+                    # XenosRecomp itself gates emission on. Adds is opcode 0, so
+                    # "nonzero opcode" would drop a real adds feeding a *_prev.
+                    comps = ()
+                    if vop in (11, 12, 13, 14):                 # Mad, CndEq/Ge/Gt
+                        comps += lane_comps(swz3, lanes)
+                    elif vop == 17:
+                        comps += (((swz3 >> 0) + 0) & 3,)
+                    if bits(w0, 26, 6) != 50:                   # != RetainPrev
+                        comps += (((swz3 >> 6) + 3) & 3, swz3 & 3)
+                    if comps:
+                        note_read(bits(w2, 0, 8) & 0x3F, comps)
+                if export:
+                    # both pipes write the export register named by vectorDest;
+                    # scalarDest is not a second export index
+                    exports.add(vdst)
+                elif not predicated:
+                    note_write(vdst, [i for i in range(4) if (vmask >> i) & 1])
+                    if smask:
+                        note_write(sdst, [i for i in range(4) if (smask >> i) & 1])
 
     return vfetch_slots, tfetch_consts, tfetch_dims, inputs, exports
 
