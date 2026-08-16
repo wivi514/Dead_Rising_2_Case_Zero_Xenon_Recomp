@@ -169,6 +169,15 @@ void Count(const char* name) { ++g_stats[name]; }
 // `Count` stays, and is still the right thing for every path that declines a draw:
 // those run rarely, and a cold call site is not worth a static.
 uint64_t* CounterSlot(const char* name) { return &g_stats[name]; }
+
+// Is anything going to READ `Renderer::snapshotsSampledThisPass` this run? Three
+// instruments do, and all three are env-rooted: `CZ_VK_PSBIND`, `CZ_VK_DRAW_CENSUS`
+// (armed by F9, but only ever when the variable is set) and `CZ_VK_RESOLVE_TRACE`.
+// Maintaining the list costs a linear scan per snapshot fetch — ~2,070 a frame — so it
+// is worth asking the question once instead of paying for the answer 8.2 M times a
+// session. Defined here rather than as a local static because the readers live several
+// thousand lines apart and must agree; set once in VkRenderer_Init.
+bool g_passInputsWanted = false;
 #define COUNT(lit)                                                                     \
     do                                                                                 \
     {                                                                                  \
@@ -3061,8 +3070,18 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // 207 of them on the operator's route and 2,182 on the headless one. A denominator
     // that skips exactly the failures it is meant to be a denominator FOR is the same
     // early-return-shadows-a-counter defect as gotcha 171, one level up.
+    //
+    // COUNT, not Count, for every site in this function: `UploadTexture` runs once per
+    // texture fetch per draw — ~9,300 slow counter calls a frame on the operator's own
+    // profiled frame — and `Count` constructs a std::string and walks a red-black tree
+    // per call. That is 0.9-1.9 ms of a 61.7 ms frame spent counting, INSIDE the phase
+    // being counted, which is gotcha 230's defect exactly. The macro was built in part 20
+    // for the draw path and this function was simply never converted;
+    // `docs/perf-plan-part47.md` §1.2 is the measurement. The names, the ordering and the
+    // printing interface are untouched, so every counter reads identically afterwards —
+    // which is also the correctness check.
     if (shaderDim == 3)
-        Count("texture: CUBE fetch");
+        COUNT("texture: CUBE fetch");
     uint64_t key = 1469598103934665603ull;
     for (uint32_t i = 0; i < 6; i++)
     {
@@ -3079,7 +3098,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     const xenos::TextureFetch t = xenos::DecodeTextureFetch(regs, constIdx);
     if (t.type != 2)
     {
-        Count("texture: fetch constant is not a texture");
+        COUNT("texture: fetch constant is not a texture");
         // SPLIT OUT FOR THE CUBE CASE, because "cube fetch got the dummy" had no
         // breakdown and part 26 attributed all of it to the shader/constant
         // disagreement. It is not: the disagreement is 1,349 of 2.25 M cube fetches on
@@ -3088,7 +3107,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // reach now says which one it was — an unnamed decline is the shape of thing
         // this project keeps having to re-measure (gotcha 171).
         if (shaderDim == 3)
-            Count("texture: CUBE fetch whose constant is NOT A TEXTURE — served the "
+            COUNT("texture: CUBE fetch whose constant is NOT A TEXTURE — served the "
                   "dummy");
         return 0;
     }
@@ -3148,7 +3167,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     static const bool noCubeArm = EnvOn("CZ_VK_NO_CUBE");
     if (t.dimension != shaderDim && !noCubeArm)
     {
-        Count("texture: the SHADER and the FETCH CONSTANT disagree about the dimension");
+        COUNT("texture: the SHADER and the FETCH CONSTANT disagree about the dimension");
         // MEASURED: 114 cube-declared fetches in a boot-to-gameplay run have a fetch
         // constant that says 2D, against 337,602 that say cube and carry a stack depth of
         // 5 — but the SAME BINARY on the deeper outdoor recipe declined 90,984, which is
@@ -3194,11 +3213,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             static const bool noReplicate = EnvOn("CZ_VK_NO_CUBE_REPLICATE");
             if (noReplicate)
             {
-                Count("texture: CUBE fetch whose constant says otherwise — served the "
+                COUNT("texture: CUBE fetch whose constant says otherwise — served the "
                       "dummy (CZ_VK_NO_CUBE_REPLICATE)");
                 return 0;
             }
-            Count("texture: CUBE fetch whose constant says otherwise — ONE FACE "
+            COUNT("texture: CUBE fetch whose constant says otherwise — ONE FACE "
                   "replicated across six");
             cubeFromOneFace = true;
         }
@@ -3210,7 +3229,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         auto c = R->textures.find(key);
         if (c != R->textures.end())
         {
-            Count("texture: cache hit");
+            COUNT("texture: cache hit");
             return c->second.slot;
         }
     }
@@ -3290,7 +3309,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         if (!cubeFromGuest)
             cubeAtResolveDest = true;
         else
-            Count("texture: CUBE fetch at a resolve destination, uploaded from guest "
+            COUNT("texture: CUBE fetch at a resolve destination, uploaded from guest "
                   "memory anyway (CZ_VK_CUBE_FROM_GUEST)");
     }
     if (!cubeFetch)
@@ -3310,10 +3329,16 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         {
             snap = R->snapshots.find((t.address & 0x1FFFFFFF) |
                                      (wantsDepth ? 0u : kSnapshotDepthBit));
+            // Split rather than passed as a ternary: COUNT resolves the map node ONCE
+            // per call site into a function-local static, so it needs a literal, not a
+            // selected pointer. Two sites is the price of the fast counter here.
             if (snap != R->snapshots.end())
-                Count(wantsDepth
-                          ? "texture: depth fetch served by a COLOUR resolve snapshot"
-                          : "texture: colour fetch served by a DEPTH resolve snapshot");
+            {
+                if (wantsDepth)
+                    COUNT("texture: depth fetch served by a COLOUR resolve snapshot");
+                else
+                    COUNT("texture: colour fetch served by a DEPTH resolve snapshot");
+            }
         }
         if (g_texCensus)
         {
@@ -3359,15 +3384,16 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         static const bool noDepthFetch = EnvOn("CZ_VK_NO_DEPTH_FETCH");
         if (noDepthFetch && wantsDepth)
         {
-            Count("texture: depth fetch forced to the white dummy "
+            COUNT("texture: depth fetch forced to the white dummy "
                   "(CZ_VK_NO_DEPTH_FETCH)");
             return 0;
         }
         if (snap != R->snapshots.end() && SnapshotUsable(snap->second))
         {
-            Count(snap->second.fromDepth
-                      ? "texture: served from a DEPTH resolve snapshot"
-                      : "texture: served from a resolve snapshot");
+            if (snap->second.fromDepth)
+                COUNT("texture: served from a DEPTH resolve snapshot");
+            else
+                COUNT("texture: served from a resolve snapshot");
             // MEASUREMENT ONLY, and the thing it measures is a real defect with a
             // quantitative fit — see docs/phase5-notes.md §6ao.
             //
@@ -3393,7 +3419,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 (t.width != snap->second.image.width ||
                  t.height != snap->second.image.height))
             {
-                Count("texture: snapshot served at the surface PITCH, not the fetch's "
+                COUNT("texture: snapshot served at the surface PITCH, not the fetch's "
                       "declared size — texture coordinates would be scaled wrong");
                 if (!noViews && t.width <= snap->second.image.width &&
                     t.height <= snap->second.image.height)
@@ -3401,24 +3427,38 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                     const uint32_t slot = SnapshotViewSlot(snap->second, t.width, t.height);
                     if (slot)
                         return slot;
-                    Count("texture: snapshot view could not be created — serving the "
+                    COUNT("texture: snapshot view could not be created — serving the "
                           "pitch-sized image, coordinates ARE scaled wrong");
                 }
             }
             // The pass-inputs list keeps the depth bit, because "this pass sampled the
             // scene colour" and "this pass sampled the scene DEPTH" are the two
             // different answers the dependency graph exists to separate.
-            const uint32_t key =
-                (t.address & 0x1FFFFFFF) |
-                (snap->second.fromDepth ? kSnapshotDepthBit : 0u);
-            if (std::find(R->snapshotsSampledThisPass.begin(),
-                          R->snapshotsSampledThisPass.end(),
-                          key) == R->snapshotsSampledThisPass.end())
-                R->snapshotsSampledThisPass.push_back(key);
+            //
+            // BEHIND ITS OWN READERS' GATE as of part 47. This list is read by exactly
+            // two instruments — the `(snap)` suffix on `[psbind]`/`CZ_VK_DRAW_CENSUS`
+            // lines and the `sampled snapshots:` line of `CZ_VK_RESOLVE_TRACE` — and it
+            // was being maintained with a LINEAR SCAN on every fetch that hits a
+            // snapshot: 8.2 M scans in the operator's session, ~2,070 a frame, all of
+            // them for a diagnostic nobody had enabled. That is the same defect as the
+            // psbind `snprintf` twenty lines up, which part 20 already paid for once
+            // (`docs/instruments.md` promises every arm is free when off). Order is
+            // preserved for the readers that DO enable it, so the printed lines are
+            // unchanged; keeping a vector rather than a set is deliberate for that.
+            if (g_passInputsWanted)
+            {
+                const uint32_t key =
+                    (t.address & 0x1FFFFFFF) |
+                    (snap->second.fromDepth ? kSnapshotDepthBit : 0u);
+                if (std::find(R->snapshotsSampledThisPass.begin(),
+                              R->snapshotsSampledThisPass.end(),
+                              key) == R->snapshotsSampledThisPass.end())
+                    R->snapshotsSampledThisPass.push_back(key);
+            }
             return snap->second.slot;
         }
         if (snap != R->snapshots.end())
-            Count("texture: resolve snapshot too old, falling back to guest memory");
+            COUNT("texture: resolve snapshot too old, falling back to guest memory");
     }
 
     // CZ_VK_TEX_REFRESH=<hex[,hex...]> — re-read these textures' pixels on every fetch,
@@ -3486,7 +3526,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         }
         if (!refresh)
         {
-            Count("texture: cache hit");
+            COUNT("texture: cache hit");
             return cached->second.slot;
         }
     }
@@ -6235,7 +6275,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             if (dims.size() == consts.size())
                 dim = dims[i];
             else
-                Count("texture: shader sidecar has no tfetchDims — slot bound as 2D");
+                COUNT("texture: shader sidecar has no tfetchDims — slot bound as 2D");
             // COUNTED BEFORE THE ARM CAN REWRITE IT. The first version of the two cube
             // counters below sat after the CZ_VK_NO_CUBE forcing, so on the very arm the
             // A/B is read against they could not fire at all — and a poisoned-dummy run
@@ -6243,7 +6283,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // draw had asked for a cube in that era. This is the denominator for every
             // cube claim about a given RECIPE, as opposed to about a whole run.
             if (dim == 3)
-                Count("draw: shader asked for a CUBE map");
+                COUNT("draw: shader asked for a CUBE map");
             // CZ_VK_NO_CUBE=1 — bind every cube fetch the way the renderer did before
             // part 25: publish its slot into the Texture2D array, leaving the cube array
             // at zero so the shader samples the white dummy. The same-binary control arm
@@ -6349,16 +6389,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 case 2: arrayBase = kSharedTex3D; break;
                 case 3: arrayBase = kSharedTexCube; break;
                 default:
-                    Count("texture: shader declared an unknown dimension — bound as 2D");
+                    COUNT("texture: shader declared an unknown dimension — bound as 2D");
                     break;
             }
             // DID THE CUBE BINDING ACTUALLY REACH A DRAW? Counted on both sides, because
             // the first picture A/B of this change came back pixel-identical on every
             // admissible frame and there was no way to tell "the cube maps look like the
             // dummy" from "no draw in these frames ever received one" (gotcha 151).
+            // Split rather than a ternary because COUNT needs a literal; both sites
+            // are per cube FETCH per draw (~400 a frame on the operator's route) and
+            // were paying a std::string build plus a red-black tree walk each.
             if (dim == 3)
-                Count(slot ? "draw: bound a REAL cube map"
-                           : "draw: cube fetch got the dummy");
+            {
+                if (slot)
+                    COUNT("draw: bound a REAL cube map");
+                else
+                    COUNT("draw: cube fetch got the dummy");
+            }
             reinterpret_cast<uint32_t*>(shared + arrayBase)[constIdx] = slot;
             reinterpret_cast<uint32_t*>(shared + kSharedSampler)[constIdx] =
                 SamplerIndexForFetch(regs, constIdx);
@@ -6916,7 +6963,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         {
             posOffset[0] += 2.0f * float(tileX) / float(winW);
             posOffset[1] += 2.0f * float(tileY) / float(winH);
-            Count("draw: window coordinates moved to the tile's screen origin");
+            COUNT("draw: window coordinates moved to the tile's screen origin");
         }
     }
     memcpy(shared + kSharedPosScale, posScale, sizeof posScale);
@@ -8984,6 +9031,15 @@ bool InitCommon()
     R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
+    // The three readers of the per-pass snapshot-input list, asked once. See the
+    // declaration; without this the list is maintained by a linear scan on every
+    // snapshot fetch for a diagnostic that is off on essentially every run.
+    // CZ_CAPTURE_KEY is in the list because it arms the draw census by another door —
+    // an F9 press under it writes `capture.census` without CZ_VK_DRAW_CENSUS being set,
+    // and a gate that misses one of its own entrances would silently drop the `(snap)`
+    // column from exactly the captures an operator takes.
+    g_passInputsWanted = Env("CZ_VK_PSBIND") || Env("CZ_VK_DRAW_CENSUS") ||
+                         Env("CZ_VK_RESOLVE_TRACE") || Env("CZ_CAPTURE_KEY");
     if (const char* n = Env("CZ_VK_DIM_DISAGREE"))
     {
         g_dimDisagree = true;
