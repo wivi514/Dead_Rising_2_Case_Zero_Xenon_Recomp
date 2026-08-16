@@ -8605,3 +8605,82 @@ every one of them read at the 16 KB cap. `CZ_VK_TEX_GUARD_BYTES=N` exists now an
 operator's eyes. What the histogram makes possible is choosing it from data: the
 per-address `changed` table now carries each texture's source size, so "what would
 this bound stop being able to see" is a column and not an argument.
+
+### THE MEASUREMENT: part 47's default against the three part-47 arms, same binary
+
+`~/DR2CZ-troubleshooting/part47/perf2`, three runs an arm, alternated, the
+unattended DebugJump route. `pre47` = `CZ_VK_TEX_GUARD_EVERY_FETCH=1
+CZ_PM4_NO_BULK_REGS=1 CZ_VK_NO_BUFFER_BIND_CACHE=1`, i.e. the three part-47
+changes off and nothing else.
+
+**Both negative controls read exactly zero**, which is what says the arms engaged:
+`texture guard cadence: 0 of 100,556,024 checks skipped (0.0%)` and `0.0% bulk`.
+
+**Frame time by draw bin — the decisive table, and the statistic that moved is the
+PINNED share (gotcha 238):**
+
+| draw bin | part 47 | pre-47 |
+|---|---|---|
+| 3,000-5,000 | **32 ms, 98/98/98% pinned** | 40/32/38 ms, 7/66/15% pinned |
+| 5,000-8,000 | **32 ms, 73/74/85% pinned** | 43/46/42 ms, 13/11/5% pinned |
+| 8,000+ | **36-37 ms** | *the pre-47 binary never reaches this bin* |
+
+At crowd density the frame goes from 42-46 ms to **32 ms and 73-85% pinned to a
+16 ms multiple** — it stops being CPU-bound and becomes pacing-bound, which is
+what "as close as you could run it on an Xbox 360" means on this title. The
+part-47 binary also renders a whole draw band the pre-47 one never reaches, and
+does it at 36-37 ms.
+
+**Phase cost in milliseconds, matched 3,000-8,000 draw band:**
+
+| phase | part 47 | pre-47 |
+|---|---|---|
+| `textures` | **2.47** | 17.18 |
+| draw path | **13.50** | 27.90 |
+| `record` | 7.15 | 6.76 |
+
+`textures` is 2.47 ms against the no-revalidate arm's 2.3 — i.e. **the cadence fix
+recovers essentially the whole of the upper bound while keeping the mechanism.**
+The guard reads **5.8-7.4 MB/frame against 77.9-95.1**, a 12x cut.
+
+**A caveat on `outside` and `record`, stated because the table above invites the
+wrong reading**: those two columns come out slightly WORSE on the part-47 arm, and
+the comparison is inadmissible rather than the result being bad. The two arms do
+not submit the same command stream — the faster arm reaches denser content, and
+**packets per frame differ by 40%** (101,258-112,270 against 53,543-73,807). A
+matched DRAW band does not match a PM4 workload. The admissible statistic for the
+walk is its cost per packet, which is normalised by the work:
+
+```
+part 47:  110, 111, 111, 111, 112, 112, 112, 113 ns   (100.0% bulk)
+pre-47:   151, 152, 155, 156, 157, 157, 157, 158 ns   (0.0% bulk)
+```
+
+**Zero overlap across nine windows an arm, -29%.** That is item 2.1's result;
+`outside` in milliseconds is not.
+
+### The registered falsifiable claim for item 1.1, and its answer
+
+The claim was that `changed` must not fall between the arms — a real change is
+still there at the next frame's first fetch, so a drop would mean the
+once-per-frame cadence is losing detections.
+
+| | changed / frame | distinct addresses ever caught changing |
+|---|---|---|
+| part 47 (once per frame) | 0.0739, 0.0607, 0.0847 | 131, 141, 157 |
+| pre-47 (every fetch) | 0.0668, 0.0640, 0.0508 | 156, 184, 157 |
+
+**On the event rate the claim holds and the fix detects slightly MORE** (median
+0.0739 against 0.0640) — the ranges overlap, so the honest statement is that no
+detection loss is measurable there.
+
+**On the DISTINCT-ADDRESS measure the two barely overlap and the every-fetch arm
+is higher** (median 157 against 141), while the part-47 runs cover *more* ground
+(18,000 frames and 9,252-9,498 peak draws against 15,000-16,800 and 7,817-8,424).
+That is a small difference in the direction of a real detection loss, and this
+route cannot resolve it: the arms do not visit the same places, so "more addresses
+seen changing" and "more places visited" are confounded. **Recorded as an open
+question rather than dismissed** — it is the kind of small honest discrepancy that
+turns out to matter, and the thing that would settle it is the operator's own
+session, where the same route is walked twice. It is question 2 of
+`docs/part48-kickoff.md`.
