@@ -1171,8 +1171,9 @@ CZ_DIGEST_PROBE=1  the file-digest check link by link, through the alias seam: t
                    bytes SHA1_Final actually wrote. A hook rather than a debugger
                    because gotcha 198: ctx.rN is stale mid-function
 CZ_VK_NO_STATE_CACHE=1  re-issue every draw's pipeline, viewport, scissor, blend
-                   constants and descriptor sets whether or not they changed — i.e. the
-                   pre-part-18 draw path. Vulkan holds all five on the COMMAND BUFFER,
+                   constants, descriptor sets **and (part 47) vertex and index buffer
+                   bindings** whether or not they changed — i.e. the pre-part-18 draw
+                   path. Vulkan holds all five on the COMMAND BUFFER,
                    so a draw that repeats them is doing nothing, and the five bindless
                    descriptor sets are identical on every draw in the title. Skipped
                    fractions print with CZ_VK_STATS: pipeline 76%, viewport 98%, scissor
@@ -1180,7 +1181,17 @@ CZ_VK_NO_STATE_CACHE=1  re-issue every draw's pipeline, viewport, scissor, blend
                    this flag on, which is the negative control doing its job. Worth
                    11.4% of `record` (4.34 -> 3.84 ms), which is 1.6 pp of an ordinary
                    frame and ~3% of a crowd frame. It does NOT move fps in ordinary
-                   gameplay and cannot: that frame is on the title's two-vblank cap
+                   gameplay and cannot: that frame is on the title's two-vblank cap.
+                   **Part 47 extended it to the vertex and index binds**, which part 18
+                   deliberately only COUNTED until the repeat rate justified the code —
+                   it now does, from the operator's own session: vertex 26,669,313 of
+                   52,338,548 repeat the previous (buffer, offset) (51.0%) and index
+                   6,046,933 of 15,366,521 (39.4%), over 16.17 M draws. At 7,231 draws a
+                   frame that is ~11,900 vertex and ~2,700 index calls a frame that need
+                   not happen, inside a `record` phase worth 10.9 ms of their 61.7 ms
+                   frame. Sound for the same reason the other five are: both are
+                   command-buffer state, this renderer starts one command buffer a frame,
+                   and `R->bound` is reset there and nowhere else
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS

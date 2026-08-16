@@ -5700,32 +5700,62 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
     return at;
 }
 
-// Count a vertex or index bind against what the state cache WOULD have skipped.
-// Counting only: the bind is still issued by the caller. See Renderer::BindSkips.
-// The BUFFER is part of the comparison, not just the offset. Since the cross-frame store
-// exists there are two buffers a stream can be in, and offset 0 of one is a different
-// bind from offset 0 of the other — without this the repeat counters would over-report
-// exactly at the boundary between them, which is a measurement quietly telling a lie
-// about the change that introduced it.
-void NoteVertexBind(uint32_t binding, VkBuffer buffer, VkDeviceSize offset)
+// Bind a vertex or index buffer, or SKIP the call when this binding already holds
+// exactly this (buffer, offset[, index type]) on this command buffer.
+//
+// Counting only until part 47, because `docs/perf-cpu-plan.md` §1a said to measure the
+// repeat rate before writing the cache: a low rate kills the idea for free and a high
+// one is the justification. The rate is now in from the operator's own session —
+// **vertex 26,669,313 of 52,338,548 repeat (51.0%), index 6,046,933 of 15,366,521
+// (39.4%)** over 16.17 M draws — which at 7,231 draws a frame is ~11,900 vertex and
+// ~2,700 index calls a frame that need not happen at all, inside a `record` phase that
+// is 10.9 ms of the operator's 61.7 ms frame. So the counters now gate the call as well
+// as counting it, and `Repeats` becomes "binds skipped" rather than "binds that could
+// have been".
+//
+// SOUND FOR THE SAME REASON THE OTHER FIVE ARE (see Renderer::BoundState): vertex and
+// index bindings are properties of the COMMAND BUFFER, this renderer starts exactly one
+// per frame, and `R->bound` is reset there and nowhere else. `vkCmdBindVertexBuffers`
+// carries no size and the stride lives in the pipeline, so (buffer, offset) is the whole
+// of the state — and the BUFFER must be compared, not just the offset: since the
+// cross-frame store exists a stream can live in two buffers, and offset 0 of one is a
+// different bind from offset 0 of the other. CZ_VK_NO_STATE_CACHE=1 disables this with
+// the other five, so one arm remains the whole pre-cache renderer.
+void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offset)
 {
+    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
     ++R->skips.vertexBinds;
+    // Above the tracked range the bind is always issued — untracked, never assumed
+    // unchanged. 16 is above the highest binding this title has ever used.
     if (binding >= Renderer::BoundState::kMaxTrackedBindings)
+    {
+        vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
         return;
-    if (R->bound.haveVertex[binding] && R->bound.vertexOffset[binding] == offset &&
+    }
+    if (!noStateCache && R->bound.haveVertex[binding] &&
+        R->bound.vertexOffset[binding] == offset &&
         R->bound.vertexBuffer[binding] == buffer)
+    {
         ++R->skips.vertexBindRepeats;
+        return;
+    }
+    vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
     R->bound.haveVertex[binding] = true;
     R->bound.vertexOffset[binding] = offset;
     R->bound.vertexBuffer[binding] = buffer;
 }
 
-void NoteIndexBind(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
+void BindIndexBufferCached(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 {
+    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
     ++R->skips.indexBinds;
-    if (R->bound.haveIndex && R->bound.indexOffset == offset &&
+    if (!noStateCache && R->bound.haveIndex && R->bound.indexOffset == offset &&
         R->bound.indexType == type && R->bound.indexBuffer == buffer)
+    {
         ++R->skips.indexBindRepeats;
+        return;
+    }
+    vkCmdBindIndexBuffer(R->cmd, buffer, offset, type);
     R->bound.haveIndex = true;
     R->bound.indexOffset = offset;
     R->bound.indexType = type;
@@ -7591,8 +7621,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 break;
             }
             const VkDeviceSize offset = four + uint64_t(a.offsetDwords) * 4;
-            NoteVertexBind(binding, R->arena.buffer, offset);
-            vkCmdBindVertexBuffers(R->cmd, binding, 1, &R->arena.buffer, &offset);
+            BindVertexBufferCached(binding, R->arena.buffer, offset);
             ++binding;
             continue;
         }
@@ -7606,8 +7635,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (rangeCensus && a.strideDwords && rangeAttrCount < 32)
             rangeAttrs[rangeAttrCount++] = { a.strideDwords, a.offsetDwords,
                                              uint32_t(a.format), bytes, loc.bytes() };
-        NoteVertexBind(binding, loc.handle(), offset);
-        vkCmdBindVertexBuffers(R->cmd, binding, 1, &loc.buf->buffer, &offset);
+        BindVertexBufferCached(binding, loc.handle(), offset);
         ++binding;
     }
     if (!streamsOk)
@@ -7996,8 +8024,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkDeviceSize at = ExpandIndices(base, draw, expand, expandedCount);
         if (at == VkDeviceSize(-1))
             return;
-        NoteIndexBind(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
-        vkCmdBindIndexBuffer(R->cmd, R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
+        BindIndexBufferCached(R->arena.buffer, at, VK_INDEX_TYPE_UINT32);
         // rectSynth already folded the base vertex into its three corners, and its
         // expanded indices name a private four-vertex stream — so offsetting again
         // would apply it twice.
@@ -8057,8 +8084,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         const VkIndexType itype =
             draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
-        NoteIndexBind(loc.handle(), loc.at, itype);
-        vkCmdBindIndexBuffer(R->cmd, loc.handle(), loc.at, itype);
+        BindIndexBufferCached(loc.handle(), loc.at, itype);
         vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
         COUNT("draw: indexed");
     }
@@ -10583,14 +10609,15 @@ void VkRenderer_DumpStats()
                 100.0 * double(R->skips.scissor) / double(d),
                 100.0 * double(R->skips.blend) / double(d),
                 100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
-    // ...and the two the cache does NOT cover yet, as the repeat rate a cache over them
-    // would convert into skips. Reported as counts as well as percentages because the
-    // absolute number is what multiplies by the ~340 ns a `vkCmd*` costs here; a high
-    // percentage of a small count is not worth a line of code.
+    // ...and the two the cache COVERS AS OF PART 47. The numbers were the measurement
+    // that justified writing it (51.0% and 39.4% on the operator's own session, over
+    // 16.17 M draws); they are now the count of calls the renderer did not make.
+    // Reported as counts as well as percentages because the absolute number is what
+    // multiplies by the ~340 ns a `vkCmd*` costs here.
     if (R->skips.vertexBinds || R->skips.indexBinds)
         fprintf(stderr,
-                "[vk]   binds NOT cached: vertex %llu of %llu repeat the previous "
-                "offset (%.1f%%), index %llu of %llu (%.1f%%)\n",
+                "[vk]   binds skipped by the state cache: vertex %llu of %llu repeat "
+                "the previous offset (%.1f%%), index %llu of %llu (%.1f%%)\n",
                 (unsigned long long)R->skips.vertexBindRepeats,
                 (unsigned long long)R->skips.vertexBinds,
                 R->skips.vertexBinds
