@@ -675,7 +675,69 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-15 (part 45 — the white-surface / flat-prop class
+Where the port is, as of 2026-08-15 (part 46 — the operator's two items, both
+taken as far as measurement goes: **THE TREE SHARDS ARE MISSING ALPHA-TO-MASK
+COVERAGE** (demonstrated by an arm, three byte-identical null controls, and a
+repro that now needs no operator), and **THE REPORTED PERFORMANCE REGRESSION IS
+NOT REPRODUCED BY ANY OF THE THREE NAMED SUSPECTS**. `docs/part47-kickoff.md` is
+the LIVE hand-off.):
+
+* **ITEM 0t, THE TREES: the shards are missing ALPHA-TO-MASK coverage, and the
+  remaining work is a named renderer change.** The canopy draws are alpha test
+  GREATER at `RB_ALPHA_REF = 0.0` plus A2M over a **DXT4/5** albedo, i.e.
+  fractional alpha. At ref 0 the alpha test keeps everything, so A2M is doing the
+  whole cutout alone — and the renderer declined to emulate it on a written
+  excuse ("the draws hardware sets it on also set the alpha test, so the clip
+  covers them") that is false exactly at ref 0, so the leaf fringe the artist
+  authored at alpha 0.05..0.5 was written at FULL opacity. An arm supplying the
+  coverage removes the hard plates and lands the pre-named property on the
+  oracle: canopy **p05/p95 0.291 -> 0.324 against hardware's 0.326**, with three
+  byte-identical null controls (default cache, new emitter with the define off,
+  define on with the gate declining). `phase5-notes.md` §6ca + addendum,
+  gotchas 317-319.
+* **AND THE REPRO IS THE TITLE SCREEN, whose hardware oracle was already in the
+  repo.** The menu backdrop is the same material — 120 s,
+  `CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,NONE`, no input, near-static camera — and
+  `Xenia logs/E_screenshots/E3_title_background_stillcreek.png` photographs that
+  exact screen (content box x 0..1399, y 96..880 -> resize to 1280x720). Static
+  also makes a `CZ_VK_DRAW_ID` map readable against another run's picture, which
+  the moving outdoor route can never do.
+* **The surface is 2x MSAA on BOTH machines, which is why the fix is not the
+  obvious one.** Our counter reads msaa=1 on 69,390 A2M draws (4x on none), and
+  `tools/xtr_draw_bindings.py` now carries `RB_SURFACE_INFO` so hardware can be
+  asked: `w1_spawn` says msaa=1 on every leaf draw and all 240 A2M draws. We only
+  sample-expand 4x surfaces, so `CZ_VK_A2M_ANY_SURFACE=1` (which dithers at pixel
+  granularity) is a DIAGNOSTIC and not a default — it pushes the hard-edge share
+  3.13% -> 4.92% against hardware's 0.21%. **The fix is to sample-expand 2x
+  surfaces** (Xenos 2x is a vertical pair, so a 1x2 dither is exact and the
+  existing resolve averages it); the shader half is built and controlled.
+* **Refuted against hardware, do not re-buy**: the leaf render-state read
+  (colour control, alpha ref, blend — byte-equal across all 19 round-2/3/4
+  traces) and the `k_10_11_11` normal decode (hardware's own streams decode to
+  unit length on **512 of 512** sampled vertices, 74.8% at N·L > 0). **Demoted**:
+  the denormal/NaN packed-normal suspect. **Method worth keeping**: selecting the
+  DEFECTIVE and the CORRECT pixels separately and reading both through the
+  draw-ID map showed they were the SAME DRAW, retiring every per-draw input in
+  one measurement (gotcha 318).
+* **PERFORMANCE: all three named suspects are EXONERATED, and "no regression
+  exists" is NOT what that measures.** Part 45's liveness fix: six alternated
+  600 s outdoor runs, three an arm, one variable (`assets/shader_spv_pre45`) —
+  **every draw bin inside its own measured noise floor**, with the two bins off
+  the pacing floor disagreeing in sign (−2.9% and +4.3%); below 3,000 draws both
+  arms sit at 32 ms with 94-99% pinned. Part 41's per-fetch samplers and part
+  44/45's mip chain/tail, read on the `textures` phase share: **44.6 / 46.0 /
+  44.2 against a baseline of 45.4**, all unmoved, every arm shown to have engaged
+  by the counter the others carry. GPU quoted, not assumed: P5, 559 MHz, 34%,
+  28.1 W. `phase5-notes.md` §6cb + addendum; `tools/part46_perf_ab.sh` and
+  `tools/part46_perf_read.py`.
+* **What the profiler did say: `textures` is 43-45% of the draw path** (~29-30%
+  of the frame) on every arm — structural, not recent. The comparison against
+  part 20's 13.6% is explicitly the weak half of that argument (different route
+  era, binary and session; gotcha 13). **The next perf move is a measurement on
+  the OPERATOR'S configuration** — windowed, their route — not a fourth headless
+  arm; an operator report outranks a headless number.
+
+Where the port WAS, as of 2026-08-15 (part 45 — the white-surface / flat-prop class
 SOLVED at its root: our own synth tool was dropping PS interpolants after PARTIAL
 register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL.
 **`docs/part46-kickoff.md` is the LIVE hand-off and the operator has set part

@@ -63,13 +63,26 @@ backlog form.
    with the test on; the solid trunk/branch/LOD geometry is DXT1 with it off, on
    hardware too. Expect about a third of the leaf draws to move, and do not read
    the other two thirds staying put as a partial fix.
-3. **Performance.** See the part-46 record for what its A/B measured; the two
-   suspects it could not separate with a preserved control arm are part 41's
-   per-fetch samplers and part 44/45's mip uploads, neither of which has a
-   whole-cache arm the way part 45's liveness fix has `assets/shader_spv_pre45`.
-   If the A/B came back inside the noise floor, the next move is NOT another
-   frame-time run: it is `CZ_VK_PROFILE` phase splits on the same route, which
-   attribute time rather than measuring the pacing floor.
+3. **Performance — ALL THREE SUSPECTS ARE EXONERATED; the next measurement is on
+   the OPERATOR'S configuration, not another arm here** (§6cb + addendum).
+   Part 45's liveness fix: six alternated 600 s runs, three an arm, one variable
+   — **every draw bin inside its own noise floor**, and the two bins off the
+   pacing floor disagree in sign. Part 41's per-fetch samplers and part 44/45's
+   mip chain/tail: one run each on the `textures` phase share — **44.6 / 46.0 /
+   44.2 against a baseline of 45.4**, all unmoved, every arm shown to have
+   engaged by the counter the others carry.
+   **Do not run a fourth arm here.** Four unmoved results in a row are a fact
+   about the framing: this headless route does not reproduce what the operator
+   reports. What is needed is a run on THEIR configuration — windowed, their
+   route, `CZ_VK_PROFILE` + `CZ_VK_FRAME_STATS` — and, if you can get it, the
+   same on a binary from before part 41, which is the only way to test "the last
+   few days" as a whole rather than one change at a time.
+   **What the profiler did say, and it is worth someone's time regardless:**
+   `textures` is **43-45% of the draw path**, ~29-30% of the frame, on every arm.
+   It is structural rather than recent. Whether that is a real cost worth
+   attacking or just a share that was always this high is open — §6cb's
+   comparison against part 20's 13.6% is explicitly the weak half of that
+   argument (different route era, binary and session; gotcha 13).
 4. **The UI text layer (open item 00k) is still owed a FIX**, unchanged from
    part 46's kickoff: the mechanism is confirmed (the cross-frame stream store's
    guard, item 00c above the 16 KB bound), and "always exact" is not it —
