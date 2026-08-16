@@ -675,10 +675,50 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-16 (part 46 CLOSED — both of the operator's items
+Where the port is, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE plan's tiers 1
+and 2 executed, and its top item turned out to be worth about twice its estimate.
+**`docs/part48-kickoff.md` is the LIVE hand-off; `docs/perf-plan-part47.md` is still
+the live performance plan and now carries a STATUS header.**):
+
+* **THE TEXTURE REVALIDATION GUARD WAS NEARLY THE WHOLE TEXTURE PHASE, and the
+  plan's own named first run proved it in one measurement.**
+  `CZ_VK_NO_TEX_REVALIDATE=1` on the outdoor route: `textures` **15.9 ms with
+  the guard and 2.3 ms without**, against the 8-11 ms the plan priced. In the
+  5,000-8,000 draw bin the frame goes from **47-48 ms at 23-24% pinned to
+  32-33 ms at 67-94% pinned** — onto the title's own two-vblank floor. That arm
+  is the upper bound and not a configuration; it is the defect part 38 fixed.
+* **THE FIX IS A CADENCE CHANGE and it recovers most of that**: the content
+  guard runs **once per frame per cache entry** instead of once per texture
+  fetch per draw. Measured **93.4% of checks skipped, 15.1x less hashing**.
+  `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm. The mechanism is untouched, so
+  what it costs is at most one frame of staleness for a texture the guest
+  rewrites mid-frame — and the registered falsifiable claim is that `changed`
+  must not fall between the arms.
+* **The PM4 walk writes register RUNS in bulk** — the two range questions asked
+  once per run instead of once per dword — and it is verified against the
+  per-dword code it replaced, because **both PM4 boundary oracles pass
+  identically whether or not that rewrite is correct** (gotcha 322): **0
+  mismatches over 152,020,384 dwords**, `CZ_PM4_VERIFY_POISON=1` first to show
+  the check can fail, and **100.0% of dwords take the bulk path**.
+* **The state cache now covers the VERTEX and INDEX binds.** Part 18 added the
+  counters and deliberately did not act on them until the repeat rate justified
+  it; it does — **51.0% / 39.4% over 16.17 M draws** on the operator's session.
+* **Three ways a perf A/B on this title reads wrong, all of which bit in one
+  afternoon**: a phase SHARE moves when the other phases do, so taking 13 ms out
+  of `textures` made four other phases read 34-68% worse without moving (quote
+  MILLISECONDS, gotcha 320); pooling profile windows across a route measures the
+  ROUTE and calls it noise, a 58% "floor" that was a safehouse window averaged
+  with a crowd window (use a matched draw band, 321); and `msec` is the LAST of
+  the eighteen `.stats` columns. `tools/part47_perf_read.py` does all three.
+* **What is OWED is the operator's own session** —
+  `tools/part47_operator_session.sh`, two chained arms — because the headless
+  route understates their draw path by ~2x, so a headless win here is not the
+  conservative direction. Ask two things: is it faster, and does any texture
+  ever look STALE.
+
+Where the port WAS, as of 2026-08-16 (part 46 CLOSED — both of the operator's items
 answered, one of them FIXED, and the performance work now has a plan built on the
-operator's own profiled frame. **`docs/part47-kickoff.md` is the LIVE hand-off and
-`docs/perf-plan-part47.md` is the live performance plan.**):
+operator's own profiled frame):
 
 * **THE UI TEXT / HUD DEFECT IS FIXED AND OPERATOR-CONFIRMED** (open items
   00c/00k, first seen part 24). Their words: *"Ui stay good the whole time"*, then
@@ -723,87 +763,7 @@ operator's own profiled frame. **`docs/part47-kickoff.md` is the LIVE hand-off a
   picture** — two operator captures were compared per-pixel because they looked
   like the same view and their eyes were 250 units apart.
 
-Where the port WAS, as of 2026-08-15 (part 45 — the white-surface / flat-prop class
-SOLVED at its root: our own synth tool was dropping PS interpolants after PARTIAL
-register writes; 217 of 333 pixel shaders sampled their diffuse at ONE TEXEL.
-**`docs/part46-kickoff.md` is the LIVE hand-off and the operator has set part
-46's order: TREES first, then the PERFORMANCE REGRESSION they report from the
-last few days' fixes.**):
-
-* **ITEM 00i's MENU HALF (and with it the flat-prop class) IS SOLVED, and the
-  defect was OURS, in `tools/synth_shader_container.py`'s liveness.** The
-  part-45 menu lab ran the fourth addendum's plan to completion: the GAS ball
-  draw named by CZ_VK_DRAW_ID (draw 1606, vs_d338876a58c8c0ed /
-  ps_eb170d16fe949e52); hardware's texture bytes for all four slots dumped
-  out of B1 and **byte-identical to ours** (four md5 matches — the red disc
-  was in our memory all along); UVs equal on every sampled vertex; every
-  recoverable constant equal; dummies refuted by poison. The generated HLSL
-  then showed `r0 = 0.0; r2 = 0.0; r3 = 0.0` where the microcode PARTIALLY
-  writes those registers (`tfetch2D r0.__xy` keeps .xy!) before sampling the
-  diffuse at r0.xy — the old analysis kept `written` as a flat register set.
-  Per-component read-before-write (commit fdda6f3, encodings transcribed from
-  XenosRecomp's own operand printer): **265 of 333 pixel shaders change, 217
-  gain interpolants; the menu ball is RED; the E3 correlation gate flips
-  +0.687 (fail) → +0.710 (pass).** Old cache kept at
-  `assets/shader_spv_pre45` (CZ_SHADER_SPV = same-binary control arm). Full
-  record `phase5-notes.md` §6by; gotcha 316; open-items 00i head updated.
-* **THE OPERATOR'S A/B CLOSES THE FLAT-AT-RANGE CLASS TOO** (§6by addendum 2).
-  Two launches, one binary, `CZ_SHADER_SPV` the only difference, their own
-  route: fixed cache — *"the game looks way better now, the building doesn't
-  seem to have issues… almost like OG game"*; pre-45 cache — *"way worse —
-  gas station looks bad and building look FLAT DEPENDING ON DISTANCE."* That
-  is item 00i's original complaint, toggled by the shader cache. **What drove
-  parts 42-44 was substantially this defect.** Their one remaining complaint
-  is the TREE CANOPY (hard black shards), which is PRE-EXISTING — it shows on
-  part 44's captures too — and is named: `ps_69a5c3be9359b87c` /
-  `ps_8602b5fd69289893` at `cc=AA00001C` (alpha test GREATER + ALPHA_TO_MASK,
-  56 draws), i.e. part 41's parked A2M item, now top of the picture list.
-* **A SECOND OPERATOR COMPLAINT IS SOLVED TO ITS MECHANISM: the UI TEXT LAYER
-  IS STALE BECAUSE OF THE STREAM STORE'S GUARD** — item 00c (part 24's ammo
-  counter) recurring above the 16 KB bound that fixed it. A matched operator
-  A/B decides it: the STATUS screen's KEY ITEMS tab, same save, one env var
-  apart — default renders the ATTRIBUTES tab's labels, and
-  `CZ_VK_STREAM_GUARD_EXACT=1` renders `Still Creek Map / Zombrex / Shed Key`
-  correctly (`phase5-notes.md` §6bz addendum 2). **The FIX is still owed and
-  "always exact" is not it**: that arm reads 63.76 MB/frame in the guard
-  against 9.28, so it is designed and measured together with the performance
-  item below. Part 45's TEAR reading is RETRACTED.
-* **(characterisation, still accurate) the UI TEXT LAYER symptoms** (open item 00k, `phase5-notes.md` §6bz + addendum). Colour changes
-  MID-WORD, glyphs go missing, and the PREVIOUS screen's text persists (the
-  SKILLS tab renders ATTRIBUTES' labels; pause-menu items stay painted over
-  gameplay) while STATIC text in the same frames is perfect. Pre-existing, not
-  from the fix. 32 captures in `part45-operator/ui_fixed/`. The text layer is
-  ONE dynamic vertex buffer sub-allocated per run (§6ab), so one bad copy
-  garbles every run. Eliminated: dropped draws (both bounds counters ZERO
-  across 54.7M draws) and the ALU constant window. **The garbling VARIES frame
-  to frame**, so the leading reading is a TORN buffer, not a frozen cache —
-  arms `CZ_VK_FRAMES_IN_FLIGHT=1` then `CZ_VK_STREAM_GUARD_EXACT=1`.
-  **The cheap headless check for this whole class, from the operator: press
-  START at the title screen and a card appears for a second or two COMPLETELY
-  EMPTY** (trim drawn, no glyphs) —
-  `part45-operator/ui_fixed/capture_001343.ppm`.
-* **PERFORMANCE: the operator reports a REGRESSION over the last few days'
-  fixes** — unmeasured, and part 46's second item. Suspects in order of
-  introduction: part 41's per-fetch samplers, part 44/45's mip uploads, and
-  part 45's own fix (217 shaders gained interpolants).
-  `assets/shader_spv_pre45` makes that last one a one-variable A/B. Measure
-  with three runs an arm and MEDIANS plus the 16 ms-pinned share, never means
-  (gotchas 237/238).
-* **Every shading-side measurement through the old cache now has gotcha-172
-  exposure, and the first re-measures ran the same day** (§6by addendum 1): the
-  fixed-cache spawn gains the QUARANTINE bus lettering + van panel detail
-  (part-26 white-prop members visibly fixed; the operator tour will finish
-  the list), and **the mip-tint overshoot signature REPRODUCES on the clean
-  bank** — a real, separate mechanism. Contact points at one fixed view:
-  `CZ_VK_ANISO=0` is ~1 octave deeper (aniso engages and buys its octave),
-  `CZ_VK_NO_FETCH_SAMPLERS=1` deeper still — neither arm shallows, so the
-  sampler terms are exonerated and the residual +1..2-octave global shift has
-  no named cause — **but it no longer has a visible symptom either**, so the
-  first move on it is re-running part 44's decisive `CZ_VK_NO_MIPS=1` arm on
-  the FIXED cache before quoting that result again. `docs/part46-kickoff.md`
-  is the LIVE hand-off.
-
-**Older per-part status blocks (parts 28-44, the superseded mid-part-44 closure
+**Older per-part status blocks (parts 28-45, the superseded mid-part-44 closure
 and the superseded MID-PART-46 block) moved to `docs/port-history.md`** — CLAUDE.md keeps
 only the live part and one part back, per the 2026-08-08 split's rule.
 
