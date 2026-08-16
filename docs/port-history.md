@@ -3135,3 +3135,100 @@ fully named, OUR EXECUTION OF IT IS CORRECT, and item 00i waits on capture R5):
   directory object as %s, salted the log with NULs, and plain grep read the
   whole probe as absent for two runs — `grep -a` / `tr -d '\0'` before
   believing a zero from an instrument's own log (gotcha 25's self-made form).
+
+
+## Archived status block — MID-PART-46 (superseded the same day by part 46's close-out)
+
+Kept because the two items it lists were both answered AFTER it was written: the
+UI text defect was fixed and operator-confirmed, and the tree fix settled on
+`CZ_VK_A2M_MODE=1` rather than the per-sample dither this block proposes.
+
+Where the port was MID-PART-46 (superseded by the block above — the operator's two items, both
+taken as far as measurement goes: **THE TREE SHARDS ARE MISSING ALPHA-TO-MASK
+COVERAGE** (demonstrated by an arm, three byte-identical null controls, and a
+repro that now needs no operator), and **THE REPORTED PERFORMANCE REGRESSION IS
+NOT REPRODUCED BY ANY OF THE THREE NAMED SUSPECTS**. `docs/part47-kickoff.md` is
+the LIVE hand-off.):
+
+* **ITEM 0t, THE TREES: the shards are missing ALPHA-TO-MASK coverage, and the
+  remaining work is a named renderer change.** The canopy draws are alpha test
+  GREATER at `RB_ALPHA_REF = 0.0` plus A2M over a **DXT4/5** albedo, i.e.
+  fractional alpha. At ref 0 the alpha test keeps everything, so A2M is doing the
+  whole cutout alone — and the renderer declined to emulate it on a written
+  excuse ("the draws hardware sets it on also set the alpha test, so the clip
+  covers them") that is false exactly at ref 0, so the leaf fringe the artist
+  authored at alpha 0.05..0.5 was written at FULL opacity. An arm supplying the
+  coverage removes the hard plates and lands the pre-named property on the
+  oracle: canopy **p05/p95 0.291 -> 0.324 against hardware's 0.326**, with three
+  byte-identical null controls (default cache, new emitter with the define off,
+  define on with the gate declining). `phase5-notes.md` §6ca + addendum,
+  gotchas 317-319.
+* **AND THE REPRO IS THE TITLE SCREEN, whose hardware oracle was already in the
+  repo.** The menu backdrop is the same material — 120 s,
+  `CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,NONE`, no input, near-static camera — and
+  `Xenia logs/E_screenshots/E3_title_background_stillcreek.png` photographs that
+  exact screen (content box x 0..1399, y 96..880 -> resize to 1280x720). Static
+  also makes a `CZ_VK_DRAW_ID` map readable against another run's picture, which
+  the moving outdoor route can never do.
+* **The surface is 2x MSAA on BOTH machines, which is why the fix is not the
+  obvious one.** Our counter reads msaa=1 on 69,390 A2M draws (4x on none), and
+  `tools/xtr_draw_bindings.py` now carries `RB_SURFACE_INFO` so hardware can be
+  asked: `w1_spawn` says msaa=1 on every leaf draw and all 240 A2M draws. We only
+  sample-expand 4x surfaces, so `CZ_VK_A2M_ANY_SURFACE=1` (which dithers at pixel
+  granularity) is a DIAGNOSTIC and not a default — it pushes the hard-edge share
+  3.13% -> 4.92% against hardware's 0.21%. **The fix is to sample-expand 2x
+  surfaces** (Xenos 2x is a vertical pair, so a 1x2 dither is exact and the
+  existing resolve averages it); the shader half is built and controlled.
+* **Refuted against hardware, do not re-buy**: the leaf render-state read
+  (colour control, alpha ref, blend — byte-equal across all 19 round-2/3/4
+  traces) and the `k_10_11_11` normal decode (hardware's own streams decode to
+  unit length on **512 of 512** sampled vertices, 74.8% at N·L > 0). **Demoted**:
+  the denormal/NaN packed-normal suspect. **Method worth keeping**: selecting the
+  DEFECTIVE and the CORRECT pixels separately and reading both through the
+  draw-ID map showed they were the SAME DRAW, retiring every per-draw input in
+  one measurement (gotcha 318).
+* **PERFORMANCE: all three named suspects are EXONERATED, and "no regression
+  exists" is NOT what that measures.** Part 45's liveness fix: six alternated
+  600 s outdoor runs, three an arm, one variable (`assets/shader_spv_pre45`) —
+  **every draw bin inside its own measured noise floor**, with the two bins off
+  the pacing floor disagreeing in sign (−2.9% and +4.3%); below 3,000 draws both
+  arms sit at 32 ms with 94-99% pinned. Part 41's per-fetch samplers and part
+  44/45's mip chain/tail, read on the `textures` phase share: **44.6 / 46.0 /
+  44.2 against a baseline of 45.4**, all unmoved, every arm shown to have engaged
+  by the counter the others carry. GPU quoted, not assumed: P5, 559 MHz, 34%,
+  28.1 W. `phase5-notes.md` §6cb + addendum; `tools/part46_perf_ab.sh` and
+  `tools/part46_perf_read.py`.
+* **What the profiler did say: `textures` is 43-45% of the draw path** (~29-30%
+  of the frame) on every arm — structural, not recent. The comparison against
+  part 20's 13.6% is explicitly the weak half of that argument (different route
+  era, binary and session; gotcha 13). **The next perf move is a measurement on
+  the OPERATOR'S configuration** — windowed, their route — not a fourth headless
+  arm; an operator report outranks a headless number.
+
+
+## Archived status block — part 44
+
+Where the port was, as of 2026-08-15 (part 44 — item 00i REOPENED same day as a
+MIP-SELECTION OVERSHOOT; the part-43 menu reframe is retracted):
+
+* **ITEM 00i, PART-44 STATE (superseded by part 45's root cause above for the
+  menu half; outdoor half under re-measure): a mip-selection overshoot in the scene pass, ~2
+  octaves too deep globally.** The "closed as faithful" verdict (now in
+  `docs/port-history.md`'s status-block archive) was retracted the same day: the operator recreated the R4 walk and their
+  matched capture shows the flat buildings bind FULL-SIZE textures (8
+  tiny-on-big of 1,760 draws) — the thumbnail class was never the mechanism,
+  and E5 (round-1 screenshot) proves hardware-FRESH is crisp at range. The
+  elimination that followed (§6bx addenda 2–3): `CZ_VK_NO_MIPS=1` restores
+  the buildings at the matched view (tail arm does not; the SCENE surface
+  carries the flatness); the mip DATA is correct (guest chains AND uploaded
+  staging verified level by level); every LOD input matches hardware (tfetch
+  lod_bias 0 on 1,846/1,846; fetch-constant lod_bias 0 on 56,111/56,111
+  bound constants in R4_04; filters/aniso equal, aniso engaged). The new
+  `CZ_VK_MIP_TINT=1` paints each uploaded level a code color and shows L1 at
+  two meters, L2 at ten, the spawn fence at L2 where texel math says 0.5.
+  **`docs/part45-kickoff.md` step 0 is the hunt**: draw-ID the wall at the
+  matched pose, compute hardware's implied LOD from R4_04's vertex streams,
+  audit the scene pass's derivative environment (MSAA window-scale,
+  §6bf/§6bh). The menu retraction and the level-machine reverse-engineering
+  below STAND.
+

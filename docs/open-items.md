@@ -1117,7 +1117,30 @@ Next, in order:
    second implementation forces the seam: copy into `runtime/audio/` here first, and leave
    any shared-library question to Case West.
 
-00k. **THE UI TEXT LAYER IS STALE — MECHANISM CONFIRMED (part 45): it is the
+00k. ~~**THE UI TEXT LAYER IS STALE**~~ **CLOSED IN PART 46, OPERATOR-CONFIRMED.**
+   The fix is exactness EARNED per stream rather than bought by size: a stream the
+   cross-frame store catches CHANGING is hashed exactly from then on, and one the
+   cheap sampled guard is proved able to see is demoted back to it.
+   `CZ_VK_GUARD_BUDGET` is the default; `CZ_VK_NO_GUARD_BUDGET=1` is the
+   same-binary control arm, and the operator ran both in one session — the fix
+   arm's HUD stayed correct throughout ("Ui stay good the whole time", then "Hud
+   stay good and all" on the cheaper variant), the control arm's broke.
+   **THE TWO WRONG TURNS ARE THE VALUABLE PART, do not re-buy either.**
+   (1) *"Raise the guard's byte bound"* — the recommendation in two successive
+   kickoffs — is **REFUTED**: at 256 KB the HUD still dropped out, and since part
+   45's unlimited arm did fix it the UI buffer is ABOVE 256 KB, where the size
+   histogram prices exactness at 121+ MB/frame. Size is the wrong discriminator.
+   (2) The lazy promotion left a window at the start of a session (a stream is
+   sampled until its first VISIBLE change) which the operator hit and which then
+   SELF-HEALED — that self-healing was the first evidence the mechanism was right.
+   Closing it by probing new entries had to be BUDGETED: unbounded it cost 838
+   streams and 66.8 MB/frame, i.e. as much as hashing everything.
+   **What is still owed**: it costs ~30 MB/frame on the operator's session, and
+   their own A/B priced the earlier version at +22.7% in the 4500-6000 draw bin.
+   That cost is folded into `docs/perf-plan-part47.md`, not treated as done.
+   `phase5-notes.md` §6cc addendum.
+
+00k-old. (the part-45 characterisation, kept for the chain) **THE UI TEXT LAYER IS STALE — MECHANISM CONFIRMED (part 45): it is the
    cross-frame stream store's GUARD, i.e. item 00c recurring above the 16 KB
    bound that fixed it. What remains is the FIX, and it has a cost to solve
    for.** A matched operator A/B settles it (§6bz addendum 2): the STATUS
@@ -1187,7 +1210,22 @@ Next, in order:
    they said "everything works fine", but took no captures and the sentence
    equally reads as "no defects other than the trees". Ask before recording.
 
-00l. **PERFORMANCE REGRESSION over parts 41-45 — operator-reported, unmeasured.**
+00l. **PERFORMANCE — NOW MEASURED, AND IT HAS ITS OWN PLAN:
+   `docs/perf-plan-part47.md`.** Part 46 profiled the operator's real windowed
+   frame for the first time: **61.7 ms at 7,231 draws**, textures 26.5 ms, PM4
+   walk 14.2, record 10.9, GPU 34% utilised with `submit.gpu` 0.0 — a pure CPU
+   problem. Target 33 ms, because the 360 shipped this game at 30 fps.
+   **The headline: the texture revalidation guard read 366 GB over one session
+   (92.9 MB/frame) to catch 986 real changes out of 26.8M checks — 0.0037%.** Its
+   upper bound is knowable in ONE run, `CZ_VK_NO_TEX_REVALIDATE=1`, and that is
+   the first thing to do before any code is written.
+   The three suspects this item originally named (part 41's samplers, part 44/45's
+   mips, part 45's liveness fix) are all EXONERATED — but on the HEADLESS route,
+   which understates the operator's draw path by ~2x, so they are cleared on a
+   workload half as expensive as the real one. §6cb + addendum, §6cc.
+   The original text follows.
+
+00l-old. **PERFORMANCE REGRESSION over parts 41-45 — operator-reported, unmeasured.**
    *"The performance degraded with all the fix you did in the last few days."*
    Part 46's second item, immediately after the trees, by their own ordering.
    Suspects in order of introduction: part 41's per-fetch samplers; part 44/45's
