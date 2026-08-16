@@ -46,6 +46,26 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/part48-operator"
 mkdir -p "$OUT"
 
+# REFUSE TO START IF ANOTHER RUN IS ALIVE. This cost the operator a session: a headless
+# A/B run survived a kill because Linux truncates a process's `comm` to 15 characters, so
+# `cz_runtime_envperpacket` appears as `cz_runtime_envp` and `pgrep -x cz_runtime` — the
+# check that said "machine free" — could not match it. The operator noticed by HEARING the
+# other run's audio, which is not an instrument this project can rely on.
+#
+# Two runs sharing the CPU is not a small error here: the whole point of an operator
+# session is a real frame rate on their machine, and a contended arm reads slower for a
+# reason that has nothing to do with what it is testing. Match on a PREFIX of `comm`, and
+# on the truncation length, so no snapshot binary name can slip past.
+others=$(pgrep -a . 2>/dev/null | awk '$2 ~ /^cz_runtime/ {print $1" "$2}')
+if [ -n "$others" ]; then
+    echo "!! another cz_runtime is already running -- refusing to start, because it would"
+    echo "   contend for the CPU and every frame rate below would be wrong:"
+    echo "$others" | sed 's/^/     /'
+    echo "   kill its PROCESS GROUP (kill -9 -<pgid>), not the game: a driver script"
+    echo "   restarts the next arm the moment you kill one of its runs."
+    exit 2
+fi
+
 run() {
     local tag="$1"; shift
     mkdir -p "$OUT/$tag"
