@@ -8684,3 +8684,65 @@ question rather than dismissed** — it is the kind of small honest discrepancy 
 turns out to matter, and the thing that would settle it is the operator's own
 session, where the same route is walked twice. It is question 2 of
 `docs/part48-kickoff.md`.
+
+### THE OPERATOR'S OWN A/B — the confirmation the headless route could not give
+
+Their session, `~/DR2CZ-troubleshooting/part47-operator/`, two chained arms of ONE
+binary (`tools/part47_operator_session.sh`), their own route, the gas-station spot
+they name as the worst for frame rate. Three minutes an arm at the same place.
+
+Their words: *"performance is way better, still far from perfect"*, *"pretty much
+10 fps difference between the two"*, and — the answer to the question part 47's
+fix could have failed — *"games looks pretty much the same as last time"*, with
+**no stale texture reported**.
+
+Matched on draw count (6,500-7,600 band, 15 windows against 10):
+
+| | part 47 | pre-47 |
+|---|---|---|
+| frame | **42.8 ms — 23.4 fps** | 64.1 ms — 15.6 fps |
+| `textures` | **4.45 ms** | 25.19 ms |
+| `outside` | 16.61 | 18.24 |
+| `record` | 15.19 | 14.20 |
+| other + constants | 5.56 | 5.70 |
+
+**-21.3 ms and +7.8 fps at matched draws**, and against part 46's profile of the
+same machine (61.7 ms at 7,231 draws) the texture phase is **26.5 -> 4.45 ms**.
+Item 1.1 is confirmed on the only workload that decides.
+
+**`record` comes out 1 ms HIGHER on the part-47 arm and that is NOT established as
+a regression** — the same sign appeared headlessly (7.15 against 6.76) and the
+reader put it INSIDE a 22.8% within-arm floor. A matched draw COUNT is not a
+matched draw COMPOSITION: the operator played two three-minute stretches at one
+spot, not the same stretch twice, and `record` scales with per-draw vertex and
+stream sizes as well as with draw count. **But the vertex/index bind cache is the
+one part-47 change never isolated in an A/B of its own**, and if it is a net loss
+this is where that would show. `CZ_VK_NO_BUFFER_BIND_CACHE=1` exists precisely for
+that and the measurement is owed.
+
+### What their frame is made of NOW, and the finding that is specific to it
+
+At ~7,010 draws and 42.8 ms:
+
+| phase | ms | |
+|---|---|---|
+| **`outside`** | **16.61** | 81,533 packets/frame at **144 ns each** |
+| **`record`** | **15.19** | **2.17 µs per draw** |
+| other | 4.19 | |
+| textures | 4.45 | closed |
+| constants + readback | 2.2 | |
+
+**Their packets cost 144 ns where the headless route measures 110-113 on the SAME
+binary, and the reason is in the data: their packets carry 7.8 register dwords
+each against the headless 9.4.** Their frame submits a different packet MIX, with
+proportionally more non-register packets, so the bulk-register path of item 2.1
+buys them less than it bought the headless route and what dominates their walk is
+**per-PACKET** overhead. That makes the census counters — four atomic
+read-modify-writes per packet, ~326,000 `lock xadd`s a frame on their mix — the
+correctly aimed next item rather than a footnote (`part48-kickoff.md` 1b).
+
+**And `record` is 2.17 µs per draw against the headless route's ~1.3.** It is now
+the largest draw-path term on their frame and it is **completely uninstrumented
+inside** — exactly the state the PM4 walk was in before it got its packet census,
+and the state that made "the walk is 11 ms" support no hypothesis about what to
+change. Splitting it is the prerequisite to costing it.
