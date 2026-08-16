@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 331 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 333 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -675,7 +675,43 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-16 (part 48 CLOSED — **THE PERFORMANCE TARGET IS MET
+Where the port is, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT
+WAS THE TITLE'S OWN SETTING ALL ALONG.** The operator has played the whole map at
+`CZ_FPS_CAP=60`. **`docs/part50-kickoff.md` is the LIVE hand-off and
+`docs/perf-plan-part50.md` is the live plan**, built on that lap):
+
+* **THE WHOLE-MAP LAP IS THE HEADLINE — 16,788 frames on their machine.** 62.5 fps
+  below 3,000 draws, 43.5 at 3-5k, **35.7 at 5-7k where 60% of their play is**, and
+  only **3.6% of frames below 30 fps**. Their words: *"seems to be working pretty
+  well"*, and on the question that could have invalidated all of it, *"the game plays
+  perfectly"*.
+* **THE 30 fps WAS THE TITLE'S OWN D3D PRESENT INTERVAL**, traced end to end: config
+  `0x82A57ACC` -> `sub_823C8D20` -> `sub_827CBB00` -> `dev+13804` -> `sub_82841AD0`
+  -> `sub_82841878` -> the vblank walker. Reading it BACKWARDS is the finding — the
+  game's own "vsync 1" setting produces interval 1, so **60 fps is a configuration it
+  already ships with**, not a defeat of its pacing (which §6am forbids).
+* **THE CAP WORKS BY SHORTENING THE VBLANK PERIOD, NOT THE INTERVAL.** Presents are
+  vblank-quantised, so at 16 ms the ladder is 16/32/48 ms with NOTHING between and any
+  frame needing 17 ms falls to 31 fps. The operator found that in minutes — *"when it
+  is 60 fps the game plays perfectly"* but *"when it drops it still goes back to
+  30"*. An 8 ms period with the title's own interval of 2 gives the same ceiling and
+  half the rung.
+* **IT DOES NOT DOUBLE THE SIMULATION**: locomotion p90 **0.99x** against a registered
+  2.00x prediction, with a 31-39% null control bounding what that can rule out.
+* **TWO MORE CEILINGS APPEARED THE MOMENT THE FIRST LIFTED**, which is the transferable
+  half (gotcha 333). The host's vsync had been throttling us for 48 parts behind the
+  guest's own cap — **headless read 62.5 fps the whole time and nobody asked why
+  windowed disagreed** (332) — and the vblank ladder above.
+* **FRAME TIME IS A USABLE INSTRUMENT AGAIN, for the first time since part 30**, and
+  **the GPU is IDLE** (`submit.gpu` 0.0% median over 22 windows). Gotchas 237/238's
+  pinned share was a workaround for a ceiling that is gone.
+* **What is left, all CPU, all on their numbers**: the PM4 walk at **81,106
+  packets/frame x 100 ns = 8.1 ms** (28.7% of them type-2 filler doing NOTHING); the
+  stream guard still hashing **63-72 MB every frame** inside `rec.vertex` (part 47 made
+  that hash 4x faster and not SMALLER); and `other`'s residual at 206 ns/draw, still
+  unnamed after two splits.
+
+Where the port WAS, as of 2026-08-16 (part 48 CLOSED — **THE PERFORMANCE TARGET IS MET
 ON THE OPERATOR'S OWN MACHINE**: 33.6 ms and 29.8 fps at the spot they name as worst,
 against the 33 ms the plan set, with no staleness reported. **`docs/part49-kickoff.md`
 is the LIVE hand-off**, and its first action is a QUESTION — the standing "performance
@@ -876,8 +912,14 @@ only the live part and one part back, per the 2026-08-08 split's rule.
   position-71 three-name interleave of gotcha 221 shows on some runs and not others, and
   `CZ_PM4_TICK_MS=16 CZ_VBLANK_TICKCOUNT=1` reduces it rather than removing it (part 18
   said "restores" on the strength of one run). Quote A5.
-* **Performance: ordinary gameplay is 31 fps and CLOSED** — that is the title's own
-  two-vblank pacing and it will not go higher. **Crowds are the open item and are
+* ~~**Performance: ordinary gameplay is 31 fps and CLOSED** — that is the title's own
+  two-vblank pacing and it will not go higher.~~ **RETRACTED IN PART 49.** It was true
+  of the shipped CONFIGURATION and false of the title. The 30 fps is the title's own
+  D3D present interval, traced end to end from its config global to its swap
+  scheduler, and **a 60 fps mode is a configuration the game already ships with**
+  (`CZ_FPS_CAP=60`). The operator has played the whole map on it: 62.5 fps below 3,000
+  draws, 43.5 at 3-5k, 35.7 at 5-7k, and only 3.6% of 16,788 frames below 30 fps. The
+  rest of this bullet stands. **Crowds are the open item and are
   CPU-bound in our runtime**: 75% of a crowd frame is the renderer's draw path and the
   PM4 walk. `docs/perf-cpu-plan.md` is the plan; item 0 is closed (the headless recipe
   reaches the outdoor world at 6,400-8,700 draws a frame) and **part 20 re-measured the
