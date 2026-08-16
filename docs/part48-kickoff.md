@@ -36,11 +36,26 @@ Two things to ask them, and only two:
   route, against the plan's 8-11 ms estimate. In the 5,000-8,000 draw bin the
   frame goes 47-48 ms at 23-24% pinned → **32-33 ms at 67-94% pinned**. That arm
   is the upper bound, not a configuration — it is the defect part 38 fixed.
-* **The fix is a CADENCE change and it recovers most of that**: once per frame per
-  cache entry, **93.4% of checks skipped, 15.1x less hashing**. The redundancy
-  factor was the whole size of the item and had never been measured; a first
-  estimate off run totals said 2x and was wrong by the length of the route
-  (gotcha 323).
+* **The fix is a CADENCE change and the A/B says it recovers essentially ALL of
+  it.** Once per frame per cache entry: **93.4% of checks skipped, 15.1x less
+  hashing**, `textures` **17.18 → 2.47 ms**. Three runs an arm, both negative
+  controls reading exactly zero. **At 5,000-8,000 draws the frame goes 42-46 ms →
+  32 ms and the 16 ms-pinned share goes 5-13% → 73-85%** — the crowd frame stops
+  being CPU-bound and becomes pacing-bound, and the binary reaches an 8,000+ draw
+  band the pre-47 one never gets to, at 36-37 ms. The redundancy factor was the
+  whole size of the item and had never been measured; a first estimate off run
+  totals said 2x and was wrong by the length of the route (gotcha 323).
+* **TWO THINGS RECORDED AGAINST THAT RESULT, and the second is question 2 below.**
+  `outside` and `record` read slightly WORSE on the part-47 arm, and that
+  comparison is inadmissible rather than the result being bad: the arms do not
+  submit the same command stream and their packets-per-frame differ by **40%**, so
+  a matched DRAW band does not match a PM4 workload. Cost per packet is the
+  admissible statistic — **110-113 ns against 151-158, zero overlap over nine
+  windows an arm**. And item 1.1's registered claim (`changed` must not fall)
+  **holds on the event rate** (0.0739 vs 0.0640 per frame, ranges overlapping) and
+  is **UNRESOLVED on the distinct-address measure**, where the every-fetch arm
+  sees 157 against 141 while the part-47 runs covered more ground. The arms do not
+  visit the same places, so this route cannot settle it.
 * **The PM4 walk writes register RUNS in bulk**, and it is verified against the
   per-dword code it replaced rather than against a gate that could not see it:
   **0 mismatches over 152,020,384 dwords**, with `CZ_PM4_VERIFY_POISON=1` first to
