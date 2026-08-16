@@ -3254,3 +3254,34 @@ From phase C part 18 (the frame rate — and none of it was work):
      the surviving 16.7% effect is eight times it. **Put an arm in every campaign
      that must read zero on the statistic you care about**, and narrow the band
      until it does.
+
+332. **NOT ASKING FOR A THING IS NOT THE SAME AS ASKING FOR IT NOT TO HAPPEN — and a
+     second clock only reveals itself when it becomes the SLOWER one.** This runtime
+     created its SDL renderer without `SDL_RENDERER_PRESENTVSYNC`, with a comment
+     explaining that the guest's swap rate is the frame clock and a vsync-paced
+     present would be a second clock. It never told SDL *not* to vsync, and under a
+     compositor — Wayland here — presentation is throttled to the display refresh
+     whatever SDL was asked for. **It hid for forty-eight parts because the guest was
+     capped at 30 fps by its own present interval the whole time**, so the display's
+     clock was never the binding one. The afternoon that cap was lifted, it bound
+     immediately, and its failure mode is the sharp one: with no triple buffering a
+     frame taking just OVER the refresh period cannot present until the NEXT one, so
+     the rate snaps 60 -> 30 with nothing between. **The operator diagnosed it from the
+     shape of the number** ("pretty sure it's vsync") while the headless arm had been
+     reading 62.5 fps throughout — no window, no compositor, and nobody had asked why
+     headless and windowed disagreed. Set the negative explicitly, use the call that
+     can FAIL (`SDL_RenderSetVSync`, 2.0.18+) rather than the hint that cannot, and
+     **print what you actually got** (`SDL_GetRendererInfo`'s `PRESENTVSYNC`) rather
+     than what you requested. The general form: whenever a headless and a windowed run
+     of the same binary disagree on a rate, the window is in the path and that IS the
+     finding.
+
+333. **A CAP THAT IS NEVER REACHED IS INVISIBLE, SO RAISING ONE CAP EXPOSES EVERY
+     OTHER CEILING AT ONCE.** Lifting this title's 30 fps present interval did not just
+     raise the frame rate; it made three previously-unobservable limits observable in
+     one afternoon — the compositor's vsync (332), our own 16 ms vblank period (which
+     puts the ceiling at 62.5 fps by construction), and the present path's readback
+     cost, which went 2.7% -> 4.7% of the frame simply because it now runs twice as
+     often per second. **Expect a cap change to produce a QUEUE of newly-visible
+     limits rather than one number moving**, and price the ones you did not intend to
+     change before quoting the one you did.
