@@ -5152,7 +5152,13 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             // that reads ~11-14 MB/frame against the default's ~18, and the operator's
             // session ran the default at 35-48 MB/frame with a +22.7% mid-crowd frame
             // cost, so this is the variable to test next.
-            static const bool budgetAll = EnvOn("CZ_VK_GUARD_BUDGET");
+            // DEFAULT ON since the operator confirmed it in play ("Hud stay good and
+            // all"), which is the only test that can check it — the headless empty-card
+            // repro has no discriminating power on a fresh boot. On their session it
+            // took the promotion from 35-48 MB/frame to 30.5. CZ_VK_NO_GUARD_BUDGET=1
+            // is the same-binary control arm (the session-3 policy: every stream ever
+            // caught changing stays exact forever).
+            static const bool budgetAll = !EnvOn("CZ_VK_NO_GUARD_BUDGET");
             if (pit->second.dynamic &&
                 (!budgetAll || pit->second.needsExact ||
                  pit->second.sampledAgreed < Renderer::kSampledProof))
