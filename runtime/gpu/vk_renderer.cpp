@@ -209,6 +209,18 @@ struct ProfilePhases
     uint64_t streams = 0;     // vertex/index stream copy + dword swap
     uint64_t textures = 0;    // texture untile + upload
     uint64_t record = 0;      // the vkCmd calls of a draw
+    // ...and `record` SPLIT THREE WAYS (part 47). It is 15.2 ms of the operator's
+    // 42.8 ms frame — 2.17 microseconds per draw, against ~1.3 on the headless route —
+    // and it was completely uninstrumented inside, which is precisely the state the PM4
+    // walk was in when "the walk is 11 ms" supported no hypothesis about what to change.
+    // A number with no breakdown is not an item, it is a place to start guessing.
+    //
+    // These are EXCLUSIVE of each other and subtract from `record`, like every other
+    // scope here, so `record` keeps its meaning as the residual: the shared-constant
+    // writes, the A2M block and the draw fingerprint.
+    uint64_t recordState = 0;    // pipeline / viewport / scissor / blend / sets / push
+    uint64_t recordVertex = 0;   // the vertex-stream walk and its binds
+    uint64_t recordIndex = 0;    // the index setup, its bind, and the vkCmdDraw* itself
     uint64_t submit = 0;      // vkQueueSubmit + the fence wait (i.e. the GPU)
     // ...and that split in two, because they are different subsystems wearing one
     // number. `submitCall` is the driver translating a command buffer of ~1,900 draws
@@ -281,16 +293,23 @@ struct ProfScope
         parent = current;
         current = this;
     }
-    ~ProfScope()
+    // Stop accounting NOW rather than at the closing brace. Needed where a phase
+    // boundary does not coincide with a scope boundary — part 47 split `record` into
+    // three, and its vertex section is not braced, so bracing it would have moved a
+    // dozen locals that the index section reads. Idempotent, and the destructor becomes
+    // a no-op afterwards, so a Close() plus the normal scope exit cannot double-count.
+    void Close()
     {
-        if (!g_profileOn)
+        if (!g_profileOn || !sink)
             return;
         const uint64_t total = ProfNow() - t0;
         *sink += total - childNs;
         if (parent)
             parent->childNs += total;
         current = parent;
+        sink = nullptr;
     }
+    ~ProfScope() { Close(); }
 };
 thread_local ProfScope* ProfScope::current = nullptr;
 
@@ -7287,6 +7306,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
 
     ProfScope _pRecord(&g_prof.record);
+    {
+    ProfScope _pState(&g_prof.recordState);
     // Only what has actually changed since the last draw on this command buffer. See
     // Renderer::BoundState for why that is sound; CZ_VK_NO_STATE_CACHE=1 re-issues
     // everything every draw, which is the pre-part-18 renderer and the control arm.
@@ -7353,6 +7374,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     vkCmdPushConstants(R->cmd, R->pipeLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
                        &pushConstants);
+    }   // end recordState
 
     // CZ_VK_STATE_PROBE=1 — the distinct values of the state registers this renderer
     // ASSUMES rather than reads. Each of these is a place where a wrong assumption
@@ -7455,6 +7477,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
 
     // --- vertex streams -------------------------------------------------------------
+    ProfScope _pVertex(&g_prof.recordVertex);
     //
     // RECTANGLE LISTS GET A SYNTHESISED FOURTH CORNER. A Xenos rect list stores three
     // vertices — this title's are TL, TR, BR, measured straight off the stream:
@@ -8041,6 +8064,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
 
     // --- indices ---------------------------------------------------------------------
+    // `recordVertex` ends here by assignment rather than by scope, because the vertex
+    // section is not braced and bracing it would move a dozen locals the index section
+    // reads. Same trick, one line: hand the scope a sink it can no longer reach.
+    _pVertex.Close();
+    ProfScope _pIndex(&g_prof.recordIndex);
     if (expand != Expansion::None)
     {
         // Both expansions need the source indices, so an indexed one has to have a
@@ -10252,8 +10280,14 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // always-on censuses. `outside` is everything that is not the renderer at
             // all: the guest's simulation, the command processor, and any wait between
             // frames.
+            // `record` is now a RESIDUAL and the three sub-phases sit beside it, so
+            // the draw total has to include them or the `outside` column absorbs the
+            // difference and reads as a regression nobody made. Exactly the arithmetic
+            // that part 20 got wrong in the other direction (see ProfScope).
+            const uint64_t recordTotal = g_prof.record + g_prof.recordState +
+                                         g_prof.recordVertex + g_prof.recordIndex;
             const uint64_t drawTotal = g_prof.constants + g_prof.streams +
-                                       g_prof.textures + g_prof.record +
+                                       g_prof.textures + recordTotal +
                                        g_prof.drawOther;
             const uint64_t submitTotal =
                 g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
@@ -10266,9 +10300,30 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
                     pct(drawTotal), pct(g_prof.constants), pct(g_prof.streams),
-                    pct(g_prof.textures), pct(g_prof.record), pct(g_prof.drawOther),
+                    pct(g_prof.textures), pct(recordTotal), pct(g_prof.drawOther),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), 100.0 - pct(known));
+
+            // THE SPLIT OF `record`, which is the largest draw-path term on the
+            // operator's frame (15.2 ms, 2.17 us a draw) and had no breakdown at all.
+            // ns-per-draw as well as a share, because the share moves when any other
+            // phase does (gotcha 320) and the per-draw cost is what a change to this
+            // code path actually moves.
+            {
+                const double d = frames ? double(g_prof.draws) : 0.0;
+                fprintf(stderr,
+                        "[vkprof] record %.1f%% = state %.1f + vertex %.1f + index %.1f "
+                        "+ residual %.1f  |  per draw: %.0f ns = %.0f + %.0f + %.0f + "
+                        "%.0f\n",
+                        pct(recordTotal), pct(g_prof.recordState),
+                        pct(g_prof.recordVertex), pct(g_prof.recordIndex),
+                        pct(g_prof.record),
+                        d ? double(recordTotal) / d : 0.0,
+                        d ? double(g_prof.recordState) / d : 0.0,
+                        d ? double(g_prof.recordVertex) / d : 0.0,
+                        d ? double(g_prof.recordIndex) / d : 0.0,
+                        d ? double(g_prof.record) / d : 0.0);
+            }
 
             // Pipeline creation, broken out of `other`. Printed only when it happened,
             // because a line of zeroes every window would train the eye to skip it —
