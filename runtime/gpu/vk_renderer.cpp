@@ -681,17 +681,67 @@ uint64_t g_guardHistBytes[kGuardHistBuckets] = {};
 // saves, spent inside the check that makes the store safe. Folding a whole uint64 per
 // step keeps the mixing (xor then multiply by an odd constant is injective in the input
 // word either way) and cuts the chain to 64 steps.
+// CZ_VK_GUARD_FOLD_SERIAL=1 restores the single-accumulator fold — the same-binary
+// control arm for the part-47 widening below.
+inline bool GuardFoldSerial()
+{
+    // getenv rather than Env(): this sits above Env's definition, and moving Env up
+    // would drag the whole environment-arm block above the profiler it is used by.
+    static const bool serial = getenv("CZ_VK_GUARD_FOLD_SERIAL") != nullptr;
+    return serial;
+}
+
+// FOUR INDEPENDENT LANES, because this loop is LATENCY-bound and not bandwidth-bound.
+//
+// The single-accumulator form is `h = (h ^ v) * PRIME` per 8 bytes, and the multiply is
+// on the critical path: ~5 cycles of latency per 8 bytes is ~1.6 bytes/cycle, roughly
+// 6 GB/s, however much load bandwidth the machine has. That did not matter when this
+// was hashing a few hundred KB. It matters now: **the stream guard reads 81.65 MB in
+// one frame of the operator's session** (60.8 of it the exact-hash promotion that fixed
+// the UI text in part 46), and at ~6 GB/s that alone is most of the 15.2 ms `record`
+// phase — which the part-47 split shows is 1,327 ns per draw in its vertex section.
+//
+// Four lanes give the out-of-order engine four independent multiply chains, so the loop
+// becomes load-bound instead. **The bytes read, the coverage and therefore the detection
+// power are all unchanged** — this is the same hash over the same input, computed
+// faster. The VALUE changes, which is safe because a guard is only ever compared with
+// another guard computed by this same code in this same process; none is persisted or
+// compared with anything external.
+//
+// The tail is folded serially into lane 0 so a buffer under 32 bytes still mixes every
+// byte, and the lanes are combined with distinct rotations so that two lanes swapping
+// contents cannot cancel.
 inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
 {
+    constexpr uint64_t P = 1099511628211ull;
     size_t i = 0;
+    if (!GuardFoldSerial())
+    {
+        uint64_t h0 = h, h1 = h ^ 0x9E3779B97F4A7C15ull, h2 = h ^ 0xC2B2AE3D27D4EB4Full,
+                 h3 = h ^ 0x165667B19E3779F9ull;
+        for (; i + 32 <= n; i += 32)
+        {
+            uint64_t v0, v1, v2, v3;
+            memcpy(&v0, p + i, 8);        // unaligned-safe; each compiles to one load
+            memcpy(&v1, p + i + 8, 8);
+            memcpy(&v2, p + i + 16, 8);
+            memcpy(&v3, p + i + 24, 8);
+            h0 = (h0 ^ v0) * P;
+            h1 = (h1 ^ v1) * P;
+            h2 = (h2 ^ v2) * P;
+            h3 = (h3 ^ v3) * P;
+        }
+        h = h0 ^ ((h1 << 13) | (h1 >> 51)) ^ ((h2 << 27) | (h2 >> 37)) ^
+            ((h3 << 41) | (h3 >> 23));
+    }
     for (; i + 8 <= n; i += 8)
     {
         uint64_t v;
         memcpy(&v, p + i, 8);   // unaligned-safe and compiles to one load
-        h = (h ^ v) * 1099511628211ull;
+        h = (h ^ v) * P;
     }
     for (; i < n; ++i)
-        h = (h ^ p[i]) * 1099511628211ull;
+        h = (h ^ p[i]) * P;
     return h;
 }
 
