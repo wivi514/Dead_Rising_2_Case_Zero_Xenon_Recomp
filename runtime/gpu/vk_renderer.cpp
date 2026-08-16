@@ -1833,7 +1833,42 @@ struct Renderer
     // cross-frame store exists is either buffer — a stream served across the frame
     // boundary is registered here too, so the second and subsequent draws of that frame
     // do not even pay its guard.
-    std::unordered_map<uint64_t, StreamLoc> streamCache;
+    //
+    // STAMPED RATHER THAN CLEARED (part 48 item 2b). This map used to be `clear()`ed at
+    // the top of every frame and refilled — ~2,000-3,200 first-touch inserts a frame
+    // against ~33,000 lookups — and `std::unordered_map` is node-based, so that was an
+    // allocation per insert and a free per clear, every frame, on the draw path. The
+    // stamp makes an entry from an earlier frame a MISS that is overwritten in place, so
+    // the same map serves the same purpose with no node churn at all. It is the same
+    // pattern part 47's item 1.1 used on the texture cache's guard, one cache over.
+    //
+    // The entries then have to be reaped, or a long session grows the map without bound
+    // as guest buffers move: see kStreamCacheSweep.
+    struct StreamCacheEntry
+    {
+        StreamLoc loc;
+        uint64_t stamp = 0;   // the generation that filled it; anything older is a miss
+    };
+    std::unordered_map<uint64_t, StreamCacheEntry> streamCache;
+    // The generation, advanced by BeginFrame — NOT `frame`, which is incremented at the
+    // swap. The two differ by one for the whole of a frame's draws, and the stream
+    // census's "what did the PREVIOUS frame cache" reads the generation from before the
+    // advance, so it must be a number whose relationship to this cache's fills is exact
+    // rather than one that happens to be close. Starts at 1 so a default-constructed
+    // entry (stamp 0) can never be mistaken for a live one.
+    uint64_t streamCacheStamp = 1;
+    // How often to walk the map dropping entries no recent frame has touched. Every
+    // frame would be the per-frame walk this change exists to remove; never would let a
+    // three-minute session accumulate every stream address the guest ever used. Once
+    // every 64 frames is ~2 s of play, off the draw path, and bounds the map at the
+    // working set of the last 64 frames.
+    static constexpr uint64_t kStreamCacheSweep = 64;
+    static constexpr uint64_t kStreamCacheKeepFrames = 64;
+    // Proof the change engaged, since an arm with no counter cannot be shown to have
+    // done anything (gotcha 151). `reused` is a first touch that overwrote a stale entry
+    // instead of allocating a node — the whole of the saving — and `swept` says the
+    // reaper is keeping up.
+    uint64_t streamCacheReused = 0, streamCacheInserted = 0, streamCacheSwept = 0;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -5116,6 +5151,16 @@ void BeginFrame()
         g_prevStreamKeys.clear();
         for (const auto& kv : R->streamCache)
         {
+            // "What the PREVIOUS frame cached" — which since part 48's frame stamp is
+            // the entries carrying that frame's number, not every entry in the map. This
+            // is called at the top of a frame before `R->frame` advances, so the newest
+            // stamp in the map is the frame that just ended. Without this filter the
+            // census would count a stream last seen sixty frames ago as one the previous
+            // frame held, and `prevFrameKeyHits` — the measurement the whole cross-frame
+            // store was built on — would over-report. `streamCacheStamp` still holds the
+            // previous frame's generation here; it is advanced below.
+            if (kv.second.stamp != R->streamCacheStamp)
+                continue;
             uint64_t h = 0;
             if (g_streamCensus >= 2)
             {
@@ -5127,7 +5172,32 @@ void BeginFrame()
         }
         g_streamHashes.clear();
     }
-    R->streamCache.clear();
+    // Part 48 item 2b: the frame stamp replaces the clear. `CZ_VK_STREAM_CACHE_CLEAR=1`
+    // restores the per-frame clear and is the same-binary control arm.
+    //
+    // The sweep is what keeps the map bounded now that nothing empties it. It runs every
+    // 64 frames and drops anything no frame in the last 64 has touched — off the draw
+    // path, and 1/64th of the walk it replaces.
+    ++R->streamCacheStamp;
+    static const bool clearStreamCache = EnvOn("CZ_VK_STREAM_CACHE_CLEAR");
+    if (clearStreamCache)
+        R->streamCache.clear();
+    else if (R->streamCacheStamp % Renderer::kStreamCacheSweep == 0)
+    {
+        const uint64_t cutoff = R->streamCacheStamp > Renderer::kStreamCacheKeepFrames
+                                    ? R->streamCacheStamp - Renderer::kStreamCacheKeepFrames
+                                    : 0;
+        for (auto it = R->streamCache.begin(); it != R->streamCache.end();)
+        {
+            if (it->second.stamp < cutoff)
+            {
+                it = R->streamCache.erase(it);
+                ++R->streamCacheSwept;
+            }
+            else
+                ++it;
+        }
+    }
     // Refill the guard's probe toll. Per FRAME, so the bootstrap's cost is a constant
     // the frame budget can absorb rather than a function of how much geometry streamed
     // in this second (which is what made the unbounded version cost 66.8 MB/frame).
@@ -5347,15 +5417,18 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
     // disjoint bits instead makes the key exact rather than probably-unique.
     const uint64_t key = (uint64_t(va) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
                          (endian & 3);
+    // A hit is an entry from THIS generation. An entry from an older one is a miss whose
+    // node already exists, which is the point of the stamp: the fill below overwrites it
+    // in place rather than allocating (part 48 item 2b).
     auto it = R->streamCache.find(key);
-    if (it != R->streamCache.end())
+    if (it != R->streamCache.end() && it->second.stamp == R->streamCacheStamp)
     {
         if (g_streamCensus)
         {
             ++g_streamCensus_c.hits;
             g_streamCensus_c.bytesHit += bytes;
         }
-        return it->second;
+        return it->second.loc;
     }
 
     // Below here runs at most ONCE per (key, frame) — ~2,000 times in a crowd frame
@@ -5574,7 +5647,20 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         }
         loc = StreamLoc{ &R->arena, at };
     }
-    R->streamCache.emplace(key, loc);
+    // Overwrite a stale node in place where one exists — no allocation, no free, and no
+    // rehash. `it` is still valid: nothing between the lookup above and here inserts
+    // into or erases from this map, and the arena, the guard and the copy do not touch
+    // it at all. Only when the key has never been seen does this allocate.
+    if (it != R->streamCache.end())
+    {
+        it->second = Renderer::StreamCacheEntry{ loc, R->streamCacheStamp };
+        ++R->streamCacheReused;
+    }
+    else
+    {
+        R->streamCache.emplace(key, Renderer::StreamCacheEntry{ loc, R->streamCacheStamp });
+        ++R->streamCacheInserted;
+    }
 
     // The census, entirely on the first-touch path — which already costs a guard and
     // usually a copy, so the instrument is small against what it is measuring, and the
@@ -10722,6 +10808,26 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         (unsigned long long)(R->persist.size >> 20),
                         (unsigned long long)p.flushes);
                 R->persistStats = Renderer::PersistStats{};
+            }
+            // The per-frame stream cache's node churn (part 48 item 2b). ALWAYS printed,
+            // not behind the census, because this is the line that says the change is
+            // engaged and a counter nobody looks at by default reports a silent
+            // regression to nobody (gotcha 151). `reused` is a first touch that
+            // overwrote a stale node instead of allocating one — the whole of the
+            // saving — so a `reused` share near 100% is the change working and a share
+            // near zero would mean the guest's stream addresses churn and it is not.
+            // `entries` is the bound the sweep is there to keep.
+            {
+                const uint64_t fills = R->streamCacheReused + R->streamCacheInserted;
+                fprintf(stderr,
+                        "[vkprof] stream cache %llu fills/frame, %.1f%% reused a node "
+                        "(%llu allocated) | %zu entries, %llu swept this window\n",
+                        (unsigned long long)(frames ? fills / frames : 0),
+                        fills ? 100.0 * double(R->streamCacheReused) / double(fills) : 0.0,
+                        (unsigned long long)R->streamCacheInserted,
+                        R->streamCache.size(),
+                        (unsigned long long)R->streamCacheSwept);
+                R->streamCacheReused = R->streamCacheInserted = R->streamCacheSwept = 0;
             }
             if (g_streamCensus)
             {
