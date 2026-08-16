@@ -1350,11 +1350,20 @@ CZ_VK_NO_ALPHA_TEST=1   disable the RB_COLORCONTROL alpha test (the pre-part-38 
                    GREATER/GEQUAL, with RB_ALPHA_REF as the per-draw threshold
                    (shared constants +272). Any OTHER enabled compare func is counted
                    by name ("alpha test func X UNEMULATED") and left un-emulated.
-                   NB: the shard-tree foliage is NOT this — it never fired the RB
-                   alpha test. **Part 39 read hardware's own RB_COLORCONTROL across
+                   ~~NB: the shard-tree foliage is NOT this — it never fired the RB
+                   alpha test. Part 39 read hardware's own RB_COLORCONTROL across
                    all eight R4 traces (40,703 draws) and it enables NEITHER the alpha
-                   test NOR ALPHA-TO-MASK anywhere**, so the bit-4 suspect §6bp named
-                   is refuted and the emulation should not be built. §6bq.
+                   test NOR ALPHA-TO-MASK anywhere, so the bit-4 suspect §6bp named
+                   is refuted and the emulation should not be built. §6bq.~~
+                   **RETRACTED — that paragraph is the PART-39 measurement, taken
+                   through register 0x2205 (RB_BLENDCONTROL1), and part 40 replaced
+                   the index with 0x2202.** Re-run on the right register, hardware
+                   enables both: over all 19 round-2/3/4 traces the leaf materials
+                   carry `AA000007`, `AA00000C` and `AA00001C` — the last being
+                   GREATER + enable + **ALPHA_TO_MASK** — and `RB_ALPHA_REF = 0.0` on
+                   every leaf draw. The foliage IS an alpha-test draw, A2M IS set, and
+                   part 46 names A2M as the shard mechanism (§6ca). A zero measured on
+                   the wrong register is gotcha 3 wearing a different hat.
 ```
 
 ## Mip levels (part 39)

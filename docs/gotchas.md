@@ -3060,3 +3060,37 @@ From phase C part 18 (the frame rate — and none of it was work):
      input lists carried spurious registers whose only writer was the scalar
      pipe. Transcribe operand component semantics from the translator's own
      printer rather than re-deriving them — the two ends cannot then disagree.
+
+317. **AN UNEMULATED FEATURE'S EXCUSE HAS A DOMAIN — check the domain, not the
+     feature.** Case Zero's renderer declined to emulate ALPHA_TO_MASK with a
+     written reason: "the draws hardware sets it on also set the alpha test, so
+     the clip covers them". True in general, and false for every draw that
+     matters, because this title's foliage sets **`RB_ALPHA_REF = 0.0`** — at
+     which point the alpha test keeps everything and A2M is doing all of the
+     work alone. The material is DXT4/5 (fractional alpha), so what should have
+     been fractional coverage was written at full opacity, and a canopy of soft
+     feathered leaf cards came out as hard-edged near-black shards. When a
+     declined feature is justified by "something else covers it", write down the
+     range of inputs over which that is true and CENSUS the title against it;
+     the excuse and the counter-example lived four parts apart in the same file.
+
+318. **A SUBSET-OF-ONE-DRAW SYMPTOM ELIMINATES EVERY PER-DRAW INPUT AT ONCE,
+     AND THAT IS THE CHEAPEST CUT AVAILABLE — take it first.** Selecting the
+     defective pixels and the correct pixels separately out of one frame and
+     reading BOTH through the draw-ID map answered, in one run, that they came
+     from the same draw — which retires the constants, the bound textures, the
+     render state and the pipeline together, without measuring any of them.
+     Three parts of this port were spent measuring per-draw inputs one at a time
+     on defects that this cut would have re-scoped in an afternoon. Do the
+     both-populations attribution before the first input comparison, not after.
+
+319. **PREFER A REPRO THAT ALREADY HAS AN ORACLE IN THE REPOSITORY.** The tree
+     defect was believed to need an operator standing at a gas station. It also
+     reproduces on the TITLE SCREEN — 120 s, no input, near-static camera — and
+     that screen is one of the round-1 hardware screenshots (E3), so the arm,
+     the control and the ground truth are all self-servable. A static repro also
+     buys the thing a moving one cannot have: two runs land on the same camera,
+     so a draw-ID map from one run can be read against a picture from another.
+     Before accepting "this needs a play session", check the menus, the
+     attract loop and the title backdrop — they are usually the same renderer on
+     the same assets, and the screenshot set was captured there first.

@@ -126,6 +126,56 @@ Next, in order:
 0t. **THE SHARD TREES — foliage renders leaf cards as solid plates; the cutout never
    happens.**
 
+   **PART 46 — THE REMAINING HALF IS ALPHA-TO-MASK, AND IT IS EXACTLY EMULABLE HERE.**
+   Part 40 fixed the register index and the solid plates went away; what is left is
+   the operator's "hard black shards among correct leaves", and part 46 attributes it.
+   `docs/phase5-notes.md` §6ca. Four things changed in this item:
+   * **The repro is now the TITLE SCREEN** — the menu backdrop is this same Still Creek
+     material, reached in 120 s with `CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,NONE` and no
+     input, on a near-static camera; and **hardware's own picture of it is already in
+     the repo**, `Xenia logs/E_screenshots/E3_title_background_stillcreek.png` (content
+     box x 0..1399, y 96..880 -> resize to 1280x720 and it registers). The item no
+     longer needs an operator OR a new capture. Gotcha 319.
+   * **The draw-ID pass that part 40 asked for exists and was used.** The dark shards
+     and the correct gold leaves in one canopy come from **the SAME DRAW** (menu frame,
+     draw 2329, `vs_716ff2d14e06fa52 / ps_03533a74cbd5228c`, `cc=AA00001C`), which
+     retires every per-draw input at once — constants, textures, render state,
+     pipeline. Gotcha 318. Note this is a THIRD material: the part-46 kickoff named
+     `ps_69a5c3be9359b87c`/`ps_8602b5fd69289893` from a gameplay capture, and neither
+     is the menu tree's.
+   * **The state read is byte-equal to hardware** across all 19 round-2/3/4 traces —
+     the three leaf `RB_COLORCONTROL` values (`AA000007`, `AA00000C`, `AA00001C`),
+     their blend controls, and `RB_ALPHA_REF = 0.0` on every leaf draw. And the
+     `k_10_11_11` normal decode is right: hardware's own streams decode to unit length
+     on 512 of 512 sampled vertices, with 74.8% at N.L > 0.
+   * **The mechanism.** The canopy draws are GREATER at **ref = 0** plus ALPHA_TO_MASK
+     on a **DXT4/5** albedo, i.e. fractional alpha. At ref 0 the alpha test keeps
+     essentially everything, so A2M is doing all of the work — and we do not emulate
+     it, on a written excuse ("the draws hardware sets it on also set the alpha test,
+     so the clip covers them") that is false exactly at ref 0. Gotcha 317. The soft
+     feathered fringe the artist authored at alpha 0.05..0.5 is written at FULL
+     opacity into an opaque-blended target; hardware spreads it over the 4x MSAA
+     coverage mask and resolves it soft. The luminance distributions agree with E3
+     (p05/p95 0.291 vs 0.326), so this is a COVERAGE defect, not a brightness one.
+   * **Part 38's plan said "as a threshold/dither discard, since we have no real MSAA".
+     Better than that is available:** we rasterise 1-sample into an EDRAM image scaled
+     2x in BOTH axes for a 4x surface, so one of our pixels IS one guest sample and the
+     2x2 sample grid is `(int(iPos.x)&1, int(iPos.y)&1)`. The coverage can be
+     reproduced sample for sample, and `RB_COLORCONTROL`'s top byte `0xAA` is hardware's
+     own `alpha_to_mask_offset0..3 = 2,2,2,2` ordering.
+   **NEXT, and it is build-and-measure, not investigate:** make the alpha threshold
+   per-sample for A2M draws (an ordered 2x2 dither in place of the scalar
+   `g_AlphaThreshold`, which is a macro in XenosRecomp's `shader_common.h`, so it can
+   ship as a `CZ_DXC_DEFINES` + `CZ_SHADER_SPV` arm before it is ever a default), then
+   A/B the menu frame against E3 on a NAMED property — the canopy box's p05/p95 ratio
+   and its hard-edge count, not "does it still look wrong".
+   **Still owed, honestly:** the fix is not built or measured; and the
+   `XE_NAN_VS_KILL_IN` arm run for the denormal/NaN packed-normal suspect (10.5% of
+   hardware's leaf normals are denormal as float32, 2.5% NaN, and they are the
+   straight-up ones) left the menu tree pixel-identical WITHOUT its positive control,
+   so it has not been shown capable of firing and that suspect is neither confirmed
+   nor closed.
+
    **PART 39: THE SUSPECT IS REFUTED AND THE ITEM NOW NEEDS ONE CAPTURE, NOT AN
    INVESTIGATION.** RB_COLORCONTROL read across all eight R4 traces — **40,703 draws** —
    says hardware enables neither the alpha test (bit 3) nor **ALPHA-TO-MASK (bit 4)**

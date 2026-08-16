@@ -7893,3 +7893,182 @@ crowd's big geometry — raise the bound and measure, or make exactness a
 property of the stream KIND (the store already splits declared binding / index
 buffer / dependent fetch) rather than of its size. Measure the candidates the
 way `docs/measurement.md` says, because this one has a real cost on the frame.
+
+## 6ca. Part 46: THE TREES — a HEADLESS repro with a hardware oracle, the defect
+## attributed to a DRAW BY MEASUREMENT, and ALPHA-TO-MASK named as the mechanism
+
+Part 46's first item, set by the operator: the tree canopies render hard-edged
+near-black shards among otherwise-correct gold leaves
+(`~/DR2CZ-troubleshooting/part45-operator/capture_006615`). It pre-dates the
+part-45 liveness fix. This section records what was established, what was
+refuted, and — importantly — two things the part-46 kickoff said that turned
+out to be wrong.
+
+### The repro moved from "an operator at the gas station" to the TITLE SCREEN
+
+The defect reproduces on the **menu backdrop**, which is a near-static Still
+Creek scene reached in ~40 s with no input at all:
+
+```
+(cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 \
+   CZ_CAPTURE_KEY=<dir> CZ_FAKE_START_MS=8000 \
+   CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,NONE timeout 120 ./cz_runtime)
+```
+
+That matters for three reasons and each was a blocker before. It is **cheap**
+(120 s against 420 for the DebugJump route). It is **static**, so two arms land
+on the same camera and a `CZ_VK_DRAW_ID` map can be read against a picture from
+a different run — the outdoor route cannot do this (gotcha 254, and two spawn
+runs here came out with view directions 0.9 apart). And it has a **hardware
+oracle already in the repository**: `Xenia logs/E_screenshots/E3_title_background_stillcreek.png`
+is this exact screen. E3's content box is x 0..1399, y 96..880 — crop and
+resize to 1280x720 and it registers against our capture directly.
+
+The gameplay route still reproduces it (the DebugJump spawn tree renders almost
+entirely black), but nothing below needed it.
+
+### THE KICKOFF NAMED THE WRONG SHADER PAIR — the menu tree is a different material
+
+`docs/part46-kickoff.md` names `ps_69a5c3be9359b87c` / `ps_8602b5fd69289893` as
+"the leaf materials", from the operator's gameplay capture. On the menu tree the
+canopy is **`vs_716ff2d14e06fa52` / `ps_03533a74cbd5228c`**. Both pairs are real
+leaf materials; neither is "the" one. This is the third time in three parts that
+a shader-hash-by-appearance inference selected the wrong draw (gotchas 291, 302,
+and now this), and it is why the attribution below was done with the draw-ID
+pass instead.
+
+### The attribution, and what it eliminates
+
+`CZ_VK_DRAW_ID=1` on the menu frame, read against the same run's census, with
+the dark-shard pixels and the correct-gold pixels selected separately out of the
+canopy box (645,395)-(795,505) of the *picture* run:
+
+| pixels | top draw | share |
+|---|---|---|
+| dark shards (628 px) | draw 2329 `vs_716ff2d14e06fa52 / ps_03533a74cbd5228c cc=AA00001C` | 267 px |
+| correct gold (12,251 px) | **draw 2329, the same draw** | 2,367 px |
+
+**The shards and the leaves they sit among are the SAME DRAW.** That eliminates
+every per-draw input in one measurement: the constants, the bound textures, the
+render state and the pipeline are by construction identical for both sets of
+pixels. Whatever differs is per-vertex or per-texel.
+
+`ps_03533a74cbd5228c` narrows it further: it samples **exactly one texture** and
+its colour is a function of the interpolated normal alone (twelve constants
+`pc(68)..pc(79)` plus `pc(23)`, each dotted against the normalised interpolator
+2 — an irradiance evaluation). So the candidates are the per-vertex NORMAL and
+the per-texel texture, and nothing else.
+
+### Refuted: the render-state read, and the packed-normal decode
+
+Both were checked against hardware rather than argued.
+
+**The render state is byte-equal to hardware.** `tools/xtr_draw_bindings.py`
+over all 19 round-2/3/4 traces: for the leaf shaders hardware uses exactly the
+three `RB_COLORCONTROL` values our own census reports — `AA000007` (test off),
+`AA00000C` (GREATER + enable, alpha-blended) and `AA00001C` (GREATER + enable +
+**ALPHA_TO_MASK**, opaque) — with the same `RB_BLENDCONTROL` for each, and
+`RB_ALPHA_REF = 0.0` on **every** leaf draw in every trace. So the part-46
+kickoff's "read how `vk_renderer.cpp` treats `RB_COLORCONTROL` bit 4 before
+theorising" has been read, and the register decode is not the defect.
+
+**The `k_10_11_11` packed-normal decode is correct**, and the check is an
+invariant rather than a comparison (memory: *derive the reading from an
+invariant*). Hardware's own vertex streams for the leaf VS, read with
+`tools/xtr_draw_vertices.py`, decode through `XeUnpack_10_11_11` to **unit
+length on 512 of 512 sampled vertices** across 12 draws. A wrong field layout,
+a wrong sign convention or a wrong endian could not produce that. The same
+census also shows **74.8% of hardware's leaf normals have N·L > 0** (median
++0.365), which is what makes hardware's canopy lit at all — the shader's
+diffuse term is `max(N·L, pc(254).x)` and `pc(254).x` reads **0.0** in our
+runtime, so a back-facing card genuinely does collapse to the ambient term on
+BOTH machines.
+
+One live suspect came out of that census and is **not yet closed**: 10.5% of
+hardware's leaf packed normals are DENORMAL as float32 and 2.5% are NaN, and
+those are precisely the `(0, 0.999, 0)` straight-up normals — the brightest
+cards. We deliver that attribute as `VK_FORMAT_R32_SFLOAT` and recover the bits
+with `asuint` (vk_renderer.cpp's fmt-16 note), which is only safe if the fetch
+is a raw dword load. The `XE_NAN_VS_KILL_IN` shader arm (built with
+`CZ_DXC_DEFINES="-D XE_NAN_VS_KILL_IN=1"`, which kills any vertex whose inputs
+are NaN) left the menu tree **pixel-identical**, i.e. no NaN-class vertex is in
+that tree — so the arm neither confirmed nor refuted anything and **has not been
+shown capable of firing** (gotcha 30). Its positive control
+(`XE_NAN_VS_KILL_IN_FORCE=1`) and a run on a tree that does contain NaN-class
+normals are both still owed.
+
+### The mechanism: ALPHA-TO-MASK, on a material with FRACTIONAL alpha
+
+The canopy draws are `cc=AA00001C` — alpha test GREATER with **`RB_ALPHA_REF =
+0.0`**, plus ALPHA_TO_MASK, with blend `ONE/ZERO`. Two facts turn that into the
+symptom:
+
+1. **The leaf albedo is `fmt=20`, `k_DXT4_5`** — 8-bit interpolated alpha, not
+   punch-through. (Every `AA00001C` leaf draw in the menu frame, in the
+   operator's gameplay frame and in hardware's `w2_gasstation` binds a DXT4/5
+   at slot 0.) An artist wanting a binary cutout would ship DXT1; DXT4/5 plus
+   ALPHA_TO_MASK is a *coverage* material.
+2. **At ref = 0 the alpha test keeps essentially everything.** Our emulation is
+   `clip(oC0.w - g_AlphaThreshold)` with the threshold published as
+   `ref + 1/512` — so every texel with alpha above ~0.002 is written at FULL
+   opacity into an opaque-blended target. The soft feathered fringe of each leaf
+   card, which the artist authored at alpha 0.05..0.5, is painted solid.
+
+On hardware ALPHA_TO_MASK converts that fractional alpha into a per-sample
+coverage pattern inside the 4x MSAA surface, and the resolve averages it — which
+is exactly the soft, feathery canopy E3 shows. `vk_renderer.cpp` declines to
+emulate A2M and justifies it as "the draws hardware sets it on also set the
+alpha test, so the clip covers them". **That justification does not hold when
+the reference is zero**: with ref = 0 the alpha test is a no-op and A2M is doing
+all of the work, which is the case for every canopy draw in this title.
+
+The quantitative comparison against E3 supports "coverage, not brightness":
+over the registered canopy box, hardware and our render have nearly the same
+luminance distribution —
+
+| | p05 | p50 | p95 | p05/p95 | share < 40 |
+|---|---|---|---|---|---|
+| hardware (E3) | 58.6 | 115.2 | 179.6 | 0.326 | 0.9% |
+| ours | 55.1 | 126.5 | 189.4 | 0.291 | 0.3% |
+
+— so the canopy is not globally too dark, and the lighting inputs are not
+grossly wrong. What differs is spatial: hardware's dark foliage is soft-edged
+and blended, ours is hard-cut. That is the signature of binary coverage
+replacing fractional coverage, and it is why the operator reads it as "shards".
+
+### Why this is emulable here, exactly, and what the fix looks like
+
+We rasterise at `VK_SAMPLE_COUNT_1_BIT` into an EDRAM image that is **twice as
+wide and twice as tall** for a 4x-MSAA surface (the part-32/33 window scale,
+`vk_renderer.cpp`'s `msaa == 2` block). So one of our pixels IS one guest
+sample, and the 2x2 sample grid is `(int(iPos.x) & 1, int(iPos.y) & 1)`. A2M is
+therefore not an approximation problem here — the coverage pattern can be
+reproduced sample for sample, and `RB_COLORCONTROL`'s top byte `0xAA` is
+literally `alpha_to_mask_offset0..3 = 2,2,2,2`, hardware's own ordering.
+
+The change is to make the alpha threshold **per-sample** for A2M draws: an
+ordered 2x2 dither instead of the scalar `g_AlphaThreshold`. The emitted test
+comes from XenosRecomp (`clip(oC0.w - g_AlphaThreshold)`) and `g_AlphaThreshold`
+is a macro in its `shader_common.h`, so this can be built as a shader-cache arm
+(`CZ_DXC_DEFINES` + `CZ_SHADER_SPV`) and A/B'd on the menu frame against E3
+before anything is made default. **The property to move is named**: the
+p05/p95 ratio and the hard-edge count inside the registered canopy box, both
+against E3 — not "does it still look wrong" (memory: *name the property a fix
+should move*).
+
+**The alpha channel was already dumped, in part 40, and it is a RAMP.**
+`CZ_VK_TEX_DUMP_PS` pulled the gameplay leaf material's own textures out of a
+headless run: a 256x256 DXT5 leaf sheet, a 128x256 DXT1 bark strip and a
+256x512 DXT5 branch card, all decoding cleanly through our untiler with, in
+that session's words, "the DXT5 alpha planes are PERFECT — the leaf sheet's
+alpha is a per-leaf cutout mask" (open item 0t). That was recorded then as
+*exonerating* the texture, and it is better read now as the other half of this
+diagnosis: an authored per-leaf alpha mask in an 8-bit-alpha format is exactly
+the input ALPHA_TO_MASK exists to spread over coverage, and exactly what a
+binary clip destroys. The same dump has not been repeated for the MENU tree's
+`ps_03533a74cbd5228c`, which would cost one 120 s run
+(`CZ_VK_TEX_DUMP` + `CZ_VK_TEX_DUMP_PS=03533a74cbd5228c`); the trace tools
+cannot substitute, because none of the 19 captures carries that texture's bytes
+(`--dump-texture` returns "dumped 0 copies").
+
+**Not yet done, and honestly owed**: the fix itself is not built or measured.
