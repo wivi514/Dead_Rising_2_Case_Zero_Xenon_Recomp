@@ -4248,6 +4248,10 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         cached->second.va = va;
         cached->second.srcBytes = srcBytes;
         cached->second.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
+        // Re-stamped: this IS a validation, freshly computed. Without it a refresh under
+        // CZ_VK_TEX_REFRESH_ALL — which bypasses the guard block entirely — would leave
+        // guardFrame at an older frame and cost the next fetch a redundant hash.
+        cached->second.guardFrame = R->frame + 1;
         ++g_texGuardStats.reuploaded;
         if (pixels.size() <= R->staging.size)
         {
@@ -4296,6 +4300,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     entry.va = va;
     entry.srcBytes = srcBytes;
     entry.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
+    // ...and that guard IS this frame's validation. A texture uploaded during a frame is
+    // fetched again by later draws of the same frame, and without this stamp the very
+    // first of those re-hashes bytes that were read a few microseconds ago. Same `frame +
+    // 1` convention as the check.
+    entry.guardFrame = R->frame + 1;
     // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
     // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
     // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
