@@ -1264,6 +1264,31 @@ Next, in order:
    (gotchas 237/238). Noise floor 10-13% at one run a side; sample the GPU clock
    with `tools/gpu_clock_sample.py` rather than assuming it.
 
+00m. **DECALS — operator-reported, part 47, NOT investigated and NOT introduced by
+   the performance work.** Their words: *"still has the issue with decals that I
+   think I didn't warn you about"* — i.e. a standing defect that had never been
+   filed, reported alongside the confirmation that part 47's performance changes
+   left the picture *"pretty much the same as last time"*. **No captures yet and
+   none requested**; the operator offered and the answer was to stay on
+   performance. What is known: it pre-dates part 47, and it is theirs to
+   characterise when the performance work is done.
+   The likely handle when it is picked up: decals are a separate draw pass with
+   their own blend state, so `CZ_VK_DRAW_CENSUS` on a frame containing one plus
+   `CZ_VK_DRAW_ID` should name the draws in a single capture, and the title
+   screen / menu backdrop is worth checking first for a self-servable repro
+   (gotcha 319).
+
+00n. **A SIGN AND SOME ITEMS STILL WRONG AT DISTANCE — operator-reported, part 47.**
+   *"some sign and item that still got issue with distance but this is not
+   introduced by your performance fix."* This is the tail of item 00i's
+   flat-at-range class, most of which part 45's interpolant-liveness fix closed
+   on the operator's own A/B. **Do not read it as a regression**: they said
+   explicitly that it is not, and the part-47 arms are a same-binary control if
+   that ever needs testing. Related: the parked mip-selection overshoot, whose
+   decisive arm (`CZ_VK_NO_MIPS=1` on the FIXED shader cache) has still not been
+   re-run since part 45 — that is the first measurement to make here, not a new
+   investigation.
+
 00f. **WHITE PATCHES ON WORLD SURFACES — an operator session's evidence, and it is at
    least TWO defects.** Reported part 26 and reproducible on every run: large blown-out
    patches of ground with hard polygon edges (spawn area, gas-station forecourt), fully
