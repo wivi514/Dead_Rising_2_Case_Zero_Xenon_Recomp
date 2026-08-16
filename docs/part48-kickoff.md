@@ -1,134 +1,122 @@
-# Part 48 kickoff — the performance work needs the OPERATOR'S verdict next, and the tree fix is the picture item behind it
+# Part 48 kickoff — PERFORMANCE, still, to the operator's order; the plan is `docs/perf-plan-part48.md`
 
 Written at the close of part 47 (2026-08-16). **This is the LIVE hand-off**,
 superseding `part47-kickoff.md`.
 
 ## START HERE
 
-**Part 47 executed tiers 1 and 2 of `docs/perf-plan-part47.md` and the plan's own
-first run repriced its top item upward.** Read the plan's STATUS header, then
-`docs/phase5-notes.md` §6cd.
+**The operator's order is unchanged and explicit: *"For now performance is the
+most important."*** They have picture defects to report and said so — items 00m
+(decals) and 00n (a sign and some items wrong at distance) are filed from their
+own words, both confirmed by them as PRE-EXISTING and not caused by the
+performance work — and they explicitly deferred them. Do not start on those.
 
-**The first action of part 48 is not a measurement, it is a LAUNCH**:
-`tools/part47_operator_session.sh`. It runs two chained arms, one binary, three
-environment variables apart, with `CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS` wired
-in. Everything part 47 measured is on the headless route, **which understates the
-operator's draw path by about a factor of two**, so a headless win here is not
-conservative — the reverse of the usual order, and `docs/part47-kickoff.md`'s
-standing rule.
+**The plan is `docs/perf-plan-part48.md`.** It is built on their OWN part-47
+frame, not on the headless route. Read it, then §6cd of `docs/phase5-notes.md`.
 
-Two things to ask them, and only two:
+**Action zero, and it is a LAUNCH, not a measurement**:
+`tools/part47_operator_session.sh`. One change has landed since their last
+session and has never been measured on their machine — the guard fold's four
+lanes, which headlessly takes `record` from 1,636 to 1,198 ns/draw and on their
+81.65 MB/frame of guard hashing predicts **~6.8 ms**, i.e. 42.8 → ~36 ms. Their
+frame is the one the 33 ms target is set against.
 
-1. **Is it faster where you play?** The headless answer is that the crowd frame
-   moves onto the two-vblank floor.
-2. **Does any texture ever look STALE — a surface wearing something that belongs
-   somewhere else, or one that does not update when it should?** This is the one
-   thing part 47's item 1.1 could plausibly have broken, and it is the symptom
-   part 38 fixed: the guard now runs once per frame per cache entry instead of
-   once per fetch, so a texture the guest rewrites MID-frame is served stale for
-   the rest of that frame. `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm that undoes
-   exactly that, and it is arm B of the session driver.
+Ask them the same two questions as last time; the second still matters most:
+
+1. **Is it faster where you play?**
+2. **Does any texture or surface ever look STALE?** Part 47 changed both content
+   guards — the texture guard's cadence and the stream guard's hash — and
+   staleness is the only symptom either could produce. `CZ_VK_TEX_GUARD_EVERY_FETCH=1`
+   and `CZ_VK_GUARD_FOLD_SERIAL=1` are the arms that undo them individually.
+
+## What part 47 achieved
+
+**The headless route: the crowd frame lands on the two-vblank pacing floor.**
+Three runs an arm, one binary, both negative controls reading exactly zero:
+
+| draw bin | part 47 | pre-47 |
+|---|---|---|
+| 3,000-5,000 | **32 ms, 98% pinned** | 32-40 ms, 7-66% pinned |
+| 5,000-8,000 | **32 ms, 73-85% pinned** | 42-46 ms, 5-13% pinned |
+| 8,000+ | **36-37 ms** | never reached |
+
+**The operator's own machine, matched on draw count**: 64.1 → **42.8 ms**,
+15.6 → **23.4 fps**, `textures` 25.19 → **4.45 ms**. Their words: *"performance
+is way better, still far from perfect"*, *"pretty much 10 fps difference"*, and
+*"games looks pretty much the same as last time"* — no staleness reported.
+
+Built, each in its own commit with its own same-binary arm:
+
+| item | change | arm |
+|---|---|---|
+| 1.1 | texture content guard once per frame per cache entry | `CZ_VK_TEX_GUARD_EVERY_FETCH=1` |
+| — | the guard fold gets four lanes, 9.0 → 35.7 GB/s | `CZ_VK_GUARD_FOLD_SERIAL=1` |
+| 1.2/1.3 | 21 hot `Count`→`COUNT`; per-fetch scan behind its readers' gate | mechanical |
+| 2.1/2.2 | PM4 writes register RUNS in bulk | `CZ_PM4_NO_BULK_REGS=1` |
+| 3.1 | state cache covers vertex/index binds | `CZ_VK_NO_BUFFER_BIND_CACHE=1` |
+| — | per-fetch sampler lookup as a flat 512-entry table | provably equivalent |
+| — | `record` split into state/vertex/index/residual | an instrument |
 
 ## What part 47 settled (do not re-derive)
 
-* **The texture revalidation guard was nearly the whole texture phase.**
-  `CZ_VK_NO_TEX_REVALIDATE=1`: `textures` **15.9 ms → 2.3 ms** on the outdoor
-  route, against the plan's 8-11 ms estimate. In the 5,000-8,000 draw bin the
-  frame goes 47-48 ms at 23-24% pinned → **32-33 ms at 67-94% pinned**. That arm
-  is the upper bound, not a configuration — it is the defect part 38 fixed.
-* **The fix is a CADENCE change and the A/B says it recovers essentially ALL of
-  it.** Once per frame per cache entry: **93.4% of checks skipped, 15.1x less
-  hashing**, `textures` **17.18 → 2.47 ms**. Three runs an arm, both negative
-  controls reading exactly zero. **At 5,000-8,000 draws the frame goes 42-46 ms →
-  32 ms and the 16 ms-pinned share goes 5-13% → 73-85%** — the crowd frame stops
-  being CPU-bound and becomes pacing-bound, and the binary reaches an 8,000+ draw
-  band the pre-47 one never gets to, at 36-37 ms. The redundancy factor was the
-  whole size of the item and had never been measured; a first estimate off run
-  totals said 2x and was wrong by the length of the route (gotcha 323).
-* **TWO THINGS RECORDED AGAINST THAT RESULT, and the second is question 2 below.**
-  `outside` and `record` read slightly WORSE on the part-47 arm, and that
-  comparison is inadmissible rather than the result being bad: the arms do not
-  submit the same command stream and their packets-per-frame differ by **40%**, so
-  a matched DRAW band does not match a PM4 workload. Cost per packet is the
-  admissible statistic — **110-113 ns against 151-158, zero overlap over nine
-  windows an arm**. And item 1.1's registered claim (`changed` must not fall)
-  **holds on the event rate** (0.0739 vs 0.0640 per frame, ranges overlapping) and
-  is **UNRESOLVED on the distinct-address measure**, where the every-fetch arm
-  sees 157 against 141 while the part-47 runs covered more ground. The arms do not
-  visit the same places, so this route cannot settle it.
-* **The PM4 walk writes register RUNS in bulk**, and it is verified against the
-  per-dword code it replaced rather than against a gate that could not see it:
-  **0 mismatches over 152,020,384 dwords**, with `CZ_PM4_VERIFY_POISON=1` first to
-  show the check can fail (gotcha 322). **100.0% of dwords take the bulk path.**
-* **The state cache now covers the vertex and index binds.** Part 18 added the
-  counters and deliberately did not act on them; the rate came back 51.0% / 39.4%
-  on the operator's own session over 16.17 M draws.
-* **Item 1.4 is void as written**: the "two cache lookups per fetch" is arm-gated
-  (`CZ_VK_TEX_CACHE_FIRST`), so the default path has one.
+* **The texture revalidation guard was nearly the whole texture phase**, and the
+  fix is a CADENCE change: **93.4% of checks skipped, 15.1x less hashing**. The
+  redundancy factor was the entire size of the item and had never been measured;
+  an estimate off run totals said 2x and was wrong by the length of the route
+  (gotcha 323).
+* **`record`'s vertex section was 70% of it, and the work in it was the STREAM
+  guard, not the vertex walk** — charged there because `g_prof.streams` wraps only
+  the copy. Gotcha 238 contained this exact example nine parts before anyone acted
+  on it (gotcha 326).
+* **The guard fold was latency-bound, not bandwidth-bound.** Four accumulators,
+  4.0x, same bytes, and a single-bit sweep at 676 positions confirming 0 misses on
+  both folds — the sensitivity check is what makes a hash speedup safe (gotcha 324).
+* **THEIR WORKLOAD DIFFERS FROM OURS IN KIND**: 144 ns/packet against 110-113, and
+  **7.8 register dwords per packet against 9.4**. Item 2.1's bulk path buys them
+  less, and per-PACKET cost dominates their walk. Quote walk changes as ns per
+  packet, not as `outside` in milliseconds.
+* **Both PM4 boundary oracles are blind to anything inside `ExecutePacket`** — they
+  verify packet-length and indirect-walk arithmetic and would pass identically if a
+  rewrite there were wrong. The incumbent implementation is the oracle
+  (`CZ_PM4_VERIFY_BULK_REGS`, 0 mismatches over 152 M dwords, with a poison arm
+  first). Gotcha 322.
 * **Three ways a perf A/B on this title reads wrong**, all of which bit in one
-  afternoon: phase SHARES move when other phases do (quote milliseconds, gotcha
-  320); pooling profile windows across a route measures the route and calls it
-  noise (matched draw band, gotcha 321); and `msec` is the LAST of the eighteen
-  `.stats` columns, not the first. `tools/part47_perf_read.py` does all three
-  correctly and refuses a verdict below two runs an arm.
+  afternoon: phase SHARES move when other phases do (quote milliseconds, 320);
+  pooling profile windows across a route measures the route (matched draw band,
+  321); and `msec` is the LAST of the eighteen `.stats` columns.
+  `tools/part47_perf_read.py` does all three.
 
-## The plan
+## What is OWED, and what is unresolved
 
-0. **THE OPERATOR SESSION, first.** `tools/part47_operator_session.sh`. Nothing
-   below is worth doing before their answer, because their frame is the one the
-   target is set against.
-1. **The remaining lever inside item 1.1, if their frame is still over budget.**
-   `CZ_VK_TEX_GUARD_BYTES=N` exists and **its default is deliberately unchanged at
-   16384**. Four fifths of the guard's bytes are spent on textures whose source is
-   32 KB or larger, every one read at the 16 KB cap, so a lower bound is a large
-   further cut — but it is the one option that trades DETECTION for cost. The
-   histogram and the per-address `changed` table (which now carries each texture's
-   source size) are what price both halves; choose from those, and confirm with an
-   operator, never from the argument that a recycled address looks different in
-   its first bytes.
-1b. **THE PM4 CENSUS COUNTERS ARE FOUR `lock xadd`s PER PACKET, and the walk is
-   93,661 packets a frame.** Found while reading part 47's own result and not
-   acted on, because the A/B was running. `ExecutePacket` does
-   `g_packets.fetch_add`, `g_types[type].fetch_add`, `g_opcodes[opcode].fetch_add`
-   and `g_regWrites.fetch_add` (plus `g_draws` on draw packets) — every one an
-   atomic read-modify-write, ~20 cycles on x86 even uncontended. That is roughly
-   **375,000 atomic RMWs a frame, ~2 ms**, inside the phase part 47 just took from
-   19.0 to 12.1 ns per register dword. It is the same defect class as items 1.2
-   and 1.3, one subsystem over: instrumentation charged to the thing it measures
-   (gotcha 230).
-   **The reason they are atomic is real and must be preserved** — the walk runs on
-   the graphics pump and `[vkprof]` differences them from the renderer's thread —
-   so the fix is per-thread counters aggregated at read time, not plain `uint64_t`.
-   Predict ~2 ms of the walk and measure it with the `ns each` field on the
-   `[vkprof] pm4` line, which is already the right instrument.
-2. **Tier 3.2, multithreaded recording**, which the plan puts last on purpose: it
-   is invasive, it changes the ordering the resolve/snapshot logic relies on, and
-   it multiplies the cost of every per-draw bug. Its prerequisite is that the
-   per-draw path be free of shared mutable state, and it is *less* urgent now.
-3. **THE TREE FIX PROPER** — unchanged from `part47-kickoff.md` item 1, and still
-   the top picture item. `CZ_VK_A2M_MODE=1` ships today and is good enough that
-   this is not urgent. The renderer change is to sample-expand 2x surfaces the way
-   `msaa == 2` ones already are, then flip `XeAlphaTestThreshold`'s dither to the
-   1x2 pattern. The property is already named: canopy p05/p95 against E3's 0.326,
-   and the hard-edge share, which must come DOWN toward hardware's 0.21%.
-4. **Parked, unchanged**: the mip overshoot (re-run `CZ_VK_NO_MIPS=1` on the FIXED
-   cache before quoting part 44's result again); the 0u residues; part 41's clamp
-   modes / cyan fringes; the AO-only-up-close observation; and the part-43
-   sledgehammer FREEZE, which has not recurred in any operator session since.
+* **The operator's confirmation of the guard fold** — action zero.
+* **The vertex/index bind cache has never been A/B'd on its own**, and `record`
+  came out ~1 ms higher on the part-47 arm in BOTH the headless and the operator's
+  data. Neither is established (a matched draw COUNT is not a matched draw
+  COMPOSITION) but the sign is consistent. `CZ_VK_NO_BUFFER_BIND_CACHE=1`, three
+  runs an arm. **If it is a loss, delete it.** Plan §2d.
+* **Item 1.1's registered claim is half-answered.** `changed` per frame did not
+  fall (0.0739 vs 0.0640) but the every-fetch arm saw more DISTINCT addresses ever
+  change (157 vs 141) while the part-47 runs covered more ground. Confounded by
+  route; the operator's session is where it can be settled.
 
 ## Standing state
 
-* **Runtime defaults changed in part 47**: the texture content guard runs once per
-  frame per cache entry (`CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm); the PM4 walk
-  writes register runs in bulk (`CZ_PM4_NO_BULK_REGS=1`); the state cache covers
-  vertex and index binds (`CZ_VK_NO_BUFFER_BIND_CACHE=1`). Every other part-47
-  change is mechanical and has no arm because it has no behaviour.
-* **The A2M work is still NOT a default** — it needs
-  `CZ_SHADER_SPV=assets/shader_spv_a2m CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1`,
-  which is what `tools/part47_operator_session.sh` runs.
-* **Tooling added in part 47**: `part47_perf_ab.sh` (the arm is a parameter),
-  `part47_perf_read.py`, `part47_gates.sh` (every standing gate in one command),
-  `part47_operator_session.sh`.
-* **Gates at close**: run `tools/part47_gates.sh` — link gate, unlowered switches,
-  shader dimension census, both PM4 boundary oracles, and the E3 picture gate,
-  which reads **+0.878, LAYOUT AGREES**.
+* **Runtime defaults changed in part 47**: texture guard once per frame per entry;
+  the guard fold's four lanes; PM4 bulk register runs; the state cache covering
+  vertex and index binds. Every one has an arm, listed above.
+* **The A2M work is still NOT a default** — `CZ_SHADER_SPV=assets/shader_spv_a2m
+  CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1`, which is what the session driver runs.
+* **Tooling**: `part47_perf_ab.sh` (arm as a parameter), `part47_perf_read.py`,
+  `part47_gates.sh` (every standing gate in one command),
+  `part47_operator_session.sh` (two chained arms, instruments wired in).
+* **Artifacts**: `~/DR2CZ-troubleshooting/part47/` (its README says what `base`
+  means in each subdirectory — it is a DIFFERENT binary in `perf/` and `perf2/`)
+  and `part47-operator/` (their two-arm session, with two F9 captures at the
+  gas station).
+* **Gates at close**: `tools/part47_gates.sh` — all clean, E3 at **+0.877,
+  LAYOUT AGREES**.
+* **The picture items, parked by the operator's own instruction**: 00m decals
+  (new, never characterised), 00n a sign and some items at distance (the tail of
+  00i), the tree fix proper (`CZ_VK_A2M_MODE=1` ships and is good enough), the mip
+  overshoot, the 0u residues, part 41's clamp modes, and the part-43 freeze which
+  has not recurred in any operator session since.

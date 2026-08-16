@@ -675,10 +675,52 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE plan's tiers 1
-and 2 executed, and its top item turned out to be worth about twice its estimate.
-**`docs/part48-kickoff.md` is the LIVE hand-off; `docs/perf-plan-part47.md` is still
-the live performance plan and now carries a STATUS header.**):
+Where the port is, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE work executed
+and **CONFIRMED BY THE OPERATOR ON THEIR OWN MACHINE**: 64.1 -> 42.8 ms, 15.6 -> 23.4
+fps at matched draws, with the picture unchanged. **`docs/part48-kickoff.md` is the
+LIVE hand-off and `docs/perf-plan-part48.md` is the live performance plan**, built on
+their frame rather than on the headless route):
+
+* **THE OPERATOR'S OWN TWO-ARM A/B IS THE HEADLINE.** One binary, their route,
+  the gas-station spot they name as worst for frame rate, three minutes an arm,
+  matched on draw count: **64.1 -> 42.8 ms, 15.6 -> 23.4 fps, `textures`
+  25.19 -> 4.45 ms.** Their words: *"performance is way better, still far from
+  perfect"*, *"pretty much 10 fps difference"*, and — the question the fix could
+  have failed — *"games looks pretty much the same as last time"*, with **no
+  stale texture reported**. Headlessly the crowd frame lands on the two-vblank
+  floor: at 5,000-8,000 draws 42-46 ms -> 32 ms and the 16 ms-PINNED share
+  5-13% -> 73-85%, plus an 8,000+ draw band the old binary never reached.
+* **THE BIGGEST SINGLE ITEM WAS THE TEXTURE REVALIDATION GUARD** and the fix is a
+  CADENCE change, not a mechanism change: once per frame per cache entry instead
+  of once per texture fetch per draw. **93.4% of checks skipped, 15.1x less
+  hashing.** The redundancy factor WAS the size of the item and had never been
+  measured — an estimate off run totals said 2x (gotcha 323).
+* **THE SECOND WAS HIDING IN THE WRONG PHASE.** Splitting `record` (which had no
+  breakdown at all) showed its vertex section was 70% of it — and the work there
+  was the cross-frame store's CONTENT GUARD, **81.65 MB hashed in one frame of
+  their session**, charged to `record` because `g_prof.streams` wraps only the
+  copy. **Gotcha 238 contains that exact example and it took nine parts to act on
+  it** (gotcha 326). The fold was then found to be LATENCY-bound, not
+  bandwidth-bound: four accumulators took it **9.0 -> 35.7 GB/s**, same bytes,
+  with a single-bit sweep confirming 0 misses on both folds (gotcha 324).
+* **THEIR WORKLOAD DIFFERS FROM OURS IN KIND, not just in size**: 144 ns per PM4
+  packet against our 110-113, and **7.8 register dwords per packet against 9.4**.
+  Part 47's bulk register path buys them less than it bought us, and per-PACKET
+  cost dominates their walk — so quote walk changes as ns per packet, and rank
+  against their budget.
+* **Method, and it cost real time to learn**: a phase SHARE moves when any other
+  phase does, so quote MILLISECONDS (320); pooling profile windows across a route
+  measures the route and calls it noise (321); a gate that would pass whether or
+  not your change is correct has not tested it, and the code you replaced is
+  still compiled in and is the oracle (322); a counter nothing reads is not an
+  instrument (325).
+* **OWED into part 48**: the operator's confirmation of the guard fold (unmeasured
+  on their machine); an isolated A/B of the vertex/index bind cache, which is the
+  one part-47 change never measured alone and whose sign is consistently
+  unfavourable; and item 1.1's registered claim, half-answered.
+
+Where the port WAS, as of 2026-08-16 (part 47 mid-part — the plan's tiers 1 and 2
+executed and its top item repriced):
 
 * **THE TEXTURE REVALIDATION GUARD WAS NEARLY THE WHOLE TEXTURE PHASE, and the
   plan's own named first run proved it in one measurement.**
