@@ -1444,7 +1444,30 @@ struct Renderer
         // whole thing anyway.
         uint32_t probes = 0;
         bool dynamic = false;
+        // ...AND WHETHER IT ACTUALLY NEEDS THE EXACT GUARD, which is a different
+        // question from whether it changes.
+        //
+        // The first version promoted every stream it caught changing, and that is far
+        // too broad: a crowd's animated actor meshes are rewritten every frame, so they
+        // all promoted, and 436 streams and 35 MB/frame of exact hashing showed up in
+        // the operator's session (their frame-time A/B: +22.7% in the 4500-6000 draw
+        // bin). But those meshes never needed it — they change WHOLESALE, and the cheap
+        // sampled guard catches them perfectly well. The only streams that need an exact
+        // guard are the ones whose changes the SAMPLED guard misses, which is the UI
+        // text buffer's small edits inside a large buffer and almost nothing else.
+        //
+        // So both guards are computed for a promoted stream — the sampled one costs at
+        // most kGuardBytes on top, which is noise next to the exact hash — and the
+        // entry is demoted back to sampling once the sampled guard has proved it can see
+        // this stream's changes. `needsExact` latches the moment it is caught missing
+        // one, and never unlatches.
+        uint64_t sampledGuard = 0;
+        uint32_t sampledAgreed = 0;   // consecutive changes the sampled guard also saw
+        bool needsExact = false;      // the sampled guard has been caught missing one
     };
+    // Consecutive changes the sampled guard must catch before a stream is demoted back
+    // to it. Small: this is evidence, not a warranty, and `needsExact` is permanent.
+    static constexpr uint32_t kSampledProof = 3;
     // How many observations a new stream is hashed exactly for before it is trusted to
     // the sampled guard, and A PER-FRAME BYTE BUDGET for doing it.
     //
@@ -5103,24 +5126,74 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         bool exactHere = false;
         if (!noDynamicGuard && pit != R->persistCache.end())
         {
-            if (pit->second.dynamic)
-                exactHere = true;                    // already proved dynamic: always
+            // PROVEN need is unbudgeted; everything else shares one. The proven set is
+            // the streams the sampled guard has actually been caught missing a change on
+            // — the UI text buffers and almost nothing else — so it is small by
+            // construction and it is the whole reason this policy exists. Everything
+            // else (a stream that changes but has not yet shown that sampling misses it,
+            // and a newly-met stream still being probed) is SPECULATIVE, and speculation
+            // gets a fixed toll rather than a blank cheque. Without this the promoted set
+            // cost 35-48 MB/frame in the operator's session and 22.7% of a mid-crowd
+            // frame, because a stream that changes only occasionally accrues its proof
+            // slowly while paying the exact hash on every observation in between.
+            // THE DEFAULT IS THE POLICY THE OPERATOR CONFIRMED ("Ui stay good the whole
+            // time"), not the cheaper one below, and that is deliberate. The cost work
+            // was written after that confirmation, and the only test that can check it
+            // is another operator session — the headless empty-card repro was tried and
+            // has NO discriminating power on a fresh boot (both arms scored identically,
+            // so it says nothing either way, gotcha 30). Shipping an unverified variant
+            // over a confirmed fix to save frame time is the wrong trade to make
+            // silently, so the saving is an ARM until someone plays it.
+            //
+            // CZ_VK_GUARD_BUDGET=1 selects the cheaper policy: proven need
+            // (`needsExact`) stays unbudgeted, and everything speculative — a stream
+            // that changes but has not yet shown that sampling MISSES its changes, and a
+            // newly-met stream still being probed — shares the per-frame toll. Headless
+            // that reads ~11-14 MB/frame against the default's ~18, and the operator's
+            // session ran the default at 35-48 MB/frame with a +22.7% mid-crowd frame
+            // cost, so this is the variable to test next.
+            static const bool budgetAll = EnvOn("CZ_VK_GUARD_BUDGET");
+            if (pit->second.dynamic &&
+                (!budgetAll || pit->second.needsExact ||
+                 pit->second.sampledAgreed < Renderer::kSampledProof))
+            {
+                if (!budgetAll || pit->second.needsExact)
+                    exactHere = true;
+                else if (R->probeBudgetLeft >= bytes)
+                {
+                    exactHere = true;
+                    R->probeBudgetLeft -= bytes;
+                }
+            }
             else if (pit->second.probes < Renderer::kGuardProbes &&
                      R->probeBudgetLeft >= bytes)
             {
-                exactHere = true;                    // bootstrap, within this frame's toll
+                exactHere = true;                  // bootstrap, within this frame's toll
                 R->probeBudgetLeft -= bytes;
             }
         }
         uint64_t guardRead = 0;
         const uint64_t guard = StreamGuard(src, size_t(bytes), &guardRead, exactHere);
         R->persistStats.guardBytes += guardRead;
+        // When the exact guard is in use, take the SAMPLED one alongside it — the whole
+        // point is to find out whether sampling would have seen the same changes, and
+        // that cannot be answered without both. Bounded by kGuardBytes, so it is noise
+        // against the exact hash it rides on.
+        uint64_t sampled = 0;
+        if (exactHere && !g_guardExact)
+        {
+            size_t sr = 0;
+            sampled = StreamGuard(src, size_t(bytes), &sr, false);
+            R->persistStats.guardBytes += sr;
+        }
         if (pit != R->persistCache.end())
         {
             Renderer::PersistEntry& e = pit->second;
             e.lastFrame = R->frame;
             if (e.probes < Renderer::kGuardProbes)
                 ++e.probes;
+            if (exactHere && !g_guardExact && e.sampledGuard == 0)
+                e.sampledGuard = sampled;
             if (e.guard == guard)
             {
                 // The whole point: the bytes are already in device memory, dword-swapped,
@@ -5151,6 +5224,23 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 // Caught changing => dynamic => exact from the next frame on. Set before
                 // any of the ping-pong bookkeeping so an early exit below cannot lose it.
                 e.dynamic = true;
+                // Would the CHEAP guard have seen this change too? If yes often enough,
+                // this stream does not need the expensive one; if it is ever caught
+                // missing one, it needs it permanently. Only answerable while the exact
+                // guard is the one being used, which is exactly when `sampled` was taken.
+                if (exactHere && !g_guardExact)
+                {
+                    if (e.sampledGuard != 0 && sampled == e.sampledGuard)
+                    {
+                        // The bytes changed and the sampled guard did NOT notice. This is
+                        // the UI-text case, and it is the only one that matters.
+                        e.needsExact = true;
+                        e.sampledAgreed = 0;
+                    }
+                    else if (e.sampledAgreed < Renderer::kSampledProof)
+                        ++e.sampledAgreed;
+                }
+                e.sampledGuard = sampled;
                 bool safe = true;
                 if (R->framesInFlight > 1)
                 {
