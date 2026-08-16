@@ -1210,8 +1210,33 @@ Next, in order:
    they said "everything works fine", but took no captures and the sentence
    equally reads as "no defects other than the trees". Ask before recording.
 
-00l. **PERFORMANCE — NOW MEASURED, AND IT HAS ITS OWN PLAN:
-   `docs/perf-plan-part47.md`.** Part 46 profiled the operator's real windowed
+00l. **PERFORMANCE — MEASURED, PLANNED, AND TIERS 1+2 EXECUTED IN PART 47.**
+   **Read `docs/perf-plan-part47.md`'s STATUS header first**; the plan's budget
+   and ranking stand, its price for item 1.1 does not.
+   **The plan's own named first run settled its top item and repriced it upward.**
+   `CZ_VK_NO_TEX_REVALIDATE=1` on the outdoor route: `textures` is **15.9 ms with
+   the revalidation guard and 2.3 ms without**, against the 8-11 ms estimated —
+   the guard is nearly the whole texture phase. In the 5,000-8,000 draw bin the
+   frame goes from 47-48 ms at 23-24% pinned to **32-33 ms at 67-94% pinned**,
+   i.e. onto the two-vblank floor. That arm is not shippable (it is the defect
+   part 38 fixed); it is the upper bound, and it cost one run.
+   **The fix is a CADENCE change**: the guard runs once per frame per cache entry
+   rather than once per texture fetch per draw — **93.4% of checks skipped, 15.1x
+   less hashing**, arm `CZ_VK_TEX_GUARD_EVERY_FETCH=1`. Landed with it: the
+   texture path's counters (`Count`→`COUNT`), the per-fetch linear scan behind its
+   readers' gate, bulk register runs in the PM4 walk (verified against the code
+   they replace — 0 mismatches over 152 M dwords, 100.0% bulk), the state cache
+   extended to the vertex and index binds (51%/39% repeat rate), and the per-fetch
+   sampler lookup as a flat table.
+   **What remains**: tier 3.2 (multithreaded recording, deliberately last), and
+   the one lever inside 1.1 that trades detection for cost —
+   `CZ_VK_TEX_GUARD_BYTES=N` exists with its default UNCHANGED and the histogram
+   that prices it prints with the stats. **AND THE OPERATOR'S OWN CONFIRMATION IS
+   OWED**: `tools/part47_operator_session.sh` is the two-arm driver, because the
+   headless route understates their draw path by ~2x.
+   The part-46 text follows.
+
+00l-part46. **PERFORMANCE — the part-46 measurement that produced the plan:** Part 46 profiled the operator's real windowed
    frame for the first time: **61.7 ms at 7,231 draws**, textures 26.5 ms, PM4
    walk 14.2, record 10.9, GPU 34% utilised with `submit.gpu` 0.0 — a pure CPU
    problem. Target 33 ms, because the 360 shipped this game at 30 fps.
