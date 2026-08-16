@@ -5730,9 +5730,20 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
 // cross-frame store exists a stream can live in two buffers, and offset 0 of one is a
 // different bind from offset 0 of the other. CZ_VK_NO_STATE_CACHE=1 disables this with
 // the other five, so one arm remains the whole pre-cache renderer.
+// CZ_VK_NO_BUFFER_BIND_CACHE=1 is the ISOLATED control arm for this change, and it has
+// to exist separately from CZ_VK_NO_STATE_CACHE: that one also undoes part 18's five
+// binds, so an A/B on it would measure both parts at once and could attribute neither.
+// Every item gets an arm that turns off exactly itself.
+bool NoBufferBindCache()
+{
+    static const bool off =
+        Env("CZ_VK_NO_BUFFER_BIND_CACHE") || Env("CZ_VK_NO_STATE_CACHE");
+    return off;
+}
+
 void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offset)
 {
-    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
+    const bool noStateCache = NoBufferBindCache();
     ++R->skips.vertexBinds;
     // Above the tracked range the bind is always issued — untracked, never assumed
     // unchanged. 16 is above the highest binding this title has ever used.
@@ -5756,7 +5767,7 @@ void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offs
 
 void BindIndexBufferCached(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
 {
-    static const bool noStateCache = Env("CZ_VK_NO_STATE_CACHE") != nullptr;
+    const bool noStateCache = NoBufferBindCache();
     ++R->skips.indexBinds;
     if (!noStateCache && R->bound.haveIndex && R->bound.indexOffset == offset &&
         R->bound.indexType == type && R->bound.indexBuffer == buffer)

@@ -1205,6 +1205,12 @@ CZ_VK_NO_STATE_CACHE=1  re-issue every draw's pipeline, viewport, scissor, blend
                    frame. Sound for the same reason the other five are: both are
                    command-buffer state, this renderer starts one command buffer a frame,
                    and `R->bound` is reset there and nowhere else
+CZ_VK_NO_BUFFER_BIND_CACHE=1  the ISOLATED arm for just that part-47 extension, and it
+                   exists separately because CZ_VK_NO_STATE_CACHE also undoes part 18's
+                   five binds — an A/B on that one would measure both parts at once and
+                   could attribute neither. Every item gets an arm that turns off exactly
+                   itself. The skip percentages on the `binds skipped by the state cache`
+                   line must read 0.0% under it, which is the negative control
 CZ_VK_NO_TEX_SWIZZLE=1  ignore the fetch constant's component swizzle, i.e. the
                    pre-fix behaviour where a single-channel font atlas samples alpha
                    as a constant 1.0 and all text renders as SOLID BLOCKS

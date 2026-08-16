@@ -8455,3 +8455,54 @@ Their frame, on this build: 14.2-18.9 fps at 5,394-7,148 draws, draw path
 — `textures` still is — but it is a real addition to a frame that is already
 over budget, and shipping it without pricing it on their machine would be
 exactly the trade this project keeps refusing to make blind.
+
+## 6cd. Part 47: PERFORMANCE — the texture revalidation guard was almost the whole
+## texture phase, and its upper bound is far above what the plan estimated
+
+Part 47's subject was set by the operator: performance, "as close as you could
+run it on an Xbox 360". The plan is `docs/perf-plan-part47.md`, written against
+their own profiled frame — **61.7 ms at 7,231 draws, target 33 ms** — and its
+first instruction was one run, because item 1.1's upper bound is knowable in one:
+
+> "Item 1.1's upper bound is knowable in one run (`CZ_VK_NO_TEX_REVALIDATE=1`),
+> and that is the first thing to do — if it does not move the frame by ~10 ms,
+> this entire plan's top item is wrong and the ranking should be rebuilt."
+
+### The measurement: `CZ_VK_NO_TEX_REVALIDATE=1` on the outdoor route
+
+Two runs an arm, alternated, `tools/part47_perf_ab.sh`, the unattended DebugJump
+route with the title's own AI driving. Read as CZ_VK_PROFILE **phase shares**
+rather than frame time, per the plan's §6, because this title paces to a
+two-vblank floor that absorbs a saving the phase share still records.
+
+| | draws/frame | frame | `textures` | frames in 600 s |
+|---|---|---|---|---|
+| default (guard on) | 4,155-4,626 | 36.7-38.6 ms | **39.4-40.8%** | 15,599 |
+| `CZ_VK_NO_TEX_REVALIDATE=1` | 5,402-6,375 | 32.1-32.8 ms | **7.8-8.3%** | 18,225 |
+
+**The guard is nearly the whole texture phase**, and the arm without it renders
+MORE draws in LESS time — 16.8% more frames over the same wall clock. On the
+operator's frame, where `textures` is 42.9% of 61.7 ms, the same proportion puts
+the guard at roughly **21 ms of their 61.7**, against the plan's estimate of
+8-11. The plan's ranking is right and its top item is worth about twice what it
+was priced at.
+
+That arm is NOT a shippable configuration — it is the defect part 38 fixed (a
+streaming-recycled address serving its first occupant forever; the tanker wearing
+a brick wall). It is an upper bound, and its whole value is that it is one run.
+
+### What the guard was actually doing
+
+From the same session's own census: **97,041,062 cache hits checked over 15,599
+frames — 6,221 a frame — reading 1,376,540 MB, i.e. 88.2 MB a frame, to catch
+575 real changes.** The operator's session reads 92.9 MB/frame to catch 986 in
+26.8 M (0.0037%). `UploadTexture` runs once per texture fetch per draw, so a
+texture that many draws of one frame share was re-hashed once for each of them.
+
+Two properties of that population decide the fix, and both are printed:
+
+* the addresses that DO change are **tiny** — 8x8 to 64x16, formats 18 and 20 —
+  while the bytes are spent on large surfaces, every one of them capped at the
+  16 KB the guard borrowed from the STREAM guard without anyone choosing it;
+* a change is a *recycled address* — an entirely different texture written over
+  the old one — not a subtle edit, which is what the stream guard hunts.
