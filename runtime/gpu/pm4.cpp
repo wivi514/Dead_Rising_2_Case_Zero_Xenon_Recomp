@@ -900,6 +900,10 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 // are incremented once per RUN, not per dword, so a relaxed add costs nothing measurable.
 std::atomic<uint64_t> g_regRunBulk{ 0 };   // dwords taken by the bulk copy
 std::atomic<uint64_t> g_regRunSlow{ 0 };   // ...and by the per-dword fallback
+// Dwords the bulk path got WRONG, as judged by the per-dword path it replaced. Only
+// counted under CZ_PM4_VERIFY_BULK_REGS; it must be 0, and the check must be shown able
+// to report a positive before a 0 from it means anything (gotcha 30).
+std::atomic<uint64_t> g_regRunMismatch{ 0 };
 const bool g_noBulkRegs = getenv("CZ_PM4_NO_BULK_REGS") != nullptr;
 
 // Does any register in [index, index+count) have a side effect on write? Two windows:
@@ -935,6 +939,52 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
     }
     g_regRunBulk.fetch_add(count, std::memory_order_relaxed);
     fetch.Read(srcPos, count, g_regs + index);
+
+    // CZ_PM4_VERIFY_BULK_REGS=1 — CHECK THE NEW PATH AGAINST THE OLD ONE, which is
+    // still right here.
+    //
+    // The two PM4 boundary oracles cannot see this change: they verify the packet-LENGTH
+    // and indirect-walk arithmetic, and this touches neither. A picture correlation
+    // cannot see it either — a wrong constant produces a plausible wrong picture, which
+    // is the failure mode this project has spent whole sessions on. But the thing being
+    // replaced is still compiled in, and `Source::operator()` has been the definition of
+    // "read a dword of the packet stream" for 47 parts, so it is an oracle that is not
+    // our new code (the rule this project keeps: two of your own components agreeing is a
+    // consistency check unless one of them is the incumbent).
+    //
+    // What can actually differ is exactly one thing: `Source::Read` hoists the wrap test
+    // and the modulo out of the loop and reads the linear case with an unaligned memcpy.
+    // So compare every dword. It is far too slow to leave on — that is the point of the
+    // flag — and it must be run on a route that reaches gameplay, because the ring path
+    // (wrapDwords != 0) and the indirect path are different branches.
+    // CZ_PM4_VERIFY_POISON=1 is the POSITIVE CONTROL, and it is not decoration: a check
+    // that has never been shown capable of failing proves nothing by passing (gotcha 30,
+    // and gotcha 234 for the time this project shipped a comparison that could only ever
+    // read 100%). It corrupts one dword in every 4,096 bulk-written runs, so the verifier
+    // must report mismatches and the picture must visibly break. Run the pair.
+    static const bool verifyPoison = getenv("CZ_PM4_VERIFY_POISON") != nullptr;
+    if (verifyPoison && count && (g_regRunBulk.load() & 0xFFFu) == 0)
+        g_regs[index] ^= 0x40000000u;
+
+    static const bool verify = getenv("CZ_PM4_VERIFY_BULK_REGS") != nullptr;
+    if (verify)
+    {
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const uint32_t want = fetch(srcPos + i);
+            if (g_regs[index + i] != want)
+            {
+                g_regRunMismatch.fetch_add(1, std::memory_order_relaxed);
+                if (g_regRunMismatch.load() <= 16)
+                    fprintf(stderr,
+                            "[pm4] BULK REGISTER MISMATCH at reg %04X (+%u of %u): bulk "
+                            "wrote %08X, the per-dword path reads %08X  [src=%s]\n",
+                            index + i, i, count, g_regs[index + i], want,
+                            g_constWatchSource);
+                g_regs[index + i] = want;   // repair, so one bug is not a cascade
+            }
+        }
+    }
 }
 
 bool EvalWaitCondition(uint32_t func, uint32_t value, uint32_t mask, uint32_t ref)
@@ -1965,6 +2015,7 @@ uint64_t Pm4_RegisterWriteCount() { return g_regWrites.load(); }
 // §2.1); a fallback share near 100% would mean it is worth nothing.
 uint64_t Pm4_RegRunBulkDwords() { return g_regRunBulk.load(); }
 uint64_t Pm4_RegRunSlowDwords() { return g_regRunSlow.load(); }
+uint64_t Pm4_RegRunMismatches() { return g_regRunMismatch.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
 uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
 uint64_t Pm4_DrawCount() { return g_draws.load(); }

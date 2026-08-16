@@ -8506,3 +8506,46 @@ Two properties of that population decide the fix, and both are printed:
   16 KB the guard borrowed from the STREAM guard without anyone choosing it;
 * a change is a *recycled address* — an entirely different texture written over
   the old one — not a subtle edit, which is what the stream guard hunts.
+
+### A caveat on this A/B's own conditions
+
+`base_2` ran with light single-threaded background work on the same machine
+(two analysis scripts, `nice -n 19`, on a 16-core box while the runtime uses
+three threads). `base_1` and both `norevalidate` runs were clean. The effect
+being measured is a **five-fold** difference in the `textures` phase share, which
+is two orders of magnitude outside anything that could explain, so the conclusion
+does not depend on it — but a run's conditions are part of its record and this
+project has been bitten by unrecorded ones before (gotchas 50/51/86). Quote
+`base_1` where a single clean baseline is wanted.
+
+### The four changes part 47 made, and what each one is
+
+Each has its own same-binary control arm, and each is a separate commit, because
+an item without an arm cannot be shown to have engaged (gotcha 151) and items
+bundled together cannot be attributed.
+
+| item | change | arm |
+|---|---|---|
+| 1.1 | the content guard runs **once per frame per cache entry**, not once per fetch | `CZ_VK_TEX_GUARD_EVERY_FETCH=1` |
+| 1.2/1.3 | `Count`→`COUNT` on 21 hot sites; the per-fetch linear scan behind its readers' gate | none — mechanical, and the counters must read identically |
+| 2.1/2.2 | the PM4 walk writes register RUNS in bulk, asking the scratch and const-watch range questions once per run | `CZ_PM4_NO_BULK_REGS=1` |
+| 3.1 | the state cache covers the **vertex and index bindings** | `CZ_VK_NO_BUFFER_BIND_CACHE=1` |
+
+Plus one that is too small to have an arm and is provably equivalent: the
+per-fetch sampler lookup is a flat 512-entry table rather than a `std::map` over
+a nine-bit key.
+
+**Item 1.1 is a cadence change, not a mechanism change**, and that is what makes
+it safe to reason about: what it costs is at most one frame of staleness for a
+texture the guest rewrites mid-frame, against a picture that only updates once a
+frame anyway. The falsifiable claim registered with it is that **`changed` does
+not fall between the arms** — a real change is still there at the next frame's
+first fetch — and the `texture guard cadence:` line reports both the skipped
+share and the fetch-to-texture redundancy factor, which nothing in this runtime
+had ever measured.
+
+**Item 3.1 was measured before it was written**, which is what part 18 asked for:
+it added the repeat counters and deliberately did not act on them, because a low
+repeat rate kills the idea for free. The rate came back **51.0% vertex and 39.4%
+index over 16.17 M draws** on the operator's session (55.1% / 43.3% headless),
+i.e. ~11,900 and ~2,700 `vkCmd` calls a frame that need not happen.

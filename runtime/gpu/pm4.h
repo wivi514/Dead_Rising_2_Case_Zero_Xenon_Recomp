@@ -186,6 +186,9 @@ uint64_t Pm4_RegisterWriteCount();
 // the same-binary control arm.
 uint64_t Pm4_RegRunBulkDwords();
 uint64_t Pm4_RegRunSlowDwords();
+// Dwords the bulk path wrote that the per-dword path disagrees with, under
+// CZ_PM4_VERIFY_BULK_REGS=1. Must be 0.
+uint64_t Pm4_RegRunMismatches();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F
 uint64_t Pm4_DrawCount();

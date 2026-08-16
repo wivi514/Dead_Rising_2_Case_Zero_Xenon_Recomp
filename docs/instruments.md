@@ -1595,3 +1595,19 @@ with `CZ_VK_ANISO=0` / `CZ_VK_NO_FETCH_SAMPLERS=1` to attribute octaves to
 sampler terms, and with `CZ_VK_NO_MIPS=1` as the whole-feature arm.
 Diagnostic arm only — the picture is deliberately wrong everywhere a chain
 exists.
+CZ_PM4_VERIFY_BULK_REGS=1  check part 47's bulk register path against the per-dword path
+                   it replaced, dword by dword, and count the disagreements. Neither PM4
+                   boundary oracle can see that change — they verify packet-LENGTH and
+                   indirect-walk arithmetic and it touches neither — and a picture
+                   correlation cannot either, because a wrong constant produces a
+                   plausible wrong picture. But the code being replaced is still compiled
+                   in and `Source::operator()` has been the definition of "read a dword
+                   of the packet stream" for 47 parts, so it is an oracle that is not the
+                   new code. Far too slow to leave on. **Measured: 0 mismatches over
+                   152,020,384 register dwords, 100.0% of them taking the bulk path**
+CZ_PM4_VERIFY_POISON=1  the POSITIVE CONTROL for that verifier: corrupt one dword in every
+                   4,096 bulk-written runs. A check never shown capable of failing proves
+                   nothing by passing (gotcha 30; gotcha 234 is the time this project
+                   shipped a comparison that could only ever read 100%). Measured: the
+                   verifier reports the corruption immediately, naming the register, the
+                   position in the run and the packet source

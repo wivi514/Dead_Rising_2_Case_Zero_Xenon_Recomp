@@ -47,7 +47,12 @@ fi
 # +0.687 -> +0.710, so it is demonstrably able to fail.
 note "picture gate: title backdrop vs capture E3 (120 s run)"
 CAP=$(mktemp -d "${TMPDIR:-/tmp}/cz-part47-gate.XXXXXX")
-( cd runtime/build && CZ_NO_WINDOW=1 CZ_VKDRAW=1 "CZ_CAPTURE_KEY=$CAP" \
+# `env`, not assignment prefixes. A QUOTED word like "CZ_CAPTURE_KEY=$CAP" is not
+# recognised as an assignment prefix -- quoting removes that -- so bash parses it as the
+# COMMAND and everything after it as arguments. The part-46 A/B script carries the same
+# note because six of its runs died that way in under a second, and this script repeated
+# the mistake on its first outing: "CZ_CAPTURE_KEY=/tmp/...: No such file or directory".
+( cd runtime/build && env CZ_NO_WINDOW=1 CZ_VKDRAW=1 "CZ_CAPTURE_KEY=$CAP" \
     CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=NONE,NONE,NONE,F9,NONE \
     timeout 150 ./cz_runtime > "$CAP/run.log" 2>&1 )
 # A shader the cache lacks is ONE log line and a silent counter, so it is checked here

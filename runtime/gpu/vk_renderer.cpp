@@ -10356,6 +10356,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     dPackets ? double(dRegWrites) / double(dPackets) : 0.0,
                     (dBulk + dSlow) ? 100.0 * double(dBulk) / double(dBulk + dSlow)
                                     : 0.0);
+            // Under CZ_PM4_VERIFY_BULK_REGS this must stay at zero. Printed only when
+            // the verifier is on OR it is non-zero, so an ordinary run is not given a
+            // line saying "0 mismatches" for a check it never ran -- which would be a
+            // clean result from a test that could not have failed.
+            if (const uint64_t mm = Pm4_RegRunMismatches())
+                fprintf(stderr,
+                        "[vkprof] pm4 BULK REGISTER MISMATCHES: %llu — the bulk path and "
+                        "the per-dword path DISAGREE; this is a defect\n",
+                        (unsigned long long)mm);
             lastPump = p;
 
             // The stream cache, when asked for. Printed inside the profile window so the
