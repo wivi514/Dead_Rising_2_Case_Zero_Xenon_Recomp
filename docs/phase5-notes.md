@@ -8549,3 +8549,57 @@ it added the repeat counters and deliberately did not act on them, because a low
 repeat rate kills the idea for free. The rate came back **51.0% vertex and 39.4%
 index over 16.17 M draws** on the operator's session (55.1% / 43.3% headless),
 i.e. ~11,900 and ~2,700 `vkCmd` calls a frame that need not happen.
+
+### What the fixes measured, on their own instruments
+
+**The guard cadence — the number that decided item 1.1's size, and nothing in this
+runtime had ever measured it:**
+
+```
+texture guard cadence: 49,017,332 of 52,499,796 checks skipped because the entry
+                       was ALREADY validated this frame (93.4%, i.e. 15.1x less hashing)
+```
+
+**15.1x**, not the 2x a first estimate off the session totals suggested — that
+estimate divided per-frame fetches by addresses seen over a whole RUN, which is
+the population error gotcha 242 names. Per frame the distinct-descriptor count is
+far smaller than the run's, so the redundancy is large. The guard's remaining cost
+is 6.6% of what it was, which puts `textures` at roughly the no-revalidate arm's
+2.3 ms plus 0.9 — i.e. this recovers nearly all of the 13.6 ms upper bound while
+keeping the mechanism.
+
+**The bulk register path, verified against the code it replaced** (see
+`CZ_PM4_VERIFY_BULK_REGS`, with `CZ_PM4_VERIFY_POISON` as its positive control):
+**0 mismatches over 152,020,384 register dwords**, and **100.0% of dwords take the
+bulk path** — the per-dword fallback for runs touching the scratch mirror or the
+const-watch window never fires on this title, because its constant banks live at
+0x2000 and above while the scratch registers are at 0x0578. ns-per-packet reads
+93-97 against the 154 ns baseline *with the verifier still on*.
+
+**The bind cache** reports `vertex 55,686,751 of 104,798,941 repeat the previous
+offset (53.1%), index 11,935,810 of 29,871,146 (40.0%)` — the operator's 51.0% /
+39.4%, reproduced.
+
+**The sampler flat table's registered prediction held exactly**: the four
+`[vk] sampler #N:` lines are identical in number, order and content to the
+previous build's, which is what says a `std::map` over a nine-bit key and a
+512-entry array are the same function.
+
+### The one lever left in item 1.1, now priced rather than argued
+
+The guard's bytes, by SOURCE size, over that run (reads are already capped at the
+16 KB bound, so the MB column is true cost and not a size sum):
+
+```
+8K=6,896/26.9MB(0%)   16K=1,106,624/8,645.5MB(19%)   32K=475,001/7,421.9MB(16%)
+64K=542,464/8,476.0MB(19%)   128K=357,371/5,583.9MB(12%)  256K=735,508/11,492.3MB(25%)
+512K=181,147/2,830.4MB(6%)   1024K=60,997/953.1MB(2%)     2048K=16,456/257.1MB(1%)
+```
+
+Four fifths of the bytes are spent on textures whose source is 32 KB or larger,
+every one of them read at the 16 KB cap. `CZ_VK_TEX_GUARD_BYTES=N` exists now and
+**its default is unchanged at 16384**, because lowering it is the one option in
+§1.1 that trades detection for cost and it needs its own measurement and an
+operator's eyes. What the histogram makes possible is choosing it from data: the
+per-address `changed` table now carries each texture's source size, so "what would
+this bound stop being able to see" is a column and not an argument.
