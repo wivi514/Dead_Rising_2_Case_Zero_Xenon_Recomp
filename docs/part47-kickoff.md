@@ -1,11 +1,60 @@
-# Part 47 kickoff — finish the tree fix (the mechanism is proven, the renderer change is named), then whatever part 46's performance A/B left open
+# Part 47 kickoff — PERFORMANCE FIRST, to the operator's own order; the picture items are diagnosed and parked behind it
 
-Written at the end of part 46 (2026-08-15). **This is the LIVE hand-off**,
-superseding `part46-kickoff.md`. Read `docs/phase5-notes.md` §6ca **and its
-addendum** before anything else; open item 0t carries the same material in
-backlog form.
+Written at the close of part 46 (2026-08-16). **This is the LIVE hand-off**,
+superseding `part46-kickoff.md`.
+
+## START HERE
+
+**The operator set part 47's subject before going to sleep: performance, "as
+close as you could run it on an Xbox 360".** The plan for it is
+**`docs/perf-plan-part47.md`** and it is written against their OWN profiled
+frame, not a headless route. Read it before this document's picture items.
+
+**The very first action, and it is one 600 s run**: `CZ_VK_NO_TEX_REVALIDATE=1`
+on the outdoor route with `CZ_VK_PROFILE`. That arm already exists and it puts an
+upper bound on the plan's largest item — the texture revalidation guard, which
+read **366 GB over one operator session (92.9 MB/frame) to catch 986 real changes
+out of 26.8M checks, 0.0037%**. If it does not move the frame by ~10 ms the
+plan's top item is wrong and the ranking should be rebuilt before any code is
+written.
+
+The budget it is working against, from
+`~/DR2CZ-troubleshooting/part46-operator4/budget.log` at 7,231 draws:
+
+| phase | ms of 61.7 |
+|---|---|
+| textures | 26.5 |
+| outside (PM4 walk 14.2) | 17.6 |
+| record | 10.9 |
+| other / constants / readback | 6.6 |
+
+GPU 34% utilised, `submit.gpu` 0.0 — **a pure CPU problem**. Target 33 ms.
+
+**Two standing rules that part 46 paid for:**
+* **Wire `CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS` into every operator launch.**
+  Part 46's first session shipped without them and their "around 20 fps" had no
+  measurement behind it at all.
+* **The headless route understates the operator's draw path by ~2x** (28.7 ms at
+  5,241 draws vs their 53.9 at 5,080). A headless win is not conservative here;
+  confirm it on their configuration.
 
 ## What part 46 settled (do not re-derive)
+
+* **THE UI TEXT / HUD DEFECT IS FIXED AND OPERATOR-CONFIRMED** (open items
+  00c/00k). Exactness is EARNED per stream — a stream the cross-frame store
+  catches CHANGING is hashed exactly, one the cheap sampled guard is proved able
+  to see is demoted back. `CZ_VK_GUARD_BUDGET` is the default,
+  `CZ_VK_NO_GUARD_BUDGET=1` the control arm, and the operator ran both: fix good
+  throughout, control broke. **"Raise the bound" is REFUTED** — 256 KB still
+  dropped the HUD, so the buffer is above 256 KB where exactness costs 121+
+  MB/frame. It still costs ~30 MB/frame and that is folded into the performance
+  plan, not treated as done. §6cc addendum.
+* **THE TREE SETTING TO SHIP IS `CZ_VK_A2M_MODE=1`** (with
+  `CZ_VK_A2M_ANY_SURFACE=1` and the `assets/shader_spv_a2m` cache). The
+  operator's near-matched A/B: isolated-pixel share **0.71% (mode 1) vs 4.17%
+  (mode 2, the faithful dither)**, hardware 0.00%. Mode 2 screen-doors and mode 1
+  does not; neither is hardware-exact, because that needs the renderer change in
+  item 1 below.
 
 * **THE TREE SHARDS ARE MISSING ALPHA-TO-MASK COVERAGE. Demonstrated, not
   argued.** The canopy draws are alpha test GREATER at `RB_ALPHA_REF = 0.0`
@@ -36,9 +85,20 @@ backlog form.
   DRAW, which retired every per-draw input in one measurement (gotcha 318).
   Do that before comparing inputs, not after.
 
-## The plan
+## The plan — performance first, then the picture items
 
-1. **BUILD THE FIX. It is a renderer change; the shader half is already done
+0. **PERFORMANCE: `docs/perf-plan-part47.md`, tiers 1 and 2 first.** They are
+   ~21 ms with no architectural change and each item is individually verifiable:
+   the texture revalidation budget, the `Count`→`COUNT` conversion on the texture
+   path (~9,300 slow `std::map<std::string>` calls a frame), the linear
+   `std::find` scans per fetch, and bulk register writes in the PM4 walk (797,624
+   dwords a frame at 17.8 ns each where the store is one cycle). Tier 3
+   (multithreaded recording) is last on purpose. **Run the PM4 oracles and the
+   picture gates after every one of these** — several touch code the picture
+   depends on.
+
+1. **THE TREE FIX PROPER, when performance is done.** Mode 1 ships today and is
+   good enough that this is no longer urgent. **BUILD THE FIX. It is a renderer change; the shader half is already done
    and controlled.** Give the coverage somewhere to be resolved, one of:
    * **(recommended) sample-expand 2x surfaces the way `msaa == 2` ones already
      are.** Xenos 2x is a vertical sample pair, so a Y-expanded image plus a
@@ -52,7 +112,7 @@ backlog form.
    hardware's 0.21% — the pixel-granularity arm pushed it UP to 4.92%, and that
    is the number that says whether the expansion worked.
    `CZ_VK_A2M_ANY_SURFACE=1` stays a diagnostic; it is not the fix.
-2. **Then take it to the operator's own trees.** The menu tree is
+2. **Then take the tree fix to the operator's own trees.** The menu tree is
    `ps_03533a74cbd5228c`; the gameplay canopies the operator photographed are
    `ps_69a5c3be9359b87c` / `ps_8602b5fd69289893`. All are A2M at ref 0, so the
    fix should carry — but **only 26 of the 78 leaf draws in the operator's frame
@@ -63,59 +123,35 @@ backlog form.
    with the test on; the solid trunk/branch/LOD geometry is DXT1 with it off, on
    hardware too. Expect about a third of the leaf draws to move, and do not read
    the other two thirds staying put as a partial fix.
-3. **PERFORMANCE — READ `docs/perf-plan-part47.md`. It is the live plan and it is
-   written against the operator's OWN profiled frame**, which part 46's last
-   session finally captured: 61.7 ms at 7,231 draws, textures 26.5 ms, PM4 walk
-   14.2 ms, record 10.9 ms, GPU 34% utilised and `submit.gpu` 0.0 — a pure CPU
-   problem. **Start with item 1.1's upper bound, which is one run**:
-   `CZ_VK_NO_TEX_REVALIDATE=1`. The texture revalidation guard read 366 GB over
-   their session (92.9 MB/frame) to catch 986 real changes. If that arm does not
-   move the frame by ~10 ms the plan's top item is wrong and the ranking should
-   be rebuilt before any code is written.
-   The three suspects below are exonerated but only on the HEADLESS route
-   (§6cb + addendum), which understates the operator's draw path by ~2x.
-   Part 45's liveness fix: six alternated 600 s runs, three an arm, one variable
-   — **every draw bin inside its own noise floor**, and the two bins off the
-   pacing floor disagree in sign. Part 41's per-fetch samplers and part 44/45's
-   mip chain/tail: one run each on the `textures` phase share — **44.6 / 46.0 /
-   44.2 against a baseline of 45.4**, all unmoved, every arm shown to have
-   engaged by the counter the others carry.
-   **Do not run a fourth arm here.** Four unmoved results in a row are a fact
-   about the framing: this headless route does not reproduce what the operator
-   reports. What is needed is a run on THEIR configuration — windowed, their
-   route, `CZ_VK_PROFILE` + `CZ_VK_FRAME_STATS` — and, if you can get it, the
-   same on a binary from before part 41, which is the only way to test "the last
-   few days" as a whole rather than one change at a time.
-   **What the profiler did say, and it is worth someone's time regardless:**
-   `textures` is **43-45% of the draw path**, ~29-30% of the frame, on every arm.
-   It is structural rather than recent. Whether that is a real cost worth
-   attacking or just a share that was always this high is open — §6cb's
-   comparison against part 20's 13.6% is explicitly the weak half of that
-   argument (different route era, binary and session; gotcha 13).
-4. **The UI text layer (open items 00c/00k) is FIXED and operator-confirmed** —
-   "Ui stay good the whole time", then "Hud stay good and all" on the cheaper
-   variant, against a control arm (`CZ_VK_NO_DYNAMIC_GUARD=1`) that broke.
-   Exactness is now EARNED per stream rather than bought by size: a stream the
-   store catches changing is hashed exactly, and one the sampled guard is proved
-   able to see is demoted back. `CZ_VK_GUARD_BUDGET` is the default;
-   `CZ_VK_NO_GUARD_BUDGET=1` is the control. §6cc addendum.
-   **What is still owed**: it costs 30.5 MB/frame on their session and their own
-   A/B priced the earlier version at +22.7% in the 4500-6000 draw bin. It is
-   item 1.1's sibling and the same budgeting idea applies — fold it into the
-   performance plan rather than treating it as done.
+3. **Parked, unchanged from part 46's kickoff**: the mip overshoot (re-run
+   `CZ_VK_NO_MIPS=1` on the FIXED cache before quoting part 44's result again);
+   the 0u residues; part 41's clamp modes / cyan fringes; the AO-only-up-close
+   observation; and the part-43 sledgehammer FREEZE, which has not recurred in
+   any of part 46's five operator sessions with `CZ_WAIT_TRACE=1` armed.
 
 ## Standing state
 
-* Caches: `assets/shader_spv` (435, default, unchanged this part),
-  `assets/shader_spv_pre45` (the part-45 control arm). Part 46 built three more
-  under `/tmp` — rebuild them, they are on a tmpfs:
-  `CZ_DXC_DEFINES="-D XE_ALPHA_TO_MASK=1"` for the arm, no defines for the null.
-* Artifacts: `~/DR2CZ-troubleshooting/part46/` — `menu_a` (default), `menu_id`
-  (draw-ID map + census), `menu_null`, `menu_a2m` (gated off), `menu_a2m_any`
-  (the arm), `menu_nankill`, `tree_a`/`tree_id` (the gameplay spawn), and
-  `perf/` (the A/B's stats and logs).
-* Tools added: `tools/part46_perf_ab.sh` (the alternating A/B driver),
-  `tools/part46_perf_read.py` (medians + pinned share + within-arm noise floor).
-* XenosRecomp carries two new local changes, both no-ops without the define:
-  `XeAlphaTestThreshold()` in `shader_common.h` and the emitter calling it.
-  Record them in `docs/xenonrecomp-upstream-bugs.md` if they are kept.
+* **Runtime defaults changed in part 46**: `CZ_VK_GUARD_BUDGET` on (the UI fix;
+  `CZ_VK_NO_GUARD_BUDGET=1` is the control arm). The A2M work is NOT a default —
+  it needs `CZ_SHADER_SPV=assets/shader_spv_a2m CZ_VK_A2M_ANY_SURFACE=1
+  CZ_VK_A2M_MODE=1`, which is what the operator sessions ran.
+* **Caches**: `assets/shader_spv` (435, the default bank),
+  `assets/shader_spv_pre45` (the part-45 control arm), `assets/shader_spv_a2m`
+  (built with `CZ_DXC_DEFINES="-D XE_ALPHA_TO_MASK=1"` — rebuild it after any
+  XenosRecomp change).
+* **XenosRecomp carries a local change**, committed there as `e0c086f`:
+  `XeAlphaTestThreshold()` in `shader_common.h` and the emitter calling it. It is
+  a proven no-op without the define — the whole 434-shader bank was rebuilt from
+  the new emitter and the canopy crop came out byte-identical. Recorded in
+  `docs/xenonrecomp-upstream-bugs.md`.
+* **Session drivers** (chained arms, quit one to start the next):
+  `tools/part46_operator_session{,2,3,4}.sh`. Copy the newest for part 47 and
+  keep `CZ_VK_PROFILE` + `CZ_VK_FRAME_STATS` in it.
+* **A/B tooling**: `tools/part46_perf_ab.sh` (three runs an arm, alternated) and
+  `tools/part46_perf_read.py` (per-bin medians, pinned share, within-arm noise
+  floor; it refuses a verdict below two runs an arm).
+* **Artifacts**: `~/DR2CZ-troubleshooting/part46/` (headless menu arms, draw-ID
+  map, the perf A/B) and `part46-operator{,2,3,4}/` (four operator sessions —
+  `operator4/budget.log` is the profiled frame the performance plan is built on).
+* **Gates all clean at close**: `--smoke` 0, `find_unlowered_switches.py` 0
+  defects, `shader_dim_census.py` agrees on every shader, working tree committed.
