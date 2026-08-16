@@ -248,6 +248,13 @@ struct ProfilePhases
                                 // miss, the creation `pipelineNs` reports separately)
     uint64_t otherFetch = 0;    // the texture/sampler fetch-constant walk and its binds,
                                 // minus `textures` (UploadTexture has its own scope)
+    // ...and the RESIDUAL split again, because the first split said the residual was the
+    // largest part of `other` (45%, 329 ns/draw) and a residual names nothing. Gotcha
+    // 327: splitting a phase has now found three items in two parts and reading the code
+    // has found none, so the answer to "what is in the residual" is another split.
+    uint64_t otherShader = 0;   // the two shader-hash lookups and the draw's early guards
+    uint64_t otherBegin = 0;    // BeginFrame + BeginRendering + the three arena allocs
+    uint64_t otherTail = 0;     // bool/loop constants, the viewport decode, the censuses
     uint64_t draws = 0;       // how many draws those numbers are spread over
     // Pipeline creation, which lives INSIDE `drawOther` and is the only thing in there
     // that costs milliseconds. Separated because a first-visit stutter and a per-draw
@@ -6067,6 +6074,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // the phases, computed at print time; it is not measured separately, because a sum
     // and a second measurement of the same interval can only ever disagree.
     ProfScope _pDraw(&g_prof.drawOther);
+    // The shader lookups and the early guards, closed by hand at the key build.
+    ProfScope _pShader(&g_prof.otherShader);
     if (!vsBind.hash || !psBind.hash)
     {
         Count("draw: no shader bound");
@@ -6138,6 +6147,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         Count("draw: zero indices");
         return;
     }
+
+    _pShader.Close();
 
     // The register decode and the key build (part 48 tier 3). Closed by hand just before
     // GetPipeline rather than braced, because the key and half a dozen decoded registers
@@ -6360,6 +6371,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (pipeline == VK_NULL_HANDLE)
         return; // GetPipeline has already counted and named the reason
 
+    // BeginFrame/BeginRendering and the three arena allocations. Both Begins are
+    // first-draw-of-the-frame work amortised over every draw, which is exactly why they
+    // need their own number: an amortised cost divided by 6,000 draws looks like nothing
+    // and is not, if what it does is per-frame heavy.
+    ProfScope _pBegin(&g_prof.otherBegin);
     BeginFrame();
     BeginRendering();
 
@@ -6376,6 +6392,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         return;
 
     uint8_t* shared = R->arena.mapped + sharedAt;
+    _pBegin.Close();
     {
         ProfScope _p(&g_prof.constants);
         g_prof.draws++;
@@ -7194,6 +7211,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     _pFetch.Close();
 
+    // Everything from here to the command recording: the bool and loop constant files,
+    // the viewport decode and the always-on censuses. Closed by `record`'s scope opening.
+    ProfScope _pTail(&g_prof.otherTail);
+
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)
         reinterpret_cast<uint32_t*>(shared + kSharedBoolFile)[i] =
@@ -7493,6 +7514,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             fprintf(stderr, "%s\n", line);
         }
     }
+
+    _pTail.Close();
 
     ProfScope _pRecord(&g_prof.record);
     {
@@ -10477,7 +10500,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                          g_prof.recordVertex + g_prof.recordIndex;
             // `other` is now a residual in exactly the same way, for the same reason.
             const uint64_t otherTotal = g_prof.drawOther + g_prof.otherKey +
-                                        g_prof.otherPipeline + g_prof.otherFetch;
+                                        g_prof.otherPipeline + g_prof.otherFetch +
+                                        g_prof.otherShader + g_prof.otherBegin +
+                                        g_prof.otherTail;
             const uint64_t drawTotal = g_prof.constants + g_prof.streams +
                                        g_prof.textures + recordTotal + otherTotal;
             const uint64_t submitTotal =
@@ -10520,17 +10545,18 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // number a change to this code path moves and it is comparable between
                 // their frame and ours where a share is not.
                 fprintf(stderr,
-                        "[vkprof] other %.1f%% = key %.1f + pipeline %.1f + fetch %.1f "
-                        "+ residual %.1f  |  per draw: %.0f ns = %.0f + %.0f + %.0f + "
-                        "%.0f\n",
-                        pct(otherTotal), pct(g_prof.otherKey),
-                        pct(g_prof.otherPipeline), pct(g_prof.otherFetch),
-                        pct(g_prof.drawOther),
+                        "[vkprof] other %.0f ns/draw = shader %.0f + key %.0f + pipeline "
+                        "%.0f + begin %.0f + fetch %.0f + tail %.0f + residual %.0f "
+                        "(%.1f%% of frame)\n",
                         d ? double(otherTotal) / d : 0.0,
+                        d ? double(g_prof.otherShader) / d : 0.0,
                         d ? double(g_prof.otherKey) / d : 0.0,
                         d ? double(g_prof.otherPipeline) / d : 0.0,
+                        d ? double(g_prof.otherBegin) / d : 0.0,
                         d ? double(g_prof.otherFetch) / d : 0.0,
-                        d ? double(g_prof.drawOther) / d : 0.0);
+                        d ? double(g_prof.otherTail) / d : 0.0,
+                        d ? double(g_prof.drawOther) / d : 0.0,
+                        pct(otherTotal));
             }
 
             // Pipeline creation, broken out of `other`. Printed only when it happened,
