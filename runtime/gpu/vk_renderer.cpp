@@ -1664,7 +1664,22 @@ struct Renderer
     // the set-3 heap. Index 0 stays the plain trilinear REPEAT sampler, which is
     // both the fallback and the pre-part-41 behaviour. Samplers live for the
     // process, like every other sampler here.
-    std::map<uint32_t, uint32_t> samplerBySpec;
+    //
+    // A FLAT ARRAY, not a std::map, as of part 47: the key is nine bits — dword3 bits
+    // 19..27 — so its whole domain is 512 entries, and this is looked up once per
+    // texture fetch per draw, ~6,800 times a frame. A red-black tree over a 512-value
+    // domain is a tree walk to answer a question an index answers, and the `textures`
+    // phase it sits in is 42.9% of the operator's frame. -1 is "no sampler for this spec
+    // yet", because 0 is a REAL answer (the plain trilinear REPEAT sampler is both the
+    // fallback and the pre-part-41 behaviour), which is exactly the kind of thing a
+    // zero-initialised table gets wrong.
+    // The initialiser is an immediately-invoked lambda rather than a fill in
+    // VkRenderer_Init on purpose: a table whose "empty" value is not zero and whose
+    // filling lives somewhere else is a bug waiting for the day someone adds a second
+    // construction site. This one cannot be constructed uninitialised.
+    static constexpr uint32_t kSamplerSpecs = 512;
+    std::vector<int32_t> samplerBySpec =
+        std::vector<int32_t>(kSamplerSpecs, -1);
     uint32_t samplerCount = 1;
     Image dummy2D, dummy3D, dummyCube, dummy1D;
 
@@ -5808,9 +5823,8 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
         return 0;
     const uint32_t d3 = regs[xenos::kFetchConstantBase + constIdx * 6 + 3];
     const uint32_t key = (d3 >> 19) & 0x1FF;          // mag:2 min:2 mip:2 aniso:3
-    auto it = R->samplerBySpec.find(key);
-    if (it != R->samplerBySpec.end())
-        return it->second;
+    if (R->samplerBySpec[key] >= 0)
+        return uint32_t(R->samplerBySpec[key]);
     if (R->samplerCount >= g_maxDescriptors)
     {
         Count("sampler: set-3 heap FULL — fetch served the default");
@@ -5860,7 +5874,7 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
     w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     w.pImageInfo = &ii;
     vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
-    R->samplerBySpec[key] = idx;
+    R->samplerBySpec[key] = int32_t(idx);
     // One line per DISTINCT spec for the process — a handful, and each is the
     // engagement evidence the census can be checked against.
     fprintf(stderr, "[vk] sampler #%u: mag=%u min=%u mip=%u anisoField=%u -> "
