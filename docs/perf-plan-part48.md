@@ -9,16 +9,22 @@ Target, unchanged: **the Xbox 360 shipped this game at 30 fps, i.e. a 33 ms fram
 
 ---
 
-## STATUS, written during part 48 — read this before the plan below
+## STATUS at the CLOSE of part 48 — **THE TARGET IS MET**; read this before the plan below
+
+**The operator's own frame at the spot they name as worst is 33.6 ms and 29.8 fps at
+~7,000 draws**, against 42.8 ms and 23.4 fps in part 47. The target this document
+opens with — "the Xbox 360 shipped this game at 30 fps, i.e. a 33 ms frame" — is met.
+`docs/phase5-notes.md` §6ce addendum is the measurement.
 
 | item | state |
 |---|---|
-| 1a print the opcode census | **BUILT.** And it found two things nobody predicted — see below |
-| 1b per-thread census counters | **BUILT and verified** (0 of 135 counters disagree, poison arm reports 1). A/B running |
-| 2b stream cache without the churn | **BUILT.** 97.7% of fills reuse a node; allocations 1,161,050 → 25,668 per window. A/B running |
-| 2d isolate the bind cache | A/B running, in the same campaign |
+| **0 the operator's confirmation of the fold** | **CONFIRMED, to within 0.1 ms of the prediction: 6.9 ms measured against ~6.8 predicted.** It halves `rec.vertex` (776 → 1,547 ns/draw when undone), 61x the measured floor |
+| 1a print the opcode census | **BUILT.** Found two things nobody predicted — see below |
+| 1b per-thread census counters | **BUILT and verified** (0 of 135 counters disagree; the poison arm reports 1). **Measured at only ~3 ns/packet against a predicted 20-40** — real, consistent in 3/3 runs, and an order of magnitude smaller than the plan priced it |
+| — the PM4 walk's `getenv` | **NOT IN THIS PLAN AT ALL, and it is the part's second-biggest win: 4.5 ms on the operator's frame**, 136 → 95 ns/packet. `ExecutePacket` called `getenv` once per type-3 packet, ~29,000 times a frame. Found by applying gotcha 329 — written the same afternoon, for the renderer — to `pm4.cpp` |
+| 2b stream cache without the churn | **BUILT, MEASURED A LOSS, REVERTED** (d8068d7). Its own counter was perfect (97.7% node reuse, 45x fewer allocations) and the phase got 8.5% slower, because the map grew 1,900 → 7,000 entries and 22,000 lookups a frame paid for 1,800 cheaper inserts. Gotcha 330 |
+| 2d isolate the bind cache | **NOT ESTABLISHED EITHER WAY, and specifically NOT the loss part 47 feared**: +0.8% on `record` against a ±2% floor, inconsistent across runs. Keep it; the headless route cannot separate it |
 | §5 split `other` | **BUILT — and it REFUTED this document's own prediction. §5 below is wrong; see the correction** |
-| 0 the operator's confirmation of the fold | **STILL OWED.** They were not free; `tools/part48_operator_session.sh` is written and the gates are clean against the binary |
 
 **§1a found two things this plan did not know**, both from counters that already
 existed: **`SET_BIN_MASK_LO` is the most frequent packet in the entire stream** — a
