@@ -8113,6 +8113,16 @@ as the renderer stands, and `CZ_VK_A2M_ANY_SURFACE=1` was added as a diagnostic
 that drops the gate — knowingly dithering at PIXEL granularity, which is a worse
 picture but a decisive question.
 
+**AND HARDWARE AGREES THAT IT IS 2x.** A number that redirects a fix should not
+rest on our own decoder (an untrusted path is not an oracle), so
+`tools/xtr_draw_bindings.py` now carries `RB_SURFACE_INFO` (0x2000) into its CSV
+as well. Over `w1_spawn`: **msaa = 1 on every leaf draw of both leaf shaders —
+all four `RB_COLORCONTROL` flavours — and on every one of the 240 A2M draws in
+the trace, with none at 1x or 4x.** So the title genuinely renders this pass into
+a 2x surface and our read is right. (Our own runs also show 140,715-187,621
+draws taking the 4x window scale in the same frame, so both surfaces exist in one
+frame; which pass is which is not chased here.)
+
 **The result, at the menu frame, canopy box (645,395)-(795,505), against E3:**
 
 | arm | p05 | p50 | p95 | **p05/p95** | hard-edge share |

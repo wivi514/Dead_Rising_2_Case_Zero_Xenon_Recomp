@@ -347,9 +347,16 @@ def main():
             # alpha-to-mask offset signature in its top byte, and the R4 traces enable
             # the alpha test on hundreds of draws per frame — the foliage cutout part 38
             # went looking for. See kRbColorControl in runtime/gpu/xenos.h.
+            # RB_SURFACE_INFO (0x2000) too, because part 46 redirected a fix on the
+            # strength of its msaa field: our runtime reads 2x at the foliage draws,
+            # and "2x" is what decides whether ALPHA-TO-MASK can be emulated per
+            # sample. A number that steers a fix should be checkable against hardware
+            # rather than trusted from our own decoder (an untrusted path is not an
+            # oracle). pitch:14, msaa:2 @16.
             draws.append((len(draws), idx_count, names, tex, prim,
                           regs.get(0x2202, 0), regs.get(0x210E, 0),
-                          regs.get(0x2201, 0), regs.get(0x2200, 0)))
+                          regs.get(0x2201, 0), regs.get(0x2200, 0),
+                          regs.get(0x2000, 0)))
             if want:
                 for t in tex:
                     if t['addr'] == want:
@@ -405,7 +412,7 @@ def main():
                       'cannot supply it: a surface the GPU produces inside the traced '
                       'frame is never snapshotted again. ***')
     shown = 0
-    for i, n, names, tex, prim, cc, aref, bl, dc in sorted(draws, key=lambda d: -d[1]):
+    for i, n, names, tex, prim, cc, aref, bl, dc, si in sorted(draws, key=lambda d: -d[1]):
         if n < args.min_verts or shown >= 12:
             continue
         shown += 1
@@ -424,14 +431,14 @@ def main():
         with open(args.csv, 'w') as f:
             f.write('draw,verts,vs,ps,slot,addr,w,h,fmt,dim,depth,'
                     'mipMin,mipMax,mipAddr,packedMips,colorControl,alphaRef,'
-                    'blendControl0,depthControl\n')
-            for i, n, names, tex, prim, cc, aref, bl, dc in draws:
+                    'blendControl0,depthControl,surfaceInfo\n')
+            for i, n, names, tex, prim, cc, aref, bl, dc, si in draws:
                 for t in tex:
-                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d,%s,%d,%s,%s,%08X,%s,%08X,%08X,%08X,%08X\n'
+                    f.write('%d,%d,%s,%s,%d,%08X,%d,%d,%d,%s,%d,%s,%s,%08X,%s,%08X,%08X,%08X,%08X,%08X\n'
                             % (i, n, names.get('vs', ''), names.get('ps', ''),
                                t['slot'], t['addr'], t['w'], t['h'], t['fmt'],
                                t['dim'], t['depth'], t['mipMin'], t['mipMax'],
-                               t['mipAddr'] or 0, t['packedMips'], cc, aref, bl, dc))
+                               t['mipAddr'] or 0, t['packedMips'], cc, aref, bl, dc, si))
         print('wrote %s' % args.csv)
     # The staleness gate exits non-zero AFTER the rest of the output, so a caller who
     # wanted the census as well still gets it. A warning buried in a long listing is a

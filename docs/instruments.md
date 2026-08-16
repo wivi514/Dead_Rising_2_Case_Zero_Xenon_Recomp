@@ -1366,6 +1366,37 @@ CZ_VK_NO_ALPHA_TEST=1   disable the RB_COLORCONTROL alpha test (the pre-part-38 
                    the wrong register is gotcha 3 wearing a different hat.
 ```
 
+## Alpha-to-mask coverage (part 46)
+
+```
+XE_ALPHA_TO_MASK   a SHADER-CACHE arm, not an environment variable — build a second
+                   cache with `CZ_DXC_DEFINES="-D XE_ALPHA_TO_MASK=1"` and select it
+                   with CZ_SHADER_SPV. XenosRecomp's shader_common.h defines
+                   `XeAlphaTestThreshold(pos)`, which the emitter now calls in place of
+                   the scalar `g_AlphaThreshold`; with the define it returns
+                   `max(threshold, (bayer2x2 + 0.5)/4)` indexed by `uint2(pos) & 1`,
+                   i.e. Xenos ALPHA-TO-MASK coverage evaluated per SAMPLE.
+                   Without the define it returns `g_AlphaThreshold`, so a cache built
+                   from the new emitter is the NULL CONTROL and it is byte-identical:
+                   canopy md5 f4a1a593a15b3e27b40d59136aadf622 for the default cache,
+                   the null cache and the gated-off arm alike (§6ca addendum).
+CZ_VK_A2M_ANY_SURFACE=1   DIAGNOSTIC ONLY. The runtime publishes its A2M flag
+                   (shared+284) only for a 4x guest surface, because only there does
+                   our window scale make one of OUR pixels one of hardware's SAMPLES.
+                   This title's foliage is drawn into a **2x** surface — the counter
+                   `draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=N — dither declined`
+                   reads msaa=1 on 69,390 draws, msaa=0 on 518 and 4x on NONE — so the
+                   gate declines everything and the arm would be silently inert. This
+                   variable drops the gate, knowingly dithering at PIXEL granularity.
+                   It is how §6ca's mechanism was demonstrated (canopy p05/p95
+                   0.291 -> 0.324 against hardware's 0.326, hard plates gone), and it
+                   is NOT a candidate default: hard-edge share goes 3.13% -> 4.92%
+                   against hardware's 0.21%, which is the stipple you get from
+                   dithering with no sample grid underneath.
+                   Engagement counter: `draw: ALPHA-TO-MASK on a 4x surface —
+                   per-sample dither published`.
+```
+
 ## Mip levels (part 39)
 
 ```
