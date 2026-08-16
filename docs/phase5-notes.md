@@ -8243,3 +8243,50 @@ The frame-time A/B above needed three runs an arm and still landed inside its
 floor in every bin; the profiler's phase share is an internal attribution rather
 than a paced quantity, so it separates arms that the frame time cannot — which
 is the whole lesson of gotchas 237/238 applied one level further in.
+
+### §6cb addendum — AND THE OTHER TWO SUSPECTS ARE EXONERATED TOO, on the phase share
+
+The section above named `textures` as where the frame goes and pointed at the two
+suspects living in that path. Both were then run, plus the third mip arm, one
+600 s outdoor run each against the three-run baseline, read on the `textures`
+share rather than on frame time:
+
+| arm | ms/frame | draws | draw% | **textures (% of draw path)** |
+|---|---|---|---|---|
+| baseline (3 runs) | 42.9 | 5,241 | 66.9% | **45.4** |
+| `CZ_VK_NO_FETCH_SAMPLERS=1` (part-40 renderer) | 43.5 | 4,773 | 66.2% | **44.6** |
+| `CZ_VK_NO_MIPS=1` (part-38 renderer) | 46.9 | 5,718 | 67.8% | **46.0** |
+| `CZ_VK_NO_MIP_TAIL=1` (part-40 renderer) | 44.6 | 5,626 | 66.6% | **44.2** |
+
+**Every arm engaged, and each is shown so by the counter the others carry**
+(gotcha 151): the baseline uploads 2,513 mip chains and 6,452 packed-tail levels
+and creates 4 distinct samplers; `NO_FETCH_SAMPLERS` creates **0** samplers while
+still uploading 2,450 chains and 6,274 tails; `NO_MIPS` emits **no** chain or
+tail lines while still creating 4 samplers; `NO_MIP_TAIL` uploads 2,178 chains
+and **no** tails. So these are real semantic differences, not inert flags.
+
+**And none of them moves `textures` — 44.2 to 46.0 against a baseline of 45.4.**
+So all three suspects the part-46 kickoff named are exonerated: part 45's
+liveness fix by the six-run A/B above, and part 41's per-fetch samplers and part
+44/45's mip uploads by this table.
+
+**Read four "unmoved" results in a row as a fact about the framing, not as four
+eliminations** (that is the standing lesson from part 33's instrument-class
+wall). What this table actually establishes is that **the `textures` share is
+STRUCTURAL rather than recent** — it is not something the last few days
+introduced. Which in turn means the part-20 comparison in §6cb is the weak half
+of that argument and should be treated as such: a share measured on a different
+route era, binary and session is exactly the number gotcha 13 says has a shelf
+life, and the honest reading now is that 13.6% and 45% may simply not be
+comparable quantities.
+
+**What is NOT concluded here.** "No regression exists" is not what this measures.
+The operator plays windowed on a real display, on their own route, with audio and
+a swapchain this headless route does not exercise; the standing rule in this
+project is that an operator report outranks a headless number. What is measured
+is narrower and still useful: **on the outdoor DebugJump route, none of the three
+changes named as suspects produces a frame-time or phase-share regression, and
+three of them cannot be the cause.** The next move is to measure on the
+operator's own configuration — a windowed run with `CZ_VK_PROFILE` and
+`CZ_VK_FRAME_STATS` on their route, and ideally the same on a binary from before
+part 41 — rather than to run a fourth arm here.
