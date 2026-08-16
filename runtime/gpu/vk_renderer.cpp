@@ -655,10 +655,21 @@ inline uint64_t GuardFold(uint64_t h, const uint8_t* p, size_t n)
 // crowd frame — establish the picture first, then decide what it is worth.
 bool g_guardExact = false;
 
-uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
+// Streams promoted to an exact guard because they were caught changing, and what that
+// promotion costs — both reported, because an adaptive policy nobody can price is how
+// "raise the bound" stayed unactionable for two parts.
+uint64_t g_guardDynamic = 0;
+uint64_t g_guardDynamicBytes = 0;
+
+uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool forceExact)
 {
-    if (g_guardExact)
+    if (g_guardExact || forceExact)
     {
+        if (forceExact && !g_guardExact)
+        {
+            ++g_guardDynamic;
+            g_guardDynamicBytes += bytes;
+        }
         if (readOut)
             *readOut += bytes;
         return GuardFold((1469598103934665603ull ^ bytes) * 1099511628211ull, p, bytes);
@@ -1400,8 +1411,54 @@ struct Renderer
         uint64_t guard = 0;      // StreamGuard over the guest bytes when it was copied
         uint64_t lastFrame = 0;  // for the age report; not an eviction policy yet
         uint32_t bytes = 0;
+        // THIS STREAM HAS BEEN SEEN TO CHANGE, so from now on its guard is EXACT.
+        //
+        // Part 46, open items 00c/00k. The guard is exact up to a byte bound and sampled
+        // above it, and the UI text layer — one big vertex buffer the guest sub-allocates
+        // every run of glyphs out of — sits above any affordable bound: raising it to
+        // 256 KB left the operator's HUD still dropping out, while part 45's unlimited
+        // arm fixed it, which places the buffer above 256 KB. Buying exactness by SIZE
+        // therefore costs 121 MB/frame at 256 KB and more above it, to protect a handful
+        // of buffers.
+        //
+        // Size is the wrong discriminator. The distinction that matters is DYNAMIC vs
+        // STATIC: the world's geometry is written once and read for the rest of the
+        // level, while the UI buffer is rewritten every frame. A stream that has ever
+        // been caught changing is dynamic, and dynamic streams are few — so hash those
+        // exactly and keep sampling everything else. It costs nothing on the population
+        // that made the bound expensive, and it cannot be fooled by a buffer's size.
+        //
+        // The one thing it cannot do is catch a stream whose FIRST change is invisible to
+        // the sampled guard. That hole is REAL and the operator hit it on the first
+        // session with this policy: "UI did break at the start of being in game but then
+        // it seems to be good now" — the promotion is earned, so until a stream has been
+        // caught changing once it is still sampled, and a miss in that window serves the
+        // stale buffer exactly as before. It then self-heals, which is why the defect
+        // disappeared without anything else changing.
+        //
+        // So the presumption is inverted for a NEW entry: a stream is hashed EXACTLY for
+        // its first few observations and demoted to the sampled guard only after it has
+        // proved static. That closes the window (a dynamic buffer is caught on its first
+        // change rather than on its first VISIBLE change) and it is bounded — it costs
+        // only on entries the store has just met, where the alternative was to copy the
+        // whole thing anyway.
+        uint32_t probes = 0;
+        bool dynamic = false;
     };
+    // How many observations a new stream is hashed exactly for before it is trusted to
+    // the sampled guard, and A PER-FRAME BYTE BUDGET for doing it.
+    //
+    // The budget is not a refinement, it is the whole thing working. Without it the
+    // probe cost 838 streams and 66.8 MB/frame on the outdoor route -- as much as
+    // hashing everything exactly, which is the cost this policy exists to avoid --
+    // because a streaming world meets new geometry continuously, so "new entries only"
+    // is not a small population at all. With it the probe is a fixed toll paid to the
+    // oldest-unprobed entries first, so the hole still closes, just over a few frames
+    // instead of instantly, and the worst case is a constant rather than the workload.
+    static constexpr uint32_t kGuardProbes = 3;
+    static constexpr uint64_t kGuardProbeBudget = 4u << 20;   // bytes per frame
     std::unordered_map<uint64_t, PersistEntry> persistCache;
+    uint64_t probeBudgetLeft = 0;   // refilled each frame; see kGuardProbeBudget
     // Counted, not sampled, because a cache that silently serves stale data looks exactly
     // like a rendering bug twenty frames later and this project has spent whole parts
     // chasing those. Plain adds on a hot struct — never Count(), which is a
@@ -3382,7 +3439,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         {
             uint64_t read = 0;
             uint64_t g = StreamGuard(base + cached->second.va,
-                                     size_t(cached->second.srcBytes), &read);
+                                     size_t(cached->second.srcBytes), &read, false);
             // The poison perturbs only the COMPUTED guard, never the stored one, so
             // every hit is forced to mismatch and the census must read 100%.
             if (g_texGuardPoison)
@@ -4021,7 +4078,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // instrument never being satisfied.
         cached->second.va = va;
         cached->second.srcBytes = srcBytes;
-        cached->second.guard = StreamGuard(base + va, size_t(srcBytes), nullptr);
+        cached->second.guard = StreamGuard(base + va, size_t(srcBytes), nullptr, false);
         ++g_texGuardStats.reuploaded;
         if (pixels.size() <= R->staging.size)
         {
@@ -4069,7 +4126,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // keyed on. See TextureEntry for why the cache needs both.
     entry.va = va;
     entry.srcBytes = srcBytes;
-    entry.guard = StreamGuard(base + va, size_t(srcBytes), nullptr);
+    entry.guard = StreamGuard(base + va, size_t(srcBytes), nullptr, false);
     // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
     // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
     // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
@@ -4795,6 +4852,10 @@ void BeginFrame()
         g_streamHashes.clear();
     }
     R->streamCache.clear();
+    // Refill the guard's probe toll. Per FRAME, so the bootstrap's cost is a constant
+    // the frame budget can absorb rather than a function of how much geometry streamed
+    // in this second (which is what made the unbounded version cost 66.8 MB/frame).
+    R->probeBudgetLeft = Renderer::kGuardProbeBudget;
     R->drawsThisFrame = 0;
     // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
     // of the whole RUN, so a .pose would carry a camera from some frame minutes earlier
@@ -5030,14 +5091,36 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
 
     if (R->persistOn)
     {
-        uint64_t guardRead = 0;
-        const uint64_t guard = StreamGuard(src, size_t(bytes), &guardRead);
-        R->persistStats.guardBytes += guardRead;
+        // THE LOOKUP COMES FIRST, so the entry can choose its own guard. A stream this
+        // store has already caught changing is hashed EXACTLY from then on (see
+        // PersistEntry::dynamic); everything else keeps the bounded, sampled guard.
+        // CZ_VK_NO_DYNAMIC_GUARD=1 is the same-binary control arm: the pre-part-46
+        // policy, where exactness is bought by SIZE alone and a big dynamic buffer is
+        // sampled forever. Without an off switch this change could never be shown to be
+        // the thing that fixed (or did not fix) the HUD.
+        static const bool noDynamicGuard = EnvOn("CZ_VK_NO_DYNAMIC_GUARD");
         auto pit = R->persistCache.find(key);
+        bool exactHere = false;
+        if (!noDynamicGuard && pit != R->persistCache.end())
+        {
+            if (pit->second.dynamic)
+                exactHere = true;                    // already proved dynamic: always
+            else if (pit->second.probes < Renderer::kGuardProbes &&
+                     R->probeBudgetLeft >= bytes)
+            {
+                exactHere = true;                    // bootstrap, within this frame's toll
+                R->probeBudgetLeft -= bytes;
+            }
+        }
+        uint64_t guardRead = 0;
+        const uint64_t guard = StreamGuard(src, size_t(bytes), &guardRead, exactHere);
+        R->persistStats.guardBytes += guardRead;
         if (pit != R->persistCache.end())
         {
             Renderer::PersistEntry& e = pit->second;
             e.lastFrame = R->frame;
+            if (e.probes < Renderer::kGuardProbes)
+                ++e.probes;
             if (e.guard == guard)
             {
                 // The whole point: the bytes are already in device memory, dword-swapped,
@@ -5065,6 +5148,9 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 // back on the pre-store path, which is the same trade the `overflow`
                 // counter below already makes; the alternative is trading correctness for
                 // a copy, which is never the trade to make silently.
+                // Caught changing => dynamic => exact from the next frame on. Set before
+                // any of the ping-pong bookkeeping so an early exit below cannot lose it.
+                e.dynamic = true;
                 bool safe = true;
                 if (R->framesInFlight > 1)
                 {
@@ -9987,6 +10073,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     }
                     fprintf(stderr, "%s\n", line);
                 }
+                // What the dynamic-stream promotion actually costs. An adaptive policy
+                // whose price is unknown is the thing that kept item 00c parked.
+                fprintf(stderr,
+                        "[vkprof] guard PROMOTED to exact (stream seen changing): "
+                        "%llu/frame, %.1f MB/frame\n",
+                        (unsigned long long)(frames ? g_guardDynamic / frames : 0),
+                        frames ? double(g_guardDynamicBytes) / double(frames) / 1048576.0
+                               : 0.0);
+                g_guardDynamic = 0;
+                g_guardDynamicBytes = 0;
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
                         " this window\n",
