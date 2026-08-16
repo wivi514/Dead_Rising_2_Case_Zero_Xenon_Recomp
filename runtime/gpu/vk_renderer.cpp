@@ -234,6 +234,20 @@ struct ProfilePhases
     // lookup, the fetch-constant walk, and the always-on censuses. EXCLUSIVE of every
     // phase above, which it was not until part 20; see the ProfScope comment.
     uint64_t drawOther = 0;
+    // ...and `drawOther` SPLIT THREE WAYS (part 48), for exactly the reason `record` was
+    // split in part 47: it is 4.19 ms of the operator's frame and it was four different
+    // things wearing one number, one of which had been named a suspect for two parts
+    // without anyone being able to price it. The part-47 split is what found the stream
+    // guard — 81.65 MB hashed in one frame, charged to a phase whose name did not
+    // mention it (gotchas 325, 326) — so this is the same move, one phase over.
+    //
+    // EXCLUSIVE of each other and of the named phases nested inside them, like every
+    // scope here, so `drawOther` keeps its meaning as the residual.
+    uint64_t otherKey = 0;      // register decode + the PipelineKey build + the censuses
+    uint64_t otherPipeline = 0; // the std::map<PipelineKey, VkPipeline> probe (and, on a
+                                // miss, the creation `pipelineNs` reports separately)
+    uint64_t otherFetch = 0;    // the texture/sampler fetch-constant walk and its binds,
+                                // minus `textures` (UploadTexture has its own scope)
     uint64_t draws = 0;       // how many draws those numbers are spread over
     // Pipeline creation, which lives INSIDE `drawOther` and is the only thing in there
     // that costs milliseconds. Separated because a first-visit stutter and a per-draw
@@ -6039,6 +6053,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         return;
     }
 
+    // The register decode and the key build (part 48 tier 3). Closed by hand just before
+    // GetPipeline rather than braced, because the key and half a dozen decoded registers
+    // below it are read for the rest of the function.
+    ProfScope _pKey(&g_prof.otherKey);
     PipelineKey key{};
     key.vsHash = vsBind.hash;
     key.psHash = psBind.hash;
@@ -6242,7 +6260,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (((key.depthControl >> 1) & 1) && ((key.depthControl >> 4) & 7) == 0)
         COUNT("draw: depth compare is NEVER");
 
-    VkPipeline pipeline = GetPipeline(key, vs, ps);
+    _pKey.Close();
+
+    // The pipeline probe on its own. `std::map<PipelineKey, VkPipeline>` is a red-black
+    // tree walked once per draw over a key of this size, which is the same shape as the
+    // sampler `std::map` part 47 turned into a flat table — so the plan predicts this is
+    // most of `drawOther`, and this is the measurement that decides whether it is.
+    VkPipeline pipeline;
+    {
+        ProfScope _pPipe(&g_prof.otherPipeline);
+        pipeline = GetPipeline(key, vs, ps);
+    }
     if (pipeline == VK_NULL_HANDLE)
         return; // GetPipeline has already counted and named the reason
 
@@ -6364,6 +6392,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         memset(shared, 0, kSharedSize);
     }
+
+    // The fetch-constant walk (part 48 tier 3), closed by hand at the bool/loop constant
+    // files below. `UploadTexture` opens its own `textures` scope inside this one, so
+    // what this measures is the WALK — the decode, the dimension lookup, the sampler
+    // lookup and the descriptor writes — and not the untile and upload it drives.
+    ProfScope _pFetch(&g_prof.otherFetch);
 
     // Texture and sampler descriptor indices, one per sampler slot the pixel shader
     // declared. A slot the shader does not use is left at 0, which is the dummy — a
@@ -7054,6 +7088,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             Count(msg);
         }
     }
+
+    _pFetch.Close();
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)
@@ -10336,9 +10372,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // that part 20 got wrong in the other direction (see ProfScope).
             const uint64_t recordTotal = g_prof.record + g_prof.recordState +
                                          g_prof.recordVertex + g_prof.recordIndex;
+            // `other` is now a residual in exactly the same way, for the same reason.
+            const uint64_t otherTotal = g_prof.drawOther + g_prof.otherKey +
+                                        g_prof.otherPipeline + g_prof.otherFetch;
             const uint64_t drawTotal = g_prof.constants + g_prof.streams +
-                                       g_prof.textures + recordTotal +
-                                       g_prof.drawOther;
+                                       g_prof.textures + recordTotal + otherTotal;
             const uint64_t submitTotal =
                 g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
             const uint64_t known = drawTotal + submitTotal + g_prof.readback;
@@ -10350,7 +10388,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
                     pct(drawTotal), pct(g_prof.constants), pct(g_prof.streams),
-                    pct(g_prof.textures), pct(recordTotal), pct(g_prof.drawOther),
+                    pct(g_prof.textures), pct(recordTotal), pct(otherTotal),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), 100.0 - pct(known));
 
@@ -10373,6 +10411,23 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         d ? double(g_prof.recordVertex) / d : 0.0,
                         d ? double(g_prof.recordIndex) / d : 0.0,
                         d ? double(g_prof.record) / d : 0.0);
+                // ...and THE SPLIT OF `other` (part 48 tier 3), in the same form and for
+                // the same reason: 4.19 ms of the operator's frame with nothing said
+                // about what is in it. Quoted per draw as well, because that is the
+                // number a change to this code path moves and it is comparable between
+                // their frame and ours where a share is not.
+                fprintf(stderr,
+                        "[vkprof] other %.1f%% = key %.1f + pipeline %.1f + fetch %.1f "
+                        "+ residual %.1f  |  per draw: %.0f ns = %.0f + %.0f + %.0f + "
+                        "%.0f\n",
+                        pct(otherTotal), pct(g_prof.otherKey),
+                        pct(g_prof.otherPipeline), pct(g_prof.otherFetch),
+                        pct(g_prof.drawOther),
+                        d ? double(otherTotal) / d : 0.0,
+                        d ? double(g_prof.otherKey) / d : 0.0,
+                        d ? double(g_prof.otherPipeline) / d : 0.0,
+                        d ? double(g_prof.otherFetch) / d : 0.0,
+                        d ? double(g_prof.drawOther) / d : 0.0);
             }
 
             // Pipeline creation, broken out of `other`. Printed only when it happened,
@@ -10391,8 +10446,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         double(g_prof.pipelineNs) * 1e-6 /
                             double(g_prof.pipelinesCreated),
                         pct(g_prof.pipelineNs),
-                        g_prof.drawOther ? 100.0 * double(g_prof.pipelineNs) /
-                                               double(g_prof.drawOther) : 0.0);
+                        otherTotal ? 100.0 * double(g_prof.pipelineNs) /
+                                         double(otherTotal) : 0.0);
 
             // ...and what `outside` actually IS. The renderer runs on the graphics
             // pump's thread, so everything the pump does between two presents is in
