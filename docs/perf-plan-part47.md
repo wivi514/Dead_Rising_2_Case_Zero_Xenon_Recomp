@@ -14,6 +14,23 @@
 > * 1.1 as a CADENCE change — the guard runs once per frame per cache entry rather
 >   than once per fetch. Measured **93.4% of checks skipped, 15.1x less hashing**.
 >   Arm `CZ_VK_TEX_GUARD_EVERY_FETCH=1`.
+>
+> **AND THE A/B IS IN. THE TARGET IS MET ON THE HEADLESS ROUTE.** Three runs an
+> arm, same binary, the three part-47 arms the only variable, both negative
+> controls reading exactly zero:
+>
+> | draw bin | part 47 | pre-47 |
+> |---|---|---|
+> | 3,000-5,000 | **32 ms, 98% pinned** | 32-40 ms, 7-66% pinned |
+> | 5,000-8,000 | **32 ms, 73-85% pinned** | 42-46 ms, 5-13% pinned |
+> | 8,000+ | **36-37 ms** | never reached |
+>
+> `textures` **17.18 -> 2.47 ms**; PM4 **151-158 -> 110-113 ns per packet** with
+> zero overlap over nine windows an arm. §7's table predicted 61.7 -> 41.0 ms for
+> tiers 1+2; on this route the crowd frame is at the 32 ms pacing floor, i.e. the
+> saving is larger than predicted and the remaining tier-3 items are no longer
+> needed to reach 30 fps HERE. **The operator's frame is the one that decides**,
+> and it is ~2x this one.
 > * 1.2 and 1.3 as written.
 > * 2.1/2.2 as written, and **verified against the code they replace** — 0
 >   mismatches over 152 M dwords with a positive control, **100.0% bulk**.
