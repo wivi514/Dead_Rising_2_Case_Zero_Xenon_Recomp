@@ -14,8 +14,8 @@ first run repriced its top item upward.** Read the plan's STATUS header, then
 environment variables apart, with `CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS` wired
 in. Everything part 47 measured is on the headless route, **which understates the
 operator's draw path by about a factor of two**, so a headless win here is not
-conservative — the reverse of the usual order (gotcha, and
-`docs/part47-kickoff.md`'s standing rule).
+conservative — the reverse of the usual order, and `docs/part47-kickoff.md`'s
+standing rule.
 
 Two things to ask them, and only two:
 
