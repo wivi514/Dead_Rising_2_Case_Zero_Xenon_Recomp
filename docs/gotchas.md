@@ -3094,3 +3094,52 @@ From phase C part 18 (the frame rate — and none of it was work):
      Before accepting "this needs a play session", check the menus, the
      attract loop and the title backdrop — they are usually the same renderer on
      the same assets, and the screenshot set was captured there first.
+
+320. **A PROFILER'S PHASE SHARE MOVES WHEN THE OTHER PHASES DO — quote
+     MILLISECONDS.** Part 47 took 13 ms out of the texture phase, and the same
+     profile window then reported `record` +34%, `constants` +43%, `other` +38%
+     and `outside` +68%. None of them had moved: a share is a share OF THE
+     FRAME, so shrinking one phase inflates every other one's percentage while
+     its cost is unchanged. The first read of that A/B looked like one item
+     fixed and four regressions. Multiply the share by the window's frame time
+     before comparing arms, and only use the share to decide what to look at.
+     Sibling of 238 (a mean frame time measures the pacing floor) and of 228
+     (nested phases counted twice): a profiler's own arithmetic is a thing to
+     re-derive, not to read.
+
+321. **TWO ARMS OF ONE A/B DO NOT WALK THE ROUTE AT THE SAME SPEED, so pooling
+     their profile windows measures the ROUTE and calls it noise.** The faster
+     arm gets further in the same wall clock and spends its windows in denser
+     places. Pooling every window above 1,500 draws produced a within-arm
+     "noise floor" of 58%, which was not noise at all — it was a safehouse
+     window averaged with a crowd window. Restricted to a matched 3,000-8,000
+     draws/frame band, the same runs' baseline spread is 1-2% and the effect is
+     unambiguous. Any per-window statistic compared across arms needs a matched
+     band on the variable that drives it, exactly as the era-median tooling
+     already does for pictures (gotcha 254's family, applied to timing).
+
+322. **A GATE THAT PASSES IDENTICALLY BEFORE AND AFTER YOUR CHANGE HAS NOT
+     TESTED YOUR CHANGE — and the code you replaced is still compiled in, so use
+     it as the oracle.** Part 47 rewrote the command processor's register-write
+     loop. Both PM4 boundary oracles passed, and would have passed just as well
+     had the rewrite been wrong: they verify packet-LENGTH and indirect-walk
+     arithmetic, which the rewrite does not touch. A picture correlation could
+     not see it either, because a wrong register produces a plausible wrong
+     picture. What settled it was running the OLD per-dword path alongside the
+     new bulk one and comparing every dword — 0 mismatches over 152 M — with a
+     poison arm first, to show the check could fail at all (30). Before trusting
+     a gate on a change, ask what it would report if the change were wrong; an
+     incumbent implementation is an oracle you already own, and it is the one
+     kind of second opinion that is not two of your own new components agreeing.
+
+323. **A PER-FRAME REDUNDANCY FACTOR ESTIMATED FROM PER-RUN TOTALS IS WRONG BY
+     THE LENGTH OF THE ROUTE.** "How many times does one frame re-check the same
+     texture?" was estimated at 2x by dividing a frame's 6,790 guard checks by
+     the 3,266 distinct addresses the RUN had touched. Measured per frame it is
+     **15.1x**, because a run visits many places and a frame visits one. That
+     factor was the entire size of the item, so the estimate would have priced a
+     13 ms fix at under 1 ms and probably killed it. When a ratio's numerator is
+     per-frame, its denominator must be too — and if the per-frame denominator
+     is not instrumented, that is the measurement to add first. Same family as
+     242, one level down: there the statistic was fitted to the reachable
+     population, here to the reachable duration.
