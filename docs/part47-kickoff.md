@@ -55,10 +55,14 @@ backlog form.
 2. **Then take it to the operator's own trees.** The menu tree is
    `ps_03533a74cbd5228c`; the gameplay canopies the operator photographed are
    `ps_69a5c3be9359b87c` / `ps_8602b5fd69289893`. All are A2M at ref 0, so the
-   fix should carry — but **58 of the 78 leaf draws in the operator's frame are
-   `cc=AA000007`, alpha test OFF and opaque, and hardware draws those opaquely
-   too**, so they are trunk/branch geometry and will not change. Check that
-   before reading a partial improvement as a partial fix.
+   fix should carry — but **only 26 of the 78 leaf draws in the operator's frame
+   will change, and the texture format says which**. In frame 6615 the split is
+   exact: all 58 `cc=AA000007` draws (alpha test OFF, opaque) bind a **DXT1** at
+   slot 0, and all 26 draws that enable the test (10 `AA00000C` alpha-blended,
+   16 `AA00001C` A2M) bind a **DXT4/5**. Cutout foliage is fractional-alpha DXT5
+   with the test on; the solid trunk/branch/LOD geometry is DXT1 with it off, on
+   hardware too. Expect about a third of the leaf draws to move, and do not read
+   the other two thirds staying put as a partial fix.
 3. **Performance.** See the part-46 record for what its A/B measured; the two
    suspects it could not separate with a preserved control arm are part 41's
    per-fetch samplers and part 44/45's mip uploads, neither of which has a
