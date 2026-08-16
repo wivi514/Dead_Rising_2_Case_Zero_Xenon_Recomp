@@ -10470,6 +10470,86 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         "[vkprof] pm4 BULK REGISTER MISMATCHES: %llu — the bulk path and "
                         "the per-dword path DISAGREE; this is a defect\n",
                         (unsigned long long)mm);
+
+            // ...and WHICH packets those were. `Pm4_TypeCount` and `Pm4_OpcodeCount`
+            // have existed since phase 4 and were incremented on every single packet,
+            // and until now they were called from NOWHERE in the runtime — so "what is
+            // the 16.6 ms of walk actually walking" was unanswerable while the data sat
+            // in memory. That is the same gap `record` was in until part 47 split it,
+            // and splitting it is what found the stream guard (gotchas 325, 326).
+            //
+            // It matters here specifically because the operator's packet mix DIFFERS
+            // FROM THE HEADLESS ROUTE'S IN KIND, not just in size: 144 ns per packet
+            // against our 110-113, and 7.8 register dwords per packet against 9.4, so
+            // they submit proportionally more non-register packets and per-PACKET cost
+            // dominates their walk. Nothing in the runtime described that mix; this
+            // does, and `docs/perf-plan-part48.md` §3 ranks the walk items off it.
+            //
+            // Differenced per window like every other rate on these lines, so the
+            // shares divide into the same `dPackets` the ns-per-packet above is
+            // computed from. Types first, because the type split is the coarse answer
+            // (type 0/1 are register writes, type 2 is ring filler, type 3 is
+            // everything the command processor actually does), then every type-3
+            // opcode with a non-zero delta, sorted by frequency.
+            static uint64_t lastTypes[4] = {}, lastOpcodes[128] = {};
+            uint64_t dTypes[4];
+            for (uint32_t t = 0; t < 4; t++)
+            {
+                const uint64_t c = Pm4_TypeCount(t);
+                dTypes[t] = c - lastTypes[t];
+                lastTypes[t] = c;
+            }
+            const auto packetPct = [&](uint64_t n) {
+                return dPackets ? 100.0 * double(n) / double(dPackets) : 0.0;
+            };
+            fprintf(stderr,
+                    "[vkprof] pm4 types: t0(reg-run) %.1f%% t1(reg-pair) %.1f%% "
+                    "t2(filler) %.1f%% t3(command) %.1f%% | %llu t3/frame\n",
+                    packetPct(dTypes[0]), packetPct(dTypes[1]), packetPct(dTypes[2]),
+                    packetPct(dTypes[3]),
+                    (unsigned long long)(frames ? dTypes[3] / frames : 0));
+
+            // Collect, sort by count descending, print. 128 slots is a fixed, tiny
+            // array; B1's census says this title uses 21 opcodes, so this is at most
+            // four lines and usually three.
+            struct OpCensus { uint32_t op; uint64_t count; };
+            OpCensus hot[128];
+            uint32_t nHot = 0;
+            for (uint32_t op = 0; op < 128; op++)
+            {
+                const uint64_t c = Pm4_OpcodeCount(op);
+                const uint64_t d = c - lastOpcodes[op];
+                lastOpcodes[op] = c;
+                if (d)
+                    hot[nHot++] = { op, d };
+            }
+            std::sort(hot, hot + nHot,
+                      [](const OpCensus& a, const OpCensus& b) { return a.count > b.count; });
+            for (uint32_t i = 0; i < nHot; i += 5)
+            {
+                char line[512];
+                int n = snprintf(line, sizeof(line), "[vkprof] pm4 %s ",
+                                 i ? "         " : "opcodes:");
+                for (uint32_t j = i; j < nHot && j < i + 5; j++)
+                {
+                    // An unnamed opcode is reported by index, not skipped: the walk
+                    // already treats one as a reportable anomaly (a parser desync or a
+                    // packet the captures never held), and a census that silently
+                    // dropped it would answer "which packets" with a confident subset.
+                    const char* name = Pm4_OpcodeName(hot[j].op);
+                    char named[24];
+                    if (!name)
+                    {
+                        snprintf(named, sizeof(named), "UNKNOWN_%02X", hot[j].op);
+                        name = named;
+                    }
+                    n += snprintf(line + n, sizeof(line) - n, "%s %llu/f (%.1f%%)  ",
+                                  name,
+                                  (unsigned long long)(frames ? hot[j].count / frames : 0),
+                                  packetPct(hot[j].count));
+                }
+                fprintf(stderr, "%s\n", line);
+            }
             lastPump = p;
 
             // The stream cache, when asked for. Printed inside the profile window so the
