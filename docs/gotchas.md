@@ -3143,3 +3143,44 @@ From phase C part 18 (the frame rate — and none of it was work):
      is not instrumented, that is the measurement to add first. Same family as
      242, one level down: there the statistic was fitted to the reachable
      population, here to the reachable duration.
+
+324. **A HOT LOOP WITH A SERIAL DEPENDENCY IS LATENCY-BOUND, AND THE FIX IS MORE
+     ACCUMULATORS, NOT MORE BYTES PER STEP.** The content guard's fold already
+     read 8 bytes an iteration and still ran at 9 GB/s, because
+     `h = (h ^ v) * PRIME` puts a ~5-cycle multiply on the critical path per
+     step — about 1.6 bytes/cycle whatever the machine's load bandwidth is.
+     Four independent accumulators gave the out-of-order engine four chains to
+     overlap: **9.01 → 35.68 GB/s, 4.0x, same bytes read.** It looked like a
+     bandwidth problem and was an ILP problem, and the tell is that widening the
+     step had already been done and had not helped. Before optimising a byte
+     loop, ask whether each step depends on the previous one's result.
+     **And measure the SENSITIVITY as well as the speed**: a hash that got faster
+     by noticing less would be a silent disaster with no symptom until a stale
+     buffer reached the screen. Flipping one bit at 676 positions across a 64 KB
+     buffer and confirming **0 misses on both the old and the new fold** is what
+     makes the speed claim safe to ship.
+
+325. **A COUNTER THAT NOTHING READS IS NOT AN INSTRUMENT, AND ITS SUBJECT IS AS
+     UNMEASURED AS IF IT HAD NEVER BEEN COUNTED.** `Pm4_OpcodeCount` and
+     `Pm4_TypeCount` have been incremented on every packet since phase 4 and are
+     called from nowhere in the runtime. So "which packets cost the 16.6 ms of
+     the operator's PM4 walk" was unanswerable while the answer sat in memory,
+     and part 48 has to start by printing numbers this project has been
+     collecting for thirty parts. Distinct from gotcha 25 (a grep that cannot
+     match): there the emitter was missing, here the emitter is fine and the
+     READER was never written. When adding a counter, add its print in the same
+     commit — an unprinted counter is a cost with no benefit, and it reads as
+     coverage that does not exist.
+
+326. **A PROFILER PHASE NAMES A SCOPE, NOT A SUBSYSTEM — and gotcha 238 said so
+     nine parts before anyone acted on it.** `g_prof.streams` wraps only the
+     stream COPY, so the cross-frame store's content guard — **81.65 MB of
+     hashing in one frame of the operator's session** — was charged to `record`,
+     the phase that encloses it. `streams` read 0.0% throughout and was cited for
+     five parts as "the stream cache is closed, do not revisit". Both statements
+     were true and together they were badly misleading. Gotcha 238 already
+     contains the general form AND this exact example ("`streams` read 0.0% while
+     the guard that replaced it doubled `record`"); it took until part 47's split
+     of `record` for anyone to follow it. **When a phase reads zero, find the
+     scope's boundaries before believing the subsystem is free** — and read the
+     ledger for the case you are about to rediscover.
