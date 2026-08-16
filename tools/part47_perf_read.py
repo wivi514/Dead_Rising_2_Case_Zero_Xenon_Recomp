@@ -30,6 +30,10 @@ import sys, os, re, glob, statistics
 
 VBLANK_MS = 16.0
 BINS = [(0, 500), (500, 1500), (1500, 3000), (3000, 5000), (5000, 8000), (8000, 10**9)]
+# The matched draw band for the phase-share table. See the comment at its heading:
+# two arms of one A/B do not walk the route at the same speed, so the comparison has to
+# be restricted to windows drawing comparable amounts or it measures the route.
+PHASE_LO, PHASE_HI = 3000, 8000
 
 # `[vkprof] 26.0 fps (38.5 ms/frame, 4565 draws/frame) | draw 64.5% [constants 2.3
 #  streams 0.0 textures 40.7 record 14.6 other 6.8] submit 0.2% [call 0.2 gpu 0.0]
@@ -45,17 +49,24 @@ FIELD = re.compile(r'([a-z-]+) ([\d.]+)%?')
 def load_stats(path):
     """(draws, frame_ms) per presented frame. The msec column is a CUMULATIVE
     timestamp, so a frame's cost is the difference from the previous one; a gap over
-    2 s is a load or a clock step rather than a frame."""
+    2 s is a load or a clock step rather than a frame.
+
+    `msec` IS THE LAST OF THE EIGHTEEN COLUMNS, and column 0 is the frame NUMBER. The first version of
+    this reader took column 0 as the timestamp and every bin came out at a median of
+    "1.0 ms" with a pinned share of zero -- which is consecutive frame numbers
+    differing by one, not a frame time, and is exactly the shape of wrongness that
+    looks like a plausible result. Read the header line of a .stats file before
+    trusting a column index."""
     out, prev = [], None
     with open(path) as f:
         for line in f:
             if line.startswith('#'):
                 continue
             p = line.split()
-            if len(p) < 5:
+            if len(p) < 18:
                 continue
             try:
-                msec, draws = float(p[0]), int(p[1])
+                msec, draws = float(p[-1]), int(p[1])
             except ValueError:
                 continue
             if prev is not None:
@@ -140,21 +151,35 @@ def main():
                  [len(w) for w in profs[a]]))
 
     # --- the PRIMARY reading: phase shares -------------------------------------------
-    # Restricted to windows above 1,500 draws: below that the frame is at the pacing
-    # floor and every arm ties, so including the safehouse era dilutes the very
-    # measurement it is being included for.
-    print('\nCZ_VK_PROFILE phase shares, windows above 1,500 draws/frame')
+    #
+    # RESTRICTED TO A MATCHED DRAW BAND, and that is not a detail. A profile window's
+    # phase shares depend strongly on how much the frame is drawing, and two arms of this
+    # A/B do NOT walk the same route at the same speed -- a faster arm gets further and
+    # spends its windows in denser places. Pooling every window above 1,500 draws mixed a
+    # safehouse window with a crowd window and reported a within-arm "noise floor" of 58%,
+    # which is not noise, it is content. The band is the same for both arms, so what is
+    # compared is like with like; below PHASE_LO the frame is at the pacing floor and
+    # every arm ties, above PHASE_HI only the faster arm has windows at all.
+    print('\nCZ_VK_PROFILE phase cost in MILLISECONDS, windows in the %d-%d '
+          'draws/frame band' % (PHASE_LO, PHASE_HI))
     print('  (median over windows, one column per run; the spread across runs is the floor)')
     phases = ['draw', 'textures', 'record', 'streams', 'constants', 'other',
               'readback', 'outside', 'submit']
-    print('  %-11s %-10s %-26s %-9s %s' % ('phase', 'arm', 'median % per run',
+    print('  %-11s %-10s %-26s %-9s %s' % ('phase', 'arm', 'median ms per run',
                                            'overall', 'within-arm spread'))
     for ph in phases:
         rows = []
         for a in arms:
             per_run = []
             for w in profs[a]:
-                vals = [r[ph] for r in w if r.get('draws', 0) >= 1500 and ph in r]
+                # MILLISECONDS, not the percentage. A share is a share OF THE FRAME,
+                # so removing work from one phase inflates every other phase's share
+                # while its cost is unchanged -- which reads as five phases getting
+                # worse. `textures` fell 82% here and `record`, `other` and `constants`
+                # all "rose" 34-43% on the share, in milliseconds none of them moved.
+                # Quote milliseconds; the share is only the route into them.
+                vals = [r[ph] * r['ms'] / 100.0 for r in w
+                        if PHASE_LO <= r.get('draws', 0) < PHASE_HI and ph in r]
                 if vals:
                     per_run.append(statistics.median(vals))
             rows.append((a, per_run))
