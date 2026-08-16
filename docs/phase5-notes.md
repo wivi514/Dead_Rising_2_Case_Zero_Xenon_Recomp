@@ -8564,9 +8564,11 @@ texture guard cadence: 49,017,332 of 52,499,796 checks skipped because the entry
 estimate divided per-frame fetches by addresses seen over a whole RUN, which is
 the population error gotcha 242 names. Per frame the distinct-descriptor count is
 far smaller than the run's, so the redundancy is large. The guard's remaining cost
-is 6.6% of what it was, which puts `textures` at roughly the no-revalidate arm's
-2.3 ms plus 0.9 — i.e. this recovers nearly all of the 13.6 ms upper bound while
-keeping the mechanism.
+is 6.6% of what it was, which PREDICTS `textures` at roughly the no-revalidate
+arm's 2.3 ms plus 0.9 — i.e. recovering nearly all of the 13.6 ms upper bound
+while keeping the mechanism. **That is an arithmetic prediction off a counter, not
+a measurement**; the measurement is the `perf2` A/B below, and the distinction is
+the one this project keeps insisting on.
 
 **The bulk register path, verified against the code it replaced** (see
 `CZ_PM4_VERIFY_BULK_REGS`, with `CZ_PM4_VERIFY_POISON` as its positive control):
