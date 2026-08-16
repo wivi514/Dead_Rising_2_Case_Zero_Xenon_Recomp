@@ -8399,3 +8399,59 @@ now has a price attached to both answers, and the arm that settles it
 ambiguous) is what the operator is playing. If it fixes the HUD, the histogram
 narrows the bound afterwards; that is the order that gets a fix instead of a
 trade.
+
+### §6cc addendum — THE UI TEXT DEFECT IS FIXED, confirmed in play, and what it costs
+
+Open items 00c/00k, first seen in part 24 and diagnosed in part 45, closed in
+part 46 by an operator session. Their words, on the third build of the evening:
+**"Ui stay good the whole time."**
+
+**The route to it, because two of the three steps were wrong and both were
+informative.**
+
+1. *Raise the guard's byte bound.* This was the recommendation in two successive
+   kickoffs and it is REFUTED: at 256 KB the operator's HUD still dropped out
+   (`part46-operator2/ui_guard/`, captures 2240 and 2293 correct, 2528 with the
+   whole top-left block gone — with the presence test shown capable of both
+   readings against known-good and known-bad frames first). Since part 45's
+   unlimited arm did fix it, the UI buffer is ABOVE 256 KB, and the size
+   histogram prices exactness there at 121+ MB/frame. **Size is the wrong
+   discriminator**, and it took a measured null to say so.
+2. *Earn exactness instead.* A stream the store catches CHANGING is hashed
+   exactly from then on; everything else keeps the sampled guard. Static world
+   geometry never promotes; a per-frame UI buffer promotes whatever its size.
+   Lazy, this cost 101-116 streams and **0.5 MB/frame**. The operator: *"UI did
+   break at the start of being in game but then it seems to be good now"* — the
+   hole the design has by construction, since a stream is sampled until its first
+   VISIBLE change, and then self-heals. **A defect that repairs itself is a
+   strong signal about its own mechanism**; it was the first evidence the policy
+   was working at all.
+3. *Close the window by inverting the presumption for a new entry* — exact for
+   its first few observations, demoted once it proves static. Unbounded this cost
+   **838 streams and 66.8 MB/frame**, i.e. as much as hashing everything, which
+   is the entire cost the policy exists to avoid: a streaming world meets new
+   geometry continuously, so "new entries only" is not a small population. With a
+   **4 MB/frame budget** spent on unprobed entries it works and the hole closes
+   over a few frames instead of instantly.
+
+`CZ_VK_NO_DYNAMIC_GUARD=1` is the same-binary control arm, and the operator ran
+it: with the fix the HUD self-healed and stayed healed; with the control it broke
+at the start, recovered, and **relapsed later in the session**. One session a
+side and judged by eye, so it is a pointer rather than a proof — but it is the
+right pointer and it agrees with the mechanism.
+
+**THE COST, stated rather than buried.** On the headless outdoor route the
+promotion reads 290-323 streams and ~18 MB/frame and does not move the frame time
+(42.0-44.5 ms at ~5,000 draws against a 42.9 ms baseline at 5,241). **On the
+operator's own session it reads 451-676 streams and 33.9-48.3 MB/frame** — twice
+the headless figure, the same factor by which their draw path exceeds ours
+(§6cc). That is not free, and it has NOT been A/B'd for frame rate on their
+configuration: their control-arm run was on an earlier build, so the two are not
+comparable. **The owed measurement is `CZ_VK_NO_DYNAMIC_GUARD=1` against the
+default on the SAME binary, on their route.**
+
+Their frame, on this build: 14.2-18.9 fps at 5,394-7,148 draws, draw path
+67-72%, `textures` 40-43% of it. So the guard is not what makes their frame slow
+— `textures` still is — but it is a real addition to a frame that is already
+over budget, and shipping it without pricing it on their machine would be
+exactly the trade this project keeps refusing to make blind.
