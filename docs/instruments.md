@@ -573,6 +573,18 @@ CZ_VK_TEX_GUARD=1  a CONTENT guard over the texture cache: on a cache hit, hash 
                    and because it is two-sided (see the poison below). Needs CZ_VK_STATS=N
                    to print anything at all. NB blind by construction to a fetch pointing
                    at an address that was never that texture's home
+CZ_VK_TEX_GUARD_BYTES=N  the bound the TEXTURE content guard folds at, in bytes.
+                   Default 16384 — which is what it has silently been since part 38,
+                   because it borrowed the STREAM guard's constant; the two were never
+                   chosen separately and they are different questions. A stream guard is
+                   hunting a small edit inside a batched UI buffer (item 00c). A texture
+                   guard is hunting an address the STREAMING SYSTEM RECYCLED — a
+                   different texture written over the old one, which the eight spread
+                   blocks see at essentially any bound. The `texture guard bytes by
+                   SOURCE size` histogram printed with CZ_VK_STATS says what each bound
+                   would cost, and the per-address `changed` table (which now carries
+                   each texture's source size) says what it would stop being able to see:
+                   pick the bound off those two rather than off an argument
 CZ_VK_TEX_GUARD_POISON=1  the POSITIVE control: perturbs only the COMPUTED guard, never
                    the stored one, so every hit must mismatch. Measured 14,554,550 of
                    14,554,550 = 100.00%, against 0.00% on an unpoisoned boot. A census that
@@ -590,8 +602,25 @@ CZ_VK_TEX_REVALIDATE=1  **THE DEFAULT since part 38** (the flag remains accepted
                    everything up close wears a random texture"). Field-tested a full
                    evening: every prop correct, no reported slowdown. §6bp, gotcha 293.
 CZ_VK_NO_TEX_REVALIDATE=1  the same-binary control arm: the pre-part-38 once-only cache,
-                   which brings the random-texture class back. A headless frame-time A/B
-                   of the guard's cost is owed; do not quote one from an operator session
+                   which brings the random-texture class back. **PART 47 RAN THE OWED
+                   A/B AND THE GUARD IS ALMOST THE WHOLE TEXTURE PHASE**: on the outdoor
+                   route `textures` is 40.8% of the frame with it and **7.8% without**,
+                   at MORE draws — i.e. the upper bound on the revalidation item is far
+                   above the 8-11 ms `docs/perf-plan-part47.md` §1.1 estimated. Keep
+                   using it as the upper bound for any guard-cost question; it is not a
+                   shippable configuration, because it is the defect part 38 fixed
+CZ_VK_TEX_GUARD_EVERY_FETCH=1  the pre-part-47 CADENCE: revalidate on every fetch rather
+                   than once per frame per cache entry. `UploadTexture` runs once per
+                   texture fetch per draw, so a texture many draws share was re-hashed
+                   once for each of them — which is where 92.9 MB a frame went to catch
+                   0.0037% of anything. The counter that proves the policy engaged is the
+                   `texture guard cadence:` line, which reports the skipped share and the
+                   redundancy factor; under this arm it must read 0. **The falsifiable
+                   claim is that `changed` does not fall between the two arms**: a real
+                   change is still there at the next frame's first fetch, so a drop would
+                   mean the policy is losing detections and the number says how many.
+                   What it costs is at most one frame of staleness for a texture the
+                   guest rewrites mid-frame
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty

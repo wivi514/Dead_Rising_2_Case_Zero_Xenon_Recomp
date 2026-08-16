@@ -367,15 +367,47 @@ struct TexGuardStats
     uint64_t changed = 0;     // ...whose guest bytes had changed since upload
     uint64_t reuploaded = 0;  // ...and were re-uploaded (REVALIDATE only)
     uint64_t guardBytes = 0;  // what the guard itself read, i.e. its own cost
+    // ONCE PER FRAME PER ENTRY (part 47). Cache hits the guard was NOT computed for
+    // because this same cache entry had already been validated in this frame — i.e.
+    // what the policy below saves. It is the numerator of the whole item: hits +
+    // skippedSameFrame is what the pre-part-47 renderer would have hashed.
+    uint64_t skippedSameFrame = 0;
 } g_texGuardStats;
+
+// CZ_VK_TEX_GUARD_EVERY_FETCH=1 — the same-binary CONTROL ARM for that policy, i.e. the
+// pre-part-47 behaviour: revalidate on every fetch rather than once per frame per entry.
+//
+// WHY THE POLICY EXISTS. The operator's own profiled frame charged **26.5 ms of 61.7 to
+// `textures`**, and the guard is most of it: over one session it read **366 GB — 92.9 MB
+// a frame — to catch 986 real changes in 26.8 M checks (0.0037%)**
+// (`docs/perf-plan-part47.md` §1.1). The mechanism is load-bearing and stays: part 38
+// built it because a streaming-recycled address served its first occupant forever (the
+// tanker cylinder wearing a brick wall). What does not have to stay is buying that
+// exactness once per FETCH when the same texture is fetched by many draws of one frame.
+//
+// WHAT IT COSTS, stated so a run can refute it: a texture the guest rewrites mid-frame
+// is now served stale for the REST OF THAT FRAME instead of from the first draw after
+// the write — at most one frame of latency, against a picture that only updates once a
+// frame anyway. The falsifiable claim is that `changed` does not fall: if a change is
+// real it is still there at the next frame's first fetch, so the two arms should report
+// the same population. A drop means the policy is losing detections and the number says
+// how many.
+bool g_texGuardEveryFetch = false;
 // Per address, because "17% of hits are stale" and "one atlas is stale every frame" are
 // completely different defects and a single ratio cannot tell them apart.
 struct TexGuardAddr
 {
     uint64_t hits = 0, changed = 0;
     uint32_t width = 0, height = 0, format = 0;
+    uint64_t srcBytes = 0;   // what one check of this texture costs
 };
 std::map<uint32_t, TexGuardAddr> g_texGuardAddrs;
+// Where the guard's bytes go, by SOURCE size: bucket b is [1 KB << b, 1 KB << (b+1)),
+// bucket 0 everything below 1 KB, the last bucket everything above. See the comment at
+// the increment for why this exists — it is the price list for a bounded-prefix guard.
+constexpr size_t kTexGuardHistBuckets = 12;
+uint64_t g_texGuardHistCount[kTexGuardHistBuckets]{};
+uint64_t g_texGuardHistBytes[kTexGuardHistBuckets]{};
 
 // CZ_VK_DIM_CENSUS=1 — WHERE IS THE DIMENSION IN THE TEXTURE FETCH CONSTANT?
 //
@@ -670,6 +702,50 @@ bool g_guardExact = false;
 uint64_t g_guardDynamic = 0;
 uint64_t g_guardDynamicBytes = 0;
 
+// The folding itself, at a CALLER-CHOSEN bound: exact up to `bound`, and above it eight
+// blocks of `bound/8` spread over the whole buffer — the first starting exactly at 0 and
+// the last ending exactly on the final byte.
+//
+// Split out in part 47 so the TEXTURE guard can have its own bound without borrowing the
+// stream guard's counters. They are two different questions with two different answers:
+// a stream guard is looking for a small edit inside a batched UI buffer (item 00c, where
+// missing one shows the previous frame's ammo count), and a texture guard is looking for
+// an ADDRESS THE STREAMING SYSTEM RECYCLED — an entirely different texture written over
+// the old one, which a spread sample sees at essentially any bound. Sharing the constant
+// between them was never a decision anyone made.
+uint64_t GuardOver(const uint8_t* p, size_t bytes, size_t bound, size_t* readOut)
+{
+    uint64_t h = (1469598103934665603ull ^ bytes) * 1099511628211ull;
+    if (bytes <= bound)
+    {
+        if (readOut)
+            *readOut += bytes;
+        return GuardFold(h, p, bytes);
+    }
+    const size_t block = bound / kGuardBlocks;
+    const size_t span = bytes - block;
+    for (size_t b = 0; b < kGuardBlocks; ++b)
+        h = GuardFold(h, p + (span * b) / (kGuardBlocks - 1), block);
+    if (readOut)
+        *readOut += bound;
+    return h;
+}
+
+// The bound the TEXTURE content guard folds at, in bytes. `CZ_VK_TEX_GUARD_BYTES=N`.
+//
+// It defaults to the stream guard's 16 KB, which is what it has silently been since part
+// 38 — so the default is not a change and every earlier texture-guard number stays
+// comparable. It is a knob because the guard costs 92.9 MB a frame and the histogram
+// printed with the stats says exactly what each bound would buy; choosing one is then a
+// measurement rather than a guess, which is the whole reason "raise the bound" stayed
+// unactionable for two parts on the stream side.
+size_t g_texGuardBytes = 16384;
+
+uint64_t TextureGuard(const uint8_t* p, size_t bytes, size_t* readOut)
+{
+    return GuardOver(p, bytes, g_texGuardBytes, readOut);
+}
+
 uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool forceExact)
 {
     if (g_guardExact || forceExact)
@@ -683,22 +759,17 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool force
             *readOut += bytes;
         return GuardFold((1469598103934665603ull ^ bytes) * 1099511628211ull, p, bytes);
     }
-    // The size is folded in first. Without it a stream that shrinks to a prefix of
-    // itself would hash the same, and size is part of the key only for the streams the
-    // key came from — a re-copy into the same slot keeps the slot's size.
-    uint64_t h = (1469598103934665603ull ^ bytes) * 1099511628211ull;
-    if (bytes <= g_guardBytes)
-    {
-        if (readOut)
-            *readOut += bytes;
-        return GuardFold(h, p, bytes);
-    }
+    // The size is folded in first (inside GuardOver). Without it a stream that shrinks to
+    // a prefix of itself would hash the same, and size is part of the key only for the
+    // streams the key came from — a re-copy into the same slot keeps the slot's size.
+    //
     // Above the bound the guard is a SAMPLE and can therefore miss a small edit. Count
     // the exposure rather than leaving it silent: this is the population that item 00c's
     // defect lived in, and a bound raised until this counter is zero for the streams that
     // matter is a bound chosen by measurement instead of by guess.
-    ++g_guardSampled;
+    if (bytes > g_guardBytes)
     {
+        ++g_guardSampled;
         // Which power-of-two bucket this stream would need the bound raised to.
         size_t b = 0;
         for (size_t lim = 32768; b + 1 < kGuardHistBuckets && bytes >= lim; lim <<= 1)
@@ -706,16 +777,7 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool force
         ++g_guardHistCount[b];
         g_guardHistBytes[b] += bytes;
     }
-    const size_t block = g_guardBytes / kGuardBlocks;
-    // Eight starts spread over [0, bytes - block], the first exactly at 0 and the last
-    // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive, and the
-    // last block therefore ends on the final byte rather than near it.
-    const size_t span = bytes - block;
-    for (size_t b = 0; b < kGuardBlocks; ++b)
-        h = GuardFold(h, p + (span * b) / (kGuardBlocks - 1), block);
-    if (readOut)
-        *readOut += g_guardBytes;
-    return h;
+    return GuardOver(p, bytes, g_guardBytes, readOut);
 }
 
 bool g_active = false;
@@ -1178,6 +1240,12 @@ struct TextureEntry
     // re-copies into the same image and would otherwise write face 0 and leave the
     // other five holding their first-upload pixels.
     uint32_t layers = 1;
+    // THE FRAME THIS ENTRY'S CONTENT GUARD WAS LAST COMPUTED IN, plus one, so that the
+    // zero-initialised value can never be mistaken for "already validated in frame 0".
+    // See `g_texGuardEveryFetch`: the guard is the single largest term in the operator's
+    // frame and re-hashing one texture once per draw that samples it is where the 92.9
+    // MB/frame goes.
+    uint64_t guardFrame = 0;
 };
 
 // A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
@@ -3498,27 +3566,65 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // THE GUARD: are the bytes this image was built from still the bytes at that
         // address? The key says the fetch constant is unchanged; only this says the
         // TEXTURE is. See the CZ_VK_TEX_GUARD comment for why the two differ.
-        if ((g_texGuard || g_texRevalidate) && cached->second.srcBytes)
+        //
+        // ...AT MOST ONCE PER FRAME PER ENTRY. `UploadTexture` is called once per fetch
+        // per draw, so a texture that many draws of one frame share was being re-hashed
+        // once for each of them — which is where 92.9 MB a frame goes to catch 0.0037%
+        // of anything. Everything about the mechanism is unchanged except how OFTEN it
+        // runs, and the stamp is `frame + 1` so a zero-initialised entry can never read
+        // as "already validated in frame 0". `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the
+        // control arm and `skippedSameFrame` is the counter that proves it engaged
+        // (gotcha 151); see the arm's comment for the falsifiable claim.
+        const uint64_t stamp = R->frame + 1;
+        const bool alreadyThisFrame =
+            !g_texGuardEveryFetch && cached->second.guardFrame == stamp;
+        if (alreadyThisFrame)
+            ++g_texGuardStats.skippedSameFrame;
+        if ((g_texGuard || g_texRevalidate) && cached->second.srcBytes &&
+            !alreadyThisFrame)
         {
+            cached->second.guardFrame = stamp;
             uint64_t read = 0;
-            uint64_t g = StreamGuard(base + cached->second.va,
-                                     size_t(cached->second.srcBytes), &read, false);
+            uint64_t g = TextureGuard(base + cached->second.va,
+                                      size_t(cached->second.srcBytes), &read);
             // The poison perturbs only the COMPUTED guard, never the stored one, so
             // every hit is forced to mismatch and the census must read 100%.
             if (g_texGuardPoison)
                 g ^= R->frame * 0x9E3779B97F4A7C15ull;
             g_texGuardStats.guardBytes += read;
             ++g_texGuardStats.hits;
+            // WHICH TEXTURE SIZES THE GUARD SPENDS ITS BYTES ON, as a histogram over
+            // the SOURCE size. This exists to price the one remaining option in
+            // `perf-plan-part47.md` §1.1 that is not yet costed — hashing a bounded
+            // prefix instead of the whole surface — with data rather than a guess. The
+            // stream guard has had exactly this histogram since part 46 and it is what
+            // turned "raise the bound" from an argument into a refutation; the texture
+            // guard never had one, so nobody could say what a bound would buy or what
+            // it would stop being able to see.
+            //
+            // The two things it must be read together with are already printed: the
+            // per-address `changed` table says how big the textures that ACTUALLY get
+            // recycled are, and a bound above all of those costs nothing in detection.
+            {
+                size_t b = 0;
+                for (size_t lim = 1024;
+                     b + 1 < kTexGuardHistBuckets && cached->second.srcBytes >= lim;
+                     lim <<= 1)
+                    ++b;
+                ++g_texGuardHistCount[b];
+                g_texGuardHistBytes[b] += read;
+            }
             TexGuardAddr& a = g_texGuardAddrs[t.address & 0x1FFFFFFF];
             ++a.hits;
             a.width = t.width;
             a.height = t.height;
             a.format = t.format;
+            a.srcBytes = cached->second.srcBytes;
             if (g != cached->second.guard)
             {
                 ++g_texGuardStats.changed;
                 ++a.changed;
-                Count("texture: cache hit but the GUEST BYTES CHANGED — this draw is "
+                COUNT("texture: cache hit but the GUEST BYTES CHANGED — this draw is "
                       "being served an image built from pixels that are gone");
                 if (g_texRevalidate)
                     refresh = true;   // fall through to the in-place re-upload below
@@ -4141,7 +4247,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // instrument never being satisfied.
         cached->second.va = va;
         cached->second.srcBytes = srcBytes;
-        cached->second.guard = StreamGuard(base + va, size_t(srcBytes), nullptr, false);
+        cached->second.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
         ++g_texGuardStats.reuploaded;
         if (pixels.size() <= R->staging.size)
         {
@@ -4189,7 +4295,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // keyed on. See TextureEntry for why the cache needs both.
     entry.va = va;
     entry.srcBytes = srcBytes;
-    entry.guard = StreamGuard(base + va, size_t(srcBytes), nullptr, false);
+    entry.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
     // A COUNTER, NOT A REPAIR. An upload whose every texel is zero is this runtime
     // saying out loud that it had nothing to give, and one of those (0364B000, a 16x16
     // DXT1) is drawn over the save-slot thumbnails on the new-game screen as three
@@ -9060,6 +9166,25 @@ bool InitCommon()
         g_texGuard = !noRevalidate || EnvOn("CZ_VK_TEX_GUARD");
         g_texRevalidate = !noRevalidate;
     }
+    // The pre-part-47 cadence — revalidate on every fetch instead of once a frame per
+    // cache entry. A control arm, not a fix; see its declaration.
+    g_texGuardEveryFetch = EnvOn("CZ_VK_TEX_GUARD_EVERY_FETCH");
+    if (const char* n = Env("CZ_VK_TEX_GUARD_BYTES"))
+    {
+        // Clamped to a multiple of kGuardBlocks and to at least one block: below that
+        // `bound / kGuardBlocks` is zero and the sampled path folds nothing at all,
+        // which would read as a guard that never fires rather than as a bad setting.
+        const size_t want = size_t(strtoul(n, nullptr, 0));
+        g_texGuardBytes = std::max<size_t>(kGuardBlocks * 8, want & ~size_t(kGuardBlocks - 1));
+        fprintf(stderr,
+                "[vk] CZ_VK_TEX_GUARD_BYTES=%zu — the texture content guard is exact to "
+                "that many bytes and samples 8 spread blocks above it (default 16384)\n",
+                g_texGuardBytes);
+    }
+    if (g_texGuardEveryFetch)
+        fprintf(stderr,
+                "[vk] CZ_VK_TEX_GUARD_EVERY_FETCH — the texture content guard runs on "
+                "EVERY fetch, not once a frame per entry (the pre-part-47 cadence)\n");
     g_texGuardPoison = EnvOn("CZ_VK_TEX_GUARD_POISON");
     if (g_texGuardPoison)
         fprintf(stderr, "[vk] texture guard POISONED — the changed share must now read "
@@ -10609,6 +10734,49 @@ void VkRenderer_DumpStats()
                 100.0 * double(g.changed) / double(g.hits),
                 (unsigned long long)g.reuploaded,
                 double(g.guardBytes) / 1048576.0);
+        // WHAT THE ONCE-PER-FRAME POLICY SAVED, as a share of what the pre-part-47
+        // renderer would have hashed — because an arm with no counter cannot be shown to
+        // have engaged (gotcha 151), and because this ratio IS the item: it is the
+        // redundancy factor between fetches and distinct textures in a frame, which
+        // nothing in this runtime had ever measured.
+        {
+            const uint64_t would = g.hits + g.skippedSameFrame;
+            fprintf(stderr,
+                    "[vk]   texture guard cadence: %llu of %llu checks skipped because "
+                    "the entry was ALREADY validated this frame (%.1f%%, i.e. %.1fx less "
+                    "hashing)%s\n",
+                    (unsigned long long)g.skippedSameFrame, (unsigned long long)would,
+                    would ? 100.0 * double(g.skippedSameFrame) / double(would) : 0.0,
+                    g.hits ? double(would) / double(g.hits) : 0.0,
+                    g_texGuardEveryFetch ? "  [CZ_VK_TEX_GUARD_EVERY_FETCH — expect 0]"
+                                         : "");
+        }
+        // ...and WHERE those bytes went, by texture size. Read it against the per-address
+        // `changed` table below: a prefix bound above every size that appears there costs
+        // nothing in detection and saves everything above it. Bytes are what the guard
+        // ACTUALLY read (the sampled path already caps a big surface at the stream
+        // bound), so the column is a true cost and not a size sum.
+        {
+            uint64_t tot = 0;
+            for (size_t b = 0; b < kTexGuardHistBuckets; b++)
+                tot += g_texGuardHistBytes[b];
+            fprintf(stderr, "[vk]   texture guard bytes by SOURCE size (checks/MB read):");
+            for (size_t b = 0; b < kTexGuardHistBuckets; b++)
+            {
+                if (!g_texGuardHistCount[b])
+                    continue;
+                char lo[16];
+                if (b == 0)
+                    snprintf(lo, sizeof lo, "<1K");
+                else
+                    snprintf(lo, sizeof lo, "%zuK", size_t(1) << b);
+                fprintf(stderr, "  %s=%llu/%.1fMB(%.0f%%)", lo,
+                        (unsigned long long)g_texGuardHistCount[b],
+                        double(g_texGuardHistBytes[b]) / 1048576.0,
+                        tot ? 100.0 * double(g_texGuardHistBytes[b]) / double(tot) : 0.0);
+            }
+            fprintf(stderr, "\n");
+        }
         if (g_texGuardPoison)
             fprintf(stderr, "[vk]   (POISONED: that share MUST be 100.00%% — the census "
                             "is only trustworthy if it can also report a positive)\n");
@@ -10631,9 +10799,13 @@ void VkRenderer_DumpStats()
         {
             if (!a.changed || shown++ >= 24)
                 break;
-            fprintf(stderr, "[vk]     %08X %4ux%-4u f%-2u  %llu of %llu hits stale "
-                            "(%.1f%%)\n",
-                    addr, a.width, a.height, a.format, (unsigned long long)a.changed,
+            // srcBytes is on this line as of part 47: it is the size a prefix bound has
+            // to cover to keep seeing this address change, and the whole population is
+            // 24 rows, so the answer to "what bound is safe" is readable straight off it.
+            fprintf(stderr, "[vk]     %08X %4ux%-4u f%-2u %7llu B  %llu of %llu hits "
+                            "stale (%.1f%%)\n",
+                    addr, a.width, a.height, a.format,
+                    (unsigned long long)a.srcBytes, (unsigned long long)a.changed,
                     (unsigned long long)a.hits,
                     100.0 * double(a.changed) / double(a.hits));
         }
