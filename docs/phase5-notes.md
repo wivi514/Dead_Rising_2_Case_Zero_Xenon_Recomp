@@ -8162,3 +8162,84 @@ path averages it), or rasterise A2M draws with real Vulkan MSAA plus
 `alphaToCoverage`. The first fits this renderer's existing design and is the
 recommendation. The shader side is already built and controlled; only the
 surface expansion is missing, and the arm above is how the result will be read.
+
+## 6cb. Part 46: THE PERFORMANCE REGRESSION — part 45's shader fix is EXONERATED by a
+## three-runs-an-arm A/B, and the profiler names `textures` as where the frame went
+
+The operator's second item: *"the performance degraded with all the fix you did
+in the last few days."* Unmeasured until now. `tools/part46_perf_ab.sh` runs the
+A/B and `tools/part46_perf_read.py` reads it.
+
+### The design, and why it is the only one-variable A/B available
+
+Three suspects were named in the part-46 kickoff, in the order they were
+introduced: part 41's per-fetch samplers, part 44/45's mip-chain and tail
+uploads, and part 45's interpolant-liveness fix, which added interpolants to 217
+of 333 pixel shaders. Only the last has a whole preserved control arm —
+`assets/shader_spv_pre45` is the entire pre-fix cache — so it is the one that can
+be turned into a **one-variable, same-binary** A/B with no rebuild.
+
+Six runs of the unattended outdoor DebugJump route, **alternated** rather than
+blocked so that thermal drift over the hour cannot be read as an arm difference,
+600 s each, `CZ_VK_PROFILE=30` and `CZ_VK_FRAME_STATS` on both. All six reached
+the outdoor era (peak draws 7,291-10,014). GPU sampled during the block with
+`tools/gpu_clock_sample.py`: **P5, mean 559 MHz, 34% utilisation, 28.1 W** —
+the awake, governed state this project documents, not the blanked-monitor P8 that
+gotcha 219 was retracted over.
+
+### The result: a clean NULL, in every draw bin
+
+Medians per run, and the share of frames within 1 ms of the 16 ms pacing period —
+the two statistics gotchas 237/238 say to read, because a MEAN on this title
+measures its own two-vblank floor rather than the change.
+
+| draw bin | fixed (median ms x3) | pre45 (median ms x3) | fixed vs pre45 | within-arm floor |
+|---|---|---|---|---|
+| 0-500 | 32 32 32 | 32 32 32 | +0.0% | 0.0% |
+| 500-1500 | 32 32 32 | 32 32 32 | +0.0% | 0.0% |
+| 1500-3000 | 32 32 32 | 32 32 32 | +0.0% | 0.0% |
+| 3000-5000 | 34 33 36 | 35 33 38 | −2.9% | 14.3% |
+| 5000-8000 | 48 48 45 | 45 46 46 | +4.3% | 6.2% |
+
+**Every bin is inside its own measured noise floor**, and the two bins that are
+not at the pacing floor disagree in SIGN (−2.9% and +4.3%), which is what a null
+looks like. Below 3,000 draws both arms sit at 32 ms with 94-99% of frames
+pinned — there is nothing there to regress. **Part 45's liveness fix is not
+responsible for a measurable frame-time regression on this route**, and 217
+shaders gaining interpolants cost nothing readable.
+
+The phase split agrees, which is the stronger form of the same statement because
+it does not go through the pacing floor at all — outdoor samples only, ≥4,000
+draws/frame, sub-phases as a share OF THE DRAW PATH:
+
+| arm | ms/frame | draws | draw% | constants | streams | **textures** | record | other | outside% |
+|---|---|---|---|---|---|---|---|---|---|
+| fixed | 42.9 | 5,241 | 66.9% | 2.4 | 0.0 | **45.4** | 11.6 | 7.1 | 32.1% |
+| pre45 | 41.9 | 4,783 | 64.8% | 2.4 | 0.1 | **43.0** | 11.6 | 7.2 | 34.0% |
+
+### WHAT THE PROFILER DID SAY: `textures` is now most of the draw path
+
+The interesting number is not the difference between the arms — it is the column
+they agree on. **`textures` is 43-45% of the draw path on both**, i.e. roughly
+29-30% of the whole frame.
+
+Against part 20's corrected measurement at ~6,800 draws — draw path 19.9 ms of
+which `textures` 2.7 ms, **13.6%** — that share has more than tripled. And the
+two suspects the A/B could not test are exactly the two that live in the texture
+path: **part 41's per-fetch samplers** (one `VkSampler` per distinct fetch spec,
+chosen per fetch) and **part 44/45's mip-chain and packed-tail uploads**.
+
+**Read that comparison with its exposure, honestly.** Part 20's figure is a
+different session, a different route era and a different binary, and it is a
+SHARE rather than a like-for-like millisecond count, so gotcha 13 applies to it
+as much as to anything else here. What it supports is a direction to look, not a
+quantity. What makes it actionable anyway is that both suspects already have
+same-binary arms and need no new code: `CZ_VK_NO_FETCH_SAMPLERS=1` (the part-40
+renderer: one global trilinear sampler), `CZ_VK_NO_MIPS=1` (the part-38
+renderer: level 0 only) and `CZ_VK_NO_MIP_TAIL=1` (the part-40 renderer).
+
+**And read the `textures` share rather than the frame time when running them.**
+The frame-time A/B above needed three runs an arm and still landed inside its
+floor in every bin; the profiler's phase share is an internal attribution rather
+than a paced quantity, so it separates arms that the frame time cannot — which
+is the whole lesson of gotchas 237/238 applied one level further in.
