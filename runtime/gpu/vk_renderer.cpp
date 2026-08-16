@@ -597,6 +597,23 @@ size_t g_guardBytes = kGuardBytesDefault;
 uint64_t g_guardSampled = 0;
 constexpr size_t kGuardBlocks = 8;
 
+// THE SIZE HISTOGRAM OF THE EXPOSED POPULATION, and why a count was not enough.
+//
+// The counter above says how MANY streams the bound leaves sampled — 6,405 a frame in
+// the operator's session — and that number cannot choose a new bound, because raising
+// the bound costs in proportion to the BYTES of the streams it newly covers, not their
+// count. Item 00c's fix was parked twice for exactly this: "raise the bound" was the
+// recommendation both times and nobody could say to what, because a bound is only
+// choosable against the distribution it has to separate. If the UI text buffer is 40 KB
+// and the crowd's meshes are 400 KB, one number fixes the picture for almost nothing;
+// if they overlap, size is the wrong discriminator entirely and that is worth knowing
+// before building anything on it.
+//
+// Powers of two from 16 KB up, so a bound can be read straight off it.
+constexpr size_t kGuardHistBuckets = 8;   // 16K,32K,64K,128K,256K,512K,1M,>1M
+uint64_t g_guardHistCount[kGuardHistBuckets] = {};
+uint64_t g_guardHistBytes[kGuardHistBuckets] = {};
+
 // EIGHT BYTES A STEP, not one, and the reason is the dependency chain rather than the
 // memory. FNV-1a is `h = (h ^ byte) * prime`, so every byte waits on the previous byte's
 // MULTIPLY — about four cycles each, serial, no matter how fast the loads are. At 512
@@ -661,6 +678,14 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut)
     // defect lived in, and a bound raised until this counter is zero for the streams that
     // matter is a bound chosen by measurement instead of by guess.
     ++g_guardSampled;
+    {
+        // Which power-of-two bucket this stream would need the bound raised to.
+        size_t b = 0;
+        for (size_t lim = 32768; b + 1 < kGuardHistBuckets && bytes >= lim; lim <<= 1)
+            ++b;
+        ++g_guardHistCount[b];
+        g_guardHistBytes[b] += bytes;
+    }
     const size_t block = g_guardBytes / kGuardBlocks;
     // Eight starts spread over [0, bytes - block], the first exactly at 0 and the last
     // exactly at the end. `bytes > kGuardBytes` guarantees the span is positive, and the
@@ -6530,8 +6555,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         static const bool a2mAnySurface = EnvOn("CZ_VK_A2M_ANY_SURFACE");
         const bool a2mSurface = a2mAnySurface ||
                                 ((regs[xenos::kRbSurfaceInfo] >> 16) & 3) == 2;
+        // CZ_VK_A2M_MODE — 1 = FLAT threshold at 0.5, 2 = per-sample 2x2 dither.
+        //
+        // The default is 2 because it is the faithful one, but it is faithful only where
+        // a host pixel IS a guest sample, and on this title's 2x foliage surface it is
+        // not: the operator's A/B showed it removing the hard black plates (good) while
+        // taking the canopy's isolated-pixel share from 0.14% to 5.59% against
+        // hardware's ~0% (a screen door). Mode 1 gives up the soft edge and keeps the
+        // silhouette, which on a host with no downsampling resolve may simply be the
+        // better trade — so it is an arm rather than an argument.
+        static const uint32_t a2mMode = []() -> uint32_t {
+            const char* m = Env("CZ_VK_A2M_MODE");
+            return m ? uint32_t(strtoul(m, nullptr, 10)) : 2u;
+        }();
         const uint32_t a2m = (!EnvOn("CZ_VK_NO_ALPHA_TEST") && (cc & 0x10) && a2mSurface)
-                                 ? 1u : 0u;
+                                 ? a2mMode : 0u;
         reinterpret_cast<uint32_t*>(shared + kSharedAlphaToMask)[0] = a2m;
         if (a2m)
             Count("draw: ALPHA-TO-MASK on a 4x surface — per-sample dither published");
@@ -9923,6 +9961,32 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         g_guardBytes,
                         (unsigned long long)(frames ? g_guardSampled / frames : 0));
                 g_guardSampled = 0;
+                // ...and the SIZE distribution of that population, because a count
+                // cannot choose a bound and the cost of raising one is in the bytes.
+                {
+                    static const char* kNames[kGuardHistBuckets] =
+                        { "16-32K", "32-64K", "64-128K", "128-256K", "256-512K",
+                          "512K-1M", "1-2M", ">2M" };
+                    char line[512];
+                    int at = snprintf(line, sizeof line,
+                                      "[vkprof] sampled-stream sizes (raise the bound to "
+                                      "cover a bucket and you pay its MB/frame):");
+                    for (size_t b = 0; b < kGuardHistBuckets; ++b)
+                    {
+                        if (!g_guardHistCount[b] || at >= int(sizeof line) - 48)
+                            continue;
+                        at += snprintf(line + at, sizeof line - at, "  %s=%llu/%0.1fMB",
+                                       kNames[b],
+                                       (unsigned long long)(frames ? g_guardHistCount[b] / frames
+                                                                   : g_guardHistCount[b]),
+                                       frames ? double(g_guardHistBytes[b]) / double(frames)
+                                                    / 1048576.0
+                                              : 0.0);
+                        g_guardHistCount[b] = 0;
+                        g_guardHistBytes[b] = 0;
+                    }
+                    fprintf(stderr, "%s\n", line);
+                }
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
                         " this window\n",

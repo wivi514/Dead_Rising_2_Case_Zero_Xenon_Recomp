@@ -8290,3 +8290,112 @@ three of them cannot be the cause.** The next move is to measure on the
 operator's own configuration — a windowed run with `CZ_VK_PROFILE` and
 `CZ_VK_FRAME_STATS` on their route, and ideally the same on a binary from before
 part 41 — rather than to run a fourth arm here.
+
+## 6cc. Part 46, OPERATOR SESSIONS: the A2M arm judged in play, a THIRD mode that keeps
+## the win without the screen door, and the FIRST profile of the operator's own frame
+
+Two chained operator sessions (`tools/part46_operator_session.sh` and
+`part46_operator_session2.sh`), captures in
+`~/DR2CZ-troubleshooting/part46-operator{,2}/`.
+
+### The trees: the arm is confirmed in play, and it brought its own defect
+
+Session 1, default vs the A2M dither. The operator: *"I think the trees look
+better on second arm but they still got different kind of issue."* Both halves
+of that are measurable, and the second half is the artifact §6ca predicted in
+advance rather than a surprise.
+
+The new statistic is **ISOLATED PIXELS** — a pixel differing from all four of its
+neighbours by more than 50 levels. A real edge cannot produce one; a dither
+produces nothing else, so it separates "cutout" from "screen door" where the
+luminance quantiles cannot.
+
+Session 2 put a third mode against the second at a **near-matched pose** (eye 5.4
+units apart, view directions within 0.02 — the same tree by the DAILY
+NECESSITIES building):
+
+| arm | hard-edge | **ISOLATED** |
+|---|---|---|
+| hardware E3 (menu canopy) | 0.18% | **0.00%** |
+| A2M mode 2 — per-sample dither | 12.92% | **4.17%** |
+| A2M mode 1 — flat threshold at 0.5 | 6.93% | **0.71%** |
+
+and on the headless menu tree, which IS pixel-matched:
+
+| arm | p05/p95 | hard-edge | ISOLATED |
+|---|---|---|---|
+| hardware E3 | 0.326 | 0.18% | 0.00% |
+| default | 0.291 | 3.10% | 0.18% |
+| mode 2 (dither) | 0.324 | 4.95% | 1.13% |
+| **mode 1 (flat 0.5)** | 0.306 | 3.37% | **0.20%** |
+
+**Mode 1 is the one to keep.** It gives up hardware's soft edge and recovers
+about half the tonal gain, but it removes the hard black plates with **no screen
+door at all** — 0.20% isolated against the default's 0.18%, where the dither is
+1.13%. Its justification is one line: a coverage mask averaged over a resolve
+crosses 50% at alpha 0.5, so a flat 0.5 threshold puts the SILHOUETTE where
+hardware's resolve puts it without needing a sample grid to average anything.
+`CZ_VK_A2M_MODE=1` / `=2` selects them.
+
+### A METHOD ERROR, recorded because it nearly became a finding
+
+Two operator captures were compared per-pixel over a canopy box on the strength
+of the pictures looking like the same view. `tools/pose_read.py` says the eyes
+are **250 units apart** with view directions 0.88 and −0.03 in x — different
+trees entirely, and the numbers were comparing unrelated pixels. They were
+withdrawn. **Read the pose before the picture**: this port has a tool that
+answers "is this the same place" in one second, and eyeballing two screenshots is
+not that tool. It is the same wall gotcha 254 describes, met from the other side.
+
+### THE FIRST PROFILE OF THE OPERATOR'S OWN FRAME, and it does not look like ours
+
+Session 1 shipped with no `CZ_VK_PROFILE` and no `CZ_VK_FRAME_STATS`, so the
+operator's *"performance is at around 20fps"* had no measurement behind it at
+all. Session 2 wired both. Their frame, windowed, on their own route:
+
+| fps | ms | draws | draw path | textures (% of draw) | outside |
+|---|---|---|---|---|---|
+| **14.6** | 68.6 | 5,080 | **78.6%** | 33.1 | 20.2% |
+| 21.7 | 46.0 | 4,590 | 66.9% | 42.1 | 31.4% |
+| 31.2 | 32.0 | 1,423 | 25.5% | 15.2 | 72.0% |
+
+**The 20 fps is real and it is OURS.** At 1,400 draws they sit at the two-vblank
+floor with 72% of the frame `outside` — the guest's pacing, nothing to win. In a
+crowd the draw path is **67-79% of the frame**, and at 5,080 draws that is 53.9
+ms of a 68.6 ms frame, of which `textures` is ~17.8 ms — the largest single term,
+exactly as §6cb's headless profile said.
+
+**AND THE HEADLESS ROUTE UNDERSTATES IT BY ABOUT A FACTOR OF TWO.** §6cb measured
+the draw path at 28.7 ms at 5,241 draws; the operator's is **53.9 ms at 5,080**.
+Same order of draws, nearly double the cost. Read with its caveat — a different
+route renders different content at the same draw count, and windowed adds a
+swapchain and a compositor this route never touches — but it is large enough to
+matter for how §6cb's conclusions are used: **the three suspects "exonerated"
+there were exonerated on a workload that is half as expensive as the real one**,
+so that is an exoneration on the headless route, not on the operator's.
+
+### THE NUMBER THAT UNBLOCKS ITEM 00c/00k, finally measured
+
+The UI text defect has been diagnosed to the cross-frame stream store's guard
+since part 45, and the fix has been parked twice with the same recommendation —
+"raise the bound" — and no way to say to what, because a COUNT of exposed streams
+cannot price a bound. Raising it costs in BYTES. Session 2 added the histogram:
+
+| stream size | streams/frame | MB/frame if the bound covered it |
+|---|---|---|
+| 16-32K | 46 | 1.1 |
+| 32-64K | 144 | 5.4 |
+| 64-128K | 137 | 9.5 |
+| **128-256K** | **831** | **104.7** |
+| 256-512K | 411 | 103.0 |
+| 512K-1M | 24 | 12.3 |
+| 1-2M | 2 | 2.0 |
+
+**A bound of 128 KB costs 16 MB/frame; 256 KB costs 121 MB/frame.** The
+distribution is strongly bimodal — a few hundred small streams, then a wall of
+831 buffers at 128-256K — so the question "is the UI text buffer under 128 KB"
+now has a price attached to both answers, and the arm that settles it
+(`CZ_VK_STREAM_GUARD_BYTES=262144`, deliberately wide so a null cannot be
+ambiguous) is what the operator is playing. If it fixes the HUD, the histogram
+narrows the bound afterwards; that is the order that gets a fix instead of a
+trade.
