@@ -74,6 +74,15 @@ def windows(path):
     return out
 
 
+def arm_logs(d, arm):
+    """Every log belonging to `arm`. A headless campaign writes `<arm>_1.log` per run; an
+    OPERATOR session writes a single `<arm>.log`. Both are real inputs to these readers,
+    and a reader that globs only `<arm>_*.log` reports "no windows in band" for an
+    operator session -- a zero from a check that could not have matched (gotcha 25)."""
+    return sorted(glob.glob(os.path.join(d, f'{arm}_*.log')) +
+                  glob.glob(os.path.join(d, f'{arm}.log')))
+
+
 def med(xs):
     return statistics.median(xs) if xs else float('nan')
 
@@ -84,7 +93,8 @@ def main():
     d = sys.argv[1]
     arms = sys.argv[2:]
     if not arms:
-        seen = {os.path.basename(p).rsplit('_', 1)[0] for p in glob.glob(os.path.join(d, '*.log'))}
+        seen = {re.sub(r'(_\d+)?\.log$', '', os.path.basename(p))
+                for p in glob.glob(os.path.join(d, '*.log'))}
         arms = ['base'] + sorted(seen - {'base'})
 
     print(f"PM4 walk, ns per packet -- windows drawing >= {LO} (the outdoor era)")
@@ -92,7 +102,7 @@ def main():
           f"{'filler%':>8} {'wins':>5} {'runs':>5}")
     table = {}
     for arm in arms:
-        logs = sorted(glob.glob(os.path.join(d, f'{arm}_*.log')))
+        logs = arm_logs(d, arm)
         rows = [w for p in logs for w in windows(p) if LO <= w[0] < HI]
         if not rows:
             print(f"{arm:<20}   no windows in band ({len(logs)} logs)")

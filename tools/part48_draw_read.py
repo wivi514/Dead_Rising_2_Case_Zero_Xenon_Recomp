@@ -55,6 +55,15 @@ OTHER_FIELDS = ['other', 'oth.shader', 'oth.key', 'oth.pipeline', 'oth.begin',
                 'oth.fetch', 'oth.tail', 'oth.residual']
 
 
+def arm_logs(d, arm):
+    """Every log belonging to `arm`. A headless campaign writes `<arm>_1.log` per run; an
+    OPERATOR session writes a single `<arm>.log`. Both are real inputs to these readers,
+    and a reader that globs only `<arm>_*.log` reports "no windows in band" for an
+    operator session -- a zero from a check that could not have matched (gotcha 25)."""
+    return sorted(glob.glob(os.path.join(d, f'{arm}_*.log')) +
+                  glob.glob(os.path.join(d, f'{arm}.log')))
+
+
 def windows(path, lo, hi):
     """{field: value} per profile window whose draws/frame is in [lo, hi). The `record`
     and `other` lines are attributed to the most recent frame line — the profiler emits
@@ -89,12 +98,11 @@ def main():
     ap.add_argument('--hi', type=int, default=6000)
     a = ap.parse_args()
 
-    arms = sorted({os.path.basename(p).rsplit('_', 1)[0]
+    arms = sorted({re.sub(r'(_\d+)?\.log$', '', os.path.basename(p))
                    for p in glob.glob(os.path.join(a.dir, '*.log'))} - {'base'})
     data = {}
     for arm in ['base'] + arms:
-        runs = [windows(p, a.lo, a.hi)
-                for p in sorted(glob.glob(os.path.join(a.dir, f'{arm}_*.log')))]
+        runs = [windows(p, a.lo, a.hi) for p in arm_logs(a.dir, arm)]
         if any(runs):
             data[arm] = runs
     if 'base' not in data:
@@ -160,9 +168,17 @@ def main():
                 if v is None:
                     continue
                 rel = abs((v - b) / b * 100)
-                if rel > 2 * floor[f] and floor[f] >= 0:
-                    print(f"  {f:<14} {arm}: {rel:.1f}% against a {floor[f]:.1f}% floor "
-                          f"— {rel/max(floor[f],1e-9):.1f}x, REAL")
+                # A null control that reads EXACTLY zero does not mean the floor is zero;
+                # it means this statistic is quantised (the profiler prints ns/draw as an
+                # integer) and one arm happened to land on the same value. Dividing by it
+                # produced "2702702702.7x, REAL" for a 2.7% difference on the first run of
+                # this tool. The floor cannot be finer than the print resolution, so it is
+                # clamped to one unit in the last place of the base value.
+                ulp = 100.0 / b if b else 1.0
+                fl = max(floor[f], ulp)
+                if rel > 2 * fl:
+                    print(f"  {f:<14} {arm}: {rel:.1f}% against a {fl:.1f}% floor "
+                          f"— {rel/fl:.1f}x, REAL")
     else:
         print("!! no --null arm given. A percentage with no measured floor beside it is "
               "not a result (gotcha 331).")
