@@ -1,5 +1,44 @@
 # The performance plan — written against the OPERATOR'S OWN FRAME, part 46 → 47
 
+> ## STATUS after part 47 executed tiers 1 and 2 — read this before the plan below
+>
+> **Item 1.1 was correctly ranked first and was worth about twice its estimate.**
+> The plan's own first instruction was one run of `CZ_VK_NO_TEX_REVALIDATE=1` to
+> bound it, and that run says the guard is **nearly the whole texture phase**: on
+> the outdoor route `textures` is **15.9 ms with it and 2.3 ms without**, against
+> an estimate of 8-11 ms. In the 5,000-8,000 draw bin the frame goes from 47-48 ms
+> at 23-24% pinned to 32-33 ms at 67-94% pinned — i.e. it lands on the two-vblank
+> floor. §7's ranking stands; §1.1's price does not.
+>
+> **What part 47 built, all of it in tiers 1-2 plus 3.1:**
+> * 1.1 as a CADENCE change — the guard runs once per frame per cache entry rather
+>   than once per fetch. Measured **93.4% of checks skipped, 15.1x less hashing**.
+>   Arm `CZ_VK_TEX_GUARD_EVERY_FETCH=1`.
+> * 1.2 and 1.3 as written.
+> * 2.1/2.2 as written, and **verified against the code they replace** — 0
+>   mismatches over 152 M dwords with a positive control, **100.0% bulk**.
+>   Arm `CZ_PM4_NO_BULK_REGS=1`.
+> * 3.1 turned out to be **already bought for its five binds** (pipeline 70-81%,
+>   viewport/scissor 99%, blend and descriptor sets 100% skipped since part 18).
+>   What was NOT bought is the vertex and index binds, which part 18 deliberately
+>   only counted; their repeat rate is 51.0% / 39.4% on the operator's session, so
+>   they are now cached too. Arm `CZ_VK_NO_BUFFER_BIND_CACHE=1`.
+> * Not in the plan, same class as 1.2: the per-fetch sampler lookup was a
+>   `std::map` over a NINE-BIT key and is now a 512-entry table.
+>
+> **What 1.4 turned out to be**: the "two cache lookups per fetch" is arm-gated —
+> the first `R->textures.find` is inside `if (cacheFirst)`, i.e. only under
+> `CZ_VK_TEX_CACHE_FIRST=1`. There is one lookup on the default path and nothing
+> to collapse. The per-draw memo half is untouched and is now largely redundant,
+> since the once-per-frame cadence removes the work it would have skipped.
+>
+> **Still open**: 3.2, multithreaded recording — deliberately last, and now less
+> urgent. And the one lever inside 1.1 that trades detection for cost, hashing a
+> bounded prefix: `CZ_VK_TEX_GUARD_BYTES=N` exists, **its default is unchanged**,
+> and the histogram that prices it is printed with the stats (`phase5-notes.md`
+> §6cd).
+
+
 Written at the end of part 46 (2026-08-16), after the first session that ever
 profiled the operator's real, windowed, played frame. Supersedes
 `docs/perf-cpu-plan.md` as the live plan; that document's §1 ranking was built on
