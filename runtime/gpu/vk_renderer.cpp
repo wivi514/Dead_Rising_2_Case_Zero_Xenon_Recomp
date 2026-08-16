@@ -7070,22 +7070,39 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             const char* m = Env("CZ_VK_A2M_MODE");
             return m ? uint32_t(strtoul(m, nullptr, 10)) : 2u;
         }();
-        const uint32_t a2m = (!EnvOn("CZ_VK_NO_ALPHA_TEST") && (cc & 0x10) && a2mSurface)
-                                 ? a2mMode : 0u;
+        // The three statements below were the ONLY per-draw environment read left in
+        // this file and one of the last dynamic `Count`s, and part 48's split of `other`
+        // is what surfaced them — the same way part 47's split of `record` surfaced the
+        // stream guard. Every neighbouring env read here is already a function-local
+        // static; this one alone called `getenv` per draw, which is a linear walk of the
+        // environment block, and the declined branch built a string with `snprintf` and
+        // then looked it up in a `std::map` keyed by `std::string`. The declined branch
+        // is the COMMON one — 598,304 draws took it in the run that measured this, and
+        // 69,390 A2M draws of 187,621 in the census that motivated the counter. Gotcha
+        // 230's defect class, third instance in two parts.
+        static const bool noAlphaTest = EnvOn("CZ_VK_NO_ALPHA_TEST");
+        const uint32_t a2m = (!noAlphaTest && (cc & 0x10) && a2mSurface) ? a2mMode : 0u;
         reinterpret_cast<uint32_t*>(shared + kSharedAlphaToMask)[0] = a2m;
         if (a2m)
-            Count("draw: ALPHA-TO-MASK on a 4x surface — per-sample dither published");
+            COUNT("draw: ALPHA-TO-MASK on a 4x surface — per-sample dither published");
         else if (cc & 0x10)
         {
             // NAME the sample count rather than counting "not 4x" — the first version
             // of this counter said only "declined" and read 94,783 against 187,621
             // draws that DID take the 4x window scale, which is a contradiction a
             // nameless counter cannot help you resolve.
-            char msg[80];
-            snprintf(msg, sizeof msg,
-                     "draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=%u — dither declined",
-                     (regs[xenos::kRbSurfaceInfo] >> 16) & 3);
-            Count(msg);
+            //
+            // The name has four possible values, so it is four literals with four cached
+            // slots rather than a formatted string per draw. Same names, same counts —
+            // which is the check on this change, since nothing downstream of
+            // `VkRenderer_DumpStats` can tell the two forms apart if that holds.
+            switch ((regs[xenos::kRbSurfaceInfo] >> 16) & 3)
+            {
+                case 0: COUNT("draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=0 — dither declined"); break;
+                case 1: COUNT("draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=1 — dither declined"); break;
+                case 2: COUNT("draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=2 — dither declined"); break;
+                default: COUNT("draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=3 — dither declined"); break;
+            }
         }
     }
 
