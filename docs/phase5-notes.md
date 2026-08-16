@@ -8018,6 +8018,13 @@ symptom:
    operator's gameplay frame and in hardware's `w2_gasstation` binds a DXT4/5
    at slot 0.) An artist wanting a binary cutout would ship DXT1; DXT4/5 plus
    ALPHA_TO_MASK is a *coverage* material.
+   **And the split is exact, which is the corroboration**: over the operator's
+   frame 6615, all **58** `cc=AA000007` leaf draws (alpha test OFF, opaque) bind
+   a **DXT1**, and all **26** draws that enable the test (10 `AA00000C`
+   alpha-blended, 16 `AA00001C` A2M) bind a **DXT4/5**. The material's format
+   and its render state agree perfectly about which draws want a cutout, with no
+   overlap in either direction — so "the foliage cards are the fractional-alpha
+   ones and the trunk/branch geometry is not" is measured rather than assumed.
 2. **At ref = 0 the alpha test keeps essentially everything.** Our emulation is
    `clip(oC0.w - g_AlphaThreshold)` with the threshold published as
    `ref + 1/512` — so every texel with alpha above ~0.002 is written at FULL
