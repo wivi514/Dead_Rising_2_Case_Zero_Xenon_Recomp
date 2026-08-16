@@ -62,6 +62,36 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    ratios: 0.9997 / 1.000 / 0.523 with walks==kicks==drains is the
                    healthy shape, `distinct=2` with `arms` frozen is a replay. It is
                    what retired the "~300x amplification" (gotchas 161-162)
+CZ_FPS_CAP=60|30|20  **THE FRAME RATE CAP — and it is the TITLE'S OWN SETTING, not
+                   something this runtime imposes.** Default unset = 30 fps, unchanged.
+                   The 32 ms frame is `present interval x vblank period` = 2 x 16 ms,
+                   and the interval lives in the D3D device field `dev+13804`
+                   (`kDevicePresentInterval`, derived in `gpu/vd.h` from the title's own
+                   code): 0 or 1 -> 60 fps, 2 -> 30 fps, 4 -> 20 fps. **Reading the
+                   config chain backwards is the point: the game's own "vsync 1" setting
+                   produces exactly the value 0**, so this selects a mode the title
+                   already ships with. `phase5-notes.md` §6am warns the two-vblank WAIT
+                   "must not be optimised" — it is not being. The wait is intact and our
+                   vblank cadence is untouched at 16 ms; the title simply asks for one
+                   vblank instead of two. Re-asserted every vblank rather than hooked at
+                   the setter, because `sub_827D31D0` calls that only when the title's
+                   own cached copy changes — possibly once, before the device exists —
+                   and a mode that silently did not engage reads as "the change did
+                   nothing" (gotcha 151). **`CZ_SWAPQ_TRACE=1` is the instrument that
+                   proves it**: `due` should be `tick+1` instead of `tick+2`, `tick`
+                   should still climb ~62/s, and `done` should keep pace with `tail`.
+                   60/30/20 are the only values offered — interval 0 is present-
+                   immediately, which `CZ_PM4_NO_STOP_ON_WAIT=1` already showed
+                   overflows the flip queue 10 runs in 10 — and anything else is refused
+                   loudly rather than rounded (gotcha 5).
+                   **IT DOES NOT DOUBLE THE SIMULATION SPEED**, which was the registered
+                   claim and the way this could have been a lie: world units travelled
+                   per WALL second read p90 **0.99x** and p95 1.18x against a predicted
+                   2.00x if the engine were frame-locked. The null control — two runs of
+                   the same 30 fps config — is 31-39%, so this rules out a DOUBLING and
+                   not a 10-20% difference. The oracle measures Chuck walking only;
+                   animation, Havok at half the timestep, and audio sync are the
+                   operator's to judge
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_TICK_MS=N   how often the RING is walked, as opposed to how often the guest sees
                    a vblank. **Default 1; `CZ_PM4_TICK_MS=16` is the control arm**, i.e.
