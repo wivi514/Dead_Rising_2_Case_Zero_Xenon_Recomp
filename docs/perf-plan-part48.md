@@ -9,6 +9,40 @@ Target, unchanged: **the Xbox 360 shipped this game at 30 fps, i.e. a 33 ms fram
 
 ---
 
+## STATUS, written during part 48 — read this before the plan below
+
+| item | state |
+|---|---|
+| 1a print the opcode census | **BUILT.** And it found two things nobody predicted — see below |
+| 1b per-thread census counters | **BUILT and verified** (0 of 135 counters disagree, poison arm reports 1). A/B running |
+| 2b stream cache without the churn | **BUILT.** 97.7% of fills reuse a node; allocations 1,161,050 → 25,668 per window. A/B running |
+| 2d isolate the bind cache | A/B running, in the same campaign |
+| §5 split `other` | **BUILT — and it REFUTED this document's own prediction. §5 below is wrong; see the correction** |
+| 0 the operator's confirmation of the fold | **STILL OWED.** They were not free; `tools/part48_operator_session.sh` is written and the gates are clean against the binary |
+
+**§1a found two things this plan did not know**, both from counters that already
+existed: **`SET_BIN_MASK_LO` is the most frequent packet in the entire stream** — a
+third of all type-3 packets, half again as many as there are draws — and **28.7% of
+every packet walked is type-2 ring FILLER**, which does no work at all and, before
+item 1b, still paid two atomic read-modify-writes. That second number is most of
+item 1b's justification and nothing in this plan had it.
+
+**§5's prediction is REFUTED.** It said "expect the pipeline-key build and its
+`std::map` lookup to be most of" `other`. Measured on the outdoor route at ~5,000
+draws, `other` = 735 ns/draw = **key 40 + pipeline 118 + fetch 246 + residual 329**.
+The probe is **16%**; the residual is 45% and the fetch walk is second. The
+within-phase ranking in §5 should be read as a list of candidates, not a priority
+order (gotcha 328 — a plan can only name suspects that *have* names, so it is
+systematically biased toward the named component).
+
+**And the split found a real item within minutes of printing**: a `getenv` and an
+`snprintf` on the per-draw path in the alpha-to-mask block. `otherFetch` 246 → 119
+ns/draw, `other` 735 → 571; at the operator's ~7,000 draws that is ~1.15 ms.
+`other`'s residual is now split three ways again (shader / begin / tail) and that
+reading is owed.
+
+---
+
 ## 1. THE BUDGET — where the operator's frame goes NOW
 
 Their own session, `~/DR2CZ-troubleshooting/part47-operator/`, matched on draw
