@@ -1210,7 +1210,25 @@ Next, in order:
    they said "everything works fine", but took no captures and the sentence
    equally reads as "no defects other than the trees". Ask before recording.
 
-00l. **PERFORMANCE — MEASURED, PLANNED, AND TIERS 1+2 EXECUTED IN PART 47.**
+00l. **PERFORMANCE — EXECUTED IN PART 47 AND CONFIRMED BY THE OPERATOR ON THEIR OWN
+   MACHINE. The live plan is now `docs/perf-plan-part48.md`.**
+   **Their two-arm A/B, one binary, their route, matched on draw count: 64.1 ->
+   42.8 ms, 15.6 -> 23.4 fps, `textures` 25.19 -> 4.45 ms**, with the picture
+   unchanged and no staleness reported. Headlessly the crowd frame reaches the
+   two-vblank floor (42-46 -> 32 ms, pinned share 5-13% -> 73-85%).
+   **What remains, in `docs/perf-plan-part48.md`**: their PM4 walk at 16.6 ms
+   (and its first item is an INSTRUMENT — `Pm4_OpcodeCount` has been counted since
+   phase 4 and read by nothing, so nobody can say which packets those are);
+   `record` re-measured after the guard fold; `other` at 4.19 ms and
+   uninstrumented; and two items deliberately left alone (the bounded-prefix
+   texture-guard lever, and multithreaded recording).
+   **OWED**: the operator's confirmation of the guard fold, and an ISOLATED A/B of
+   the vertex/index bind cache — the one part-47 change never measured alone, and
+   `record` came out ~1 ms higher on the part-47 arm in both datasets. If it is a
+   loss, delete it.
+   The part-47 text follows.
+
+00l-part47. **PERFORMANCE — the part-46/47 plan, kept for its derivations.**
    **Read `docs/perf-plan-part47.md`'s STATUS header first**; the plan's budget
    and ranking stand, its price for item 1.1 does not.
    **The plan's own named first run settled its top item and repriced it upward.**
