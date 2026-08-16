@@ -390,3 +390,35 @@ brackets balanced. The slot/stride recording for mini-fetch inheritance
 happens before the check, so the minis still resolve. **Upstream-relevant**:
 any title whose compiler leaves a pure-prefetch vfetch_full in the microcode
 hits this; it is data-dependent, so a bank can be clean for months first.
+
+## XenosRecomp, part 46: alpha-to-mask coverage (a FEATURE, not a bug fix)
+
+Commit `e0c086f` in `~/GithubRepo/XenosRecomp`. Two small changes, and **both
+are no-ops unless the shader is built with `-D XE_ALPHA_TO_MASK=1`**, which is
+how it stays an A/B arm rather than a fork:
+
+* `shader_common.h` gains `XeAlphaTestThreshold(float2 pos)`, returning
+  `g_AlphaThreshold` normally and `max(g_AlphaThreshold, 2x2 Bayer)` for a draw
+  the host has flagged as ALPHA_TO_MASK (a new shared constant at +284).
+* `shader_recompiler.cpp` emits `clip(oC0.w - XeAlphaTestThreshold(iPos.xy))`
+  instead of `clip(oC0.w - g_AlphaThreshold)`.
+
+**Shown to be a no-op, not assumed to be**: the whole 434-shader cache was
+rebuilt from the new emitter with the define OFF and the canopy region under
+investigation came out byte-identical to the old cache's (md5
+`f4a1a593a15b3e27b40d59136aadf622`), as did a third cache built with the define
+ON but the host's gate declining every draw.
+
+**Why it exists**: Xenos applies A2M *in addition to* the alpha test, and Case
+Zero's foliage draws GREATER at `RB_ALPHA_REF = 0.0`, at which the alpha test
+keeps everything and A2M is doing the entire cutout alone over a DXT4/5 albedo
+whose per-leaf alpha is a ramp. A scalar-threshold clip writes the leaf card's
+soft fringe at full opacity, and feathery canopies render as hard-edged plates.
+`docs/phase5-notes.md` §6ca.
+
+**Upstream-relevant, with a caveat worth stating**: the per-sample form is only
+*exact* on a host that rasterises one sample per guest SAMPLE. Case Zero's
+renderer does that for 4x surfaces (it scales window coordinates 2x in both
+axes) but not for 2x — and this title's foliage is on a 2x surface, so the arm
+there dithers at pixel granularity and is a diagnostic rather than a default.
+A port adopting this should check which surfaces it sample-expands first.
