@@ -3184,3 +3184,40 @@ From phase C part 18 (the frame rate — and none of it was work):
      of `record` for anyone to follow it. **When a phase reads zero, find the
      scope's boundaries before believing the subsystem is free** — and read the
      ledger for the case you are about to rediscover.
+
+327. **THE THIRD ITEM IN TWO PARTS WAS FOUND BY SPLITTING A PROFILER PHASE, AND
+     NONE OF THEM BY READING THE CODE.** Part 47 split `record` and found the
+     stream guard; part 48 split `other` and found a `getenv` on the per-draw
+     path; part 48's opcode census — a split of the PM4 walk by opcode — found
+     that 28.7% of the packets are ring filler that does no work. In every case
+     the code had been read before, by someone looking for exactly that kind of
+     defect, and in every case reading did not find it. **Splitting a phase is
+     cheap, it is reversible, and it is the highest-yield action available on an
+     uninstrumented number** — so when a phase is above ~10% of a frame and has
+     no breakdown, split it before forming any hypothesis about it. The corollary
+     is the ranking rule: a phase with no breakdown should outrank a phase with
+     one at the same size, because the second has already been looked at.
+
+328. **A PLAN'S PREDICTION ABOUT WHAT IS INSIDE A PHASE IS A GUESS, AND IT WILL
+     NAME THE THING THAT HAS A NAME.** `docs/perf-plan-part48.md` §5 predicted the
+     pipeline-key `std::map` probe would be "most of" `other`, reasoning from a
+     real precedent (part 47's sampler map). Measured: the probe is **16%** of
+     `other`, the RESIDUAL is 45%, and the fetch walk is second. The error is
+     systematic rather than unlucky — a plan can only name suspects that have
+     names, and a residual by definition has none, so every such prediction is
+     biased toward the named component and against the one that is actually
+     costing. **Write the split before writing the ranking, not after**, and
+     treat a plan's within-phase ordering as a list of candidates rather than as
+     a priority order.
+
+329. **`getenv` IS A LINEAR SCAN, AND ONE ON A PER-DRAW PATH IS INVISIBLE IN
+     REVIEW BECAUSE IT LOOKS LIKE A CONSTANT.** `EnvOn("CZ_VK_NO_ALPHA_TEST")`
+     read like a compile-time switch and was a walk of the environment block per
+     draw; every other environment read in the same twenty lines was already a
+     function-local static, which is what made the one exception unreadable. The
+     grep that finds these is not `getenv` — it is **`getenv`/`EnvOn` NOT preceded
+     by `static`**, and it is worth running once per performance part. The same
+     line's other half is the matching idiom for counters: a name built with
+     `snprintf` and then looked up in a `std::map<std::string, uint64_t>` is a
+     per-draw allocation and a tree walk, and where the name has a small fixed set
+     of values it should be that many literals with cached slots.

@@ -8746,3 +8746,125 @@ the largest draw-path term on their frame and it is **completely uninstrumented
 inside** — exactly the state the PM4 walk was in before it got its packet census,
 and the state that made "the walk is 11 ms" support no hypothesis about what to
 change. Splitting it is the prerequisite to costing it.
+
+## 6ce. Part 48: THE COUNTERS WERE THE COST, TWICE — and splitting a profiler phase
+## refuted the plan that asked for the split
+
+Part 48's subject is unchanged and set by the operator: *"For now performance is
+the most important."* The plan is `docs/perf-plan-part48.md`, built on their own
+part-47 frame — **42.8 ms at ~7,010 draws, target 33 ms**.
+
+Its first instruction, and this is the part worth transferring, was **not** an
+optimisation. It was to print a number that had been collected for twenty-odd
+parts and read by nobody.
+
+### §1. `Pm4_OpcodeCount` was incremented on every packet and called from NOWHERE
+
+`Pm4_OpcodeCount(opcode)` and `Pm4_TypeCount(type)` have existed since phase 4.
+Every packet the command processor executed bumped one of each. **Neither was
+called anywhere in the runtime.** So "which packets cost the 16.6 ms of PM4 walk"
+— the largest single term on the operator's frame — was unanswerable while the
+answer sat in memory, and the walk had been optimised twice without it.
+
+Twenty lines, differenced per profile window like every other rate on those
+lines. On the outdoor route at ~6,400 draws:
+
+```
+[vkprof] pm4 types: t0(reg-run) 34.5% t1(reg-pair) 0.0% t2(filler) 28.7% t3(command) 36.8%
+[vkprof] pm4 opcodes: SET_BIN_MASK_LO 9061/f (11.9%)  DRAW_INDX 5975/f (7.9%)
+                      EVENT_WRITE 4557/f (6.0%)  EVENT_WRITE_EXT 4486/f (5.9%)
+                      IM_LOAD 1556/f (2.0%)  LOAD_ALU_CONSTANT 1839/f (2.3%)  ...
+```
+
+Two things nobody had predicted, and neither is small:
+
+* **`SET_BIN_MASK_LO` is the most frequent packet in the whole stream** — a third
+  of all type-3 packets, and *half again as many as there are draws*. The guest
+  rewrites the bin mask's low dword one and a half times per draw.
+* **28.7% of every packet walked is type-2 ring FILLER**, which does no work
+  whatsoever and, before this part, still paid two atomic read-modify-writes.
+
+### §2. Those atomics were the item, and they are now per-thread
+
+`ExecutePacket` did four `lock xadd`s on an ordinary packet — packets, types,
+opcodes, regWrites — and a fifth on a draw. On the operator's 81,533 packets a
+frame that is roughly **326,000 bus-locked read-modify-writes**, ~20 cycles each
+even completely uncontended, for pure instrumentation. Gotcha 230's defect class,
+one subsystem over from part 47's items 1.2 and 1.3.
+
+The counters are **not** removed — they are the only description this project has
+of the thing it is optimising. They become one instance per walking thread,
+summed by the accessors, with the fields still `std::atomic` because the storage
+class is not what costs: a relaxed `store(load() + n)` is `mov`/`add`/`mov` with
+no bus lock, where `fetch_add` is `lock xadd`.
+
+**Verified against the code it replaces**, because no gate in this repo can see
+inside `ExecutePacket` (gotcha 322): `CZ_PM4_VERIFY_COUNTERS=1` drives BOTH forms
+from every call site and compares all 135 counters. "Compare two runs' totals"
+would not do — nothing about this title's packet stream is reproducible run to
+run. Within one run the two are bumped by the same call with the same argument.
+
+| arm | result |
+|---|---|
+| `CZ_PM4_VERIFY_COUNTERS_POISON=1` | **1 of 135 DISAGREE** — the check can fail |
+| `CZ_PM4_VERIFY_COUNTERS=1` | **0 of 135**, 13 windows, outdoor route |
+
+The comparison is exact because exactly one thread walks (`vd.cpp` is the only
+caller of `Pm4_Execute` and says so), and the report prints the walker count so
+that is checked every run rather than trusted. It read 1.
+
+### §3. Splitting `other` REFUTED the plan section that asked for the split
+
+`drawOther` was 4.19 ms of the operator's frame and was four things wearing one
+number. `docs/perf-plan-part48.md` §5 predicted: *"expect the pipeline-key build
+and its `std::map` lookup to be most of it"*, reasoning that a red-black tree
+probed once per draw is the same shape as the sampler `std::map` part 47 replaced
+with a flat table.
+
+Measured, outdoor route at ~5,000 draws:
+
+```
+[vkprof] other 12.2% = key 0.7 + pipeline 2.0 + fetch 4.1 + residual 5.5
+         per draw:  735 ns =  40 +        118 +       246 +          329
+```
+
+**The pipeline probe is 16% of it.** The largest term is the residual at 45% and
+the fetch walk is second. The plan's tier-3 ranking was wrong, and it was wrong in
+the same direction the profiler has been wrong every previous time: toward the
+thing that has a name.
+
+### §4. ...and within minutes the split found a `getenv` on the per-draw path
+
+`otherFetch` at 246 ns/draw was worth reading, and the read was immediate. The
+alpha-to-mask block ran
+
+* `EnvOn("CZ_VK_NO_ALPHA_TEST")` — a raw `getenv`, i.e. a linear walk of the
+  environment block — **once per draw**, while every other environment read in the
+  same twenty lines is already a function-local static; and
+* on its declined branch, an `snprintf` building a counter name followed by a
+  lookup in a `std::map<std::string, uint64_t>`. **That branch is the common
+  one**: 598,304 draws took it in the run that measured this.
+
+Fixed as a static, a `COUNT(literal)`, and four literals for the four values the
+formatted name can take. **`otherFetch` 246 → 119 ns/draw and `other` as a whole
+735 → 571**; at the operator's ~7,000 draws that is ~1.15 ms of a 42.8 ms frame.
+
+No control arm, because there is nothing to compare that is not strictly worse:
+the change is equivalent by construction and the check is that the counters still
+print the same names with real counts (`msaa=1 … dither declined 598304`), which
+is the one thing a wrong transcription of four literals would break.
+
+### What generalises
+
+**Three items in two parts have now been found by SPLITTING a profiler phase, and
+none of them by reading the code.** Part 47's `record` split found the stream
+guard (81.65 MB hashed in a frame, charged to a phase whose name did not mention
+it); part 48's `other` split found the per-draw `getenv`; and item 1a's census —
+also a split, of the walk by opcode — found that a third of the packets are
+filler. A phase name is a **scope**, not a subsystem, and what is expensive inside
+it is routinely not what the name says (gotchas 325, 326).
+
+The second half is worth saying separately: **a counter that is collected and
+never printed is worse than no counter**, because it makes the question look
+answered. `Pm4_OpcodeCount` was in the header, in the accessor list, and
+incremented on the hottest loop in the runtime, for twenty parts.
