@@ -208,6 +208,27 @@ CZ_PM4_NO_BULK_REGS=1  write every register run one dword at a time — the pre-
                    share would mean the item is worth much less than it looks.
                    **Run both PM4 boundary oracles against any change here** —
                    `tools/part47_gates.sh` does
+CZ_PM4_ATOMIC_COUNTERS=1   the pre-part-48 census: `g_packets`, `g_types`, `g_opcodes`
+                   and `g_regWrites` as bus-locked `fetch_add`s rather than per-thread
+                   counters summed at read time. FOUR `lock xadd`s on an ordinary packet
+                   and a fifth on a draw, i.e. ~326,000 a frame on the operator's stream,
+                   for pure instrumentation — and part 48's opcode census sharpened it by
+                   showing 28.7% of those packets are type-2 ring FILLER that does no
+                   other work. The same-binary control arm for item 1b; read it as ns per
+                   PACKET with `tools/part48_walk_read.py`, never as `outside` in ms
+CZ_PM4_VERIFY_COUNTERS=1   drive BOTH forms of the census from every call site and
+                   compare all 135 counters, reported on the `[vkprof] pm4 census verify`
+                   line. Must be 0. This has to be a WITHIN-RUN comparison rather than
+                   "compare two runs' totals", because nothing about this title's packet
+                   stream is reproducible run to run; within one run the two forms are
+                   bumped by the same call with the same argument, so any difference is a
+                   real defect. The line also prints the number of threads that have ever
+                   walked a packet — it is 1 in this runtime, and the exactness of the
+                   comparison depends on that (gotcha 322: no gate in this repo can see
+                   inside `ExecutePacket`, so the incumbent implementation is the oracle)
+CZ_PM4_VERIFY_COUNTERS_POISON=1  drop one per-thread packet increment in ten thousand, so
+                   the check above is shown able to FAIL before a zero from it means
+                   anything (gotcha 30). It reports 1 of 135
 CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. Kept as an arm, and no
                    longer interesting: the zeros were our own unwritten VdSwap padding
                    (finding 39), and B1 turns out to contain no genuine zero header at
@@ -634,6 +655,19 @@ CZ_VK_TEX_GUARD_EVERY_FETCH=1  the pre-part-47 CADENCE: revalidate on every fetc
                    mean the policy is losing detections and the number says how many.
                    What it costs is at most one frame of staleness for a texture the
                    guest rewrites mid-frame
+CZ_VK_STREAM_CACHE_CLEAR=1  the pre-part-48 per-frame stream cache: `clear()` at the top
+                   of every frame and refill, instead of a generation stamp that makes an
+                   older entry a miss overwritten IN PLACE. `std::unordered_map` is
+                   node-based, so the clear form is an allocation per first touch and a
+                   free per frame — measured at **1,161,050 allocations in one 20 s
+                   window against 25,668**, i.e. 97.7% of fills now reuse a node. The
+                   `[vkprof] stream cache` line reports that share and is always printed.
+                   **The check on this change is not the allocation count but the STREAM
+                   CENSUS beside it**: a stamp compared wrongly would serve an entry from
+                   an earlier frame, whose arena location has since been reset and
+                   overwritten, and that shows up as a HIGHER hit rate and FEWER copied
+                   bytes — i.e. it would look like a bigger win. The two arms read 92.0%
+                   vs 91.9% hit and 0.30 vs 0.29 MB/frame copied
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty
