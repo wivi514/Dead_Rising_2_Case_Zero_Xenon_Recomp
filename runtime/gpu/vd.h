@@ -95,6 +95,38 @@ constexpr uint32_t kDeviceSwapQueue = 0x418C;    // 16 x {surface, dueTick}
 constexpr uint32_t kDeviceSwapHead = 0x420C;
 constexpr uint32_t kDeviceSwapTail = 0x4210;
 
+// THE D3D PRESENT INTERVAL, and therefore the frame rate cap. This is the field that
+// makes this title run at 30 fps, and it is the TITLE'S OWN SETTING rather than
+// anything this runtime imposes — which is why a 60 fps mode is a configuration and
+// not a hack.
+//
+// The chain, traced end to end through the recompiled image:
+//
+//   game config global 0x82A57ACC  (parsed from a config string)
+//     -> sub_823C8D20   maps 0->2, 1->1, 2->2, 3->3, >3->0
+//     -> sub_827CBB00   maps 0->0x80000000, 2->2, 3->4, ELSE->0
+//     -> sub_8283E920   `stw r4,13804(r3)` — a one-instruction setter; THIS FIELD
+//     -> sub_82841AD0   maps 0->1, 1->1, 2->2, 4->3, else->0; packs (n << 8)
+//     -> sub_82841878   `due = cursor + n`, i.e. schedule the present n vblank
+//                       ticks after the previous one
+//     -> sub_82841760   the vblank ISR's walker: retires a record only once
+//                       `dueTick <= vblankTick`, and retiring is what clears the
+//                       rendezvous word our command processor's WAIT_REG_MEM polls
+//
+// So the frame time is `interval x vblank period` = 2 x 16 ms = 32 ms, and the value
+// in this field selects the interval:
+//
+//   0 or 1  -> interval 1  -> 60 fps      (what the game's own "vsync 1" produces)
+//   2       -> interval 2  -> 30 fps      (the shipped default, via config 0)
+//   4       -> interval 3  -> 20 fps
+//   other   -> interval 0  -> UNPACED, which overflows the flip queue — not a mode
+//
+// `docs/phase5-notes.md` §6am established the two-vblank wait and warned that it "must
+// not be optimised"; that warning is about our vblank CADENCE, which is the title
+// pacing itself correctly. Changing which interval the title asks for is a different
+// thing, and it is a value the title itself can be configured to produce.
+constexpr uint32_t kDevicePresentInterval = 13804; // 0x35EC
+
 struct VdGraphicsState
 {
     uint32_t interruptCallback; // guest routine, called as (source, userData)

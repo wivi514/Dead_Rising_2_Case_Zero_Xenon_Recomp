@@ -141,6 +141,17 @@ void TraceIsrMirror(const char* when)
 const bool g_isrPerCpu = getenv("CZ_ISR_SINGLE_CPU") == nullptr;
 std::atomic<uint64_t> g_isrPerCpuDeliveries{ 0 };
 
+// The frame rate cap (CZ_FPS_CAP), as the value the title's D3D present-interval field
+// takes: 0 = 60 fps, 2 = 30 fps, 4 = 20 fps, -1 = leave the title alone. Set once in
+// the pump before the loop; read on every vblank. See kDevicePresentInterval in vd.h
+// for the derivation of those numbers out of the title's own code.
+int g_fpsCapValue = -1;
+// How many times the field had to be written. 1 means the title set it once at start-up
+// and never touched it again; a number that climbs means the title is actively setting
+// it back and the cap is fighting it, which is a fact worth knowing rather than
+// discovering as a frame rate that drifts.
+std::atomic<uint64_t> g_fpsCapWrites{ 0 };
+
 // gpu/pump_stats.h — where the pump's wall time goes. See that header for why a cycles
 // profile structurally cannot answer this: the pump spends most of a frame asleep, and
 // a sleeping thread contributes no samples.
@@ -271,6 +282,32 @@ void GraphicsInterruptPump()
 
     KLOG("graphics interrupt pump started (%d ms vblank cadence, %d ms ring tick)\n",
          vblankMs, tickMs);
+
+    // CZ_FPS_CAP — the frame rate cap, expressed the way a player would say it and
+    // translated here into the device field the title's own configuration writes.
+    // Unset means "leave the title alone", which is 30 fps, so the default behaviour of
+    // this runtime is unchanged unless asked.
+    //
+    // Only the three intervals the title's own packer recognises are offered. There is
+    // deliberately no "uncapped": interval 0 means present immediately, and
+    // `CZ_PM4_NO_STOP_ON_WAIT=1` already showed what an unpaced command processor does
+    // here — it overflows the flip queue in 10 runs out of 10. An unsupported number
+    // is refused loudly rather than rounded to something plausible (gotcha 5).
+    if (const char* capEnv = getenv("CZ_FPS_CAP"))
+    {
+        const int cap = atoi(capEnv);
+        g_fpsCapValue = cap == 60 ? 0 : cap == 30 ? 2 : cap == 20 ? 4 : -1;
+        if (g_fpsCapValue < 0)
+            fprintf(stderr,
+                    "[vd] CZ_FPS_CAP=%s is not one of 60, 30 or 20 — IGNORED. Those are "
+                    "the only present intervals this title's own packer recognises "
+                    "(1, 2 and 3 vblanks); anything else selects interval 0, which is "
+                    "unpaced and overflows the flip queue.\n",
+                    capEnv);
+        else
+            KLOG("fps cap: %d fps requested (present interval %d)\n", cap,
+                 cap == 60 ? 1 : cap == 30 ? 2 : 3);
+    }
 
     // Registered here rather than at construction: the sink runs guest code on THIS
     // thread's context, so it must not be reachable before the context exists.
@@ -554,6 +591,44 @@ void GraphicsInterruptPump()
         if (vblankGate)
             PPC_STORE_U32(kDisplayControllerGate,
                           PPC_LOAD_U32(kDisplayControllerGate) | 1);
+
+        // CZ_FPS_CAP=60|30|20 — THE FRAME RATE CAP, which is the title's own D3D
+        // present interval and not anything this runtime imposes. See the derivation
+        // above `kDevicePresentInterval` in vd.h: the field selects how many vblank
+        // ticks apart the title schedules its presents, the shipped default is 2 (30
+        // fps), and 60 fps is the value the game's OWN "vsync 1" configuration
+        // produces. So this selects a configuration the title already supports rather
+        // than defeating its pacing — which matters, because `docs/phase5-notes.md`
+        // §6am says in terms that the two-vblank WAIT must not be "optimised". It is
+        // not being: the title still waits for exactly the interval it asked for, and
+        // our vblank cadence is untouched at 16 ms.
+        //
+        // WHY IT IS RE-ASSERTED EVERY VBLANK rather than written once. The setter
+        // `sub_8283E920` is called from `sub_827D31D0` only when the title's own
+        // cached copy CHANGES, so a hook there would fire an unknown number of times
+        // and possibly once, before the device exists — and a mode that silently did
+        // not engage would present as "the fix did nothing", which is the failure this
+        // project has paid for repeatedly (gotcha 151). Writing the field is a single
+        // store at 62 Hz; the counter below is what proves it took.
+        if (g_fpsCapValue >= 0 && userData)
+        {
+            const uint32_t want = uint32_t(g_fpsCapValue);
+            const uint32_t had = PPC_LOAD_U32(userData + kDevicePresentInterval);
+            if (had != want)
+            {
+                PPC_STORE_U32(userData + kDevicePresentInterval, want);
+                // Counted, not just logged: the FIRST write is the title booting with
+                // its own default, and every write after that is the title setting it
+                // back — two different facts that one startup log line could not tell
+                // apart. The old value is captured BEFORE the store, or the line would
+                // report the value it just wrote as the value it replaced.
+                if (g_fpsCapWrites.fetch_add(1, std::memory_order_relaxed) == 0)
+                    KLOG("fps cap: the title asked for present-interval field %u; "
+                         "forcing %u (%s)\n",
+                         had, want,
+                         want == 0 ? "60 fps" : want == 2 ? "30 fps" : "20 fps");
+            }
+        }
 
         // CZ_SWAPQ_TRACE=1 — the swap queue once a second. Head and tail are the
         // measurement that separates "the walker has nothing to do" from "the walker
