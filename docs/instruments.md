@@ -655,19 +655,22 @@ CZ_VK_TEX_GUARD_EVERY_FETCH=1  the pre-part-47 CADENCE: revalidate on every fetc
                    mean the policy is losing detections and the number says how many.
                    What it costs is at most one frame of staleness for a texture the
                    guest rewrites mid-frame
-CZ_VK_STREAM_CACHE_CLEAR=1  the pre-part-48 per-frame stream cache: `clear()` at the top
-                   of every frame and refill, instead of a generation stamp that makes an
-                   older entry a miss overwritten IN PLACE. `std::unordered_map` is
-                   node-based, so the clear form is an allocation per first touch and a
-                   free per frame — measured at **1,161,050 allocations in one 20 s
-                   window against 25,668**, i.e. 97.7% of fills now reuse a node. The
-                   `[vkprof] stream cache` line reports that share and is always printed.
-                   **The check on this change is not the allocation count but the STREAM
-                   CENSUS beside it**: a stamp compared wrongly would serve an entry from
-                   an earlier frame, whose arena location has since been reset and
-                   overwritten, and that shows up as a HIGHER hit rate and FEWER copied
-                   bytes — i.e. it would look like a bigger win. The two arms read 92.0%
-                   vs 91.9% hit and 0.30 vs 0.29 MB/frame copied
+~~CZ_VK_STREAM_CACHE_CLEAR=1~~  **RETRACTED — the variable no longer exists.** It was
+                   the arm for part 48's item 2b, which replaced the per-frame stream
+                   cache's `clear()` with a generation stamp so an older entry became a
+                   miss overwritten in place. **The item was a measured LOSS and is
+                   reverted** (commit d8068d7): three runs an arm, `record` in ns per
+                   DRAW in a narrow 4000-6000 draw band, the arm (the OLD code) came out
+                   **8.5% faster overall and 16.7% faster on `index`**, consistently in
+                   all three runs, against a null-control arm reading 0.5-2.3%.
+                   The mechanism worked exactly as designed and was still a loss: 97.7%
+                   of fills reused a node and allocations fell 45x, but the map grew from
+                   ~1,900 entries to ~7,000 and every one of the ~22,000-33,000 LOOKUPS a
+                   frame then walked a bigger table. **Optimising 1,800 inserts at the
+                   expense of 22,000 lookups** — and the upper bound was computable
+                   beforehand from numbers already in hand (58,000 allocations a second
+                   is ~0.6% of wall time at 100 ns each). Kept here as a named dead end
+                   so it is not rebuilt; see gotcha 330
 CZ_VK_TEX_REFRESH_ALL=1  re-read EVERY texture on EVERY fetch. Ruinously slow; the cache
                    cannot serve a stale image under it, so it is the picture arm that
                    would have proved the cache guilty had it been guilty

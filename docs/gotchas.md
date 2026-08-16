@@ -3221,3 +3221,36 @@ From phase C part 18 (the frame rate — and none of it was work):
      `snprintf` and then looked up in a `std::map<std::string, uint64_t>` is a
      per-draw allocation and a tree walk, and where the name has a small fixed set
      of values it should be that many literals with cached slots.
+
+330. **A CHANGE CAN DO EXACTLY WHAT IT WAS DESIGNED TO DO, PROVE IT ON ITS OWN
+     COUNTER, AND STILL BE A NET LOSS — because its counter measures the half it
+     improved.** Part 48's item 2b gave the per-frame stream cache a generation
+     stamp so an older entry became a miss overwritten in place instead of a
+     `clear()` and a fresh allocation. Its counter was unambiguous: **97.7% of
+     fills reused a node and allocations fell from 1,161,050 to 25,668 in a 20 s
+     window, 45x.** The phase it lives in got **8.5% SLOWER** (16.7% on the index
+     path), consistently across three runs an arm. The map stopped being emptied,
+     so it grew from ~1,900 entries to ~7,000, and every one of the
+     22,000-33,000 LOOKUPS a frame then walked a bigger table. The change
+     optimised 1,800 inserts at the expense of 22,000 lookups. **Before building
+     a cache change, count BOTH populations and price the one you are not
+     touching** — and note the upper bound was arithmetic available beforehand:
+     58,000 allocations a second at even 100 ns each is 0.6% of wall time, an
+     order of magnitude below what the plan predicted the item was worth. A
+     counter that only watches the operation you made cheaper cannot report the
+     one you made dearer.
+
+331. **A "MATCHED DRAW BAND" CAN STILL BE WIDE ENOUGH TO BE THE WHOLE EFFECT, AND
+     THE FIX IS A NULL-CONTROL ARM RATHER THAN A NARROWER BAND ALONE.** Gotcha 321
+     established the 3,000-8,000 draw band. Part 48 measured `record` in ns per
+     draw and found it varies **1,204 → 1,033 across that band** — because
+     per-frame costs amortise over more draws — while the four arms of one
+     campaign populated the band at medians from 4,669 to 5,544 draws. So an arm
+     that merely wandered into denser scenery read 8% "faster" on a per-draw
+     statistic. What caught it was not suspicion but a **NULL CONTROL INSIDE THE
+     CAMPAIGN**: `CZ_PM4_ATOMIC_COUNTERS=1` changes only the PM4 walk and cannot
+     move `record`, and it was reading -5%. Narrowing to 4,000-6,000 took the null
+     to 0.5-2.3% — which then IS the noise floor, measured rather than assumed, and
+     the surviving 16.7% effect is eight times it. **Put an arm in every campaign
+     that must read zero on the statistic you care about**, and narrow the band
+     until it does.
