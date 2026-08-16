@@ -146,6 +146,43 @@ std::atomic<uint64_t> g_isrPerCpuDeliveries{ 0 };
 // the pump before the loop; read on every vblank. See kDevicePresentInterval in vd.h
 // for the derivation of those numbers out of the title's own code.
 int g_fpsCapValue = -1;
+
+// THE VBLANK PERIOD, and as of part 49 it is what the frame rate cap actually moves.
+//
+// The operator's report on the first attempt — interval 1 at a 16 ms vblank — was
+// exact: *"when it is 60 fps the game plays perfectly"*, but *"when it drops it still
+// goes back to 30 fps"*. That is not the compositor (which was fixed separately and
+// stayed fixed) and it is not a bug. The title's presents are VBLANK-QUANTISED by
+// construction: `sub_82841878` schedules `due = cursor + interval` and the walker
+// retires a record only once `due <= tick`, so a present can only land on a vblank
+// boundary. At a 16 ms period a frame needing 20 ms of CPU cannot present at 20 — it
+// waits for the next tick at 32. The ladder is 62.5 / 31.2 / 20.8 fps with nothing in
+// between, which is precisely the 60-or-30 they described.
+//
+// So the lever is the PERIOD, not the interval. At 8 ms with the title's OWN interval
+// of 2 the cap is unchanged at 2 x 8 = 16 ms = 62.5 fps, but the ladder becomes
+// 62.5 / 41.7 / 31.2 / 25 — the same ceiling and half the step. And the title's pacing
+// logic is left completely alone: it still asks for two vblanks and still gets exactly
+// two, which is what `docs/phase5-notes.md` §6am asks for.
+//
+// `CZ_VBLANK_MS` still overrides this outright, for experiments.
+int VblankPeriodMs()
+{
+    static const int ms = [] {
+        if (const char* e = getenv("CZ_VBLANK_MS"))
+            return std::max(1, atoi(e));
+        if (const char* c = getenv("CZ_FPS_CAP"))
+        {
+            const int fps = atoi(c);
+            // The title's interval is 2, so the period that caps at `fps` is
+            // 1000/(2*fps). Clamped at 1 ms because that is the pump's own tick floor.
+            if (fps >= 20 && fps <= 500)
+                return std::max(1, (1000 + fps) / (2 * fps));
+        }
+        return 16;
+    }();
+    return ms;
+}
 // How many times the field had to be written. 1 means the title set it once at start-up
 // and never touched it again; a number that climbs means the title is actively setting
 // it back and the cap is fighting it, which is a fact worth knowing rather than
@@ -256,8 +293,7 @@ void GraphicsInterruptPump()
     // symptom appears: if a guest behaviour is quantised to a multiple of this
     // number, halving it says so in one run. Gotcha 7 — an instrument needs a
     // control, and here the control is the same binary at a different cadence.
-    const char* env = getenv("CZ_VBLANK_MS");
-    const int vblankMs = env ? std::max(1, atoi(env)) : 16;
+    const int vblankMs = VblankPeriodMs();
 
     // CZ_PM4_TICK_MS — how often the RING is walked, as opposed to how often the guest
     // sees a vblank. Those have been the same number since phase 1 and there is no
@@ -296,17 +332,33 @@ void GraphicsInterruptPump()
     if (const char* capEnv = getenv("CZ_FPS_CAP"))
     {
         const int cap = atoi(capEnv);
-        g_fpsCapValue = cap == 60 ? 0 : cap == 30 ? 2 : cap == 20 ? 4 : -1;
-        if (g_fpsCapValue < 0)
+        if (cap < 20 || cap > 500)
             fprintf(stderr,
-                    "[vd] CZ_FPS_CAP=%s is not one of 60, 30 or 20 — IGNORED. Those are "
-                    "the only present intervals this title's own packer recognises "
-                    "(1, 2 and 3 vblanks); anything else selects interval 0, which is "
-                    "unpaced and overflows the flip queue.\n",
-                    capEnv);
+                    "[vd] CZ_FPS_CAP=%s is out of range (20..500) — IGNORED.\n", capEnv);
         else
-            KLOG("fps cap: %d fps requested (present interval %d)\n", cap,
-                 cap == 60 ? 1 : cap == 30 ? 2 : 3);
+        {
+            // THE INTERVAL IS PINNED AT THE TITLE'S OWN 2, and the PERIOD does the
+            // work. The first version of this did the opposite — interval 1 at a 16 ms
+            // vblank — and the operator found what is wrong with that within minutes:
+            // the ceiling was right and the ladder underneath it had one rung, so any
+            // frame over 16 ms fell straight to 31 fps. Pinning the interval also makes
+            // the cap deterministic whatever the game's own config says.
+            g_fpsCapValue = 2;
+            // CZ_PRESENT_INTERVAL=1|2|3 overrides which interval the title is given,
+            // so the PERIOD and the INTERVAL can be varied independently. They are two
+            // different things — the period sets the granularity of the frame-time
+            // ladder and costs one guest ISR each, the interval sets how many rungs up
+            // that ladder the cap sits — and the first attempt at this conflated them.
+            if (const char* iv = getenv("CZ_PRESENT_INTERVAL"))
+            {
+                const int n = atoi(iv);
+                g_fpsCapValue = n == 1 ? 0 : n == 2 ? 2 : n == 3 ? 4 : 2;
+            }
+            const int ivN = g_fpsCapValue == 0 ? 1 : g_fpsCapValue == 2 ? 2 : 3;
+            KLOG("fps cap: %d fps requested — vblank period %d ms, present interval %d, "
+                 "so the cap is %d ms and the ladder steps %d ms\n",
+                 cap, vblankMs, ivN, vblankMs * ivN, vblankMs);
+        }
     }
 
     // Registered here rather than at construction: the sink runs guest code on THIS
@@ -786,7 +838,19 @@ void Vd_FillVideoMode(XVIDEO_MODE* mode)
     mode->IsInterlaced = 0;
     mode->IsWidescreen = 1;
     mode->IsHighDefinition = 1;
-    mode->RefreshRate = 0x42700000; // 60.0f
+    // THE REFRESH RATE MUST MATCH THE VBLANK WE ACTUALLY DELIVER. This was hardcoded
+    // 60.0f, which was true while the period was 16 ms and becomes a lie the moment
+    // `CZ_FPS_CAP` shortens it. The guest reads this in `sub_8284C818`, stores it at
+    // `dev+21764`, and its swap scheduler `sub_82841878` divides by it to decide
+    // whether enough of the current refresh has elapsed to nudge the due tick forward
+    // by one. Told 60 while being given 125, that heuristic reads over 100% and can add
+    // a spurious tick — i.e. the wrong belief costs a frame, silently and only
+    // sometimes, which is the worst shape of defect this project deals in.
+    const float hz = 1000.0f / float(VblankPeriodMs());
+    uint32_t hzBits;
+    static_assert(sizeof hzBits == sizeof hz, "float/uint32 pun");
+    memcpy(&hzBits, &hz, sizeof hzBits);
+    mode->RefreshRate = hzBits;
     mode->VideoStandard = 1;        // NTSC-M
     mode->Unknown4A = 0x4A;
     mode->Unknown01 = 0x01;
