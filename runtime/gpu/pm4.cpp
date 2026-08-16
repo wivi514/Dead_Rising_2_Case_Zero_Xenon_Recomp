@@ -478,6 +478,32 @@ struct Source
         const uint32_t index = wrapDwords ? (i % wrapDwords) : i;
         return GuestLoad32(base, va + index * 4);
     }
+
+    // A RUN of consecutive dwords, byte-swapped into `dst`.
+    //
+    // The point is what it does NOT do per dword: the wrap test and the modulo are
+    // hoisted out of the loop, and on the linear (indirect-buffer) path — which is where
+    // essentially every constant run arrives — what is left is a byte-swapping copy that
+    // runs at memory bandwidth. The operator's profiled frame carries **797,624 register
+    // dwords at ~17.8 ns each**, i.e. 50-70 cycles for what should be a load, a bswap
+    // and a store, and a per-dword `i % wrapDwords` on a runtime divisor is 20-26 cycles
+    // of that on its own. `docs/perf-plan-part47.md` §2.1.
+    void Read(uint32_t i, uint32_t count, uint32_t* dst) const
+    {
+        if (wrapDwords)
+        {
+            for (uint32_t k = 0; k < count; k++)
+                dst[k] = GuestLoad32(base, va + ((i + k) % wrapDwords) * 4);
+            return;
+        }
+        const uint8_t* p = base + va + size_t(i) * 4;
+        for (uint32_t k = 0; k < count; k++)
+        {
+            uint32_t raw;
+            memcpy(&raw, p + size_t(k) * 4, 4);   // memcpy, not a cast: the packet
+            dst[k] = __builtin_bswap32(raw);      // stream has no alignment guarantee
+        }
+    }
 };
 
 // ---------------------------------------------------------------------------------
@@ -848,6 +874,69 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
     }
 }
 
+// --- bulk register runs ------------------------------------------------------------
+//
+// WHY THIS EXISTS. The PM4 walk is 14.2 ms of the operator's 61.7 ms frame and it is a
+// register-write loop: 94,098 packets a frame carrying **797,624 register dwords at
+// ~17.8 ns each**. A register write is a store. Everything above 2-3 ns is the overhead
+// around it — the wrap modulo in `Source::operator()`, the bounds test, the const-watch
+// range test and the scratch range test, all evaluated per dword for a destination range
+// that is fixed for the whole run.
+//
+// So ask the two range questions ONCE per run. `WriteRegister` stays the definition of
+// correct and is still what runs whenever a run touches a register whose write has a
+// side effect; the bulk path is only taken when the destination range provably has none,
+// which for `SET_CONSTANT`/`SET_CONSTANT2`/`LOAD_ALU_CONSTANT` (banks at 0x2000 and
+// above) is every time. The fallback is COUNTED rather than assumed rare: if it turns
+// out to be common this item is worth much less than it looks, and a share is the only
+// thing that can say so (gotcha 151 — an arm with no counter cannot be shown to have
+// engaged).
+//
+// CZ_PM4_NO_BULK_REGS=1 restores the per-dword path for every run — the same-binary
+// control arm, and the thing to run the PM4 boundary oracles against.
+// Atomic for the same reason g_packets and g_regWrites are: the walk runs on the
+// graphics pump and `[vkprof]` differences these from the renderer's own thread, so a
+// plain uint64_t here would be a data race for a number nobody would ever suspect. They
+// are incremented once per RUN, not per dword, so a relaxed add costs nothing measurable.
+std::atomic<uint64_t> g_regRunBulk{ 0 };   // dwords taken by the bulk copy
+std::atomic<uint64_t> g_regRunSlow{ 0 };   // ...and by the per-dword fallback
+const bool g_noBulkRegs = getenv("CZ_PM4_NO_BULK_REGS") != nullptr;
+
+// Does any register in [index, index+count) have a side effect on write? Two windows:
+// the scratch mirror (a real reporting channel the guest polls) and the const-watch
+// instrument (a diagnostic, whose window is empty unless CZ_PM4_CONST_WATCH is set —
+// which is item 2.2: with an empty window this is one predictable branch per RUN now
+// rather than two compares per dword).
+inline bool RegRunHasSideEffects(uint32_t index, uint32_t count)
+{
+    const uint32_t last = index + count - 1;
+    return (index <= kRegScratch7 && last >= kRegScratch0) ||
+           (index <= g_constWatchHi && last >= g_constWatchLo);
+}
+
+// Write `count` consecutive registers from `count` consecutive dwords of the packet
+// stream. Semantically identical to calling WriteRegister in a loop, including the
+// out-of-range drop that an unknown constant bank relies on.
+void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
+                      uint32_t index, uint32_t count)
+{
+    if (index >= kRegCount || !count)
+        return;
+    // Clip rather than drop: WriteRegister drops each out-of-range index individually,
+    // so a run that starts in range and walks off the end must write the part that fits.
+    if (count > kRegCount - index)
+        count = kRegCount - index;
+    if (g_noBulkRegs || RegRunHasSideEffects(index, count))
+    {
+        g_regRunSlow.fetch_add(count, std::memory_order_relaxed);
+        for (uint32_t i = 0; i < count; i++)
+            WriteRegister(base, index + i, fetch(srcPos + i));
+        return;
+    }
+    g_regRunBulk.fetch_add(count, std::memory_order_relaxed);
+    fetch.Read(srcPos, count, g_regs + index);
+}
+
 bool EvalWaitCondition(uint32_t func, uint32_t value, uint32_t mask, uint32_t ref)
 {
     const uint32_t v = value & mask;
@@ -931,8 +1020,13 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         const bool oneReg = (header >> 15) & 1;
         g_constWatchSource = oneReg ? "TYPE0(one-reg)" : "TYPE0(run)";
         g_regWrites.fetch_add(bodyCount, std::memory_order_relaxed);
-        for (uint32_t i = 0; i < bodyCount; i++)
-            WriteRegister(base, oneReg ? reg : reg + i, fetch(pos + 1 + i));
+        // ONE-REG is not a run — every dword lands on the same index, and its scratch
+        // mirror must fire once per write, not once. It stays on the per-dword path.
+        if (oneReg)
+            for (uint32_t i = 0; i < bodyCount; i++)
+                WriteRegister(base, reg, fetch(pos + 1 + i));
+        else
+            WriteRegisterRun(base, fetch, pos + 1, reg, bodyCount);
         return bodyCount + 1;
     }
 
@@ -1350,8 +1444,8 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             }
             g_constWatchSource = "SET_CONSTANT";
             g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
-            for (uint32_t i = 1; i < bodyCount; i++)
-                WriteRegister(base, index + i - 1, body(i));
+            // `body(i)` is `fetch(pos + 1 + i)`, so body(1) is at pos + 2.
+            WriteRegisterRun(base, fetch, pos + 2, index, bodyCount - 1);
             break;
         }
 
@@ -1359,8 +1453,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x56:
             g_constWatchSource = "SET_CONSTANT2";
             g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
-            for (uint32_t i = 1; i < bodyCount; i++)
-                WriteRegister(base, (body(0) & 0xFFFF) + i - 1, body(i));
+            WriteRegisterRun(base, fetch, pos + 2, body(0) & 0xFFFF, bodyCount - 1);
             break;
 
         case 0x2F: // LOAD_ALU_CONSTANT: addr, offset_type, size — constants from memory
@@ -1381,8 +1474,14 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             const uint32_t size = body(2) & 0xFFF;
             g_constWatchSource = "LOAD_ALU_CONSTANT";
             g_regWrites.fetch_add(size, std::memory_order_relaxed);
-            for (uint32_t i = 0; i < size; i++)
-                WriteRegister(base, index + i, GuestLoad32(base, addr + i * 4));
+            // The source here is GUEST MEMORY, not the packet stream — but a `Source`
+            // with no wrap IS a linear big-endian dword reader at a guest address, so
+            // the same bulk run applies verbatim. That reuse is the reason `Source` is a
+            // struct with a base and a va rather than a closure over the packet walk.
+            {
+                const Source mem{ base, addr, 0 };
+                WriteRegisterRun(base, mem, 0, index, size);
+            }
             break;
         }
 
@@ -1860,6 +1959,12 @@ uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
 uint64_t Pm4_PacketCount() { return g_packets.load(); }
 uint64_t Pm4_RegisterWriteCount() { return g_regWrites.load(); }
+// How the register dwords were written: in bulk runs, or one at a time because the
+// destination range touched the scratch mirror or the const-watch window. The share is
+// what says whether the bulk path is worth what it is estimated at (perf-plan-part47
+// §2.1); a fallback share near 100% would mean it is worth nothing.
+uint64_t Pm4_RegRunBulkDwords() { return g_regRunBulk.load(); }
+uint64_t Pm4_RegRunSlowDwords() { return g_regRunSlow.load(); }
 uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
 uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
 uint64_t Pm4_DrawCount() { return g_draws.load(); }

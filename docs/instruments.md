@@ -195,6 +195,19 @@ CZ_PM4_IB_VERIFY=1 snapshot every indirect buffer before walking it and compare 
                    naming the first dword that moved. The instrument that killed the
                    "the guest is writing under us" theory: 84,808 buffers, 0 dirty.
                    Doubles the reads, so read a CLEAN result as the strong one
+CZ_PM4_NO_BULK_REGS=1  write every register run one dword at a time — the pre-part-47
+                   command processor. The walk is a register-write loop (94,098 packets a
+                   frame carrying 797,624 register dwords at ~17.8 ns each on the
+                   operator's frame), and a register write is a store: essentially all of
+                   that is the per-dword overhead around it — the ring modulo, the bounds
+                   test, the const-watch range test and the scratch range test. The bulk
+                   path asks the two RANGE questions once per run and byte-swap-copies the
+                   rest, falling back to the per-dword path for any run that touches a
+                   register whose write has a side effect. The `%% bulk` field on the
+                   `[vkprof] pm4` line is the counter that proves it engaged, and a low
+                   share would mean the item is worth much less than it looks.
+                   **Run both PM4 boundary oracles against any change here** —
+                   `tools/part47_gates.sh` does
 CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. Kept as an arm, and no
                    longer interesting: the zeros were our own unwritten VdSwap padding
                    (finding 39), and B1 turns out to contain no genuine zero header at

@@ -10300,15 +10300,28 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             const uint64_t dRegWrites = regWrites - lastRegWrites;
             lastPackets = packets;
             lastRegWrites = regWrites;
+            // ...and how those dwords were written. A bulk share near 100% is what the
+            // part-47 run copy predicts for this title (its constant banks live at
+            // 0x2000 and above, nowhere near the scratch mirror); a low share would mean
+            // the item is worth much less than §2.1 estimates, and only the counter can
+            // say which. Differenced over the same window as everything else.
+            static uint64_t lastBulk = 0, lastSlow = 0;
+            const uint64_t bulk = Pm4_RegRunBulkDwords();
+            const uint64_t slow = Pm4_RegRunSlowDwords();
+            const uint64_t dBulk = bulk - lastBulk, dSlow = slow - lastSlow;
+            lastBulk = bulk;
+            lastSlow = slow;
             fprintf(stderr,
                     "[vkprof] pm4 %llu packets (%llu/frame, %.0f ns each) | %llu "
-                    "register dwords (%llu/frame, %.1f/packet)\n",
+                    "register dwords (%llu/frame, %.1f/packet, %.1f%% bulk)\n",
                     (unsigned long long)dPackets,
                     (unsigned long long)(frames ? dPackets / frames : 0),
                     dPackets ? double(pm4Ns) / double(dPackets) : 0.0,
                     (unsigned long long)dRegWrites,
                     (unsigned long long)(frames ? dRegWrites / frames : 0),
-                    dPackets ? double(dRegWrites) / double(dPackets) : 0.0);
+                    dPackets ? double(dRegWrites) / double(dPackets) : 0.0,
+                    (dBulk + dSlow) ? 100.0 * double(dBulk) / double(dBulk + dSlow)
+                                    : 0.0);
             lastPump = p;
 
             // The stream cache, when asked for. Printed inside the profile window so the

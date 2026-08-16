@@ -180,6 +180,12 @@ uint64_t Pm4_PacketCount();
 // for the walk's own cost (`docs/perf-cpu-plan.md` §2). Differenced per second by
 // `[vkprof]`, it turns the walk's milliseconds into a cost per dword.
 uint64_t Pm4_RegisterWriteCount();
+// The split of those dwords between the bulk run copy (part 47) and the per-dword
+// fallback taken when a run's destination range touches the scratch mirror or the
+// const-watch window. CZ_PM4_NO_BULK_REGS=1 forces everything down the fallback and is
+// the same-binary control arm.
+uint64_t Pm4_RegRunBulkDwords();
+uint64_t Pm4_RegRunSlowDwords();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F
 uint64_t Pm4_DrawCount();
