@@ -687,13 +687,28 @@ the live performance plan and now carries a STATUS header.**):
   5,000-8,000 draw bin the frame goes from **47-48 ms at 23-24% pinned to
   32-33 ms at 67-94% pinned** — onto the title's own two-vblank floor. That arm
   is the upper bound and not a configuration; it is the defect part 38 fixed.
-* **THE FIX IS A CADENCE CHANGE and it recovers most of that**: the content
-  guard runs **once per frame per cache entry** instead of once per texture
-  fetch per draw. Measured **93.4% of checks skipped, 15.1x less hashing**.
-  `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm. The mechanism is untouched, so
-  what it costs is at most one frame of staleness for a texture the guest
-  rewrites mid-frame — and the registered falsifiable claim is that `changed`
-  must not fall between the arms.
+* **THE FIX IS A CADENCE CHANGE and the A/B says it recovers essentially ALL of
+  that**: the content guard runs **once per frame per cache entry** instead of
+  once per texture fetch per draw. Three runs an arm, same binary, both negative
+  controls reading exactly zero: **at 5,000-8,000 draws the frame goes 42-46 ms
+  -> 32 ms and the 16 ms-PINNED SHARE goes 5-13% -> 73-85%.** The crowd frame
+  stops being CPU-bound and becomes PACING-bound, and the binary reaches an
+  8,000+ draw band the old one never got to, at 36-37 ms. `textures` 17.18 ->
+  **2.47 ms** (the no-revalidate upper bound was 2.3); the guard reads 5.8-7.4
+  MB/frame against 77.9-95.1. `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm.
+* **Item 1.1's registered claim — "`changed` must not fall" — holds on the event
+  rate and is UNRESOLVED on the distinct-address measure.** Per frame the fix
+  detects slightly more (0.0739 against 0.0640, ranges overlapping). But the
+  every-fetch arm sees more distinct addresses ever change (157 against 141)
+  while the part-47 runs covered *more* ground, and the two arms do not visit
+  the same places — so that is confounded and this route cannot settle it. It is
+  the second question for the operator, not a closed item.
+* **`outside` and `record` read slightly WORSE on the part-47 arm and that
+  comparison is INADMISSIBLE**, not bad: the arms do not submit the same command
+  stream and their packets-per-frame differ by 40%, so a matched DRAW band does
+  not match a PM4 workload. The admissible statistic for the walk is cost per
+  packet — **110-113 ns against 151-158, zero overlap over nine windows an
+  arm**.
 * **The PM4 walk writes register RUNS in bulk** — the two range questions asked
   once per run instead of once per dword — and it is verified against the
   per-dword code it replaced, because **both PM4 boundary oracles pass
