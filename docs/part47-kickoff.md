@@ -63,8 +63,17 @@ backlog form.
    with the test on; the solid trunk/branch/LOD geometry is DXT1 with it off, on
    hardware too. Expect about a third of the leaf draws to move, and do not read
    the other two thirds staying put as a partial fix.
-3. **Performance — ALL THREE SUSPECTS ARE EXONERATED; the next measurement is on
-   the OPERATOR'S configuration, not another arm here** (§6cb + addendum).
+3. **PERFORMANCE — READ `docs/perf-plan-part47.md`. It is the live plan and it is
+   written against the operator's OWN profiled frame**, which part 46's last
+   session finally captured: 61.7 ms at 7,231 draws, textures 26.5 ms, PM4 walk
+   14.2 ms, record 10.9 ms, GPU 34% utilised and `submit.gpu` 0.0 — a pure CPU
+   problem. **Start with item 1.1's upper bound, which is one run**:
+   `CZ_VK_NO_TEX_REVALIDATE=1`. The texture revalidation guard read 366 GB over
+   their session (92.9 MB/frame) to catch 986 real changes. If that arm does not
+   move the frame by ~10 ms the plan's top item is wrong and the ranking should
+   be rebuilt before any code is written.
+   The three suspects below are exonerated but only on the HEADLESS route
+   (§6cb + addendum), which understates the operator's draw path by ~2x.
    Part 45's liveness fix: six alternated 600 s runs, three an arm, one variable
    — **every draw bin inside its own noise floor**, and the two bins off the
    pacing floor disagree in sign. Part 41's per-fetch samplers and part 44/45's
@@ -83,12 +92,17 @@ backlog form.
    attacking or just a share that was always this high is open — §6cb's
    comparison against part 20's 13.6% is explicitly the weak half of that
    argument (different route era, binary and session; gotcha 13).
-4. **The UI text layer (open item 00k) is still owed a FIX**, unchanged from
-   part 46's kickoff: the mechanism is confirmed (the cross-frame stream store's
-   guard, item 00c above the 16 KB bound), and "always exact" is not it —
-   63.76 MB/frame against 9.28. Raise the bound, or make exactness a property of
-   the stream KIND. The cheap headless check is the EMPTY card after pressing
-   START at the title screen.
+4. **The UI text layer (open items 00c/00k) is FIXED and operator-confirmed** —
+   "Ui stay good the whole time", then "Hud stay good and all" on the cheaper
+   variant, against a control arm (`CZ_VK_NO_DYNAMIC_GUARD=1`) that broke.
+   Exactness is now EARNED per stream rather than bought by size: a stream the
+   store catches changing is hashed exactly, and one the sampled guard is proved
+   able to see is demoted back. `CZ_VK_GUARD_BUDGET` is the default;
+   `CZ_VK_NO_GUARD_BUDGET=1` is the control. §6cc addendum.
+   **What is still owed**: it costs 30.5 MB/frame on their session and their own
+   A/B priced the earlier version at +22.7% in the 4500-6000 draw bin. It is
+   item 1.1's sibling and the same budgeting idea applies — fold it into the
+   performance plan rather than treating it as done.
 
 ## Standing state
 
