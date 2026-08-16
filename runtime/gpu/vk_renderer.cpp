@@ -74,6 +74,10 @@ constexpr uint32_t kSharedHalfPixelOffset = 264;
 constexpr uint32_t kSharedAlphaThreshold = 272;
 constexpr uint32_t kSharedParamGenMask = 276;
 constexpr uint32_t kSharedTessGrid = 280;
+// ALPHA-TO-MASK, part 46. 1 when RB_COLORCONTROL bit 4 is set AND the guest surface is
+// 4x MSAA — the only configuration in which our sample-per-sample dither is the right
+// emulation. The last free dword before the 1D alias table at 288.
+constexpr uint32_t kSharedAlphaToMask = 284;
 constexpr uint32_t kSharedTex1D = 288;
 constexpr uint32_t kSharedPosScale = 352;
 constexpr uint32_t kSharedPosOffset = 360;
@@ -5629,7 +5633,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             }
         }
         else if (!noAlphaTest && (cc & 0x10))
-            Count("draw: ALPHA-TO-MASK without alpha test — UNEMULATED");
+        {
+            // A2M with the alpha test DISABLED. The clip is the only channel we have
+            // for it, and the shader only compiles the clip when this key bit is set,
+            // so turn it on and let the published threshold (RB_ALPHA_REF, which is
+            // 0.0 wherever this title does it) plus the per-sample dither below carry
+            // the whole cutout. Without this the arm would be silently inert on
+            // exactly the draws that need it most.
+            key.alphaTest = 1;
+            Count("draw: ALPHA-TO-MASK without alpha test — clip enabled for the dither");
+        }
+
     }
 
     // PRIMITIVE RESTART — OFF, and that is a measurement rather than an omission.
@@ -6491,6 +6505,48 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         else if ((cc & 0x8) && (cc & 0x7) == 2 && thr >= 1.0f)
             thr -= 1.0f / 512.0f;
         reinterpret_cast<float*>(shared + kSharedAlphaThreshold)[0] = thr;
+
+        // ALPHA-TO-MASK (part 46, §6ca). Hardware applies it IN ADDITION to the alpha
+        // test, turning fractional alpha into a per-sample coverage pattern in the 4x
+        // MSAA surface. We publish a flag rather than emulating it here because the
+        // decision is per SAMPLE and only the shader knows which sample it is.
+        //
+        // Gated on the surface really being 4x, because the emulation is only exact
+        // there: the msaa==2 window scale makes one of OUR pixels one of hardware's
+        // samples, so "is this sample covered" and "keep this pixel" become the same
+        // question. On a single-sampled guest surface there is no sample grid to
+        // spread coverage over and the shader keeps the scalar threshold.
+        //
+        // Reading this flag is opt-in in the shader (XE_ALPHA_TO_MASK), so publishing
+        // it costs one dword and changes nothing until a cache is built with the arm.
+        //
+        // CZ_VK_A2M_ANY_SURFACE=1 drops the 4x gate. It is a DIAGNOSTIC, not a fix:
+        // this title draws its foliage into a **2x** surface (msaa=1 on 69,390 A2M
+        // draws against 518 at 1x and ZERO at 4x), which our renderer does not
+        // sample-expand, so one of our pixels is one guest PIXEL there and a 2x2
+        // dither lands at pixel granularity — a visible checkerboard, which is a
+        // worse picture. What it CAN say is whether missing coverage is the shard
+        // mechanism at all: if the hard plates break up under it, they were coverage.
+        static const bool a2mAnySurface = EnvOn("CZ_VK_A2M_ANY_SURFACE");
+        const bool a2mSurface = a2mAnySurface ||
+                                ((regs[xenos::kRbSurfaceInfo] >> 16) & 3) == 2;
+        const uint32_t a2m = (!EnvOn("CZ_VK_NO_ALPHA_TEST") && (cc & 0x10) && a2mSurface)
+                                 ? 1u : 0u;
+        reinterpret_cast<uint32_t*>(shared + kSharedAlphaToMask)[0] = a2m;
+        if (a2m)
+            Count("draw: ALPHA-TO-MASK on a 4x surface — per-sample dither published");
+        else if (cc & 0x10)
+        {
+            // NAME the sample count rather than counting "not 4x" — the first version
+            // of this counter said only "declined" and read 94,783 against 187,621
+            // draws that DID take the 4x window scale, which is a contradiction a
+            // nameless counter cannot help you resolve.
+            char msg[80];
+            snprintf(msg, sizeof msg,
+                     "draw: ALPHA-TO-MASK with RB_SURFACE_INFO msaa=%u — dither declined",
+                     (regs[xenos::kRbSurfaceInfo] >> 16) & 3);
+            Count(msg);
+        }
     }
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.

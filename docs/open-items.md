@@ -169,12 +169,37 @@ Next, in order:
    ship as a `CZ_DXC_DEFINES` + `CZ_SHADER_SPV` arm before it is ever a default), then
    A/B the menu frame against E3 on a NAMED property — the canopy box's p05/p95 ratio
    and its hard-edge count, not "does it still look wrong".
-   **Still owed, honestly:** the fix is not built or measured; and the
-   `XE_NAN_VS_KILL_IN` arm run for the denormal/NaN packed-normal suspect (10.5% of
+   **THE MECHANISM IS NOW DEMONSTRATED, not just named** (§6ca addendum). The dither
+   was built — `XeAlphaTestThreshold()` in XenosRecomp's `shader_common.h` behind
+   `XE_ALPHA_TO_MASK`, the emitter calling it, and the runtime publishing an A2M flag
+   at shared+284 — and run at the menu frame against E3:
+   * **the hard dark plates break up into feathered foliage with sky through it**, and
+     the named property lands on the oracle: canopy p05/p95 **0.291 -> 0.324** against
+     hardware's **0.326**;
+   * **three null arms are byte-identical over the canopy** (default cache, the new
+     emitter with the define OFF, and the define ON with the gate declining every
+     draw — md5 `f4a1a593a15b3e27b40d59136aadf622` on all three), so the emitter
+     change and the published flag are proven no-ops and the effect is the dither;
+   * hard-edge share goes 3.13% -> 4.92% against hardware's 0.21%, which is the
+     expected stipple of dithering with no sample grid underneath.
+   **AND THE SURFACE IS 2x, NOT 4x — the counter is what found it.** The first gate
+   published the flag only for `RB_SURFACE_INFO` msaa==2 and published ZERO, against
+   187,621 draws taking the 4x window scale in the same run; renaming the counter to
+   carry the sample count reads **msaa=1 (2x) on 69,390 A2M draws, msaa=0 on 518, 4x
+   on none**. So the foliage is drawn into a 2x surface our renderer does not
+   sample-expand, and `CZ_VK_A2M_ANY_SURFACE=1` (the arm above) is a DIAGNOSTIC that
+   dithers at pixel granularity, not a fix.
+   **THE FIX, named:** sample-expand 2x surfaces the way `msaa==2` ones already are
+   (Xenos 2x is a vertical sample pair, so a 1x2 dither over a Y-expanded image is
+   exact and the existing resolve averages it), or rasterise A2M draws with real
+   Vulkan MSAA + `alphaToCoverage`. The shader half is built and controlled; only the
+   surface expansion is missing.
+   **Demoted, not closed:** the denormal/NaN packed-normal suspect (10.5% of
    hardware's leaf normals are denormal as float32, 2.5% NaN, and they are the
-   straight-up ones) left the menu tree pixel-identical WITHOUT its positive control,
-   so it has not been shown capable of firing and that suspect is neither confirmed
-   nor closed.
+   straight-up ones). The `XE_NAN_VS_KILL_IN` arm DOES fire on this tree — 5.41% of
+   canopy pixels change — so NaN-class vertices are present and their exponent bits
+   reach the shader; it cannot speak for the mantissa or for the denormal half. With
+   A2M reproducing and removing the symptom, this is no longer a leading explanation.
 
    **PART 39: THE SUSPECT IS REFUTED AND THE ITEM NOW NEEDS ONE CAPTURE, NOT AN
    INVESTIGATION.** RB_COLORCONTROL read across all eight R4 traces — **40,703 draws** —

@@ -7984,18 +7984,28 @@ diffuse term is `max(N·L, pc(254).x)` and `pc(254).x` reads **0.0** in our
 runtime, so a back-facing card genuinely does collapse to the ambient term on
 BOTH machines.
 
-One live suspect came out of that census and is **not yet closed**: 10.5% of
+One suspect came out of that census and is **demoted, not closed**: 10.5% of
 hardware's leaf packed normals are DENORMAL as float32 and 2.5% are NaN, and
 those are precisely the `(0, 0.999, 0)` straight-up normals — the brightest
 cards. We deliver that attribute as `VK_FORMAT_R32_SFLOAT` and recover the bits
 with `asuint` (vk_renderer.cpp's fmt-16 note), which is only safe if the fetch
 is a raw dword load. The `XE_NAN_VS_KILL_IN` shader arm (built with
 `CZ_DXC_DEFINES="-D XE_NAN_VS_KILL_IN=1"`, which kills any vertex whose inputs
-are NaN) left the menu tree **pixel-identical**, i.e. no NaN-class vertex is in
-that tree — so the arm neither confirmed nor refuted anything and **has not been
-shown capable of firing** (gotcha 30). Its positive control
-(`XE_NAN_VS_KILL_IN_FORCE=1`) and a run on a tree that does contain NaN-class
-normals are both still owed.
+are NaN) **does fire on this tree**: 892 of the canopy box's 16,500 pixels
+change, 5.41%, 71 of them by more than 32 levels. So NaN-class vertices are
+present and the exponent bits reach the shader intact — which is the opposite of
+what "the fetch destroyed them" predicts.
+
+**A correction, in place**: this section first recorded that arm as leaving the
+tree "pixel-identical", which was an eyeball comparison of two zoomed crops. The
+canopy crop's md5 says otherwise. Looking at a picture is not a null test
+(gotcha 133); hash the region.
+
+What the arm still cannot say is whether the MANTISSA survived, since a
+canonicalised NaN is still a NaN, so the denormal half of the class is
+untouched by it. Given that the A2M arm below reproduces and removes the actual
+symptom, this suspect is no longer the leading explanation for anything, and it
+should be closed by a cheap direct check rather than by more picture arms.
 
 ### The mechanism: ALPHA-TO-MASK, on a material with FRACTIONAL alpha
 
@@ -8072,3 +8082,66 @@ cannot substitute, because none of the 19 captures carries that texture's bytes
 (`--dump-texture` returns "dumped 0 copies").
 
 **Not yet done, and honestly owed**: the fix itself is not built or measured.
+
+### §6ca addendum — THE MECHANISM IS DEMONSTRATED: an A2M coverage arm removes the
+### shards and lands the named property on hardware, and the remaining work is named
+
+The dither described above was built and run, and it converts §6ca from a named
+mechanism into a demonstrated one.
+
+**What was built.** Three pieces, each separately controlled:
+* `XenosRecomp/shader_common.h` gains `XeAlphaTestThreshold(float2 pos)`, which
+  returns `g_AlphaThreshold` unless the shader is built with `XE_ALPHA_TO_MASK`,
+  in which case an A2M draw takes `max(threshold, (bayer2x2 + 0.5) / 4)` indexed
+  by `uint2(pos) & 1`.
+* `shader_recompiler.cpp` emits `clip(oC0.w - XeAlphaTestThreshold(iPos.xy))` in
+  place of `clip(oC0.w - g_AlphaThreshold)`.
+* the runtime publishes an A2M flag at shared+284, and — separately — turns the
+  clip on for A2M draws that do NOT enable the alpha test, which would otherwise
+  have compiled no clip at all for the arm to modify.
+
+**THE SURFACE IS 2x, NOT 4x, AND THE COUNTER IS WHAT SAID SO.** The first gate
+only published the flag for `RB_SURFACE_INFO` msaa == 2 (4x), on the reasoning in
+§6ca that our 4x window scale makes one of our pixels one guest sample. It
+published **zero** flags, against 187,621 draws in the same run taking the 4x
+window scale — a contradiction a nameless "declined" counter could not resolve,
+so the counter was changed to NAME the sample count. It reads **msaa=1 (2x) on
+69,390 A2M draws and msaa=0 on 518, and 4x on none of them**: this title draws
+its foliage into a 2x surface, which our renderer does not sample-expand. So the
+exact sample-for-sample emulation §6ca proposed is not available at the foliage
+as the renderer stands, and `CZ_VK_A2M_ANY_SURFACE=1` was added as a diagnostic
+that drops the gate — knowingly dithering at PIXEL granularity, which is a worse
+picture but a decisive question.
+
+**The result, at the menu frame, canopy box (645,395)-(795,505), against E3:**
+
+| arm | p05 | p50 | p95 | **p05/p95** | hard-edge share |
+|---|---|---|---|---|---|
+| hardware E3 | 58.6 | 115.2 | 179.6 | **0.326** | 0.21% |
+| default cache | 55.1 | 126.5 | 189.4 | 0.291 | 3.13% |
+| null cache (new emitter, define OFF) | 55.1 | 126.5 | 189.4 | 0.291 | 3.13% |
+| A2M built, 4x gate declines every draw | 55.1 | 126.5 | 189.4 | 0.291 | 3.13% |
+| **A2M dither (`CZ_VK_A2M_ANY_SURFACE=1`)** | 61.6 | 129.0 | 190.0 | **0.324** | 4.92% |
+
+**The three null arms are byte-identical over the canopy** (md5
+`f4a1a593a15b3e27b40d59136aadf622` on all three crops), which is the control this
+project's own rule asks for before quoting an arm: the emitter change and the
+published flag are proven no-ops, so the fourth row is the dither and nothing
+else. The dither changes 59.5% of canopy pixels, 12.9% by more than 32 levels.
+
+**Read it as two separate statements.** The tonal one is that the named property
+lands on the oracle — p05/p95 0.291 → 0.324 against hardware's 0.326 — and the
+picture shows the hard dark plates broken up into feathered foliage with sky
+visible through it. **The shards were missing coverage.** The spatial one is that
+hard edges go UP, 3.13% → 4.92%, where hardware sits at 0.21%: that is the
+expected artifact of a 2x2 dither on a surface with no sample grid under it, and
+it is why this stays a diagnostic arm rather than becoming a default.
+
+**What the fix now is, and it is a renderer change rather than a shader one:**
+give the coverage somewhere to be resolved. Either sample-expand 2x surfaces the
+way `msaa == 2` surfaces are already expanded (Xenos 2x is a vertical sample
+pair, so a 1x2 dither over a Y-expanded image is exact and the existing resolve
+path averages it), or rasterise A2M draws with real Vulkan MSAA plus
+`alphaToCoverage`. The first fits this renderer's existing design and is the
+recommendation. The shader side is already built and controlled; only the
+surface expansion is missing, and the arm above is how the result will be read.
