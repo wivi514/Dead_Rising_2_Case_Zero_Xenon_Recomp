@@ -16,12 +16,18 @@
 #            session and has never been measured on your machine. Headlessly it takes
 #            `record` from 1,636 to 1,198 ns/draw; on the 81.65 MB/frame of guard hashing
 #            your session showed, it predicts ~6.8 ms, i.e. 42.8 -> ~36 ms.
-#   pmcount  CZ_PM4_ATOMIC_COUNTERS=1 — undoes part 48's per-thread PM4 census counters.
-#            OPTIONAL, and last on purpose: it is the only item aimed at your PM4 walk,
-#            which is 16.6 ms of your frame and the largest single term in it, and your
-#            packet mix is not ours (144 ns/packet against our 110-113, 7.8 register
-#            dwords per packet against 9.4), so the headless number does not transfer.
-#            If you are short of time, quit after `fold` — the first two answer the plan.
+#   envpkt   CZ_PM4_ENV_PER_PACKET=1 — undoes part 48's biggest walk find: `ExecutePacket`
+#            was calling `getenv` once per TYPE-3 PACKET, ~29,000 times a frame, for a
+#            diagnostic that has been off in every run this project has ever measured.
+#            That sits inside the PM4 walk, which is 16.6 ms of your frame and the largest
+#            single term in it, and YOUR PACKET MIX IS NOT OURS (144 ns/packet against our
+#            110-113, 7.8 register dwords per packet against 9.4), so the headless number
+#            would not transfer even if we had one — the A/B for it was killed to free the
+#            machine for this session. If you are short of time, quit after `fold`.
+#
+# (The per-thread PM4 census counters, part 48's item 1b, are in all three arms. They
+#  measured at only ~3 ns per packet headlessly against a predicted 20-40, so they are not
+#  worth an arm of your time.)
 #
 # WHY THE INSTRUMENTS ARE NOT OPTIONAL. Part 46's first operator session shipped without
 # CZ_VK_PROFILE and CZ_VK_FRAME_STATS and its "around 20 fps" had no measurement behind it
@@ -61,7 +67,7 @@ run() {
 
 run part48 CZ_NOOP=1
 run fold    CZ_VK_GUARD_FOLD_SERIAL=1
-run pmcount CZ_PM4_ATOMIC_COUNTERS=1
+run envpkt  CZ_PM4_ENV_PER_PACKET=1
 
 echo
 echo "Read them with:"
