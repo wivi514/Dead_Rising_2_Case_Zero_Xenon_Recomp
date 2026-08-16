@@ -10,8 +10,8 @@ share of frames pinned to a 16 ms multiple (10% -> 97%). So this reads:
 
   * the MEDIAN frame time, per draw-count bin (a frame's cost is dominated by its draw
     count, and the two arms do not visit the same places at the same times);
-  * the PINNED share -- frames within 1 ms of a multiple of 16.67 ms, i.e. frames the
-    guest's pacing is holding rather than frames we are slow on;
+  * the PINNED share -- frames within 1 ms of a multiple of the 16 ms pacing period,
+    i.e. frames the guest's pacing is holding rather than frames we are slow on;
   * and, first, the WITHIN-ARM spread across the three runs of each arm, which is the
     noise floor this comparison has to beat. Quoting an arm difference without it is
     the mistake gotcha 229 names: the floor here is 10-13% at one run a side.
@@ -20,15 +20,24 @@ Usage: part46_perf_read.py <dir>            # expects fixed_N.stats / pre45_N.st
 """
 import sys, os, glob, statistics
 
-VBLANK_MS = 1000.0 / 60.0
+# 16 rather than 16.67: the msec column is integer milliseconds, so a 16.67
+# period spends the tolerance on the timestamp's quantisation rather than on the
+# frame. Same constant tools/frame_perf_bins.py defaults to.
+VBLANK_MS = 16.0
 BINS = [(0, 500), (500, 1500), (1500, 3000), (3000, 5000), (5000, 8000), (8000, 10**9)]
 
 
 def load(path):
-    """(draws, msec) per presented frame. Frame 1 and any zero-msec row are dropped:
-    the first present has no predecessor to be timed against, and a 0 ms row is the
-    stats writer's 'no time recorded', not a fast frame."""
-    out = []
+    """(draws, frame_ms) per presented frame.
+
+    The `msec` column is a CUMULATIVE timestamp, not a duration, so a frame's cost is
+    the difference from the previous presented frame's -- the same reading
+    tools/frame_perf_bins.py uses, and getting it wrong the first time here produced
+    median 'frame times' of 590,000 ms, which is the kind of number that says the
+    column is not what you assumed rather than that the run was slow. The first row of
+    a file has no predecessor, and a gap over 2 s is a load or a clock step rather than
+    a frame."""
+    out, prev = [], None
     with open(path) as f:
         for line in f:
             if line.startswith('#'):
@@ -37,16 +46,19 @@ def load(path):
             if len(p) < 18:
                 continue
             try:
-                draws, ms = int(p[1]), float(p[17])
+                draws, ms = int(p[1]), int(p[17])
             except ValueError:
                 continue
-            if ms > 0:
-                out.append((draws, ms))
+            if prev is not None:
+                dt = ms - prev
+                if 0 < dt <= 2000:
+                    out.append((draws, float(dt)))
+            prev = ms
     return out
 
 
 def pinned(ms_list):
-    """Share of frames within 1 ms of a 16.67 ms multiple -- the decisive statistic."""
+    """Share of frames within 1 ms of a pacing multiple -- the decisive statistic."""
     if not ms_list:
         return float('nan')
     n = sum(1 for m in ms_list
@@ -103,13 +115,23 @@ def main():
         pm = row[1][1]
         if fm and pm:
             fmed, pmed = statistics.median(fm), statistics.median(pm)
-            floor = max((max(fm) - min(fm)) / fmed if len(fm) > 1 else 0,
-                        (max(pm) - min(pm)) / pmed if len(pm) > 1 else 0) * 100
             delta = (fmed - pmed) / pmed * 100
-            verdict = ('INSIDE the noise floor -- not shown to do anything'
-                       if abs(delta) <= floor else 'outside the floor')
-            print('  %-14s %-6s fixed vs pre45: %+.1f%% median, noise floor %.1f%%  -> %s'
-                  % ('', '=>', delta, floor, verdict))
+            if len(fm) < 2 or len(pm) < 2:
+                # With one run an arm there IS no measured floor, and printing 0.0%
+                # would turn every difference into "outside the floor" -- a tool
+                # manufacturing the confidence the run count cannot support. The
+                # documented floor on this workload is 10-13% at one run a side
+                # (gotcha 229), which is larger than most differences worth having.
+                print('  %-14s %-6s fixed vs pre45: %+.1f%% median -- NO VERDICT, '
+                      'fewer than 2 runs an arm in this bin (floor unmeasured; '
+                      'the documented one-run-a-side floor is 10-13%%)'
+                      % ('', '=>', delta))
+            else:
+                floor = max((max(fm) - min(fm)) / fmed, (max(pm) - min(pm)) / pmed) * 100
+                verdict = ('INSIDE the noise floor -- not shown to do anything'
+                           if abs(delta) <= floor else 'outside the floor')
+                print('  %-14s %-6s fixed vs pre45: %+.1f%% median, noise floor %.1f%%  -> %s'
+                      % ('', '=>', delta, floor, verdict))
         print()
 
 
