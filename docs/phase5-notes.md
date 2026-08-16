@@ -8941,3 +8941,115 @@ Three things in that table are new information and none of them existed this mor
 * **`oth.begin` is 107 ns/draw ≈ 0.75 ms a frame** for `BeginFrame` + `BeginRendering`
   — work that is supposed to happen once per frame. Nothing had ever measured it.
 * **`oth.residual` is 205 ns/draw ≈ 1.4 ms** and is still unnamed after two splits.
+
+## 6cf. Part 49: THE 30 fps CAP IS THE TITLE'S OWN SETTING, THE 60-OR-NOTHING WAS THE
+## VBLANK LADDER, AND "ordinary gameplay is 31 fps and CLOSED" IS RETRACTED
+
+The operator's request, and it was framed as diagnosis rather than comfort: *"we'll
+implement a 60 fps cap ... so it'll help us better see what's the performance issue
+without hitting 30 fps cap all the time."* That framing is correct and it is gotcha
+237/238's problem stated from the other end — part 48 had put the frame ON the
+two-vblank floor (at >=5,000 draws, 4,452 frames of 12,009 at exactly 32 ms and
+another 3,570 at 33), so a CPU saving below 33 ms measured as exactly zero.
+
+### §1. Where the 30 fps actually came from — the title, not us
+
+Traced end to end through the recompiled image:
+
+```
+game config 0x82A57ACC
+  -> sub_823C8D20   0->2, 1->1, 2->2, 3->3, >3->0
+  -> sub_827CBB00   0->0x80000000, 2->2, 3->4, ELSE->0
+  -> sub_8283E920   `stw r4,13804(r3)` — a one-instruction setter; THE FIELD
+  -> sub_82841AD0   0/1->1, 2->2, 4->3;  packs (n << 8)
+  -> sub_82841878   due = cursor + n
+  -> sub_82841760   the vblank walker retires only when due <= tick, and retiring is
+                    what clears the word our WAIT_REG_MEM polls
+```
+
+**Reading that chain backwards is the finding**: the game's own "vsync 1" setting
+produces device value 0, i.e. present interval 1. **A 60 fps mode is a configuration
+this title already ships with**, not a defeat of its pacing, which matters because
+§6am says in terms that the two-vblank wait "must not be optimised".
+
+### §2. The registered claim, and it could have made the whole thing a lie
+
+If the engine took its delta time from the vblank COUNT rather than from the timebase,
+presenting twice as often would run the whole game at DOUBLE SPEED. Registered before
+running: locomotion p90/p95 near 3.38/3.58 units per WALL second if delta-time based,
+near 6.8/7.2 if frame-locked.
+
+| arm | loco s | p75 | p90 | p95 |
+|---|---|---|---|---|
+| cap30 #1 | 129 | 1.28 | 3.38 | 3.58 |
+| cap30 #2 | 129 | 0.78 | 2.28 | 2.48 |
+| cap60 | 193 | 1.63 | 2.80 | 3.57 |
+
+**p90 0.99x. Nothing near 2.00x.** The null control — two runs of the same config —
+is 31-39%, so this rules out a doubling and not a 10-20% difference. The operator's
+verdict in play settled the rest: *"the game plays perfectly"*.
+
+A METHOD NOTE, because the first oracle was thrown away: holding the stick forward was
+tried first and gave zero signal — Chuck walked into geometry within seconds and both
+arms ended at the IDENTICAL position, p90 0.00 each. **A held stick is a locomotion
+oracle only where there is somewhere to walk.**
+
+### §3. TWO more ceilings appeared the moment the first one lifted
+
+* **The host's vsync.** The SDL renderer was created without
+  `SDL_RENDERER_PRESENTVSYNC` and was never told NOT to vsync; a compositor throttles
+  presentation regardless, and they are on Wayland. It hid for 48 parts because the
+  guest's own 30 fps cap was always the slower clock. **The operator diagnosed it from
+  the shape of the number** — *"pretty sure it's vsync"* — while headless had been
+  reading 62.5 fps throughout and nobody had asked why windowed disagreed (gotcha 332).
+* **The vblank LADDER, which is the one that mattered.** Presents can land only on a
+  vblank boundary, so at a 16 ms period the rungs are 16/32/48 ms and a frame needing
+  17 ms falls to 31 fps. Raising the ceiling with the interval left that alone — again
+  the operator, within minutes: *"when it is 60 fps the game plays perfectly"* but
+  *"when it drops it still goes back to 30 fps"*. The fix is to shorten the PERIOD to
+  8 ms and pin the title's OWN interval of 2: same 16 ms cap, half the rung.
+
+A four-way sweep at matched draws, which also RETRACTS an intermediate claim that a
+shorter period costs ~5 ms of CPU (that was two runs compared across time):
+
+| vblank | interval | cap | fps | frame | `outside` |
+|---|---|---|---|---|---|
+| 16 ms | 1 | 16 ms | 61.7 | 16.2 ms | 6.3 ms |
+| 8 ms | 2 | 16 ms | 61.8 | 16.2 ms | 6.1 ms |
+| 8 ms | 1 | 8 ms | 61.4 | 16.3 ms | 6.1 ms |
+| 16 ms | 2 | 32 ms | 31.2 | 32.0 ms | 21.5 ms |
+
+### §4. THE RESULT, on the operator's own whole-map lap — 16,788 frames
+
+| draws/frame | frame | fps | before |
+|---|---|---|---|
+| 0-1,500 | 16.0 ms | **62.5** | 31 |
+| 1,500-3,000 | 16.0 ms | **62.5** | 31 |
+| 3,000-5,000 | 23.0 ms | **43.5** | 31 |
+| 5,000-7,000 | 28.0 ms | **35.7** | 31 |
+| 7,000+ | 35.0 ms | 28.6 | ~25 |
+
+**24.1% of frames at 57+ fps; only 3.6% below 30.** So **"ordinary gameplay is 31 fps
+and CLOSED — that is the title's own two-vblank pacing and it will not go higher" is
+RETRACTED.** It was true of the shipped configuration and false of the title, which
+supports a 60 fps configuration and always did.
+
+**What this did NOT do is make anything faster.** The CPU cost per frame is unchanged;
+a ceiling that was hiding it was removed. That is exactly what it was asked for.
+
+### §5. What the frame is made of now, and it is a different shape
+
+At 5,000-7,000 draws, 28.3 ms:
+
+| term | ms | |
+|---|---|---|
+| **`outside`** | **11.3** | the PM4 walk (**81,106 packets/frame at 100 ns = 8.1 ms**) plus the guest's own simulation |
+| **`record`** | **7.4** | 1,250 ns/draw = state 172 + **vertex 662** + index 220 + residual 182 |
+| `other` | 4.4 | 717 ns/draw = shader 96 + key 36 + pipeline 124 + begin 101 + fetch 114 + tail 40 + **residual 206** |
+| `textures` | 3.1 | closed in part 47, staying closed |
+| **GPU** | **0.0** | `submit.gpu` median 0.0% over 22 windows — **the GPU is idle and this is 100% a CPU problem** |
+
+And a cost that was free to ignore at 30 fps and is not now: **the guest simulates
+twice as often per second**, so `outside` per SECOND has roughly doubled, and
+`readback` — our present path copying the image back to host memory to blit it — went
+2.7% -> 4.7% of the frame for the same reason.

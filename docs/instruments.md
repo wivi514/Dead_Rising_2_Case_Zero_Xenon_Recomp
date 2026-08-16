@@ -62,36 +62,54 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    ratios: 0.9997 / 1.000 / 0.523 with walks==kicks==drains is the
                    healthy shape, `distinct=2` with `arms` frozen is a replay. It is
                    what retired the "~300x amplification" (gotchas 161-162)
-CZ_FPS_CAP=60|30|20  **THE FRAME RATE CAP — and it is the TITLE'S OWN SETTING, not
-                   something this runtime imposes.** Default unset = 30 fps, unchanged.
-                   The 32 ms frame is `present interval x vblank period` = 2 x 16 ms,
-                   and the interval lives in the D3D device field `dev+13804`
-                   (`kDevicePresentInterval`, derived in `gpu/vd.h` from the title's own
-                   code): 0 or 1 -> 60 fps, 2 -> 30 fps, 4 -> 20 fps. **Reading the
-                   config chain backwards is the point: the game's own "vsync 1" setting
-                   produces exactly the value 0**, so this selects a mode the title
-                   already ships with. `phase5-notes.md` §6am warns the two-vblank WAIT
-                   "must not be optimised" — it is not being. The wait is intact and our
-                   vblank cadence is untouched at 16 ms; the title simply asks for one
-                   vblank instead of two. Re-asserted every vblank rather than hooked at
-                   the setter, because `sub_827D31D0` calls that only when the title's
-                   own cached copy changes — possibly once, before the device exists —
-                   and a mode that silently did not engage reads as "the change did
-                   nothing" (gotcha 151). **`CZ_SWAPQ_TRACE=1` is the instrument that
-                   proves it**: `due` should be `tick+1` instead of `tick+2`, `tick`
-                   should still climb ~62/s, and `done` should keep pace with `tail`.
-                   60/30/20 are the only values offered — interval 0 is present-
-                   immediately, which `CZ_PM4_NO_STOP_ON_WAIT=1` already showed
-                   overflows the flip queue 10 runs in 10 — and anything else is refused
-                   loudly rather than rounded (gotcha 5).
+CZ_FPS_CAP=N       **THE FRAME RATE CAP.** Default unset = 30 fps, unchanged. It works by
+                   SHORTENING THE VBLANK PERIOD, not by changing the title's present
+                   interval, and that distinction is the whole of part 49's second half.
+                   The title's presents are vblank-QUANTISED by construction —
+                   `sub_82841878` schedules `due = cursor + interval`, the walker retires
+                   only once `due <= tick` — so a present can land only on a vblank
+                   boundary. At the stock 16 ms period the ladder is 16/32/48 ms, i.e.
+                   62.5/31.2/20.8 fps WITH NOTHING BETWEEN, and any frame needing 17 ms
+                   falls all the way to 31. The first attempt raised the ceiling with the
+                   interval and left that ladder alone; the operator found the flaw in
+                   minutes ("when it is 60 fps the game plays perfectly" but "when it
+                   drops it still goes back to 30"). `CZ_FPS_CAP=60` now sets an 8 ms
+                   period and pins the title's OWN interval of 2: same 16 ms cap, half
+                   the rung, ladder 16/24/32. The title still asks for two vblanks and
+                   still gets exactly two, which is what phase5-notes §6am requires.
+                   Verified on the operator's whole-map lap, 16,788 frames: 62.5 fps
+                   below 3,000 draws, 43.5 at 3-5k, 35.7 at 5-7k, and only 3.6% of
+                   frames below 30 fps.
                    **IT DOES NOT DOUBLE THE SIMULATION SPEED**, which was the registered
-                   claim and the way this could have been a lie: world units travelled
-                   per WALL second read p90 **0.99x** and p95 1.18x against a predicted
-                   2.00x if the engine were frame-locked. The null control — two runs of
-                   the same 30 fps config — is 31-39%, so this rules out a DOUBLING and
-                   not a 10-20% difference. The oracle measures Chuck walking only;
-                   animation, Havok at half the timestep, and audio sync are the
-                   operator's to judge
+                   claim: world units per WALL second read p90 **0.99x** against a
+                   predicted 2.00x if the engine were frame-locked, and the operator's
+                   verdict in play was "the game plays perfectly". The null control (two
+                   runs of one config) is 31-39%, so this rules out a DOUBLING and not a
+                   10-20% difference.
+                   `CZ_VBLANK_MS=N` still overrides the period outright, and
+                   `CZ_PRESENT_INTERVAL=1|2|3` the interval, so the two can be varied
+                   independently — conflating them is what made the first attempt wrong.
+                   A four-way sweep at matched draws says a shorter period costs NOTHING
+                   in CPU (6.1 vs 6.3 ms of `outside`), retracting an earlier claim here
+                   that it cost ~5 ms.
+CZ_PRESENT_INTERVAL=1|2|3  how many vblanks the title waits per present, overriding what
+                   `CZ_FPS_CAP` picks. 1/2/3 map to the device values 0/2/4 that the
+                   title's own packer recognises; the shipped default is 2. Interval 0
+                   (present immediately) is deliberately not offered — it is unpaced and
+                   overflows the flip queue 10 runs in 10
+CZ_HOST_VSYNC=1    put the HOST's presentation vsync back on. Off is now the default, and
+                   part 49 is why: the renderer was created without
+                   SDL_RENDERER_PRESENTVSYNC but was never told NOT to vsync, and a
+                   compositor throttles `SDL_RenderPresent` regardless — on Wayland it
+                   owns presentation outright. **It hid for 48 parts because the guest's
+                   own 30 fps cap was always the slower clock**; the afternoon that cap
+                   lifted, the display's became binding, and its failure mode is the sharp
+                   one (a frame just over the refresh period waits for the next, so 60
+                   snaps to 30). The startup line prints what was REQUESTED, whether
+                   `SDL_RenderSetVSync` accepted it, and what `SDL_GetRendererInfo`
+                   actually reports — three different things, and only the third is the
+                   answer. Headless read 62.5 fps throughout and nobody asked why
+                   windowed disagreed (gotcha 332)
 CZ_VBLANK_MS=N     interrupt cadence (default 16); the control for timing symptoms
 CZ_PM4_TICK_MS=N   how often the RING is walked, as opposed to how often the guest sees
                    a vblank. **Default 1; `CZ_PM4_TICK_MS=16` is the control arm**, i.e.
