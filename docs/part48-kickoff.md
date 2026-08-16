@@ -71,6 +71,21 @@ Two things to ask them, and only two:
    source size) are what price both halves; choose from those, and confirm with an
    operator, never from the argument that a recycled address looks different in
    its first bytes.
+1b. **THE PM4 CENSUS COUNTERS ARE FOUR `lock xadd`s PER PACKET, and the walk is
+   93,661 packets a frame.** Found while reading part 47's own result and not
+   acted on, because the A/B was running. `ExecutePacket` does
+   `g_packets.fetch_add`, `g_types[type].fetch_add`, `g_opcodes[opcode].fetch_add`
+   and `g_regWrites.fetch_add` (plus `g_draws` on draw packets) — every one an
+   atomic read-modify-write, ~20 cycles on x86 even uncontended. That is roughly
+   **375,000 atomic RMWs a frame, ~2 ms**, inside the phase part 47 just took from
+   19.0 to 12.1 ns per register dword. It is the same defect class as items 1.2
+   and 1.3, one subsystem over: instrumentation charged to the thing it measures
+   (gotcha 230).
+   **The reason they are atomic is real and must be preserved** — the walk runs on
+   the graphics pump and `[vkprof]` differences them from the renderer's thread —
+   so the fix is per-thread counters aggregated at read time, not plain `uint64_t`.
+   Predict ~2 ms of the walk and measure it with the `ns each` field on the
+   `[vkprof] pm4` line, which is already the right instrument.
 2. **Tier 3.2, multithreaded recording**, which the plan puts last on purpose: it
    is invasive, it changes the ordering the resolve/snapshot logic relies on, and
    it multiplies the cost of every per-draw bug. Its prerequisite is that the
