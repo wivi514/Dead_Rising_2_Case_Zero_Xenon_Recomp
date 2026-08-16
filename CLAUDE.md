@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 326 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 331 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -675,10 +675,48 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE work executed
+Where the port is, as of 2026-08-16 (part 48 CLOSED — **THE PERFORMANCE TARGET IS MET
+ON THE OPERATOR'S OWN MACHINE**: 33.6 ms and 29.8 fps at the spot they name as worst,
+against the 33 ms the plan set, with no staleness reported. **`docs/part49-kickoff.md`
+is the LIVE hand-off**, and its first action is a QUESTION — the standing "performance
+is the most important" instruction has been satisfied and should not be assumed to
+still hold):
+
+* **THREE ARMS ON THEIR MACHINE, SOAKED AT ONE SPOT, ARE THE HEADLINE.** The camera
+  stationary at the gas station in every arm, so the band check reads **0.0% drift**
+  across 6,800-7,500 draws — the cleanest comparison this project has had on their
+  hardware. **33.6 ms / 29.8 fps** default; **40.5 ms** with part 47's guard fold
+  undone; **38.1 ms** with part 48's PM4-walk `getenv` undone. Against part 47's
+  42.8 ms and 23.4 fps at 7,010 draws: **−9.2 ms, +6.4 fps.** Their picture verdict
+  on the guards: *"Some looked wrong but they are not new"* — second consecutive
+  clean session.
+* **BOTH OF PART 48'S WINS WERE FOUND BY SPLITTING A PROFILER PHASE, NEITHER BY
+  READING CODE** — three items in two parts now (gotcha 327). Splitting `other`
+  found a `getenv` on the per-draw path; applying the gotcha written for THAT to
+  `pm4.cpp` found a `getenv` **on the PM4 walk, once per type-3 packet, ~29,000
+  times a frame**, worth **4.5 ms** on their frame (136 -> 95 ns/packet).
+* **`Pm4_OpcodeCount` HAD BEEN COUNTED ON EVERY PACKET SINCE PHASE 4 AND READ BY
+  NOTHING.** Printing it showed **`SET_BIN_MASK_LO` is the most frequent packet in
+  the stream** (a third of all type-3, half again as many as there are draws) and
+  **28.7% of packets are type-2 ring filler** doing no work at all.
+* **AN ITEM CAN BE PERFECT ON ITS OWN COUNTER AND A NET LOSS** (gotcha 330). Item
+  2b stamped the stream cache instead of clearing it: 97.7% node reuse, **45x fewer
+  allocations**, and `record` **8.5% slower** — the map grew 1,900 -> 7,000 entries
+  and 22,000 lookups a frame paid for 1,800 cheaper inserts. Built, measured,
+  reverted the same day.
+* **A NULL-CONTROL ARM IS WHAT MAKES A PER-DRAW A/B READABLE** (gotcha 331). The
+  3,000-8,000 draw band is NOT narrow enough: `record` varies 1,204 -> 1,033 ns/draw
+  across it. Put an arm in every campaign that CANNOT move the statistic; whatever
+  it reads is the floor. It read +1.5-4.9% while the fold read **+99.4%**.
+* **What is left, on their numbers**: the stream guard still hashes **63-72 MB every
+  frame** inside `rec.vertex` (part 47 made that hash 4x faster and not SMALLER — attack
+  the bytes); `oth.begin` is **0.75 ms a frame** for once-per-frame work; and
+  `oth.residual` is **1.4 ms and still unnamed after two splits**.
+
+Where the port WAS, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE work executed
 and **CONFIRMED BY THE OPERATOR ON THEIR OWN MACHINE**: 64.1 -> 42.8 ms, 15.6 -> 23.4
-fps at matched draws, with the picture unchanged. **`docs/part48-kickoff.md` is the
-LIVE hand-off and `docs/perf-plan-part48.md` is the live performance plan**, built on
+fps at matched draws, with the picture unchanged. `docs/part48-kickoff.md` was the
+hand-off and `docs/perf-plan-part48.md` the performance plan, built on
 their frame rather than on the headless route):
 
 * **THE OPERATOR'S OWN TWO-ARM A/B IS THE HEADLINE.** One binary, their route,
