@@ -8868,3 +8868,76 @@ The second half is worth saying separately: **a counter that is collected and
 never printed is worse than no counter**, because it makes the question look
 answered. `Pm4_OpcodeCount` was in the header, in the accessor list, and
 incremented on the hottest loop in the runtime, for twenty parts.
+
+### §6ce addendum — THE OPERATOR'S SESSION: 33.6 ms AND 29.8 fps AT THE SPOT THEY NAME
+### AS WORST, i.e. THE PLAN'S TARGET IS MET — and both items are confirmed on their frame
+
+Three arms, `tools/part48_operator_session.sh`, played by the operator on their own
+machine and route. **They soaked at the gas-station spot in every arm**, which is
+what makes this the cleanest comparison this project has ever had on their hardware:
+long stationary windows at ~7,000 draws in all three, and a band check reading
+**0.0% drift** across 6,800-7,500 draws.
+
+| arm | frame | fps | what it isolates |
+|---|---|---|---|
+| **default (all of part 48)** | **33.6 ms** | **29.8** | — |
+| `CZ_VK_GUARD_FOLD_SERIAL=1` | 40.5 ms | 24.7 | **part 47's four-lane guard fold: 6.9 ms** |
+| `CZ_PM4_ENV_PER_PACKET=1` | 38.1 ms | 26.2 | **part 48's PM4-walk `getenv`: 4.5 ms** |
+
+Against their part-47 session — 42.8 ms and 23.4 fps at 7,010 draws — that is
+**−9.2 ms and +6.4 fps**, and **`docs/perf-plan-part48.md`'s target of a 33 ms frame
+is met**: the Xbox 360 shipped this game at 30 fps and their worst spot now runs at
+29.8.
+
+**Action zero is confirmed to within 0.1 ms of its prediction.** The plan predicted
+the guard fold would be worth ~6.8 ms on their 81.65 MB/frame of hashing; it measured
+6.9. In per-draw terms it *halves* the vertex section of `record`:
+
+```
+                base   envpkt (null)      fold
+  record        1357   1380  +1.7%     2172  +60.1%
+  rec.vertex     776    788  +1.6%     1547  +99.4%
+  other          721    732  +1.5%      717   -0.6%
+```
+
+**THE NULL CONTROL IS THE REASON THOSE NUMBERS CAN BE BELIEVED** (gotcha 331).
+`CZ_PM4_ENV_PER_PACKET=1` changes only the command processor and therefore cannot
+move any draw-path phase by any mechanism, and it reads **+1.5% to +4.9% across all
+thirteen** of them. That IS the floor, measured rather than assumed — and the fold's
+99.4% is 61 times it.
+
+The walk agrees independently: **136 → 95 ns per packet**, with the packet mix
+matched (7.4 against 7.5 register dwords per packet, filler 28.6% against 28.7%), so
+the comparison is admissible by this reader's own test. At their ~100,000 packets a
+frame, 41 ns/packet is 4.1 ms — against the 4.5 ms the frame time says. Two
+statistics, different denominators, agreeing.
+
+### The second question, which is the one that could have gone wrong
+
+Both of part 47 and part 48's biggest wins are **content guards**, and the only
+symptom either can produce is a STALE surface. Asked directly, the operator's answer
+was: *"Some looked wrong but they are not new so no issue with your fix from what I
+can see."* That is the second consecutive session in which the guard work comes back
+clean, and it attributes the wrong-looking surfaces to the pre-existing open items
+00m and 00n, which they had already filed and deferred.
+
+### What their frame is made of NOW, and it is a different shape from part 47's
+
+At 33.6 ms and ~7,000 draws, from their own profile:
+
+| term | ms | note |
+|---|---|---|
+| PM4 walk | ~9.5 | ~100,000 packets at 95 ns |
+| `record` | ~9.5 | of which **`vertex` is 5.4** |
+| `other` | ~5.0 | `shader` 98 + `key` 37 + `pipeline` 122 + `begin` 107 + `fetch` 112 + `tail` 39 + **`residual` 205** ns/draw |
+| `textures` | ~3.6 | closed in part 47 and staying closed |
+
+Three things in that table are new information and none of them existed this morning:
+
+* **`rec.vertex` at 776 ns/draw is the largest single draw-path item**, and the
+  cross-frame store's content guard is still reading **63-72 MB every frame** inside
+  it. Part 47 made that hash four times faster; it did not make it SMALLER, and the
+  fold arm proves the hash is most of the section.
+* **`oth.begin` is 107 ns/draw ≈ 0.75 ms a frame** for `BeginFrame` + `BeginRendering`
+  — work that is supposed to happen once per frame. Nothing had ever measured it.
+* **`oth.residual` is 205 ns/draw ≈ 1.4 ms** and is still unnamed after two splits.
