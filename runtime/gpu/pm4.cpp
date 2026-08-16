@@ -1246,9 +1246,29 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // CZ_PM4_BIN_TRACE_ARM=hex holds the trace until the bin select first takes that
     // value, because the interesting era is a quarter of a million packets into the
     // boot and a budget spent on the untiled prologue says nothing (gotcha 139).
-    if (getenv("CZ_PM4_BIN_TRACE"))
+    //
+    // THE `getenv` IS HOISTED, and that is not tidiness. This branch is evaluated once
+    // per TYPE-3 PACKET — 29,000 a frame on the outdoor route and more on the operator's
+    // — and `getenv` is a linear walk of the environment block, so the disabled
+    // diagnostic was costing the walk on every packet of the phase that is 16.6 ms of
+    // the operator's frame. Found by applying gotcha 329's own grep (`getenv` NOT
+    // preceded by `static`) to this file after part 48 found the same shape on the
+    // per-draw path in the renderer; every other environment read in this module was
+    // already a global or a function-local static, which is what made the two exceptions
+    // unreadable.
+    //
+    // CZ_PM4_ENV_PER_PACKET=1 restores the per-packet `getenv` and is the same-binary
+    // control arm. It exists because the claim here is about SIZE, not correctness — the
+    // two forms are behaviourally identical, so nothing in the picture or in any gate
+    // could separate them, and without an arm the only measurement available would be
+    // against a different binary (gotcha 50: the control is the other arm of the same
+    // binary, run now).
+    static const char* binTraceCached = getenv("CZ_PM4_BIN_TRACE");
+    static const bool envPerPacket = getenv("CZ_PM4_ENV_PER_PACKET") != nullptr;
+    const char* binTraceEnv = envPerPacket ? getenv("CZ_PM4_BIN_TRACE") : binTraceCached;
+    if (binTraceEnv)
     {
-        static int left = atoi(getenv("CZ_PM4_BIN_TRACE"));
+        static int left = atoi(binTraceEnv);
         static const char* armEnv = getenv("CZ_PM4_BIN_TRACE_ARM");
         static const char* armMaskEnv = getenv("CZ_PM4_BIN_TRACE_ARMMASK");
         static const uint64_t armSelect = armEnv ? strtoull(armEnv, nullptr, 16) : 0;
@@ -1707,7 +1727,8 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             {
                 const uint32_t addr = body(0);
                 const uint32_t size = body(1) & 0xFFFFF;
-                if (getenv("CZ_PM4_IB_TRACE"))
+                static const bool ibTrace = getenv("CZ_PM4_IB_TRACE") != nullptr;
+                if (ibTrace)
                 {
                     static std::atomic<uint64_t> n{ 0 };
                     if (n.fetch_add(1) < 64)
