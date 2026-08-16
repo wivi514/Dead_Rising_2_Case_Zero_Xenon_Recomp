@@ -10491,6 +10491,21 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // (type 0/1 are register writes, type 2 is ring filler, type 3 is
             // everything the command processor actually does), then every type-3
             // opcode with a non-zero delta, sorted by frequency.
+            // The per-thread census's own correctness check (part 48 item 1b). Printed
+            // only when the verifier is running or a mismatch exists, for the same
+            // reason the bulk-register line is: an ordinary run must not be handed a
+            // line saying "0 mismatches" for a check it never ran. `threads` is printed
+            // alongside because the comparison is only exact while one thread walks.
+            {
+                uint64_t walkers = 0;
+                const uint64_t bad = Pm4_CensusMismatches(&walkers);
+                if (bad || getenv("CZ_PM4_VERIFY_COUNTERS"))
+                    fprintf(stderr,
+                            "[vkprof] pm4 census verify: %llu of 135 counters DISAGREE "
+                            "(per-thread vs atomic), %llu walking thread%s\n",
+                            (unsigned long long)bad, (unsigned long long)walkers,
+                            walkers == 1 ? "" : "s — the comparison is NOT exact above 1");
+            }
             static uint64_t lastTypes[4] = {}, lastOpcodes[128] = {};
             uint64_t dTypes[4];
             for (uint32_t t = 0; t < 4; t++)

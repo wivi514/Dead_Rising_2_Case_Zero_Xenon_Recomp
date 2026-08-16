@@ -191,6 +191,17 @@ uint64_t Pm4_RegRunSlowDwords();
 uint64_t Pm4_RegRunMismatches();
 uint64_t Pm4_TypeCount(uint32_t type);      // type 0..3
 uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F
+// All of the counts above are kept PER WALKING THREAD as of part 48 and summed here,
+// because as bus-locked atomics they were four `lock xadd`s on every packet — ~326,000
+// per frame on the operator's stream, for pure instrumentation.
+// CZ_PM4_ATOMIC_COUNTERS=1 restores the atomic form and is the control arm.
+//
+// How many of the 135 counters the two forms DISAGREE on under
+// CZ_PM4_VERIFY_COUNTERS=1, which drives both from every site. Must be 0, and
+// CZ_PM4_VERIFY_COUNTERS_POISON=1 must make it non-zero before that means anything.
+// `threads` (optional) receives the number of threads that have ever walked a packet;
+// it is 1 in this runtime and the exactness of the comparison depends on that.
+uint64_t Pm4_CensusMismatches(uint64_t* threads);
 uint64_t Pm4_DrawCount();
 uint64_t Pm4_FrameCount();                  // XE_SWAP packets = frames
 uint64_t Pm4_InterruptCount();

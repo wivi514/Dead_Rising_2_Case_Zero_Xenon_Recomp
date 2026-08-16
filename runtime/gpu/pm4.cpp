@@ -223,6 +223,113 @@ std::atomic<uint64_t> g_draws{ 0 };
 // thing that separates "this pass had few draws" from "this pass had many and hardware
 // wanted them in the other tile".
 std::atomic<uint64_t> g_drawsPredicatedOut{ 0 };
+
+// --- the same counters again, ONE SET PER WALKING THREAD (part 48, plan item 1b) ---
+//
+// WHY. Every one of the atomics above was a `lock xadd` on the hottest loop in the
+// runtime, and `ExecutePacket` performs four of them on an ordinary packet — packets,
+// types, opcodes, regWrites — plus a fifth on a draw. On the operator's frame that is
+// 81,533 packets and roughly 326,000 bus-locked read-modify-writes, ~20 cycles each
+// even completely uncontended, for pure instrumentation. It is the same defect class
+// as part 47's items 1.2 and 1.3, one subsystem over (gotcha 230), and part 48's
+// opcode census sharpened it: **28.7% of the packets paying that toll are type-2 ring
+// filler**, which does no other work whatsoever.
+//
+// WHY NOT SIMPLY DELETE THE COUNTERS. They are not decoration. The walk runs on the
+// graphics pump and `[vkprof]` differences them per window to produce ns-per-packet
+// and dwords-per-packet, which is how part 47 discovered that the operator's packet
+// mix differs from the headless route's in kind. Removing them would remove the only
+// description of the thing being optimised.
+//
+// WHAT REPLACES THEM. One instance per thread that walks, linked into a list, summed
+// by the accessors. In this runtime there is exactly ONE such thread — `vd.cpp` is the
+// only caller of `Pm4_Execute` and its comment says so explicitly — so the list has one
+// element and the sum is a single load. The list exists anyway because a second walker
+// would otherwise corrupt the numbers silently, and the verify report below prints the
+// instance count so that assumption is checked rather than trusted (gotcha 13).
+//
+// WHY THE FIELDS ARE STILL `std::atomic`. Because the storage class is not what costs:
+// a RELAXED `store(load() + n)` is `mov`/`add`/`mov` with no bus lock, where
+// `fetch_add` is `lock xadd`. Only the owning thread ever writes an instance, so the
+// load/store pair cannot lose an update; the atomics are here so the accessors'
+// cross-thread READ is defined behaviour rather than a data race in a number nobody
+// would ever think to suspect.
+struct alignas(64) Census
+{
+    std::atomic<uint64_t> packets{ 0 };
+    std::atomic<uint64_t> types[4];
+    std::atomic<uint64_t> opcodes[128];
+    std::atomic<uint64_t> regWrites{ 0 };
+    std::atomic<uint64_t> draws{ 0 };
+    std::atomic<uint64_t> drawsPredicatedOut{ 0 };
+    Census* next = nullptr;
+};
+std::atomic<Census*> g_censusList{ nullptr };
+thread_local Census* t_census = nullptr;
+// Never written, only read: the sink the bump helpers use under the atomic arm so that
+// arm pays no thread-local lookup at all and is a faithful copy of the pre-48 walk.
+Census g_censusUnused;
+
+// CZ_PM4_ATOMIC_COUNTERS=1 restores the pre-part-48 form — the same-binary control arm
+// for this item, and the reference implementation the verifier below judges against.
+const bool g_atomicCounters = getenv("CZ_PM4_ATOMIC_COUNTERS") != nullptr;
+// CZ_PM4_VERIFY_COUNTERS=1 drives BOTH forms from every call site and compares the
+// totals. This is the correctness check, and it has to be this rather than "compare two
+// runs' totals": nothing about this title's packet stream is reproducible run to run, so
+// two runs' counts differ for reasons that have nothing to do with the change. Within
+// one run the two forms are bumped by the same call with the same argument, so they are
+// equal at every point between calls and any difference is a real defect — a site that
+// bumps one and not the other (gotcha 322: the incumbent implementation is the oracle).
+const bool g_verifyCounters = getenv("CZ_PM4_VERIFY_COUNTERS") != nullptr;
+// ...and the check must be shown able to fail before a zero from it means anything
+// (gotcha 30). This drops exactly one per-thread packet increment in ten thousand.
+const bool g_verifyPoison = getenv("CZ_PM4_VERIFY_COUNTERS_POISON") != nullptr;
+
+Census& ThreadCensus()
+{
+    if (!t_census)
+    {
+        Census* c = new Census();  // one per walking thread, never freed
+        Census* head = g_censusList.load(std::memory_order_relaxed);
+        do
+        {
+            c->next = head;
+        } while (!g_censusList.compare_exchange_weak(head, c, std::memory_order_release,
+                                                     std::memory_order_relaxed));
+        t_census = c;
+    }
+    return *t_census;
+}
+
+// The one place the two forms are selected between. Both conditions are `const bool`s
+// fixed for the process, so this is a perfectly predicted branch rather than a bus lock.
+inline void CensusAdd(std::atomic<uint64_t>& local, std::atomic<uint64_t>& global,
+                      uint64_t n = 1)
+{
+    if (!g_atomicCounters)
+        local.store(local.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
+    if (g_atomicCounters || g_verifyCounters)
+        global.fetch_add(n, std::memory_order_relaxed);
+}
+inline void CensusSub(std::atomic<uint64_t>& local, std::atomic<uint64_t>& global,
+                      uint64_t n = 1)
+{
+    if (!g_atomicCounters)
+        local.store(local.load(std::memory_order_relaxed) - n, std::memory_order_relaxed);
+    if (g_atomicCounters || g_verifyCounters)
+        global.fetch_sub(n, std::memory_order_relaxed);
+}
+// Sum one field across every walking thread. `Field` is a lambda taking a `Census&`,
+// because `types[]` and `opcodes[]` are arrays and a pointer-to-member cannot index one.
+template <typename Field>
+uint64_t CensusSum(Field f)
+{
+    uint64_t n = 0;
+    for (Census* c = g_censusList.load(std::memory_order_acquire); c; c = c->next)
+        n += f(*c).load(std::memory_order_relaxed);
+    return n;
+}
+
 std::atomic<uint64_t> g_frames{ 0 };
 std::atomic<uint64_t> g_interrupts{ 0 };
 void (*g_interruptSink)() = nullptr;
@@ -1012,8 +1119,19 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
 {
     const uint32_t header = fetch(pos);
     const uint32_t type = header >> 30;
-    g_packets.fetch_add(1, std::memory_order_relaxed);
-    g_types[type].fetch_add(1, std::memory_order_relaxed);
+    // Hoisted once per packet rather than looked up at each of the five census sites
+    // below, so the whole census costs one thread-local read per packet. Under the
+    // atomic arm it is a reference to an instance nothing ever writes, which is how that
+    // arm avoids paying even that.
+    Census& cs = g_atomicCounters ? g_censusUnused : ThreadCensus();
+    // The poison drives the GLOBAL only, so the two forms diverge by one every ten
+    // thousand packets and the verifier must report it. Meaningful only with
+    // CZ_PM4_VERIFY_COUNTERS=1, which is what bumps the global at all.
+    if (g_verifyPoison && (g_packets.load(std::memory_order_relaxed) % 10000) == 0)
+        g_packets.fetch_add(1, std::memory_order_relaxed);
+    else
+        CensusAdd(cs.packets, g_packets);
+    CensusAdd(cs.types[type], g_types[type]);
 
     if (type == 2) // filler
         return 1;
@@ -1023,8 +1141,8 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // two dwords of a packet still being written and desync the stream.
     if (header == 0 && depth == 0)
     {
-        g_packets.fetch_sub(1, std::memory_order_relaxed);
-        g_types[type].fetch_sub(1, std::memory_order_relaxed);
+        CensusSub(cs.packets, g_packets);
+        CensusSub(cs.types[type], g_types[type]);
         return 0;
     }
 
@@ -1054,7 +1172,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         if (avail < 3)
             return 0;
         g_constWatchSource = "TYPE1";
-        g_regWrites.fetch_add(2, std::memory_order_relaxed);
+        CensusAdd(cs.regWrites, g_regWrites, 2);
         WriteRegister(base, header & 0x7FF, fetch(pos + 1));
         WriteRegister(base, (header >> 11) & 0x7FF, fetch(pos + 2));
         return 3;
@@ -1069,7 +1187,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         const uint32_t reg = header & 0x7FFF;
         const bool oneReg = (header >> 15) & 1;
         g_constWatchSource = oneReg ? "TYPE0(one-reg)" : "TYPE0(run)";
-        g_regWrites.fetch_add(bodyCount, std::memory_order_relaxed);
+        CensusAdd(cs.regWrites, g_regWrites, bodyCount);
         // ONE-REG is not a run — every dword lands on the same index, and its scratch
         // mirror must fire once per write, not once. It stays on the per-dword path.
         if (oneReg)
@@ -1082,9 +1200,9 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
 
     // type 3
     const uint32_t opcode = (header >> 8) & 0x7F;
-    g_opcodes[opcode].fetch_add(1, std::memory_order_relaxed);
+    CensusAdd(cs.opcodes[opcode], g_opcodes[opcode]);
     if (opcode == 0x22 || opcode == 0x36)
-        g_draws.fetch_add(1, std::memory_order_relaxed);
+        CensusAdd(cs.draws, g_draws);
 
     // An opcode this command processor does not have is reported, once each. B1's
     // census says there are exactly 21 and all are named, so any of these is either a
@@ -1180,7 +1298,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     if (predicated)
     {
         if (opcode == 0x22 || opcode == 0x36)
-            g_drawsPredicatedOut.fetch_add(1, std::memory_order_relaxed);
+            CensusAdd(cs.drawsPredicatedOut, g_drawsPredicatedOut);
         if (!noPredication)
             return bodyCount + 1;
     }
@@ -1493,7 +1611,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 default: index = kRegCount;     // unknown bank: drop
             }
             g_constWatchSource = "SET_CONSTANT";
-            g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
+            CensusAdd(cs.regWrites, g_regWrites, bodyCount - 1);
             // `body(i)` is `fetch(pos + 1 + i)`, so body(1) is at pos + 2.
             WriteRegisterRun(base, fetch, pos + 2, index, bodyCount - 1);
             break;
@@ -1502,7 +1620,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         case 0x55: // SET_CONSTANT2 / SET_SHADER_CONSTANTS: absolute index in body(0)
         case 0x56:
             g_constWatchSource = "SET_CONSTANT2";
-            g_regWrites.fetch_add(bodyCount - 1, std::memory_order_relaxed);
+            CensusAdd(cs.regWrites, g_regWrites, bodyCount - 1);
             WriteRegisterRun(base, fetch, pos + 2, body(0) & 0xFFFF, bodyCount - 1);
             break;
 
@@ -1523,7 +1641,7 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
             const uint32_t addr = PhysToVa(body(0) & 0x3FFFFFFC);
             const uint32_t size = body(2) & 0xFFF;
             g_constWatchSource = "LOAD_ALU_CONSTANT";
-            g_regWrites.fetch_add(size, std::memory_order_relaxed);
+            CensusAdd(cs.regWrites, g_regWrites, size);
             // The source here is GUEST MEMORY, not the packet stream — but a `Source`
             // with no wrap IS a linear big-endian dword reader at a guest address, so
             // the same bulk run applies verbatim. That reuse is the reason `Source` is a
@@ -2007,8 +2125,19 @@ uint64_t Pm4_HoldStreakMax() { return g_holdStreakMax.load(); }
 void Pm4_SetFenceWord(uint32_t va) { g_fenceWord.store(va, std::memory_order_relaxed); }
 uint64_t Pm4_FenceRegressionCount() { return g_fenceRegressions.load(); }
 
-uint64_t Pm4_PacketCount() { return g_packets.load(); }
-uint64_t Pm4_RegisterWriteCount() { return g_regWrites.load(); }
+// The census accessors. Under the atomic arm the globals are the live counters; by
+// default the per-thread instances are, and the globals stay at zero. The selection is
+// made once here rather than at each of the eight bump sites.
+uint64_t Pm4_PacketCount()
+{
+    return g_atomicCounters ? g_packets.load()
+                            : CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.packets; });
+}
+uint64_t Pm4_RegisterWriteCount()
+{
+    return g_atomicCounters ? g_regWrites.load()
+                            : CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.regWrites; });
+}
 // How the register dwords were written: in bulk runs, or one at a time because the
 // destination range touched the scratch mirror or the const-watch window. The share is
 // what says whether the bulk path is worth what it is estimated at (perf-plan-part47
@@ -2016,10 +2145,72 @@ uint64_t Pm4_RegisterWriteCount() { return g_regWrites.load(); }
 uint64_t Pm4_RegRunBulkDwords() { return g_regRunBulk.load(); }
 uint64_t Pm4_RegRunSlowDwords() { return g_regRunSlow.load(); }
 uint64_t Pm4_RegRunMismatches() { return g_regRunMismatch.load(); }
-uint64_t Pm4_TypeCount(uint32_t type) { return type < 4 ? g_types[type].load() : 0; }
-uint64_t Pm4_OpcodeCount(uint32_t opcode) { return opcode < 128 ? g_opcodes[opcode].load() : 0; }
-uint64_t Pm4_DrawCount() { return g_draws.load(); }
-uint64_t Pm4_DrawsPredicatedOut() { return g_drawsPredicatedOut.load(); }
+uint64_t Pm4_TypeCount(uint32_t type)
+{
+    if (type >= 4)
+        return 0;
+    return g_atomicCounters
+               ? g_types[type].load()
+               : CensusSum([type](Census& c) -> std::atomic<uint64_t>& { return c.types[type]; });
+}
+uint64_t Pm4_OpcodeCount(uint32_t opcode)
+{
+    if (opcode >= 128)
+        return 0;
+    return g_atomicCounters
+               ? g_opcodes[opcode].load()
+               : CensusSum([opcode](Census& c) -> std::atomic<uint64_t>& { return c.opcodes[opcode]; });
+}
+uint64_t Pm4_DrawCount()
+{
+    return g_atomicCounters ? g_draws.load()
+                            : CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.draws; });
+}
+uint64_t Pm4_DrawsPredicatedOut()
+{
+    return g_atomicCounters
+               ? g_drawsPredicatedOut.load()
+               : CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.drawsPredicatedOut; });
+}
+
+// The verifier. Returns the number of the 135 counters on which the per-thread form and
+// the atomic form DISAGREE, and 0 when the check is not running — which is why the
+// caller must print it only under CZ_PM4_VERIFY_COUNTERS, or it would be a clean result
+// from a test that never ran (gotcha 30, the same rule the bulk-register check follows).
+//
+// The comparison is exact, not approximate, and that is a property of this runtime
+// rather than of the code: `vd.cpp` is the only caller of `Pm4_Execute` and states that
+// only the pump thread walks, so there is one instance and no other thread can advance
+// either form while this reads them. `threads` is returned so that assumption is checked
+// on every run rather than trusted — a 2 here invalidates the exactness, not the change.
+uint64_t Pm4_CensusMismatches(uint64_t* threads)
+{
+    if (threads)
+    {
+        uint64_t n = 0;
+        for (Census* c = g_censusList.load(std::memory_order_acquire); c; c = c->next)
+            n++;
+        *threads = n;
+    }
+    if (!g_verifyCounters)
+        return 0;
+    uint64_t bad = 0;
+    const auto cmp = [&](uint64_t a, uint64_t b) { bad += (a != b) ? 1 : 0; };
+    cmp(g_packets.load(),
+        CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.packets; }));
+    cmp(g_regWrites.load(),
+        CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.regWrites; }));
+    cmp(g_draws.load(), CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.draws; }));
+    cmp(g_drawsPredicatedOut.load(),
+        CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.drawsPredicatedOut; }));
+    for (uint32_t t = 0; t < 4; t++)
+        cmp(g_types[t].load(),
+            CensusSum([t](Census& c) -> std::atomic<uint64_t>& { return c.types[t]; }));
+    for (uint32_t op = 0; op < 128; op++)
+        cmp(g_opcodes[op].load(),
+            CensusSum([op](Census& c) -> std::atomic<uint64_t>& { return c.opcodes[op]; }));
+    return bad;
+}
 
 // The (mask, select) pair table, in the same shape `tools/xtr_bin_predication.py`
 // prints for capture B1. Enabled by CZ_PM4_BIN_CENSUS=1 and printed by the ring trace.
