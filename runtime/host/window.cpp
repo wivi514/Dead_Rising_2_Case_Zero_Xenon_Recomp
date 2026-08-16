@@ -585,6 +585,19 @@ bool Host_WindowInit()
     // No SDL_RENDERER_PRESENTVSYNC. The guest's swap rate is the frame clock here
     // (one XE_SWAP per frame, verified against B1), and a vsync-paced present would
     // add a second clock that silently becomes the slower of the two.
+    //
+    // NOT ASKING FOR VSYNC IS NOT THE SAME AS ASKING FOR NO VSYNC, and part 49 paid for
+    // the difference. Omitting the flag leaves the decision to the backend, and a
+    // compositor throttles `SDL_RenderPresent` to the display refresh whatever SDL was
+    // asked for. That is invisible while the guest is capped at 30 fps — the second
+    // clock is the faster one and never binds — and the moment `CZ_FPS_CAP=60` lifted
+    // the guest's own cap it became the binding one. Its failure mode is the sharp one:
+    // with no triple buffering a frame that takes just OVER 16.67 ms cannot present
+    // until the NEXT refresh, so the frame rate snaps 60 -> 30 with nothing in between,
+    // which is exactly what the operator reported ("it seems to go back to around
+    // 30 fps, pretty sure it's vsync"). Headless reads 62.5 fps because there is no
+    // window and therefore no compositor in the path — the arm that localises this.
+    SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
     if (!g_renderer)
     {
@@ -605,6 +618,32 @@ bool Host_WindowInit()
 
     g_inputTrace = getenv("CZ_INPUT_TRACE") != nullptr;
     g_active = true;
+
+    // ...and say so out loud, per renderer, because the hint above is a REQUEST. SDL
+    // 2.0.18 added the explicit call, which is the one that can also FAIL and say so —
+    // and under a compositor that owns presentation it may well fail, in which case the
+    // right answer is to know that rather than to believe the hint took.
+    //
+    // CZ_HOST_VSYNC=1 puts it back on: the same-binary control arm, so "the frame rate
+    // is capped by the display" and "the frame rate is capped by our own work" can be
+    // told apart in one run instead of argued about.
+    const bool wantVsync = getenv("CZ_HOST_VSYNC") != nullptr;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    const int vsRc = SDL_RenderSetVSync(g_renderer, wantVsync ? 1 : 0);
+#else
+    const int vsRc = -1;
+#endif
+    SDL_RendererInfo ri{};
+    SDL_GetRendererInfo(g_renderer, &ri);
+    fprintf(stderr,
+            "[host] present vsync: requested %s, SDL_RenderSetVSync %s, renderer "
+            "reports PRESENTVSYNC %s\n",
+            wantVsync ? "ON (CZ_HOST_VSYNC=1)" : "OFF",
+            vsRc == 0 ? "accepted" : "UNAVAILABLE (hint only)",
+            (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? "SET — the display is still pacing "
+                                                     "us, and the frame rate above 60 "
+                                                     "fps will be its refresh rate"
+                                                   : "clear");
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
             kDefaultHeight, SDL_GetCurrentVideoDriver());
