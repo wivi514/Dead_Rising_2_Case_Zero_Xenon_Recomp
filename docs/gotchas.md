@@ -3396,3 +3396,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      artifact of a long run, check that the run has ENDED — a completion marker in the
      driver's own output, not the file's mtime and not a guess from the clock — and if
      it has not, do not read the artifact at all rather than reading it carefully.
+
+340. **A SYMBOL PROFILER OUTRANKS THE PHASE PROFILER YOU WROTE, AND IT CAN SEE THE
+     THREADS YOURS CANNOT.** This project spent thirty parts refining a per-phase timer
+     inside its graphics pump — splitting `record`, splitting `other`, splitting the
+     split — and every one of those columns is, by construction, a scope somebody
+     already suspected. `perf record -F 999 -p <pid>` for 30 s named the top cost in
+     every thread of the process at once, in function symbols, and it disagreed with the
+     phase profiler about our own pump: the phase table charges ~15 ms of a 22 ms frame
+     to the draw path, while at symbol level `DoDraw` is 9.84% of the thread and a
+     CONTENT GUARD is 16.79%. In a recompiled port it is better than that, because
+     every guest function is a real symbol: the same profile read the TITLE's code and
+     showed 84% of the busiest thread in one spin-wait. **Run the symbol profiler before
+     writing another phase split.** A phase profiler can only tell you which of the
+     boxes you drew is heavy; only a symbol profiler can tell you the weight is not in
+     any of them — and it needs no code, no rebuild and no arm. Corollary: `perf`
+     attributes INLINED code to its container, so a hot "function" may be something
+     inlined into it (here, an instrument inlined into the present path). Confirm with
+     `--sort=sym,srcline` before naming a subsystem.
+
+341. **PRICE THE SETUP AND THE AFTERMATH BEFORE THE PART THAT MADE THE IDEA
+     ATTRACTIVE.** Replacing a 128 KB hash with a 256-byte soft-dirty pagemap read is a
+     three-orders-of-magnitude argument and it was CORRECT — measured, the kernel's
+     answer is 1.6-4x cheaper than reading the bytes for anything above 64 KB. The idea
+     is still dead, twice over, on the two costs that are not part of the pitch: ARMING
+     it (`/proc/self/clear_refs`) walks the whole process's page tables at 24.4 ns per
+     resident page, which on a 1.2 GB resident set is 7.5 ms per frame against the
+     ~0.7 ms of hashing it removes; and arming WRITE-PROTECTS every page, so the next
+     write to each takes a minor fault at 773 ns/page — charged not to the thread that
+     armed it but to whichever thread writes next, which here is the guest's own
+     simulation. **Both are invisible in the comparison everyone actually runs**, which
+     is "new mechanism per query" against "old mechanism per query". Ask what it costs
+     to turn on, and what it costs everybody ELSE afterwards.
