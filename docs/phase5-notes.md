@@ -9053,3 +9053,139 @@ And a cost that was free to ignore at 30 fps and is not now: **the guest simulat
 twice as often per second**, so `outside` per SECOND has roughly doubled, and
 `readback` — our present path copying the image back to host memory to blit it — went
 2.7% -> 4.7% of the frame for the same reason.
+
+## 6cg. Part 50: THE PLAN'S TOP TWO ITEMS WERE BOTH REPRICED BY THE MEASUREMENT THAT
+## PRECEDED THEM, and one of them turned out to be the profiler measuring itself
+
+Part 50 executed `docs/perf-plan-part50.md` tier 1 and tier 3 and instrumented tier 2.
+Its transferable result is not a millisecond count. It is that **three of the plan's
+estimates were built on statistics that could not support them, and in each case the
+cheap measurement that could was one counter away.**
+
+### §1. Item 1a — the filler runs. A SHARE IS NOT A SHAPE
+
+Part 48's opcode census established that **28.7% of every PM4 packet this title walks is
+type-2 ring filler**, a one-dword no-op. The plan priced "skip runs of it" at 1.5-2 ms
+on that number alone.
+
+But a 28.7% share is equally consistent with one enormous run of padding and with 23,000
+isolated dwords wedged between real packets, and coalescing is worth everything in the
+first case and nothing in the second. **Nobody had ever measured the run length.** So the
+histogram was built before the fast path, and it repriced the item immediately:
+
+| | |
+|---|---|
+| mean run length | **2.24 dwords** |
+| shape | **bimodal** — 28% singletons, 72% runs of 2-3, a thin tail of ~1,100 runs of 32-63 per window, and *nothing in between* |
+| at ring level | **0%** |
+
+Two consequences, neither of which the share could have suggested. First, coalescing in
+the callee would have removed only **57%** of the calls, so the test was moved to
+`ExecuteLinear`'s loop — which has already fetched the header for its own trail, so there
+it is free and removes **100%** of them. Second, **this is not the driver padding the ring
+to a wrap boundary**, which is what the word "filler" suggests and what the ring path is
+written to expect; it is the title's own indirect buffers, padded packet by packet. Two
+different producers, and only one of them was where the code expected it.
+
+**The A/B refuted the plan's prediction.** Registered: 20-30 ns off the mean per-packet
+cost. Measured, three runs an arm, alternated, in the 3,000+ draw band:
+
+| arm | ns/packet, per-run medians | pooled |
+|---|---|---|
+| base (the fix) | 96.0, 99.0, 105.0 | 102.0 |
+| `CZ_PM4_NO_FILLER_RUNS=1` | 105.5, 101.5, 110.0 | 106.0 |
+
+**The null control is `base` against itself and it spans 96.0-105.0 — 9.4%.** The arm
+effect is 4.0-6.5 ns/packet, i.e. **inside the noise floor**. What keeps the sign is that
+all three rounds order the same way and the mechanism is not in doubt (12,267 calls a
+frame provably removed), so the item is real and **worth ~0.3-0.5 ms, not 1.5-2 ms**.
+
+**Its by-product is worth more than the item.** The difference divided by the calls
+removed prices one `ExecutePacket` call at **24-40 ns**, and because a filler packet
+returns before the zero-header check, the `avail` test and the body decode, that is a
+LOWER BOUND on the per-packet fixed cost. At 74,767 packets a frame that is **~2.2 ms of
+pure dispatch overhead** — which is item 1c's ceiling, now measured instead of estimated,
+and it lands inside the plan's guessed 2-3 ms.
+
+### §2. Item 3 — `other`'s residual IS THIS PROFILER, and the plan called it the best item
+
+The plan: *"`residual` 206 ns/draw (~1.4 ms) — SPLIT IT AGAIN. Two splits have not named
+it... This is the highest-yield-per-hour item in the document."*
+
+It could never have been named by splitting, because **it is not in any of the code being
+split.** Work through where `ProfScope`'s two clock reads fall. The constructor's read
+happens between the parent's `t0` and the child's, so it is inside the parent's interval
+and is **not** in `childNs` — nothing subtracts it. The `Close()` read is inside the
+child's own measured total, so it lands in the child's named phase. **One whole clock read
+per nested scope therefore accumulates in the parent's residual and nowhere else** — and
+`drawOther`, printed as `other`, is DoDraw's outermost scope.
+
+Measured rather than argued. `CalibrateProfNow` times the call; the scopes are counted;
+the print multiplies them and puts the product next to the residual, as a claim that can
+fail. `CZ_VK_PROFILE_EXTRA_SCOPES=N` is the positive control, and it did not fail:
+
+| arm | scopes/draw | `other` residual |
+|---|---|---|
+| null | 14.3 | **205 ns** |
+| `CZ_VK_PROFILE_EXTRA_SCOPES=8` | 22.3 | **397 ns** |
+
+**+8 scopes moved the residual +192 ns — a slope of 24.0 ns per scope against a calibrated
+clock read of 21.6 ns.** DoDraw opens ~8 scopes DIRECTLY inside `_pDraw` (the rest are
+grandchildren, whose reads land in their own parents), and 8 x 24.0 = **192 ns of the
+205 ns residual, 94% of it**.
+
+**The item is retired.** There is no frame time there to save: it is absent from every run
+that does not set `CZ_VK_PROFILE`. Gotcha 335, and it is a nastier shape than gotcha 7 —
+an expensive probe usually distorts what it reports, but this one **files its own cost
+under a name that invites you to go looking for a defect there**, and two parts did.
+
+### §3. Item 2a — the guard's promotion, and a hypothesis of mine refuted by one counter
+
+The stream guard reads 35.6 MB a frame, of which **26 MB is "promoted to exact"** — but
+the budget for speculative promotion is 4 MB a frame, so most of it had to be arriving
+through some other door and nothing in the runtime said which. Split three ways:
+
+| door | streams/frame | MB/frame |
+|---|---|---|
+| **proven** — `needsExact`, **unbudgeted and permanent** | **388-483** | **21.8-29.4** |
+| speculative — dynamic, still accruing proof (budgeted) | 29-37 | 0.0 |
+| probe — newly met (budgeted) | 10-12 | 0.0 |
+
+**This refutes part 46's expectation of its own mechanism.** That part wrote that
+`needsExact` would be "the UI text buffer's small edits inside a large buffer and almost
+nothing else". It is **15,643 of 126,536 store entries — 12.4%, rising monotonically
+window over window, and the latch never unlatches.** A streaming world keeps meeting new
+large buffers, so the set that pays the unbudgeted exact hash grows for as long as the
+player keeps playing.
+
+**And it refutes the hypothesis I formed about what to do with it, which is the part worth
+keeping.** The argument was clean: a stream proven to change is one we are about to copy
+anyway, so hashing it is a whole extra read of the buffer to learn what the copy is about
+to tell us free — and always-copying would be **cheaper and safer**, since a stream always
+copied can never be served stale. So the change rate inside the proven set was counted
+before anything was built. **11-13% of proven observations find the stream actually
+changed.** The guard saves the copy on ~88% of them and is doing exactly its job.
+
+So item 2a's 26 MB a frame is not waste, and the item is NOT "stop hashing". It is the
+narrower and harder question the counters now pose: **can a large buffer's change be
+detected more cheaply than by reading all of it?** The sampled guard reads 16 KB of a
+128 KB buffer and genuinely misses localized edits — that is why the latch fires, and it
+fires correctly. The candidates left are all about asking the operating system rather than
+the bytes (soft-dirty page tracking via `/proc/self/clear_refs` + `pagemap` would turn a
+128 KB read into a 256-byte one and be EXACT), and that is architectural work, not a
+tightening. It is written up as the live item rather than attempted at the end of a part.
+
+### §4. What this does to the plan's budget, and it affects every number in it
+
+`docs/perf-plan-part50.md` §1 is built on the operator's whole-map lap: 28.3 ms and
+35.7 fps at 5,000-7,000 draws, with a full per-draw table. **Every one of those numbers
+was read out of a run with `CZ_VK_PROFILE` set**, because that is the only way to obtain
+the phase split at all — and §2 above establishes that the profiler charges ~24 ns per
+nested scope into the enclosing residual plus a further read into each named phase, at
+14.3 scopes per draw.
+
+That makes the frame the operator actually plays **faster than the frame this project has
+been quoting**, and the target correspondingly closer. The A/B that prices it is
+`tools/part50_profiler_cost.sh` — three runs with the profile off, compared against the
+campaign's own three `base` runs on the same pinned binary, using the `msec` column of
+`CZ_VK_FRAME_STATS`, which is the one statistic that exists in both arms.

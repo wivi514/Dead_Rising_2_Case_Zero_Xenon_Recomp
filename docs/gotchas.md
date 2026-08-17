@@ -3285,3 +3285,78 @@ From phase C part 18 (the frame rate — and none of it was work):
      often per second. **Expect a cap change to produce a QUEUE of newly-visible
      limits rather than one number moving**, and price the ones you did not intend to
      change before quoting the one you did.
+
+334. **A SHARE TELLS YOU HOW MUCH OF A POPULATION SOMETHING IS AND NOTHING ABOUT ITS
+     SHAPE — and for "coalesce the cheap ones" the shape IS the value.** Part 48's
+     opcode census said **28.7% of every PM4 packet this title walks is type-2 ring
+     filler**, a one-dword no-op, and part 50's plan priced "skip runs of it" at
+     1.5-2 ms on the strength of that number alone. But 28.7% is equally consistent
+     with one enormous run of padding and with 23,000 isolated dwords wedged between
+     real packets, and coalescing is worth everything in the first case and precisely
+     nothing in the second. **Nobody had measured the run length, so the histogram was
+     built before the fast path**, and it repriced the item on the spot: mean run
+     **2.3**, bimodally 28% singletons and 72% runs of 2-3, with a thin tail of ~1,100
+     runs of 32-63 and *nothing in between*. Coalescing alone would have removed 57%
+     of the calls, not ~100% — which is what moved the fix from the callee to the
+     CALLER, where the header is already in hand and the test is free. The histogram
+     also answered a question nobody had asked: **0% of it is at ring level**, so it
+     is not the driver padding the ring to a wrap boundary, which is what "filler"
+     suggests, but the title's own indirect buffers padded packet by packet. Two
+     different producers, and only one of them was where the code expected it.
+
+335. **A PROFILER'S OWN CLOCK READS LAND IN THE RESIDUAL OF THE SCOPE AROUND THEM, SO
+     THE OUTERMOST SCOPE'S "UNNAMED" TIME IS THE INSTRUMENT.** This project's
+     `ProfScope` reads the clock twice — once in the constructor, once at close — and
+     subtracts each child's measured total from its parent so the columns are
+     exclusive. Work through where the two reads fall: the constructor's read happens
+     between the parent's `t0` and the child's, so it is inside the parent's interval
+     and is NOT in `childNs`; the close read is inside the child's own total, so it
+     lands in the child's named phase. **One whole clock read per nested scope
+     therefore accumulates in the parent's residual and nowhere else** — and DoDraw's
+     outermost scope is `other`, whose 206 ns/draw residual two separate splits had
+     failed to name. It could not have been named by splitting, because it is not in
+     any of the code being split. The general form is nastier than gotcha 7's: an
+     expensive probe usually distorts the thing it reports, but this one **files its
+     own cost under a name that invites you to go looking for a defect there**. Check
+     it the cheap way — calibrate the clock call, count the scopes, multiply, and put
+     the product next to the residual — and give the model a positive control that can
+     refute it. **Here it did not**: `CZ_VK_PROFILE_EXTRA_SCOPES=8` added eight
+     do-nothing scopes per draw and moved the residual **205 -> 397 ns, a slope of
+     24.0 ns per scope against the 21.6 ns calibrated read**, and DoDraw's ~8 DIRECT
+     children at that slope account for 192 ns of a 205 ns residual. Note which count
+     goes into that arithmetic: only the scopes nested *directly* inside the one whose
+     residual you are reading, not every scope the frame opens — a grandchild's reads
+     land in its own parent, not in yours. And note the consequence beyond the one
+     item: **every ms and ns/draw a profiled run reports is inflated by the profiler**,
+     including the frame time, so a budget built from `CZ_VK_PROFILE` describes a
+     frame slower than the one the player is actually getting.
+
+336. **THE HYPOTHESIS THAT SAYS "THIS WORK IS WASTED" DESERVES THE SAME COUNTER AS
+     THE ONE THAT SAYS IT IS NOT.** The stream guard hashes 26 MB a frame over 400-480
+     "proven dynamic" streams to decide whether to copy them. The reasoning wrote
+     itself: a stream proven to change is a stream we are about to copy anyway, so the
+     hash is a whole extra read of the buffer to learn what the copy would tell us
+     free — and always-copying would be both **cheaper and safer**, since a stream
+     always copied can never be served stale. That is a strong argument, it names a
+     real mechanism, and it is wrong. One counter over the proven set's own
+     observations said **11-13% of them found the stream actually changed**: the guard
+     saves the copy on ~88% of them and is doing exactly what it was built to do.
+     The trap is that "this work is wasted" feels like a conclusion rather than a
+     hypothesis, because it is an argument for doing LESS and therefore sounds
+     conservative. It is not — deleting work that turns out to be load-bearing is the
+     same error as adding work that turns out to be useless, and it is harder to
+     detect afterwards because the cost shows up as bandwidth somewhere else. Price
+     the population before removing it, and put the counter on the ratio your argument
+     turns on rather than on the total it makes vivid.
+
+337. **A GROWING FILE READ MID-RUN IS A COMPLETE FILE THAT ENDS EARLY, AND IT LOOKS
+     EXACTLY LIKE A HANG.** Half an hour into a six-run campaign, an arm's stats file
+     ended at 96.7 s of a 330 s run while the baseline's ended at 328.8 s, with a third
+     of the frames and two profile windows against ten. Read as a finished run that is
+     the signature of a stall — and the arm in question was a control arm, so "the
+     control hangs" would have been a serious finding about the change under test. It
+     was a file being written at that moment. **Nothing in the file says which it is**:
+     a truncated tail and a completed short run are byte-identical. Before reading any
+     artifact of a long run, check that the run has ENDED — a completion marker in the
+     driver's own output, not the file's mtime and not a guess from the clock — and if
+     it has not, do not read the artifact at all rather than reading it carefully.
