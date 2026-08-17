@@ -3551,3 +3551,80 @@ operator's own profiled frame):
   picture** — two operator captures were compared per-pixel because they looked
   like the same view and their eyes were 250 units apart.
 
+
+## Part 50 status block, moved out of CLAUDE.md at the close of part 52
+
+Superseded by parts 51 and 52. Kept verbatim: its two headline findings — that
+`CZ_VK_PROFILE` costs 2-4 ms a frame, and that this port uses 2.46 of 16 cores — are
+still live facts, and its item-by-item repricing is the record of how the part-50 plan
+was dismantled.
+
+Where the port WAS, as of 2026-08-16 (part 50 CLOSED — **THE PLAN'S TOP TWO ITEMS WERE
+BOTH REPRICED BY THE MEASUREMENT THAT PRECEDED THEM, AND ONE OF THEM WAS THE PROFILER
+MEASURING ITSELF.** ~~`docs/part51-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part52-kickoff.md`; `docs/perf-plan-part50.md` is still the live plan, but **read
+`phase5-notes.md` §6cg BEFORE it** — §6cg retires two of its items and corrects every
+number in its budget):
+
+* **`CZ_VK_PROFILE` COSTS 2-4 ms A FRAME, 8-18%**, and every figure in the plan's budget
+  — including the operator's whole-map lap — was read from a profiled run, because that
+  is the only way to get a phase split. **The operator's 28.3 ms / 35.7 fps at 5,000-7,000
+  draws is really ~25-26 ms / ~39-40 fps in play.** Rankings are unchanged (every phase
+  is inflated, not one); the distance is not — the plan's 20 ms intermediate is ~3 ms
+  closer than it believed. Three runs an arm, two of four draw bands outside their own
+  noise floor. **Never quote a frame time from a profiled run without saying so**: this
+  project did from part 30 to 49 and could not have noticed, because a 32 ms pacing floor
+  absorbs an 8% inflation without moving.
+* **`other`'s RESIDUAL WAS THIS PROFILER, and the plan called it "the highest-yield-per-
+  hour item in the document".** A `ProfScope`'s constructor clock read falls inside the
+  PARENT's interval and nothing subtracts it, and `other` is DoDraw's outermost scope —
+  so it could never have been named by splitting, because it is not in the code being
+  split. Confirmed by a control that could have refuted it: `CZ_VK_PROFILE_EXTRA_SCOPES=8`
+  moved it **205 -> 397 ns**, 24.0 ns/scope against a 21.6 ns calibrated read, and
+  DoDraw's ~8 DIRECT children are 94% of it. **Retired: there is no frame time there.**
+* **ITEM 1a IS SHIPPED AND IS WORTH ~0.3-0.5 ms, NOT 1.5-2.** A share is not a shape:
+  "28.7% of packets are type-2 filler" is equally consistent with one huge run and with
+  23,000 isolated dwords. Measured mean run **2.24**, bimodal, and **0% at ring level** —
+  it is the title's own indirect buffers, not driver ring padding. That moved the fix from
+  the callee (57% of calls) to `ExecuteLinear`'s loop (100%, and free, because the header
+  is already fetched). The plan's 20-30 ns/packet prediction is **refuted**: 4.0-6.5 ns
+  against a 9.4% null floor, the sign held by 3/3 rounds and 12,267 calls a frame removed.
+* **ITS BY-PRODUCT IS WORTH MORE THAN THE ITEM**: the difference prices one
+  `ExecutePacket` call at **24-40 ns**, a LOWER bound, so item 1c's ceiling is **~2.2 ms**
+  — measured, not estimated. But **1c's top candidate is refuted for free**: hoisting the
+  wrap modulo is worth nothing, because `INDIRECT_BUFFER` is only **43-46 packets a
+  frame**, so ~45 buffers carry all ~75,000 packets and every one is fetched with
+  `wrapDwords == 0`. 1c has no single lever; inlining the walk is a refactor, not a
+  tightening.
+* **ITEM 2a IS UNDERSTOOD AND IS NOT WASTE.** The guard's 26 MB/frame all comes through
+  one door: `needsExact`, **unbudgeted and permanent**, at 388-483 streams a frame — and
+  **15,643 of 126,536 store entries have latched it, 12.4% and rising monotonically**,
+  refuting part 46's expectation that it would be "the UI text buffers and almost nothing
+  else". **But the obvious fix is refuted too**: always-copying proven streams is cheaper
+  AND safer by a clean argument, and one counter killed it — only **11-13%** of proven
+  observations find a change, so the guard saves the copy on ~88%. The real question is
+  whether a large buffer's change can be detected without reading it (soft-dirty page
+  tracking), and that is architectural work with a correctness risk, costed in the kickoff.
+* **WHAT PART 50 ACTUALLY DELIVERED IS ~0.4 ms, and the rest is a CORRECTION rather than
+  a speedup.** Both headline numbers move the reported frame time the same way and must
+  not be banked together: item 1a is a real −0.4 ms (though its own frame-time A/B read
+  **+0.0%** in every draw band — 0.4 ms is under this route's noise), while the profiler's
+  2-4 ms is time **the player never paid**, because nobody plays with `CZ_VK_PROFILE` set.
+  Part 51 starts from ~25.5 ms at 7,000 draws, of which part 50 earned 0.4 (gotcha 337).
+* **THE NULL FLOOR IS NOW MEASURED, NOT ASSUMED: 9.4% on ns/packet and 8-18% on frame
+  time by draw band.** An item worth under ~1 ms is invisible in frame time on this route
+  and must be settled on a per-unit statistic. Budget for that before picking an item.
+* **WE ARE USING 2.46 OF 16 CORES — 15.4% of the machine — AND NOBODY HAD EVER ASKED.**
+  Thirty parts of frame times and phase shares cannot answer "is this single-core?",
+  because a per-phase profiler is written from inside ONE thread and cannot represent a
+  core doing nothing (gotcha 338). Measured with `tools/part50_thread_cpu.py`: 37 threads,
+  **twenty below 0.5%**, and two carrying 70% of the CPU — a **GUEST** thread at **93.2%**
+  (the title simulating, nearly saturated, and not ours to optimise) and **our pump at
+  79.0%**, whose stack is `Pm4_Execute -> ExecutePacket -> DoDraw`, i.e. **the PM4 walk and
+  the Vulkan recording serialised on one core by construction**. Every item in the live
+  plan makes that one core's work smaller and no item asks whether that is the right
+  strategy. **Part 51's item 0 is now to find out whether the guest thread is the limiter
+  — and whether it is WORKING or SPINNING, which this measurement cannot tell apart.**
+  Also: `outside` is not all work — at 79% busy the pump is BLOCKED ~4.7 ms of a 22.3 ms
+  frame, so the plan's "guest simulation ~3 ms" inside `outside` is our pump waiting.
+* **Gates at close: ALL CLEAN**, E3 best of five **+0.8820**, 4 of 5 agreeing on layout.
