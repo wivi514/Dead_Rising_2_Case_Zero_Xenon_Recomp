@@ -10112,3 +10112,99 @@ switch and rides in BOTH arms, so `other` must hold, and it does.
   frame-stats-free session.
 * The memo held again: **100.0% hit at 2,224 loads/frame, 16 misses in 2.2 M, 0
   mismatches, `no translated shader` = 0** in both arms.
+
+### §12. THE SOAK — the operator's idea, and it produced the cleanest A/B in the project's
+### history *and* found a place that is not at the cap
+
+The operator proposed going somewhere heavier and standing still for three minutes in each
+arm. Both halves of that matter, and the second is the one nobody here had thought of.
+
+**Why a soak is the right shape.** Part 26 established that a matched-frame picture A/B is
+unsatisfiable outdoors — a crowd of animated actors never renders the same draw list twice
+(gotcha 247) — and every performance A/B since has been two different WALKS compared
+through draw bins, which spreads a few hundred frames over a dozen bins. A soak does not
+make frames identical; it makes them **dense**. Standing still holds the draw count in a
+band, so one bin fills with thousands of comparable frames.
+
+Measured: **the 7,000-7,499 bin holds 7,773 frames in arm A and 6,079 in arm B**, where
+the previous walk A/B's best bin held 1,348 and 1,276.
+
+#### Frame time — and a significance figure two orders of magnitude past anything before
+
+| draws/frame | A (memo on) | B (memo off) | Δ mean | Δ median | sig |
+|---|---|---|---|---|---|
+| 0-499 | 16.82 | 16.82 | **+0.0%** | **+0.0%** | +0.0 |
+| 2,500-2,999 | 16.12 | 16.12 | **+0.0%** | **+0.0%** | +0.0 |
+| 4,500-4,999 | 16.71 | 19.75 | +18.2% | +12.5% | +3.1 |
+| 5,000-5,499 | 17.93 | 20.71 | +15.5% | +17.6% | +6.6 |
+| 6,500-6,999 | 22.83 | 25.59 | +12.1% | +8.7% | +9.6 |
+| **7,000-7,499 (the soak)** | **23.87 / 24.0 med** | **26.63 / 27.0 med** | **+11.6%** | **+12.5%** | **+211.3** |
+| 7,500-7,999 | 24.92 | 27.17 | +9.0% | +12.5% | +12.0 |
+| 8,000-8,499 | 25.17 | 28.07 | +11.5% | +12.0% | +10.6 |
+
+The light bins remain the experiment's own null at **+0.0%**, and four bins around the soak
+agree with it independently. **The memo alone is worth 2.8-2.9 ms at 7,000-8,500 draws.**
+
+#### The phase split over the soak — 18 windows an arm, and ONE column moved
+
+| phase | memo ON | memo OFF | delta |
+|---|---|---|---|
+| **`outside`** | **2.77** | **5.27** | **+2.49** |
+| `record` | 8.69 | 8.76 | +0.08 |
+| `other` | 4.11 | 4.23 | +0.12 |
+| `textures` | 3.13 | 3.13 | −0.00 |
+| `constants` | 1.34 | 1.38 | +0.04 |
+| `streams` | 0.02 | 0.03 | +0.00 |
+| `readback` | 0.55 | 0.58 | +0.03 |
+| `submit` | 0.07 | 0.08 | +0.01 |
+| accounted total | 20.66 | 23.48 | +2.82 |
+
+**2.49 of the 2.82 ms is one column**, and the other eight are within ±0.12. This is what a
+same-binary A/B is supposed to look like and this project has never had one this clean.
+
+#### The memo's value SCALES WITH DRAW COUNT — which reconciles three measurements
+
+| where | draws | `outside` delta |
+|---|---|---|
+| operator, walk (§11) | ~5,500 | 1.36 ms |
+| operator, soak (§12) | ~7,200 | **2.49 ms** |
+| headless campaign | 6,000-7,000 | ~2.4 ms |
+
+Of course it does: `BindShader` runs per shader-load packet and the packets scale with the
+draws. The soak measured **3,010-3,047 loads/frame**, against 2,224 on the walk and 2,073
+headless — 45% more. **So "the memo is worth N ms" is not a number, it is a slope**, and
+§11's 1.8-2.0 ms and this section's 2.8-2.9 ms are the same finding at two loads. Quote the
+draw count with it, always.
+
+#### AND THE STRATEGIC FINDING: this place is NOT at the frame cap
+
+§6ci §10 and the part 53 hand-off both said the open question was whether a heavier place
+exists, because both routes this project could measure on had reached the cap and further
+CPU items could therefore buy only headroom. **The operator found the place in one
+session.**
+
+* the soak sustains **7,162-7,529 draws with peaks to 8,562** — heavier than any place this
+  project has ever measured, and it holds there for three minutes;
+* **0% of its frames are on a pacing rung** in either arm. It is CPU-bound, not
+  pacing-limited;
+* `CZ_VK_FRAME_STATS` prints its own bill at **3.21-3.23 ms/frame** here — measured
+  directly on their machine, a fourth independent confirmation — so uninstrumented the
+  24.0 ms median is roughly **16.7-18.7 ms, ~53-60 fps**, at or just under the cap rather
+  than pinned to it;
+* the pump is **97.5-97.8% on CPU** and blocked 0.11-0.12 ms. It is saturated.
+
+**So the remaining plan items buy frames here, not headroom, and this is the place to
+measure them from.** The three options the hand-off posed are resolved in favour of the
+first: find the worst place and measure there. It has been found.
+
+#### What dominates the heaviest frame, now that the memo is gone
+
+`record` is **8.69 ms of 20.66** — 42% of the accounted frame and the largest phase by a
+factor of two. Its own split: vertex 21.0% (699 ns/draw), index 6.4% (214), state 4.6%
+(154), residual 4.4% (148). Then `other` 4.11, `textures` 3.13, `outside` 2.77.
+
+That reorders the plan. `GuardFold` (item 1.1) is charged inside `textures` and `other`,
+which together are 7.24 ms; `record` is the `vkCmd*` calls themselves, which item 1.4 —
+parallel command recording, explicitly deferred by the plan as "a genuine architectural
+project" — is the only item that addresses. The plan's own instruction was to re-measure
+first and let the numbers make that case rather than ambition. **They now make it.**
