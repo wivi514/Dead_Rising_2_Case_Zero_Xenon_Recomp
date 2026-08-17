@@ -1483,6 +1483,16 @@ CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and cou
                    ~3.2 M served guards per window, 0.0002-0.0021%, and that is an UPPER
                    bound on harm because most disagreements are streams that read as
                    changed either way. Costs the whole saving; an arm, never a default
+CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing else.
+                   The point is the BILL: every other frame-rate instrument here costs
+                   enough to change the answer (`CZ_VK_PROFILE` 2-4 ms/frame,
+                   `CZ_VK_FRAME_STATS` 1.9-3.3), so the only uninstrumented configuration
+                   this port had produced no number at all. This is one counter and one
+                   clock read per PRESENTED frame, ~20 ns against a 13-20 ms frame. It
+                   prints the median because a mean on this title measures the pacing
+                   floor rather than the change (gotcha 237), and the window's frame
+                   count, so an interval covering a load screen is visible rather than
+                   averaged in. `tools/play_session.sh` is the session it exists for
 CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
                    frame into a staging buffer before the window and the picture
                    instruments read it, the way the present path did for fifty-two parts.

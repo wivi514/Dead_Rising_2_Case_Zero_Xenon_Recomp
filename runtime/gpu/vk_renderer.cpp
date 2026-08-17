@@ -10198,6 +10198,60 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // is the difference between the early draws being served and hashing inline.
     GuardPoolDispatch();
 
+    // CZ_FPS_LOG=N — the frame rate, every N seconds, and NOTHING ELSE.
+    //
+    // It exists because every instrument this project owns that reports a frame rate has
+    // a bill big enough to change the answer: `CZ_VK_PROFILE` costs 2-4 ms a frame and
+    // `CZ_VK_FRAME_STATS` walks all 921,600 pixels for another 1.9-3.3 (gotcha 337). So
+    // "just play it and tell me how it feels" has always been the only uninstrumented
+    // configuration, and it produces no number at all — which makes a session that
+    // reports "it fares well" unfalsifiable, the one thing this project does not accept.
+    //
+    // This is one counter and one clock read per PRESENTED frame — ~20 ns against a
+    // 13-20 ms frame, i.e. one part in a million, against the profiler's thousands of
+    // clock reads. It is the cheapest thing here that can still be wrong, so it is off
+    // by default like everything else.
+    //
+    // It reports the MEDIAN as well as the mean, because on this title a mean measures
+    // the pacing floor rather than the change (gotcha 237) — and the interval's own
+    // frame count, so a window that covers a load screen is visible as such rather than
+    // averaged in.
+    {
+        static const int fpsLogSec = Env("CZ_FPS_LOG") ? atoi(Env("CZ_FPS_LOG")) : 0;
+        if (fpsLogSec > 0)
+        {
+            using clk = std::chrono::steady_clock;
+            static clk::time_point windowStart = clk::now();
+            static clk::time_point lastFrame = windowStart;
+            static uint64_t frames = 0;
+            static std::vector<uint32_t> frameUs;
+            const clk::time_point now = clk::now();
+            ++frames;
+            frameUs.push_back(uint32_t(
+                std::chrono::duration_cast<std::chrono::microseconds>(now - lastFrame)
+                    .count()));
+            lastFrame = now;
+            const double elapsed =
+                std::chrono::duration<double>(now - windowStart).count();
+            if (elapsed >= double(fpsLogSec) && frames > 1)
+            {
+                // The first sample of a window is the gap ACROSS the window boundary and
+                // belongs to neither; dropping it costs one frame in a few hundred.
+                std::sort(frameUs.begin() + 1, frameUs.end());
+                const uint32_t medUs = frameUs[(frameUs.size() + 1) / 2];
+                fprintf(stderr,
+                        "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
+                        "%llu frames in %.1f s\n",
+                        double(frames) / elapsed, 1000.0 * elapsed / double(frames),
+                        1e6 / double(medUs), double(medUs) / 1000.0,
+                        (unsigned long long)frames, elapsed);
+                windowStart = now;
+                frames = 0;
+                frameUs.clear();
+            }
+        }
+    }
+
     if (!R->recording)
     {
         // A frame with no recorded work at all: present the previous contents rather
