@@ -1,4 +1,4 @@
-# Part 53 kickoff — four items shipped, and the headless route has run out of headroom
+# Part 53 kickoff — four items shipped, and the operator found the place to measure from
 
 Written at the close of part 52 (2026-08-17). **This is the LIVE hand-off**, superseding
 `part52-kickoff.md`.
@@ -10,13 +10,16 @@ designs was refuted by its own verify arm, and its remaining items are unchanged
 still correctly ordered. Read it, then `phase5-notes.md` §6ci for what part 52 measured,
 which corrects two of the plan's own numbers.
 
-**Read §6ci §5c before planning any frame-time measurement**, because the thing that
-changed most in part 52 is not an item, it is what can be measured at all: *the headless
-outdoor route now sits on the frame cap for most of its length.* Both arms of an A/B land
-on the rung and the comparison reads zero whatever the change was worth. That is an
-UNMEASURABLE result, not a null one. `tools/part52_item_campaign.sh` raises
-`CZ_FPS_CAP=120` in every arm to get around it, and what it then reports is the CPU
+**The thing that changed most in part 52 is not an item, it is what can be measured.**
+The headless outdoor route now sits on the frame cap for most of its length, so both arms
+of an A/B land on the rung and it reads zero whatever the change was worth — an
+UNMEASURABLE result, not a null one (§6ci §5c). `tools/part52_item_campaign.sh` works
+around it by raising `CZ_FPS_CAP=120` in every arm, and what it then reports is a CPU
 saving rather than a frame rate anybody sees.
+
+**But the real answer came from the operator: there is a heavier place, it is not at the
+cap, and a three-minute SOAK there is the best measurement this project has ever taken.**
+Read "the place to measure from" below before anything else.
 
 **The operator's instruction is still current**: *"prepare a whole plan to fix CPU
 performance issue and we'll start it in a fresh conversation."* Their two deferred picture
@@ -69,6 +72,42 @@ complete.** Nothing else would have found this.
   its samples on four `imulq`s. That is the opposite of `GuardFold` (plan §0 fact 3,
   memory-bound at ~10 GB/s), and the two need opposite fixes. Check which you have before
   reaching for SIMD or for a memo.
+
+## THE PLACE TO MEASURE FROM — found by the operator, and it is NOT at the cap
+
+**This supersedes the "both routes reach the cap" worry entirely** (`phase5-notes.md`
+§6ci §12). The operator went somewhere heavier and soaked for three minutes an arm:
+
+* it sustains **7,162-7,529 draws with peaks to 8,562**, held for three minutes — heavier
+  than any place this project has measured;
+* **0% of its frames sit on a pacing rung.** It is CPU-bound, not pacing-limited, so
+  **the remaining items buy frames here rather than headroom**;
+* uninstrumented it is roughly **16.7-18.7 ms, ~53-60 fps** (`CZ_VK_FRAME_STATS` printed
+  its own bill at **3.21-3.23 ms/frame** there, a fourth direct confirmation);
+* the pump is **97.5-97.8% on CPU**, blocked 0.11-0.12 ms. Saturated.
+
+**Ask the operator to take every future A/B there, as a soak.** A soak is also the best
+measurement shape this project has found: standing still makes frames DENSE, so one draw
+bin held **7,773 frames against 6,079** where a walk's best bin held 1,348 — a
+significance figure of **+211** against the walk's +13.
+
+### What dominates that frame, which reorders the plan
+
+| phase | ms | |
+|---|---|---|
+| **`record`** | **8.69** | **42% of the accounted frame, twice the next phase** — vertex 699 ns/draw, index 214, state 154 |
+| `other` | 4.11 | |
+| `textures` | 3.13 | |
+| `outside` | 2.77 | |
+| `constants` | 1.34 | |
+| `readback` | 0.55 | |
+
+`GuardFold` (item 1.1) is charged inside `textures` and `other`. **`record` is the
+`vkCmd*` calls themselves, and item 1.4 — parallel command recording — is the only item
+that addresses it.** The plan deferred 1.4 as "a genuine architectural project" and said
+to re-measure first and let the numbers make the case rather than ambition. **The numbers
+now make it**, so 1.4 is a live candidate for the top of the order rather than a someday
+item. It is still the highest-risk thing in the document; price it before starting it.
 
 ## THE ORDER TO TAKE PART 53
 
@@ -132,21 +171,10 @@ about their own two runs.
 
 ## WHAT IS OWED
 
-* **THE THING THAT SHOULD SHAPE PART 53: both routes now reach the cap.** The headless one
-  does, and so does the operator's. Every remaining item in the plan is worth 0.2-3 ms of a
-  frame that is already pacing-limited on both machines this project can measure on, which
-  means **none of them can be shown to help a player** without either raising the cap (a
-  measurement device, not a shipping configuration) or finding a heavier place than
-  anybody has yet looked for. **Answer that before picking item 1.1.** The honest options
-  are: find the worst thing in the game and measure there; accept that the remaining items
-  buy headroom rather than frames and say so when shipping them; or stop optimising CPU
-  and take the picture items.
-* **A decision about the headless route.** It has run out of headroom at the shipped cap.
-  Either every future CPU A/B runs at a raised cap and says so, or the route needs a
-  heavier destination. The first is what part 52 did and it works; the second has never
-  been looked for.
-* **Item 1.3 is repriced by the operator's own session**: `readback` is **0.62 ms** with
-  frame stats off, so it is a 0.5-0.6 ms item and not the 1.2 the old plan guessed.
+* **NOTHING about the operator's judgement, and nothing about the strategy question.** Both
+  were settled in the same session — see the two sections above.
+* **Item 1.3 is repriced by their session**: `readback` is **0.55-0.62 ms** with frame
+  stats off, so it is a 0.5-0.6 ms item and not the 1.2 the old plan guessed.
 
 ## MEASUREMENT RULES THAT CHANGED IN PART 52
 
