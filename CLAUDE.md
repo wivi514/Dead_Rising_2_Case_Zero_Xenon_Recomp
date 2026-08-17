@@ -176,18 +176,21 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part53-kickoff.md`.** State the rule as well as the name, because this line said
+    `part54-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
   - **`perf-plan-part52.md` IS STILL THE LIVE PERFORMANCE PLAN** (built from a `perf`
-    SYMBOL budget rather than a phase table). Four of its items shipped in part 52 and
-    **its §9b records, in place, the two of its own statements that part 52 refuted** —
-    item 1.0's probe key and item 2.1's sizing. **`perf-plan-part50.md` is history.**
-    Read `docs/part53-kickoff.md` first, then `phase5-notes.md` §6ci (part 52) — and read
-    **§6ci §5c before planning any frame-time measurement at all**, because the headless
-    route now sits on the frame cap and an A/B there reads zero whatever the change was
-    worth. §6cg (part 50) and §6ch (part 51) are the earlier corrections.
+    SYMBOL budget rather than a phase table). Six of its items have shipped — four in
+    part 52 and **items 1.1 and 1.3 in part 53, which are the first work this port has
+    moved off the pump thread**. It records its own corrections in place: **§9b** the two
+    statements part 52 refuted (item 1.0's probe key, item 2.1's sizing) and **§9c** what
+    part 53 established, including the one thing the plan never budgeted — a (b) item's
+    BILL. **`perf-plan-part50.md` is history.**
+    Read `docs/part54-kickoff.md` first, then `phase5-notes.md` §6cj (part 53) and §6ci
+    (part 52) — and read **§6ci §5c before planning any frame-time measurement at all**,
+    because the headless route sits on the frame cap and an A/B there reads zero whatever
+    the change was worth. §6cg (part 50) and §6ch (part 51) are the earlier corrections.
     `perf-cpu-plan.md` and `perf-plan-part{47,48}.md` are executed predecessors.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     ~~`perf-cpu-plan.md` (the live performance plan)~~ and `perf-plan-overnight.md` (its
@@ -256,7 +259,11 @@ mask; trust the microcode's own swizzles.
   - `cpu/guest_probe.cpp` — argument probes on named guest functions via the alias
     seam, behind `CZ_ARG_PROBE`. Kept as the worked example of tracing a bad value
     back to its producer; it is what closed finding 27.
-  - `gpu/vk_renderer.{h,cpp}` + `gpu/xenos.h` — **phase 5: the renderer.** Inert
+  - `gpu/vk_renderer.{h,cpp}` + `gpu/xenos.h` — **phase 5: the renderer.** Its content
+    guards fold on a four-worker pool as of part 53 — the first work this port moved off
+    the pump thread — filed a frame ahead from the working set the pump last saw, with an
+    inline fallback on every miss so correctness never depends on the prediction.
+    `CZ_VK_NO_PARALLEL_GUARD=1` is the control arm. Inert
     unless `CZ_VKDRAW=1`. `xenos.h` holds the register indices and format codes with
     each field layout written next to it, because every one of them is a magic number
     whose wrong value is silent. The header comment of `vk_renderer.cpp` transcribes
@@ -700,13 +707,84 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
+Where the port is, as of 2026-08-17 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
+EVER MOVED OFF THE PUMP THREAD. Both content guards now fold on four workers a frame
+ahead: `GuardFold` 25.87% -> 0.86% of the pump, the thread 63.4% -> 50.3% of a core, frame
+time −12.5% against a null of +0.1%. And the first item whose BILL had to be measured as
+carefully as its benefit — 33.2 points of core appeared on the workers where 13.1 left the
+pump.** `docs/part54-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still the
+live plan and **its §9c records what part 53 established in it**; read `phase5-notes.md`
+§6cj, and **§6ci §5c before planning any frame-time measurement**):
+
+* **`GuardFold` WAS 25.87% OF THE PUMP THREAD AND IS NOW 0.86%.** It is the largest symbol
+  there and the only large cost in this renderer that is PURE — guest bytes in, a
+  `uint64_t` out, no Vulkan and no renderer state. Every guard the pump computes now files
+  a job for the NEXT frame; the swap dispatches the list to four workers; the pump's
+  existing cache lookup also yields the slot, so finding the answer costs nothing extra.
+  **88-91% of guards are served by a finished pre-hash** (the plan's pre-registered floor
+  was 80%) and **the pool never once blocked the pump**. A miss hashes inline exactly as
+  before, so correctness never depends on the prediction.
+* **THE FRAME IS 12.5-13.1% SHORTER ACROSS FOUR ADJACENT DRAW BANDS, AGAINST A NULL OF
+  +0.1%.** Three runs an arm, alternated, `CZ_FPS_CAP=120` in every arm so neither lands
+  on the rung (`tools/part53_item_campaign.sh`): 5,000-5,999 −13.0%, **6,000-6,999 −12.5%
+  mean / −13.3% median at significance −34.9**, 7,000-7,999 −13.1%, 8,000-8,999 −13.0%,
+  while the campaign's own null reads −0.5%, **+0.1%**, +1.6% in the same bands. Raw
+  throughput needs no binning at all: **84,540 frames against 76,845 in the same wall
+  time, +10.0%.** **In milliseconds it is a SLOPE** — 1.92 ms at 6,000-6,999, 2.41 at
+  8,000-8,999 — because the guard runs per first-touch stream and per guarded texture.
+  Quote the draw count.
+* **AND THE PART THAT IS NEW TO THIS PROJECT: A (b) ITEM HAS A BILL, AND IT IS NOT SMALL.**
+  Moving work onto idle cores RAISES total CPU: **2.53 -> 2.68 cores**, four workers at
+  **8.3% of a core each**. The pump lost **13.1 points**; the workers gained **33.2**.
+  Neither number is wrong — a memory-latency-bound loop is cheaper interleaved with other
+  work than run alone, because on the pump its misses overlapped with register decode and
+  driver calls. **So `perf` understates such a loop's isolated cost: a symbol share says
+  what to MOVE, not what moving it will cost.** A second, smaller bill lands straight back
+  on the thread being shortened — `recordState` 140 -> 183 ns/draw and `otherBegin`
+  57 -> 81, neither of them code this change touched, ~0.4 ms/frame of the workers
+  evicting the pump's working set from the shared L3. Gotcha 344.
+* **THE RACE THIS WIDENS WAS MEASURED, NOT ARGUED.** The guard has read guest memory while
+  the guest wrote it since the day it existed; pre-hashing moves that read up to a frame
+  earlier, which admits a *coherent old* state where the inline hash would have seen new
+  bytes — a one-frame stale mesh, the part-46 class. `CZ_VK_VERIFY_PARALLEL_GUARD=1`:
+  **8-76 of ~3.2 M served guards per window, 0.0002-0.0021%**, and that is an UPPER bound
+  on harm. Its poison arm reads **100.0000%**, which is what licenses reading the
+  unpoisoned number at all (gotcha 30).
+* **THE ONE SILENT FAILURE — a slot mix-up, one entry handed another's VALID hash — is
+  impossible by construction.** Every result echoes back the pointer and length it was
+  computed for; a disagreement is a loud line plus an inline fallback. **0 over every run
+  of the part.** Same shape as part 52's memo defect, one subsystem over (gotchas 342,
+  346).
+* **ITEM 1.3 NEEDED NO WORKER AT ALL — the readback was making a redundant 3.5 MB copy per
+  frame.** The staging buffer existed so the picture instruments could walk CACHED memory,
+  on a buffer that has been HOST_CACHED since the readback fix. `readback` **5.5-7.3% of
+  the frame -> 0.0%**, ~0.78 ms, and a matched-draw pair (6,253 vs 6,255) reads 13.0 vs
+  13.9 ms. **The predicate is the MEMORY TYPE, not "is an instrument armed"** — gating on
+  the instruments would have shipped a default path that no gate here ever runs, because
+  every picture gate sets one of them (gotcha 345).
+* **New tooling worth reaching for: `tools/part53_symbols.py`.** `perf report --tid=N` does
+  NOT renormalise — it filters the rows and leaves each symbol's share of the WHOLE profile
+  — so every hand reading of a per-thread profile in this project has had to correct for
+  it, and getting it wrong turns 26% of the thread that IS the frame into 8% of a process
+  nobody is optimising. This buckets by TID, folds `symbol+0xNNN` into functions, divides
+  by the THREAD, and `--diff` prints two arms side by side.
+* **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1 (24,527,474 packets, 0
+  disagreeing); the switch gate (0 defects); the dimension census (0 disagreements); `no
+  translated shader` = 0; `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0
+  with 4 permutation windows, 0 real**; **E3 best of five +0.8808**, 4 of 5 agreeing on
+  layout; the shader-cache NAME diff found nothing new (**the cache is still 436**).
+* **WHAT IS OWED: the operator has not judged this.** Everything above is headless, and
+  their frame is heavier than this route. The place to measure is the three-minute soak
+  they found in part 52, which is NOT at the cap. `docs/part54-kickoff.md` leads with it.
+
+Where the port WAS, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
 MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S
 JOB. The plan's own verify arm refuted the plan's own fix, and the operator found the
 place to measure from — a three-minute soak at 7,200-8,562 draws that is NOT at the frame
-cap.** `docs/part53-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still
-the live plan and its §9b records what part 52 corrected in it; read `phase5-notes.md`
-§6ci, and **§6ci §5c before planning any frame-time measurement**):
+cap.** ~~`docs/part53-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part54-kickoff.md`; `perf-plan-part52.md` is still the live plan and its §9b records what
+part 52 corrected in it; read `phase5-notes.md` §6ci, and **§6ci §5c before planning any
+frame-time measurement**):
 
 * **`BindShader` WAS 14.16% OF THE PUMP THREAD AND IS NOW 0.00% — not one sample.** It
   re-hashed the entire microcode on every shader-load packet, ~1,300-2,200 a frame, and
@@ -801,91 +879,12 @@ the live plan and its §9b records what part 52 corrected in it; read `phase5-no
   at 435 = 435 with different members. **The cache is 436.** Run the name diff in any part
   where `CZ_SHADER_DUMP` was set, which for a performance part is every part.
 
-Where the port WAS, as of 2026-08-16 (part 51 CLOSED — **THE BUSIEST THREAD IN THE
-PROCESS IS NOT THE GAME SIMULATING, IT IS THE GAME WAITING FOR US — and the largest item
-in the plan is dead while the largest item in the frame was never in the plan.**
-~~`docs/part52-kickoff.md` is the LIVE hand-off~~ — superseded by `part53-kickoff.md`;
-read `phase5-notes.md` §6ch):
-
-* **ITEM 0 IS ANSWERED AND IT INVERTS THE WORRY THAT OPENED THE PART.** Part 50 found a
-  guest thread at 93.2% and correctly refused to guess whether it was WORKING or
-  SPINNING. It is spinning: **84.15% of that thread is `sub_8283C6C8` under
-  `sub_82845160`**, which `phase1-notes.md` **finding 38** identified in phase 1 as the
-  **Draw Thread waiting on the ring read pointer** — and the only thing in this process
-  that advances that pointer is our own pump. Part 50's table called it "the title
-  simulating", which was wrong in the one direction that would have retired the whole
-  plan. **Milliseconds off our pump are milliseconds off the frame.**
-* **THE METHOD IS THE TRANSFERABLE HALF AND IT IS ONE COMMAND.** Thirty parts of
-  per-phase profiling from inside the pump thread, against `perf record -F 999 -p <pid>`,
-  which names the top cost in EVERY thread in symbols — the guest's included, because
-  every guest function is a real symbol here. It disagrees with the phase profiler about
-  our own pump: `DoDraw` is 9.84% of that thread and a CONTENT GUARD is 16.79%. Gotcha
-  340; `tools/part51_thread_probe.sh`. Caveat: `perf` charges INLINED code to its
-  container, and a 19.4% entry in the present path turned out to be an instrument.
-* **THE PLAN'S BIGGEST ITEM (2a, soft-dirty page tracking) IS REFUTED — TWICE — AND
-  NEITHER REFUTATION IS THE ONE IT WAS AIMED AT.** The query really is 1.6-4x cheaper
-  than hashing the bytes, exactly as argued. But **arming `clear_refs` costs 24.4 ns per
-  resident page = 7.5 ms/frame** on this runtime's 1.2 GB, against the ~0.7 ms of hashing
-  it removes; and arming **write-protects every page**, so re-touching costs **+773
-  ns/page** in minor faults charged to whoever writes next — **the GUEST's threads**.
-  Strike the item. Gotcha 341: price the SETUP and the AFTERMATH before the part that
-  made the idea attractive.
-* **THE ITEM NOBODY HAD: THE PUMP SLEEPS 1 ms BEFORE EVERY RING WALK, AND SOMEBODY IS
-  WAITING.** Absent from the plan because every item there makes the pump's WORK smaller
-  and a sleep is not work. **The walk stops ~3.1 times a frame whatever the tick period
-  is** — invariant across a 40x range — so the tick sets only how long each stop lasts.
-  87-100% of those sleeps are immediately followed by a walk that finds real work (37-46%
-  in the boot windows, which is the instrument's own negative control).
-* **100 us IS THE NEW DEFAULT, and the POSITIVE CONTROL is what proves it.** Three arms,
-  three unprofiled runs each: at **3,000-5,000 draws the frame goes 19 -> 16 ms, −15.8%,
-  outside its own 5.3% floor**, with the 16 ms-PINNED share **24-36% -> 72-95%**. The
-  4 ms control arm is **+34.8% to +56.2% and outside the floor in every bin**, i.e. the
-  sleep converts to frame time at ~1:1 — which is what licenses the 2.7 ms in the bins
-  where the direct comparison sits inside its noise. `CZ_PM4_TICK_MS=1` is the control
-  arm. Costs stated rather than buried: process CPU **2.57 -> 2.75 cores of 16** and the
-  pump's duty cycle **79% -> 93%**.
-* **AND THE INSTRUMENT THAT RECORDS FRAME TIME COSTS ~3 ms A FRAME (12-20%).**
-  `CZ_VK_FRAME_STATS` zeroes a 2 MB bitmap and walks all 921,600 pixels of every
-  presented frame, and it was on in **every performance run this project has ever
-  recorded** — the operator's lap and part 50's own profiler A/B included. Part 50 wrote
-  the rule ("an instrument that can only be read through another cannot measure that
-  one") and stopped one instrument short of applying it. **This is a CORRECTION, not a
-  saving** (gotcha 337): with both instruments off, the operator's 28.3 ms at 5,000-7,000
-  draws is really nearer **22-23 ms, ~43-45 fps**. A/Bs carrying it in both arms are
-  unaffected.
-* **A sub-millisecond tick broke a health warning on the way through**, on the one line
-  whose own comment warns about exactly that: the ring trace's "sat on one wait for over
-  a second" was 60 TICKS, which at 100 us means 6 ms, and a healthy run measures 104.
-  Both the threshold and the label are now durations (gotchas 98/157).
-* **THE OPERATOR HAS NOW JUDGED IT, and both halves are recorded as they came.** On
-  "which felt smoother" they **could not tell the arms apart** — that rules out a GROSS
-  pacing regression, which was the way this change could fail, and it is not written up
-  as "confirmed smoother". On the profiler, the win reproduces on their machine and
-  route: **3,000-5,000 draws 21 -> 17 ms with the vblank-pinned share 2% -> 51%**, and
-  5,000-8,000 draws 26 -> 24 ms. The mechanism is visible directly — `outside`, the
-  column the sleep lives in, reads **7.89 -> 5.37 ms, a 2.52 ms difference against the
-  2.7 predicted**, while every other phase moves by a few percent. One run an arm, so
-  the statistical weight remains the headless campaign's; this confirmed direction and
-  mechanism on their hardware. §6ch §7.
-* **Gates at close: ALL CLEAN**, and the two numbers that MOVED both moved for reasons
-  the change predicts. `--smoke`; both PM4 capture oracles on B1 (24,527,474 packets, 0
-  disagreeing; 0 indirect-buffer disagreements); the switch gate (0 defects); the shader
-  dimension census (328 2D + 97 cube, 0 disagreements); `no translated shader` = 0;
-  `truncated=0`; deepest file on a plain boot **#83 `cinezombie.big`**. **A5 exit 0 with
-  4 permutation windows and 0 real** — part 50 recorded 3 windows, and a tick ten times
-  finer re-interleaves the boot's scheduling by construction, which is what a permutation
-  window IS. **E3 best of fourteen +0.8043, layout agreeing on every sample above the
-  +0.70 threshold**, against part 50's +0.8820 best of five: the title backdrop is an
-  ANIMATED scene, so a correlation is a fact about which moment was sampled (gotcha 133),
-  and this change alters when frames land without touching what is drawn. Quoted as
-  lower rather than tidied up, because a cross-session best-of on an animated reference
-  is a weak comparison and should be read as one.
-
-**Older per-part status blocks (parts 28-50, the superseded mid-part-44 closure and the
+**Older per-part status blocks (parts 28-51, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`** — CLAUDE.md keeps only the
-live part and one part back, per the 2026-08-08 split's rule. **Part 51 had to move four
-of them at once**, because parts 47-50 each added a block without retiring one and nobody
-noticed: this file is loaded into every session whole, and the cost is not its size, it is
+live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
+51's out in the same commit that added its own**, which is what the rule below asks for.
+**Part 51 had to move four at once**, because parts 47-50 each added a block without
+retiring one and nobody noticed: this file is loaded into every session whole, and the cost is not its size, it is
 that a reader cannot tell which block is current. Same defect as a stale LIVE pointer
 (gotcha 13). If you are adding a block, move one out in the same commit.
 

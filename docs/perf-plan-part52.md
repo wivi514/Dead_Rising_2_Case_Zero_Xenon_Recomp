@@ -517,6 +517,48 @@ is right. `docs/part53-kickoff.md` reorders §10 accordingly and leads with it.
 
 ---
 
+## 9c. STATUS AT THE CLOSE OF PART 53 — the strategy question is answered
+
+Part 53 executed items **1.1** and **1.3**, and they are the first work this port has ever
+moved off the pump thread. `docs/phase5-notes.md` §6cj has the evidence; the corrections
+this document owes are:
+
+* **Item 1.1 delivered more than the repriced ~5.3 ms suggested it would in headless
+  terms, and less than that in FRAME terms, and both are the same fact.** `GuardFold` went
+  **25.87% -> 0.86%** of the pump thread and the thread itself **63.4% -> 50.3%** of a
+  core; frame time fell **12.5-13.1%** across four adjacent draw bands (5,000-9,000) with
+  the campaign's own null at **+0.1%**. In milliseconds it is a **slope** — 1.92 ms at
+  6,000-6,999 draws, 2.41 at 8,000-8,999 — because the guard runs per first-touch stream
+  and per guarded texture. The gap between the 2.8 ms of guard removed and the 2.2 ms of
+  frame delivered is the item's own bill; see below.
+* **§3's item 1.1 sizing missed the bill entirely, and every future (b) item needs it.**
+  Moving work onto idle cores raises the PROCESS's CPU: 2.53 -> 2.68 cores, four workers
+  at 8.3% of a core each. **33.2 points appeared on the workers where 13.1 left the pump**
+  — a memory-latency-bound loop is cheaper interleaved with other work than run alone. And
+  ~0.4 ms/frame comes straight back to the pump as cache pollution, visible in two phases
+  that have nothing to do with hashing (`recordState` 140 -> 183 ns/draw, `otherBegin`
+  57 -> 81). Gotcha 344.
+* **Item 1.3 needed no worker at all.** The readback was TWO 3.5 MB copies and the
+  intermediate one existed only so the picture instruments could walk cached memory — on
+  a buffer that has been HOST_CACHED since the readback fix. `readback` 5.5-7.3% of the
+  frame **-> 0.0%**, ~0.78 ms. Gotcha 345 is the part worth keeping: the predicate must be
+  the memory type and not "is an instrument armed", or the shipped path is one no gate
+  runs.
+* **The pool exists and is proved, which was §3's stated precondition for item 1.2.**
+  88-91% of guards are served by a finished pre-hash, the pool never once blocked the
+  pump, and its verify arm sizes the race the design widens at 0.0002-0.0021%.
+
+| item | status |
+|---|---|
+| **1.1 parallel guards** | **DONE** — `GuardFold` 25.87% -> 0.86% of the pump; −1.9..2.4 ms, −12.5% of the frame; `CZ_VK_NO_PARALLEL_GUARD=1` |
+| **1.3 readback** | **DONE** — and it was a redundant copy, not a threading problem; `CZ_VK_PRESENT_STAGING=1` |
+| 1.2 parallel textures | **unblocked** — the pool is proved. Harder than the guard: the pump needs the RESULT, not a decision |
+| 1.4 parallel recording | open, ~4 ms at four workers, still the riskiest thing in the plan |
+| 2.3 / 3.3 / 2.2 / 3.4 / 4.2 | open |
+| 2a soft-dirty page tracking | struck in part 51 |
+
+---
+
 ## 10. SUGGESTED ORDER
 
 | # | item | expected | risk | why here |

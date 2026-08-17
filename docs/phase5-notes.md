@@ -10533,3 +10533,68 @@ Raw throughput, which needs no binning at all: **84,540 frames against 76,845 in
 > "landed near 16 ms", not "on the pacing floor" (the part-52 rule). It is why the control
 > arm shows 79% at 6,000-6,999 and the item arm 6%: the control is sitting at ~15-16 ms
 > and the item arm is not.
+
+### §7. ITEM 1.3 — and the copy turned out to be for instruments that were not running
+
+The plan sizes item 1.3 as "move the present readback onto a worker, ~0.55 ms". It never
+needed a worker. The readback was **two** 3.5 MB copies: one from the mapped readback
+buffer into `R->presentPixels`, and then `Host_PresentPixels`'s own into the window's back
+buffer. The intermediate one existed so the present-side instruments — frame stats, the
+PPM dumps, the black/dark triggers, the uniform-colour census — could walk a *cached*
+buffer.
+
+**But that buffer has been HOST_CACHED since the readback fix.** `ReadbackMemoryProps`
+searches for a `HOST_CACHED` memory type and takes it; `CZ_VK_READBACK_UNCACHED=1` is
+still the arm for the other case. So the instruments can read the mapped buffer directly
+and the staging copy is 3.5 MB per frame for nothing.
+
+| | default | `CZ_VK_PRESENT_STAGING=1` |
+|---|---|---|
+| `readback`, share of frame | **0.0%** | 5.5-7.3% |
+| ms/frame | ~0 | ~0.78 |
+| frame at a matched 6,253 / 6,255 draws | **13.0 ms** | 13.9 ms |
+
+**The condition is the MEMORY TYPE, not which instruments are armed, and that is the
+load-bearing choice.** The obvious implementation is "copy only if an instrument will read
+it" — and it would have left the default configuration on a code path **no gate in this
+project ever runs**, because every picture gate here (`CZ_VK_FRAME_DUMP`, the E3
+correlation's `CZ_CAPTURE_KEY`, `CZ_VK_SNAP_ON_*`) sets one of them. Gating on
+`g_readbackCached` instead keeps the default path the only path in an ordinary run, and
+leaves the staging copy exactly where it is genuinely needed.
+
+> **The transferable half: a fast path that only runs when no instrument is armed is a
+> fast path nothing tests.** Ask what the gates set before choosing the predicate.
+
+### §8. Gates at close — all clean
+
+| gate | result |
+|---|---|
+| `--smoke` | OK |
+| switch gate | 0 defects (2 benign frameless thunks) |
+| shader dimension census | 0 disagreements; 1 sidecar without `tfetchDims`, the known lost-microcode entry |
+| PM4 oracle 1/2 — packet lengths | 24,527,474 packets, **0 disagreeing** |
+| PM4 oracle 2/2 — indirect-buffer walks | clean |
+| E3 picture | **best of five +0.8808**, 4 of 5 agreeing on layout |
+| `no translated shader` | 0 |
+| `truncated=` | 0 |
+| deepest file on a plain boot | **#83 `game:\data\skeleton\cinezombie.big`** |
+| A5 kernel-call diff | **exit 0, 4 permutation windows, 0 real** |
+| shader-cache NAME diff | 435 built from the dumps vs 436 in the cache, differing only by `ps_926c15dd20571cf1` (microcode lost) — **no new entry missed this part** |
+| `PARALLEL GUARD SLOT MIX-UP` | **0**, over every run of this part |
+
+E3 next to its neighbours, because a cross-session best-of on an ANIMATED backdrop is a
+weak comparison (gotcha 133): part 50 +0.8820 of five, part 51 +0.8043 of fourteen, part 52
++0.8771 then +0.8764 of five, part 53 **+0.8808** of five. Nothing in this part touches
+what is drawn — and item 1.3 in particular is now on the path the gate itself exercises,
+which is the whole reason its predicate is the memory type.
+
+### §9. WHAT PART 53 DID NOT DO
+
+* **Item 1.2, parallel texture untile.** The pool now exists and is proved, which was the
+  plan's precondition ("only after 1.1 proves the worker pool"). It is a harder dependency
+  than the guard: the pump needs the *result* — a filled staging buffer — before it can
+  record the upload, where the guard only needs a decision.
+* **Item 1.4, parallel command recording**, still the largest remaining item at ~4 ms and
+  still the riskiest.
+* **The operator has not judged this yet.** Everything above is headless. The soak they
+  found in part 52 is the place to measure it, and it is not at the cap.

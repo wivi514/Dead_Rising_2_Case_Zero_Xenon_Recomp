@@ -1483,6 +1483,14 @@ CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and cou
                    ~3.2 M served guards per window, 0.0002-0.0021%, and that is an UPPER
                    bound on harm because most disagreements are streams that read as
                    changed either way. Costs the whole saving; an arm, never a default
+CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
+                   frame into a staging buffer before the window and the picture
+                   instruments read it, the way the present path did for fifty-two parts.
+                   Off by default because the readback buffer is HOST_CACHED and the copy
+                   was therefore 3.5 MB/frame for nothing: `readback` reads 5.5-7.3% of
+                   the frame with it and **0.0%** without. It turns itself back ON, with
+                   no variable set, if the machine has no HOST_CACHED memory type -- there
+                   the instruments' whole-frame walks would each be a write-combined read
 CZ_VK_VERIFY_PARALLEL_GUARD_POISON=1  perturb every pre-hashed value so the check above
                    MUST fire. It reads 100.0000% -- which is what licenses reading the
                    unpoisoned 0.0005% as a measurement rather than as a silent instrument

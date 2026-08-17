@@ -3628,3 +3628,87 @@ number in its budget):
   Also: `outside` is not all work — at 79% busy the pump is BLOCKED ~4.7 ms of a 22.3 ms
   frame, so the plan's "guest simulation ~3 ms" inside `outside` is our pump waiting.
 * **Gates at close: ALL CLEAN**, E3 best of five **+0.8820**, 4 of 5 agreeing on layout.
+
+---
+
+## Part 51 status block, moved out of CLAUDE.md at the close of part 53
+
+Where the port WAS, as of 2026-08-16 (part 51 CLOSED — **THE BUSIEST THREAD IN THE
+PROCESS IS NOT THE GAME SIMULATING, IT IS THE GAME WAITING FOR US — and the largest item
+in the plan is dead while the largest item in the frame was never in the plan.**
+~~`docs/part52-kickoff.md` is the LIVE hand-off~~ — superseded by `part53-kickoff.md`;
+read `phase5-notes.md` §6ch):
+
+* **ITEM 0 IS ANSWERED AND IT INVERTS THE WORRY THAT OPENED THE PART.** Part 50 found a
+  guest thread at 93.2% and correctly refused to guess whether it was WORKING or
+  SPINNING. It is spinning: **84.15% of that thread is `sub_8283C6C8` under
+  `sub_82845160`**, which `phase1-notes.md` **finding 38** identified in phase 1 as the
+  **Draw Thread waiting on the ring read pointer** — and the only thing in this process
+  that advances that pointer is our own pump. Part 50's table called it "the title
+  simulating", which was wrong in the one direction that would have retired the whole
+  plan. **Milliseconds off our pump are milliseconds off the frame.**
+* **THE METHOD IS THE TRANSFERABLE HALF AND IT IS ONE COMMAND.** Thirty parts of
+  per-phase profiling from inside the pump thread, against `perf record -F 999 -p <pid>`,
+  which names the top cost in EVERY thread in symbols — the guest's included, because
+  every guest function is a real symbol here. It disagrees with the phase profiler about
+  our own pump: `DoDraw` is 9.84% of that thread and a CONTENT GUARD is 16.79%. Gotcha
+  340; `tools/part51_thread_probe.sh`. Caveat: `perf` charges INLINED code to its
+  container, and a 19.4% entry in the present path turned out to be an instrument.
+* **THE PLAN'S BIGGEST ITEM (2a, soft-dirty page tracking) IS REFUTED — TWICE — AND
+  NEITHER REFUTATION IS THE ONE IT WAS AIMED AT.** The query really is 1.6-4x cheaper
+  than hashing the bytes, exactly as argued. But **arming `clear_refs` costs 24.4 ns per
+  resident page = 7.5 ms/frame** on this runtime's 1.2 GB, against the ~0.7 ms of hashing
+  it removes; and arming **write-protects every page**, so re-touching costs **+773
+  ns/page** in minor faults charged to whoever writes next — **the GUEST's threads**.
+  Strike the item. Gotcha 341: price the SETUP and the AFTERMATH before the part that
+  made the idea attractive.
+* **THE ITEM NOBODY HAD: THE PUMP SLEEPS 1 ms BEFORE EVERY RING WALK, AND SOMEBODY IS
+  WAITING.** Absent from the plan because every item there makes the pump's WORK smaller
+  and a sleep is not work. **The walk stops ~3.1 times a frame whatever the tick period
+  is** — invariant across a 40x range — so the tick sets only how long each stop lasts.
+  87-100% of those sleeps are immediately followed by a walk that finds real work (37-46%
+  in the boot windows, which is the instrument's own negative control).
+* **100 us IS THE NEW DEFAULT, and the POSITIVE CONTROL is what proves it.** Three arms,
+  three unprofiled runs each: at **3,000-5,000 draws the frame goes 19 -> 16 ms, −15.8%,
+  outside its own 5.3% floor**, with the 16 ms-PINNED share **24-36% -> 72-95%**. The
+  4 ms control arm is **+34.8% to +56.2% and outside the floor in every bin**, i.e. the
+  sleep converts to frame time at ~1:1 — which is what licenses the 2.7 ms in the bins
+  where the direct comparison sits inside its noise. `CZ_PM4_TICK_MS=1` is the control
+  arm. Costs stated rather than buried: process CPU **2.57 -> 2.75 cores of 16** and the
+  pump's duty cycle **79% -> 93%**.
+* **AND THE INSTRUMENT THAT RECORDS FRAME TIME COSTS ~3 ms A FRAME (12-20%).**
+  `CZ_VK_FRAME_STATS` zeroes a 2 MB bitmap and walks all 921,600 pixels of every
+  presented frame, and it was on in **every performance run this project has ever
+  recorded** — the operator's lap and part 50's own profiler A/B included. Part 50 wrote
+  the rule ("an instrument that can only be read through another cannot measure that
+  one") and stopped one instrument short of applying it. **This is a CORRECTION, not a
+  saving** (gotcha 337): with both instruments off, the operator's 28.3 ms at 5,000-7,000
+  draws is really nearer **22-23 ms, ~43-45 fps**. A/Bs carrying it in both arms are
+  unaffected.
+* **A sub-millisecond tick broke a health warning on the way through**, on the one line
+  whose own comment warns about exactly that: the ring trace's "sat on one wait for over
+  a second" was 60 TICKS, which at 100 us means 6 ms, and a healthy run measures 104.
+  Both the threshold and the label are now durations (gotchas 98/157).
+* **THE OPERATOR HAS NOW JUDGED IT, and both halves are recorded as they came.** On
+  "which felt smoother" they **could not tell the arms apart** — that rules out a GROSS
+  pacing regression, which was the way this change could fail, and it is not written up
+  as "confirmed smoother". On the profiler, the win reproduces on their machine and
+  route: **3,000-5,000 draws 21 -> 17 ms with the vblank-pinned share 2% -> 51%**, and
+  5,000-8,000 draws 26 -> 24 ms. The mechanism is visible directly — `outside`, the
+  column the sleep lives in, reads **7.89 -> 5.37 ms, a 2.52 ms difference against the
+  2.7 predicted**, while every other phase moves by a few percent. One run an arm, so
+  the statistical weight remains the headless campaign's; this confirmed direction and
+  mechanism on their hardware. §6ch §7.
+* **Gates at close: ALL CLEAN**, and the two numbers that MOVED both moved for reasons
+  the change predicts. `--smoke`; both PM4 capture oracles on B1 (24,527,474 packets, 0
+  disagreeing; 0 indirect-buffer disagreements); the switch gate (0 defects); the shader
+  dimension census (328 2D + 97 cube, 0 disagreements); `no translated shader` = 0;
+  `truncated=0`; deepest file on a plain boot **#83 `cinezombie.big`**. **A5 exit 0 with
+  4 permutation windows and 0 real** — part 50 recorded 3 windows, and a tick ten times
+  finer re-interleaves the boot's scheduling by construction, which is what a permutation
+  window IS. **E3 best of fourteen +0.8043, layout agreeing on every sample above the
+  +0.70 threshold**, against part 50's +0.8820 best of five: the title backdrop is an
+  ANIMATED scene, so a correlation is a fact about which moment was sampled (gotcha 133),
+  and this change alters when frames land without touching what is drawn. Quoted as
+  lower rather than tidied up, because a cross-session best-of on an animated reference
+  is a weak comparison and should be read as one.

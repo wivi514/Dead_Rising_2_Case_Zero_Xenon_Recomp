@@ -3471,3 +3471,43 @@ From phase C part 18 (the frame rate — and none of it was work):
      should contain. Neither instrument could have said this alone: the symbol profile
      knows a function is hot but not which phase pays for it, and the phase table knows a
      phase is hot but not what is nested inside it.
+
+344. **A PARALLEL ITEM'S PRICE IS NOT ITS SYMBOL SHARE — budget the cache it stops
+     warming as well as the work it moves.** Part 53 moved both content guards off the
+     pump thread onto four workers. `GuardFold` was 25.87% of that thread and fell to
+     0.86%; the thread itself fell 63.4% -> 50.3% of a core, so **13.1 points left**. The
+     four workers gained **33.2**. Two and a half times as much CPU appeared on the
+     workers as left the pump, and neither number is wrong: a memory-latency-bound loop
+     is *cheaper interleaved with other work than run on its own*, because on the pump
+     its misses overlapped with register decode and driver calls and on a worker there is
+     nothing to overlap with. **`perf`-attributed cycles for such a loop understate its
+     isolated cost**, which makes a symbol share a good guide to what to MOVE and a bad
+     estimate of what moving it will cost. And a second bill lands straight back on the
+     thread you were shortening: `recordState` went 140 -> 183 ns/draw and `otherBegin`
+     57 -> 81, neither of them code the change touched — the workers evicting the pump's
+     working set from the shared L3, ~0.4 ms/frame of it. The item still delivered
+     −2.2 ms of a 15.9 ms frame; the point is that three separate things had to be
+     budgeted (the work that moves, the dispatch bookkeeping, and the cache), and only
+     the first is visible in any instrument that names a subsystem.
+
+345. **A FAST PATH THAT ONLY RUNS WHEN NO INSTRUMENT IS ARMED IS A FAST PATH NOTHING
+     TESTS.** Part 53 found the present readback making a 3.5 MB staging copy that only
+     the picture instruments read, on a buffer that has been HOST_CACHED for parts. The
+     obvious predicate is "copy only if an instrument will read it" — and it would have
+     shipped a default configuration whose code path **no gate in the project ever
+     runs**, because every picture gate here sets one of those variables
+     (`CZ_VK_FRAME_DUMP`, `CZ_CAPTURE_KEY` for the E3 correlation, `CZ_VK_SNAP_ON_*`).
+     The predicate that works is the one the instruments do not move: whether the memory
+     is cached at all. **Ask what the gates set before choosing the condition on a fast
+     path**, or the arm you ship is the arm you never gate.
+
+346. **WHEN A PREDICTION FEEDS A CACHE KEY, THE ONLY SILENT FAILURE IS THE SLOT MIX-UP —
+     so make every result carry the descriptor it was computed FOR.** Part 53's guard
+     pool hands each cache entry an INDEX into a results array. A stale or wrong index is
+     not a miss, it is another buffer's real, valid hash — which compares equal or
+     unequal for reasons that have nothing to do with this buffer, and whose symptom is a
+     stale mesh with no error anywhere. Exactly the shape gotcha 342 is about, one
+     subsystem over. The fix costs two words per slot: the worker echoes back the pointer
+     and length it hashed, the consumer checks them, and a disagreement is a loud line
+     plus an inline fallback. It has never fired — which is only worth saying because the
+     poison arm beside it proves the check can.
