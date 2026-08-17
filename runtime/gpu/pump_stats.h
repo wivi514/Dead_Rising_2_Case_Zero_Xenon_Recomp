@@ -33,12 +33,32 @@
 
 #include <cstdint>
 
+// PART 51 ADDS THE ONLY QUESTION THE FOUR FIELDS ABOVE CANNOT ANSWER: was the sleep ON
+// THE CRITICAL PATH? `sleepNs` says how long the pump was not running; it cannot say
+// whether anybody was waiting for it. Both readings are consistent with 12% of the wall
+// clock in that line:
+//
+//   harmless  the ring is empty, the guest has not kicked yet, and a pump that woke
+//             sooner would only spin. Sleeping is then the correct thing to do.
+//   costly    packets are already waiting, or a WAIT_REG_MEM the walk stopped at has
+//             since been satisfied. Every nanosecond of the sleep is then frame time,
+//             and the Draw Thread is burning a core spinning on our read pointer while
+//             we sleep (finding 38 — the busiest thread in this process is that spin).
+//
+// The discriminator is what the walk does NEXT. If the walk immediately after a sleep
+// advances the ring cursor, then there was work to do and the sleep delayed it; if it
+// returns the same cursor, the sleep cost nothing. So `sleepBeforeProgressNs` is an
+// UPPER BOUND on the latency the tick period is adding — upper, because work that
+// arrived halfway through a sleep was only delayed by the remaining half, and nothing
+// on this side can see when it arrived. Quote it as a bound, never as a saving.
 struct PumpStats
 {
     uint64_t ticks;   // pump loop iterations
     uint64_t sleepNs; // time asleep at the top of the loop
     uint64_t walkNs;  // time inside Pm4_Execute (command processor + renderer + submit)
     uint64_t isrNs;   // time inside the guest's vblank ISR
+    uint64_t progressTicks;        // ticks whose walk advanced the ring cursor
+    uint64_t sleepBeforeProgressNs; // ...and the sleep that immediately preceded them
 };
 
 // A snapshot. Like ChainStats_Read these are independent relaxed counters, so the fields

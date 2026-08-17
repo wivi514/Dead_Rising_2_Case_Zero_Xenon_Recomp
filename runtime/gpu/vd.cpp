@@ -200,6 +200,9 @@ std::atomic<uint64_t> g_pumpTicks{ 0 };
 std::atomic<uint64_t> g_pumpSleepNs{ 0 };
 std::atomic<uint64_t> g_pumpWalkNs{ 0 };
 std::atomic<uint64_t> g_pumpIsrNs{ 0 };
+// Part 51: was that sleep on the critical path? gpu/pump_stats.h has the argument.
+std::atomic<uint64_t> g_pumpProgressTicks{ 0 };
+std::atomic<uint64_t> g_pumpSleepBeforeProgressNs{ 0 };
 
 inline uint64_t NowNs()
 {
@@ -320,8 +323,30 @@ void GraphicsInterruptPump()
     const int tickMs =
         tickEnv ? std::max(1, std::min(atoi(tickEnv), vblankMs)) : std::min(1, vblankMs);
 
-    KLOG("graphics interrupt pump started (%d ms vblank cadence, %d ms ring tick)\n",
-         vblankMs, tickMs);
+    // CZ_PM4_TICK_US — the same knob with the floor taken off, and part 51's arm.
+    //
+    // The 1 ms above is not a measured period, it is the smallest number the MILLISECOND
+    // knob can express, and the loop sleeps it unconditionally before every walk. At the
+    // ~3.0 ticks a frame this title runs at, that is ~3 ms of every frame with the pump
+    // off the CPU — 10-18% of the wall clock in the `pump` line — while the title's Draw
+    // Thread spins on our read pointer at 93% of a core waiting for exactly the progress
+    // that sleep is deferring (finding 38, and part 51 §item 0 for the profile). Nothing
+    // in the frame-time budget of `docs/perf-plan-part50.md` accounts for it, because
+    // every item there makes the pump's WORK smaller and this is not work.
+    //
+    // Kept as an ARM rather than a new default until it is measured, and expressed in
+    // microseconds so the same code path serves both: `CZ_PM4_TICK_MS` continues to mean
+    // exactly what it meant, and is still the control arm for every claim part 18 made.
+    // Floor of 10 us so a typo cannot turn the pump into a spinner that starves the guest
+    // threads it is waiting for — that would be the same defect in the other direction,
+    // and on a 16-core machine with 13 cores idle it would still be an unmeasured change.
+    const char* tickUsEnv = getenv("CZ_PM4_TICK_US");
+    const int tickUs = tickUsEnv
+                           ? std::max(10, std::min(atoi(tickUsEnv), vblankMs * 1000))
+                           : tickMs * 1000;
+
+    KLOG("graphics interrupt pump started (%d ms vblank cadence, %d us ring tick)\n",
+         vblankMs, tickUs);
 
     // CZ_FPS_CAP — the frame rate cap, expressed the way a player would say it and
     // translated here into the device field the title's own configuration writes.
@@ -392,15 +417,16 @@ void GraphicsInterruptPump()
         Pm4_SetDrawSink(VkRenderer_Draw);
 
     uint64_t ticks = 0;   // VBLANKS delivered — every `ticks %` below means vblanks
-    int sinceVblankMs = 0; // ms of ring ticks accumulated toward the next vblank
+    int sinceVblankUs = 0; // us of ring ticks accumulated toward the next vblank
     auto nextVblankAt = std::chrono::steady_clock::now(); // ...or the deadline, below
     for (;;)
     {
         // Timed, because this sleep is the single largest term in a gameplay frame and
         // no instrument in this port could see it (gpu/pump_stats.h).
         const uint64_t tSleep = NowNs();
-        std::this_thread::sleep_for(std::chrono::milliseconds(tickMs));
-        g_pumpSleepNs.fetch_add(NowNs() - tSleep, std::memory_order_relaxed);
+        std::this_thread::sleep_for(std::chrono::microseconds(tickUs));
+        const uint64_t sleptNs = NowNs() - tSleep;
+        g_pumpSleepNs.fetch_add(sleptNs, std::memory_order_relaxed);
         g_pumpTicks.fetch_add(1, std::memory_order_relaxed);
 
         // Keep the exported KeTimeStampBundle current before waking the guest. The
@@ -472,6 +498,18 @@ void GraphicsInterruptPump()
             if (const uint32_t slot = g_rptrWriteback.load())
                 PPC_STORE_U32(slot, cursor);
 
+            // Did this walk have anything to do? A cursor that moved means the sleep
+            // just taken delayed real ring progress by up to its whole duration; a
+            // cursor that did not move means the sleep cost nothing. That is the only
+            // honest way this side can separate the two, and it is an upper bound by
+            // construction — gpu/pump_stats.h says why, and says to quote it as one.
+            static uint32_t lastCursor = 0xFFFFFFFFu;
+            if (cursor != lastCursor)
+            {
+                lastCursor = cursor;
+                g_pumpProgressTicks.fetch_add(1, std::memory_order_relaxed);
+                g_pumpSleepBeforeProgressNs.fetch_add(sleptNs, std::memory_order_relaxed);
+            }
         }
 
         // Everything below this line is the VBLANK, and it keeps the guest's own
@@ -512,10 +550,13 @@ void GraphicsInterruptPump()
         }
         else
         {
-            sinceVblankMs += tickMs;
-            if (sinceVblankMs < vblankMs)
+            // Accumulated in MICROSECONDS since part 51, so a sub-millisecond tick
+            // cannot silently round to zero here and stop the tick-count vblank arm
+            // from ever firing.
+            sinceVblankUs += tickUs;
+            if (sinceVblankUs < vblankMs * 1000)
                 continue;
-            sinceVblankMs -= vblankMs;
+            sinceVblankUs -= vblankMs * 1000;
         }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
@@ -830,7 +871,9 @@ PumpStats PumpStats_Read()
     return PumpStats{ g_pumpTicks.load(std::memory_order_relaxed),
                       g_pumpSleepNs.load(std::memory_order_relaxed),
                       g_pumpWalkNs.load(std::memory_order_relaxed),
-                      g_pumpIsrNs.load(std::memory_order_relaxed) };
+                      g_pumpIsrNs.load(std::memory_order_relaxed),
+                      g_pumpProgressTicks.load(std::memory_order_relaxed),
+                      g_pumpSleepBeforeProgressNs.load(std::memory_order_relaxed) };
 }
 
 // ---------------------------------------------------------------------------

@@ -128,6 +128,19 @@ CZ_PM4_TICK_MS=N   how often the RING is walked, as opposed to how often the gue
                    pure sleep, against the 2 vblank periods the title is really waiting
                    for. Worth 84.4 -> 69.9 ms (1.21x), with `submit` identical at 24.0 ms
                    on both arms — the entire delta is sleep and none of it is GPU
+CZ_PM4_TICK_US=N   the same knob WITHOUT the millisecond floor (part 51). The 1 ms above
+                   is not a measured period, it is the smallest number the millisecond
+                   knob can say, and the loop sleeps it before EVERY walk. Measured on
+                   the outdoor route: 3.0-3.4 ticks a frame, `sleep` 10-16% of the wall
+                   clock, and — the number that turns that from a share into an item —
+                   **87-100% of those sleeps are immediately followed by a walk that
+                   advances the ring cursor**, i.e. by real work that was waiting. The
+                   `[vkprof] sleep on the critical path` line prints that share and the
+                   bound it implies (`<= 3.17 ms/frame` at the 1 ms default). Meanwhile
+                   the title's Draw Thread spins on the read pointer only that walk
+                   advances, at 93% of a core (finding 38, §6ch). Range 10 us .. one
+                   vblank period; `CZ_PM4_TICK_MS` is unchanged and is still the control
+                   arm for every part-18 claim
 CZ_VBLANK_TICKCOUNT=1  deliver the vblank every N loop ITERATIONS again instead of on a
                    steady_clock deadline — the pre-part-18 accounting, and a defect that
                    predates the whole of phase C. An iteration is a sleep PLUS a ring

@@ -230,6 +230,17 @@ struct ProfilePhases
     uint64_t submitCall = 0;
     uint64_t fenceWait = 0;
     uint64_t readback = 0;    // image -> host buffer -> window
+    // CZ_VK_FRAME_STATS's OWN COST, and it exists because part 50 wrote the rule and
+    // then stopped one instrument short of applying it. §6cg §6: "an instrument that
+    // can only be read through another instrument cannot measure that one" — said of
+    // `CZ_VK_PROFILE`, whose 2-4 ms bill was found by reading `CZ_VK_FRAME_STATS`
+    // instead. Nobody then asked what THAT one costs, and it is not small: per
+    // PRESENTED frame it zeroes a 2 MB bitmap and walks all 921,600 pixels with a
+    // random-access bit test. Every performance number in this project since part 18 —
+    // including the operator's whole-map lap and part 50's own profiler A/B — was
+    // recorded with it enabled, so it is a floor under every frame time ever quoted
+    // here. EXCLUSIVE, like every scope; it is not part of `readback`.
+    uint64_t frameStats = 0;
     // DoDraw's own untimed work — register decode, the pipeline-key build and its
     // lookup, the fetch-constant walk, and the always-on censuses. EXCLUSIVE of every
     // phase above, which it was not until part 20; see the ProfScope comment.
@@ -10130,6 +10141,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
 
     if (statsFile)
     {
+        ProfScope _fs(&g_prof.frameStats);
         uint64_t lit = 0, lumaSum = 0, ph = 0xCBF29CE484222325ull;
         // Distinct colours exactly, without a hash set: the frame is RGBA8 and a
         // 2^24-bit bitmap is 2 MB, which is cheaper than a hash table per frame and
@@ -10555,7 +10567,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                        g_prof.textures + recordTotal + otherTotal;
             const uint64_t submitTotal =
                 g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
-            const uint64_t known = drawTotal + submitTotal + g_prof.readback;
+            const uint64_t known =
+                drawTotal + submitTotal + g_prof.readback + g_prof.frameStats;
             fprintf(stderr,
                     "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
                     "[constants %.1f streams %.1f textures %.1f record %.1f other "
@@ -10567,6 +10580,21 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     pct(g_prof.textures), pct(recordTotal), pct(otherTotal),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), 100.0 - pct(known));
+
+            // THE INSTRUMENT'S OWN BILL, on its own line so it can never be read as
+            // part of the game's frame. It is charged to the run that asked for it and
+            // to nothing else, and it is ZERO in a run without CZ_VK_FRAME_STATS — but
+            // that is exactly the run in which no frame time is recorded, which is why
+            // it had gone 33 parts unmeasured. Quote it whenever quoting a frame time
+            // measured with frame stats on, i.e. always (gotcha 335's shape, one
+            // instrument further out).
+            if (g_prof.frameStats)
+                fprintf(stderr,
+                        "[vkprof]   CZ_VK_FRAME_STATS itself: %.2f ms/frame (%.1f%% of "
+                        "this window) — the measured frame is this much SLOWER than the "
+                        "one a player runs\n",
+                        frames ? double(g_prof.frameStats) * 1e-6 / double(frames) : 0.0,
+                        pct(g_prof.frameStats));
 
             // THE SPLIT OF `record`, which is the largest draw-path term on the
             // operator's frame (15.2 ms, 2.17 us a draw) and had no breakdown at all.
@@ -10677,15 +10705,34 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // the 10.98 ms term `docs/perf-cpu-plan.md` §2 is about, and until now it
             // could only be got by subtracting two lines of this report by hand.
             const uint64_t pm4Ns = walkNs > known ? walkNs - known : 0;
+            const uint64_t dSleep = p.sleepNs - lastPump.sleepNs;
             fprintf(stderr,
                     "[vkprof] pump %llu ticks (%.2f/frame) | sleep %.1f%% walk %.1f%% "
                     "[pm4 %.1f] vblank-isr %.1f%% | unaccounted %.1f%%\n",
                     (unsigned long long)dTicks,
                     frames ? double(dTicks) / double(frames) : 0.0,
-                    pct(p.sleepNs - lastPump.sleepNs), pct(walkNs), pct(pm4Ns),
+                    pct(dSleep), pct(walkNs), pct(pm4Ns),
                     pct(p.isrNs - lastPump.isrNs),
-                    100.0 - pct((p.sleepNs - lastPump.sleepNs) + walkNs +
-                                (p.isrNs - lastPump.isrNs)));
+                    100.0 - pct(dSleep + walkNs + (p.isrNs - lastPump.isrNs)));
+
+            // ...and how much of that sleep was ON THE CRITICAL PATH (part 51). The
+            // line above has been printed since part 18 and says only that the pump was
+            // off the CPU; it cannot say whether anything was waiting for it, and the
+            // answer decides whether the sleep is correct behaviour or frame time.
+            // gpu/pump_stats.h defines the discriminator (did the next walk advance the
+            // ring cursor?) and why the millisecond figure is an UPPER BOUND — print it
+            // with the word `<=` so it cannot be quoted as a saving by accident.
+            const uint64_t dProg = p.progressTicks - lastPump.progressTicks;
+            const uint64_t dProgSleep =
+                p.sleepBeforeProgressNs - lastPump.sleepBeforeProgressNs;
+            fprintf(stderr,
+                    "[vkprof]   sleep on the critical path: %llu of %llu ticks made "
+                    "progress (%.1f%%), sleep before them %.1f ms of %.1f ms | "
+                    "<= %.2f ms/frame of latency\n",
+                    (unsigned long long)dProg, (unsigned long long)dTicks,
+                    dTicks ? 100.0 * double(dProg) / double(dTicks) : 0.0,
+                    double(dProgSleep) * 1e-6, double(dSleep) * 1e-6,
+                    frames ? double(dProgSleep) * 1e-6 / double(frames) : 0.0);
 
             // ...and what the walk was WALKING. `pm4` above is a number of
             // milliseconds; on its own it supports no hypothesis about what to change,
