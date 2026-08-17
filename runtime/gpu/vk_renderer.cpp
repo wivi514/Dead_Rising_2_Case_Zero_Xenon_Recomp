@@ -168,6 +168,20 @@ void Count(const char* name) { ++g_stats[name]; }
 //
 // `Count` stays, and is still the right thing for every path that declines a draw:
 // those run rarely, and a cold call site is not worth a static.
+//
+// HOW TO FIND THE SITES THAT ARE WORTH CONVERTING, because part 52 got this wrong from
+// the code and right from the data. `perf` put `std::map<std::string, uint64_t>::
+// operator[]` at 2.30% of the pump thread, and `perf-plan-part52.md` §4 priced the fix
+// as "28 `Count(` sites inside `DoDraw`'s body" — counted by reading the source. The
+// counters' OWN DUMP says something different: of ~62.5 M plain-`Count` calls in a
+// 200-second outdoor run, **52.9 M — 84.6% — are the single site in
+// `VkRenderer_Draw`**, and ten sites are 99.2% of the total. Most of the 28 in `DoDraw`
+// are decline paths that fire a few hundred times an hour.
+//
+// So the rule is: `VkRenderer_DumpStats` already prints the call count of every counter,
+// which is the exact statistic that ranks these sites, and reading the source instead
+// ranks them by how alarming they look. Sort the dump before converting anything
+// (`docs/phase5-notes.md` §6ci).
 uint64_t* CounterSlot(const char* name) { return &g_stats[name]; }
 
 // Is anything going to READ `Renderer::snapshotsSampledThisPass` this run? Three
@@ -3164,7 +3178,7 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
             return 0;
         }
         it->second.frameSeen = R->frame;
-        Count("texture: CUBE served from resolve snapshots");
+        COUNT("texture: CUBE served from resolve snapshots");
         return it->second.slot;
     }
     if (R->nextCubeSlot >= g_maxDescriptors)
@@ -5856,7 +5870,7 @@ VkDeviceSize SynthRectStream(const uint8_t* src, uint64_t streamBytes,
         const float v = a + c - b;
         memcpy(dst + 3 * stride + d * 4, &v, 4);
     }
-    Count("draw: rect fourth corner synthesised");
+    COUNT("draw: rect fourth corner synthesised");
     return out;
 }
 
@@ -6255,7 +6269,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             if (func == 4 || func == 6)
             {
                 key.alphaTest = 1;
-                Count("draw: alpha test (GREATER/GEQUAL) enabled");
+                COUNT("draw: alpha test (GREATER/GEQUAL) enabled");
             }
             else if (func == 2 && F32(regs[xenos::kRbAlphaRef]) >= 1.0f)
             {
@@ -6267,7 +6281,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 // hardware's traces too) and the two-pass core redraw. EQUAL at any
                 // LOWER ref cannot be spelled with one >= clip and stays counted below.
                 key.alphaTest = 1;
-                Count("draw: alpha test EQUAL@1.0 (emulated as >= 1-eps)");
+                COUNT("draw: alpha test EQUAL@1.0 (emulated as >= 1-eps)");
             }
             else if (func != 7)
             {
@@ -7349,7 +7363,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (!noMsaaScale && msaa == 2)
         {
             posScale[0] *= 2.0f;
-            Count("draw: window coordinates scaled for a 4x MSAA surface");
+            COUNT("draw: window coordinates scaled for a 4x MSAA surface");
         }
         // Y is scaled for a 4x surface as well as X — THE DEFAULT since part 34.
         //
@@ -7382,7 +7396,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (!noMsaaScaleY && !noMsaaScale && msaa == 2)
         {
             posScale[1] *= 2.0f;
-            Count("draw: window Y also scaled for a 4x MSAA surface");
+            COUNT("draw: window Y also scaled for a 4x MSAA surface");
         }
         // ...and the TILE ORIGIN, for the same reason the viewport path does NOT need
         // it. A window coordinate is relative to the EDRAM surface, and hardware moves
@@ -8505,7 +8519,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     const uint32_t control = regs[xenos::kRbCopyControl];
     const uint32_t dest = regs[xenos::kRbCopyDestBase] & 0xFFFFFFFCu;
     R->lastResolveDest = dest;
-    Count("resolve");
+    COUNT("resolve");
 
     // RB_COPY_CONTROL bits 0..2 — copy_src_select. 0..3 name a colour target, 4 names
     // the DEPTH buffer. This renderer read that field nowhere until phase C part 14 and
@@ -8996,7 +9010,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         vkCmdClearColorImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                              &value, 1, &range);
-        Count("resolve: colour cleared");
+        COUNT("resolve: colour cleared");
     }
     if (clearDepth)
     {
@@ -9083,7 +9097,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             vkCmdClearDepthStencilImage(R->cmd, R->depth.image,
                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1,
                                         &range);
-            Count("resolve: depth cleared");
+            COUNT("resolve: depth cleared");
         }
     }
 }
@@ -9604,7 +9618,7 @@ void VkRenderer_Draw(uint8_t* base, const Pm4Draw& draw)
     // and the renderer's prim counters disagreed by half and there was no number in
     // between to say where the difference lived — a chain has to be counted link by
     // link (gotcha 162), including the link between two modules.
-    Count("draw: handed to the renderer");
+    COUNT("draw: handed to the renderer");
     const uint32_t* regs = Pm4_Registers();
     // The resolve discriminator, and the only one: RB_MODECONTROL's edram_mode.
     if ((regs[0x2208] & 7) == 6)
