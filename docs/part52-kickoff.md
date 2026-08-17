@@ -63,7 +63,13 @@ the saving is arithmetic rather than statistical:
 | base | 1 ms | 3.00-3.44 | 10.6-15.9% | 87-100% | <= 3.17 ms/frame |
 | fast | 100 us | 3.01-3.35 | 1.6-2.1% | 90-99.7% | <= 0.47 ms/frame |
 
-`CZ_PM4_TICK_US` is the arm and `CZ_PM4_TICK_MS` is untouched.
+**100 us is now the DEFAULT**, promoted on three unprofiled runs an arm read by draw bin:
+at **3,000-5,000 draws the frame goes 19 -> 16 ms (-15.8%, outside its own 5.3% floor)**
+with the 16 ms-pinned share **24-36% -> 72-95%**, and the 4 ms positive control is
+**+34.8% to +56.2%, outside the floor in every bin** — i.e. the sleep converts to frame
+time at ~1:1, which is what licenses the 2.7 ms in the bins where the direct comparison
+sits inside its noise. `CZ_PM4_TICK_MS=1` is the control arm. Costs: process CPU
+**2.57 -> 2.75 cores of 16**, pump duty cycle **79% -> 93%**.
 
 ## THE ORDER TO TAKE PART 52
 
@@ -96,8 +102,9 @@ the saving is arithmetic rather than statistical:
 
 ## STANDING STATE
 
-* Runtime defaults unchanged from part 49 except where part 51's measurement says
-  otherwise: 60 fps (`CZ_FPS_CAP=30` reproduces the shipped pacing), host vsync off.
+* Runtime defaults: 60 fps since part 49 (`CZ_FPS_CAP=30` reproduces the shipped pacing),
+  host vsync off, and **the ring tick is 100 us since part 51** (`CZ_PM4_TICK_MS=1` is its
+  control arm; `CZ_PM4_TICK_MS=16` is still part 18's).
 * New arms in part 51: `CZ_PM4_TICK_US=N`.
 * New instrument lines: `[vkprof]   sleep on the critical path:` and
   `[vkprof]   CZ_VK_FRAME_STATS itself:`.
