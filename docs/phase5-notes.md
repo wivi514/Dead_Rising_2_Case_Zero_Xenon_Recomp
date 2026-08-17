@@ -9805,6 +9805,44 @@ driven by the title's own AI and the two instruments sampled different windows:
 Both say down, by between a seventh and a third. Neither is quoted as *the* number.
 `BindShader` -> 0.00% is the result that needs no denominator.
 
+### §5c. The frame time, measured ABOVE the cap because below it the question is unaskable
+
+Part 51's tick change plus this item took the headless outdoor route onto the frame cap
+for most of its length, and **a capped frame cannot report a CPU saving**: both arms sit
+on the rung and the A/B reads zero whatever the change was worth. That is not a null
+result, it is an unmeasurable one. So `tools/part52_item_campaign.sh` runs every arm at
+`CZ_FPS_CAP=120`, which lifts the ceiling above the work and changes nothing else. **The
+number it produces is the CPU saving, not the frame rate a player sees.**
+
+Three runs an arm, alternated, one pinned binary, plus a NULL arm (`base` against itself)
+in the same block — `tools/frame_perf_bins.py`:
+
+| draws/frame | base (memo on) | noitem (memo off) | control arm's cost | **the null, same bin** |
+|---|---|---|---|---|
+| 0-999 | 8.74 ms | 8.83 | +1.0% | +1.1% |
+| 3,000-3,999 | 12.21 | 12.22 | +0.1% | −1.3% |
+| 4,000-4,999 | 13.15 | 13.50 | +2.7% | −5.8% |
+| 5,000-5,999 | 14.98 | 15.93 | +6.4% | −4.5% |
+| **6,000-6,999** | **15.84** | **18.22** | **+15.0% mean, +12.5% median** | **+0.2%** |
+| **7,000-7,999** | **16.98** | **19.38** | **+14.2% / +11.8%** | +7.4% (low n) |
+
+**Read the 6,000-6,999 row against the null in the same bin**: +15.0% against +0.2%, on
+19,875 frames versus 11,202. The bins below 5,000 are flat in both arms, which is what a
+change to a per-packet cost should look like where the frame is under the ladder's reach —
+and an arm that "improved" those would have meant a changed draw set and an inadmissible
+comparison.
+
+**The saving is ~2.4 ms at 6,000-7,000 draws, and that is a LOWER bound.** The `base` arm
+is *on a pacing rung* there (96% of its frames within 1 ms of one, against 17% for the
+control), so its CPU work is bounded above by the rung rather than measured by it. The
+plan predicted −1.5 to −2.3 ms; the measurement is at or just past the top of that range.
+
+One caveat on the pinned column, because it is quoted here and it was defined for a
+different ladder: `frame_perf_bins.py` counts frames within 1 ms of a multiple of **16 ms**,
+and this campaign ran a 8.33 ms vblank period. 16.67 is within 1 ms of 16, so the column
+still reads "on the second rung" correctly — but it is not counting the ladder's other
+rungs and should not be quoted as "pinned share" without saying which ladder.
+
 ### §6. Item 2.1 — the counter dump repriced it, and one site is 85% of it
 
 The plan prices `std::map<std::string, uint64_t>::operator[]` (2.30% of the pump) as "28
