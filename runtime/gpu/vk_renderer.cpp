@@ -10748,6 +10748,55 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     double(dProgSleep) * 1e-6, double(dSleep) * 1e-6,
                     frames ? double(dProgSleep) * 1e-6 / double(frames) : 0.0);
 
+            // ...and the one thing `outside` has never been able to say: how much of it
+            // is the pump WORKING and how much is the pump NOT RUNNING AT ALL.
+            //
+            // Part 52 item 4.1, and it is the same gap in a different place. Every
+            // column above is a wall-clock interval measured from inside this thread,
+            // and a wall-clock interval cannot tell "we spent 4 ms doing something" from
+            // "we spent 4 ms descheduled waiting for somebody else". `perf-plan-part50.md`
+            // §6cg made exactly that mistake in reverse — it read `outside`'s residual as
+            // "guest simulation ~3 ms" when at 79% duty the pump was simply blocked — and
+            // the plan's own item 4.1 asks for the split rather than another guess.
+            //
+            // One clock read answers it. CLOCK_THREAD_CPUTIME_ID is THIS thread's CPU
+            // time, so `wall - cpu` is by definition every nanosecond the pump was off a
+            // core, and the sleep counter above already accounts for the deliberate part.
+            // Whatever is left is the pump blocked on somebody else: a mutex, the driver,
+            // a fence, the guest.
+            //
+            // This costs one `clock_gettime` per REPORT (every N seconds), not per frame,
+            // which is the whole reason it is safe to leave on: an instrument on the hot
+            // path can cancel the effect it measures (gotcha 223), and this one is not on
+            // any path at all.
+            {
+                static uint64_t lastCpuNs = 0;
+                static bool haveCpu = false;
+                timespec cts{};
+                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cts);
+                const uint64_t cpuNs =
+                    uint64_t(cts.tv_sec) * 1000000000ull + uint64_t(cts.tv_nsec);
+                const uint64_t dCpu = haveCpu ? cpuNs - lastCpuNs : 0;
+                const bool first = !haveCpu;
+                lastCpuNs = cpuNs;
+                haveCpu = true;
+                const double wallNs = ms * 1e6;
+                if (!first && wallNs > 0.0)
+                {
+                    const double offNs = wallNs > double(dCpu) ? wallNs - double(dCpu) : 0.0;
+                    const double blockedNs =
+                        offNs > double(dSleep) ? offNs - double(dSleep) : 0.0;
+                    fprintf(stderr,
+                            "[vkprof]   pump thread: %.1f%% on CPU | off-CPU %.2f ms/frame "
+                            "= sleep %.2f + BLOCKED %.2f — the blocked part is `outside` "
+                            "time that is not work and cannot be optimised away\n",
+                            100.0 * double(dCpu) / wallNs,
+                            frames ? offNs * 1e-6 / double(frames) : 0.0,
+                            frames ? double(dSleep) * 1e-6 / double(frames) : 0.0,
+                            frames ? blockedNs * 1e-6 / double(frames) : 0.0);
+                }
+            }
+
             // ...and what the walk was WALKING. `pm4` above is a number of
             // milliseconds; on its own it supports no hypothesis about what to change,
             // which is the state §2 of `docs/perf-cpu-plan.md` describes as
