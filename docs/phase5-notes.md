@@ -9189,3 +9189,71 @@ been quoting**, and the target correspondingly closer. The A/B that prices it is
 `tools/part50_profiler_cost.sh` — three runs with the profile off, compared against the
 campaign's own three `base` runs on the same pinned binary, using the `msec` column of
 `CZ_VK_FRAME_STATS`, which is the one statistic that exists in both arms.
+
+### §5. Item 1c — the plan's top candidate is worth nothing, and the census already said so
+
+The plan lists three candidates for the per-packet preamble "in order of confidence", and
+the first is: *"Hoist the wrap modulo. `Source::operator()` does `% ring` per dword
+fetched. A walk that knows it is not near the ring end can index directly."*
+
+**It is worth essentially nothing, and the opcode census this project has been printing
+since part 48 already contained the refutation.** `INDIRECT_BUFFER` runs at **43-46
+packets a frame** — 0.1% of the stream. So ~45 indirect buffers carry all ~75,000
+packets, roughly 1,660 packets each, and **every one of those packets is fetched with
+`wrapDwords == 0`**, where `Source::operator()` is a predictable branch and no modulo at
+all. Only the ~45 ring-level packets that dispatch them ever take the modulo path. This is
+the same shape as §1's filler finding — the ring is nearly empty of work and the title's
+own buffers hold all of it — and it is the second time in one part that assuming "the
+ring" was where the packets are cost an estimate its credibility.
+
+The second candidate (skip the const-watch store when the window is empty) is one store of
+a constant pointer per packet. So **item 1c's ~2.2 ms is real but has no single lever**:
+it is the call, the fetch, the thread-local census read, two counter updates, the switch
+and the return, none of them dominant. The only structural way at it is to inline the walk
+so there is no call per packet, which is a real refactor of `ExecutePacket` with genuine
+desync risk, and it should be costed as one rather than picked up as a tightening.
+
+The per-frame mix it would be attacking, for whoever does:
+
+```
+SET_BIN_MASK_LO 8,848 (11.6%)   DRAW_INDX 5,377 (7.1%)   EVENT_WRITE 4,447 (5.9%)
+EVENT_WRITE_EXT 4,375 (5.8%)    IM_LOAD 1,919 (2.5%)     LOAD_ALU_CONSTANT 1,694 (2.2%)
+INDIRECT_BUFFER 43 (0.1%)
+```
+
+### §6. AND THE PROFILER'S BILL, MEASURED IN FRAME TIME — 2-4 ms, 8-18% of the frame
+
+§2 established the mechanism and priced it per scope. This prices it where it matters, by
+the one statistic that exists in both arms: the `msec` column of `CZ_VK_FRAME_STATS`,
+which is written whether or not `CZ_VK_PROFILE` is set. Three runs an arm, the same pinned
+binary, the same route, banded by draws:
+
+| draws/frame | profile ON | profile OFF | delta | |
+|---|---|---|---|---|
+| 1,500-3,000 | 18.00 ms | 16.00 ms | **−11.1%** | **outside the 6.2% floor** |
+| 3,000-5,000 | 22.00 ms | 18.00 ms | −18.2% | inside a 23.5% floor |
+| 5,000-8,000 | 25.00 ms | 23.00 ms | −8.0% | inside a 16.0% floor |
+| 8,000+ | 31.00 ms | 27.00 ms | **−12.9%** | **outside the floor** |
+
+**Two of four bands clear their own noise floor and all four point the same way: the
+profiler costs 2-4 ms a frame, 8-18%.** It is consistent with §2's per-scope model — 14.3
+scopes/draw at ~45 ns of total bill is ~3.9 ms at 6,000 draws, against 2-4 ms measured,
+the shortfall being the reads that overlap surrounding work.
+
+**So `docs/perf-plan-part50.md` §1's budget describes a frame that only exists while it is
+being measured.** The operator's 28.3 ms and 35.7 fps at 5,000-7,000 draws is really about
+**25-26 ms and 39-40 fps** in play. That does not make any item in the plan less worth
+doing, and it does not change their ranking — every phase is inflated, not one of them.
+What it changes is the distance to the target: the plan's "creditable intermediate" of
+20 ms (50 fps) is roughly **three milliseconds closer than the plan believed**, and the
+16 ms goal is 9 ms away rather than 12.
+
+Two rules follow, and they are cheap:
+
+* **Never quote a frame time from a profiled run without saying so.** This project has
+  been doing it since part 30 and the error was invisible while the frame was pinned to a
+  32 ms floor, because a floor absorbs an 8% inflation without moving. Part 49 removed the
+  floor; this is the first part that could have seen it.
+* **A frame-time A/B between a profiled and an unprofiled arm is possible ONLY because
+  `CZ_VK_FRAME_STATS` is independent of `CZ_VK_PROFILE`.** Keep them independent. An
+  instrument that can only be read through another instrument cannot measure that one.
