@@ -9456,3 +9456,46 @@ every size. That was an artifact of the decoder, not of the syscall. Re-measured
 the decode removed, the syscall floor is what the table above records. The direction of
 the error is the one to notice — it flattered the conclusion the other two rows were
 already reaching, and it would have been quoted as a third independent refutation.
+
+### §4. The item item 0 found: the pump SLEEPS 1 ms before every walk, and somebody is waiting
+
+Nothing in `docs/perf-plan-part50.md` mentions the pump's sleep, and the reason is
+structural: every item in that plan makes the pump's WORK smaller, and a sleep is not
+work. But the pump loop has begun with `sleep_for(tickMs)` since phase 1, the `pump` line
+has reported that sleep as 10-18% of the wall clock since part 18, and **the 1 ms is not
+a measured period — it is the smallest number the millisecond knob can express.**
+
+Two readings fit "sleep 12%", and until part 51 nothing in this runtime could separate
+them: the ring is empty and sleeping is correct, or packets are already waiting and every
+nanosecond of it is frame time. §1 makes the second reading likely — the Draw Thread is
+burning 93% of a core spinning on the read pointer only that walk advances — but likely
+is not measured.
+
+**The discriminator is what the walk does NEXT.** If the walk immediately after a sleep
+advances the ring cursor, there was work to do and the sleep delayed it; if the cursor
+does not move, the sleep cost nothing. That is `PumpStats::sleepBeforeProgressNs`, and it
+is an UPPER BOUND by construction — work that arrived halfway through a sleep was delayed
+by half of it, and nothing on this side can see when it arrived. It prints with a `<=` so
+it cannot be quoted as a saving by accident.
+
+It also has its own negative control built in, without anyone having to arrange one: in
+the boot and menu windows the progress share reads **37-46%**, and in the outdoor crowd it
+reads **87-100%**. An instrument that read the same everywhere would not have been shown
+capable of failing (gotcha 30); this one is visibly a measurement of something.
+
+`tools/part51_tick_campaign.sh`, one pinned binary, three arms — `base` at the shipped
+1 ms, `fast` at 100 us, and `slow` at 4 ms as the positive control, because an arm that
+can only make things better is a hope rather than an experiment:
+
+| arm | tick | ticks/frame | `sleep` % of wall clock | ticks whose walk made progress | latency bound |
+|---|---|---|---|---|---|
+| base | 1000 us | 3.00-3.44 | 10.6-15.9% | 87-100% | **<= 3.17 ms/frame** |
+| fast | 100 us | 3.01-3.35 | **1.6-1.9%** | 90-99.7% | **<= 0.47 ms/frame** |
+
+**The most informative number in that table is the one that did NOT move.** A tick ten
+times finer produced the SAME ~3.0-3.4 ticks a frame. So the pump is not waking uselessly
+and the tick is not what schedules it: the walk stops three times a frame because it stops
+at unsatisfied `WAIT_REG_MEM`s (part 4's brake, resumed by `StallPlan`), and the tick only
+decides how long each of those three stops lasts. The saving is therefore arithmetic
+rather than statistical — 3 stops x 0.9 ms = 2.7 ms — and the measured bound moves 3.17 ->
+0.47, which is that number to two figures.
