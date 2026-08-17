@@ -700,9 +700,11 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED, THE PLAN'S
-OWN VERIFY ARM REFUTED THE PLAN'S OWN FIX, AND THE OPERATOR FOUND THE PLACE TO MEASURE
-FROM — a three-minute soak at 7,200-8,562 draws that is NOT at the frame cap.** `docs/part53-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still
+Where the port is, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
+MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S
+JOB. The plan's own verify arm refuted the plan's own fix, and the operator found the
+place to measure from — a three-minute soak at 7,200-8,562 draws that is NOT at the frame
+cap.** `docs/part53-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still
 the live plan and its §9b records what part 52 corrected in it; read `phase5-notes.md`
 §6ci, and **§6ci §5c before planning any frame-time measurement**):
 
@@ -769,6 +771,27 @@ the live plan and its §9b records what part 52 corrected in it; read `phase5-no
   measured **3,010-3,047 loads/frame** against 2,224 on the walk. Three measurements that
   looked inconsistent are one finding at three loads. **Quote the draw count with any
   per-draw or per-packet saving.**
+* **AND THE THING PART 52 DID NOT DO, WHICH IS PART 53'S WHOLE JOB.** The plan's §1
+  commits to strategy **(b) — move work onto cores that are doing nothing** — and says so
+  in as many words. **All four shipped items are (a): they make ONE thread's work
+  smaller.** That happened by following the plan's §10 ORDER, which front-loads three
+  serial items ahead of the first parallel one; the prose and the table disagree and the
+  prose is right. The process still uses **2.24 of 16 cores (14% of the machine) with ~13
+  idle**, and at the operator's heaviest place our pump is **97.5-97.8% on CPU** — there
+  is no slack left in (a) at that load. **Item 1.1 (parallel content guards) is part 53's
+  job**, now measured at **~5.3 ms**. Note what "spread across all cores" can mean here
+  before promising it: the PM4 walk is inherently SERIAL because the stream's meaning is
+  positional (`pm4.h`), so the target is **3-5 busy threads, not 16**.
+* **PRICING ITEM 1.4 MOVED 39% OF IT ONTO ITEM 1.1, and reconciled two instruments that
+  had never been compared.** The stream content guard is charged to `record`, because
+  `UploadStream` runs inside the `recordVertex` scope while `ProfScope(streams)` wraps
+  only the copy — so item 1.1 (priced off the `GuardFold` SYMBOL) and item 1.4 (priced off
+  the `record` PHASE) **shared the same milliseconds**. Split: `record 1,007 ns/draw =
+  state 141 + vertex 188 + index 161 + GUARD 391 + residual 126`. Item 1.4's real ceiling
+  is **~5.32 ms (~4.0 at four workers)**, not the 8.69 `record` implied; item 1.1 rises to
+  **~5.3 ms**. Same size, and 1.1 is a pure function with a byte-exact oracle where
+  recording owns renderer state and draw ORDER is semantic — **so 1.1 goes first**.
+  Gotcha 343: a scope is a region of code, not a subsystem.
 * **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1; the switch gate (0
   defects); the dimension census (0 disagreements); `no translated shader` = 0;
   `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation
