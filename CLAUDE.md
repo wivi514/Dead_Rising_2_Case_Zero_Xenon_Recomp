@@ -675,10 +675,60 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT
+Where the port is, as of 2026-08-16 (part 50 CLOSED — **THE PLAN'S TOP TWO ITEMS WERE
+BOTH REPRICED BY THE MEASUREMENT THAT PRECEDED THEM, AND ONE OF THEM WAS THE PROFILER
+MEASURING ITSELF.** `docs/part51-kickoff.md` is the LIVE hand-off;
+`docs/perf-plan-part50.md` is still the live plan, but **read `phase5-notes.md` §6cg
+BEFORE it** — §6cg retires two of its items and corrects every number in its budget):
+
+* **`CZ_VK_PROFILE` COSTS 2-4 ms A FRAME, 8-18%**, and every figure in the plan's budget
+  — including the operator's whole-map lap — was read from a profiled run, because that
+  is the only way to get a phase split. **The operator's 28.3 ms / 35.7 fps at 5,000-7,000
+  draws is really ~25-26 ms / ~39-40 fps in play.** Rankings are unchanged (every phase
+  is inflated, not one); the distance is not — the plan's 20 ms intermediate is ~3 ms
+  closer than it believed. Three runs an arm, two of four draw bands outside their own
+  noise floor. **Never quote a frame time from a profiled run without saying so**: this
+  project did from part 30 to 49 and could not have noticed, because a 32 ms pacing floor
+  absorbs an 8% inflation without moving.
+* **`other`'s RESIDUAL WAS THIS PROFILER, and the plan called it "the highest-yield-per-
+  hour item in the document".** A `ProfScope`'s constructor clock read falls inside the
+  PARENT's interval and nothing subtracts it, and `other` is DoDraw's outermost scope —
+  so it could never have been named by splitting, because it is not in the code being
+  split. Confirmed by a control that could have refuted it: `CZ_VK_PROFILE_EXTRA_SCOPES=8`
+  moved it **205 -> 397 ns**, 24.0 ns/scope against a 21.6 ns calibrated read, and
+  DoDraw's ~8 DIRECT children are 94% of it. **Retired: there is no frame time there.**
+* **ITEM 1a IS SHIPPED AND IS WORTH ~0.3-0.5 ms, NOT 1.5-2.** A share is not a shape:
+  "28.7% of packets are type-2 filler" is equally consistent with one huge run and with
+  23,000 isolated dwords. Measured mean run **2.24**, bimodal, and **0% at ring level** —
+  it is the title's own indirect buffers, not driver ring padding. That moved the fix from
+  the callee (57% of calls) to `ExecuteLinear`'s loop (100%, and free, because the header
+  is already fetched). The plan's 20-30 ns/packet prediction is **refuted**: 4.0-6.5 ns
+  against a 9.4% null floor, the sign held by 3/3 rounds and 12,267 calls a frame removed.
+* **ITS BY-PRODUCT IS WORTH MORE THAN THE ITEM**: the difference prices one
+  `ExecutePacket` call at **24-40 ns**, a LOWER bound, so item 1c's ceiling is **~2.2 ms**
+  — measured, not estimated. But **1c's top candidate is refuted for free**: hoisting the
+  wrap modulo is worth nothing, because `INDIRECT_BUFFER` is only **43-46 packets a
+  frame**, so ~45 buffers carry all ~75,000 packets and every one is fetched with
+  `wrapDwords == 0`. 1c has no single lever; inlining the walk is a refactor, not a
+  tightening.
+* **ITEM 2a IS UNDERSTOOD AND IS NOT WASTE.** The guard's 26 MB/frame all comes through
+  one door: `needsExact`, **unbudgeted and permanent**, at 388-483 streams a frame — and
+  **15,643 of 126,536 store entries have latched it, 12.4% and rising monotonically**,
+  refuting part 46's expectation that it would be "the UI text buffers and almost nothing
+  else". **But the obvious fix is refuted too**: always-copying proven streams is cheaper
+  AND safer by a clean argument, and one counter killed it — only **11-13%** of proven
+  observations find a change, so the guard saves the copy on ~88%. The real question is
+  whether a large buffer's change can be detected without reading it (soft-dirty page
+  tracking), and that is architectural work with a correctness risk, costed in the kickoff.
+* **Gates at close: ALL CLEAN**, E3 best of five **+0.8820**, 4 of 5 agreeing on layout.
+
+Where the port WAS, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT
 WAS THE TITLE'S OWN SETTING ALL ALONG.** The operator has played the whole map at
-`CZ_FPS_CAP=60`. **`docs/part50-kickoff.md` is the LIVE hand-off and
-`docs/perf-plan-part50.md` is the live plan**, built on that lap):
+`CZ_FPS_CAP=60`. ~~`docs/part50-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part51-kickoff.md`; `docs/perf-plan-part50.md` is still the live plan, built on that lap
+— **but every frame-time number in that lap is inflated 8-18% by the profiler that
+recorded it, so the fps figures below are LOWER than what the operator actually played;
+see part 50 above**):
 
 * **60 fps IS NOW THE DEFAULT**, on the operator's instruction; `CZ_FPS_CAP=30` is
   the control arm and reproduces the shipped pacing exactly. A player-facing
