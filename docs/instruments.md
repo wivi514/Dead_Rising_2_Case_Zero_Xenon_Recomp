@@ -282,6 +282,34 @@ CZ_PM4_VERIFY_COUNTERS=1   drive BOTH forms of the census from every call site a
 CZ_PM4_VERIFY_COUNTERS_POISON=1  drop one per-thread packet increment in ten thousand, so
                    the check above is shown able to FAIL before a zero from it means
                    anything (gotcha 30). It reports 1 of 135
+CZ_PM4_NO_FILLER_RUNS=1    the pre-part-50 walk: one full `ExecutePacket` call per type-2
+                   filler DWORD instead of one per RUN of them. ~30% of every packet this
+                   title walks is that filler, so this is the same-binary control arm for
+                   part 50 item 1a. Read it as ns/PACKET (`tools/part48_walk_read.py`),
+                   and note the measured effect is 4.0-6.5 ns against a 9.4% NULL FLOOR —
+                   the item is real (12,267 calls a frame removed, 3/3 rounds ordered the
+                   same way) and it is worth ~0.3-0.5 ms, not the plan's 1.5-2
+CZ_PM4_VERIFY_FILLER_POISON=1  make one filler run in 4,096 consume one dword too many.
+                   THE POSITIVE CONTROL for the above, and it is not decoration: both PM4
+                   boundary oracles are Python models of capture B1 and neither executes
+                   our walk, so the only gates between item 1a and a desync are
+                   `truncated=0`, the unknown-opcode report and the picture. This makes
+                   them fail — 9 truncations and an UNKNOWN type-3 opcode where the same
+                   recipe unpoisoned reads 0 and 0 (gotcha 30)
+CZ_VK_PROFILE_EXTRA_SCOPES=N   open N do-nothing `ProfScope`s per draw. THE POSITIVE
+                   CONTROL for the `[vkprof] instrument:` line, which claims that `other`'s
+                   residual is the profiler's own clock reads — a nested scope's ctor read
+                   falls in its PARENT's interval and nothing subtracts it, and `other` is
+                   DoDraw's outermost scope. Registered prediction: the residual rises by
+                   about N x the calibrated read cost and no named phase moves. MEASURED at
+                   N=8: 205 -> 397 ns, a slope of 24.0 ns/scope against 21.6 ns calibrated,
+                   and DoDraw's ~8 DIRECT children are 94% of the residual. **So the plan's
+                   "highest-yield-per-hour item" is retired — there is no frame time there,
+                   it is absent from every run without CZ_VK_PROFILE.** And the wider
+                   consequence: the whole profiler costs 2-4 ms a frame (8-18%), so NEVER
+                   QUOTE A FRAME TIME FROM A PROFILED RUN WITHOUT SAYING SO. That A/B is
+                   possible only because CZ_VK_FRAME_STATS is independent of CZ_VK_PROFILE
+                   (`tools/part50_profiler_cost.sh`); keep them independent
 CZ_PM4_ZERO_IS_NOP=1       read a zero dword as a 1-dword no-op. Kept as an arm, and no
                    longer interesting: the zeros were our own unwritten VdSwap padding
                    (finding 39), and B1 turns out to contain no genuine zero header at
