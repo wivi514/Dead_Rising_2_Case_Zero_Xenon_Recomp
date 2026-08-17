@@ -9918,3 +9918,37 @@ accounts for the deliberate part:
 is not the pump waiting on somebody else. Read this line together with the frame rate,
 though: in a window pinned to the 60 fps cap the sleep term is the CAP and not a cost,
 and the instrument is only interesting when the frame is above the cap's floor.
+
+### §9. Gates at close — all clean, and one caught something
+
+| gate | result |
+|---|---|
+| `--smoke` | OK |
+| switch gate | 0 defects (2 benign frameless thunks) |
+| shader dimension census | 0 disagreements; 1 sidecar without `tfetchDims`, the known lost-microcode entry |
+| PM4 oracle 1/2 — packet lengths, 24.5 M packets | clean |
+| PM4 oracle 2/2 — indirect-buffer walks, 28,726 buffers | clean |
+| E3 picture | **best of five +0.8771**, 4 of 5 agreeing on layout |
+| `no translated shader` | 0 |
+| `truncated=` | 0 |
+| deepest file on a plain boot | **#83 `game:\data\skeleton\cinezombie.big`** |
+| A5 kernel-call diff | **exit 0, 4 permutation windows, 0 real** |
+| `SHADER MEMO MISMATCH` under the verify arm | 0 over a 600 s roam |
+
+E3 is quoted next to its neighbours because a cross-session best-of on an ANIMATED
+backdrop is a weak comparison (gotcha 133): part 50 read +0.8820 of five, part 51 +0.8043
+of fourteen, this part +0.8771 of five. Nothing here touches what is drawn.
+
+**The name-diff gate earned its place again.** `tools/build_shader_spv.sh` over
+`~/DR2CZ-troubleshooting/ucode-dumps` and a `diff` of the NAMES found
+**`ps_bd5d8eb053e36a84` present in the dumps and absent from the cache** — microcode
+captured at 23:58 the previous evening, by a recon run, and never translated. No run in
+this part bound it, so `grep -c "no translated shader"` read 0 every single time, and the
+COUNT could not show it either: 435 dumps, 435 modules, **different sets**. Exactly the
+failure CLAUDE.md describes from part 27, reproduced. The cache is now **436**, and the
+only remaining name difference is `ps_926c15dd20571cf1`, whose microcode is lost.
+
+> Restating the rule because it has now caught two entries in two different parts: **the
+> gate is the NAME diff, not the count, and it must be run in any part where
+> `CZ_SHADER_DUMP` was set on any run** — which for a performance part means every part,
+> because the recon scripts set it. It is two lines and it is free.
