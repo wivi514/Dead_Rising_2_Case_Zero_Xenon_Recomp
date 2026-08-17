@@ -235,6 +235,19 @@ struct ProfilePhases
     uint64_t recordState = 0;    // pipeline / viewport / scissor / blend / sets / push
     uint64_t recordVertex = 0;   // the vertex-stream walk and its binds
     uint64_t recordIndex = 0;    // the index setup, its bind, and the vkCmdDraw* itself
+    // THE STREAM CONTENT GUARD, split out of `record` in part 52 to price plan item 1.4.
+    //
+    // It was never in `streams`: `ProfScope(streams)` deliberately wraps only the
+    // `CopySwapped`, so a cross-frame HIT costs the `streams` column nothing — which is
+    // exactly the design, and exactly why `streams` reads 0.02 ms while `GuardFold` is
+    // the biggest symbol in the pump. The hash was therefore being charged to whichever
+    // scope encloses `UploadStream`, and that is `recordVertex` and `recordIndex`.
+    //
+    // That matters for more than tidiness. Item 1.4 (parallel command RECORDING) is
+    // priced off `record`, and item 1.1 (parallel content GUARDS) is priced off
+    // `GuardFold` — and without this split the same milliseconds were counted in both.
+    // A profiler phase names a SCOPE, not a subsystem.
+    uint64_t streamGuard = 0;
     uint64_t submit = 0;      // vkQueueSubmit + the fence wait (i.e. the GPU)
     // ...and that split in two, because they are different subsystems wearing one
     // number. `submitCall` is the driver translating a command buffer of ~1,900 draws
@@ -5644,7 +5657,11 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             }
         }
         uint64_t guardRead = 0;
-        const uint64_t guard = StreamGuard(src, size_t(bytes), &guardRead, exactHere);
+        uint64_t guard;
+        {
+            ProfScope _g(&g_prof.streamGuard);
+            guard = StreamGuard(src, size_t(bytes), &guardRead, exactHere);
+        }
         R->persistStats.guardBytes += guardRead;
         // When the exact guard is in use, take the SAMPLED one alongside it — the whole
         // point is to find out whether sampling would have seen the same changes, and
@@ -5654,7 +5671,10 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         if (exactHere && !g_guardExact)
         {
             size_t sr = 0;
-            sampled = StreamGuard(src, size_t(bytes), &sr, false);
+            {
+                ProfScope _g(&g_prof.streamGuard);
+                sampled = StreamGuard(src, size_t(bytes), &sr, false);
+            }
             R->persistStats.guardBytes += sr;
         }
         if (pit != R->persistCache.end())
@@ -10650,7 +10670,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // difference and reads as a regression nobody made. Exactly the arithmetic
             // that part 20 got wrong in the other direction (see ProfScope).
             const uint64_t recordTotal = g_prof.record + g_prof.recordState +
-                                         g_prof.recordVertex + g_prof.recordIndex;
+                                         g_prof.recordVertex + g_prof.recordIndex +
+                                         g_prof.streamGuard;
             // `other` is now a residual in exactly the same way, for the same reason.
             const uint64_t otherTotal = g_prof.drawOther + g_prof.otherKey +
                                         g_prof.otherPipeline + g_prof.otherFetch +
@@ -10698,16 +10719,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 const double d = frames ? double(g_prof.draws) : 0.0;
                 fprintf(stderr,
                         "[vkprof] record %.1f%% = state %.1f + vertex %.1f + index %.1f "
-                        "+ residual %.1f  |  per draw: %.0f ns = %.0f + %.0f + %.0f + "
-                        "%.0f\n",
+                        "+ GUARD %.1f + residual %.1f  |  per draw: %.0f ns = %.0f + "
+                        "%.0f + %.0f + %.0f + %.0f\n",
                         pct(recordTotal), pct(g_prof.recordState),
                         pct(g_prof.recordVertex), pct(g_prof.recordIndex),
-                        pct(g_prof.record),
+                        pct(g_prof.streamGuard), pct(g_prof.record),
                         d ? double(recordTotal) / d : 0.0,
                         d ? double(g_prof.recordState) / d : 0.0,
                         d ? double(g_prof.recordVertex) / d : 0.0,
                         d ? double(g_prof.recordIndex) / d : 0.0,
+                        d ? double(g_prof.streamGuard) / d : 0.0,
                         d ? double(g_prof.record) / d : 0.0);
+                // WHY `GUARD` IS INSIDE `record` AND WHAT IT MEANS FOR THE PLAN. It is
+                // the stream content hash, and it was ALWAYS in this column — it just
+                // had no name, because `ProfScope(streams)` wraps only the copy so a
+                // cross-frame hit costs `streams` nothing. Item 1.4 is priced off
+                // `record` and item 1.1 off `GuardFold`; until this line existed the same
+                // milliseconds were in both prices. What is left of `record` after this
+                // subtraction is the actual `vkCmd*` recording, and THAT is item 1.4's
+                // real ceiling.
                 // ...and THE SPLIT OF `other` (part 48 tier 3), in the same form and for
                 // the same reason: 4.19 ms of the operator's frame with nothing said
                 // about what is in it. Quoted per draw as well, because that is the
