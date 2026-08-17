@@ -498,12 +498,22 @@ frame-time A/B on it reads zero unless `CZ_FPS_CAP` is raised in both arms, whic
 
 | item | status |
 |---|---|
-| 1.0 `BindShader` memoization | **DONE** — 14.16% of the pump -> 0.00%, ~2.4 ms at 6-7k draws (a lower bound) |
+| 1.0 `BindShader` memoization | **DONE** — 14.16% of the pump -> 0.00%; ~1.8-2.0 ms of the operator's frame at 5-7k draws, ~2.5 ms at their soak |
 | 2.1 `Count` -> `COUNT` | **DONE** — ten sites |
 | 4.1 re-split `outside` | **DONE** — the pump is BLOCKED only 0.09-0.12 ms of a 16 ms frame |
 | 3.2 pipeline lookup | **DONE** — 110-112 -> 38-43 ns/draw, ~0.43 ms/frame |
+| **1.1 parallel guards** | **REPRICED UP to ~5.3 ms** — 3.37 inside `record` (the stream guard) + 1.98 inside `textures`. Still first |
+| **1.3 readback off-thread** | **REPRICED DOWN to ~0.55 ms**, measured with frame stats OFF as §3 asked |
+| **1.4 parallel recording** | **PRICED: ~5.32 ms ceiling, ~4.0 at four workers** — not the 8.69 that `record` implied, because 39% of `record` is the guard and belongs to 1.1 |
 | 2a soft-dirty page tracking | struck in part 51 |
-| everything else | open, and the order below still holds |
+| everything else | open |
+
+**AND A THIRD CORRECTION, WHICH IS ABOUT THIS DOCUMENT'S OWN ORDER RATHER THAN ITS
+NUMBERS.** §1 says "This plan puts (b) first" — move work onto idle cores — and §10's
+order then front-loads THREE strategy-(a) items ahead of the first parallel one. Part 52
+followed the order and shipped four (a) items, so **no work was moved onto another core
+and the process still uses 2.24 of 16 cores**. The prose and the table disagree; the prose
+is right. `docs/part53-kickoff.md` reorders §10 accordingly and leads with it.
 
 ---
 
