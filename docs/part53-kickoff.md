@@ -107,10 +107,28 @@ deliberately off. The phase split against part 51's session on the same machine:
 quoted them at 35.7 fps in that band, part 51 at 41.7. This is the first session where the
 heaviest thing they walk through is not CPU-bound.
 
-**It is not an A/B**, and the same-binary control was not run:
-`ARM=ab tools/part52_operator_session.sh` chains an arm with `CZ_PM4_NO_SHADER_MEMO=1`.
-Run it before quoting any of this as a measured speedup rather than as confirmation of
-direction and mechanism.
+**And the same-binary A/B was then run** (`ARM=ab`, §6ci §11), which **revises the table
+above down** — it is a cross-session comparison and this supersedes it as a measurement of
+size:
+
+| | |
+|---|---|
+| `outside`, memo on vs off | **3.06 -> 4.42 ms** — the ONLY column that moved; every other held within ±0.21 |
+| frame time, 4-5k draws | +9.9% mean, **+17.6% median**, pinned share **53% -> 16%** |
+| frame time, 6-7k draws | **+9.6% / +9.5%** |
+| 0-999 and 2-3k draws | **+0.0%** — the experiment's own null, at the cap where the arm cannot act |
+
+**The memo is ~1.8-2.0 ms of the operator's frame**, not the 2.35 the cross-session table
+suggested. The A/B under-reports the part by design — only the memo has a run-time switch
+— so with the pipeline (~0.4) and counters (~0.3) added back, **part 52 is ~2.5-2.7 ms of
+their frame**.
+
+Two things about that A/B worth reusing: `other` correctly did **not** move, which is the
+control working in the other direction (the pipeline change rides in both arms, so it
+must hold); and the light bins reading +0.0% on 1,228 vs 1,230 frames is what makes an
+operator's route usable as an experiment at all — **binning by draw count survives
+different spawns and different dwell times**, which is exactly what the operator flagged
+about their own two runs.
 
 ## WHAT IS OWED
 
