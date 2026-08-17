@@ -9935,6 +9935,15 @@ and the instrument is only interesting when the frame is above the cap's floor.
 | A5 kernel-call diff | **exit 0, 4 permutation windows, 0 real** |
 | `SHADER MEMO MISMATCH` under the verify arm | 0 over a 600 s roam |
 
+**Re-run after the `record`/GUARD split**, because that change landed after the gate pass
+above and a claim of "instrument-only" is exactly the kind this project does not take on
+trust: **ALL GATES CLEAN again, E3 best of five +0.8764 with 4 of 5 agreeing** (against
++0.8771 on the previous pass — the same five sample points on an animated backdrop). The
+split is safe on the shipping path by construction as well as by measurement:
+`ProfScope`'s constructor and `Close()` both early-return on `!g_profileOn`, so with the
+profiler off it is a global load and a branch, the same as the twenty scopes already on
+the draw path.
+
 E3 is quoted next to its neighbours because a cross-session best-of on an ANIMATED
 backdrop is a weak comparison (gotcha 133): part 50 read +0.8820 of five, part 51 +0.8043
 of fourteen, this part +0.8771 of five. Nothing here touches what is drawn.
