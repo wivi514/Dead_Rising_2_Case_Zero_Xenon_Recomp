@@ -9635,3 +9635,214 @@ looking and going back to sleep — and it is the honest cost of the change: a f
 of one core in scenes that are already at the frame cap, where it buys nothing. It is
 also the instrument's negative control working on the operator's route without anyone
 having to arrange it.
+
+## 6ci. Part 52: THE PLAN'S BIGGEST ITEM WAS RIGHT ABOUT THE COST AND WRONG ABOUT THE
+## FIX — and its own verify arm refuted it on the first run
+
+`docs/perf-plan-part52.md` opens with a symbol budget rather than a phase table, and its
+item 1.0 is the one that budget found: **`BindShader` re-hashes the entire microcode on
+every shader-load packet**, 12.47% of the pump thread with every instrument off, third
+behind `GuardFold` and `DoDraw` and **in no plan this project had ever written**.
+
+Part 52 confirmed the cost, built the fix the plan specified, and the fix was wrong. The
+verify arm the plan insisted on caught it in one run.
+
+### §1. The cost is where the plan said, and the annotation says why
+
+`perf annotate` on the `nostats` recon profile, over `BindShader`'s ~4.3% of the whole
+process:
+
+```
+   17.36 :   2579c48:  imulq %rax, %r10
+    5.82 :   2579c4c:  movzbl 0x1(%rdx,%r8), %r9d
+   17.41 :   2579c55:  imulq %rax, %r9
+    6.51 :   2579c59:  movzbl 0x2(%rdx,%r8), %r10d
+   17.75 :   2579c62:  imulq %rax, %r10
+    6.51 :   ...
+   18.65 :   2579c6f:  imulq %rax, %r9
+```
+
+**~71% of the function's samples sit on four `imulq`s** — the FNV-1a accumulator, one
+5-cycle-latency multiply per BYTE with every multiply depending on the last. The loads
+beside them take 6% each. So this is **ALU-latency bound at about a byte per cycle**, not
+memory bound, and that distinction is what decides the fix. (Contrast `GuardFold`, which
+§0 of the plan establishes IS memory-bound at ~10 GB/s — the same "it's a hash, make it
+faster" instinct is right for one of them and wrong for the other.)
+
+Neither `LooksLikeUcode` nor the `announced` linear scan the plan also flagged shows up
+at all. The plan named three suspects inside one function; the annotation says one of
+them is 95% of it.
+
+### §2. Why the hash cannot be replaced, which is the trap that makes the item interesting
+
+It is the **shader cache key**. `assets/shader_spv/vs_<hash>.spv`, `build_shader_spv.sh`,
+the `[imload]` line and the "no translated shader" miss report all name a shader by this
+exact FNV-1a value, and the offline pipeline recomputes it from the same bytes. A wider
+or vectorised fold renames all 435 cache entries at once and presents as a silently
+unshaded world. **The hash has to be avoided, not accelerated** — which is what makes
+this a memoization item rather than a SIMD item.
+
+### §3. THE PLAN'S KEY IS REFUTED, and the failure is silent rather than loud
+
+The plan specifies the memo as `(ucodeVa, sizeDwords)` plus "the first and last dword of
+the microcode alongside — two loads, and it catches the overwhelming majority of a
+re-upload", and argues the failure mode is benign: a wrong hash names nothing in the
+cache, so the standing `grep -c "no translated shader"` gate would catch it.
+
+Both halves are false, and `CZ_PM4_VERIFY_SHADER_HASH=1` — which computes the memoized
+answer AND the real fold on every load — said so on its first full outdoor run:
+
+```
+[pm4] SHADER MEMO MISMATCH #2: VS va=00000000 size=102 — memo said f2ef2d2f8de976d0,
+      the microcode hashes to 8ed00911a7bc1eb1 (first=F1555004 last=A9A9C68D)
+[pm4] SHADER MEMO MISMATCH #3: VS va=00000000 size=102 — memo said 8ed00911a7bc1eb1,
+      the microcode hashes to f2ef2d2f8de976d0 (first=F1555004 last=A9A9C68D)
+```
+
+**Two different shaders, identical in size and in both probe dwords, alternating** — so
+the probe was wrong about half the times it was consulted for that pair. It happened at a
+real address too (`va=BC73D080 size=120 first=F5556005`), which is the driver recycling
+one staging buffer: exactly the case the probe was specifically supposed to catch.
+
+The reason is structural and should have been predictable: **microcode is far too regular
+for two dwords to identify it.** Dword 0 is a control-flow instruction pair whose encoding
+repeats across every shader a compiler emits from one template, and the last dword is as
+often as not the tail of a padded block. `F5556005` and `F1555004` are shared CF headers,
+not fingerprints.
+
+And the wrong answer is **not** a cache miss. It is **another real shader's hash**, which
+IS in the cache — so the renderer would bind a real, wrong, translated shader and draw
+with it. That is a stale-mesh-class defect (part 46) with no gate pointing at it.
+
+> **The transferable rule (gotcha 342): when a cache key is a PROBE rather than the
+> content, ask what the WRONG ANSWER IS, not just how likely it is.** A probe that fails
+> into another valid key fails invisibly. The plan reasoned about probability ("catches
+> the overwhelming majority") and about loudness ("it would read as a miss"), and was
+> wrong about both — one measurement settled it, and the measurement existed only because
+> the plan had also insisted on a verify arm. **Write the verify arm even when the
+> argument for the fix sounds complete.**
+
+### §4. What is shipped instead: the key is the content, compared with `memcmp`
+
+`(va, size, first dword)` survives only as a way to choose which stored copy to compare
+against; the decision is `memcmp` against the microcode we hashed last time. **Exact —
+there is no probability left in it** — and still a large win, because the cost being
+removed is a serial multiply chain and not a memory read: FNV-1a runs at ~1 byte/cycle
+here and `__memcmp_avx2_movbe` at tens of bytes per cycle over the same bytes, which are
+hot (each of ~250 shaders is re-bound several times a frame).
+
+The table is **256 sets x 4 ways** rather than direct-mapped *because of the measurement
+in §3*: the alternating pair is real, and a one-entry-per-slot table would evict on every
+load and hash every time.
+
+Two by-products, both free:
+
+* the pointer path no longer copies at all on a hit — it compares guest memory in place;
+* both paths snapshot into **one reusable buffer** instead of constructing a
+  `std::vector` per packet, removing ~1,300-1,900 mallocs and frees a frame. That is a
+  share of the `_int_malloc` the recon found on the frame path (plan item 3.3), collected
+  without going looking for it.
+
+### §5. The gates, in the order that makes them mean anything
+
+**Poison first.** `CZ_PM4_VERIFY_SHADER_POISON=1` corrupts one memoized hash in every
+1024 hits. It produced the capped 32 mismatch reports — so the verifier's silence is
+evidence rather than decoration (gotcha 30).
+
+**And the poison run found a defect in the verifier itself**: under the verify arm,
+`BindShader` ran on every load and therefore re-INSERTED on every load, filling all four
+ways of a set with the same shader and reporting **2,152,161 evictions against 46,128
+misses**. An instrument that destroys the statistic standing next to it has changed the
+measurement (gotcha 7); the fix is one comparison — insert only when the memo did not
+already answer correctly, so a disagreement still repairs the table.
+
+**Then the clean arm**, full unattended outdoor roam:
+
+| | |
+|---|---|
+| memo hit rate | **100.0%** — and the last four windows are **0 misses at all**, at 1,195-2,073 loads/frame |
+| evictions | **0** |
+| capacity misses | **0** — every miss is compulsory, i.e. a shader seen for the first time |
+| `SHADER MEMO MISMATCH` | **0** over the whole 600 s run |
+| `no translated shader` | **0**, with 564 distinct shaders bound |
+
+A 100% hit rate is the item's own pre-registered success criterion (the plan asks for
+~80%) and it is also the strongest evidence that the ~1,500 loads a frame really are the
+same few hundred shaders rebound over and over.
+
+### §5b. The A/B: `BindShader` goes from 14.16% of the pump thread to ZERO
+
+Two arms of one binary on the same route with the same event gate, `nostats` (no profiler,
+no frame stats), 40 s of `perf record -F 999` after a 100 s roam —
+`tools/part52_recon.sh` with `ENVX=CZ_PM4_NO_SHADER_MEMO=1` for the control. Symbol shares
+**of the pump thread**, which is the denominator that matters: process-wide shares are
+confounded here because the memo makes the guest's Draw Thread spin proportionally longer
+(`sub_8283C6C8` 14.26% -> 19.44% of the process), which is itself a corroboration.
+
+| symbol | control (memo off) | memo on |
+|---|---|---|
+| **`BindShader`** | **14.16%** | **0.00% — not one sample** |
+| `GuardFold` | 24.30% | 29.85% |
+| `DoDraw` | 15.53% | 15.49% |
+| `UploadStream` | 8.27% | 10.46% |
+| `memcmp` | 3.36% | 4.18% |
+| `_int_malloc` | 1.08% | 1.41% |
+
+The commit predicted "under 2%". It is zero. And the memo's own `memcmp` — ~1.5 MB a
+frame against the 9 MB it stopped hashing — never becomes visible: `memcmp`'s share of the
+*process* actually fell (1.06% -> 0.89%), which is route noise rather than evidence, but
+it bounds the new cost at well under the old one either way.
+
+**Where the honest uncertainty is, stated rather than smoothed over.** The two arms
+disagree on how much the pump's total CPU fell, because they are two different roams
+driven by the title's own AI and the two instruments sampled different windows:
+
+* `/proc` per-thread CPU over a 20 s window: the pump goes **59.9% -> 51.5% of a core**,
+  −14%;
+* `perf` sample share over the following 40 s: the pump goes **31.56% -> 21.31% of the
+  process**, which against near-identical process totals (2.28 vs 2.24 cores) is −34%.
+
+Both say down, by between a seventh and a third. Neither is quoted as *the* number.
+`BindShader` -> 0.00% is the result that needs no denominator.
+
+### §6. Item 2.1 — the counter dump repriced it, and one site is 85% of it
+
+The plan prices `std::map<std::string, uint64_t>::operator[]` (2.30% of the pump) as "28
+`Count(` sites inside `DoDraw`'s body", counted by reading the source. **The counters'
+own dump says something different.** Of ~62.5 M plain-`Count` calls in a 200 s outdoor
+run:
+
+| site | calls |
+|---|---|
+| `VkRenderer_Draw`, "draw: handed to the renderer" | **52,901,332 — 84.6% on its own** |
+| the next nine sites together | 8.6 M |
+| everything else (83 sites) | < 0.5 M |
+
+Most of the 28 in `DoDraw` are decline paths that fire a few hundred times an hour. Ten
+sites are 99.2% of the total and those are what was converted.
+
+> **The rule: `VkRenderer_DumpStats` already prints the call count of every counter,
+> which is the exact statistic that ranks these sites.** Reading the source instead ranks
+> them by how alarming they look. This is the third time in three parts that a number the
+> project already collects answered a question someone was about to estimate.
+
+### §7. Item 4.1 — `outside` re-split, and almost none of it is blocking
+
+`outside` is a wall-clock residual measured from inside the pump thread, and a wall-clock
+interval cannot tell "we spent 4 ms doing something" from "we spent 4 ms descheduled".
+Part 50 §6cg read the residual as "guest simulation ~3 ms" when at 79% duty the pump was
+simply blocked, and the plan's item 4.1 asks for the split rather than another guess.
+
+One `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` per REPORT — not per frame, so the
+instrument is on no path at all (gotcha 223) — answers it exactly, because `wall - cpu`
+is by definition every nanosecond the pump was off a core and the sleep counter already
+accounts for the deliberate part:
+
+```
+[vkprof]   pump thread: 75.6% on CPU | off-CPU 3.96 ms/frame = sleep 3.83 + BLOCKED 0.12
+```
+
+**The blocked term is 0.12 ms of a 16 ms frame — 0.8%.** Whatever else `outside` is, it
+is not the pump waiting on somebody else. Read this line together with the frame rate,
+though: in a window pinned to the 60 fps cap the sleep term is the CAP and not a cost,
+and the instrument is only interesting when the frame is above the cap's floor.
