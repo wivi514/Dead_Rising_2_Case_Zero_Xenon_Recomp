@@ -181,7 +181,18 @@ prints two arms side by side, which is an item A/B in one command.
 * **New tooling**: `tools/part53_symbols.py` (per-thread, per-function `perf` shares with
   a `--diff`), `tools/part53_item_campaign.sh` (the frame-time campaign, which also
   samples per-thread CPU in every arm because a (b) item's bill has to travel with it).
-* The shader cache is **436**, unchanged this part; the name diff found nothing new.
+* The shader cache is **438** (was 436). The operator's uncapped play session found
+  `vs_44a271ebee6e6354` through the miss counter and **`ps_22a996258bacd2c8` through the
+  NAME diff alone** — no run bound it, so the counter read 1 and not 2. Both caches
+  rebuilt and identical in membership.
+* **A DEFAULT IS NOW WRONG AND IT IS PART 54'S CHEAPEST WIN: the shipped `CZ_FPS_CAP=60`
+  costs the operator frames.** Part 53 took their soak frame to 14.44 ms, under the 16 ms
+  ceiling, and the title's presents are vblank-quantised — so they get exactly 62.5 fps
+  where the work supports 69, and 62.5 in light zones where it supports 119-147. **The
+  lever is the PERIOD, not the ceiling**: 120 and 250 both still present a 14.44 ms frame
+  at 16.0 ms; only 500 (a 1 ms period) gives 15.0. Its cost is the guest vblank ISR at
+  1000/s against 125, which has ~4 minutes of evidence and no complaint. `phase5-notes.md`
+  §6cj §13.
 * Artifacts: `~/DR2CZ-troubleshooting/part53/` — `p53_base.*` (the opening symbol budget),
   `p53_par.*` / `p53_ctrl.*` (the item's symbol A/B), `p53_baseprof.*` (guard volumes),
   `frame/` (the 9-run campaign).

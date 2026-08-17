@@ -10810,3 +10810,72 @@ never what the gotcha was about.
 soak.** Two three-minute holds at their load, everything else constant, and item 1.3 has a
 number at the load that matters. It is 0.5 ms, so it does not justify an evening on its
 own — but it costs nothing next to an item that does.
+
+### §13. THE UNCAPPED PLAY SESSION — and the shipped 60 fps default now COSTS frames
+
+The operator asked what `CZ_FPS_CAP=120` in the measurement runs meant and whether the cap
+could come off entirely. **It cannot, and that is deliberate**: the knob moves the vblank
+PERIOD with the title's own present interval pinned at 2, and interval 0 (present
+immediately) overflows the flip queue in 10 runs out of 10 (`gpu/vd.cpp`). Its maximum,
+500, gives a **1 ms period and a 2 ms ceiling** — nothing in this game approaches that, so
+it never binds. `tools/play_session.sh` is that configuration with every instrument off
+except `CZ_FPS_LOG`, which is one counter and one clock read per presented frame.
+
+Their session, ~4 minutes, `[fps]` medians:
+
+| where | fps | ms |
+|---|---|---|
+| menus / title | 166 | 6.0 |
+| light zones | **119-147** | 6.8-8.4 |
+| ordinary gameplay | 83-114 | 8.7-12.1 |
+| **their soak spot** | **69-71** | **14.05-14.34** |
+
+**Nothing clusters at a ceiling** — 166, 147, 129, 119, 114, 111, 105... — which is the
+check that the cap really is out of the way, and it is why the operator's "light zones
+reach 125" is a workload number and not a rung.
+
+#### The instrument bill, measured a fifth time and most tightly
+
+Their instrumented soak in §10 read **49.8 fps / 20.1 ms** at the same place this reads
+**69 fps / 14.44 ms**. That is **~5.7 ms of `CZ_VK_PROFILE` + `CZ_VK_FRAME_STATS`** on
+their machine, against the 2-4 and 1.9-3.3 quoted separately — the first time both have
+been removed at once at a known place. Every absolute frame time in §10 is inflated by it;
+the A/B deltas are not.
+
+#### AND THE FINDING THAT CHANGES A DEFAULT
+
+**Their clean soak frame is 14.44 ms, which is UNDER the 16 ms ceiling the shipped 60 fps
+cap imposes.** The title's presents are vblank-quantised, so at `CZ_FPS_CAP=60` (period 8)
+the ladder is 16 / 24 / 32 ms and a 14.44 ms frame **presents at 16 — exactly 62.5 fps**.
+In light zones a 6.8 ms frame presents at 16 too.
+
+Before part 53 this did not matter: they were at ~20 ms at the soak, above the ceiling, so
+the cap never bound. **Part 53 took them under it, and the default now costs them
+frames** — 62.5 where the work supports 69 at the soak and 119-147 in light zones.
+
+The period is what sets the granularity, and it has to be FINE, not merely high:
+
+| `CZ_FPS_CAP` | period | what a 14.44 ms frame presents at |
+|---|---|---|
+| 60 (shipped) | 8 ms | 16.0 ms — **62.5 fps** |
+| 120 | 4 ms | 16.0 ms — 62.5 fps |
+| 250 | 2 ms | 16.0 ms — 62.5 fps |
+| **500** | **1 ms** | **15.0 ms — 66.7 fps** |
+
+Raising the cap without shortening the period buys nothing at this frame time, which is
+not obvious and is worth saying: **the ladder's STEP is the lever, and the step is the
+period.** The cost of the top setting is that the period is also the guest's vblank ISR
+cadence — **1000 a second against 125** — which measured 0.0% of the pump at 4 ms and now
+has ~4 minutes of evidence at 1 ms and no complaint.
+
+#### Gates from the session
+
+* **`no translated shader` = 1** — `vs_44a271ebee6e6354`, and `CZ_SHADER_DUMP` was set so
+  the microcode was captured rather than lost.
+* **The NAME diff then found a SECOND one the counter never reported**,
+  `ps_22a996258bacd2c8` — no run bound it, so the miss counter read 1 and not 2. **Fourth
+  part running that the name diff catches an entry the count cannot.**
+* Both caches rebuilt and re-checked: **436 -> 438**, `assets/shader_spv` and
+  `assets/shader_spv_a2m` identical in membership, dimension census 0 disagreements.
+* **0 `PARALLEL GUARD SLOT MIX-UP` over a real play session**, which is the first time
+  part 53's guard has been exercised anywhere other than the two headless routes.
