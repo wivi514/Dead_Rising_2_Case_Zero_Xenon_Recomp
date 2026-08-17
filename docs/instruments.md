@@ -295,6 +295,30 @@ CZ_PM4_VERIFY_COUNTERS=1   drive BOTH forms of the census from every call site a
 CZ_PM4_VERIFY_COUNTERS_POISON=1  drop one per-thread packet increment in ten thousand, so
                    the check above is shown able to FAIL before a zero from it means
                    anything (gotcha 30). It reports 1 of 135
+CZ_PM4_NO_SHADER_MEMO=1    hash the whole microcode on EVERY shader-load packet, the way
+                   the runtime did before part 52. The same-binary control arm for item
+                   1.0, and the only part-52 item that has one — the `Count` -> `COUNT`
+                   conversion is a container choice at ten call sites and cannot be
+                   switched at run time, so any campaign using this arm under-reports the
+                   part's total by whatever that item is worth. Read it as `BindShader`'s
+                   share of the pump thread in a `perf` profile (12.47% before), not as
+                   frame time: the headless outdoor route now sits on the 60 fps cap for
+                   most of its length and a capped frame cannot report a CPU saving at all
+CZ_PM4_VERIFY_SHADER_HASH=1   compute BOTH the memoized hash and a real fold of the
+                   microcode on every load, and report every disagreement with the
+                   address, the size and both values on a `[pm4] SHADER MEMO MISMATCH`
+                   line. Must be 0. **This arm earned its keep on its first run**: the
+                   memo key `perf-plan-part52.md` specifies — `(va, size)` plus the first
+                   and last dword — turned out to be wrong about half the time it was
+                   consulted for one pair of shaders, because microcode is far too regular
+                   for two dwords to identify it. The shipped memo compares the whole
+                   content with `memcmp` instead. A disagreement REPAIRS the table as well
+                   as reporting it, and the arm deliberately does not re-insert on a
+                   correct answer — without that it filled every way of a set with the same
+                   shader and reported 46x more evictions than misses (gotcha 7)
+CZ_PM4_VERIFY_SHADER_POISON=1  corrupt one memoized hash in every 1,024 hits. THE POSITIVE
+                   CONTROL for the above (gotcha 30); it produces the capped 32 mismatch
+                   reports
 CZ_PM4_NO_FILLER_RUNS=1    the pre-part-50 walk: one full `ExecutePacket` call per type-2
                    filler DWORD instead of one per RUN of them. ~30% of every packet this
                    title walks is that filler, so this is the same-binary control arm for
@@ -983,6 +1007,22 @@ CZ_VK_PROFILE=N    the frame's CPU time by phase, every N SECONDS (a clock, not 
                    suspicion into a target. Counted once per PACKET from its body count,
                    never per `WriteRegister` call, so the census cannot become the thing
                    it measures (gotcha 7)
+                   **PART 52 ADDS TWO LINES.** `[vkprof] shader memo:` is item 1.0's own
+                   measurement — the hit rate, the evictions and how many of the misses
+                   were CAPACITY rather than compulsory. A hit rate below ~90% would mean
+                   the memo is thrashing and any frame-time result from it is noise; it
+                   measures 100.0% with 0 evictions on the outdoor route. And
+                   `[vkprof]   pump thread:` splits `outside` into the pump WORKING and
+                   the pump not running at all, with one `clock_gettime(
+                   CLOCK_THREAD_CPUTIME_ID)` per REPORT rather than per frame:
+                   `wall - cpu` is by definition every nanosecond the pump was off a core,
+                   and part 51's sleep counter already accounts for the deliberate part,
+                   so what is left is the pump BLOCKED on somebody else. It reads
+                   **0.09-0.12 ms of a 16-17 ms frame** — whatever else `outside` is, it
+                   is not the pump waiting. Read it next to the frame rate: in a window
+                   pinned to the fps cap the sleep term IS the cap and not a cost. This
+                   answers plan item 4.1 and retires part 50's reading of the same
+                   residual as "guest simulation ~3 ms"
 CZ_VK_PROFILE + tools/gpu_clock_sample.py  **sample the GPU's CLOCK and QUOTE it
                    before believing any `submit` figure — and do NOT pin it.** The
                    P8/210 MHz reading this entry used to carry, and the
