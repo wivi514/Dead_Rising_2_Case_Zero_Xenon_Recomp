@@ -2441,6 +2441,10 @@ struct Renderer
     uint32_t frontWidth = 0, frontHeight = 0;
     bool haveFrontSnapshot = false;
 
+    // The staging copy of the presented frame. Filled ONLY when a picture instrument is
+    // armed (part 53 item 1.3) — without one the present path reads the mapped readback
+    // buffer directly and this stays as `VkRenderer_Init` sized it. See `wantCachedPixels`
+    // in the swap for why the choice is made once from the environment.
     std::vector<uint8_t> presentPixels;
 };
 
@@ -2481,6 +2485,13 @@ uint32_t FindMemoryType(uint32_t typeBits, VkMemoryPropertyFlags want)
 // HOST_CACHED is the fix and it is the whole fix. Asking for it is a preference rather
 // than a requirement because an integrated GPU may not offer the combination, and a
 // renderer that refuses to start is worse than one that reads slowly.
+// Did the readback buffers end up HOST_CACHED? Read by the present path: with cached
+// memory the mapped buffer can be handed straight to the instruments and to the window,
+// and the staging copy that used to sit in front of it is pure cost. With UNCACHED
+// memory it is not — several instruments walk the whole frame, and each walk would be a
+// write-combined read. See `stagingCopy` in the swap.
+bool g_readbackCached = false;
+
 VkMemoryPropertyFlags ReadbackMemoryProps()
 {
     const VkMemoryPropertyFlags base = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -2496,7 +2507,10 @@ VkMemoryPropertyFlags ReadbackMemoryProps()
     {
         const VkMemoryPropertyFlags f = R->memProps.memoryTypes[i].propertyFlags;
         if ((f & base) == base && (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+        {
+            g_readbackCached = true;
             return base | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        }
     }
     fprintf(stderr, "[vk] no HOST_CACHED memory type — the readback stays uncached\n");
     return base;
@@ -10278,12 +10292,42 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         return;
     const uint32_t width1 = pres.width, height1 = pres.height;
     const size_t bytes = pres.bytes;
+    // THE COPY EXISTS FOR THE INSTRUMENTS, AND ONLY FOR THEM (part 53, plan item 1.3).
+    //
+    // `pres.present.mapped` is HOST_CACHED (see ReadbackMemoryProps — it was made cached
+    // deliberately, and CZ_VK_READBACK_UNCACHED=1 is still the arm for that), so reading
+    // it costs what reading any other host buffer costs. Everything downstream of here
+    // that looks at the picture — the frame stats, the PPM dumps, the black/dark
+    // triggers, the uniform-colour census — was reading `presentPixels`, and
+    // `Host_PresentPixels` then makes its own copy into the window's back buffer under
+    // its own lock. So on a run with no picture instrument armed the intermediate buffer
+    // was 3.5 MB copied per frame for nothing: 7 MB of traffic where 3.5 does.
+    //
+    // `px` is now the pixels to read, and it points at the mapped buffer directly. The
+    // condition is the MEMORY TYPE, not which instruments are armed, and that is
+    // deliberate: gating on the instruments would mean the default configuration took a
+    // code path no gate in this project ever exercises, because every picture gate here
+    // (the frame dump, the E3 correlation, CZ_VK_SNAP_*) sets one of them. Gating on
+    // whether the readback is cached keeps the default path the ONLY path in every
+    // ordinary run, and leaves the staging copy where it is genuinely needed — the
+    // uncached fallback, where several whole-frame walks would each be a
+    // write-combined read. `CZ_VK_PRESENT_STAGING=1` is the same-binary control arm.
+    static const bool stagingCopy = !g_readbackCached || EnvOn("CZ_VK_PRESENT_STAGING");
+    const uint8_t* px = nullptr;
     {
         ProfScope _p(&g_prof.readback);
-        if (R->presentPixels.size() < bytes)
-            R->presentPixels.resize(bytes);
-        memcpy(R->presentPixels.data(), pres.present.mapped, bytes);
-        Host_PresentPixels(R->presentPixels.data(), width1, height1);
+        if (stagingCopy)
+        {
+            if (R->presentPixels.size() < bytes)
+                R->presentPixels.resize(bytes);
+            memcpy(R->presentPixels.data(), pres.present.mapped, bytes);
+            px = R->presentPixels.data();
+        }
+        else
+        {
+            px = pres.present.mapped;
+        }
+        Host_PresentPixels(px, width1, height1);
     }
 
     // CZ_VK_SNAP_ON_BLACK[=pct] — dump the whole resolve chain of the frame the picture
@@ -10360,7 +10404,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         uint64_t lit = 0, seen = 0, luma = 0;
         for (size_t i = 0; i + 4 <= bytes; i += 64)
         {
-            const uint8_t* p = R->presentPixels.data() + i;
+            const uint8_t* p = px + i;
             if (p[0] || p[1] || p[2])
                 lit++;
             luma += (77u * p[0] + 150u * p[1] + 29u * p[2]) >> 8;
@@ -10459,7 +10503,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         {
             fprintf(f, "P6\n%u %u\n255\n", width1, height1);
             for (size_t i = 0; i < bytes; i += 4)
-                fwrite(&R->presentPixels[i], 1, 3, f);
+                fwrite(&px[i], 1, 3, f);
             fclose(f);
             fprintf(stderr, "[vk] capture: wrote %s (%ux%u)%s\n", path, width1, height1,
                     R->drawIdRanOnFrame == pres.frame
@@ -10570,7 +10614,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         {
             fprintf(f, "P6\n%u %u\n255\n", width1, height1);
             for (size_t i = 0; i < bytes; i += 4)
-                fwrite(&R->presentPixels[i], 1, 3, f);
+                fwrite(&px[i], 1, 3, f);
             fclose(f);
         }
         else if (!complained)
@@ -10704,8 +10748,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         uint64_t distinct = 0;
         for (size_t i = 0; i < bytes; i += 4)
         {
-            const uint32_t r = R->presentPixels[i], g = R->presentPixels[i + 1],
-                           b = R->presentPixels[i + 2];
+            const uint32_t r = px[i], g = px[i + 1], b = px[i + 2];
             const uint32_t rgb = (r << 16) | (g << 8) | b;
             if (rgb)
                 ++lit;
@@ -10787,10 +10830,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // uniform colour" separates a missing draw from a clear that ran and nothing else.
     {
         uint32_t first = 0;
-        memcpy(&first, R->presentPixels.data(), 4);
+        memcpy(&first, px, 4);
         bool uniform = true;
         for (size_t i = 4; i < bytes && uniform; i += 4)
-            uniform = memcmp(&R->presentPixels[i], &first, 4) == 0;
+            uniform = memcmp(&px[i], &first, 4) == 0;
         if (uniform)
             Count(first == 0xFF000000u || first == 0 ? "frame: uniformly black"
                                                      : "frame: uniformly one colour");

@@ -10314,3 +10314,222 @@ like it had to be taken first.
 > what ELSE is inside that phase.** A scope is a region of code, not a subsystem, and two
 > items priced off two instruments can silently share the same milliseconds. Here the
 > overlap was 39% and it would have been spent on the riskier of the two.
+
+---
+
+## 6cj. Part 53: THE FIRST WORK THIS PORT HAS EVER MOVED ONTO ANOTHER CORE — and the
+## first item whose BILL had to be measured as carefully as its benefit
+
+Part 52 shipped four items, the operator confirmed them, and every one of them was
+strategy **(a)**: make the pump thread's work smaller. `perf-plan-part52.md` §1 commits in
+as many words to **(b)** — move work onto cores that are doing nothing — and puts it first;
+its §10 order then front-loads three serial items ahead of the first parallel one, and
+following the table rather than the prose cost a whole part. At the close of part 52 the
+process used **2.24 of 16 cores** with the pump **97.5-97.8% on CPU** and ~13 cores idle.
+There was nothing left in (a) at that load.
+
+**Part 53 is item 1.1, and item 1.1 is (b).**
+
+### §1. Why the guard and not something else
+
+The plan's three questions for a movable piece of pump work — is it pure, is its input
+knowable in advance, is there an oracle — and the content guard is the only large cost in
+this renderer that answers yes to all three. It reads guest memory, returns a `uint64_t`,
+touches no Vulkan and no renderer state; the incumbent serial hash is retained as a
+same-binary arm and is byte-exact.
+
+It is also the biggest thing there. Measured at the open of this part on the outdoor
+DebugJump route with **both instruments off** (`tools/part52_recon.sh`, read with the new
+`tools/part53_symbols.py`):
+
+| symbol | % of the pump thread |
+|---|---|
+| **`GuardFold`** | **26.31%** |
+| `DoDraw` | 16.27 |
+| `[unknown]` (the nvidia driver) | 10.90 |
+| `UploadStream` | 9.88 |
+| `UploadTexture` | 6.80 |
+| `memmove` | 6.45 |
+| `WriteRegisterRun` | 4.89 |
+
+> **A note on the tool, because it is the transferable half of the measurement.**
+> `perf report --tid=N` does **not** renormalise: it shows only that thread's rows while
+> printing each symbol's share of the WHOLE profile. Every hand reading of a per-thread
+> profile in this project has had to correct for that, and getting it wrong turns a symbol
+> at 26% of the thread that IS the frame into 8% of a process nobody is trying to speed
+> up. `tools/part53_symbols.py` buckets by TID, folds `symbol+0xNNN` rows into one
+> function, and divides by the THREAD. `--diff` prints two arms side by side.
+
+### §2. The design, and the one thing it does not do
+
+The pump discovers work by walking packets, so nothing can be handed to a worker in
+advance — that is the obstacle the plan names. What makes it tractable is that the working
+SET barely changes even when the contents do (part 22: 94-97% of stream bytes are identical
+frame to frame). So:
+
+* every guard the pump computes **files a job for the next frame** — a guest pointer, a
+  length, a fold bound, and whether the exact variant was wanted;
+* the **swap** dispatches the whole list to four workers, right after `++R->frame` and
+  before `BeginFrame`, so the readback and the pre-draw packets are head start;
+* the pump's existing `persistCache.find(key)` / `textures.find(key)` now also yields a
+  slot index, so **the lookup costs nothing extra**;
+* a miss — never seen, not finished, wrong variant — **hashes inline exactly as before.**
+  Correctness never depends on the prediction; only performance does.
+
+**Workers never touch `persistCache` or `textures`.** An `unordered_map` node's address is
+stable but an erase is not, and a worker holding a pointer into a cache the pump is editing
+is a use-after-free waiting for an unlucky frame. Each job is self-contained and each
+result lands in an array the pool owns; the cache entry keeps only an index plus the frame
+it was filed for, both written by the pump. A stale index therefore reads as a miss rather
+than as another buffer's hash.
+
+**Both guards move**: the cross-frame stream store's (the one charged to `record`, gotcha
+343) and the texture cache's (charged to `textures`). They have different fold bounds and
+were priced separately in §13; they are one mechanism here.
+
+### §3. THE FAILURE MODE THAT WOULD BE SILENT, and what was built for it
+
+Two things can go wrong and only one of them is a bug.
+
+**A slot mix-up — one entry handed another entry's hash — is the bug**, and it is exactly
+the shape of the part-52 memo defect: the wrong answer is *another real buffer's real
+hash*, which compares equal or unequal for reasons that have nothing to do with this
+buffer, and the symptom is a stale mesh with no error anywhere (gotcha 342). So every
+result **echoes back the descriptor it was computed for**, the consumer checks it, and a
+disagreement prints `[vk] PARALLEL GUARD SLOT MIX-UP` and falls back to hashing inline.
+Zero in every run of this part.
+
+**The race is not a bug, it is the item's real cost.** The guard has read guest memory
+while the guest wrote it since the day it existed; a torn read produces a different hash,
+reads as "changed", and is safe by construction. What pre-hashing changes is the WINDOW: up
+to a frame, instead of the instant of the draw. And the new failure it admits is not a torn
+read — it is a **coherent OLD state** that matches the stored guard where the inline hash
+would have seen new bytes and re-copied. That is a one-frame stale mesh, the part-46 defect
+class, so it was measured rather than argued.
+
+`CZ_VK_VERIFY_PARALLEL_GUARD=1` hashes inline as well, at the draw, on every served guard:
+
+```
+[vkprof] guard prehash VERIFY: 16 of 3499109 served guards disagreed ... (0.0005%)
+                               76 of 3664279                             (0.0021%)
+                                8 of 3214914                             (0.0002%)
+```
+
+**8-76 per window, 0.0002-0.0021%** — and that is an **upper** bound on harm, because a
+disagreement only damages anything when the pre-hash happens to equal the STORED guard
+while the true value differs; most disagreements are streams that read as changed either
+way.
+
+`CZ_VK_VERIFY_PARALLEL_GUARD_POISON=1` perturbs every pre-hashed value and the same check
+reads **100.0000%**. Without that arm the 0.0005% is a silent instrument rather than a
+measurement (gotcha 30) — and this project has now twice shipped a check that could not
+fail.
+
+### §4. THE RESULT — one binary, arms by environment, matched on draw count
+
+`CZ_FPS_CAP=120` in both arms, because at the shipped 60 fps cap this route sits on the
+rung and the comparison reads zero whatever the change was worth (§6ci §5c). Phase
+profiler, six windows an arm, quoted at the closest matched draw counts:
+
+| | parallel (default) | control (`CZ_VK_NO_PARALLEL_GUARD=1`) |
+|---|---|---|
+| draws/frame | 6,549 | 6,501 |
+| **frame** | **13.9 ms (72.1 fps)** | **15.9 ms (62.8 fps)** |
+| `record` GUARD | **15 ns/draw** | 313 ns/draw |
+| `textures` | 1.17 ms | 2.05 ms |
+| `record` total | 4.34 ms | 6.09 ms |
+| served by a finished pre-hash | 88-91% | — |
+| pool blocked the pump | **0 times** | — |
+
+And in symbols, from a `perf` profile of each arm:
+
+| | parallel | control |
+|---|---|---|
+| **`GuardFold`, share of the pump thread** | **0.86%** | **25.87%** |
+| pump thread, % of one core | **50.3%** | 63.4% |
+| the guest Draw Thread (the load's own control) | 91.7% | 91.3% |
+
+The Draw Thread is the honest check that the two runs saw comparable work: it is the
+guest's own ring spin (finding 38) and neither arm touches it.
+
+**−2.0 to −2.4 ms at 6,000-6,800 draws**, which is a **saving**, not a frame rate — at the
+shipped cap this route is already at 60 and the saving buys headroom. The player-facing
+number is owed from the operator's soak, which is not capped.
+
+### §5. THE BILL, and it is the part of strategy (b) nobody had had to write down before
+
+**Moving work onto idle cores raises the process's total CPU even when the frame gets
+shorter**, and a saving reported without that is half a measurement:
+
+| | parallel | control |
+|---|---|---|
+| process total | **2.68 cores of 16** | 2.53 |
+| the four workers | 8.3% of a core **each** | — |
+| pump thread | 50.3% | 63.4% |
+
+Note what does **not** balance. The pump loses **13.1 points** of a core; the workers gain
+**33.2**. Two and a half times as much CPU appears on the workers as leaves the pump, and
+the honest reading is that a memory-latency-bound loop is *cheaper interleaved with other
+work than run on its own*: on the pump the guard's misses overlapped with `DoDraw`'s
+register decode and the driver's own work, and isolated on a worker there is nothing to
+overlap with. **`perf`-attributed cycles for such a loop understate its isolated cost**,
+which means a symbol share is a good guide to what to MOVE and a bad estimate of what the
+move will cost elsewhere.
+
+And there is a second, smaller bill charged straight back to the pump:
+
+| phase | parallel | control |
+|---|---|---|
+| `recordState` | 181-186 ns/draw | 140-147 |
+| `otherBegin` | 79-83 ns/draw | 56-58 |
+
+Neither of those is code this change touched. It is the workers evicting the pump's working
+set from the shared L3 — the state cache's `memcmp`s and `BeginFrame`'s walk of a few
+thousand `streamCache` nodes both start missing. **~0.4 ms/frame**, against 2.8 ms of guard
+removed and 2.2 ms of frame delivered; the difference is exactly this.
+
+> **The transferable half: a parallel item's price is not its symbol share.** Budget for
+> three separate things — the work that moves (measurable), the dispatch and lookup
+> bookkeeping (small), and the CACHE the moved work stops warming and starts polluting
+> (invisible in every instrument that names a subsystem, and it showed up here in two
+> phases that have nothing to do with hashing).
+
+### §6. THE FRAME-TIME CAMPAIGN — three runs an arm, alternated, with its own null
+
+`tools/part53_item_campaign.sh`, one pinned binary, `CZ_FPS_CAP=120` in every arm so
+neither lands on the rung, `CZ_VK_FRAME_STATS` in every arm (so its ~2-3 ms rides in both
+and the ABSOLUTE times below are inflated by it — the relative saving is not). 84,540
+frames in the item arm against 76,845 in the control.
+
+**Item against control** (`CZ_VK_NO_PARALLEL_GUARD=1`):
+
+| draws | control mean | item mean | Δ mean | Δ median | significance |
+|---|---|---|---|---|---|
+| 5,000-5,999 | 14.37 | 12.50 | **−13.0%** | −14.3% | −37.3 |
+| 6,000-6,999 | 15.30 | **13.38** | **−12.5%** | −13.3% | **−34.9** |
+| 7,000-7,999 | 17.04 | 14.82 | −13.1% | −17.6% | −11.0 |
+| 8,000-8,999 | 18.58 | 16.17 | −13.0% | −11.1% | −17.3 |
+
+**And the experiment's own null** (`base` against `base`), in the same bands:
+
+| draws | Δ mean | Δ median | significance |
+|---|---|---|---|
+| 5,000-5,999 | −0.5% | +0.0% | −1.2 |
+| 6,000-6,999 | **+0.1%** | **+0.0%** | **+0.2** |
+| 8,000-8,999 | +1.6% | +0.0% | +5.8 |
+
+A 12-13% effect against a 0-2% floor, holding across four adjacent draw bands, on medians
+as well as means. The 3,000-3,999 band is the one to distrust: the null itself reads −5.7%
+there, which is what that band does on its own.
+
+**In milliseconds it is a SLOPE, like part 52's memo** — 1.92 ms at 6,000-6,999, 2.22 at
+7,000-7,999, 2.41 at 8,000-8,999. Of course: the guard runs per first-touch stream and per
+guarded texture, and both scale with the frame. **Quote the draw count with it.**
+
+Raw throughput, which needs no binning at all: **84,540 frames against 76,845 in the same
+3 x 330 seconds, +10.0%.**
+
+> **`pinned%` is quoted here for a 16 ms ladder while the cap is 8.33 ms**, so read it as
+> "landed near 16 ms", not "on the pacing floor" (the part-52 rule). It is why the control
+> arm shows 79% at 6,000-6,999 and the item arm 6%: the control is sitting at ~15-16 ms
+> and the item arm is not.
