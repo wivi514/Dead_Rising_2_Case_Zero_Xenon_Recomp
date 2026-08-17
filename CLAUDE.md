@@ -701,8 +701,8 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 Where the port is, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED, THE PLAN'S
-OWN VERIFY ARM REFUTED THE PLAN'S OWN FIX, AND THE HEADLESS ROUTE HAS RUN OUT OF
-HEADROOM.** `docs/part53-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still
+OWN VERIFY ARM REFUTED THE PLAN'S OWN FIX, AND THE OPERATOR FOUND THE PLACE TO MEASURE
+FROM — a three-minute soak at 7,200-8,562 draws that is NOT at the frame cap.** `docs/part53-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still
 the live plan and its §9b records what part 52 corrected in it; read `phase5-notes.md`
 §6ci, and **§6ci §5c before planning any frame-time measurement**):
 
@@ -747,6 +747,28 @@ the live plan and its §9b records what part 52 corrected in it; read `phase5-no
   in EVERY arm; what it then reports is a CPU saving, not a frame rate anyone sees.
   `frame_perf_bins.py`'s `pinned%` is defined for a 16 ms ladder — at another cap it reads
   "on the second rung", so name the ladder when quoting it.
+* **THE OPERATOR JUDGED IT, RAN THE CONTROL, AND THEN FOUND THE PLACE TO MEASURE FROM.**
+  "Performance is better." A chained same-binary A/B (`ARM=ab
+  tools/part52_operator_session.sh`) put **exactly one phase column in motion** —
+  `outside`, where `BindShader` lives — with every other column inside ±0.21 ms, which is
+  what makes one run an arm quotable: drift moves everything. Then **they proposed a
+  three-minute SOAK in a heavier place, and it is the best measurement this project has
+  ever taken**: one draw bin held **7,773 frames against 6,079** (a walk's best bin holds
+  ~1,300), giving **+11.6% mean / +12.5% median at a significance of +211**, with the
+  light bins still reading **+0.0%** as the experiment's own null. §6ci §§10-12.
+* **THAT SOAK ANSWERS THE STRATEGY QUESTION AND REORDERS THE PLAN.** It sustains
+  **7,162-7,529 draws with peaks to 8,562** for three minutes — heavier than any place
+  measured here — and **0% of its frames sit on a pacing rung**, so it is CPU-bound and
+  the remaining items buy FRAMES there rather than headroom. Uninstrumented it is
+  ~16.7-18.7 ms (`CZ_VK_FRAME_STATS` printed its own bill at **3.21-3.23 ms/frame**
+  there); the pump is **97.5-97.8% on CPU**. And what dominates it is **`record` at 8.69
+  ms of 20.66 — 42%, twice the next phase** — which only item 1.4, parallel command
+  recording, addresses. **Take every future A/B there, as a soak.**
+* **A SAVING IS A SLOPE, NOT A NUMBER.** The memo's `outside` delta is **1.36 ms at ~5,500
+  draws and 2.49 ms at ~7,200**, because it runs per shader-load packet and the soak
+  measured **3,010-3,047 loads/frame** against 2,224 on the walk. Three measurements that
+  looked inconsistent are one finding at three loads. **Quote the draw count with any
+  per-draw or per-packet saving.**
 * **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1; the switch gate (0
   defects); the dimension census (0 disagreements); `no translated shader` = 0;
   `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation
