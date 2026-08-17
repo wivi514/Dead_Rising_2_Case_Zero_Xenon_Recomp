@@ -9322,3 +9322,137 @@ expected value while costing one run to investigate**. Multithreaded command rec
 already named in the plan's §5 as deferred "for the same reasons" as the swapchain work;
 this is the measurement that says how much it might be worth and it should be re-costed
 rather than left at the bottom.
+
+## 6ch. Part 51: THE BUSIEST THREAD IN THE PROCESS IS NOT WORKING, IT IS WAITING FOR US —
+## and the plan's largest remaining item is refuted by two costs nobody had priced
+
+`docs/part51-kickoff.md` opened with a question part 50 could not answer and correctly
+refused to guess at: our pump is 79% busy, a GUEST thread is at 93.2%, and **a CPU
+percentage cannot tell WORKING from SPINNING** (gotcha 338). If that thread is the title
+simulating and it is saturated, then every item in `docs/perf-plan-part50.md` — all of
+which make our pump's work smaller — buys nothing.
+
+It is spinning, it is spinning on **us**, and the instrument that says so is one command.
+
+### §1. Item 0 — the 93% thread is the Draw Thread, and 84% of it is a fence spin
+
+`tools/part51_thread_probe.sh` drives the standard unattended outdoor route, waits for
+the DRAW COUNT to pass 4,000 (an event, not a wall clock — gotcha 75), and then samples
+the whole process with `perf record -F 999` for 30 s. No call graph: at `-O2` without
+frame pointers an fp walk is fiction, and the question is which INSTRUCTIONS run, which
+needs no stack. Every guest function is a real symbol (`sub_XXXXXXXX`, RelWithDebInfo),
+so the profile reads the title's own code directly.
+
+The thread table reproduces part 50 exactly (2.57 cores of 16, busiest thread 93.6%), and
+83,222 samples then split that thread as follows — percentages **of the thread**:
+
+| symbol | share of the thread | what it is |
+|---|---|---|
+| `sub_8283C6C8` | **41.98%** | the spin body: `mr rX,rX` priority hints in a `bdnz` loop, then a timeout check |
+| `sub_82845160` | **21.49%** | the loop that calls it — the ring-progress wait |
+| `__restgprlr_29` / `__savegprlr_29` | 11.23% / 5.35% | that function's own prologue and epilogue, once per spin iteration |
+| `sub_82821FF0` | 4.10% | the two-load timebase read the spin polls with |
+| everything else | < 2.3% each | |
+
+**84.15% of the busiest thread in this process is one spin-wait.** And the port already
+knew what that wait is: `docs/phase1-notes.md` **finding 38** traced it end to end in
+phase 1, with the same two addresses and a `gdb` stack showing them under
+`sub_827D3898` — **the Draw Thread body**. Its protocol, quoted there out of the title's
+own code:
+
+```
+82845200  lwz  r11,0x2a90(r31)   ; r11 = the progress-word POINTER
+82845204  lwz  r10,0x2a9c(r31)   ; W = what the driver has produced
+8284520C  lwz  r11,0(r11)        ; R = what the GPU has consumed
+82845214  cmplw cr6,r9,r11       ; (W - target) >= (W - R)  ->  R has reached target
+82845218  blt  cr6,0x828451f0    ; ...else spin again
+```
+
+`R` is the ring read pointer, and **the only thing in this process that advances it is
+our own pump**, which publishes its parser's real position after every walk
+(`vd.cpp`, `g_rptrWriteback`). So the answer to item 0 is not "the guest is saturated
+and we cannot help it". It is:
+
+* the thread is **not simulating** — part 50's table guessed "a GUEST thread — the title
+  simulating", and that guess was wrong in the direction that would have retired the
+  plan;
+* it is **blocked on our pump's throughput**, burning a core to do it, because on the
+  360 those `mr r31,r31` hints yield SMT slots to the other hardware thread and here
+  they are no-ops;
+* therefore **the plan's whole strategy is correctly aimed**: milliseconds taken off our
+  pump are milliseconds off the frame, and the concern that opened part 51 is answered
+  in the reassuring direction.
+
+**The transferable half is the method, and it is embarrassingly cheap.** Thirty parts of
+this project have profiled the frame with a hand-written per-phase timer that can only
+see inside the pump thread and reports scopes rather than functions. One `perf record`
+names the top cost in every thread at once, in symbols, including the guest's — and the
+port had the symbols the whole time. **Run the symbol profiler before the phase
+profiler**: the phase profiler tells you which of the scopes YOU wrote is expensive, and
+only the symbol profiler can tell you that the expensive thing is not in them.
+
+### §2. The same profile, read on our pump thread — and it is mostly not the renderer
+
+The pump (31.12% of the process, 79.3% of a core) splits by symbol like this:
+
+| symbol | share of the pump thread |
+|---|---|
+| `DoSwapImpl` | **19.40%** |
+| `GuardFold` | **16.79%** |
+| `DoDraw` | 9.84% |
+| `UploadStream` | 7.21% |
+| `BindShader` | 6.48% |
+| `UploadTexture` | 4.92% |
+| `memcmp` / `memmove` / `memset` | 4.57 / 3.78 / 1.71% |
+| `WriteRegisterRun` | 2.92% |
+| `ExecutePacket` | 2.42% |
+| `ExecuteLinear` | 1.14% |
+
+Three things are worth saying about that table, and the first two contradict documents
+in this repo.
+
+**`DoDraw` is under a tenth of the pump.** The per-phase profiler charges ~15 ms of a
+~22 ms frame to the draw path, which reads as "the renderer is the problem"; at symbol
+level the draw recording itself is 9.84% and the two biggest entries are a **content
+guard** and the **present path**. `GuardFold` at 16.79% is item 2a — the stream guard —
+independently confirmed by a tool nobody in this project wrote, which is the kind of
+oracle the evidence rules ask for.
+
+**`ExecutePacket` + `ExecuteLinear` + `WriteRegisterRun` is 6.48% of the pump.** Part
+50 priced the PM4 walk's dispatch overhead at ~2.2 ms of a ~22 ms frame from its own
+A/B — about 10% — so this is the same order, measured a completely different way. Item
+1c is real, and it is not where the frame is.
+
+**And `DoSwapImpl` at the top is a trap that §5 unpicks**: `perf` attributes inlined
+code to its container, and the frame-statistics instrument is inlined into that
+function. See below before reading 19.40% as the cost of presenting.
+
+### §3. Item 1 — soft-dirty page tracking is DEAD, and not for the reason it was expected to be
+
+The kickoff's item 1 was to price `/proc/self/clear_refs` before building anything on
+it, on the grounds that it walks the page tables of the whole process and could be
+milliseconds. `tools/part51_clear_refs_cost.py` reproduces the runtime's own memory
+shape (a 4 GB sparse reservation; the live outdoor process measures **1.2 GB resident**
+across 7.6 GB of VMAs) and sweeps the resident set. Three measurements, and **the one
+that was expected to decide it did not**:
+
+| | measured | verdict |
+|---|---|---|
+| **the arm** — one `clear_refs` write | 24.4 ns per resident page → **7.5 ms** at 1.2 GB | **fatal.** It replaces ~26 MB of hashing, which at the fold's own 35.7 GB/s is ~0.7 ms. The arm alone is ~10x the cost of the thing it removes, once per frame |
+| **the query** — a `pagemap` read | 2.24 us for 128 KB against 3.67 us to hash it; 14.9 us against 58.7 at 2 MB | **the idea's premise was RIGHT.** Above ~64 KB the kernel's answer is 1.6-4x cheaper than reading the bytes |
+| **the aftermath** — the write-protect faults arming creates | re-touching 1.2 GB costs **+237 ms**, i.e. **773 ns per page** | **fatal, and independently so.** Those faults land on whoever writes next, which is the GUEST's threads — we would be charging the title's own simulation for our measurement |
+
+So the item dies twice over, and neither death is the one the question was aimed at. The
+part worth keeping is the shape: **the seductive part of a mechanism was the part that
+was fine.** The query really is three orders of magnitude smaller than the hash, exactly
+as the kickoff argued — and the mechanism is unusable anyway because arming it is
+process-wide and because it converts a read-only page into a fault. When costing an
+idea that replaces work with a kernel service, price the SETUP and the AFTERMATH before
+the part that made the idea attractive; they are the two nobody writes down.
+
+One honest note on measurement 2: the first version of that table read the pagemap
+*and decoded every entry in Python*, and reported the query as SLOWER than the hash at
+every size. That was an artifact of the decoder, not of the syscall. Re-measured with
+the decode removed, the syscall floor is what the table above records. The direction of
+the error is the one to notice — it flattered the conclusion the other two rows were
+already reaching, and it would have been quoted as a third independent refutation.
