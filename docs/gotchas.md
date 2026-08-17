@@ -3451,3 +3451,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      would have. And **check what your verify arm does to the thing it is standing next
      to**: this one re-inserted into the table on every load and reported 46x more
      evictions than misses until one comparison stopped it (gotcha 7 again, one level in).
+
+343. **BEFORE PRICING AN ITEM OFF A PROFILER PHASE, CHECK WHAT ELSE IS INSIDE THAT
+     PHASE — two items priced off two instruments can silently share the same
+     milliseconds.** Part 52's plan had item 1.1 (parallel content guards) priced off
+     the `GuardFold` SYMBOL at 20-30% of the pump thread, and item 1.4 (parallel command
+     recording) priced off the `record` PHASE at 8.69 ms. Both numbers were correct.
+     They also overlapped by 39%, because `UploadStream` is called from inside the
+     `recordVertex` scope while `ProfScope(streams)` deliberately wraps only the copy —
+     so the guard's hash was charged to `record`, and the same milliseconds appeared in
+     the price of both items. Splitting it (`record 1,007 ns/draw = state 141 + vertex
+     188 + index 161 + GUARD 391 + residual 126`) moved a third of the riskier item's
+     apparent size onto the safer one, which reversed which should be built. **A scope is
+     a region of code, not a subsystem**, and the check that catches this is cheap:
+     reconcile the phase table against the symbol profile and see whether they add up.
+     Here they had never been compared, and afterwards they agree to the millisecond —
+     391 ns/draw x 6,508 draws = 2.54 ms of stream guard, `GuardFold` reads 4.52 ms by
+     `perf`, and the 1.98 ms difference is exactly the texture guard that `textures`
+     should contain. Neither instrument could have said this alone: the symbol profile
+     knows a function is hot but not which phase pays for it, and the phase table knows a
+     phase is hot but not what is nested inside it.

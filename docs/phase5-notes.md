@@ -10208,3 +10208,100 @@ which together are 7.24 ms; `record` is the `vkCmd*` calls themselves, which ite
 parallel command recording, explicitly deferred by the plan as "a genuine architectural
 project" — is the only item that addresses. The plan's own instruction was to re-measure
 first and let the numbers make that case rather than ambition. **They now make it.**
+
+### §13. PRICING ITEM 1.4 — and 39% of its apparent size belongs to item 1.1
+
+§12 put `record` at 8.69 ms of the operator's heaviest frame — 42%, twice the next phase —
+and concluded that item 1.4 (parallel command recording) was the only item addressing it.
+The operator asked for it to be priced before anything was built. **Pricing it moved a
+third of it to a different item.**
+
+#### Step 1: what `record` is made of, which nobody had asked
+
+`ProfScope(streams)` wraps only the `CopySwapped` — deliberately, so a cross-frame guard
+HIT costs the `streams` column nothing. That is the right design and it is why `streams`
+reads 0.02 ms while `GuardFold` is the biggest symbol in the pump. But `UploadStream` is
+called from **inside** the `recordVertex` and `recordIndex` scopes, so the hash was charged
+to `record`. **Item 1.4 is priced off `record` and item 1.1 off `GuardFold`, so the same
+milliseconds were in both prices.** Split (`g_prof.streamGuard`), measured on the outdoor
+route at ~6,500 draws:
+
+```
+record 1,007 ns/draw = state 141 + vertex 188 + index 161 + GUARD 391 + residual 126
+```
+
+**The guard is 38.8% of `record`.** And the split makes the phase table and the symbol
+profile agree for the first time:
+
+| | |
+|---|---|
+| stream guard, from the phase split | 391 ns/draw x 6,508 draws = **2.54 ms**, 16.8% of the pump's work |
+| `GuardFold`, from `perf` | **29.85% of the pump** = 4.52 ms |
+| texture guard, by difference | **1.98 ms** — which is what `textures` should contain |
+
+Two instruments of different classes, built years apart, now reconcile to the millisecond.
+Neither could have produced this alone: the symbol profile knows `GuardFold` is huge but
+not which *phase* pays for it, and the phase table knew `record` was huge but not that a
+hash was inside it.
+
+#### Step 2: item 1.4's real ceiling
+
+Applying the 38.8% share to the operator's soak:
+
+| | ms of their heaviest frame |
+|---|---|
+| `record` as measured in §12 | 8.69 |
+| — the stream guard inside it → **item 1.1** | **3.37** |
+| — the actual `vkCmd*` recording → **item 1.4** | **5.32** |
+
+And the recording work is small per call, because the state cache already removes most of
+it. From the counters the renderer has been keeping all along:
+
+* **3.20 vertex-bind attempts per draw, 52.5% skipped → 1.52 real calls**
+* 0.95 index-bind attempts, 40.6% skipped → 0.56 real
+* pipeline 70% skipped → 0.30; viewport 99.1%, scissor 99.0%, blend and descriptor sets
+  100% skipped → ~0.02 combined
+* plus one push-constants and one draw
+
+**≈ 4.4 `vkCmd*` calls per draw**, so 616 ns/draw of recording is ~140 ns a call. That is
+driver-side work, and it is the kind that parallelises across independent command buffers.
+
+| workers | ideal saving on their heaviest frame |
+|---|---|
+| 2 | 2.66 ms |
+| 4 | **3.99 ms** |
+| 8 | 4.65 ms |
+
+**Minus** the overhead the plan already names and this pricing does not remove: a secondary
+command buffer inherits no state except the render pass, so every secondary must re-bind
+pipeline, sets, viewport, scissor and vertex buffers at its head — which is cheap only
+because the draws must be split into CONTIGUOUS ranges anyway (order is semantic). Plus
+`vkBeginCommandBuffer`/`vkEndCommandBuffer` per secondary and one `vkCmdExecuteCommands`.
+
+#### The verdict, and it is the plan's own order
+
+**Item 1.4 is worth ~4 ms at four workers, not the ~8.7 ms §12 implied — and item 1.1 is
+worth more than the plan thought.** The guard is now measured at **3.37 ms inside `record`
+plus 1.98 ms inside `textures` = ~5.3 ms of the operator's heaviest frame**, against the
+plan's "20% of the pump, −2..3 ms".
+
+So the two items are the same size, and they are not the same risk:
+
+| | item 1.1 parallel guards | item 1.4 parallel recording |
+|---|---|---|
+| size | ~5.3 ms (both guards) | ~4 ms at 4 workers |
+| what moves | a **pure** function: reads guest memory, returns a `uint64_t` | Vulkan command recording, which owns renderer state |
+| ordering | none — each stream is independent | **semantic** — draw order must be preserved |
+| oracle | the serial hash, byte-identical | none; a mis-ordered draw is a picture defect |
+| failure mode | a wrong hash = a stale mesh, caught by a verify arm | wrong order or lost state = wrong picture, no gate |
+| plan's own risk | medium | **high, "a genuine architectural project"** |
+
+**Do 1.1 first.** It is the same size, it has an oracle, and it is already next in the
+order. Item 1.4 stays a live candidate — the numbers do support it, which §12 could not
+say — but it is now a ~4 ms item behind a ~5.3 ms one, not the 8.7 ms item that looked
+like it had to be taken first.
+
+> **The transferable half (gotcha 343): before pricing an item off a profiler phase, check
+> what ELSE is inside that phase.** A scope is a region of code, not a subsystem, and two
+> items priced off two instruments can silently share the same milliseconds. Here the
+> overlap was 39% and it would have been spent on the riskier of the two.
