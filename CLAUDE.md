@@ -754,9 +754,16 @@ tier of `perf-plan-part50.md`):
   whose own comment warns about exactly that: the ring trace's "sat on one wait for over
   a second" was 60 TICKS, which at 100 us means 6 ms, and a healthy run measures 104.
   Both the threshold and the label are now durations (gotchas 98/157).
-* **What is OWED is the operator's verdict, and the question is not the usual one**: this
-  change moves WHEN work happens rather than how much there is, so ask whether it is
-  SMOOTHER, not only whether it is faster. `tools/part51_operator_session.sh`.
+* **THE OPERATOR HAS NOW JUDGED IT, and both halves are recorded as they came.** On
+  "which felt smoother" they **could not tell the arms apart** — that rules out a GROSS
+  pacing regression, which was the way this change could fail, and it is not written up
+  as "confirmed smoother". On the profiler, the win reproduces on their machine and
+  route: **3,000-5,000 draws 21 -> 17 ms with the vblank-pinned share 2% -> 51%**, and
+  5,000-8,000 draws 26 -> 24 ms. The mechanism is visible directly — `outside`, the
+  column the sleep lives in, reads **7.89 -> 5.37 ms, a 2.52 ms difference against the
+  2.7 predicted**, while every other phase moves by a few percent. One run an arm, so
+  the statistical weight remains the headless campaign's; this confirmed direction and
+  mechanism on their hardware. §6ch §7.
 * **Gates at close: ALL CLEAN**, and the two numbers that MOVED both moved for reasons
   the change predicts. `--smoke`; both PM4 capture oracles on B1 (24,527,474 packets, 0
   disagreeing; 0 indirect-buffer disagreements); the switch gate (0 defects); the shader

@@ -9584,3 +9584,54 @@ The rule to carry: **when quoting a frame time, say which instruments were on.**
 price an instrument, find a counter that does not depend on it — `VkRenderer_DumpStats`
 prints the frame number and is independent of both — or put a scope on the instrument
 itself, which is what was done here.
+
+### §7. THE OPERATOR'S VERDICT — the win reproduces on their machine, and the risk did not materialise
+
+Part 51's change was the first in this campaign that could fail as PACING rather than as
+throughput: it moves WHEN work happens rather than how much there is. So the operator was
+asked two questions in a chained same-binary A/B (`tools/part51_operator_session.sh`, arm
+A `CZ_PM4_TICK_US=100`, arm B `=1000`), and the first was not the usual one.
+
+**"Which felt smoother?" — they could not tell the two apart.** Recorded as what it is:
+that rules out a GROSS pacing regression, which is the way this change could plausibly
+have failed. It does not establish that the change is smoother, and it is not written up
+as if it did.
+
+**"What does the profiler say?" — the win reproduces on their hardware and route.** Median
+frame time over thousands of frames, binned by draws:
+
+| draws/frame | tick100 | tick1000 | | frames at the vblank floor |
+|---|---|---|---|---|
+| 0-500 | 16.0 ms | 16.0 ms | — | 99% / 99% |
+| 1,500-3,000 | 16.0 ms | 16.0 ms | — | 99% / 93% |
+| **3,000-5,000** | **17.0 ms** | **21.0 ms** | **+23.5%** | **51% / 2%** |
+| 5,000-8,000 | **24.0 ms** | 26.0 ms | +8.3% | 3% / 3% |
+
+47.6 -> 58.8 fps in the mid band, 38.5 -> 41.7 in the crowd, and the 2% -> 51% pinned
+share is the same signature the headless campaign showed: the frame stops being CPU-bound
+and lands on the 16 ms floor.
+
+**And the phase split shows the mechanism directly, which is what makes a one-run-an-arm
+session worth quoting at all.** `outside` — the column the pump's sleep lives in — reads
+**5.37 ms against 7.89 ms, a difference of 2.52 ms** against the 2.7 ms the model
+predicted, while every other phase sits within a few percent (`constants` −0.5%, `submit`
++3.2%, `readback` +3.9%). The arm is also provably engaged: `sleep` 2.1-3.3% of the wall
+clock against 11.6-14.0%, and the latency bound 0.47 against 3.17 ms/frame.
+
+**What this session is NOT.** One run an arm, so `part47_perf_read.py` correctly refuses a
+verdict on every frame-time bin; the statistical weight is the headless campaign's three
+runs an arm plus its 4 ms positive control, and this session's job was to confirm the
+direction and the mechanism on the operator's own machine. Both arms also carried
+`CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS` — the latter measured at **1.86-3.32 ms/frame on
+their machine**, agreeing with §6's headless 3 ms — so the frame times above are ~5-6 ms
+slower than what they actually play. Uninstrumented, their 3,000-5,000 band would sit on
+the 16 ms floor almost entirely.
+
+**One incidental finding worth keeping.** In the LIGHT windows of the tick100 arm (1,284
+and 1,351 draws/frame) the pump ran **46.9-54.8 ticks a frame with only 5.0-6.4% of them
+finding work**, against 3.3-3.4 ticks a frame and 88-90% in the crowd. That is the finer
+tick doing exactly what a finer tick does when there is nothing to collect — waking,
+looking and going back to sleep — and it is the honest cost of the change: a few percent
+of one core in scenes that are already at the frame cap, where it buys nothing. It is
+also the instrument's negative control working on the operator's route without anyone
+having to arrange it.
