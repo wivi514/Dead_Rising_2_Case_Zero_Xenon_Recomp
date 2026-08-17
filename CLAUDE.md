@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 333 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 338 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 326-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 338-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -171,12 +171,21 @@ mask; trust the microcode's own swizzles.
   - **`phase-av-notes.md`** (sound, the cinematic that was waiting for it, and part
     29's diagnosis of the loop that followed) with `phase-av-plan.md` the plan it
     executed, `phase-av-kickoff.md` the phase hand-off and `part29-kickoff.md` its
-    successor. **`part32-kickoff.md` is the LIVE one** and supersedes all of them on
-    "where the port is". `d3d-phase-c28-kickoff.md` records how the white-surface chain
+    successor. `d3d-phase-c28-kickoff.md` records how the white-surface chain
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
+  - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
+    supersedes every earlier kickoff on "where the port is". **It is currently
+    `part51-kickoff.md`.** State the rule as well as the name, because this line said
+    "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
+    — a stale pointer in the file every session loads whole is the one documentation
+    defect that misroutes a session before it has read anything else (gotcha 13).
+  - **`perf-plan-part50.md` is the LIVE performance plan** — but its opening box lists
+    four of its own numbers that part 50 measured and found wrong, and `phase5-notes.md`
+    §6cg is the evidence; read the box before acting on any tier. `perf-cpu-plan.md`
+    and `perf-plan-part{47,48}.md` are its executed predecessors.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
-    `perf-cpu-plan.md` (the live performance plan) and `perf-plan-overnight.md` (its
+    ~~`perf-cpu-plan.md` (the live performance plan)~~ and `perf-plan-overnight.md` (its
     executed predecessor).
   - Formats and tooling: `big-archive-format.md` (the cracked `.big` container, **plus
     two part-27 retractions: the name table is NOT fixed-width outside the shader
@@ -720,6 +729,15 @@ BEFORE it** — §6cg retires two of its items and corrects every number in its 
   observations find a change, so the guard saves the copy on ~88%. The real question is
   whether a large buffer's change can be detected without reading it (soft-dirty page
   tracking), and that is architectural work with a correctness risk, costed in the kickoff.
+* **WHAT PART 50 ACTUALLY DELIVERED IS ~0.4 ms, and the rest is a CORRECTION rather than
+  a speedup.** Both headline numbers move the reported frame time the same way and must
+  not be banked together: item 1a is a real −0.4 ms (though its own frame-time A/B read
+  **+0.0%** in every draw band — 0.4 ms is under this route's noise), while the profiler's
+  2-4 ms is time **the player never paid**, because nobody plays with `CZ_VK_PROFILE` set.
+  Part 51 starts from ~25.5 ms at 7,000 draws, of which part 50 earned 0.4 (gotcha 337).
+* **THE NULL FLOOR IS NOW MEASURED, NOT ASSUMED: 9.4% on ns/packet and 8-18% on frame
+  time by draw band.** An item worth under ~1 ms is invisible in frame time on this route
+  and must be settled on a per-unit statistic. Budget for that before picking an item.
 * **Gates at close: ALL CLEAN**, E3 best of five **+0.8820**, 4 of 5 agreeing on layout.
 
 Where the port WAS, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT

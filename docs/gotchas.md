@@ -3349,7 +3349,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      the population before removing it, and put the counter on the ratio your argument
      turns on rather than on the total it makes vivid.
 
-337. **A GROWING FILE READ MID-RUN IS A COMPLETE FILE THAT ENDS EARLY, AND IT LOOKS
+337. **A MEASUREMENT CORRECTION IS NOT A SPEEDUP, AND THE TWO ARE EASY TO BANK
+     TOGETHER BECAUSE THEY MOVE THE SAME NUMBER IN THE SAME DIRECTION.** Part 50's
+     largest result by far was that `CZ_VK_PROFILE` costs **2-4 ms a frame** — so the
+     frame this project had been quoting at 28.3 ms was really ~25-26 ms. Its only
+     shipped optimisation was worth **~0.4 ms**, below the route's own noise floor.
+     Both make the reported frame time smaller; only one of them is something the
+     player experiences, and **the player never paid the 2-4 ms at all**, because
+     nobody plays with the profiler on. Writing "part 50: −3 ms" would be false in the
+     way that matters, and it would compound: the next part inherits it as a baseline
+     and "wins" already claimed cannot be won again. State the delivered saving and
+     the corrected baseline as two separate lines, put the corrected baseline in the
+     plan's own table rather than in prose, and say in the same breath what the player
+     would feel — here, nothing. The general rule: **when a number moves, say whether
+     the WORLD changed or your VIEW of it did**, and never let a retraction of your own
+     earlier measurement be scored as progress.
+
+338. **A GROWING FILE READ MID-RUN IS A COMPLETE FILE THAT ENDS EARLY, AND IT LOOKS
      EXACTLY LIKE A HANG.** Half an hour into a six-run campaign, an arm's stats file
      ended at 96.7 s of a 330 s run while the baseline's ended at 328.8 s, with a third
      of the frames and two profile windows against ten. Read as a finished run that is

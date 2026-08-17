@@ -1,7 +1,11 @@
 # Part 50 kickoff — CPU performance, with the frame rate finally readable
 
-Written at the close of part 49 (2026-08-16). **This is the LIVE hand-off**,
-superseding `part49-kickoff.md`.
+Written at the close of part 49 (2026-08-16). ~~This is the LIVE hand-off~~ —
+**SUPERSEDED BY `docs/part51-kickoff.md`** at the close of part 50, which executed
+tiers 1 and 3 of this document's plan and found four of its numbers wrong. In
+particular this file's "Tier 1 first, and item 1a is the cheapest thing in the
+document" is retracted (it is worth ~0.4 ms, not 1.5-2), and its budget table is
+inflated 8-18% by the profiler that recorded it. Read `phase5-notes.md` §6cg.
 
 ## START HERE
 

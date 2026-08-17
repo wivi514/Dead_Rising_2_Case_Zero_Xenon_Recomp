@@ -35,6 +35,26 @@ than it believed**, and 16 ms is 9 ms away rather than 12.
 from part 30 to part 49 and could not have noticed: a 32 ms pacing floor absorbs an 8%
 inflation without moving. Part 49 removed the floor.
 
+### AND WHAT PART 50 ACTUALLY DELIVERED IS ~0.4 ms — do not inherit the rest as a win
+
+This matters more than it looks, because both of part 50's headline numbers move the
+reported frame time in the same direction and it would be easy to bank them together:
+
+| | ms | is it a speedup? |
+|---|---|---|
+| item 1a, shipped | **−0.4** | **yes** — but below this route's frame-time noise; its own A/B read **+0.0%** in every draw band, and the 0.4 comes from ns/packet |
+| the profiler correction | −2.8 | **NO.** The player never paid it; nobody plays with `CZ_VK_PROFILE` set. It changed what we may CLAIM, not what the game does |
+
+So part 51 starts from **~25.5 ms at 7,000 draws, of which part 50 earned 0.4**. Writing
+"part 50: −3 ms" would be false in the way that matters and would compound — a win already
+claimed cannot be won again. Gotcha 337.
+
+**One consequence for how part 51 must measure**: the null floor here is **9.4% on
+ns/packet and 8-18% on frame time by draw band**, both measured in part 50 rather than
+assumed. An item worth under ~1 ms is invisible in frame time on this route and has to be
+settled on a per-unit statistic (ns/packet, ns/draw, MB/frame). Budget for that before
+picking an item, not after it reads as zero.
+
 ## What part 50 settled — do not re-derive any of this
 
 * **Item 1a (filler runs) is BUILT, GATED AND SHIPPED, and it is worth ~0.3-0.5 ms, not
@@ -143,4 +163,4 @@ deserves its own part with the exact hash retained as the oracle it would be rep
   ending at 96.7 s of a 330 s run, with a third of the frames, is the signature of a stall
   — and it was a file being written at that moment. Nothing in the file distinguishes the
   two. Check the driver's own completion marker before reading any artifact of a long run.
-  Gotcha 337.
+  Gotcha 338.

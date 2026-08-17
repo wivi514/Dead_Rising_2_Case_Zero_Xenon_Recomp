@@ -6,6 +6,29 @@ and closed, and its target was met.
 
 ---
 
+> ## ⚠ PART 50 EXECUTED THIS PLAN AND FOUND FOUR OF ITS NUMBERS WRONG. READ THIS BOX FIRST.
+>
+> The structure below survives and the ranking of what is left is unchanged. **Four
+> specific claims do not, and each is retracted at the point it is made** — but they are
+> collected here because a reader who skims will otherwise act on them. The evidence is
+> `docs/phase5-notes.md` §6cg; the live hand-off is `docs/part51-kickoff.md`.
+>
+> | § | the plan says | measured in part 50 |
+> |---|---|---|
+> | §1 | the frame is **28.3 ms / 35.7 fps** at 5,000-7,000 draws | **~25-26 ms / ~39-40 fps.** Every number in §1 was read from a run with `CZ_VK_PROFILE` set, and the profiler costs **2-4 ms a frame, 8-18%** |
+> | §2 1a | filler runs are worth **1.5-2 ms**, "the cheapest thing in the document" | **~0.3-0.5 ms.** Built and shipped. The prediction of 20-30 ns/packet is refuted: 4.0-6.5 ns against a **9.4% null floor**, and the frame-time A/B read **+0.0%** in every draw band |
+> | §2 1c | hoist the wrap modulo — the **top candidate** for the preamble | **worth nothing.** `INDIRECT_BUFFER` is 43-46 packets/frame, so ~45 buffers carry all ~75,000 packets and every one is fetched with `wrapDwords == 0`. The modulo is essentially never executed |
+> | §4 | `other`'s residual is **"the highest-yield-per-hour item in the document"** | **RETIRED — it is this profiler.** A `ProfScope`'s ctor clock read lands in the PARENT's residual unsubtracted, and `other` is DoDraw's outermost scope. There is no frame time there at all |
+>
+> **§6's cumulative table is therefore wrong by about 4 ms of its ~9 ms**: items 1a, 1c's
+> lead candidate and the whole of the item-3 residual are worth far less, or nothing, than
+> it adds up. A corrected order is in `part51-kickoff.md`.
+>
+> **§3 (item 2a) is NOT retracted** — it is still the largest item — but its mechanism is
+> not what §3 assumes. See the note at §3.
+
+---
+
 ## 0. WHY THIS PLAN CAN BE BELIEVED WHERE THE LAST THREE COULD NOT
 
 Parts 46-48 all had to argue from profiler phase shares, because the frame was pinned
@@ -30,6 +53,17 @@ Two consequences that shape everything below:
 ---
 
 ## 1. THE BUDGET — the operator's own machine, 16,788 frames, whole map
+
+> **EVERY MILLISECOND AND fps IN THIS SECTION IS INFLATED 8-18%**, because the whole lap
+> was recorded with `CZ_VK_PROFILE` set — the only way to obtain a phase split — and part
+> 50 measured that profiler at **2-4 ms a frame**. The 5,000-7,000 band's **28.3 ms /
+> 35.7 fps is really ~25-26 ms / ~39-40 fps in play.** The per-phase RANKING below is
+> unaffected: every phase is inflated, not one of them, and the ns/draw figures carry an
+> extra ~24 ns per nested scope in each residual. Three runs an arm, two of four draw
+> bands outside their own noise floor; `docs/phase5-notes.md` §6cg §6.
+>
+> The error was undetectable before part 49: a 32 ms pacing floor absorbs an 8% inflation
+> without moving, so from part 30 to part 49 this could not have shown up.
 
 | draws/frame | frame | fps | share of their lap |
 |---|---|---|---|
@@ -69,7 +103,27 @@ SET_BIN_MASK_LO 11.9%   DRAW_INDX 7.9%   EVENT_WRITE 6.0%
 EVENT_WRITE_EXT 5.9%    IM_LOAD 2.0%     LOAD_ALU_CONSTANT 2.3%
 ```
 
-### 1a. 28.7% of every packet walked is TYPE-2 RING FILLER that does no work — EXPECTED 1.5-2 ms
+### 1a. 28.7% of every packet walked is TYPE-2 RING FILLER that does no work — ~~EXPECTED 1.5-2 ms~~
+
+> **RETRACTED IN PART 50 — it is worth ~0.3-0.5 ms, and it is BUILT AND SHIPPED.** Three
+> corrections, all from measurements this section did not ask for:
+> * **A share is not a shape.** 28.7% is equally consistent with one enormous run and with
+>   23,000 isolated dwords. Measured mean run length **2.24**, bimodal (28% singletons, 72%
+>   runs of 2-3, a thin tail of ~1,100 runs of 32-63, nothing between). Coalescing in the
+>   callee would have removed only **57%** of the calls — which is why the shipped fix puts
+>   the test in `ExecuteLinear`'s loop, where the header is already fetched and it removes
+>   100%.
+> * **It is not RING filler.** `fillerRingDwords` reads **0%**. It is the title's own
+>   indirect buffers, padded packet by packet — not the driver padding the ring to a wrap
+>   boundary, which is what this section's title assumes.
+> * **The prediction is refuted.** Registered: 20-30 ns off the mean per-packet cost.
+>   Measured 4.0-6.5 ns against a **9.4% null floor** (base against itself), with frame
+>   time at **+0.0%** in every draw band. The sign is held only by 3/3 rounds ordering the
+>   same way and 12,267 calls a frame provably removed.
+>
+> Its BY-PRODUCT is worth more than the item: the difference divided by the calls removed
+> prices one `ExecutePacket` call at **24-40 ns**, a lower bound, so 1c's ceiling is
+> ~2.2 ms measured rather than estimated.
 
 A type-2 packet is a one-dword no-op. It currently costs a full `ExecutePacket` call:
 the `Source` fetch with its wrap modulo, the header decode, the census bump, the
@@ -102,9 +156,24 @@ functor's wrap modulo, the type decode, the `avail` bounds test, the zero-header
 the predication evaluation (`(header & 1) && (g_binMask & g_binSelect) == 0`), the
 `g_constWatchSource` store. Per packet, 81,106 times a frame.
 
+> **PART 50: the ceiling is CONFIRMED at ~2.2 ms and MEASURED rather than estimated** —
+> item 1a's own A/B prices one `ExecutePacket` call at 24-40 ns, and because a filler
+> packet returns before the zero-header check, the `avail` test and the body decode, that
+> is a LOWER bound. But the first candidate below is dead and there is no single lever
+> among the rest, so this is a REFACTOR (inline the walk so there is no call per packet)
+> and should be costed as one. Both PM4 boundary oracles are blind inside `ExecutePacket`,
+> so the incumbent is the oracle and it needs a poison arm, as item 1a's did.
+
 Candidates, in order of confidence:
-* **Hoist the wrap modulo.** `Source::operator()` does `% ring` per dword fetched. A
-  walk that knows it is not near the ring end can index directly.
+* ~~**Hoist the wrap modulo.** `Source::operator()` does `% ring` per dword fetched. A
+  walk that knows it is not near the ring end can index directly.~~
+  **RETRACTED IN PART 50 — worth nothing, and the opcode census already said so.**
+  `INDIRECT_BUFFER` runs at **43-46 packets a frame**, 0.1% of the stream. So ~45 indirect
+  buffers carry all ~75,000 packets, ~1,660 each, and every one of those packets is
+  fetched with `wrapDwords == 0`, where `Source::operator()` is a predictable branch and
+  no modulo at all. Only the ~45 ring-level packets that dispatch them take that path.
+  Second time in one part that assuming "the ring" is where the packets are cost an
+  estimate its credibility — see 1a's retraction above.
 * **Skip the const-watch store** when the watch window is empty, which it is unless
   `CZ_PM4_CONST_WATCH` is set. Part 47 did this for the register run path and not here.
 * **Dispatch on a table rather than a switch** only if the switch is measured to be
@@ -124,6 +193,37 @@ looks. `CZ_FPS_CAP` makes that a one-run experiment — compare `outside` per SE
 ## 3. TIER 2 — `record`, 7.4 ms, of which `vertex` is 662 ns/draw
 
 ### 2a. THE STREAM GUARD STILL HASHES 63-72 MB EVERY FRAME — EXPECTED 2-3 ms
+
+> **PART 50 INSTRUMENTED THIS AND IT IS STILL THE LARGEST ITEM — but its mechanism is not
+> what this section assumes, and two of its three "lines of attack" are now known to be
+> wrong.** The bytes all come through ONE door:
+>
+> | door | streams/frame | MB/frame |
+> |---|---|---|
+> | **proven** (`needsExact`) — **unbudgeted and PERMANENT** | **388-483** | **21.8-29.4** |
+> | speculative — dynamic, still accruing proof (budgeted) | 29-37 | 0.0 |
+> | probe — newly met (budgeted) | 10-12 | 0.0 |
+>
+> **15,643 of 126,536 store entries have latched `needsExact` — 12.4%, rising
+> monotonically window over window, and it never unlatches.** That refutes part 46's
+> expectation of its own mechanism ("the UI text buffer's small edits and almost nothing
+> else"): a streaming world keeps meeting new large buffers.
+>
+> **But the bullet below about "earn exactness per stream" and the obvious variant of it
+> are refuted by measurement, and so is the strongest argument against the guard.** That
+> argument: a stream proven to change is one we are about to copy anyway, so hashing it is
+> an extra whole read to learn what the copy will tell us free — and always-copying would
+> be cheaper AND safer, since a stream always copied can never be served stale. One
+> counter killed it: **only 11-13% of proven observations find a change.** The guard saves
+> the copy on ~88% of them and is doing exactly its job (gotcha 336).
+>
+> So the real question is narrower and harder than this section poses: **can a large
+> buffer's change be detected more cheaply than by reading all of it?** The sampled guard
+> reads 16 KB of a 128 KB buffer and genuinely misses localized edits — the latch fires
+> *correctly*. The serious candidate is soft-dirty page tracking
+> (`/proc/self/clear_refs` + `pagemap`), which is EXACT rather than probabilistic and turns
+> a 128 KB read into a 256-byte one. It is architectural and touches correctness; its
+> costing is in `part51-kickoff.md` and its first step is one run.
 
 This is the biggest item in tier 2 and the one with the clearest statement. The
 cross-frame store's content guard is what `rec.vertex` is mostly doing. Part 47 made
@@ -165,9 +265,23 @@ other 717 ns/draw = shader 96 + key 36 + pipeline 124 + begin 101 + fetch 114
                     + tail 40 + residual 206
 ```
 
-* **`residual` 206 ns/draw (~1.4 ms) — SPLIT IT AGAIN.** Two splits have not named it,
+* ~~**`residual` 206 ns/draw (~1.4 ms) — SPLIT IT AGAIN.** Two splits have not named it,
   and splitting has found three items in two parts where reading code found none
-  (gotcha 327). This is the highest-yield-per-hour item in the document.
+  (gotcha 327). This is the highest-yield-per-hour item in the document.~~
+  **RETIRED IN PART 50: THE RESIDUAL IS THIS PROFILER, and no third split could ever have
+  found it because it is not in any of the code being split.** A `ProfScope` reads the
+  clock twice; the constructor's read falls between the parent's `t0` and the child's, so
+  it is inside the parent's interval and is **not** in `childNs` — nothing subtracts it —
+  while the `Close()` read lands in the child's own named phase. One whole clock read per
+  nested scope therefore accumulates in the parent's residual, and `drawOther` (printed as
+  `other`) is DoDraw's outermost scope. Confirmed by a control that could have refuted it:
+  `CZ_VK_PROFILE_EXTRA_SCOPES=8` moved the residual **205 -> 397 ns**, a slope of
+  **24.0 ns per scope** against a **21.6 ns** calibrated read, and DoDraw's ~8 DIRECT
+  children at that slope are **192 ns of the 205 ns residual, 94% of it**. **There is no
+  frame time here to save** — it is absent from every run without `CZ_VK_PROFILE`.
+  Gotcha 335, and it is a nastier shape than gotcha 7: an expensive probe usually distorts
+  what it reports, but this one files its own cost under a name that invites you to go
+  looking for a defect there, and two parts did.
 * **`pipeline` 124 ns/draw (~0.8 ms).** A `std::map<PipelineKey, VkPipeline>` — a
   red-black tree walked once per draw. Part 47 turned the sampler `std::map` into a
   flat table; this is the same shape and the last one left. Note the plan's §5
@@ -201,6 +315,10 @@ worth naming, because at 60 fps it costs double what part 48 priced it at, and b
 
 ## 6. THE ORDER, and what it should add up to
 
+> **THIS TABLE IS WRONG BY ABOUT 4 ms OF ITS ~9 ms.** Both the baseline and three of the
+> six items were repriced in part 50; the corrected version is below it. Kept in place
+> rather than edited so the size of the error is visible, which is the point.
+
 | # | item | expected | cumulative at 7,000 draws |
 |---|---|---|---|
 | — | measured baseline | — | **28.3 ms (35.7 fps)** |
@@ -211,6 +329,22 @@ worth naming, because at 60 fps it costs double what part 48 priced it at, and b
 | 3 | pipeline map → flat, shader pair cache | −1.0 | **19.3 ms (52 fps)** |
 | 1d | ask what the guest sim costs per present | ? | ? |
 | 5 | present without the readback | −1.2 | 18.1 |
+
+**CORRECTED AT THE CLOSE OF PART 50**, on the unprofiled frame:
+
+| # | item | expected | cumulative at 7,000 draws | state |
+|---|---|---|---|---|
+| — | baseline, **profiler removed** | — | **~25.5 ms (~39 fps)** | the frame the operator actually plays |
+| 1a | skip runs of type-2 filler | **−0.4** | 25.1 | **SHIPPED**; below this route's frame-time noise |
+| 2a | detect change without reading the buffer | −2.5 | **22.6** | architectural; price `clear_refs` first, one run |
+| 1c | inline the walk (no call per packet) | up to −2.2 | 20.4 | a REFACTOR with desync risk, not a tightening |
+| 3 | pipeline map → flat, shader-pair cache | −1.0 | **~19.4 ms (~52 fps)** | always real; only the *residual* was the phantom |
+| 5 | present without the readback | −1.2 | 18.2 | the GPU is idle and can do the blit |
+| 1d | does the guest sim run per PRESENT or its own timer? | ? | ? | one run: `outside` per SECOND at 30/45/60 |
+
+**The target is unchanged and it is closer than the plan believed** — not because anything
+got faster, but because 2.8 ms of the old baseline was the instrument. **Nothing in this
+correction is a speedup the player would feel; part 50 shipped ~0.4 ms.**
 
 **Tiers 1-3 are mechanical and individually verifiable.** 16 ms at 7,000 draws needs
 tier 5 or better than expected elsewhere; 20 ms is reachable without any architectural
@@ -225,6 +359,21 @@ The rules parts 47 and 48 paid for, with one important change at the top:
 * **FRAME TIME IS USABLE AGAIN.** The 32 ms floor is gone below 5,000 draws entirely
   and is 28 ms above it. Quote fps and ms directly. Gotchas 237/238's pinned share was
   a workaround for a ceiling that no longer exists — do not reach for it first.
+* **BUT NEVER QUOTE A FRAME TIME FROM A PROFILED RUN WITHOUT SAYING SO** (part 50).
+  `CZ_VK_PROFILE` costs 2-4 ms a frame, 8-18%, so a profiled frame is not the frame the
+  player gets. `CZ_VK_FRAME_STATS` is independent of it and its `msec` column exists in
+  both arms — which is the only reason that A/B is possible at all
+  (`tools/part50_profiler_cost.sh`). **Keep them independent**: an instrument that can
+  only be read through another instrument cannot measure that one.
+* **A MEASUREMENT CORRECTION IS NOT A SPEEDUP.** Part 50's largest number is the 2-4 ms
+  the profiler costs, and **the player never paid it** — it changed what we may claim, not
+  what the game does. Report the two separately and never bank a correction as a saving
+  (gotcha 338).
+* **THE NULL FLOOR ON THIS ROUTE IS LARGE AND MUST BE MEASURED PER STATISTIC**, not
+  assumed: part 50 measured **9.4% on ns/packet** (base against itself, 3 runs) and
+  **8-18% on frame time by draw band**. An item worth 0.4 ms is invisible here — item 1a's
+  frame-time A/B read exactly **+0.0%** in all three bands — so an item below ~1 ms needs
+  a per-unit statistic (ns/packet, ns/draw, MB/frame) and cannot be settled on frame time.
 * **EVERY CAMPAIGN NEEDS A NULL-CONTROL ARM** — one whose change cannot move the
   statistic you are reading. Whatever it reads IS the floor (gotcha 331). Part 48
   believed a fake 8% for an hour without one.
