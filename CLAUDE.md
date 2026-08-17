@@ -680,6 +680,9 @@ WAS THE TITLE'S OWN SETTING ALL ALONG.** The operator has played the whole map a
 `CZ_FPS_CAP=60`. **`docs/part50-kickoff.md` is the LIVE hand-off and
 `docs/perf-plan-part50.md` is the live plan**, built on that lap):
 
+* **60 fps IS NOW THE DEFAULT**, on the operator's instruction; `CZ_FPS_CAP=30` is
+  the control arm and reproduces the shipped pacing exactly. A player-facing
+  option to choose is later work.
 * **THE WHOLE-MAP LAP IS THE HEADLINE — 16,788 frames on their machine.** 62.5 fps
   below 3,000 draws, 43.5 at 3-5k, **35.7 at 5-7k where 60% of their play is**, and
   only **3.6% of frames below 30 fps**. Their words: *"seems to be working pretty

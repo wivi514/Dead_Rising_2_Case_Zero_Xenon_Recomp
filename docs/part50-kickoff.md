@@ -76,9 +76,12 @@ machine.
 ## Standing state
 
 * **Runtime defaults changed in part 49**: host presentation vsync is OFF
-  (`CZ_HOST_VSYNC=1` restores it). `CZ_FPS_CAP` is unset by default, so the frame rate
-  cap is unchanged at 30 unless asked — **decide with the operator whether 60 should
-  become the default.**
+  (`CZ_HOST_VSYNC=1` restores it), and **the frame rate cap is 60 fps** —
+  `CZ_FPS_CAP=30` is the control arm and restores the shipped pacing exactly.
+  The operator asked for 60 as the default after playing the whole map on it; a
+  PLAYER-FACING option to choose is later, separate work and is not built.
+  **Every measurement in this plan was taken at 60 fps**, so a number quoted from
+  part 48 or earlier was taken at 30 and is not comparable without saying so.
 * **New arms**: `CZ_FPS_CAP=N`, `CZ_PRESENT_INTERVAL=1|2|3`, `CZ_HOST_VSYNC=1`, and
   from part 48 `CZ_PM4_ATOMIC_COUNTERS=1`, `CZ_PM4_VERIFY_COUNTERS[_POISON]=1`.
 * **Tooling**: `part48_campaign.sh` (many arms, one pinned binary, one shared

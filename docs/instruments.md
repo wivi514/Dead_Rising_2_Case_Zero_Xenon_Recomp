@@ -62,7 +62,12 @@ CZ_RING_TRACE=1    the ring words once a second, incl. the MMIO dword we do NOT 
                    ratios: 0.9997 / 1.000 / 0.523 with walks==kicks==drains is the
                    healthy shape, `distinct=2` with `arms` frozen is a replay. It is
                    what retired the "~300x amplification" (gotchas 161-162)
-CZ_FPS_CAP=N       **THE FRAME RATE CAP.** Default unset = 30 fps, unchanged. It works by
+CZ_FPS_CAP=N       **THE FRAME RATE CAP. THE DEFAULT IS 60 fps AS OF PART 49**, on the
+                   operator's instruction after they played the whole map on it;
+                   `CZ_FPS_CAP=30` is the same-binary control arm and restores the
+                   shipped pacing exactly (the period is `1000/(2*fps)` with TRUNCATING
+                   division, so 30 comes out at exactly the 16 ms this runtime has used
+                   since phase 1). It works by
                    SHORTENING THE VBLANK PERIOD, not by changing the title's present
                    interval, and that distinction is the whole of part 49's second half.
                    The title's presents are vblank-QUANTISED by construction —
