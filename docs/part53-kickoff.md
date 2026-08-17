@@ -20,8 +20,10 @@ saving rather than a frame rate anybody sees.
 
 **The operator's instruction is still current**: *"prepare a whole plan to fix CPU
 performance issue and we'll start it in a fresh conversation."* Their two deferred picture
-items (00m decals, 00n a sign and items at distance) remain deferred. **Part 52 shipped
-work they have not yet judged** — see "what is owed" below.
+items (00m decals, 00n a sign and items at distance) remain deferred. **They have now
+judged part 52 — "performance is better" — and their crowd frame reaches the 60 fps cap;
+read "the operator has judged it" below BEFORE picking an item, because it changes the
+question part 53 should ask.**
 
 ## WHAT PART 52 SHIPPED — do not re-derive any of this
 
