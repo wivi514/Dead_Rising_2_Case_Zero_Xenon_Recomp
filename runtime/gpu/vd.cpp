@@ -617,20 +617,32 @@ void GraphicsInterruptPump()
             // ring nothing will ever release (streak without bound). Every other
             // counter on these lines reads identically in both cases (gotcha 81).
             //
-            // The streak is in TICKS, and a tick is CZ_PM4_TICK_MS milliseconds — which
+            // The streak is in TICKS, and a tick is CZ_PM4_TICK_US microseconds — which
             // stopped being the vblank period in part 18. It is printed here so the
             // number stays comparable across arms that tick at different rates: at a
             // 1 ms tick a wait released by the next VBLANK legitimately reads ~16, and
             // reading that against a figure recorded at a 16 ms tick would score a
             // healthy run as a 16x regression (gotcha 157).
-            KLOG("ring: waits unmet=%llu held=%llu streak=%llu max=%llu (tick=%dms)%s\n",
+            //
+            // PART 51 HAD TO FIX THIS LINE TWICE OVER, and both breakages are the very
+            // trap the paragraph above was written about. Adding a sub-millisecond tick
+            // made `tick=%dms` print `1` for a pump ticking at 100 us — a label that is
+            // not merely coarse but WRONG — and it made the "over a second" test below
+            // fire after 6 ms, on every healthy run, because 60 was a tick count chosen
+            // when a tick was a millisecond. The threshold is now a DURATION and the
+            // label is now the real period. A warning that fires on healthy runs is
+            // worse than no warning: it teaches the reader to skip the line.
+            const uint64_t streakUs = Pm4_HoldStreak() * uint64_t(tickUs);
+            KLOG("ring: waits unmet=%llu held=%llu streak=%llu max=%llu (tick=%dus, "
+                 "streak=%.1f ms)%s\n",
                  (unsigned long long)Pm4_WaitUnmetCount(),
                  (unsigned long long)Pm4_RingHeldCount(),
                  (unsigned long long)Pm4_HoldStreak(),
-                 (unsigned long long)Pm4_HoldStreakMax(), tickMs,
-                 Pm4_HoldStreak() > 60 ? "   <-- the ring has sat on ONE wait for over a "
-                                         "second: nothing is going to release it"
-                                       : "");
+                 (unsigned long long)Pm4_HoldStreakMax(), tickUs,
+                 double(streakUs) * 1e-3,
+                 streakUs > 1000000 ? "   <-- the ring has sat on ONE wait for over a "
+                                      "second: nothing is going to release it"
+                                    : "");
             // The GPU/CPU hand-off chain, link by link (cpu/chain_stats.h). Read it as
             // a chain of RATIOS: arms -> ints is how many times the command processor
             // executed each arm block, ints -> isr is the per-CPU acknowledge's own
