@@ -561,8 +561,213 @@ void DumpShader(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t size
     }
 }
 
+// --- the shader-content memo (part 52 item 1.0) ------------------------------------
+//
+// WHY THIS EXISTS. `BindShader` runs on every IM_LOAD / IM_LOAD_IMMEDIATE packet —
+// **~1,300-1,900 a frame** by the opcode census — and hashed the ENTIRE microcode every
+// time. A `perf` symbol profile with every instrument off (part 52's recon,
+// `tools/part52_recon.sh nostats`) put `BindShader` at **12.47% of the pump thread**,
+// the third-largest symbol in the process behind the guard fold and `DoDraw`, and an
+// instruction-level annotation put **~95% of its samples on four `imulq`s** — the FNV-1a
+// multiply chain, one 5-cycle-latency multiply per BYTE with the accumulator on the
+// dependency chain, i.e. about a byte per cycle. On the order of 9 MB of microcode
+// hashed per frame to recompute the same ~250 distinct hashes it computed last frame,
+// and the frame before.
+//
+// WHY THE HASH CANNOT SIMPLY BE MADE FASTER, WHICH IS THE FIRST TRAP HERE. It is the
+// SHADER CACHE KEY. `assets/shader_spv/vs_<hash>.spv`, `tools/build_shader_spv.sh`, the
+// `[imload]` line and the renderer's "no translated shader" miss report all name a
+// shader by this exact value, and the offline pipeline computes it with the same
+// function over the same bytes. Swapping in a wider or vectorised fold would rename all
+// 435 cache entries at once and present as a silently unshaded world. **So the hash has
+// to be AVOIDED, not accelerated.**
+//
+// WHY THE KEY IS THE WHOLE MICROCODE AND NOT A CHEAP PROBE, WHICH IS THE SECOND TRAP AND
+// THE EXPENSIVE ONE. `perf-plan-part52.md` §3 item 1.0 specifies the memo as
+// `(ucodeVa, sizeDwords)` plus "the first and last dword of the microcode alongside —
+// two loads, and it catches the overwhelming majority of a re-upload", and argues that a
+// wrong answer would be loud because it would read as a cache MISS. **Both halves were
+// measured and both are false**, by the verify arm below on its first full run:
+//
+//   [pm4] SHADER MEMO MISMATCH #2: VS va=00000000 size=102 — memo said f2ef2d2f8de976d0,
+//         the microcode hashes to 8ed00911a7bc1eb1 (first=F1555004 last=A9A9C68D)
+//   [pm4] SHADER MEMO MISMATCH #3: VS va=00000000 size=102 — memo said 8ed00911a7bc1eb1,
+//         the microcode hashes to f2ef2d2f8de976d0 (first=F1555004 last=A9A9C68D)
+//
+// Two DIFFERENT shaders, identical in size and in both probe dwords, alternating — so
+// the probe was wrong roughly half the time it was consulted for that pair. Microcode is
+// far too regular for two dwords to identify it: dword 0 is a control-flow instruction
+// pair whose encoding repeats across every shader a compiler emits from one template,
+// and the last dword is as often as not the tail of a padded block. The same happened at
+// a real address (`va=BC73D080 size=120 first=F5556005`), which is the driver recycling
+// one staging buffer — the case the probe was specifically supposed to catch.
+//
+// And the failure is SILENT, not loud. The plan's argument was that a wrong hash names
+// nothing in the cache, so the standing `grep -c "no translated shader"` gate would see
+// it. But a wrong hash here is not a random number — it is **another real shader's
+// hash**, which is in the cache, so the renderer would bind a real, wrong, translated
+// shader and draw with it. That is a stale-mesh-class defect (part 46) with no gate
+// pointing at it. Gotcha: when a cache key is a PROBE rather than the content, ask what
+// the wrong answer IS, not just how likely it is — a probe that fails into another valid
+// key fails invisibly.
+//
+// WHAT IS DONE INSTEAD. The key is the microcode itself, compared with `memcmp` against
+// a stored copy. That is exact — there is no probability left in it — and it is still a
+// large win, because the cost being removed is a serial multiply chain and not a memory
+// read: FNV-1a here runs at ~1 byte/cycle, `__memcmp_avx2_movbe` at tens of bytes per
+// cycle over the same bytes, and those bytes are hot (each of ~250 shaders is re-bound
+// several times a frame). The `(va, size, first dword)` triple survives only as a way to
+// pick which stored copy to compare against, where being wrong costs a wasted compare
+// and nothing else.
+//
+// The table is set-associative rather than direct-mapped **because of the measurement
+// above**: the alternating pair is real, and a one-entry-per-slot table would evict on
+// every load and hash every time. Four ways per set hold it.
+struct ShaderMemoEntry
+{
+    uint32_t va = 0;
+    uint32_t sizeDwords = 0;   // 0 = empty way
+    uint32_t first = 0;        // microcode dword 0 — a cheap reject before the memcmp
+    uint64_t hash = 0;
+    std::vector<uint8_t> bytes;  // the microcode as the guest holds it, big-endian
+};
+// 256 sets x 4 ways = 1024 entries against ~250 distinct shaders a run. The bytes are
+// held per entry, so the whole table is on the order of a megabyte at this title's
+// shader sizes; it is allocated lazily, one `std::vector` per distinct shader actually
+// seen, and never freed.
+constexpr uint32_t kShaderMemoSets = 256;
+constexpr uint32_t kShaderMemoWays = 4;
+ShaderMemoEntry g_shaderMemo[kShaderMemoSets][kShaderMemoWays];
+uint32_t g_shaderMemoNextWay[kShaderMemoSets];
+std::atomic<uint64_t> g_shaderMemoHits{ 0 };
+std::atomic<uint64_t> g_shaderMemoMisses{ 0 };
+std::atomic<uint64_t> g_shaderMemoEvictions{ 0 };
+std::atomic<uint64_t> g_shaderMemoMismatches{ 0 };
+// Of the misses, the ones where every way of the set was already occupied — i.e.
+// CAPACITY pressure, which more ways or more sets would remove. The complement is a
+// compulsory miss (a shader seen for the first time), which nothing can remove. Split
+// because "N% of loads still hash" means two completely different things depending on
+// which it is, and guessing which would be exactly the "a share is not a shape" error
+// part 50 made twice (gotcha 339).
+std::atomic<uint64_t> g_shaderMemoCollisions{ 0 };
+
+// CZ_PM4_NO_SHADER_MEMO=1 restores the pre-part-52 form — a full hash on every load —
+// and is the same-binary control arm for the item.
+const bool g_noShaderMemo = getenv("CZ_PM4_NO_SHADER_MEMO") != nullptr;
+// CZ_PM4_VERIFY_SHADER_HASH=1 takes the memo's answer AND computes the real hash on
+// every single load, and reports every disagreement with the address, the size and both
+// hashes. This is the correctness gate, it is the incumbent-as-oracle shape the counter
+// verifier next door already uses (gotcha 322), and **it earned its keep the first time
+// it ran** — see the mismatch transcript above.
+const bool g_verifyShaderHash = getenv("CZ_PM4_VERIFY_SHADER_HASH") != nullptr;
+// ...and a gate that has never been shown able to fail proves nothing by passing
+// (gotcha 30). This corrupts one memoized hash in every 1024 hits, so the verify arm
+// must SCREAM on a poisoned run before its silence on a clean one means anything.
+const bool g_verifyShaderPoison = getenv("CZ_PM4_VERIFY_SHADER_POISON") != nullptr;
+
+uint32_t ShaderMemoSet(uint32_t va, uint32_t sizeDwords)
+{
+    uint64_t k = (uint64_t(va) << 32) ^ (uint64_t(sizeDwords) * 0x9E3779B97F4A7C15ull);
+    k ^= k >> 33;
+    k *= 0xFF51AFD7ED558CCDull;
+    return uint32_t(k >> 32) & (kShaderMemoSets - 1);
+}
+
+// The microcode's first dword, read big-endian — i.e. exactly as the guest holds it, the
+// same convention `Fnv1a` hashes in, so the pointer path and the immediate path produce
+// the same value for the same shader.
+inline uint32_t UcodeDwordBE(const uint8_t* p)
+{
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) |
+           uint32_t(p[3]);
+}
+
+// The lookup. `code` is `sizeDwords * 4` bytes of microcode as the guest holds them —
+// for the pointer path that is guest memory read in place, with no copy at all. Returns
+// 0 on a miss; on a hit it returns the memoized hash AND has already bound it.
+uint64_t ShaderMemoLookup(uint32_t type, uint32_t va, uint32_t sizeDwords,
+                          const uint8_t* code)
+{
+    const size_t nbytes = size_t(sizeDwords) * 4;
+    const uint32_t first = UcodeDwordBE(code);
+    ShaderMemoEntry* set = g_shaderMemo[ShaderMemoSet(va, sizeDwords)];
+    uint32_t occupied = 0;
+    for (uint32_t w = 0; w < kShaderMemoWays; w++)
+    {
+        ShaderMemoEntry& e = set[w];
+        if (!e.sizeDwords)
+            continue;
+        occupied++;
+        if (e.sizeDwords != sizeDwords || e.va != va || e.first != first)
+            continue;
+        if (memcmp(e.bytes.data(), code, nbytes) != 0)
+            continue;
+        g_shaderMemoHits.store(g_shaderMemoHits.load(std::memory_order_relaxed) + 1,
+                               std::memory_order_relaxed);
+        uint64_t hash = e.hash;
+        if (g_verifyShaderPoison &&
+            (g_shaderMemoHits.load(std::memory_order_relaxed) & 0x3FF) == 0)
+            hash ^= 1;   // the positive control: one hit in 1024 answers wrongly
+        g_boundShaders[type] = { va, sizeDwords, hash };
+        return hash;
+    }
+    g_shaderMemoMisses.store(g_shaderMemoMisses.load(std::memory_order_relaxed) + 1,
+                             std::memory_order_relaxed);
+    if (occupied == kShaderMemoWays)
+        g_shaderMemoCollisions.store(
+            g_shaderMemoCollisions.load(std::memory_order_relaxed) + 1,
+            std::memory_order_relaxed);
+    return 0;
+}
+
+void ShaderMemoInsert(uint32_t va, uint32_t sizeDwords, const uint8_t* code, uint64_t hash)
+{
+    const uint32_t setIndex = ShaderMemoSet(va, sizeDwords);
+    ShaderMemoEntry* set = g_shaderMemo[setIndex];
+    uint32_t victim = kShaderMemoWays;
+    for (uint32_t w = 0; w < kShaderMemoWays; w++)
+        if (!set[w].sizeDwords)
+        {
+            victim = w;
+            break;
+        }
+    if (victim == kShaderMemoWays)
+    {
+        // Round-robin rather than random, so a set thrashed by K > ways distinct shaders
+        // degrades smoothly instead of pinning one entry; and evictions are counted so
+        // "the memo is thrashing" is a number rather than a suspicion.
+        victim = g_shaderMemoNextWay[setIndex] % kShaderMemoWays;
+        g_shaderMemoNextWay[setIndex] = victim + 1;
+        g_shaderMemoEvictions.store(
+            g_shaderMemoEvictions.load(std::memory_order_relaxed) + 1,
+            std::memory_order_relaxed);
+    }
+    ShaderMemoEntry& e = set[victim];
+    e.va = va;
+    e.sizeDwords = sizeDwords;
+    e.first = UcodeDwordBE(code);
+    e.hash = hash;
+    e.bytes.assign(code, code + size_t(sizeDwords) * 4);
+}
+
+// The reusable staging buffer both load paths snapshot into.
+//
+// It replaces a `std::vector<uint8_t>` constructed per packet — a malloc and a free on
+// every one of ~1,900 shader loads a frame, which is a large share of the `_int_malloc`
+// the recon found on the frame path (`perf-plan-part52.md` item 3.3). Nothing retains
+// the pointer past `BindShader`, and only the pump thread walks packets, so one buffer
+// is enough; it is `static` rather than `thread_local` for the same reason the rest of
+// this module is single-threaded by construction.
+std::vector<uint8_t> g_ucodeStaging;
+
 // The shared body of both load packets: validate, hash, bind, dump, announce once.
-void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t sizeDwords)
+//
+// `expectHash` is non-zero only under CZ_PM4_VERIFY_SHADER_HASH, where the memo has
+// already answered and this call exists solely to check that answer against the real
+// fold. The real fold wins in that case — the verify arm reports a disagreement, it does
+// not propagate one.
+void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t sizeDwords,
+                uint64_t expectHash = 0)
 {
     if (type > 1 || !sizeDwords || sizeDwords > 0x10000)
         return;
@@ -582,6 +787,34 @@ void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t s
 
     const uint64_t hash = Fnv1a(code, size_t(sizeDwords) * 4);
     g_boundShaders[type] = { ucodeVa, sizeDwords, hash };
+
+    // Publish these exact bytes as the key for their own hash. The copy is taken from
+    // the SNAPSHOT and not from a re-read of guest memory, so the stored key and the
+    // stored value describe the same bytes even though the driver may be rewriting that
+    // staging area while we work — which is the reason the caller snapshots at all.
+    //
+    // Skipped when the memo already answered CORRECTLY, which only happens under the
+    // verify arm — and it matters, because without the test the verify arm re-inserts on
+    // every load, fills all four ways of a set with the same shader and reports an
+    // eviction count 46x its own miss count. An instrument that destroys the statistic it
+    // is standing next to is still an instrument that changed the measurement (gotcha 7);
+    // here the fix is one comparison. A DISAGREEMENT still inserts, so the verify arm
+    // repairs the table as well as reporting it.
+    if (expectHash != hash)
+        ShaderMemoInsert(ucodeVa, sizeDwords, code, hash);
+
+    if (expectHash && expectHash != hash)
+    {
+        const uint64_t n = g_shaderMemoMismatches.fetch_add(1);
+        if (n < 32)
+            fprintf(stderr,
+                    "[pm4] SHADER MEMO MISMATCH #%llu: %s va=%08X size=%u — memo said "
+                    "%016llx, the microcode hashes to %016llx (first=%08X last=%08X)\n",
+                    static_cast<unsigned long long>(n), type == 0 ? "VS" : "PS", ucodeVa,
+                    sizeDwords, static_cast<unsigned long long>(expectHash),
+                    static_cast<unsigned long long>(hash), UcodeDwordBE(code),
+                    UcodeDwordBE(code + (size_t(sizeDwords) - 1) * 4));
+    }
 
     // One line per distinct shader, always on. The renderer's own miss report says
     // "hash X is not in the cache"; this is what says which stage it was and how big,
@@ -1781,11 +2014,25 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 // staging area while our executor works through the ring, so reading
                 // the target twice — once to hash, once to translate — can see two
                 // different shaders and produce a name that matches neither.
+                //
+                // ...but ask the memo FIRST, because on a hit neither the snapshot nor
+                // the fold has to happen at all (part 52 item 1.0). The comparison is
+                // made against guest memory IN PLACE, with no copy: `memcmp` is the
+                // whole test, and a torn read simply fails it and falls through to the
+                // honest path below. It cannot produce a wrong hash, only a missed
+                // saving — which is precisely what the two-dword probe the plan
+                // specified could NOT promise (see the memo's header comment).
                 if (size && size <= 0x10000)
                 {
-                    std::vector<uint8_t> code(size_t(size) * 4);
-                    memcpy(code.data(), base + va, code.size());
-                    BindShader(type, va, code.data(), size);
+                    const uint8_t* src = base + va;
+                    const uint64_t memo =
+                        g_noShaderMemo ? 0 : ShaderMemoLookup(type, va, size, src);
+                    if (!memo || g_verifyShaderHash)
+                    {
+                        g_ucodeStaging.resize(size_t(size) * 4);
+                        memcpy(g_ucodeStaging.data(), src, g_ucodeStaging.size());
+                        BindShader(type, va, g_ucodeStaging.data(), size, memo);
+                    }
                 }
             }
             break;
@@ -1799,9 +2046,21 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                 {
                     // Written back out big-endian on purpose: `body()` has already
                     // swapped, and the hash must be over the bytes as the guest holds
-                    // them or this path names a shader differently from the pointer
-                    // path above (see Fnv1a's comment).
-                    std::vector<uint8_t> code(size_t(size) * 4);
+                    // them or this path names a shader differently from the pointer path
+                    // above (see Fnv1a's comment).
+                    //
+                    // The memo applies here too, but unlike the pointer path this one
+                    // cannot skip building the bytes: the microcode is INSIDE the packet
+                    // stream, so there is nothing contiguous to compare against until it
+                    // has been swapped out. What the memo still removes is the fold,
+                    // which is the expensive half by an order of magnitude — the swap
+                    // loop is a load, a bswap and a store per dword with no dependency
+                    // chain. The buffer is reused rather than allocated, so this path no
+                    // longer mallocs either. The key's `va` is 0 for every immediate
+                    // load; that is not a collision farm, because the stored bytes are
+                    // the key and the set index only decides where to look.
+                    g_ucodeStaging.resize(size_t(size) * 4);
+                    uint8_t* code = g_ucodeStaging.data();
                     for (uint32_t k = 0; k < size; k++)
                     {
                         const uint32_t w = body(2 + k);
@@ -1810,7 +2069,10 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
                         code[k * 4 + 2] = uint8_t(w >> 8);
                         code[k * 4 + 3] = uint8_t(w);
                     }
-                    BindShader(type, 0, code.data(), size);
+                    const uint64_t memo =
+                        g_noShaderMemo ? 0 : ShaderMemoLookup(type, 0, size, code);
+                    if (!memo || g_verifyShaderHash)
+                        BindShader(type, 0, code, size, memo);
                 }
             }
             break;
@@ -2322,6 +2584,16 @@ uint64_t Pm4_FillerHist(uint32_t bucket)
     return CensusSum(
         [bucket](Census& c) -> std::atomic<uint64_t>& { return c.fillerHist[bucket]; });
 }
+
+// The shader memo's own numbers. Plain globals rather than per-thread `Census` fields
+// because shader loads happen only on the walking thread and there is exactly one of
+// those in this runtime — the per-thread split next door exists to remove `lock xadd`
+// from a path taken 326,000 times a frame, and this one is taken 1,919 times.
+uint64_t Pm4_ShaderMemoHits() { return g_shaderMemoHits.load(); }
+uint64_t Pm4_ShaderMemoMisses() { return g_shaderMemoMisses.load(); }
+uint64_t Pm4_ShaderMemoEvictions() { return g_shaderMemoEvictions.load(); }
+uint64_t Pm4_ShaderMemoCollisions() { return g_shaderMemoCollisions.load(); }
+uint64_t Pm4_ShaderMemoMismatches() { return g_shaderMemoMismatches.load(); }
 
 // The verifier. Returns the number of the 135 counters on which the per-thread form and
 // the atomic form DISAGREE, and 0 when the check is not running — which is why the

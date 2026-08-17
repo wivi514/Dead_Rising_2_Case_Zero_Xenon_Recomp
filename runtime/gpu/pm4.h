@@ -211,6 +211,26 @@ uint64_t Pm4_CensusMismatches(uint64_t* threads);
 uint64_t Pm4_FillerRuns();
 uint64_t Pm4_FillerRingDwords();   // ...of the type-2 dwords, those walked at ring level
 uint64_t Pm4_FillerHist(uint32_t bucket);  // run length, log2 buckets: 1,2,4,8..128+
+// The shader-hash memo (part 52 item 1.0). `BindShader` hashed the whole microcode on
+// every one of ~1,919 shader-load packets a frame, which a `perf` symbol profile with
+// the instruments off put at 12.47% of the pump thread — ~95% of it in the FNV multiply
+// chain. The memo answers from `(va, size, first dword, last dword)` instead.
+//
+// The hit rate is the item's own measurement and is printed by `[vkprof]`: a low one
+// means the memo is thrashing rather than working, and evictions separate "the guest
+// binds more shaders than the table holds" from "the guest keeps re-uploading".
+// CZ_PM4_NO_SHADER_MEMO=1 is the control arm.
+uint64_t Pm4_ShaderMemoHits();
+uint64_t Pm4_ShaderMemoMisses();
+uint64_t Pm4_ShaderMemoEvictions();
+// ...of which were a COLLISION (a different shader held the slot) rather than the guest
+// re-uploading different microcode to the same address. Only the first kind is fixable
+// by a bigger or set-associative table.
+uint64_t Pm4_ShaderMemoCollisions();
+// Disagreements between the memo's answer and a real fold of the microcode, under
+// CZ_PM4_VERIFY_SHADER_HASH=1 (which does BOTH on every load). **Must be 0**, and
+// CZ_PM4_VERIFY_SHADER_POISON=1 must make it non-zero before that zero means anything.
+uint64_t Pm4_ShaderMemoMismatches();
 uint64_t Pm4_DrawCount();
 uint64_t Pm4_FrameCount();                  // XE_SWAP packets = frames
 uint64_t Pm4_InterruptCount();

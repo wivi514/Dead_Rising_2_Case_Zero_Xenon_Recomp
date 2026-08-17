@@ -10932,6 +10932,40 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             hist);
             }
 
+            // The shader-hash memo (part 52 item 1.0). The item's claim is that the
+            // ~1,919 shader loads a frame re-hash a handful of distinct shaders, so the
+            // HIT RATE is the claim, not a side note: below ~90% the memo is thrashing
+            // and the frame-time result will be noise. Evictions separate the two ways a
+            // low rate can happen — a working set larger than the table, or a guest that
+            // genuinely keeps uploading new microcode. Printed unconditionally because a
+            // number nobody prints is a number nobody checks (part 51's `outside`).
+            {
+                static uint64_t lastHits = 0, lastMisses = 0, lastEvict = 0, lastColl = 0;
+                const uint64_t hits = Pm4_ShaderMemoHits();
+                const uint64_t misses = Pm4_ShaderMemoMisses();
+                const uint64_t evict = Pm4_ShaderMemoEvictions();
+                const uint64_t dHits = hits - lastHits, dMisses = misses - lastMisses;
+                const uint64_t dEvict = evict - lastEvict;
+                const uint64_t coll = Pm4_ShaderMemoCollisions();
+                const uint64_t dColl = coll - lastColl;
+                lastColl = coll;
+                lastHits = hits;
+                lastMisses = misses;
+                lastEvict = evict;
+                if (dHits || dMisses)
+                    fprintf(stderr,
+                            "[vkprof] shader memo: %.1f%% hit (%llu hit / %llu miss, "
+                            "%llu evicted, %llu of the misses a collision) | "
+                            "%llu loads/frame%s\n",
+                            100.0 * double(dHits) / double(dHits + dMisses),
+                            (unsigned long long)dHits, (unsigned long long)dMisses,
+                            (unsigned long long)dEvict, (unsigned long long)dColl,
+                            (unsigned long long)(frames ? (dHits + dMisses) / frames : 0),
+                            Pm4_ShaderMemoMismatches()
+                                ? "  *** MEMO MISMATCHES, see [pm4] above ***"
+                                : "");
+            }
+
             // Collect, sort by count descending, print. 128 slots is a fixed, tiny
             // array; B1's census says this title uses 21 opcodes, so this is at most
             // four lines and usually three.
