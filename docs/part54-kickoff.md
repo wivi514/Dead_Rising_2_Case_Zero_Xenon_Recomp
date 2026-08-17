@@ -58,15 +58,33 @@ overlap at all** between the two sets.
 | on | 2 (staging) | **1.14 ms** |
 | on | 1 | **0.67 ms** — the default, and 0.66 in their arm A |
 
-**The guard pool DOUBLES the cost of the present copies**, because four workers streaming
-~70 MB/frame leave much less bandwidth for a 3.5 MB `memcpy`. Item 1.3 takes that back.
 Their A/B switched both items together, so item 1.3 was compared against an arm that had
-the workers off as well — and an item can read NEGATIVE when the other item in the same
-arm taxes it. Both items ship.
+the workers off as well — and **an item can read NEGATIVE when the other item in the same
+arm taxes it** (gotcha 347). Both items ship.
 
-**Carry the bandwidth number forward, though: it is large enough to double an unrelated
-3.5 MB copy.** Item 1.2 moves texture UNTILING, which is a pure bandwidth job, so it must
-be priced against the memory system and not only against the CPU it frees.
+**Then the operator corrected the correction, and it is the more useful half.** The
+per-item arm sat at the military camp — **1,891-4,777 draws** — while their soak is
+**7,000-7,500**. Read down its columns instead of taking its mean and `readback` goes
+**0.525 -> 0.700 ms with load INSIDE one arm**, so item 1.3's saving is a slope like
+everything else here: **−0.37 ms at 1,900 draws, −0.59 at 4,200**. Their load is above the
+whole of that range, so the item is worth MORE there than the arm can show. The
+three-configuration table above is an INFERENCE, not a matched measurement — it compares
+40 fps against ~100 fps — and §6cj §12 says what survives it.
+
+**Two reading errors in one write-up, both "quoted the arm mean without looking down the
+column".** That is gotcha 237's failure one instrument over, and this part committed it
+twice in an hour. Look down the column.
+
+**Carry the bandwidth number forward.** The pool moves **2.2-3.0 GB/s** in every
+configuration measured (23-30 MB/frame at ~100 fps here; **69.8 MB/frame at 49.8 fps on
+their machine**), and that pressure is what sets the cost of an unrelated 3.5 MB copy.
+Item 1.2 moves texture UNTILING, which is a pure bandwidth job, so **it must be priced
+against the memory system and not only against the CPU it frees** — it may not be
+−1..2 ms at all.
+
+**Cheap and owed:** fold a `CZ_VK_PRESENT_STAGING`-only pair into the next operator soak.
+Two three-minute holds at their load, everything else constant. It is 0.5 ms so it does not
+justify an evening alone, but it costs nothing beside an item that does.
 
 ---
 
@@ -136,7 +154,9 @@ prints two arms side by side, which is an item A/B in one command.
 
 ## WHAT IS OWED
 
-* Nothing from part 53 itself. Both items are measured, confirmed on the operator's own
+* **A `CZ_VK_PRESENT_STAGING`-only pair at the operator's load** — see above. Cheap, and
+  it is the only number item 1.3 is missing.
+* Otherwise nothing from part 53 itself. Both items are measured, confirmed on the operator's own
   machine and route, and their verdict on the picture is *"look and feel is as usual"* —
   which rules out a GROSS stale-buffer regression, the way this change could have failed
   badly, and is not evidence that the widened race never fires (the verify arm puts that at

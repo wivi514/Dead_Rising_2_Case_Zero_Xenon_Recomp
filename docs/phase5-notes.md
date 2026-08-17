@@ -10746,3 +10746,67 @@ measurement rather than a story.
 enough to double an unrelated 3.5 MB copy.** Every remaining parallel item in the plan —
 1.2 especially, which moves texture UNTILING, a pure bandwidth job — has to be priced
 against that, not just against the CPU it frees.
+
+### §12. THE OPERATOR CORRECTS §11's COVERAGE — and it moves item 1.3 the GOOD way
+
+> *"Your session pretty much stayed at the military camp where load is light and my
+> session is where load is the heaviest."*
+
+They are right, and it invalidates one sentence of §11 outright. Item 1.3's arm ran
+**1,891-4,777 draws/frame**; their soak was **7,000-7,500**. §11 said "thirteen windows at
+wildly different draw counts are all the same number within an arm", and that is **wrong**
+— it was read off the arm means without looking down the columns. Paired by draw count:
+
+| draws | 1 copy (default) | 2 copies (`CZ_VK_PRESENT_STAGING=1`) | Δ |
+|---|---|---|---|
+| ~1,890 | 0.525 | 0.894 | **−0.369** |
+| ~2,580 | 0.576 | 1.009 | −0.433 |
+| ~3,400 | 0.687 | 1.210 | −0.523 |
+| ~3,800/3,900 | 0.686 | 1.242 | −0.556 |
+| ~4,100/4,200 | 0.693 | 1.283 | **−0.590** |
+| ~4,570/4,780 | 0.700 | 1.251 | −0.551 |
+
+**`readback` is a fixed 3.5 MB copy and its COST still rises with the frame's load** — 0.525
+-> 0.700 ms across the light range with one copy — because what sets it is the memory
+bandwidth left over, and the guard pool is most of what takes that. So **item 1.3's saving
+is a slope like everything else in this part**: −0.37 ms at 1,900 draws, −0.55 to −0.59 at
+4,100-4,800. The mean of −0.467 quoted in §11 is the mean of a slope over a range that does
+not include the operator's load, and should not be quoted on its own.
+
+**The direction is the point: the operator's load is above the whole of that range, so
+item 1.3 is worth MORE there than this arm can show, not less.** Their caveat improves the
+item.
+
+#### What has to be downgraded, said plainly
+
+§11's three-configuration table compared their arm B (pool OFF, 2 copies, **40 fps**) with
+this arm (pool ON, 2 copies, **~95-120 fps**). Two things differ, not one, so
+"**the guard pool DOUBLES the cost of the present copies**" is an INFERENCE across
+non-comparable runs and not a matched measurement. What survives it:
+
+* the within-arm slope above, which is direct evidence that the cost tracks memory
+  pressure on ONE route with everything else held constant;
+* the pool's own traffic, which dominates that pressure: **2.2-3.0 GB/s** in every
+  configuration measured here (23 MB/frame x 95 fps; 30 MB/frame x 100; **69.8 MB/frame x
+  49.8 on their machine**);
+* their arm B, the only pool-OFF measurement in existence, at 0.56 ms for TWO copies —
+  cheaper than one copy costs with the pool running anywhere.
+
+The residual §11 could not explain — their 1-copy heavy arm at **0.66 ms** against this
+arm's 4,573-draw window at **0.70** — dissolves once the quantity is read as bandwidth per
+SECOND rather than per frame: at 40 fps they do 140 MB/s of present copies where this route
+does 350, on a similar pool load. Per-frame load is the wrong axis; per-second pressure is
+the right one.
+
+#### And the correction to gotcha 347's magnitude, not its lesson
+
+The confound is real and the lesson stands: their combined arm had the pool switched off
+alongside item 1.3, so item 1.3 was measured against a machine with no memory pressure and
+read as +0.08 ms when it was saving them time. What is downgraded is the SIZE — "doubles"
+becomes "the pool is most of the memory pressure that sets this cost" — and the size was
+never what the gotcha was about.
+
+**Owed, and it is cheap: fold a `CZ_VK_PRESENT_STAGING`-only pair into the next operator
+soak.** Two three-minute holds at their load, everything else constant, and item 1.3 has a
+number at the load that matters. It is 0.5 ms, so it does not justify an evening on its
+own — but it costs nothing next to an item that does.

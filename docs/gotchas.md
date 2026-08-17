@@ -3530,3 +3530,13 @@ From phase C part 18 (the frame rate — and none of it was work):
      — it cost fifteen minutes here against reverting a change that works. The corollary
      is a pricing rule for everything parallel that follows: a worker pool's BANDWIDTH
      footprint is a cost to other subsystems, and it is big enough to measure.
+     **Magnitude corrected the same evening, by the operator, and the lesson is untouched.**
+     "The pool DOUBLES the cost" compared their pool-off arm at 40 fps against the per-item
+     arm at ~100 fps — two things differing, not one — so it is an inference across
+     non-comparable runs. What is matched, and what should have been read first, is the
+     per-item arm's own columns: `readback` goes 0.525 -> 0.700 ms with load INSIDE one
+     arm, so the saving is a slope (−0.37 ms at 1,900 draws, −0.59 at 4,200) and the −0.467
+     mean is the mean of a slope over a range that excluded the operator's load entirely.
+     **Two separate reading errors in one section, and both were "quoted the arm mean
+     without looking down the column"** — the same failure gotcha 237 is about, one
+     instrument over.

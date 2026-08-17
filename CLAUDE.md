@@ -799,6 +799,16 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   back. Their A/B switched BOTH items together, so **an item read NEGATIVE because the
   other item in the same arm taxed it.** No number of repeats would have fixed that; a
   per-item arm did, in fifteen minutes. Gotcha 347. **Both items ship.**
+* **AND THE OPERATOR THEN CORRECTED THE CORRECTION — the per-item arm sat at the military
+  camp (1,891-4,777 draws) while their soak is 7,000-7,500.** Reading down its columns
+  instead of taking its mean: `readback` goes **0.525 -> 0.700 ms with load inside one
+  arm**, so **item 1.3's saving is a SLOPE too** — −0.37 ms at 1,900 draws, **−0.59 at
+  4,200** — and the −0.467 mean is the mean of a slope over a range that excludes their
+  load. The direction is what matters: **their load is above the whole range, so the item
+  is worth MORE there than the arm can show.** The "pool DOUBLES the copies" table is
+  downgraded to an inference (it compared 40 fps against ~100 fps); what survives is the
+  within-arm slope and the pool's traffic at **2.2-3.0 GB/s** in every configuration
+  measured. §6cj §12.
 * **AND A NUMBER TO CARRY INTO EVERY REMAINING PARALLEL ITEM: the pool's bandwidth
   footprint is large enough to double an unrelated 3.5 MB copy.** Item 1.2 moves texture
   UNTILING, a pure bandwidth job, so it must be priced against the memory system and not
