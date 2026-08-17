@@ -757,10 +757,19 @@ tier of `perf-plan-part50.md`):
 * **What is OWED is the operator's verdict, and the question is not the usual one**: this
   change moves WHEN work happens rather than how much there is, so ask whether it is
   SMOOTHER, not only whether it is faster. `tools/part51_operator_session.sh`.
-* **Gates at close: ALL CLEAN.** `--smoke`, both PM4 capture oracles on B1 (24,527,474
-  packets, 0 disagreeing; 0 indirect-buffer disagreements), the switch gate (0 defects),
-  the shader dimension census (328 2D + 97 cube, 0 disagreements), `no translated
-  shader` = 0, `truncated=0`.
+* **Gates at close: ALL CLEAN**, and the two numbers that MOVED both moved for reasons
+  the change predicts. `--smoke`; both PM4 capture oracles on B1 (24,527,474 packets, 0
+  disagreeing; 0 indirect-buffer disagreements); the switch gate (0 defects); the shader
+  dimension census (328 2D + 97 cube, 0 disagreements); `no translated shader` = 0;
+  `truncated=0`; deepest file on a plain boot **#83 `cinezombie.big`**. **A5 exit 0 with
+  4 permutation windows and 0 real** — part 50 recorded 3 windows, and a tick ten times
+  finer re-interleaves the boot's scheduling by construction, which is what a permutation
+  window IS. **E3 best of fourteen +0.8043, layout agreeing on every sample above the
+  +0.70 threshold**, against part 50's +0.8820 best of five: the title backdrop is an
+  ANIMATED scene, so a correlation is a fact about which moment was sampled (gotcha 133),
+  and this change alters when frames land without touching what is drawn. Quoted as
+  lower rather than tidied up, because a cross-session best-of on an animated reference
+  is a weak comparison and should be read as one.
 
 Where the port WAS, as of 2026-08-16 (part 50 CLOSED — **THE PLAN'S TOP TWO ITEMS WERE
 BOTH REPRICED BY THE MEASUREMENT THAT PRECEDED THEM, AND ONE OF THEM WAS THE PROFILER

@@ -113,3 +113,14 @@ sits inside its noise. `CZ_PM4_TICK_MS=1` is the control arm. Costs: process CPU
   `tools/part51_tick_read.py`, `tools/part51_operator_session.sh`.
 * Artifacts: `~/DR2CZ-troubleshooting/part51/` — `base.perf.data` and `base.threadcpu`
   (the symbol profile), `profile/` and `frame/` (the tick campaign).
+* **Gates at close: all clean.** `--smoke`; both PM4 capture oracles on B1 (24,527,474
+  packets, 0 disagreeing); the switch gate (0 defects); the shader dimension census (328
+  2D + 97 cube, 0 disagreements); `no translated shader` = 0; `truncated=0`; deepest file
+  on a plain boot #83 `cinezombie.big`. Two numbers moved and both were predicted by the
+  change: **A5 exit 0 with 4 permutation windows** (part 50 had 3 — a finer tick
+  re-interleaves the boot, which is what a permutation window is), and **E3 best of
+  fourteen +0.8043** with layout agreeing on every sample over threshold, against part
+  50's +0.8820 best of five. The backdrop is animated, so that number is a fact about
+  which moment was sampled (gotcha 133) and the cross-session comparison is weak; it is
+  quoted low rather than tidied. If a future part wants E3 to be a real gate on this
+  code path, dump the SAME frame index in both arms of one session.
