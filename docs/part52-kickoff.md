@@ -5,10 +5,24 @@ Written at the close of part 51 (2026-08-16). **This is the LIVE hand-off**, sup
 
 ## START HERE
 
-`docs/perf-plan-part50.md` is still the plan on paper, but **three of its items are now
-closed or retired and its largest one is dead**, so read this file and `phase5-notes.md`
-§6ch before it. Part 50 retired items 1a and 3; part 51 retires item 2a's only serious
-candidate and answers item 0.
+**THE LIVE PLAN IS `docs/perf-plan-part52.md`**, written at the close of part 51 and built
+from a SYMBOL budget rather than a phase table. `docs/perf-plan-part50.md` is now history:
+of its seven items three shipped, three are retired or refuted, and the biggest thing in
+the frame was never in it. Read the new plan, then `phase5-notes.md` §6ch for the evidence
+behind it.
+
+**Its item 0 (the recon) is already done** — `tools/part52_recon.sh`, three configurations,
+artifacts in `~/DR2CZ-troubleshooting/part52/` — and it changed the item ranking before the
+plan was finished. Two results to carry in:
+
+* **`BindShader` is 12.47% of the pump (~2.3 ms/frame) and is in no plan this project has
+  written.** It re-hashes every shader on every `IM_LOAD`, 1,919 a frame, byte-at-a-time.
+  The hash IS the shader cache key so it cannot be made faster — it has to be memoized.
+  **That is the plan's item 1.0 and the first thing to build.**
+* **`DoSwapImpl` reads 19.4% of the pump with `CZ_VK_FRAME_STATS` on and vanishes from the
+  top eleven with it off.** An item invented and destroyed by one environment variable.
+  `perf` charges inlined code to its container; always re-take a profile with the
+  instruments off before pricing anything from it.
 
 **The operator's instruction is still current**: *"prepare a whole plan to fix CPU
 performance issue and we'll start it in a fresh conversation."* Their two deferred picture
@@ -73,13 +87,24 @@ sits inside its noise. `CZ_PM4_TICK_MS=1` is the control arm. Costs: process CPU
 
 ## THE ORDER TO TAKE PART 52
 
-| # | item | expected | note |
+**`docs/perf-plan-part52.md` §10 is the order.** It is reproduced here only in outline;
+the plan carries the evidence, the control arm and the risk for each item.
+
+| # | item | expected | risk |
 |---|---|---|---|
-| **0** | **the operator's verdict on the tick**, `tools/part51_operator_session.sh` | — | **first, and it asks a question this project has not had to ask before: is it SMOOTHER, not just faster.** A tick period changes WHEN things happen, and pacing is felt before it is counted. No headless counter here can answer it |
-| 1 | **parallelism** — get the PM4 walk and the Vulkan recording off one thread | re-cost | ~13 idle cores, and part 51 removed the doubt about whether our side is the limiter. This is now the biggest structural item |
-| 2 | item 5 — present without the readback | -1.2 ms | the GPU is idle and can do the blit. Check its symbol cost first: `DoSwapImpl` reads 19.4% of the pump thread, but part 51 found an INSTRUMENT inlined into it, so re-measure with frame stats off before pricing |
-| 3 | item 1c — inline the PM4 walk so there is no call per packet | up to -2.2 ms | a REFACTOR with desync risk; both oracles are blind inside `ExecutePacket`, so it needs a poison arm as item 1a's did |
-| 4 | item 3's leftovers — `pipeline` std::map -> flat, shader-pair cache | -1.0 ms | always real; only the *residual* was the phantom |
+| 1 | **`BindShader` memoization** — stop re-hashing every shader on every `IM_LOAD` | **−1.5..2.3 ms** | low |
+| 2 | `Count("...")` -> `COUNT(...)` on the 28 draw-path sites | −0.3..0.4 ms | none |
+| 3 | re-split `outside` | — | none |
+| 4 | **parallel content guards** — `GuardFold` is 20% of the pump and is pure | **−2..3 ms** | medium |
+| 5 | readback off the pump thread | −0.5..1 ms | low |
+| 6 | pipeline `std::map` -> flat hash | −0.3..0.7 ms | low |
+| 7+ | see the plan | | |
+
+**The operator's verdict on part 51's tick is IN and part 52 does not need to re-ask it.**
+They could not tell the two arms apart on feel — which rules out a gross pacing regression
+and is not the same as "smoother" — while the profiler showed the win reproducing on their
+machine (3,000-5,000 draws 21 -> 17 ms, pinned share 2% -> 51%; `outside` 7.89 -> 5.37 ms
+against a predicted 2.7). §6ch §7.
 
 ## MEASUREMENT RULES THAT CHANGED IN PART 51
 

@@ -180,8 +180,10 @@ mask; trust the microcode's own swizzles.
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
-  - **`perf-plan-part50.md` is the LIVE performance plan ON PAPER ONLY, and by now more
-    of it is retired than live.** Read `docs/part52-kickoff.md` first, then
+  - **`perf-plan-part52.md` IS THE LIVE PERFORMANCE PLAN** (written at the close of part
+    51, built from a `perf` SYMBOL budget rather than a phase table, and its recon item is
+    already executed). **`perf-plan-part50.md` is history** — more of it is retired than
+    live. Read `docs/part52-kickoff.md` first, then
     `phase5-notes.md` §6cg (part 50: items 1a and 3 retired, every budget number
     corrected) and §6ch (part 51: item 2a's only candidate REFUTED, so the item is
     struck; and the biggest item in the document turned out not to be in the document at
