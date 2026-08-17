@@ -171,14 +171,18 @@ int VblankPeriodMs()
     static const int ms = [] {
         if (const char* e = getenv("CZ_VBLANK_MS"))
             return std::max(1, atoi(e));
-        if (const char* c = getenv("CZ_FPS_CAP"))
-        {
-            const int fps = atoi(c);
-            // The title's interval is 2, so the period that caps at `fps` is
-            // 1000/(2*fps). Clamped at 1 ms because that is the pump's own tick floor.
-            if (fps >= 20 && fps <= 500)
-                return std::max(1, (1000 + fps) / (2 * fps));
-        }
+        // 60 fps IS THE DEFAULT as of part 49, on the operator's instruction after they
+        // played the whole map on it. `CZ_FPS_CAP=30` is the same-binary control arm and
+        // restores the shipped pacing exactly — see the note on the division below.
+        const char* c = getenv("CZ_FPS_CAP");
+        const int fps = c ? atoi(c) : 60;
+        // The title's interval is 2, so the period that caps at `fps` is 1000/(2*fps).
+        // TRUNCATING division, not rounding, and that is load-bearing: it makes 30 fps
+        // come out at exactly 16 ms — the period this runtime has used since phase 1 —
+        // so the control arm reproduces the shipped pacing bit for bit rather than
+        // approximately. 60 -> 8, 45 -> 11, 30 -> 16, 20 -> 25.
+        if (fps >= 20 && fps <= 500)
+            return std::max(1, 1000 / (2 * fps));
         return 16;
     }();
     return ms;
@@ -329,12 +333,13 @@ void GraphicsInterruptPump()
     // `CZ_PM4_NO_STOP_ON_WAIT=1` already showed what an unpaced command processor does
     // here — it overflows the flip queue in 10 runs out of 10. An unsupported number
     // is refused loudly rather than rounded to something plausible (gotcha 5).
-    if (const char* capEnv = getenv("CZ_FPS_CAP"))
     {
-        const int cap = atoi(capEnv);
-        if (cap < 20 || cap > 500)
+        const char* capEnv = getenv("CZ_FPS_CAP");
+        const int cap = capEnv ? atoi(capEnv) : 60;
+        if (capEnv && (cap < 20 || cap > 500))
             fprintf(stderr,
-                    "[vd] CZ_FPS_CAP=%s is out of range (20..500) — IGNORED.\n", capEnv);
+                    "[vd] CZ_FPS_CAP=%s is out of range (20..500) — IGNORED, using the "
+                    "60 fps default.\n", capEnv);
         else
         {
             // THE INTERVAL IS PINNED AT THE TITLE'S OWN 2, and the PERIOD does the
@@ -675,10 +680,14 @@ void GraphicsInterruptPump()
                 // apart. The old value is captured BEFORE the store, or the line would
                 // report the value it just wrote as the value it replaced.
                 if (g_fpsCapWrites.fetch_add(1, std::memory_order_relaxed) == 0)
-                    KLOG("fps cap: the title asked for present-interval field %u; "
-                         "forcing %u (%s)\n",
-                         had, want,
-                         want == 0 ? "60 fps" : want == 2 ? "30 fps" : "20 fps");
+                    // Names the INTERVAL, not an fps. It used to name an fps, which
+                    // silently became false the moment the cap started moving the vblank
+                    // PERIOD instead: interval 2 is 30 fps at a 16 ms period and 60 fps
+                    // at 8 ms, so the field alone does not determine a frame rate.
+                    KLOG("fps cap: the title asked for present-interval field %u "
+                         "(%u vblanks); forcing %u (%u vblanks)\n",
+                         had, had == 0 || had == 1 ? 1u : had == 2 ? 2u : had == 4 ? 3u : 0u,
+                         want, want == 0 ? 1u : want == 2 ? 2u : 3u);
             }
         }
 
