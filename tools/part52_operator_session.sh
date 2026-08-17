@@ -34,13 +34,20 @@
 #
 # INSTRUMENTS, and what is deliberately NOT here.
 #
-#   `CZ_VK_PROFILE=20` is on: it costs 2-4 ms a frame and it is the only source of the
-#   phase split, which is what makes an operator report comparable with the headless
-#   numbers. `CZ_VK_FRAME_STATS` is deliberately OFF — part 51 measured it at 1.86-3.32 ms
-#   a frame on this machine, and it was on in every performance run this project ever
-#   recorded. Leaving it off costs the per-frame draw-bin analysis and buys ~3 ms of the
-#   frame you are actually judging, which for a session about FEEL is the right trade.
-#   Quote nothing from here as an absolute frame time without saying the profiler was on.
+#   `CZ_VK_PROFILE=20` is on in both modes: it costs 2-4 ms a frame and it is the only
+#   source of the phase split, which is what makes an operator report comparable with the
+#   headless numbers.
+#
+#   `CZ_VK_FRAME_STATS` is on ONLY in the A/B mode, and the asymmetry is the point. It
+#   costs 1.86-3.32 ms a frame on this machine (part 51 §6ch §7) and was silently on in
+#   every performance run this project ever recorded. In a SINGLE-arm session the operator
+#   is judging feel, so paying 3 ms to instrument the thing being judged is exactly the
+#   probe that manufactures its own result (gotcha 7) — off. In a TWO-arm session it rides
+#   in both, inflates both equally, and buys the median by DRAW BIN and the vblank-pinned
+#   share, which are the statistics `docs/measurement.md` says to read and which the
+#   profiler's per-window mean cannot give (gotcha 237).
+#
+#   Quote nothing from here as an absolute frame time without saying which were on.
 #
 # Usage:  tools/part52_operator_session.sh          # one arm, the current build
 #         ARM=ab tools/part52_operator_session.sh   # two arms chained: quit one, the
@@ -73,11 +80,19 @@ run() {
     echo "  F4  = the Case Zero debug submenus (Left goes back)"
     echo "  Quit the game normally when you are done."
     echo "==================================================================="
+    # CZ_VK_FRAME_STATS is enabled only for the A/B, and that is a deliberate asymmetry.
+    # It costs 1.86-3.32 ms/frame on this machine (part 51 §6ch §7), so it is off for a
+    # single-arm session where the operator is judging FEEL. In a two-arm comparison it
+    # rides in BOTH arms, inflates both equally, and buys the two statistics this project
+    # says to read — the median by DRAW BIN and the vblank-pinned share — neither of which
+    # the profiler's per-window mean can give (gotcha 237, `docs/measurement.md`).
+    local stats=()
+    [ "${ARM:-single}" = ab ] && stats=("CZ_VK_FRAME_STATS=$OUT/$tag.stats")
     ( cd "$ROOT/runtime/build" && env \
         CZ_VKDRAW=1 CZ_DEBUG_MENU=1 \
         "CZ_CAPTURE_KEY=$OUT/$tag" \
         "CZ_SHADER_DUMP=$HOME/DR2CZ-troubleshooting/ucode-dumps" \
-        CZ_VK_PROFILE=20 \
+        CZ_VK_PROFILE=20 "${stats[@]}" \
         "CZ_SHADER_SPV=$A2M" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1 \
         "$@" \
         ./cz_runtime > "$OUT/$tag.log" 2>&1 )
@@ -89,9 +104,40 @@ run() {
 }
 
 if [ "${ARM:-single}" = ab ]; then
+    cat <<'BANNER'
+
+  ###################################################################
+  #  TWO ARMS, CHAINED. Quit arm A and arm B starts by itself.      #
+  #                                                                 #
+  #  PLAY THE SAME ROUTE IN BOTH, for roughly the same time, and    #
+  #  finish in the same crowd. The comparison is made between       #
+  #  frames with LIKE DRAW COUNTS, so it survives you wandering —   #
+  #  but it cannot compare a crowd against a corridor, and an arm   #
+  #  that never reaches a crowd contributes nothing to the bins     #
+  #  that matter.                                                   #
+  #                                                                 #
+  #  WHAT THE CONTROL ARM RESTORES, and what it does NOT: arm B     #
+  #  puts back the pre-part-52 shader path (the full hash on every  #
+  #  load). The pipeline-lookup change and the counter conversion   #
+  #  have no run-time switch, so they ride in BOTH arms and this    #
+  #  A/B under-reports part 52 by whatever those are worth          #
+  #  (~0.4 and ~0.3 ms). Read it as the MEMO's cost, not the        #
+  #  part's.                                                        #
+  ###################################################################
+
+BANNER
     run part52on
     echo; echo "  Arm A finished. Starting arm B — the pre-part-52 shader path."; echo
     run part52off CZ_PM4_NO_SHADER_MEMO=1
+    cat <<EOM
+
+  Both arms done. Read them with:
+    python3 tools/frame_perf_bins.py --a $OUT/part52on.stats --b $OUT/part52off.stats
+
+  ORDER CONFOUND, stated because one run an arm cannot remove it: arm A ran first, on a
+  cooler machine. A thermal drift would move EVERY phase, though, and the prediction here
+  is specific — ~2.4 ms in \`outside\` and nothing else — so the two are distinguishable.
+EOM
 else
     run part52
 fi
