@@ -9952,3 +9952,90 @@ only remaining name difference is `ps_926c15dd20571cf1`, whose microcode is lost
 > gate is the NAME diff, not the count, and it must be run in any part where
 > `CZ_SHADER_DUMP` was set on any run** — which for a performance part means every part,
 > because the recon scripts set it. It is two lines and it is free.
+
+### §10. THE OPERATOR'S SESSION — the two columns that should have moved, moved, by the
+### predicted amounts, and nothing else did
+
+A whole-map lap on the operator's own machine, `tools/part52_operator_session.sh`, single
+arm, `CZ_VK_PROFILE=20` and **`CZ_VK_FRAME_STATS` deliberately OFF** — part 51 measured
+that instrument at 1.86-3.32 ms/frame on this machine and it was on in every performance
+run this project had ever recorded, including part 51's own operator session.
+
+Their verdict, first, because it is the thing the headless campaign cannot produce:
+**"performance is better."**
+
+#### The phase split, against part 51's operator session on the same machine and route
+
+Milliseconds, part 51's medians over 3,000-8,000 draws (`perf-plan-part52.md` §2a) against
+part 52's four crowd windows at 5,365-6,293 draws. **Both tables exclude the instruments
+from their columns**, which is what makes them comparable at all:
+
+| phase | part 51 | part 52 | delta | where the change was aimed |
+|---|---|---|---|---|
+| **`outside`** | **5.37** | **3.02** | **−2.35** | **`BindShader` — it is called from the PM4 WALK, not from `DoDraw`, so the memo's saving lands here.** Predicted ~2.4 |
+| — `other` | 3.92 | 3.48 | **−0.44** | **the pipeline lookup.** Predicted 0.43 |
+| — `textures` | 3.20 | 3.50 | +0.30 | not touched |
+| — `record` | 6.21 | 6.47 | +0.26 | not touched |
+| — `constants` | 1.10 | 1.17 | +0.07 | not touched |
+| — `streams` | 0.03 | 0.02 | −0.01 | not touched |
+| `readback` | 0.60 | 0.62 | +0.02 | not touched |
+| `submit` | 0.07 | 0.06 | −0.01 | not touched |
+| **draw total** | 14.45 | 14.46 | +0.01 | |
+
+**Two columns moved and both by the amount predicted for the item that lives in them.**
+`outside` −2.35 against a predicted ~2.4; `other` −0.44 against a predicted 0.43. The two
+that drifted up (`textures`, `record`) are a heavier draw mix — this band is 5,365-6,293
+where part 51's median spans 3,000-8,000 — and `draw total` is flat because that drift
+exactly cancels the pipeline win inside it.
+
+That the memo's saving appears in **`outside` and not in `draw`** is worth stating plainly,
+because it is not where a reader would look for a "shader" change: `BindShader` runs on an
+IM_LOAD packet inside the command-processor walk, and the walk is what `outside` is.
+
+#### Frame rate, with the instrument arithmetic done out loud
+
+| | part 51 (tick100) | part 52 |
+|---|---|---|
+| crowd frame, as measured | 24.0 ms median, profiler **and** frame stats | 17.5-18.7 ms mean, profiler only |
+| frame stats removed from the part-51 figure | ~21.5 ms | — |
+| **comparable** | **~21.5 ms, ~46.5 fps** | **~18.2 ms, ~55 fps** |
+| profiler also removed (2-4 ms) | | **~14-16 ms — at or above the 60 fps cap** |
+
+**~2.5 ms of the raw 5.8 ms difference is the instrument I turned off, not the change**
+(gotcha 337, and the reason the phase table above is the evidence rather than this one).
+The remaining ~3.3 ms is part 52, and it agrees with the phase columns.
+
+**The operator's crowd frame now reaches the 60 fps cap uninstrumented.** Part 50 quoted
+them at 35.7 fps at 5,000-7,000 draws; part 51 at 41.7; this is the first session where
+the heaviest thing they walk through is not CPU-bound.
+
+#### What the session says about the items themselves
+
+* **The memo holds on their route**: 100.0% hit in every window, at up to **2,574
+  loads/frame** (headless peaks at 2,073), 4-134 misses per ~2.9 M, 0-2 evictions, and
+  **0 `SHADER MEMO MISMATCH`**.
+* **The pipeline front cache holds too**: 62.7-71.5%, against 67.7-71.6% headless. And
+  their route grows the table to **568 entries** where headless reaches 392-412 — a deeper
+  tree, so the item is worth at least as much to them as to the harness.
+* **`readback` is 0.62 ms with frame stats off**, which is exactly what plan item 1.3
+  asked to be priced this way and settles it: it is a 0.5-0.6 ms item, not the 1.2 the old
+  plan guessed.
+* **The pump is 87-93% on CPU and BLOCKED 0.37-0.77 ms/frame** — larger than headless
+  (0.09-0.12) but still small. `outside`'s 3.02 ms is now roughly sleep 0.8-1.7 + blocked
+  0.4-0.8 + about a millisecond of actual walk.
+* **`no translated shader` = 0** over 327 distinct shaders, and the name-diff gate found
+  **no new microcode at all** after a whole-map lap. The cache is complete for the map
+  they cover — the first lap in this project's history to add nothing.
+
+#### What this session is NOT
+
+**It is not an A/B.** It is one run compared with a session from the previous day, which is
+the comparison this project's own rule warns against (gotchas 50/51/86: the control is the
+old configuration run NOW). It is also a per-window MEAN read against part 51's MEDIAN, and
+a different draw band. The phase table is quotable in spite of that because the two columns
+that moved are the two the items live in and every other column held — drift, thermals or a
+different route would have moved `record` and `textures` too, and would not have known to
+leave `readback` and `submit` alone. **The same-binary control exists and was not run**:
+`ARM=ab tools/part52_operator_session.sh` chains a second arm with `CZ_PM4_NO_SHADER_MEMO=1`.
+Run it before quoting a number from this session as a measured speedup rather than as a
+confirmation of direction and mechanism.
