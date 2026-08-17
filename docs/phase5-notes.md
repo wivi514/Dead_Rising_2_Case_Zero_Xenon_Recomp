@@ -10039,3 +10039,76 @@ leave `readback` and `submit` alone. **The same-binary control exists and was no
 `ARM=ab tools/part52_operator_session.sh` chains a second arm with `CZ_PM4_NO_SHADER_MEMO=1`.
 Run it before quoting a number from this session as a measured speedup rather than as a
 confirmation of direction and mechanism.
+
+### §11. THE SAME-BINARY A/B ON THE OPERATOR'S MACHINE — one column moved, and it is the
+### right one
+
+§10's comparison was against the previous day's session, which is the comparison this
+project's own rule warns about. The control was then run: `ARM=ab
+tools/part52_operator_session.sh`, two arms chained in one sitting, arm B restoring the
+pre-part-52 shader path with `CZ_PM4_NO_SHADER_MEMO=1` in the SAME BINARY. Both arms
+carried `CZ_VK_FRAME_STATS` this time — valid because it inflates both equally, and it is
+what buys the two statistics below. The operator reports the same route in both, with the
+zombie spawns varying and slightly longer at the main menu in arm A.
+
+#### Frame time by draw bin, and the arm's own null inside it
+
+| draws/frame | A (memo on) | B (memo off) | Δ mean | Δ median | pinned A / B |
+|---|---|---|---|---|---|
+| 0-999 | 16.83 ms | 16.83 | **+0.0%** | **+0.0%** | 99% / 98% |
+| 2,000-2,999 | 16.02 | 16.05 | **+0.2%** | **+0.0%** | 99% / 98% |
+| 4,000-4,999 | 18.21 | 20.02 | **+9.9%** | **+17.6%** | **53% / 16%** |
+| 5,000-5,999 | 19.71 | 20.69 | +5.0% | +0.0% | **15% / 1%** |
+| **6,000-6,999** | **21.33** | **23.37** | **+9.6%** | **+9.5%** | 0% / 1% |
+| 7,000-7,999 | 25.10 | 34.86 | +38.9% | +8.7% | n = 52 / 22 — ignore |
+
+**The two light bins are this A/B's own null control and they read +0.0%.** They are at
+the frame cap in both arms, where the change cannot move anything — so the experiment
+contains, for free, a band in which the arm is provably unable to act. That also settles
+the operator's own worry about spending longer at the main menu in arm A: the 0-999 bin
+holds 1,228 frames against 1,230 and the two are identical to the digit. **Binning by
+draw count is what makes an operator's route usable as an experiment** — it survives
+different spawns and different dwell times, and it cannot compare a crowd with a corridor.
+
+**The memo alone is worth ~1.8-2.0 ms** on their machine (18.21 -> 20.02 and
+21.33 -> 23.37), and the pinned share collapses where it acts: **53% -> 16%** and
+**15% -> 1%**.
+
+#### The phase split — the mechanism, and the reason this is quotable at one run an arm
+
+Median over the crowd windows of each arm:
+
+| phase | memo ON | memo OFF | delta |
+|---|---|---|---|
+| **`outside`** | **3.06** | **4.42** | **+1.36** |
+| `record` | 6.01 | 6.03 | +0.02 |
+| `other` | 3.25 | 3.27 | +0.01 |
+| `textures` | 2.95 | 3.10 | +0.14 |
+| `constants` | 1.09 | 1.05 | −0.03 |
+| `streams` | 0.04 | 0.04 | +0.00 |
+| `readback` | 0.58 | 0.55 | −0.04 |
+| `submit` | 0.06 | 0.06 | +0.00 |
+| draw total | 13.34 | 13.12 | −0.21 |
+
+**Exactly one column moved and it is the one `BindShader` lives in.** Everything else is
+within ±0.21 ms. A thermal drift or a route difference — the two confounds one run an arm
+cannot remove — would have moved `record` and `textures` as well, and would not have known
+to leave `readback` and `submit` alone. Note also that **`other` did NOT move**, which is
+the control working in the other direction: the pipeline-lookup change has no run-time
+switch and rides in BOTH arms, so `other` must hold, and it does.
+
+#### What this revises
+
+* **§10's `−2.35 ms in `outside`` is a cross-session number and this supersedes it as a
+  measurement of SIZE.** The A/B puts the memo at ~1.4 ms of `outside` and ~1.8-2.0 ms of
+  frame time on their machine; §10's larger figure was a day-to-day comparison and should
+  be read as agreeing on MECHANISM, not as a second measurement. The headless campaign's
+  ~2.4 ms remains the headless figure.
+* **This A/B under-reports part 52 by design**, because only the memo has a run-time
+  switch. Adding the pipeline lookup (~0.4 ms) and the counters (~0.3) puts the part at
+  **~2.5-2.7 ms of the operator's frame**.
+* **Frame stats is confirmed at ~1.5-2 ms on their machine a third time**, by difference:
+  the same arm reads 20.1-20.2 ms here at ~5,700 draws against 18.3-18.7 in §10's
+  frame-stats-free session.
+* The memo held again: **100.0% hit at 2,224 loads/frame, 16 misses in 2.2 M, 0
+  mismatches, `no translated shader` = 0** in both arms.
