@@ -1367,6 +1367,42 @@ struct PipelineKey
     {
         return memcmp(this, &o, sizeof(*this)) < 0;
     }
+    bool operator==(const PipelineKey& o) const
+    {
+        return memcmp(this, &o, sizeof(*this)) == 0;
+    }
+};
+
+// THE LOOKUP CONTAINER IS A HASH TABLE, NOT A TREE (part 52 item 3.2).
+//
+// This map is probed once per DRAW — ~5,500 times a frame outdoors — and the profiler's
+// `other` split prices that probe at **108-113 ns/draw**, the largest term in `other`
+// after the residual that part 50 showed is the profiler measuring itself. A
+// `std::map` of ~413 entries is ~9 levels of pointer chasing, and every level is a
+// separate cache line holding a red-black node, so the cost is 9 likely misses and 9
+// 48-byte `memcmp`s. A hash table is one hash of a fixed 48 bytes and one bucket.
+//
+// The key is a POD with no padding (two `uint64_t` then eight `uint32_t` = exactly 48
+// bytes), which is what makes both the `memcmp` comparison and this hash correct —
+// hashing raw bytes of a struct WITH padding would hash uninitialised memory and give
+// two equal keys different hashes. If a field is ever added, keep that property or the
+// table silently starts missing.
+struct PipelineKeyHash
+{
+    size_t operator()(const PipelineKey& k) const
+    {
+        static_assert(sizeof(PipelineKey) == 48, "PipelineKey must stay padding-free");
+        uint64_t h = 0xCBF29CE484222325ull;
+        uint64_t w[6];
+        memcpy(w, &k, sizeof w);
+        for (uint64_t v : w)
+        {
+            h ^= v;
+            h *= 0x100000001B3ull;
+            h ^= h >> 29;
+        }
+        return size_t(h);
+    }
 };
 
 // ===================================================================================
@@ -1890,7 +1926,15 @@ struct Renderer
     Image dummy2D, dummy3D, dummyCube, dummy1D;
 
     std::map<uint64_t, ShaderMeta> shaders;
-    std::map<PipelineKey, VkPipeline> pipelines;
+    std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
+    // ...with a one-entry front cache, because consecutive draws routinely share a
+    // pipeline (same shader pair, same blend/depth state) and a 48-byte compare is three
+    // SIMD instructions against a hash plus a bucket probe. Its hit rate is COUNTED
+    // rather than assumed: if consecutive draws did not repeat, this would be a wasted
+    // compare per draw and the counter is the only thing that could say so.
+    PipelineKey lastPipelineKey{};
+    VkPipeline lastPipeline = VK_NULL_HANDLE;
+    bool lastPipelineValid = false;
     // The draw-ID pass: the substitute fragment module, and the frame it is armed for
     // (0 = disarmed, which is every frame unless CZ_VK_DRAW_ID is set and F9 pressed).
     VkShaderModule drawIdModule = VK_NULL_HANDLE;
@@ -4754,11 +4798,40 @@ VkCompareOp XenosCompareOp(uint32_t f)
 // ===================================================================================
 // Pipelines
 // ===================================================================================
+// CZ_VK_NO_PIPELINE_CACHE1=1 disables the one-entry front cache below — the same-binary
+// control arm for the half of item 3.2 that could in principle be wrong. (The container
+// swap itself has no arm: it is `std::map` -> `std::unordered_map` with the same key and
+// the same comparison, and its correctness is that `pipelines=413` and the picture are
+// unchanged.)
+bool NoPipelineCache1()
+{
+    static const bool off = getenv("CZ_VK_NO_PIPELINE_CACHE1") != nullptr;
+    return off;
+}
+uint64_t g_pipeCache1Hits = 0, g_pipeCache1Misses = 0;
+
 VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps)
 {
+    // The front cache. Correct by construction: it only ever answers for a key that
+    // compares EQUAL to the one it stored, and it is invalidated by being overwritten on
+    // every miss, so an insert cannot leave it holding a handle the table disagrees with.
+    if (!NoPipelineCache1())
+    {
+        if (R->lastPipelineValid && R->lastPipelineKey == key)
+        {
+            ++g_pipeCache1Hits;
+            return R->lastPipeline;
+        }
+        ++g_pipeCache1Misses;
+    }
     auto it = R->pipelines.find(key);
     if (it != R->pipelines.end())
+    {
+        R->lastPipelineKey = key;
+        R->lastPipeline = it->second;
+        R->lastPipelineValid = true;
         return it->second;
+    }
 
     // --- vertex input, straight out of the vertex shader's own declaration ---------
     // One Vulkan binding per attribute rather than one per stream. The Xenos vertex
@@ -4786,6 +4859,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
             }
             Count("pipeline: refused, unmapped vertex format");
             R->pipelines.emplace(key, VK_NULL_HANDLE);
+            R->lastPipelineKey = key;
+            R->lastPipeline = VK_NULL_HANDLE;
+            R->lastPipelineValid = true;
             return VK_NULL_HANDLE;
         }
         // A mapped format the DEVICE cannot use as a vertex buffer is a different
@@ -5041,6 +5117,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         Count("pipeline: created");
     }
     R->pipelines.emplace(key, pipeline);
+    R->lastPipelineKey = key;
+    R->lastPipeline = pipeline;
+    R->lastPipelineValid = true;
     return pipeline;
 }
 
@@ -10700,6 +10779,30 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         pct(g_prof.pipelineNs),
                         otherTotal ? 100.0 * double(g_prof.pipelineNs) /
                                          double(otherTotal) : 0.0);
+
+            // The pipeline LOOKUP, which is a different quantity from the creation
+            // above and is the one part 52 item 3.2 changed: once per draw, ~5,500 times
+            // a frame, priced by the `other` split at 108-113 ns/draw before the change.
+            // The front cache's hit rate is the item's own falsifier — consecutive draws
+            // sharing a pipeline is an ASSUMPTION about this title's draw order, and a
+            // low rate here would mean the compare is a wasted instruction per draw
+            // rather than a saving. CZ_VK_NO_PIPELINE_CACHE1=1 is the control arm.
+            {
+                static uint64_t lastH = 0, lastM = 0;
+                const uint64_t dH = g_pipeCache1Hits - lastH;
+                const uint64_t dM = g_pipeCache1Misses - lastM;
+                lastH = g_pipeCache1Hits;
+                lastM = g_pipeCache1Misses;
+                if (dH || dM)
+                    fprintf(stderr,
+                            "[vkprof] pipeline lookup: %.1f%% served by the one-entry "
+                            "cache (%llu hit / %llu miss, %llu lookups/frame, %zu in the "
+                            "table)\n",
+                            100.0 * double(dH) / double(dH + dM),
+                            (unsigned long long)dH, (unsigned long long)dM,
+                            (unsigned long long)(frames ? (dH + dM) / frames : 0),
+                            R->pipelines.size());
+            }
 
             // ...and what `outside` actually IS. The renderer runs on the graphics
             // pump's thread, so everything the pump does between two presents is in
