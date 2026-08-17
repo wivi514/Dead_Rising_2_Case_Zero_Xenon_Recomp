@@ -473,6 +473,40 @@ part 51's were repriced or killed by exactly this step.
 
 ---
 
+## 9b. STATUS AT THE CLOSE OF PART 52 — read this before picking an item
+
+Part 52 executed items 1.0, 2.1, 4.1 and 3.2 of the order below. **Two things in this
+document are corrected by that execution and are corrected in place here rather than left
+to be re-derived** (`docs/phase5-notes.md` §6ci has the evidence):
+
+* **Item 1.0's KEY, as specified in §3, is REFUTED.** `(va, size)` plus the first and last
+  dword does not identify a shader — two different blobs alternate with identical size and
+  identical probe dwords — and this document's argument that a wrong answer "means a cache
+  MISS, which the standing gate already counts" is wrong: the wrong answer is another real
+  shader's hash, which IS in the cache, so it binds a real, wrong shader silently. The
+  shipped memo compares the whole content with `memcmp`. Gotcha 342. **The verify arm this
+  document insisted on is the only reason this was caught — keep insisting on it.**
+* **Item 2.1's SIZING, "28 `Count(` sites inside `DoDraw`'s body", is wrong.** The
+  counters' own dump says one site in `VkRenderer_Draw` is 84.6% of ~62.5 M calls and ten
+  sites are 99.2%; most of the 28 in `DoDraw` fire a few hundred times an hour.
+  `VkRenderer_DumpStats` already prints the statistic that ranks these.
+
+And one thing about §2's budget that is not a correction but a change in the world:
+**the headless outdoor route now sits on the frame cap for most of its length.** Every
+frame-time A/B on it reads zero unless `CZ_FPS_CAP` is raised in both arms, which is what
+`tools/part52_item_campaign.sh` does. Say "CPU saving", not "frame rate", when quoting it.
+
+| item | status |
+|---|---|
+| 1.0 `BindShader` memoization | **DONE** — 14.16% of the pump -> 0.00%, ~2.4 ms at 6-7k draws (a lower bound) |
+| 2.1 `Count` -> `COUNT` | **DONE** — ten sites |
+| 4.1 re-split `outside` | **DONE** — the pump is BLOCKED only 0.09-0.12 ms of a 16 ms frame |
+| 3.2 pipeline lookup | **DONE** — 110-112 -> 38-43 ns/draw, ~0.43 ms/frame |
+| 2a soft-dirty page tracking | struck in part 51 |
+| everything else | open, and the order below still holds |
+
+---
+
 ## 10. SUGGESTED ORDER
 
 | # | item | expected | risk | why here |
