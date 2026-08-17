@@ -9499,3 +9499,88 @@ at unsatisfied `WAIT_REG_MEM`s (part 4's brake, resumed by `StallPlan`), and the
 decides how long each of those three stops lasts. The saving is therefore arithmetic
 rather than statistical — 3 stops x 0.9 ms = 2.7 ms — and the measured bound moves 3.17 ->
 0.47, which is that number to two figures.
+
+### §5. Does the removed latency become frame time? Yes — and the POSITIVE CONTROL is what proves it
+
+Three arms, one pinned binary, **three unprofiled runs each**, alternated, read by draw
+bin with `tools/part47_perf_read.py` (medians per run, and the within-arm spread as the
+floor):
+
+| draw bin | base (1 ms) | fast (100 us) | slow (4 ms) | fast vs base | slow vs base |
+|---|---|---|---|---|---|
+| 500-1,500 | 16.0 | 16.0 | 22/22/21 | +0.0% | **+37.5%**, outside its 4.5% floor |
+| 1,500-3,000 | 17/16/16 | 16/16/16 | 25/25/26 | +0.0%, inside a 6.2% floor | **+56.2%**, outside |
+| **3,000-5,000** | 19/19/18 | **16/16/16** | 28/29/29 | **−15.8%, OUTSIDE its 5.3% floor** | **+52.6%**, outside |
+| 5,000-8,000 | 23/23/23 | 20/22/16 | 30/31/32 | −13.0%, inside a 30% floor | **+34.8%**, outside |
+
+And the statistic gotchas 237/238 exist for — the share of frames pinned within 1 ms of a
+vblank multiple — in the bin where the win lands: **24-36% (base) -> 72-95% (fast)**. At
+3,000-5,000 draws the frame stops being CPU-bound and lands on the 16 ms floor.
+
+**The `slow` arm is the reason any of this can be believed.** The direct comparison is
+outside its floor in only one bin, and this route's floor is wide (part 50 measured 8-18%
+on frame time). But the 4 ms arm is +34.8% to +56.2% and outside the floor in **every**
+bin, at a tick 4x coarser — i.e. **3 extra sleeps of 3 ms convert to 7-11 ms of frame
+time, ~1:1.** A mechanism that converts at 1:1 when pushed the expensive way converts at
+1:1 when pushed the cheap way, and that is what licenses the 2.7 ms in the bins where the
+direct measurement sits inside its noise. An arm that can only make things better would
+have proved none of it (gotcha 331).
+
+**100 us is now the default.** `CZ_PM4_TICK_MS` is untouched and setting it explicitly
+still gives millisecond behaviour, so `CZ_PM4_TICK_MS=1` is the control arm for this
+change. The costs, stated rather than buried: process CPU in a crowd goes **2.57 -> 2.75
+cores of 16**, and our pump's duty cycle goes **79% -> 93%** — it is now walking where it
+used to sleep, which is the point, and which also makes part 52's parallelism item
+sharper. What is NOT judged here is how it FEELS: this changes WHEN work happens rather
+than how much there is, and pacing is felt before it is counted. That is the operator's
+question (`tools/part51_operator_session.sh`) and it is part 52's item 0.
+
+**And the fix broke a health signature on the way through, which is worth recording
+because the line's own comment warned about it.** The ring trace prints the consecutive
+hold streak in TICKS and warns when it passes 60, a threshold that meant "about a second"
+only while a tick was a millisecond. At 100 us it means 6 ms, and a healthy run of the new
+default measures `max=104` ticks — so the warning would have fired on every run, on the
+one line whose comment says "when a wait's cadence changes, re-express every gate on it in
+a unit that survives the change" (gotcha 157/98). The threshold is now a duration and the
+label prints the real period. **A warning that fires on healthy runs is worse than no
+warning: it teaches the reader to skip the line.**
+
+### §6. AND THE INSTRUMENT THAT RECORDS FRAME TIME COSTS 3 ms A FRAME
+
+Part 50 priced `CZ_VK_PROFILE` at 2-4 ms/frame by reading `CZ_VK_FRAME_STATS`, and wrote
+the rule that followed from it: *"an instrument that can only be read through another
+instrument cannot measure that one."* It then stopped one instrument short of applying it.
+
+`CZ_VK_FRAME_STATS` zeroes a 2 MB colour bitmap and walks all **921,600 pixels** of every
+PRESENTED frame, computing lit coverage, mean luma, an exact distinct-colour count through
+a random-access bit test, and a hash. Measured with its own `ProfScope` on the outdoor
+route:
+
+```
+[vkprof]   CZ_VK_FRAME_STATS itself: 3.24 ms/frame (19.8% of this window)
+                                     2.94 ms/frame (15.2%)
+                                     2.99 ms/frame (14.9%)
+```
+
+**~3 ms a frame, 15-20% of the window** — larger than the profiler's bill, and it has been
+enabled in **every performance run this project has ever recorded**, including the
+operator's whole-map lap and part 50's own profiler A/B. It was invisible for the
+structural reason part 50 named and did not extend: the run that would show its absence is
+the run that records no frame times.
+
+Three consequences, and the first is a correction rather than a win (gotcha 337):
+
+1. **Every absolute frame time in this repo is inflated by ~3 ms on top of the profiler's
+   2-4.** The operator's 28.3 ms at 5,000-7,000 draws was already corrected to ~25-26 by
+   part 50; it is really nearer **22-23 ms, ~43-45 fps**. Nobody plays with either
+   instrument set. This changes what may be CLAIMED, not what the game does.
+2. **A/Bs are unaffected** where both arms carry it, which is all of them. Part 51's own
+   campaign carried it in all three arms.
+3. **3 ms is a lower bound on its cost.** The `ProfScope` measures the block's own
+   interval; it cannot see that a 2 MB bitmap scrubbed once a frame evicts the cache the
+   next frame's work then re-warms.
+
+The rule to carry: **when quoting a frame time, say which instruments were on.** And to
+price an instrument, find a counter that does not depend on it — `VkRenderer_DumpStats`
+prints the frame number and is independent of both — or put a scope on the instrument
+itself, which is what was done here.
