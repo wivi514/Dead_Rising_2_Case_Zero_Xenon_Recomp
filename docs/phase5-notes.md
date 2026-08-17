@@ -9864,6 +9864,40 @@ sites are 99.2% of the total and those are what was converted.
 > them by how alarming they look. This is the third time in three parts that a number the
 > project already collects answered a question someone was about to estimate.
 
+### §8. Item 3.2 — the pipeline lookup, and a column that moved alone
+
+`R->pipelines` is probed once per draw — **6,613 lookups a frame** on this route — and it
+was a `std::map` of ~400 entries: ~9 levels of pointer chasing with a 48-byte `memcmp` at
+each, every level on its own red-black node and therefore its own cache line. Replaced
+with `std::unordered_map` hashing the key's fixed 48 bytes, plus a one-entry front cache
+because consecutive draws often share a pipeline.
+
+The measurement is the `other` split, against the **pinned pre-change binary run now**
+(gotcha 51) on the same route with the same instruments:
+
+| `other`, ns/draw | shader | key | **pipeline** | begin | fetch | tail | residual | total |
+|---|---|---|---|---|---|---|---|---|
+| before | 79-80 | 25 | **110-112** | 54-59 | 105-108 | 34-35 | 203-204 | 609-623 |
+| after | 79 | 25 | **38-43** | 55-60 | 104-106 | 34-35 | 204 | 540-547 |
+
+**Every other column is unchanged to the digit and only the one the change touches
+moved.** That is a stronger control than any arm could give here: a route difference or a
+thermal drift would have moved `fetch` and `begin` too. −70 ns/draw is **~0.43 ms/frame**
+at 6,000 draws, against the plan's −0.3 to −0.7 ms, and the commit's prediction of "under
+50 ns/draw" is met at 38-43.
+
+The front cache's assumption is confirmed rather than assumed: **67.7-71.6% of lookups
+are served by it**, which is what makes the remaining hash probes ~30% of what they were.
+A low rate here would have meant a wasted 48-byte compare per draw, and the counter is
+the only thing that could have said so. `CZ_VK_NO_PIPELINE_CACHE1=1` is its arm.
+
+One honest gap. The commit predicted "`pipelines=413` unchanged"; the two runs ended with
+412 and 366 entries, because the title's own AI drove two different roams and a pipeline
+is created per distinct STATE combination, so the count is a fact about where the run
+went. `shaders=435` matched exactly in both. The correctness argument is therefore
+structural rather than numeric — same key, same equality, and a front cache that only
+ever answers on `==` — and it should have been stated that way in the prediction.
+
 ### §7. Item 4.1 — `outside` re-split, and almost none of it is blocking
 
 `outside` is a wall-clock residual measured from inside the pump thread, and a wall-clock
