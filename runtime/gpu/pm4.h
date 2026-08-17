@@ -202,6 +202,15 @@ uint64_t Pm4_OpcodeCount(uint32_t opcode);  // type-3 opcode 0x00..0x7F
 // `threads` (optional) receives the number of threads that have ever walked a packet;
 // it is 1 in this runtime and the exactness of the comparison depends on that.
 uint64_t Pm4_CensusMismatches(uint64_t* threads);
+// The filler-run census (part 50 item 1a). A run of consecutive type-2 no-op dwords is
+// consumed by ONE `ExecutePacket` call; `Pm4_TypeCount(2) / Pm4_FillerRuns()` is the mean
+// run length and therefore the factor by which the item reduces calls. It is printed
+// because the item's whole value is that ratio and nothing had ever measured it — a share
+// of 28.7% is consistent both with one enormous run and with 23,000 isolated dwords, and
+// only the second of those makes this change worthless. CZ_PM4_NO_FILLER_RUNS=1 is the arm.
+uint64_t Pm4_FillerRuns();
+uint64_t Pm4_FillerRingDwords();   // ...of the type-2 dwords, those walked at ring level
+uint64_t Pm4_FillerHist(uint32_t bucket);  // run length, log2 buckets: 1,2,4,8..128+
 uint64_t Pm4_DrawCount();
 uint64_t Pm4_FrameCount();                  // XE_SWAP packets = frames
 uint64_t Pm4_InterruptCount();

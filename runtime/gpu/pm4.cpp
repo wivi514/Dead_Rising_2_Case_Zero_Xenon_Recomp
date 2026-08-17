@@ -262,6 +262,20 @@ struct alignas(64) Census
     std::atomic<uint64_t> regWrites{ 0 };
     std::atomic<uint64_t> draws{ 0 };
     std::atomic<uint64_t> drawsPredicatedOut{ 0 };
+    // --- the filler-run census (part 50 item 1a) ---
+    //
+    // WHY A HISTOGRAM AND NOT JUST A COUNT. The plan prices "skip runs of type-2 filler"
+    // at 1.5-2 ms on the strength of `t2 28.7%` — 23,000 of the operator's 81,106
+    // packets a frame. But that share says nothing about whether those 23,000 dwords
+    // arrive as ONE run of 23,000 or as 23,000 isolated dwords between real packets, and
+    // the whole value of the item is the difference: coalescing turns N calls into one
+    // per RUN, so at a mean run length of 1 it saves precisely nothing and costs a scan.
+    // Nobody has ever measured the run length here, so the item is built with the
+    // measurement that can refute it, and `fillerRuns` against `types[2]` is that
+    // measurement in one division.
+    std::atomic<uint64_t> fillerRuns{ 0 };      // coalesced runs, i.e. calls that hit filler
+    std::atomic<uint64_t> fillerRingDwords{ 0 };// ...of which came from the ring (depth 0)
+    std::atomic<uint64_t> fillerHist[8];        // run length, log2 buckets: 1,2,4,8,...,128+
     Census* next = nullptr;
 };
 std::atomic<Census*> g_censusList{ nullptr };
@@ -284,6 +298,20 @@ const bool g_verifyCounters = getenv("CZ_PM4_VERIFY_COUNTERS") != nullptr;
 // ...and the check must be shown able to fail before a zero from it means anything
 // (gotcha 30). This drops exactly one per-thread packet increment in ten thousand.
 const bool g_verifyPoison = getenv("CZ_PM4_VERIFY_COUNTERS_POISON") != nullptr;
+
+// CZ_PM4_NO_FILLER_RUNS=1 restores the pre-part-50 form — one `ExecutePacket` call per
+// filler dword — and is the same-binary control arm for item 1a.
+const bool g_noFillerRuns = getenv("CZ_PM4_NO_FILLER_RUNS") != nullptr;
+// ...and the POSITIVE CONTROL for it. Neither PM4 boundary oracle can see this change —
+// both are Python models of capture B1 and neither executes our walk — so the gates that
+// stand between item 1a and a desync are `truncated=0`, the unknown-opcode report and the
+// picture. A gate that has never been shown able to fail proves nothing by passing
+// (gotcha 30), and the failure this item could actually cause is exactly one thing: a run
+// that consumes the wrong number of dwords. So this makes one run in 4,096 over-consume
+// by one, and the pair must be run — the poisoned arm has to produce truncations, unknown
+// opcodes or a visibly broken picture, or those gates are blind here and something else
+// is needed.
+const bool g_fillerPoison = getenv("CZ_PM4_VERIFY_FILLER_POISON") != nullptr;
 
 Census& ThreadCensus()
 {
@@ -1110,6 +1138,67 @@ bool EvalWaitCondition(uint32_t func, uint32_t value, uint32_t mask, uint32_t re
     }
 }
 
+// --- type-2 filler runs (part 50 item 1a) --------------------------------------------
+//
+// WHY. A type-2 packet is a one-dword no-op, and executing one used to cost everything a
+// real packet costs except the handler: the call, the `Source` fetch with its wrap
+// modulo, the header decode, the thread-local census lookup, two counter updates, the
+// return, and the caller's own loop bookkeeping. Part 48's opcode census — the first time
+// anything in this runtime had looked — priced that at **28.7% of every packet walked**
+// on the operator's frame, ~23,000 calls a frame doing no work whatsoever.
+//
+// WHAT THE MEASUREMENT SAID, because the share on its own does not decide this. 28.7%
+// type-2 is equally consistent with one enormous run of padding and with 23,000 isolated
+// dwords wedged between real packets, and coalescing is worth everything in the first case
+// and nothing in the second. So the histogram was built before the fast path and it says:
+// **mean run length 2.3**, and the distribution is bimodal — 28% of runs are a single
+// dword, 72% are runs of 2-3, and there is a thin tail of ~1,100 runs of 32-63 a window
+// with NOTHING in between. Coalescing alone would therefore remove only 57% of the calls,
+// which is why the caller in `ExecuteLinear` checks the type itself and removes 100% of
+// them: it has already fetched the header for its own trail, so the test is free there.
+//
+// AND IT IS ALL IN INDIRECT BUFFERS: `fillerRingDwords` reads **0%**. This is not the
+// driver padding the ring to a wrap boundary, which is what "filler" suggests and what
+// the ring path is written to expect. It is the title's own command buffers, padded
+// packet by packet — which is why the fast path lives in the linear walk and the ring
+// keeps the general one rather than both being changed on a guess.
+//
+// WHAT IS DELIBERATELY NOT CHANGED IS THE CENSUS. The run is charged dword by dword to
+// `packets` and `types[2]`, in one update each, so every rate `[vkprof]` derives from
+// them (ns per packet, register dwords per packet, the type mix) means exactly what it
+// meant before and the arms remain comparable. A walk that skipped its own accounting
+// here would read as one that got faster per packet because it stopped counting the cheap
+// ones — the same defect one level up as gotcha 325.
+//
+// `avail` bounds the scan, which is what makes it safe on the ring: a dword past the
+// write pointer is memory the driver has not written yet, and reading it to decide it is
+// not filler would be using uninitialised memory to make a control-flow decision. The
+// scan stops there and the next tick continues from the same place.
+//
+// The first dword at `pos` must already be known to be type 2.
+inline uint32_t ConsumeFillerRun(Census& cs, const Source& fetch, uint32_t pos,
+                                 uint32_t avail, int depth)
+{
+    uint32_t n = 1;
+    if (!g_noFillerRuns)
+        while (n < avail && (fetch(pos + n) >> 30) == 2)
+            n++;
+    CensusAdd(cs.packets, g_packets, n);
+    CensusAdd(cs.types[2], g_types[2], n);
+    const uint64_t runs = cs.fillerRuns.load(std::memory_order_relaxed) + 1;
+    cs.fillerRuns.store(runs, std::memory_order_relaxed);
+    if (g_fillerPoison && (runs & 0xFFFu) == 0 && n < avail)
+        return n + 1;   // the deliberate desync; see g_fillerPoison
+    if (depth == 0)
+        cs.fillerRingDwords.store(cs.fillerRingDwords.load(std::memory_order_relaxed) + n,
+                                  std::memory_order_relaxed);
+    // 31 - clz(n) = floor(log2 n); bucket 7 collects everything from 128 up.
+    const uint32_t b = std::min(7u, 31u - static_cast<uint32_t>(__builtin_clz(n)));
+    cs.fillerHist[b].store(cs.fillerHist[b].load(std::memory_order_relaxed) + 1,
+                           std::memory_order_relaxed);
+    return n;
+}
+
 // Execute one packet at `pos`. Returns the dwords consumed, or 0 when the packet
 // claims more than `avail` — which at ring level means the driver has written the
 // header but not yet the body, and the right answer is to come back next tick rather
@@ -1124,6 +1213,14 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     // atomic arm it is a reference to an instance nothing ever writes, which is how that
     // arm avoids paying even that.
     Census& cs = g_atomicCounters ? g_censusUnused : ThreadCensus();
+
+    // Filler. `ExecuteLinear` catches this before the call — which is where all of it
+    // actually is — but the ring walk does not pre-fetch its header, so this stays as
+    // the general path and is what makes the fast path an optimisation rather than the
+    // only implementation.
+    if (type == 2)
+        return ConsumeFillerRun(cs, fetch, pos, avail, depth);
+
     // The poison drives the GLOBAL only, so the two forms diverge by one every ten
     // thousand packets and the verifier must report it. Meaningful only with
     // CZ_PM4_VERIFY_COUNTERS=1, which is what bumps the global at all.
@@ -1132,9 +1229,6 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
     else
         CensusAdd(cs.packets, g_packets);
     CensusAdd(cs.types[type], g_types[type]);
-
-    if (type == 2) // filler
-        return 1;
 
     // An all-zero dword at ring level is memory the driver has not written yet.
     // Parsing it as a type-0 "write one register at index 0" would silently consume
@@ -1806,9 +1900,24 @@ uint32_t ExecuteLinear(uint8_t* base, uint32_t va, uint32_t sizeDwords, int dept
     };
     Step trail[8] = {};
     uint32_t steps = 0;
+    Census& cs = g_atomicCounters ? g_censusUnused : ThreadCensus();
     while (pos < sizeDwords)
     {
         const uint32_t header = fetch(pos);
+        // The filler fast path (item 1a). 100% of this title's type-2 dwords arrive here
+        // rather than at ring level, and they are ~30% of every packet walked, so the one
+        // test that keeps them out of `ExecutePacket` entirely is the whole item. It is
+        // free: the header is fetched above for the trail regardless.
+        //
+        // The trail is skipped for filler on purpose. It exists so a TRUNCATION can name
+        // the packet whose length arithmetic was wrong, and a no-op has no length
+        // arithmetic — leaving filler out keeps eight real packets in the eight slots
+        // instead of the two or three that survive a stream 30% padded.
+        if ((header >> 30) == 2 && !g_noFillerRuns)
+        {
+            pos += ConsumeFillerRun(cs, fetch, pos, sizeDwords - pos, depth);
+            continue;
+        }
         const uint32_t consumed = ExecutePacket(base, fetch, pos, sizeDwords - pos, depth);
         trail[steps % 8] = { pos, header, consumed };
         steps++;
@@ -2192,6 +2301,26 @@ uint64_t Pm4_DrawsPredicatedOut()
     return g_atomicCounters
                ? g_drawsPredicatedOut.load()
                : CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.drawsPredicatedOut; });
+}
+
+// The filler-run census (item 1a). These have no atomic twin, because they describe the
+// part-50 walk rather than the pre-48 one, and under CZ_PM4_ATOMIC_COUNTERS they simply
+// read zero — which is honest: that arm is the pre-part-48 counter form, and the filler
+// coalescing it still performs is described by `Pm4_TypeCount(2)` divided by nothing.
+uint64_t Pm4_FillerRuns()
+{
+    return CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.fillerRuns; });
+}
+uint64_t Pm4_FillerRingDwords()
+{
+    return CensusSum([](Census& c) -> std::atomic<uint64_t>& { return c.fillerRingDwords; });
+}
+uint64_t Pm4_FillerHist(uint32_t bucket)
+{
+    if (bucket >= 8)
+        return 0;
+    return CensusSum(
+        [bucket](Census& c) -> std::atomic<uint64_t>& { return c.fillerHist[bucket]; });
 }
 
 // The verifier. Returns the number of the 135 counters on which the per-thread form and
