@@ -3428,3 +3428,26 @@ From phase C part 18 (the frame rate — and none of it was work):
      simulation. **Both are invisible in the comparison everyone actually runs**, which
      is "new mechanism per query" against "old mechanism per query". Ask what it costs
      to turn on, and what it costs everybody ELSE afterwards.
+
+342. **WHEN A CACHE KEY IS A PROBE RATHER THAN THE CONTENT, ASK WHAT THE WRONG ANSWER
+     *IS*, NOT JUST HOW LIKELY IT IS.** Part 52's plan specified a memo on the shader
+     hash keyed by `(address, size)` plus the first and last dword of the microcode —
+     "two loads, and it catches the overwhelming majority of a re-upload" — and argued
+     the failure mode was benign, because a wrong hash names nothing in the shader cache
+     and the standing "no translated shader" gate would therefore catch it. Both halves
+     were wrong. The probe was wrong about HALF the times it was consulted for one pair
+     of shaders (two different blobs, same size, same first dword, same last dword,
+     alternating), because microcode is far too regular for two dwords to identify it:
+     dword 0 is a control-flow instruction pair whose encoding repeats across everything
+     one compiler emits. And the wrong answer was not a random number that misses — it
+     was **another real shader's hash**, which IS in the cache, so the renderer would
+     have bound a real, wrong, translated shader and drawn with it, silently, past every
+     gate the project owns. **A probe that fails into another VALID key fails
+     invisibly.** The fix was to stop probing: compare the whole content with `memcmp`
+     against the bytes hashed last time, which is exact and still ~30x cheaper than the
+     hash, because the hash's cost was a serial multiply chain and not a memory read.
+     Two corollaries. **Write the verify arm even when the argument for the fix sounds
+     complete** — this one refuted its own design on its first run, and nothing else
+     would have. And **check what your verify arm does to the thing it is standing next
+     to**: this one re-inserted into the table on every load and reported 46x more
+     evictions than misses until one comparison stopped it (gotcha 7 again, one level in).
