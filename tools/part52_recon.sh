@@ -63,6 +63,18 @@ envv=(CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_AUTOCHUCK=EXPLORER
       CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE)
 [ "$MODE" = stats ] && envv+=("CZ_VK_FRAME_STATS=$OUT/$TAG.stats")
 [ -n "$PROF" ] && envv+=(CZ_VK_PROFILE=30)
+# ENVX="VAR=1 VAR2=1" adds arbitrary arms to the run. This is what makes the recon
+# reusable as the A/B harness for an ITEM rather than only as a survey: the control arm
+# for a change measured in symbol shares has to be the same binary, the same route and
+# the same event gate, and re-deriving all three in a second script is how two arms drift
+# apart (gotcha 51 — the control is the old configuration run NOW, under the same
+# conditions). Used for item 1.0 as ENVX=CZ_PM4_NO_SHADER_MEMO=1.
+if [ -n "${ENVX:-}" ]; then
+    for kv in $ENVX; do envv+=("$kv"); done
+fi
+# NO_DWARF=1 skips the call-graph pass. The flat profile is what an item's A/B reads;
+# the DWARF pass is for attribution and costs ~500 MB and 20 s a run.
+[ -n "${NO_DWARF:-}" ] && DWARF_SECS=0
 
 echo "=== $TAG ($MODE${PROF:+ +profile}) $(date +%H:%M:%S)"
 ( cd "$ROOT/runtime/build" && env "${envv[@]}" timeout "$SECS" ./cz_runtime > "$LOG" 2>&1 ) &
@@ -103,8 +115,10 @@ perf record -F 999 -p "$PID" -o "$OUT/$TAG.flat.perf.data" -- sleep "$FLAT_SECS"
 # DWARF unwinding is expensive and writes a lot, so it gets a shorter window. It is the
 # only way to attribute a hot LEAF to its callers here: the build is -O2 without frame
 # pointers, so an fp walk would be fiction rather than merely imprecise.
+if [ "$DWARF_SECS" != 0 ]; then
 perf record -F 499 --call-graph dwarf,16384 -p "$PID" -o "$OUT/$TAG.cg.perf.data" \
     -- sleep "$DWARF_SECS" >> "$OUT/$TAG.perf.log" 2>&1
+fi
 
 kill "$PID" 2>/dev/null
 wait $RUNNER 2>/dev/null
