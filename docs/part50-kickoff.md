@@ -90,7 +90,11 @@ machine.
   `part49_launch60.sh` (a guarded single launch), `part47_gates.sh`.
 * **Artifacts**: `~/DR2CZ-troubleshooting/part48/campaign/`, `part48-operator/`,
   `part49-operator/` (the whole-map lap is `cap60c.stats`, 16,788 frames).
-* **Gates at close**: all clean, E3 at **+0.879, LAYOUT AGREES**.
+* **Gates at close**: all clean at the 60 fps default, E3 **best of five +0.8807**,
+  4 of 5 samples agreeing on layout. The gate now takes FIVE captures because part 49
+  found it could fail by luck: the backdrop is animated and correlation swings ~0.23
+  within one configuration, with one 30 fps sample reading 0.649 against the gate's own
+  +0.70 threshold (gotcha 133 sitting inside a standing gate).
 * **Two process lessons that each cost real time**: `pgrep -x cz_runtime` cannot see
   `cz_runtime_envperpacket` because Linux truncates `comm` to 15 characters — match on
   a PREFIX; and **launch through a guarded script**, because two instances at once
