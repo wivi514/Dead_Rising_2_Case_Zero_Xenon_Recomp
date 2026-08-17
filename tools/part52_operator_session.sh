@@ -92,7 +92,7 @@ run() {
         CZ_VKDRAW=1 CZ_DEBUG_MENU=1 \
         "CZ_CAPTURE_KEY=$OUT/$tag" \
         "CZ_SHADER_DUMP=$HOME/DR2CZ-troubleshooting/ucode-dumps" \
-        CZ_VK_PROFILE=20 "${stats[@]}" \
+        "CZ_VK_PROFILE=${PROF:-20}" "${stats[@]}" \
         "CZ_SHADER_SPV=$A2M" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1 \
         "$@" \
         ./cz_runtime > "$OUT/$tag.log" 2>&1 )
@@ -115,6 +115,15 @@ if [ "${ARM:-single}" = ab ]; then
   #  but it cannot compare a crowd against a corridor, and an arm   #
   #  that never reaches a crowd contributes nothing to the bins     #
   #  that matter.                                                   #
+  #                                                                 #
+  #  BEST OF ALL: go to the HEAVIEST place you know, stand still    #
+  #  and SOAK for ~3 minutes in each arm. A soak holds the draw     #
+  #  count and the camera steady, so a bin fills with hundreds of   #
+  #  genuinely comparable frames instead of two different walks —   #
+  #  which is the one thing this project has never been able to     #
+  #  arrange headlessly (gotcha 247). Press F9 when the soak        #
+  #  STARTS: the capture is named by frame index, so it marks the   #
+  #  soak exactly in the stats file.                                #
   #                                                                 #
   #  WHAT THE CONTROL ARM RESTORES, and what it does NOT: arm B     #
   #  puts back the pre-part-52 shader path (the full hash on every  #
