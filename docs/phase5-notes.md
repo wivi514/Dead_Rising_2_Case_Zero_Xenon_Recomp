@@ -10879,3 +10879,90 @@ has ~4 minutes of evidence at 1 ms and no complaint.
   `assets/shader_spv_a2m` identical in membership, dimension census 0 disagreements.
 * **0 `PARALLEL GUARD SLOT MIX-UP` over a real play session**, which is the first time
   part 53's guard has been exercised anywhere other than the two headless routes.
+
+### §14. INTERNAL RESOLUTION SCALING — and it is nearly FREE exactly where the frame is
+### worst, which is the opposite of the intuition
+
+The operator asked for a resolution knob "so the game looks crisp and we can better test
+the GPU". `CZ_VK_RES=2560x1440` (or `CZ_VK_RES_SCALE=2`). Their verdict on the picture:
+**"Perfect looks all good."**
+
+#### What it does, in one line
+
+The title still renders at 1280x720 in its own coordinates — its vertex positions, its
+viewports, its scissors and its resolve extents are its numbers and none of them changed.
+What scales is the **rasterisation target** they land in, so the same triangles are sampled
+at four times as many points.
+
+**The invariant the whole change is an instance of: a surface whose pixels come from the
+RENDER PIPELINE scales; a surface whose pixels come from GUEST MEMORY does not.** The EDRAM
+stand-in, the resolve snapshots, their right-sized views and the cube map the title renders
+itself are the first kind. An uploaded texture is the second — there is no more data in
+guest memory than the guest put there, and inventing some would be a different feature (an
+upscaler) wearing this one's name.
+
+The consequence is that every guest coordinate is multiplied **once, on its way into
+Vulkan, and nowhere else**. `edramWidth`/`edramHeight` therefore stay in guest pixels: they
+are the denominator of the window-coordinate-to-NDC mapping, which is
+resolution-independent by construction. Those two used to equal `R->color.width`, so every
+site that compared a guest coordinate against the image now compares against `edramWidth`
+— **substitutions that are identities at scale 1**, which is what makes the default arm
+provably the old code rather than a rewrite that happens to agree.
+
+`Snapshot` gained `guestW`/`guestH` for the same reason: a fetch declaring 640x360, a
+sub-region fold looking for "a surface of the same extent", and the resize check that
+rebuilds a reused address are all asking about the surface the TITLE resolved, not about
+how many host pixels we chose to keep it in.
+
+Integer multiples only, and an unsupported value is refused loudly (gotcha 5): a fractional
+scale would put a fraction into the tile scissors, and this title renders in two 640-wide
+halves where half a pixel of scissor error is a **seam down the middle of the screen that
+no counter would report.**
+
+#### THE MEASUREMENT, and it reorders how to think about the GPU
+
+Their play session, same route, same build, `CZ_FPS_LOG` medians:
+
+| where | 1280x720 | **2560x1440** | cost |
+|---|---|---|---|
+| menus / title | 166 fps | 183 | — (both trivial) |
+| light zones | **119-147** | **96-97** | **−30 to −35%** |
+| ordinary gameplay | 83-114 | 74-92 | −10 to −20% |
+| **the heavy end** | **69-71** | **66** | **−4 to −7%** |
+
+**Four times the pixels costs almost nothing where the frame is worst.** That is not a
+surprise once it is written down — gotcha 231 measured the GPU idle 68% of every frame, and
+part 51 established that our pump thread is the critical path — but it inverts the usual
+expectation about a resolution setting:
+
+* **in a crowd we are CPU-bound, so 1440p is nearly free**: 69-71 -> 66 fps for four times
+  the sampling;
+* **in a light zone we were NOT CPU-bound, so 1440p costs what it should**: 147 -> 96.
+
+So this knob converts idle GPU into picture quality precisely where the frame has none to
+spare, and costs frames only where there were frames to spare. **It is the first change in
+this port that makes the GPU the limiter anywhere**, which is what the operator asked for
+in the second half of their sentence, and it gives every future GPU-side item a place to be
+measured that did not exist this morning.
+
+#### The bill, and where to look first if a frame time surprises
+
+The present readback is the scale SQUARED in bytes: **3.5 MB/frame at 1x, 14.1 at 2x.**
+That is four times the copy part 53 spent the afternoon shrinking (§11), and at 2x it is
+the single largest fixed per-frame cost in the renderer. `readback` in `CZ_VK_PROFILE` is
+where it lands, the startup line says the number out loud, and **it is now the strongest
+argument yet for a real swapchain** — the plan's §7 item, which has been deferred as "a
+different and much larger job" since part 52 and would remove the copy entirely rather than
+shrinking it.
+
+The window is not resized: the bigger image is filtered down into whatever the window is,
+which is supersampling. Dragging the window out is what puts the resolution on screen
+rather than only in the sampling.
+
+#### What this does NOT fix, said out loud because it will be noticed
+
+The title's post chain computes its blur taps from texel offsets IT supplies, in units of a
+1280-wide surface. Those are NORMALISED offsets, so a tap still lands the same fraction of
+the screen away and a blur keeps its screen-space size — it is simply sampled at fewer taps
+per pixel than the artist intended. That is the ordinary, accepted outcome of resolution
+scaling and not a defect to chase.

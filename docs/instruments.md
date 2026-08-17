@@ -1483,6 +1483,24 @@ CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and cou
                    ~3.2 M served guards per window, 0.0002-0.0021%, and that is an UPPER
                    bound on harm because most disagreements are streams that read as
                    changed either way. Costs the whole saving; an arm, never a default
+CZ_VK_RES=WxH      **the internal resolution.** An INTEGER multiple of the title's own
+                   1280x720 and nothing else -- 2560x1440, 3840x2160, 5120x2880 --
+                   because a fractional scale would put a fraction into the tile
+                   scissors, and this title renders in two 640-wide halves where half a
+                   pixel of scissor error is a seam down the middle that no counter would
+                   report. An unsupported value is refused loudly and the run continues at
+                   1280x720 (gotcha 5). `CZ_VK_RES_SCALE=N` is the same thing as a
+                   multiplier; 1 is the control arm and is provably the old code, because
+                   every substitution the change makes is an identity at scale 1.
+                   The guest's geometry, viewports, scissors and resolve extents are ITS
+                   numbers and are untouched; what scales is the rasterisation target they
+                   land in. **The invariant: a surface whose pixels come from the RENDER
+                   PIPELINE scales, a surface whose pixels come from GUEST MEMORY does
+                   not** -- so the EDRAM stand-in, the resolve snapshots, their right-sized
+                   views and the rendered cube map all scale, and an uploaded texture does
+                   not. The present readback costs the scale SQUARED: 3.5 MB/frame at 1x,
+                   14.1 at 2x, so read `readback` in `CZ_VK_PROFILE` before blaming
+                   anything else for a frame time here
 CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing else.
                    The point is the BILL: every other frame-rate instrument here costs
                    enough to change the answer (`CZ_VK_PROFILE` 2-4 ms/frame,

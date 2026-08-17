@@ -88,10 +88,37 @@ justify an evening alone, but it costs nothing beside an item that does.
 
 ---
 
+## AND THE PORT GAINED A RESOLUTION KNOB AT THE END OF PART 53 — read this before
+## picking a GPU item, because it changes where the limiter is
+
+`CZ_VK_RES=2560x1440` (`phase5-notes.md` §6cj §14). The operator asked for it, played it,
+and said *"perfect looks all good"*. The measurement is the part worth carrying:
+
+| where | 1280x720 | 2560x1440 | cost |
+|---|---|---|---|
+| light zones | 119-147 fps | 96-97 | **−30 to −35%** |
+| ordinary gameplay | 83-114 | 74-92 | −10 to −20% |
+| **the heavy end** | **69-71** | **66** | **−4 to −7%** |
+
+**Four times the pixels costs almost nothing where the frame is worst**, because there we
+are CPU-bound (gotcha 231: the GPU is idle 68% of every frame). It costs what a resolution
+setting should only in the light zones, where we were not. So **this is the first change in
+this port that makes the GPU the limiter anywhere**, and it gives GPU-side items a place to
+be measured that did not exist before.
+
+**Its bill is the present readback, which is the scale SQUARED: 3.5 -> 14.1 MB/frame.**
+That is four times the copy item 1.3 just removed, and it makes the plan's §7 swapchain
+item — deferred as "a different and much larger job" — the strongest remaining candidate
+outside the parallel tier. Read `readback` in `CZ_VK_PROFILE` before blaming anything else
+for a frame time at 2x.
+
+---
+
 ## THE STATE OF THE PLAN
 
 | item | expected | risk | note |
 |---|---|---|---|
+| **§7 a real swapchain** | removes 14.1 MB/frame at 2x | med-high | **promoted by the resolution knob.** It was 3.5 MB/frame and deferrable; at 1440p it is the largest fixed per-frame cost in the renderer |
 | **1.2 parallel texture untile** | −1..2 ms | med-high | **unblocked** — the plan's precondition was "only after 1.1 proves the worker pool", and it does. See below for why it is harder than the guard |
 | 2.3 audit the always-on censuses | −0.1..0.3 ms | none | |
 | 3.3 `_int_malloc` on the frame path | −0.2..0.3 ms | low | still 1.2-1.6% of the pump; part 52 removed ~1,500 mallocs/frame from the shader path and there is another caller |
@@ -171,14 +198,21 @@ prints two arms side by side, which is an item A/B in one command.
 
 ## STANDING STATE
 
-* Runtime defaults: 60 fps cap, host vsync off, 100 us ring tick, **4 guard workers**,
-  **no present staging copy**.
+* Runtime defaults: **500 fps cap (a 1 ms vblank period — changed from 60 at the close of
+  part 53, on the operator's choice, because part 53 took their frame UNDER the 16 ms
+  ceiling the old default imposed)**, host vsync off, 100 us ring tick, **4 guard
+  workers**, **no present staging copy**, internal resolution **1280x720** (the title's
+  own; `CZ_VK_RES=2560x1440` is the knob).
 * **New arms**: `CZ_VK_NO_PARALLEL_GUARD=1`, `CZ_VK_GUARD_WORKERS=N`,
   `CZ_VK_VERIFY_PARALLEL_GUARD=1`, `CZ_VK_VERIFY_PARALLEL_GUARD_POISON=1`,
-  `CZ_VK_PRESENT_STAGING=1`. All in `docs/instruments.md`.
+  `CZ_VK_PRESENT_STAGING=1`, **`CZ_VK_RES=WxH` / `CZ_VK_RES_SCALE=N`**, **`CZ_FPS_LOG=N`**.
+  All in `docs/instruments.md`. `CZ_FPS_CAP=60` is now the arm that restores the OLD
+  default rather than being it.
 * **New instrument lines**: `[vkprof] guard prehash:` (hit rate, MB/frame moved, miss
   reasons, dispatches, drain stalls) and `[vkprof] guard prehash VERIFY:`.
-* **New tooling**: `tools/part53_symbols.py` (per-thread, per-function `perf` shares with
+* **New tooling**: `tools/play_session.sh` (a judging session: no profiler, no frame
+  stats, no debug menu, `FPS=` and `RES=` knobs, F9 screenshots still armed),
+  `tools/part53_operator_session.sh` (the two-arm soak), `tools/part53_symbols.py` (per-thread, per-function `perf` shares with
   a `--diff`), `tools/part53_item_campaign.sh` (the frame-time campaign, which also
   samples per-thread CPU in every arm because a (b) item's bill has to travel with it).
 * The shader cache is **438** (was 436). The operator's uncapped play session found

@@ -1047,6 +1047,81 @@ const char* Env(const char* n) { return getenv(n); }
 bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 
 // ===================================================================================
+// INTERNAL RESOLUTION SCALE — CZ_VK_RES / CZ_VK_RES_SCALE
+// ===================================================================================
+//
+// The title renders at 1280x720 and nothing changes that: its vertex positions, its
+// viewports, its scissors, its resolve extents and its texture fetches are all in guest
+// pixels, and they are its own numbers. What this scales is the RASTERISATION TARGET —
+// the host images the guest's draws land in — so the same geometry is sampled at more
+// points. That is why it produces a sharper picture rather than a different one, and it
+// is why the whole change fits on one side of a line that already exists in this file.
+//
+// **THE INVARIANT, and every edit below is an instance of it: a surface whose pixels
+// come from the RENDER PIPELINE scales; a surface whose pixels come from GUEST MEMORY
+// does not.** The EDRAM stand-in, the resolve snapshots, their right-sized views and the
+// rendered cube map are the first kind. An uploaded texture is the second — there is no
+// more data in guest memory than the guest put there, and inventing some would be a
+// different feature (an upscaler) wearing this one's name.
+//
+// The consequence is that every guest coordinate has to be multiplied on its way to
+// Vulkan and nowhere else. `edramWidth`/`edramHeight` therefore stay in GUEST pixels —
+// they are the denominator of the window-coordinate-to-NDC mapping, which is
+// resolution-independent by construction — while `R->color.width` is the host image's
+// and is scaled. The two used to be the same number, so anywhere the old code compared a
+// guest coordinate against `R->color.width` it now compares against `edramWidth`; those
+// substitutions are identities at scale 1, which is what makes the default arm provably
+// unchanged.
+//
+// WHAT THIS DOES NOT FIX, said out loud because it will be noticed. The title's post
+// chain computes its blur taps from texel offsets IT supplies, in units of a 1280-wide
+// surface. Those are NORMALISED offsets, so a tap still lands the same fraction of the
+// screen away and a blur keeps its screen-space size — it is simply sampled at fewer
+// taps per pixel than the artist intended. That is the ordinary, accepted outcome of
+// resolution scaling and not a defect to chase.
+//
+// INTEGER MULTIPLES ONLY, and an unsupported request is refused loudly rather than
+// rounded (gotcha 5). A non-integer scale would put a fractional factor into the tile
+// scissors — this title renders in two 640-wide halves — and half a pixel of scissor
+// error is a seam down the middle of the screen that no counter would report.
+//
+//   CZ_VK_RES=2560x1440   the resolution, said the way a player says it
+//   CZ_VK_RES_SCALE=2     the same thing as a multiplier
+uint32_t ResScale()
+{
+    static const uint32_t s = [] () -> uint32_t {
+        constexpr uint32_t kBaseW = 1280, kBaseH = 720, kMaxScale = 4;
+        if (const char* r = Env("CZ_VK_RES"))
+        {
+            uint32_t w = 0, h = 0;
+            if (sscanf(r, "%ux%u", &w, &h) == 2 && w && h && w % kBaseW == 0 &&
+                h % kBaseH == 0 && w / kBaseW == h / kBaseH &&
+                w / kBaseW >= 1 && w / kBaseW <= kMaxScale)
+                return w / kBaseW;
+            fprintf(stderr,
+                    "[vk] CZ_VK_RES=%s is not an integer multiple of this title's own "
+                    "1280x720 (up to %ux) — IGNORED, rendering at 1280x720. Try %s.\n",
+                    r, kMaxScale, "1280x720, 2560x1440, 3840x2160 or 5120x2880");
+            return 1;
+        }
+        if (const char* n = Env("CZ_VK_RES_SCALE"))
+        {
+            const long v = strtol(n, nullptr, 10);
+            if (v >= 1 && v <= long(kMaxScale))
+                return uint32_t(v);
+            fprintf(stderr,
+                    "[vk] CZ_VK_RES_SCALE=%s is out of range (1..%u) — IGNORED.\n", n,
+                    kMaxScale);
+        }
+        return 1;
+    }();
+    return s;
+}
+// A guest extent, in host pixels. Every use is a guest coordinate crossing into Vulkan.
+inline uint32_t RS(uint32_t v) { return v * ResScale(); }
+inline int32_t RSi(int32_t v) { return v * int32_t(ResScale()); }
+
+// ===================================================================================
 // THE CONTENT GUARDS, ON OTHER CORES — part 53, plan item 1.1
 // ===================================================================================
 //
@@ -1926,6 +2001,14 @@ struct SnapshotView
 struct Snapshot
 {
     Image image;
+    // THE GUEST EXTENT, which is `image`'s divided by the resolution scale — and it is
+    // stored rather than derived because it is what every comparison in this file
+    // actually means. A fetch declaring 640x360, a sub-region fold looking for a surface
+    // "of the same extent", and the resize check that rebuilds a reused address are all
+    // asking about the surface the TITLE resolved, not about how many host pixels we
+    // chose to keep it in. Deriving it by division would work and would put a scale
+    // factor at every one of those sites instead of at the two that create the image.
+    uint32_t guestW = 0, guestH = 0;
     uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
     uint64_t frameSeen = 0;
     // Keyed (width << 16) | height. Refreshed from `image` by whatever resolve next
@@ -3632,7 +3715,8 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
     // requires compatible formats, and this image exists only to be filled from those.
     // The fetch constant's own format is deliberately NOT consulted — a rendered surface's
     // pixels are whatever the render target held, not whatever the fetch declares.
-    if (!CreateImage(cube.image, t.width, t.height, VK_FORMAT_R8G8B8A8_UNORM,
+    // Scaled, because its six faces are resolve snapshots and those are.
+    if (!CreateImage(cube.image, RS(t.width), RS(t.height), VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_CUBE, 6, 1))
@@ -3733,7 +3817,12 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
                                            VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE };
     const VkImageAspectFlags aspect =
         snap.fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    if (!CreateImage(view.image, w, h, snap.image.format,
+    // The KEY stays the guest size — it is what the fetch asked for — while the image
+    // is the scaled one, because `RefreshSnapshotView` copies the top-left corner of the
+    // snapshot into it and the snapshot is scaled. A guest-sized view here would serve
+    // the top-left 1/scale^2 of the surface, which reads as a zoomed texture and not as
+    // a missing one.
+    if (!CreateImage(view.image, RS(w), RS(h), snap.image.format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
                      aspect, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
@@ -3743,7 +3832,7 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
         Count("texture: snapshot view image creation FAILED");
         return 0;
     }
-    NameImage(view.image, "snapshot view %ux%u slot %u%s", w, h, view.slot,
+    NameImage(view.image, "snapshot view %ux%u slot %u%s", RS(w), RS(h), view.slot,
               snap.fromDepth ? " DEPTH" : "");
 
     VkDescriptorImageInfo ii{};
@@ -4137,13 +4226,12 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // the same-binary control arm.
             static const bool noViews = EnvOn("CZ_VK_NO_SNAPSHOT_VIEWS");
             if (t.width && t.height &&
-                (t.width != snap->second.image.width ||
-                 t.height != snap->second.image.height))
+                (t.width != snap->second.guestW || t.height != snap->second.guestH))
             {
                 COUNT("texture: snapshot served at the surface PITCH, not the fetch's "
                       "declared size — texture coordinates would be scaled wrong");
-                if (!noViews && t.width <= snap->second.image.width &&
-                    t.height <= snap->second.image.height)
+                if (!noViews && t.width <= snap->second.guestW &&
+                    t.height <= snap->second.guestH)
                 {
                     const uint32_t slot = SnapshotViewSlot(snap->second, t.width, t.height);
                     if (slot)
@@ -8054,6 +8142,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
+    // INTO HOST PIXELS, and here rather than anywhere above. Everything that produced
+    // these four numbers — the guest's VTE scale/offset, the EDRAM extent fallback, the
+    // MSAA window factor — is in the title's own window coordinates, and the NDC mapping
+    // `posScale` shares with them must stay resolution-independent or the geometry would
+    // land in a corner of the enlarged target. One multiply, at the boundary.
+    // A negative height (the Y flip above) keeps its sign through it.
+    if (ResScale() != 1)
+    {
+        const float rs = float(ResScale());
+        viewport.x *= rs;
+        viewport.y *= rs;
+        viewport.width *= rs;
+        viewport.height *= rs;
+    }
     // Height may legitimately be NEGATIVE now (the Y flip above), so the check is on
     // magnitude. Testing `height <= 0` here would silently drop every single draw.
     if (viewport.width <= 0.0f || std::fabs(viewport.height) <= 0.0f)
@@ -8082,11 +8184,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     VkRect2D scissor{};
     scissor.offset = { 0, 0 };
     scissor.extent = { R->color.width, R->color.height };
-    if (winX1 > winX && winY1 > winY && winX < R->color.width && winY < R->color.height)
+    // `edramWidth`/`edramHeight` and NOT `R->color.width`: the window scissor is in the
+    // title's own screen coordinates and those two numbers were the same until the
+    // resolution scale existed. Identical at scale 1.
+    if (winX1 > winX && winY1 > winY && winX < R->edramWidth && winY < R->edramHeight)
     {
-        scissor.offset = { int32_t(winX), int32_t(winY) };
-        scissor.extent = { std::min(winX1, R->color.width) - winX,
-                           std::min(winY1, R->color.height) - winY };
+        scissor.offset = { RSi(int32_t(winX)), RSi(int32_t(winY)) };
+        scissor.extent = { RS(std::min(winX1, R->edramWidth) - winX),
+                           RS(std::min(winY1, R->edramHeight) - winY) };
     }
 
     // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
@@ -9213,9 +9318,11 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // because "the snapshot is the right size" and "the snapshot is FULL" are different
     // claims and only the second one makes a shadow map usable.
     static const bool smallEdram = EnvOn("CZ_VK_SMALL_EDRAM");
-    const uint32_t w = smallEdram ? std::min(surfW, R->color.width)
+    // `edramWidth`/`edramHeight`, not the image's: every extent from here to the copy
+    // is in the title's own pixels and is multiplied once, at the vkCmd calls.
+    const uint32_t w = smallEdram ? std::min(surfW, R->edramWidth)
                                   : std::min(surfW, kMaxSurfaceExtent);
-    const uint32_t h = smallEdram ? std::min(surfH, R->color.height)
+    const uint32_t h = smallEdram ? std::min(surfH, R->edramHeight)
                                   : std::min(surfH, kMaxSurfaceExtent);
     if (!smallEdram && (surfW > kMaxSurfaceExtent || surfH > kMaxSurfaceExtent))
         Count("resolve: destination surface larger than the snapshot cap");
@@ -9224,8 +9331,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     uint32_t copyW = wx1 > wx ? std::min(wx1, w) - copyX : w - copyX;
     uint32_t copyH = wy1 > wy ? std::min(wy1, h) - copyY : h - copyY;
     // Bound by the EDRAM we can read from, and say so when that bites.
-    const uint32_t availW = copyX < R->color.width ? R->color.width - copyX : 0;
-    const uint32_t availH = copyY < R->color.height ? R->color.height - copyY : 0;
+    const uint32_t availW = copyX < R->edramWidth ? R->edramWidth - copyX : 0;
+    const uint32_t availH = copyY < R->edramHeight ? R->edramHeight - copyY : 0;
     if (copyW > availW || copyH > availH)
         Count("resolve: copy region clipped by the EDRAM stand-in's size");
     copyW = std::min(copyW, availW);
@@ -9269,7 +9376,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             if (((k & kSnapshotDepthBit) != 0) != fromDepth)
                 continue;
             const uint32_t b = k & 0x1FFFFFFF;
-            if (b >= baseKey || s.image.width != w || s.image.height != h)
+            if (b >= baseKey || s.guestW != w || s.guestH != h)
                 continue;
             const uint32_t delta = baseKey - b;
             if (delta & 0xFFF)          // not a whole number of macro tiles
@@ -9330,7 +9437,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         // partial overwrite leaves the previous surface's pixels around the edge of
         // the new one, which reads as a ghosting artefact with no obvious source.
         if (it != R->snapshots.end() &&
-            (it->second.image.width != w || it->second.image.height != h))
+            (it->second.guestW != w || it->second.guestH != h))
         {
             vkDeviceWaitIdle(R->device);
             vkDestroyImageView(R->device, it->second.image.view, nullptr);
@@ -9356,6 +9463,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             Snapshot s;
             s.slot = R->nextTextureSlot++;
             s.fromDepth = fromDepth;
+            s.guestW = w;
+            s.guestH = h;
             // A depth snapshot keeps the EDRAM depth buffer's own format, because
             // vkCmdCopyImage is only defined between identical depth formats — there
             // is no copy from a depth image into a colour one. It is viewed through
@@ -9367,7 +9476,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE
             };
-            if (CreateImage(s.image, w, h,
+            if (CreateImage(s.image, RS(w), RS(h),
                             fromDepth ? R->depth.format : VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -9447,10 +9556,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // surface, which is what `dstX`/`dstY` carry.
             VkImageCopy copy{};
             copy.srcSubresource = { aspect, 0, 0, 1 };
-            copy.srcOffset = { int32_t(copyX), int32_t(copyY), 0 };
+            copy.srcOffset = { RSi(int32_t(copyX)), RSi(int32_t(copyY)), 0 };
             copy.dstSubresource = { aspect, 0, 0, 1 };
-            copy.dstOffset = { int32_t(dstX), int32_t(dstY), 0 };
-            copy.extent = { copyW, copyH, 1 };
+            copy.dstOffset = { RSi(int32_t(dstX)), RSi(int32_t(dstY)), 0 };
+            copy.extent = { RS(copyW), RS(copyH), 1 };
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
@@ -9612,8 +9721,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         if (scopedClear && copyW && copyH)
         {
             VkClearRect rect{};
-            rect.rect.offset = { int32_t(copyX), int32_t(copyY) };
-            rect.rect.extent = { copyW, copyH };
+            rect.rect.offset = { RSi(int32_t(copyX)), RSi(int32_t(copyY)) };
+            rect.rect.extent = { RS(copyW), RS(copyH) };
             rect.baseArrayLayer = 0;
             rect.layerCount = 1;
             // vkCmdClearAttachments needs a render pass; outside one the region form is
@@ -9630,7 +9739,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
             VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
-            ri.renderArea = { { int32_t(copyX), int32_t(copyY) }, { copyW, copyH } };
+            ri.renderArea = { { RSi(int32_t(copyX)), RSi(int32_t(copyY)) },
+                              { RS(copyW), RS(copyH) } };
             ri.layerCount = 1;
             ri.pDepthAttachment = &depthAtt;
             ri.pStencilAttachment = &depthAtt;
@@ -9684,7 +9794,8 @@ bool InitCommon()
     // clip volume it maps into has to be the EDRAM's (see the vte==0 branch).
     R->edramWidth = R->targetWidth;
     R->edramHeight = edramH;
-    if (!CreateImage(R->color, R->targetWidth, edramH,
+    // THE HOST EXTENT IS SCALED; `edramWidth`/`edramHeight` below stay in guest pixels.
+    if (!CreateImage(R->color, RS(R->targetWidth), RS(edramH),
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -9692,7 +9803,7 @@ bool InitCommon()
         // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
         // buffer rather than the colour one (its shadow cascades and the scene depth
         // its depth-of-field pass reads back) — see DoResolve.
-        !CreateImage(R->depth, R->targetWidth, edramH,
+        !CreateImage(R->depth, RS(R->targetWidth), RS(edramH),
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -9702,8 +9813,8 @@ bool InitCommon()
         fprintf(stderr, "[vk] render target creation FAILED\n");
         return false;
     }
-    NameImage(R->color, "EDRAM colour %ux%u", R->targetWidth, edramH);
-    NameImage(R->depth, "EDRAM depth %ux%u", R->targetWidth, edramH);
+    NameImage(R->color, "EDRAM colour %ux%u", RS(R->targetWidth), RS(edramH));
+    NameImage(R->depth, "EDRAM depth %ux%u", RS(R->targetWidth), RS(edramH));
 
     // A depth snapshot is sampled through the same bindless heap and the same single
     // linear sampler as every other texture, so the device has to be able to filter
@@ -9843,8 +9954,8 @@ bool InitCommon()
                       // is 4096x1024, and the dump SKIPS anything that does not fit,
                       // which would have made the one surface under investigation the
                       // one surface absent from the directory.
-                      std::max(uint64_t(R->targetWidth) * R->targetHeight,
-                               uint64_t(4096) * 1024) * 4,
+                      std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
+                               uint64_t(RS(4096)) * RS(1024)) * 4,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
@@ -9860,8 +9971,8 @@ bool InitCommon()
     for (uint32_t i = 0; i < R->framesInFlight; ++i)
     {
         if (!CreateBuffer(R->frames[i].present,
-                          std::max(uint64_t(R->targetWidth) * R->targetHeight,
-                                   uint64_t(4096) * 1024) * 4,
+                          std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
+                                   uint64_t(RS(4096)) * RS(1024)) * 4,
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
         {
             fprintf(stderr, "[vk] present readback buffer %u allocation FAILED\n", i);
@@ -10041,7 +10152,7 @@ bool InitCommon()
     if (!LoadShaders())
         return false;
 
-    R->presentPixels.resize(size_t(R->targetWidth) * R->targetHeight * 4);
+    R->presentPixels.resize(size_t(RS(R->targetWidth)) * RS(R->targetHeight) * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
     // The three readers of the per-pass snapshot-input list, asked once. See the
@@ -10133,6 +10244,15 @@ bool InitCommon()
     g_active = true;
     fprintf(stderr, "[vk] renderer UP: %ux%u target, %zu shaders\n", R->targetWidth,
             R->targetHeight, R->shaders.size());
+    if (ResScale() != 1)
+        fprintf(stderr,
+                "[vk] internal resolution %ux%u (%ux the title's own 1280x720): the "
+                "guest's geometry is unchanged and the rasterisation target is not. The "
+                "present readback is %ux the bytes — %.1f MB/frame — so read `readback` "
+                "in CZ_VK_PROFILE before quoting a frame time.\n",
+                RS(R->targetWidth), RS(R->targetHeight), ResScale(),
+                ResScale() * ResScale(),
+                double(RS(R->targetWidth)) * RS(R->targetHeight) * 4.0 / 1048576.0);
     if (g_profileOn)
         fprintf(stderr, "[vkprof] frame CPU profile ON\n");
     return true;
@@ -10281,8 +10401,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // stopped being the same number when the EDRAM grew to hold the 1024-row shadow
     // cascade, and reading back the whole image would hand the window a 1280x1024
     // buffer as if it were the 1280x720 frame.
-    const uint32_t width0 = R->haveFrontSnapshot ? R->frontWidth : R->targetWidth;
-    const uint32_t height0 = R->haveFrontSnapshot ? R->frontHeight : R->targetHeight;
+    // In HOST pixels: `frontWidth`/`frontHeight` are what the guest resolved and
+    // `targetWidth`/`targetHeight` are what it thinks the screen is, and the image in
+    // front of us is neither if a resolution scale is in force.
+    const uint32_t width0 = RS(R->haveFrontSnapshot ? R->frontWidth : R->targetWidth);
+    const uint32_t height0 = RS(R->haveFrontSnapshot ? R->frontHeight : R->targetHeight);
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
 

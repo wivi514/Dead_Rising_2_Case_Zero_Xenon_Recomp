@@ -813,6 +813,29 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   footprint is large enough to double an unrelated 3.5 MB copy.** Item 1.2 moves texture
   UNTILING, a pure bandwidth job, so it must be priced against the memory system and not
   only against the CPU it frees.
+* **AND THE PORT GAINED TWO THINGS AT THE END OF THE PART THAT CHANGE WHAT A SESSION CAN
+  ASK. First, `CZ_FPS_LOG=N` — a frame-rate line of one counter and one clock read per
+  presented frame**, because every other frame-rate instrument here costs enough to change
+  the answer (2-4 ms for `CZ_VK_PROFILE`, 1.9-3.3 for `CZ_VK_FRAME_STATS`), so the only
+  uninstrumented configuration this port had produced no number at all. It measured the
+  instrument bill directly for the first time: the operator's soak reads **49.8 fps
+  instrumented and 69 clean — ~5.7 ms**. **Second, the shipped frame cap moved 60 -> 500**
+  (a 1 ms vblank period), on their choice, because part 53 took their frame UNDER the 16 ms
+  ceiling the old default imposed and it had started rounding them down to exactly 62.5 fps.
+  **The lever is the PERIOD, not the ceiling** — 120 and 250 both still present a 14.44 ms
+  frame at 16.0 ms. `CZ_FPS_CAP=60` is now the arm that restores the old default.
+* **AND AN INTERNAL RESOLUTION KNOB — `CZ_VK_RES=2560x1440` — WHICH IS NEARLY FREE EXACTLY
+  WHERE THE FRAME IS WORST.** The title still renders at 1280x720 in its own coordinates;
+  what scales is the rasterisation target, under one invariant: **a surface whose pixels
+  come from the RENDER PIPELINE scales, a surface whose pixels come from GUEST MEMORY does
+  not.** Integer multiples only — a fraction in the tile scissors is a seam down the middle
+  of a screen this title renders in two 640-wide halves, and no counter would report it.
+  Operator-judged: *"perfect looks all good."* Measured: light zones **147 -> 96 fps
+  (−35%)**, ordinary play −10..20%, and **the heavy end 69-71 -> 66, −4%** — because in a
+  crowd we are CPU-bound and the GPU is idle 68% of every frame (gotcha 231). **It is the
+  first change in this port that makes the GPU the limiter anywhere.** Its bill is the
+  present readback at the scale SQUARED, **3.5 -> 14.1 MB/frame**, which promotes the
+  plan's long-deferred swapchain item. §6cj §14.
 * **THEIR PICTURE VERDICT: *"look and feel is as usual."*** That rules out a GROSS
   stale-buffer regression — the way this change could have failed badly — and is NOT
   evidence that the widened race never fires: the verify arm puts it at 0.0002-0.0021%,

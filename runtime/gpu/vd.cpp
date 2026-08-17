@@ -171,11 +171,28 @@ int VblankPeriodMs()
     static const int ms = [] {
         if (const char* e = getenv("CZ_VBLANK_MS"))
             return std::max(1, atoi(e));
-        // 60 fps IS THE DEFAULT as of part 49, on the operator's instruction after they
-        // played the whole map on it. `CZ_FPS_CAP=30` is the same-binary control arm and
-        // restores the shipped pacing exactly — see the note on the division below.
+        // ~~60 fps IS THE DEFAULT as of part 49~~ — **500 as of part 53**, on the
+        // operator's instruction again, and for a reason that only became true in part 53:
+        // their frame went UNDER the 16 ms ceiling that a 60 fps cap imposes, so the cap
+        // started rounding them down. Their measured soak is 14.44 ms of work, which at a
+        // period of 8 ms presents at exactly 16.0 — 62.5 fps where the work supports 69 —
+        // and a 6.8 ms light-zone frame presents at 16.0 as well.
+        //
+        // AND THE LEVER IS THE PERIOD, NOT THE CEILING, which is the part worth reading
+        // twice: raising the cap to 120 or 250 leaves that 14.44 ms frame presenting at
+        // 16.0 all the same, because the ladder's STEP is the period and neither 4 nor 2
+        // divides finely enough there. Only a 1 ms period moves it (to 15.0). Measured on
+        // their machine with every instrument off (`phase5-notes.md` §6cj §13):
+        //
+        //   menus 166 fps | light zones 119-147 | ordinary play 83-114 | their soak 69-71
+        //
+        // THE COST, stated rather than buried: the period is also the guest's vblank ISR
+        // cadence, so this fires it 1000 times a second against 125 at the old default. It
+        // measured 0.0% of the pump at a 4 ms period. `CZ_FPS_CAP=60` is the same-binary
+        // control arm for this change and `CZ_FPS_CAP=30` still restores the shipped
+        // pacing exactly — see the note on the division below.
         const char* c = getenv("CZ_FPS_CAP");
-        const int fps = c ? atoi(c) : 60;
+        const int fps = c ? atoi(c) : 500;
         // The title's interval is 2, so the period that caps at `fps` is 1000/(2*fps).
         // TRUNCATING division, not rounding, and that is load-bearing: it makes 30 fps
         // come out at exactly 16 ms — the period this runtime has used since phase 1 —
@@ -375,17 +392,19 @@ void GraphicsInterruptPump()
     // this runtime is unchanged unless asked.
     //
     // Only the three intervals the title's own packer recognises are offered. There is
-    // deliberately no "uncapped": interval 0 means present immediately, and
+    // deliberately no "uncapped" — and the DEFAULT of 500 is not it: it is a 2 ms ceiling,
+    // which nothing in this game approaches, so it never binds. Interval 0 means present
+    // immediately, and
     // `CZ_PM4_NO_STOP_ON_WAIT=1` already showed what an unpaced command processor does
     // here — it overflows the flip queue in 10 runs out of 10. An unsupported number
     // is refused loudly rather than rounded to something plausible (gotcha 5).
     {
         const char* capEnv = getenv("CZ_FPS_CAP");
-        const int cap = capEnv ? atoi(capEnv) : 60;
+        const int cap = capEnv ? atoi(capEnv) : 500;
         if (capEnv && (cap < 20 || cap > 500))
             fprintf(stderr,
                     "[vd] CZ_FPS_CAP=%s is out of range (20..500) — IGNORED, using the "
-                    "60 fps default.\n", capEnv);
+                    "500 fps default.\n", capEnv);
         else
         {
             // THE INTERVAL IS PINNED AT THE TITLE'S OWN 2, and the PERIOD does the
@@ -731,8 +750,12 @@ void GraphicsInterruptPump()
         // produces. So this selects a configuration the title already supports rather
         // than defeating its pacing — which matters, because `docs/phase5-notes.md`
         // §6am says in terms that the two-vblank WAIT must not be "optimised". It is
-        // not being: the title still waits for exactly the interval it asked for, and
-        // our vblank cadence is untouched at 16 ms.
+        // not being: the title still waits for exactly the interval it asked for.
+        // ~~our vblank cadence is untouched at 16 ms~~ — RETRACTED as of part 49, which
+        // is where the cap became the PERIOD rather than the interval, and the period is
+        // 1 ms as of part 53's default. The interval the title asked for is still
+        // honoured exactly; what changed is how long a vblank lasts, which is what makes
+        // the frame-time ladder fine enough to be worth the cap at all (VblankPeriodMs).
         //
         // WHY IT IS RE-ASSERTED EVERY VBLANK rather than written once. The setter
         // `sub_8283E920` is called from `sub_827D31D0` only when the title's own

@@ -29,6 +29,17 @@
 # Usage:  tools/play_session.sh            # the top setting
 #         FPS=250 tools/play_session.sh    # fall back a rung
 #         PLAIN=1 tools/play_session.sh    # the a2m foliage cache off, i.e. stock shaders
+#         RES=2560x1440 tools/play_session.sh   # internal resolution scale
+#
+# RES is an INTEGER multiple of the title's own 1280x720 and nothing else -- 2560x1440,
+# 3840x2160, 5120x2880. The guest's geometry, viewports and scissors are its own numbers
+# and are untouched; what scales is the rasterisation target it draws into, so the same
+# triangles are sampled at more points. The window stays where it is and the bigger image
+# is filtered down into it, which is supersampling -- drag the window bigger, or maximise
+# it, to see the resolution on screen instead of only in the sampling.
+#
+# It costs the present readback SQUARED in bytes: 3.5 MB/frame at 1x, 14.7 at 2x. Read
+# `readback` in CZ_VK_PROFILE before blaming anything else for a frame time here.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/play"
@@ -50,6 +61,7 @@ mkdir -p "$OUT/$TAG"
 # The alpha-to-mask foliage cache is the configuration the operator CHOSE in part 46, not
 # a debug arm, so it rides in a play session. PLAIN=1 takes it off.
 extra=()
+[ -n "${RES:-}" ] && extra+=("CZ_VK_RES=$RES")
 if [ -z "${PLAIN:-}" ]; then
     extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
 fi
@@ -57,6 +69,7 @@ fi
 echo "==================================================================="
 echo "  PLAY SESSION — no profiler, no frame stats, no debug menu"
 echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((1000/FPS)) ms)"
+echo "  res:  ${RES:-1280x720}"
 echo "  fps:  one line every 10 s, mean AND median"
 echo "  F9 :  screenshot -> $OUT/$TAG"
 echo "  log:  $OUT/$TAG.log"
