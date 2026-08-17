@@ -3511,3 +3511,22 @@ From phase C part 18 (the frame rate — and none of it was work):
      and length it hashed, the consumer checks them, and a disagreement is a loud line
      plus an inline fallback. It has never fired — which is only worth saying because the
      poison arm beside it proves the check can.
+
+347. **WHEN ONE A/B SWITCHES TWO ITEMS TOGETHER, AN ITEM CAN READ NEGATIVE BECAUSE THE
+     OTHER ONE TAXES IT — and no number of repeats will fix it.** Part 53's operator
+     session controlled both of the part's items with one arm, which is the natural thing
+     to do when you want the PART's total and the operator's time is the scarce resource.
+     It reported item 1.3 (deleting a redundant 3.5 MB present copy) at **+0.08 ms — the
+     wrong direction** — against a headless −0.78, and the item was written up as "did not
+     survive the operator's machine". It had survived. Its own arm, with the OTHER item
+     held constant, reads **0.668 vs 1.135 ms, −0.467 ms, with no overlap across thirteen
+     windows an arm**. Three configurations say why: guard pool OFF + two copies 0.56 ms,
+     pool ON + two copies 1.14, pool ON + one copy 0.67. **The parallel guard pool doubles
+     the cost of an unrelated `memcpy`**, because four workers streaming ~70 MB/frame leave
+     much less memory bandwidth for it — so item 1.3 was saving ~0.47 ms in the very arm
+     that made it look negative. The failure is not noise and not sample size: the arms
+     were answering a different question from the one being asked. **Give each item an arm
+     that holds the others constant, even when a combined arm is what the schedule wants**
+     — it cost fifteen minutes here against reverting a change that works. The corollary
+     is a pricing rule for everything parallel that follows: a worker pool's BANDWIDTH
+     footprint is a cost to other subsystems, and it is big enough to measure.

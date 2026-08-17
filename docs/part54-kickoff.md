@@ -1,5 +1,4 @@
-# Part 54 kickoff — the work is off the pump, the operator has confirmed it, and one
-# of the two items did not survive their machine
+# Part 54 kickoff — the work is off the pump and the operator has confirmed it
 
 Written at the close of part 53 (2026-08-17). **This is the LIVE hand-off**, superseding
 `part53-kickoff.md`.
@@ -45,22 +44,29 @@ pump had slack and the item read as a thread doing less (63.4% -> 50.3%); on the
 path it reads as throughput instead. Their bill: **2.64 -> 3.11 cores**, four workers at
 11.1-11.2% of a core each.
 
-### **ITEM 1.3 IS OPEN AGAIN, AND IT IS PART 54'S FIRST JOB**
+### Item 1.3 looked like it had failed there, and it had not — it was a confound
 
-`readback` went **0.58 ms -> 0.66 ms** on their machine, against a headless **−0.78 ms**.
-Both measurements are right about what they measured: **headless, `Host_PresentPixels`
-returns immediately**, so the staging copy was the whole readback and removing it removed
-all of it. Windowed, the window's own copy runs, and the saving mostly is not there.
+`readback` read **0.58 -> 0.66 ms** across their two arms, against a headless −0.78, and
+was filed as "did not survive". **Its own arm, run the same evening, retracts that**
+(§6cj §11): windowed, the guard pool held ON in both sides, `CZ_VK_PRESENT_STAGING` the
+only difference, thirteen profile windows an arm — **0.668 vs 1.135 ms, −0.467 ms, with no
+overlap at all** between the two sets.
 
-It could not be separated from item 1.1 in that A/B — both were switched together — and
-the likely explanation is that 1.3 is being **taxed by 1.1** rather than being wrong: the
-workers stream ~3.5 GB/s, and the same tax shows in `other` (+45 ns/draw) and `outside`
-(+0.42 ms).
+| guard pool | present copies | `readback` |
+|---|---|---|
+| off | 2 (staging) | **0.56 ms** — the operator's arm B |
+| on | 2 (staging) | **1.14 ms** |
+| on | 1 | **0.67 ms** — the default, and 0.66 in their arm A |
 
-**So: run item 1.3's own arm, WINDOWED, with the guard pool held on in both sides**
-(`CZ_VK_PRESENT_STAGING` alone). It is ~15 minutes and it decides whether the change stays
-or is reverted. A windowed run can drive itself — `CZ_FAKE_PRESS_SEQ` works with a window
-up — so it does not need the operator.
+**The guard pool DOUBLES the cost of the present copies**, because four workers streaming
+~70 MB/frame leave much less bandwidth for a 3.5 MB `memcpy`. Item 1.3 takes that back.
+Their A/B switched both items together, so item 1.3 was compared against an arm that had
+the workers off as well — and an item can read NEGATIVE when the other item in the same
+arm taxes it. Both items ship.
+
+**Carry the bandwidth number forward, though: it is large enough to double an unrelated
+3.5 MB copy.** Item 1.2 moves texture UNTILING, which is a pure bandwidth job, so it must
+be priced against the memory system and not only against the CPU it frees.
 
 ---
 
@@ -130,11 +136,11 @@ prints two arms side by side, which is an item A/B in one command.
 
 ## WHAT IS OWED
 
-* **Item 1.3's own windowed arm** — see above. It is the first job.
-* **The operator's LOOK/FEEL verdict on part 53.** They ran both soaks and the numbers are
-  in; what is not recorded is whether anything looked or felt wrong, and the one class this
-  part could have introduced is a ONE-FRAME STALE buffer (a lagging HUD value, a mesh that
-  snaps, a texture that flicks for a frame). Ask before closing the item.
+* Nothing from part 53 itself. Both items are measured, confirmed on the operator's own
+  machine and route, and their verdict on the picture is *"look and feel is as usual"* —
+  which rules out a GROSS stale-buffer regression, the way this change could have failed
+  badly, and is not evidence that the widened race never fires (the verify arm puts that at
+  0.0002-0.0021%, which no human catches by eye).
 * Their two deferred picture items, **00m decals** and **00n a sign and items at
   distance**, still deferred. If the CPU work stalls, these are the alternative.
 * **The operator's standing instruction** from part 52: *"prepare a whole plan to fix CPU

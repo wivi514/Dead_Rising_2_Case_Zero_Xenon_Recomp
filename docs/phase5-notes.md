@@ -10680,3 +10680,69 @@ and +0.31 in `other` are the same phenomenon the headless run charged to `record
 windowed, with the guard pool held constant in both. Recorded here rather than tidied
 away, because a headless number that does not transfer is exactly what an operator session
 is for, and this project has now had three of them.
+
+#### The operator's LOOK/FEEL verdict, recorded as it came
+
+> *"Look and feel is as usual."*
+
+**What that does and does not establish.** The one class this part could have introduced is
+a one-frame stale buffer — a HUD value lagging, a mesh snapping, a texture flicking for a
+frame — and a whole soak in a crowd with none of it seen **rules out a GROSS regression**,
+which is the way this change could have failed badly. It is not evidence that the widened
+race never fires: the verify arm measures it at **0.0002-0.0021%** of served guards, and a
+single wrong frame in a 50 fps crowd is not something a human reliably catches. The two
+instruments answer different questions and both are needed.
+
+It is also not "confirmed smoother", and is not written up as such — both arms carried
+~3 ms of instrument, which is most of the difference being judged. The frame-time claim
+rests on the binned statistics above, not on this line. Same shape as part 51 §6ch §7,
+where the operator could not tell the tick arms apart while the profiler showed the win
+plainly.
+
+### §11. ITEM 1.3'S OWN ARM — the item is real, and §10's reading of it was a CONFOUND
+
+§10 read `readback` 0.58 -> 0.66 ms across the operator's two arms and filed item 1.3 as
+"did not survive". **That is retracted here.** Their A/B switched BOTH items together, and
+the other item taxes this one.
+
+Item 1.3's own arm: windowed, driven by synthetic input on the DebugJump route,
+`CZ_FPS_CAP=120`, **the guard pool ON in both sides**, `CZ_VK_PRESENT_STAGING` the only
+thing that differs. Thirteen profile windows an arm:
+
+| | `readback` ms/frame |
+|---|---|
+| no staging copy (the default) | 0.525 0.576 0.707 0.687 0.697 0.684 0.691 0.686 0.693 0.677 0.673 0.693 0.700 — **mean 0.668** |
+| `CZ_VK_PRESENT_STAGING=1` | 0.894 1.009 1.283 1.255 1.242 1.195 1.251 1.254 1.210 1.028 1.025 1.069 1.035 — **mean 1.135** |
+
+**−0.467 ms, and the two sets do not overlap at all** (highest without: 0.707; lowest
+with: 0.894). `readback` is a fixed 3.5 MB per frame and does not scale with draws, which
+is why thirteen windows at wildly different draw counts are all the same number within an
+arm — and why this is decisive at one run an arm.
+
+#### Putting the three configurations side by side explains everything, including §10
+
+| guard pool | present copies | `readback` | where measured |
+|---|---|---|---|
+| **off** | 2 (staging) | **0.56 ms** | the operator's arm B |
+| **on** | 2 (staging) | **1.14 ms** | this arm, `CZ_VK_PRESENT_STAGING=1` |
+| **on** | 1 | **0.67 ms** | this arm, default — and **0.66 ms** in the operator's arm A |
+
+Read down the table: **the guard pool DOUBLES the cost of the present copies** — 0.56 ->
+1.14 ms for the same two `memcpy`s — because four workers streaming ~70 MB/frame leave far
+less memory bandwidth for a 3.5 MB copy. Item 1.3 then takes that 1.14 back to 0.67.
+
+So in the operator's session item 1.3 was **saving them ~0.47 ms**, and it looked like
++0.08 only because the arm it was compared against had the workers switched off as well.
+Their arm A and this arm's default agree to **0.01 ms**, which is what makes the table a
+measurement rather than a story.
+
+> **The transferable half: when one A/B switches two items together, an item can read
+> NEGATIVE because the other one taxes it.** That is not noise and no number of repeats
+> would have fixed it — the arms were answering a different question from the one being
+> asked. The fix is the obvious one and it is cheap: give each item an arm that holds the
+> other constant. It cost fifteen minutes here and it saved reverting a change that works.
+
+**And a number worth keeping on its own: the guard pool's bandwidth footprint is large
+enough to double an unrelated 3.5 MB copy.** Every remaining parallel item in the plan —
+1.2 especially, which moves texture UNTILING, a pure bandwidth job — has to be priced
+against that, not just against the CPU it frees.

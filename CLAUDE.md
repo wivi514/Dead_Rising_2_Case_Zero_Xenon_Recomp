@@ -787,17 +787,27 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   frames**. Headlessly the pump had slack and the same item read as a thread doing less
   (63.4% -> 50.3%); on the real critical path it reads as throughput instead. Their bill:
   **2.64 -> 3.11 cores**, four workers at 11.1-11.2% of a core each.
-* **BUT ITEM 1.3 DID NOT SURVIVE THE SESSION AND IS OPEN AGAIN.** `readback` went **0.58
-  -> 0.66 ms** on their machine against a headless −0.78. Both numbers are right about what
-  they measured: **headless, `Host_PresentPixels` returns immediately**, so the staging copy
-  WAS the whole readback. Windowed, the window's own copy runs and the saving mostly is not
-  there. It could not be separated from item 1.1 in that A/B and is probably being TAXED by
-  it (the workers stream ~3.5 GB/s; the same tax shows in `other` +45 ns/draw and `outside`
-  +0.42 ms). **Part 54's first job is item 1.3's own windowed arm.** A headless number that
-  does not transfer is exactly what an operator session is for — the third time now.
-* **STILL OWED: their LOOK/FEEL verdict.** The numbers are in; nobody has said whether
-  anything looked wrong, and the one class this part could have introduced is a ONE-FRAME
-  STALE buffer (a lagging HUD value, a mesh that snaps, a texture that flicks).
+* **ITEM 1.3 LOOKED LIKE IT HAD FAILED THERE AND HAD NOT — IT WAS A CONFOUND, AND THE
+  RETRACTION IS THE MOST TRANSFERABLE THING IN THE PART.** Their `readback` read 0.58 ->
+  0.66 ms, so it was filed as "did not survive"; **its own arm the same evening reads
+  0.668 vs 1.135 ms, −0.467 ms, with NO OVERLAP across thirteen windows an arm** (guard
+  pool held ON in both sides, `CZ_VK_PRESENT_STAGING` the only difference). Three
+  configurations explain everything: pool OFF + 2 copies **0.56 ms**, pool ON + 2 copies
+  **1.14**, pool ON + 1 copy **0.67** (and 0.66 in their arm A — agreement to 0.01 ms).
+  **The guard pool DOUBLES the cost of the present copies** — four workers streaming
+  ~70 MB/frame leave much less bandwidth for a 3.5 MB `memcpy` — and item 1.3 takes that
+  back. Their A/B switched BOTH items together, so **an item read NEGATIVE because the
+  other item in the same arm taxed it.** No number of repeats would have fixed that; a
+  per-item arm did, in fifteen minutes. Gotcha 347. **Both items ship.**
+* **AND A NUMBER TO CARRY INTO EVERY REMAINING PARALLEL ITEM: the pool's bandwidth
+  footprint is large enough to double an unrelated 3.5 MB copy.** Item 1.2 moves texture
+  UNTILING, a pure bandwidth job, so it must be priced against the memory system and not
+  only against the CPU it frees.
+* **THEIR PICTURE VERDICT: *"look and feel is as usual."*** That rules out a GROSS
+  stale-buffer regression — the way this change could have failed badly — and is NOT
+  evidence that the widened race never fires: the verify arm puts it at 0.0002-0.0021%,
+  and one wrong frame in a 50 fps crowd is not something a human catches. The two
+  instruments answer different questions and both were needed.
 
 Where the port WAS, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
 MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S
