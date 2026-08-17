@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -18,8 +19,10 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -965,7 +968,18 @@ uint64_t TextureGuard(const uint8_t* p, size_t bytes, size_t* readOut)
     return GuardOver(p, bytes, g_texGuardBytes, readOut);
 }
 
-uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool forceExact)
+// SPLIT IN TWO for part 53 item 1.1, and the split is the whole reason the parallel
+// guard can be shown to change nothing but WHERE the hash runs.
+//
+// `StreamGuardCount` is the census — the promotion counters and the sampled-size
+// histogram — and it stays on the pump thread whoever does the hashing, because those
+// numbers are what make the two arms comparable at all. `StreamGuardHash` is the pure
+// part: guest bytes in, a `uint64_t` out, no globals written. Only the pure half moves.
+//
+// Keeping them callable together as `StreamGuard` means the serial path is byte-for-byte
+// the code it always was, which is what makes it a usable oracle rather than a rewrite
+// that happens to agree.
+void StreamGuardCount(size_t bytes, bool forceExact)
 {
     if (g_guardExact || forceExact)
     {
@@ -974,14 +988,8 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool force
             ++g_guardDynamic;
             g_guardDynamicBytes += bytes;
         }
-        if (readOut)
-            *readOut += bytes;
-        return GuardFold((1469598103934665603ull ^ bytes) * 1099511628211ull, p, bytes);
+        return;
     }
-    // The size is folded in first (inside GuardOver). Without it a stream that shrinks to
-    // a prefix of itself would hash the same, and size is part of the key only for the
-    // streams the key came from — a re-copy into the same slot keeps the slot's size.
-    //
     // Above the bound the guard is a SAMPLE and can therefore miss a small edit. Count
     // the exposure rather than leaving it silent: this is the population that item 00c's
     // defect lived in, and a bound raised until this counter is zero for the streams that
@@ -996,7 +1004,34 @@ uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool force
         ++g_guardHistCount[b];
         g_guardHistBytes[b] += bytes;
     }
+}
+
+// How many bytes a guard over `bytes` at `bound` READS — derivable from the sizes alone,
+// so the byte census stays exact even when the hash itself ran on another thread and
+// never reported back. Mirrors GuardOver's own two cases.
+inline uint64_t GuardReadBytes(uint64_t bytes, uint64_t bound)
+{
+    return bytes <= bound ? bytes : bound;
+}
+
+uint64_t StreamGuardHash(const uint8_t* p, size_t bytes, size_t* readOut, bool forceExact)
+{
+    if (g_guardExact || forceExact)
+    {
+        if (readOut)
+            *readOut += bytes;
+        return GuardFold((1469598103934665603ull ^ bytes) * 1099511628211ull, p, bytes);
+    }
+    // The size is folded in first (inside GuardOver). Without it a stream that shrinks to
+    // a prefix of itself would hash the same, and size is part of the key only for the
+    // streams the key came from — a re-copy into the same slot keeps the slot's size.
     return GuardOver(p, bytes, g_guardBytes, readOut);
+}
+
+uint64_t StreamGuard(const uint8_t* p, size_t bytes, size_t* readOut, bool forceExact)
+{
+    StreamGuardCount(bytes, forceExact);
+    return StreamGuardHash(p, bytes, readOut, forceExact);
 }
 
 bool g_active = false;
@@ -1010,6 +1045,320 @@ bool g_d3dMode = false;
 
 const char* Env(const char* n) { return getenv(n); }
 bool EnvOn(const char* n) { return getenv(n) != nullptr; }
+
+// ===================================================================================
+// THE CONTENT GUARDS, ON OTHER CORES — part 53, plan item 1.1
+// ===================================================================================
+//
+// WHY THIS EXISTS. Every performance plan this project has written makes the pump
+// thread's work SMALLER. Part 52 shipped four such items and the operator confirmed
+// them, and at the end of it the process was still using 2.24 of 16 cores with the pump
+// 97.5% busy — thirteen cores idle while one thread was the frame. `GuardFold` is the
+// largest symbol in that thread (26.3% of it with the instruments off, measured on the
+// outdoor route at the open of this part; 20.0% on the operator's machine), and it is
+// the one big cost here that is PURE: it reads guest memory and returns a `uint64_t`,
+// calls no Vulkan, and mutates no renderer state. So it is the first thing to move.
+//
+// THE OBSTACLE, AND THE SHAPE OF THE ANSWER. The pump discovers which streams and
+// textures a frame touches by walking the packet stream, so the work is discovered
+// exactly when it is needed — there is nothing to hand a worker in advance. What makes
+// it tractable is that the working set barely changes: part 22 measured 94-97% of stream
+// BYTES byte-identical frame to frame, so the SET is stable even when the contents are
+// not. Every guard the pump computes therefore also files a job for NEXT frame, and at
+// the swap the whole list is dispatched to the pool. When the pump reaches that stream
+// again it finds a finished hash instead of computing one.
+//
+// CORRECTNESS NEVER DEPENDS ON THE PREDICTION. A miss — a stream never seen before, a
+// worker that has not finished, an entry that wanted the exact hash when only the
+// sampled one was pre-computed — falls straight back to hashing inline. The prediction
+// buys performance and nothing else.
+//
+// THE RACE, STATED HONESTLY, BECAUSE IT IS THE REAL COST OF THIS ITEM. The guard reads
+// guest memory while the guest may be writing it, and that is true today: the inline
+// guard has always raced. What changes is the WINDOW. Inline, the bytes are hashed at
+// the moment the draw needs them; pre-hashed, they are hashed up to a frame earlier. A
+// torn read still produces a different hash and reads as "changed", which is safe. What
+// is NEW is that the pre-hash can see a COHERENT OLD state that matches the stored
+// guard, where the inline hash would have seen the new bytes and re-copied — so a stream
+// the guest rewrote mid-frame can be served one frame stale. That is the part-46 defect
+// class (a stale mesh, a stale HUD), so it is not waved away: `CZ_VK_VERIFY_PARALLEL_GUARD=1`
+// measures how often it actually happens, and it is what must be read before this is
+// called free. `CZ_VK_NO_PARALLEL_GUARD=1` is the same-binary control arm.
+//
+// WHAT A WORKER MAY AND MAY NOT TOUCH. Workers never look at `persistCache` or
+// `textures`: an `unordered_map` node's address is stable but an ERASE is not, and a
+// worker holding a pointer into a cache the pump is editing is a use-after-free waiting
+// for an unlucky frame. Instead each job is self-contained — a guest pointer, a length,
+// a bound — and each result lands in a slot the pool owns. The cache entry keeps only
+// an INDEX into that array plus the frame it belongs to, both written by the pump.
+
+struct GuardJob
+{
+    const uint8_t* p = nullptr;
+    uint64_t bytes = 0;
+    uint32_t bound = 0;      // the sampled bound this subsystem folds at
+    uint8_t wantExact = 0;   // also fold the WHOLE buffer (a promoted dynamic stream)
+};
+
+struct GuardOut
+{
+    uint64_t sampled = 0;
+    uint64_t exact = 0;
+    // THE DESCRIPTOR THE WORKER ACTUALLY HASHED, echoed back. A slot mix-up — entry A
+    // handed entry B's hash — is the one failure here that would be silent and would
+    // draw a wrong mesh, so the consumer checks that the slot it read describes the
+    // buffer it asked about. Gotcha 342: ask what the wrong answer IS, not how likely.
+    const uint8_t* p = nullptr;
+    uint64_t bytes = 0;
+    uint32_t haveExact = 0;
+    std::atomic<uint32_t> done{ 0 };
+};
+
+// Heap-allocated once and never freed on purpose: the workers are detached and outlive
+// static destruction, so a global with a destructor would be a teardown crash.
+struct GuardPool
+{
+    std::mutex mx;
+    std::condition_variable wake;    // workers wait here for a dispatch
+    std::condition_variable idle;    // the pump waits here to drain before re-dispatching
+    std::vector<GuardJob> jobs;      // the dispatch the workers are chewing on
+    std::vector<GuardJob> gather;    // next frame's list, appended to as the pump walks
+    GuardOut* out = nullptr;
+    size_t outCap = 0;
+    size_t count = 0;
+    uint64_t generation = 0;
+    std::atomic<size_t> next{ 0 };
+    std::atomic<size_t> finished{ 0 };
+    unsigned workers = 0;
+    bool started = false;
+};
+GuardPool* g_gp = nullptr;
+
+// The census, printed with CZ_VK_PROFILE. `served` over `requests` is the hit rate the
+// plan told this part to PRE-REGISTER: below ~80% the item is not working and any
+// frame-time number taken from it is noise.
+struct GuardPoolStats
+{
+    uint64_t requests = 0;     // guards the pump wanted
+    uint64_t served = 0;       // ...answered by a finished pre-hash
+    uint64_t bytesServed = 0;  // ...and the bytes that did not get hashed on the pump
+    uint64_t missUnknown = 0;  // no job was filed for this buffer last frame
+    uint64_t missPending = 0;  // filed, dispatched, but the worker has not finished
+    uint64_t missVariant = 0;  // filed, but the exact hash was wanted and only sampled ran
+    uint64_t mixups = 0;       // the slot described a DIFFERENT buffer — a real defect
+    uint64_t dispatches = 0;
+    uint64_t drainBlocked = 0; // dispatches that had to wait for the previous one
+    uint64_t drainNs = 0;
+    uint64_t verifyChecked = 0;
+    uint64_t verifyStale = 0;  // the pre-hash disagreed with an inline hash taken now
+};
+GuardPoolStats g_gpStats;
+
+// CZ_VK_VERIFY_PARALLEL_GUARD=1 — hash inline as well and compare, on every served
+// guard. A disagreement is NOT necessarily a bug: it is the widened race above, and this
+// is the instrument that says how wide. Costs the whole saving and then some, so it is
+// an arm, never a default.
+// CZ_VK_VERIFY_PARALLEL_GUARD_POISON=1 — perturb every pre-hash so the check MUST fire.
+// A verify arm that has never been seen to fail has not been shown capable of it
+// (gotcha 30).
+bool g_gpVerify = false;
+bool g_gpVerifyPoison = false;
+
+void GuardRunJob(const GuardJob& j, GuardOut& o)
+{
+    const uint64_t seed = (1469598103934665603ull ^ j.bytes) * 1099511628211ull;
+    o.sampled = GuardOver(j.p, size_t(j.bytes), j.bound, nullptr);
+    if (j.wantExact)
+        o.exact = GuardFold(seed, j.p, size_t(j.bytes));
+    o.haveExact = j.wantExact;
+    o.p = j.p;
+    o.bytes = j.bytes;
+    if (g_gpVerifyPoison)
+    {
+        o.sampled ^= 0x9E3779B97F4A7C15ull;
+        o.exact ^= 0x9E3779B97F4A7C15ull;
+    }
+    o.done.store(1, std::memory_order_release);
+}
+
+void GuardWorker()
+{
+    GuardPool& gp = *g_gp;
+    uint64_t seen = 0;
+    for (;;)
+    {
+        {
+            std::unique_lock<std::mutex> lk(gp.mx);
+            gp.wake.wait(lk, [&] { return gp.generation != seen; });
+            seen = gp.generation;
+        }
+        for (;;)
+        {
+            const size_t i = gp.next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= gp.count)
+                break;
+            GuardRunJob(gp.jobs[i], gp.out[i]);
+            // The pump polls `done` per slot and never waits on this, so the only
+            // consumer of `finished` is the drain at the next dispatch.
+            if (gp.finished.fetch_add(1, std::memory_order_acq_rel) + 1 == gp.count)
+            {
+                std::lock_guard<std::mutex> lk(gp.mx);
+                gp.idle.notify_all();
+            }
+        }
+    }
+}
+
+// 0 = off (the control arm). Otherwise the number of workers.
+unsigned GuardPoolWorkers()
+{
+    static const unsigned n = [] () -> unsigned {
+        if (EnvOn("CZ_VK_NO_PARALLEL_GUARD"))
+            return 0;
+        if (const char* s = Env("CZ_VK_GUARD_WORKERS"))
+            return unsigned(strtoul(s, nullptr, 10));
+        // FOUR, not sixteen, and the reason is in the plan: the PM4 walk is inherently
+        // serial, so this pool is not a way to use the machine — it is a way to hide one
+        // memory-latency-bound loop behind the walk. Four independent streams of misses
+        // is most of what a single core's line-fill buffers cannot overlap; past that
+        // the dispatch and the cache traffic start to cost more than they hide.
+        unsigned hw = std::thread::hardware_concurrency();
+        return hw >= 6 ? 4u : (hw >= 3 ? 2u : 0u);
+    }();
+    return n;
+}
+
+// Wait for the previous dispatch to finish. This blocks the PUMP, so it is counted:
+// a pool that is still working when the next frame swaps is a pool that is too small,
+// and that has to be visible rather than merely slow.
+void GuardPoolDrain()
+{
+    GuardPool& gp = *g_gp;
+    if (gp.finished.load(std::memory_order_acquire) >= gp.count)
+        return;
+    ++g_gpStats.drainBlocked;
+    // An unconditional clock read, not ProfNow(): this is a stall the pump pays whether
+    // or not anyone asked for a profile, and a number that only exists under an
+    // instrument cannot be used to size the pool.
+    const auto t0 = std::chrono::steady_clock::now();
+    {
+        std::unique_lock<std::mutex> lk(gp.mx);
+        gp.idle.wait(lk,
+                     [&] { return gp.finished.load(std::memory_order_acquire) >= gp.count; });
+    }
+    g_gpStats.drainNs += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::steady_clock::now() - t0)
+                                      .count());
+}
+
+// Called from the swap, right after the frame counter moves. Hands the list the frame
+// just ended built to the workers and starts them.
+void GuardPoolDispatch()
+{
+    const unsigned n = GuardPoolWorkers();
+    if (!n)
+        return;
+    if (!g_gp)
+    {
+        g_gp = new GuardPool();
+        g_gp->workers = n;
+        g_gpVerify = EnvOn("CZ_VK_VERIFY_PARALLEL_GUARD");
+        g_gpVerifyPoison = EnvOn("CZ_VK_VERIFY_PARALLEL_GUARD_POISON");
+    }
+    GuardPool& gp = *g_gp;
+    if (gp.gather.empty())
+        return;
+    GuardPoolDrain();
+    gp.jobs.swap(gp.gather);
+    gp.gather.clear();
+    gp.count = gp.jobs.size();
+    if (gp.count > gp.outCap)
+    {
+        // Grown, never shrunk, and only here — where the pool is provably idle, because
+        // the drain above just ran. `GuardOut` holds an atomic and is therefore neither
+        // copyable nor movable, so this is a plain array rather than a vector.
+        delete[] gp.out;
+        gp.outCap = gp.count + gp.count / 2 + 64;
+        gp.out = new GuardOut[gp.outCap];
+    }
+    for (size_t i = 0; i < gp.count; ++i)
+        gp.out[i].done.store(0, std::memory_order_relaxed);
+    gp.next.store(0, std::memory_order_relaxed);
+    gp.finished.store(0, std::memory_order_release);
+    ++g_gpStats.dispatches;
+    {
+        std::lock_guard<std::mutex> lk(gp.mx);
+        ++gp.generation;
+    }
+    gp.wake.notify_all();
+    if (!gp.started)
+    {
+        gp.started = true;
+        for (unsigned i = 0; i < n; ++i)
+            std::thread(GuardWorker).detach();
+    }
+}
+
+// File a job for NEXT frame and return the slot it will land in. Called by the pump at
+// the moment it computes (or reuses) a guard, which is exactly the order the next frame
+// will ask for them in — so the shared job counter hands the earliest-needed buffers out
+// first, and a worker pool that cannot finish the whole list still finishes the useful
+// end of it.
+uint32_t GuardPoolFile(const uint8_t* p, uint64_t bytes, uint32_t bound, bool wantExact)
+{
+    if (!GuardPoolWorkers() || !g_gp)
+        return UINT32_MAX;
+    GuardPool& gp = *g_gp;
+    if (gp.gather.size() >= 65535)
+        return UINT32_MAX;
+    gp.gather.push_back(GuardJob{ p, bytes, bound, uint8_t(wantExact) });
+    return uint32_t(gp.gather.size() - 1);
+}
+
+// The consumer side. Returns the finished result for `slot`, or nullptr with the reason
+// counted. `stamp` is the frame the slot was filed FOR; a slot from any other frame is
+// not this frame's answer.
+const GuardOut* GuardPoolTake(uint32_t slot, uint64_t stamp, uint64_t frame,
+                              const uint8_t* p, uint64_t bytes, bool needExact)
+{
+    if (!GuardPoolWorkers() || !g_gp)
+        return nullptr;
+    ++g_gpStats.requests;
+    GuardPool& gp = *g_gp;
+    if (slot == UINT32_MAX || stamp != frame || slot >= gp.count)
+    {
+        ++g_gpStats.missUnknown;
+        return nullptr;
+    }
+    GuardOut& o = gp.out[slot];
+    if (!o.done.load(std::memory_order_acquire))
+    {
+        ++g_gpStats.missPending;
+        return nullptr;
+    }
+    if (o.p != p || o.bytes != bytes)
+    {
+        // A slot describing another buffer means the index bookkeeping is wrong, and the
+        // consequence would be a real, wrong hash — the shape of the part-52 memo defect.
+        // Loud, capped, and it falls back to hashing inline so the picture stays right.
+        if (g_gpStats.mixups < 8)
+            fprintf(stderr,
+                    "[vk] PARALLEL GUARD SLOT MIX-UP #%llu: slot %u was filed for "
+                    "%p/%llu but was claimed for %p/%llu\n",
+                    (unsigned long long)g_gpStats.mixups + 1, slot, (const void*)o.p,
+                    (unsigned long long)o.bytes, (const void*)p,
+                    (unsigned long long)bytes);
+        ++g_gpStats.mixups;
+        return nullptr;
+    }
+    if (needExact && !o.haveExact)
+    {
+        ++g_gpStats.missVariant;
+        return nullptr;
+    }
+    ++g_gpStats.served;
+    return &o;
+}
 
 // ===================================================================================
 // Guest memory, again
@@ -1501,6 +1850,11 @@ struct TextureEntry
     // frame and re-hashing one texture once per draw that samples it is where the 92.9
     // MB/frame goes.
     uint64_t guardFrame = 0;
+    // The pre-hashed guard's slot for the NEXT frame, and the frame it was filed for.
+    // See PersistEntry::preSlot — same mechanism, different subsystem and a different
+    // fold bound (`g_texGuardBytes`, which is a separate knob for a separate question).
+    uint32_t preSlot = UINT32_MAX;
+    uint64_t preFrame = 0;
 };
 
 // A RESOLVE SNAPSHOT: what one pass left in the EDRAM, kept as a host image under the
@@ -1796,6 +2150,13 @@ struct Renderer
         uint64_t sampledGuard = 0;
         uint32_t sampledAgreed = 0;   // consecutive changes the sampled guard also saw
         bool needsExact = false;      // the sampled guard has been caught missing one
+        // WHERE NEXT FRAME'S PRE-HASHED GUARD WILL BE (part 53 item 1.1). Written by the
+        // pump when it guards this entry, so the next frame's lookup — which already does
+        // `persistCache.find(key)` — costs nothing extra to find its answer. `preFrame`
+        // is the frame the slot was filed FOR; anything else is a stale index and is
+        // ignored, which is what makes an entry that was erased and re-created safe.
+        uint32_t preSlot = UINT32_MAX;
+        uint64_t preFrame = 0;
     };
     // Consecutive changes the sampled guard must catch before a stream is demoted back
     // to it. Small: this is evidence, not a warranty, and `needsExact` is permanent.
@@ -3862,9 +4223,39 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             !alreadyThisFrame)
         {
             cached->second.guardFrame = stamp;
-            uint64_t read = 0;
-            uint64_t g = TextureGuard(base + cached->second.va,
-                                      size_t(cached->second.srcBytes), &read);
+            const uint8_t* const tsrc = base + cached->second.va;
+            const uint64_t tbytes = cached->second.srcBytes;
+            const uint64_t read = GuardReadBytes(tbytes, g_texGuardBytes);
+            // ITEM 1.1, the texture half. Same mechanism as the stream guard and the
+            // same fallback: a texture the previous frame guarded filed a job, and if a
+            // worker finished it the pump reads the answer instead of computing it.
+            // Textures never want the exact variant — a recycled texture address is a
+            // wholesale rewrite, which a spread sample sees at any bound (see
+            // g_texGuardBytes) — so there is only one variant to predict and the
+            // prediction is trivially right.
+            uint64_t g;
+            const GuardOut* tpre = GuardPoolTake(cached->second.preSlot,
+                                                 cached->second.preFrame, R->frame, tsrc,
+                                                 tbytes, /*needExact=*/false);
+            if (tpre)
+            {
+                g = tpre->sampled;
+                g_gpStats.bytesServed += read;
+                if (g_gpVerify)
+                {
+                    const uint64_t inl = TextureGuard(tsrc, size_t(tbytes), nullptr);
+                    ++g_gpStats.verifyChecked;
+                    if (inl != g)
+                        ++g_gpStats.verifyStale;
+                }
+            }
+            else
+            {
+                g = TextureGuard(tsrc, size_t(tbytes), nullptr);
+            }
+            cached->second.preSlot =
+                GuardPoolFile(tsrc, tbytes, uint32_t(g_texGuardBytes), false);
+            cached->second.preFrame = R->frame + 1;
             // The poison perturbs only the COMPUTED guard, never the stored one, so
             // every hit is forced to mismatch and the census must read 100%.
             if (g_texGuardPoison)
@@ -5656,31 +6047,71 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 g_guardProbeBytes += bytes;
             }
         }
-        uint64_t guardRead = 0;
-        uint64_t guard;
-        {
-            ProfScope _g(&g_prof.streamGuard);
-            guard = StreamGuard(src, size_t(bytes), &guardRead, exactHere);
-        }
-        R->persistStats.guardBytes += guardRead;
+        // The census stays on this thread whoever does the hashing, so the two arms
+        // report identical promotion counters and identical byte totals and the only
+        // thing that can differ between them is time.
+        StreamGuardCount(size_t(bytes), exactHere);
+        const bool wantExact = exactHere || g_guardExact;
         // When the exact guard is in use, take the SAMPLED one alongside it — the whole
         // point is to find out whether sampling would have seen the same changes, and
         // that cannot be answered without both. Bounded by kGuardBytes, so it is noise
         // against the exact hash it rides on.
+        const bool wantSampledToo = exactHere && !g_guardExact;
+        R->persistStats.guardBytes += wantExact
+                                          ? bytes
+                                          : GuardReadBytes(bytes, g_guardBytes);
+        if (wantSampledToo)
+            R->persistStats.guardBytes += GuardReadBytes(bytes, g_guardBytes);
+
+        uint64_t guard = 0;
         uint64_t sampled = 0;
-        if (exactHere && !g_guardExact)
+        // ITEM 1.1: did a worker already hash these bytes while the pump was walking
+        // packets? The entry carries the slot it filed last frame; anything missing,
+        // unfinished or of the wrong variant falls straight back to the inline hash.
+        const GuardOut* pre = nullptr;
+        if (pit != R->persistCache.end())
+            pre = GuardPoolTake(pit->second.preSlot, pit->second.preFrame, R->frame, src,
+                                bytes, wantExact);
+        if (pre)
         {
-            size_t sr = 0;
+            guard = wantExact ? pre->exact : pre->sampled;
+            if (wantSampledToo)
+                sampled = pre->sampled;
+            g_gpStats.bytesServed += wantExact ? bytes : GuardReadBytes(bytes, g_guardBytes);
+            if (g_gpVerify)
             {
-                ProfScope _g(&g_prof.streamGuard);
-                sampled = StreamGuard(src, size_t(bytes), &sr, false);
+                // Two questions at once, and they have to be told apart. If the inline
+                // hash taken NOW disagrees, either the bytes changed since the pre-hash
+                // (the widened race, which is what this arm exists to size) or the
+                // parallel path computed the wrong thing. The descriptor echo in
+                // GuardPoolTake has already ruled out the second's only silent form —
+                // a slot belonging to another buffer — so a disagreement here is the
+                // race, and its RATE is the number to read.
+                size_t vr = 0;
+                const uint64_t inl = StreamGuardHash(src, size_t(bytes), &vr, wantExact);
+                ++g_gpStats.verifyChecked;
+                if (inl != guard)
+                    ++g_gpStats.verifyStale;
             }
-            R->persistStats.guardBytes += sr;
         }
+        else
+        {
+            ProfScope _g(&g_prof.streamGuard);
+            guard = StreamGuardHash(src, size_t(bytes), nullptr, wantExact);
+            if (wantSampledToo)
+                sampled = StreamGuardHash(src, size_t(bytes), nullptr, false);
+        }
+        // File this stream for NEXT frame whether or not it was served this one: the
+        // order these are filed in is the order the next frame asks for them, which is
+        // what lets a pool that cannot finish the list still finish the useful end.
+        const uint32_t slot =
+            GuardPoolFile(src, bytes, uint32_t(g_guardBytes), wantExact);
         if (pit != R->persistCache.end())
         {
             Renderer::PersistEntry& e = pit->second;
             e.lastFrame = R->frame;
+            e.preSlot = slot;
+            e.preFrame = R->frame + 1;
             if (e.probes < Renderer::kGuardProbes)
                 ++e.probes;
             if (exactHere && !g_guardExact && e.sampledGuard == 0)
@@ -5784,6 +6215,8 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 e.guard = guard;
                 e.lastFrame = R->frame;
                 e.bytes = uint32_t(bytes);
+                e.preSlot = slot;
+                e.preFrame = R->frame + 1;
                 R->persistCache.emplace(key, e);
                 ++R->persistStats.fills;
                 R->persistStats.fillBytes += bytes;
@@ -9744,6 +10177,13 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     R->frontBuffer = frontBuffer;
     ++R->frame;
 
+    // ITEM 1.1: start the workers on the frame that is beginning, here and not in
+    // `BeginFrame`, which does not run until the first draw. Everything between this
+    // line and that first draw — the readback, the present, the frame-stats walk, the
+    // packets before the first DRAW_INDX — is head start the pool gets for free, and it
+    // is the difference between the early draws being served and hashing inline.
+    GuardPoolDispatch();
+
     if (!R->recording)
     {
         // A frame with no recorded work at all: present the previous contents rather
@@ -11097,6 +11537,42 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             Pm4_ShaderMemoMismatches()
                                 ? "  *** MEMO MISMATCHES, see [pm4] above ***"
                                 : "");
+            }
+
+            // THE PARALLEL GUARD'S HIT RATE (part 53 item 1.1). The plan told this part
+            // to PRE-REGISTER it: below ~80% served, the item is not working and any
+            // frame-time number taken from the run is noise. `drain` is the other half
+            // of the story — a pool still hashing when the next frame swaps is a pool
+            // that is too small, and the pump pays that wait.
+            if (GuardPoolWorkers() && g_gpStats.requests)
+            {
+                const GuardPoolStats& s = g_gpStats;
+                fprintf(stderr,
+                        "[vkprof] guard prehash: %.1f%% served (%llu of %llu, %.1f "
+                        "MB/frame moved off the pump) | miss: unknown %llu pending %llu "
+                        "variant %llu | %u workers, %llu dispatches, %llu blocked "
+                        "(%.2f ms total)%s%s\n",
+                        100.0 * double(s.served) / double(s.requests),
+                        (unsigned long long)s.served, (unsigned long long)s.requests,
+                        frames ? double(s.bytesServed) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)s.missUnknown,
+                        (unsigned long long)s.missPending,
+                        (unsigned long long)s.missVariant, GuardPoolWorkers(),
+                        (unsigned long long)s.dispatches,
+                        (unsigned long long)s.drainBlocked,
+                        double(s.drainNs) / 1e6,
+                        s.mixups ? "  *** SLOT MIX-UPS, see [vk] above ***" : "",
+                        s.verifyChecked ? "" : "");
+                if (s.verifyChecked)
+                    fprintf(stderr,
+                            "[vkprof] guard prehash VERIFY: %llu of %llu served guards "
+                            "disagreed with an inline hash taken at the draw (%.4f%%) — "
+                            "that is the widened race, not a wrong implementation; a "
+                            "slot mix-up would have printed above instead\n",
+                            (unsigned long long)s.verifyStale,
+                            (unsigned long long)s.verifyChecked,
+                            100.0 * double(s.verifyStale) / double(s.verifyChecked));
+                g_gpStats = GuardPoolStats{};
             }
 
             // Collect, sort by count descending, print. 128 slots is a fixed, tiny

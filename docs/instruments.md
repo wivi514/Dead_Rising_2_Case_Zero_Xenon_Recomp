@@ -1460,6 +1460,33 @@ CZ_VK_STREAM_GUARD_BYTES=N  the cross-frame store's guard is EXACT up to N bytes
 CZ_VK_STREAM_GUARD_EXACT=1  hash every byte whatever the size. The diagnostic that
                    identified 00c. Not for normal use: 75x the hashing and +11.9 points of
                    frame time against the 16 KB default's ~a quarter of that
+CZ_VK_NO_PARALLEL_GUARD=1  **the control arm for part 53 item 1.1.** Both content guards
+                   -- the cross-frame stream store's and the texture cache's -- fold
+                   inline on the pump thread, the way they did for fifty-two parts. On by
+                   default the folding runs on a small worker pool instead: every guard
+                   the pump computes files a job for the NEXT frame, the swap dispatches
+                   the list, and the pump reads a finished hash. A miss (a buffer never
+                   seen, a worker not finished, the exact variant wanted where only the
+                   sampled one ran) falls back to hashing inline, so correctness never
+                   depends on the prediction
+CZ_VK_GUARD_WORKERS=N  how many. Default 4 on a machine with 6+ hardware threads, 2 on
+                   3-5, 0 below that. Four is not a machine-sizing decision -- the PM4
+                   walk is serial, so this pool exists to hide ONE memory-latency-bound
+                   loop behind the walk, and four independent miss streams is most of
+                   what a single core cannot overlap by itself
+CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and count the
+                   disagreements. A disagreement is not a wrong implementation -- a slot
+                   mix-up prints its own loud `[vk] PARALLEL GUARD SLOT MIX-UP` line and
+                   falls back -- it is the RACE this item widens: the guard has always
+                   read guest memory while the guest wrote it, and pre-hashing moves that
+                   read up to a frame earlier. Measured on the outdoor route: 8-76 of
+                   ~3.2 M served guards per window, 0.0002-0.0021%, and that is an UPPER
+                   bound on harm because most disagreements are streams that read as
+                   changed either way. Costs the whole saving; an arm, never a default
+CZ_VK_VERIFY_PARALLEL_GUARD_POISON=1  perturb every pre-hashed value so the check above
+                   MUST fire. It reads 100.0000% -- which is what licenses reading the
+                   unpoisoned 0.0005% as a measurement rather than as a silent instrument
+                   (gotcha 30)
 CZ_ZOMBIE_CAPTURE=1 logs up to 512 genuine calls to the retail actor-manager submit
                    routine: caller LR, guest thread, factory, source tag/line, result,
                    and the first 96 descriptor bytes. Use while walking through a
