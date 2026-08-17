@@ -256,6 +256,7 @@ struct ProfilePhases
     uint64_t otherBegin = 0;    // BeginFrame + BeginRendering + the three arena allocs
     uint64_t otherTail = 0;     // bool/loop constants, the viewport decode, the censuses
     uint64_t draws = 0;       // how many draws those numbers are spread over
+    uint64_t scopes = 0;      // ProfScope closes — the profiler's own bill, see ProfScope
     // Pipeline creation, which lives INSIDE `drawOther` and is the only thing in there
     // that costs milliseconds. Separated because a first-visit stutter and a per-draw
     // overhead are different defects that were sharing one column. See GetPipeline.
@@ -272,6 +273,33 @@ inline uint64_t ProfNow()
                                      .count())
                        : 0;
 }
+// --- WHAT THE PROFILER ITSELF COSTS, and why that is a phase's worth of nanoseconds ----
+//
+// `docs/perf-plan-part50.md` §4 calls `other`'s residual — 206 ns/draw, unnamed after two
+// splits — "the highest-yield-per-hour item in the document". Before splitting it a third
+// time, there is a candidate that no split could ever name, because it is not IN any of
+// the code being split: **the clock reads this profiler performs.**
+//
+// Every `ProfScope` reads the clock twice, and DoDraw opens a dozen of them. Worse, the
+// exclusivity accounting puts that overhead somewhere very specific. A child's measured
+// interval starts AFTER its constructor's `ProfNow()` has returned and ends AT its
+// `Close()`'s read, so the cost of both reads falls outside the child's interval and
+// inside its parent's — and it is not subtracted, because `childNs` only ever receives
+// the child's own measured total. `drawOther` is the outermost per-draw scope. So **every
+// clock read every nested scope in DoDraw performs lands in `other`'s residual, and
+// nowhere else.**
+//
+// If that is what the residual is, it is not an item at all: it is absent from any run
+// without `CZ_VK_PROFILE`, so "removing" it would save a frame time nobody is paying.
+// This is gotcha 7 — a probe expensive enough to distort what it reports — in the one
+// place it is hardest to see, because the probe is the thing doing the reporting.
+//
+// So the cost is MEASURED rather than argued: `CalibrateProfNow` times the call, the
+// scope count per draw is counted, and the profile print multiplies the two and puts the
+// product next to the residual it is meant to explain. A prediction that can be wrong.
+uint64_t g_profNowNs10 = 0;   // ns per ProfNow() call, x10, so a sub-ns cost is visible
+uint32_t g_extraScopes = 0;   // CZ_VK_PROFILE_EXTRA_SCOPES — the control; see DoDraw
+
 // Scoped accumulator, EXCLUSIVE of any scope nested inside it. Compiles to nothing
 // measurable when the profile is off, because every call short-circuits on one
 // already-hot bool.
@@ -329,10 +357,37 @@ struct ProfScope
             parent->childNs += total;
         current = parent;
         sink = nullptr;
+        ++g_prof.scopes;   // one add against this scope's two clock reads; see above
     }
     ~ProfScope() { Close(); }
 };
 thread_local ProfScope* ProfScope::current = nullptr;
+
+// Time `ProfNow()`. Called once, before the first draw, with the profile already on so
+// the calibrated call is the same call the scopes make — including its `g_profileOn`
+// test, which is part of what a scope pays.
+//
+// The MINIMUM of many batches, not the mean: this runs while the rest of the process is
+// starting up, so a batch can be interrupted by anything, and every such interruption can
+// only make a batch slower. The floor is the number that describes the call.
+void CalibrateProfNow()
+{
+    uint64_t best = ~0ull;
+    volatile uint64_t sink = 0;
+    for (int batch = 0; batch < 32; ++batch)
+    {
+        const uint64_t t0 = ProfNow();
+        for (int i = 0; i < 1000; ++i)
+            sink += ProfNow();
+        const uint64_t t1 = ProfNow();
+        best = std::min(best, t1 - t0);
+    }
+    g_profNowNs10 = (best + 50) / 100;   // best is ns for 1000 calls => x10 per call
+    fprintf(stderr,
+            "[vkprof] a clock read costs %.1f ns; every ProfScope makes TWO and their "
+            "cost lands in the residual of the scope AROUND them (see g_profNowNs10)\n",
+            double(g_profNowNs10) / 10.0);
+}
 
 // CZ_VK_TEX_CENSUS=1 — per texture ADDRESS, where its pixels came from.
 //
@@ -791,6 +846,42 @@ bool g_guardExact = false;
 // "raise the bound" stayed unactionable for two parts.
 uint64_t g_guardDynamic = 0;
 uint64_t g_guardDynamicBytes = 0;
+
+// ...AND WHY EACH ONE WAS PROMOTED, which is the split part 50 item 2a turns on.
+//
+// The policy has three doors to the exact guard and they have completely different
+// prices. `needsExact` — the sampled guard has been caught missing a real change — is
+// UNBUDGETED and PERMANENT, because that is the UI-text case item 00c was about and
+// serving a stale HUD to save bandwidth is not a trade this renderer makes. The other
+// two, a dynamic stream still accruing its proof and a newly-met stream being probed,
+// share one 4 MB per-frame toll.
+//
+// Which means the whole promotion cost can be read off these three numbers, and part 46
+// left a prediction to check: `needsExact` should be "the UI text buffers and almost
+// nothing else". If it is, the promotion cannot exceed the 4 MB budget by much and item
+// 2a is somewhere else entirely. If it is not — if a permanent, unbudgeted latch is
+// firing on ordinary geometry — then the promotion is unbounded by construction and
+// grows for as long as the player keeps meeting new streams, which no counter here would
+// have shown. Splitting a cost by its REASON is what found three items in two parts
+// (gotcha 327); this is the same move one subsystem over.
+uint64_t g_guardProven = 0,  g_guardProvenBytes = 0;   // needsExact: unbudgeted, forever
+uint64_t g_guardSpec = 0,    g_guardSpecBytes = 0;     // dynamic, still accruing proof
+uint64_t g_guardProbe = 0,   g_guardProbeBytes = 0;    // newly met, bootstrap probe
+// How many entries have EVER latched `needsExact`, against the store's size. The latch
+// never unlatches, so this is a ratchet and its trend is the thing to read.
+uint64_t g_guardProvenEntries = 0;
+// ...and the number that decides what to DO about it: of the observations that came
+// through the proven door, how many found the stream actually CHANGED?
+//
+// The guard exists to avoid a copy. For a stream that changes on nearly every frame it
+// avoids nothing and costs a whole extra read of the buffer: we hash N bytes to learn
+// what we are about to find out anyway, and then copy N bytes. Always copying such a
+// stream is cheaper (one pass instead of two) AND strictly safer — a stream that is
+// always copied can never be served stale, which is the defect this whole mechanism
+// exists to prevent. For a stream that rarely changes the guard is the win it was built
+// to be. So the change RATE within the proven set is the whole decision, and it has
+// never been measured.
+uint64_t g_guardProvenObs = 0, g_guardProvenChanged = 0;
 
 // The folding itself, at a CALLER-CHOSEN bound: exact up to `bound`, and above it eight
 // blocks of `bound/8` spread over the whole buffer — the first starting exactly at 0 and
@@ -5384,6 +5475,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         static const bool noDynamicGuard = EnvOn("CZ_VK_NO_DYNAMIC_GUARD");
         auto pit = R->persistCache.find(key);
         bool exactHere = false;
+        bool provenHere = false;   // ...through the UNBUDGETED, PERMANENT door
         if (!noDynamicGuard && pit != R->persistCache.end())
         {
             // PROVEN need is unbudgeted; everything else shares one. The proven set is
@@ -5424,11 +5516,18 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                  pit->second.sampledAgreed < Renderer::kSampledProof))
             {
                 if (!budgetAll || pit->second.needsExact)
+                {
                     exactHere = true;
+                    provenHere = true;
+                    ++g_guardProven;
+                    g_guardProvenBytes += bytes;
+                }
                 else if (R->probeBudgetLeft >= bytes)
                 {
                     exactHere = true;
                     R->probeBudgetLeft -= bytes;
+                    ++g_guardSpec;
+                    g_guardSpecBytes += bytes;
                 }
             }
             else if (pit->second.probes < Renderer::kGuardProbes &&
@@ -5436,6 +5535,8 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             {
                 exactHere = true;                  // bootstrap, within this frame's toll
                 R->probeBudgetLeft -= bytes;
+                ++g_guardProbe;
+                g_guardProbeBytes += bytes;
             }
         }
         uint64_t guardRead = 0;
@@ -5460,6 +5561,8 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 ++e.probes;
             if (exactHere && !g_guardExact && e.sampledGuard == 0)
                 e.sampledGuard = sampled;
+            g_guardProvenObs += provenHere ? 1 : 0;
+            g_guardProvenChanged += (provenHere && e.guard != guard) ? 1 : 0;
             if (e.guard == guard)
             {
                 // The whole point: the bytes are already in device memory, dword-swapped,
@@ -5500,6 +5603,8 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                     {
                         // The bytes changed and the sampled guard did NOT notice. This is
                         // the UI-text case, and it is the only one that matters.
+                        if (!e.needsExact)
+                            ++g_guardProvenEntries;   // a ratchet: this never unlatches
                         e.needsExact = true;
                         e.sampledAgreed = 0;
                     }
@@ -5988,6 +6093,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // the phases, computed at print time; it is not measured separately, because a sum
     // and a second measurement of the same interval can only ever disagree.
     ProfScope _pDraw(&g_prof.drawOther);
+    // CZ_VK_PROFILE_EXTRA_SCOPES=N — THE POSITIVE CONTROL for the instrument line at the
+    // bottom of the profile print, and the only thing that can refute its model.
+    //
+    // That line claims `other`'s residual is mostly this profiler's own clock reads. The
+    // claim predicts a SLOPE: add N do-nothing scopes to the draw and the residual must
+    // rise by about N x the calibrated read cost, with the named phases untouched. A
+    // model that only ever explains the number it was written for explains nothing
+    // (gotcha 30) — so this arm exists to make it produce a number it did not choose.
+    //
+    // A throwaway sink, so the extra scopes' own measured time does not land in any
+    // phase the report adds up and the arm cannot flatter itself.
+    if (g_extraScopes)
+    {
+        static uint64_t discard = 0;
+        for (uint32_t i = 0; i < g_extraScopes; ++i)
+            ProfScope _e(&discard);
+    }
     // The shader lookups and the early guards, closed by hand at the key build.
     ProfScope _pShader(&g_prof.otherShader);
     if (!vsBind.hash || !psBind.hash)
@@ -9411,6 +9533,18 @@ bool InitCommon()
                         "(CZ_VK_TEX_REFRESH_ALL) — a picture arm, ruinously slow, and "
                         "the cache cannot serve a stale image under it\n");
     g_profileOn = EnvOn("CZ_VK_PROFILE");
+    if (g_profileOn)
+    {
+        CalibrateProfNow();
+        g_extraScopes = Env("CZ_VK_PROFILE_EXTRA_SCOPES")
+                            ? uint32_t(atoi(Env("CZ_VK_PROFILE_EXTRA_SCOPES"))) : 0;
+        if (g_extraScopes)
+            fprintf(stderr,
+                    "[vkprof] CZ_VK_PROFILE_EXTRA_SCOPES=%u — the positive control for "
+                    "the instrument line; `other`'s residual must rise by about %.0f "
+                    "ns/draw and no named phase may move\n",
+                    g_extraScopes, double(g_extraScopes) * double(g_profNowNs10) / 10.0);
+    }
     // Reported through the profile window, so it needs the profile on to say anything.
     // Saying so out loud rather than silently counting into a report nobody prints.
     g_streamCensus =
@@ -10471,6 +10605,39 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         d ? double(g_prof.otherTail) / d : 0.0,
                         d ? double(g_prof.drawOther) / d : 0.0,
                         pct(otherTotal));
+
+                // WHAT THE PROFILER ITSELF PUT IN THAT RESIDUAL. See the ProfScope
+                // comment for the mechanism: a nested scope's two clock reads fall
+                // OUTSIDE its own measured interval and inside its parent's, and are not
+                // subtracted — and `drawOther` is the outermost per-draw scope, so all of
+                // them land in the number printed as `residual` just above.
+                //
+                // The arithmetic, per nested scope, worked through once: the constructor's
+                // read is spent between the parent's `t0` and the child's, so it is in the
+                // parent's interval and is NOT in `childNs` — that is one whole read into
+                // the parent's residual. The `Close()` read is inside the child's own
+                // measured total, so it lands in the CHILD's named phase and is subtracted
+                // from the parent. So the model is **one read per scope into the residual,
+                // and a second spread across the named phases** — the profiler's total
+                // bill being twice what shows up here.
+                //
+                // Both are printed because they answer different questions: `resid` is how
+                // much of the item the plan wants split is instrumentation, and `bill` is
+                // how much every ns/draw figure in this report is inflated by the act of
+                // measuring it. And this is a PREDICTION, not a correction — nothing is
+                // subtracted anywhere. CZ_VK_PROFILE_EXTRA_SCOPES=N adjudicates it: it
+                // adds N do-nothing scopes per draw, and the residual must rise by about
+                // N x the read cost. If it does not, this model is wrong.
+                const double scopesPerDraw = d ? double(g_prof.scopes) / d : 0.0;
+                const double readNs = double(g_profNowNs10) / 10.0;
+                const double residNs = d ? double(g_prof.drawOther) / d : 0.0;
+                fprintf(stderr,
+                        "[vkprof] instrument: %.1f scopes/draw x %.1f ns per clock read => "
+                        "~%.0f ns/draw in `other`'s %.0f ns residual (%.0f%% of it), total "
+                        "profiler bill ~%.0f ns/draw\n",
+                        scopesPerDraw, readNs, scopesPerDraw * readNs, residNs,
+                        residNs > 0.0 ? 100.0 * scopesPerDraw * readNs / residNs : 0.0,
+                        scopesPerDraw * 2.0 * readNs);
             }
 
             // Pipeline creation, broken out of `other`. Printed only when it happened,
@@ -10622,6 +10789,39 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     packetPct(dTypes[3]),
                     (unsigned long long)(frames ? dTypes[3] / frames : 0));
 
+            // The filler-run census (part 50 item 1a). `t2` above says how MANY no-op
+            // dwords the walk meets; this says how many CALLS they cost, which is the
+            // only form in which "coalesce them" has a value. Mean run length 1.0 would
+            // mean the item saves nothing at all and the histogram would say where the
+            // ones are; the ring share separates driver ring padding from padding inside
+            // the title's own indirect buffers, which are different producers.
+            {
+                static uint64_t lastRuns = 0, lastRing = 0, lastHist[8] = {};
+                const uint64_t runs = Pm4_FillerRuns();
+                const uint64_t ring = Pm4_FillerRingDwords();
+                const uint64_t dRuns = runs - lastRuns, dRing = ring - lastRing;
+                lastRuns = runs;
+                lastRing = ring;
+                char hist[256];
+                int hn = 0;
+                for (uint32_t b = 0; b < 8; b++)
+                {
+                    const uint64_t c = Pm4_FillerHist(b);
+                    const uint64_t d = c - lastHist[b];
+                    lastHist[b] = c;
+                    hn += snprintf(hist + hn, sizeof(hist) - size_t(hn), "%s%llu",
+                                   b ? "/" : "", (unsigned long long)d);
+                }
+                if (dTypes[2] || dRuns)
+                    fprintf(stderr,
+                            "[vkprof] pm4 filler: %llu dwords in %llu runs (mean %.1f, "
+                            "%.0f%% ring) | runs by length 1/2/4/8/16/32/64/128+: %s\n",
+                            (unsigned long long)dTypes[2], (unsigned long long)dRuns,
+                            dRuns ? double(dTypes[2]) / double(dRuns) : 0.0,
+                            dTypes[2] ? 100.0 * double(dRing) / double(dTypes[2]) : 0.0,
+                            hist);
+            }
+
             // Collect, sort by count descending, print. 128 slots is a fixed, tiny
             // array; B1's census says this title uses 21 opcodes, so this is at most
             // four lines and usually three.
@@ -10740,6 +10940,29 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                : 0.0);
                 g_guardDynamic = 0;
                 g_guardDynamicBytes = 0;
+                // ...split by the DOOR each promotion came through, because the three
+                // have different prices and only one of them is bounded. See the
+                // g_guardProven declaration for what this is asking.
+                fprintf(stderr,
+                        "[vkprof] guard promotion by reason: proven(unbudgeted, forever) "
+                        "%llu/frame %.1f MB | speculative(budgeted) %llu/frame %.1f MB | "
+                        "probe(budgeted) %llu/frame %.1f MB | %llu of %zu entries have "
+                        "EVER latched proven | of proven observations %.1f%% found the "
+                        "stream ACTUALLY CHANGED (above ~50%% the guard costs a read to "
+                        "learn what the copy would have told us free)\n",
+                        (unsigned long long)(frames ? g_guardProven / frames : 0),
+                        frames ? double(g_guardProvenBytes) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)(frames ? g_guardSpec / frames : 0),
+                        frames ? double(g_guardSpecBytes) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)(frames ? g_guardProbe / frames : 0),
+                        frames ? double(g_guardProbeBytes) / double(frames) / 1048576.0 : 0.0,
+                        (unsigned long long)g_guardProvenEntries, R->persistCache.size(),
+                        g_guardProvenObs ? 100.0 * double(g_guardProvenChanged) /
+                                               double(g_guardProvenObs) : 0.0);
+                g_guardProvenObs = g_guardProvenChanged = 0;
+                g_guardProven = g_guardProvenBytes = 0;
+                g_guardSpec = g_guardSpecBytes = 0;
+                g_guardProbe = g_guardProbeBytes = 0;
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
                         " this window\n",
