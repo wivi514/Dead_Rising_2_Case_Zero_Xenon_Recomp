@@ -102,12 +102,30 @@ significance figure of **+211** against the walk's +13.
 | `constants` | 1.34 | |
 | `readback` | 0.55 | |
 
-`GuardFold` (item 1.1) is charged inside `textures` and `other`. **`record` is the
-`vkCmd*` calls themselves, and item 1.4 — parallel command recording — is the only item
-that addresses it.** The plan deferred 1.4 as "a genuine architectural project" and said
-to re-measure first and let the numbers make the case rather than ambition. **The numbers
-now make it**, so 1.4 is a live candidate for the top of the order rather than a someday
-item. It is still the highest-risk thing in the document; price it before starting it.
+**AND ITEM 1.4 WAS THEN PRICED, WHICH MOVED 39% OF IT ONTO ITEM 1.1** (§6ci §13). The
+stream content guard is charged to `record`, because `UploadStream` runs inside the
+`recordVertex` scope while `ProfScope(streams)` wraps only the copy. So item 1.1 (priced
+off the `GuardFold` symbol) and item 1.4 (priced off the `record` phase) **shared the same
+milliseconds**. Split:
+
+```
+record 1,007 ns/draw = state 141 + vertex 188 + index 161 + GUARD 391 + residual 126
+```
+
+| of the operator's heaviest frame | ms |
+|---|---|
+| `record` as measured | 8.69 |
+| — the stream guard inside it, **item 1.1** | **3.37** |
+| — the real `vkCmd*` recording, **item 1.4** | **5.32** (~4.0 at four workers) |
+| item 1.1 total (stream 3.37 + texture 1.98) | **~5.3** |
+
+The split also reconciles the phase table with the symbol profile for the first time, to
+the millisecond. **The two items are the same size and not the same risk** — the guard is
+a pure function with a byte-exact oracle and no ordering constraint; command recording
+owns renderer state, must preserve draw order, and has no gate that would catch getting it
+wrong. **Do 1.1 first**, which is what the order below already said. 1.4 stays live and is
+now supported by numbers rather than by ambition, but it is a ~4 ms item behind a ~5.3 ms
+one.
 
 ## THE ORDER TO TAKE PART 53
 
@@ -116,7 +134,7 @@ items landed** (§6ci §5b), so this ranking is current rather than inherited:
 
 | # | item | expected | risk | note |
 |---|---|---|---|---|
-| 1 | **1.1 parallel content guards** | **−2..3 ms** | medium | `GuardFold` is now **29.85% of the pump**, up from 24.30% — its share ROSE because the thread got smaller, so convert to ms before comparing (gotcha 320) |
+| 1 | **1.1 parallel content guards** | **~5.3 ms** (repriced, §6ci §13) | medium | measured, not shared with any other item: **3.37 ms inside `record`** (the stream guard) + **1.98 ms inside `textures`**. `GuardFold` is 29.85% of the pump; its SHARE rose because the thread got smaller, so convert to ms before comparing (gotcha 320) |
 | 2 | 1.3 readback off the pump | −0.5..1 ms | low | price it from `readback` with frame stats OFF, never from `DoSwapImpl`'s symbol share |
 | 3 | 2.3 audit the always-on censuses | −0.1..0.3 ms | none | |
 | 4 | 3.3 `_int_malloc` on the frame path | −0.2..0.3 ms | low | part 52 removed ~1,500 mallocs/frame from the shader path as a by-product; it still reads 1.08-1.41% of the pump, so there is another caller |
@@ -124,6 +142,7 @@ items landed** (§6ci §5b), so this ranking is current rather than inherited:
 | 6 | 1.2 parallel textures | −1..2 ms | med-high | only after 1.1 proves the pool |
 | 7 | 3.4 `memcmp` at 3.4-4.2% | ? | — | **measure before touching**; part 52 added the memo's own `memcmp` to this symbol, so it is no longer only the state cache |
 | 8 | 4.2 inline the PM4 walk | −2.2 ms ceiling | **high** | last, and only with a poison arm |
+| — | **1.4 parallel command recording** | **~4 ms at 4 workers** | **high** | priced in part 52 and now supported by numbers, but it is behind 1.1 on size AND ahead of it on risk. Secondaries inherit no state but the render pass, and draw ORDER is semantic |
 
 **Item 1.1 is still the headline and its ceiling is unchanged.** But note what part 52's
 `outside` split says about the strategy behind it: the pump is blocked 0.09-0.12 ms of a
