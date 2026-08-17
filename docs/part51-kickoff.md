@@ -123,15 +123,53 @@ order, because any one of them can kill it:
 **Do not start this as a tightening.** It is architectural, it touches correctness, and it
 deserves its own part with the exact hash retained as the oracle it would be replacing.
 
+## WE ARE USING 2.5 OF 16 CORES, AND THE PLAN NEVER ASKED — read §6cg §7
+
+Asked at the end of part 50 and never asked before: **is this a single-core problem?**
+One 25 s sample of `/proc/PID/task/*/stat` in an outdoor crowd (`tools/part50_thread_cpu.py`):
+
+```
+process total   246.2% of one core = 2.46 cores of 16 (15.4% of the machine)
+37 threads alive; TWENTY of them below 0.5%
+```
+
+| thread | % of one core | what it is, from its stack |
+|---|---|---|
+| — | **93.2%** | a GUEST thread — the title simulating. **Nearly saturated, and we cannot optimise it directly** |
+| — | **79.0%** | **OURS** — `GraphicsInterruptPump` -> `Pm4_Execute` -> `ExecutePacket` -> `DoDraw` |
+| — | 29.1% | a second guest thread |
+
+Three consequences, none of which are in the plan:
+
+1. **Our pump does the PM4 walk AND the Vulkan recording on ONE thread** — the stack shows
+   `ExecutePacket -> DoDraw` directly. So `outside`'s walk (~8 ms) and the whole draw path
+   (~15 ms) are serialised on one core **by construction**, and every item in the plan is
+   an attempt to make that one core's work smaller. Legitimate, but not the only strategy,
+   and nobody chose it deliberately.
+2. **The busiest thread is the GAME'S, at 93.2%.** If the simulation thread is the real
+   limiter then milliseconds taken off our pump buy **nothing**, and no item in the plan
+   would ever find that out. **Resolve this first.**
+3. **`outside` is not all work.** At 79% busy our pump is blocked ~4.7 ms of a 22.3 ms
+   frame, and `outside` reported 10.7 ms. The plan reads the non-walk part of `outside` as
+   "the guest's own simulation, ~3 ms" — but the guest simulates on a *different thread*
+   and cannot be inside our pump's frame time except as blocking. That ~3 ms is our pump
+   WAITING, so the walk item is smaller than `outside` makes it look.
+
+**Caveat that must not be dropped: a thread's CPU% does not distinguish WORKING from
+SPINNING.** A guest thread spinning on a lock looks identical here. The 93.2% is a lead,
+not a conclusion (gotcha 338).
+
 ## The order to take part 51, given all of the above
 
 | # | item | expected | note |
 |---|---|---|---|
-| 1 | **item 2a step 1** — price `clear_refs` on the guest map | one run | it can kill the whole idea in ten minutes |
-| 2 | **item 5** — present without the readback | −1.2 ms | the plan's tier 4, untouched, and the GPU is idle and can do the blit |
-| 3 | **item 1c** — inline the walk so there is no call per packet | up to −2.2 ms | a REFACTOR with desync risk; both PM4 oracles are blind inside `ExecutePacket`, so the incumbent is the oracle and it needs a poison arm, as 1a's did |
-| 4 | item 3's leftovers — `pipeline` std::map -> flat, shader-pair cache | −1.0 ms | these were always real; only the *residual* was the phantom |
-| 5 | item 1d — does the guest sim run per PRESENT or per its own timer? | ? | `CZ_FPS_CAP` makes it a one-run experiment: compare `outside` per SECOND at 30, 45, 60 |
+| **0** | **IS THE GUEST SIM THREAD THE LIMITER, AND IS IT WORKING OR SPINNING?** | one run + `perf` | **new, and it comes first because it can invalidate items 2-4.** `perf record -t <tid>` or repeated `eu-stack` samples of the 93% thread: a spin shows as one tight address range. If it IS the limiter, the plan's whole "make the pump smaller" strategy is mis-aimed |
+| 1 | **item 2a step 1** — price `clear_refs` on the guest map | one run | can kill the biggest item in ten minutes |
+| 2 | **parallelism** — get the walk and the recording off one thread | **re-cost it** | the plan's §5 defers multithreaded recording "for the same reasons" as the swapchain; §6cg §7 is the measurement that says what it might be worth. ~13 idle cores |
+| 3 | **item 5** — present without the readback | −1.2 ms | the GPU is idle and can do the blit |
+| 4 | **item 1c** — inline the walk so there is no call per packet | up to −2.2 ms | a REFACTOR with desync risk; both PM4 oracles are blind inside `ExecutePacket`, so the incumbent is the oracle and it needs a poison arm, as 1a's did |
+| 5 | item 3's leftovers — `pipeline` std::map -> flat, shader-pair cache | −1.0 ms | these were always real; only the *residual* was the phantom |
+| 6 | item 1d — does the guest sim run per PRESENT or per its own timer? | ? | `CZ_FPS_CAP` makes it a one-run experiment: compare `outside` per SECOND at 30, 45, 60. **Item 0 may answer this as a side effect** |
 
 ## Standing state
 
@@ -163,4 +201,4 @@ deserves its own part with the exact hash retained as the oracle it would be rep
   ending at 96.7 s of a 330 s run, with a third of the frames, is the signature of a stall
   — and it was a file being written at that moment. Nothing in the file distinguishes the
   two. Check the driver's own completion marker before reading any artifact of a long run.
-  Gotcha 338.
+  Gotcha 339.

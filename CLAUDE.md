@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 338 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 339 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 338-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 339-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -738,6 +738,19 @@ BEFORE it** — §6cg retires two of its items and corrects every number in its 
 * **THE NULL FLOOR IS NOW MEASURED, NOT ASSUMED: 9.4% on ns/packet and 8-18% on frame
   time by draw band.** An item worth under ~1 ms is invisible in frame time on this route
   and must be settled on a per-unit statistic. Budget for that before picking an item.
+* **WE ARE USING 2.46 OF 16 CORES — 15.4% of the machine — AND NOBODY HAD EVER ASKED.**
+  Thirty parts of frame times and phase shares cannot answer "is this single-core?",
+  because a per-phase profiler is written from inside ONE thread and cannot represent a
+  core doing nothing (gotcha 338). Measured with `tools/part50_thread_cpu.py`: 37 threads,
+  **twenty below 0.5%**, and two carrying 70% of the CPU — a **GUEST** thread at **93.2%**
+  (the title simulating, nearly saturated, and not ours to optimise) and **our pump at
+  79.0%**, whose stack is `Pm4_Execute -> ExecutePacket -> DoDraw`, i.e. **the PM4 walk and
+  the Vulkan recording serialised on one core by construction**. Every item in the live
+  plan makes that one core's work smaller and no item asks whether that is the right
+  strategy. **Part 51's item 0 is now to find out whether the guest thread is the limiter
+  — and whether it is WORKING or SPINNING, which this measurement cannot tell apart.**
+  Also: `outside` is not all work — at 79% busy the pump is BLOCKED ~4.7 ms of a 22.3 ms
+  frame, so the plan's "guest simulation ~3 ms" inside `outside` is our pump waiting.
 * **Gates at close: ALL CLEAN**, E3 best of five **+0.8820**, 4 of 5 agreeing on layout.
 
 Where the port WAS, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT

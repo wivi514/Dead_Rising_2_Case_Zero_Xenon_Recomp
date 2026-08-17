@@ -3365,7 +3365,27 @@ From phase C part 18 (the frame rate — and none of it was work):
      the WORLD changed or your VIEW of it did**, and never let a retraction of your own
      earlier measurement be scored as progress.
 
-338. **A GROWING FILE READ MID-RUN IS A COMPLETE FILE THAT ENDS EARLY, AND IT LOOKS
+338. **A WALL-CLOCK FRAME TIME CANNOT TELL YOU HOW MANY CORES YOU ARE USING, AND A
+     PROFILER THAT ONLY INSTRUMENTS ONE THREAD WILL NEVER RAISE THE QUESTION.** Thirty
+     parts of performance work on this port produced frame times, phase shares and
+     per-draw costs, all measured on the renderer's own thread, and not one of them
+     could answer "is this a single-core problem?". The answer, when finally asked in
+     one 25-second sample of `/proc/PID/task/*/stat`, was **2.46 cores of 16 — 15.4% of
+     the machine — with 37 threads alive and twenty of them below 0.5%**, two threads
+     carrying 70% of the CPU. That reframes every item in the live plan, all of which
+     make ONE thread's work smaller. The trap is structural rather than careless: a
+     per-phase profiler is written from inside one thread, so its columns always sum to
+     that thread's time and always look like a complete account of the frame. It cannot
+     represent a core that is doing nothing, so it never prompts you to look. **Ask for
+     the process-wide core count before building a budget, not after** — it is one
+     script and it decides whether the strategy is "make this smaller" or "move some of
+     it somewhere else". Two corollaries that both bit here: a thread's CPU% does not
+     distinguish WORKING from SPINNING, so a saturated guest thread is a lead and not a
+     conclusion; and time in a residual phase like `outside` is not necessarily work —
+     our pump was 79% busy, so a fifth of what that column reported was the thread
+     BLOCKED, waiting on a producer that lives on a different core.
+
+339. **A GROWING FILE READ MID-RUN IS A COMPLETE FILE THAT ENDS EARLY, AND IT LOOKS
      EXACTLY LIKE A HANG.** Half an hour into a six-run campaign, an arm's stats file
      ended at 96.7 s of a 330 s run while the baseline's ended at 328.8 s, with a third
      of the frames and two profile windows against ten. Read as a finished run that is

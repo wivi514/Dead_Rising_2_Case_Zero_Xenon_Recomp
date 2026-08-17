@@ -9257,3 +9257,68 @@ Two rules follow, and they are cheap:
 * **A frame-time A/B between a profiled and an unprofiled arm is possible ONLY because
   `CZ_VK_FRAME_STATS` is independent of `CZ_VK_PROFILE`.** Keep them independent. An
   instrument that can only be read through another instrument cannot measure that one.
+
+### §7. HOW MANY CORES ARE WE ACTUALLY USING? 2.5 OF 16 — and the plan never asked
+
+Every performance number this project has produced since part 18 is a wall-clock frame
+time or a share of one, and both are blind to the question a reader asks first: **is this
+a single-core problem or a parallel one?** A 25 ms frame with one thread saturated and
+fifteen cores idle is a completely different item from a 25 ms frame with eight threads
+half busy. `tools/part50_thread_cpu.py` reads it out of `/proc/PID/task/*/stat`,
+differenced over a window so it describes the workload running *now* rather than the boot.
+
+Sampled over 25 s in an outdoor crowd (6,563 draws, ~22-26 ms/frame), 16 cores:
+
+| thread | % of one core | what it is (from its stack) |
+|---|---|---|
+| 630402 | **93.2%** | a GUEST thread — `GuestThread::Run` -> `sub_82829BB0` -> `sub_827D3898` |
+| 630391 | **79.0%** | **OURS** — `GraphicsInterruptPump` -> `Pm4_Execute` -> `ExecuteLinear` -> `ExecutePacket` -> `DoDraw` |
+| 630380 | 29.1% | a second guest thread |
+| 630403 | 10.5% | |
+| 17 more | < 6% each | |
+| 20 more | **< 0.5%** | |
+
+```
+process total   246.2% of one core = 2.46 cores of 16 (15.4% of the machine)
+busiest thread   93.2%  -- 38% of all CPU this process is using
+```
+
+**37 threads exist and two of them carry 70% of the CPU.** The capacity is there on both
+sides and is not being used: the title is built to be parallel (A1 shows it naming
+`JobThread0`..`JobThread5`, `cAsyncFileSystem` and `BigFile Decompress Thread`), and our
+runtime gives every guest thread a real host thread with no affinity pinning — the
+processor mask is only reported back through the PCR so the guest reads what it asked for.
+**Twenty of those threads are below 0.5%.**
+
+Three things follow, and none of them are in `perf-plan-part50.md`.
+
+**1. OUR PUMP DOES THE PM4 WALK AND THE VULKAN RECORDING ON ONE THREAD.** The stack shows
+it directly: `Pm4_Execute` -> `ExecutePacket` -> `DoDraw`. So `outside`'s walk (~8 ms) and
+the entire draw path (`record` + `other` + `textures`, ~15 ms) are **serialised on a single
+core by construction**, and every item in the plan is an attempt to make one core's work
+smaller. That is a legitimate strategy and it is not the only one available.
+
+**2. THE BUSIEST THREAD IS THE GAME'S, NOT OURS — and it is nearly saturated.** 93.2% on
+recompiled title code is a thread with almost no headroom, and we cannot optimise it
+directly: it is the guest simulating. Whether it is genuinely the critical path or merely
+busy is NOT established here and must not be assumed — a guest thread spinning on a lock
+would look identical in this measurement. **That is the first thing part 51 should
+resolve**, because if the simulation thread is the limiter then several milliseconds off
+our pump buys nothing at all, and the plan has no item that would find that out.
+
+**3. `outside` IS NOT ALL WORK.** Our pump is **79% busy**, so on a 22.3 ms frame it is
+blocked for ~4.7 ms. `outside` read 47.8% of that frame (10.7 ms) — and the plan reads
+`outside` as "the PM4 walk 8.1 ms plus the guest's own simulation, ~3 ms". **The guest's
+simulation is on a different thread and cannot be inside our pump's frame time except as
+blocking**, so that ~3 ms is not the guest computing, it is our pump WAITING for it. The
+walk item is therefore smaller than `outside` makes it look, for the third time in this
+part that a number was read as work when part of it was something else.
+
+**What this does NOT say.** It does not say the frame is limited by single-threading — a
+79% pump has 21% slack, and a change that halves the pump's work would still help if the
+pump is the limiter. It says the machine has ~13 idle cores, that we have never asked why,
+and that **the parallelism question outranks several of the plan's remaining items on
+expected value while costing one run to investigate**. Multithreaded command recording is
+already named in the plan's §5 as deferred "for the same reasons" as the swapchain work;
+this is the measurement that says how much it might be worth and it should be re-costed
+rather than left at the bottom.
