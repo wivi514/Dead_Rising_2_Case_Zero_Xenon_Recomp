@@ -89,17 +89,44 @@ items landed** (§6ci §5b), so this ranking is current rather than inherited:
 16 ms frame, i.e. it is *working*, not waiting. Moving work off it is therefore still the
 right idea — there is nothing to overlap with, only work to relocate.
 
+## THE OPERATOR HAS JUDGED IT — and their frame reaches the cap
+
+Done at the close of part 52 (`phase5-notes.md` §6ci §10, `tools/part52_operator_session.sh`).
+**"Performance is better."** A whole-map lap, `CZ_VK_PROFILE` on and `CZ_VK_FRAME_STATS`
+deliberately off. The phase split against part 51's session on the same machine:
+
+| phase | part 51 | part 52 | delta | predicted |
+|---|---|---|---|---|
+| `outside` | 5.37 | 3.02 | **−2.35** | ~2.4 (the memo — `BindShader` runs in the PM4 WALK, so its saving lands here, not in `draw`) |
+| `other` | 3.92 | 3.48 | **−0.44** | 0.43 (the pipeline lookup) |
+| everything else | | | within ±0.30 | untouched |
+
+**Their crowd frame is ~14-16 ms uninstrumented — at or above the 60 fps cap.** Part 50
+quoted them at 35.7 fps in that band, part 51 at 41.7. This is the first session where the
+heaviest thing they walk through is not CPU-bound.
+
+**It is not an A/B**, and the same-binary control was not run:
+`ARM=ab tools/part52_operator_session.sh` chains an arm with `CZ_PM4_NO_SHADER_MEMO=1`.
+Run it before quoting any of this as a measured speedup rather than as confirmation of
+direction and mechanism.
+
 ## WHAT IS OWED
 
-* **The operator has not judged part 52.** Four items, ~2.8-3.3 ms of pump work removed,
-  and their frame is heavier than the headless one, so their route may still be below the
-  cap where this one is not. Wire `CZ_VK_PROFILE` into the launch (their frame is the one
-  that matters) and ask about SMOOTHNESS as well as speed. `tools/part51_operator_session.sh`
-  is the harness.
+* **THE THING THAT SHOULD SHAPE PART 53: both routes now reach the cap.** The headless one
+  does, and so does the operator's. Every remaining item in the plan is worth 0.2-3 ms of a
+  frame that is already pacing-limited on both machines this project can measure on, which
+  means **none of them can be shown to help a player** without either raising the cap (a
+  measurement device, not a shipping configuration) or finding a heavier place than
+  anybody has yet looked for. **Answer that before picking item 1.1.** The honest options
+  are: find the worst thing in the game and measure there; accept that the remaining items
+  buy headroom rather than frames and say so when shipping them; or stop optimising CPU
+  and take the picture items.
 * **A decision about the headless route.** It has run out of headroom at the shipped cap.
   Either every future CPU A/B runs at a raised cap and says so, or the route needs a
   heavier destination. The first is what part 52 did and it works; the second has never
   been looked for.
+* **Item 1.3 is repriced by the operator's own session**: `readback` is **0.62 ms** with
+  frame stats off, so it is a 0.5-0.6 ms item and not the 1.2 the old plan guessed.
 
 ## MEASUREMENT RULES THAT CHANGED IN PART 52
 
