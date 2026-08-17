@@ -773,9 +773,31 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   translated shader` = 0; `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0
   with 4 permutation windows, 0 real**; **E3 best of five +0.8808**, 4 of 5 agreeing on
   layout; the shader-cache NAME diff found nothing new (**the cache is still 436**).
-* **WHAT IS OWED: the operator has not judged this.** Everything above is headless, and
-  their frame is heavier than this route. The place to measure is the three-minute soak
-  they found in part 52, which is NOT at the cap. `docs/part54-kickoff.md` leads with it.
+* **THE OPERATOR CONFIRMED IT ON THEIR OWN SOAK, AND IT IS BIGGER THERE.** Two soaks in
+  their heaviest place, both items switched together in the control arm: **7,000-7,999
+  draws, 24.65 -> 20.33 ms, −17.5% mean / −16.7% median at significance −50.2**, with the
+  light bins reading **+0.1%** and **+0.5%** as the experiment's own null. `record`'s GUARD
+  **518 -> 13 ns/draw**, `textures` **428 -> 227**, **97.8% of guards served** by a
+  finished pre-hash, **0 mix-ups**. And at 4,000-6,000 draws the share of frames pinned to
+  the shipped 60 fps cap goes **55% -> 98%** and **29% -> 93%** — frames a player gets,
+  not headroom.
+* **AND THE READING TO CARRY FORWARD: THE PUMP DID NOT GET LESS BUSY, IT STAYED
+  SATURATED.** ~94% of a core in BOTH arms on their machine. What changed is what each
+  frame costs it — **23.6 -> 18.75 ms** — so the same pinned thread delivers **24% more
+  frames**. Headlessly the pump had slack and the same item read as a thread doing less
+  (63.4% -> 50.3%); on the real critical path it reads as throughput instead. Their bill:
+  **2.64 -> 3.11 cores**, four workers at 11.1-11.2% of a core each.
+* **BUT ITEM 1.3 DID NOT SURVIVE THE SESSION AND IS OPEN AGAIN.** `readback` went **0.58
+  -> 0.66 ms** on their machine against a headless −0.78. Both numbers are right about what
+  they measured: **headless, `Host_PresentPixels` returns immediately**, so the staging copy
+  WAS the whole readback. Windowed, the window's own copy runs and the saving mostly is not
+  there. It could not be separated from item 1.1 in that A/B and is probably being TAXED by
+  it (the workers stream ~3.5 GB/s; the same tax shows in `other` +45 ns/draw and `outside`
+  +0.42 ms). **Part 54's first job is item 1.3's own windowed arm.** A headless number that
+  does not transfer is exactly what an operator session is for — the third time now.
+* **STILL OWED: their LOOK/FEEL verdict.** The numbers are in; nobody has said whether
+  anything looked wrong, and the one class this part could have introduced is a ONE-FRAME
+  STALE buffer (a lagging HUD value, a mesh that snaps, a texture that flicks).
 
 Where the port WAS, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
 MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S

@@ -1,4 +1,5 @@
-# Part 54 kickoff — the work is off the pump; the operator has not seen it yet
+# Part 54 kickoff — the work is off the pump, the operator has confirmed it, and one
+# of the two items did not survive their machine
 
 Written at the close of part 53 (2026-08-17). **This is the LIVE hand-off**, superseding
 `part53-kickoff.md`.
@@ -13,31 +14,53 @@ store's and the texture cache's — now fold on a four-worker pool**, filed a fr
 from the working set the pump saw last frame, with an inline fallback on every miss.
 `GuardFold` went from **25.87% of the pump thread to 0.86%**, the pump itself from
 **63.4% to 50.3% of a core**, and frame time fell **12.5-13.1%** across four adjacent draw
-bands against a null of **+0.1%**. A second, smaller item removed a redundant 3.5 MB copy
-from the present path (`readback` 5.5-7.3% -> **0.0%**).
+bands against a null of **+0.1%**. **The operator then confirmed it at −17.5% on their own
+soak** — see the next section, which also records the second item coming apart there.
 
 `docs/phase5-notes.md` **§6cj** is the record. `perf-plan-part52.md` **§9c** is the plan's
 own status. `perf-plan-part52.md` is still the live plan.
 
 ---
 
-## THE FIRST THING TO DO, AND IT IS NOT AN ITEM
+## THE OPERATOR HAS NOW JUDGED IT — and it settled one item and unsettled another
 
-**Everything in part 53 is headless.** The operator has judged every performance part
-since 47 and has twice corrected a headless conclusion; part 52's own hand-off records
-that their frame is heavier than this route and that the place to measure is **the
-three-minute soak they found**, which is *not* at the frame cap.
+Done at the close of part 53, `ARM=ab tools/part53_operator_session.sh`, two soaks in
+their heaviest place, both items switched together in arm B (`phase5-notes.md` §6cj §10).
 
-Ask for one session, `ARM=ab tools/part52_operator_session.sh`, at the soak:
+**Item 1.1 is confirmed and is bigger on their machine than on the headless route.**
 
-* it chains the arms so quitting one starts the next;
-* the control arm is `CZ_VK_NO_PARALLEL_GUARD=1`;
-* bin by draw count, and read the light bins as the experiment's own null;
-* **and ask for the process's core count in both arms**, because this item costs CPU —
-  it is the first one that does.
+| | |
+|---|---|
+| 7,000-7,999 draws | **24.65 -> 20.33 ms, −17.5% mean / −16.7% median, significance −50.2** |
+| the light bins, as the experiment's own null | **+0.1%** and **+0.5%** |
+| `record`'s GUARD | **518 -> 13 ns/draw** |
+| `textures` | **428 -> 227 ns/draw** |
+| 4,000-5,999 draws, share pinned to the 60 fps cap | **55% -> 98%** and **29% -> 93%** |
+| guards served by a finished pre-hash | **97.8%**, 0 pending, 0 blocked, **0 slot mix-ups** |
 
-If they cannot, the headless campaign stands on its own (three runs an arm, alternated,
-with a null), but "the operator has not judged it" belongs in any summary until they have.
+**And the reading worth carrying forward: the pump did NOT get less busy — it stayed
+saturated at ~94% of a core in both arms.** What changed is what each FRAME costs it,
+**23.6 -> 18.75 ms**, so the same pinned thread delivers 24% more frames. Headlessly the
+pump had slack and the item read as a thread doing less (63.4% -> 50.3%); on the critical
+path it reads as throughput instead. Their bill: **2.64 -> 3.11 cores**, four workers at
+11.1-11.2% of a core each.
+
+### **ITEM 1.3 IS OPEN AGAIN, AND IT IS PART 54'S FIRST JOB**
+
+`readback` went **0.58 ms -> 0.66 ms** on their machine, against a headless **−0.78 ms**.
+Both measurements are right about what they measured: **headless, `Host_PresentPixels`
+returns immediately**, so the staging copy was the whole readback and removing it removed
+all of it. Windowed, the window's own copy runs, and the saving mostly is not there.
+
+It could not be separated from item 1.1 in that A/B — both were switched together — and
+the likely explanation is that 1.3 is being **taxed by 1.1** rather than being wrong: the
+workers stream ~3.5 GB/s, and the same tax shows in `other` (+45 ns/draw) and `outside`
+(+0.42 ms).
+
+**So: run item 1.3's own arm, WINDOWED, with the guard pool held on in both sides**
+(`CZ_VK_PRESENT_STAGING` alone). It is ~15 minutes and it decides whether the change stays
+or is reverted. A windowed run can drive itself — `CZ_FAKE_PRESS_SEQ` works with a window
+up — so it does not need the operator.
 
 ---
 
@@ -107,7 +130,11 @@ prints two arms side by side, which is an item A/B in one command.
 
 ## WHAT IS OWED
 
-* **The operator's verdict on part 53** — see START HERE.
+* **Item 1.3's own windowed arm** — see above. It is the first job.
+* **The operator's LOOK/FEEL verdict on part 53.** They ran both soaks and the numbers are
+  in; what is not recorded is whether anything looked or felt wrong, and the one class this
+  part could have introduced is a ONE-FRAME STALE buffer (a lagging HUD value, a mesh that
+  snaps, a texture that flicks for a frame). Ask before closing the item.
 * Their two deferred picture items, **00m decals** and **00n a sign and items at
   distance**, still deferred. If the CPU work stalls, these are the alternative.
 * **The operator's standing instruction** from part 52: *"prepare a whole plan to fix CPU

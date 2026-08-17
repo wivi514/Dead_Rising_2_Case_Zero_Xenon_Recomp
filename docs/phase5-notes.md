@@ -10598,3 +10598,85 @@ which is the whole reason its predicate is the memory type.
   still the riskiest.
 * **The operator has not judged this yet.** Everything above is headless. The soak they
   found in part 52 is the place to measure it, and it is not at the cap.
+
+### §10. THE OPERATOR'S SOAK A/B — the strongest measurement in this part, and one of its
+### two items did not survive it
+
+`ARM=ab tools/part53_operator_session.sh`, two soaks in the heaviest place they know, one
+binary, both items switched off in arm B (`CZ_VK_NO_PARALLEL_GUARD=1
+CZ_VK_PRESENT_STAGING=1`). Both arms carry `CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS`, so
+every absolute time below is inflated by ~3 ms in both.
+
+#### Frame time, binned by draw count
+
+| draws | control n | control mean | item n | item mean | Δ mean | Δ median | significance |
+|---|---|---|---|---|---|---|---|
+| 0-999 | 1,229 | 16.83 | 1,231 | 16.85 | **+0.1%** | +0.0% | **+0.0** |
+| 2,000-2,999 | 1,041 | 16.04 | 1,354 | 16.12 | **+0.5%** | +0.0% | **+0.8** |
+| 4,000-4,999 | 111 | 18.74 | 502 | 16.13 | −13.9% | −5.9% | −4.3 |
+| 5,000-5,999 | 651 | 19.18 | 620 | 16.28 | −15.1% | −11.1% | −10.6 |
+| 6,000-6,999 | 402 | 21.60 | 6,754 | 19.94 | −7.7% | −4.8% | −6.2 |
+| **7,000-7,999** | **7,628** | **24.65** | **3,064** | **20.33** | **−17.5%** | **−16.7%** | **−50.2** |
+
+The two light bins are the experiment's own null and they read **+0.1%** and **+0.5%**.
+The two arms' soaks settled at slightly different draw counts — the control's in
+7,000-7,999 and the item's in 6,000-6,999 — which is exactly what binning by draw count
+exists to survive; both bins still hold thousands of frames on both sides.
+
+**And the `pinned%` column says something the means cannot.** At 4,000-4,999 the control
+is 55% pinned to the 16 ms ladder and the item arm **98%**; at 5,000-5,999, **29% -> 93%**.
+Here the ladder IS the shipped 60 fps cap, so in those bands this is not headroom — it is
+the game reaching its own cap where it previously could not.
+
+#### The mechanism, per draw, which is the fair comparison at unequal draw counts
+
+| | control (~7,470 draws) | item (~6,930 draws) |
+|---|---|---|
+| **`record`'s GUARD** | **518 ns/draw** | **13** |
+| **`textures`** | **428 ns/draw** | **227** |
+| `record` total | 1,244 ns/draw | 746 |
+| `other` | 569 ns/draw | 614 |
+| frame | 25.0 ms, **40.1 fps** | 20.1 ms, **49.8 fps** |
+| guards served by a finished pre-hash | — | **97.8%**, 0 pending, 0 blocked |
+| `PARALLEL GUARD SLOT MIX-UP` | — | **0** |
+
+−505 ns/draw of stream guard and −201 of texture guard is **−4.9 ms at 7,000 draws**, and
+the 97.8% hit rate is *higher* than the headless 88-91% because a soak's working set is
+stable by construction.
+
+#### THE BILL ON THEIR MACHINE, and the reading that changes how to think about the pump
+
+| | control | item |
+|---|---|---|
+| process total | 2.64 cores of 16 | **3.11** |
+| the four workers | — | **11.1-11.2% of a core each** (44.6 points) |
+| **the pump thread** | **94.5% of a core** | **93.3%** |
+| pump WORK per frame | 23.6 ms | **18.75 ms** |
+
+**The pump did not get less busy — it stayed saturated, and that is the point.** The
+headless route left it slack (63.4% -> 50.3%), so the item read there as a thread doing
+less. Here the pump is pinned at ~94% in both arms and what changed is how much work each
+FRAME costs it: **23.6 -> 18.75 ms, so the same saturated thread delivers 24% more
+frames.** That is the shape a strategy-(b) item takes when the thread it shortens is
+genuinely the critical path, and it is the more useful way to read one.
+
+#### AND ITEM 1.3 DID NOT SURVIVE THE SESSION
+
+`readback` went **0.58 ms (control) -> 0.66 ms (item)**. The headless measurement said
+−0.78 ms. Both are right about what they measured, and the difference is that **headless,
+`Host_PresentPixels` returns immediately** — so the staging copy WAS the entire readback
+and removing it removed all of it. Windowed, the window's own copy runs, and one copy read
+from the mapped buffer costs slightly more than a copy from the mapped buffer plus a copy
+from a staging vector that is still hot in cache.
+
+It cannot be separated from item 1.1 in this A/B — both were switched together — and the
+most likely explanation is not that 1.3 is wrong but that it is being **taxed by 1.1**:
+the workers stream 69.8 MB/frame at 49.8 fps, i.e. ~3.5 GB/s, and the same tax is visible
+in `other` (+45 ns/draw) and `outside` (2.88 -> 3.30 ms). Item 1.1's +0.42 ms in `outside`
+and +0.31 in `other` are the same phenomenon the headless run charged to `recordState` and
+`otherBegin`.
+
+**So item 1.3 is an OPEN QUESTION, not a shipped saving, and it needs its own arm** —
+windowed, with the guard pool held constant in both. Recorded here rather than tidied
+away, because a headless number that does not transfer is exactly what an operator session
+is for, and this project has now had three of them.
