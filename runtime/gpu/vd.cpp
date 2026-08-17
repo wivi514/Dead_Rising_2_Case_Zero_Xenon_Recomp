@@ -334,16 +334,37 @@ void GraphicsInterruptPump()
     // in the frame-time budget of `docs/perf-plan-part50.md` accounts for it, because
     // every item there makes the pump's WORK smaller and this is not work.
     //
-    // Kept as an ARM rather than a new default until it is measured, and expressed in
-    // microseconds so the same code path serves both: `CZ_PM4_TICK_MS` continues to mean
-    // exactly what it meant, and is still the control arm for every claim part 18 made.
+    // **100 us IS NOW THE DEFAULT**, measured rather than assumed, and the campaign that
+    // promoted it is §6ch §4-§5. Three arms, one pinned binary, three unprofiled runs
+    // each, read by draw bin:
+    //
+    //   3,000-5,000 draws   19 ms -> 16 ms, -15.8%, OUTSIDE its own 5.3% floor, and the
+    //                       16 ms-PINNED share goes 24-36% -> 72-95%: the frame stops
+    //                       being CPU-bound and lands on the vblank floor.
+    //   the 4 ms POSITIVE CONTROL is what licenses the rest: +34.8% to +56.2% and
+    //                       outside the floor in every bin, i.e. the sleep converts to
+    //                       frame time at ~1:1, so the 2.7 ms this removes is real even
+    //                       in the bins where the direct comparison sits inside its
+    //                       noise (gotcha 331 — an arm that can only make things better
+    //                       is a hope, not an experiment).
+    //
+    // `CZ_PM4_TICK_MS` is deliberately untouched and still means exactly what it meant:
+    // setting it explicitly gives the millisecond behaviour, so `CZ_PM4_TICK_MS=1` is the
+    // control arm for this change and `CZ_PM4_TICK_MS=16` remains the control arm for
+    // every claim part 18 made.
+    //
     // Floor of 10 us so a typo cannot turn the pump into a spinner that starves the guest
     // threads it is waiting for — that would be the same defect in the other direction,
     // and on a 16-core machine with 13 cores idle it would still be an unmeasured change.
+    // What is NOT yet judged is how this FEELS: a tick period changes when things happen
+    // rather than how much work there is, and pacing is felt before it is counted. That
+    // is `tools/part51_operator_session.sh`'s question and it is part 52's item 0.
+    constexpr int kDefaultTickUs = 100;
     const char* tickUsEnv = getenv("CZ_PM4_TICK_US");
     const int tickUs = tickUsEnv
                            ? std::max(10, std::min(atoi(tickUsEnv), vblankMs * 1000))
-                           : tickMs * 1000;
+                           : tickEnv ? tickMs * 1000
+                                     : std::min(kDefaultTickUs, vblankMs * 1000);
 
     KLOG("graphics interrupt pump started (%d ms vblank cadence, %d us ring tick)\n",
          vblankMs, tickUs);
