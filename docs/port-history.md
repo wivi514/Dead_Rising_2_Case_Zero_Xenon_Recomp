@@ -3319,3 +3319,235 @@ last few days' fixes.**):
   the FIXED cache before quoting that result again. `docs/part46-kickoff.md`
   is the LIVE hand-off.
 
+## Per-part status blocks moved out of CLAUDE.md in part 51 (parts 46-49)
+
+Moved on 2026-08-16 under the 2026-08-08 rule that CLAUDE.md keeps only the live part
+and one part back. It had six. The rule exists because that file is loaded into every
+session whole, and the cost of breaking it is not size — it is that a reader cannot tell
+which block is current (gotcha 13, the same defect as a stale LIVE pointer).
+
+Where the port WAS, as of 2026-08-16 (part 49 CLOSED — **THE 30 fps CAP IS GONE AND IT
+WAS THE TITLE'S OWN SETTING ALL ALONG.** The operator has played the whole map at
+`CZ_FPS_CAP=60`. ~~`docs/part50-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part51-kickoff.md`; `docs/perf-plan-part50.md` is still the live plan, built on that lap
+— **but every frame-time number in that lap is inflated 8-18% by the profiler that
+recorded it, so the fps figures below are LOWER than what the operator actually played;
+see part 50 above**):
+
+* **60 fps IS NOW THE DEFAULT**, on the operator's instruction; `CZ_FPS_CAP=30` is
+  the control arm and reproduces the shipped pacing exactly. A player-facing
+  option to choose is later work.
+* **THE WHOLE-MAP LAP IS THE HEADLINE — 16,788 frames on their machine.** 62.5 fps
+  below 3,000 draws, 43.5 at 3-5k, **35.7 at 5-7k where 60% of their play is**, and
+  only **3.6% of frames below 30 fps**. Their words: *"seems to be working pretty
+  well"*, and on the question that could have invalidated all of it, *"the game plays
+  perfectly"*.
+* **THE 30 fps WAS THE TITLE'S OWN D3D PRESENT INTERVAL**, traced end to end: config
+  `0x82A57ACC` -> `sub_823C8D20` -> `sub_827CBB00` -> `dev+13804` -> `sub_82841AD0`
+  -> `sub_82841878` -> the vblank walker. Reading it BACKWARDS is the finding — the
+  game's own "vsync 1" setting produces interval 1, so **60 fps is a configuration it
+  already ships with**, not a defeat of its pacing (which §6am forbids).
+* **THE CAP WORKS BY SHORTENING THE VBLANK PERIOD, NOT THE INTERVAL.** Presents are
+  vblank-quantised, so at 16 ms the ladder is 16/32/48 ms with NOTHING between and any
+  frame needing 17 ms falls to 31 fps. The operator found that in minutes — *"when it
+  is 60 fps the game plays perfectly"* but *"when it drops it still goes back to
+  30"*. An 8 ms period with the title's own interval of 2 gives the same ceiling and
+  half the rung.
+* **IT DOES NOT DOUBLE THE SIMULATION**: locomotion p90 **0.99x** against a registered
+  2.00x prediction, with a 31-39% null control bounding what that can rule out.
+* **TWO MORE CEILINGS APPEARED THE MOMENT THE FIRST LIFTED**, which is the transferable
+  half (gotcha 333). The host's vsync had been throttling us for 48 parts behind the
+  guest's own cap — **headless read 62.5 fps the whole time and nobody asked why
+  windowed disagreed** (332) — and the vblank ladder above.
+* **FRAME TIME IS A USABLE INSTRUMENT AGAIN, for the first time since part 30**, and
+  **the GPU is IDLE** (`submit.gpu` 0.0% median over 22 windows). Gotchas 237/238's
+  pinned share was a workaround for a ceiling that is gone.
+* **What is left, all CPU, all on their numbers**: the PM4 walk at **81,106
+  packets/frame x 100 ns = 8.1 ms** (28.7% of them type-2 filler doing NOTHING); the
+  stream guard still hashing **63-72 MB every frame** inside `rec.vertex` (part 47 made
+  that hash 4x faster and not SMALLER); and `other`'s residual at 206 ns/draw, still
+  unnamed after two splits.
+
+Where the port WAS, as of 2026-08-16 (part 48 CLOSED — **THE PERFORMANCE TARGET IS MET
+ON THE OPERATOR'S OWN MACHINE**: 33.6 ms and 29.8 fps at the spot they name as worst,
+against the 33 ms the plan set, with no staleness reported. **`docs/part49-kickoff.md`
+is the LIVE hand-off**, and its first action is a QUESTION — the standing "performance
+is the most important" instruction has been satisfied and should not be assumed to
+still hold):
+
+* **THREE ARMS ON THEIR MACHINE, SOAKED AT ONE SPOT, ARE THE HEADLINE.** The camera
+  stationary at the gas station in every arm, so the band check reads **0.0% drift**
+  across 6,800-7,500 draws — the cleanest comparison this project has had on their
+  hardware. **33.6 ms / 29.8 fps** default; **40.5 ms** with part 47's guard fold
+  undone; **38.1 ms** with part 48's PM4-walk `getenv` undone. Against part 47's
+  42.8 ms and 23.4 fps at 7,010 draws: **−9.2 ms, +6.4 fps.** Their picture verdict
+  on the guards: *"Some looked wrong but they are not new"* — second consecutive
+  clean session.
+* **BOTH OF PART 48'S WINS WERE FOUND BY SPLITTING A PROFILER PHASE, NEITHER BY
+  READING CODE** — three items in two parts now (gotcha 327). Splitting `other`
+  found a `getenv` on the per-draw path; applying the gotcha written for THAT to
+  `pm4.cpp` found a `getenv` **on the PM4 walk, once per type-3 packet, ~29,000
+  times a frame**, worth **4.5 ms** on their frame (136 -> 95 ns/packet).
+* **`Pm4_OpcodeCount` HAD BEEN COUNTED ON EVERY PACKET SINCE PHASE 4 AND READ BY
+  NOTHING.** Printing it showed **`SET_BIN_MASK_LO` is the most frequent packet in
+  the stream** (a third of all type-3, half again as many as there are draws) and
+  **28.7% of packets are type-2 ring filler** doing no work at all.
+* **AN ITEM CAN BE PERFECT ON ITS OWN COUNTER AND A NET LOSS** (gotcha 330). Item
+  2b stamped the stream cache instead of clearing it: 97.7% node reuse, **45x fewer
+  allocations**, and `record` **8.5% slower** — the map grew 1,900 -> 7,000 entries
+  and 22,000 lookups a frame paid for 1,800 cheaper inserts. Built, measured,
+  reverted the same day.
+* **A NULL-CONTROL ARM IS WHAT MAKES A PER-DRAW A/B READABLE** (gotcha 331). The
+  3,000-8,000 draw band is NOT narrow enough: `record` varies 1,204 -> 1,033 ns/draw
+  across it. Put an arm in every campaign that CANNOT move the statistic; whatever
+  it reads is the floor. It read +1.5-4.9% while the fold read **+99.4%**.
+* **What is left, on their numbers**: the stream guard still hashes **63-72 MB every
+  frame** inside `rec.vertex` (part 47 made that hash 4x faster and not SMALLER — attack
+  the bytes); `oth.begin` is **0.75 ms a frame** for once-per-frame work; and
+  `oth.residual` is **1.4 ms and still unnamed after two splits**.
+
+Where the port WAS, as of 2026-08-16 (part 47 CLOSED — the PERFORMANCE work executed
+and **CONFIRMED BY THE OPERATOR ON THEIR OWN MACHINE**: 64.1 -> 42.8 ms, 15.6 -> 23.4
+fps at matched draws, with the picture unchanged. `docs/part48-kickoff.md` was the
+hand-off and `docs/perf-plan-part48.md` the performance plan, built on
+their frame rather than on the headless route):
+
+* **THE OPERATOR'S OWN TWO-ARM A/B IS THE HEADLINE.** One binary, their route,
+  the gas-station spot they name as worst for frame rate, three minutes an arm,
+  matched on draw count: **64.1 -> 42.8 ms, 15.6 -> 23.4 fps, `textures`
+  25.19 -> 4.45 ms.** Their words: *"performance is way better, still far from
+  perfect"*, *"pretty much 10 fps difference"*, and — the question the fix could
+  have failed — *"games looks pretty much the same as last time"*, with **no
+  stale texture reported**. Headlessly the crowd frame lands on the two-vblank
+  floor: at 5,000-8,000 draws 42-46 ms -> 32 ms and the 16 ms-PINNED share
+  5-13% -> 73-85%, plus an 8,000+ draw band the old binary never reached.
+* **THE BIGGEST SINGLE ITEM WAS THE TEXTURE REVALIDATION GUARD** and the fix is a
+  CADENCE change, not a mechanism change: once per frame per cache entry instead
+  of once per texture fetch per draw. **93.4% of checks skipped, 15.1x less
+  hashing.** The redundancy factor WAS the size of the item and had never been
+  measured — an estimate off run totals said 2x (gotcha 323).
+* **THE SECOND WAS HIDING IN THE WRONG PHASE.** Splitting `record` (which had no
+  breakdown at all) showed its vertex section was 70% of it — and the work there
+  was the cross-frame store's CONTENT GUARD, **81.65 MB hashed in one frame of
+  their session**, charged to `record` because `g_prof.streams` wraps only the
+  copy. **Gotcha 238 contains that exact example and it took nine parts to act on
+  it** (gotcha 326). The fold was then found to be LATENCY-bound, not
+  bandwidth-bound: four accumulators took it **9.0 -> 35.7 GB/s**, same bytes,
+  with a single-bit sweep confirming 0 misses on both folds (gotcha 324).
+* **THEIR WORKLOAD DIFFERS FROM OURS IN KIND, not just in size**: 144 ns per PM4
+  packet against our 110-113, and **7.8 register dwords per packet against 9.4**.
+  Part 47's bulk register path buys them less than it bought us, and per-PACKET
+  cost dominates their walk — so quote walk changes as ns per packet, and rank
+  against their budget.
+* **Method, and it cost real time to learn**: a phase SHARE moves when any other
+  phase does, so quote MILLISECONDS (320); pooling profile windows across a route
+  measures the route and calls it noise (321); a gate that would pass whether or
+  not your change is correct has not tested it, and the code you replaced is
+  still compiled in and is the oracle (322); a counter nothing reads is not an
+  instrument (325).
+* **OWED into part 48**: the operator's confirmation of the guard fold (unmeasured
+  on their machine); an isolated A/B of the vertex/index bind cache, which is the
+  one part-47 change never measured alone and whose sign is consistently
+  unfavourable; and item 1.1's registered claim, half-answered.
+
+Where the port WAS, as of 2026-08-16 (part 47 mid-part — the plan's tiers 1 and 2
+executed and its top item repriced):
+
+* **THE TEXTURE REVALIDATION GUARD WAS NEARLY THE WHOLE TEXTURE PHASE, and the
+  plan's own named first run proved it in one measurement.**
+  `CZ_VK_NO_TEX_REVALIDATE=1` on the outdoor route: `textures` **15.9 ms with
+  the guard and 2.3 ms without**, against the 8-11 ms the plan priced. In the
+  5,000-8,000 draw bin the frame goes from **47-48 ms at 23-24% pinned to
+  32-33 ms at 67-94% pinned** — onto the title's own two-vblank floor. That arm
+  is the upper bound and not a configuration; it is the defect part 38 fixed.
+* **THE FIX IS A CADENCE CHANGE and the A/B says it recovers essentially ALL of
+  that**: the content guard runs **once per frame per cache entry** instead of
+  once per texture fetch per draw. Three runs an arm, same binary, both negative
+  controls reading exactly zero: **at 5,000-8,000 draws the frame goes 42-46 ms
+  -> 32 ms and the 16 ms-PINNED SHARE goes 5-13% -> 73-85%.** The crowd frame
+  stops being CPU-bound and becomes PACING-bound, and the binary reaches an
+  8,000+ draw band the old one never got to, at 36-37 ms. `textures` 17.18 ->
+  **2.47 ms** (the no-revalidate upper bound was 2.3); the guard reads 5.8-7.4
+  MB/frame against 77.9-95.1. `CZ_VK_TEX_GUARD_EVERY_FETCH=1` is the arm.
+* **Item 1.1's registered claim — "`changed` must not fall" — holds on the event
+  rate and is UNRESOLVED on the distinct-address measure.** Per frame the fix
+  detects slightly more (0.0739 against 0.0640, ranges overlapping). But the
+  every-fetch arm sees more distinct addresses ever change (157 against 141)
+  while the part-47 runs covered *more* ground, and the two arms do not visit
+  the same places — so that is confounded and this route cannot settle it. It is
+  the second question for the operator, not a closed item.
+* **`outside` and `record` read slightly WORSE on the part-47 arm and that
+  comparison is INADMISSIBLE**, not bad: the arms do not submit the same command
+  stream and their packets-per-frame differ by 40%, so a matched DRAW band does
+  not match a PM4 workload. The admissible statistic for the walk is cost per
+  packet — **110-113 ns against 151-158, zero overlap over nine windows an
+  arm**.
+* **The PM4 walk writes register RUNS in bulk** — the two range questions asked
+  once per run instead of once per dword — and it is verified against the
+  per-dword code it replaced, because **both PM4 boundary oracles pass
+  identically whether or not that rewrite is correct** (gotcha 322): **0
+  mismatches over 152,020,384 dwords**, `CZ_PM4_VERIFY_POISON=1` first to show
+  the check can fail, and **100.0% of dwords take the bulk path**.
+* **The state cache now covers the VERTEX and INDEX binds.** Part 18 added the
+  counters and deliberately did not act on them until the repeat rate justified
+  it; it does — **51.0% / 39.4% over 16.17 M draws** on the operator's session.
+* **Three ways a perf A/B on this title reads wrong, all of which bit in one
+  afternoon**: a phase SHARE moves when the other phases do, so taking 13 ms out
+  of `textures` made four other phases read 34-68% worse without moving (quote
+  MILLISECONDS, gotcha 320); pooling profile windows across a route measures the
+  ROUTE and calls it noise, a 58% "floor" that was a safehouse window averaged
+  with a crowd window (use a matched draw band, 321); and `msec` is the LAST of
+  the eighteen `.stats` columns. `tools/part47_perf_read.py` does all three.
+* **What is OWED is the operator's own session** —
+  `tools/part47_operator_session.sh`, two chained arms — because the headless
+  route understates their draw path by ~2x, so a headless win here is not the
+  conservative direction. Ask two things: is it faster, and does any texture
+  ever look STALE.
+
+Where the port WAS, as of 2026-08-16 (part 46 CLOSED — both of the operator's items
+answered, one of them FIXED, and the performance work now has a plan built on the
+operator's own profiled frame):
+
+* **THE UI TEXT / HUD DEFECT IS FIXED AND OPERATOR-CONFIRMED** (open items
+  00c/00k, first seen part 24). Their words: *"Ui stay good the whole time"*, then
+  *"Hud stay good and all"* on the cheaper variant, against a control arm
+  (`CZ_VK_NO_DYNAMIC_GUARD=1`) that broke in the same session. **"Raise the guard
+  bound" was REFUTED by measurement** — at 256 KB the HUD still dropped out, and
+  since part 45's unlimited arm fixed it the UI buffer is above 256 KB, where the
+  size histogram prices exactness at 121+ MB/frame. **Size was the wrong
+  discriminator.** The fix is exactness EARNED per stream: a stream the store
+  catches CHANGING is hashed exactly, and one the cheap sampled guard is proved
+  able to see is demoted back. `CZ_VK_GUARD_BUDGET` is the default;
+  `CZ_VK_NO_GUARD_BUDGET=1` is the control. `phase5-notes.md` §6cc addendum.
+* **THE TREE SHARDS ARE MISSING ALPHA-TO-MASK COVERAGE, and the setting to ship is
+  `CZ_VK_A2M_MODE=1`.** Canopy draws are alpha test GREATER at `RB_ALPHA_REF =
+  0.0` plus A2M over a DXT4/5 albedo: at ref 0 the alpha test keeps everything, so
+  A2M does the whole cutout alone, and we declined to emulate it on an excuse that
+  is false exactly at ref 0 (gotcha 317). Mode 1 (flat 0.5 threshold) removes the
+  hard black plates with no screen door; mode 2 (the faithful per-sample dither)
+  screen-doors, because the foliage is on a **2x MSAA** surface — confirmed on
+  hardware's own traces — and our EDRAM stand-in is not at sample resolution. The
+  operator's near-matched A/B: isolated-pixel share **0.71% (mode 1) vs 4.17%
+  (mode 2)**, hardware 0.00%. §6ca + addendum, §6cc, open item 0t, gotchas 317-319.
+* **THE PERFORMANCE PLAN IS `docs/perf-plan-part47.md`**, written against the
+  operator's own frame — **61.7 ms at 7,231 draws, target 33 ms** (the 360 shipped
+  this at 30 fps). Budget: **textures 26.5 ms, PM4 walk 14.2, record 10.9**, GPU
+  34% utilised with `submit.gpu` 0.0, i.e. a pure CPU problem. **The headline is
+  that the texture revalidation guard read 366 GB over one session — 92.9 MB/frame
+  — to catch 986 real changes out of 26.8M checks (0.0037%)**, and its upper bound
+  is knowable in ONE run (`CZ_VK_NO_TEX_REVALIDATE=1`). Tiers 1+2 are ~21 ms with
+  no architectural change.
+* **THE HEADLESS ROUTE UNDERSTATES THE OPERATOR'S DRAW PATH BY ~2x** (28.7 ms at
+  5,241 draws against their 53.9 ms at 5,080). Part 46's three "exonerated"
+  performance suspects — part 45's interpolant liveness, part 41's per-fetch
+  samplers, part 44/45's mip uploads — are cleared on THAT route and not on the
+  operator's. Wire `CZ_VK_PROFILE` and `CZ_VK_FRAME_STATS` into every operator
+  launch; part 46's first session shipped without them and wasted itself.
+* **The part-26 white-prop class is CLOSED on the operator's word** — newspaper
+  boxes, register, gas-station sign, bathroom window all correct after part 45.
+* Methods worth keeping: the DEFECTIVE-and-CORRECT-pixels draw-ID cut retires
+  every per-draw input in one measurement (gotcha 318); prefer a repro that
+  already has an oracle in the repo (319); and **read the pose before the
+  picture** — two operator captures were compared per-pixel because they looked
+  like the same view and their eyes were 250 units apart.
+
