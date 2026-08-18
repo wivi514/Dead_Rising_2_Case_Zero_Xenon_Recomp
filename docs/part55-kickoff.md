@@ -1,5 +1,14 @@
-# Part 55 kickoff — the present stopped copying the frame, the headless route is honest
-# again, and the biggest thing left on the pump is the draw path
+# Part 55 kickoff — the present stopped copying the frame, and the operator has set the
+# next target: make this port genuinely multi-threaded
+
+> **PART 55'S SUBJECT IS SET BY THE OPERATOR** — *"I want us to focus on making it so the
+> game properly use multithread and dispose of the load properly unless you tell me it's
+> not possible."* **`docs/perf-plan-part55.md` is the plan and its §0 is the honest answer**:
+> possible, and the right target, but the ceiling is **5-6 busy threads, not 16**. The PM4
+> walk is serial because a command stream's meaning is positional, and draw ORDER is
+> semantic — recording can be parallel, submission cannot. The prize is roughly a third off
+> the frame at the load they actually play. Read that document first; the rest of this
+> hand-off is what part 54 leaves behind.
 
 Written at the close of part 54 (2026-08-18). **This is the LIVE hand-off**, superseding
 `part54-kickoff.md`. The record is `docs/phase5-notes.md` **§6ck**; the live plan is still
