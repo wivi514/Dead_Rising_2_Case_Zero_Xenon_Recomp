@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 352 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 354 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 352-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 354-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -738,9 +738,17 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   a thread no instrument here reads) and the GPU's copy, visible only as `submit gpu` rising
   to 14.7% — **the GPU being a limiter at 2x, which is what the resolution knob was
   supposed to produce and had not been seen doing.**
-* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p**, three rounds an arm, alternated, one
-  frozen binary, medians per draw band (2,500-2,999 draws, n=7-9 an arm), against the
-  campaign's own within-arm null of **−0.7% and +0.0%** in the same band.
+* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p — INTO A SMALL WINDOW, AND THAT
+  QUALIFIER IS LOAD-BEARING.** Three rounds an arm, alternated, one frozen binary, medians
+  per draw band (2,500-2,999 draws, n=7-9 an arm), against the campaign's own within-arm
+  null of **−0.7% and +0.0%**. **The campaign left the WINDOW at its default (a 1088x612
+  drawable) and the operator plays MAXIMISED at 2560x1417**, where the readback path's CPU
+  cost is unchanged — it is a function of the internal resolution — and this arm's blit
+  DESTINATION is four times larger. They report the frame rate as unchanged there, which is
+  evidence and not a measurement (what it is compared against is a remembered number from
+  another day, gotcha 51). **`WINSIZE=2560x1417 tools/part54_present_cost.sh` is owed and
+  is the first thing part 55 should run.** Gotcha 353: a present-path measurement has TWO
+  resolutions and naming only one of them is naming none.
 * **AND IT IS A SLOPE THE OTHER WAY ROUND FROM EVERY PREVIOUS ITEM.** Parts 52 and 53
   shipped savings that grew with the draw count, because their work ran per draw or per
   packet. This is a FIXED cost per frame, so its share is largest where the frame is
@@ -749,6 +757,17 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   the phase it zeroes** — zeroing a 24.5% `readback` out of 10.20 ms predicts 7.70 and the
   measurement is 7.00 — the extra being the GPU copy and the pump waiting on the window
   thread's mutex.
+* **THE OPERATOR FOUND A REAL DEFECT IN TEN MINUTES THAT NO GATE HERE COULD HAVE: the
+  swapchain did not follow the window.** It rebuilt only on `VK_ERROR_OUT_OF_DATE_KHR` and
+  merely COUNTED `VK_SUBOPTIMAL_KHR`, so a window enlarged after the first present kept
+  being presented from the original 1280x720 swapchain and the compositor stretched it to
+  a 1440p monitor — *"it is blurry"*, and it was. **SDL's `SDL_RenderCopy` had always
+  scaled the full-size texture into whatever the window currently was, so resizing needed
+  no code of ours and appears nowhere in it**: replacing a library's present means
+  inheriting jobs it was doing invisibly (gotcha 354). The fix asks the drawable SIZE every
+  frame rather than trusting a return code; `CZ_WINDOW_RESIZE_AT=SECS:WxH` is the positive
+  control, because **no headless gate can resize a window**, and it proved the rebuild in
+  both directions. Their verdict after it: *"Looks a lot nicer now."*
 * **IT IS AN ARM, NOT THE DEFAULT, FOR EXACTLY ONE REASON: the host-rendered F4 debug
   overlay is drawn by SDL's renderer and a Vulkan window has no SDL renderer.** The title's
   own F2 DebugJump screen is drawn by the GAME and is unaffected, as is every other

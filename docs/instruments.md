@@ -1520,7 +1520,14 @@ CZ_VK_SWAPCHAIN=1  **present through a real Vulkan swapchain (part 54, plan §7)
                    is worth was MEASURED windowed before it was built: 8.1-8.7% of the
                    frame at 1280x720 (~0.65 ms) and **16.4-22.6% at 2560x1440 (~1.7-2.2
                    ms)**, the largest single non-draw phase at 2x and the only cost in this
-                   renderer that grows when the resolution does. It also picks the present
+                   renderer that grows when the resolution does. **QUOTE THE WINDOW SIZE
+                   WITH ANY NUMBER FROM THIS ARM.** The −8.3%/−31.4% frame-time result was
+                   measured into a ~1088x612 drawable; the operator plays MAXIMISED at
+                   2560x1417, where the readback path's CPU cost is unchanged (it is a
+                   function of the internal resolution) and this arm's blit destination is
+                   four times larger. They reported the frame rate as unchanged there.
+                   `WINSIZE=2560x1417 tools/part54_present_cost.sh` is the owed experiment;
+                   gotcha 353 It also picks the present
                    MODE, which the SDL path never could: MAILBOX, so the compositor cannot
                    pace us (part 49's 60->30 snap) -- `CZ_VK_SWAPCHAIN_FIFO=1` is the arm
                    for that question and FIFO is named in the log when it is all the

@@ -88,6 +88,33 @@ standing +0.8396…+0.8808. Vulkan validation is clean.
 
 ---
 
+## 2b. RUN THIS FIRST — the frame-time number was measured into the WRONG WINDOW
+
+**`WINSIZE=2560x1417 tools/part54_present_cost.sh`, three rounds an arm, both arms.** It is
+the first thing part 55 should do and it may correct §2's headline.
+
+The campaign behind §2 left the window at its default and measured a **1088x612 drawable**.
+The operator plays **maximised at 2560x1417**, and the two arms do not scale the same way
+with it:
+
+* the **readback** path's CPU cost is a function of the INTERNAL resolution — 14.1 MB read
+  back and 14.1 MB copied at 2x — and is **independent of the window size**;
+* the **swapchain** arm's blit DESTINATION *is* the window, four times larger there than
+  anything §2 measured.
+
+Handed the arm to judge, the operator's verdict was *"Looks a lot nicer now"* on the
+picture and **"still feels pretty much the same framerate wise"** on the rate, at 69-96 fps.
+**That is evidence and not a measurement** — what it is implicitly compared against is a
+remembered frame rate from another day, which is precisely what gotcha 51 forbids. It says
+"go and measure", not "the item is worth less".
+
+Until that campaign has run, **quote §2's numbers with the window size attached.** Gotcha
+353: a present-path measurement has TWO resolutions — the internal render and the window —
+and naming only one of them is naming none. No instrument here records either beside a
+frame time.
+
+---
+
 ## 3. THE OPEN DECISION: DOES THE SWAPCHAIN BECOME THE DEFAULT?
 
 It is an arm because of one thing and one thing only: **the host-rendered F4 debug overlay
@@ -129,7 +156,10 @@ Three ways forward, in the order they should be considered:
 
 ## 5. WHAT IS OWED
 
-* **The operator's verdict on the swapchain arm** — see §3.
+* **`WINSIZE=2560x1417 tools/part54_present_cost.sh`** — see §2b. First.
+* **The operator's verdict on the swapchain arm** — PARTLY IN. Picture: *"Looks a lot
+  nicer now"* (after the resize fix). Frame rate: *"still feels pretty much the same"*,
+  which is what §2b is owed for. Whether it becomes the default is still open.
 * **A `CZ_VK_PRESENT_STAGING`-only pair at the operator's load**, still owed from part 53
   and now mostly moot if the swapchain becomes the default.
 * Their two deferred picture items, **00m decals** and **00n a sign and items at
@@ -146,7 +176,12 @@ Three ways forward, in the order they should be considered:
   vsync off, 100 us ring tick, 4 guard workers, no present staging copy, internal
   resolution 1280x720, **the readback present path**.
 * **New arms**: `CZ_VK_SWAPCHAIN=1`, `CZ_VK_SWAPCHAIN_FIFO=1`, `CZ_VK_SWAPCHAIN_DUMP=dir`
-  (+`_EVERY=N`), `CZ_FAKE_PRESS_EDGE_MISS=1`. All in `docs/instruments.md`.
+  (+`_EVERY=N`), `CZ_FAKE_PRESS_EDGE_MISS=1`, `CZ_WINDOW_RESIZE_AT=SECS:WxH`. All in
+  `docs/instruments.md`.
+* **The swapchain follows the window**, as of the operator's blurry-picture report: the
+  event loop publishes the drawable size into two atomics and the blit rebuilds when it
+  differs. `CZ_WINDOW_RESIZE_AT` is the positive control, because no headless gate can
+  resize a window (gotcha 354).
 * **New instrument lines**: `[vkprof] swapchain` (presents, DROPPED frames, rebuilds,
   suboptimal), `[vk] swapchain WxH … present mode`, and the `LATE` annotation on a
   synthetic host debug edge that had to be recovered.

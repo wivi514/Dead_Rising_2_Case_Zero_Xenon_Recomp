@@ -3623,3 +3623,36 @@ From phase C part 18 (the frame rate — and none of it was work):
      and note the two neighbours this one also hid: the window thread's own copy (8.8% ->
      15.0% of a core between the two resolutions, on a thread no instrument here reads) and
      the GPU's image-to-buffer copy, which shows only as `submit gpu` rising to 14.7%.
+
+353. **A PRESENT-PATH MEASUREMENT HAS TWO RESOLUTIONS, AND NAMING ONLY ONE OF THEM IS
+     NAMING NONE.** Part 54 measured a swapchain arm at **−8.3% of the frame at a 720p
+     internal render and −31.4% at 1440p** and wrote both down with the internal
+     resolution attached, which part 53 had already made the rule. The operator then played
+     it and reported *"still feels pretty much the same framerate wise"* — and the campaign
+     had left the WINDOW at its default, a 1088x612 drawable, while they play **maximised at
+     2560x1417**. Those are not the same experiment, because the two arms do not scale the
+     same way with it: **the readback path's CPU cost is a function of the internal
+     resolution and is independent of the window, while the swapchain's blit DESTINATION is
+     the window.** So the headline number is a number for a small window and the item's
+     value at the operator's window size is unmeasured. Two further points. **Their report
+     is evidence, not a measurement**: what it is implicitly compared against is a
+     remembered frame rate from another day, which is the thing gotcha 51 forbids — it says
+     "go and measure", not "the item is worth less". And **no instrument in this project
+     records either resolution beside a frame time**, which is why this could be written
+     down wrong without anything complaining.
+
+354. **REPLACING A LIBRARY'S PRESENT MEANS INHERITING JOBS IT WAS DOING INVISIBLY.** Part
+     54's swapchain rebuilt only on `VK_ERROR_OUT_OF_DATE_KHR` and merely COUNTED
+     `VK_SUBOPTIMAL_KHR`, so a window enlarged after the first present kept being presented
+     from the original 1280x720 swapchain and the compositor upscaled it to a 1440p
+     monitor. The operator saw it in ten minutes — *"it is blurry"* — and no gate here
+     could have, because **no headless gate can resize a window**. SDL's `SDL_RenderCopy`
+     had always scaled the full-size texture into whatever the window currently was, so
+     resizing had needed no code of ours and appears nowhere in it; the inherited job is
+     invisible precisely because nothing we wrote ever mentioned it. **When taking a
+     responsibility off a library, enumerate what it was doing that your code never named**
+     — window resize, DPI/scale change, output change, minimise — and build the arm that
+     forces each (`CZ_WINDOW_RESIZE_AT=SECS:WxH`, which proved the fix in both directions).
+     And prefer asking the STATE over trusting a return code: the fix compares the drawable
+     size every frame, so it does not depend on which of three plausible compositor
+     behaviours this one picks.
