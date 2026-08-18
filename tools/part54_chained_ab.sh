@@ -81,7 +81,9 @@ run_arm() {
     local arm="$1" n="$2"
     local tag="p54ab_${STAMP}_${n}_${arm}"
     local extra=()
-    [ "$arm" = swapchain ] && extra+=(CZ_VK_SWAPCHAIN=1)
+    # Inverted at the close of part 54: the swapchain is the default, so it is the
+    # READBACK arm that needs a flag now.
+    [ "$arm" = readback ] && extra+=(CZ_VK_NO_SWAPCHAIN=1)
     cat <<BANNER
 
 ===================================================================

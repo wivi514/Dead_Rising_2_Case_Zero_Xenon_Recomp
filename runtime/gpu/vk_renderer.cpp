@@ -2128,6 +2128,9 @@ struct SwapchainState
     // Set when a present reported SUBOPTIMAL or OUT_OF_DATE; consumed at the top of the
     // next frame's blit, where tearing the old objects down is safe.
     bool rebuildWanted = false;
+    // The F4 debug overlay's staging image. Allocated the first time the menu is opened
+    // and never in a run that does not open it.
+    Image overlay;
     const char* dumpDir = nullptr;
     uint64_t dumpEvery = 64;
     bool dumpPending = false;
@@ -2922,8 +2925,9 @@ bool CreateDevice()
     // renderer creates images in five different places and the handle names none of them.
     // Naming is free, off with the layer, and turns that message into an address.
     const bool wantValidation = EnvOn("CZ_VK_VALIDATION");
-    // CZ_VK_SWAPCHAIN=1 — the window has already decided (it had to: SDL_WINDOW_VULKAN
-    // is a creation flag) and it hands us the platform extensions its surface needs.
+    // The swapchain is the DEFAULT present path since part 54; `CZ_VK_NO_SWAPCHAIN=1` is
+    // the control arm. The window has already decided (it had to: SDL_WINDOW_VULKAN is a
+    // creation flag) and it hands us the platform extensions its surface needs.
     // Asking the WINDOW rather than reading the env var a second time is deliberate:
     // if the flagged window failed to create, the window fell back to the copy path and
     // said so, and this must fall back with it rather than build half a swapchain.
@@ -2932,7 +2936,7 @@ bool CreateDevice()
         ? Host_VulkanInstanceExtensions() : std::vector<const char*>{};
     if (R->wantSwapchain && instExts.empty())
     {
-        fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: SDL named no instance extensions — "
+        fprintf(stderr, "[vk] swapchain: SDL named no instance extensions — "
                         "presenting through the readback path instead.\n");
         R->wantSwapchain = false;
     }
@@ -3062,7 +3066,7 @@ bool CreateDevice()
         uint64_t surfaceHandle = 0;
         if (!Host_VulkanCreateSurface(R->instance, &surfaceHandle) || !surfaceHandle)
         {
-            fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: no surface — presenting through the "
+            fprintf(stderr, "[vk] swapchain: no surface — presenting through the "
                             "readback path instead.\n");
             R->wantSwapchain = false;
         }
@@ -3077,7 +3081,7 @@ bool CreateDevice()
                 // A graphics family that cannot present is real on some multi-GPU and
                 // headless-render setups. Naming it is the difference between "the arm
                 // did nothing" and a day spent on the swapchain code.
-                fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: graphics queue family %u cannot "
+                fprintf(stderr, "[vk] swapchain: graphics queue family %u cannot "
                                 "present to this surface — presenting through the "
                                 "readback path instead.\n", R->queueFamily);
                 vkDestroySurfaceKHR(R->instance, R->swap.surface, nullptr);
@@ -6448,8 +6452,81 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
                    R->swap.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    VK_FILTER_LINEAR);
 
-    // The dump copy goes here, while the image is still TRANSFER_DST and the blit that
-    // filled it is the immediately preceding command. `R->readback` is the renderer's
+    // THE F4 DEBUG OVERLAY, over the presented frame.
+    //
+    // It exists because part 54 made this the DEFAULT present path, and a window carrying
+    // SDL_WINDOW_VULKAN has no SDL_Renderer — so without this, flipping the default would
+    // have silently deleted the host-rendered debug menu. A default that quietly removes a
+    // feature is the shape this project spends its time undoing, so the overlay was ported
+    // rather than documented as a casualty.
+    //
+    // The layout is emitted ONCE in window.cpp and rasterised there into an RGBA buffer at
+    // a fixed 1280x720; this scales it to the swapchain with the same LINEAR blit the frame
+    // uses. The one deliberate difference from the SDL backend: that one draws the panel at
+    // alpha 225 and this one is opaque, because a blit cannot blend. At 88% opacity the
+    // difference is not what anyone is reading the menu for.
+    //
+    // Everything here is skipped entirely when the menu is closed — `Host_DebugOverlayRender`
+    // returns false and not a byte is touched — so the default path pays a predicate.
+    {
+        static std::vector<uint8_t> overlayPixels;
+        uint32_t ow = 0, oh = 0;
+        if (Host_DebugOverlayRender(overlayPixels, ow, oh) && ow && oh)
+        {
+            const size_t bytes = size_t(ow) * oh * 4;
+            if (!R->swap.overlay.image || R->swap.overlay.width != ow ||
+                R->swap.overlay.height != oh)
+            {
+                if (!CreateImage(R->swap.overlay, ow, oh, VK_FORMAT_R8G8B8A8_UNORM,
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT))
+                    Count("swap: debug overlay image allocation FAILED");
+            }
+            if (R->swap.overlay.image && bytes <= R->staging.size)
+            {
+                memcpy(R->staging.mapped, overlayPixels.data(), bytes);
+                Barrier(R->cmd, R->swap.overlay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                VkBufferImageCopy up{};
+                up.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                up.imageExtent = { ow, oh, 1 };
+                vkCmdCopyBufferToImage(R->cmd, R->staging.buffer, R->swap.overlay.image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
+                Barrier(R->cmd, R->swap.overlay, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                // Scaled by the swapchain's HEIGHT against the overlay's own 720, so the
+                // panel keeps its proportions on an ultrawide instead of being stretched
+                // across it.
+                const double sc = double(R->swap.height) / double(oh);
+                VkImageBlit ob{};
+                ob.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                ob.srcOffsets[1] = { int32_t(ow), int32_t(oh), 1 };
+                ob.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                ob.dstOffsets[1] = {
+                    int32_t(std::min<double>(R->swap.width, ow * sc)),
+                    int32_t(R->swap.height), 1 };
+                vkCmdBlitImage(R->cmd, R->swap.overlay.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               R->swap.images[index],
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ob,
+                               VK_FILTER_LINEAR);
+                Count("swap: debug overlay drawn");
+            }
+        }
+    }
+
+    // The dump copy goes here, AFTER the frame blit and AFTER the overlay, while the
+    // image is still TRANSFER_DST.
+    //
+    // THE ORDER IS LOAD-BEARING AND IT WAS WRONG FIRST. The overlay was added below this
+    // block, which broke two things at once: the dump captured the image BEFORE the
+    // overlay and so could never show it (the gate read zero panel pixels while the
+    // overlay's own counter read 5,595), and — worse and silently — the dump leaves the
+    // image in TRANSFER_SRC, so the overlay then blitted into an image whose layout said
+    // otherwise. That is undefined behaviour that only happens when the DUMP is armed,
+    // i.e. only in the gate, which is the one configuration nobody watches on screen.
+    // Whatever is drawn into the presented image must be drawn before the dump reads it. `R->readback` is the renderer's
     // general-purpose readback buffer and is already sized for a front-buffer resolve;
     // a swapchain larger than it is reported rather than truncated.
     R->swap.dumpPending = false;
@@ -11061,7 +11138,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     {
         saidWhy = true;
         fprintf(stderr,
-                "[vk] CZ_VK_SWAPCHAIN with a picture instrument armed: the present "
+                "[vk] swapchain present with a picture instrument armed: the present "
                 "READBACK IS STILL RUNNING, because every picture instrument here walks "
                 "the frame on the CPU. This run pays for both present paths and its "
                 "`readback` column is NOT this arm's cost — take a frame-time A/B "

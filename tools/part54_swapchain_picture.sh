@@ -91,8 +91,11 @@ score_arm() {
     echo "         best grab: $bestshot"
 }
 
-run_arm readback
-run_arm swapchain CZ_VK_SWAPCHAIN=1
+# The swapchain is the DEFAULT since part 54, so the ARMS ARE INVERTED from how this
+# script was first written: the plain run is the swapchain and the readback needs the
+# control flag. Kept in this order so the output still reads readback-then-swapchain.
+run_arm readback CZ_VK_NO_SWAPCHAIN=1
+run_arm swapchain
 
 echo
 echo "=== E3 correlation through the COMPOSITOR (the oracle neither arm produced) ==="

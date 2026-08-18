@@ -75,6 +75,7 @@ bool Host_PadState(uint32_t, HostPadState&) { return false; }
 void Host_DebugMenuSetItems(const std::vector<std::string>&) {}
 void Host_DebugMenuSetVisible(bool) {}
 bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
+bool Host_DebugOverlayRender(std::vector<uint8_t>&, uint32_t&, uint32_t&) { return false; }
 bool Host_VulkanSwapchainWanted() { return false; }
 std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
 bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
@@ -278,21 +279,61 @@ const char* Glyph(char c)
     }
 }
 
-void DrawText(int x, int y, const std::string& text, int scale,
-              uint8_t r, uint8_t g, uint8_t b)
+// THE DEBUG OVERLAY, AS A LIST OF RECTANGLES — one layout, two backends.
+//
+// It used to be SDL_RenderFillRect calls inline. Part 54 made the Vulkan swapchain the
+// default present path, and a window carrying SDL_WINDOW_VULKAN has no SDL_Renderer, so
+// the overlay needed a second backend that rasterises into a buffer the renderer can blit.
+//
+// Writing that as a second copy of the layout is how two drawings of the same menu drift
+// apart — one of them gains a row, or a colour, or a scroll offset, and nobody notices
+// until an operator reports that the menu "looks different in the other mode". So the
+// LAYOUT is here, once, and it emits rectangles to whatever wants them; the two backends
+// are a `SDL_RenderFillRect` and a memory fill, and neither knows anything about menus.
+template <typename Rect>
+void EmitDebugOverlay(int w, int h, Rect&& rect)
 {
-    SDL_SetRenderDrawColor(g_renderer, r, g, b, 255);
-    for (char c : text)
+    // Caller holds g_debugOverlayMutex.
+    const int panelX = 24, panelY = 24;
+    const int panelW = w > 760 ? 720 : w - 48;
+    const int panelH = h - 48;
+    if (panelW <= 0 || panelH <= 0)
+        return;
+    rect(panelX, panelY, panelW, panelH, 8, 26, 96);                 // panel
+    rect(panelX, panelY, panelW, 1, 70, 150, 255);                   // border, four edges
+    rect(panelX, panelY + panelH - 1, panelW, 1, 70, 150, 255);
+    rect(panelX, panelY, 1, panelH, 70, 150, 255);
+    rect(panelX + panelW - 1, panelY, 1, panelH, 70, 150, 255);
+
+    auto text = [&](int tx, int ty, const std::string& str, int scale,
+                    uint8_t r, uint8_t g, uint8_t b) {
+        for (char c : str)
+        {
+            if (const char* bits = Glyph(c))
+                for (int row = 0; row < 7; ++row)
+                    for (int col = 0; col < 5; ++col)
+                        if (bits[row * 5 + col] == '1')
+                            rect(tx + col * scale, ty + row * scale, scale, scale, r, g, b);
+            tx += 6 * scale;
+        }
+    };
+
+    text(44, 42, "CASE ZERO DEBUG MENU", 3, 255, 255, 255);
+    text(44, 70, "UP/DOWN SELECT  ENTER USE  LEFT/RIGHT EDIT  F4 CLOSE", 2, 145, 205, 255);
+
+    const size_t rows = panelH > 120 ? size_t((panelH - 110) / 18) : 0;
+    const size_t start = g_debugOverlaySelection >= rows
+        ? g_debugOverlaySelection - rows + 1 : 0;
+    for (size_t line = 0; line < rows && start + line < g_debugOverlayItems.size(); ++line)
     {
-        if (const char* bits = Glyph(c))
-            for (int row = 0; row < 7; ++row)
-                for (int col = 0; col < 5; ++col)
-                    if (bits[row * 5 + col] == '1')
-                    {
-                        SDL_Rect p{x + col * scale, y + row * scale, scale, scale};
-                        SDL_RenderFillRect(g_renderer, &p);
-                    }
-        x += 6 * scale;
+        const size_t index = start + line;
+        const bool selected = index == g_debugOverlaySelection;
+        if (selected)
+            rect(38, 98 + int(line) * 18, panelW - 28, 17, 35, 105, 205);
+        std::string label = (selected ? "> " : "  ") + g_debugOverlayItems[index];
+        if (label.size() > 54) label.resize(54);
+        text(44, 101 + int(line) * 18, label, 2,
+             selected ? 255 : 205, selected ? 255 : 225, 255);
     }
 }
 
@@ -301,37 +342,20 @@ void DrawDebugOverlay()
     std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
     if (!g_debugOverlayVisible.load(std::memory_order_acquire))
         return;
-
     int w = 0, h = 0;
     SDL_GetRendererOutputSize(g_renderer, &w, &h);
+    // BLEND stays on for the SDL backend, because that is what it has always looked like
+    // and this refactor must not change the picture of the arm it is not about. The panel
+    // is drawn at alpha 225 there and opaque in the Vulkan backend, which is the one
+    // deliberate difference between them and is noted at the Vulkan blit.
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(g_renderer, 8, 26, 96, 225);
-    SDL_Rect panel{24, 24, w > 760 ? 720 : w - 48, h - 48};
-    SDL_RenderFillRect(g_renderer, &panel);
-    SDL_SetRenderDrawColor(g_renderer, 70, 150, 255, 255);
-    SDL_RenderDrawRect(g_renderer, &panel);
-    DrawText(44, 42, "CASE ZERO DEBUG MENU", 3, 255, 255, 255);
-    DrawText(44, 70, "UP/DOWN SELECT  ENTER USE  LEFT/RIGHT EDIT  F4 CLOSE",
-             2, 145, 205, 255);
-
-    const size_t rows = panel.h > 120 ? size_t((panel.h - 110) / 18) : 0;
-    const size_t start = g_debugOverlaySelection >= rows
-        ? g_debugOverlaySelection - rows + 1 : 0;
-    for (size_t line = 0; line < rows && start + line < g_debugOverlayItems.size(); ++line)
-    {
-        const size_t index = start + line;
-        const bool selected = index == g_debugOverlaySelection;
-        if (selected)
-        {
-            SDL_SetRenderDrawColor(g_renderer, 35, 105, 205, 255);
-            SDL_Rect hi{38, 98 + int(line) * 18, panel.w - 28, 17};
-            SDL_RenderFillRect(g_renderer, &hi);
-        }
-        std::string label = (selected ? "> " : "  ") + g_debugOverlayItems[index];
-        if (label.size() > 54) label.resize(54);
-        DrawText(44, 101 + int(line) * 18, label, 2,
-                 selected ? 255 : 205, selected ? 255 : 225, 255);
-    }
+    EmitDebugOverlay(w, h, [&](int x, int y, int rw, int rh,
+                               uint8_t r, uint8_t g, uint8_t b) {
+        SDL_SetRenderDrawColor(g_renderer, r, g, b,
+                               (r == 8 && g == 26 && b == 96) ? 225 : 255);
+        SDL_Rect p{ x, y, rw, rh };
+        SDL_RenderFillRect(g_renderer, &p);
+    });
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_NONE);
 }
 
@@ -631,7 +655,25 @@ bool Host_WindowInit()
     // backend — its accelerated backends are GL/GLES/D3D/Metal). So the two present
     // paths are mutually exclusive by construction, which is the honest shape: they are
     // two arms, not a fallback chain.
-    g_wantVulkanSwapchain = getenv("CZ_VK_SWAPCHAIN") != nullptr;
+    // THE DEFAULT SINCE PART 54, on the operator's decision after judging both arms.
+    //
+    // `CZ_VK_NO_SWAPCHAIN=1` is the control arm and restores the readback present path
+    // exactly — three full-frame copies and a GPU->CPU->GPU round trip — which is what
+    // every measurement before part 54 was taken on. It is not deprecated: it is the arm
+    // that any future present-path claim has to be compared against.
+    //
+    // WHAT DECIDED IT, recorded here because a default with no reason attached is one
+    // nobody can re-open. Their soak A/B, both arms in one session: −21.1% of the frame at
+    // ~2,400 draws and −3.5% (+2.4 fps) at ~6,800, which is where they play; and a
+    // smoothness win that the frame rate does not carry — frame-time mean against median
+    // IN TRANSIT is +3.3% for MAILBOX against +5.9% for the compositor-paced SDL present.
+    // The picture correlates with hardware's own screenshot at both internal resolutions.
+    //
+    // NOTHING IS LOST WITH IT. The one thing this arm could not do was draw the F4 debug
+    // overlay, and that was ported rather than accepted (see the blit in vk_renderer.cpp),
+    // because a default that quietly removes a feature is exactly the shape this project
+    // spends its time undoing.
+    g_wantVulkanSwapchain = getenv("CZ_VK_NO_SWAPCHAIN") == nullptr;
 
     // CZ_WINDOW_SIZE=WxH and CZ_WINDOW_MAXIMIZED=1 — the window as a CONTROLLED VARIABLE.
     //
@@ -673,8 +715,10 @@ bool Host_WindowInit()
         // believes they are measuring the swapchain would make the A/B report zero and
         // look like a null result (gotcha 7). So it says which of the two happened.
         fprintf(stderr, "[host] SDL_CreateWindow with SDL_WINDOW_VULKAN failed: %s — "
-                        "CZ_VK_SWAPCHAIN is NOT in force; falling back to the readback "
-                        "present path.\n", SDL_GetError());
+                        "the swapchain present path is NOT in force; falling back to the "
+                        "readback present path. This is a DEGRADED default, not a "
+                        "configuration: expect the frame times of part 53.\n",
+                SDL_GetError());
         g_wantVulkanSwapchain = false;
         g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
                                     SDL_WINDOWPOS_CENTERED, startW, startH,
@@ -765,14 +809,14 @@ bool Host_WindowInit()
         // CZ_HOST_VSYNC is meaningless here — say so rather than letting a run be
         // configured with a flag that does nothing (gotcha 5).
         fprintf(stderr,
-                "[host] CZ_VK_SWAPCHAIN: this window carries SDL_WINDOW_VULKAN and has "
+                "[host] swapchain present (the default; CZ_VK_NO_SWAPCHAIN=1 is the "
+                "control arm): this window carries SDL_WINDOW_VULKAN and has "
                 "NO SDL_Renderer. The renderer presents its own image; the present "
                 "readback and its two copies do not run, and the present MODE is chosen "
                 "by the renderer (see the [vk] swapchain line), not by SDL.%s\n"
                 "[host] WHAT THIS ARM COSTS, said out loud: the host-rendered F4 debug "
-                "overlay is drawn by SDL's renderer and is therefore NOT DRAWN in this "
-                "arm. The title's own F2 DebugJump screen is drawn by the GAME and is "
-                "unaffected, and so is every other instrument.\n",
+                "overlay is drawn HERE rather than by SDL, at a fixed 1280x720 scaled "
+                "to the window, with an opaque panel instead of SDL's 88%% one.\n",
                 wantVsync ? " CZ_HOST_VSYNC=1 is IGNORED here." : "");
     }
     PublishDrawableSize();
@@ -847,6 +891,37 @@ void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height)
 // window exists; SDL_Vulkan_GetDrawableSize reads the window's size, which the loop only
 // ever grows through SDL's own resize handling — a stale value here costs one
 // swapchain rebuild, which the renderer does on VK_SUBOPTIMAL_KHR anyway.
+// The second backend of EmitDebugOverlay. Called from the renderer's pump thread, which
+// is why it takes the same mutex the event loop's key handling does — the menu's selection
+// index is written there.
+bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height)
+{
+    // The overlay's own logical size, and the panel geometry is written against 1280x720
+    // in EmitDebugOverlay, so this is that. The caller scales the result to the window.
+    constexpr int kW = 1280, kH = 720;
+    std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
+    if (!g_active || !g_debugOverlayVisible.load(std::memory_order_acquire))
+        return false;
+    width = kW;
+    height = kH;
+    rgba.assign(size_t(kW) * kH * 4, 0);
+    EmitDebugOverlay(kW, kH, [&](int x, int y, int rw, int rh,
+                                 uint8_t r, uint8_t g, uint8_t b) {
+        const int x0 = std::max(0, x), y0 = std::max(0, y);
+        const int x1 = std::min(kW, x + rw), y1 = std::min(kH, y + rh);
+        for (int py = y0; py < y1; ++py)
+        {
+            uint8_t* row = rgba.data() + (size_t(py) * kW + x0) * 4;
+            for (int px = x0; px < x1; ++px)
+            {
+                row[0] = r; row[1] = g; row[2] = b; row[3] = 255;
+                row += 4;
+            }
+        }
+    });
+    return true;
+}
+
 bool Host_VulkanSwapchainWanted()
 {
     return g_active && g_wantVulkanSwapchain;

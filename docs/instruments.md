@@ -1511,8 +1511,20 @@ CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing
                    floor rather than the change (gotcha 237), and the window's frame
                    count, so an interval covering a load screen is visible rather than
                    averaged in. `tools/play_session.sh` is the session it exists for
-CZ_VK_SWAPCHAIN=1  **present through a real Vulkan swapchain (part 54, plan §7)** instead
-                   of reading the frame back into host memory and handing SDL a texture.
+CZ_VK_NO_SWAPCHAIN=1  **the control arm for the present path, which since part 54 is a
+                   real Vulkan swapchain BY DEFAULT** (plan §7, on the operator's decision
+                   after judging both arms). It restores the readback path exactly — the
+                   frame read back into host memory and handed to SDL as a texture — which
+                   is what every measurement before part 54 was taken on, so it is the arm
+                   any future present claim must be compared against rather than a
+                   deprecated path. What decided the default: their soak A/B read **−21.1%
+                   of the frame at ~2,400 draws and −3.5% (+2.4 fps) at ~6,800**, plus a
+                   smoothness win the frame rate does not carry — frame-time mean against
+                   median IN TRANSIT is **+3.3% for MAILBOX against +5.9%** for the
+                   compositor-paced SDL present. **Nothing is lost with the default**: the
+                   F4 debug overlay, which a Vulkan window cannot get from SDL, is drawn by
+                   the renderer instead (one layout, two backends, see `EmitDebugOverlay`).
+                   The swapchain, described:
                    Removes three full-frame copies a present -- the GPU's image->buffer
                    copy, the pump's `memcpy` into the window's back buffer, and the window
                    thread's `SDL_UpdateTexture` -- and replaces them with one GPU blit into

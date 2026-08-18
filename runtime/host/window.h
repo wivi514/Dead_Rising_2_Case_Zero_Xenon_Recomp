@@ -169,6 +169,19 @@ bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface);
 // size. The swapchain is created at this extent and re-created when it changes.
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
 
+// The debug overlay, rasterised into an RGBA8 buffer for a caller that has no
+// SDL_Renderer — i.e. the Vulkan swapchain present path, which is the default since part
+// 54. Returns false when the menu is not open, in which case nothing is written.
+//
+// The buffer is a FIXED logical size (the out params say which) rather than the window's,
+// because the caller scales it: rasterising a 3440x1368 overlay on the CPU every frame to
+// draw a menu panel would be a real cost for a debug feature, and the glyphs are 5x7
+// blocks that scale without looking any worse than they already do.
+//
+// It exists because making the swapchain the default would otherwise have DELETED the F4
+// menu, and the one honest way to ship a default is that nothing is quietly lost with it.
+bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
+
 // Host-rendered replacement for the retail build's missing blue debug-menu layer.
 // The labels still come from the genuine guest cDebugMenu nodes.
 void Host_DebugMenuSetItems(const std::vector<std::string>& items);
