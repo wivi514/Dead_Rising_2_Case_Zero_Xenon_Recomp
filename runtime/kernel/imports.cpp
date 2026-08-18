@@ -4036,15 +4036,59 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // all-zero pad — exactly like NONE — so that detector sees no change and would never
     // fire. And it must not fire per poll: the title polls input ~1,100 times a boot per
     // user, so a level-triggered request would re-open the DebugJump screen on every poll
-    // for the whole 150 ms window and the menu would be unusable. Keying on `idx` makes it
-    // one pulse per sequence entry no matter how often the guest asks.
-    if (active && entry.hostKey)
+    // for the whole 150 ms window and the menu would be unusable. One pulse per sequence
+    // ENTRY, no matter how often the guest asks, is the property that has to hold.
+    //
+    // IT IS KEYED ON THE ENTRY, NOT ON `active`, AND PART 54 PAID FOR THE DIFFERENCE.
+    // `active` requires the poll to land inside a 150 ms window at a fixed wall-clock
+    // offset — 8.000-8.150 s for interval 0 — and whether the guest polls input at all in
+    // those 150 ms is not something this runtime controls: during a load it may not poll
+    // for seconds. When the window is missed the edge is LOST, `idx` walks on, and the
+    // whole DebugJump route silently degrades to "the recipe pressed START a lot".
+    //
+    // It fails intermittently, which is the worst version. Part 54's opening recon lost
+    // seven minutes to it, a one-run-a-side A/B then blamed the frame-cap default (three
+    // runs an arm refuted that — gotcha 159 exactly), and the real answer is that a
+    // 150 ms window against an uncontrolled poll rate is a RACE that this recipe has been
+    // winning most of the time since part 39.
+    //
+    // So: fire the LOWEST un-fired host edge whose interval has been reached, on the
+    // first poll after it is reached, and remember which have fired. Three consequences,
+    // all wanted:
+    //   * an edge whose 150 ms window was missed still fires, one poll late instead of
+    //     never — which is what a human pressing F2 does;
+    //   * ordering is preserved, one edge per poll, so F2 can never pulse together with
+    //     a later F4;
+    //   * while WAITJUMP is parked the sequence clock is frozen at the barrier, so an
+    //     F2 that was never delivered is still eligible and gets delivered there. That is
+    //     the case that matters: the barrier is waiting for exactly the screen request
+    //     that the lost F2 was supposed to cause.
+    // Entries are fired at most once each, so this cannot re-pulse an edge that already
+    // took — which is the property the old `lastFired` latch existed to provide.
+    //
+    // CZ_FAKE_PRESS_EDGE_MISS=1 — THE POSITIVE CONTROL FOR THE RECOVERY ABOVE, and the
+    // reason it exists is that the recovery path is the half of this that no ordinary run
+    // exercises: when the 150 ms window IS hit, the first eligible poll is inside it and
+    // the code below is indistinguishable from the old latch. A fix whose new path never
+    // runs has not been shown to work (gotcha 30).
+    //
+    // The arm makes the window unhittable — every poll that lands inside it is ignored —
+    // so the edge can ONLY be delivered late, by the recovery. If the DebugJump still
+    // lands with this set, the recovery is proved on the real route rather than argued
+    // for. It is not a simulation of the defect: it reproduces the exact condition the
+    // defect is (no poll inside the window) and leaves everything else alone.
+    static const bool edgeMiss = getenv("CZ_FAKE_PRESS_EDGE_MISS") != nullptr;
+    if ((started || parked) && !(edgeMiss && active && entry.hostKey))
     {
-        static std::atomic<size_t> lastFired{ SIZE_MAX };
-        size_t prev = lastFired.load(std::memory_order_relaxed);
-        if (prev != idx && lastFired.compare_exchange_strong(prev, idx))
+        static std::vector<std::atomic<bool>> hostFired(sequence.size());
+        for (size_t j = 0; j <= idx && j < sequence.size(); ++j)
         {
-            switch (entry.hostKey)
+            if (!sequence[j].hostKey)
+                continue;
+            bool was = false;
+            if (!hostFired[j].compare_exchange_strong(was, true))
+                continue;
+            switch (sequence[j].hostKey)
             {
                 case 2: Host_RequestDebugJump(); break;
                 case 3: Host_RequestDebugEnter(); break;
@@ -4055,10 +4099,15 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
             // several seconds later in a completely different subsystem. If the bridge is
             // not installed — CZ_DEBUG_MENU unset — the press is consumed and nothing
             // happens, and this line is the only thing that would distinguish that from a
-            // recipe that never reached the main menu.
-            KLOG("CZ_FAKE_PRESS_SEQ: synthetic %s host debug edge at %llds (interval %zu). "
-                 "Needs CZ_DEBUG_MENU=1 to have any effect.\n", entry.name,
-                 static_cast<long long>(elapsedMs / 1000), idx);
+            // recipe that never reached the main menu. `late` is the new half: it says
+            // the 150 ms window was missed and this delivery is the recovery, so a run
+            // that used to fail silently now says so in the one line anybody greps.
+            KLOG("CZ_FAKE_PRESS_SEQ: synthetic %s host debug edge at %llds (interval %zu"
+                 "%s). Needs CZ_DEBUG_MENU=1 to have any effect.\n", sequence[j].name,
+                 static_cast<long long>(elapsedMs / 1000), j,
+                 (j == idx && active && entry.hostKey) ? "" : ", LATE — the 150 ms "
+                 "window was missed and this is the recovery");
+            break;   // one edge per poll, in order
         }
     }
 
