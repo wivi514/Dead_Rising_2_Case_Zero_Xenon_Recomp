@@ -40,9 +40,16 @@
 # the game clears them on a level load. So god mode is identical, automatic and counted in
 # both arms — no operator fiddling, and no way for the arms to differ in it.
 #
-# Only survival flags. Nothing that changes the SCENE: "ZOMBIES IGNORE ALL HUMANS" would
-# be a different workload wearing the same name, and the whole point of a soak in the
-# heaviest place is that the crowd behaves normally.
+# "ZOMBIES IGNORE ALL HUMANS" IS IN, AND THE OPERATOR'S REASON IS BETTER THAN THE ONE THIS
+# SCRIPT ORIGINALLY GAVE FOR LEAVING IT OUT. The first version excluded it as "a different
+# workload wearing the same name". Their answer: "zombies will not grab me so it won't move
+# the camera" -- and a grab moves the CAMERA, which changes the draw set, which is the one
+# thing a soak exists to hold still. That is a measurement argument, not a convenience one,
+# and it outranks workload fidelity: the crowd is still there and still rendered, it simply
+# does not reach in and rotate the thing being measured.
+#
+# It is held in BOTH arms, so it cannot bias the comparison; what it costs is that the
+# scene is not exactly ordinary play, which is stated here rather than discovered later.
 #
 # WHAT IS DELIBERATELY NOT ON: the profiler (2-4 ms/frame) and frame stats (1.9-3.3), both
 # of which would change the thing being judged, and the second of which would additionally
@@ -57,7 +64,7 @@ OUT="$HOME/DR2CZ-troubleshooting/part54-operator"
 RES="${RES:-2560x1440}"
 FPS="${FPS:-500}"
 ORDER="${ORDER:-swapchain,readback}"
-FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE}"
+FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS}"
 mkdir -p "$OUT"
 
 busy=""
