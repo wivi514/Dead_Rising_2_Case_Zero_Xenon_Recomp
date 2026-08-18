@@ -3821,3 +3821,30 @@ frame-time measurement**):
   in the cache, never bound by any run, so the miss counter read 0 and the count matched
   at 435 = 435 with different members. **The cache is 436.** Run the name diff in any part
   where `CZ_SHADER_DUMP` was set, which for a performance part is every part.
+---
+
+## Part 54 (2026-08-18) — the present was copying the frame three times, and one of those
+## copies had never been measured
+
+* **Opened by losing the recon to a race.** `CZ_FAKE_PRESS_SEQ`'s host debug edges fired
+  only if the guest polled input inside a fixed 150 ms window; on a miss the DebugJump
+  route silently degraded and the run profiled the prologue for seven minutes. Fixed (fire
+  on the first poll after the interval is reached), with `CZ_FAKE_PRESS_EDGE_MISS=1` as the
+  positive control for the recovery path. A one-run-a-side A/B blamed part 53's frame-cap
+  change first and was refuted by three runs an arm. Gotcha 349.
+* **`CZ_VK_SWAPCHAIN=1`** — the plan's §7 item, which the plan had filed under "explicitly
+  not in this plan" with two reasons that were both wrong. Priced windowed BEFORE it was
+  built, because `Host_PresentPixels` is a no-op with no window and `readback` had
+  therefore read 0.0% on every headless run in the project's history (gotcha 352).
+  −8.3% at 720p, −31.4% at 1440p, against a within-arm null of −0.7%/+0.0%.
+* **The picture gate had to be new**, because every existing one walks the readback the
+  change removes (gotcha 350) — and the first replacement, a compositor grab, read
+  uniformly black because the monitor was asleep (gotcha 351). `CZ_VK_SWAPCHAIN_DUMP`
+  correlates the image handed to the presentation engine against Xenia's own screenshot:
+  +0.8831 at 1x, +0.8741 at 2x.
+* **The headless route came off the pacing rung** — the pump is 93.7% of a core there,
+  where part 53 closed at 50.3% — which retires §6ci §5c and makes headless A/B valid again.
+* **The symbol budget re-taken**: `DoDraw` 24.43% and the NVIDIA driver 15.13% are the same
+  item at 39.6% of the pump (item 1.4); `UploadStream` at 12.84% is in no plan at all.
+* Shipped as an ARM, not the default, because a Vulkan window has no `SDL_Renderer` and so
+  no host-rendered F4 overlay. The operator's verdict is what it is waiting for.
