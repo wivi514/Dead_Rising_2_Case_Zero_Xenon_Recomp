@@ -62,9 +62,12 @@ LOG="$OUT/$TAG.log"
 envv=(CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_AUTOCHUCK=EXPLORER
       CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE
       CZ_VK_PROFILE=15 "CZ_VK_RES_SCALE=$SCALE")
-if [ -n "${WINSIZE:-}" ]; then
-    envv+=("CZ_WINDOW_RESIZE_AT=20:${WINSIZE/x/x}")
-fi
+# MAXIMIZED=1 is the one to use, and WINSIZE is kept for a deliberate odd size. Both set
+# the window at CREATION: resizing it afterwards was tried and the window bounced through
+# six different drawables in one run as the compositor placed it and SDL's scale conversion
+# argued with it, which is not a control (gotcha 353's practical half).
+[ -n "${MAXIMIZED:-}" ] && envv+=(CZ_WINDOW_MAXIMIZED=1)
+[ -n "${WINSIZE:-}" ] && envv+=("CZ_WINDOW_SIZE=$WINSIZE")
 # ENVX="VAR=1" is how an ARM is added without a second script -- the control for a
 # present-path change has to be the same binary, the same route and the same event gate.
 if [ -n "${ENVX:-}" ]; then for kv in $ENVX; do envv+=("$kv"); done; fi

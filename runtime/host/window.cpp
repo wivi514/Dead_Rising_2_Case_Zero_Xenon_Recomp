@@ -135,17 +135,33 @@ bool          g_wantVulkanSwapchain = false;
 // being upscaled from it by the compositor).
 std::atomic<uint32_t> g_drawableW{ 0 }, g_drawableH{ 0 };
 
+// IT RUNS IN BOTH PRESENT ARMS, and that is a deliberate repair rather than tidiness.
+//
+// The first version only tracked the drawable when the swapchain wanted it, so the
+// readback arm reported its window size NOWHERE — and part 54 then measured a present-path
+// A/B into a 1088x612 window, wrote the result down as a property of the internal
+// resolution, and had to be corrected by the operator playing it maximised at 2560x1417.
+// A present-path number has TWO resolutions and naming only one of them is naming none
+// (gotcha 353); the arm that cannot state one of them makes that mistake unavoidable.
+//
+// So the size is logged on every change in BOTH arms. It costs one line per resize.
 void PublishDrawableSize()
 {
-    if (!g_window || !g_wantVulkanSwapchain)
+    if (!g_window)
         return;
     int w = 0, h = 0;
-    SDL_Vulkan_GetDrawableSize(g_window, &w, &h);
-    if (w > 0 && h > 0)
-    {
-        g_drawableW.store(uint32_t(w), std::memory_order_release);
-        g_drawableH.store(uint32_t(h), std::memory_order_release);
-    }
+    if (g_renderer)
+        SDL_GetRendererOutputSize(g_renderer, &w, &h);
+    else
+        SDL_Vulkan_GetDrawableSize(g_window, &w, &h);
+    if (w <= 0 || h <= 0)
+        return;
+    const uint32_t nw = uint32_t(w), nh = uint32_t(h);
+    if (nw != g_drawableW.exchange(nw, std::memory_order_acq_rel) ||
+        nh != g_drawableH.exchange(nh, std::memory_order_acq_rel))
+        fprintf(stderr, "[host] window drawable %ux%u (%s present) — quote this with any "
+                        "frame time from this run\n",
+                nw, nh, g_renderer ? "readback" : "swapchain");
 }
 SDL_GameController* g_controller = nullptr;
 SDL_JoystickID      g_controllerId = -1;
@@ -616,10 +632,39 @@ bool Host_WindowInit()
     // paths are mutually exclusive by construction, which is the honest shape: they are
     // two arms, not a fallback chain.
     g_wantVulkanSwapchain = getenv("CZ_VK_SWAPCHAIN") != nullptr;
+
+    // CZ_WINDOW_SIZE=WxH and CZ_WINDOW_MAXIMIZED=1 — the window as a CONTROLLED VARIABLE.
+    //
+    // Set at CREATION, not by resizing afterwards, and part 54 paid for the difference.
+    // A present-path A/B has to hold the window fixed across its arms (gotcha 353), and
+    // the obvious way — `CZ_WINDOW_RESIZE_AT`, which exists as the positive control for the
+    // swapchain rebuild — turned out to be useless for it: the window bounced through
+    // 1280x720, 1088x613, 2560x1417, 1088x613, 3012x1600, 3544x1881 in a single run as
+    // the compositor placed it and SDL's scale conversion argued with it. A variable that
+    // moves six times during the run it is meant to hold constant is not a control.
+    //
+    // MAXIMIZED is the one to reach for, because it is what the operator actually plays
+    // and it needs no arithmetic about display scale — this desktop has one output at 85%
+    // and one at 100%, so a logical size means two different pixel counts depending on
+    // where the window lands.
+    int startW = kDefaultWidth, startH = kDefaultHeight;
+    if (const char* ws = getenv("CZ_WINDOW_SIZE"))
+    {
+        int w = 0, h = 0;
+        if (sscanf(ws, "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64 && w <= 16384 &&
+            h <= 16384)
+        {
+            startW = w;
+            startH = h;
+        }
+        else
+            fprintf(stderr, "[host] CZ_WINDOW_SIZE=%s is not a usable WxH — IGNORED.\n", ws);
+    }
     const Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
-                               (g_wantVulkanSwapchain ? SDL_WINDOW_VULKAN : 0u);
+                               (g_wantVulkanSwapchain ? SDL_WINDOW_VULKAN : 0u) |
+                               (getenv("CZ_WINDOW_MAXIMIZED") ? SDL_WINDOW_MAXIMIZED : 0u);
     g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
-                                SDL_WINDOWPOS_CENTERED, kDefaultWidth, kDefaultHeight,
+                                SDL_WINDOWPOS_CENTERED, startW, startH,
                                 windowFlags);
     if (!g_window && g_wantVulkanSwapchain)
     {
@@ -632,8 +677,8 @@ bool Host_WindowInit()
                         "present path.\n", SDL_GetError());
         g_wantVulkanSwapchain = false;
         g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
-                                    SDL_WINDOWPOS_CENTERED, kDefaultWidth, kDefaultHeight,
-                                    SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                                    SDL_WINDOWPOS_CENTERED, startW, startH,
+                                    windowFlags & ~Uint32(SDL_WINDOW_VULKAN));
     }
     if (!g_window)
     {
@@ -729,8 +774,8 @@ bool Host_WindowInit()
                 "arm. The title's own F2 DebugJump screen is drawn by the GAME and is "
                 "unaffected, and so is every other instrument.\n",
                 wantVsync ? " CZ_HOST_VSYNC=1 is IGNORED here." : "");
-        PublishDrawableSize();
     }
+    PublishDrawableSize();
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
             kDefaultHeight, SDL_GetCurrentVideoDriver());
