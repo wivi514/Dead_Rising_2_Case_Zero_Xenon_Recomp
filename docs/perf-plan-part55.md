@@ -41,6 +41,90 @@ work that moves, the dispatch bookkeeping, and the cache the moved work stops wa
 
 ---
 
+## 0b. THE THREAD BUDGET — scale to the USER'S machine, and leave the machine usable
+
+The operator's second instruction, and it is a design constraint rather than a preference:
+*"even if we really needed the 16 core we should still leave core empty for user background
+item and all. So we should do it smart and depend on amount of core the user has instead of
+aiming for my machine."*
+
+Three things follow, and the first is a correction to §0's own arithmetic.
+
+### The machine is half the size this project has been claiming
+
+`os.cpu_count()` returns **16** on the operator's box. It is a **Ryzen 7 5700: 8 physical
+cores, 2 threads per core.** So every "3.75 of 16 cores, 23% of the machine" quoted here
+since part 50 is really **3.75 of 8 — 47%** — and the headroom for a worker pool is half
+what it looked like. Two SMT siblings share one core's execution resources: a second thread
+on a busy core buys perhaps 20-30% on a mixed workload and nothing at all on one already
+saturating the same units, which a memory-latency-bound hash loop very nearly is.
+`tools/part50_thread_cpu.py` now reports both and says which is which.
+
+**Budget against PHYSICAL cores.** Logical threads are the right denominator for "how many
+runnable threads may exist"; physical cores are the right one for "how much machine is
+left", and it is the second question this plan is spending.
+
+### One budget for the whole runtime, not one pool per item
+
+This is the trap the plan would otherwise walk into. Part 55 proposes three parallel items;
+if each independently sizes itself the way the guard pool does, a 6-core machine gets
+**twelve** workers plus the pump plus the guest's own threads. The guest is not idle — A1
+names `JobThread0`..`JobThread5`, `cAsyncFileSystem` and `BigFile Decompress Thread`, and
+part 54's profile shows two guest threads at **80.7% and 70.9% of a core** alongside the
+pump's 93.7%.
+
+So: **a single `ThreadBudget` module owns the number, and every pool asks it for a share.**
+Measured baseline, from part 54's own profile, in physical cores:
+
+| | cores |
+|---|---|
+| the graphics pump | ~0.94 |
+| the two busy guest threads | ~1.5 |
+| audio, file, decompress, misc | ~0.4 |
+| **already committed before any worker** | **~2.9** |
+
+### The policy, stated so it can be argued with
+
+```
+physical      = physical cores (counted, not divided — heterogeneous parts exist)
+reserved      = 2          # one for the OS/compositor, one for the user's own things
+committed     = 3          # pump + guest threads, measured above
+budget        = clamp(physical - reserved - committed, 0, 6)
+```
+
+which gives, and these are the numbers to sanity-check the policy against:
+
+| machine | physical | budget | behaviour |
+|---|---|---|---|
+| 4-core laptop | 4 | **0** | fully serial — the correct answer, not a degraded one |
+| 6-core | 6 | 1 | one worker, shared across items |
+| **8-core (the operator's)** | **8** | **3** | three workers total across all pools |
+| 12-core | 12 | 6 | six, the cap |
+| 16-core+ | 16 | 6 | six — **deliberately not more** |
+
+**The cap of 6 is not timidity, it is §0's ceiling.** The PM4 walk is serial and draw
+submission is ordered, so past five or six busy threads there is nothing left to give them;
+adding more only spends memory bandwidth and cache, which part 53 measured doing real harm
+(gotcha 344: 13.1 points left the pump and 33.2 appeared on the workers, plus ~0.4 ms/frame
+of cache pollution charged to two unrelated phases).
+
+**Zero must be a first-class configuration, not a fallback.** On a 4-core machine the right
+answer is the serial path — it is the control arm, it is gated, and it is correct. The
+existing guard pool already does this (`hw >= 6 ? 4 : (hw >= 3 ? 2 : 0)`), which is the
+pattern to generalise rather than invent.
+
+### What is owed to this section
+
+* `CZ_WORKERS=N` overrides the whole budget, and `0` forces the serial path — one knob,
+  not one per pool, or the arms multiply and nobody can say what a run was configured as.
+* The chosen budget is **printed at start-up with the machine it was derived from**, because
+  a performance number from an unknown thread count is not comparable with anything.
+* **Every A/B states the budget it ran at.** This is gotcha 353's shape a third time over:
+  a parallel measurement has a machine as well as a workload, and naming only one is naming
+  none.
+
+---
+
 ## 1. WHERE THE TIME IS, re-measured in part 54
 
 Pump thread, instruments off, outdoors in a crowd, **93.7% of a core**:
@@ -139,7 +223,7 @@ not save you: it produces bands with n=1 exactly where the answer lives.
 | | today | plausible |
 |---|---|---|
 | pump thread | ~94% of a core | ~60% |
-| busy threads | 3.75 cores of 16 | 5-6 |
+| busy threads | **3.75 of 8 PHYSICAL cores (47%)** | 5-6 threads, ~5 of 8 cores |
 | frame at ~6,800 draws | 14.2 ms (70 fps) | 10-11 ms (~90-100 fps) |
 
 That is the honest ceiling with the serial PM4 walk left in place. It is not 16 cores and

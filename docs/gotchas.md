@@ -3720,3 +3720,32 @@ From phase C part 18 (the frame rate — and none of it was work):
      recorded command executes is not scratch memory, and the fix is per-subsystem
      ownership rather than a shared base pointer.** Ask, of any mapped buffer you write:
      what else writes here, and has the GPU finished reading what was here before?
+
+358. **`hardware_concurrency()` COUNTS THREADS, AND A THREAD IS NOT A CORE.** Every
+     statement in this project of the form "we use 3.75 of 16 cores, 23% of the machine"
+     since part 50 has been counting LOGICAL threads. The operator's machine is a Ryzen 7
+     5700 — **8 physical cores, 2 threads per core** — so the real figure is 3.75 of 8,
+     **47% of the machine**, and the headroom for a worker pool was half what every plan
+     assumed. Two SMT siblings share one core's execution resources: a second thread on a
+     busy core buys perhaps 20-30% on a mixed workload and nothing on one already saturating
+     the same units, which a memory-latency-bound loop nearly is. **Budget parallel work
+     against PHYSICAL cores** (count distinct `(physical id, core id)` pairs — do not divide
+     by a threads-per-core constant, which is wrong on any heterogeneous part), and keep the
+     logical count only for "how many runnable threads may exist".
+
+359. **ONE THREAD BUDGET FOR THE RUNTIME, NOT ONE POOL PER ITEM — AND SIZE IT FOR THE USER'S
+     MACHINE, NOT THE DEVELOPER'S.** The operator's instruction when setting part 55's
+     subject: *"even if we really needed the 16 core we should still leave core empty for
+     user background item and all. So we should do it smart and depend on amount of core the
+     user has instead of aiming for my machine."* Both halves are load-bearing. A plan with
+     three parallel items, each sizing its own pool the way the first one did, puts **twelve
+     workers** on a six-core machine — plus the critical thread, plus the guest's own busy
+     threads, which in this title are two at 70-80% of a core. The budget has to be central,
+     shared, and computed from what is ACTUALLY LEFT: physical cores, minus what the process
+     already commits, minus a reservation for the OS and whatever the player is running
+     alongside the game. **Zero must be a first-class configuration** — on a small machine
+     the serial path is the right answer, not a degraded one — and the cap at the top end is
+     set by the workload's own serial fraction, not by the core count. Print the chosen
+     budget with the machine it was derived from, and state it in every A/B: a parallel
+     measurement has a machine as well as a workload, and naming only one is naming none
+     (gotcha 353's shape, one dimension over).

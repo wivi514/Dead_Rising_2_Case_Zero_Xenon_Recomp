@@ -34,7 +34,43 @@ Usage: part50_thread_cpu.py [seconds]     # default 20
 import os, sys, time, glob
 
 HZ = os.sysconf('SC_CLK_TCK')
+# LOGICAL THREADS AND PHYSICAL CORES ARE NOT THE SAME NUMBER, and this tool reported the
+# first as if it were the second for five parts. `os.cpu_count()` on the operator's machine
+# returns 16; it is a Ryzen 7 5700 with **8 physical cores and 2 threads per core**. So
+# every "3.75 of 16 cores (23% of the machine)" this project has quoted since part 50 is
+# really 3.75 of 8 (**47%**), and the headroom for a worker pool is half what it looked
+# like. Two SMT siblings share one core's execution resources: a second thread on a busy
+# core buys maybe 20-30% on a mixed workload and nothing at all on one that is already
+# saturating the same units.
+#
+# Both are printed, because both are the right denominator for a different question:
+# logical for "how many runnable threads can we have", physical for "how much machine is
+# left".
 CORES = os.cpu_count()
+
+def _physical_cores():
+    """Physical cores from /proc/cpuinfo's (physical id, core id) pairs.
+
+    Counted rather than divided by a threads-per-core constant, because that constant is
+    wrong on anything heterogeneous -- an Intel P/E-core part has SMT on some cores and not
+    others, and a single division would silently misreport it."""
+    try:
+        seen, phys, core = set(), None, None
+        with open('/proc/cpuinfo') as f:
+            for line in f:
+                if line.startswith('physical id'):
+                    phys = line.split(':')[1].strip()
+                elif line.startswith('core id'):
+                    core = line.split(':')[1].strip()
+                elif not line.strip() and phys is not None and core is not None:
+                    seen.add((phys, core)); phys = core = None
+        if phys is not None and core is not None:
+            seen.add((phys, core))
+        return len(seen) or CORES
+    except OSError:
+        return CORES
+
+PHYS = _physical_cores()
 
 
 def find_pid():
@@ -78,7 +114,9 @@ def main():
     rows.sort(reverse=True)
     total = sum(r[0] for r in rows)
 
-    print(f'pid {pid}, {len(rows)} threads, {elapsed:.1f} s window, {CORES} cores\n')
+    smt = f', {CORES // PHYS} threads/core' if PHYS and CORES > PHYS else ''
+    print(f'pid {pid}, {len(rows)} threads, {elapsed:.1f} s window, '
+          f'{PHYS} physical cores / {CORES} logical{smt}\n')
     print(f'{"thread":>10} {"% of one core":>14}   {"bar (100% = 1 core)":<40}')
     for pct, tid in rows:
         if pct < 0.5:
@@ -89,7 +127,8 @@ def main():
         print(f'{"":>10} {"":>14}   ...and {quiet} thread(s) below 0.5%')
 
     print(f'\nprocess total   {total:8.1f}% of one core '
-          f'= {total / 100:.2f} cores of {CORES} ({total / CORES:.1f}% of the machine)')
+          f'= {total / 100:.2f} cores of {PHYS} PHYSICAL ({total / PHYS:.1f}% of the '
+          f'machine), {total / CORES:.1f}% of {CORES} logical')
     if rows:
         busiest = rows[0][0]
         print(f'busiest thread  {busiest:8.1f}%  -- it is {100 * busiest / total:.0f}% '
