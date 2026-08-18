@@ -3600,7 +3600,10 @@ From phase C part 18 (the frame rate — and none of it was work):
      display — something neither the renderer nor its instruments produced. Part 54 built
      that gate, ran it at 01:35, and got five 2560x1440 PNGs whose RGB extrema were
      `(0,0)` on every channel in both arms, scoring `+0.0000` against every orientation.
-     Nothing was wrong with the renderer, the grabber or the gate. **This is gotcha 231's
+     Nothing was wrong with the renderer, the grabber or the gate — **and that was
+     CHECKED rather than assumed**: the same command run later with the screen in use
+     returns a grab with extrema `(0,255)` on every channel. "The monitor was asleep" is a
+     comfortable explanation and it had to earn the word "measured". **This is gotcha 231's
      trap one subsystem over** — that one was five sessions of quoting a 210 MHz GPU clock
      sampled with the monitor asleep — and the general form is: **a measurement taken
      through the display is a measurement of the display's power state as much as of your

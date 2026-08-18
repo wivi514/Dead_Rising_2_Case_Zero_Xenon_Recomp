@@ -11186,7 +11186,14 @@ in this pipeline that neither our renderer nor our instruments produced.
 `tools/part54_swapchain_picture.sh` is that gate — and every grab it took at 01:35 came
 back **uniformly black**, RGB extrema `(0,0)` on every channel in both arms, scoring
 `+0.0000` against every orientation. Nothing was wrong with the renderer, the grabber or
-the gate: **the monitor was asleep.** Gotcha 231's trap, one subsystem over. (It also
+the gate: **the display was asleep.** Gotcha 231's trap, one subsystem over.
+
+**That is a test, not an inference**, and it is worth saying which: "the monitor was
+asleep" is exactly the kind of comfortable explanation this project files under
+"measure it" (gotcha 3's shape — a black image is a capture failure, not a fact about the
+window). The same command, run later in the day with the screen in use, returns a
+**6452x1694 grab with extrema (0,255) on every channel**. The grabber and the gate are
+fine; what the earlier run measured was the display's power state. (It also
 found that the tool is compositor-specific: KWin does not implement the `wlr-screencopy`
 protocol `grim` needs and says so clearly, which is the better of the two failures;
 `spectacle -b -n -f` goes through KWin's own interface.)

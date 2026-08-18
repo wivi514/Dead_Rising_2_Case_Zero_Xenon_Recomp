@@ -79,7 +79,11 @@ echo "==================================================================="
 echo "  PLAY SESSION — no profiler, no frame stats, no debug menu"
 echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((1000/FPS)) ms)"
 echo "  res:  ${RES:-1280x720}"
-echo "  swap: ${SWAP:+CZ_VK_SWAPCHAIN=1 -- the part-54 present path (no readback)}${SWAP:-readback present (the shipped default)}"
+if [ -n "${SWAP:-}" ]; then
+    echo "  swap: CZ_VK_SWAPCHAIN=1 -- the part-54 present path (no readback copies)"
+else
+    echo "  swap: readback present (the shipped default)"
+fi
 echo "  fps:  one line every 10 s, mean AND median"
 echo "  F9 :  screenshot -> $OUT/$TAG"
 echo "  log:  $OUT/$TAG.log"
