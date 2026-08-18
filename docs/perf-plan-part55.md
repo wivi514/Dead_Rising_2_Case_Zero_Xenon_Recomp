@@ -52,6 +52,14 @@ Three things follow, and the first is a correction to §0's own arithmetic.
 
 ### The machine is half the size this project has been claiming
 
+> The operator's own note on why the habit is worth naming rather than just correcting:
+> *"it's the AMD bulldozer FX era that make me stuck like that counting thread as cores."*
+> That is exactly where it comes from, and on those parts the question was genuinely
+> contested — an FX "8-core" was four modules, each pair of integer cores sharing a front
+> end and a floating-point unit, which is why the marketing and the benchmarks disagreed
+> for a decade. The lesson survives the history: **a core count is a claim about shared
+> execution resources, and the only way to know what you have is to ask the machine.**
+
 `os.cpu_count()` returns **16** on the operator's box. It is a **Ryzen 7 5700: 8 physical
 cores, 2 threads per core.** So every "3.75 of 16 cores, 23% of the machine" quoted here
 since part 50 is really **3.75 of 8 — 47%** — and the headroom for a worker pool is half

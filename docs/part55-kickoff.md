@@ -7,19 +7,34 @@
 > possible, and the right target, but the ceiling is **5-6 busy threads, not 16**. The PM4
 > walk is serial because a command stream's meaning is positional, and draw ORDER is
 > semantic — recording can be parallel, submission cannot. The prize is roughly a third off
-> the frame at the load they actually play. Read that document first; the rest of this
-> hand-off is what part 54 leaves behind.
+> the frame at the load they actually play.
+>
+> **AND THEIR SECOND INSTRUCTION IS A HARD CONSTRAINT ON HOW, not a preference** — *"even
+> if we really needed the 16 core we should still leave core empty for user background item
+> and all. So we should do it smart and depend on amount of core the user has instead of
+> aiming for my machine."* That is **§0b of the plan**, and it comes with a correction to
+> this project's arithmetic: **the operator's machine is 8 PHYSICAL cores, not 16.** Every
+> "N of 16 cores" written here since part 50 counted logical threads, so the process at
+> 3.75 cores is using **47% of that machine and not 23%**. One central thread budget for the
+> whole runtime, sized from PHYSICAL cores minus what is already committed minus a
+> reservation for the player's own software; **zero workers is a first-class configuration**
+> on a small machine, not a degraded one. Gotchas 358 and 359.
+>
+> Read `perf-plan-part55.md` first — §0 for what is possible, §0b for the budget, §3 for
+> how it must be measured. The rest of this hand-off is what part 54 leaves behind.
 
 Written at the close of part 54 (2026-08-18). **This is the LIVE hand-off**, superseding
-`part54-kickoff.md`. The record is `docs/phase5-notes.md` **§6ck**; the live plan is still
-`docs/perf-plan-part52.md`.
+`part54-kickoff.md`. The record is `docs/phase5-notes.md` **§6ck**; **the live plan is
+`docs/perf-plan-part55.md`** (`perf-plan-part52.md` is its predecessor, kept because its
+§9b/§9c/§9d record what parts 52-54 corrected in it).
 
 ---
 
 ## START HERE — three things changed, and the second changes how you measure
 
-1. **`CZ_VK_SWAPCHAIN=1` presents the frame where it already is** (plan §7). `readback`
-   goes to 0.0%. It is an ARM, not the default, and the reason is in §3.
+1. **The frame is presented through a real Vulkan swapchain, and it is the DEFAULT**
+   (plan §7, the operator's decision). `readback` goes to 0.0%; `CZ_VK_NO_SWAPCHAIN=1` is
+   the control arm. The F4 debug overlay was ported onto it rather than lost — see §3.
 2. **THE HEADLESS ROUTE IS OFF THE PACING RUNG AND THE PUMP IS SATURATED THERE.** 93.7% of
    a core, where part 53 closed at 50.3%. The frame-cap default moving 60 → 500 did that,
    and it **retires §6ci §5c's warning** that a headless A/B here reads zero whatever the
