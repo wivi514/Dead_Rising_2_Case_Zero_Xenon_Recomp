@@ -30,6 +30,7 @@
 #         FPS=250 tools/play_session.sh    # fall back a rung
 #         PLAIN=1 tools/play_session.sh    # the a2m foliage cache off, i.e. stock shaders
 #         RES=2560x1440 tools/play_session.sh   # internal resolution scale
+#         SWAP=1 RES=2560x1440 tools/play_session.sh   # + the part-54 swapchain present
 #
 # RES is an INTEGER multiple of the title's own 1280x720 and nothing else -- 2560x1440,
 # 3840x2160, 5120x2880. The guest's geometry, viewports and scissors are its own numbers
@@ -62,6 +63,14 @@ mkdir -p "$OUT/$TAG"
 # a debug arm, so it rides in a play session. PLAIN=1 takes it off.
 extra=()
 [ -n "${RES:-}" ] && extra+=("CZ_VK_RES=$RES")
+# SWAP=1 -- present through a real Vulkan swapchain (part 54, plan §7) instead of reading
+# the frame back into host memory and handing SDL a texture. Measured at -8.3% of the frame
+# at 720p and -31.4% at 1440p, and it is in a PLAY session because what it is missing is a
+# human verdict: the numbers and the E3 correlation both say it is right, and neither of
+# them can say how it FEELS. The one thing it costs is the host-rendered F4 debug overlay,
+# which this session does not enable anyway; the title's own F2 screen is the game's and is
+# unaffected.
+[ -n "${SWAP:-}" ] && extra+=(CZ_VK_SWAPCHAIN=1)
 if [ -z "${PLAIN:-}" ]; then
     extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
 fi
@@ -70,6 +79,7 @@ echo "==================================================================="
 echo "  PLAY SESSION — no profiler, no frame stats, no debug menu"
 echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((1000/FPS)) ms)"
 echo "  res:  ${RES:-1280x720}"
+echo "  swap: ${SWAP:+CZ_VK_SWAPCHAIN=1 -- the part-54 present path (no readback)}${SWAP:-readback present (the shipped default)}"
 echo "  fps:  one line every 10 s, mean AND median"
 echo "  F9 :  screenshot -> $OUT/$TAG"
 echo "  log:  $OUT/$TAG.log"
