@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 355 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 357 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 355-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 357-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -805,14 +805,22 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   writing it twice is how two drawings of one menu drift apart until an operator reports
   that it "looks different in the other mode". The only deliberate difference is an opaque
   panel where SDL's is 88%, since a blit cannot blend.
-* **AND GATING THE OVERLAY FOUND A REAL BUG THAT LOOKING NEVER WOULD.** It was first placed
-  AFTER the `CZ_VK_SWAPCHAIN_DUMP` copy, so the dump could never show it — 0 panel pixels
-  while the overlay's own counter read 5,595 — and, silently, the dump had already moved
-  the image to `TRANSFER_SRC`, so the overlay blitted into an image whose layout said
-  otherwise. **Undefined behaviour reachable only with the dump armed, i.e. only in the
-  gate, which is the one configuration nobody watches on screen.** Reordered so anything
-  drawn into the presented image is drawn before the dump reads it; 23 of 51 dumps now
-  carry the panel.
+* **AND THE OVERLAY TOOK FOUR DEFECTS TO GET RIGHT, THREE OF THEM FOUND BY THE OPERATOR
+  LOOKING AT THE SCREEN AND NONE BY A COUNTER.** (i) It was first placed AFTER the
+  `CZ_VK_SWAPCHAIN_DUMP` copy, so the dump could not show it and — silently — the dump had
+  already moved the image to `TRANSFER_SRC`, so the overlay blitted into an image whose
+  layout said otherwise: undefined behaviour reachable only with the dump armed, i.e. only
+  in the gate. (ii) It was rasterised FULL SCREEN with transparent margins and copied
+  whole, and **a blit is a copy, not a blend — so the entire game was black around the
+  panel** while `swap: debug overlay drawn` read 5,595 and my own dump check happily
+  confirmed 6,466 panel-coloured samples. **The check looked for the thing I had built and
+  never asked whether anything ELSE was still there** (gotcha 356). (iii) The panel then
+  came out SOLID where SDL's is 225/255; a copy cannot blend, so the blend is now done on
+  the CPU against the frame behind the panel, captured one frame earlier — staleness that
+  is unobservable behind a menu, against a graphics pipeline that is a lot of machinery for
+  one. (iv) It uploaded through `R->staging`, the SHARED staging buffer, at offset zero,
+  **where every texture upload also writes and whose copy executes later** — so the overlay
+  and textures overwrote each other's bytes (gotcha 357). Operator-confirmed fixed.
 * **NONE OF THIS PROJECT'S PICTURE GATES CAN SEE THIS ARM, AND THAT IS THE MOST
   TRANSFERABLE THING IN THE PART.** `CZ_CAPTURE_KEY`, `CZ_VK_FRAME_DUMP`,
   `CZ_VK_FRAME_STATS` and the E3 correlation all walk the present READBACK — the exact copy

@@ -3686,3 +3686,37 @@ From phase C part 18 (the frame rate — and none of it was work):
      this one: the frame-rate line was made to carry the draw count *for a different reason*
      (the operator's point that spawns differ between runs), and that is what made the
      retraction visible rather than a disagreement about feel.
+
+356. **A COUNTER THAT SAYS A THING WAS DRAWN SAYS NOTHING ABOUT WHETHER THE PICTURE IS
+     RIGHT — and a check you write for your own feature will confirm your own feature.**
+     Part 54 ported the F4 debug overlay onto a Vulkan present path and instrumented it:
+     `swap: debug overlay drawn` read **5,595**, and a dump-based gate confirmed the panel
+     was present with 6,466 panel-coloured samples a frame. Both were true. **The entire
+     game was black around the panel**, because the overlay was rasterised full-screen with
+     transparent margins and a blit is a COPY, not a blend — the zeroed margins overwrote
+     the frame. The gate looked for the thing that had been built (is the panel there?) and
+     never asked the only question that mattered (**is anything ELSE still there?**). The
+     operator saw it in seconds. Two rules follow. **Instrument the NEGATIVE space**: for
+     anything drawn over a picture, check the pixels it should NOT have touched, not just
+     the ones it should. And **when compositing without a blend stage, the source must be
+     exactly the shape of what you want to change** — every transparent pixel in a copied
+     image is an opaque black one.
+     Two neighbours came out of the same change and are worth the same paragraph. A
+     translucent element composited by copy comes out SOLID, and the fix is either a real
+     blending pipeline or a CPU blend against a captured background (one frame stale is
+     free and unobservable behind a menu). And **alpha must be a parameter of a shared
+     layout, never inferred**: the SDL backend recovered the panel's 225/255 by matching
+     its colour, which worked exactly as long as there was one backend.
+
+357. **A SHARED STAGING BUFFER WRITTEN AT OFFSET ZERO BY TWO SUBSYSTEMS IS A RACE WITH NO
+     ERROR PATH.** The overlay above uploaded through `R->staging` — the renderer's 64 MB
+     shared staging buffer — at offset zero, which is exactly where every TEXTURE upload
+     writes. A texture upload memcpys its bytes and then RECORDS a `vkCmdCopyBufferToImage`
+     that executes later, so anything else writing offset zero before the command buffer
+     runs silently substitutes its own bytes. The operator saw one half as "issue appearing
+     at the top of debug menu from time to time"; the other half — textures receiving
+     overlay bytes — would have presented as an intermittent wrong texture and been chased
+     somewhere else entirely. **A staging buffer whose contents must survive until a
+     recorded command executes is not scratch memory, and the fix is per-subsystem
+     ownership rather than a shared base pointer.** Ask, of any mapped buffer you write:
+     what else writes here, and has the GPU finished reading what was here before?
