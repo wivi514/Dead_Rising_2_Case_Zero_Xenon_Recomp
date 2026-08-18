@@ -75,7 +75,8 @@ bool Host_PadState(uint32_t, HostPadState&) { return false; }
 void Host_DebugMenuSetItems(const std::vector<std::string>&) {}
 void Host_DebugMenuSetVisible(bool) {}
 bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
-bool Host_DebugOverlayRender(std::vector<uint8_t>&, uint32_t&, uint32_t&) { return false; }
+bool Host_DebugOverlayRender(std::vector<uint8_t>&, uint32_t&, uint32_t&, uint32_t&,
+                            uint32_t&, uint32_t&, uint32_t&) { return false; }
 bool Host_VulkanSwapchainWanted() { return false; }
 std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
 bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
@@ -291,7 +292,7 @@ const char* Glyph(char c)
 // LAYOUT is here, once, and it emits rectangles to whatever wants them; the two backends
 // are a `SDL_RenderFillRect` and a memory fill, and neither knows anything about menus.
 template <typename Rect>
-void EmitDebugOverlay(int w, int h, Rect&& rect)
+void EmitDebugOverlay(int w, int h, Rect&& rect)   // rect(x,y,w,h,r,g,b,a)
 {
     // Caller holds g_debugOverlayMutex.
     const int panelX = 24, panelY = 24;
@@ -299,11 +300,15 @@ void EmitDebugOverlay(int w, int h, Rect&& rect)
     const int panelH = h - 48;
     if (panelW <= 0 || panelH <= 0)
         return;
-    rect(panelX, panelY, panelW, panelH, 8, 26, 96);                 // panel
-    rect(panelX, panelY, panelW, 1, 70, 150, 255);                   // border, four edges
-    rect(panelX, panelY + panelH - 1, panelW, 1, 70, 150, 255);
-    rect(panelX, panelY, 1, panelH, 70, 150, 255);
-    rect(panelX + panelW - 1, panelY, 1, panelH, 70, 150, 255);
+    // The panel is the ONE translucent element -- 225/255, so the game reads through it.
+    // Every other rect is opaque. Alpha is a parameter rather than something a backend
+    // infers from the colour, which is what the SDL backend used to do and which broke the
+    // moment a second backend needed the same information.
+    rect(panelX, panelY, panelW, panelH, 8, 26, 96, 225);            // panel
+    rect(panelX, panelY, panelW, 1, 70, 150, 255, 255);              // border, four edges
+    rect(panelX, panelY + panelH - 1, panelW, 1, 70, 150, 255, 255);
+    rect(panelX, panelY, 1, panelH, 70, 150, 255, 255);
+    rect(panelX + panelW - 1, panelY, 1, panelH, 70, 150, 255, 255);
 
     auto text = [&](int tx, int ty, const std::string& str, int scale,
                     uint8_t r, uint8_t g, uint8_t b) {
@@ -313,7 +318,7 @@ void EmitDebugOverlay(int w, int h, Rect&& rect)
                 for (int row = 0; row < 7; ++row)
                     for (int col = 0; col < 5; ++col)
                         if (bits[row * 5 + col] == '1')
-                            rect(tx + col * scale, ty + row * scale, scale, scale, r, g, b);
+                            rect(tx + col * scale, ty + row * scale, scale, scale, r, g, b, 255);
             tx += 6 * scale;
         }
     };
@@ -329,7 +334,7 @@ void EmitDebugOverlay(int w, int h, Rect&& rect)
         const size_t index = start + line;
         const bool selected = index == g_debugOverlaySelection;
         if (selected)
-            rect(38, 98 + int(line) * 18, panelW - 28, 17, 35, 105, 205);
+            rect(38, 98 + int(line) * 18, panelW - 28, 17, 35, 105, 205, 255);
         std::string label = (selected ? "> " : "  ") + g_debugOverlayItems[index];
         if (label.size() > 54) label.resize(54);
         text(44, 101 + int(line) * 18, label, 2,
@@ -350,9 +355,8 @@ void DrawDebugOverlay()
     // deliberate difference between them and is noted at the Vulkan blit.
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
     EmitDebugOverlay(w, h, [&](int x, int y, int rw, int rh,
-                               uint8_t r, uint8_t g, uint8_t b) {
-        SDL_SetRenderDrawColor(g_renderer, r, g, b,
-                               (r == 8 && g == 26 && b == 96) ? 225 : 255);
+                               uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+        SDL_SetRenderDrawColor(g_renderer, r, g, b, a);
         SDL_Rect p{ x, y, rw, rh };
         SDL_RenderFillRect(g_renderer, &p);
     });
@@ -894,27 +898,55 @@ void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height)
 // The second backend of EmitDebugOverlay. Called from the renderer's pump thread, which
 // is why it takes the same mutex the event loop's key handling does — the menu's selection
 // index is written there.
-bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height)
+//
+// It rasterises THE PANEL, not the screen. See window.h for why that is the correctness of
+// the whole thing and not an optimisation.
+bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height,
+                             uint32_t& outX, uint32_t& outY, uint32_t& baseW,
+                             uint32_t& baseH)
 {
-    // The overlay's own logical size, and the panel geometry is written against 1280x720
-    // in EmitDebugOverlay, so this is that. The caller scales the result to the window.
+    // The overlay's own logical screen. EmitDebugOverlay places the panel against these,
+    // and the caller scales the returned rectangle to whatever the window is.
     constexpr int kW = 1280, kH = 720;
     std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
     if (!g_active || !g_debugOverlayVisible.load(std::memory_order_acquire))
         return false;
-    width = kW;
-    height = kH;
-    rgba.assign(size_t(kW) * kH * 4, 0);
+
+    // The panel's rectangle, computed the same way EmitDebugOverlay does. Taken from its
+    // first emitted rect rather than duplicated: the layout is emitted once and this asks
+    // it where it put things, so the two cannot drift.
+    int px = 0, py = 0, pw = 0, ph = 0;
+    bool havePanel = false;
+    EmitDebugOverlay(kW, kH, [&](int x, int y, int rw, int rh, uint8_t, uint8_t, uint8_t,
+                                 uint8_t) {
+        if (!havePanel) { px = x; py = y; pw = rw; ph = rh; havePanel = true; }
+    });
+    if (!havePanel || pw <= 0 || ph <= 0)
+        return false;
+
+    width = uint32_t(pw);
+    height = uint32_t(ph);
+    outX = uint32_t(px);
+    outY = uint32_t(py);
+    baseW = uint32_t(kW);
+    baseH = uint32_t(kH);
+    rgba.assign(size_t(pw) * ph * 4, 0);
+    // Every rect is emitted in SCREEN coordinates and written at panel-relative ones.
+    // Anything falling outside the panel is clipped away rather than wrapping, which is
+    // what a rect drawn at a negative offset would otherwise do.
     EmitDebugOverlay(kW, kH, [&](int x, int y, int rw, int rh,
-                                 uint8_t r, uint8_t g, uint8_t b) {
-        const int x0 = std::max(0, x), y0 = std::max(0, y);
-        const int x1 = std::min(kW, x + rw), y1 = std::min(kH, y + rh);
-        for (int py = y0; py < y1; ++py)
+                                 uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+        const int x0 = std::max(px, x), y0 = std::max(py, y);
+        const int x1 = std::min(px + pw, x + rw), y1 = std::min(py + ph, y + rh);
+        for (int sy = y0; sy < y1; ++sy)
         {
-            uint8_t* row = rgba.data() + (size_t(py) * kW + x0) * 4;
-            for (int px = x0; px < x1; ++px)
+            uint8_t* row = rgba.data() + (size_t(sy - py) * pw + (x0 - px)) * 4;
+            for (int sx = x0; sx < x1; ++sx)
             {
-                row[0] = r; row[1] = g; row[2] = b; row[3] = 255;
+                // THE ALPHA IS CARRIED, not flattened. The caller composites with a copy,
+                // so it does the blend itself against a captured background -- and it can
+                // only do that if this says which pixels are translucent.
+                row[0] = r; row[1] = g; row[2] = b; row[3] = a;
                 row += 4;
             }
         }

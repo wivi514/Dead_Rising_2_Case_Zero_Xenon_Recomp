@@ -180,7 +180,18 @@ void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
 //
 // It exists because making the swapchain the default would otherwise have DELETED the F4
 // menu, and the one honest way to ship a default is that nothing is quietly lost with it.
-bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
+// `rgba` is the PANEL ONLY, `width`/`height` are its size, and `x`/`y` are where it sits
+// inside a `baseW` x `baseH` logical screen so the caller can scale the rectangle to a
+// window of any size.
+//
+// IT IS THE PANEL AND NOT THE SCREEN, and that is the whole correctness of it: the caller
+// composites with a BLIT, and a blit is a copy, not a blend. A full-screen overlay bitmap
+// with transparent margins therefore overwrites everything around the panel with black —
+// which is exactly what the first version of this did, hiding the entire game behind the
+// menu. Handing back only the panel's rectangle means the copy touches only the pixels
+// the menu actually occupies, and needs no blending to be correct.
+bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height,
+                             uint32_t& x, uint32_t& y, uint32_t& baseW, uint32_t& baseH);
 
 // Host-rendered replacement for the retail build's missing blue debug-menu layer.
 // The labels still come from the genuine guest cDebugMenu nodes.

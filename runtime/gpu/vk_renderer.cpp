@@ -2128,9 +2128,22 @@ struct SwapchainState
     // Set when a present reported SUBOPTIMAL or OUT_OF_DATE; consumed at the top of the
     // next frame's blit, where tearing the old objects down is safe.
     bool rebuildWanted = false;
-    // The F4 debug overlay's staging image. Allocated the first time the menu is opened
-    // and never in a run that does not open it.
-    Image overlay;
+    // The F4 debug overlay. All of it is allocated the first time the menu is opened and
+    // never in a run that does not open it.
+    Image overlay;          // the composited panel, uploaded and blitted
+    // ITS OWN UPLOAD BUFFER, not the renderer's shared `staging`. The first version used
+    // `staging`, which every texture upload also writes AT OFFSET ZERO — and a texture
+    // upload records its copy into a command buffer that executes later, so the overlay
+    // overwrote bytes a pending texture copy was going to read, and vice versa. The
+    // operator saw it as "issue appearing at the top of debug menu from time to time";
+    // the other half of it, silently, was TEXTURES getting overlay bytes.
+    Buffer overlayStage;
+    // The frame BEHIND the panel, captured one frame earlier so the blend has something
+    // to blend against. See the composite for why a frame of staleness is the right price.
+    Image bgImage;
+    Buffer bgBuffer;
+    bool bgValid = false;
+    uint32_t bgW = 0, bgH = 0;
     const char* dumpDir = nullptr;
     uint64_t dumpEvery = 64;
     bool dumpPending = false;
@@ -6456,56 +6469,151 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
     //
     // It exists because part 54 made this the DEFAULT present path, and a window carrying
     // SDL_WINDOW_VULKAN has no SDL_Renderer — so without this, flipping the default would
-    // have silently deleted the host-rendered debug menu. A default that quietly removes a
-    // feature is the shape this project spends its time undoing, so the overlay was ported
-    // rather than documented as a casualty.
+    // have silently deleted the host-rendered debug menu.
     //
-    // The layout is emitted ONCE in window.cpp and rasterised there into an RGBA buffer at
-    // a fixed 1280x720; this scales it to the swapchain with the same LINEAR blit the frame
-    // uses. The one deliberate difference from the SDL backend: that one draws the panel at
-    // alpha 225 and this one is opaque, because a blit cannot blend. At 88% opacity the
-    // difference is not what anyone is reading the menu for.
+    // A BLIT IS A COPY AND NOT A BLEND, AND THAT ONE FACT SHAPES EVERYTHING HERE. Two
+    // defects came out of ignoring it, both found by the operator looking at the screen
+    // and neither by any counter in this renderer:
     //
-    // Everything here is skipped entirely when the menu is closed — `Host_DebugOverlayRender`
-    // returns false and not a byte is touched — so the default path pays a predicate.
+    //   1. the first version rasterised a full 1280x720 overlay with transparent margins
+    //      and copied the whole thing, so everywhere the panel was not, the game was
+    //      overwritten with black. `window.cpp` now hands back the PANEL, so the copy
+    //      touches only the pixels the menu occupies.
+    //   2. the panel then came out SOLID where SDL's is 225/255, so nothing could be seen
+    //      through it. A copy cannot blend, so the blend is done on the CPU here, against
+    //      the frame that was behind the panel — captured below, one frame earlier.
+    //
+    // WHY ONE FRAME STALE, said plainly: the background has to be read by the CPU, and
+    // reading the CURRENT frame would mean waiting for the GPU in the middle of the
+    // present. The alternative to staleness is a graphics pipeline with real alpha
+    // blending — the correct answer for a game, and a lot of machinery for a debug menu
+    // whose background is a scene the player is standing still in. One frame of lag behind
+    // a menu is not observable; a stall in the present would be.
     {
-        static std::vector<uint8_t> overlayPixels;
-        uint32_t ow = 0, oh = 0;
-        if (Host_DebugOverlayRender(overlayPixels, ow, oh) && ow && oh)
+        static std::vector<uint8_t> overlayPixels;   // the panel, RGBA with real alpha
+        static std::vector<uint8_t> composited;      // that panel blended over the frame
+        uint32_t ow = 0, oh = 0, ox = 0, oy = 0, baseW = 0, baseH = 0;
+        if (Host_DebugOverlayRender(overlayPixels, ow, oh, ox, oy, baseW, baseH) && ow &&
+            oh && baseW && baseH)
         {
             const size_t bytes = size_t(ow) * oh * 4;
-            if (!R->swap.overlay.image || R->swap.overlay.width != ow ||
-                R->swap.overlay.height != oh)
+            const double sc = double(R->swap.height) / double(baseH);
+            const int32_t dx0 = int32_t(std::max(0.0, ox * sc));
+            const int32_t dy0 = int32_t(std::max(0.0, oy * sc));
+            const int32_t dx1 = int32_t(std::min(double(R->swap.width), (ox + ow) * sc));
+            const int32_t dy1 = int32_t(std::min(double(R->swap.height), (oy + oh) * sc));
+            const bool fits = dx1 > dx0 && dy1 > dy0;
+
+            if (fits && (!R->swap.overlay.image || R->swap.overlay.width != ow ||
+                         R->swap.overlay.height != oh))
             {
+                R->swap.bgValid = false;
                 if (!CreateImage(R->swap.overlay, ow, oh, VK_FORMAT_R8G8B8A8_UNORM,
                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                 VK_IMAGE_ASPECT_COLOR_BIT))
-                    Count("swap: debug overlay image allocation FAILED");
+                                 VK_IMAGE_ASPECT_COLOR_BIT) ||
+                    !CreateImage(R->swap.bgImage, ow, oh, VK_FORMAT_R8G8B8A8_UNORM,
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT) ||
+                    !CreateBuffer(R->swap.overlayStage, bytes,
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false) ||
+                    !CreateBuffer(R->swap.bgBuffer, bytes,
+                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                  ReadbackMemoryProps(), false))
+                    Count("swap: debug overlay allocation FAILED");
+                else
+                {
+                    R->swap.bgW = ow;
+                    R->swap.bgH = oh;
+                }
             }
-            if (R->swap.overlay.image && bytes <= R->staging.size)
+
+            if (fits && R->swap.overlay.image && R->swap.overlayStage.mapped)
             {
-                memcpy(R->staging.mapped, overlayPixels.data(), bytes);
+                // 1. CAPTURE the frame behind the panel, for the NEXT frame's blend. The
+                //    swapchain image currently holds the frame and nothing else, which is
+                //    the only moment this is true. Downscaled to the panel's own size by
+                //    the blit, so the background costs one small image rather than the
+                //    panel's area at window scale.
+                VkImageMemoryBarrier toSrc{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+                toSrc.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                toSrc.image = R->swap.images[index];
+                toSrc.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                                     nullptr, 1, &toSrc);
+                Barrier(R->cmd, R->swap.bgImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                VkImageBlit grab{};
+                grab.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                grab.srcOffsets[0] = { dx0, dy0, 0 };
+                grab.srcOffsets[1] = { dx1, dy1, 1 };
+                grab.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                grab.dstOffsets[1] = { int32_t(ow), int32_t(oh), 1 };
+                vkCmdBlitImage(R->cmd, R->swap.images[index],
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, R->swap.bgImage.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &grab,
+                               VK_FILTER_LINEAR);
+                Barrier(R->cmd, R->swap.bgImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_ASPECT_COLOR_BIT);
+                VkBufferImageCopy down{};
+                down.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                down.imageExtent = { ow, oh, 1 };
+                vkCmdCopyImageToBuffer(R->cmd, R->swap.bgImage.image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       R->swap.bgBuffer.buffer, 1, &down);
+                // Back to DST for the overlay blit below and for the present transition.
+                std::swap(toSrc.oldLayout, toSrc.newLayout);
+                std::swap(toSrc.srcAccessMask, toSrc.dstAccessMask);
+                vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                                     nullptr, 1, &toSrc);
+
+                // 2. COMPOSITE the panel over the background captured on a previous frame.
+                //    Until one has been captured the panel is drawn opaque, which is the
+                //    first frame the menu is open and nothing else.
+                composited.resize(bytes);
+                const uint8_t* bg = R->swap.bgValid && R->swap.bgBuffer.mapped
+                                        ? R->swap.bgBuffer.mapped : nullptr;
+                for (size_t i = 0; i < bytes; i += 4)
+                {
+                    const uint32_t a = overlayPixels[i + 3];
+                    for (int c = 0; c < 3; ++c)
+                    {
+                        const uint32_t src = overlayPixels[i + c];
+                        const uint32_t dst = bg ? bg[i + c] : src;
+                        composited[i + c] = uint8_t((src * a + dst * (255 - a)) / 255);
+                    }
+                    composited[i + 3] = 255;
+                }
+                R->swap.bgValid = true;
+
+                // 3. UPLOAD and blit the composited panel over its own rectangle.
+                memcpy(R->swap.overlayStage.mapped, composited.data(), bytes);
                 Barrier(R->cmd, R->swap.overlay, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
                 VkBufferImageCopy up{};
                 up.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
                 up.imageExtent = { ow, oh, 1 };
-                vkCmdCopyBufferToImage(R->cmd, R->staging.buffer, R->swap.overlay.image,
+                vkCmdCopyBufferToImage(R->cmd, R->swap.overlayStage.buffer,
+                                       R->swap.overlay.image,
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &up);
                 Barrier(R->cmd, R->swap.overlay, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                         VK_IMAGE_ASPECT_COLOR_BIT);
-                // Scaled by the swapchain's HEIGHT against the overlay's own 720, so the
-                // panel keeps its proportions on an ultrawide instead of being stretched
-                // across it.
-                const double sc = double(R->swap.height) / double(oh);
                 VkImageBlit ob{};
                 ob.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
                 ob.srcOffsets[1] = { int32_t(ow), int32_t(oh), 1 };
                 ob.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-                ob.dstOffsets[1] = {
-                    int32_t(std::min<double>(R->swap.width, ow * sc)),
-                    int32_t(R->swap.height), 1 };
+                ob.dstOffsets[0] = { dx0, dy0, 0 };
+                ob.dstOffsets[1] = { dx1, dy1, 1 };
                 vkCmdBlitImage(R->cmd, R->swap.overlay.image,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                R->swap.images[index],
@@ -6513,7 +6621,11 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
                                VK_FILTER_LINEAR);
                 Count("swap: debug overlay drawn");
             }
+            else if (!fits)
+                Count("swap: debug overlay declined, window too small for the panel");
         }
+        else
+            R->swap.bgValid = false;
     }
 
     // The dump copy goes here, AFTER the frame blit and AFTER the overlay, while the
