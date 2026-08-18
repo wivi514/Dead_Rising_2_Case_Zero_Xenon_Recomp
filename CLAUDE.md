@@ -180,7 +180,15 @@ mask; trust the microcode's own swizzles.
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
-  - **`perf-plan-part52.md` IS STILL THE LIVE PERFORMANCE PLAN** (built from a `perf`
+  - **`perf-plan-part55.md` IS THE LIVE PERFORMANCE PLAN** — the operator's instruction
+    for part 55 is *"make it so the game properly use multithread and dispose of the load
+    properly"*, and its **§0 is the honest answer to their "unless you tell me it's not
+    possible": possible, and the ceiling is 5-6 busy threads, not 16**, because the PM4
+    walk is serial (a command stream's meaning is positional) and draw ORDER is semantic,
+    so recording can be parallel while submission cannot. The prize is roughly a third off
+    the frame at the load they actually play.
+  - ~~**`perf-plan-part52.md` IS STILL THE LIVE PERFORMANCE PLAN**~~ — superseded, and kept
+    because its §9b/§9c/§9d record what parts 52-54 corrected in it (built from a `perf`
     SYMBOL budget rather than a phase table). Six of its items have shipped — four in
     part 52 and **items 1.1 and 1.3 in part 53, which are the first work this port has
     moved off the pump thread**. It records its own corrections in place: **§9b** the two
@@ -860,12 +868,16 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   thing in the plan. **`UploadStream` at 12.84% is not in the plan at all**: part 22 closed
   the stream cache on `ProfScope(streams)` reading 0.0%, and the symbol says that scope is
   not where the cost is (gotcha 343's shape). Splitting it is the cheapest unexplored item.
-* **Gates at close: ALL CLEAN.** `--smoke`; switch gate 0 defects; dimension census 0
-  disagreements; both PM4 oracles on B1; E3 best of five **+0.8399**, 4 of 5 agreeing on
-  layout; `no translated shader` 0; `truncated=0`; 0 `PARALLEL GUARD SLOT MIX-UP`; deepest
-  file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation windows, 0 real**; the
-  shader-cache NAME diff shows only `ps_926c15dd20571cf1`, the known lost-microcode entry.
-  **The cache is 438**, unchanged — the first part in a while to reach no new ground.
+* **Gates at close: ALL CLEAN, re-run whole after the default flip and the overlay work.**
+  `--smoke`; switch gate 0 defects; dimension census 0 disagreements; both PM4 oracles on
+  B1; E3 best of five **+0.8415**, 4 of 5 agreeing on layout; `no translated shader` 0;
+  `truncated=0`; 0 `PARALLEL GUARD SLOT MIX-UP`; deepest file **#83 `cinezombie.big`**;
+  **A5 exit 0, 4 permutation windows, 0 real**; plus the two rows this part had to invent,
+  the swapchain image against E3 at **1x (+0.8831)** and **2x (+0.8741)**.
+  **And the shader-cache NAME diff caught one for the FIFTH part running** —
+  `vs_d34782b5c8ddf527`, dumped by the operator's own play session and never in the cache,
+  which no miss counter reported because no run had bound it. **The cache is 439**, both
+  caches rebuilt and identical in membership.
 
 Where the port WAS, as of 2026-08-18 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
 EVER MOVED OFF THE PUMP THREAD. Both content guards now fold on four workers a frame
