@@ -2596,7 +2596,25 @@ struct Renderer
     // instead of instantly, and the worst case is a constant rather than the workload.
     static constexpr uint32_t kGuardProbes = 3;
     static constexpr uint64_t kGuardProbeBudget = 4u << 20;   // bytes per frame
-    std::unordered_map<uint64_t, PersistEntry> persistCache;
+    // THE CROSS-FRAME STORE'S INDEX IS FLAT AS OF PART 55, and it was the LARGER half of
+    // the `UploadStream` cost. After the per-frame cache went flat, re-splitting the
+    // function by source line said 62% of what was left was STILL hash-map machinery —
+    // this map, probed once per first-touch stream (~2,000 times a crowd frame) against
+    // a table big enough that each probe is two cold misses. Fewer lookups than the
+    // per-frame cache by a factor of sixteen, and a comparable share of the thread.
+    //
+    // ONLY ONE OF THESE TWO IS POPULATED IN A GIVEN RUN, which is different from the
+    // stream cache and the shader table, and the reason is worth stating: entries here
+    // are MUTATED through the pointer a lookup returns (the guard, the ping-pong slot,
+    // the promotion counters), so maintaining a shadow copy would mean mirroring every
+    // mutation — more new code than the change itself, and a defect in the mirror would
+    // look exactly like a defect in the thing being verified. So `CZ_VK_NO_FLAT_CACHE=1`
+    // switches which container the accessors below use, and the FlatCache implementation
+    // itself is verified where a shadow IS cheap: the stream cache and the shader table
+    // check every lookup against their maps (0 of 48.5 M disagreed) and run the same
+    // probe, insert and grow code.
+    FlatCache<PersistEntry> persistCache;
+    std::unordered_map<uint64_t, PersistEntry> persistCacheMap;
     uint64_t probeBudgetLeft = 0;   // refilled each frame; see kGuardProbeBudget
     // Counted, not sampled, because a cache that silently serves stale data looks exactly
     // like a rendering bug twenty frames later and this project has spent whole parts
@@ -2889,6 +2907,40 @@ struct Renderer
 };
 
 Renderer* R = nullptr;
+
+// The cross-frame store's index, through one seam so the container is a runtime choice.
+// A raw pointer rather than an iterator because that is what both containers can return
+// and because every caller wanted `->second` anyway. It stays valid until the next
+// insert into the same container, which is exactly the guarantee the old iterator gave.
+Renderer::PersistEntry* PersistFind(uint64_t key)
+{
+    if (!g_flatCacheOff)
+        return R->persistCache.Find(key);
+    auto it = R->persistCacheMap.find(key);
+    return it != R->persistCacheMap.end() ? &it->second : nullptr;
+}
+Renderer::PersistEntry* PersistInsert(uint64_t key, const Renderer::PersistEntry& e)
+{
+    if (!g_flatCacheOff)
+        return R->persistCache.Insert(key, e);
+    return &R->persistCacheMap.emplace(key, e).first->second;
+}
+void PersistErase(uint64_t key)
+{
+    if (!g_flatCacheOff)
+        R->persistCache.Erase(key);
+    else
+        R->persistCacheMap.erase(key);
+}
+void PersistClear()
+{
+    R->persistCache.Clear();
+    R->persistCacheMap.clear();
+}
+size_t PersistSize()
+{
+    return g_flatCacheOff ? R->persistCacheMap.size() : R->persistCache.Size();
+}
 
 #define VK_CHECK(expr, what)                                                           \
     do                                                                                 \
@@ -6212,7 +6264,7 @@ void PersistMaintenance()
                         "overran it — dropping and refilling\n",
                 (unsigned long long)(kPersistCeiling >> 20));
     }
-    R->persistCache.clear();
+    PersistClear();
     R->persistCursor = 0;
     ++R->persistStats.flushes;
 }
@@ -7212,10 +7264,10 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         // sampled forever. Without an off switch this change could never be shown to be
         // the thing that fixed (or did not fix) the HUD.
         static const bool noDynamicGuard = EnvOn("CZ_VK_NO_DYNAMIC_GUARD");
-        auto pit = R->persistCache.find(key);
+        Renderer::PersistEntry* pit = PersistFind(key);
         bool exactHere = false;
         bool provenHere = false;   // ...through the UNBUDGETED, PERMANENT door
-        if (!noDynamicGuard && pit != R->persistCache.end())
+        if (!noDynamicGuard && pit)
         {
             // PROVEN need is unbudgeted; everything else shares one. The proven set is
             // the streams the sampled guard has actually been caught missing a change on
@@ -7250,11 +7302,11 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             // is the same-binary control arm (the session-3 policy: every stream ever
             // caught changing stays exact forever).
             static const bool budgetAll = !EnvOn("CZ_VK_NO_GUARD_BUDGET");
-            if (pit->second.dynamic &&
-                (!budgetAll || pit->second.needsExact ||
-                 pit->second.sampledAgreed < Renderer::kSampledProof))
+            if (pit->dynamic &&
+                (!budgetAll || pit->needsExact ||
+                 pit->sampledAgreed < Renderer::kSampledProof))
             {
-                if (!budgetAll || pit->second.needsExact)
+                if (!budgetAll || pit->needsExact)
                 {
                     exactHere = true;
                     provenHere = true;
@@ -7269,7 +7321,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                     g_guardSpecBytes += bytes;
                 }
             }
-            else if (pit->second.probes < Renderer::kGuardProbes &&
+            else if (pit->probes < Renderer::kGuardProbes &&
                      R->probeBudgetLeft >= bytes)
             {
                 exactHere = true;                  // bootstrap, within this frame's toll
@@ -7300,8 +7352,8 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         // packets? The entry carries the slot it filed last frame; anything missing,
         // unfinished or of the wrong variant falls straight back to the inline hash.
         const GuardOut* pre = nullptr;
-        if (pit != R->persistCache.end())
-            pre = GuardPoolTake(pit->second.preSlot, pit->second.preFrame, R->frame, src,
+        if (pit)
+            pre = GuardPoolTake(pit->preSlot, pit->preFrame, R->frame, src,
                                 bytes, wantExact);
         if (pre)
         {
@@ -7337,9 +7389,9 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         // what lets a pool that cannot finish the list still finish the useful end.
         const uint32_t slot =
             GuardPoolFile(src, bytes, uint32_t(g_guardBytes), wantExact);
-        if (pit != R->persistCache.end())
+        if (pit)
         {
-            Renderer::PersistEntry& e = pit->second;
+            Renderer::PersistEntry& e = *pit;
             e.lastFrame = R->frame;
             e.preSlot = slot;
             e.preFrame = R->frame + 1;
@@ -7427,7 +7479,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 {
                     // `e` dies with this line. Nothing below may touch it, and `loc`
                     // stays empty so the per-frame arena path takes this stream.
-                    R->persistCache.erase(pit);
+                    PersistErase(key);
                     ++R->persistStats.staleEvicted;
                 }
             }
@@ -7448,7 +7500,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 e.bytes = uint32_t(bytes);
                 e.preSlot = slot;
                 e.preFrame = R->frame + 1;
-                R->persistCache.emplace(key, e);
+                PersistInsert(key, e);
                 ++R->persistStats.fills;
                 R->persistStats.fillBytes += bytes;
                 loc = StreamLoc{ &R->persist, at };
@@ -13262,7 +13314,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         frames ? double(g_guardSpecBytes) / double(frames) / 1048576.0 : 0.0,
                         (unsigned long long)(frames ? g_guardProbe / frames : 0),
                         frames ? double(g_guardProbeBytes) / double(frames) / 1048576.0 : 0.0,
-                        (unsigned long long)g_guardProvenEntries, R->persistCache.size(),
+                        (unsigned long long)g_guardProvenEntries, PersistSize(),
                         g_guardProvenObs ? 100.0 * double(g_guardProvenChanged) /
                                                double(g_guardProvenObs) : 0.0);
                 g_guardProvenObs = g_guardProvenChanged = 0;
@@ -13272,7 +13324,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fprintf(stderr,
                         "[vkprof] store %zu entries, %llu MB of %llu MB used, %llu flushes"
                         " this window\n",
-                        R->persistCache.size(),
+                        PersistSize(),
                         (unsigned long long)(R->persistCursor >> 20),
                         (unsigned long long)(R->persist.size >> 20),
                         (unsigned long long)p.flushes);
