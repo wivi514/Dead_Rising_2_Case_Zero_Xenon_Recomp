@@ -11439,3 +11439,75 @@ one is convenient. What can be said:
 **The one experiment that would settle it is a chained A/B they can feel**, both arms
 maximised at 1440p with `CZ_FPS_LOG`: quit one and the next starts. Ten minutes of operator
 time, and it is the only thread this part leaves open.
+
+### §10. THE OPERATOR'S SOAK A/B RETRACTS §6 AND §9's HEADLINE: the saving COLLAPSES with
+### load, and every campaign in this part measured the light end
+
+Both arms in one session, their machine, their route, uninstrumented apart from
+`CZ_FPS_LOG`, god mode / no death sequence / **zombies ignore all humans** held by the pump
+in both (their idea, and a better one than the script's original reasoning — a zombie grab
+moves the CAMERA, which is the one thing a soak exists to hold still). Four minutes an arm,
+matched on the draw count the `[fps]` line now carries:
+
+| draws | readback | swapchain | Δ fps | Δ ms | delta |
+|---|---|---|---|---|---|
+| 2,250-2,499 (n=1/2) | 90.4 fps, 11.06 ms | 114.7, 8.73 | +24.2 | **−2.33** | −21.1% |
+| 6,500-6,749 (n=1/13) | 69.4, 14.41 | 70.9, 14.10 | +1.5 | −0.31 | −2.2% |
+| **6,750-6,999 (n=4/6)** | **67.8, 14.75** | **70.2, 14.24** | **+2.4** | **−0.51** | **−3.5%** |
+
+Their own report before seeing any of this: *"Feels pretty much the same but run 1 felt like
+it had less stutter and framerate was 3 to 6 fps higher than arm 2."* **Measured: +1.5 to
++2.4 fps.** They were right and slightly generous.
+
+#### What is retracted, and it is the generality and not the number
+
+§6 and §9 are correct about what they measured and wrong about what it means:
+
+* **In milliseconds the saving is NOT constant.** §6 and §9 said it was a fixed per-frame
+  cost whose PERCENTAGE falls with load while the millisecond figure holds — measured at
+  −3.20 ms at 500-999 draws through −2.70 at 4,500-4,999. Their soak reads **−2.33 ms at
+  ~2,400 draws and −0.51 ms at ~6,800.** The milliseconds collapse too.
+* **Every campaign in this part measured the LIGHT END.** The best-populated band in both
+  the small-window and maximised campaigns was 2,500-2,999 draws; the heaviest band with
+  more than one window an arm was 3,500-3,999. **The operator plays at 6,700-7,300.** The
+  −29.0% headline is a number for ~2,700 draws, and at the load they actually play it is
+  **−3.5%**. Their light band agrees with the campaigns (−21.1% at ~2,400), so nothing was
+  mis-measured — it was over-generalised.
+* **The likely mechanism, stated as a hypothesis.** At high load the GPU is busy, so CPU
+  time taken off the pump is absorbed by a longer fence wait rather than converted into
+  frames: `submit gpu` was already rising to 14.7% at 2x in §3. That predicts the saving
+  returns wherever the frame is CPU-bound again, and it is testable with `CZ_VK_PROFILE` on
+  a soak — which nobody has run, because a profiled soak costs 2-4 ms a frame and would be
+  a different frame.
+
+**The transferable half is the process failure, not the physics.** The item was priced,
+built, gated, A/B'd three rounds an arm at two internal resolutions and two window sizes,
+and every one of those campaigns sampled the same light part of the game. The operator's
+first soak found it. That is the third time in three parts that a soak in the heaviest place
+has answered a question a roaming campaign could not (part 52 §§10-12, part 53 §10, this),
+and the lesson is now unambiguous: **take the A/B at the load the player is at, or the
+number is a fact about the load you happened to sample.**
+
+#### The stutter is real and separate, and it is the present MODE
+
+Their *"less stutter"* is supported by the logs. Frame-time mean against median — a mean
+above the median means slow frames exist in the tail:
+
+| | settled soak | in transit |
+|---|---|---|
+| swapchain (MAILBOX) | +0.3% | **+3.3%** |
+| readback (SDL, compositor-paced) | +0.0% | **+5.9%** |
+
+At the settled soak both are smooth. Where the two differ is **while moving and loading**,
+which is where the compositor's pacing of `SDL_RenderPresent` bites and where MAILBOX — the
+present mode the SDL path could never choose — does not. That is a quality-of-motion win
+the frame-rate number does not carry, and it is the part of this item that survives the
+retraction above intact.
+
+#### Where that leaves the item
+
+**It ships as an arm, and the honest summary is: a large win at light load, ~3.5% at the
+load the operator plays, plus a real smoothness win in transit and a picture that
+correlates with hardware at both resolutions.** It also removes the readback's whole
+architecture — three full-frame copies and a GPU→CPU→GPU round trip — which is worth
+keeping for what it makes possible later, not only for what it returns today.
