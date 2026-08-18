@@ -116,19 +116,34 @@ the readback arm reported it nowhere and that is what made the mistake unavoidab
 than careless. `CZ_WINDOW_MAXIMIZED=1` / `CZ_WINDOW_SIZE=WxH` set it at CREATION — resizing
 afterwards is not a control, the window bounced through six drawables in one run.
 
-### The one thing this part leaves unreconciled
+### RESOLVED BY THE OPERATOR'S SOAK — and it retracts §2's headline
 
-The measurement says 21-29% at the operator's resolution and window. They played it and
-said **"still feels pretty much the same framerate wise"**, at 69-96 fps. Nothing measured
-contradicts them: there is no readback-arm measurement of THEIR route on THEIR machine from
-the same evening, and what their report is implicitly compared against is part 53's numbers
-from another day (gotcha 51). Both arms are also well clear of 60 fps over most of the map
-— 10.70 → 7.60 ms is 93 → 132 fps — and this item's shape works against being felt: it is a
-FIXED per-frame cost, so its percentage is largest exactly where nobody was short of frames.
+`tools/part54_chained_ab.sh` — both arms in one session, their machine, a four-minute SOAK
+an arm, uninstrumented but for `CZ_FPS_LOG`, matched on the draw count that line now
+carries:
 
-**A chained A/B they can feel — both arms maximised at 1440p with `CZ_FPS_LOG`, quitting one
-starts the next — is the ten minutes that would settle it, and it is the highest-value
-operator errand this hand-off can name.**
+| draws | readback | swapchain | Δ fps | Δ ms | delta |
+|---|---|---|---|---|---|
+| 2,250-2,499 | 90.4 fps | 114.7 | +24.2 | −2.33 | −21.1% |
+| **6,750-6,999** (n=4/6) | **67.8** | **70.2** | **+2.4** | **−0.51** | **−3.5%** |
+
+Their report, before seeing any of it: *"3 to 6 fps higher"*. Measured **+1.5 to +2.4**.
+
+**EVERY CAMPAIGN IN PART 54 SAMPLED THE LIGHT END.** Six of them — two internal
+resolutions, two window sizes, three rounds an arm — and all put their best-populated band
+at 2,500-2,999 draws, while the operator plays at **6,700-7,300**. Their light band agrees
+with the campaigns (−21.1% at ~2,400), so nothing was mis-measured; it was over-generalised.
+And the SHAPE was wrong too: §2 said the millisecond saving holds while the percentage
+falls, and the milliseconds collapse as well, **2.33 → 0.51 ms**. Likely mechanism, as a
+hypothesis: at high load the GPU is busy, so CPU time taken off the pump is absorbed by a
+longer fence wait rather than converted to frames — testable with `CZ_VK_PROFILE` on a
+soak, which nobody has run. **Gotcha 355, and it is the single most important thing in this
+hand-off: take the A/B at the load the player is at.**
+
+**The stutter is real and is a separate win.** Frame-time mean against median in transit:
+**+3.3% for MAILBOX against +5.9% for the compositor-paced SDL present**; at the settled
+soak both are smooth. That is the present MODE, a choice the SDL path could never make, and
+it survives the retraction intact.
 
 ---
 
@@ -173,11 +188,17 @@ Three ways forward, in the order they should be considered:
 
 ## 5. WHAT IS OWED
 
-* **A chained A/B the operator can FEEL** — see §2b. Ten minutes, and it is the only
-  unreconciled thing in the part.
-* **The operator's verdict on the swapchain arm** — PARTLY IN. Picture: *"Looks a lot
-  nicer now"* (after the resize fix). Frame rate: *"still feels pretty much the same"*,
-  which the measurement disagrees with. Whether it becomes the default is still open.
+* **The operator's verdict on the swapchain arm is IN, on both halves.** Picture: *"Looks
+  a lot nicer now"* (after the resize fix). Frame rate: *"3 to 6 fps higher, less
+  stutter"*, and the measurement agrees. **Whether it becomes the default is still open**
+  and is now a judgement about −3.5% plus smoothness plus removing three copies of
+  architecture, against losing the F4 overlay — see §3.
+* **A PROFILED SOAK.** The retraction's mechanism — CPU time absorbed by the fence wait at
+  high load — is a hypothesis, and `CZ_VK_PROFILE` on a soak at 6,800 draws would settle
+  it. It costs 2-4 ms a frame so it is a different frame, but `submit gpu` is the column
+  that would show it.
+* **RE-PRICE EVERY OPEN PLAN ITEM AT SOAK LOAD.** Item 1.2 and item 1.4 have both been
+  sized off campaigns of exactly the kind gotcha 355 is about.
 * **A `CZ_VK_PRESENT_STAGING`-only pair at the operator's load**, still owed from part 53
   and now mostly moot if the swapchain becomes the default.
 * Their two deferred picture items, **00m decals** and **00n a sign and items at
