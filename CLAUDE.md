@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 354 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 355 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 354-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 355-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -739,7 +739,8 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   to 14.7% — **the GPU being a limiter at 2x, which is what the resolution knob was
   supposed to produce and had not been seen doing.**
 * **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p, AND −29.0% AT 1440p INTO THE
-  OPERATOR'S OWN MAXIMISED 2560x1417 WINDOW.** Three rounds an arm, alternated, one frozen
+  OPERATOR'S OWN MAXIMISED 2560x1417 WINDOW — ALL AT ~2,700 DRAWS, WHICH IS THE LIGHT END.
+  READ THE RETRACTION TWO BULLETS DOWN BEFORE QUOTING ANY OF THESE.** Three rounds an arm, alternated, one frozen
   binary, medians per draw band (2,500-2,999 draws, n=7-9 an arm), against the campaign's
   own within-arm null of **−0.7%, +0.0% and +0.0%**. At the maximised window it is −45.1%
   at 500-999 draws, **−29.0% at 2,500-2,999**, −23.3% at 3,500-3,999 and −21.4% at
@@ -754,16 +755,26 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   "probably fine" was still correct — only the campaign could separate the two. Gotcha 353
   stands: **a present-path measurement has TWO resolutions and naming only one is naming
   none**, and both arms now log their drawable size for that reason.
-* **WHAT IS NOT RECONCILED, AND IS THE ONE THREAD THIS PART LEAVES OPEN: the operator
-  played it and said "still feels pretty much the same framerate wise"** at 69-96 fps,
-  while the measurement says 21-29% at their resolution and their window. Nothing measured
-  contradicts them — there is no readback-arm measurement of THEIR route on THEIR machine
-  from the same evening, and the numbers their report is implicitly compared against are
-  part 53's, from another day (gotcha 51). Both arms are also well clear of 60 fps over
-  most of the map (10.70 -> 7.60 ms is 93 -> 132 fps), and this item's shape works against
-  being felt: it is a FIXED per-frame cost, so its percentage is largest exactly where
-  nobody was short of frames. **A chained A/B they can feel, both arms maximised at 1440p
-  with `CZ_FPS_LOG`, is the ten minutes that would settle it.**
+* **AND THEN THE OPERATOR'S SOAK A/B RETRACTED THAT HEADLINE'S GENERALITY. EVERY CAMPAIGN
+  IN THIS PART SAMPLED THE LIGHT END OF THE GAME.** Both arms in one session, their
+  machine, uninstrumented but for `CZ_FPS_LOG`, matched on the draw count that line now
+  carries: **2,250-2,499 draws 90.4 -> 114.7 fps (−2.33 ms, −21.1%)** but **6,750-6,999
+  draws 67.8 -> 70.2 fps (−0.51 ms, −3.5%)**. Their own report first, before seeing any of
+  it: *"3 to 6 fps higher"* — measured **+1.5 to +2.4**, so they were right and slightly
+  generous. **In MILLISECONDS the saving is not constant after all**: this file and
+  §6/§9 said the percentage falls with load while the millisecond figure holds, and it
+  collapses too, 2.33 ms -> 0.51 ms. The best-populated band in BOTH campaigns was
+  2,500-2,999 draws and **the operator plays at 6,700-7,300**; their light band agrees with
+  the campaigns, so nothing was mis-measured — it was over-generalised. Likely mechanism,
+  as a hypothesis: at high load the GPU is busy, so CPU time taken off the pump is absorbed
+  by a longer fence wait rather than converted to frames. **Third part in three where a
+  soak in the heaviest place answered a question a roaming campaign could not** — gotcha
+  355.
+* **THE STUTTER THEY REPORTED IS REAL AND IS A SEPARATE WIN: it is the present MODE.**
+  Frame-time mean against median IN TRANSIT is **+3.3% for MAILBOX against +5.9% for the
+  compositor-paced SDL present**; at the settled soak both are smooth. MAILBOX is a choice
+  the SDL path could never make (part 49's 60->30 snap), and this half survives the
+  retraction above intact.
 * **AND IT IS A SLOPE THE OTHER WAY ROUND FROM EVERY PREVIOUS ITEM.** Parts 52 and 53
   shipped savings that grew with the draw count, because their work ran per draw or per
   packet. This is a FIXED cost per frame, so its share is largest where the frame is

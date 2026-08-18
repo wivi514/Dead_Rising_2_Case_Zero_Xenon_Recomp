@@ -3664,3 +3664,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      And prefer asking the STATE over trusting a return code: the fix compares the drawable
      size every frame, so it does not depend on which of three plausible compositor
      behaviours this one picks.
+
+355. **AN A/B MEASURES THE LOAD IT SAMPLED, AND A ROAMING CAMPAIGN SAMPLES THE LIGHT END.**
+     Part 54's swapchain item was priced, built, gated and A/B'd three rounds an arm at two
+     internal resolutions and two window sizes — six campaigns — and every one of them put
+     its best-populated draw band at **2,500-2,999 draws**, with the heaviest band having
+     more than one window an arm at 3,500-3,999. **The operator plays at 6,700-7,300.**
+     Their first soak, both arms in one session, read **−21.1% at ~2,400 draws and −3.5% at
+     ~6,800**: the campaigns were right about what they sampled and the headline was a fact
+     about the light end of the game. Worse, the shape was wrong too — the write-up said
+     this was a fixed per-frame cost whose PERCENTAGE falls with load while the millisecond
+     figure holds, and the milliseconds collapse as well, **2.33 ms -> 0.51 ms**. The
+     likely mechanism is that at high load the GPU is busy, so CPU time taken off the
+     critical thread is absorbed by a longer fence wait instead of becoming frames.
+     **This is the third consecutive part in which a SOAK in the heaviest place answered a
+     question a roaming campaign could not** (parts 52, 53, 54), and the rule is now
+     unambiguous: **take the A/B at the load the player is at.** A roam visits the heavy
+     places briefly and the light places for most of its length, so binning by draw count
+     does not save you — it produces bands with n=1 exactly where the answer lives. Check
+     the WINDOW COUNT of the band you are quoting, not just its delta. And note what saved
+     this one: the frame-rate line was made to carry the draw count *for a different reason*
+     (the operator's point that spawns differ between runs), and that is what made the
+     retraction visible rather than a disagreement about feel.
