@@ -768,11 +768,20 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   it, and getting it wrong turns 26% of the thread that IS the frame into 8% of a process
   nobody is optimising. This buckets by TID, folds `symbol+0xNNN` into functions, divides
   by the THREAD, and `--diff` prints two arms side by side.
-* **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1 (24,527,474 packets, 0
-  disagreeing); the switch gate (0 defects); the dimension census (0 disagreements); `no
-  translated shader` = 0; `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0
-  with 4 permutation windows, 0 real**; **E3 best of five +0.8808**, 4 of 5 agreeing on
-  layout; the shader-cache NAME diff found nothing new (**the cache is still 436**).
+* **Gates at close: ALL CLEAN, AND RE-RUN WHOLE after the resolution knob, the cap default
+  change and `CZ_FPS_LOG` — at BOTH resolutions.** `--smoke`; both PM4 oracles on B1
+  (24.5 M packets, 0 disagreeing); the switch gate (0 defects); the dimension census (0
+  disagreements); `no translated shader` = 0 **at 1x and at 2x**; `truncated=0`; deepest
+  file **#83 `cinezombie.big`**; **A5 exit 0 with 4 permutation windows, 0 real**;
+  **0 `PARALLEL GUARD SLOT MIX-UP`**; **E3 at 1x best of five +0.8396 and E3 at
+  `CZ_VK_RES=2560x1440` best of five +0.8562**, 4 of 5 agreeing on layout at each — the 2x
+  row is what gives the resolution change an oracle that is not the operator's eye. The
+  shader cache is **438**, both caches identical in membership.
+  **E3 read +0.8808 earlier in the part and +0.8396 here on the same code path**, and the
+  capture filenames say why: the cap moved 60 -> 500, so far more frames elapse in the
+  gate's fixed 120 s and its five F9 presses land on different moments of an ANIMATED
+  backdrop (frames 1,896-3,853 then 5,890-13,874). **A frame-index-addressed sample of a
+  moving scene is re-aimed by anything that changes the frame rate** (gotcha 133).
 * **THE OPERATOR CONFIRMED IT ON THEIR OWN SOAK, AND IT IS BIGGER THERE.** Two soaks in
   their heaviest place, both items switched together in the control arm: **7,000-7,999
   draws, 24.65 -> 20.33 ms, −17.5% mean / −16.7% median at significance −50.2**, with the

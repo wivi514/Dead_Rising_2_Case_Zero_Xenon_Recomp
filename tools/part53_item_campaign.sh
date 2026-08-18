@@ -16,11 +16,13 @@
 #           what this runtime did for fifty-two parts. The old configuration RUN NOW.
 #   null    `base` again — the noise floor.
 #
-# THE CAP IS RAISED IN EVERY ARM. Unchanged from part 52 and still the thing that makes
-# this readable at all: this route sits on the 60 fps cap for most of its length, and on
-# the cap both arms read 16.2 ms whatever the change was worth. What this reports is
-# therefore a CPU SAVING, not a frame rate a player sees. The player-facing number comes
-# from the operator's soak, which is NOT capped (part 52 §6ci §12).
+# ~~THE CAP IS RAISED IN EVERY ARM.~~ TRUE WHEN THIS RAN, AND INVERTED AT THE CLOSE OF THE
+# SAME PART. When this campaign ran, the runtime default was 60 fps and this route sat on
+# that cap for most of its length, so both arms read 16.2 ms whatever the change was worth
+# and `CAP=120` is what made it readable. The default is now 500 (a 1 ms vblank period),
+# so `CAP=120` LOWERS the ceiling instead of raising it — see the note above the value.
+# What this reports is still a CPU SAVING and not a frame rate a player sees; the
+# player-facing number comes from the operator's soak, which is not capped.
 #
 # AND THE COST THIS ITEM HAS THAT PART 52'S DID NOT. Strategy (b) spends idle cores to
 # shorten one thread, so the process's TOTAL cpu goes UP even when the frame gets
@@ -48,6 +50,12 @@ if [ -n "$busy" ]; then
     echo "!! a cz_runtime is already running; refusing to start a second:"; printf '%s' "$busy"; exit 2
 fi
 
+#
+# !! READ BEFORE RE-RUNNING, as of the close of part 53: THE RUNTIME DEFAULT IS NOW 500,
+# not 60. `CAP=120` below therefore CONSTRAINS the run rather than lifting it — it sets a
+# 4 ms vblank period where the default is 1 ms, which coarsens the frame-time ladder and
+# binds the light draw bins at 125 fps. The value is left as it was so the campaign
+# already recorded with it stays reproducible; a FRESH campaign should pass `CAP=500`.
 CAP="${CAP:-120}"
 declare -A ARMS=( [noitem]="CZ_VK_NO_PARALLEL_GUARD=1" )
 ORDER=(base noitem null)

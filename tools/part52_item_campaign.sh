@@ -73,6 +73,12 @@ fi
 #
 # The player-facing question is answered on the OPERATOR's machine and route, which is
 # heavier than this one, and by the symbol shares — not here.
+#
+# !! READ BEFORE RE-RUNNING, as of the close of part 53: THE RUNTIME DEFAULT IS NOW 500,
+# not 60. `CAP=120` below therefore CONSTRAINS the run rather than lifting it — it sets a
+# 4 ms vblank period where the default is 1 ms, which coarsens the frame-time ladder and
+# binds the light draw bins at 125 fps. The value is left as it was so the campaign
+# already recorded with it stays reproducible; a FRESH campaign should pass `CAP=500`.
 CAP="${CAP:-120}"
 declare -A ARMS=( [noitem]="CZ_PM4_NO_SHADER_MEMO=1" )
 ORDER=(base noitem null)

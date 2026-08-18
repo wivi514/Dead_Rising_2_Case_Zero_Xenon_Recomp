@@ -10966,3 +10966,41 @@ The title's post chain computes its blur taps from texel offsets IT supplies, in
 the screen away and a blur keeps its screen-space size — it is simply sampled at fewer taps
 per pixel than the artist intended. That is the ordinary, accepted outcome of resolution
 scaling and not a defect to chase.
+
+### §15. GATES RE-RUN AT THE CLOSE — including the resolution change, at BOTH scales
+
+§8's pass predates the resolution knob, the frame-cap default change and `CZ_FPS_LOG`, so
+it was re-run whole. **ALL CLEAN.**
+
+| gate | result |
+|---|---|
+| `--smoke` | OK |
+| switch gate | 0 defects (2 benign frameless thunks) |
+| shader dimension census | 0 disagreements; 1 sidecar without `tfetchDims`, the known lost-microcode entry |
+| PM4 oracle 1/2 — packet lengths | 24.5 M packets, 0 disagreeing |
+| PM4 oracle 2/2 — indirect-buffer walks | clean |
+| **E3 picture at 1x** | **best of five +0.8396**, 4 of 5 agreeing on layout |
+| **E3 picture at 2x (`CZ_VK_RES=2560x1440`)** | **best of five +0.8562**, 4 of 5 agreeing, captures 2560x1440 |
+| `no translated shader` | 0 at both scales |
+| `truncated=` | 0 |
+| deepest file on a plain boot | **#83 `game:\data\skeleton\cinezombie.big`** |
+| A5 kernel-call diff | **exit 0, 4 permutation windows, 0 real** |
+| `PARALLEL GUARD SLOT MIX-UP` | **0** |
+
+**The 2x row is the one that matters most, because until it ran the resolution change had
+exactly one oracle and it was the operator's eye.** It now has a second that is not ours:
+the picture at 2560x1440 correlates with hardware's own screenshot of the same screen as
+well as the 1x picture does, and agrees on layout on the same 4 of 5 samples.
+`frame_signature.py` compares across sizes already (E3 is 1401x1006), so this needed no new
+tooling — which is worth noting as a reason the gate was affordable at all.
+
+#### And a small instance of gotcha 133 caused by the cap change
+
+E3 read **+0.8808** earlier in the part and **+0.8396** here, on the same code path at
+scale 1. The reason is in the capture filenames: the earlier pass sampled frames
+**1,896-3,853** and this one **5,890-13,874**. The gate presses F9 on a fixed schedule and
+the frame cap moved from 60 to 500, so far more frames elapse in the same 120 seconds and
+the five presses land on completely different moments of an ANIMATED backdrop. Nothing about
+what is drawn changed. **A frame-index-addressed sample of a moving scene is re-aimed by
+anything that changes the frame rate** — which is a fact worth having written down before
+someone reads a future E3 drop as a regression.
