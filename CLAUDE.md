@@ -794,12 +794,25 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   frame rather than trusting a return code; `CZ_WINDOW_RESIZE_AT=SECS:WxH` is the positive
   control, because **no headless gate can resize a window**, and it proved the rebuild in
   both directions. Their verdict after it: *"Looks a lot nicer now."*
-* **IT IS AN ARM, NOT THE DEFAULT, FOR EXACTLY ONE REASON: the host-rendered F4 debug
-  overlay is drawn by SDL's renderer and a Vulkan window has no SDL renderer.** The title's
-  own F2 DebugJump screen is drawn by the GAME and is unaffected, as is every other
-  instrument. **The operator's verdict is what this arm is missing** — `CZ_VK_SWAPCHAIN=1
-  RES=2560x1440 tools/play_session.sh` is the judging session, and it should happen before
-  anything is built on top of it. `part55-kickoff.md` §3 has the three ways forward.
+* **IT IS THE DEFAULT AS OF THE CLOSE OF PART 54, ON THE OPERATOR'S DECISION, AND NOTHING
+  WAS LOST WITH IT.** `CZ_VK_NO_SWAPCHAIN=1` is the control arm and restores the readback
+  path exactly — it is what every measurement before part 54 was taken on, so it is the arm
+  future present claims are compared against and not a deprecated path. **The one blocker
+  was that a window carrying `SDL_WINDOW_VULKAN` has no `SDL_Renderer` and so could not
+  draw the host-rendered F4 debug menu; that was PORTED rather than accepted.** The layout
+  is emitted once (`EmitDebugOverlay`) and consumed by two backends — SDL rects, and a
+  software rasteriser the renderer uploads and blits over the presented image — because
+  writing it twice is how two drawings of one menu drift apart until an operator reports
+  that it "looks different in the other mode". The only deliberate difference is an opaque
+  panel where SDL's is 88%, since a blit cannot blend.
+* **AND GATING THE OVERLAY FOUND A REAL BUG THAT LOOKING NEVER WOULD.** It was first placed
+  AFTER the `CZ_VK_SWAPCHAIN_DUMP` copy, so the dump could never show it — 0 panel pixels
+  while the overlay's own counter read 5,595 — and, silently, the dump had already moved
+  the image to `TRANSFER_SRC`, so the overlay blitted into an image whose layout said
+  otherwise. **Undefined behaviour reachable only with the dump armed, i.e. only in the
+  gate, which is the one configuration nobody watches on screen.** Reordered so anything
+  drawn into the presented image is drawn before the dump reads it; 23 of 51 dumps now
+  carry the panel.
 * **NONE OF THIS PROJECT'S PICTURE GATES CAN SEE THIS ARM, AND THAT IS THE MOST
   TRANSFERABLE THING IN THE PART.** `CZ_CAPTURE_KEY`, `CZ_VK_FRAME_DUMP`,
   `CZ_VK_FRAME_STATS` and the E3 correlation all walk the present READBACK — the exact copy

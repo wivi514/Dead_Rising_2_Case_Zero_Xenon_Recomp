@@ -147,7 +147,31 @@ it survives the retraction intact.
 
 ---
 
-## 3. THE OPEN DECISION: DOES THE SWAPCHAIN BECOME THE DEFAULT?
+## 3. CLOSED: THE SWAPCHAIN IS THE DEFAULT, AND THE OVERLAY CAME WITH IT
+
+The operator's decision at the close of part 54, after judging both arms. What follows is
+kept because it records what the decision cost and what it did not.
+
+**`CZ_VK_NO_SWAPCHAIN=1` is the control arm**, and it restores the readback path exactly.
+It is what every measurement before part 54 was taken on, so it is what future present
+claims get compared against — not a deprecated path.
+
+**The one blocker was the F4 overlay, and it was ported rather than accepted.** A window
+carrying `SDL_WINDOW_VULKAN` has no `SDL_Renderer`. The layout is now emitted once
+(`EmitDebugOverlay` in `host/window.cpp`) and consumed by two backends: SDL rects, and a
+software rasteriser the renderer uploads and blits over the presented image. Writing it
+twice is how two drawings of one menu drift apart until somebody reports that it "looks
+different in the other mode". The only deliberate difference is an opaque panel where
+SDL's is 88%, because a blit cannot blend.
+
+**Gating it found a bug that looking never would.** The overlay was first placed after the
+`CZ_VK_SWAPCHAIN_DUMP` copy, so the dump could not show it (0 panel pixels against the
+overlay's own counter of 5,595) and — silently — the dump had already moved the image to
+`TRANSFER_SRC`, so the overlay blitted into an image whose layout said otherwise.
+Undefined behaviour reachable only with the dump armed, i.e. only in the gate. **Anything
+drawn into the presented image must be drawn before the dump reads it.**
+
+### The superseded three-way decision, kept for the reasoning
 
 It is an arm because of one thing and one thing only: **the host-rendered F4 debug overlay
 is drawn by SDL's renderer, and a Vulkan window has no SDL renderer.** The title's own F2
