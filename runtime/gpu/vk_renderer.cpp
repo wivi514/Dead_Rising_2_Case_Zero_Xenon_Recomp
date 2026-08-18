@@ -1883,6 +1883,221 @@ struct StreamLoc
     VkDeviceSize capacity() const { return buf->size; }
 };
 
+// ===================================================================================
+// A FLAT, OPEN-ADDRESSED CACHE — because the largest single cost on the pump thread
+// turned out to be `std::unordered_map`, not any of the work it was caching
+// ===================================================================================
+//
+// HOW THIS WAS FOUND, because the method transfers further than the fix. Part 55's plan
+// filed item C as "split `UploadStream` before assuming anything about it": the symbol is
+// 14.74% of the pump thread and appears in no performance plan this project has written,
+// because part 22 closed the stream cache on the strength of `ProfScope(streams)` reading
+// 0.0% — and a scope is a region of code, not a subsystem (gotcha 343).
+//
+// It could not be split with `ProfScope`. The hot path here is taken ~33,000 times in a
+// crowd frame and a scope costs two clock reads at ~20 ns, so instrumenting it would add
+// 1.3 ms a frame — larger than several of the phases it would be separating. An
+// instrument that big does not measure the function, it replaces it (gotcha 7). So the
+// split was done with `perf` and the DWARF line table instead (`tools/part55_srcline.py`),
+// at zero cost to the thing being measured, and the answer was not what any amount of
+// reading the code would have suggested:
+//
+//     41.24%  stl_function.h:378     std::equal_to<uint64_t> — the key compare
+//     13.99%  hashtable.h:2263   \
+//     12.79%  hashtable.h:0       |  _M_find_before_node: the bucket's node chain
+//     10.14%  hashtable.h:2257   /
+//     10.49%  hashtable_policy.h:585 _Mod_range_hashing — the PRIME MODULO, a division
+//      1.53%  vk_renderer.cpp:6851   ...the first line of our own function
+//
+// **Eighty-nine percent of `UploadStream` is the hash-map lookup**, i.e. 13.1% of the
+// whole pump thread — larger than any single item in part 55's plan, and it is not
+// parallel work waiting for a thread. It is work that should not exist.
+//
+// WHY `std::unordered_map` IS THIS SLOW HERE, stated so the reasoning can be checked
+// rather than trusted. It is a chained hash table: every entry is a separately
+// `malloc`ed node, so a lookup is a bucket-array load, then a dependent pointer chase to
+// a node that was allocated at an unrelated address, then a compare of a key that lives
+// in that node — two dependent cache misses whose latency cannot be overlapped, and the
+// compare is charged with the second one, which is why `equal_to` reads as the single
+// hottest line. On top of that the standard mandates prime-modulo bucketing, so every
+// lookup performs a 64-bit division (~20-26 cycles, unpipelined), and `std::hash` for an
+// integer is the IDENTITY, so nothing is mixed before that division.
+//
+// WHAT REPLACES IT. Open addressing with linear probing, keys and values in two flat
+// arrays sized to a power of two: one masked load, and a probe sequence that walks
+// forward through memory the prefetcher can see coming. The division is gone; the node
+// allocations are gone (`_int_malloc` is 2.19% of this thread); a hit is typically one
+// cache line.
+//
+// TWO DETAILS THAT WOULD BE SILENT DEFECTS IF GOT WRONG.
+//
+//  1. **The key must be MIXED, not used raw.** With prime bucketing, a structured key is
+//     survivable. With a power-of-two mask the low bits ARE the bucket, and this cache's
+//     key is `(va << 32) | (bytes << 2) | endian` — its low bits are an endian code and
+//     the bottom of a byte count, so the identity hash would pile every stream in a
+//     frame into a handful of buckets and turn a probe into a linear scan. A splitmix64
+//     finalizer costs three multiplies and fixes it. This is not a hypothetical: it is
+//     the standard way a power-of-two table is slower than the chained one it replaced.
+//
+//  2. **Clearing is a GENERATION BUMP, not a memset.** `streamCache` is cleared every
+//     frame; zeroing a 4,096-entry table each time would hand back part of the saving.
+//     Each slot carries the generation it was written in, and a slot from any older
+//     generation reads as empty. That is correct with linear probing for a reason worth
+//     writing down: every live entry was inserted AFTER the last bump, so its own probe
+//     sequence also treated stale slots as free — no live key's chain can pass over one.
+//
+// AND IT IS AN ARM WITH A VERIFIER, because the wrong answer here is not a crash.
+// `UploadStream`'s key is an identity by construction (part 22 fixed a version whose
+// fields overlapped) and a lookup that returns the WRONG entry hands a draw another
+// mesh's vertex stream — triangles between unrelated vertices, on some frames, in some
+// places. `CZ_VK_NO_FLAT_CACHE=1` keeps the `std::unordered_map` and is the same-binary
+// control arm; `CZ_VK_VERIFY_FLAT_CACHE=1` maintains BOTH structures and compares every
+// lookup, and `CZ_VK_VERIFY_FLAT_CACHE_POISON=1` perturbs the flat one so the check can
+// be seen to fire — a verifier that has never failed has not been shown capable of it
+// (gotcha 30). Same shape as part 53's slot-mix-up check, which is why that item was
+// trustworthy.
+bool g_flatCacheOff = false;
+bool g_flatCacheVerify = false;
+bool g_flatCacheVerifyPoison = false;
+uint64_t g_flatCacheChecked = 0;
+uint64_t g_flatCacheDisagreed = 0;
+uint64_t g_flatCacheProbes = 0;     // probe steps taken, to price the load factor
+uint64_t g_flatCacheLookups = 0;
+
+// splitmix64's finalizer. Three multiplies and three shifts; enough avalanche that the
+// low bits of a structured key are usable as a bucket index.
+inline uint64_t FlatMix(uint64_t x)
+{
+    x ^= x >> 30;
+    x *= 0xBF58476D1CE4E5B9ull;
+    x ^= x >> 27;
+    x *= 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+
+// Key 0 is usable: emptiness is decided by the generation stamp, never by a sentinel
+// key. That matters because this cache's keys are guest-derived and a reserved value
+// would be a landmine nobody would find until a stream landed at address 0.
+template <class V>
+struct FlatCache
+{
+    std::vector<uint64_t> keys;
+    std::vector<uint32_t> gens;
+    std::vector<V> vals;
+    uint32_t mask = 0;
+    uint32_t gen = 1;
+    uint32_t live = 0;
+
+    void Reserve(uint32_t n)
+    {
+        uint32_t cap = 16;
+        while (cap < n * 2)
+            cap <<= 1;
+        keys.assign(cap, 0);
+        gens.assign(cap, 0);
+        vals.assign(cap, V{});
+        mask = cap - 1;
+        gen = gen + 1 ? gen + 1 : 1;
+        live = 0;
+    }
+
+    // Bump the generation rather than clearing. Wrapping past 0 would make an ancient
+    // slot read as live, so the wrap re-arms the table properly instead of pretending it
+    // cannot happen: at one bump a frame this is ~2.3 years of continuous play, and the
+    // branch costs nothing measurable against a frame.
+    void Clear()
+    {
+        if (gen == 0xFFFFFFFFu)
+        {
+            std::fill(gens.begin(), gens.end(), 0u);
+            gen = 1;
+        }
+        else
+        {
+            ++gen;
+        }
+        live = 0;
+    }
+
+    V* Find(uint64_t key)
+    {
+        if (!mask)
+            return nullptr;
+        ++g_flatCacheLookups;
+        // The poison arm looks the WRONG KEY up, so a lookup that should hit misses and
+        // the verifier must see it. It is deliberately not a wrong VALUE: this table is
+        // still serving the frame while poisoned, and a miss costs a re-copy where a
+        // wrong hit would draw a wrong mesh. What is being tested is the check's power,
+        // not the renderer's tolerance for corruption.
+        const uint64_t k = g_flatCacheVerifyPoison ? (key ^ 1ull) : key;
+        uint32_t i = uint32_t(FlatMix(k)) & mask;
+        for (;;)
+        {
+            ++g_flatCacheProbes;
+            if (gens[i] != gen)
+                return nullptr;
+            if (keys[i] == k)
+                return &vals[i];
+            i = (i + 1) & mask;
+        }
+    }
+
+    // The caller has already established that `key` is absent (every insert here follows
+    // a miss). Grows at a 0.7 load factor, which keeps the average probe count under two.
+    void Insert(uint64_t key, const V& v)
+    {
+        if (!mask || live + 1 > ((mask + 1) * 7) / 10)
+            Grow();
+        uint32_t i = uint32_t(FlatMix(key)) & mask;
+        while (gens[i] == gen)
+        {
+            if (keys[i] == key)
+            {
+                vals[i] = v;
+                return;
+            }
+            i = (i + 1) & mask;
+        }
+        keys[i] = key;
+        gens[i] = gen;
+        vals[i] = v;
+        ++live;
+    }
+
+    // Walk the live entries. Used by the stream census, which is off by default.
+    template <class F>
+    void ForEach(F f) const
+    {
+        for (uint32_t i = 0; i <= mask; ++i)
+            if (gens[i] == gen)
+                f(keys[i], vals[i]);
+    }
+
+  private:
+    void Grow()
+    {
+        const uint32_t oldCap = mask ? mask + 1 : 0;
+        std::vector<uint64_t> ok;
+        std::vector<V> ov;
+        ok.reserve(live);
+        ov.reserve(live);
+        for (uint32_t i = 0; i < oldCap; ++i)
+            if (gens[i] == gen)
+            {
+                ok.push_back(keys[i]);
+                ov.push_back(vals[i]);
+            }
+        const uint32_t cap = oldCap ? oldCap * 2 : 1024;
+        keys.assign(cap, 0);
+        gens.assign(cap, 0);
+        vals.assign(cap, V{});
+        mask = cap - 1;
+        live = 0;
+        for (size_t k = 0; k < ok.size(); ++k)
+            Insert(ok[k], ov[k]);
+    }
+};
+
 struct Image
 {
     VkImage image = VK_NULL_HANDLE;
@@ -2530,7 +2745,13 @@ struct Renderer
     // cross-frame store exists is either buffer — a stream served across the frame
     // boundary is registered here too, so the second and subsequent draws of that frame
     // do not even pay its guard.
-    std::unordered_map<uint64_t, StreamLoc> streamCache;
+    // FLAT as of part 55: the `std::unordered_map` this used to be was 13.1% of the pump
+    // thread all by itself — see the FlatCache comment above for the measurement and for
+    // why a chained map is that expensive on a lookup this hot. The map is kept beside it
+    // and is used by `CZ_VK_NO_FLAT_CACHE=1` (the control arm) and by
+    // `CZ_VK_VERIFY_FLAT_CACHE=1` (both structures maintained, every lookup compared).
+    FlatCache<StreamLoc> streamCache;
+    std::unordered_map<uint64_t, StreamLoc> streamCacheMap;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -5963,20 +6184,29 @@ void BeginFrame()
     if (g_streamCensus)
     {
         g_prevStreamKeys.clear();
-        for (const auto& kv : R->streamCache)
-        {
+        // Whichever structure this run is actually using. Reading only the flat one would
+        // silently empty this census in the `CZ_VK_NO_FLAT_CACHE` arm, and a census that
+        // reads zero because it looked in the wrong place is the exact shape of gotcha 25.
+        auto remember = [] (uint64_t key) {
             uint64_t h = 0;
             if (g_streamCensus >= 2)
             {
-                auto hit = g_streamHashes.find(kv.first);
+                auto hit = g_streamHashes.find(key);
                 if (hit != g_streamHashes.end())
                     h = hit->second;
             }
-            g_prevStreamKeys.emplace(kv.first, h);
-        }
+            g_prevStreamKeys.emplace(key, h);
+        };
+        if (g_flatCacheOff)
+            for (const auto& kv : R->streamCacheMap)
+                remember(kv.first);
+        else
+            R->streamCache.ForEach([&] (uint64_t key, const StreamLoc&) { remember(key); });
         g_streamHashes.clear();
     }
-    R->streamCache.clear();
+    R->streamCache.Clear();
+    if (g_flatCacheOff || g_flatCacheVerify)
+        R->streamCacheMap.clear();
     // Refill the guard's probe toll. Per FRAME, so the bootstrap's cost is a constant
     // the frame budget can absorb rather than a function of how much geometry streamed
     // in this second (which is what made the unbounded version cost 66.8 MB/frame).
@@ -6858,15 +7088,45 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
     // disjoint bits instead makes the key exact rather than probably-unique.
     const uint64_t key = (uint64_t(va) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
                          (endian & 3);
-    auto it = R->streamCache.find(key);
-    if (it != R->streamCache.end())
+    // THE LOOKUP THAT WAS 13.1% OF THE PUMP THREAD. See the FlatCache comment for how
+    // that was measured and what it means; what matters here is that the answer must be
+    // IDENTICAL to the map's, because a lookup returning the wrong entry hands this draw
+    // another mesh's vertex stream and nothing in this runtime would report it.
+    const StreamLoc* hit = nullptr;
+    if (!g_flatCacheOff)
+        hit = R->streamCache.Find(key);
+    if (g_flatCacheOff || g_flatCacheVerify)
+    {
+        auto it = R->streamCacheMap.find(key);
+        const StreamLoc* mhit = it != R->streamCacheMap.end() ? &it->second : nullptr;
+        if (g_flatCacheVerify)
+        {
+            ++g_flatCacheChecked;
+            const bool agree = (hit == nullptr) == (mhit == nullptr) &&
+                               (!hit || (hit->buf == mhit->buf && hit->at == mhit->at));
+            if (!agree)
+            {
+                if (g_flatCacheDisagreed < 8)
+                    fprintf(stderr,
+                            "[vk] FLAT CACHE DISAGREEMENT #%llu on key %016llx: flat %s, "
+                            "map %s\n",
+                            (unsigned long long)g_flatCacheDisagreed + 1,
+                            (unsigned long long)key, hit ? "hit" : "miss",
+                            mhit ? "hit" : "miss");
+                ++g_flatCacheDisagreed;
+            }
+        }
+        if (g_flatCacheOff)
+            hit = mhit;
+    }
+    if (hit)
     {
         if (g_streamCensus)
         {
             ++g_streamCensus_c.hits;
             g_streamCensus_c.bytesHit += bytes;
         }
-        return it->second;
+        return *hit;
     }
 
     // Below here runs at most ONCE per (key, frame) — ~2,000 times in a crowd frame
@@ -7148,7 +7408,10 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         }
         loc = StreamLoc{ &R->arena, at };
     }
-    R->streamCache.emplace(key, loc);
+    if (!g_flatCacheOff)
+        R->streamCache.Insert(key, loc);
+    if (g_flatCacheOff || g_flatCacheVerify)
+        R->streamCacheMap.emplace(key, loc);
 
     // The census, entirely on the first-touch path — which already costs a guard and
     // usually a copy, so the instrument is small against what it is measuring, and the
@@ -10990,6 +11253,15 @@ bool InitCommon()
     // The pre-part-47 cadence — revalidate on every fetch instead of once a frame per
     // cache entry. A control arm, not a fix; see its declaration.
     g_texGuardEveryFetch = EnvOn("CZ_VK_TEX_GUARD_EVERY_FETCH");
+    // The flat open-addressed cache and its two arms. See the FlatCache comment: the
+    // failure mode this is guarding against is a lookup that returns the WRONG entry,
+    // which draws a wrong mesh and reports nothing, so the control arm restores the
+    // `std::unordered_map` exactly and the verify arm runs both and compares.
+    g_flatCacheOff = EnvOn("CZ_VK_NO_FLAT_CACHE");
+    g_flatCacheVerify = EnvOn("CZ_VK_VERIFY_FLAT_CACHE");
+    g_flatCacheVerifyPoison = EnvOn("CZ_VK_VERIFY_FLAT_CACHE_POISON");
+    if (g_flatCacheVerifyPoison)
+        g_flatCacheVerify = true;   // the poison is meaningless without the check
     if (const char* n = Env("CZ_VK_TEX_GUARD_BYTES"))
     {
         // Clamped to a multiple of kGuardBlocks and to at least one block: below that
@@ -12717,6 +12989,39 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             (unsigned long long)s.verifyChecked,
                             100.0 * double(s.verifyStale) / double(s.verifyChecked));
                 g_gpStats = GuardPoolStats{};
+            }
+
+            // The flat stream cache. Two numbers and both are needed: PROBES PER LOOKUP
+            // is the only thing that says the table is actually flat in practice rather
+            // than in principle — a bad hash or a load factor left too high turns linear
+            // probing into a linear scan, and it would present as "the change did
+            // nothing", which is indistinguishable from a wrong theory. Above ~2.0 the
+            // table is the problem. The verify line is the correctness half and prints
+            // only when the arm is on.
+            // ...and it prints in the CONTROL arm too, with zero lookups, because an arm
+            // that is silent is an arm nobody can tell was on (gotcha 151).
+            if (g_flatCacheLookups || g_flatCacheOff)
+            {
+                fprintf(stderr,
+                        "[vkprof] flat stream cache: %llu lookups/frame, %.2f probes per "
+                        "lookup%s\n",
+                        (unsigned long long)(frames ? g_flatCacheLookups / frames : 0),
+                        g_flatCacheLookups ? double(g_flatCacheProbes) / double(g_flatCacheLookups) : 0.0,
+                        g_flatCacheOff ? " [CZ_VK_NO_FLAT_CACHE: the std::unordered_map is serving]" : "");
+                g_flatCacheLookups = 0;
+                g_flatCacheProbes = 0;
+            }
+            if (g_flatCacheChecked)
+            {
+                fprintf(stderr,
+                        "[vkprof] flat cache VERIFY: %llu of %llu lookups disagreed with "
+                        "the std::unordered_map (%.4f%%)%s\n",
+                        (unsigned long long)g_flatCacheDisagreed,
+                        (unsigned long long)g_flatCacheChecked,
+                        100.0 * double(g_flatCacheDisagreed) / double(g_flatCacheChecked),
+                        g_flatCacheVerifyPoison ? "  [POISONED: this MUST be non-zero]" : "");
+                g_flatCacheChecked = 0;
+                g_flatCacheDisagreed = 0;
             }
 
             // Collect, sort by count descending, print. 128 slots is a fixed, tiny
