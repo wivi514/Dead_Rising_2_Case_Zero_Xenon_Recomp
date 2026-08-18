@@ -10936,6 +10936,20 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // the pacing floor rather than the change (gotcha 237) — and the interval's own
     // frame count, so a window that covers a load screen is visible as such rather than
     // averaged in.
+    //
+    // AND IT REPORTS THE DRAW COUNT, which the operator asked for and which is what makes
+    // this line usable for a comparison at all. Their objection, in their words: AutoChuck
+    // "isn't a predetermined route and zombie spawns are not always the same, so it won't
+    // be 100% accurate especially if in a run it stays in the military zone and one go on
+    // the main street." That is exactly right, and it applies to a human-driven session
+    // too. Without the draw count a `[fps]` window is a frame rate with no statement of
+    // what was being drawn, so two windows cannot be matched and the difference between
+    // the arms and the difference between two PLACES are the same number.
+    //
+    // The min and max go out beside the median because a window that STRADDLES two places
+    // is the case that has to be visible: a median of 3,000 built from 900 and 6,000 is
+    // not a place at all, and a reader who only saw the median would match it against a
+    // genuine 3,000-draw window in the other arm. It costs one counter read a frame.
     {
         static const int fpsLogSec = Env("CZ_FPS_LOG") ? atoi(Env("CZ_FPS_LOG")) : 0;
         if (fpsLogSec > 0)
@@ -10945,8 +10959,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             static clk::time_point lastFrame = windowStart;
             static uint64_t frames = 0;
             static std::vector<uint32_t> frameUs;
+            static std::vector<uint32_t> frameDraws;
             const clk::time_point now = clk::now();
             ++frames;
+            frameDraws.push_back(uint32_t(R->drawsThisFrame));
             frameUs.push_back(uint32_t(
                 std::chrono::duration_cast<std::chrono::microseconds>(now - lastFrame)
                     .count()));
@@ -10959,15 +10975,25 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // belongs to neither; dropping it costs one frame in a few hundred.
                 std::sort(frameUs.begin() + 1, frameUs.end());
                 const uint32_t medUs = frameUs[(frameUs.size() + 1) / 2];
+                uint32_t dMin = 0, dMed = 0, dMax = 0;
+                if (!frameDraws.empty())
+                {
+                    std::vector<uint32_t> d = frameDraws;
+                    std::sort(d.begin(), d.end());
+                    dMin = d.front();
+                    dMed = d[d.size() / 2];
+                    dMax = d.back();
+                }
                 fprintf(stderr,
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
-                        "%llu frames in %.1f s\n",
+                        "%llu frames in %.1f s | draws med %u (%u..%u)\n",
                         double(frames) / elapsed, 1000.0 * elapsed / double(frames),
                         1e6 / double(medUs), double(medUs) / 1000.0,
-                        (unsigned long long)frames, elapsed);
+                        (unsigned long long)frames, elapsed, dMed, dMin, dMax);
                 windowStart = now;
                 frames = 0;
                 frameUs.clear();
+                frameDraws.clear();
             }
         }
     }
