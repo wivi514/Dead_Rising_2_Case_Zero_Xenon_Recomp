@@ -11511,3 +11511,180 @@ load the operator plays, plus a real smoothness win in transit and a picture tha
 correlates with hardware at both resolutions.** It also removes the readback's whole
 architecture — three full-frame copies and a GPU→CPU→GPU round trip — which is worth
 keeping for what it makes possible later, not only for what it returns today.
+
+## 6cl. Part 55: THE OPERATOR ASKED FOR MULTITHREADING AND THE BIGGEST THING ON THE
+## CRITICAL THREAD TURNED OUT NOT TO BE PARALLELISABLE WORK AT ALL — it was
+## `std::unordered_map`
+
+**The subject was set by the operator**, closing part 54: *"For part 55 I want us to focus
+on making it so the game properly use multithread and dispose of the load properly unless
+you tell me it's not possible."* And a second instruction that is a design constraint
+rather than a preference: *"even if we really needed the 16 core we should still leave core
+empty for user background item and all. So we should do it smart and depend on amount of
+core the user has instead of aiming for my machine."*
+
+`docs/perf-plan-part55.md` is the plan that answers both. Its §0 says the ceiling is 5-6
+busy threads and not 16, because the PM4 walk is serial (a command stream's meaning is
+positional) and draw ORDER is semantic. Its §0b sets the thread budget. And its item C —
+filed as the cheapest thing on the list and expected to return an *instrument* rather than
+a saving — is what this part is actually about.
+
+---
+
+### 1. THE THREAD BUDGET, because it constrains everything after it
+
+`runtime/cpu/thread_budget.{h,cpp}`. One number for the whole runtime, and every pool asks
+it for a share:
+
+```
+physical  = counted from sysfs topology, INTERSECTED with the process's affinity mask
+reserved  = 2      # the OS/compositor, and the user's own software
+committed = 3      # the graphics pump + the two busy guest threads, measured
+budget    = clamp(physical - reserved - committed, 0, 6)
+```
+
+| machine | physical | budget |
+|---|---|---|
+| 4-core laptop | 4 | **0** — the serial path, which is correct and not degraded |
+| 6-core | 6 | 1 |
+| **the operator's** | **8** | **3** |
+| 12-core and up | 12+ | 6, the cap |
+
+Three things about it are deliberate.
+
+**Physical cores are COUNTED, not derived.** Unique `(package, core)` pairs out of
+`/sys/devices/system/cpu/*/topology`, because dividing the logical count by an assumed
+threads-per-core is wrong on any heterogeneous part. The count is intersected with
+`sched_getaffinity`, so a run under `taskset` or in a constrained container budgets against
+what it was actually given — verified, `taskset -c 0,1,8,9` reports **2 physical cores and
+a budget of 0**.
+
+**One knob.** `CZ_WORKERS=N` overrides the whole budget and `CZ_WORKERS=0` forces the
+serial path everywhere. Not one variable per pool, or the arms multiply and nobody can say
+afterwards what a run was configured as. Per-pool arms that already existed still win where
+set.
+
+**It prints**, at start-up and again once the grants exist:
+
+```
+[threads] machine: 8 physical cores, 16 logical cpus -> budget 3 workers (reserve 2, committed 3, cap 6)
+[threads]   guard      3 of 4 wanted (clamped)
+```
+
+because a performance number taken at an unknown thread count is not comparable with
+anything. That is gotcha 353's shape a third time over — a parallel measurement has a
+MACHINE as well as a workload.
+
+**The measurable consequence, stated so it can be refuted:** the guard pool asked for 4 and
+gets 3 on this machine, so part 53's measured configuration is no longer the default.
+`CZ_VK_GUARD_WORKERS=4` restores it exactly, and the A/B is owed.
+
+---
+
+### 2. ITEM C: THE SPLIT THAT COULD NOT BE TAKEN WITH A ProfScope
+
+The plan filed `UploadStream` as unexplored: 12.84% of the pump thread in part 54's symbol
+budget (14.74% when re-taken here), and in no performance plan this project had written —
+because part 22 closed the stream cache on the strength of `ProfScope(streams)` reading
+0.0%, and a scope is a region of code and not a subsystem (gotcha 343).
+
+**It could not be split the way `record` and `drawOther` were.** The hot path is taken
+~33,000 times in a crowd frame and a `ProfScope` costs two clock reads at ~20 ns —
+**1.3 ms a frame**, larger than several of the phases it would be separating. An instrument
+that big does not measure a function, it replaces it (gotcha 7), and this project has the
+worked example already: part 50 found `other`'s residual WAS the profiler's own clock
+reads.
+
+So the split was taken with `perf` and the DWARF line table the RelWithDebInfo build
+already carries — `tools/part55_srcline.py`, which folds a flat profile by SOURCE LINE
+inside one symbol on one thread, at zero cost to the subject, and at -O2 attributes
+INLINED callees to their own lines rather than to the container. It is the same move part
+51 made from phases to symbols, one level finer. **Gotcha 360.**
+
+The answer was not something reading the code would have produced:
+
+| share of `UploadStream` | line | what it is |
+|---|---|---|
+| **41.24%** | `stl_function.h:378` | `std::equal_to<uint64_t>` — the key compare |
+| **36.92%** | `hashtable.h:2257/2263/0` | `_M_find_before_node` — the bucket's node chain |
+| **10.49%** | `hashtable_policy.h:585` | `_Mod_range_hashing` — the prime modulo, a division |
+| 1.53% | `vk_renderer.cpp:6851` | ...the first line of our own function |
+
+**Eighty-nine percent of `UploadStream` was the hash-map lookup — 13.1% of the whole pump
+thread.** Not parallel work waiting for a thread. Work that should not exist.
+
+And the same tool, run on the other hot symbols, said it was a CLASS and not one site:
+
+| symbol | share of the pump | of which container lookup |
+|---|---|---|
+| `DoDraw` | 22.06% | **17.9%** — `std::less` + `_Rb_tree::find`, i.e. `R->shaders` probed twice per draw |
+| `UploadTexture` | 9.50% | **~76%** — `R->textures` plus two always-on census `std::map`s |
+| `UploadStream` | 14.74% | **89%** |
+
+Roughly **a quarter of the pump thread was container lookups**, which is larger than any
+single item in part 55's plan and larger than the two parallel items combined.
+
+**WHY `std::unordered_map` IS THIS SLOW**, stated so the reasoning can be checked rather
+than trusted. It is a chained hash table: every entry is a separately `malloc`ed node, so a
+lookup is a bucket-array load, a dependent chase to a node allocated at an unrelated
+address, and a compare of a key living in that node — two dependent cache misses whose
+latency cannot be overlapped, with the compare charged for the second, which is why
+`equal_to` reads as the single hottest line. The standard then mandates prime-modulo
+bucketing, so every lookup performs a 64-bit division (~20-26 cycles, unpipelined), and
+`std::hash` for an integer is the IDENTITY, so nothing is mixed before it. `std::map` is
+worse: a red-black tree walk of ~9 dependent pointer loads.
+
+---
+
+### 3. WHAT REPLACED THEM, and the two details that would have been silent defects
+
+`FlatCache<V>` in `vk_renderer.cpp`: open addressing with linear probing, keys, generation
+stamps and values in three flat arrays sized to a power of two. One masked load and a probe
+sequence that walks forward through memory the prefetcher can see coming. No division, no
+node allocation — `_int_malloc` was 2.11% of the pump thread and is now **0.02%**.
+
+**The key must be MIXED.** With prime bucketing a structured key is survivable; with a
+power-of-two mask the low bits ARE the bucket, and the stream key is
+`(va << 32) | (bytes << 2) | endian` — its low bits are an endian code and the bottom of a
+byte count. The identity hash would pile a frame's streams into a handful of buckets and
+turn a probe into a linear scan. A splitmix64 finalizer costs three multiplies and fixes
+it. **`[vkprof] flat stream cache` prints PROBES PER LOOKUP for exactly this reason**: a
+bad hash or a load factor left too high presents as "the change did nothing", which is
+indistinguishable from a wrong theory. Measured: **1.37-1.62**.
+
+**Clearing is a GENERATION BUMP, not a memset.** The per-frame cache is cleared every
+frame and zeroing a 4,096-slot table would hand back part of the saving. Each slot carries
+the generation it was written in and any older generation reads as empty — correct with
+linear probing because every live entry was inserted after the last bump, so its own probe
+sequence also treated stale slots as free and no live key's chain can pass over one. The
+tombstone flag lives in the TOP BIT of the same generation word, so a probe still reads one
+array, and a tombstone from an older generation reads as empty for free.
+
+---
+
+### 4. THE VERIFIER, because a wrong lookup is a wrong ANSWER and not a crash
+
+A lookup returning the wrong entry hands a draw another mesh's vertex stream, or the wrong
+shader. Nothing in this runtime would report it. Same shape as part 52's memo defect and
+part 53's slot mix-up, which is why those items were trustworthy.
+
+* **`CZ_VK_NO_FLAT_CACHE=1`** restores `std::unordered_map`/`std::map` for all three tables
+  — the same-binary control arm, and what this renderer used for fifty-four parts. It
+  announces itself in the profile with `0 lookups/frame` rather than going silent
+  (gotcha 151).
+* **`CZ_VK_VERIFY_FLAT_CACHE=1`** maintains both structures and compares every lookup, for
+  the two tables where a shadow copy is cheap. **0 of 25.4 M, 0 of 36.7 M, 0 of 26.5 M and
+  0 of 48.5 M disagreed** across four windows.
+* **`CZ_VK_VERIFY_FLAT_CACHE_POISON=1`** makes the flat side look the wrong key up, so the
+  check MUST fire: **81.7%** of lookups disagree, and the shader half has a *visible*
+  consequence rather than only a counter — the run starts printing `no translated shader`
+  for hashes that are in the cache. A verifier that has never failed has not been shown
+  capable of failing (gotcha 30).
+
+**The cross-frame store is the exception and the reason is worth recording.** Its entries
+are MUTATED through the pointer a lookup returns — the guard, the ping-pong slot, the
+promotion counters, the pre-hash slot — so a shadow copy would mean mirroring every
+mutation: more new code than the change itself, and a defect in the mirror would present
+exactly like a defect in the subject. So there the arm switches which container four
+accessors use, and the `FlatCache` implementation is verified where a shadow IS cheap,
+running the same probe, insert and grow code.

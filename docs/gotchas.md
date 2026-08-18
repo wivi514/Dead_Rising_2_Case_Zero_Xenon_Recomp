@@ -3749,3 +3749,42 @@ From phase C part 18 (the frame rate — and none of it was work):
      budget with the machine it was derived from, and state it in every A/B: a parallel
      measurement has a machine as well as a workload, and naming only one is naming none
      (gotcha 353's shape, one dimension over).
+
+360. **A HOT PATH CAN BE TOO HOT TO INSTRUMENT WITH A SCOPE — SPLIT IT WITH `perf` AND THE
+     LINE TABLE INSTEAD.** Part 55's largest finding sat behind a lookup taken ~33,000 times
+     a frame. A `ProfScope` costs two clock reads at ~20 ns, so instrumenting it would have
+     added **1.3 ms a frame** — larger than several of the phases it was meant to separate,
+     and an instrument that big does not measure a function, it replaces it (gotcha 7). The
+     answer is that a RelWithDebInfo build already carries the DWARF line table, so a flat
+     `perf` profile can be folded by SOURCE LINE inside one symbol at zero cost to the
+     subject, and at -O2 that attributes INLINED callees to their own lines rather than to
+     the container. `tools/part55_srcline.py` is the tool; it is the same move part 51 made
+     from phases to symbols, one level finer. **When a phase split is too expensive to take,
+     that is a statement about the instrument, not about the question.**
+
+361. **THE BIGGEST COST ON A HOT THREAD CAN BE THE CONTAINER, NOT THE WORK.** Split by source
+     line, **89% of `UploadStream` was `std::unordered_map` lookup machinery** — 13.1% of the
+     whole pump thread — and `DoDraw`'s two `std::map` shader lookups were another ~4%. None
+     of it was visible: the enclosing phases (`streams` reading 0.0%, `otherShader`) NAME the
+     lookups and price them together with something else, and the subsystem the cost was
+     charged to had been declared closed on the strength of exactly that. `std::unordered_map`
+     is chained — every entry a separate `malloc`, so a lookup is a bucket load, a dependent
+     chase to an unrelated address and a compare of a key living there, two dependent cache
+     misses that cannot overlap — and the standard mandates prime-modulo bucketing, i.e. a
+     64-bit division per lookup, with `std::hash` on an integer being the IDENTITY so nothing
+     is mixed before it. `std::map` is worse still: a tree walk of ~9 dependent loads.
+     **Before parallelising a hot function, check what fraction of it is the container**, and
+     remember the two traps in replacing one: with a power-of-two mask the low bits ARE the
+     bucket, so a structured key must be passed through a mixer, and the replacement needs a
+     verifier because the failure mode of a wrong lookup is a wrong ANSWER, not a crash.
+
+362. **THE ANSWER TO "MAKE IT MULTI-THREADED" CAN BE "DELETE THE WORK".** The operator asked
+     part 55 for genuine multithreading and the plan sized three parallel items off a symbol
+     budget. The largest single thing on the critical thread turned out not to be
+     parallelisable work at all — it was container lookups, and the fix removes them rather
+     than moving them. **Strategy (a) — make the work smaller — outranks strategy (b) — move
+     the work elsewhere — whenever both are available**, because (b) has a bill that (a) does
+     not: part 53 measured 13.1 points leaving the pump while 33.2 appeared on the workers,
+     plus ~0.4 ms/frame of cache pollution charged to unrelated phases (gotcha 344). A plan
+     that opens with the parallel items should still run the cheap "split it and look" item
+     first, precisely because it can retire the expensive ones.

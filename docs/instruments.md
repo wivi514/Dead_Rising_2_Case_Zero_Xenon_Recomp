@@ -1469,11 +1469,17 @@ CZ_VK_NO_PARALLEL_GUARD=1  **the control arm for part 53 item 1.1.** Both conten
                    seen, a worker not finished, the exact variant wanted where only the
                    sampled one ran) falls back to hashing inline, so correctness never
                    depends on the prediction
-CZ_VK_GUARD_WORKERS=N  how many. Default 4 on a machine with 6+ hardware threads, 2 on
-                   3-5, 0 below that. Four is not a machine-sizing decision -- the PM4
-                   walk is serial, so this pool exists to hide ONE memory-latency-bound
-                   loop behind the walk, and four independent miss streams is most of
-                   what a single core cannot overlap by itself
+CZ_VK_GUARD_WORKERS=N  how many, overriding the runtime-wide budget for this pool only.
+                   ~~Default 4 on a machine with 6+ hardware threads, 2 on 3-5, 0 below
+                   that.~~ **RETIRED IN PART 55, and it was counting the wrong thing.**
+                   That test read `hardware_concurrency()`, which returns 16 on the
+                   operator's 8-PHYSICAL-core box. The pool now ASKS for 4 and receives
+                   whatever `CZ_WORKERS` (below) can spare -- 3 on that machine. Four was
+                   never a machine-sizing decision anyway: the PM4 walk is serial, so this
+                   pool exists to hide ONE memory-latency-bound loop behind the walk, and
+                   four independent miss streams is most of what a single core cannot
+                   overlap by itself. Set this to 4 to restore part 53's measured
+                   configuration exactly
 CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and count the
                    disagreements. A disagreement is not a wrong implementation -- a slot
                    mix-up prints its own loud `[vk] PARALLEL GUARD SLOT MIX-UP` line and
@@ -1483,6 +1489,44 @@ CZ_VK_VERIFY_PARALLEL_GUARD=1  compute the inline hash TOO, at the draw, and cou
                    ~3.2 M served guards per window, 0.0002-0.0021%, and that is an UPPER
                    bound on harm because most disagreements are streams that read as
                    changed either way. Costs the whole saving; an arm, never a default
+CZ_WORKERS=N       **THE ONE THREAD KNOB, and it overrides the whole budget.** `0` forces
+                   the fully serial path in every pool at once, which is the control arm
+                   for all parallel work in this runtime and the SHIPPED behaviour on a
+                   machine small enough that the policy computes zero. Default is
+                   `clamp(physical cores - 2 reserved - 3 already committed, 0, 6)`, which
+                   is 0 on a 4-core laptop, 1 on a 6-core, **3 on the operator's 8-core**
+                   and 6 on anything larger. PHYSICAL cores, counted as distinct
+                   (package, core) pairs and intersected with the process's CPU affinity
+                   mask, so a run under `taskset` budgets against what it was given. One
+                   variable rather than one per pool, because otherwise the arms multiply
+                   and nobody can say afterwards what a run was configured as (gotchas
+                   358, 359). Every run prints `[threads] machine: ... -> budget N` at
+                   start-up and the per-pool grants once they exist -- quote that line in
+                   any performance claim, because a parallel measurement has a MACHINE as
+                   well as a workload
+CZ_VK_NO_FLAT_CACHE=1  **the control arm for part 55's container work.** Restores
+                   `std::unordered_map` for the per-frame stream cache, `std::map` for the
+                   shader table and `std::unordered_map` for the cross-frame store's
+                   index -- i.e. what this renderer used for fifty-four parts. On by
+                   default all three are flat open-addressed tables, which is worth
+                   ~13% of the pump thread for the first alone. It announces itself in
+                   `[vkprof] flat stream cache`, which prints `0 lookups/frame` plus the
+                   arm's name rather than going silent (gotcha 151)
+CZ_VK_VERIFY_FLAT_CACHE=1  maintain BOTH structures and compare every lookup, for the two
+                   caches where a shadow copy is cheap (the per-frame stream cache and the
+                   shader table; the cross-frame store's entries are mutated through the
+                   returned pointer, so a shadow there would have to mirror every mutation
+                   and a defect in the mirror would look exactly like a defect in the
+                   subject). 0 of 48.5 M lookups disagreed. Costs more than the item saves;
+                   an arm, never a default
+CZ_VK_VERIFY_FLAT_CACHE_POISON=1  make the flat side look the WRONG key up, so the check
+                   above MUST fire -- 81.7% of lookups disagree, and the shader half has a
+                   visible consequence rather than only a counter: the run starts printing
+                   `no translated shader` for hashes that are in the cache. Deliberately a
+                   forced MISS and not a wrong VALUE: the table is still serving the frame
+                   while poisoned, so a miss costs a re-copy where a wrong hit would draw
+                   a wrong mesh. A verifier that has never failed has not been shown
+                   capable of failing (gotcha 30)
 CZ_VK_RES=WxH      **the internal resolution.** An INTEGER multiple of the title's own
                    1280x720 and nothing else -- 2560x1440, 3840x2160, 5120x2880 --
                    because a fractional scale would put a fraction into the tile
