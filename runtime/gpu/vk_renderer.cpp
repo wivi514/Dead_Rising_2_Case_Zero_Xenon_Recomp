@@ -5,6 +5,7 @@
 #include "drawid_ps_spv.h"
 #include "xenos.h"
 #include "../host/window.h"
+#include "../cpu/thread_budget.h"
 
 #include <vulkan/vulkan.h>
 
@@ -1290,15 +1291,23 @@ unsigned GuardPoolWorkers()
     static const unsigned n = [] () -> unsigned {
         if (EnvOn("CZ_VK_NO_PARALLEL_GUARD"))
             return 0;
-        if (const char* s = Env("CZ_VK_GUARD_WORKERS"))
-            return unsigned(strtoul(s, nullptr, 10));
         // FOUR, not sixteen, and the reason is in the plan: the PM4 walk is inherently
         // serial, so this pool is not a way to use the machine — it is a way to hide one
         // memory-latency-bound loop behind the walk. Four independent streams of misses
         // is most of what a single core's line-fill buffers cannot overlap; past that
         // the dispatch and the cache traffic start to cost more than they hide.
-        unsigned hw = std::thread::hardware_concurrency();
-        return hw >= 6 ? 4u : (hw >= 3 ? 2u : 0u);
+        //
+        // FOUR IS NOW A REQUEST RATHER THAN A DECISION (part 55). The number this pool
+        // gets is whatever the runtime-wide budget can spare, because part 55 proposes
+        // two more pools and three pools each sizing themselves off
+        // `hardware_concurrency()` is how a six-core machine ends up running twelve
+        // workers. On the operator's 8-physical-core box the budget is 3, so this asks
+        // for 4 and is CLAMPED to 3 — a deliberate, measured cost of leaving the machine
+        // usable, and `CZ_VK_GUARD_WORKERS=4` is the arm that restores part 53's number.
+        // See runtime/cpu/thread_budget.h for the policy and why it counts PHYSICAL
+        // cores; the old line here was `hw >= 6 ? 4 : (hw >= 3 ? 2 : 0)` against a
+        // logical count, which on this machine read 16 for 8 cores.
+        return ThreadBudget_Take("guard", 4, "CZ_VK_GUARD_WORKERS");
     }();
     return n;
 }
@@ -1331,6 +1340,11 @@ void GuardPoolDrain()
 void GuardPoolDispatch()
 {
     const unsigned n = GuardPoolWorkers();
+    // Report once the grant exists. `ThreadBudget_Report` prints only when something has
+    // changed since the last call, so this is a single predictable branch per swap and
+    // the line that matters — the final allocation, with this pool's share in it — is
+    // the last `[threads]` line in the log rather than the first.
+    ThreadBudget_Report();
     if (!n)
         return;
     if (!g_gp)

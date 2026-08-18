@@ -31,6 +31,7 @@
 
 #include <image.h> // XenonUtils: Image::ParseImage (devkit-key + LZX; see gotchas 15/16)
 
+#include "cpu/thread_budget.h"
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
@@ -201,6 +202,12 @@ int main(int argc, char** argv)
     g_memory.Init();
     g_heap.Init();
     fprintf(stderr, "runtime: guest memory at %p, heaps ready\n", (void*)g_memory.base);
+
+    // The thread budget, printed BEFORE anything spawns a worker. A performance number
+    // taken at an unknown thread count is not comparable with anything, and this line is
+    // what makes a run's parallelism visible in its own log rather than inferred from the
+    // machine it happened to run on. See runtime/cpu/thread_budget.h.
+    ThreadBudget_Report();
 
     // Before any guest code: the title reads the XMA context-array base out of the
     // decoder's register aperture exactly once (sub_8285EDF8) and caches it, so a
