@@ -3712,3 +3712,112 @@ read `phase5-notes.md` §6ch):
   and this change alters when frames land without touching what is drawn. Quoted as
   lower rather than tidied up, because a cross-session best-of on an animated reference
   is a weak comparison and should be read as one.
+
+---
+
+## Part 52 — the status block, moved out of CLAUDE.md at the close of part 54
+
+Retired from CLAUDE.md's live status by part 54's block, per the 2026-08-08 split's rule
+(keep the live part and one part back; move one out in the same commit that adds one).
+
+Where the port WAS, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
+MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S
+JOB. The plan's own verify arm refuted the plan's own fix, and the operator found the
+place to measure from — a three-minute soak at 7,200-8,562 draws that is NOT at the frame
+cap.** ~~`docs/part53-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part54-kickoff.md`; `perf-plan-part52.md` is still the live plan and its §9b records what
+part 52 corrected in it; read `phase5-notes.md` §6ci, and **§6ci §5c before planning any
+frame-time measurement**):
+
+* **`BindShader` WAS 14.16% OF THE PUMP THREAD AND IS NOW 0.00% — not one sample.** It
+  re-hashed the entire microcode on every shader-load packet, ~1,300-2,200 a frame, and
+  `perf annotate` put **~71% of its samples on four `imulq`s**: the FNV-1a accumulator, a
+  serial multiply per BYTE. The hash cannot be made faster because it IS the shader cache
+  key, so it had to be avoided. Worth **~2.4 ms at 6,000-7,000 draws** (3 runs an arm plus
+  a null arm: the control costs +15.0% mean / +12.5% median where the null read +0.2%),
+  and that is a LOWER bound because the base arm is on a pacing rung there.
+* **THE PLAN'S KEY FOR IT WAS WRONG, AND ONLY THE VERIFY ARM COULD HAVE SAID SO.** The
+  plan specified `(va, size)` plus the microcode's first and last dword, and argued a
+  wrong answer would read as a cache MISS. Measured: **two different shaders alternate
+  with identical size and identical probe dwords** — microcode is far too regular for two
+  dwords to identify it — and the wrong answer is **another real shader's hash**, which
+  IS in the cache, so it would have bound a real, wrong shader silently past every gate.
+  The shipped memo compares the whole content with `memcmp` (exact, and still ~30x
+  cheaper, because the cost removed was ALU latency and not memory). **Gotcha 342: when a
+  cache key is a PROBE, ask what the wrong answer IS, not how likely it is** — and write
+  the verify arm even when the argument for the fix sounds complete.
+* **THE COUNTER DUMP REPRICED ITEM 2.1 AND THE SOURCE HAD RANKED IT WRONG.** The plan says
+  "28 `Count(` sites inside `DoDraw`". Of ~62.5 M plain-`Count` calls, **52,901,332 —
+  84.6% — are one site in `VkRenderer_Draw`**, and ten sites are 99.2%; most of the 28
+  fire a few hundred times an hour. `VkRenderer_DumpStats` already prints the statistic
+  that ranks them. Third part running that a number the project already collects answered
+  a question somebody was about to estimate.
+* **`outside` IS NOT THE PUMP WAITING.** One `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` per
+  report splits it into working and not-running-at-all: the pump is **BLOCKED 0.09-0.12 ms
+  of a 16-17 ms frame**. That retires part 50's reading of the same residual as "guest
+  simulation ~3 ms", and it means moving work OFF the pump (plan item 1.1) is still the
+  right strategy — there is nothing to overlap with, only work to relocate.
+* **The pipeline lookup is 110-112 -> 38-43 ns/draw** (~0.43 ms/frame at 6,000 draws), a
+  `std::map` of ~400 entries replaced by a hash table with a one-entry front cache that
+  serves **67.7-71.6%** of 6,613 lookups a frame. Measured against the PINNED pre-change
+  binary run now, and **every other column of the `other` split is unchanged to the
+  digit** — a stronger control than any arm, because drift would have moved them too.
+* **AND THE THING THAT CHANGES HOW THE NEXT PART MEASURES: the headless outdoor route now
+  sits on the frame cap for most of its length.** Both arms of an A/B land on the rung and
+  the comparison reads zero whatever the change was worth. **That is an UNMEASURABLE
+  result, not a null one**, and reporting it as "no change" is the same error as reading a
+  mean off this title's vblank floor. `tools/part52_item_campaign.sh` raises `CZ_FPS_CAP`
+  in EVERY arm; what it then reports is a CPU saving, not a frame rate anyone sees.
+  `frame_perf_bins.py`'s `pinned%` is defined for a 16 ms ladder — at another cap it reads
+  "on the second rung", so name the ladder when quoting it.
+* **THE OPERATOR JUDGED IT, RAN THE CONTROL, AND THEN FOUND THE PLACE TO MEASURE FROM.**
+  "Performance is better." A chained same-binary A/B (`ARM=ab
+  tools/part52_operator_session.sh`) put **exactly one phase column in motion** —
+  `outside`, where `BindShader` lives — with every other column inside ±0.21 ms, which is
+  what makes one run an arm quotable: drift moves everything. Then **they proposed a
+  three-minute SOAK in a heavier place, and it is the best measurement this project has
+  ever taken**: one draw bin held **7,773 frames against 6,079** (a walk's best bin holds
+  ~1,300), giving **+11.6% mean / +12.5% median at a significance of +211**, with the
+  light bins still reading **+0.0%** as the experiment's own null. §6ci §§10-12.
+* **THAT SOAK ANSWERS THE STRATEGY QUESTION AND REORDERS THE PLAN.** It sustains
+  **7,162-7,529 draws with peaks to 8,562** for three minutes — heavier than any place
+  measured here — and **0% of its frames sit on a pacing rung**, so it is CPU-bound and
+  the remaining items buy FRAMES there rather than headroom. Uninstrumented it is
+  ~16.7-18.7 ms (`CZ_VK_FRAME_STATS` printed its own bill at **3.21-3.23 ms/frame**
+  there); the pump is **97.5-97.8% on CPU**. And what dominates it is **`record` at 8.69
+  ms of 20.66 — 42%, twice the next phase** — which only item 1.4, parallel command
+  recording, addresses. **Take every future A/B there, as a soak.**
+* **A SAVING IS A SLOPE, NOT A NUMBER.** The memo's `outside` delta is **1.36 ms at ~5,500
+  draws and 2.49 ms at ~7,200**, because it runs per shader-load packet and the soak
+  measured **3,010-3,047 loads/frame** against 2,224 on the walk. Three measurements that
+  looked inconsistent are one finding at three loads. **Quote the draw count with any
+  per-draw or per-packet saving.**
+* **AND THE THING PART 52 DID NOT DO, WHICH IS PART 53'S WHOLE JOB.** The plan's §1
+  commits to strategy **(b) — move work onto cores that are doing nothing** — and says so
+  in as many words. **All four shipped items are (a): they make ONE thread's work
+  smaller.** That happened by following the plan's §10 ORDER, which front-loads three
+  serial items ahead of the first parallel one; the prose and the table disagree and the
+  prose is right. The process still uses **2.24 of 16 cores (14% of the machine) with ~13
+  idle**, and at the operator's heaviest place our pump is **97.5-97.8% on CPU** — there
+  is no slack left in (a) at that load. **Item 1.1 (parallel content guards) is part 53's
+  job**, now measured at **~5.3 ms**. Note what "spread across all cores" can mean here
+  before promising it: the PM4 walk is inherently SERIAL because the stream's meaning is
+  positional (`pm4.h`), so the target is **3-5 busy threads, not 16**.
+* **PRICING ITEM 1.4 MOVED 39% OF IT ONTO ITEM 1.1, and reconciled two instruments that
+  had never been compared.** The stream content guard is charged to `record`, because
+  `UploadStream` runs inside the `recordVertex` scope while `ProfScope(streams)` wraps
+  only the copy — so item 1.1 (priced off the `GuardFold` SYMBOL) and item 1.4 (priced off
+  the `record` PHASE) **shared the same milliseconds**. Split: `record 1,007 ns/draw =
+  state 141 + vertex 188 + index 161 + GUARD 391 + residual 126`. Item 1.4's real ceiling
+  is **~5.32 ms (~4.0 at four workers)**, not the 8.69 `record` implied; item 1.1 rises to
+  **~5.3 ms**. Same size, and 1.1 is a pure function with a byte-exact oracle where
+  recording owns renderer state and draw ORDER is semantic — **so 1.1 goes first**.
+  Gotcha 343: a scope is a region of code, not a subsystem.
+* **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1; the switch gate (0
+  defects); the dimension census (0 disagreements); `no translated shader` = 0;
+  `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation
+  windows, 0 real**; **E3 best of five +0.8771**, 4 of 5 agreeing on layout. And the
+  shader-cache **NAME diff caught one again** — `ps_bd5d8eb053e36a84`, in the dumps, never
+  in the cache, never bound by any run, so the miss counter read 0 and the count matched
+  at 435 = 435 with different members. **The cache is 436.** Run the name diff in any part
+  where `CZ_SHADER_DUMP` was set, which for a performance part is every part.

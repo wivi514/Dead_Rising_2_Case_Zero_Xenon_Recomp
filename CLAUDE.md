@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 348 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 352 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 348-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 352-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part54-kickoff.md`.** State the rule as well as the name, because this line said
+    `part55-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -187,10 +187,11 @@ mask; trust the microcode's own swizzles.
     statements part 52 refuted (item 1.0's probe key, item 2.1's sizing) and **§9c** what
     part 53 established, including the one thing the plan never budgeted — a (b) item's
     BILL. **`perf-plan-part50.md` is history.**
-    Read `docs/part54-kickoff.md` first, then `phase5-notes.md` §6cj (part 53) and §6ci
-    (part 52) — and read **§6ci §5c before planning any frame-time measurement at all**,
-    because the headless route sits on the frame cap and an A/B there reads zero whatever
-    the change was worth. §6cg (part 50) and §6ch (part 51) are the earlier corrections.
+    Read `docs/part55-kickoff.md` first, then `phase5-notes.md` §6ck (part 54), §6cj
+    (part 53) and §6ci (part 52). **§6ci §5c is RETIRED as of part 54**: it said the
+    headless route sits on the frame cap so an A/B there reads zero whatever the change
+    was worth, and the cap default moving 60 -> 500 took the route off the rung — the pump
+    is 93.7% of a core there now, where part 53 closed at 50.3%. §6cg (part 50) and §6ch (part 51) are the earlier corrections.
     `perf-cpu-plan.md` and `perf-plan-part{47,48}.md` are executed predecessors.
   - `instruments.md` (every env var and arm), `measurement.md` (how to judge a change),
     ~~`perf-cpu-plan.md` (the live performance plan)~~ and `perf-plan-overnight.md` (its
@@ -264,7 +265,12 @@ mask; trust the microcode's own swizzles.
     the pump thread — filed a frame ahead from the working set the pump last saw, with an
     inline fallback on every miss so correctness never depends on the prediction.
     `CZ_VK_NO_PARALLEL_GUARD=1` is the control arm. Inert
-    unless `CZ_VKDRAW=1`. `xenos.h` holds the register indices and format codes with
+    unless `CZ_VKDRAW=1`. **As of part 54 it can also present through a real Vulkan
+    swapchain** (`CZ_VK_SWAPCHAIN=1`), which is an ARM and not the default: it takes the
+    frame −8.3% at 720p and −31.4% at 1440p, and it costs the host-rendered F4 overlay,
+    because a window carrying `SDL_WINDOW_VULKAN` cannot also carry an `SDL_Renderer`.
+    Nothing renders INTO a swapchain image — the finished frame is blitted in — so the
+    renderer's dynamic rendering, pipeline formats and resolve chain are unaware it exists. `xenos.h` holds the register indices and format codes with
     each field layout written next to it, because every one of them is a magic number
     whose wrong value is silent. The header comment of `vk_renderer.cpp` transcribes
     the interface the translated shaders present (push constants, the five descriptor
@@ -272,7 +278,9 @@ mask; trust the microcode's own swizzles.
     this, if the two ever disagree.
   - `host/window.{h,cpp}` — phase 3: the SDL window, the event loop, the present
     seam and the pad, deliberately in **one** module because in SDL they are one
-    thread. Everything except `Host_Present` (called from the PM4 executor) and
+    thread. Part 54 added the Vulkan swapchain seam — four functions the renderer thread
+    calls, and the decision has to be made HERE, before the window exists, because
+    `SDL_WINDOW_VULKAN` is a creation flag. Everything except `Host_Present` (called from the PM4 executor) and
     `Host_PadState` (called from whichever guest thread polls `XamInputGetState`)
     runs on the thread that created the window, which is the process's main thread —
     which is why `main.cpp` now runs the guest entry on a spawned thread
@@ -707,12 +715,99 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-18 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
+Where the port is, as of 2026-08-18 (part 54 CLOSED — **THE PRESENT WAS COPYING THE FRAME
+THREE TIMES AND ONE OF THOSE COPIES HAD NEVER BEEN MEASURED, BECAUSE IT ONLY EXISTS WITH A
+WINDOW AND EVERY PERFORMANCE RUN HERE IS HEADLESS. A real Vulkan swapchain takes the frame
+−8.3% at 720p and −31.4% at 1440p against a null of −0.7%/+0.0%. And the route to the
+outdoor world turned out to be winning a 150 ms race.** `docs/part55-kickoff.md` is the
+LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.md` §6ck):
+
+* **`CZ_VK_SWAPCHAIN=1` — the plan's §7 item, promoted by part 53's resolution knob and
+  PRICED BEFORE IT WAS BUILT.** The default present path copies the frame three times per
+  present — the GPU's image→buffer copy, the pump's `memcpy` into the window's back buffer,
+  and the window thread's `SDL_UpdateTexture` — a GPU→CPU→GPU round trip for pixels that
+  never needed to leave the card. The arm acquires a swapchain image, blits the finished
+  frame into it and presents on a **semaphore** rather than a fence, so the window gets the
+  frame while the CPU is still retiring the previous one. `readback` reads **0.0%**.
+* **`readback` HAD READ 0.0% ON EVERY HEADLESS RUN IN THIS PROJECT'S HISTORY** — including
+  the ones part 53 used to declare its readback item done — because `Host_PresentPixels`
+  returns immediately with no window. Windowed it is **8.1-8.7% of the frame at 1280x720
+  and 16.4-36.2% at 2560x1440**, the largest single non-draw phase at 2x. The phase was not
+  lying; it was reporting a path that was not running (gotcha 352). Two neighbours hid the
+  same way: the window thread's own copy (8.8% → 15.0% of a core between the two scales, on
+  a thread no instrument here reads) and the GPU's copy, visible only as `submit gpu` rising
+  to 14.7% — **the GPU being a limiter at 2x, which is what the resolution knob was
+  supposed to produce and had not been seen doing.**
+* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p**, three rounds an arm, alternated, one
+  frozen binary, medians per draw band (2,500-2,999 draws, n=7-9 an arm), against the
+  campaign's own within-arm null of **−0.7% and +0.0%** in the same band.
+* **AND IT IS A SLOPE THE OTHER WAY ROUND FROM EVERY PREVIOUS ITEM.** Parts 52 and 53
+  shipped savings that grew with the draw count, because their work ran per draw or per
+  packet. This is a FIXED cost per frame, so its share is largest where the frame is
+  otherwise lightest: at 2x, **−50.0% at 500-999 draws and −17.8% at 5,000-5,499**. Quote
+  the draw count, and expect the trend to run the other way. It also removes **more than
+  the phase it zeroes** — zeroing a 24.5% `readback` out of 10.20 ms predicts 7.70 and the
+  measurement is 7.00 — the extra being the GPU copy and the pump waiting on the window
+  thread's mutex.
+* **IT IS AN ARM, NOT THE DEFAULT, FOR EXACTLY ONE REASON: the host-rendered F4 debug
+  overlay is drawn by SDL's renderer and a Vulkan window has no SDL renderer.** The title's
+  own F2 DebugJump screen is drawn by the GAME and is unaffected, as is every other
+  instrument. **The operator's verdict is what this arm is missing** — `CZ_VK_SWAPCHAIN=1
+  RES=2560x1440 tools/play_session.sh` is the judging session, and it should happen before
+  anything is built on top of it. `part55-kickoff.md` §3 has the three ways forward.
+* **NONE OF THIS PROJECT'S PICTURE GATES CAN SEE THIS ARM, AND THAT IS THE MOST
+  TRANSFERABLE THING IN THE PART.** `CZ_CAPTURE_KEY`, `CZ_VK_FRAME_DUMP`,
+  `CZ_VK_FRAME_STATS` and the E3 correlation all walk the present READBACK — the exact copy
+  the swapchain removes — so they pass **with the old path still doing all the work**.
+  Gotcha 350: **before gating a change, ask which BYTES the gate reads and whether the
+  change produced them.** The replacement, `CZ_VK_SWAPCHAIN_DUMP`, reads back the image
+  actually handed to the presentation engine and correlates it against Xenia's own
+  screenshot: **+0.8831 at 1x (21 of 38 agreeing on layout) and +0.8741 at 2x (16 of 32)**,
+  against the E3 gate's standing +0.8396…+0.8808. Vulkan validation clean.
+* **THE FIRST ORACLE TRIED WAS A COMPOSITOR GRAB AND IT READ UNIFORMLY BLACK, BECAUSE THE
+  MONITOR WAS ASLEEP.** Five 2560x1440 PNGs with RGB extrema `(0,0)` on every channel in
+  both arms, `+0.0000` against every orientation, and nothing wrong with the renderer, the
+  grabber or the gate. Gotcha 231's trap one subsystem over. `tools/part54_swapchain_picture.sh`
+  is still the better gate **by day**; use `CZ_VK_SWAPCHAIN_DUMP` at night. (KWin does not
+  implement the `wlr-screencopy` protocol `grim` needs and says so clearly; `spectacle -b -n
+  -f` goes through KWin's own interface.)
+* **THE ROUTE TO THE OUTDOOR WORLD WAS A COIN FLIP AND IS FIXED.** A synthetic host debug
+  edge (`F2`/`F3`/`F4`/`F9`) fired only if the guest polled `XamInputGetState` inside a
+  **150 ms window at a fixed wall-clock offset**. On a miss the edge was LOST, the DebugJump
+  screen was never requested, and the recipe silently degraded to "press START a lot" while
+  the run continued for its full seven minutes and profiled the prologue. It had been
+  winning that race since part 39. The edge now fires on the first poll after its interval
+  is reached; **`CZ_FAKE_PRESS_EDGE_MISS=1` is the positive control** that forces the
+  recovery path, which no ordinary run exercises. **The diagnosis went wrong first in the
+  standard way**: one run an arm blamed part 53's frame-cap default change, and three runs
+  an arm read 3/3 and 3/3 six minutes later. Gotcha 349.
+* **THE HEADLESS ROUTE IS OFF THE PACING RUNG AND THE PUMP IS SATURATED THERE — 93.7% of a
+  core, where part 53 closed at 50.3%.** The cap default moving 60 → 500 did that, and it
+  **retires §6ci §5c's warning** that a headless A/B here reads zero whatever the change was
+  worth. The process uses **3.75 of 16 cores**, up from 2.68.
+* **The re-taken symbol budget, and the biggest thing left is the draw path.** Pump thread,
+  instruments off, outdoors in a crowd: `DoDraw` **24.43%**, the NVIDIA driver
+  **15.13%**, `UploadStream` **12.84%**, `WriteRegisterRun` 9.10%, `UploadTexture` 8.69%,
+  `ExecutePacket` 5.77%. `GuardFold` does not appear. **`DoDraw` plus the driver is 39.6%
+  and they are the same item** — the driver time IS the `vkCmd*` calls the recording makes,
+  so plan item 1.4 (parallel command recording) moves both, and it is still the riskiest
+  thing in the plan. **`UploadStream` at 12.84% is not in the plan at all**: part 22 closed
+  the stream cache on `ProfScope(streams)` reading 0.0%, and the symbol says that scope is
+  not where the cost is (gotcha 343's shape). Splitting it is the cheapest unexplored item.
+* **Gates at close: ALL CLEAN.** `--smoke`; switch gate 0 defects; dimension census 0
+  disagreements; both PM4 oracles on B1; E3 best of five **+0.8399**, 4 of 5 agreeing on
+  layout; `no translated shader` 0; `truncated=0`; 0 `PARALLEL GUARD SLOT MIX-UP`; deepest
+  file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation windows, 0 real**; the
+  shader-cache NAME diff shows only `ps_926c15dd20571cf1`, the known lost-microcode entry.
+  **The cache is 438**, unchanged — the first part in a while to reach no new ground.
+
+Where the port WAS, as of 2026-08-18 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
 EVER MOVED OFF THE PUMP THREAD. Both content guards now fold on four workers a frame
 ahead: `GuardFold` 25.87% -> 0.86% of the pump, the thread 63.4% -> 50.3% of a core, frame
 time −12.5% against a null of +0.1%. And the first item whose BILL had to be measured as
 carefully as its benefit — 33.2 points of core appeared on the workers where 13.1 left the
-pump.** `docs/part54-kickoff.md` is the LIVE hand-off; `perf-plan-part52.md` is still the
+pump.** ~~`docs/part54-kickoff.md` is the LIVE hand-off~~ — superseded by
+`part55-kickoff.md`; `perf-plan-part52.md` is still the
 live plan and **its §9c records what part 53 established in it**; read `phase5-notes.md`
 §6cj, and **§6ci §5c before planning any frame-time measurement**):
 
@@ -851,109 +946,7 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   and one wrong frame in a 50 fps crowd is not something a human catches. The two
   instruments answer different questions and both were needed.
 
-Where the port WAS, as of 2026-08-17 (part 52 CLOSED — **FOUR ITEMS SHIPPED AND ALL FOUR
-MAKE ONE THREAD SMALLER; NOT ONE LINE OF WORK MOVED ONTO ANOTHER CORE, WHICH IS PART 53'S
-JOB. The plan's own verify arm refuted the plan's own fix, and the operator found the
-place to measure from — a three-minute soak at 7,200-8,562 draws that is NOT at the frame
-cap.** ~~`docs/part53-kickoff.md` is the LIVE hand-off~~ — superseded by
-`part54-kickoff.md`; `perf-plan-part52.md` is still the live plan and its §9b records what
-part 52 corrected in it; read `phase5-notes.md` §6ci, and **§6ci §5c before planning any
-frame-time measurement**):
-
-* **`BindShader` WAS 14.16% OF THE PUMP THREAD AND IS NOW 0.00% — not one sample.** It
-  re-hashed the entire microcode on every shader-load packet, ~1,300-2,200 a frame, and
-  `perf annotate` put **~71% of its samples on four `imulq`s**: the FNV-1a accumulator, a
-  serial multiply per BYTE. The hash cannot be made faster because it IS the shader cache
-  key, so it had to be avoided. Worth **~2.4 ms at 6,000-7,000 draws** (3 runs an arm plus
-  a null arm: the control costs +15.0% mean / +12.5% median where the null read +0.2%),
-  and that is a LOWER bound because the base arm is on a pacing rung there.
-* **THE PLAN'S KEY FOR IT WAS WRONG, AND ONLY THE VERIFY ARM COULD HAVE SAID SO.** The
-  plan specified `(va, size)` plus the microcode's first and last dword, and argued a
-  wrong answer would read as a cache MISS. Measured: **two different shaders alternate
-  with identical size and identical probe dwords** — microcode is far too regular for two
-  dwords to identify it — and the wrong answer is **another real shader's hash**, which
-  IS in the cache, so it would have bound a real, wrong shader silently past every gate.
-  The shipped memo compares the whole content with `memcmp` (exact, and still ~30x
-  cheaper, because the cost removed was ALU latency and not memory). **Gotcha 342: when a
-  cache key is a PROBE, ask what the wrong answer IS, not how likely it is** — and write
-  the verify arm even when the argument for the fix sounds complete.
-* **THE COUNTER DUMP REPRICED ITEM 2.1 AND THE SOURCE HAD RANKED IT WRONG.** The plan says
-  "28 `Count(` sites inside `DoDraw`". Of ~62.5 M plain-`Count` calls, **52,901,332 —
-  84.6% — are one site in `VkRenderer_Draw`**, and ten sites are 99.2%; most of the 28
-  fire a few hundred times an hour. `VkRenderer_DumpStats` already prints the statistic
-  that ranks them. Third part running that a number the project already collects answered
-  a question somebody was about to estimate.
-* **`outside` IS NOT THE PUMP WAITING.** One `clock_gettime(CLOCK_THREAD_CPUTIME_ID)` per
-  report splits it into working and not-running-at-all: the pump is **BLOCKED 0.09-0.12 ms
-  of a 16-17 ms frame**. That retires part 50's reading of the same residual as "guest
-  simulation ~3 ms", and it means moving work OFF the pump (plan item 1.1) is still the
-  right strategy — there is nothing to overlap with, only work to relocate.
-* **The pipeline lookup is 110-112 -> 38-43 ns/draw** (~0.43 ms/frame at 6,000 draws), a
-  `std::map` of ~400 entries replaced by a hash table with a one-entry front cache that
-  serves **67.7-71.6%** of 6,613 lookups a frame. Measured against the PINNED pre-change
-  binary run now, and **every other column of the `other` split is unchanged to the
-  digit** — a stronger control than any arm, because drift would have moved them too.
-* **AND THE THING THAT CHANGES HOW THE NEXT PART MEASURES: the headless outdoor route now
-  sits on the frame cap for most of its length.** Both arms of an A/B land on the rung and
-  the comparison reads zero whatever the change was worth. **That is an UNMEASURABLE
-  result, not a null one**, and reporting it as "no change" is the same error as reading a
-  mean off this title's vblank floor. `tools/part52_item_campaign.sh` raises `CZ_FPS_CAP`
-  in EVERY arm; what it then reports is a CPU saving, not a frame rate anyone sees.
-  `frame_perf_bins.py`'s `pinned%` is defined for a 16 ms ladder — at another cap it reads
-  "on the second rung", so name the ladder when quoting it.
-* **THE OPERATOR JUDGED IT, RAN THE CONTROL, AND THEN FOUND THE PLACE TO MEASURE FROM.**
-  "Performance is better." A chained same-binary A/B (`ARM=ab
-  tools/part52_operator_session.sh`) put **exactly one phase column in motion** —
-  `outside`, where `BindShader` lives — with every other column inside ±0.21 ms, which is
-  what makes one run an arm quotable: drift moves everything. Then **they proposed a
-  three-minute SOAK in a heavier place, and it is the best measurement this project has
-  ever taken**: one draw bin held **7,773 frames against 6,079** (a walk's best bin holds
-  ~1,300), giving **+11.6% mean / +12.5% median at a significance of +211**, with the
-  light bins still reading **+0.0%** as the experiment's own null. §6ci §§10-12.
-* **THAT SOAK ANSWERS THE STRATEGY QUESTION AND REORDERS THE PLAN.** It sustains
-  **7,162-7,529 draws with peaks to 8,562** for three minutes — heavier than any place
-  measured here — and **0% of its frames sit on a pacing rung**, so it is CPU-bound and
-  the remaining items buy FRAMES there rather than headroom. Uninstrumented it is
-  ~16.7-18.7 ms (`CZ_VK_FRAME_STATS` printed its own bill at **3.21-3.23 ms/frame**
-  there); the pump is **97.5-97.8% on CPU**. And what dominates it is **`record` at 8.69
-  ms of 20.66 — 42%, twice the next phase** — which only item 1.4, parallel command
-  recording, addresses. **Take every future A/B there, as a soak.**
-* **A SAVING IS A SLOPE, NOT A NUMBER.** The memo's `outside` delta is **1.36 ms at ~5,500
-  draws and 2.49 ms at ~7,200**, because it runs per shader-load packet and the soak
-  measured **3,010-3,047 loads/frame** against 2,224 on the walk. Three measurements that
-  looked inconsistent are one finding at three loads. **Quote the draw count with any
-  per-draw or per-packet saving.**
-* **AND THE THING PART 52 DID NOT DO, WHICH IS PART 53'S WHOLE JOB.** The plan's §1
-  commits to strategy **(b) — move work onto cores that are doing nothing** — and says so
-  in as many words. **All four shipped items are (a): they make ONE thread's work
-  smaller.** That happened by following the plan's §10 ORDER, which front-loads three
-  serial items ahead of the first parallel one; the prose and the table disagree and the
-  prose is right. The process still uses **2.24 of 16 cores (14% of the machine) with ~13
-  idle**, and at the operator's heaviest place our pump is **97.5-97.8% on CPU** — there
-  is no slack left in (a) at that load. **Item 1.1 (parallel content guards) is part 53's
-  job**, now measured at **~5.3 ms**. Note what "spread across all cores" can mean here
-  before promising it: the PM4 walk is inherently SERIAL because the stream's meaning is
-  positional (`pm4.h`), so the target is **3-5 busy threads, not 16**.
-* **PRICING ITEM 1.4 MOVED 39% OF IT ONTO ITEM 1.1, and reconciled two instruments that
-  had never been compared.** The stream content guard is charged to `record`, because
-  `UploadStream` runs inside the `recordVertex` scope while `ProfScope(streams)` wraps
-  only the copy — so item 1.1 (priced off the `GuardFold` SYMBOL) and item 1.4 (priced off
-  the `record` PHASE) **shared the same milliseconds**. Split: `record 1,007 ns/draw =
-  state 141 + vertex 188 + index 161 + GUARD 391 + residual 126`. Item 1.4's real ceiling
-  is **~5.32 ms (~4.0 at four workers)**, not the 8.69 `record` implied; item 1.1 rises to
-  **~5.3 ms**. Same size, and 1.1 is a pure function with a byte-exact oracle where
-  recording owns renderer state and draw ORDER is semantic — **so 1.1 goes first**.
-  Gotcha 343: a scope is a region of code, not a subsystem.
-* **Gates at close: ALL CLEAN.** `--smoke`; both PM4 oracles on B1; the switch gate (0
-  defects); the dimension census (0 disagreements); `no translated shader` = 0;
-  `truncated=0`; deepest file **#83 `cinezombie.big`**; **A5 exit 0, 4 permutation
-  windows, 0 real**; **E3 best of five +0.8771**, 4 of 5 agreeing on layout. And the
-  shader-cache **NAME diff caught one again** — `ps_bd5d8eb053e36a84`, in the dumps, never
-  in the cache, never bound by any run, so the miss counter read 0 and the count matched
-  at 435 = 435 with different members. **The cache is 436.** Run the name diff in any part
-  where `CZ_SHADER_DUMP` was set, which for a performance part is every part.
-
-**Older per-part status blocks (parts 28-51, the superseded mid-part-44 closure and the
+**Older per-part status blocks (parts 28-52, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`** — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

@@ -11118,3 +11118,177 @@ Three things fall out of that table:
   was supposed to produce and had not yet been seen doing.
 * **The window thread's cost doubles too** — 8.8% → 15.0% of a core — which is copy (3),
   and no instrument in this project reports it because none of them reads that thread.
+
+### §4. THE SWAPCHAIN — what was built, and the three things it deliberately does not do
+
+`CZ_VK_SWAPCHAIN=1`. The window is created with `SDL_WINDOW_VULKAN` and no `SDL_Renderer`;
+the renderer creates a surface from it, acquires an image at present time, blits the
+finished frame into it and presents on a **semaphore** rather than a fence. `readback`
+reads 0.0%.
+
+**The decision has to be made before the window exists**, and that is why the arm is an
+env-var read in `Host_WindowInit` rather than a renderer option: `SDL_WINDOW_VULKAN` is a
+creation flag, and a window carrying it cannot also carry an `SDL_Renderer` (SDL2 has no
+Vulkan renderer backend). So the two present paths are mutually exclusive by construction,
+which is the honest shape — two arms, not a fallback chain. The renderer asks the WINDOW
+whether the flag took, not the environment, so a window that failed to create with the flag
+takes the renderer down the readback path with it and says so.
+
+Three deliberate non-goals:
+
+* **Nothing renders INTO a swapchain image.** The images are `TRANSFER_DST` only and the
+  frame arrives by `vkCmdBlitImage`. The renderer's dynamic rendering, its pipeline colour
+  formats and its whole resolve chain are therefore completely unaware a swapchain exists
+  — which is what makes this an arm rather than a rewrite.
+* **Vulkan does not move onto the window's thread.** The surface is created from the window
+  (SDL documents that as thread-safe) and every other call runs on the pump, where the rest
+  of the renderer runs. Phase 3's separation was about not depending on the WINDOWING
+  SYSTEM'S thread, and that still holds.
+* **BLIT, not copy, and LINEAR.** The swapchain is the window's size and the frame is the
+  internal resolution, and those stopped being the same number when `CZ_VK_RES` existed. A
+  copy would require them equal and would present a crop; `NEAREST` would alias a 2x image
+  down into a 720p window and make the resolution knob look like a downgrade.
+
+**The present MODE is a choice the SDL path never had.** Part 49 spent a session
+discovering that a compositor throttles `SDL_RenderPresent` to the display refresh whatever
+SDL was asked for, with a sharp failure: a frame just over 16.67 ms snaps 60 → 30. MAILBOX
+is stated here rather than requested; FIFO is the fallback and is **named in the log** when
+it is all the surface offers, because a run silently on FIFO is a run whose frame rate is
+the monitor's. `CZ_VK_SWAPCHAIN_FIFO=1` is the arm for that question.
+
+Two hazards were closed by inspection rather than by a symptom, and both are worth naming
+because their symptom would have appeared nowhere near their cause:
+
+* **An acquired image with no submit.** An acquired image comes with a semaphore the
+  presentation engine will signal, and something must wait on it; abandoning the frame
+  after acquiring leaves it signalled with no waiter and the next acquire reuses it
+  illegally. Both ways of abandoning a frame here — `CZ_VK_NO_SUBMIT`, and a command buffer
+  that is not recording — are knowable BEFORE the acquire, so the acquire is simply not
+  made.
+* **A rebuild destroying pending semaphores.** A resize or an out-of-date surface rebuilds
+  the swapchain, and the old objects can still be pending on a submit or a present. The
+  device is idled first; rebuilds are rare, so it costs nothing anyone measures, and
+  without it the failure lands several frames later as a device lost with no visible
+  connection to a window resize.
+
+### §5. THE PICTURE GATE HAD TO BE NEW, AND THE FIRST ONE READ BLACK BECAUSE THE MONITOR
+### WAS ASLEEP
+
+**Not one of this project's picture gates can see this arm.** `CZ_CAPTURE_KEY`,
+`CZ_VK_FRAME_DUMP`, `CZ_VK_FRAME_STATS` and the E3 correlation all walk the present
+READBACK — the exact copy the swapchain removes. Run them against this arm and they pass
+**with the old path still doing all the work**; take the readback genuinely away and they
+see nothing. Either way the gate looks healthy while measuring something the change never
+touched. That is gotcha 350, and it is gotcha 345's shape one step further out.
+
+The right oracle is a grab of the actual display, because the compositor is the one thing
+in this pipeline that neither our renderer nor our instruments produced.
+`tools/part54_swapchain_picture.sh` is that gate — and every grab it took at 01:35 came
+back **uniformly black**, RGB extrema `(0,0)` on every channel in both arms, scoring
+`+0.0000` against every orientation. Nothing was wrong with the renderer, the grabber or
+the gate: **the monitor was asleep.** Gotcha 231's trap, one subsystem over. (It also
+found that the tool is compositor-specific: KWin does not implement the `wlr-screencopy`
+protocol `grim` needs and says so clearly, which is the better of the two failures;
+`spectacle -b -n -f` goes through KWin's own interface.)
+
+So the night-time gate reads back **the image actually handed to the presentation engine**
+— `CZ_VK_SWAPCHAIN_DUMP=<dir>`, in the channel order the surface format declares — and
+correlates it against capture E3, Xenia's own screenshot of that screen. The blit's scale,
+filter, orientation and channel order are all inside that number:
+
+| | |
+|---|---|
+| best identity correlation, 38 dumps | **+0.8831** |
+| frames reporting LAYOUT AGREES | **21 of 38** |
+| the E3 gate's own standing figure | +0.8396 … +0.8808 |
+| Vulkan validation, swapchain/present/blit/layout messages | **0** |
+
+The dump arm requests `TRANSFER_SRC` on the swapchain images, which the default arm does
+not, so it is strictly a different swapchain: read it as a picture gate and never as a
+frame time. And what it proves is bounded, said out loud — the pixels handed to the
+presentation engine are the right pixels; **that they are displayed is something only a
+screen can show**, and that is the operator's judgement to make.
+
+### §6. WHAT IT IS WORTH — three rounds an arm, both resolutions, with the campaign's own
+### null
+
+`tools/part54_present_cost.sh` × 3 rounds × 2 resolutions × 2 arms, alternated, one
+variable between arms, **one frozen binary** (`md5 abeca2f4…`; a mid-campaign rebuild is
+why the first, mixed-binary campaign was discarded rather than reported). Read with
+`tools/part54_swap_bins.py`, which bins the profiler's own windows by DRAW COUNT — the two
+arms never see the same draw list, and one round put them at 1,806 and 4,039 draws in the
+same window.
+
+**1280x720**, median ms/frame per band, 21 profiler windows an arm:
+
+| draws | base | swapchain | delta | `readback` base → arm |
+|---|---|---|---|---|
+| 500-999 | 3.70 | 3.60 | −2.7% | 8.5 → 0.0 |
+| 2,000-2,499 | 7.10 | 6.50 | −8.5% | 7.8 → 0.0 |
+| **2,500-2,999** (n=7/4) | **7.20** | **6.60** | **−8.3%** | 7.5 → 0.0 |
+| 3,500-3,999 | 9.30 | 8.60 | −7.5% | 7.3 → 0.0 |
+| 4,000-4,499 | 9.40 | 9.50 | +1.1% | 7.0 → 0.0 |
+| 4,500-4,999 (n=1/2) | 10.40 | 10.00 | −3.8% | 6.5 → 0.0 |
+
+**2560x1440**, 21 windows an arm:
+
+| draws | base | swapchain | delta | `readback` base → arm |
+|---|---|---|---|---|
+| 500-999 | 7.60 | 3.80 | **−50.0%** | 36.2 → 0.0 |
+| 2,000-2,499 | 10.20 | 7.40 | −27.5% | 24.6 → 0.0 |
+| **2,500-2,999** (n=9/9) | **10.20** | **7.00** | **−31.4%** | 24.5 → 0.0 |
+| 4,000-4,499 | 12.30 | 9.20 | −25.2% | 21.7 → 0.0 |
+| 5,000-5,499 (n=1/1) | 13.50 | 11.10 | −17.8% | 16.0 → 0.0 |
+
+**And the campaign's own null**, rounds a+b against round c *within* an arm — the
+comparison that cannot move, run on the same data:
+
+| null | 500-999 | 2,500-2,999 | 4,000-4,499 |
+|---|---|---|---|
+| base vs base, 1x | +2.7% | −0.7% | −2.6% |
+| base vs base, 2x | +5.5% | **+0.0%** | — |
+| swapchain vs swapchain, 2x | +0.0% | +0.7% | −1.1% |
+
+In the best-populated band the null is **−0.7%, +0.0%, +0.7%** against signals of **−8.3%
+and −31.4%**.
+
+#### Three readings worth carrying
+
+* **It removes MORE than the phase it zeroes.** At 2x, 2,500-2,999 draws: `readback` is
+  24.5% of a 10.20 ms frame, i.e. 2.50 ms, so zeroing it predicts 7.70 ms. Measured
+  **7.00 ms.** The extra 0.7 ms is the two copies no instrument here charges to anything —
+  the GPU's image-to-buffer copy (visible only as `submit gpu`) and the pump's wait on
+  `g_frameMutex` while the window thread runs `SDL_UpdateTexture` under it.
+* **The saving is a SLOPE the other way round from every previous item.** Parts 52 and 53
+  each shipped a saving that grew with the draw count, because their work ran per draw or
+  per packet. This one is a FIXED cost per frame, so its share is largest where the frame
+  is otherwise lightest: −50% at 500-999 draws and −17.8% at 5,000-5,499. **Quote the draw
+  count with it, and expect the opposite trend.**
+* **`readback`'s share at 2x is much bigger than §3 measured** — 36.2% at 500-999 draws
+  against the 16.4-22.6% seen at 2,900-3,700. Same reason. §3's numbers are not wrong; they
+  are the value at the draw counts §3 happened to sample, which is the whole of the point
+  above.
+
+### §7. GATES AT CLOSE — ALL CLEAN, and the picture gate ran at BOTH resolutions
+
+| gate | result |
+|---|---|
+| `--smoke` | OK |
+| switch-lowering gate | 0 defects |
+| shader dimension census | 0 disagreements |
+| PM4 oracle, packet lengths (24.5 M packets) | clean |
+| PM4 oracle, indirect-buffer walks (28,726 buffers) | clean |
+| E3 picture gate, best of five | **+0.8399**, 4 of 5 agreeing on layout |
+| `no translated shader` | **0** |
+| `truncated=` | **0** |
+| `PARALLEL GUARD SLOT MIX-UP` | **0** |
+| deepest file on a no-input boot | **#83 `cinezombie.big`** |
+| A5 kernel-call diff | **exit 0, 4 permutation windows, 0 real** |
+| shader-cache NAME diff | only `ps_926c15dd20571cf1`, the known lost-microcode entry |
+| shader cache | **438**, unchanged |
+| **swapchain image vs E3, 1280x720** | **+0.8831**, 21 of 38 |
+| **swapchain image vs E3, 2560x1440** | **+0.8741**, 16 of 32 |
+
+The last two rows are the ones this part had to invent, and they are why §5 exists: the E3
+row above them was produced by the READBACK path and says nothing about the swapchain arm,
+because the arm is off in a headless gate run.
