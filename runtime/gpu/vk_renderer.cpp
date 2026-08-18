@@ -2125,6 +2125,9 @@ struct SwapchainState
     uint32_t acquired = UINT32_MAX;
     uint64_t presents = 0, acquireFails = 0, rebuilds = 0, suboptimal = 0;
     // CZ_VK_SWAPCHAIN_DUMP — the picture gate for this arm. See CreateSwapchain.
+    // Set when a present reported SUBOPTIMAL or OUT_OF_DATE; consumed at the top of the
+    // next frame's blit, where tearing the old objects down is safe.
+    bool rebuildWanted = false;
     const char* dumpDir = nullptr;
     uint64_t dumpEvery = 64;
     bool dumpPending = false;
@@ -6324,10 +6327,41 @@ bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
 void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
 {
     R->swap.acquired = UINT32_MAX;
-    if (!R->swap.swapchain)
+
+    // REBUILD WHEN THE WINDOW HAS CHANGED SIZE — and the reason this is a size COMPARISON
+    // rather than a reaction to a driver return code is the defect it fixes.
+    //
+    // The first version only rebuilt on VK_ERROR_OUT_OF_DATE_KHR, and counted
+    // VK_SUBOPTIMAL_KHR without acting on it. A Wayland compositor commonly reports a
+    // resize as SUBOPTIMAL — or tolerates the mismatch silently and scales the smaller
+    // image up itself — so a window enlarged after the first present kept being presented
+    // from a swapchain built at the ORIGINAL size, and the compositor upscaled it. The
+    // operator's report was "feels good but it is blurry", at 2560x1440, and they were
+    // right: the internal resolution was 2560x1440 exactly as asked, and it was being
+    // blitted into a 1280x720 swapchain and then stretched back out by the compositor.
+    //
+    // The readback path never had this, which is why it took an operator to find: SDL's
+    // `SDL_RenderCopy` always scales the full-size texture into whatever the window
+    // currently is, so a resize needed no code of ours at all.
+    //
+    // The drawable size is published by the window's own event loop into two atomics, so
+    // this costs two relaxed loads a frame and needs no SDL call from the pump thread.
+    // Asking the SIZE, rather than trusting a return code, is what makes it independent of
+    // which of the three plausible driver behaviours this compositor picks (gotcha 5's
+    // shape: never let a silent tolerance stand in for a decision).
+    uint32_t dw = 0, dh = 0;
+    Host_VulkanDrawableSize(&dw, &dh);
+    const bool sizeChanged =
+        R->swap.swapchain && dw && dh &&
+        (dw != R->swap.width || dh != R->swap.height);
+    if (!R->swap.swapchain || sizeChanged || R->swap.rebuildWanted)
     {
-        uint32_t dw = 0, dh = 0;
-        Host_VulkanDrawableSize(&dw, &dh);
+        if (sizeChanged)
+            fprintf(stderr, "[vk] window drawable is now %ux%u, swapchain was %ux%u — "
+                            "rebuilding (a stale swapchain is presented UPSCALED by the "
+                            "compositor and looks blurry)\n",
+                    dw, dh, R->swap.width, R->swap.height);
+        R->swap.rebuildWanted = false;
         if (!CreateSwapchain(dw, dh))
         {
             R->swap.acquireFails++;
@@ -6359,7 +6393,13 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
                                    VK_NULL_HANDLE, &index);
     }
     if (rc == VK_SUBOPTIMAL_KHR)
+    {
+        // Present this frame anyway — the image is usable — and rebuild before the next
+        // one. Suboptimal means the swapchain no longer matches the surface, which is a
+        // stale EXTENT more often than anything else.
         R->swap.suboptimal++;
+        R->swap.rebuildWanted = true;
+    }
     else if (rc != VK_SUCCESS)
     {
         R->swap.acquireFails++;
@@ -6472,6 +6512,7 @@ void PresentSwapchain()
     {
         R->swap.presents++;
         R->swap.suboptimal++;
+        R->swap.rebuildWanted = true;
     }
     else if (rc == VK_ERROR_OUT_OF_DATE_KHR)
     {
@@ -6480,6 +6521,7 @@ void PresentSwapchain()
         // resize turns into a device-lost.
         Count("swap: present out of date, swapchain will be rebuilt");
         R->swap.acquireFails++;
+        R->swap.rebuildWanted = true;
     }
     else
     {

@@ -126,6 +126,27 @@ SDL_Window*   g_window = nullptr;
 // guard is `g_renderer` itself rather than a second flag so the two can never disagree.
 SDL_Renderer* g_renderer = nullptr;
 bool          g_wantVulkanSwapchain = false;
+// The window's DRAWABLE size, published by the event loop and read by the renderer's
+// pump thread. Atomics rather than an SDL call from the pump: SDL documents window
+// queries as belonging to the thread that created the window, and the renderer needs this
+// every frame. The loop already sees every resize, so publishing it there is free and
+// correct — and it is what tells the swapchain it has gone stale (part 54's blurry
+// picture: the swapchain was built once at 1280x720 and a window enlarged after that kept
+// being upscaled from it by the compositor).
+std::atomic<uint32_t> g_drawableW{ 0 }, g_drawableH{ 0 };
+
+void PublishDrawableSize()
+{
+    if (!g_window || !g_wantVulkanSwapchain)
+        return;
+    int w = 0, h = 0;
+    SDL_Vulkan_GetDrawableSize(g_window, &w, &h);
+    if (w > 0 && h > 0)
+    {
+        g_drawableW.store(uint32_t(w), std::memory_order_release);
+        g_drawableH.store(uint32_t(h), std::memory_order_release);
+    }
+}
 SDL_GameController* g_controller = nullptr;
 SDL_JoystickID      g_controllerId = -1;
 bool g_inputTrace = false;
@@ -708,6 +729,7 @@ bool Host_WindowInit()
                 "arm. The title's own F2 DebugJump screen is drawn by the GAME and is "
                 "unaffected, and so is every other instrument.\n",
                 wantVsync ? " CZ_HOST_VSYNC=1 is IGNORED here." : "");
+        PublishDrawableSize();
     }
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
@@ -823,11 +845,8 @@ bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface)
 
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h)
 {
-    int dw = 0, dh = 0;
-    if (Host_VulkanSwapchainWanted())
-        SDL_Vulkan_GetDrawableSize(g_window, &dw, &dh);
-    if (w) *w = uint32_t(dw < 0 ? 0 : dw);
-    if (h) *h = uint32_t(dh < 0 ? 0 : dh);
+    if (w) *w = g_drawableW.load(std::memory_order_acquire);
+    if (h) *h = g_drawableH.load(std::memory_order_acquire);
 }
 
 bool Host_PadState(uint32_t userIndex, HostPadState& out)
@@ -880,6 +899,7 @@ void Host_WindowRun()
     uint64_t presented = 0;
     uint64_t framesAtLastTitle = 0;
     auto lastTitle = std::chrono::steady_clock::now();
+    const auto loopStart = lastTitle;
     bool sizedToGuest = false;
 
     for (;;)
@@ -906,6 +926,16 @@ void Host_WindowRun()
                         g_keyboardFocus = false;
                     else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED)
                         g_keyboardFocus = true;
+                    // Every event that can change the drawable size, not just RESIZED:
+                    // SIZE_CHANGED also covers a programmatic resize and a
+                    // maximise/restore, and a move between outputs of different scale
+                    // changes the drawable without changing the logical size at all.
+                    else if (e.window.event == SDL_WINDOWEVENT_RESIZED ||
+                             e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                             e.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
+                             e.window.event == SDL_WINDOWEVENT_RESTORED ||
+                             e.window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED)
+                        PublishDrawableSize();
                     break;
                 case SDL_KEYDOWN:
                     if (!e.key.repeat)
@@ -945,6 +975,42 @@ void Host_WindowRun()
                     break;
                 default:
                     break;
+            }
+        }
+
+        // CZ_WINDOW_RESIZE_AT=SECS:WxH — THE POSITIVE CONTROL FOR THE SWAPCHAIN REBUILD.
+        //
+        // The rebuild path fires when the window's drawable size changes, and no headless
+        // gate can change a window's size, so without this the fix for part 54's blurry
+        // picture would ship on the strength of an argument (gotcha 30). This resizes the
+        // window once, at a stated moment, so a run can be checked for the renderer's
+        // "window drawable is now WxH" line and for the second `[vk] swapchain` line
+        // underneath it.
+        //
+        // It is also the reproduction of the DEFECT: before the fix, this resize produced
+        // no new swapchain at all and the compositor upscaled the old one.
+        {
+            static const char* resizeEnv = getenv("CZ_WINDOW_RESIZE_AT");
+            static bool resized = false;
+            if (resizeEnv && !resized)
+            {
+                int secs = 0, rw = 0, rh = 0;
+                if (sscanf(resizeEnv, "%d:%dx%d", &secs, &rw, &rh) == 3 && rw > 0 && rh > 0)
+                {
+                    const auto up = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - loopStart).count();
+                    if (up >= secs)
+                    {
+                        resized = true;
+                        fprintf(stderr, "[host] CZ_WINDOW_RESIZE_AT: resizing the window "
+                                        "to %dx%d at %llds — the swapchain must follow\n",
+                                rw, rh, (long long)up);
+                        SDL_SetWindowSize(g_window, rw, rh);
+                        PublishDrawableSize();
+                    }
+                }
+                else
+                    resized = true;   // malformed: complain once by doing nothing further
             }
         }
 
