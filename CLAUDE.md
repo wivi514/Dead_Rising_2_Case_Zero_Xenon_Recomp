@@ -738,17 +738,32 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   a thread no instrument here reads) and the GPU's copy, visible only as `submit gpu` rising
   to 14.7% — **the GPU being a limiter at 2x, which is what the resolution knob was
   supposed to produce and had not been seen doing.**
-* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p — INTO A SMALL WINDOW, AND THAT
-  QUALIFIER IS LOAD-BEARING.** Three rounds an arm, alternated, one frozen binary, medians
-  per draw band (2,500-2,999 draws, n=7-9 an arm), against the campaign's own within-arm
-  null of **−0.7% and +0.0%**. **The campaign left the WINDOW at its default (a 1088x612
-  drawable) and the operator plays MAXIMISED at 2560x1417**, where the readback path's CPU
-  cost is unchanged — it is a function of the internal resolution — and this arm's blit
-  DESTINATION is four times larger. They report the frame rate as unchanged there, which is
-  evidence and not a measurement (what it is compared against is a remembered number from
-  another day, gotcha 51). **`WINSIZE=2560x1417 tools/part54_present_cost.sh` is owed and
-  is the first thing part 55 should run.** Gotcha 353: a present-path measurement has TWO
-  resolutions and naming only one of them is naming none.
+* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p, AND −29.0% AT 1440p INTO THE
+  OPERATOR'S OWN MAXIMISED 2560x1417 WINDOW.** Three rounds an arm, alternated, one frozen
+  binary, medians per draw band (2,500-2,999 draws, n=7-9 an arm), against the campaign's
+  own within-arm null of **−0.7%, +0.0% and +0.0%**. At the maximised window it is −45.1%
+  at 500-999 draws, **−29.0% at 2,500-2,999**, −23.3% at 3,500-3,999 and −21.4% at
+  4,500-4,999.
+* **THE WINDOW-SIZE WORRY WAS REAL, WAS RECORDED AS OPEN, AND WAS THEN REFUTED BY THE
+  CAMPAIGN IT ASKED FOR.** The first campaign measured a 1088x612 drawable while the
+  operator plays maximised, and the two arms genuinely do scale differently with the window
+  — the readback path's CPU cost is a function of the INTERNAL resolution and is
+  independent of it, while the swapchain's blit DESTINATION *is* the window. Measured as a
+  2x2: **the window costs the readback arm +2.7…+4.9% and the swapchain arm +2.6…+8.6%.**
+  The mechanism was right and the magnitude was small. Filing it as OPEN rather than as
+  "probably fine" was still correct — only the campaign could separate the two. Gotcha 353
+  stands: **a present-path measurement has TWO resolutions and naming only one is naming
+  none**, and both arms now log their drawable size for that reason.
+* **WHAT IS NOT RECONCILED, AND IS THE ONE THREAD THIS PART LEAVES OPEN: the operator
+  played it and said "still feels pretty much the same framerate wise"** at 69-96 fps,
+  while the measurement says 21-29% at their resolution and their window. Nothing measured
+  contradicts them — there is no readback-arm measurement of THEIR route on THEIR machine
+  from the same evening, and the numbers their report is implicitly compared against are
+  part 53's, from another day (gotcha 51). Both arms are also well clear of 60 fps over
+  most of the map (10.70 -> 7.60 ms is 93 -> 132 fps), and this item's shape works against
+  being felt: it is a FIXED per-frame cost, so its percentage is largest exactly where
+  nobody was short of frames. **A chained A/B they can feel, both arms maximised at 1440p
+  with `CZ_FPS_LOG`, is the ten minutes that would settle it.**
 * **AND IT IS A SLOPE THE OTHER WAY ROUND FROM EVERY PREVIOUS ITEM.** Parts 52 and 53
   shipped savings that grew with the draw count, because their work ran per draw or per
   packet. This is a FIXED cost per frame, so its share is largest where the frame is

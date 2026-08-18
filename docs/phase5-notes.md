@@ -11337,7 +11337,8 @@ gate can resize a window** and without it this would have shipped on an argument
 
 Their verdict after the fix: *"Looks a lot nicer now."*
 
-#### §8b. OPEN: THE FRAME-TIME NUMBER WAS MEASURED INTO A SMALL WINDOW, AND THEY PLAY MAXIMISED
+#### §8b. THE FRAME-TIME NUMBER WAS MEASURED INTO A SMALL WINDOW — **RESOLVED IN §9, AND
+#### THE WORRY WAS WRONG.** Read §9 before acting on anything below
 
 Their second sentence is the one that is not resolved: *"still feels pretty much the same
 framerate wise"*, at 69-96 fps on `CZ_FPS_LOG`.
@@ -11367,3 +11368,74 @@ thing part 55 should run. **Until it has, quote §6's numbers with the window si
 > only one of them is naming none.** The internal render and the window are independent
 > knobs, they load the two arms differently, and no instrument in this project records
 > either alongside a frame time.
+
+### §9. THE OWED CAMPAIGN RAN, AND §8b's WORRY IS REFUTED: the saving survives at the
+### operator's window
+
+`MAXIMIZED=1 tools/part54_present_cost.sh`, 1440p internal, **both arms at a stable
+2560x1417 drawable** — the operator's own configuration — three rounds an arm, alternated,
+one frozen binary.
+
+| draws | base | swapchain | delta | null (base a+b vs c) |
+|---|---|---|---|---|
+| 500-999 | 7.10 | 3.90 | **−45.1%** | +3.5% |
+| **2,500-2,999** (n=7/9) | **10.70** | **7.60** | **−29.0%** | **+0.0%** |
+| 3,000-3,499 | 11.30 | 8.40 | −25.7% | — |
+| 3,500-3,999 (n=4/4) | 11.60 | 8.90 | −23.3% | −1.7% |
+| 4,500-4,999 | 12.60 | 9.90 | −21.4% | — |
+
+The swapchain arm's own null reads **+0.0%, +0.0%, +2.3%**. So **−29.0% at the operator's
+window against −31.4% at a 1088x612 one**: the worry was reasonable and the answer is that
+it barely matters.
+
+#### Why it barely matters — the 2x2 that falls out of the two campaigns
+
+The same internal resolution measured at two window sizes, per arm:
+
+| arm | small window → maximised | reading |
+|---|---|---|
+| **readback** | +2.7 … +4.9% | as predicted: its CPU cost is a function of the INTERNAL resolution, not the window |
+| **swapchain** | +2.6 … +8.6% | the blit destination is four times larger and it costs a few percent, not the item |
+
+**§8b's mechanism was real and its magnitude was wrong.** The swapchain arm *does* pay for
+a larger window and the readback arm *does* not, exactly as argued — the term is simply
+small next to the three copies being removed. **Recording it as OPEN rather than as
+"probably fine" was still right**: the argument for it was sound, and the only thing that
+could separate "sound argument, small effect" from "sound argument, large effect" was the
+campaign.
+
+#### One number in here is not explained, and it is flagged rather than smoothed
+
+The readback arm's `readback` phase costs **2.50 ms at the small window and 1.86 ms at the
+maximised one** (24.5% of 10.20 against 17.4% of 10.70) — it got *cheaper* as the window
+grew, while the frame got longer. The copy itself cannot have changed: it is sized by the
+internal resolution. The plausible mechanism is contention — `Host_PresentPixels` and the
+window thread's `SDL_UpdateTexture` share `g_frameMutex`, and a bigger window makes each
+loop iteration slower, so the loop takes that mutex *less often* and the pump blocks on it
+less. **That is a hypothesis and it is written down as one**; it would be settled by
+timing the lock, which no instrument here does.
+
+#### WHAT IS STILL UNEXPLAINED, AND IT IS THE OPERATOR'S REPORT
+
+The measurement says this item is worth **21-29% of the frame at their internal resolution
+and their window size**. They played it and said **"still feels pretty much the same
+framerate wise"**, at 69-96 fps.
+
+Those are not reconciled, and the honest position is to say so rather than pick whichever
+one is convenient. What can be said:
+
+* **Nothing measured contradicts them.** There is no readback-arm measurement of THEIR
+  route on THEIR machine from the same evening; the numbers their report is implicitly
+  compared against are part 53's, from another day, which is what gotcha 51 forbids using
+  as a control.
+* **Both arms are well clear of 60 fps in most of the map.** 10.70 → 7.60 ms is 93 → 132
+  fps. A change that moves a frame rate around within "comfortably above the refresh rate"
+  is real and is not necessarily felt, and this project has no instrument for felt.
+* **The routes differ.** The campaign drives the DebugJump route with AutoChuck; they play.
+* **The item's shape works against being felt**, which §6 already recorded: it is a FIXED
+  per-frame cost, so its percentage is largest where the frame is lightest — precisely
+  where nobody was short of frames.
+
+**The one experiment that would settle it is a chained A/B they can feel**, both arms
+maximised at 1440p with `CZ_FPS_LOG`: quit one and the next starts. Ten minutes of operator
+time, and it is the only thread this part leaves open.

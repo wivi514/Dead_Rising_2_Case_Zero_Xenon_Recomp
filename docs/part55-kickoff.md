@@ -88,30 +88,47 @@ standing +0.8396…+0.8808. Vulkan validation is clean.
 
 ---
 
-## 2b. RUN THIS FIRST — the frame-time number was measured into the WRONG WINDOW
+## 2b. THE WINDOW-SIZE WORRY — raised, filed as open, and REFUTED the same evening
 
-**`WINSIZE=2560x1417 tools/part54_present_cost.sh`, three rounds an arm, both arms.** It is
-the first thing part 55 should do and it may correct §2's headline.
+§2's campaign left the window at its default (a **1088x612** drawable) and the operator
+plays **maximised at 2560x1417**. The two arms genuinely do not scale the same way with it:
+the readback path's CPU cost is a function of the INTERNAL resolution and is independent of
+the window, while the swapchain's blit DESTINATION *is* the window. So the headline could
+have been a small-window artifact.
 
-The campaign behind §2 left the window at its default and measured a **1088x612 drawable**.
-The operator plays **maximised at 2560x1417**, and the two arms do not scale the same way
-with it:
+**It was not.** `MAXIMIZED=1 tools/part54_present_cost.sh`, three rounds an arm, both arms
+at a stable 2560x1417:
 
-* the **readback** path's CPU cost is a function of the INTERNAL resolution — 14.1 MB read
-  back and 14.1 MB copied at 2x — and is **independent of the window size**;
-* the **swapchain** arm's blit DESTINATION *is* the window, four times larger there than
-  anything §2 measured.
+| draws | base | swapchain | delta | null |
+|---|---|---|---|---|
+| 500-999 | 7.10 ms | 3.90 ms | −45.1% | +3.5% |
+| **2,500-2,999** (n=7/9) | **10.70** | **7.60** | **−29.0%** | **+0.0%** |
+| 3,500-3,999 | 11.60 | 8.90 | −23.3% | −1.7% |
+| 4,500-4,999 | 12.60 | 9.90 | −21.4% | — |
 
-Handed the arm to judge, the operator's verdict was *"Looks a lot nicer now"* on the
-picture and **"still feels pretty much the same framerate wise"** on the rate, at 69-96 fps.
-**That is evidence and not a measurement** — what it is implicitly compared against is a
-remembered frame rate from another day, which is precisely what gotcha 51 forbids. It says
-"go and measure", not "the item is worth less".
+The 2x2 that falls out of the two campaigns says why: **the window costs the swapchain arm
++2.6…+8.6% and the readback arm +2.7…+4.9%.** The mechanism was right and the magnitude was
+small. Filing it as OPEN rather than as "probably fine" was still correct — a sound argument
+cannot separate a small effect from a large one.
 
-Until that campaign has run, **quote §2's numbers with the window size attached.** Gotcha
-353: a present-path measurement has TWO resolutions — the internal render and the window —
-and naming only one of them is naming none. No instrument here records either beside a
-frame time.
+**Both present arms now log their drawable size** at start-up and on every change, because
+the readback arm reported it nowhere and that is what made the mistake unavoidable rather
+than careless. `CZ_WINDOW_MAXIMIZED=1` / `CZ_WINDOW_SIZE=WxH` set it at CREATION — resizing
+afterwards is not a control, the window bounced through six drawables in one run.
+
+### The one thing this part leaves unreconciled
+
+The measurement says 21-29% at the operator's resolution and window. They played it and
+said **"still feels pretty much the same framerate wise"**, at 69-96 fps. Nothing measured
+contradicts them: there is no readback-arm measurement of THEIR route on THEIR machine from
+the same evening, and what their report is implicitly compared against is part 53's numbers
+from another day (gotcha 51). Both arms are also well clear of 60 fps over most of the map
+— 10.70 → 7.60 ms is 93 → 132 fps — and this item's shape works against being felt: it is a
+FIXED per-frame cost, so its percentage is largest exactly where nobody was short of frames.
+
+**A chained A/B they can feel — both arms maximised at 1440p with `CZ_FPS_LOG`, quitting one
+starts the next — is the ten minutes that would settle it, and it is the highest-value
+operator errand this hand-off can name.**
 
 ---
 
@@ -156,10 +173,11 @@ Three ways forward, in the order they should be considered:
 
 ## 5. WHAT IS OWED
 
-* **`WINSIZE=2560x1417 tools/part54_present_cost.sh`** — see §2b. First.
+* **A chained A/B the operator can FEEL** — see §2b. Ten minutes, and it is the only
+  unreconciled thing in the part.
 * **The operator's verdict on the swapchain arm** — PARTLY IN. Picture: *"Looks a lot
   nicer now"* (after the resize fix). Frame rate: *"still feels pretty much the same"*,
-  which is what §2b is owed for. Whether it becomes the default is still open.
+  which the measurement disagrees with. Whether it becomes the default is still open.
 * **A `CZ_VK_PRESENT_STAGING`-only pair at the operator's load**, still owed from part 53
   and now mostly moot if the swapchain becomes the default.
 * Their two deferred picture items, **00m decals** and **00n a sign and items at

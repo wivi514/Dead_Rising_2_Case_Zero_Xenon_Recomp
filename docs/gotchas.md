@@ -3640,6 +3640,14 @@ From phase C part 18 (the frame rate — and none of it was work):
      "go and measure", not "the item is worth less". And **no instrument in this project
      records either resolution beside a frame time**, which is why this could be written
      down wrong without anything complaining.
+     **THE CAMPAIGN RAN AND THE WORRY WAS REFUTED, WHICH IS THE POINT.** At the operator's
+     maximised 2560x1417 window the item reads **−29.0%** against **−31.4%** at 1088x612;
+     the window costs the swapchain arm **+2.6…+8.6%** and the readback arm **+2.7…+4.9%**.
+     The mechanism was exactly right and the magnitude was small. **Recording it as OPEN
+     rather than as "probably fine" was still correct** — a sound argument cannot tell a
+     small effect from a large one, and only the measurement could. The lesson survives the
+     refutation intact: name both resolutions, and give both arms an instrument that can
+     state the one they were measured at.
 
 354. **REPLACING A LIBRARY'S PRESENT MEANS INHERITING JOBS IT WAS DOING INVISIBLY.** Part
      54's swapchain rebuilt only on `VK_ERROR_OUT_OF_DATE_KHR` and merely COUNTED
