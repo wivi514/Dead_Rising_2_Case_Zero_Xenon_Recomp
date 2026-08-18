@@ -707,7 +707,7 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-17 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
+Where the port is, as of 2026-08-18 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
 EVER MOVED OFF THE PUMP THREAD. Both content guards now fold on four workers a frame
 ahead: `GuardFold` 25.87% -> 0.86% of the pump, the thread 63.4% -> 50.3% of a core, frame
 time −12.5% against a null of +0.1%. And the first item whose BILL had to be measured as

@@ -3540,3 +3540,19 @@ From phase C part 18 (the frame rate — and none of it was work):
      **Two separate reading errors in one section, and both were "quoted the arm mean
      without looking down the column"** — the same failure gotcha 237 is about, one
      instrument over.
+
+348. **A SAMPLE ADDRESSED BY FRAME INDEX IS RE-AIMED BY ANYTHING THAT CHANGES THE FRAME
+     RATE.** The E3 picture gate runs a fixed 120 seconds and presses its capture key on a
+     fixed schedule, then correlates the five frames it caught against hardware's
+     screenshot of the same screen. It read **+0.8808** early in part 53 and **+0.8396** at
+     the close, on a code path that had not changed at scale 1 — and the capture filenames
+     say why: the first pass sampled frames **1,896-3,853** and the second **5,890-13,874**,
+     because the frame cap's default moved 60 -> 500 and far more frames elapse in the same
+     wall time. The five presses landed on completely different moments of an ANIMATED
+     backdrop. Nothing about what is drawn moved at all. This is gotcha 133 with a specific
+     and easily-missed trigger: **a performance change re-aims every picture instrument
+     whose trigger is a frame number or a wall clock**, and the drop it produces looks
+     exactly like a rendering regression. Check WHICH FRAMES a picture sample caught before
+     reading its correlation as a change — the filenames carry it for free — and prefer a
+     trigger anchored to an EVENT over one anchored to a count (the same argument that
+     produced `WAITJUMP`, gotcha 251).
