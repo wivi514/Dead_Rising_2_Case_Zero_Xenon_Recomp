@@ -29,6 +29,21 @@
 #      spread rather than averaged into a plausible median. Match windows on it; discard
 #      any window whose spread is wide.
 #
+# GOD MODE IS ON IN BOTH ARMS, AND NOT THROUGH THE MENU. The operator's second objection:
+# "if you want me to do a soak launch the game on debug or else I'll get killed by zombies"
+# — standing still in the heaviest place is exactly where Chuck dies. The obvious answer,
+# the F4 host-rendered debug menu, is the ONE thing the swapchain arm cannot draw, so it
+# would have to be set by hand in one arm and not the other.
+#
+# `CZ_DEBUG_FLAGS` is the better answer and it already existed: it names entries from the
+# title's own debug-bool table by label, and the PUMP re-asserts them every frame because
+# the game clears them on a level load. So god mode is identical, automatic and counted in
+# both arms — no operator fiddling, and no way for the arms to differ in it.
+#
+# Only survival flags. Nothing that changes the SCENE: "ZOMBIES IGNORE ALL HUMANS" would
+# be a different workload wearing the same name, and the whole point of a soak in the
+# heaviest place is that the crowd behaves normally.
+#
 # WHAT IS DELIBERATELY NOT ON: the profiler (2-4 ms/frame) and frame stats (1.9-3.3), both
 # of which would change the thing being judged, and the second of which would additionally
 # force the readback to keep running in the swapchain arm and measure nothing at all
@@ -42,6 +57,7 @@ OUT="$HOME/DR2CZ-troubleshooting/part54-operator"
 RES="${RES:-2560x1440}"
 FPS="${FPS:-500}"
 ORDER="${ORDER:-swapchain,readback}"
+FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE}"
 mkdir -p "$OUT"
 
 busy=""
@@ -65,6 +81,7 @@ run_arm() {
   ARM $n of 2:  $arm
   res:   $RES internal, window MAXIMISED
   cap:   CZ_FPS_CAP=$FPS
+  debug: $FLAGS  (held on by the pump, both arms -- no menu needed)
   log:   $OUT/$tag.log
 
   >>> STAND STILL IN THE HEAVIEST PLACE YOU CAN FIND, for 2-3 min.
@@ -82,6 +99,7 @@ BANNER
         "CZ_SHADER_DUMP=$HOME/DR2CZ-troubleshooting/ucode-dumps" \
         "CZ_SHADER_SPV=$ROOT/assets/shader_spv_a2m" CZ_VK_A2M_ANY_SURFACE=1 \
         CZ_VK_A2M_MODE=1 \
+        CZ_DEBUG_MENU=1 "CZ_DEBUG_FLAGS=$FLAGS" \
         "${extra[@]}" ./cz_runtime > "$OUT/$tag.log" 2>&1 )
     echo "  arm $n ($arm) finished."
 }
@@ -98,6 +116,7 @@ for f in "$OUT"/p54ab_"$STAMP"_*.log; do
     echo
     echo "--- $(basename "$f")"
     grep -a "window drawable\|\[vk\] swapchain " "$f" | tail -2
+    grep -a "CZ_DEBUG_FLAGS" "$f" | tail -3
     grep -a "^\[fps\]" "$f" | tail -20
 done
 echo
