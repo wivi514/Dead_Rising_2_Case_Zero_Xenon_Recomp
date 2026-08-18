@@ -75,6 +75,10 @@ bool Host_PadState(uint32_t, HostPadState&) { return false; }
 void Host_DebugMenuSetItems(const std::vector<std::string>&) {}
 void Host_DebugMenuSetVisible(bool) {}
 bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
+bool Host_VulkanSwapchainWanted() { return false; }
+std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
+bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
+void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; }
 
 #else
 
@@ -86,6 +90,11 @@ bool Host_DebugMenuConsumeAction(uint32_t&, int32_t&) { return false; }
 #include <vector>
 
 #include <SDL.h>
+// vulkan.h before SDL_vulkan.h so the latter uses the real handle types rather than
+// its own forward declarations — the surface below is a VkSurfaceKHR either way, but
+// VK_NULL_HANDLE only exists with the real header.
+#include <vulkan/vulkan.h>
+#include <SDL_vulkan.h>
 
 #include "../gpu/vk_renderer.h"
 
@@ -112,7 +121,11 @@ constexpr uint16_t XI_Y              = 0x8000;
 
 bool          g_active = false;
 SDL_Window*   g_window = nullptr;
+// Null in the CZ_VK_SWAPCHAIN arm, where the window carries SDL_WINDOW_VULKAN and the
+// renderer thread owns presentation. Every use of it in this file is guarded, and the
+// guard is `g_renderer` itself rather than a second flag so the two can never disagree.
 SDL_Renderer* g_renderer = nullptr;
+bool          g_wantVulkanSwapchain = false;
 SDL_GameController* g_controller = nullptr;
 SDL_JoystickID      g_controllerId = -1;
 bool g_inputTrace = false;
@@ -571,9 +584,36 @@ bool Host_WindowInit()
         return false;
     }
 
+    // CZ_VK_SWAPCHAIN=1 — the renderer presents its own image through a Vulkan
+    // swapchain on this window instead of reading it back and handing us pixels.
+    //
+    // THE DECISION HAS TO BE MADE HERE, before the window exists, and that is the whole
+    // reason this arm is an env var read in Host_WindowInit rather than a renderer
+    // option: `SDL_WINDOW_VULKAN` cannot be added to a window afterwards, and a window
+    // carrying it cannot also carry an `SDL_Renderer` (SDL2 has no Vulkan renderer
+    // backend — its accelerated backends are GL/GLES/D3D/Metal). So the two present
+    // paths are mutually exclusive by construction, which is the honest shape: they are
+    // two arms, not a fallback chain.
+    g_wantVulkanSwapchain = getenv("CZ_VK_SWAPCHAIN") != nullptr;
+    const Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+                               (g_wantVulkanSwapchain ? SDL_WINDOW_VULKAN : 0u);
     g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
                                 SDL_WINDOWPOS_CENTERED, kDefaultWidth, kDefaultHeight,
-                                SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                                windowFlags);
+    if (!g_window && g_wantVulkanSwapchain)
+    {
+        // Losing the Vulkan flag must not silently cost the window, and it must not
+        // silently cost the ARM either: falling back to the copy path while the operator
+        // believes they are measuring the swapchain would make the A/B report zero and
+        // look like a null result (gotcha 7). So it says which of the two happened.
+        fprintf(stderr, "[host] SDL_CreateWindow with SDL_WINDOW_VULKAN failed: %s — "
+                        "CZ_VK_SWAPCHAIN is NOT in force; falling back to the readback "
+                        "present path.\n", SDL_GetError());
+        g_wantVulkanSwapchain = false;
+        g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
+                                    SDL_WINDOWPOS_CENTERED, kDefaultWidth, kDefaultHeight,
+                                    SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    }
     if (!g_window)
     {
         fprintf(stderr, "[host] SDL_CreateWindow failed: %s — RUNNING HEADLESS.\n",
@@ -598,15 +638,20 @@ bool Host_WindowInit()
     // 30 fps, pretty sure it's vsync"). Headless reads 62.5 fps because there is no
     // window and therefore no compositor in the path — the arm that localises this.
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
-    g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
-    if (!g_renderer)
+    // No SDL_Renderer on a Vulkan window: the renderer thread owns presentation from
+    // here on, and everything below that touches `g_renderer` is skipped. What that
+    // costs is named out loud at the end of this function rather than discovered later.
+    g_renderer = g_wantVulkanSwapchain
+        ? nullptr
+        : SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_renderer && !g_wantVulkanSwapchain)
     {
         fprintf(stderr, "[host] accelerated renderer unavailable (%s) — falling back "
                         "to software.\n",
                 SDL_GetError());
         g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
     }
-    if (!g_renderer)
+    if (!g_renderer && !g_wantVulkanSwapchain)
     {
         fprintf(stderr, "[host] SDL_CreateRenderer failed: %s — RUNNING HEADLESS.\n",
                 SDL_GetError());
@@ -628,22 +673,42 @@ bool Host_WindowInit()
     // is capped by the display" and "the frame rate is capped by our own work" can be
     // told apart in one run instead of argued about.
     const bool wantVsync = getenv("CZ_HOST_VSYNC") != nullptr;
+    if (g_renderer)
+    {
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-    const int vsRc = SDL_RenderSetVSync(g_renderer, wantVsync ? 1 : 0);
+        const int vsRc = SDL_RenderSetVSync(g_renderer, wantVsync ? 1 : 0);
 #else
-    const int vsRc = -1;
+        const int vsRc = -1;
 #endif
-    SDL_RendererInfo ri{};
-    SDL_GetRendererInfo(g_renderer, &ri);
-    fprintf(stderr,
-            "[host] present vsync: requested %s, SDL_RenderSetVSync %s, renderer "
-            "reports PRESENTVSYNC %s\n",
-            wantVsync ? "ON (CZ_HOST_VSYNC=1)" : "OFF",
-            vsRc == 0 ? "accepted" : "UNAVAILABLE (hint only)",
-            (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? "SET — the display is still pacing "
-                                                     "us, and the frame rate above 60 "
-                                                     "fps will be its refresh rate"
-                                                   : "clear");
+        SDL_RendererInfo ri{};
+        SDL_GetRendererInfo(g_renderer, &ri);
+        fprintf(stderr,
+                "[host] present vsync: requested %s, SDL_RenderSetVSync %s, renderer "
+                "reports PRESENTVSYNC %s\n",
+                wantVsync ? "ON (CZ_HOST_VSYNC=1)" : "OFF",
+                vsRc == 0 ? "accepted" : "UNAVAILABLE (hint only)",
+                (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? "SET — the display is still "
+                                                         "pacing us, and the frame rate "
+                                                         "above 60 fps will be its "
+                                                         "refresh rate"
+                                                       : "clear");
+    }
+    else
+    {
+        // The swapchain arm chooses its own present mode inside the renderer, and
+        // CZ_HOST_VSYNC is meaningless here — say so rather than letting a run be
+        // configured with a flag that does nothing (gotcha 5).
+        fprintf(stderr,
+                "[host] CZ_VK_SWAPCHAIN: this window carries SDL_WINDOW_VULKAN and has "
+                "NO SDL_Renderer. The renderer presents its own image; the present "
+                "readback and its two copies do not run, and the present MODE is chosen "
+                "by the renderer (see the [vk] swapchain line), not by SDL.%s\n"
+                "[host] WHAT THIS ARM COSTS, said out loud: the host-rendered F4 debug "
+                "overlay is drawn by SDL's renderer and is therefore NOT DRAWN in this "
+                "arm. The title's own F2 DebugJump screen is drawn by the GAME and is "
+                "unaffected, and so is every other instrument.\n",
+                wantVsync ? " CZ_HOST_VSYNC=1 is IGNORED here." : "");
+    }
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
             kDefaultHeight, SDL_GetCurrentVideoDriver());
@@ -703,6 +768,66 @@ void Host_PresentPixels(const uint8_t* rgba, uint32_t width, uint32_t height)
     g_pixelsWidth = width;
     g_pixelsHeight = height;
     g_havePixels = true;
+}
+
+// ===================================================================================
+// The Vulkan swapchain seam (CZ_VK_SWAPCHAIN=1). See window.h for why it exists and
+// what it costs.
+// ===================================================================================
+// These four are the ONLY functions in this file the renderer thread calls, and none of
+// them touches the event loop's state. SDL_Vulkan_GetInstanceExtensions and
+// SDL_Vulkan_CreateSurface are documented as safe to call from any thread once the
+// window exists; SDL_Vulkan_GetDrawableSize reads the window's size, which the loop only
+// ever grows through SDL's own resize handling — a stale value here costs one
+// swapchain rebuild, which the renderer does on VK_SUBOPTIMAL_KHR anyway.
+bool Host_VulkanSwapchainWanted()
+{
+    return g_active && g_wantVulkanSwapchain;
+}
+
+std::vector<const char*> Host_VulkanInstanceExtensions()
+{
+    std::vector<const char*> out;
+    if (!Host_VulkanSwapchainWanted())
+        return out;
+    unsigned n = 0;
+    if (!SDL_Vulkan_GetInstanceExtensions(g_window, &n, nullptr))
+    {
+        fprintf(stderr, "[host] SDL_Vulkan_GetInstanceExtensions failed: %s\n",
+                SDL_GetError());
+        return out;
+    }
+    out.resize(n);
+    if (!SDL_Vulkan_GetInstanceExtensions(g_window, &n, out.data()))
+    {
+        fprintf(stderr, "[host] SDL_Vulkan_GetInstanceExtensions failed: %s\n",
+                SDL_GetError());
+        out.clear();
+    }
+    return out;
+}
+
+bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface)
+{
+    if (!Host_VulkanSwapchainWanted() || !instance || !outSurface)
+        return false;
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    if (!SDL_Vulkan_CreateSurface(g_window, static_cast<VkInstance>(instance), &surface))
+    {
+        fprintf(stderr, "[host] SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
+        return false;
+    }
+    *outSurface = reinterpret_cast<uint64_t>(surface);
+    return true;
+}
+
+void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h)
+{
+    int dw = 0, dh = 0;
+    if (Host_VulkanSwapchainWanted())
+        SDL_Vulkan_GetDrawableSize(g_window, &dw, &dh);
+    if (w) *w = uint32_t(dw < 0 ? 0 : dw);
+    if (h) *h = uint32_t(dh < 0 ? 0 : dh);
 }
 
 bool Host_PadState(uint32_t userIndex, HostPadState& out)
@@ -853,6 +978,14 @@ void Host_WindowRun()
                     SDL_SetWindowSize(g_window, int(width), int(height));
             }
 
+            // In the CZ_VK_SWAPCHAIN arm there is no SDL_Renderer and nothing to blit:
+            // the renderer thread has already presented this frame through its own
+            // swapchain. The loop still runs — it owns the event pump, the pad and the
+            // title bar — it simply has no picture to draw, so the whole blit/overlay/
+            // present block below is skipped and the title-bar clock underneath it keeps
+            // reporting, which is what says the present seam is running in this arm too.
+            if (g_renderer)
+            {
             // Blit the rendered frame if there is one. With CZ_VKDRAW off there
             // never is, and the flat clear below is the honest present: the guest's
             // front buffer holds whatever its allocator left there, and showing it
@@ -895,6 +1028,7 @@ void Host_WindowRun()
             }
             DrawDebugOverlay();
             SDL_RenderPresent(g_renderer);
+            }
         }
         else
         {

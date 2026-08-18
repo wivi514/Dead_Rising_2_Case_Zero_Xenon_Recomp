@@ -2092,9 +2092,49 @@ struct FrameSlot
 // the CPU's 27.7, so one frame of overlap already hides all of it (§6ar).
 constexpr uint32_t kMaxFramesInFlight = 3;
 
+// THE SWAPCHAIN, when CZ_VK_SWAPCHAIN=1 puts one on the window (part 54, plan §7).
+//
+// Everything here is null in the default arm and not one line of it executes. The
+// default present path — resolve image -> host buffer -> Host_PresentPixels -> SDL
+// texture — is untouched, which is what makes these two arms of one A/B.
+struct SwapchainState
+{
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
+    uint32_t width = 0, height = 0;
+    std::vector<VkImage> images;
+    // Layout tracking, because a swapchain image arrives UNDEFINED the first time and
+    // PRESENT_SRC every time after, and the barrier before the blit has to name the
+    // right old layout or the validation layer objects (and a driver may keep the old
+    // contents rather than discarding them).
+    std::vector<bool> everPresented;
+    // One acquire semaphore per FRAME SLOT, not per image: the acquire happens before we
+    // know which image we will get, so the semaphore cannot be indexed by image. One
+    // render-finished semaphore per IMAGE, because the present waits on it and the same
+    // image may be re-acquired while an older present on a different image is still
+    // pending.
+    std::vector<VkSemaphore> acquireSem;
+    std::vector<VkSemaphore> renderSem;
+    uint32_t acquireIndex = 0;
+    // The image acquired for the frame currently being submitted, or UINT32_MAX when the
+    // acquire failed and this frame will not be presented. A frame that cannot acquire
+    // is DROPPED rather than presented stale — and it is counted, because a swapchain
+    // that silently drops frames is a frame-rate defect wearing a driver's name.
+    uint32_t acquired = UINT32_MAX;
+    uint64_t presents = 0, acquireFails = 0, rebuilds = 0, suboptimal = 0;
+    // CZ_VK_SWAPCHAIN_DUMP — the picture gate for this arm. See CreateSwapchain.
+    const char* dumpDir = nullptr;
+    uint64_t dumpEvery = 64;
+    bool dumpPending = false;
+};
+
 struct Renderer
 {
     VkInstance instance = VK_NULL_HANDLE;
+    bool wantSwapchain = false;
+    SwapchainState swap;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     // Null unless CZ_VK_VALIDATION=1 brought VK_EXT_debug_utils in with the layer. See
@@ -2878,16 +2918,30 @@ bool CreateDevice()
     // a sampled image still UNDEFINED when a draw reads it — was not, because this
     // renderer creates images in five different places and the handle names none of them.
     // Naming is free, off with the layer, and turns that message into an address.
-    const char* instExts[] = { VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
     const bool wantValidation = EnvOn("CZ_VK_VALIDATION");
+    // CZ_VK_SWAPCHAIN=1 — the window has already decided (it had to: SDL_WINDOW_VULKAN
+    // is a creation flag) and it hands us the platform extensions its surface needs.
+    // Asking the WINDOW rather than reading the env var a second time is deliberate:
+    // if the flagged window failed to create, the window fell back to the copy path and
+    // said so, and this must fall back with it rather than build half a swapchain.
+    R->wantSwapchain = Host_VulkanSwapchainWanted();
+    std::vector<const char*> instExts = R->wantSwapchain
+        ? Host_VulkanInstanceExtensions() : std::vector<const char*>{};
+    if (R->wantSwapchain && instExts.empty())
+    {
+        fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: SDL named no instance extensions — "
+                        "presenting through the readback path instead.\n");
+        R->wantSwapchain = false;
+    }
     if (wantValidation)
     {
         ici.enabledLayerCount = 1;
         ici.ppEnabledLayerNames = layers;
-        ici.enabledExtensionCount = 1;
-        ici.ppEnabledExtensionNames = instExts;
+        instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         fprintf(stderr, "[vk] validation layer requested\n");
     }
+    ici.enabledExtensionCount = uint32_t(instExts.size());
+    ici.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
     VkResult ir = vkCreateInstance(&ici, nullptr, &R->instance);
     if (ir == VK_ERROR_EXTENSION_NOT_PRESENT && wantValidation)
     {
@@ -2895,12 +2949,21 @@ bool CreateDevice()
         // cost the layer — the same rule as the retry below, one level in.
         fprintf(stderr, "[vk] VK_EXT_debug_utils is absent — validation messages will "
                         "name raw handles rather than our objects\n");
-        ici.enabledExtensionCount = 0;
+        // Drop ONLY the naming extension. Setting the count to 0 here would also drop
+        // the surface extensions and leave CZ_VK_SWAPCHAIN asking for a swapchain on an
+        // instance that cannot make a surface — a configuration failing for a reason
+        // nobody would connect to a validation flag.
+        instExts.pop_back();
+        ici.enabledExtensionCount = uint32_t(instExts.size());
+        ici.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
         ir = vkCreateInstance(&ici, nullptr, &R->instance);
     }
     if (ir == VK_ERROR_LAYER_NOT_PRESENT && wantValidation)
     {
-        ici.enabledExtensionCount = 0;
+        if (!instExts.empty() && instExts.back() == std::string(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+            instExts.pop_back();
+        ici.enabledExtensionCount = uint32_t(instExts.size());
+        ici.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
         // Asking for an absent layer must not cost the renderer. It did: the instance
         // failed, Init returned false, and the run had no renderer at all — while the
         // log said "validation layer requested", which reads as though it was ON. An
@@ -2981,6 +3044,44 @@ bool CreateDevice()
     {
         fprintf(stderr, "[vk] no graphics queue family\n");
         return false;
+    }
+
+    // The surface, and the check that this queue family can present to it. Both happen
+    // HERE, between choosing the physical device and creating the logical one, because
+    // that is the only point at which the answer can still change anything: a family
+    // that cannot present has to be found before vkCreateDevice, not after.
+    //
+    // A failure at any step turns the arm OFF and says so. It never falls back silently
+    // and it never proceeds with half a swapchain — the readback path is complete and
+    // correct, so degrading to it is safe as long as the run knows which one it got.
+    if (R->wantSwapchain)
+    {
+        uint64_t surfaceHandle = 0;
+        if (!Host_VulkanCreateSurface(R->instance, &surfaceHandle) || !surfaceHandle)
+        {
+            fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: no surface — presenting through the "
+                            "readback path instead.\n");
+            R->wantSwapchain = false;
+        }
+        else
+        {
+            R->swap.surface = reinterpret_cast<VkSurfaceKHR>(surfaceHandle);
+            VkBool32 canPresent = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(R->physical, R->queueFamily,
+                                                 R->swap.surface, &canPresent);
+            if (!canPresent)
+            {
+                // A graphics family that cannot present is real on some multi-GPU and
+                // headless-render setups. Naming it is the difference between "the arm
+                // did nothing" and a day spent on the swapchain code.
+                fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN: graphics queue family %u cannot "
+                                "present to this surface — presenting through the "
+                                "readback path instead.\n", R->queueFamily);
+                vkDestroySurfaceKHR(R->instance, R->swap.surface, nullptr);
+                R->swap.surface = VK_NULL_HANDLE;
+                R->wantSwapchain = false;
+            }
+        }
     }
 
     // The three features the translated shaders cannot run without, requested
@@ -3072,6 +3173,12 @@ bool CreateDevice()
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qi;
+    const char* devExts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    if (R->wantSwapchain)
+    {
+        dci.enabledExtensionCount = 1;
+        dci.ppEnabledExtensionNames = devExts;
+    }
     VK_CHECK(vkCreateDevice(R->physical, &dci, nullptr, &R->device), "vkCreateDevice");
     vkGetDeviceQueue(R->device, R->queueFamily, 0, &R->queue);
     // Resolves to null when the extension was not enabled, which is every run without
@@ -5963,11 +6070,455 @@ void SubmitFrame()
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &fs.cmd;
+    // The swapchain arm's two semaphores. The wait is at TRANSFER, not at the top of the
+    // pipe: the only thing in this command buffer that touches the acquired image is the
+    // blit at the very end, so everything before it — the whole frame — may run before
+    // the presentation engine has handed the image over. Waiting at TOP_OF_PIPE would
+    // serialise the entire frame behind an acquire for no reason.
+    VkSemaphore waitSem = VK_NULL_HANDLE, signalSem = VK_NULL_HANDLE;
+    constexpr VkPipelineStageFlags kWaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (R->wantSwapchain && R->swap.acquired != UINT32_MAX)
+    {
+        waitSem = R->swap.acquireSem[R->swap.acquireIndex];
+        signalSem = R->swap.renderSem[R->swap.acquired];
+        si.waitSemaphoreCount = 1;
+        si.pWaitSemaphores = &waitSem;
+        si.pWaitDstStageMask = &kWaitStage;
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores = &signalSem;
+    }
     ProfScope _p(&g_prof.submit);
     ProfScope _c(&g_prof.submitCall);
     vkResetFences(R->device, 1, &fs.fence);
     vkQueueSubmit(R->queue, 1, &si, fs.fence);
     fs.inFlight = true;
+}
+
+// ===================================================================================
+// THE SWAPCHAIN (CZ_VK_SWAPCHAIN=1) — plan §7, built in part 54
+// ===================================================================================
+// WHY, IN THE ONLY TERMS THAT MATTER HERE. The default present path copies the frame
+// three times — image -> host buffer on the GPU, host buffer -> window back buffer on the
+// pump, back buffer -> texture on the window thread — and the middle one is charged to
+// `readback`. Measured windowed at ~3,700 draws (part 54):
+//
+//     1280x720    readback 8.1-8.7% of the frame     ~0.65 ms
+//     2560x1440   readback 16.4-17.9%                ~1.7-2.2 ms
+//
+// At 2x it is the largest single non-draw phase, and it is the ONLY cost in this renderer
+// that grows when the operator raises the internal resolution. This path presents the
+// image where it already is: one GPU blit into a swapchain image, no host copy at all.
+//
+// WHAT IT DELIBERATELY DOES NOT DO. It does not move Vulkan onto the window's thread —
+// the surface is created from the window (SDL documents that as thread-safe) and every
+// other call here runs on the pump, exactly where the rest of the renderer runs. Phase
+// 3's separation was about not making the renderer depend on the WINDOWING SYSTEM'S
+// thread, and that still holds.
+//
+// THE PRESENT MODE IS A CHOICE, AND IT IS THE ONE THE COPY PATH NEVER HAD. Part 49 spent
+// a session discovering that a compositor throttles `SDL_RenderPresent` to the display
+// refresh whatever SDL was asked for, and that the failure mode is sharp: with no triple
+// buffering a frame just over 16.67 ms snaps 60 -> 30. MAILBOX is the fix and it is
+// stated rather than requested — the queue never blocks, the newest finished frame wins,
+// and the guest's own pacing stays the only clock. FIFO is the fallback (it is the only
+// mode a Vulkan implementation must support) and it is named in the log when it happens,
+// because a run silently on FIFO is a run whose frame rate is the monitor's.
+// `CZ_VK_SWAPCHAIN_FIFO=1` selects it deliberately, as the arm for exactly that question.
+bool CreateSwapchain(uint32_t wantW, uint32_t wantH);
+
+void DestroySwapchainObjects()
+{
+    for (VkSemaphore sem : R->swap.renderSem)
+        if (sem) vkDestroySemaphore(R->device, sem, nullptr);
+    for (VkSemaphore sem : R->swap.acquireSem)
+        if (sem) vkDestroySemaphore(R->device, sem, nullptr);
+    R->swap.renderSem.clear();
+    R->swap.acquireSem.clear();
+    R->swap.images.clear();
+    R->swap.everPresented.clear();
+    if (R->swap.swapchain)
+        vkDestroySwapchainKHR(R->device, R->swap.swapchain, nullptr);
+    R->swap.swapchain = VK_NULL_HANDLE;
+}
+
+bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
+{
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(R->physical, R->swap.surface, &caps)
+        != VK_SUCCESS)
+        return false;
+
+    // `currentExtent` of 0xFFFFFFFF means "you choose"; anything else is binding, and
+    // arguing with it produces a swapchain the compositor immediately calls suboptimal.
+    VkExtent2D extent = caps.currentExtent;
+    if (extent.width == 0xFFFFFFFFu)
+    {
+        extent.width  = std::clamp(wantW, caps.minImageExtent.width,
+                                   caps.maxImageExtent.width);
+        extent.height = std::clamp(wantH, caps.minImageExtent.height,
+                                   caps.maxImageExtent.height);
+    }
+    // A minimised window reports a zero extent, and creating a zero-extent swapchain is
+    // invalid. Report it as "no swapchain right now" and let the present path drop the
+    // frame; the next resize rebuilds.
+    if (!extent.width || !extent.height)
+        return false;
+
+    uint32_t fcount = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(R->physical, R->swap.surface, &fcount, nullptr);
+    std::vector<VkSurfaceFormatKHR> formats(fcount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(R->physical, R->swap.surface, &fcount,
+                                         formats.data());
+    if (formats.empty())
+        return false;
+    // Prefer a plain 8-bit UNORM surface in either channel order. The blit converts, so
+    // B8G8R8A8 and R8G8B8A8 are equally fine — but an sRGB surface is NOT: our colour
+    // image is UNORM and the presented pixels are already in whatever space the title's
+    // own post chain left them, so letting the presentation engine apply a second
+    // transfer function would brighten every frame. That is exactly the class of defect
+    // this project has spent parts chasing, so it is excluded here by name.
+    VkSurfaceFormatKHR chosen = formats[0];
+    for (const VkSurfaceFormatKHR& f : formats)
+        if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM)
+        {
+            chosen = f;
+            break;
+        }
+
+    uint32_t mcount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(R->physical, R->swap.surface, &mcount,
+                                              nullptr);
+    std::vector<VkPresentModeKHR> modes(mcount);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(R->physical, R->swap.surface, &mcount,
+                                              modes.data());
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;   // always supported
+    if (!EnvOn("CZ_VK_SWAPCHAIN_FIFO"))
+        for (VkPresentModeKHR m : modes)
+            if (m == VK_PRESENT_MODE_MAILBOX_KHR)
+            {
+                mode = m;
+                break;
+            }
+
+    // MAILBOX needs at least three images to actually be mailbox rather than a
+    // differently-spelled FIFO; ask for one more than the minimum and let the driver clamp.
+    uint32_t images = std::max(caps.minImageCount + 1,
+                               mode == VK_PRESENT_MODE_MAILBOX_KHR ? 3u : 2u);
+    if (caps.maxImageCount && images > caps.maxImageCount)
+        images = caps.maxImageCount;
+
+    VkSwapchainKHR old = R->swap.swapchain;
+    VkSwapchainCreateInfoKHR sci{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
+    sci.surface = R->swap.surface;
+    sci.minImageCount = images;
+    sci.imageFormat = chosen.format;
+    sci.imageColorSpace = chosen.colorSpace;
+    sci.imageExtent = extent;
+    sci.imageArrayLayers = 1;
+    // TRANSFER_DST, not COLOR_ATTACHMENT: we never render INTO a swapchain image, we
+    // blit the finished frame into it. That keeps the whole renderer — its dynamic
+    // rendering, its pipeline formats, its resolve chain — completely unaware that a
+    // swapchain exists, which is what makes this an arm rather than a rewrite.
+    sci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // CZ_VK_SWAPCHAIN_DUMP=<dir> — read the SWAPCHAIN IMAGE back and write it as a PPM.
+    //
+    // THIS IS THE ONLY WAY TO GATE THIS ARM'S PICTURE WITHOUT AN AWAKE SCREEN, and part
+    // 54 found that out the expensive way: the obvious oracle is a compositor grab, and
+    // at 01:35 every grab came back uniformly black because the monitor was asleep — the
+    // same trap that made this project quote a 210 MHz GPU clock for five sessions
+    // (gotcha 231). A grab is still the better oracle when there is a screen; this is the
+    // one that works at 3 a.m. and in CI.
+    //
+    // What it proves and what it does not, said out loud: it proves the pixels HANDED TO
+    // THE PRESENTATION ENGINE are the right pixels — the blit's filter, scale, channel
+    // order and orientation are all in it — because they are then correlated against
+    // capture E3, which is Xenia's own screenshot and not something this project wrote.
+    // It does not prove the presentation engine displays them; only a screen can.
+    //
+    // The extra usage bit is requested ONLY in this arm. A swapchain created with a usage
+    // the default path does not need is a different swapchain, and gating a measurement
+    // arm's picture on a configuration nobody ships is the failure this project keeps
+    // paying for (gotcha 345) — so the default arm's swapchain stays exactly TRANSFER_DST.
+    if (Env("CZ_VK_SWAPCHAIN_DUMP"))
+    {
+        if (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+            sci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        else
+            fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN_DUMP: this surface does not allow "
+                            "TRANSFER_SRC on its images — the dump cannot run.\n");
+    }
+    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    sci.preTransform = caps.currentTransform;
+    sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    sci.presentMode = mode;
+    sci.clipped = VK_TRUE;
+    sci.oldSwapchain = old;
+    VkSwapchainKHR fresh = VK_NULL_HANDLE;
+    const VkResult rc = vkCreateSwapchainKHR(R->device, &sci, nullptr, &fresh);
+    if (rc != VK_SUCCESS)
+    {
+        fprintf(stderr, "[vk] vkCreateSwapchainKHR failed (%d)\n", int(rc));
+        return false;
+    }
+    DestroySwapchainObjects();       // retires `old` too
+    R->swap.swapchain = fresh;
+    R->swap.format = chosen.format;
+    R->swap.mode = mode;
+    R->swap.width = extent.width;
+    R->swap.height = extent.height;
+
+    uint32_t got = 0;
+    vkGetSwapchainImagesKHR(R->device, fresh, &got, nullptr);
+    R->swap.images.resize(got);
+    vkGetSwapchainImagesKHR(R->device, fresh, &got, R->swap.images.data());
+    R->swap.everPresented.assign(got, false);
+    R->swap.renderSem.resize(got, VK_NULL_HANDLE);
+    R->swap.acquireSem.resize(R->framesInFlight + 1, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semi{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (VkSemaphore& sem : R->swap.renderSem)
+        vkCreateSemaphore(R->device, &semi, nullptr, &sem);
+    for (VkSemaphore& sem : R->swap.acquireSem)
+        vkCreateSemaphore(R->device, &semi, nullptr, &sem);
+    R->swap.acquireIndex = 0;
+    R->swap.rebuilds++;
+    if (!R->swap.dumpDir)
+        if (const char* d = Env("CZ_VK_SWAPCHAIN_DUMP"))
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(d, ec);
+            R->swap.dumpDir = d;
+            if (const char* e = Env("CZ_VK_SWAPCHAIN_DUMP_EVERY"))
+                R->swap.dumpEvery = std::max(1ull, strtoull(e, nullptr, 10));
+            fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN_DUMP: every %llu-th SWAPCHAIN IMAGE "
+                            "-> %s. This is the picture gate for this arm — correlate "
+                            "the PPMs against capture E3.\n",
+                    (unsigned long long)R->swap.dumpEvery, d);
+        }
+
+    fprintf(stderr,
+            "[vk] swapchain %ux%u, %u images, format %d, present mode %s%s\n",
+            extent.width, extent.height, got, int(chosen.format),
+            mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX (the queue never blocks; the "
+                                                  "newest finished frame wins)"
+                                                : "FIFO — THE DISPLAY IS PACING US and "
+                                                  "the frame rate above the refresh rate "
+                                                  "will be the refresh rate",
+            EnvOn("CZ_VK_SWAPCHAIN_FIFO") ? " (CZ_VK_SWAPCHAIN_FIFO=1)" : "");
+    return true;
+}
+
+// Acquire the image this frame will be presented into, and record the blit into the
+// frame's own command buffer. Called from DoSwapImpl in place of the readback copy.
+//
+// The acquire happens HERE rather than at the top of the frame on purpose: it is the
+// only call in this path that can block, and blocking as late as possible means the CPU
+// has already done the frame's whole recording before it ever waits on the presentation
+// engine. With MAILBOX and three images it does not wait at all.
+void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
+{
+    R->swap.acquired = UINT32_MAX;
+    if (!R->swap.swapchain)
+    {
+        uint32_t dw = 0, dh = 0;
+        Host_VulkanDrawableSize(&dw, &dh);
+        if (!CreateSwapchain(dw, dh))
+        {
+            R->swap.acquireFails++;
+            Count("swap: swapchain unavailable, frame DROPPED");
+            return;
+        }
+    }
+
+    VkSemaphore acq = R->swap.acquireSem[R->swap.acquireIndex];
+    uint32_t index = 0;
+    VkResult rc = vkAcquireNextImageKHR(R->device, R->swap.swapchain, UINT64_MAX, acq,
+                                        VK_NULL_HANDLE, &index);
+    if (rc == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        // The window changed size or the surface was lost. Rebuild and try once; a
+        // second failure drops the frame rather than looping, because a loop here would
+        // spin the pump inside a resize.
+        uint32_t dw = 0, dh = 0;
+        Host_VulkanDrawableSize(&dw, &dh);
+        // The semaphores are recreated by CreateSwapchain, so re-read `acq` after it.
+        if (!CreateSwapchain(dw, dh))
+        {
+            R->swap.acquireFails++;
+            Count("swap: swapchain out of date and could not be rebuilt, frame DROPPED");
+            return;
+        }
+        acq = R->swap.acquireSem[R->swap.acquireIndex];
+        rc = vkAcquireNextImageKHR(R->device, R->swap.swapchain, UINT64_MAX, acq,
+                                   VK_NULL_HANDLE, &index);
+    }
+    if (rc == VK_SUBOPTIMAL_KHR)
+        R->swap.suboptimal++;
+    else if (rc != VK_SUCCESS)
+    {
+        R->swap.acquireFails++;
+        Count("swap: vkAcquireNextImageKHR failed, frame DROPPED");
+        return;
+    }
+    R->swap.acquired = index;
+
+    // The source image into TRANSFER_SRC, the swapchain image into TRANSFER_DST, blit,
+    // then the swapchain image into PRESENT_SRC. `Barrier` handles the source because it
+    // is one of our tracked images; the swapchain images are not ours, so their two
+    // transitions are written out here.
+    Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VkImageMemoryBarrier toDst{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    toDst.srcAccessMask = 0;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    // UNDEFINED the first time an image is used, PRESENT_SRC after — and UNDEFINED is
+    // also correct for a re-use, because the blit overwrites every pixel. Tracking it
+    // anyway costs one bool and makes the barrier say what is true, which is what a
+    // validation run reads.
+    toDst.oldLayout = R->swap.everPresented[index] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                                   : VK_IMAGE_LAYOUT_UNDEFINED;
+    toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.image = R->swap.images[index];
+    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                         &toDst);
+
+    // BLIT, not copy: the swapchain is the WINDOW's size and the frame is the internal
+    // resolution, and those stopped being the same number the moment CZ_VK_RES existed.
+    // A copy would require them equal and would present a crop of the frame; the blit
+    // scales, which is the same filtered-down supersampling the SDL path got for free
+    // from SDL_RenderCopy. LINEAR for that reason — NEAREST would alias the 2x image
+    // down into a 720p window and make the resolution knob look like a downgrade.
+    VkImageBlit blit{};
+    blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    blit.srcOffsets[1] = { int32_t(width), int32_t(height), 1 };
+    blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    blit.dstOffsets[1] = { int32_t(R->swap.width), int32_t(R->swap.height), 1 };
+    vkCmdBlitImage(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   R->swap.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+
+    // The dump copy goes here, while the image is still TRANSFER_DST and the blit that
+    // filled it is the immediately preceding command. `R->readback` is the renderer's
+    // general-purpose readback buffer and is already sized for a front-buffer resolve;
+    // a swapchain larger than it is reported rather than truncated.
+    R->swap.dumpPending = false;
+    if (R->swap.dumpDir && (R->frame % R->swap.dumpEvery) == 0)
+    {
+        const size_t need = size_t(R->swap.width) * R->swap.height * 4;
+        if (need > R->readback.size)
+            Count("swap: DUMP declined, swapchain larger than the readback buffer");
+        else
+        {
+            VkImageMemoryBarrier toSrc = toDst;
+            toSrc.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                                 nullptr, 1, &toSrc);
+            VkBufferImageCopy back{};
+            back.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            back.imageExtent = { R->swap.width, R->swap.height, 1 };
+            vkCmdCopyImageToBuffer(R->cmd, R->swap.images[index],
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   R->readback.buffer, 1, &back);
+            toDst.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;   // for `toPresent`
+            R->swap.dumpPending = true;
+        }
+    }
+
+    VkImageMemoryBarrier toPresent = toDst;
+    toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toPresent.dstAccessMask = 0;
+    toPresent.oldLayout = R->swap.dumpPending ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                                              : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
+                         1, &toPresent);
+    R->swap.everPresented[index] = true;
+}
+
+// Hand the acquired image to the presentation engine. Called immediately after the
+// submit that contains the blit, and it waits on that submit's semaphore rather than on
+// a fence — which is the whole reason this is cheaper than the readback: nothing on the
+// CPU waits for the GPU to finish the frame before the window can show it.
+void PresentSwapchain()
+{
+    if (R->swap.acquired == UINT32_MAX)
+        return;
+    VkPresentInfoKHR pi{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &R->swap.renderSem[R->swap.acquired];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &R->swap.swapchain;
+    pi.pImageIndices = &R->swap.acquired;
+    const VkResult rc = vkQueuePresentKHR(R->queue, &pi);
+    if (rc == VK_SUCCESS)
+        R->swap.presents++;
+    else if (rc == VK_SUBOPTIMAL_KHR)
+    {
+        R->swap.presents++;
+        R->swap.suboptimal++;
+    }
+    else if (rc == VK_ERROR_OUT_OF_DATE_KHR)
+    {
+        // Rebuild on the NEXT frame rather than here: the images are still in use by the
+        // present that just failed, and tearing them down inside the failure is how a
+        // resize turns into a device-lost.
+        Count("swap: present out of date, swapchain will be rebuilt");
+        R->swap.acquireFails++;
+    }
+    else
+    {
+        Count("swap: vkQueuePresentKHR FAILED");
+        R->swap.acquireFails++;
+    }
+    R->swap.acquireIndex = (R->swap.acquireIndex + 1) %
+                           uint32_t(R->swap.acquireSem.size());
+    R->swap.acquired = UINT32_MAX;
+
+    // The dump, on the frames that asked for it. `vkQueueWaitIdle` is a blunt instrument
+    // and it is the right one HERE: this runs on one frame in `dumpEvery`, in a
+    // diagnostic arm, and the alternative — threading a fence through the present — would
+    // put new synchronisation into the path being gated, which is the one place a gate
+    // must not change what it measures (gotcha 7).
+    if (R->swap.dumpPending)
+    {
+        R->swap.dumpPending = false;
+        vkQueueWaitIdle(R->queue);
+        char path[512];
+        snprintf(path, sizeof path, "%s/swap_%06llu.ppm", R->swap.dumpDir,
+                 (unsigned long long)R->frame);
+        if (FILE* f = fopen(path, "wb"))
+        {
+            fprintf(f, "P6\n%u %u\n255\n", R->swap.width, R->swap.height);
+            const uint8_t* p = R->readback.mapped;
+            const size_t n = size_t(R->swap.width) * R->swap.height * 4;
+            // The surface format decides the channel order, and getting it wrong here
+            // would produce a red/blue-swapped PPM that the E3 correlation — which works
+            // on LUMINANCE — would happily pass. So it is read from the format the
+            // swapchain was actually created with rather than assumed.
+            const bool bgra = R->swap.format == VK_FORMAT_B8G8R8A8_UNORM ||
+                              R->swap.format == VK_FORMAT_B8G8R8A8_SRGB;
+            for (size_t i = 0; i < n; i += 4)
+            {
+                const uint8_t rgb[3] = { bgra ? p[i + 2] : p[i],
+                                         p[i + 1],
+                                         bgra ? p[i] : p[i + 2] };
+                fwrite(rgb, 1, 3, f);
+            }
+            fclose(f);
+            Count("swap: swapchain image dumped");
+        }
+        else
+            fprintf(stderr, "[vk] CZ_VK_SWAPCHAIN_DUMP: cannot write %s\n", path);
+    }
 }
 
 // Wait for the OLDEST frame still in flight and hand back its slot, or -1 if there is
@@ -10409,16 +10960,56 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
 
+    // WHETHER THE READBACK STILL HAPPENS AT ALL. In the CZ_VK_SWAPCHAIN arm the window
+    // gets its pixels from the swapchain blit below and nothing needs them in host
+    // memory — except the picture instruments, every one of which walks the presented
+    // frame on the CPU. So the readback survives in that arm exactly when one of them is
+    // armed, and the run SAYS SO, because a swapchain run carrying a picture instrument
+    // is paying for both paths and its `readback` column is not the arm's cost.
+    //
+    // Read once from the environment, like every other decision of this shape here: a
+    // per-frame getenv is a syscall on the frame path, and a predicate that can change
+    // mid-run makes two windows of one profile incomparable.
+    // These are exactly the environment variables the five consumers of `px` below test
+    // — the black/dark triggers, the periodic PPM dump, the F9 capture, the frame stats
+    // — and the list is kept in this one place so it can be checked against them. Every
+    // consumer ALSO tests `px` itself, and a consumer that finds itself armed with no
+    // pixels says so by name in the census rather than doing nothing quietly: a
+    // predicate that misses a case must produce a report, not a silence (gotcha 151).
+    static const bool wantCachedPixels =
+        Env("CZ_VK_FRAME_STATS") || Env("CZ_VK_FRAME_DUMP") || Env("CZ_VK_SNAP_DUMP") ||
+        Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") || Env("CZ_CAPTURE_KEY") ||
+        Env("CZ_VK_SNAP_FRAME");
+    const bool doReadback = !R->wantSwapchain || wantCachedPixels;
+    static bool saidWhy = false;
+    if (R->wantSwapchain && wantCachedPixels && !saidWhy)
+    {
+        saidWhy = true;
+        fprintf(stderr,
+                "[vk] CZ_VK_SWAPCHAIN with a picture instrument armed: the present "
+                "READBACK IS STILL RUNNING, because every picture instrument here walks "
+                "the frame on the CPU. This run pays for both present paths and its "
+                "`readback` column is NOT this arm's cost — take a frame-time A/B "
+                "without one.\n");
+    }
+
     // Into THIS SLOT's readback buffer, not a shared one: with a frame in flight the
     // window has not necessarily fetched the previous frame's pixels yet.
     FrameSlot& rec = R->frames[R->frameSlot];
-    Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    copy.imageExtent = { width0, height0, 1 };
-    vkCmdCopyImageToBuffer(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           rec.present.buffer, 1, &copy);
+    if (doReadback)
+    {
+        Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = { width0, height0, 1 };
+        vkCmdCopyImageToBuffer(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               rec.present.buffer, 1, &copy);
+    }
+    // The swapchain blit goes LAST in the command buffer, after the readback copy when
+    // both are present, because it is what the submit's semaphore signals on.
+    if (R->wantSwapchain)
+        RecordSwapchainBlit(source, width0, height0);
 
     // What this frame WAS, recorded next to the pixels it produced. Every present-side
     // instrument below reads this and not `R->frame`/`R->drawFingerprint`, which from
@@ -10434,6 +11025,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     rec.presentable = true;
 
     SubmitFrame();
+    // Immediately after the submit, and before the fence wait below: the present waits on
+    // the submit's SEMAPHORE, so the window can be handed this frame while the CPU is
+    // still retiring the previous one. That ordering is the item — the readback path
+    // cannot show a frame until its bytes have arrived in host memory.
+    if (R->wantSwapchain)
+        PresentSwapchain();
     const int presentSlot = RetireOldestFrame();
 
     // Advance the ring for the next frame. It happens HERE, after the wait above, so
@@ -10491,6 +11088,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // write-combined read. `CZ_VK_PRESENT_STAGING=1` is the same-binary control arm.
     static const bool stagingCopy = !g_readbackCached || EnvOn("CZ_VK_PRESENT_STAGING");
     const uint8_t* px = nullptr;
+    if (!doReadback)
+    {
+        // The swapchain arm with no picture instrument: there are no host pixels and
+        // nothing downstream of here has anything to look at. Everything below this point
+        // — the frame stats, the dumps, the black triggers — is guarded on `px`, and
+        // this counter is what makes the choice visible in the census rather than
+        // inferable from an absence.
+        Count("swap: presented through the swapchain (no host readback)");
+    }
+    else
     {
         ProfScope _p(&g_prof.readback);
         if (stagingCopy)
@@ -10573,7 +11180,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     static bool oweBrightReference = false;
 
     bool blackTransition = false;
-    if (onBlackEnv || onDarkEnv)
+    if (px && (onBlackEnv || onDarkEnv))
     {
         // Sampled every 16th pixel: this runs on the present path of every frame, and
         // the quantity is a whole-frame fraction that a 1-in-16 sample estimates to far
@@ -10670,7 +11277,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // Separate from the loop below rather than folded into its interval test, because
     // this one has to fire on EXACTLY the armed frame — the interval test would either
     // miss it or, if the interval were forced to 1, write every frame of the run.
-    if (R->capturePictureFrame && pres.frame == R->capturePictureFrame)
+    if (px && R->capturePictureFrame && pres.frame == R->capturePictureFrame)
     {
         R->capturePictureFrame = 0;
         char path[512];
@@ -10768,7 +11375,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         Env("CZ_VK_FRAME_DUMP_EVERY")
             ? std::max<uint64_t>(1, strtoull(Env("CZ_VK_FRAME_DUMP_EVERY"), nullptr, 10))
             : 64;
-    if (dumpDir && (pres.frame % dumpEvery) == 0)
+    if (px && dumpDir && (pres.frame % dumpEvery) == 0)
     {
         // Create the directory, and SAY SO if the frames cannot be written. This used to
         // be a bare fopen whose failure was silent, so a run pointed at a directory that
@@ -10913,7 +11520,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         }
     }
 
-    if (statsFile)
+    if (px && statsFile)
     {
         ProfScope _fs(&g_prof.frameStats);
         uint64_t lit = 0, lumaSum = 0, ph = 0xCBF29CE484222325ull;
@@ -11005,6 +11612,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // renderer produces, and it is invisible in a log. Counting it makes "the picture
     // is black" a number rather than a report — and separating "black" from "some
     // uniform colour" separates a missing draw from a clear that ran and nothing else.
+    if (px)
     {
         uint32_t first = 0;
         memcpy(&first, px, 4);
@@ -11369,6 +11977,31 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         "one a player runs\n",
                         frames ? double(g_prof.frameStats) * 1e-6 / double(frames) : 0.0,
                         pct(g_prof.frameStats));
+
+            // THE SWAPCHAIN ARM'S OWN COUNTER (CZ_VK_SWAPCHAIN=1). An arm with no
+            // counter cannot be shown to have engaged (gotcha 151), and this one has a
+            // specific way of half-engaging that would otherwise look like a frame-rate
+            // regression with no cause: a swapchain that cannot acquire DROPS the frame,
+            // so `presents` below the window's frame count is the whole explanation for
+            // a picture that stutters while every other column reads normal.
+            if (R->wantSwapchain)
+            {
+                static uint64_t lastPresents = 0, lastFails = 0;
+                const uint64_t dp = R->swap.presents - lastPresents;
+                const uint64_t df = R->swap.acquireFails - lastFails;
+                lastPresents = R->swap.presents;
+                lastFails = R->swap.acquireFails;
+                fprintf(stderr,
+                        "[vkprof] swapchain %ux%u %s: %llu presented this window of %llu "
+                        "frames, %llu DROPPED (acquire/present failed), %llu rebuilds, "
+                        "%llu suboptimal\n",
+                        R->swap.width, R->swap.height,
+                        R->swap.mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "FIFO",
+                        (unsigned long long)dp, (unsigned long long)frames,
+                        (unsigned long long)df,
+                        (unsigned long long)R->swap.rebuilds,
+                        (unsigned long long)R->swap.suboptimal);
+            }
 
             // THE SPLIT OF `record`, which is the largest draw-path term on the
             // operator's frame (15.2 ms, 2.17 us a draw) and had no breakdown at all.

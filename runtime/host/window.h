@@ -121,6 +121,54 @@ void Host_RequestDebugMenu();
 void Host_RequestSnapDump();
 bool Host_ConsumeSnapDumpPressed();
 
+// ===================================================================================
+// THE VULKAN SWAPCHAIN SEAM — CZ_VK_SWAPCHAIN=1 (part 54, plan §7)
+// ===================================================================================
+// Everything above presents by COPYING: the renderer reads its colour target back into
+// host memory, `Host_PresentPixels` copies that into the window's back buffer, and the
+// event loop uploads it again with `SDL_UpdateTexture`. Three full frames of traffic and
+// a GPU->CPU->GPU round trip, per presented frame, for pixels that never left the card
+// in the first place.
+//
+// That was the right trade while the guest ran at 30 fps into a 1280x720 target — 3.5 MB
+// a frame is nothing, and it kept Vulkan off the window's thread, which is the separation
+// phase 3 was built around. Part 53's internal resolution knob changed the arithmetic:
+// the copy is the scale SQUARED, so at `CZ_VK_RES=2560x1440` it is 14.1 MB a frame, and
+// MEASURED (part 54, windowed, ~3,700 draws) it is:
+//
+//     1280x720    readback 8.1-8.7% of the frame     ~0.65 ms
+//     2560x1440   readback 16.4-17.9%                ~1.7-2.2 ms
+//
+// — the largest single non-draw phase at 2x, and the only cost in this renderer that
+// grows when the operator raises the resolution.
+//
+// So this seam exists to let the renderer present the image it already has, in place.
+// It is an ARM, not a replacement: without `CZ_VK_SWAPCHAIN` not one line of it runs and
+// the copy path above is untouched, which is what makes the two same-binary arms of one
+// A/B rather than a rewrite that has to be trusted.
+//
+// THE FLAG HAS TO BE DECIDED AT WINDOW-CREATION TIME. `SDL_WINDOW_VULKAN` cannot be added
+// to a window that already exists, and a window carrying it cannot also carry an
+// `SDL_Renderer` — so the choice is made once, in Host_WindowInit, before the guest
+// starts. The renderer asks about it later, from the pump thread, through
+// Host_VulkanSwapchainWanted().
+bool Host_VulkanSwapchainWanted();
+
+// The instance extensions SDL needs for a surface on this window (VK_KHR_surface plus the
+// platform one). Empty when there is no Vulkan window, which is the honest answer for a
+// headless run and makes the renderer's "no swapchain here" branch data-driven rather
+// than a second env-var read.
+std::vector<const char*> Host_VulkanInstanceExtensions();
+
+// Create the surface for this window. `instance` and `outSurface` are `VkInstance` and
+// `VkSurfaceKHR*` passed as void*/uintptr_t so that this header — which the whole runtime
+// includes — does not have to pull in vulkan.h. Returns false and says why on failure.
+bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface);
+
+// The window's drawable size in pixels, which on a scaled display is NOT its logical
+// size. The swapchain is created at this extent and re-created when it changes.
+void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
+
 // Host-rendered replacement for the retail build's missing blue debug-menu layer.
 // The labels still come from the genuine guest cDebugMenu nodes.
 void Host_DebugMenuSetItems(const std::vector<std::string>& items);

@@ -1511,6 +1511,53 @@ CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing
                    floor rather than the change (gotcha 237), and the window's frame
                    count, so an interval covering a load screen is visible rather than
                    averaged in. `tools/play_session.sh` is the session it exists for
+CZ_VK_SWAPCHAIN=1  **present through a real Vulkan swapchain (part 54, plan §7)** instead
+                   of reading the frame back into host memory and handing SDL a texture.
+                   Removes three full-frame copies a present -- the GPU's image->buffer
+                   copy, the pump's `memcpy` into the window's back buffer, and the window
+                   thread's `SDL_UpdateTexture` -- and replaces them with one GPU blit into
+                   an acquired swapchain image. **`readback` goes to 0.0%**, and what that
+                   is worth was MEASURED windowed before it was built: 8.1-8.7% of the
+                   frame at 1280x720 (~0.65 ms) and **16.4-22.6% at 2560x1440 (~1.7-2.2
+                   ms)**, the largest single non-draw phase at 2x and the only cost in this
+                   renderer that grows when the resolution does. It also picks the present
+                   MODE, which the SDL path never could: MAILBOX, so the compositor cannot
+                   pace us (part 49's 60->30 snap) -- `CZ_VK_SWAPCHAIN_FIFO=1` is the arm
+                   for that question and FIFO is named in the log when it is all the
+                   surface offers.
+                   **Decided at WINDOW-CREATION time**, because `SDL_WINDOW_VULKAN` is a
+                   creation flag and a window carrying it cannot also carry an
+                   `SDL_Renderer`. Consequences, all stated in the log at start-up:
+                   headless runs ignore it entirely (there is no window, so it degrades to
+                   the readback path and every gate is unaffected); **the host-rendered F4
+                   debug overlay is not drawn in this arm** (the title's own F2 DebugJump
+                   screen is drawn by the GAME and is unaffected); and a run carrying a
+                   PICTURE instrument -- `CZ_VK_FRAME_STATS`, `CZ_VK_FRAME_DUMP`,
+                   `CZ_VK_SNAP_*`, `CZ_CAPTURE_KEY` -- keeps the readback running as well,
+                   because every one of them walks the frame on the CPU, and SAYS SO: such
+                   a run pays for both paths and its `readback` column is not this arm's
+                   cost. `[vkprof] swapchain` counts presents, DROPPED frames, rebuilds and
+                   suboptimal results, because an arm with no counter cannot be shown to
+                   have engaged (gotcha 151)
+CZ_VK_SWAPCHAIN_DUMP=dir  **the picture gate for the arm above**, every 64th SWAPCHAIN
+                   IMAGE as a PPM (`CZ_VK_SWAPCHAIN_DUMP_EVERY=N`). It exists because none
+                   of this project's picture gates can see that arm: `CZ_CAPTURE_KEY`,
+                   `CZ_VK_FRAME_DUMP` and the E3 correlation all read the present
+                   READBACK, which is the very thing the swapchain replaces -- so they
+                   would pass with the old path doing all the work and say nothing about
+                   the pixels on screen. This reads back the image actually handed to the
+                   presentation engine, in the channel order the surface format declares,
+                   so the blit's scale, filter, orientation and channel order are all in
+                   it. Correlate the PPMs against `Xenia logs/E_screenshots/E3_*.png` with
+                   `tools/frame_signature.py`: part 54 got **+0.8831, 21 of 38 frames
+                   agreeing on layout**, against the E3 gate's own +0.8396-+0.8808.
+                   **The better oracle is a COMPOSITOR grab and it needs an awake screen**
+                   -- `tools/part54_swapchain_picture.sh` is that gate, and every grab it
+                   took at 01:35 came back uniformly black because the monitor was asleep,
+                   which is gotcha 231's trap one subsystem over. Use the grab by day and
+                   this at night. It requests `TRANSFER_SRC` on the swapchain images, which
+                   the default arm does not, so it is a different swapchain: read it as a
+                   picture gate, never as a frame time
 CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
                    frame into a staging buffer before the window and the picture
                    instruments read it, the way the present path did for fifty-two parts.
