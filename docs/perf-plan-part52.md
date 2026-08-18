@@ -422,8 +422,15 @@ how every item above is priced.
 * **A faster guard hash.** §0 fact 3: it is memory-bound at ~10 GB/s. SIMD buys nothing.
   (If you disbelieve this, the cheap test is to run the guard over a *hot* 1 MB buffer and
   compare — 35.7 GB/s hot against ~10 GB/s in situ is the whole argument.)
-* **A real Vulkan swapchain.** Worth doing eventually, but it is a presentation
-  architecture change, not a CPU item, and item 1.3 gets most of the CPU benefit.
+* ~~**A real Vulkan swapchain.** Worth doing eventually, but it is a presentation
+  architecture change, not a CPU item, and item 1.3 gets most of the CPU benefit.~~
+  **RETRACTED AND DONE IN PART 54 (`CZ_VK_SWAPCHAIN=1`).** Both halves of that sentence
+  were wrong. It IS a CPU item — the pump's `memcpy` into the window's back buffer is
+  8.1-8.7% of the frame at 720p and 16.4-36.2% at 1440p — and item 1.3 got a fraction of
+  it, not most: 1.3 removed the *redundant* staging copy, and this removes the copy that
+  was never redundant plus the GPU's image-to-buffer copy and the window thread's
+  `SDL_UpdateTexture`. The reason it read as "not a CPU item" is gotcha 352: this cost
+  only exists with a window, and every measurement behind this plan was headless.
 * **Pinning the GPU clock.** Retracted in part 30; sample it, do not pin it.
 
 ---
@@ -556,6 +563,46 @@ this document owes are:
 | 1.4 parallel recording | open, ~4 ms at four workers, still the riskiest thing in the plan |
 | 2.3 / 3.3 / 2.2 / 3.4 / 4.2 | open |
 | 2a soft-dirty page tracking | struck in part 51 |
+
+---
+
+## 9d. STATUS AT THE CLOSE OF PART 54 — §7's swapchain item is done, and §2b is stale
+
+Part 54 executed the item this document filed under **§7 EXPLICITLY NOT IN THIS PLAN**,
+and the retraction there says why that filing was wrong. `docs/phase5-notes.md` §6ck is
+the record. What this document owes:
+
+* **The whole of §2b's symbol table predates parts 52 and 53** and every share in it has
+  risen without its cost changing (gotcha 320). Re-taken in part 54, pump thread,
+  instruments off, outdoors in a crowd: `DoDraw` **24.43%**, the NVIDIA driver
+  **15.13%**, `UploadStream` **12.84%**, `WriteRegisterRun` 9.10%, `UploadTexture`
+  **8.69%**, `ExecutePacket` 5.77%, `SynthRectStream` 2.76%, `ExecuteLinear` 2.36%,
+  `_int_malloc` 2.00%. `GuardFold` — a quarter of that thread when this plan was written
+  — does not appear.
+* **`DoDraw` and the driver are the SAME item and together they are 39.6% of the pump.**
+  The driver's time is our `vkCmd*` calls; item 1.4 moves both. That makes 1.4 clearly the
+  largest thing left, and it is still the riskiest — draw ORDER is semantic and no gate
+  here would catch getting it wrong.
+* **`UploadStream` at 12.84% is not in this plan at all.** Part 22 closed the stream cache
+  on the strength of `ProfScope(streams)` reading 0.0%, and the symbol says that scope is
+  not where the cost is — gotcha 343's shape, a scope is a region of code and not a
+  subsystem. Splitting it is the cheapest unexplored item on the list.
+* **§9b's measurement warning is retired.** It said the headless route sits on the frame
+  cap so an A/B there reads zero whatever the change was worth. The cap default moved
+  60 -> 500 at the close of part 53 and the route came off the rung: the pump is **93.7%
+  of a core** headlessly, where part 53 closed at 50.3%, and the process uses **3.75 of 16
+  cores**. Headless measurement is a valid method again.
+* **And a warning this plan did not have: a cost that only exists with a window is
+  invisible to every measurement in it.** `readback` reads 0.0% headlessly and 8-36%
+  windowed (gotcha 352). `tools/part54_present_cost.sh` is the windowed harness.
+
+| item | status |
+|---|---|
+| **§7 a real swapchain** | **DONE** — −8.3% at 720p, −31.4% at 1440p; an ARM pending the operator's verdict; `CZ_VK_SWAPCHAIN=1` |
+| 1.2 parallel textures | open, `UploadTexture` 8.69% |
+| 1.4 parallel recording | open, **and it is now clearly the largest at 39.6%** |
+| *new* — split `UploadStream` | not in this plan; 12.84% and unexplained |
+| 2.3 / 3.3 / 2.2 / 3.4 / 4.2 | open |
 
 ---
 
