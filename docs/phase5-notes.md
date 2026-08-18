@@ -11004,3 +11004,117 @@ the five presses land on completely different moments of an ANIMATED backdrop. N
 what is drawn changed. **A frame-index-addressed sample of a moving scene is re-aimed by
 anything that changes the frame rate** — which is a fact worth having written down before
 someone reads a future E3 drop as a regression.
+
+---
+
+## 6ck. Part 54: THE PRESENT WAS COPYING THE FRAME THREE TIMES, AND ONE OF THOSE COPIES
+## HAD NEVER BEEN MEASURED — plus the route to the outdoor world was a coin flip
+
+Part 53 closed by promoting the plan's §7 swapchain item on the strength of an
+**arithmetic** claim: "the present readback is the scale squared in bytes, 3.5 MB/frame at
+1x and 14.1 at 2x, and at 2x it is the single largest fixed per-frame cost in the
+renderer." That is a multiplication. Nobody had read it off a running game, and every part
+of this project that built before it measured has repriced or killed the item afterwards.
+So part 54 measured it first — and then, before it could measure anything at all, had to
+fix the route.
+
+### §1. THE ROUTE TO THE OUTDOOR WORLD WAS WINNING A 150 ms RACE, AND IT LOST ONE
+
+The part opened by re-taking the symbol budget, which the hand-off asks for and which is
+six minutes. It took **seven** and sampled the wrong place: the run parked at the
+`WAITJUMP` barrier for its whole length and profiled the prologue.
+
+The cause is in `CZ_FAKE_PRESS_SEQ`. A host debug edge — `F2`, `F3`, `F4`, `F9` — fired
+only if the guest happened to poll `XamInputGetState` inside a **150 ms window at a fixed
+wall-clock offset**, 8.000-8.150 s for the first entry. Whether the guest polls input at
+all in those 150 ms is not something this runtime controls: during a load it may not poll
+for seconds. On a miss the edge was **lost** — `idx` walked on, the DebugJump screen was
+never requested, and the entire recipe degraded to "press START a lot" while the run
+continued for its full seven minutes.
+
+**It fails intermittently, which is the worst version**, and the diagnosis went wrong
+first in a way worth recording. One run an arm said the frame-cap default change (60 → 500
+at the close of part 53) had broken the route: cap 60 delivered the edge, cap 500 did not.
+Three runs an arm, six minutes later, read **3/3 and 3/3** — the cap has nothing to do with
+it. That is gotcha 159 exactly, committed on the first suspect that came to hand.
+
+The fix fires the lowest un-fired host edge whose interval has been reached, on the first
+poll after it is reached, one edge per poll, at most once each. Ordering is preserved and
+an already-delivered edge cannot re-pulse — the two properties the old single-index latch
+existed to give. While `WAITJUMP` is parked the sequence clock is frozen at the barrier, so
+a lost `F2` is **still eligible there**, which is the case that matters: the barrier is
+waiting for exactly the screen request that the lost `F2` was supposed to cause.
+
+**`CZ_FAKE_PRESS_EDGE_MISS=1` is its positive control and it is the half that makes this a
+measurement.** When the window IS hit, the new code is indistinguishable from the old
+latch — the first eligible poll is inside the window — so the recovery path is exactly the
+part no ordinary run exercises (gotcha 30). The arm makes the window unhittable, so the
+edge can only be delivered late. Same recipe, same binary:
+
+| arm | edge | DebugJump |
+|---|---|---|
+| normal | `F2` at 8s | serviced at 27s |
+| `CZ_FAKE_PRESS_EDGE_MISS=1` | `F2` at 8s, **LATE — the recovery** | serviced at 27s |
+
+### §2. THE SYMBOL BUDGET, RE-TAKEN — and the headless route is a different machine now
+
+With the route working, `tools/part52_recon.sh` + `tools/part53_symbols.py`, outdoors in a
+crowd, instruments off:
+
+| pump thread (26.5% of the process's cycles) | share |
+|---|---|
+| `DoDraw` | **24.43%** |
+| the NVIDIA driver, unsymbolised | **15.13%** |
+| `UploadStream` | **12.84%** |
+| `WriteRegisterRun` | 9.10% |
+| `UploadTexture` | 8.69% |
+| `ExecutePacket` | 5.77% |
+| `SynthRectStream` / `ExecuteLinear` | 2.76 / 2.36% |
+| `_int_malloc` | 2.00% |
+
+`GuardFold` — a quarter of this thread at the start of part 53 — does not appear. Two
+readings matter more than the ranking:
+
+* **The pump is at 93.7% of a core headlessly**, where it was 50.3% at the close of part
+  53. The frame-cap default moving 60 → 500 took the headless route off the pacing rung,
+  so **it now behaves like the operator's machine** — which retires §6ci §5c's warning that
+  a headless A/B here reads zero whatever the change was worth. The process uses **3.75 of
+  16 cores**, up from 2.68, and four guard workers sit at 14.3% each.
+* **The 15.13% `[unknown]` is the driver executing our `vkCmd*` calls** (`libnvidia-glcore`
+  is 3.95% of the whole process and the pump is 26.5% of it — the arithmetic closes). It is
+  the second-largest cost on that thread and nothing can make it faster except making
+  fewer calls, which is what item 1.4 would do.
+
+### §3. THE MEASUREMENT THE PROMOTION NEEDED — and it is bigger than the arithmetic said
+
+`Host_PresentPixels` returns immediately when there is no window, so `readback` reads
+**0.0% on every headless run this project has ever taken**, including the ones part 53 used
+to declare item 1.3 done. The cost exists only with a window, and it is three copies of the
+frame, not one:
+
+1. **GPU** — `vkCmdCopyImageToBuffer`, colour image → host-visible buffer;
+2. **pump** — `memcpy` into the window's back buffer, under `g_frameMutex`;
+3. **window thread** — `SDL_UpdateTexture` from that buffer, under the *same* mutex.
+
+Only (2) is charged to `readback`. `tools/part54_present_cost.sh` is the windowed harness —
+the recon's route and event gate, `CZ_VK_PROFILE` and per-thread CPU, one variable between
+arms:
+
+| | 1280x720 | 2560x1440 |
+|---|---|---|
+| `readback` | **8.1-8.7%** of the frame | **16.4-22.6%** |
+| in ms, at ~2,900-3,700 draws | ~0.65 ms | **~1.7-2.2 ms** |
+| `submit gpu` (blocked on the GPU) | 0.0-2.8% | **2.1-14.7%** |
+| the window thread (main) | 8.8% of a core | **15.0%** |
+
+Three things fall out of that table:
+
+* **At 2x the readback is the largest single non-draw phase**, and it is the only cost in
+  this renderer that grows when the operator raises the resolution. The arithmetic
+  under-stated it: the claim was 4x the bytes, the measurement is ~3x the milliseconds at
+  4x the bytes (a larger `memcpy` gets better bandwidth) — but it is measured against a
+  frame that is itself longer, so the SHARE roughly doubles either way.
+* **`submit gpu` at 14.7% is the GPU being the limiter**, which is what the resolution knob
+  was supposed to produce and had not yet been seen doing.
+* **The window thread's cost doubles too** — 8.8% → 15.0% of a core — which is copy (3),
+  and no instrument in this project reports it because none of them reads that thread.

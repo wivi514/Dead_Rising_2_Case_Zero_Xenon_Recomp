@@ -6260,6 +6260,13 @@ bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
         fprintf(stderr, "[vk] vkCreateSwapchainKHR failed (%d)\n", int(rc));
         return false;
     }
+    // Idle the device before tearing the previous swapchain's objects down. A rebuild
+    // only happens on a resize or an out-of-date surface, so this costs nothing anyone
+    // measures — and without it the semaphores destroyed below can still be pending on
+    // a submit or a present, which is undefined behaviour that would present as a device
+    // lost several frames later, in a place with no connection to a window resize.
+    if (old)
+        vkDeviceWaitIdle(R->device);
     DestroySwapchainObjects();       // retires `old` too
     R->swap.swapchain = fresh;
     R->swap.format = chosen.format;
@@ -11008,8 +11015,21 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     }
     // The swapchain blit goes LAST in the command buffer, after the readback copy when
     // both are present, because it is what the submit's semaphore signals on.
-    if (R->wantSwapchain)
+    //
+    // NOT ACQUIRING IS THE ONLY SAFE WAY TO NOT PRESENT. An acquired image comes with a
+    // semaphore the presentation engine will signal, and the contract is that something
+    // waits on it; abandon the frame after acquiring and that semaphore is left signalled
+    // with no waiter, so the next acquire reuses it in an illegal state. Both ways of
+    // abandoning a frame here are knowable BEFORE the acquire — `CZ_VK_NO_SUBMIT` records
+    // a frame and executes none of it (the ceiling arm), and a command buffer that is not
+    // recording cannot carry a blit — so the acquire is simply not made. `CZ_VK_NO_SUBMIT`
+    // therefore presents nothing at all in this arm, which is correct and consistent with
+    // what that arm already documents: its picture is knowingly invalid.
+    static const bool noSubmitArm = EnvOn("CZ_VK_NO_SUBMIT");
+    if (R->wantSwapchain && R->recording && !noSubmitArm)
         RecordSwapchainBlit(source, width0, height0);
+    else if (R->wantSwapchain)
+        Count("swap: no acquire (CZ_VK_NO_SUBMIT or nothing recorded) — nothing presented");
 
     // What this frame WAS, recorded next to the pixels it produced. Every present-side
     // instrument below reads this and not `R->frame`/`R->drawFingerprint`, which from

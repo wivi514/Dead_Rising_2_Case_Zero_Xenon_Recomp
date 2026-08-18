@@ -3556,3 +3556,67 @@ From phase C part 18 (the frame rate — and none of it was work):
      reading its correlation as a change — the filenames carry it for free — and prefer a
      trigger anchored to an EVENT over one anchored to a count (the same argument that
      produced `WAITJUMP`, gotcha 251).
+
+349. **A SYNTHETIC INPUT EDGE DELIVERED IN A FIXED WALL-CLOCK WINDOW IS A RACE AGAINST A
+     POLL RATE YOU DO NOT CONTROL, AND ON A MISS THE WHOLE RECIPE DEGRADES SILENTLY.**
+     `CZ_FAKE_PRESS_SEQ`'s host debug edges (`F2`/`F3`/`F4`/`F9`) fired only if the guest
+     happened to call `XamInputGetState` inside a **150 ms window at a fixed offset** —
+     8.000-8.150 s for the first entry. During a load the guest may not poll for seconds.
+     On a miss the edge was LOST: the sequence index walked on, the DebugJump screen was
+     never requested, and the route to the outdoor world became "press START a lot" while
+     the run continued for its full seven minutes and profiled the prologue. It had been
+     winning that race most of the time since part 39, which is why it read as reliable.
+     **The transferable shape is the fix, not the bug: an edge should be keyed on the
+     INTERVAL BEING REACHED and delivered on the first poll after it, not on a poll
+     landing inside a window** — one pulse per entry either way, but a missed window costs
+     one poll of latency instead of the whole recipe. And build the arm that forces the
+     miss (`CZ_FAKE_PRESS_EDGE_MISS=1`): when the window is hit the new code is
+     indistinguishable from the old, so the recovery path is exactly the part no ordinary
+     run exercises (gotcha 30).
+     **The diagnosis went wrong first, in the standard way.** One run an arm blamed the
+     last thing that had changed — the frame-cap default moving 60 -> 500 — and it was
+     wrong: three runs an arm read 3/3 and 3/3 six minutes later. **An intermittent failure
+     cannot be attributed by a single-run A/B, and the most recent change is the most
+     tempting wrong answer** (gotcha 159, and 13 for why the recent change is suspicious in
+     the first place).
+
+350. **AN INSTRUMENT THAT READS THE OUTPUT OF THE PATH YOU REPLACED CANNOT GATE THE
+     REPLACEMENT.** Every picture gate in this project — `CZ_CAPTURE_KEY`,
+     `CZ_VK_FRAME_DUMP`, `CZ_VK_FRAME_STATS`, the E3 correlation — walks the present
+     READBACK, the host copy of the frame. Part 54's swapchain arm exists precisely to stop
+     making that copy. Run those gates against it and they pass **with the old path still
+     doing all the work**, saying nothing whatever about the pixels on screen; run them
+     with the readback genuinely gone and they see nothing at all. Either way the gate is
+     measuring the wrong thing while looking healthy. **Before gating a change, ask which
+     BYTES the gate reads and whether the change produced them.** The replacement here
+     (`CZ_VK_SWAPCHAIN_DUMP`) reads back the image actually handed to the presentation
+     engine and correlates it against Xenia's own screenshot, so the blit's scale, filter,
+     orientation and channel order are all inside the number. Same shape as gotcha 345 one
+     step further out: there the danger was a fast path no gate runs, here it is a gate
+     that runs on no path the change touches.
+
+351. **A COMPOSITOR SCREEN GRAB READS UNIFORMLY BLACK WHEN THE MONITOR IS ASLEEP.** The
+     honest oracle for "does the window show the right picture" is a grab of the actual
+     display — something neither the renderer nor its instruments produced. Part 54 built
+     that gate, ran it at 01:35, and got five 2560x1440 PNGs whose RGB extrema were
+     `(0,0)` on every channel in both arms, scoring `+0.0000` against every orientation.
+     Nothing was wrong with the renderer, the grabber or the gate. **This is gotcha 231's
+     trap one subsystem over** — that one was five sessions of quoting a 210 MHz GPU clock
+     sampled with the monitor asleep — and the general form is: **a measurement taken
+     through the display is a measurement of the display's power state as much as of your
+     program.** Keep the grab as the daytime gate and build one that works without a
+     screen; also note the tool question is compositor-specific (KWin does not implement
+     the `wlr-screencopy` protocol `grim` needs, and answers with a clear error rather than
+     a black image — which is the better failure of the two).
+
+352. **A COST THAT ONLY EXISTS WITH A WINDOW IS INVISIBLE TO EVERY HEADLESS MEASUREMENT,
+     AND THIS PROJECT'S PERFORMANCE RUNS ARE ALL HEADLESS.** `Host_PresentPixels` returns
+     immediately when there is no window, so the `readback` column of `CZ_VK_PROFILE` has
+     read **0.0%** on every headless run in the project's history — including the ones part
+     53 used to declare its readback item done. Windowed it is **8.1-8.7% of the frame at
+     1280x720 and 16.4-22.6% at 2560x1440**, the largest single non-draw phase at 2x. The
+     phase was not lying; it was reporting a path that was not running. **Before pricing an
+     item off a profile, ask which of its costs the measurement CONFIGURATION removes** —
+     and note the two neighbours this one also hid: the window thread's own copy (8.8% ->
+     15.0% of a core between the two resolutions, on a thread no instrument here reads) and
+     the GPU's image-to-buffer copy, which shows only as `submit gpu` rising to 14.7%.
