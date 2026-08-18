@@ -1976,8 +1976,24 @@ inline uint64_t FlatMix(uint64_t x)
 }
 
 // Key 0 is usable: emptiness is decided by the generation stamp, never by a sentinel
-// key. That matters because this cache's keys are guest-derived and a reserved value
-// would be a landmine nobody would find until a stream landed at address 0.
+// key. That matters because these keys are guest-derived and a reserved value would be a
+// landmine nobody would find until a stream landed at address 0.
+//
+// THE SLOT STATE LIVES IN THE GENERATION WORD, in its top bit, so a probe reads one
+// array and not two. Low 31 bits = the generation the slot was written in; top bit set =
+// this slot held an entry that was ERASED, and a probe must step over it rather than
+// stop. Three cases and they are exhaustive:
+//
+//    (gens[i] & kGenMask) != gen    -> EMPTY: this slot is from an older generation (or
+//                                     was never written). Stop probing.
+//    gens[i] == (gen | kTomb)       -> TOMBSTONE: keep probing, do not match.
+//    gens[i] == gen                 -> live; compare the key.
+//
+// A tombstone from an older generation therefore reads as empty for free, which is the
+// property that lets `Clear()` stay a single increment even for a table that erases.
+constexpr uint32_t kFlatTomb = 0x80000000u;
+constexpr uint32_t kFlatGenMask = 0x7FFFFFFFu;
+
 template <class V>
 struct FlatCache
 {
@@ -1987,27 +2003,17 @@ struct FlatCache
     uint32_t mask = 0;
     uint32_t gen = 1;
     uint32_t live = 0;
+    uint32_t tombs = 0;
 
-    void Reserve(uint32_t n)
-    {
-        uint32_t cap = 16;
-        while (cap < n * 2)
-            cap <<= 1;
-        keys.assign(cap, 0);
-        gens.assign(cap, 0);
-        vals.assign(cap, V{});
-        mask = cap - 1;
-        gen = gen + 1 ? gen + 1 : 1;
-        live = 0;
-    }
+    uint32_t Size() const { return live; }
 
-    // Bump the generation rather than clearing. Wrapping past 0 would make an ancient
-    // slot read as live, so the wrap re-arms the table properly instead of pretending it
-    // cannot happen: at one bump a frame this is ~2.3 years of continuous play, and the
-    // branch costs nothing measurable against a frame.
+    // Bump the generation rather than clearing. Wrapping would make an ancient slot read
+    // as live, so the wrap re-arms the table properly instead of pretending it cannot
+    // happen: at one bump a frame this is over a year of continuous play, and the branch
+    // costs nothing measurable against a frame.
     void Clear()
     {
-        if (gen == 0xFFFFFFFFu)
+        if (gen >= kFlatGenMask)
         {
             std::fill(gens.begin(), gens.end(), 0u);
             gen = 1;
@@ -2017,6 +2023,7 @@ struct FlatCache
             ++gen;
         }
         live = 0;
+        tombs = 0;
     }
 
     V* Find(uint64_t key)
@@ -2025,7 +2032,7 @@ struct FlatCache
             return nullptr;
         ++g_flatCacheLookups;
         // The poison arm looks the WRONG KEY up, so a lookup that should hit misses and
-        // the verifier must see it. It is deliberately not a wrong VALUE: this table is
+        // the verifier must see it. It is deliberately not a wrong VALUE: the table is
         // still serving the frame while poisoned, and a miss costs a re-copy where a
         // wrong hit would draw a wrong mesh. What is being tested is the check's power,
         // not the renderer's tolerance for corruption.
@@ -2034,41 +2041,80 @@ struct FlatCache
         for (;;)
         {
             ++g_flatCacheProbes;
-            if (gens[i] != gen)
+            const uint32_t g = gens[i];
+            if ((g & kFlatGenMask) != gen)
                 return nullptr;
-            if (keys[i] == k)
+            if (g == gen && keys[i] == k)
                 return &vals[i];
             i = (i + 1) & mask;
         }
     }
 
-    // The caller has already established that `key` is absent (every insert here follows
-    // a miss). Grows at a 0.7 load factor, which keeps the average probe count under two.
-    void Insert(uint64_t key, const V& v)
+    // Insert or overwrite. Grows at a 0.7 load factor counting TOMBSTONES as occupied,
+    // because a table full of tombstones probes exactly as slowly as a full one; the
+    // rehash inside `Grow` is what drops them.
+    V* Insert(uint64_t key, const V& v)
     {
-        if (!mask || live + 1 > ((mask + 1) * 7) / 10)
+        if (!mask || live + tombs + 1 > ((mask + 1) * 7) / 10)
             Grow();
         uint32_t i = uint32_t(FlatMix(key)) & mask;
-        while (gens[i] == gen)
+        uint32_t firstTomb = UINT32_MAX;
+        for (;;)
         {
-            if (keys[i] == key)
+            const uint32_t g = gens[i];
+            if ((g & kFlatGenMask) != gen)
+                break;                                  // empty: the key is not present
+            if (g == gen && keys[i] == key)
             {
                 vals[i] = v;
-                return;
+                return &vals[i];
             }
-            i = (i + 1) & mask;
+            if (firstTomb == UINT32_MAX && g == (gen | kFlatTomb))
+                firstTomb = i;                          // reusable, but only once the
+            i = (i + 1) & mask;                         // key is known to be absent
+        }
+        if (firstTomb != UINT32_MAX)
+        {
+            i = firstTomb;
+            --tombs;
         }
         keys[i] = key;
         gens[i] = gen;
         vals[i] = v;
         ++live;
+        return &vals[i];
+    }
+
+    // Erase by key. Tombstones rather than backward-shift deletion: erases are rare in
+    // every user of this table (a stream the store could not re-home), and a shift moves
+    // OTHER entries, which would invalidate a `V*` a caller is still holding — a defect
+    // that would appear only under memory pressure and would look like a wrong mesh.
+    void Erase(uint64_t key)
+    {
+        if (!mask)
+            return;
+        uint32_t i = uint32_t(FlatMix(key)) & mask;
+        for (;;)
+        {
+            const uint32_t g = gens[i];
+            if ((g & kFlatGenMask) != gen)
+                return;
+            if (g == gen && keys[i] == key)
+            {
+                gens[i] = gen | kFlatTomb;
+                --live;
+                ++tombs;
+                return;
+            }
+            i = (i + 1) & mask;
+        }
     }
 
     // Walk the live entries. Used by the stream census, which is off by default.
     template <class F>
     void ForEach(F f) const
     {
-        for (uint32_t i = 0; i <= mask; ++i)
+        for (uint32_t i = 0; i <= mask && mask; ++i)
             if (gens[i] == gen)
                 f(keys[i], vals[i]);
     }
@@ -2087,12 +2133,18 @@ struct FlatCache
                 ok.push_back(keys[i]);
                 ov.push_back(vals[i]);
             }
-        const uint32_t cap = oldCap ? oldCap * 2 : 1024;
+        // Doubling only when the LIVE population justifies it: a table whose growth was
+        // triggered by tombstones is rehashed at the same size instead, which is what
+        // stops an erase-heavy user from growing without bound.
+        uint32_t cap = oldCap ? oldCap : 1024;
+        while (live + 1 > (cap * 7) / 10)
+            cap *= 2;
         keys.assign(cap, 0);
         gens.assign(cap, 0);
         vals.assign(cap, V{});
         mask = cap - 1;
         live = 0;
+        tombs = 0;
         for (size_t k = 0; k < ok.size(); ++k)
             Insert(ok[k], ov[k]);
     }
@@ -2670,7 +2722,18 @@ struct Renderer
     uint32_t samplerCount = 1;
     Image dummy2D, dummy3D, dummyCube, dummy1D;
 
-    std::map<uint64_t, ShaderMeta> shaders;
+    // THE SHADER TABLE IS FLAT, and it was a `std::map` — a red-black tree probed TWICE
+    // per draw. `tools/part55_srcline.py` put `std::less` + `_Rb_tree::find` at 17.9% of
+    // `DoDraw`, i.e. ~4% of the whole pump thread, for two lookups in a table of a few
+    // hundred entries that never changes after start-up. A tree walk of ~9 dependent
+    // pointer loads is the worst possible shape for that, and none of it was visible in
+    // any phase: `ProfScope(otherShader)` is the enclosing scope and it named the lookup
+    // without pricing it.
+    //
+    // The map is kept for `CZ_VK_NO_FLAT_CACHE=1` and for the verify arm, exactly as the
+    // stream cache's is; both are filled at load time, which costs nothing at run time.
+    FlatCache<ShaderMeta> shaders;
+    std::map<uint64_t, ShaderMeta> shadersMap;
     std::unordered_map<PipelineKey, VkPipeline, PipelineKeyHash> pipelines;
     // ...with a one-entry front cache, because consecutive draws routinely share a
     // pipeline (same shader pair, same blend/depth state) and a 48-byte compare is three
@@ -3638,11 +3701,14 @@ bool LoadShaders()
             ++dropped;
             continue;
         }
-        R->shaders.emplace(HashFromName(name), std::move(meta));
+        // Both structures, always. The cost is once per shader at start-up, and it is
+        // what lets the control arm be the SAME BINARY rather than a rebuild.
+        R->shaders.Insert(HashFromName(name), meta);
+        R->shadersMap.emplace(HashFromName(name), std::move(meta));
     }
-    fprintf(stderr, "[vk] %zu shader modules loaded%s\n", R->shaders.size(),
+    fprintf(stderr, "[vk] %zu shader modules loaded%s\n", R->shadersMap.size(),
             dropped ? " (see the DROPPED lines above)" : "");
-    return !R->shaders.empty();
+    return R->shaders.Size() != 0;
 }
 
 // ===================================================================================
@@ -7843,27 +7909,65 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         return;
     }
 
-    auto vsIt = R->shaders.find(vsBind.hash);
-    auto psIt = R->shaders.find(psBind.hash);
-    if (vsIt == R->shaders.end() || psIt == R->shaders.end())
+    const ShaderMeta* vsMeta = nullptr;
+    const ShaderMeta* psMeta = nullptr;
+    if (!g_flatCacheOff)
+    {
+        vsMeta = R->shaders.Find(vsBind.hash);
+        psMeta = R->shaders.Find(psBind.hash);
+    }
+    if (g_flatCacheOff || g_flatCacheVerify)
+    {
+        auto vsIt = R->shadersMap.find(vsBind.hash);
+        auto psIt = R->shadersMap.find(psBind.hash);
+        const ShaderMeta* v = vsIt != R->shadersMap.end() ? &vsIt->second : nullptr;
+        const ShaderMeta* p = psIt != R->shadersMap.end() ? &psIt->second : nullptr;
+        if (g_flatCacheVerify)
+        {
+            g_flatCacheChecked += 2;
+            // Presence only, plus the module handle. The two tables hold two COPIES of
+            // the same metadata, so comparing addresses would always disagree; what can
+            // actually go wrong in a hash table is which ENTRY comes back, and the
+            // module handle is the field that identifies it.
+            if ((vsMeta == nullptr) != (v == nullptr) ||
+                (psMeta == nullptr) != (p == nullptr) ||
+                (vsMeta && vsMeta->module != v->module) ||
+                (psMeta && psMeta->module != p->module))
+            {
+                if (g_flatCacheDisagreed < 8)
+                    fprintf(stderr,
+                            "[vk] FLAT CACHE DISAGREEMENT (shaders) #%llu: vs %016llx "
+                            "ps %016llx\n",
+                            (unsigned long long)g_flatCacheDisagreed + 1,
+                            (unsigned long long)vsBind.hash,
+                            (unsigned long long)psBind.hash);
+                ++g_flatCacheDisagreed;
+            }
+        }
+        if (g_flatCacheOff)
+        {
+            vsMeta = v;
+            psMeta = p;
+        }
+    }
+    if (!vsMeta || !psMeta)
     {
         // Naming the missing hash is what makes this actionable: the [imload] line
         // for that hash says which stage and how big, and the two together are enough
         // to add it to the cache without another run.
         static std::vector<uint64_t> reported;
-        const uint64_t missing = vsIt == R->shaders.end() ? vsBind.hash : psBind.hash;
+        const uint64_t missing = !vsMeta ? vsBind.hash : psBind.hash;
         if (std::find(reported.begin(), reported.end(), missing) == reported.end())
         {
             reported.push_back(missing);
             fprintf(stderr, "[vk] no translated shader for %s %016llx — draws skipped\n",
-                    vsIt == R->shaders.end() ? "VS" : "PS",
-                    (unsigned long long)missing);
+                    !vsMeta ? "VS" : "PS", (unsigned long long)missing);
         }
         Count("draw: shader not in the cache");
         return;
     }
-    const ShaderMeta& vs = vsIt->second;
-    const ShaderMeta& ps = psIt->second;
+    const ShaderMeta& vs = *vsMeta;
+    const ShaderMeta& ps = *psMeta;
 
     // A per-primitive-type census, always on. Which topologies a title actually issues
     // is a fact about the title, and it is the difference between "quad lists are
@@ -11318,7 +11422,7 @@ bool InitCommon()
                         "0.0%%; anything else means it cannot fail\n");
     g_active = true;
     fprintf(stderr, "[vk] renderer UP: %ux%u target, %zu shaders\n", R->targetWidth,
-            R->targetHeight, R->shaders.size());
+            R->targetHeight, R->shadersMap.size());
     if (ResScale() != 1)
         fprintf(stderr,
                 "[vk] internal resolution %ux%u (%ux the title's own 1280x720): the "
@@ -13373,7 +13477,7 @@ void VkRenderer_DumpStats()
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
-            R->pipelines.size(), R->shaders.size(), R->textures.size(),
+            R->pipelines.size(), R->shadersMap.size(), R->textures.size(),
             (unsigned long long)(R->arenaHighWater >> 10));
     // The state cache's own engagement, as fractions of the draws it was offered.
     // Printed unconditionally, including on the CZ_VK_NO_STATE_CACHE arm where every
