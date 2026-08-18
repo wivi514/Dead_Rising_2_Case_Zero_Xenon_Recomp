@@ -11299,3 +11299,71 @@ and −31.4%**.
 The last two rows are the ones this part had to invent, and they are why §5 exists: the E3
 row above them was produced by the READBACK path and says nothing about the swapchain arm,
 because the arm is off in a headless gate run.
+
+### §8. TWO CORRECTIONS THE OPERATOR FOUND IN TEN MINUTES, AND THE SECOND IS OPEN
+
+The arm was handed over as a judging session, `SWAP=1 RES=2560x1440
+tools/play_session.sh`. Their first sentence was *"Feels good but it is blurry — you are
+sure it's at 2560x1440?"*
+
+#### §8a. THE PICTURE WAS BLURRY AND IT WAS OURS — the swapchain did not follow the window
+
+It was at 2560x1440. It was also being blitted into a **1280x720 swapchain** and stretched
+back out to a 1440p monitor by the compositor. A screen grab of the live session showed the
+window nearly filling the display while the log carried **exactly one** `[vk] swapchain`
+line, at 1280x720.
+
+The first version rebuilt only on `VK_ERROR_OUT_OF_DATE_KHR` and merely COUNTED
+`VK_SUBOPTIMAL_KHR`. A Wayland compositor commonly reports a resize as suboptimal — or
+tolerates the mismatch silently and upscales the smaller image itself — so a window
+enlarged after the first present kept being presented from the original swapchain forever.
+
+**The readback path never had this, and that is the transferable half.** SDL's
+`SDL_RenderCopy` always scales the full-size texture into whatever the window currently is,
+so a resize needed no code of ours at all. **Replacing a library's present meant inheriting
+a job it had been doing invisibly** — and the inherited job is invisible precisely because
+nothing in our code ever mentioned it.
+
+The fix asks the SIZE rather than trusting a return code, so it does not depend on which of
+three plausible compositor behaviours this one picks: the window's event loop publishes the
+drawable size into two atomics on every event that can change it, and the blit rebuilds when
+it differs. `CZ_WINDOW_RESIZE_AT=SECS:WxH` is the positive control, because **no headless
+gate can resize a window** and without it this would have shipped on an argument (gotcha 30):
+
+| | before | after |
+|---|---|---|
+| window maximised | 1088x612 | **rebuilt to 2560x1417** |
+| window shrunk | 1280x720 | **rebuilt to 900x600** |
+
+Their verdict after the fix: *"Looks a lot nicer now."*
+
+#### §8b. OPEN: THE FRAME-TIME NUMBER WAS MEASURED INTO A SMALL WINDOW, AND THEY PLAY MAXIMISED
+
+Their second sentence is the one that is not resolved: *"still feels pretty much the same
+framerate wise"*, at 69-96 fps on `CZ_FPS_LOG`.
+
+**§6's campaign left the window at its default and measured a 1088x612 or 1280x720
+drawable. They play at 2560x1417.** Those are not the same experiment, and the two arms do
+not scale the same way with it:
+
+* the **readback** path's CPU cost is a function of the INTERNAL resolution — 14.1 MB
+  read back and 14.1 MB copied at 2x — and is **independent of the window size**;
+* the **swapchain** arm's blit DESTINATION *is* the window, so its GPU cost grows with it,
+  and at 2560x1417 it is roughly four times the destination §6 measured.
+
+So the honest statement is that **§6's −31.4% is a number for a small window, and the
+item's value at the operator's window size is UNMEASURED.** Their report is the first
+evidence that it may be materially smaller there — and it is only evidence, not a
+measurement: comparing their 69-96 fps against part 53's remembered 66-97 fps for the
+readback path at 1440p is a cross-session comparison against numbers from another day,
+which is the exact thing gotcha 51 exists to forbid.
+
+**What settles it** is `WINSIZE=2560x1417 tools/part54_present_cost.sh`, three rounds an
+arm, which now forces the same window size into both arms. It is owed, and it is the first
+thing part 55 should run. **Until it has, quote §6's numbers with the window size attached**
+— the same discipline part 53 imposed for the internal resolution, one variable over.
+
+> **The general rule this adds: a present-path measurement has TWO resolutions, and naming
+> only one of them is naming none.** The internal render and the window are independent
+> knobs, they load the two arms differently, and no instrument in this project records
+> either alongside a frame time.

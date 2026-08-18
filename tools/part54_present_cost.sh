@@ -27,8 +27,18 @@
 # THE ROUTE is the recon's: DebugJump to the outdoor level, AutoChuck driving, so the
 # sample lands in a crowd with no operator. The arms differ in ONE variable.
 #
+# WINSIZE=WxH RESIZES THE WINDOW IN BOTH ARMS, AND IT IS NOT OPTIONAL FOR A SWAPCHAIN
+# NUMBER. The first campaign run from this script left the window at its default and
+# measured a ~1088x612 drawable; the operator plays MAXIMIZED at 2560x1417. Those are not
+# the same experiment, because the two arms scale differently with the window: the
+# readback path's CPU cost is the INTERNAL resolution and is independent of the window,
+# while the swapchain arm's blit destination IS the window. Say which window size a
+# present number was measured at, the same way part 53 has to say which internal
+# resolution (gotcha 348's shape, one variable over).
+#
 # Usage:  tools/part54_present_cost.sh <tag> [1|2]        # resolution scale
 #         SECS=300 tools/part54_present_cost.sh p54_2x 2
+#         WINSIZE=2560x1417 tools/part54_present_cost.sh p54_big 2
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$HOME/DR2CZ-troubleshooting/part54}"
@@ -52,6 +62,9 @@ LOG="$OUT/$TAG.log"
 envv=(CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_AUTOCHUCK=EXPLORER
       CZ_FAKE_START_MS=8000 CZ_FAKE_PRESS_SEQ=F2,START,WAITJUMP,NONE,DOWN,A,NONE
       CZ_VK_PROFILE=15 "CZ_VK_RES_SCALE=$SCALE")
+if [ -n "${WINSIZE:-}" ]; then
+    envv+=("CZ_WINDOW_RESIZE_AT=20:${WINSIZE/x/x}")
+fi
 # ENVX="VAR=1" is how an ARM is added without a second script -- the control for a
 # present-path change has to be the same binary, the same route and the same event gate.
 if [ -n "${ENVX:-}" ]; then for kv in $ENVX; do envv+=("$kv"); done; fi
