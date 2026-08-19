@@ -3115,8 +3115,92 @@ VkMemoryPropertyFlags ReadbackMemoryProps()
     return base;
 }
 
+// ===================================================================================
+// GEOMETRY IN VRAM — the operator's question, and it was a real gap
+// ===================================================================================
+//
+// THEIR QUESTION, closing part 55: "shouldn't we load texture, frame buffers,
+// geometry/meshes, shadow maps, lighting and refraction data, shaders and cached assets
+// from vram. Especially since it's a old game shouldn't take much vram and then we use ram
+// as fallback and page when we really have nothing left in case someone is running it on a
+// 2gb laptop with no gpu."
+//
+// Most of that list already was in VRAM — every `VkImage` (textures, render targets,
+// shadow maps, the resolve snapshots) allocates `DEVICE_LOCAL`, and shader modules are the
+// driver's own. **Geometry was not.** The 512 MB cross-frame stream store and the
+// per-frame arena — which between them hold every vertex, every index and every ALU
+// constant this renderer draws from — asked for `HOST_VISIBLE | HOST_COHERENT`, and
+// `FindMemoryType` returns the FIRST type matching, which on this machine is
+// `memoryTypes[3]` on heap 1: system RAM. So every draw was fetching its vertices across
+// PCIe from a buffer the GPU could have owned outright.
+//
+// WHAT MAKES IT POSSIBLE NOW is a heap that did not exist on hardware of this game's era.
+// With Resizable BAR the GPU exposes `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT` over
+// its whole VRAM (`memoryTypes[5]`, heap 0, 8 GiB on the operator's RTX 3070) — CPU-
+// writable video memory. Without ReBAR the same type exists but covers only a 256 MB
+// window, and on an integrated part there is no separate heap at all. So this is a
+// PREFERENCE with a fallback, exactly as the operator framed it, and the same shape as
+// the thread budget: ask the machine what it has, take what is sensible, leave the rest.
+//
+// THE ONE THING THAT WOULD MAKE THIS A DISASTER, checked rather than assumed. CPU-visible
+// device memory is WRITE-COMBINED: sequential writes are fine and fast, but a READ is an
+// uncached fetch across PCIe and can be a hundred times slower than a cached load. Every
+// write into these buffers is `CopySwapped`, which streams forward — ideal for WC. The
+// only two places that READ back from them (`loc.bytes()` in the rect trace and in the
+// index-range census) are both behind diagnostic environment flags that are off by
+// default, so no default-path code reads this memory at all. They are named here because
+// a future edit that reads a vertex buffer on the CPU would be silently catastrophic
+// rather than merely wrong.
+//
+// `CZ_VK_NO_VRAM_STREAMS=1` is the same-binary control arm and puts them back in RAM.
+// Every big buffer prints which heap it landed in and how large that heap is, because a
+// performance number taken from an unknown memory type is not comparable with anything —
+// the same rule the thread budget's start-up line exists for.
+
+// Prefer `props | DEVICE_LOCAL`, fall back to `props`. Returns the type index and, in
+// `gotDeviceLocal`, whether the preference was actually honoured — never inferred from
+// the request, because the whole point is that it can fail.
+uint32_t FindMemoryTypePreferDevice(uint32_t typeBits, VkMemoryPropertyFlags props,
+                                    VkDeviceSize size, bool* gotDeviceLocal)
+{
+    *gotDeviceLocal = false;
+    // AN ARM, NOT THE DEFAULT, and deliberately so. The placement is a one-line
+    // preference; whether it is FASTER is a question about write-combined memory on this
+    // machine with this workload, and nothing here has measured it yet. One read hazard
+    // is also still open: `SynthRectStream` assembles on the stack and writes once (this
+    // part fixed that), but its SOURCE is still a pointer into the buffer, so it reads
+    // three vertices per rect draw across the bus in this arm. Shipping a default whose
+    // sign is unknown is how a regression arrives wearing an optimisation's name — the
+    // swapchain took the same route in part 54 and became the default on a measurement,
+    // not on an argument.
+    static const bool vram = EnvOn("CZ_VK_VRAM_STREAMS");
+    if (vram)
+    {
+        const uint32_t t =
+            FindMemoryType(typeBits, props | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (t != UINT32_MAX)
+        {
+            // LEAVE THE MACHINE USABLE, which is the operator's own rule one subsystem
+            // over. A 512 MB store into a 256 MB pre-ReBAR window, or into the 2 GB of a
+            // laptop that also has to hold every texture, is not an optimisation — it is
+            // an allocation failure or a driver silently paging it back out, which would
+            // read as "the change made it slower" with nothing saying why. Take the heap
+            // only if this buffer is at most a quarter of it.
+            const uint32_t heap = R->memProps.memoryTypes[t].heapIndex;
+            const VkDeviceSize heapSize = R->memProps.memoryHeaps[heap].size;
+            if (size * 4 <= heapSize)
+            {
+                *gotDeviceLocal = true;
+                return t;
+            }
+        }
+    }
+    return FindMemoryType(typeBits, props);
+}
+
 bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
-                  VkMemoryPropertyFlags props, bool deviceAddress)
+                  VkMemoryPropertyFlags props, bool deviceAddress,
+                  const char* vramName = nullptr)
 {
     b.size = size;
     VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -3127,11 +3211,25 @@ bool CreateBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
 
     VkMemoryRequirements req{};
     vkGetBufferMemoryRequirements(R->device, b.buffer, &req);
-    const uint32_t type = FindMemoryType(req.memoryTypeBits, props);
+    bool inVram = false;
+    const uint32_t type =
+        vramName ? FindMemoryTypePreferDevice(req.memoryTypeBits, props, req.size, &inVram)
+                 : FindMemoryType(req.memoryTypeBits, props);
     if (type == UINT32_MAX)
     {
         fprintf(stderr, "[vk] no memory type for buffer (props %u)\n", props);
         return false;
+    }
+    if (vramName)
+    {
+        const uint32_t heap = R->memProps.memoryTypes[type].heapIndex;
+        fprintf(stderr,
+                "[vk] %s: %llu MB in %s (memory type %u, heap %u of %llu MB)%s\n",
+                vramName, (unsigned long long)(size >> 20),
+                inVram ? "VIDEO MEMORY" : "system RAM", type, heap,
+                (unsigned long long)(R->memProps.memoryHeaps[heap].size >> 20),
+                inVram ? "" : " — CZ_VK_VRAM_STREAMS=1 puts geometry in VRAM where a "
+                              "CPU-writable device-local heap is big enough");
     }
 
     VkMemoryAllocateFlagsInfo flags{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO };
@@ -6277,7 +6375,7 @@ void GrowArenaIfNeeded()
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                             /*deviceAddress=*/true))
+                             /*deviceAddress=*/true, "per-frame arena (regrown)"))
             {
                 R->arena = grown;
                 vkDestroyBuffer(R->device, old.buffer, nullptr);
@@ -6343,7 +6441,7 @@ void PersistMaintenance()
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         /*deviceAddress=*/true))
+                         /*deviceAddress=*/true, "cross-frame stream store (grown)"))
         {
             R->persist = grown;
             vkDestroyBuffer(R->device, old.buffer, nullptr);
@@ -7772,9 +7870,30 @@ VkDeviceSize SynthRectStream(const uint8_t* src, uint64_t streamBytes,
     const VkDeviceSize out = ArenaAlloc(uint64_t(stride) * 4, 16);
     if (out == VkDeviceSize(-1))
         return out;
-    uint8_t* dst = R->arena.mapped + out;
+    // BUILT ON THE STACK, THEN WRITTEN ONCE — and that is not tidiness, it is the
+    // difference between this function costing what it looks like and costing a hundred
+    // times more. The arena is CPU-writable VIDEO memory as of part 55 (see
+    // FindMemoryTypePreferDevice), which is WRITE-COMBINED: sequential writes are fast,
+    // but a READ of it is an uncached fetch across PCIe. The previous version wrote three
+    // corners into the arena and then read all three back, dword by dword, to extrapolate
+    // the fourth — three reads per component per rect draw, over the bus, on a function
+    // that is 5.31% of the pump thread. It was free while the arena lived in system RAM
+    // and would have been ruinous the moment it did not, with nothing naming the cause.
+    //
+    // The rule this leaves behind for anyone editing here: **the arena and the stream
+    // store are WRITE-ONLY from the CPU.** Assemble in local memory, write once, never
+    // read back.
+    uint8_t stackBuf[1024];
+    std::vector<uint8_t> heapBuf;
+    const uint64_t quadBytes = uint64_t(stride) * 4;
+    uint8_t* work = stackBuf;
+    if (quadBytes > sizeof(stackBuf))
+    {
+        heapBuf.resize(size_t(quadBytes));
+        work = heapBuf.data();
+    }
     for (uint32_t k = 0; k < 3; k++)
-        memcpy(dst + uint64_t(k) * stride, src + uint64_t(corner[k]) * stride, stride);
+        memcpy(work + uint64_t(k) * stride, src + uint64_t(corner[k]) * stride, stride);
     // 57 = 32_32_32_FLOAT, 38 = 32_32_32_32_FLOAT, 37 = 32_32_FLOAT, 36 = 32_FLOAT.
     // Anything else in this record is not a float dword and the combination below is
     // not defined for it.
@@ -7782,19 +7901,22 @@ VkDeviceSize SynthRectStream(const uint8_t* src, uint64_t streamBytes,
     if (!floatFormat)
     {
         Count("draw: rect fourth corner copied (attribute is not 32-bit float)");
-        memcpy(dst + uint64_t(3) * stride, dst, stride);
-        return out;
+        memcpy(work + uint64_t(3) * stride, work, stride);
     }
-    for (uint32_t d = 0; d < strideDwords; d++)
+    else
     {
-        float a, b, c;
-        memcpy(&a, dst + 0 * stride + d * 4, 4);
-        memcpy(&b, dst + 1 * stride + d * 4, 4);
-        memcpy(&c, dst + 2 * stride + d * 4, 4);
-        const float v = a + c - b;
-        memcpy(dst + 3 * stride + d * 4, &v, 4);
+        for (uint32_t d = 0; d < strideDwords; d++)
+        {
+            float a, b, c;
+            memcpy(&a, work + 0 * stride + d * 4, 4);
+            memcpy(&b, work + 1 * stride + d * 4, 4);
+            memcpy(&c, work + 2 * stride + d * 4, 4);
+            const float v = a + c - b;
+            memcpy(work + 3 * stride + d * 4, &v, 4);
+        }
+        COUNT("draw: rect fourth corner synthesised");
     }
-    COUNT("draw: rect fourth corner synthesised");
+    memcpy(R->arena.mapped + out, work, size_t(quadBytes));
     return out;
 }
 
@@ -11271,7 +11393,7 @@ bool InitCommon()
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      /*deviceAddress=*/true) ||
+                      /*deviceAddress=*/true, "per-frame arena") ||
         !CreateBuffer(R->staging, 64ull << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -11321,7 +11443,7 @@ bool InitCommon()
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      /*deviceAddress=*/true))
+                      /*deviceAddress=*/true, "cross-frame stream store"))
     {
         fprintf(stderr, "[vk] the %llu MB cross-frame stream store could not be "
                         "allocated — running without it, which is slower and correct\n",
