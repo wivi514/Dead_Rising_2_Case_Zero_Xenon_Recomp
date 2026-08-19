@@ -1961,6 +1961,17 @@ uint64_t g_flatCacheChecked = 0;
 uint64_t g_flatCacheDisagreed = 0;
 uint64_t g_flatCacheProbes = 0;     // probe steps taken, to price the load factor
 uint64_t g_flatCacheLookups = 0;
+// GROW ACCOUNTING, always on, because the operator's first soak A/B reported stuttering
+// in transit that the settled soak did not have, and a doubling table is the obvious
+// suspect: a grow re-inserts every live entry and the cross-frame store reaches tens of
+// thousands of them. "Obvious suspect" is not evidence, and the headless campaigns say
+// the opposite (the flat arm had FEWER frames over 50 ms than the map arm), so this
+// counts and TIMES every grow instead of anyone reasoning about it. Two clock reads per
+// grow — of which there are a handful in a whole run — so it is free.
+uint64_t g_flatGrows = 0;
+uint64_t g_flatGrowNs = 0;
+uint64_t g_flatGrowWorstNs = 0;
+uint32_t g_flatGrowLoud = 0;
 
 // splitmix64's finalizer. Three multiplies and three shifts; enough avalanche that the
 // low bits of a structured key are usable as a bucket index.
@@ -2108,6 +2119,38 @@ struct FlatCache
         }
     }
 
+    // Size the table up front so a doubling never lands inside a frame the player is
+    // looking at. Measured on the outdoor route before this existed: 20 grows, 31.41 ms
+    // in total, the worst three 3.38 / 8.85 / 15.04 ms as the cross-frame store filled —
+    // i.e. three visible hitches during streaming, which is exactly when a player is
+    // moving and exactly when the operator reported stuttering. That report turned out
+    // to have a larger cause (see phase5-notes §6cl), but this part of it is real, it is
+    // ours, and it is removable for the price of one allocation at start-up.
+    void Reserve(uint32_t entries)
+    {
+        uint32_t cap = 16;
+        while (uint64_t(entries) * 10 > uint64_t(cap) * 7)
+            cap <<= 1;
+        if (mask && cap <= mask + 1)
+            return;                       // already at least this big
+        std::vector<uint64_t> ok;
+        std::vector<V> ov;
+        for (uint32_t i = 0; mask && i <= mask; ++i)
+            if (gens[i] == gen)
+            {
+                ok.push_back(keys[i]);
+                ov.push_back(vals[i]);
+            }
+        keys.assign(cap, 0);
+        gens.assign(cap, 0);
+        vals.assign(cap, V{});
+        mask = cap - 1;
+        live = 0;
+        tombs = 0;
+        for (size_t k = 0; k < ok.size(); ++k)
+            Insert(ok[k], ov[k]);
+    }
+
     // Find, or default-construct in place. `std::map::operator[]`'s semantics, which is
     // what the census tables that use this were written against.
     V& FindOrInsert(uint64_t key)
@@ -2129,6 +2172,7 @@ struct FlatCache
   private:
     void Grow()
     {
+        const auto growT0 = std::chrono::steady_clock::now();
         const uint32_t oldCap = mask ? mask + 1 : 0;
         std::vector<uint64_t> ok;
         std::vector<V> ov;
@@ -2154,6 +2198,25 @@ struct FlatCache
         tombs = 0;
         for (size_t k = 0; k < ok.size(); ++k)
             Insert(ok[k], ov[k]);
+        const uint64_t ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - growT0)
+                                         .count());
+        ++g_flatGrows;
+        g_flatGrowNs += ns;
+        if (ns > g_flatGrowWorstNs)
+            g_flatGrowWorstNs = ns;
+        // Loud on anything a player could see as a hitch. Capped, and unconditional —
+        // a cost that only appears under an instrument cannot be blamed or exonerated
+        // by a run the operator drives, which is the position this counter exists to
+        // get out of.
+        if (ns > 2000000 && g_flatGrowLoud < 12)
+        {
+            ++g_flatGrowLoud;
+            fprintf(stderr,
+                    "[vk] flat cache grow #%llu took %.2f ms (%u live entries into %u "
+                    "slots) — this is a per-frame HITCH if it lands mid-frame\n",
+                    (unsigned long long)g_flatGrows, double(ns) / 1e6, live, mask + 1);
+        }
     }
 };
 
@@ -11461,6 +11524,19 @@ bool InitCommon()
     g_flatCacheVerifyPoison = EnvOn("CZ_VK_VERIFY_FLAT_CACHE_POISON");
     if (g_flatCacheVerifyPoison)
         g_flatCacheVerify = true;   // the poison is meaningless without the check
+    // PRE-SIZE, so a doubling never lands inside a frame the player is looking at. Each
+    // figure is the measured high-water mark of a full outdoor run, not a guess: the
+    // cross-frame store reached 91,750 live entries with the stream store at its 512 MB
+    // ceiling, the texture cache 3,802, the per-frame stream cache ~2,200 first-touch
+    // streams, and the shader table is 439 and fixed at load. Together ~27 MB of arrays
+    // allocated once, against a renderer that already holds a 512 MB stream store — and
+    // it takes the run's grow bill from 31.41 ms in 20 grows to zero.
+    R->persistCache.Reserve(180000);
+    R->textures.Reserve(8192);
+    R->streamCache.Reserve(8192);
+    R->shaders.Reserve(1024);
+    g_texSources.Reserve(8192);
+    g_texGuardAddrs.Reserve(8192);
     if (const char* n = Env("CZ_VK_TEX_GUARD_BYTES"))
     {
         // Clamped to a multiple of kGuardBlocks and to at least one block: below that
@@ -13207,6 +13283,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         (unsigned long long)(frames ? g_flatCacheLookups / frames : 0),
                         g_flatCacheLookups ? double(g_flatCacheProbes) / double(g_flatCacheLookups) : 0.0,
                         g_flatCacheOff ? " [CZ_VK_NO_FLAT_CACHE: the std::unordered_map is serving]" : "");
+                if (g_flatGrows)
+                    fprintf(stderr,
+                            "[vkprof] flat cache grows: %llu, %.2f ms total, worst "
+                            "%.2f ms — the whole RUN, not this window\n",
+                            (unsigned long long)g_flatGrows, double(g_flatGrowNs) / 1e6,
+                            double(g_flatGrowWorstNs) / 1e6);
                 g_flatCacheLookups = 0;
                 g_flatCacheProbes = 0;
             }
@@ -13571,6 +13653,14 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // The flat tables' grow bill, printed on EVERY run rather than only under the
+    // profiler — a play session the operator drives has no profiler, and it is exactly
+    // the run where a hitch gets reported.
+    fprintf(stderr,
+            "[vk]   flat cache grows: %llu, %.2f ms total, worst %.2f ms%s\n",
+            (unsigned long long)g_flatGrows, double(g_flatGrowNs) / 1e6,
+            double(g_flatGrowWorstNs) / 1e6,
+            g_flatCacheOff ? " [CZ_VK_NO_FLAT_CACHE: no flat table was in use]" : "");
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
             R->pipelines.size(), R->shadersMap.size(), TexSize(),
             (unsigned long long)(R->arenaHighWater >> 10));
