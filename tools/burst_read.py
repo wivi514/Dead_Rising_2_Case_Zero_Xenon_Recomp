@@ -37,6 +37,7 @@ Usage:
 """
 import argparse
 import glob
+import re
 import os
 import sys
 
@@ -62,6 +63,11 @@ def main():
 
     pat = f"burst{a.seq:02d}_*.ppm" if a.seq else "burst*_*.ppm"
     files = sorted(glob.glob(os.path.join(a.dir, pat)))
+    # Only real frame files (burstNN_IIII_fFFFFFF.ppm). Without this, a SECOND run of
+    # this tool reads the flicker map its first run wrote as if it were a frame, and
+    # reports 100% of pixels changed — the tool polluting its own input.
+    files = [f for f in files
+             if re.fullmatch(r'burst\d{2}_\d{4}_f\d+\.ppm', os.path.basename(f))]
     if not files:
         sys.exit(f"no burst frames matching {pat} in {a.dir}")
     # One burst at a time: two presses in one directory would otherwise be differenced
@@ -153,9 +159,98 @@ def main():
         print(f"  VERDICT: the pixels flicker, but the camera moved during the burst "
               f"({len(cams)} distinct camera fingerprints), so a changing draw list proves "
               f"nothing on its own — a moving camera changes the draw list legitimately. "
-              f"The pixel evidence stands; RE-TAKE THE BURST STANDING STILL to make the "
-              f"draw-list half readable. That single distinction is what separates "
-              f"'z-fighting' from 'dropped geometry'.")
+              f"The pixel evidence stands. If this burst has no census file (pre-part-57 "
+              f"binary), re-take it on a build that writes one — the census is what makes "
+              f"a moving-camera burst readable at all.")
+
+    # The census section runs on EVERY path, including "nothing flickered" — a burst
+    # taken at a defect that did not fire still documents what was issued.
+    read_census(a.dir, seq)
+
+
+def read_census(dirname, seq):
+    """The per-draw half (part 57): was each draw ISSUED on each burst frame?
+
+    This is the question part 56 could not answer — the decal flicker appears ONLY
+    under camera motion, so 'the draw list changed' proves nothing by itself. Keyed
+    per DRAW, a fixed world-space decal separates cleanly from legitimate churn:
+    its key either sits in every frame (issued, then discarded downstream — depth,
+    stencil, alpha, or one of our own declines) or toggles in and out (never issued
+    on the dark frames — guest visibility, predication, or a decline of ours before
+    the census line is written... except the census is written for every draw that
+    reaches DoDraw's bind path, so 'absent' means the draw never got that far).
+
+    The key is (ps, v0, verts): v0 is the first vertex of the draw's STREAM, so
+    draws sharing one batched buffer share a v0 — those are tracked by COUNT per
+    frame instead, which still detects a drop (the count moves).
+    """
+    import collections
+    cen = os.path.join(dirname, f"burst{seq}_census.txt")
+    if not os.path.exists(cen):
+        print("\n  (no census file — a pre-part-57 burst; issued-or-discarded cannot "
+              "be answered from it)")
+        return
+    frames = {}          # frame -> Counter(key)
+    meta = {}            # key -> the identifying fields, for the report
+    for ln in open(cen):
+        if ln.startswith('#'):
+            continue
+        m = re.match(r'f(\d+) draw \d+ verts=(\d+) prim=\d+ vs=([0-9a-f]+) '
+                     r'ps=([0-9a-f]+) mask=(\S+) blend=(\S+) po=(\S+)', ln)
+        if not m:
+            continue
+        frame = int(m.group(1))
+        v0 = re.search(r' v0=(\S+)', ln)
+        s0 = re.search(r' s0=([0-9A-F]+)', ln)
+        key = (m.group(4), v0.group(1) if v0 else '-', m.group(2))
+        frames.setdefault(frame, collections.Counter())[key] += 1
+        if key not in meta:
+            meta[key] = dict(verts=m.group(2), blend=m.group(6), po=m.group(7),
+                             s0=s0.group(1) if s0 else '-')
+    if not frames:
+        print("\n  !! census file exists but parsed to nothing — its format and this "
+              "reader have drifted; fix that before believing anything below")
+        return
+    nf = len(frames)
+    order = sorted(frames)
+    print(f"\n  census: {nf} frames, "
+          f"{sum(sum(c.values()) for c in frames.values())} draws, "
+          f"{len(meta)} distinct draw keys")
+
+    # A key that toggles repeatedly is the candidate; one edge is the camera panning
+    # it in or out. Count transitions of its per-frame count.
+    toggles = []
+    for key in meta:
+        counts = [frames[f].get(key, 0) for f in order]
+        trans = sum(1 for i in range(1, nf) if (counts[i] > 0) != (counts[i-1] > 0))
+        cmoves = sum(1 for i in range(1, nf) if counts[i] != counts[i-1])
+        if trans >= 2 or cmoves >= 4:
+            toggles.append((trans, cmoves, key, counts))
+    toggles.sort(reverse=True)
+    decal = lambda k: meta[k]['blend'] == '07060706' and meta[k]['verts'] == '6'
+    n_decal_keys = sum(1 for k in meta if decal(k))
+    n_decal_toggling = sum(1 for t, c, k, _ in toggles if decal(k))
+    print(f"  decal-shaped keys (verts=6 blend=07060706): {n_decal_keys}, "
+          f"of which TOGGLING in and out: {n_decal_toggling}")
+    if toggles:
+        print(f"  keys present in SOME frames and absent in others (top 15 of "
+              f"{len(toggles)} by transitions):")
+        for trans, cmoves, key, counts in toggles[:15]:
+            ps, v0, verts = key
+            present = sum(1 for c in counts if c)
+            print(f"    ps={ps} v0={v0} verts={verts} blend={meta[key]['blend']} "
+                  f"po={meta[key]['po']} s0={meta[key]['s0']}  "
+                  f"in {present}/{nf} frames, {trans} in/out transitions"
+                  f"{'  <- DECAL-SHAPED' if decal(key) else ''}")
+    if n_decal_keys and not n_decal_toggling:
+        print("  CENSUS VERDICT: every decal-shaped draw was ISSUED on every census "
+              "frame. A decal that blinks on screen is being discarded AFTER issue — "
+              "depth, stencil, alpha or a render-state difference, not a missing draw.")
+    elif n_decal_toggling:
+        print("  CENSUS VERDICT: decal-shaped draws come and go across the burst's "
+              "frames — the dark frames are frames the draw was NEVER ISSUED. Look at "
+              "the guest's own issuing (visibility, predication, bin masks), not at "
+              "depth or blend state.")
 
 
 if __name__ == "__main__":

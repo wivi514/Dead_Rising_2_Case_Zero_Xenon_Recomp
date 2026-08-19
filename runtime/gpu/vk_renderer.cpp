@@ -2934,6 +2934,16 @@ struct Renderer
     uint32_t burstFrames = 0;       // frames written in THIS burst
     uint64_t burstEndNs = 0;        // steady-clock deadline
     FILE* burstManifest = nullptr;
+    // The burst's PER-DRAW CENSUS (part 57). Part 56's burst carried pixels and
+    // per-frame fingerprints but no draw list, so a decal seen blinking could not be
+    // asked whether its draw was ISSUED that frame — which is exactly the question the
+    // burst exists to discriminate, and exactly where the analysis stopped. One file per
+    // burst, one full census line per draw, each prefixed with its frame number so the
+    // lines align with the PPMs exactly. Default-on with the burst (a burst is already a
+    // diagnostic act); CZ_BURST_CENSUS=0 declines it, CZ_BURST_CENSUS_EVERY=N thins it.
+    FILE* burstCensusFile = nullptr;
+    bool burstCensusThisFrame = false;  // decided once per frame at the swap
+    uint64_t burstCensusLines = 0;
     uint64_t captureSnapFrame = 0;      // ... and its resolve snapshots
     FILE* drawCensusFile = nullptr;
     uint64_t drawCensusLines = 0;
@@ -8992,7 +9002,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // covers exactly one frame: at ~6,800 draws this writes ~6,800 lines, which is a file
     // to grep and not a log to read.
     const bool drawCensus = R->drawCensusFrame && R->frame == R->drawCensusFrame;
-    psbind = psbind || drawCensus;
+    // The burst census (part 57): every draw of every burst frame, in the same format,
+    // into one per-burst file. It reuses this whole formatting path because the fields
+    // that identify a decal (verts, blend, po=, the sN= texture bindings) are exactly
+    // the ones the capture census already carries.
+    const bool burstCensus = R->burstCensusThisFrame && R->burstCensusFile;
+    psbind = psbind || drawCensus || burstCensus;
     if (drawCensus && !R->drawCensusFile)
     {
         // CZ_CAPTURE_KEY supplies this path too. The arming site and the OPEN site read
@@ -9056,7 +9071,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // that is how a surface is identified without being able to click on it: the ground
     // is a small number of very large draws, and the HUD is a great many tiny ones.
     int psbindAt =
-        drawCensus
+        (drawCensus || burstCensus)
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
                        "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g",
@@ -9119,6 +9134,41 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                             regs[xenos::kRbColorMask] & 0xF,
                             regs[xenos::kRbBlendControl0])
                  : 0;
+
+    // v0= — the first vertex's first three dwords, byte-swapped and printed as floats.
+    // For a world-geometry stream that is the first corner's POSITION, and it is the
+    // identity a burst needs: a decal's shader, blend and even texture address are
+    // shared by dozens of draws, but a decal is a quad at a fixed WORLD position, so
+    // this field is what lets frame N's draw list be asked "is THIS decal issued?"
+    // rather than "did the count of decal-shaped draws move?". Printed on capture
+    // censuses too — a clip-plane investigation wants the same anchor. For a non-float
+    // position format the three numbers are garbage AS COORDINATES but still a stable
+    // fingerprint, which is all the matching needs.
+    if ((drawCensus || burstCensus) && vsMeta && psbindAt > 0 &&
+        psbindAt < int(sizeof psbindLine) - 64)
+    {
+        for (const VertexAttribute& a : vsMeta->attributes)
+        {
+            if (a.indirect || a.location < 0 || a.fetchSlot >= 96)
+                continue;
+            const xenos::VertexFetch vf =
+                xenos::DecodeVertexFetch(regs, FetchSlot(a.fetchSlot));
+            const uint32_t sva = PhysToVa(vf.address);
+            if (!vf.address || !GuestRangeOk(sva, 12))
+                break;
+            const uint32_t* p = reinterpret_cast<const uint32_t*>(base + sva);
+            float v[3];
+            for (int k = 0; k < 3; k++)
+            {
+                const uint32_t d = __builtin_bswap32(p[k]);
+                memcpy(&v[k], &d, 4);
+            }
+            psbindAt += snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
+                                 " v0=%g/%g/%g", double(v[0]), double(v[1]),
+                                 double(v[2]));
+            break;
+        }
+    }
 
     // ---- THE CLIP-DRAW REGISTER DUMP (part 56) ----------------------------------
     //
@@ -9569,6 +9619,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (psbindFull && psbindAt < int(sizeof psbindLine) - 24)
             snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
                      "  (LINE TRUNCATED)");
+        if (burstCensus)
+        {
+            // The frame number is the join key against the burst's PPMs and manifest,
+            // so it goes on every line rather than in a header a grep would lose.
+            fprintf(R->burstCensusFile, "f%llu %s\n", (unsigned long long)R->frame,
+                    psbindLine);
+            ++R->burstCensusLines;
+        }
         if (drawCensus)
         {
             if (R->drawCensusFile)
@@ -9577,7 +9635,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 ++R->drawCensusLines;
             }
         }
-        else
+        else if (!burstCensus)
         {
             const char* bindings = strstr(psbindLine, "mask=");
             std::string key(bindings ? bindings : psbindLine);
@@ -12735,6 +12793,28 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fprintf(R->burstManifest,
                         "# file frame draws vertices drawFingerprint cameraFingerprint "
                         "meanLuma distinctColours pixelHash\n");
+            // The per-draw census, default-on. Its absence is what stopped part 56's
+            // decal analysis: the burst could show a decal blinking but could not say
+            // whether its draw was issued on the dark frames. Read it with
+            // tools/burst_read.py, which aligns it with the PPMs by frame number.
+            const char* censusWant = Env("CZ_BURST_CENSUS");
+            if (!censusWant || strcmp(censusWant, "0") != 0)
+            {
+                snprintf(path, sizeof path, "%s/burst%02u_census.txt",
+                         Env("CZ_BURST_DUMP"), R->burstSeq);
+                R->burstCensusFile = fopen(path, "w");
+                if (R->burstCensusFile)
+                    fprintf(R->burstCensusFile,
+                            "# every draw of every burst frame, fN <census line>. Same "
+                            "fields as a capture census; v0= is the first vertex's "
+                            "first three dwords, the identity that survives a camera "
+                            "move.\n");
+                else
+                    fprintf(stderr, "[vk] burst #%u: cannot open its census file — the "
+                                    "issued-or-discarded half of the answer will be "
+                                    "missing\n", R->burstSeq);
+                R->burstCensusLines = 0;
+            }
             fprintf(stderr,
                     "[vk] burst #%u ARMED: every presented frame for %llu ms into %s%s\n",
                     R->burstSeq, (unsigned long long)ms, Env("CZ_BURST_DUMP"),
@@ -12790,11 +12870,31 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 fclose(R->burstManifest);
                 R->burstManifest = nullptr;
             }
+            if (R->burstCensusFile)
+            {
+                fclose(R->burstCensusFile);
+                R->burstCensusFile = nullptr;
+                fprintf(stderr, "[vk] burst #%u census: %llu draw lines\n", R->burstSeq,
+                        (unsigned long long)R->burstCensusLines);
+            }
             fprintf(stderr,
                     "[vk] burst #%u DONE: %u frames into %s — read it with "
                     "tools/burst_read.py\n",
                     R->burstSeq, R->burstFrames, Env("CZ_BURST_DUMP"));
         }
+    }
+    // Decide ONCE, at the frame boundary, whether the NEXT frame's draws go into the
+    // burst census — the draw path must not read burst timing state mid-frame, or the
+    // census could hold part of a frame and read as a draw-count change (gotcha 109's
+    // shape: a partial list is not a count). CZ_BURST_CENSUS_EVERY=N thins to every Nth
+    // burst frame for long bursts; the default is every frame, because "issued or not"
+    // is a per-frame question.
+    {
+        uint32_t every = 1;
+        if (const char* e = Env("CZ_BURST_CENSUS_EVERY"))
+            every = std::max(1u, uint32_t(strtoul(e, nullptr, 10)));
+        R->burstCensusThisFrame = R->burstActive && R->burstCensusFile &&
+                                  (R->burstFrames % every) == 0;
     }
 
     // The CZ_CAPTURE_KEY picture, written from the same readback the periodic dump uses.
