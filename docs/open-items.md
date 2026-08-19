@@ -3027,3 +3027,35 @@ under a still camera in BOTH states — present or absent. `CZ_VK_DRAW_ID` on a 
 census taken at two camera positions a frame apart, is the obvious next instrument; the F8
 burst as built carries no per-draw census, which is the gap that stopped this evening's
 analysis and is the first thing to fix if the defect is picked up again.
+
+### 00o (cont). THE DISTANCE DEFECTS: the operator's own pointer, and what it found
+
+Their steer when the stencil work started: *"For the gas sign, rooftop and all this type of
+thing that are at a distance I am pretty sure it is similar to our last issue that was like
+that."* That is **item 00i** — the "flat panels until you walk up to them" class, which part
+45 traced to OUR shader translation dropping pixel-shader interpolants, leaving 217 shaders
+sampling diffuse at ONE TEXEL. A single texel is a flat colour, and a dark one is BLACK,
+which is precisely the sign's symptom. It is a better-shaped hypothesis than either of the
+two this evening refuted, because it explains a colour REPLACEMENT rather than a colour
+error.
+
+**What the captures say, and it supports the steer.** Diffing the pixel shaders used in the
+far/broken sign frame against the near/fine one:
+
+    17 pixel shaders appear ONLY in the far frame
+     9 appear ONLY in the near frame
+
+So **this title swaps pixel shaders by distance** — the far view is not the near view's
+shader with a smaller texture, it is different code. That alone makes "the defect lives in a
+distance-only shader" a live and cheap-to-test proposition, and it is consistent with mips
+having been ruled out (a shader swap is not a mip).
+
+**What the metadata does NOT show**: the 17 far-only shaders carry 2-8 interpolators
+(median ~4) against a whole-cache median of 5, so none of them is obviously stripped the way
+part 45's were. If this is the 00i class it is a different manifestation of it, not the same
+bug recurring.
+
+**The next measurement, when this is picked up**: identify WHICH of the 17 draws the sign,
+then read our translated SPIR-V for it against the capture's own disassembly — the step
+part 27 named for the white-surface class and which has still never been taken. The far-only
+list is in `~/DR2CZ-troubleshooting/play/play_0819_1626/capture_f12174.census`.
