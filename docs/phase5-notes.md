@@ -11688,3 +11688,85 @@ mutation: more new code than the change itself, and a defect in the mirror would
 exactly like a defect in the subject. So there the arm switches which container four
 accessors use, and the `FlatCache` implementation is verified where a shadow IS cheap,
 running the same probe, insert and grow code.
+
+---
+
+### 5. WHAT IT IS WORTH — the frame, measured
+
+`tools/part55_item_campaign.sh 3 nofl=CZ_VK_NO_FLAT_CACHE=1`, one frozen binary, three
+rounds an arm, alternated `base / nofl / null`, the shipped 500 fps cap in every arm, the
+DebugJump outdoor route. **This campaign measured the first three tables** (the per-frame
+stream cache, the shader table and the cross-frame store's index); the texture cache and
+its two censuses landed afterwards and are measured by the second campaign in §7.
+
+The cleanest statistic the tool prints, because it needs no binning at all — **the per-run
+mean of every frame with ≥ 6,000 draws**:
+
+| arm | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| **base** (flat) | — | **12.18 ms** | **12.26** |
+| **null** (base again) | **12.09** | **12.26** | **12.01** |
+| **nofl** (`std::map`/`std::unordered_map`) | **13.06** | **14.19** | **14.19** |
+
+**Five runs of the shipped configuration span 12.01-12.26 ms and three runs of the control
+arm span 13.06-14.19. They do not overlap.** Pooled, 12.16 against 13.81 — **−1.65 ms,
+−12.0%**. (`base_1` reached only 3,150 draws, so it contributes no frames to this row; its
+absence is why the table has a gap rather than a number.)
+
+Binned by draw count, with the campaign's own null beside it:
+
+| draws | base | nofl | Δ mean | Δ median | NULL Δ mean |
+|---|---|---|---|---|---|
+| 3,000-3,999 | 8.51 ms | 9.22 | **+8.4%** | +12.5% | −0.4% |
+| 4,000-4,999 | 9.74 | 10.02 | +2.8% | +11.1% | +0.6% |
+| 5,000-5,999 | 10.92 | 11.26 | +3.2% | +0.0% | −0.2% |
+| **6,000-6,999** | **12.16** | **12.84** | **+5.6%** | **+8.3%** | **−1.5%** |
+| 7,000-7,999 | 13.07 | 14.63 | **+11.9%** | +7.7% | −2.7% |
+| 8,000-8,999 | 13.99 | 15.64 | **+11.8%** | +7.1% | +0.5% |
+
+**The 2,000-2,999 bin is not usable in this campaign and it is worth saying why rather than
+quietly dropping it.** `base_1` never left a light area, so it put 48,091 frames into that
+one bin — 38% of the whole arm — and the null reads **+8.1%** there against +0.0…−1.5%
+everywhere else. A bin dominated by one run of one arm is a measurement of that run.
+Gotcha 331's rule earns its place again: the arm that cannot move the statistic is what
+tells you which rows to read.
+
+**AND THE SHAPE IS THE ONE PARTS 52 AND 53 HAD, NOT PART 54'S.** The saving grows with the
+draw count, because these lookups run per stream and per draw. Part 54's swapchain item was
+a FIXED cost per frame and its percentage collapsed with load; this one does not. At the
+operator's 6,700-7,300 draws the campaign reads **+5.6% to +11.9%** and the trend is
+upward, which is the first item since part 53 that should be worth *more* on their machine
+than on this route — but that is a prediction, and gotcha 355 says the only thing that
+settles it is a soak at their load.
+
+---
+
+### 6. WHAT THE PUMP THREAD LOOKS LIKE NOW
+
+Same route, instruments off, all five tables flat:
+
+| symbol | part 54 | part 55 open | now |
+|---|---|---|---|
+| the NVIDIA driver, unsymbolised | 15.13% | 16.00% | **20.57%** |
+| `DoDraw` | 24.43% | 22.36% | **19.88%** |
+| `UploadTexture` | 8.69% | 8.87% | **11.87%** |
+| `UploadStream` | 12.84% | 14.98% | **11.68%** |
+| `ExecutePacket` | 5.77% | 5.44% | 6.06% |
+| `WriteRegisterRun` | 9.10% | 6.51% | 5.78% |
+| `_int_malloc` | 2.00% | 2.11% | **absent from the top sixteen** |
+
+**Read these as shares of a thread doing less total work**, so a symbol that did not change
+absolutely reads HIGHER here — the driver going 16.00% → 20.57% is not the driver getting
+slower, it is everything around it getting cheaper. The absolute reduction is the frame
+time in §5, and this table is for choosing what to do next.
+
+Re-split by source line, the three converted symbols have no container machinery left in
+them at all. `UploadStream`'s remaining cost is the flat probe's own cache miss
+(`vk_renderer.cpp:2045`, 40.1% of the symbol) and the guard — which is what an irreducible
+lookup looks like. `DoDraw`'s two hottest lines are now `vk_renderer.cpp:8330` and `:8333`
+at **18.90% and 18.89%**, and they are not a container: they are **the ALU constant copy**,
+2,048 dwords — 8 KB — memcpy'd into mapped memory per draw. That is **7.5% of the pump
+thread** and it is the next item in this function.
+
+`UploadTexture` was still ~72% container at that point, which is what the fourth commit
+went after.
