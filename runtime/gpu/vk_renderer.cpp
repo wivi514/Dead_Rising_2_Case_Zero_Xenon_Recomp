@@ -9059,7 +9059,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         drawCensus
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
-                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X",
+                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X cl=%08X ucp=%g/%g/%g/%g",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
                        regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
@@ -9094,7 +9094,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // ref:8, mask:8 @8, writemask:8 @16 — to be confirmed by whether
                        // the values partition sensibly against the stencil ops, the same
                        // coherence check that validated the op layout itself.
-                       regs[xenos::kRbStencilRefMask])
+                       regs[xenos::kRbStencilRefMask],
+                       // PA_CL_CLIP_CNTL and the first user clip plane. The zombie-slicing
+                       // defect's remaining half is that the BODIES are not clipped at the
+                       // cut — the game draws the whole body twice and something trims
+                       // each copy. Hardware clip planes are that mechanism and this
+                       // renderer implements none. Printed so ONE capture of a sliced
+                       // zombie says whether the guest enables them, before any of it is
+                       // built (gotcha 3: the zero we have is one draw, not a census).
+                       regs[xenos::kPaClClipCntl],
+                       // PLANE 0, at the address the register dump found. THE TEST THIS
+                       // PRINTS FOR: if the two copies of a sliced body carry the SAME
+                       // plane with OPPOSITE SIGNS, that is the slice proven outright —
+                       // one copy keeps what is above the cut and the other what is
+                       // below. Anything else and the enable bit means something other
+                       // than a body cut, and the whole clip-plane theory needs
+                       // re-examining before a line of shader work is done for it.
+                       F32(regs[xenos::kPaClUcp0X]), F32(regs[xenos::kPaClUcp0X + 1]),
+                       F32(regs[xenos::kPaClUcp0X + 2]), F32(regs[xenos::kPaClUcp0X + 3]))
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,
@@ -9102,6 +9119,41 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                             regs[xenos::kRbColorMask] & 0xF,
                             regs[xenos::kRbBlendControl0])
                  : 0;
+
+    // ---- THE CLIP-DRAW REGISTER DUMP (part 56) ----------------------------------
+    //
+    // WHY A DUMP RATHER THAN ANOTHER CENSUS FIELD. The user clip planes have now been
+    // guessed at twice — 0x2240 read 0/0/0/0 on every draw while 312 of them ENABLED
+    // plane 0, and a scan of 0x2115..0x2140 found nothing either. A third guess is not a
+    // method. This writes the WHOLE register file at the first draw that actually enables
+    // a clip plane, so the values in force can be searched offline for a plane (a
+    // roughly unit normal plus a distance) instead of hoping an address is right.
+    //
+    // Once per capture, gated on `CZ_CAPTURE_KEY` being armed and on the draw enabling
+    // the plane, so it costs nothing on any other run or any other draw.
+    if (Env("CZ_CAPTURE_KEY") && (regs[xenos::kPaClClipCntl] & 0x3F))
+    {
+        static bool dumped = false;
+        if (!dumped)
+        {
+            dumped = true;
+            char path[512];
+            snprintf(path, sizeof path, "%s/clipdraw_f%06llu.regs", Env("CZ_CAPTURE_KEY"),
+                     (unsigned long long)R->frame);
+            if (FILE* f = fopen(path, "w"))
+            {
+                fprintf(f, "# the whole register file at the first draw with a user clip "
+                           "plane enabled\n# PA_CL_CLIP_CNTL(%04X)=%08X  draw %llu\n",
+                        xenos::kPaClClipCntl, regs[xenos::kPaClClipCntl],
+                        (unsigned long long)R->drawsThisFrame);
+                for (uint32_t r = 0x2000; r < 0x2800; r++)
+                    if (regs[r])
+                        fprintf(f, "%04X %08X %g\n", r, regs[r], F32(regs[r]));
+                fclose(f);
+                fprintf(stderr, "[vk] clip-draw register dump -> %s\n", path);
+            }
+        }
+    }
 
     R->lastTexAddr = 0;
     R->lastTexSlot = 0;

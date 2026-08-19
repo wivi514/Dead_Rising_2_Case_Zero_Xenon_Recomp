@@ -13,7 +13,8 @@
 
 | # | defect | state | next action |
 |---|---|---|---|
-| A | zombie slicing — two whole bodies, square blood | **stencil implemented, operator says "isn't as bad but far from perfect"** | find out what is still wrong — the question is ASKED and unanswered |
+| A1 | zombie slicing — the square blood / cross-section cap | **FIXED** by the stencil test | nothing |
+| A2 | zombie slicing — bodies still whole, "just get a double" | **cause PROVEN: user clip planes, which this renderer does not implement** | implement clip distances (the big job — see §1b) |
 | B | decal flicker under camera motion | **UNEXPLAINED.** depth and mips both refuted | build the instrument the last session lacked (below) |
 | C | GAS sign / canopy / bunting wrong at distance | open; mips refuted; operator's own steer is item 00i | read our translated SPIR-V for a far-only shader |
 | D | polygon offset | implemented, correct emulation, **fixes nothing observed** | leave it; it is not a defect |
@@ -33,6 +34,13 @@ written), which a wrong layout could not produce.
 `~/DR2CZ-troubleshooting/play/play_0819_1815/` showing a correctly shaped lower half
 (`capture_013122`) and a correct decapitation cross-section (`capture_010173`).
 
+**THE OWED QUESTION WAS ASKED AND ANSWERED**, and it split the defect in two: *"they are
+still full zombies and they just get a double instead of slicing in two different part"*.
+So the stencil fixed the CAP and not the BODIES — two mechanisms, and treating one symptom
+as proof of a single cause was the error. See §1b for the second mechanism.
+
+The superseded text follows.
+
 **THE OWED QUESTION, asked and not yet answered: what is still wrong?** Three captures were
 examined and the remaining defect could not be seen in them — both bodies in the close-up
 render correctly. **Do not start guessing from the images; ask.** Useful shapes for the
@@ -46,6 +54,50 @@ tested:
 * two-sided stencil: `ds.back = ds.front` is copied when RB_DEPTHCONTROL bit 7
   (`backface_enable`) is clear, which is an interpretation and not a measurement;
 * the stencil is not preserved across a resolve.
+
+---
+
+## 1b. DEFECT A2 — THE BODIES ARE CLIPPED BY USER CLIP PLANES, AND WE IMPLEMENT NONE
+
+**Proven, and it took three captures because the register address was guessed twice before
+it was MEASURED.** The sequence is worth keeping as the method:
+
+* `PA_CL_CLIP_CNTL` at **0x2204** — confirmed: `cl=00080001` on **312 of ~2,480 draws**,
+  bit 0 = plane 0 enabled.
+* the plane registers at 0x2240 — **guessed, refuted**: every draw read `0/0/0/0` while 312
+  enabled the plane, which cannot both be true.
+* a scan of 0x2115..0x2140 (just past the verified viewport block) — **guessed, refuted**:
+  `ucp=none` on every draw of three captures.
+* **the whole register file dumped at the first clip-enabled draw** — one capture, and it
+  holds exactly one plane-shaped quad of floats:
+
+      2388 -2.10425e-05   2389 0.362499   238A -29.4662   238B 29.078
+
+  a normal of about (0, 0.012, −1.0) at distance 0.987 once normalised, sitting just past
+  the polygon-offset block at 0x2380..0x2383 that was confirmed the same way.
+  **`kPaClUcp0X = 0x2388`.**
+
+**WHAT THE CONFIRMING CAPTURE SHOWS, with its caveat.** Eight distinct planes on the
+clip-enabled draws, falling into **two families with opposite z/w signs** — four negative-z
+/ positive-w and four the reverse, which is the shape a cut produces (one copy keeps what is
+above the plane, the other what is below). **But the pairing is NOT exact**: in the best
+pair the z and w negate almost perfectly while x and y do not —
+
+      (-0.087, -0.343, -24.264,  23.791)  x48
+      ( 0.628,  0.043,  24.284, -23.858)  x16
+
+so "the same plane with opposite signs" is NOT established, and the implementation must not
+assume it. Eight planes is a good fit for four sliced bodies, but that is inference.
+
+**WHY THE FIX IS THE BIGGEST JOB IN THE LIST.** Vulkan clips against `ClipDistance` written
+by the VERTEX SHADER; there is no fixed-function user clip plane. So this cannot be done in
+renderer state — it needs the translated SPIR-V to compute and export a distance per enabled
+plane, which means either patching the shader cache or teaching XenosRecomp to emit it.
+`ClipDistance` appears NOWHERE in this renderer or in Fable 2's, so it is a shared gap and
+whatever is built here should be built with that in mind.
+
+Suggested order: get ONE shader emitting one clip distance and prove it on a sliced zombie
+before generalising to six planes and the whole cache.
 
 ---
 

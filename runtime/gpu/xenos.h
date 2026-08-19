@@ -110,6 +110,37 @@ constexpr uint32_t kPaScWindowScissorBr = 0x2082;
 // hardware applies; a term whose enable bit is clear is the identity, NOT the register
 // value, and reading the register anyway is a silent geometry bug rather than a crash.
 constexpr uint32_t kPaClVteCntl = 0x2206;
+// THE USER CLIP PLANES — candidates, censused before anything is built on them (part 56).
+//
+// WHY THEY MATTER HERE. The operator's zombie-slicing defect is now split in two by the
+// stencil work: the cross-section CAP is masked correctly, and the BODIES are not —
+// *"they are still full zombies and they just get a double instead of slicing in two
+// different part"*. So the game draws the whole body twice and something clips each copy
+// at the cut plane, and it is not the stencil. Hardware user clip planes are exactly that
+// mechanism, and `ClipDistance` appears NOWHERE in this renderer or in Fable 2's.
+//
+// PA_CL_CLIP_CNTL sits next to PA_CL_VTE_CNTL (0x2206, verified) in the A2xx block, and
+// the six planes are four floats each. Both are CANDIDATES until this title's own stream
+// says otherwise — the draw census prints them for that reason, and the check is whether
+// the values are purposeful (a plane is a normal plus a distance; a body-cut plane should
+// change as the corpse falls) rather than whether they look like a register document.
+constexpr uint32_t kPaClClipCntl = 0x2204;   // CONFIRMED: bit 0 = UCP_ENA_0, set on 312 draws
+// THE PLANE REGISTERS ARE NOT 0x2240 — that was a guess and the census refuted it (all
+// 2,484 draws read 0/0/0/0 while 312 of them ENABLED plane 0, which cannot both be true).
+// The viewport block above ends at PA_CL_VPORT_ZOFFSET = 0x2114 and on this hardware family
+// the six clip planes follow it immediately. Rather than guess a second time, the census
+// SCANS the range and reports the first non-zero register it finds, so one capture of a
+// sliced zombie names the block instead of confirming a hope.
+// FOUND BY DUMPING, after two wrong guesses (0x2240 and a scan of 0x2115..0x2140 both read
+// nothing while 312 draws ENABLED plane 0). The whole register file at a clip-enabled draw
+// holds exactly one plane-shaped quad of floats:
+//
+//     2388  -2.10425e-05   2389  0.362499   238A  -29.4662   238B  29.078
+//
+// i.e. a normal of about (0, 0.012, -1.0) at distance 0.987 once normalised — an almost
+// axis-aligned cutting plane, sitting just past the polygon-offset block at 0x2380..0x2383
+// that was confirmed the same way. `PA_CL_CLIP_CNTL` bit 0 selects it.
+constexpr uint32_t kPaClUcp0X = 0x2388;   // .. 0x239F = six planes of four floats
 constexpr uint32_t kPaClVportXScale = 0x210F;
 constexpr uint32_t kPaClVportXOffset = 0x2110;
 constexpr uint32_t kPaClVportYScale = 0x2111;
