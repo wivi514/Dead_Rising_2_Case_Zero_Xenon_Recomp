@@ -168,8 +168,11 @@ generalising to six planes and 439 shaders.
 
 ---
 
-## 6. OWED
+## 6. GATES AT CLOSE — ALL CLEAN, run against the final binary
 
-* **The full gate sweep on the final build** — `--smoke` passes and validation is clean, but
-  E3 and the PM4 oracles have not run against the stencil + clip-census binary. Five minutes,
-  needs nobody.
+`--smoke`; the switch gate (0 defects); the dimension census (0 disagreements); both PM4
+oracles on B1; `no translated shader` = 0; **E3 best of five +0.8472 with 4 of 5 agreeing on
+layout**; and **Vulkan validation 6 `topology-08773` and nothing else**, against a standing
+baseline of 20+6 — the stencil work removed 20 `Input-08733` as a side effect.
+
+Nothing is owed.
