@@ -3814,3 +3814,25 @@ From phase C part 18 (the frame rate — and none of it was work):
      nothing naming the cause. Images (textures, render targets, shadow maps) are a different
      case entirely and should be `DEVICE_LOCAL`: they are uploaded through a staging buffer,
      never CPU-mapped, and read many times per frame.
+
+364. **A SESSION-INTERNAL A/B IS ONLY SESSION-INTERNAL IF YOU COMPARE IT AGAINST ITS OWN
+     CONTROL ARM.** Part 55 built a chained two-arm soak harness precisely so that both arms
+     ran in one sitting on one machine, quoted gotcha 51 in its header, used it correctly
+     twice — and then, watching arm 1 live, compared it against **the previous session's**
+     control and reported −5.5%. Arm 2 of the same session said **−2 to −3%**, which was also
+     what had been predicted before the run. The pull is strongest exactly when the earlier
+     number is recent, from the same harness, and at a similar draw count: it looks like a
+     control and it is not one. **The rule is mechanical — an arm's number is meaningless
+     until its own control arm has run** — and the corollary is that live commentary on a
+     running arm should quote the arm's raw numbers and nothing derived, because a delta
+     needs a denominator that does not exist yet.
+
+365. **A HYPOTHESIS THAT SPLITS A COST NEEDS A PER-PART COUNTER, OR THE EXPLANATION IS A
+     STORY.** Part 55's constant memo failed at 3.6-7.1% as one unit and worked at 32-36%
+     once the ALU constant file was split into its two windows, on the hypothesis that the
+     VERTEX window is rewritten per draw (a world matrix per object) while the PIXEL window
+     sits still. The combined rate is consistent with that explanation and with several
+     others; the per-half counter — **VS 2.9%, PS 61.0%** on the operator's machine, VS
+     7.4-7.8% / PS 58.4-60.0% on the headless route — is what makes it a finding rather than
+     a plausible narrative attached to a number. Cost: three lines. Whenever a split is what
+     rescued an item, instrument the split itself, not just the total.

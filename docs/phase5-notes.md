@@ -11862,3 +11862,87 @@ must be audited before switching one over.
 The arm stays off. `SynthRectStream` keeps its fix — it assembles the quad in local memory
 and writes once, which is strictly better in both arms — and the rule is written where the
 next person will edit it.
+
+---
+
+### 8. THE CONSTANT COPY — a refuted attempt, a split that worked, and a headline I had to
+### take back the same evening
+
+With the container work done, the two hottest source LINES on the whole pump thread were
+`vk_renderer.cpp:8330` and `:8333` at **18.90% and 18.89% of `DoDraw`** — ~7.5% of the
+thread. They are the ALU constant copy: 256 float4 for the vertex shader and 256 for the
+pixel shader, **8 KB per draw**, ~57 MB/frame and over 5 GB/s at the operator's soak. It is
+also most of why geometry-in-VRAM lost (§7).
+
+#### The first attempt was refuted by its own counter
+
+The claim was pre-registered, with its own kill threshold: the packet census reads
+`DRAW_INDX` 2,353/frame against `LOAD_ALU_CONSTANT` 890/frame, so consecutive draws should
+usually share a constant set — predicted ~60%, **"below 30% this is not worth its risk"**
+written down before the run. Measured: **3.6-7.1%.**
+
+**The census could not see the other path.** Constants are also written by ordinary type-0
+REGISTER RUNS, which are 40.1% of all packets, and the opcode census does not count them —
+so `LOAD_ALU_CONSTANT` was a proxy for "constant updates" that misses most of them. Gotcha
+25's shape at a different scale: a count of one path used as a count of all paths. The
+guest really does rewrite its constant file on nearly every draw.
+
+#### Splitting the stamp works, and the per-half counter is what shows why
+
+The file is two independent windows — `SQ_VS_CONST` names 0..255 and `SQ_PS_CONST` names
+256..511 — and the hypothesis was that what changes per draw is the VERTEX half (a world
+matrix per object) while the pixel half sits still. Two version stamps, two memo slots:
+
+| | headless route | the operator's machine |
+|---|---|---|
+| served | 33-36% | **32.0%** |
+| VS window | 7.4-7.8% | **2.9%** |
+| PS window | 58.4-60.0% | **61.0%** |
+
+**The hypothesis was right and the per-half counter is the only reason anyone can say so** —
+a combined rate would have been consistent with any number of explanations. It also
+transferred to their hardware and their load almost exactly, which is rarer in this project
+than it sounds.
+
+Correctness, since a stale constant set draws a mesh correctly shaded IN THE WRONG PLACE —
+the hardest defect class here to see in a screenshot: `CZ_VK_VERIFY_CONST_MEMO=1` copies
+anyway into scratch and compares every dword (**0 of 117,521 and 0 of 119,019 served
+draws**), and its poison arm reads **100.0000%**. `CZ_VK_NO_CONST_MEMO=1` is the control arm.
+
+#### AND THE HEADLINE HAD TO BE RETRACTED WITHIN THE HOUR
+
+Mid-soak, arm 1 was compared against **the previous session's** flat arm — 10.53 ms at
+~7,050 draws against 11.14 at ~7,100 — and reported to the operator as **−5.5%**. Arm 2 of
+the same session refuted it:
+
+| arm | draws | frame |
+|---|---|---|
+| memo | 6,943-7,071 | 10.52-10.58 ms |
+| nomemo | 7,214-7,232 | 11.03-11.05 |
+
+Draw-matched at 7,071 with nomemo's own slope, 10.53 against 10.76: **−2.1%**. Matched at
+7,214 with memo's slope, 10.72 against 11.03: **−2.8%**. So **−2 to −3%**, which is exactly
+what was predicted before the run, and the −5.5% was an artifact of comparing an arm against
+another evening's numbers instead of against its own control — **gotcha 51, committed by the
+person who quotes it**, an hour after using a session-internal control correctly twice.
+
+It is also near the resolution limit of one pair: the memo arm drifted ~1.5% within itself
+(10.53 in its early windows, 10.66-10.75 later at the same draw counts). A second session
+would tighten it; the mechanism counters are the stronger evidence here and they are
+unambiguous.
+
+#### Where part 55 leaves the operator's frame
+
+All at ~7,000 draws in the heaviest place they know, each step measured against its own
+same-session control:
+
+| | frame | delta |
+|---|---|---|
+| part 55 start (chained maps arm) | ~12.8 ms | — |
+| flat containers | ~11.0 | **−13%** |
+| + the constant memo | **~10.5** | −2 to −3% |
+
+**About −18% off the frame at the load they actually play, and not one of it from the three
+parallel items the plan was built around.** §0 of `perf-plan-part55.md` predicted "roughly a
+third off the frame" from parallelism with a ceiling of 5-6 busy threads; half of that
+arrived from deleting work instead, on the same one thread. Gotcha 362.

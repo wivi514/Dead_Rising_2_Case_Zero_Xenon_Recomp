@@ -40,6 +40,13 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$HOME/DR2CZ-troubleshooting/part52}"
+# BIN=<name> pins the binary this samples, and part 55 added it after losing a 60-second
+# profile to the obvious mistake: a `cmake --build` during the run replaced `cz_runtime`
+# on disk, so `perf` could no longer match the file's build-id to the mmap it recorded and
+# every symbol in the report came back as a raw address. The failure is silent in the
+# sense that nothing errors — you get a complete, useless profile. Snapshot the binary and
+# point this at the copy whenever anything else might rebuild.
+BINNAME="${BIN:-cz_runtime}"
 TAG="${1:-nostats}"
 MODE="${2:-nostats}"
 PROF="${3:-}"
@@ -77,7 +84,7 @@ fi
 [ -n "${NO_DWARF:-}" ] && DWARF_SECS=0
 
 echo "=== $TAG ($MODE${PROF:+ +profile}) $(date +%H:%M:%S)"
-( cd "$ROOT/runtime/build" && env "${envv[@]}" timeout "$SECS" ./cz_runtime > "$LOG" 2>&1 ) &
+( cd "$ROOT/runtime/build" && env "${envv[@]}" timeout "$SECS" "./$BINNAME" > "$LOG" 2>&1 ) &
 RUNNER=$!
 
 PID=""
