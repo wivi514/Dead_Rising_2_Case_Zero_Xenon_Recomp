@@ -88,7 +88,14 @@ constexpr uint32_t kSharedPosOffset = 360;
 constexpr uint32_t kSharedLoopConstants = 384;
 constexpr uint32_t kSharedBoolFile = 512;
 constexpr uint32_t kSharedVfetchTable = 544;
-constexpr uint32_t kSharedSize = 544 + 96 * 16; // one entry per vertex fetch slot
+// USER CLIP PLANES (part 57). Six float4 plane equations, dotted against the raw
+// clip-space position by the vertex shader's XE_USER_CLIP_PLANES epilogue — Vulkan has
+// no fixed-function clip planes, so the distance must be computed and exported as
+// ClipDistance by the shader itself. The shared block is memset to zero every draw,
+// and a zero plane dots to distance 0, which Vulkan KEEPS — so a draw with no planes
+// enabled clips nothing by construction, and only the enabled planes are ever written.
+constexpr uint32_t kSharedClipPlanes = 544 + 96 * 16;                 // 2080
+constexpr uint32_t kSharedSize = kSharedClipPlanes + 6 * 16;          // 2176
 
 // BOTH stages get 256 float4 registers, and the pixel shader's 256 is load-bearing.
 //
@@ -3782,6 +3789,17 @@ bool CreateDevice()
         else
             fprintf(stderr, "[vk] device lacks samplerAnisotropy — distance "
                             "filtering stays trilinear on this device\n");
+        // USER CLIP PLANES (part 57): a shader cache built with XE_USER_CLIP_PLANES
+        // exports six ClipDistance values, and a pipeline whose VS declares the
+        // built-in needs this feature whether or not any plane is enabled that draw.
+        // Same pattern as anisotropy: ask only if the device has it, and name its
+        // absence out loud, because on such a device the clip-plane cache would fail
+        // pipeline creation rather than silently not clip.
+        if (haveF.shaderClipDistance)
+            f2.features.shaderClipDistance = VK_TRUE;
+        else
+            fprintf(stderr, "[vk] device lacks shaderClipDistance — an "
+                            "XE_USER_CLIP_PLANES shader cache cannot run on it\n");
     }
     // CZ_VK_ROBUST=1 — bound out-of-range buffer reads instead of undefined behaviour.
     // A Xenos vfetch past a stream's declared size returns ZERO (the fetch-constant
@@ -9802,6 +9820,59 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // Everything from here to the command recording: the bool and loop constant files,
     // the viewport decode and the always-on censuses. Closed by `record`'s scope opening.
     ProfScope _pTail(&g_prof.otherTail);
+
+    // --- USER CLIP PLANES (part 57, the zombie-slicing mechanism) --------------------
+    // PA_CL_CLIP_CNTL bits 0..5 enable the six planes at PA_CL_UCP_0..5 (0x2388..0x239F
+    // — plane 0 confirmed by the part-56 register dump, planes 1..5 the standard
+    // contiguous layout, each publish COUNTED per index so a wrong address for a plane
+    // this title never enables can never hide). The game draws a sliced body TWICE and
+    // clips each copy to one side of the cut; this renderer implemented none of it, so
+    // both copies rendered whole ("they just get a double").
+    //
+    // The distances are computed by the VERTEX SHADER (Vulkan has no fixed-function
+    // planes), so this publish does nothing until a cache built with
+    // CZ_DXC_DEFINES="-D XE_USER_CLIP_PLANES=1" is selected via CZ_SHADER_SPV — the
+    // same second-cache arm pattern as XE_ALPHA_TO_MASK. On the default cache the
+    // constants are simply never read. CZ_VK_NO_CLIP_PLANES=1 stops the publish, the
+    // same-cache control arm.
+    {
+        static const bool noClipPlanes = EnvOn("CZ_VK_NO_CLIP_PLANES");
+        // THE POSITIVE CONTROL (gotcha 30). A clip plane only fires on a draw the
+        // guest slices, which no headless route reaches — so without this arm every
+        // gate run would report the feature "working" while never executing it.
+        // (0,0,0,-1) dots to -w, negative for every visible vertex: on the clip cache
+        // the world must VANISH under this arm, and on the null cache it must change
+        // nothing. A poison that fails to empty the world means the epilogue, the
+        // feature bit or the constant plumbing is broken, named before an operator
+        // ever tests a zombie.
+        static const bool clipPoison = EnvOn("CZ_VK_CLIP_POISON");
+        if (clipPoison && !noClipPlanes)
+        {
+            float* p = reinterpret_cast<float*>(shared + kSharedClipPlanes);
+            p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = -1.0f;
+            COUNT("draw: CZ_VK_CLIP_POISON plane published");
+        }
+        const uint32_t ucpEna = regs[xenos::kPaClClipCntl] & 0x3F;
+        if (!noClipPlanes && ucpEna)
+        {
+            for (uint32_t i = 0; i < 6; i++)
+            {
+                if (!(ucpEna & (1u << i)))
+                    continue;
+                memcpy(shared + kSharedClipPlanes + i * 16,
+                       &regs[xenos::kPaClUcp0X + i * 4], 16);
+                switch (i)
+                {
+                    case 0: COUNT("draw: user clip plane 0 published"); break;
+                    case 1: COUNT("draw: user clip plane 1 published"); break;
+                    case 2: COUNT("draw: user clip plane 2 published"); break;
+                    case 3: COUNT("draw: user clip plane 3 published"); break;
+                    case 4: COUNT("draw: user clip plane 4 published"); break;
+                    default: COUNT("draw: user clip plane 5 published"); break;
+                }
+            }
+        }
+    }
 
     // The bool and loop constant files, verbatim. The shaders index them themselves.
     for (uint32_t i = 0; i < 8; i++)

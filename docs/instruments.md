@@ -1799,6 +1799,61 @@ CZ_VK_A2M_ANY_SURFACE=1   DIAGNOSTIC ONLY. The runtime publishes its A2M flag
                    per-sample dither published`.
 ```
 
+## The F8 burst and its per-draw census (parts 56/57)
+
+```
+CZ_BURST_DUMP=dir  arms F8: every presented frame for CZ_BURST_DUMP_MS (default 1000,
+                   max CZ_BURST_DUMP_MAX=300 frames) as PPMs plus a manifest with per-
+                   frame draw counts and fingerprints. Built for the decal flicker — a
+                   defect no single frame can show (gotcha 133). ~260 MB/second at 720p:
+                   point it at a real disk, never /tmp. A second F8 ends a burst early.
+                   F8 is a CZ_FAKE_PRESS_SEQ token too, so the burst is self-testable.
+CZ_BURST_CENSUS=0  decline the burst's PER-DRAW CENSUS (part 57; default ON with the
+                   burst). Every draw of every burst frame is written to
+                   burst<NN>_census.txt as a full census line prefixed with its frame
+                   number, so "was this decal's draw ISSUED on the dark frames?" is
+                   answerable — the question that stopped part 56's flicker analysis,
+                   because a moving camera changes the draw list legitimately and the
+                   defect only fires under camera motion. CZ_BURST_CENSUS_EVERY=N thins
+                   to every Nth frame. The arming frame's draws pre-date the press, so
+                   the first PPM has no census BY DESIGN. Read with tools/burst_read.py,
+                   which keys draws on (ps, v0, verts), separates decal-shaped keys
+                   (verts=6 blend=07060706) that TOGGLE from ones present every frame,
+                   and names the mechanism. Shown capable of failing by a poisoned
+                   census (44/44 transitions detected).
+                   Census lines (burst AND capture) now carry v0= — the first vertex's
+                   first three dwords as floats: a decal's shader/blend/texture are
+                   shared by dozens of draws, its WORLD POSITION is what identifies it.
+```
+
+## User clip planes (part 57 — the zombie-slicing mechanism)
+
+```
+XE_USER_CLIP_PLANES  a SHADER-CACHE arm like XE_ALPHA_TO_MASK: build with
+                   CZ_DXC_DEFINES="-D XE_USER_CLIP_PLANES=1", select with
+                   CZ_SHADER_SPV. Every vertex shader gains a guarded epilogue that
+                   dots the RAW exported clip-space position (before the window->NDC
+                   fold) against six plane equations at SharedConstants+2080 and
+                   exports them as ClipDistance[6] — Vulkan has no fixed-function user
+                   clip planes, so the VS must compute them. Null-checked: without the
+                   define the rebuilt cache is byte-identical; with it all 104 VS
+                   differ and declare the ClipDistance builtin, all 335 PS unchanged.
+                   assets/shader_spv_clip is stock+clip; assets/shader_spv_clip_a2m is
+                   the operator's a2m foliage cache + clip, the one a play session
+                   should select (one change per experiment).
+CZ_VK_NO_CLIP_PLANES=1  stop publishing the plane equations — the same-cache control
+                   arm. The shared block is zeroed per draw and a zero plane dots to 0,
+                   which Vulkan KEEPS, so unpublished planes clip nothing by
+                   construction.
+CZ_VK_CLIP_POISON=1  publish plane 0 = (0,0,0,-1) on EVERY draw: dot = -w, negative for
+                   every visible vertex. On a clip cache the picture must VANISH
+                   (menus included); on the stock cache it must change NOTHING. The
+                   positive control that proves the whole chain (feature bit, constant
+                   plumbing, epilogue) without needing a sliced zombie (gotcha 30).
+                   Counters: `draw: user clip plane N published` per plane index,
+                   `draw: CZ_VK_CLIP_POISON plane published`.
+```
+
 ## Mip levels (part 39)
 
 ```
