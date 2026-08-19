@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 359 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 365 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 359-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 365-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -176,17 +176,26 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part55-kickoff.md`.** State the rule as well as the name, because this line said
+    `part56-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
-  - **`perf-plan-part55.md` IS THE LIVE PERFORMANCE PLAN** — the operator's instruction
-    for part 55 is *"make it so the game properly use multithread and dispose of the load
-    properly"*, and its **§0 is the honest answer to their "unless you tell me it's not
-    possible": possible, and the ceiling is 5-6 busy threads, not 16**, because the PM4
-    walk is serial (a command stream's meaning is positional) and draw ORDER is semantic,
-    so recording can be parallel while submission cannot. The prize is roughly a third off
-    the frame at the load they actually play.
+  - **PERFORMANCE IS PARKED AND `docs/perf-state-parked.md` IS THE ONE DOCUMENT THAT
+    RESUMES IT** — the operator's instruction closing part 55: *"Save all of what is needed
+    for performance later on and all your finding. We'll switch to fixing the last few
+    visual bugs for the next few sessions and we'll come back to performance later."* It
+    carries where the frame is at THEIR load, the pump thread's current symbol table, the
+    four remaining items in order with their risks, the three ways part 55 got a
+    measurement wrong, every arm that exists, and the four things owed. Do not re-derive
+    any of it.
+  - ~~**`perf-plan-part55.md` IS THE LIVE PERFORMANCE PLAN**~~ — superseded by the above,
+    and kept because its §0 and §0b were EXECUTED: §0 is the honest answer to the
+    operator's "unless you tell me it's not possible" (possible, but the ceiling is 5-6
+    busy threads, not 16, because the PM4 walk is serial and draw ORDER is semantic) and
+    §0b is the thread budget that shipped. **Its prediction was half right in an
+    instructive way**: it forecast roughly a third off the frame from three PARALLEL
+    items, and part 55 delivered −18% at the operator's load with none of them, by
+    deleting container lookups instead (gotcha 362).
   - ~~**`perf-plan-part52.md` IS STILL THE LIVE PERFORMANCE PLAN**~~ — superseded, and kept
     because its §9b/§9c/§9d record what parts 52-54 corrected in it (built from a `perf`
     SYMBOL budget rather than a phase table). Six of its items have shipped — four in
@@ -195,7 +204,7 @@ mask; trust the microcode's own swizzles.
     statements part 52 refuted (item 1.0's probe key, item 2.1's sizing) and **§9c** what
     part 53 established, including the one thing the plan never budgeted — a (b) item's
     BILL. **`perf-plan-part50.md` is history.**
-    Read `docs/part55-kickoff.md` first, then `phase5-notes.md` §6ck (part 54), §6cj
+    Read `docs/part56-kickoff.md` first, then `phase5-notes.md` §6cl (part 55), §6ck (part 54), §6cj
     (part 53) and §6ci (part 52). **§6ci §5c is RETIRED as of part 54**: it said the
     headless route sits on the frame cap so an A/B there reads zero whatever the change
     was worth, and the cap default moving 60 -> 500 took the route off the rung — the pump
@@ -723,6 +732,111 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-18 (part 55 CLOSED — **THE OPERATOR ASKED FOR
+MULTITHREADING AND THE BIGGEST THING ON THE CRITICAL THREAD TURNED OUT NOT TO BE
+PARALLELISABLE WORK AT ALL: a quarter of the pump thread was `std::unordered_map` and
+`std::map`. Deleting it took their frame −13%; a per-window memo on the ALU constant copy
+took another −2 to −3%; −18% in total at the load they actually play, with none of the
+plan's three parallel items built.** `docs/part56-kickoff.md` is the LIVE hand-off and its
+subject is VISUAL BUGS; **performance is parked in `docs/perf-state-parked.md`**; read
+`phase5-notes.md` §6cl):
+
+* **THE OPERATOR SET THE SUBJECT AND THE CONSTRAINT.** *"I want us to focus on making it so
+  the game properly use multithread and dispose of the load properly"*, plus *"even if we
+  really needed the 16 core we should still leave core empty for user background item and
+  all. So we should do it smart and depend on amount of core the user has instead of aiming
+  for my machine."* Both were answered: the ceiling is 5-6 busy threads and not 16, and
+  there is now **one `ThreadBudget` for the whole runtime** sized from PHYSICAL cores
+  (counted as distinct (package, core) pairs, intersected with the process's affinity mask),
+  minus 2 reserved for the OS and the player, minus 3 already committed, capped at 6.
+  **Zero is a first-class configuration** — a 4-core laptop runs the serial path, which is
+  correct and not degraded. `CZ_WORKERS=N` is the one knob, and every run prints
+  `[threads] machine: 8 physical cores, 16 logical cpus -> budget 3 workers`. Gotchas 358,
+  359. **The arithmetic correction matters on its own: every "N of 16 cores" figure written
+  here since part 50 counted logical THREADS**, so the process at 3.75 cores was using 47%
+  of that machine and not 23%.
+* **ITEM C — "split `UploadStream` before assuming anything about it" — WAS FILED AS THE
+  CHEAPEST THING ON THE LIST AND IT REWROTE THE PART.** It could not be split with a
+  `ProfScope`: the path is taken ~33,000 times a crowd frame and two clock reads at ~20 ns
+  is 1.3 ms a frame, larger than several of the phases it would separate (gotcha 7). So it
+  was split with `perf` and the DWARF line table the RelWithDebInfo build already carries —
+  `tools/part55_srcline.py`, free, and at -O2 it attributes INLINED callees to their own
+  lines. **89% of `UploadStream` was the hash-map lookup: 41.24% `std::equal_to`, 36.92%
+  `_M_find_before_node`, 10.49% the prime MODULO — 13.1% of the whole pump thread.** The
+  same tool then found 17.9% of `DoDraw` in a `std::map` (the shader table, probed twice a
+  draw) and ~76% of `UploadTexture` in three more. **Roughly a quarter of the pump thread
+  was container lookups**, larger than any item in the plan. Gotchas 360, 361, 362.
+* **FIVE TABLES ARE NOW FLAT OPEN-ADDRESSED**, with two details that would have been silent
+  defects: the key is passed through a splitmix64 finalizer (with a power-of-two mask the
+  low bits ARE the bucket, and these keys' low bits are an endian code and the bottom of a
+  byte count), and clearing is a GENERATION BUMP rather than a memset, with the tombstone
+  flag in the top bit of the same word so a probe still reads one array.
+  **`CZ_VK_NO_FLAT_CACHE=1` restores the maps exactly**; `CZ_VK_VERIFY_FLAT_CACHE=1` runs
+  both and compares every lookup — **0 of 48.5 M disagreed** — and its poison arm reads
+  **81.7%**, which is what licenses reading the zero at all (gotcha 30). `_int_malloc` went
+  from 2.11% of the pump to **0.02%**.
+* **THE ALU CONSTANT COPY IS MEMOISED PER WINDOW, AND THE FIRST DESIGN WAS REFUTED BY ITS
+  OWN PRE-REGISTERED KILL THRESHOLD.** It copies 8 KB per draw — ~57 MB/frame and over
+  5 GB/s at the operator's soak, and the two hottest source LINES on the pump thread once
+  the containers stopped hiding them. Predicted ~60% reuse from the packet census
+  (`DRAW_INDX` 2,353/frame vs `LOAD_ALU_CONSTANT` 890/frame), "below 30% not worth its
+  risk" written down first, **measured 3.6-7.1%** — because constants are also written by
+  ordinary type-0 REGISTER RUNS, 40.1% of all packets, which that opcode census cannot see.
+  **Splitting the stamp into the two constant windows takes it to 32-36%**, on the
+  hypothesis that the VERTEX window is rewritten per draw (a world matrix per object) while
+  the PIXEL window sits still — confirmed by the per-half counter on the operator's own
+  machine: **VS 2.9%, PS 61.0%**. Gotcha 365: a hypothesis that splits a cost needs a
+  per-part counter or the explanation is a story. Verifier **0 of 117,521 and 0 of 119,019**,
+  poison **100.0000%**.
+* **MEASURED ON THE OPERATOR'S OWN SOAKS, FOUR CHAINED TWO-ARM SESSIONS, AT ~7,000 DRAWS IN
+  THE HEAVIEST PLACE THEY KNOW: ~12.8 ms -> ~11.0 (flat containers, −13%) -> ~10.5 (constant
+  memo, −2 to −3%) — about −18%, 80 fps -> 95.** Their framing is why the roaming campaign
+  was abandoned mid-run: *"I'll do your campaign with soak at the spot that hit the cpu the
+  most so we just get 2x 3minutes soak instead of hours of testing in unstable environment
+  with autochuck."* `tools/part55_chained_ab.sh` is that harness; arms are one env var each.
+* **AND THE HEADLINE HAD TO BE RETRACTED WITHIN THE HOUR, BY THE PERSON WHO WROTE THE RULE.**
+  Mid-soak, arm 1 was compared against the PREVIOUS session's control and reported as
+  −5.5%; arm 2 of the same session said −2 to −3%, which is what had been predicted before
+  the run. **Gotcha 364: an arm's number is meaningless until its OWN control arm has run**,
+  and the pull is strongest when the older number is recent, from the same harness and at a
+  similar draw count — it looks like a control and it is not one. **Every session also
+  landed its two soaks 4-7% apart in draw count**, which moved a headline in both directions
+  across the part; project with each arm's own within-arm slope and quote both projections.
+* **THE OPERATOR'S "SHOULDN'T GEOMETRY BE IN VRAM" IS A REAL GAP AND THE ANSWER IS NO —
+  ~14% SLOWER, and the reason is structural to recompilers.** Images were already
+  `DEVICE_LOCAL`; the 512 MB stream store and the per-frame arena were not, so every draw
+  fetched vertices across PCIe. Their RTX 3070 exposes `DEVICE_LOCAL | HOST_VISIBLE |
+  HOST_COHERENT` over all 8 GiB (Resizable BAR), so the switch is one line — and it took the
+  frame from 11.18 to 12.80 ms draw-matched. **A game engine uploads a mesh once and draws
+  it a hundred times, so the GPU's fetch dominates; a RECOMPILER re-uploads its shader
+  constants every draw because the guest writes its register file every draw** — ~85 MB/frame
+  of CPU writes, cached at 30+ GB/s in RAM against write-combined PCIe at a third of that.
+  Gotcha 363, plus a section in `reusability.md` written for whoever ports Case West.
+  `CZ_VK_VRAM_STREAMS=1` is kept as the arm. **Two corollaries: the calculus FLIPS once the
+  per-draw constant upload is gone, and CPU-visible device memory is WRITE-ONLY** — a read
+  is an uncached fetch across the bus, and this port found a function at 5.31% of its
+  critical thread reading three vertices back out of the buffer, free in RAM and ruinous in
+  VRAM with nothing naming the cause.
+* **A STUTTER THE OPERATOR REPORTED WAS INVESTIGATED PROPERLY RATHER THAN ATTRIBUTED.**
+  Their first session: the flat arm *"is stuttering a lot"* while moving, and its log lost
+  ~7 seconds inside one 10-second window. The tables were COUNTED (20 grows, 31.41 ms total
+  over a whole run, worst 15.04 ms — three visible hitches, not seven seconds), the headless
+  campaigns were asked and DISAGREED with the report (18 frames over 50 ms in the flat arm
+  against 39 in the map arm), and the arm ORDER was reversed, which is the control the first
+  session could not have. On the re-test every log's worst mean-over-median window is
+  1.45-1.47x on a 2 ms menu frame, and their verdict was *"arm 2 has same amount of stutter
+  as arm 1 but framerate is higher"*. **The tables were A stutter source and not THE one**;
+  pre-sizing them to the measured high-water mark takes the run's grow bill to 1 grow /
+  0.06 ms. Two things changed between the sessions, so the credit is NOT awarded cleanly.
+* **Gates at close: ALL CLEAN, re-run whole.** `--smoke`; switch gate 0 defects; dimension
+  census 0 disagreements; both PM4 oracles on B1; **E3 best of five +0.8763, 4 of 5 agreeing
+  on layout**; `no translated shader` 0; `truncated=0`; **A5 exit 0, 4 permutation windows,
+  0 real**; deepest file **#83 `cinezombie.big`**; shader-cache NAME diff shows only
+  `ps_926c15dd20571cf1`, the known lost-microcode entry — **the cache is 439**, unchanged.
+  **Plus the two rows this part had to invent**: the flat-cache verifier (0 of 48.5 M,
+  poison 81.7%) and the constant-memo verifier (0 of 117,521 and 0 of 119,019, poison
+  100.0000%).
+
 Where the port is, as of 2026-08-18 (part 54 CLOSED — **THE PRESENT WAS COPYING THE FRAME
 THREE TIMES AND ONE OF THOSE COPIES HAD NEVER BEEN MEASURED, BECAUSE IT ONLY EXISTS WITH A
 WINDOW AND EVERY PERFORMANCE RUN HERE IS HEADLESS. A real Vulkan swapchain takes the frame
@@ -879,153 +993,9 @@ LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.
   which no miss counter reported because no run had bound it. **The cache is 439**, both
   caches rebuilt and identical in membership.
 
-Where the port WAS, as of 2026-08-18 (part 53 CLOSED — **THE FIRST WORK THIS PORT HAS
-EVER MOVED OFF THE PUMP THREAD. Both content guards now fold on four workers a frame
-ahead: `GuardFold` 25.87% -> 0.86% of the pump, the thread 63.4% -> 50.3% of a core, frame
-time −12.5% against a null of +0.1%. And the first item whose BILL had to be measured as
-carefully as its benefit — 33.2 points of core appeared on the workers where 13.1 left the
-pump.** ~~`docs/part54-kickoff.md` is the LIVE hand-off~~ — superseded by
-`part55-kickoff.md`; `perf-plan-part52.md` is still the
-live plan and **its §9c records what part 53 established in it**; read `phase5-notes.md`
-§6cj, and **§6ci §5c before planning any frame-time measurement**):
-
-* **`GuardFold` WAS 25.87% OF THE PUMP THREAD AND IS NOW 0.86%.** It is the largest symbol
-  there and the only large cost in this renderer that is PURE — guest bytes in, a
-  `uint64_t` out, no Vulkan and no renderer state. Every guard the pump computes now files
-  a job for the NEXT frame; the swap dispatches the list to four workers; the pump's
-  existing cache lookup also yields the slot, so finding the answer costs nothing extra.
-  **88-91% of guards are served by a finished pre-hash** (the plan's pre-registered floor
-  was 80%) and **the pool never once blocked the pump**. A miss hashes inline exactly as
-  before, so correctness never depends on the prediction.
-* **THE FRAME IS 12.5-13.1% SHORTER ACROSS FOUR ADJACENT DRAW BANDS, AGAINST A NULL OF
-  +0.1%.** Three runs an arm, alternated, `CZ_FPS_CAP=120` in every arm so neither lands
-  on the rung (`tools/part53_item_campaign.sh`): 5,000-5,999 −13.0%, **6,000-6,999 −12.5%
-  mean / −13.3% median at significance −34.9**, 7,000-7,999 −13.1%, 8,000-8,999 −13.0%,
-  while the campaign's own null reads −0.5%, **+0.1%**, +1.6% in the same bands. Raw
-  throughput needs no binning at all: **84,540 frames against 76,845 in the same wall
-  time, +10.0%.** **In milliseconds it is a SLOPE** — 1.92 ms at 6,000-6,999, 2.41 at
-  8,000-8,999 — because the guard runs per first-touch stream and per guarded texture.
-  Quote the draw count.
-* **AND THE PART THAT IS NEW TO THIS PROJECT: A (b) ITEM HAS A BILL, AND IT IS NOT SMALL.**
-  Moving work onto idle cores RAISES total CPU: **2.53 -> 2.68 cores**, four workers at
-  **8.3% of a core each**. The pump lost **13.1 points**; the workers gained **33.2**.
-  Neither number is wrong — a memory-latency-bound loop is cheaper interleaved with other
-  work than run alone, because on the pump its misses overlapped with register decode and
-  driver calls. **So `perf` understates such a loop's isolated cost: a symbol share says
-  what to MOVE, not what moving it will cost.** A second, smaller bill lands straight back
-  on the thread being shortened — `recordState` 140 -> 183 ns/draw and `otherBegin`
-  57 -> 81, neither of them code this change touched, ~0.4 ms/frame of the workers
-  evicting the pump's working set from the shared L3. Gotcha 344.
-* **THE RACE THIS WIDENS WAS MEASURED, NOT ARGUED.** The guard has read guest memory while
-  the guest wrote it since the day it existed; pre-hashing moves that read up to a frame
-  earlier, which admits a *coherent old* state where the inline hash would have seen new
-  bytes — a one-frame stale mesh, the part-46 class. `CZ_VK_VERIFY_PARALLEL_GUARD=1`:
-  **8-76 of ~3.2 M served guards per window, 0.0002-0.0021%**, and that is an UPPER bound
-  on harm. Its poison arm reads **100.0000%**, which is what licenses reading the
-  unpoisoned number at all (gotcha 30).
-* **THE ONE SILENT FAILURE — a slot mix-up, one entry handed another's VALID hash — is
-  impossible by construction.** Every result echoes back the pointer and length it was
-  computed for; a disagreement is a loud line plus an inline fallback. **0 over every run
-  of the part.** Same shape as part 52's memo defect, one subsystem over (gotchas 342,
-  346).
-* **ITEM 1.3 NEEDED NO WORKER AT ALL — the readback was making a redundant 3.5 MB copy per
-  frame.** The staging buffer existed so the picture instruments could walk CACHED memory,
-  on a buffer that has been HOST_CACHED since the readback fix. `readback` **5.5-7.3% of
-  the frame -> 0.0%**, ~0.78 ms, and a matched-draw pair (6,253 vs 6,255) reads 13.0 vs
-  13.9 ms. **The predicate is the MEMORY TYPE, not "is an instrument armed"** — gating on
-  the instruments would have shipped a default path that no gate here ever runs, because
-  every picture gate sets one of them (gotcha 345).
-* **New tooling worth reaching for: `tools/part53_symbols.py`.** `perf report --tid=N` does
-  NOT renormalise — it filters the rows and leaves each symbol's share of the WHOLE profile
-  — so every hand reading of a per-thread profile in this project has had to correct for
-  it, and getting it wrong turns 26% of the thread that IS the frame into 8% of a process
-  nobody is optimising. This buckets by TID, folds `symbol+0xNNN` into functions, divides
-  by the THREAD, and `--diff` prints two arms side by side.
-* **Gates at close: ALL CLEAN, AND RE-RUN WHOLE after the resolution knob, the cap default
-  change and `CZ_FPS_LOG` — at BOTH resolutions.** `--smoke`; both PM4 oracles on B1
-  (24.5 M packets, 0 disagreeing); the switch gate (0 defects); the dimension census (0
-  disagreements); `no translated shader` = 0 **at 1x and at 2x**; `truncated=0`; deepest
-  file **#83 `cinezombie.big`**; **A5 exit 0 with 4 permutation windows, 0 real**;
-  **0 `PARALLEL GUARD SLOT MIX-UP`**; **E3 at 1x best of five +0.8396 and E3 at
-  `CZ_VK_RES=2560x1440` best of five +0.8562**, 4 of 5 agreeing on layout at each — the 2x
-  row is what gives the resolution change an oracle that is not the operator's eye. The
-  shader cache is **438**, both caches identical in membership.
-  **E3 read +0.8808 earlier in the part and +0.8396 here on the same code path**, and the
-  capture filenames say why: the cap moved 60 -> 500, so far more frames elapse in the
-  gate's fixed 120 s and its five F9 presses land on different moments of an ANIMATED
-  backdrop (frames 1,896-3,853 then 5,890-13,874). **A frame-index-addressed sample of a
-  moving scene is re-aimed by anything that changes the frame rate** (gotcha 133).
-* **THE OPERATOR CONFIRMED IT ON THEIR OWN SOAK, AND IT IS BIGGER THERE.** Two soaks in
-  their heaviest place, both items switched together in the control arm: **7,000-7,999
-  draws, 24.65 -> 20.33 ms, −17.5% mean / −16.7% median at significance −50.2**, with the
-  light bins reading **+0.1%** and **+0.5%** as the experiment's own null. `record`'s GUARD
-  **518 -> 13 ns/draw**, `textures` **428 -> 227**, **97.8% of guards served** by a
-  finished pre-hash, **0 mix-ups**. And at 4,000-6,000 draws the share of frames pinned to
-  the shipped 60 fps cap goes **55% -> 98%** and **29% -> 93%** — frames a player gets,
-  not headroom.
-* **AND THE READING TO CARRY FORWARD: THE PUMP DID NOT GET LESS BUSY, IT STAYED
-  SATURATED.** ~94% of a core in BOTH arms on their machine. What changed is what each
-  frame costs it — **23.6 -> 18.75 ms** — so the same pinned thread delivers **24% more
-  frames**. Headlessly the pump had slack and the same item read as a thread doing less
-  (63.4% -> 50.3%); on the real critical path it reads as throughput instead. Their bill:
-  **2.64 -> 3.11 cores**, four workers at 11.1-11.2% of a core each.
-* **ITEM 1.3 LOOKED LIKE IT HAD FAILED THERE AND HAD NOT — IT WAS A CONFOUND, AND THE
-  RETRACTION IS THE MOST TRANSFERABLE THING IN THE PART.** Their `readback` read 0.58 ->
-  0.66 ms, so it was filed as "did not survive"; **its own arm the same evening reads
-  0.668 vs 1.135 ms, −0.467 ms, with NO OVERLAP across thirteen windows an arm** (guard
-  pool held ON in both sides, `CZ_VK_PRESENT_STAGING` the only difference). Three
-  configurations explain everything: pool OFF + 2 copies **0.56 ms**, pool ON + 2 copies
-  **1.14**, pool ON + 1 copy **0.67** (and 0.66 in their arm A — agreement to 0.01 ms).
-  **The guard pool DOUBLES the cost of the present copies** — four workers streaming
-  ~70 MB/frame leave much less bandwidth for a 3.5 MB `memcpy` — and item 1.3 takes that
-  back. Their A/B switched BOTH items together, so **an item read NEGATIVE because the
-  other item in the same arm taxed it.** No number of repeats would have fixed that; a
-  per-item arm did, in fifteen minutes. Gotcha 347. **Both items ship.**
-* **AND THE OPERATOR THEN CORRECTED THE CORRECTION — the per-item arm sat at the military
-  camp (1,891-4,777 draws) while their soak is 7,000-7,500.** Reading down its columns
-  instead of taking its mean: `readback` goes **0.525 -> 0.700 ms with load inside one
-  arm**, so **item 1.3's saving is a SLOPE too** — −0.37 ms at 1,900 draws, **−0.59 at
-  4,200** — and the −0.467 mean is the mean of a slope over a range that excludes their
-  load. The direction is what matters: **their load is above the whole range, so the item
-  is worth MORE there than the arm can show.** The "pool DOUBLES the copies" table is
-  downgraded to an inference (it compared 40 fps against ~100 fps); what survives is the
-  within-arm slope and the pool's traffic at **2.2-3.0 GB/s** in every configuration
-  measured. §6cj §12.
-* **AND A NUMBER TO CARRY INTO EVERY REMAINING PARALLEL ITEM: the pool's bandwidth
-  footprint is large enough to double an unrelated 3.5 MB copy.** Item 1.2 moves texture
-  UNTILING, a pure bandwidth job, so it must be priced against the memory system and not
-  only against the CPU it frees.
-* **AND THE PORT GAINED TWO THINGS AT THE END OF THE PART THAT CHANGE WHAT A SESSION CAN
-  ASK. First, `CZ_FPS_LOG=N` — a frame-rate line of one counter and one clock read per
-  presented frame**, because every other frame-rate instrument here costs enough to change
-  the answer (2-4 ms for `CZ_VK_PROFILE`, 1.9-3.3 for `CZ_VK_FRAME_STATS`), so the only
-  uninstrumented configuration this port had produced no number at all. It measured the
-  instrument bill directly for the first time: the operator's soak reads **49.8 fps
-  instrumented and 69 clean — ~5.7 ms**. **Second, the shipped frame cap moved 60 -> 500**
-  (a 1 ms vblank period), on their choice, because part 53 took their frame UNDER the 16 ms
-  ceiling the old default imposed and it had started rounding them down to exactly 62.5 fps.
-  **The lever is the PERIOD, not the ceiling** — 120 and 250 both still present a 14.44 ms
-  frame at 16.0 ms. `CZ_FPS_CAP=60` is now the arm that restores the old default.
-* **AND AN INTERNAL RESOLUTION KNOB — `CZ_VK_RES=2560x1440` — WHICH IS NEARLY FREE EXACTLY
-  WHERE THE FRAME IS WORST.** The title still renders at 1280x720 in its own coordinates;
-  what scales is the rasterisation target, under one invariant: **a surface whose pixels
-  come from the RENDER PIPELINE scales, a surface whose pixels come from GUEST MEMORY does
-  not.** Integer multiples only — a fraction in the tile scissors is a seam down the middle
-  of a screen this title renders in two 640-wide halves, and no counter would report it.
-  Operator-judged: *"perfect looks all good."* Measured: light zones **147 -> 96 fps
-  (−35%)**, ordinary play −10..20%, and **the heavy end 69-71 -> 66, −4%** — because in a
-  crowd we are CPU-bound and the GPU is idle 68% of every frame (gotcha 231). **It is the
-  first change in this port that makes the GPU the limiter anywhere.** Its bill is the
-  present readback at the scale SQUARED, **3.5 -> 14.1 MB/frame**, which promotes the
-  plan's long-deferred swapchain item. §6cj §14.
-* **THEIR PICTURE VERDICT: *"look and feel is as usual."*** That rules out a GROSS
-  stale-buffer regression — the way this change could have failed badly — and is NOT
-  evidence that the widened race never fires: the verify arm puts it at 0.0002-0.0021%,
-  and one wrong frame in a 50 fps crowd is not something a human catches. The two
-  instruments answer different questions and both were needed.
-
-**Older per-part status blocks (parts 28-52, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`** — CLAUDE.md keeps only the
+**Older per-part status blocks (parts 28-53, the superseded mid-part-44 closure and the
+superseded MID-PART-46 block) moved to `docs/port-history.md`** — part 55 moved part 53's
+out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
 **Part 51 had to move four at once**, because parts 47-50 each added a block without
