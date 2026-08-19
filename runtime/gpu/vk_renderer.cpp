@@ -457,7 +457,6 @@ struct TexSource
     const uint8_t* src = nullptr;
     uint64_t srcBytes = 0;
 };
-std::map<uint32_t, TexSource> g_texSources;
 bool g_texCensus = false;
 
 // --- CZ_VK_TEX_GUARD / CZ_VK_TEX_REVALIDATE ------------------------------------------
@@ -538,7 +537,6 @@ struct TexGuardAddr
     uint32_t width = 0, height = 0, format = 0;
     uint64_t srcBytes = 0;   // what one check of this texture costs
 };
-std::map<uint32_t, TexGuardAddr> g_texGuardAddrs;
 // Where the guard's bytes go, by SOURCE size: bucket b is [1 KB << b, 1 KB << (b+1)),
 // bucket 0 everything below 1 KB, the last bucket everything above. See the comment at
 // the increment for why this exists — it is the price list for a bounded-prefix guard.
@@ -2110,6 +2108,15 @@ struct FlatCache
         }
     }
 
+    // Find, or default-construct in place. `std::map::operator[]`'s semantics, which is
+    // what the census tables that use this were written against.
+    V& FindOrInsert(uint64_t key)
+    {
+        if (V* v = Find(key))
+            return *v;
+        return *Insert(key, V{});
+    }
+
     // Walk the live entries. Used by the stream census, which is off by default.
     template <class F>
     void ForEach(F f) const
@@ -2149,6 +2156,15 @@ struct FlatCache
             Insert(ok[k], ov[k]);
     }
 };
+
+// THE TWO ALWAYS-ON TEXTURE CENSUSES, moved down here in part 55 so they can be flat.
+// They were `std::map<uint32_t, ...>` — red-black trees — and `g_texGuardAddrs` is
+// touched once per GUARDED TEXTURE FETCH, i.e. on the hot path of a function that was
+// 11.87% of the pump thread with ~72% of that in container machinery. A census nobody
+// reads unless a profile window prints it should not cost a tree insert per fetch. The
+// print sites sort a copy, so the output is byte-identical to the ordered map's.
+FlatCache<TexSource> g_texSources;
+FlatCache<TexGuardAddr> g_texGuardAddrs;
 
 struct Image
 {
@@ -2773,7 +2789,15 @@ struct Renderer
     bool drawIdArmed = false;      // set by F9, cleared when the frame is presented
     bool drawIdActive = false;     // set by the draw path: THIS recorded frame is the map
     uint64_t drawIdRanOnFrame = 0;
-    std::unordered_map<uint64_t, TextureEntry> textures;
+    // FLAT as of part 55, for the same reason as the stream caches and measured the same
+    // way: after the first three tables went flat, `UploadTexture` was 11.87% of the pump
+    // thread and `tools/part55_srcline.py` said ~72% of THAT was still container
+    // machinery — this map plus two always-on census `std::map`s. Only one of the two
+    // containers is populated in a given run (`CZ_VK_NO_FLAT_CACHE=1` chooses), because
+    // entries here are mutated through the pointer a lookup returns — the guard, its
+    // frame stamp, the pre-hash slot — exactly as in `persistCache`.
+    FlatCache<TextureEntry> textures;
+    std::unordered_map<uint64_t, TextureEntry> texturesMap;
     // By resolve destination, with bit 31 of the key set for a DEPTH resolve.
     //
     // The address alone is NOT an identity. `1439B000` is a shadow cascade's depth
@@ -2940,6 +2964,26 @@ void PersistClear()
 size_t PersistSize()
 {
     return g_flatCacheOff ? R->persistCacheMap.size() : R->persistCache.Size();
+}
+
+// The texture cache, through the same seam and for the same reason.
+TextureEntry* TexFind(uint64_t key)
+{
+    if (!g_flatCacheOff)
+        return R->textures.Find(key);
+    auto it = R->texturesMap.find(key);
+    return it != R->texturesMap.end() ? &it->second : nullptr;
+}
+void TexInsert(uint64_t key, TextureEntry&& e)
+{
+    if (!g_flatCacheOff)
+        R->textures.Insert(key, e);
+    else
+        R->texturesMap.emplace(key, std::move(e));
+}
+size_t TexSize()
+{
+    return g_flatCacheOff ? R->texturesMap.size() : R->textures.Size();
 }
 
 #define VK_CHECK(expr, what)                                                           \
@@ -4516,11 +4560,10 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     static const bool cacheFirst = EnvOn("CZ_VK_TEX_CACHE_FIRST");
     if (cacheFirst)
     {
-        auto c = R->textures.find(key);
-        if (c != R->textures.end())
+        if (const TextureEntry* c = TexFind(key))
         {
             COUNT("texture: cache hit");
-            return c->second.slot;
+            return c->slot;
         }
     }
     // A CUBE MAP THE TITLE RENDERS ITSELF — assembled out of its six faces' resolve
@@ -4639,8 +4682,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // exactly that — the tone map's output AND a shadow cascade — and the
             // aliased row read `1280x720 f6`, which is the colour use and says nothing
             // about the shadow map's real dimensions.
-            TexSource& s = g_texSources[(t.address & 0x1FFFFFFF) |
-                                        (wantsDepth ? kSnapshotDepthBit : 0u)];
+            TexSource& s = g_texSources.FindOrInsert(
+                (t.address & 0x1FFFFFFF) | (wantsDepth ? kSnapshotDepthBit : 0u));
             s.width = t.width;
             s.height = t.height;
             s.format = t.format;
@@ -4781,8 +4824,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         refresh = strstr(refreshEnv, addrHex) != nullptr;
     }
 
-    auto cached = R->textures.find(key);
-    if (cached != R->textures.end() && !refresh)
+    TextureEntry* cached = TexFind(key);
+    if (cached && !refresh)
     {
         // THE GUARD: are the bytes this image was built from still the bytes at that
         // address? The key says the fetch constant is unchanged; only this says the
@@ -4798,15 +4841,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // (gotcha 151); see the arm's comment for the falsifiable claim.
         const uint64_t stamp = R->frame + 1;
         const bool alreadyThisFrame =
-            !g_texGuardEveryFetch && cached->second.guardFrame == stamp;
+            !g_texGuardEveryFetch && cached->guardFrame == stamp;
         if (alreadyThisFrame)
             ++g_texGuardStats.skippedSameFrame;
-        if ((g_texGuard || g_texRevalidate) && cached->second.srcBytes &&
+        if ((g_texGuard || g_texRevalidate) && cached->srcBytes &&
             !alreadyThisFrame)
         {
-            cached->second.guardFrame = stamp;
-            const uint8_t* const tsrc = base + cached->second.va;
-            const uint64_t tbytes = cached->second.srcBytes;
+            cached->guardFrame = stamp;
+            const uint8_t* const tsrc = base + cached->va;
+            const uint64_t tbytes = cached->srcBytes;
             const uint64_t read = GuardReadBytes(tbytes, g_texGuardBytes);
             // ITEM 1.1, the texture half. Same mechanism as the stream guard and the
             // same fallback: a texture the previous frame guarded filed a job, and if a
@@ -4816,8 +4859,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // g_texGuardBytes) — so there is only one variant to predict and the
             // prediction is trivially right.
             uint64_t g;
-            const GuardOut* tpre = GuardPoolTake(cached->second.preSlot,
-                                                 cached->second.preFrame, R->frame, tsrc,
+            const GuardOut* tpre = GuardPoolTake(cached->preSlot,
+                                                 cached->preFrame, R->frame, tsrc,
                                                  tbytes, /*needExact=*/false);
             if (tpre)
             {
@@ -4835,9 +4878,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             {
                 g = TextureGuard(tsrc, size_t(tbytes), nullptr);
             }
-            cached->second.preSlot =
+            cached->preSlot =
                 GuardPoolFile(tsrc, tbytes, uint32_t(g_texGuardBytes), false);
-            cached->second.preFrame = R->frame + 1;
+            cached->preFrame = R->frame + 1;
             // The poison perturbs only the COMPUTED guard, never the stored one, so
             // every hit is forced to mismatch and the census must read 100%.
             if (g_texGuardPoison)
@@ -4859,19 +4902,19 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             {
                 size_t b = 0;
                 for (size_t lim = 1024;
-                     b + 1 < kTexGuardHistBuckets && cached->second.srcBytes >= lim;
+                     b + 1 < kTexGuardHistBuckets && cached->srcBytes >= lim;
                      lim <<= 1)
                     ++b;
                 ++g_texGuardHistCount[b];
                 g_texGuardHistBytes[b] += read;
             }
-            TexGuardAddr& a = g_texGuardAddrs[t.address & 0x1FFFFFFF];
+            TexGuardAddr& a = g_texGuardAddrs.FindOrInsert(t.address & 0x1FFFFFFF);
             ++a.hits;
             a.width = t.width;
             a.height = t.height;
             a.format = t.format;
-            a.srcBytes = cached->second.srcBytes;
-            if (g != cached->second.guard)
+            a.srcBytes = cached->srcBytes;
+            if (g != cached->guard)
             {
                 ++g_texGuardStats.changed;
                 ++a.changed;
@@ -4884,7 +4927,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         if (!refresh)
         {
             COUNT("texture: cache hit");
-            return cached->second.slot;
+            return cached->slot;
         }
     }
 
@@ -5328,7 +5371,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
 
     if (g_texCensus)
     {
-        TexSource& s = g_texSources[t.address & 0x1FFFFFFF];
+        TexSource& s = g_texSources.FindOrInsert(t.address & 0x1FFFFFFF);
         s.width = t.width;
         s.height = t.height;
         s.format = t.format;
@@ -5490,24 +5533,24 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
 
     // The refresh arm: same image, same slot, new pixels. No allocation, so it can run
     // every fetch without exhausting the bindless heap.
-    if (refresh && cached != R->textures.end())
+    if (refresh && cached)
     {
         // Re-stamp the guard from the bytes we have just read, or a revalidating run
         // re-uploads this texture on every single fetch for the rest of the run —
         // which would read as "the fix is ruinously slow" when what is slow is the
         // instrument never being satisfied.
-        cached->second.va = va;
-        cached->second.srcBytes = srcBytes;
-        cached->second.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
+        cached->va = va;
+        cached->srcBytes = srcBytes;
+        cached->guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
         // Re-stamped: this IS a validation, freshly computed. Without it a refresh under
         // CZ_VK_TEX_REFRESH_ALL — which bypasses the guard block entirely — would leave
         // guardFrame at an older frame and cost the next fetch a redundant hash.
-        cached->second.guardFrame = R->frame + 1;
+        cached->guardFrame = R->frame + 1;
         ++g_texGuardStats.reuploaded;
         if (pixels.size() <= R->staging.size)
         {
             memcpy(R->staging.mapped, pixels.data(), pixels.size());
-            Image& img = cached->second.image;
+            Image& img = cached->image;
             // A REFRESH WRITES EVERY LEVEL THE IMAGE HAS, not just the base. The cached
             // image was built with whatever level count its first upload could locate,
             // and a re-upload that refilled level 0 alone would leave the levels below
@@ -5528,7 +5571,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             });
             Count("texture: refreshed in place (CZ_VK_TEX_REFRESH)");
         }
-        return cached->second.slot;
+        return cached->slot;
     }
 
     // Set 2 has its own array of TextureCube views and therefore its own slot space; the
@@ -5669,7 +5712,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
 
     const uint32_t slot = entry.slot;
-    R->textures.emplace(key, std::move(entry));
+    TexInsert(key, std::move(entry));
     if (isCube)
     {
         Count("texture: CUBE MAP uploaded (six faces)");
@@ -13529,7 +13572,7 @@ void VkRenderer_DumpStats()
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
-            R->pipelines.size(), R->shadersMap.size(), R->textures.size(),
+            R->pipelines.size(), R->shadersMap.size(), TexSize(),
             (unsigned long long)(R->arenaHighWater >> 10));
     // The state cache's own engagement, as fractions of the draws it was offered.
     // Printed unconditionally, including on the CZ_VK_NO_STATE_CACHE arm where every
@@ -13575,7 +13618,16 @@ void VkRenderer_DumpStats()
     {
         fprintf(stderr, "[vk]   texture sources (addr, extent, fmt | uploads/zero, "
                         "snapshot, tooOld maxAge):\n");
-        for (const auto& [addr, s] : g_texSources)
+        // Sorted, so this prints exactly what the `std::map` printed before part 55
+        // made the table flat. A census whose ROW ORDER changes reads as a different
+        // census to anyone diffing two runs' logs.
+        std::vector<std::pair<uint32_t, TexSource>> srcRows;
+        g_texSources.ForEach([&] (uint64_t k, const TexSource& v) {
+            srcRows.emplace_back(uint32_t(k), v);
+        });
+        std::sort(srcRows.begin(), srcRows.end(),
+                  [] (const auto& a, const auto& b) { return a.first < b.first; });
+        for (auto& [addr, s] : srcRows)
         {
             if (!s.everResolved && !s.zeroUploads)
                 continue;
@@ -13745,8 +13797,10 @@ void VkRenderer_DumpStats()
         // The addresses, worst first. A ratio alone cannot separate "one atlas the CPU
         // rewrites every frame" from "a third of the world's textures are wrong", and
         // those are different defects with different fixes.
-        std::vector<std::pair<uint32_t, TexGuardAddr>> rows(g_texGuardAddrs.begin(),
-                                                            g_texGuardAddrs.end());
+        std::vector<std::pair<uint32_t, TexGuardAddr>> rows;
+        g_texGuardAddrs.ForEach([&] (uint64_t k, const TexGuardAddr& v) {
+            rows.emplace_back(uint32_t(k), v);
+        });
         std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
             return a.second.changed > b.second.changed;
         });
