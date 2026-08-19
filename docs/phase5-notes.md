@@ -11770,3 +11770,95 @@ thread** and it is the next item in this function.
 
 `UploadTexture` was still ~72% container at that point, which is what the fourth commit
 went after.
+
+---
+
+### 7. THE OPERATOR'S SOAK A/Bs — and a NEGATIVE result worth more than the positive one
+
+Two chained sessions on their machine (`tools/part55_chained_ab.sh`), both arms in one
+sitting, uninstrumented but for `CZ_FPS_LOG`, standing still in the heaviest place they
+know. Their own framing, and it is why the roaming campaign was abandoned mid-run: *"I'll
+do your campaign with soak at the spot that hit the cpu the most so we just get 2x
+3minutes soak instead of hours of testing in unstable environment with autochuck."*
+
+#### The container item, confirmed
+
+| session | arm | draws | frame | fps |
+|---|---|---|---|---|
+| 1 | flat | 6,701-6,971 | 10.94 ms | 91.4 |
+| 1 | maps | 7,161-7,492 | 13.20 | 75.8 |
+| 2 | maps | 6,725-6,910 | 12.50 | 80.0 |
+| 2 | flat | 7,004-7,253 | 11.14 | 89.8 |
+
+**The two soaks in a session are never at the same draw count**, which is the thing to
+watch: session 1's maps arm carried 7% MORE work than its flat arm and session 2's flat arm
+carried 4% more than its maps arm, so the raw fps gap flatters the item once and understates
+it once. Draw-matched with each arm's own within-arm slope, session 2 reads **11.18 -> 12.80
+ms, −13.2%** — and the roaming campaign said −12.0% and the cross-session pair −12.5%. Three
+independent measurements within a point of each other.
+
+#### The stutter report, and how it was resolved
+
+Their first session: arm 1 (flat) *"is stuttering a lot but since I stopped moving for the
+soak no stutter and around 20fps higher"*; arm 2 (maps) *"way less stutter when moving"*.
+The logs agreed — the flat arm lost ~7 seconds inside one 10-second transit window (270
+frames where the maps arm never dropped below 737).
+
+Three things were done and the order matters. **The tables were counted, not argued about**:
+grow accounting says 20 grows, 31.41 ms total, worst 15.04 ms over a whole run — three
+hitches a player could see, and nothing like seven seconds. **The headless campaigns were
+asked and disagreed with the report**: 18 frames over 50 ms in the flat arm against 39 in
+the map arm across three runs each. **And the order was reversed**, which is the control the
+first session could not have: on a re-test with `maps` first, the worst mean-over-median
+window in every one of the four logs except the original is 1.45-1.47x, and that peak is a
+2 ms menu frame. Their verdict on the re-test: *"arm 2 has same amount of stutter as arm 1
+but framerate is higher"*.
+
+So the tables were **a** stutter source and not **the** one, and pre-sizing them to the
+measured high-water mark takes the run's grow bill to 1 grow / 0.06 ms. Two things changed
+between the sessions — the pre-size and a now-warm page cache — so the credit cannot be
+awarded cleanly, and that is recorded rather than resolved in the fix's favour.
+
+#### THE NEGATIVE RESULT: geometry in VRAM is ~14% SLOWER, and the reason generalises
+
+Their question: *"shouldn't we load texture, frame buffers, geometry/meshes, shadow maps,
+lighting and refraction data, shaders and cached assets from vram. Especially since it's a
+old game shouldn't take much vram and then we use ram as fallback."*
+
+Most of that list already was in VRAM — every `VkImage` allocates `DEVICE_LOCAL`. Geometry
+was not: the 512 MB cross-frame store and the per-frame arena asked for
+`HOST_VISIBLE | HOST_COHERENT`, which resolves to the first matching type, system RAM. Their
+RTX 3070 exposes `memoryTypes[5]` — `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT` over all
+8 GiB, i.e. Resizable BAR — so the switch is one line.
+
+It was built as an ARM (`CZ_VK_VRAM_STREAMS=1`) rather than a default, with the new arm run
+FIRST so any first-run penalty would land on it. It lost:
+
+| arm | draws | frame | fps |
+|---|---|---|---|
+| **vram** | 6,726-7,042 | 11.80-12.34 ms | 81-85 |
+| **ram** (shipped) | 7,194-7,400 | 10.96-11.28 | 89-91 |
+
+RAM is faster while carrying ~400 MORE draws. Draw-matched at ~7,300: **12.80 vs 11.18 ms,
+about 14% slower in VRAM.**
+
+**AND THE MECHANISM IS THE PART THAT TRANSFERS.** The pre-registered prediction was
+`SynthRectStream` — which still reads three vertices per rect draw out of the buffer, and in
+VRAM those become uncached PCIe reads. It is probably a contributor and it is not the main
+term. The arithmetic is on the WRITE side: **the ALU constant copy writes 8 KB per draw**,
+which at 7,000 draws and 90 fps is ~57 MB/frame, over **5 GB/s**, plus ~28 MB/frame of
+first-touch geometry. In system RAM those are cached writes at 30+ GB/s; in VRAM they are
+write-combined transfers across PCIe at roughly a third of that. The GPU saves one fetch;
+the CPU pays several times more to put the data there.
+
+**A recompiler is not a normal engine.** A game engine uploads a mesh once and draws it for
+a hundred frames, so the GPU's fetch dominates and VRAM wins. A recompiled title re-uploads
+its shader constants every draw, because the guest writes its register file every draw. That
+is gotcha 363, and it comes with two corollaries: the calculus FLIPS if the per-draw upload
+is removed, so re-ask after any change that stops re-uploading constants; and CPU-visible
+device memory is write-combined and therefore **write-only**, so every read of such a buffer
+must be audited before switching one over.
+
+The arm stays off. `SynthRectStream` keeps its fix — it assembles the quad in local memory
+and writes once, which is strictly better in both arms — and the rule is written where the
+next person will edit it.

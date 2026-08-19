@@ -3788,3 +3788,29 @@ From phase C part 18 (the frame rate — and none of it was work):
      plus ~0.4 ms/frame of cache pollution charged to unrelated phases (gotcha 344). A plan
      that opens with the parallel items should still run the cheap "split it and look" item
      first, precisely because it can retire the expensive ones.
+
+363. **"GEOMETRY BELONGS IN VRAM" IS WRONG FOR A RECOMPILER, AND THE MEASUREMENT IS
+     UNAMBIGUOUS.** Modern GPUs expose a `DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT` heap
+     over their whole VRAM (Resizable BAR), so the vertex, index and constant buffers a
+     recompiled renderer draws from CAN be put in video memory with a one-line change of
+     memory-type preference. On this port that made the frame **~14% LONGER** at the
+     operator's soak load — 12.80 ms against 11.18 draw-matched, measured as two three-minute
+     soaks in one session with the new arm going first so any first-run penalty landed on it.
+     **The reason is that a recompiler is not a normal engine.** A game engine uploads a mesh
+     once and draws it for a hundred frames, so the GPU's fetch dominates and VRAM wins. A
+     recompiled title re-uploads its shader constants EVERY DRAW, because the guest writes
+     its register file every draw: 8 KB per draw here, ~57 MB/frame at 7,000 draws and 90 fps
+     — over 5 GB/s of CPU writes — plus ~28 MB/frame of first-touch geometry. Those are
+     cached writes at 30+ GB/s in system RAM and write-combined transfers across PCIe at
+     roughly a third of that in VRAM. **The GPU saves one fetch; the CPU pays several times
+     more to put the data there.** Two corollaries. First, the calculus flips if the
+     per-draw upload is removed — so re-ask this question after any change that stops
+     re-uploading constants, not before. Second, and unconditionally: **CPU-visible device
+     memory is WRITE-COMBINED, so it is write-only.** Sequential writes are fine; a READ is
+     an uncached fetch across the bus and can be a hundred times slower than a cached load.
+     Audit every read of such a buffer before switching one over — this port found a
+     function at 5.31% of its critical thread writing three vertices into the buffer and
+     reading all three back, which was free in RAM and would have been ruinous in VRAM with
+     nothing naming the cause. Images (textures, render targets, shadow maps) are a different
+     case entirely and should be `DEVICE_LOCAL`: they are uploaded through a staging buffer,
+     never CPU-mapped, and read many times per frame.

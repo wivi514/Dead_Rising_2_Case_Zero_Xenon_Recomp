@@ -82,3 +82,47 @@ pipeline database so the title starts without PSO-compilation stutter. The shade
 (`assets/shader_spv/`, 336 blobs) already does half of this; the **125 pipelines are
 still created at runtime** and are the obvious next candidate.
 
+
+## For the next recompilation, whichever title it is: two memory decisions, both measured
+
+Written at the operator's request — *"Save this in documentation so we know how to properly
+do it in future recomp"* — because both were arrived at by measurement here and both are
+cheap to get wrong from first principles.
+
+### 1. Container choice on the critical thread is a first-order performance decision
+
+`std::unordered_map` and `std::map` were roughly **a quarter of this port's graphics pump
+thread** — 89% of `UploadStream`, ~72% of `UploadTexture`, 17.9% of `DoDraw` — and none of
+it was visible in any profiler PHASE, because a phase names a scope and the scope contained
+other things too. Replacing five of them with a flat open-addressed table took the frame
+**−13.2%** at the load the operator plays.
+
+A recompiled renderer looks up a cache tens of thousands of times a frame: per draw for
+shaders and pipelines, per stream for vertices and indices, per fetch for textures. At that
+rate a chained hash table's two dependent cache misses and its mandated prime-modulo
+division dominate the work being cached. Start with a flat table; do not arrive at one after
+fifty parts. And take the two details with it — mix the key (with a power-of-two mask the
+low bits ARE the bucket) and clear by generation bump rather than by memset — plus a verify
+arm, because a lookup returning the wrong entry is a wrong ANSWER and not a crash.
+
+`tools/part55_srcline.py` is how this was found and is title-agnostic: it folds a `perf`
+profile by SOURCE LINE inside one symbol using the DWARF line table a RelWithDebInfo build
+already carries, at zero cost to the subject. Reach for it whenever a hot path is too hot
+to instrument with a scope.
+
+### 2. Do NOT put geometry in VRAM. Do put images there.
+
+Full reasoning in gotcha 363; the short form is that **a recompiler is not a normal engine**.
+It re-uploads shader constants every draw, because the guest writes its register file every
+draw — 8 KB per draw here, ~57 MB/frame at 7,000 draws — so the CPU write cost of
+write-combined video memory outweighs the GPU fetch it saves. Measured on an RTX 3070 with
+Resizable BAR: **~14% slower**.
+
+  * vertex / index / constant buffers the CPU writes each frame -> `HOST_VISIBLE |
+    HOST_COHERENT` in system RAM.
+  * images — textures, render targets, shadow maps, resolve snapshots — -> `DEVICE_LOCAL`.
+    They are uploaded through staging, never CPU-mapped, and read many times a frame.
+  * re-ask the first bullet only after the per-draw constant upload is gone, which flips
+    the arithmetic.
+  * and unconditionally: **CPU-visible device memory is WRITE-ONLY.** A read of it is an
+    uncached fetch across the bus. Audit every read before switching a buffer over.
