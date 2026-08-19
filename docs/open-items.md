@@ -2933,3 +2933,97 @@ Next, in order:
    no controller attached, so the split only exists when there is something to split.
    Say so in the log line either way, because a keyboard that silently stopped driving
    the game looks exactly like input that broke (gotcha 214).
+
+
+---
+
+## 00o. THE PART-56 OPERATOR SESSION: four defects, two hypotheses refuted, one measured gap
+
+All of this is from one evening of operator captures (2026-08-19,
+`~/DR2CZ-troubleshooting/play/play_0819_*`). Recorded in full because two of the
+hypotheses were WRONG and the refutations cost real time to buy.
+
+### What the operator reported, in their words
+
+* **decals** — *"pretty much normal but it appears and disappear like flicker"*, and
+  decisively: *"if you do not move the camera the decals either stay or is not there"*.
+* **the GAS sign** — broken lettering at distance, correct up close: the letters go BLACK
+  with a magenta/yellow/cyan fringe on the G.
+* **the bunting** between sign and gas-station roof — absent at distance, present close.
+  The string survives as a REGULARLY SPACED DASHED LINE whose spacing matches the pennants,
+  i.e. the surviving top edge of each triangle. **Not LOD culling** — that removes an
+  object, it does not leave evenly spaced remnants.
+* **the canopy fascia** — black at distance, red up close, changing in DISCRETE STEPS as
+  you approach.
+* **cutting a zombie in half** — *"it get separated in two full zombie and the blood is a
+  square"*. Confirmed in `capture_029266`: two COMPLETE bodies, each sitting on a red
+  rhombus of gore texture.
+
+### REFUTED 1: z-fighting / the missing polygon offset
+
+The camera-motion dependence is the classic signature of z-fighting, and the renderer
+genuinely never set `depthBiasEnable` — `PA_SU_POLY_OFFSET_*` was read nowhere, in this
+port OR in Fable 2's. The registers were censused rather than inherited (Fable 2 reads the
+enable bits from 0x2205, which is RB_BLENDCONTROL1 in our verified map), and the census
+found the offset REAL and pointed at the right draws:
+
+    3715 draws  po=0/0/0
+     178 draws  po=0/-4.8/-3e-05   } all `verts=6 prim=4 blend=07060706`
+      48 draws  po=0/-1.6/-1e-05   } — one alpha-blended quad each, i.e. DECALS
+
+So the decode was right and the change reached the decals. **It fixed nothing.** The
+positive control is what settled it: `CZ_VK_POLY_OFFSET_SCALE=10000` visibly lifts decals
+in front of walls and zombies, so the path reaches the picture — and the operator's verdict
+at that setting was *"when they are not floating they flicker"*. **A ten-thousand-fold
+depth bias does not stop the flicker, so the flicker is not a depth fight.**
+
+The polygon offset is KEPT (it is guest state we were ignoring, and the gates pass at
++0.8823) but it fixes nothing reported. `CZ_VK_NO_POLY_OFFSET=1` is the control arm.
+
+### REFUTED 2: the mip chain
+
+The unifying story was that lower mip levels decode wrong — colour for the sign, alpha for
+the bunting — and that mip SELECTION oscillating under camera motion explained the decal
+flicker while a still camera pinned it to one level. It fits every symptom and it is wrong.
+
+`CZ_VK_NO_MIPS=1` **engaged** (the mip-level-rejection lines go 8 -> 0) and the operator's
+verdict was *"gas is still black and everything still is like before"*. The plumbing was
+checked afterwards and is correct — `CreateImage` takes the level count and the view's
+`subresourceRange` carries it — and the counters say the chain is real (7,088 chains
+uploaded, 18,397 packed-tail levels taken). **The sign is black with mips and without
+them, so mip DATA is not what blackens it.**
+
+One loose end left deliberately open: the operator also saw NO added aliasing with mips
+off, which a live chain should produce. That is a soft observation against a hard one
+(the sign), so it is recorded rather than acted on — but "turning the mip chain off changes
+nothing visible" is itself worth a measurement someday.
+
+### STANDS: the stencil test, and it is MEASURED rather than inferred
+
+**`stencilTestEnable` appears ZERO times in this renderer**, while RB_DEPTHCONTROL bit 0 is
+`stencil_enable` — our own comment says so, and the code reads bits 1, 2 and 4-6 and skips
+it. Censused on the operator's own slicing frames:
+
+    capture_f29266:  350 of 1980 draws have the STENCIL TEST enabled
+    capture_f27715:  326 of 1823 draws
+
+Five distinct stencil-enabled RB_DEPTHCONTROL values, all decoding sensibly on the other
+fields (z_enable, z_write, zfunc), which is a check on the bit layout.
+
+**And the operator's "two full zombies" is what identifies the mechanism.** The game is not
+producing half-meshes: it draws the WHOLE body twice and masks each copy to one side of the
+cut. Nothing masks them, so both copies render whole and the cross-section cap renders as a
+full quad — two symptoms, one cause. The depth format is already `D24_UNORM_S8_UINT`, so the
+buffer exists.
+
+**Before implementing:** the stencil func/op field layout of RB_DEPTHCONTROL and the
+ref/mask register must be located BY CENSUS, the method that worked twice in one evening
+here and that a register document would not have settled (the 0x2205 confusion above).
+
+### The decal flicker is now UNEXPLAINED, and its constraints are
+
+Not depth (refuted at 10,000x). Not mip data (refuted). Camera-motion dependent, stable
+under a still camera in BOTH states — present or absent. `CZ_VK_DRAW_ID` on a burst, or a
+census taken at two camera positions a frame apart, is the obvious next instrument; the F8
+burst as built carries no per-draw census, which is the gap that stopped this evening's
+analysis and is the first thing to fix if the defect is picked up again.
