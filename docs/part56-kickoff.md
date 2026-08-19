@@ -45,7 +45,40 @@ no pass. The gates were re-run whole at the close (§5).
 They are all in `docs/open-items.md` with their evidence. In the order that respects what is
 known rather than what is annoying:
 
-### 00m — DECALS. Operator-reported, never investigated, no captures.
+### 00m — DECALS. **CHARACTERISED BY THE OPERATOR, AND A LEADING HYPOTHESIS IS ON RECORD.**
+
+**What it looks like, in their words:** *"The decals how it looks like is pretty much normal
+but it appears and disappear like flicker."* So it is NOT a wrong colour, a wrong texture or
+a missing decal — the decal renders correctly and then intermittently is not there.
+
+**THE LEADING HYPOTHESIS, found by reading before any instrument was built: we never set
+`depthBiasEnable`, and the guest's `PA_SU_POLY_OFFSET_*` registers are read NOWHERE in this
+renderer.** `grep -c depthBias runtime/gpu/vk_renderer.cpp` is 0, and the rasterization
+state sets `polygonMode`, `cullMode`, `frontFace` and `lineWidth` and nothing else. Decals
+are drawn exactly coplanar with the surface they are painted on, and the hardware nudges
+them toward the camera with a polygon offset so they win the depth test. Without that nudge
+they z-fight — and z-fighting under a moving camera looks precisely like flicker.
+
+**THE INSTRUMENT IS BUILT AND GATED: F8.** `CZ_BURST_DUMP=<dir>` (armed by
+`tools/play_session.sh`) records **every presented frame for one second** — ~95 frames — plus
+a manifest carrying each frame's draw count, `drawFingerprint` and `cameraFingerprint`. Read
+it with `tools/burst_read.py <dir>`, which reports the flickering region's bounding box,
+writes a heat map, and **names which of the two mechanisms the evidence points at**:
+
+  * pixels change while the **draw list does not** -> the draws are issued every frame and
+    something after that decides whether they land: **the depth fight above**;
+  * the **draw list itself changes** -> the geometry is being dropped on some frames, and
+    the suspects are the guest's own issuing, predication, the bin masks, and our declines.
+
+**THE OPERATOR MUST STAND STILL FOR THE BURST**, and it is not a nicety: a moving camera
+changes the draw list legitimately, which destroys the second half of the answer. The reader
+detects that and says it cannot conclude rather than concluding wrongly.
+
+**Nothing has been captured yet** — the session was launched and they chose to take the
+captures later. The instrument, the reader and the hypothesis are all in place, so the next
+step is one burst standing on a flickering decal.
+
+### 00m — the original filing, kept for what was known before the operator described it.
 *"still has the issue with decals that I think I didn't warn you about"* — a standing defect
 that was never filed, reported in part 47 alongside the confirmation that the performance
 work had not changed the picture. **It is theirs to characterise**: nobody here has seen it,
@@ -56,7 +89,20 @@ a single capture. **Check the title screen and menu backdrop first for a self-se
 repro** (gotcha 319) — a defect with an oracle you can run yourself is worth ten that need a
 play session.
 
-### 00n — A SIGN AND SOME ITEMS WRONG AT DISTANCE.
+### 00n — A SIGN AND SOME ITEMS WRONG AT DISTANCE. **The operator will supply F9 captures.**
+
+Their update at the close of part 55: *"For the items I don't know if it still happening but
+for the sign I know that it is and I can grab you f9 capture for them."* So **the items half
+may already be fixed** — do not assume it is still open — and the SIGN is the live half with
+a capture coming.
+
+**Ask for a PAIR**: one F9 from close, where it looks right, and one from the distance where
+it does not. A distance defect's measurement IS the comparison; either shot alone shows a
+sign and settles nothing. F9 works under the swapchain present path — the readback survives
+whenever a picture instrument is armed — so `tools/play_session.sh` is enough.
+
+Below is the original filing.
+
 *"some sign and item that still got issue with distance but this is not introduced by your
 performance fix."* The tail of 00i's flat-at-range class, most of which part 45's
 interpolant-liveness fix closed on the operator's own A/B. **The first action is a
