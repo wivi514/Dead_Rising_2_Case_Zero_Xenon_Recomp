@@ -74,6 +74,27 @@ extra=()
 # operator's decision at the close of part 54, so the knob that needs to exist is the one
 # that takes it OFF.
 [ -n "${NOSWAP:-}" ] && extra+=(CZ_VK_NO_SWAPCHAIN=1)
+
+# SAFE=1 — god mode, no death sequence, and ZOMBIES IGNORE ALL HUMANS, held on by the pump.
+#
+# The operator asked for this while trying to take captures: "need you to launch it with
+# zombie ignore human so I can take capture without dying". It is the same argument the
+# part-54 soak harness makes and it applies to CAPTURE work at least as strongly — lining up
+# a shot means standing still in a place full of zombies, which is exactly where Chuck dies,
+# and a zombie GRAB rotates the camera, which for an F8 burst destroys the draw-list half of
+# the answer.
+#
+# `CZ_DEBUG_FLAGS` names entries in the title's own debug-bool table by label and the pump
+# re-asserts them every frame, because the game clears them on a level load. That is why
+# this does not need the F4 menu and cannot silently lapse mid-session.
+#
+# NOT the default: a play session is meant to be the game as it ships, and the whole point
+# of the operator's picture verdicts is that they are judgements about what a player sees.
+# This is for capture and measurement sessions, and it announces itself below.
+SAFE_FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS}"
+if [ -n "${SAFE:-}" ]; then
+    extra+=(CZ_DEBUG_MENU=1 "CZ_DEBUG_FLAGS=$SAFE_FLAGS")
+fi
 if [ -z "${PLAIN:-}" ]; then
     extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
 fi
@@ -88,6 +109,10 @@ else
     echo "  swap: swapchain present (the default since part 54; NOSWAP=1 is the arm)"
 fi
 echo "  fps:  one line every 10 s, mean AND median"
+if [ -n "${SAFE:-}" ]; then
+    echo "  safe: $SAFE_FLAGS"
+    echo "        (held on by the pump every frame -- the game clears them on a level load)"
+fi
 echo "  F8 :  BURST — every frame for 1 s -> $OUT/$TAG  (for a FLICKER; stand still)"
 echo "  F9 :  screenshot -> $OUT/$TAG"
 echo "  log:  $OUT/$TAG.log"
