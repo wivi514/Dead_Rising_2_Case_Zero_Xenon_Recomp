@@ -1811,6 +1811,16 @@ struct PipelineKey
     // pipeline dimension for the same reason alphaTest is: the fragment module and the
     // blend state are baked at creation. Off by default and on for exactly one frame.
     uint32_t drawIdPass;
+    // THE POLYGON OFFSET, as a pipeline dimension rather than dynamic state (part 56).
+    // Dynamic would have been cheaper in principle — the value varies per draw — but a
+    // declared dynamic state MUST be set before EVERY draw with that pipeline, and this
+    // renderer has draw paths (the resolve blits, the draw-ID pass, the overlay) that do
+    // not pass through the per-draw state block. Declaring it produced 40
+    // `VUID-vkCmdDraw-None-08608` from exactly those. The title uses only two or three
+    // distinct offsets, so baking them costs a handful of pipelines and no correctness.
+    // Stored as the raw register bits so the key stays trivially comparable.
+    uint32_t polyOffsetScale;
+    uint32_t polyOffsetOffset;
 
     bool operator<(const PipelineKey& o) const
     {
@@ -1831,8 +1841,9 @@ struct PipelineKey
 // separate cache line holding a red-black node, so the cost is 9 likely misses and 9
 // 48-byte `memcmp`s. A hash table is one hash of a fixed 48 bytes and one bucket.
 //
-// The key is a POD with no padding (two `uint64_t` then eight `uint32_t` = exactly 48
-// bytes), which is what makes both the `memcmp` comparison and this hash correct —
+// The key is a POD with no padding (two `uint64_t` then TEN `uint32_t` = exactly 56
+// bytes — the polygon offset added two in part 56), which is what makes both the
+// `memcmp` comparison and this hash correct —
 // hashing raw bytes of a struct WITH padding would hash uninitialised memory and give
 // two equal keys different hashes. If a field is ever added, keep that property or the
 // table silently starts missing.
@@ -1840,9 +1851,9 @@ struct PipelineKeyHash
 {
     size_t operator()(const PipelineKey& k) const
     {
-        static_assert(sizeof(PipelineKey) == 48, "PipelineKey must stay padding-free");
+        static_assert(sizeof(PipelineKey) == 56, "PipelineKey must stay padding-free");
         uint64_t h = 0xCBF29CE484222325ull;
-        uint64_t w[6];
+        uint64_t w[7];
         memcpy(w, &k, sizeof w);
         for (uint64_t v : w)
         {
@@ -1974,6 +1985,9 @@ uint64_t g_flatCacheLookups = 0;
 // better" is a judgement, and this is the number that says the code ran at all — on the
 // title backdrop it should read ~80 a frame and `CZ_VK_NO_POLY_OFFSET=1` must take it to 0.
 uint64_t g_polyOffsetDraws = 0;
+// Draws that enabled the STENCIL TEST. ~18% of a gameplay frame on the operator's own
+// captures, and this renderer honoured none of them until part 56.
+uint64_t g_stencilDraws = 0;
 bool g_constMemoOff = false;
 bool g_psConstScaleActive = false;   // CZ_VK_PS_CONST_SCALE mutates in place; see its use
 bool g_constMemoVerify = false;
@@ -2781,6 +2795,8 @@ struct Renderer
         // driver calls a draw for nothing.
         float biasSlope = 0.0f, biasConstant = 0.0f;
         bool haveDepthBias = false;
+        uint32_t stencilRef = 0, stencilMask = 0, stencilWriteMask = 0;
+        bool haveStencil = false;
         bool setsBound = false;
         // The vertex and index bindings, tracked but NOT yet acted on — see
         // `BindSkips` for why the counter comes before the change. 16 is above the
@@ -2804,7 +2820,7 @@ struct Renderer
     struct BindSkips
     {
         uint64_t pipeline = 0, viewport = 0, scissor = 0, blend = 0, sets = 0, draws = 0;
-        uint64_t depthBias = 0;
+        uint64_t depthBias = 0, stencil = 0;
         // The vertex and index binds, COUNTED ONLY. `docs/perf-cpu-plan.md` §1a
         // hypothesis A is that a crowd — many copies of a few zombie meshes — rebinds
         // the same buffer at the same offset draw after draw, and that extending the
@@ -6017,6 +6033,28 @@ VkBlendOp XenosBlendOp(uint32_t op)
     }
 }
 
+// THE STENCIL OPS, in the guest's own encoding. Confirmed by COHERENCE rather than from a
+// register document: decoded with this table, the title's five stencil configurations come
+// out as a matched pair — `ALWAYS / KEEP / REPLACE / KEEP` draws that write a reference of
+// 254 into the buffer, and an `EQUAL / KEEP / KEEP / KEEP` draw that only paints where it
+// finds that value. A wrong layout produces random ops, not a mask-write next to a
+// mask-test, which is why this check is worth more than a header would be (see the
+// RB_COLORCONTROL comment in xenos.h for what a guessed index costs here).
+VkStencilOp XenosStencilOp(uint32_t v)
+{
+    switch (v & 7)
+    {
+    case 0: return VK_STENCIL_OP_KEEP;
+    case 1: return VK_STENCIL_OP_ZERO;
+    case 2: return VK_STENCIL_OP_REPLACE;
+    case 3: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case 4: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    case 5: return VK_STENCIL_OP_INVERT;
+    case 6: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    default: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+}
+
 VkCompareOp XenosCompareOp(uint32_t f)
 {
     switch (f & 7)
@@ -6175,7 +6213,25 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // and only the ~80 that do change. Putting the two floats in the PipelineKey instead
     // would have multiplied a 509-pipeline cache by however many distinct offsets the
     // title uses, for a value that changes per draw.
-    rs.depthBiasEnable = VK_TRUE;
+    // Static, from the key — see PipelineKey::polyOffsetScale for why this is not dynamic
+    // state. Zero factors are arithmetically identical to a disabled bias, so the ~82% of
+    // draws that ask for no offset are untouched and land on the same pipeline.
+    {
+        static const bool noPolyOffset = EnvOn("CZ_VK_NO_POLY_OFFSET");
+        static const float poScale = [] {
+            const char* v = Env("CZ_VK_POLY_OFFSET_SCALE");
+            return v ? float(atof(v)) : 1.0f;
+        }();
+        const float slope = noPolyOffset ? 0.0f : F32(key.polyOffsetScale) * poScale;
+        // 2^24: the depth buffer is D24_UNORM. Xenos's offset is in depth units; Vulkan
+        // multiplies `depthBiasConstantFactor` by the minimum resolvable difference.
+        const float konst =
+            noPolyOffset ? 0.0f : F32(key.polyOffsetOffset) * 16777216.0f * poScale;
+        rs.depthBiasEnable = (slope != 0.0f || konst != 0.0f) ? VK_TRUE : VK_FALSE;
+        rs.depthBiasSlopeFactor = slope;
+        rs.depthBiasConstantFactor = konst;
+        rs.depthBiasClamp = 0.0f;
+    }
     rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
@@ -6199,6 +6255,48 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         (!noDepthTest && ((key.depthControl >> 1) & 1)) ? VK_TRUE : VK_FALSE;
     ds.depthWriteEnable = ((key.depthControl >> 2) & 1) ? VK_TRUE : VK_FALSE;
     ds.depthCompareOp = XenosCompareOp((key.depthControl >> 4) & 7);
+
+    // ---- THE STENCIL TEST (part 56) ---------------------------------------------
+    //
+    // Never implemented before this: `stencilTestEnable` did not appear anywhere in this
+    // renderer, while RB_DEPTHCONTROL bit 0 IS `stencil_enable` — our own comment above
+    // says so, and the code read bits 1, 2 and 4..6 and stepped over it.
+    //
+    // WHAT IT COSTS TO IGNORE, measured on the operator's own frames: **350 of 1980 and
+    // 326 of 1823 draws enable it**, ~18% of a gameplay frame. Their report is what
+    // identified the consequence — cutting a zombie in half yields *"two full zombie and
+    // the blood is a square"*. The game does not build half-meshes: it draws the WHOLE
+    // body twice and masks each copy to one side of the cut, and draws the cross-section
+    // cap as a quad masked to the body's silhouette. With nothing masking either, both
+    // copies render whole AND the cap renders as a full rhombus — two symptoms, one cause.
+    //
+    // The reference and the masks are DYNAMIC state, so they do not enter the pipeline
+    // key; only the compare and the four ops do, and only when the test is enabled.
+    static const bool noStencil = EnvOn("CZ_VK_NO_STENCIL");
+    ds.stencilTestEnable = (!noStencil && (key.depthControl & 1)) ? VK_TRUE : VK_FALSE;
+    if (ds.stencilTestEnable)
+    {
+        ds.front.compareOp = XenosCompareOp((key.depthControl >> 8) & 7);
+        ds.front.failOp = XenosStencilOp((key.depthControl >> 11) & 7);
+        ds.front.passOp = XenosStencilOp((key.depthControl >> 14) & 7);
+        ds.front.depthFailOp = XenosStencilOp((key.depthControl >> 17) & 7);
+        // BACKFACE_ENABLE (bit 7) is what says the back-face fields mean anything. With
+        // it clear the guest expects one set of ops for both faces, and copying the front
+        // set is the only reading that does not invent state: the back fields are then
+        // undefined in the stream, and this title leaves them at values that would
+        // decode as ZERO/KEEP nonsense if taken literally.
+        if ((key.depthControl >> 7) & 1)
+        {
+            ds.back.compareOp = XenosCompareOp((key.depthControl >> 20) & 7);
+            ds.back.failOp = XenosStencilOp((key.depthControl >> 23) & 7);
+            ds.back.passOp = XenosStencilOp((key.depthControl >> 26) & 7);
+            ds.back.depthFailOp = XenosStencilOp((key.depthControl >> 29) & 7);
+        }
+        else
+        {
+            ds.back = ds.front;
+        }
+    }
     // CZ_VK_DEPTH_ALWAYS=1 — the arm that CZ_VK_NO_DEPTH_TEST above cannot be.
     //
     // Vulkan ties depth WRITES to the depth TEST: with `depthTestEnable` false the
@@ -6261,13 +6359,33 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     bs.attachmentCount = 1;
     bs.pAttachments = &cb;
 
-    const VkDynamicState dyn[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                   VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-                                   VK_DYNAMIC_STATE_DEPTH_BIAS };
+    // THE STENCIL DYNAMIC STATES ARE DECLARED ONLY WHEN THE PIPELINE USES THEM, and that
+    // is a correctness requirement rather than tidiness: Vulkan says a declared dynamic
+    // state MUST be set before ANY draw with that pipeline, and this renderer has draw
+    // paths that never pass through the per-draw state block — the resolve blits, the
+    // draw-ID pass, the overlay. Declaring the three unconditionally produced 40
+    // `VUID-vkCmdDraw-None-08608` from exactly those, caught by `CZ_VK_VALIDATION=1` and
+    // by nothing else: the picture was unaffected and every gate passed.
+    VkDynamicState dyn[6] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                              VK_DYNAMIC_STATE_BLEND_CONSTANTS };
+    uint32_t dynCount = 3;
+    if (ds.stencilTestEnable)
+    {
+        dyn[dynCount++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
+        dyn[dynCount++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
+        dyn[dynCount++] = VK_DYNAMIC_STATE_STENCIL_REFERENCE;
+    }
     VkPipelineDynamicStateCreateInfo dsi{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
     };
-    dsi.dynamicStateCount = 3;
+    // COUNTED FROM THE ARRAY, not written out again. This was a hardcoded `3` and the
+    // array had grown to four: `VK_DYNAMIC_STATE_DEPTH_BIAS` was added, never declared,
+    // and therefore never took effect — the pipeline used its static (zero) bias while
+    // `vkCmdSetDepthBias` was called every draw and ignored. Nothing reported it: not the
+    // validation layer (setting an undeclared dynamic state is not an error), not a gate,
+    // not the picture. An array and a separately-written count WILL drift; the only fix
+    // that stays fixed is deriving one from the other.
+    dsi.dynamicStateCount = dynCount;
     dsi.pDynamicStates = dyn;
 
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -6304,6 +6422,11 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     rci.colorAttachmentCount = 1;
     rci.pColorAttachmentFormats = &colorFormat;
     rci.depthAttachmentFormat = R->depth.format;
+    // The stencil aspect must be declared too, or a pipeline with the stencil test on is
+    // rendering into an attachment the pipeline says does not exist. The render pass has
+    // always bound the same image as both (`ri.pStencilAttachment = &depthAtt`).
+    rci.stencilAttachmentFormat = FormatHasStencil(R->depth.format) ? R->depth.format
+                                                                   : VK_FORMAT_UNDEFINED;
     rci.stencilAttachmentFormat = R->depth.format;
 
     VkGraphicsPipelineCreateInfo pci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
@@ -8380,7 +8503,19 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // separates them in one run each; reading the register table harder cannot.
     static const bool forceColorMask = EnvOn("CZ_VK_FORCE_COLORMASK");
     key.colorMask = forceColorMask ? 0xF : (regs[xenos::kRbColorMask] & 0xF);
-    key.depthControl = regs[xenos::kRbDepthControl] & 0xFF;
+    // THE WHOLE REGISTER WHEN STENCIL IS ON, the low byte otherwise. Bits 8..31 carry the
+    // stencil compare and the four ops (front and back), and storing only the low byte
+    // meant every stencil configuration collapsed onto one pipeline — which is how a
+    // renderer can read a register, pass its own gates, and still never honour it.
+    // Masking the high bits away when the test is DISABLED keeps the ~82% of draws that
+    // do not use stencil on a single key, so the pipeline cache does not multiply for a
+    // state those draws do not have.
+    {
+        const uint32_t dc = regs[xenos::kRbDepthControl];
+        key.depthControl = (dc & 1) ? dc : (dc & 0xFF);
+        key.polyOffsetScale = regs[xenos::kPaSuPolyOffsetFrontScale];
+        key.polyOffsetOffset = regs[xenos::kPaSuPolyOffsetFrontOffset];
+    }
     key.modeControl = regs[0x2208] & 7;
 
     // ALPHA TEST (part 38, LIVE AS OF PART 40). RB_COLORCONTROL bits 0..2 are the
@@ -8924,7 +9059,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         drawCensus
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
-                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X",
+                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X sr=%08X",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
                        regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
@@ -8952,7 +9087,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                        // not appear in it. A guest that clips a severed body's
                        // cross-section with the stencil buffer would have that cap drawn
                        // in full by us, which is the operator's "the blood is a square".
-                       regs[xenos::kRbDepthControl])
+                       regs[xenos::kRbDepthControl],
+                       // RB_STENCILREFMASK beside RB_DEPTHCONTROL, because the two are
+                       // only meaningful together: the ops say what to do and this says
+                       // with WHICH reference and through which masks. Candidate layout
+                       // ref:8, mask:8 @8, writemask:8 @16 — to be confirmed by whether
+                       // the values partition sensibly against the stencil ops, the same
+                       // coherence check that validated the op layout itself.
+                       regs[xenos::kRbStencilRefMask])
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,
@@ -9885,6 +10027,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (noStateCache || pipeline != R->bound.pipeline)
     {
         vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        // BINDING A PIPELINE THAT SPECIFIES STATE STATICALLY MAKES THE CORRESPONDING
+        // DYNAMIC STATE UNDEFINED, so the skip-if-unchanged cache below cannot survive a
+        // bind. The stencil states are declared dynamic only on stencil-enabled pipelines
+        // (see the dynamic-state array), which means every non-stencil draw in between
+        // invalidates them — and the symptom is not a wrong picture but 60
+        // `VUID-vkCmdDrawIndexed-None-0783{7,8,9}`, i.e. a draw reading undefined stencil
+        // state. The viewport, scissor and blend constants above are dynamic on EVERY
+        // pipeline, so they are unaffected and keep their cache.
+        R->bound.haveStencil = false;
         R->bound.pipeline = pipeline;
     }
     else
@@ -9917,63 +10068,48 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     else
         ++R->skips.blend;
 
-    // ---- THE POLYGON OFFSET (part 56) -------------------------------------------
+    // The polygon offset lives in the PIPELINE now, not here — see PipelineKey. The
+    // counter stays, because an arm with no counter cannot be shown to have engaged.
+    if (!EnvOn("CZ_VK_NO_POLY_OFFSET") &&
+        (regs[xenos::kPaSuPolyOffsetFrontScale] || regs[xenos::kPaSuPolyOffsetFrontOffset]))
+        ++g_polyOffsetDraws;
+
+    // ---- THE STENCIL REFERENCE AND MASKS (part 56) -------------------------------
     //
-    // Decals are drawn exactly coplanar with the surface they are painted on, and the
-    // hardware separates them with a polygon offset. This renderer ignored it for
-    // fifty-five parts — `depthBiasEnable` appeared nowhere in it — so decals z-fought
-    // with the ground, which under a MOVING camera looks like flicker and under a still
-    // one is stable. That is precisely the operator's report: *"it appears and disappear
-    // like flicker"*, and *"if you do not move the camera the decals either stay or is
-    // not there"*. A still camera makes the depth comparison deterministic; a moving one
-    // flips it per pixel per frame.
-    //
-    // WHAT THIS TITLE ACTUALLY DOES, censused rather than assumed (gotcha 3). On a
-    // capture of 2,468 draws: **2,388 carry `0/0` and 80 carry scale −1.6, offset −1e-05**
-    // — negative, i.e. toward the viewer, which is what coplanar geometry wants. And
-    // `PA_SU_SC_MODE_CNTL` reads `00080008` on BOTH groups, so the offset ENABLE bits are
-    // not where Fable 2's renderer looks for them (`0x2205 >> 11`, and 0x2205 is
-    // RB_BLENDCONTROL1 in our verified map — the confusion that already cost this port two
-    // parts on the alpha test). This title never touches the enables and drives the offset
-    // purely by the VALUES, which is why no enable bit is read here: a zero bias is
-    // arithmetically identical to a disabled one, so the 2,388 are untouched by
-    // construction and only the 80 change.
-    //
-    // THE UNIT CONVERSION IS THE PART THAT CAN BE WRONG. Xenos's offset is in depth units;
-    // Vulkan's `depthBiasConstantFactor` is multiplied by `r`, the minimum resolvable
-    // difference, which for the D24_UNORM depth buffer this renderer creates is 2^-24. So
-    // the guest's −1e-05 becomes −1e-05 * 2^24 = −168. If decals come out floating above
-    // their surface or still fighting, the MAGNITUDE here is the first suspect and
-    // `CZ_VK_POLY_OFFSET_SCALE=N` explores it without a rebuild; if they get worse rather
-    // than better, the SIGN is.
-    //
-    // `CZ_VK_NO_POLY_OFFSET=1` is the same-binary control arm — the renderer as it was for
-    // fifty-five parts.
+    // RB_STENCILREFMASK, layout ref:8 / mask:8 @8 / writemask:8 @16 — confirmed the same
+    // way the ops were, by whether the values come out sensible rather than from a
+    // header. They do: the draws that carry `ALWAYS / REPLACE` read `sr=00FFFFFE`, i.e.
+    // write reference **254** through full masks, and a matching draw tests `EQUAL`
+    // against it. Dynamic state, so none of this enters the pipeline key.
     {
-        static const bool noPolyOffset = EnvOn("CZ_VK_NO_POLY_OFFSET");
-        static const float poScale = [] {
-            const char* v = Env("CZ_VK_POLY_OFFSET_SCALE");
-            return v ? float(atof(v)) : 1.0f;
-        }();
-        float slope = 0.0f, constant = 0.0f;
-        if (!noPolyOffset)
+        static const bool noStencil = EnvOn("CZ_VK_NO_STENCIL");
+        const uint32_t sr = regs[xenos::kRbStencilRefMask];
+        const uint32_t ref = sr & 0xFF;
+        const uint32_t mask = (sr >> 8) & 0xFF;
+        const uint32_t wmask = (sr >> 16) & 0xFF;
+        const bool stencilOn = !noStencil && (regs[xenos::kRbDepthControl] & 1);
+        if (stencilOn)
+            ++g_stencilDraws;
+        // ONLY WHEN THE BOUND PIPELINE DECLARES THEM DYNAMIC, which is exactly when the
+        // stencil test is on. Calling a dynamic-state setter for state a pipeline
+        // specifies STATICALLY is illegal in the other direction — `VUID-vkCmdDraw-None-
+        // 08608`, 40 of them, and the message says so plainly once read rather than
+        // guessed at: "doesn't set up VK_DYNAMIC_STATE_STENCIL_*, but since the
+        // vkCmdBindPipeline, the related dynamic state commands have been called".
+        if (stencilOn &&
+            (noStateCache || !R->bound.haveStencil || R->bound.stencilRef != ref ||
+             R->bound.stencilMask != mask || R->bound.stencilWriteMask != wmask))
         {
-            slope = F32(regs[xenos::kPaSuPolyOffsetFrontScale]) * poScale;
-            // 2^24: the depth buffer is D24_UNORM (see the format at device setup).
-            constant = F32(regs[xenos::kPaSuPolyOffsetFrontOffset]) * 16777216.0f * poScale;
+            vkCmdSetStencilReference(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
+            vkCmdSetStencilCompareMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, mask);
+            vkCmdSetStencilWriteMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, wmask);
+            R->bound.stencilRef = ref;
+            R->bound.stencilMask = mask;
+            R->bound.stencilWriteMask = wmask;
+            R->bound.haveStencil = true;
         }
-        if (slope != 0.0f || constant != 0.0f)
-            ++g_polyOffsetDraws;
-        if (noStateCache || !R->bound.haveDepthBias || R->bound.biasSlope != slope ||
-            R->bound.biasConstant != constant)
-        {
-            vkCmdSetDepthBias(R->cmd, constant, 0.0f, slope);
-            R->bound.biasSlope = slope;
-            R->bound.biasConstant = constant;
-            R->bound.haveDepthBias = true;
-        }
-        else
-            ++R->skips.depthBias;
+        else if (stencilOn)
+            ++R->skips.stencil;
     }
 
     // The five bindless heaps never change address, so this is once per command
@@ -14205,6 +14341,9 @@ void VkRenderer_DumpStats()
 
     // The polygon offset, printed on every run: an arm with no counter cannot be shown to
     // have engaged (gotcha 151), and this one's effect is a judgement about a picture.
+    fprintf(stderr, "[vk]   stencil test: %llu draws enabled it%s\n",
+            (unsigned long long)g_stencilDraws,
+            EnvOn("CZ_VK_NO_STENCIL") ? "  [CZ_VK_NO_STENCIL: none were honoured]" : "");
     fprintf(stderr, "[vk]   polygon offset: %llu draws asked for one%s\n",
             (unsigned long long)g_polyOffsetDraws,
             EnvOn("CZ_VK_NO_POLY_OFFSET") ? "  [CZ_VK_NO_POLY_OFFSET: none were applied]"
