@@ -2998,7 +2998,8 @@ off, which a live chain should produce. That is a soft observation against a har
 (the sign), so it is recorded rather than acted on — but "turning the mip chain off changes
 nothing visible" is itself worth a measurement someday.
 
-### STANDS: the stencil test, and it is MEASURED rather than inferred
+### IMPLEMENTED IN PART 56 (see below for what it fixed): the stencil test, and it was
+### MEASURED rather than inferred
 
 **`stencilTestEnable` appears ZERO times in this renderer**, while RB_DEPTHCONTROL bit 0 is
 `stencil_enable` — our own comment says so, and the code reads bits 1, 2 and 4-6 and skips
@@ -3059,3 +3060,24 @@ bug recurring.
 then read our translated SPIR-V for it against the capture's own disassembly — the step
 part 27 named for the white-surface class and which has still never been taken. The far-only
 list is in `~/DR2CZ-troubleshooting/play/play_0819_1626/capture_f12174.census`.
+
+
+### 00o (cont). WHAT THE STENCIL FIXED, AND WHAT IT DID NOT
+
+Implemented at the close of part 56 (`CZ_VK_NO_STENCIL=1` is the control arm). Operator
+verdict: **"Isn't as bad but far from perfect"**. Their captures in
+`~/DR2CZ-troubleshooting/play/play_0819_1815/` show real improvement — `capture_013122` has
+a correctly shaped LOWER HALF with a proper cross-section, and `capture_010173` a correct
+decapitation — where the previous build gave whole bodies sitting on rhombi.
+
+**WHAT IS STILL WRONG IS ASKED AND UNANSWERED.** Three captures were examined and the
+remaining defect could not be identified in them: both bodies in the close-up render
+correctly, one headed and one decapitated with a proper cap. **Do not guess it from the
+images.** Useful shapes for the question: is the cap the wrong shape, colour or place? do
+halves still sometimes come out whole? does it depend on the weapon or the cut direction?
+
+If it proves intermittent, three untested suspects in order: the guest writing the mask in
+one pass and testing it in a later one while our EDRAM handling clears or reuses the
+depth/stencil image in between; the two-sided reading (`ds.back = ds.front` when
+RB_DEPTHCONTROL bit 7 is clear is an INTERPRETATION, not a measurement); and the stencil not
+surviving a resolve.
