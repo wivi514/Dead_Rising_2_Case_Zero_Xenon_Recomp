@@ -1976,6 +1976,12 @@ bool g_constMemoVerify = false;
 bool g_constMemoVerifyPoison = false;
 uint64_t g_constMemoHits = 0;
 uint64_t g_constMemoVsHits = 0;
+// Run totals, never reset by the profile print — the windowed counters above are zeroed
+// each window, and a run summary built from those would report only the last one.
+uint64_t g_constMemoRunHits = 0;
+uint64_t g_constMemoRunMisses = 0;
+uint64_t g_constMemoRunVsHits = 0;
+uint64_t g_constMemoRunPsHits = 0;
 uint64_t g_constMemoPsHits = 0;
 uint64_t g_constMemoMisses = 0;
 uint64_t g_constMemoChecked = 0;
@@ -8601,6 +8607,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // hypothesis is wrong and the win came from somewhere else.
     g_constMemoVsHits += uint32_t(vsHit);
     g_constMemoPsHits += uint32_t(psHit);
+    g_constMemoRunHits += uint32_t(vsHit) + uint32_t(psHit);
+    g_constMemoRunMisses += uint32_t(!vsHit) + uint32_t(!psHit);
+    g_constMemoRunVsHits += uint32_t(vsHit);
+    g_constMemoRunPsHits += uint32_t(psHit);
     vsConstAt = vsHit ? R->constMemoVsAt : ArenaAlloc(kVsConstBytes);
     psConstAt = psHit ? R->constMemoPsAt : ArenaAlloc(kPsConstBytes);
     const VkDeviceSize sharedAt = ArenaAlloc(kSharedSize);
@@ -13946,6 +13956,23 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // The constant memo, printed on EVERY run and not only under the profiler — the
+    // operator's A/B harness deliberately runs without `CZ_VK_PROFILE` (it costs 2-4 ms a
+    // frame and would change the thing being judged), so without this line a soak could
+    // not say whether the arm engaged at all (gotcha 151). Run totals, not a window.
+    {
+        const uint64_t tot = g_constMemoRunHits + g_constMemoRunMisses;
+        if (tot)
+            fprintf(stderr,
+                    "[vk]   const memo: %.1f%% of half-copies served (VS %.1f%%, PS "
+                    "%.1f%%), %.1f GB not copied over the run%s\n",
+                    100.0 * double(g_constMemoRunHits) / double(tot),
+                    200.0 * double(g_constMemoRunVsHits) / double(tot),
+                    200.0 * double(g_constMemoRunPsHits) / double(tot),
+                    double(g_constMemoRunHits) * 4096.0 / 1073741824.0,
+                    g_constMemoOff ? " [CZ_VK_NO_CONST_MEMO: the copy ran every draw]" : "");
+    }
+
     // The flat tables' grow bill, printed on EVERY run rather than only under the
     // profiler — a play session the operator drives has no profiler, and it is exactly
     // the run where a hitch gets reported.

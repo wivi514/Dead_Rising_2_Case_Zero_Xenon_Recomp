@@ -79,13 +79,27 @@ run_arm() {
     local arm="$1" n="$2"
     local tag="p55ab_${STAMP}_${n}_${arm}"
     local extra=()
-    [ "$arm" = maps ] && extra+=(CZ_VK_NO_FLAT_CACHE=1)
+    # Four arm names, one variable each, all against the SAME binary:
+    #   flat / maps      -- the container item (CZ_VK_NO_FLAT_CACHE)
+    #   vram / ram       -- where the GEOMETRY buffers live (CZ_VK_VRAM_STREAMS)
+    #   memo / nomemo    -- the ALU constant memo (CZ_VK_NO_CONST_MEMO)
+    # `flat`, `ram` and `memo` are all names for the shipped default, so each pair
+    # compares exactly one change against what ships and nothing else.
+    [ "$arm" = maps ]    && extra+=(CZ_VK_NO_FLAT_CACHE=1)
+    [ "$arm" = vram ]    && extra+=(CZ_VK_VRAM_STREAMS=1)
+    [ "$arm" = nomemo ]  && extra+=(CZ_VK_NO_CONST_MEMO=1)
     cat <<BANNER
 
 ===================================================================
   ARM $n of 2:  $arm
-  $( [ "$arm" = maps ] && echo "CZ_VK_NO_FLAT_CACHE=1 -- std::unordered_map / std::map" \
-                       || echo "the shipped default -- five flat open-addressed tables" )
+  $( case "$arm" in
+       maps) echo "CZ_VK_NO_FLAT_CACHE=1 -- std::unordered_map / std::map" ;;
+       vram) echo "CZ_VK_VRAM_STREAMS=1 -- geometry buffers in VIDEO memory" ;;
+       ram)  echo "the shipped default -- geometry buffers in system RAM" ;;
+       nomemo) echo "CZ_VK_NO_CONST_MEMO=1 -- all 8 KB of constants copied every draw" ;;
+       memo) echo "the shipped default -- the ALU constant memo (~35% of half-copies served)" ;;
+       *)    echo "the shipped default -- five flat open-addressed tables" ;;
+     esac )
   res:   $RES internal, window MAXIMISED
   cap:   CZ_FPS_CAP=$FPS
   debug: $FLAGS  (held on by the pump, both arms -- no menu needed)
@@ -123,6 +137,8 @@ for f in "$OUT"/p55ab_"$STAMP"_*.log; do
     # The thread budget FIRST: a parallel measurement has a machine as well as a
     # workload, and naming only one is naming none (gotcha 359).
     grep -a "^\[threads\]" "$f" | tail -3
+    grep -a "VIDEO MEMORY\|system RAM" "$f" | head -2
+    grep -a "const memo" "$f" | tail -2
     grep -a "window drawable\|\[vk\] swapchain " "$f" | tail -2
     grep -a "^\[fps\]" "$f" | tail -22
 done
