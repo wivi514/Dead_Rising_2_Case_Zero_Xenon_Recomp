@@ -77,6 +77,31 @@ constexpr uint32_t kRbDepthClear = 0x231D;
 constexpr uint32_t kRbColorClear = 0x231E;
 
 constexpr uint32_t kPaSuScModeCntl = 0x2205 + 0x7B; // 0x2280: cull/front-face/fill
+// THE POLYGON OFFSET, and the reason it is here with a health warning rather than simply
+// used. Decals are drawn exactly coplanar with the surface they are painted on, and the
+// hardware separates them with a polygon offset; a renderer that ignores it gets
+// z-fighting, which under a moving camera looks like FLICKER — the operator's part-56
+// report ("appears and disappear like flicker", stable when the camera is still, which is
+// the signature).
+//
+// `depthBiasEnable` appears NOWHERE in this renderer, and the Fable 2 port carries a
+// comment saying the same of itself, so this is a gap in BOTH ports rather than a
+// title-specific defect (CLAUDE.md's shared-decode table is exactly for this).
+//
+// **THE INDICES ARE NOT INHERITED FROM FABLE 2 AND MUST BE CENSUSED BEFORE USE.** That
+// port reads the offset ENABLE bits from `0x2205 >> 11`, and 0x2205 is RB_BLENDCONTROL1
+// in the map above — the very confusion that cost this port two parts on the alpha test
+// (see kRbColorControl). Our PA_SU block starts at 0x2280, so the enables belong in
+// PA_SU_SC_MODE_CNTL and the four offset words in the block below; both are recorded here
+// as the CANDIDATE decode, and `CZ_VK_DRAW_CENSUS` prints them per draw so this title's
+// own stream can confirm or refute them before a line of pipeline state depends on it
+// (gotcha 3: the zero we have is one draw, not a census).
+constexpr uint32_t kPaSuPolyOffsetFrontScale = 0x2380;
+constexpr uint32_t kPaSuPolyOffsetFrontOffset = 0x2381;
+constexpr uint32_t kPaSuPolyOffsetBackScale = 0x2382;
+constexpr uint32_t kPaSuPolyOffsetBackOffset = 0x2383;
+// PA_SU_SC_MODE_CNTL bits 11..13: front-enable, back-enable, para-enable (candidate).
+constexpr uint32_t kPaSuPolyOffsetEnableShift = 11;
 constexpr uint32_t kPaScWindowOffset = 0x2080;
 constexpr uint32_t kPaScWindowScissorTl = 0x2081;
 constexpr uint32_t kPaScWindowScissorBr = 0x2082;

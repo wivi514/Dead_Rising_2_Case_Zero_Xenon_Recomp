@@ -1970,6 +1970,10 @@ uint64_t g_flatCacheLookups = 0;
 // grow — of which there are a handful in a whole run — so it is free.
 // The constant memo (part 55). Hit rate is the claim, not a side note: the item is
 // worthless below ~30% and the counter is how a run says so.
+// How many draws asked for a polygon offset. THE ARM NEEDS A COUNTER: "the decals look
+// better" is a judgement, and this is the number that says the code ran at all — on the
+// title backdrop it should read ~80 a frame and `CZ_VK_NO_POLY_OFFSET=1` must take it to 0.
+uint64_t g_polyOffsetDraws = 0;
 bool g_constMemoOff = false;
 bool g_psConstScaleActive = false;   // CZ_VK_PS_CONST_SCALE mutates in place; see its use
 bool g_constMemoVerify = false;
@@ -2772,6 +2776,11 @@ struct Renderer
         VkRect2D scissor{};
         float blend[4]{};
         bool haveViewport = false, haveScissor = false, haveBlend = false;
+        // The polygon offset, tracked like the blend constants: it is dynamic state, it
+        // changes on ~3% of draws, and re-setting it on the other 97% would be three
+        // driver calls a draw for nothing.
+        float biasSlope = 0.0f, biasConstant = 0.0f;
+        bool haveDepthBias = false;
         bool setsBound = false;
         // The vertex and index bindings, tracked but NOT yet acted on — see
         // `BindSkips` for why the counter comes before the change. 16 is above the
@@ -2795,6 +2804,7 @@ struct Renderer
     struct BindSkips
     {
         uint64_t pipeline = 0, viewport = 0, scissor = 0, blend = 0, sets = 0, draws = 0;
+        uint64_t depthBias = 0;
         // The vertex and index binds, COUNTED ONLY. `docs/perf-cpu-plan.md` §1a
         // hypothesis A is that a crowd — many copies of a few zombie meshes — rebinds
         // the same buffer at the same offset draw after draw, and that extending the
@@ -6158,6 +6168,14 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
     };
     rs.polygonMode = VK_POLYGON_MODE_FILL;
+    // THE POLYGON OFFSET (part 56). Enabled in every pipeline and supplied as DYNAMIC
+    // state, which is the whole reason this costs nothing: with the bias values at zero
+    // the result is `constantFactor * r + slopeFactor * slope` = 0, i.e. bit-identical to
+    // having it disabled, so the 2,388 draws a frame that ask for no offset are unaffected
+    // and only the ~80 that do change. Putting the two floats in the PipelineKey instead
+    // would have multiplied a 509-pipeline cache by however many distinct offsets the
+    // title uses, for a value that changes per draw.
+    rs.depthBiasEnable = VK_TRUE;
     rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
@@ -6244,7 +6262,8 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     bs.pAttachments = &cb;
 
     const VkDynamicState dyn[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                   VK_DYNAMIC_STATE_BLEND_CONSTANTS };
+                                   VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                                   VK_DYNAMIC_STATE_DEPTH_BIAS };
     VkPipelineDynamicStateCreateInfo dsi{
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
     };
@@ -8905,10 +8924,35 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         drawCensus
             ? snprintf(psbindLine, sizeof psbindLine,
                        "draw %llu verts=%u prim=%u vs=%016llx ps=%016llx mask=%X "
-                       "blend=%08X",
+                       "blend=%08X po=%u/%g/%g su=%08X dc=%08X",
                        (unsigned long long)R->drawsThisFrame, draw.indexCount, draw.primType,
                        (unsigned long long)vsBind.hash, (unsigned long long)psBind.hash,
-                       regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0])
+                       regs[xenos::kRbColorMask] & 0xF, regs[xenos::kRbBlendControl0],
+                       // THE POLYGON OFFSET, so the next capture answers whether this
+                       // title uses one at all. It is the leading hypothesis for the
+                       // decal flicker and NOTHING should be built on it until this
+                       // title's own stream has been read: `po=0/0/0` on every draw
+                       // means the guest never asks for an offset and the flicker is
+                       // something else entirely; a non-zero on the decal draws is the
+                       // confirmation. See xenos.h for why the indices are candidates
+                       // rather than inherited.
+                       (regs[xenos::kPaSuScModeCntl] >> xenos::kPaSuPolyOffsetEnableShift) & 7,
+                       F32(regs[xenos::kPaSuPolyOffsetFrontScale]),
+                       F32(regs[xenos::kPaSuPolyOffsetFrontOffset]),
+                       // THE WHOLE OF PA_SU_SC_MODE_CNTL, so the ENABLE bit can be found
+                       // by PARTITIONING rather than guessed from a register document:
+                       // split the draws on whether they carry a non-zero offset (an
+                       // independent answer this title supplies itself) and see which bit
+                       // moves with it. That is how part 25 located the texture DIMENSION
+                       // field after three wrong guesses (gotcha 244), and it is the only
+                       // method here that cannot be fooled by a plausible-looking map.
+                       regs[xenos::kPaSuScModeCntl],
+                       // RB_DEPTHCONTROL whole, because BIT 0 IS `stencil_enable` and
+                       // this renderer has never set `stencilTestEnable` — the word does
+                       // not appear in it. A guest that clips a severed body's
+                       // cross-section with the stencil buffer would have that cap drawn
+                       // in full by us, which is the operator's "the blood is a square".
+                       regs[xenos::kRbDepthControl])
         : psbind ? snprintf(psbindLine, sizeof psbindLine,
                             "[psbind] frame=%llu ps=%016llx mask=%X blend=%08X",
                             (unsigned long long)R->frame,
@@ -9872,6 +9916,66 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     else
         ++R->skips.blend;
+
+    // ---- THE POLYGON OFFSET (part 56) -------------------------------------------
+    //
+    // Decals are drawn exactly coplanar with the surface they are painted on, and the
+    // hardware separates them with a polygon offset. This renderer ignored it for
+    // fifty-five parts — `depthBiasEnable` appeared nowhere in it — so decals z-fought
+    // with the ground, which under a MOVING camera looks like flicker and under a still
+    // one is stable. That is precisely the operator's report: *"it appears and disappear
+    // like flicker"*, and *"if you do not move the camera the decals either stay or is
+    // not there"*. A still camera makes the depth comparison deterministic; a moving one
+    // flips it per pixel per frame.
+    //
+    // WHAT THIS TITLE ACTUALLY DOES, censused rather than assumed (gotcha 3). On a
+    // capture of 2,468 draws: **2,388 carry `0/0` and 80 carry scale −1.6, offset −1e-05**
+    // — negative, i.e. toward the viewer, which is what coplanar geometry wants. And
+    // `PA_SU_SC_MODE_CNTL` reads `00080008` on BOTH groups, so the offset ENABLE bits are
+    // not where Fable 2's renderer looks for them (`0x2205 >> 11`, and 0x2205 is
+    // RB_BLENDCONTROL1 in our verified map — the confusion that already cost this port two
+    // parts on the alpha test). This title never touches the enables and drives the offset
+    // purely by the VALUES, which is why no enable bit is read here: a zero bias is
+    // arithmetically identical to a disabled one, so the 2,388 are untouched by
+    // construction and only the 80 change.
+    //
+    // THE UNIT CONVERSION IS THE PART THAT CAN BE WRONG. Xenos's offset is in depth units;
+    // Vulkan's `depthBiasConstantFactor` is multiplied by `r`, the minimum resolvable
+    // difference, which for the D24_UNORM depth buffer this renderer creates is 2^-24. So
+    // the guest's −1e-05 becomes −1e-05 * 2^24 = −168. If decals come out floating above
+    // their surface or still fighting, the MAGNITUDE here is the first suspect and
+    // `CZ_VK_POLY_OFFSET_SCALE=N` explores it without a rebuild; if they get worse rather
+    // than better, the SIGN is.
+    //
+    // `CZ_VK_NO_POLY_OFFSET=1` is the same-binary control arm — the renderer as it was for
+    // fifty-five parts.
+    {
+        static const bool noPolyOffset = EnvOn("CZ_VK_NO_POLY_OFFSET");
+        static const float poScale = [] {
+            const char* v = Env("CZ_VK_POLY_OFFSET_SCALE");
+            return v ? float(atof(v)) : 1.0f;
+        }();
+        float slope = 0.0f, constant = 0.0f;
+        if (!noPolyOffset)
+        {
+            slope = F32(regs[xenos::kPaSuPolyOffsetFrontScale]) * poScale;
+            // 2^24: the depth buffer is D24_UNORM (see the format at device setup).
+            constant = F32(regs[xenos::kPaSuPolyOffsetFrontOffset]) * 16777216.0f * poScale;
+        }
+        if (slope != 0.0f || constant != 0.0f)
+            ++g_polyOffsetDraws;
+        if (noStateCache || !R->bound.haveDepthBias || R->bound.biasSlope != slope ||
+            R->bound.biasConstant != constant)
+        {
+            vkCmdSetDepthBias(R->cmd, constant, 0.0f, slope);
+            R->bound.biasSlope = slope;
+            R->bound.biasConstant = constant;
+            R->bound.haveDepthBias = true;
+        }
+        else
+            ++R->skips.depthBias;
+    }
+
     // The five bindless heaps never change address, so this is once per command
     // buffer rather than once per draw — and it is the most expensive of the five.
     if (noStateCache || !R->bound.setsBound)
@@ -14098,6 +14202,13 @@ void VkRenderer_DumpStats()
                     double(g_constMemoRunHits) * 4096.0 / 1073741824.0,
                     g_constMemoOff ? " [CZ_VK_NO_CONST_MEMO: the copy ran every draw]" : "");
     }
+
+    // The polygon offset, printed on every run: an arm with no counter cannot be shown to
+    // have engaged (gotcha 151), and this one's effect is a judgement about a picture.
+    fprintf(stderr, "[vk]   polygon offset: %llu draws asked for one%s\n",
+            (unsigned long long)g_polyOffsetDraws,
+            EnvOn("CZ_VK_NO_POLY_OFFSET") ? "  [CZ_VK_NO_POLY_OFFSET: none were applied]"
+                                          : "");
 
     // The flat tables' grow bill, printed on EVERY run rather than only under the
     // profiler — a play session the operator drives has no profiler, and it is exactly
