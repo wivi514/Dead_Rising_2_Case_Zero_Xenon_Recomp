@@ -88,6 +88,7 @@ else
     echo "  swap: swapchain present (the default since part 54; NOSWAP=1 is the arm)"
 fi
 echo "  fps:  one line every 10 s, mean AND median"
+echo "  F8 :  BURST — every frame for 1 s -> $OUT/$TAG  (for a FLICKER; stand still)"
 echo "  F9 :  screenshot -> $OUT/$TAG"
 echo "  log:  $OUT/$TAG.log"
 echo "==================================================================="
@@ -96,6 +97,7 @@ echo "==================================================================="
     CZ_VKDRAW=1 \
     "CZ_FPS_CAP=$FPS" CZ_FPS_LOG=10 \
     "CZ_CAPTURE_KEY=$OUT/$TAG" \
+    "CZ_BURST_DUMP=$OUT/$TAG" \
     "CZ_SHADER_DUMP=$HOME/DR2CZ-troubleshooting/ucode-dumps" \
     "${extra[@]}" \
     ./cz_runtime > "$OUT/$TAG.log" 2>&1 )
@@ -104,5 +106,7 @@ echo
 echo "  finished. frame rate over the session:"
 grep -a "^\[fps\]" "$OUT/$TAG.log" | tail -40
 echo
+echo "  bursts recorded:          $(grep -ac 'burst .* DONE' "$OUT/$TAG.log")  ($(ls "$OUT/$TAG"/burst*_*.ppm 2>/dev/null | wc -l) frames)"
+echo "  read a burst with:        python3 tools/burst_read.py $OUT/$TAG"
 echo "  shaders the cache lacked: $(grep -ac 'no translated shader' "$OUT/$TAG.log")"
 echo "  slot mix-ups:             $(grep -ac 'PARALLEL GUARD SLOT MIX-UP' "$OUT/$TAG.log")"
