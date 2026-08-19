@@ -34,14 +34,39 @@ std::atomic<bool> g_debugMenuPressed{false};
 // need SDL at the consuming end.
 std::atomic<bool> g_snapDumpPressed{false};
 
+// F8 — RECORD EVERY PRESENTED FRAME FOR ABOUT A SECOND, on demand.
+//
+// The operator asked for this by describing a defect that no single frame can show:
+// *"The decals how it looks like is pretty much normal but it appears and disappear like
+// flicker make it so when I press f8 it records all frame for a second so you can see it."*
+//
+// That is the right instrument for the right reason. A screenshot of a flicker is a
+// screenshot of one phase of it, and which phase you get is luck (gotcha 133 — one frame of
+// an animated scene is ONE SAMPLE). F9 answers "what does it look like"; F8 answers "what
+// does it do over time", and for an intermittent defect the second question is the only one
+// with an answer.
+//
+// It also discriminates between the two mechanisms that look identical in a still: if the
+// decal's DRAW is issued every frame and only the pixels change, the draw is losing a depth
+// fight; if the draw list itself changes, the geometry is being dropped somewhere. The
+// burst's manifest carries the draw count and the draw fingerprint per frame for exactly
+// that reason, so the burst answers the question rather than just illustrating it.
+std::atomic<bool> g_burstDumpPressed{false};
+
 void Host_RequestDebugJump() { g_debugJumpPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugEnter() { g_debugEnterPressed.store(true, std::memory_order_release); }
 void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_release); }
 void Host_RequestSnapDump() { g_snapDumpPressed.store(true, std::memory_order_release); }
+void Host_RequestBurstDump() { g_burstDumpPressed.store(true, std::memory_order_release); }
 
 bool Host_ConsumeSnapDumpPressed()
 {
     return g_snapDumpPressed.exchange(false, std::memory_order_acq_rel);
+}
+
+bool Host_ConsumeBurstDumpPressed()
+{
+    return g_burstDumpPressed.exchange(false, std::memory_order_acq_rel);
 }
 
 bool Host_ConsumeDebugJumpPressed()
@@ -485,6 +510,7 @@ HostPadState ReadKeyboard()
     static bool f2WasDown = false;
     static bool f3WasDown = false;
     static bool f4WasDown = false;
+    static bool f8WasDown = false;
     static bool f9WasDown = false;
     if (g_keyboardFocus)
     {
@@ -492,6 +518,10 @@ HostPadState ReadKeyboard()
         const bool f2Down = keys[SDL_SCANCODE_F2] != 0;
         const bool f3Down = keys[SDL_SCANCODE_F3] != 0;
         const bool f4Down = keys[SDL_SCANCODE_F4] != 0;
+        const bool f8Down = keys[SDL_SCANCODE_F8] != 0;
+        if (f8Down && !f8WasDown)
+            g_burstDumpPressed.store(true, std::memory_order_release);
+        f8WasDown = f8Down;
         const bool f9Down = keys[SDL_SCANCODE_F9] != 0;
         if (f9Down && !f9WasDown)
             g_snapDumpPressed.store(true, std::memory_order_release);

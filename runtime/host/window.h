@@ -121,6 +121,12 @@ void Host_RequestDebugMenu();
 void Host_RequestSnapDump();
 bool Host_ConsumeSnapDumpPressed();
 
+// F8 — record EVERY presented frame for about a second, into CZ_BURST_DUMP's directory,
+// with a manifest carrying each frame's draw count and fingerprints. For a defect that
+// FLICKERS, which no single screenshot can show. See its definition in window.cpp.
+void Host_RequestBurstDump();
+bool Host_ConsumeBurstDumpPressed();
+
 // ===================================================================================
 // THE VULKAN SWAPCHAIN SEAM — CZ_VK_SWAPCHAIN=1 (part 54, plan §7)
 // ===================================================================================

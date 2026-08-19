@@ -2902,6 +2902,12 @@ struct Renderer
     // goes to. Zero means disarmed, which is every frame until F9 is pressed.
     uint64_t drawCensusFrame = 0;
     uint64_t capturePictureFrame = 0;   // CZ_CAPTURE_KEY: write this frame's picture
+    // F8's burst — see the write site for what it is and why a flicker needs one.
+    bool burstActive = false;
+    uint32_t burstSeq = 0;          // which press this is, so two bursts never collide
+    uint32_t burstFrames = 0;       // frames written in THIS burst
+    uint64_t burstEndNs = 0;        // steady-clock deadline
+    FILE* burstManifest = nullptr;
     uint64_t captureSnapFrame = 0;      // ... and its resolve snapshots
     FILE* drawCensusFile = nullptr;
     uint64_t drawCensusLines = 0;
@@ -12072,7 +12078,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     static const bool wantCachedPixels =
         Env("CZ_VK_FRAME_STATS") || Env("CZ_VK_FRAME_DUMP") || Env("CZ_VK_SNAP_DUMP") ||
         Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") || Env("CZ_CAPTURE_KEY") ||
-        Env("CZ_VK_SNAP_FRAME");
+        Env("CZ_VK_SNAP_FRAME") || Env("CZ_BURST_DUMP");
     const bool doReadback = !R->wantSwapchain || wantCachedPixels;
     static bool saidWhy = false;
     if (R->wantSwapchain && wantCachedPixels && !saidWhy)
@@ -12379,6 +12385,126 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // THROUGH rather than parks on can be shorter than 64 frames, and one dump of it is
     // one sample of a transition — the save-slot panel below appeared in exactly one
     // frame of a 180 s boot.
+    // ---- F8: THE BURST ----------------------------------------------------------
+    //
+    // WHY THIS EXISTS. The operator described a defect no single frame can show: *"The
+    // decals how it looks like is pretty much normal but it appears and disappear like
+    // flicker make it so when I press f8 it records all frame for a second so you can see
+    // it."* A screenshot of a flicker is a screenshot of one PHASE of it, and which phase
+    // you get is luck (gotcha 133). F9 answers "what does it look like"; F8 answers "what
+    // does it do over time".
+    //
+    // AND IT IS BUILT TO DISCRIMINATE, not just to illustrate. Two mechanisms produce an
+    // identical still image and need opposite fixes:
+    //
+    //   * the draw is ISSUED every frame and loses a depth fight — z-fighting, which is
+    //     what a decal does when the guest's polygon offset is not honoured, and the
+    //     leading hypothesis here because this renderer sets no `depthBiasEnable` at all;
+    //   * the draw is DROPPED on some frames — by the guest, by predication, by a bin
+    //     mask, or by one of our own declines.
+    //
+    // Under the first, the draw count and `drawFingerprint` are IDENTICAL frame to frame
+    // while the pixels change. Under the second they move. So the manifest carries both
+    // per frame, and the burst answers the question rather than merely showing it.
+    //
+    // `CZ_BURST_DUMP=<dir>` arms it; F8 fires it; `CZ_BURST_DUMP_MS` (default 1000) is the
+    // window and `CZ_BURST_DUMP_MAX` (default 300) bounds the disk — at 95 fps and 720p a
+    // second is ~260 MB, which is fine on a disk and would be a disaster in /tmp, so the
+    // directory is the operator's to choose and the default is under their troubleshooting
+    // tree rather than a tmpfs.
+    if (Env("CZ_BURST_DUMP") && Host_ConsumeBurstDumpPressed())
+    {
+        if (R->burstActive)
+        {
+            // A second press during a burst ENDS it rather than restarting it, so the
+            // operator can bound a recording they have already seen enough of.
+            fprintf(stderr, "[vk] burst #%u: stopped early by a second F8 (%u frames)\n",
+                    R->burstSeq, R->burstFrames);
+            R->burstEndNs = 0;
+        }
+        else
+        {
+            static uint32_t seq = 0;
+            R->burstSeq = ++seq;
+            R->burstActive = true;
+            R->burstFrames = 0;
+            uint64_t ms = 1000;
+            if (const char* m = Env("CZ_BURST_DUMP_MS"))
+                ms = strtoull(m, nullptr, 10);
+            R->burstEndNs = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now().time_since_epoch())
+                                         .count()) +
+                            ms * 1000000ull;
+            char path[512];
+            snprintf(path, sizeof path, "%s/burst%02u_manifest.txt", Env("CZ_BURST_DUMP"),
+                     R->burstSeq);
+            R->burstManifest = fopen(path, "w");
+            if (R->burstManifest)
+                fprintf(R->burstManifest,
+                        "# file frame draws vertices drawFingerprint cameraFingerprint "
+                        "meanLuma distinctColours pixelHash\n");
+            fprintf(stderr,
+                    "[vk] burst #%u ARMED: every presented frame for %llu ms into %s%s\n",
+                    R->burstSeq, (unsigned long long)ms, Env("CZ_BURST_DUMP"),
+                    R->burstManifest ? "" : "  — !! the manifest could not be opened, so "
+                                            "the frames will have no draw data beside them");
+        }
+    }
+    if (R->burstActive)
+    {
+        uint32_t maxFrames = 300;
+        if (const char* m = Env("CZ_BURST_DUMP_MAX"))
+            maxFrames = uint32_t(strtoul(m, nullptr, 10));
+        const uint64_t nowNs =
+            uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count());
+        if (!px)
+        {
+            // Armed with no pixels. Say so by name rather than recording nothing, which
+            // would read as "the defect did not happen" (gotcha 151).
+            fprintf(stderr, "[vk] burst #%u: no readback pixels this frame — nothing "
+                            "written\n", R->burstSeq);
+        }
+        else
+        {
+            char path[512];
+            snprintf(path, sizeof path, "%s/burst%02u_%04u_f%06llu.ppm",
+                     Env("CZ_BURST_DUMP"), R->burstSeq, R->burstFrames,
+                     (unsigned long long)pres.frame);
+            if (FILE* f = fopen(path, "wb"))
+            {
+                fprintf(f, "P6\n%u %u\n255\n", width1, height1);
+                for (size_t i = 0; i < bytes; i += 4)
+                    fwrite(&px[i], 1, 3, f);
+                fclose(f);
+                if (R->burstManifest)
+                    fprintf(R->burstManifest,
+                            "%s %llu %llu %llu %016llx %016llx\n",
+                            strrchr(path, '/') ? strrchr(path, '/') + 1 : path,
+                            (unsigned long long)pres.frame,
+                            (unsigned long long)pres.draws,
+                            (unsigned long long)pres.vertices,
+                            (unsigned long long)pres.drawFingerprint,
+                            (unsigned long long)pres.cameraFingerprint);
+                ++R->burstFrames;
+            }
+        }
+        if (nowNs >= R->burstEndNs || R->burstFrames >= maxFrames)
+        {
+            R->burstActive = false;
+            if (R->burstManifest)
+            {
+                fclose(R->burstManifest);
+                R->burstManifest = nullptr;
+            }
+            fprintf(stderr,
+                    "[vk] burst #%u DONE: %u frames into %s — read it with "
+                    "tools/burst_read.py\n",
+                    R->burstSeq, R->burstFrames, Env("CZ_BURST_DUMP"));
+        }
+    }
+
     // The CZ_CAPTURE_KEY picture, written from the same readback the periodic dump uses.
     // Separate from the loop below rather than folded into its interval test, because
     // this one has to fire on EXACTLY the armed frame — the interval test would either

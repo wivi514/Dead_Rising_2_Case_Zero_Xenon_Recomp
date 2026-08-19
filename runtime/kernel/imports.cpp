@@ -3824,7 +3824,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         uint16_t mask;
         int16_t lx, ly, rx, ry;
         bool hold;              // stick entries deflect for the whole interval
-        int hostKey = 0;        // 2/3/4 = the F2/F3/F4 debug edges, 9 = F9's frame
+        int hostKey = 0;        // 2/3/4 = the F2/F3/F4 debug edges, 8 = F8's burst, 9 = F9
                                 // dump/census, all of them pulses with no pad state
         bool barrier = false;   // WAITJUMP: park here until the screen request lands
     };
@@ -3859,6 +3859,11 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         // identity, and a self-test that could only be driven by a human at a window would
         // make every check of it an operator errand (gotcha 190).
         { "F9", 0, 0,0,0,0, false, 9 },
+        // F8 — the burst recorder. Headless for the same reason F9 is: an instrument that
+        // can only be driven by a human at a window makes every check of it an operator
+        // errand, and this one has to be checkable because a burst that silently records
+        // nothing looks exactly like a defect that did not happen (gotchas 30, 151, 190).
+        { "F8", 0, 0,0,0,0, false, 8 },
         // WAITJUMP — a BARRIER, and the thing that makes an F2 recipe reproducible.
         //
         // Every entry before this one is placed at a fixed wall-clock offset, which is
@@ -4093,6 +4098,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                 case 2: Host_RequestDebugJump(); break;
                 case 3: Host_RequestDebugEnter(); break;
                 case 4: Host_RequestDebugMenu(); break;
+                case 8: Host_RequestBurstDump(); break;
                 case 9: Host_RequestSnapDump(); break;
             }
             // Loud, because the whole point of this entry is that its effect appears
