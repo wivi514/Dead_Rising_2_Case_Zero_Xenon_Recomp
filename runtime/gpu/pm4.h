@@ -236,6 +236,9 @@ uint64_t Pm4_ShaderMemoCollisions();
 // CZ_PM4_VERIFY_SHADER_HASH=1 (which does BOTH on every load). **Must be 0**, and
 // CZ_PM4_VERIFY_SHADER_POISON=1 must make it non-zero before that zero means anything.
 uint64_t Pm4_ShaderMemoMismatches();
+// Bumped by every write that touches the ALU constant file. See WriteRegister for why
+// it is monotonic, why both write paths are covered, and what a missed bump costs.
+uint64_t Pm4_AluConstVersion(uint32_t half);   // 0 = VS window, 1 = PS window
 uint64_t Pm4_DrawCount();
 uint64_t Pm4_FrameCount();                  // XE_SWAP packets = frames
 uint64_t Pm4_InterruptCount();

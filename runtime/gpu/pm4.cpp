@@ -1215,12 +1215,47 @@ void ConstWatchRecord(uint32_t index, uint32_t value)
     }
 }
 
+// A VERSION STAMP ON THE ALU CONSTANT FILE — the whole point of which is that DoDraw can
+// ask "have these 512 float4 registers changed since the last draw?" in one comparison.
+//
+// It exists because the constant copy is 8 KB PER DRAW: 256 float4 for the vertex shader
+// and 256 for the pixel shader, swapped dword by dword into the per-frame arena. At the
+// operator's soak load that is ~57 MB a frame and over 5 GB/s, it is 7.5% of the pump
+// thread (`vk_renderer.cpp:8330` and `:8333`, 18.90% and 18.89% of `DoDraw` once part
+// 55's container work stopped hiding them), and it is most of why putting the arena in
+// video memory made the frame 14% LONGER (gotcha 363).
+//
+// The stamp is bumped on every write that TOUCHES the range, not on every write, and it
+// is a monotonic counter rather than a dirty flag so a consumer can hold one across an
+// arbitrary gap. Both writers of `g_regs` are covered — the per-dword path here and the
+// bulk run below — because a version that misses a write does not merely lose the
+// optimisation, it serves a draw the PREVIOUS draw's transform matrix, which draws a mesh
+// somewhere else entirely. The two arms in the renderer exist for that reason.
+//
+// Single-threaded by construction: every register write comes from the PM4 executor,
+// which is the graphics pump, and so does every read in DoDraw. If that ever stops being
+// true this needs to become an atomic, and the symptom of forgetting would be a torn
+// stale-constant frame under load.
+// TWO stamps, not one, and the reason is a measurement: a single stamp over the whole
+// file was served on only 3.6-7.1% of draws, because this guest rewrites SOMETHING in the
+// constant file almost every draw. But the file is two independent windows — the vertex
+// shader's 0..255 and the pixel shader's 256..511 — and what changes per draw is
+// overwhelmingly the vertex half (a world matrix per object). Stamping them separately
+// lets the pixel half be reused even while the vertex half is rewritten, which is half the
+// 8 KB.
+uint64_t g_aluConstVersion[2] = { 1, 1 };
+constexpr uint32_t kAluLo = xenos::kAluConstantBase;
+constexpr uint32_t kAluMid = xenos::kAluConstantBase + 256 * 4;  // PS window starts here
+constexpr uint32_t kAluHi = xenos::kAluConstantBase + 512 * 4;   // one past the end
+
 void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 {
     if (index >= kRegCount)
         return;
     if (index >= g_constWatchLo && index <= g_constWatchHi)
         ConstWatchRecord(index, value);
+    if (index >= kAluLo && index < kAluHi)
+        ++g_aluConstVersion[index >= kAluMid];
     g_regs[index] = value;
 
     // Scratch-register writeback: when SCRATCH_UMSK enables a scratch register, each
@@ -1306,6 +1341,16 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
         return;
     }
     g_regRunBulk.fetch_add(count, std::memory_order_relaxed);
+    // One overlap test per RUN, not per dword — this path exists precisely because the
+    // per-dword path was too slow, and a per-dword check here would give that back.
+    if (index < kAluHi && index + count > kAluLo)
+    {
+        // A run can straddle the two windows; bump whichever halves it overlaps.
+        if (index < kAluMid && index + count > kAluLo)
+            ++g_aluConstVersion[0];
+        if (index < kAluHi && index + count > kAluMid)
+            ++g_aluConstVersion[1];
+    }
     fetch.Read(srcPos, count, g_regs + index);
 
     // CZ_PM4_VERIFY_BULK_REGS=1 — CHECK THE NEW PATH AGAINST THE OLD ONE, which is
@@ -2553,6 +2598,7 @@ uint64_t Pm4_OpcodeCount(uint32_t opcode)
                ? g_opcodes[opcode].load()
                : CensusSum([opcode](Census& c) -> std::atomic<uint64_t>& { return c.opcodes[opcode]; });
 }
+uint64_t Pm4_AluConstVersion(uint32_t half) { return g_aluConstVersion[half & 1]; }
 uint64_t Pm4_DrawCount()
 {
     return g_atomicCounters ? g_draws.load()

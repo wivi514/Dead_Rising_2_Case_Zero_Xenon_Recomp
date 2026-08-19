@@ -1968,6 +1968,19 @@ uint64_t g_flatCacheLookups = 0;
 // the opposite (the flat arm had FEWER frames over 50 ms than the map arm), so this
 // counts and TIMES every grow instead of anyone reasoning about it. Two clock reads per
 // grow — of which there are a handful in a whole run — so it is free.
+// The constant memo (part 55). Hit rate is the claim, not a side note: the item is
+// worthless below ~30% and the counter is how a run says so.
+bool g_constMemoOff = false;
+bool g_psConstScaleActive = false;   // CZ_VK_PS_CONST_SCALE mutates in place; see its use
+bool g_constMemoVerify = false;
+bool g_constMemoVerifyPoison = false;
+uint64_t g_constMemoHits = 0;
+uint64_t g_constMemoVsHits = 0;
+uint64_t g_constMemoPsHits = 0;
+uint64_t g_constMemoMisses = 0;
+uint64_t g_constMemoChecked = 0;
+uint64_t g_constMemoStale = 0;
+
 uint64_t g_flatGrows = 0;
 uint64_t g_flatGrowNs = 0;
 uint64_t g_flatGrowWorstNs = 0;
@@ -2920,6 +2933,18 @@ struct Renderer
     // `CZ_VK_VERIFY_FLAT_CACHE=1` (both structures maintained, every lookup compared).
     FlatCache<StreamLoc> streamCache;
     std::unordered_map<uint64_t, StreamLoc> streamCacheMap;
+
+    // The constant memo's state — see the comment at its lookup in DoDraw. All of it is
+    // written and read on the pump thread only.
+    bool constMemoVsValid = false;
+    bool constMemoPsValid = false;
+    uint64_t constMemoVsVersion = 0;
+    uint64_t constMemoPsVersion = 0;
+    uint64_t constMemoFrame = ~0ull;
+    uint32_t constMemoVsBase = 0;
+    uint32_t constMemoPsBase = 0;
+    VkDeviceSize constMemoVsAt = 0;
+    VkDeviceSize constMemoPsAt = 0;
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
@@ -8529,8 +8554,55 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // shader's, 256..479 the pixel shader's. They are big-endian in our register file
     // (the packets wrote them through the same accessors as everything else) and the
     // shaders want little-endian, so every dword is swapped on the way out.
-    const VkDeviceSize vsConstAt = ArenaAlloc(kVsConstBytes);
-    const VkDeviceSize psConstAt = ArenaAlloc(kPsConstBytes);
+    // THE CONSTANT MEMO — 8 KB per draw, and most draws do not need it copied at all.
+    //
+    // The measurement that motivates this: with part 55's container work done, the two
+    // hottest source lines on the whole pump thread are this copy's two loops, 18.90% and
+    // 18.89% of `DoDraw`, i.e. ~7.5% of the thread. At the operator's soak (7,000 draws,
+    // 90 fps) it moves ~57 MB a frame, over 5 GB/s, and it is the main reason putting the
+    // arena in video memory made the frame 14% longer rather than shorter (gotcha 363).
+    //
+    // THE CLAIM, PRE-REGISTERED so a run can refute it: the guest issues far more draws
+    // than it issues constant updates, so consecutive draws usually share a constant set.
+    // The packet census says `DRAW_INDX` 2,353/frame against `LOAD_ALU_CONSTANT`
+    // 890/frame on the outdoor route, which predicts a hit rate somewhere near 60%.
+    // Below ~30% this item is not worth its risk and the counter below says so.
+    //
+    // WHAT MAKES IT SAFE. The memo is keyed on the ALU constant file's VERSION STAMP
+    // (bumped by both of pm4.cpp's register writers, see `WriteRegister`), on both
+    // constant-window bases, and on the FRAME — the arena is reset every frame, so an
+    // offset from a previous frame names bytes that now belong to something else. Any
+    // mismatch falls through to the copy, exactly as before, so correctness never depends
+    // on the prediction. `CZ_VK_NO_CONST_MEMO=1` is the same-binary control arm.
+    //
+    // AND THE FAILURE MODE IS WHY IT HAS A VERIFY ARM. A stale constant set is a wrong
+    // transform matrix: the mesh is drawn, correctly shaded, in the wrong place — the
+    // hardest class of defect to see in a screenshot and the easiest to miss in a crowd.
+    // `CZ_VK_VERIFY_CONST_MEMO=1` does the copy anyway into a scratch buffer and compares
+    // every dword against what the memo served; its poison arm makes it fire.
+    VkDeviceSize vsConstAt, psConstAt;
+    const uint32_t memoVsBase = regs[0x2307] & 0x1FF;
+    const uint32_t memoPsBase = regs[0x2308] & 0x1FF;
+    const uint64_t vsVersion = Pm4_AluConstVersion(0);
+    const uint64_t psVersion = Pm4_AluConstVersion(1);
+    const bool memoOn = !g_constMemoOff && !g_psConstScaleActive &&
+                        R->constMemoFrame == R->frame;
+    const bool vsHit = memoOn && R->constMemoVsValid &&
+                       R->constMemoVsVersion == vsVersion &&
+                       R->constMemoVsBase == memoVsBase;
+    const bool psHit = memoOn && R->constMemoPsValid &&
+                       R->constMemoPsVersion == psVersion &&
+                       R->constMemoPsBase == memoPsBase;
+    g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
+    g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
+    // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
+    // vertex window (a world matrix per object) while the pixel window sits still — and a
+    // combined rate cannot say whether it was right. If the two halves read the same, the
+    // hypothesis is wrong and the win came from somewhere else.
+    g_constMemoVsHits += uint32_t(vsHit);
+    g_constMemoPsHits += uint32_t(psHit);
+    vsConstAt = vsHit ? R->constMemoVsAt : ArenaAlloc(kVsConstBytes);
+    psConstAt = psHit ? R->constMemoPsAt : ArenaAlloc(kPsConstBytes);
     const VkDeviceSize sharedAt = ArenaAlloc(kSharedSize);
     if (vsConstAt == VkDeviceSize(-1) || psConstAt == VkDeviceSize(-1) ||
         sharedAt == VkDeviceSize(-1))
@@ -8549,16 +8621,68 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // every pixel of the surface collapsed to a constant. Part 26 is chasing exactly
         // that symptom on the ground, so the assumption gets a counter rather than a
         // benefit of the doubt (gotcha 3: the zero we have is one draw, not a census).
-        const uint32_t vsBase = regs[0x2307] & 0x1FF;
-        const uint32_t psBase = regs[0x2308] & 0x1FF;
+        const uint32_t vsBase = memoVsBase;
+        const uint32_t psBase = memoPsBase;
         if (vsBase != 0 || psBase != 256)
             Count("draw: the guest moved its ALU constant WINDOW away from 0/256");
-        uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
-        for (uint32_t i = 0; i < 256 * 4; i++)
-            dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
-        dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
-        for (uint32_t i = 0; i < 256 * 4; i++)
-            dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+        // Skipped entirely on a memo hit — the bytes at these offsets are the ones an
+        // earlier draw of this frame wrote, and the version stamp says no register in the
+        // file has changed since. This is the 8 KB.
+        R->constMemoFrame = R->frame;
+        if (!vsHit)
+        {
+            uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
+            for (uint32_t i = 0; i < 256 * 4; i++)
+                dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
+            R->constMemoVsValid = true;
+            R->constMemoVsVersion = vsVersion;
+            R->constMemoVsBase = vsBase;
+            R->constMemoVsAt = vsConstAt;
+        }
+        if (!psHit)
+        {
+            uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
+            for (uint32_t i = 0; i < 256 * 4; i++)
+                dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+            R->constMemoPsValid = true;
+            R->constMemoPsVersion = psVersion;
+            R->constMemoPsBase = psBase;
+            R->constMemoPsAt = psConstAt;
+        }
+        if ((vsHit || psHit) && g_constMemoVerify)
+        {
+            // THE ARM THAT MAKES THE MEMO BELIEVABLE. Recompute what the copy WOULD have
+            // written and compare every dword against what the memo served. A
+            // disagreement means a register write escaped the version stamp, which would
+            // otherwise present as a mesh drawn correctly in the WRONG PLACE — the
+            // hardest defect class in this renderer to see and the easiest to ship.
+            static std::vector<uint32_t> scratch;
+            scratch.resize(256 * 4 * 2);
+            for (uint32_t i = 0; i < 256 * 4; i++)
+                scratch[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
+            for (uint32_t i = 0; i < 256 * 4; i++)
+                scratch[256 * 4 + i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+            if (g_constMemoVerifyPoison)
+                scratch[0] ^= 0x40000000u;
+            const uint32_t* haveVs =
+                reinterpret_cast<const uint32_t*>(R->arena.mapped + vsConstAt);
+            const uint32_t* havePs =
+                reinterpret_cast<const uint32_t*>(R->arena.mapped + psConstAt);
+            ++g_constMemoChecked;
+            bool bad = false;
+            for (uint32_t i = 0; i < 256 * 4 && !bad; i++)
+                bad = haveVs[i] != scratch[i] || havePs[i] != scratch[256 * 4 + i];
+            if (bad)
+            {
+                if (g_constMemoStale < 8)
+                    fprintf(stderr,
+                            "[vk] CONST MEMO STALE #%llu — a register write escaped the "
+                            "ALU version stamp; this draw would use an earlier draw's "
+                            "constants\n",
+                            (unsigned long long)g_constMemoStale + 1);
+                ++g_constMemoStale;
+            }
+        }
 
         // The exposure this draw will use, recorded BEFORE any arm perturbs it, so the
         // trace reports what the GUEST asked for rather than what an experiment did.
@@ -8633,7 +8757,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }();
         if (!psConstScale.empty())
         {
-            float* f = reinterpret_cast<float*>(dst);
+            // THIS ARM AND THE MEMO ARE INCOMPATIBLE BY CONSTRUCTION, and silently so if
+            // nobody says it: the scale multiplies the constants IN PLACE in the arena,
+            // so a memo hit would re-serve an already-scaled buffer and scale it again,
+            // compounding the factor once per draw until the arm means nothing. The flag
+            // takes the memo off for the rest of the run instead. It is a diagnostic arm,
+            // so being correct matters and being fast does not.
+            g_psConstScaleActive = true;
+            float* f = reinterpret_cast<float*>(R->arena.mapped + psConstAt);
             for (const PsConstScale& s : psConstScale)
                 f[s.index * 4 + s.comp] *= s.factor;
             Count("draw: a PIXEL constant was scaled by CZ_VK_PS_CONST_SCALE");
@@ -11641,6 +11772,11 @@ bool InitCommon()
     // failure mode this is guarding against is a lookup that returns the WRONG entry,
     // which draws a wrong mesh and reports nothing, so the control arm restores the
     // `std::unordered_map` exactly and the verify arm runs both and compares.
+    g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
+    g_constMemoVerify = EnvOn("CZ_VK_VERIFY_CONST_MEMO");
+    g_constMemoVerifyPoison = EnvOn("CZ_VK_VERIFY_CONST_MEMO_POISON");
+    if (g_constMemoVerifyPoison)
+        g_constMemoVerify = true;
     g_flatCacheOff = EnvOn("CZ_VK_NO_FLAT_CACHE");
     g_flatCacheVerify = EnvOn("CZ_VK_VERIFY_FLAT_CACHE");
     g_flatCacheVerifyPoison = EnvOn("CZ_VK_VERIFY_FLAT_CACHE_POISON");
@@ -13397,6 +13533,41 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // only when the arm is on.
             // ...and it prints in the CONTROL arm too, with zero lookups, because an arm
             // that is silent is an arm nobody can tell was on (gotcha 151).
+            // The constant memo. HIT RATE IS THE CLAIM: the item's whole argument is
+            // that the guest issues several draws per constant update, and below ~30%
+            // it is not worth its risk. Printed unconditionally so a run that does not
+            // behave that way says so rather than being assumed to.
+            if (g_constMemoHits + g_constMemoMisses)
+            {
+                const uint64_t tot = g_constMemoHits + g_constMemoMisses;
+                fprintf(stderr,
+                        "[vkprof] const memo: %.1f%% served (%llu of %llu half-copies), "
+                        "%.1f MB/frame NOT copied%s\n",
+                        100.0 * double(g_constMemoHits) / double(tot),
+                        (unsigned long long)g_constMemoHits, (unsigned long long)tot,
+                        frames ? double(g_constMemoHits) * 4096.0 / double(frames) / 1048576.0
+                               : 0.0,
+                        g_constMemoOff ? " [CZ_VK_NO_CONST_MEMO: the copy runs every draw]"
+                                       : "");
+                fprintf(stderr,
+                        "[vkprof] const memo by half: VS %.1f%%, PS %.1f%% (of %llu draws "
+                        "each)\n",
+                        200.0 * double(g_constMemoVsHits) / double(tot),
+                        200.0 * double(g_constMemoPsHits) / double(tot),
+                        (unsigned long long)(tot / 2));
+                g_constMemoVsHits = g_constMemoPsHits = 0;
+                if (g_constMemoChecked)
+                    fprintf(stderr,
+                            "[vkprof] const memo VERIFY: %llu of %llu served draws had "
+                            "constants that disagreed with a fresh copy (%.4f%%)%s\n",
+                            (unsigned long long)g_constMemoStale,
+                            (unsigned long long)g_constMemoChecked,
+                            100.0 * double(g_constMemoStale) / double(g_constMemoChecked),
+                            g_constMemoVerifyPoison ? "  [POISONED: this MUST be non-zero]"
+                                                    : "");
+                g_constMemoHits = g_constMemoMisses = 0;
+                g_constMemoChecked = g_constMemoStale = 0;
+            }
             if (g_flatCacheLookups || g_flatCacheOff)
             {
                 fprintf(stderr,
