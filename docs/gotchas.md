@@ -3836,3 +3836,32 @@ From phase C part 18 (the frame rate — and none of it was work):
      7.4-7.8% / PS 58.4-60.0% on the headless route — is what makes it a finding rather than
      a plausible narrative attached to a number. Cost: three lines. Whenever a split is what
      rescued an item, instrument the split itself, not just the total.
+
+366. **AN ARRAY AND A SEPARATELY-WRITTEN COUNT WILL DRIFT, AND THE FEATURE GOES INERT WITH
+     NOTHING REPORTING IT.** Part 56 added `VK_DYNAMIC_STATE_DEPTH_BIAS` to a pipeline's
+     dynamic-state array whose `dynamicStateCount` was hardcoded to `3`. The entry was never
+     declared, so the pipeline used its static (zero) bias while `vkCmdSetDepthBias` was
+     called every draw and ignored — and **nothing reported it**: not the validation layer
+     (setting an undeclared dynamic state is not an error), not a gate, not the picture. The
+     feature appeared to work only because the driver was lenient, which is worse than not
+     working, since it produced a POSITIVE CONTROL that seemed to pass. Derive the count from
+     the array (`sizeof(a)/sizeof(a[0])`, or a counter incremented as entries are appended)
+     — never write it twice.
+
+367. **READ THE VALIDATION MESSAGE; DO NOT GUESS WHAT THE VUID MEANS.** Part 56 spent two
+     build-and-run rounds fixing the OPPOSITE of what `VUID-vkCmdDraw-None-08608` says. It
+     was assumed to mean "a declared dynamic state was not set before the draw"; its text
+     says the reverse — *"doesn't set up VK_DYNAMIC_STATE_STENCIL_*, but since the
+     vkCmdBindPipeline, the related dynamic state commands have been called"*, i.e. calling
+     a dynamic-state setter for state a pipeline specifies STATICALLY. The layer prints the
+     full sentence and the spec quotation; a VUID number is an index, not a description.
+
+368. **BINDING A PIPELINE THAT SPECIFIES STATE STATICALLY MAKES THE MATCHING DYNAMIC STATE
+     UNDEFINED — so a skip-if-unchanged cache cannot survive a bind.** A renderer that
+     declares a dynamic state on SOME pipelines only (part 56 declares the stencil states
+     just where the stencil test is enabled, which is what keeps the other 82% of draws off
+     the requirement) must re-set that state after any bind of a pipeline that does not
+     declare it. The symptom is not a wrong picture — it is `VUID-vkCmdDrawIndexed-None-
+     0783{7,8,9}`, a draw reading undefined state, which a driver may service in a way that
+     looks entirely correct until it does not. State caches keyed only on the VALUE are
+     wrong here; the pipeline bind has to invalidate them.

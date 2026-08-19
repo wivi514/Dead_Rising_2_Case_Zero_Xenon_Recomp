@@ -3999,3 +3999,165 @@ live plan and **its §9c records what part 53 established in it**; read `phase5-
   and one wrong frame in a 50 fps crowd is not something a human catches. The two
   instruments answer different questions and both were needed.
 
+
+
+---
+
+## Part 54's status block, moved out of CLAUDE.md at the close of part 56
+
+Where the port is, as of 2026-08-18 (part 54 CLOSED — **THE PRESENT WAS COPYING THE FRAME
+THREE TIMES AND ONE OF THOSE COPIES HAD NEVER BEEN MEASURED, BECAUSE IT ONLY EXISTS WITH A
+WINDOW AND EVERY PERFORMANCE RUN HERE IS HEADLESS. A real Vulkan swapchain takes the frame
+−8.3% at 720p and −31.4% at 1440p against a null of −0.7%/+0.0%. And the route to the
+outdoor world turned out to be winning a 150 ms race.** `docs/part55-kickoff.md` is the
+LIVE hand-off; `perf-plan-part52.md` is still the live plan; read `phase5-notes.md` §6ck):
+
+* **`CZ_VK_SWAPCHAIN=1` — the plan's §7 item, promoted by part 53's resolution knob and
+  PRICED BEFORE IT WAS BUILT.** The default present path copies the frame three times per
+  present — the GPU's image→buffer copy, the pump's `memcpy` into the window's back buffer,
+  and the window thread's `SDL_UpdateTexture` — a GPU→CPU→GPU round trip for pixels that
+  never needed to leave the card. The arm acquires a swapchain image, blits the finished
+  frame into it and presents on a **semaphore** rather than a fence, so the window gets the
+  frame while the CPU is still retiring the previous one. `readback` reads **0.0%**.
+* **`readback` HAD READ 0.0% ON EVERY HEADLESS RUN IN THIS PROJECT'S HISTORY** — including
+  the ones part 53 used to declare its readback item done — because `Host_PresentPixels`
+  returns immediately with no window. Windowed it is **8.1-8.7% of the frame at 1280x720
+  and 16.4-36.2% at 2560x1440**, the largest single non-draw phase at 2x. The phase was not
+  lying; it was reporting a path that was not running (gotcha 352). Two neighbours hid the
+  same way: the window thread's own copy (8.8% → 15.0% of a core between the two scales, on
+  a thread no instrument here reads) and the GPU's copy, visible only as `submit gpu` rising
+  to 14.7% — **the GPU being a limiter at 2x, which is what the resolution knob was
+  supposed to produce and had not been seen doing.**
+* **THE FRAME IS −8.3% AT 720p AND −31.4% AT 1440p, AND −29.0% AT 1440p INTO THE
+  OPERATOR'S OWN MAXIMISED 2560x1417 WINDOW — ALL AT ~2,700 DRAWS, WHICH IS THE LIGHT END.
+  READ THE RETRACTION TWO BULLETS DOWN BEFORE QUOTING ANY OF THESE.** Three rounds an arm, alternated, one frozen
+  binary, medians per draw band (2,500-2,999 draws, n=7-9 an arm), against the campaign's
+  own within-arm null of **−0.7%, +0.0% and +0.0%**. At the maximised window it is −45.1%
+  at 500-999 draws, **−29.0% at 2,500-2,999**, −23.3% at 3,500-3,999 and −21.4% at
+  4,500-4,999.
+* **THE WINDOW-SIZE WORRY WAS REAL, WAS RECORDED AS OPEN, AND WAS THEN REFUTED BY THE
+  CAMPAIGN IT ASKED FOR.** The first campaign measured a 1088x612 drawable while the
+  operator plays maximised, and the two arms genuinely do scale differently with the window
+  — the readback path's CPU cost is a function of the INTERNAL resolution and is
+  independent of it, while the swapchain's blit DESTINATION *is* the window. Measured as a
+  2x2: **the window costs the readback arm +2.7…+4.9% and the swapchain arm +2.6…+8.6%.**
+  The mechanism was right and the magnitude was small. Filing it as OPEN rather than as
+  "probably fine" was still correct — only the campaign could separate the two. Gotcha 353
+  stands: **a present-path measurement has TWO resolutions and naming only one is naming
+  none**, and both arms now log their drawable size for that reason.
+* **AND THEN THE OPERATOR'S SOAK A/B RETRACTED THAT HEADLINE'S GENERALITY. EVERY CAMPAIGN
+  IN THIS PART SAMPLED THE LIGHT END OF THE GAME.** Both arms in one session, their
+  machine, uninstrumented but for `CZ_FPS_LOG`, matched on the draw count that line now
+  carries: **2,250-2,499 draws 90.4 -> 114.7 fps (−2.33 ms, −21.1%)** but **6,750-6,999
+  draws 67.8 -> 70.2 fps (−0.51 ms, −3.5%)**. Their own report first, before seeing any of
+  it: *"3 to 6 fps higher"* — measured **+1.5 to +2.4**, so they were right and slightly
+  generous. **In MILLISECONDS the saving is not constant after all**: this file and
+  §6/§9 said the percentage falls with load while the millisecond figure holds, and it
+  collapses too, 2.33 ms -> 0.51 ms. The best-populated band in BOTH campaigns was
+  2,500-2,999 draws and **the operator plays at 6,700-7,300**; their light band agrees with
+  the campaigns, so nothing was mis-measured — it was over-generalised. Likely mechanism,
+  as a hypothesis: at high load the GPU is busy, so CPU time taken off the pump is absorbed
+  by a longer fence wait rather than converted to frames. **Third part in three where a
+  soak in the heaviest place answered a question a roaming campaign could not** — gotcha
+  355.
+* **THE STUTTER THEY REPORTED IS REAL AND IS A SEPARATE WIN: it is the present MODE.**
+  Frame-time mean against median IN TRANSIT is **+3.3% for MAILBOX against +5.9% for the
+  compositor-paced SDL present**; at the settled soak both are smooth. MAILBOX is a choice
+  the SDL path could never make (part 49's 60->30 snap), and this half survives the
+  retraction above intact.
+* **AND IT IS A SLOPE THE OTHER WAY ROUND FROM EVERY PREVIOUS ITEM.** Parts 52 and 53
+  shipped savings that grew with the draw count, because their work ran per draw or per
+  packet. This is a FIXED cost per frame, so its share is largest where the frame is
+  otherwise lightest: at 2x, **−50.0% at 500-999 draws and −17.8% at 5,000-5,499**. Quote
+  the draw count, and expect the trend to run the other way. It also removes **more than
+  the phase it zeroes** — zeroing a 24.5% `readback` out of 10.20 ms predicts 7.70 and the
+  measurement is 7.00 — the extra being the GPU copy and the pump waiting on the window
+  thread's mutex.
+* **THE OPERATOR FOUND A REAL DEFECT IN TEN MINUTES THAT NO GATE HERE COULD HAVE: the
+  swapchain did not follow the window.** It rebuilt only on `VK_ERROR_OUT_OF_DATE_KHR` and
+  merely COUNTED `VK_SUBOPTIMAL_KHR`, so a window enlarged after the first present kept
+  being presented from the original 1280x720 swapchain and the compositor stretched it to
+  a 1440p monitor — *"it is blurry"*, and it was. **SDL's `SDL_RenderCopy` had always
+  scaled the full-size texture into whatever the window currently was, so resizing needed
+  no code of ours and appears nowhere in it**: replacing a library's present means
+  inheriting jobs it was doing invisibly (gotcha 354). The fix asks the drawable SIZE every
+  frame rather than trusting a return code; `CZ_WINDOW_RESIZE_AT=SECS:WxH` is the positive
+  control, because **no headless gate can resize a window**, and it proved the rebuild in
+  both directions. Their verdict after it: *"Looks a lot nicer now."*
+* **IT IS THE DEFAULT AS OF THE CLOSE OF PART 54, ON THE OPERATOR'S DECISION, AND NOTHING
+  WAS LOST WITH IT.** `CZ_VK_NO_SWAPCHAIN=1` is the control arm and restores the readback
+  path exactly — it is what every measurement before part 54 was taken on, so it is the arm
+  future present claims are compared against and not a deprecated path. **The one blocker
+  was that a window carrying `SDL_WINDOW_VULKAN` has no `SDL_Renderer` and so could not
+  draw the host-rendered F4 debug menu; that was PORTED rather than accepted.** The layout
+  is emitted once (`EmitDebugOverlay`) and consumed by two backends — SDL rects, and a
+  software rasteriser the renderer uploads and blits over the presented image — because
+  writing it twice is how two drawings of one menu drift apart until an operator reports
+  that it "looks different in the other mode". The only deliberate difference is an opaque
+  panel where SDL's is 88%, since a blit cannot blend.
+* **AND THE OVERLAY TOOK FOUR DEFECTS TO GET RIGHT, THREE OF THEM FOUND BY THE OPERATOR
+  LOOKING AT THE SCREEN AND NONE BY A COUNTER.** (i) It was first placed AFTER the
+  `CZ_VK_SWAPCHAIN_DUMP` copy, so the dump could not show it and — silently — the dump had
+  already moved the image to `TRANSFER_SRC`, so the overlay blitted into an image whose
+  layout said otherwise: undefined behaviour reachable only with the dump armed, i.e. only
+  in the gate. (ii) It was rasterised FULL SCREEN with transparent margins and copied
+  whole, and **a blit is a copy, not a blend — so the entire game was black around the
+  panel** while `swap: debug overlay drawn` read 5,595 and my own dump check happily
+  confirmed 6,466 panel-coloured samples. **The check looked for the thing I had built and
+  never asked whether anything ELSE was still there** (gotcha 356). (iii) The panel then
+  came out SOLID where SDL's is 225/255; a copy cannot blend, so the blend is now done on
+  the CPU against the frame behind the panel, captured one frame earlier — staleness that
+  is unobservable behind a menu, against a graphics pipeline that is a lot of machinery for
+  one. (iv) It uploaded through `R->staging`, the SHARED staging buffer, at offset zero,
+  **where every texture upload also writes and whose copy executes later** — so the overlay
+  and textures overwrote each other's bytes (gotcha 357). Operator-confirmed fixed.
+* **NONE OF THIS PROJECT'S PICTURE GATES CAN SEE THIS ARM, AND THAT IS THE MOST
+  TRANSFERABLE THING IN THE PART.** `CZ_CAPTURE_KEY`, `CZ_VK_FRAME_DUMP`,
+  `CZ_VK_FRAME_STATS` and the E3 correlation all walk the present READBACK — the exact copy
+  the swapchain removes — so they pass **with the old path still doing all the work**.
+  Gotcha 350: **before gating a change, ask which BYTES the gate reads and whether the
+  change produced them.** The replacement, `CZ_VK_SWAPCHAIN_DUMP`, reads back the image
+  actually handed to the presentation engine and correlates it against Xenia's own
+  screenshot: **+0.8831 at 1x (21 of 38 agreeing on layout) and +0.8741 at 2x (16 of 32)**,
+  against the E3 gate's standing +0.8396…+0.8808. Vulkan validation clean.
+* **THE FIRST ORACLE TRIED WAS A COMPOSITOR GRAB AND IT READ UNIFORMLY BLACK, BECAUSE THE
+  MONITOR WAS ASLEEP.** Five 2560x1440 PNGs with RGB extrema `(0,0)` on every channel in
+  both arms, `+0.0000` against every orientation, and nothing wrong with the renderer, the
+  grabber or the gate. Gotcha 231's trap one subsystem over. `tools/part54_swapchain_picture.sh`
+  is still the better gate **by day**; use `CZ_VK_SWAPCHAIN_DUMP` at night. (KWin does not
+  implement the `wlr-screencopy` protocol `grim` needs and says so clearly; `spectacle -b -n
+  -f` goes through KWin's own interface.)
+* **THE ROUTE TO THE OUTDOOR WORLD WAS A COIN FLIP AND IS FIXED.** A synthetic host debug
+  edge (`F2`/`F3`/`F4`/`F9`) fired only if the guest polled `XamInputGetState` inside a
+  **150 ms window at a fixed wall-clock offset**. On a miss the edge was LOST, the DebugJump
+  screen was never requested, and the recipe silently degraded to "press START a lot" while
+  the run continued for its full seven minutes and profiled the prologue. It had been
+  winning that race since part 39. The edge now fires on the first poll after its interval
+  is reached; **`CZ_FAKE_PRESS_EDGE_MISS=1` is the positive control** that forces the
+  recovery path, which no ordinary run exercises. **The diagnosis went wrong first in the
+  standard way**: one run an arm blamed part 53's frame-cap default change, and three runs
+  an arm read 3/3 and 3/3 six minutes later. Gotcha 349.
+* **THE HEADLESS ROUTE IS OFF THE PACING RUNG AND THE PUMP IS SATURATED THERE — 93.7% of a
+  core, where part 53 closed at 50.3%.** The cap default moving 60 → 500 did that, and it
+  **retires §6ci §5c's warning** that a headless A/B here reads zero whatever the change was
+  worth. The process uses **3.75 of 16 cores**, up from 2.68.
+* **The re-taken symbol budget, and the biggest thing left is the draw path.** Pump thread,
+  instruments off, outdoors in a crowd: `DoDraw` **24.43%**, the NVIDIA driver
+  **15.13%**, `UploadStream` **12.84%**, `WriteRegisterRun` 9.10%, `UploadTexture` 8.69%,
+  `ExecutePacket` 5.77%. `GuardFold` does not appear. **`DoDraw` plus the driver is 39.6%
+  and they are the same item** — the driver time IS the `vkCmd*` calls the recording makes,
+  so plan item 1.4 (parallel command recording) moves both, and it is still the riskiest
+  thing in the plan. **`UploadStream` at 12.84% is not in the plan at all**: part 22 closed
+  the stream cache on `ProfScope(streams)` reading 0.0%, and the symbol says that scope is
+  not where the cost is (gotcha 343's shape). Splitting it is the cheapest unexplored item.
+* **Gates at close: ALL CLEAN, re-run whole after the default flip and the overlay work.**
+  `--smoke`; switch gate 0 defects; dimension census 0 disagreements; both PM4 oracles on
+  B1; E3 best of five **+0.8415**, 4 of 5 agreeing on layout; `no translated shader` 0;
+  `truncated=0`; 0 `PARALLEL GUARD SLOT MIX-UP`; deepest file **#83 `cinezombie.big`**;
+  **A5 exit 0, 4 permutation windows, 0 real**; plus the two rows this part had to invent,
+  the swapchain image against E3 at **1x (+0.8831)** and **2x (+0.8741)**.
+  **And the shader-cache NAME diff caught one for the FIFTH part running** —
+  `vs_d34782b5c8ddf527`, dumped by the operator's own play session and never in the cache,
+  which no miss counter reported because no run had bound it. **The cache is 439**, both
+  caches rebuilt and identical in membership.
+
