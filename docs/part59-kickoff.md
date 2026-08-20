@@ -27,8 +27,8 @@
 
 | item | state | next action |
 |---|---|---|
-| headless gate sweep | **OWED** — part 58 changed a DEFAULT (front=CW), the named re-run condition | ask the operator; 2 commands, ~10 min (see §1) |
-| GAS sign / distance class | unchanged from part 57: shader faithful, far-LOD texture CONTENT suspect | **R6 hardware trace** (filed, blocking) |
+| headless gate sweep | **DONE 2026-08-19, ALL GREEN** (operator-approved; results in §1b) | nothing — also covers part 56's owed sweep |
+| GAS sign / distance class | unchanged from part 57: shader faithful, far-LOD texture CONTENT suspect | **R6 hardware trace** — operator will capture it 2026-08-20; do not start other work before checking it landed |
 | decal flicker | unchanged: issued-and-lost, title triple-buffers, did not fire in parts 57–58 | when it shows: F8 burst + `CZ_VK_NO_PARALLEL_GUARD=1` A/B |
 | doubled slab (slicing) | NOT re-observed in any part-58 session | watch only; re-open on a sighting (F9 + immediate F8) |
 
@@ -50,6 +50,26 @@ python3 tools/shader_dim_census.py                      # 0 disagreements expect
 
 Also owed from part 56 (never run): the sweep on the final stencil build — this one
 covers it, same binary lineage.
+
+## 1b. SWEEP RESULT (2026-08-19, operator-approved, commit 7edf24e's build)
+
+All seven gates green on the part-58 default build (front=CW):
+
+* `--smoke` OK (58,289 mapped entries).
+* PM4 packet-length oracle: **24,527,474 / 24,527,474 agree**, exit 0.
+* PM4 indirect-walk oracle: **28,727 buffers, 0 disagreeing**, exit 0.
+* `shader_dim_census.py`: **440 shaders, 329 2D + 97 cube + 1 lost-microcode sidecar,
+  0 disagreements**, exit 0.
+* A5 kernel diff `--include-high-frequency`: **exit 0 — 119/119 names, 4 permutation
+  windows, 0 real** (windows at 27–30, 55–70, 101–106, 117–119).
+* `truncated=0` on all 141 `CZ_RING_TRACE` reports; `no translated shader` = 0.
+* Capture-E picture: **+0.9596 identity** at frame_005184 — statistically the recorded
+  +0.9597. One trap for the next runner: the LAST dumped frame reads +0.29 because the
+  title parks into the animated attract loop; scan the dump for the logo card
+  (~frame 5,000 of a 240 s no-input boot) rather than gating on the final frame.
+
+One 240 s headless no-input boot (`CZ_NO_WINDOW=1 CZ_VKDRAW=1 CZ_RING_TRACE=1
+CZ_VK_FRAME_DUMP=…`) served the A5 diff, the ring gate and the picture gate together.
 
 ## 2. WHAT PART 58 ESTABLISHED THAT A FUTURE SESSION WILL WANT
 
