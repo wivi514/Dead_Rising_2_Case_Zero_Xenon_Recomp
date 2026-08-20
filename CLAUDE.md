@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part58-kickoff.md`.** State the rule as well as the name, because this line said
+    `part59-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -732,6 +732,53 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-19 (part 58 CLOSED — **THE SLICING SEE-THROUGH IS FIXED
+AND IT WAS TRIANGLE FACING. One offline derivation answered the kickoff's space question
+(there was NO space error), the operator's shift ladder closed the whole clip branch, and
+the same session's captures found the real mechanism — a stencil-masked gore quad whose
+mask our inverted front/back complemented. Operator on the fix: "Yes it is perfect now."**
+`docs/part59-kickoff.md` is the LIVE hand-off; the full record is `phase5-notes.md` §6cn;
+per-defect state is `open-items.md` 00q; performance stays parked in
+`perf-state-parked.md`):
+
+* **THE CLIP-SPACE QUESTION IS ANSWERED OFFLINE, WITHOUT THE VIEW MATRIX THE POSES
+  FAILED TO CAPTURE** (all ten bvc blocks are the SHADOW pass's ortho — the "biggest
+  draw" heuristic caught the shadow ground draw every time). The view matrix cancels:
+  dot(P, Proj·v) = dot(Projᵀ·P, v), so the projection alone re-expresses a captured
+  plane against view space, where lengths are true meters. **All 88 distinct captured
+  planes are UNIT view-space normals (1.000 ± 0.0003 RMS)** under one fitted scene
+  projection (fov 42.98°, 16:9 exact — not the pose first-draw's 45°): the register
+  planes are exactly clip-space planes, our raw-oPos dot is hardware's dot.
+  `tools/clip_plane_space.py`; gotcha 371.
+* **PART 57's MARGIN INFERENCE IS RETRACTED AND ITS BIAS ARM RETIRED AS A PROBE**: the
+  captured planes have c ≈ −d, so CZ_VK_CLIP_BIAS's `w += eps·|P|` lands entirely in
+  the view plane's z-COEFFICIENT — a ROTATION worth 0.8–8 m of boundary at eps=0.01,
+  which is what "un-clips the whole body" measured. The meters-true replacement is
+  `CZ_VK_CLIP_SHIFT` (Δplane = Proj⁻ᵀ·(0,0,0,δ)); the operator ran the ladder
+  0/+0.05/+0.02/−0.02, every arm's counter engaged, **nothing changed → the clip
+  branch is CLOSED**. Gotcha 370.
+* **THE REAL MECHANISM, FOUND IN THE LADDER'S OWN CENSUSES**: the cut is sealed by a
+  6-vert QUAD stencil-tested EQUAL against a per-piece ref that the two-sided passes
+  WRITE (front REPLACE / back ZERO; tester refs match writer refs in-frame). A
+  two-sided-written mask depends on FACING — and facing had no other consumer in this
+  renderer (culling permanently NONE; the title censuses su=00080008, cull off FACE=0,
+  on every draw), so the hardcoded CCW front sat unverifiable until part 56 wired the
+  stencil, then surfaced as the view-dependent see-through the operator described
+  verbatim. One arm settled the coin toss and **FRONT=CW IS NOW THE DEFAULT**;
+  `CZ_VK_STENCIL_CCW_FRONT=1` is the same-binary control arm. Gotcha 372.
+* **On watch, not chased**: the part-57 doubled-slab sighting did not re-appear in any
+  of part 58's three operator sessions; severed pieces despawn in ~3 s (hardcoded, no
+  tunable) so the analysis route for any future cut defect is F9 + an immediate F8
+  burst. The ±0.05 arms' predicted "visible doubled band" was wrong in presentation
+  (ragdoll halves separate; each just gets 5 cm longer) — the engagement evidence that
+  counted was the counters.
+* **Gates**: `--smoke` OK after every change; all picture verification WINDOWED through
+  the operator (three sessions this part). **The headless sweep (E3, A5, PM4 oracles,
+  dimension census) is OWED**: part 58 changed a DEFAULT (front=CW), which is exactly
+  the condition part 57 named for re-running it — but the operator's standing
+  instruction is that they run the game, so it is the first ask of part 59.
+
+
 Where the port is, as of 2026-08-19 (part 57 CLOSED — **TWO OPERATOR SESSIONS ANSWERED ALL
 THREE PICTURE ITEMS: USER CLIP PLANES went in and the slicing doubling is FIXED, the GAS
 sign was ATTRIBUTED and its shader EXONERATED against the capture's own disassembly, and
@@ -791,80 +838,6 @@ is the LIVE hand-off; the full record is `phase5-notes.md` §6cm; per-defect sta
   cache, cache misses 0 everywhere, every arm's engagement counted. `--smoke` passes.
   The headless sweep (E3, A5, PM4 oracles) was not re-run — the changes are inert
   without the clip cache selected; run it when a part changes the default path.
-
-Where the port is, as of 2026-08-19 (part 56 CLOSED — **A PICTURE SESSION DRIVEN END TO END
-BY OPERATOR CAPTURES. It implemented the STENCIL TEST, which this renderer had never honoured
-on ~18% of a gameplay frame's draws, and REFUTED TWO of its own hypotheses about the other
-defects. Three of the four reported defects remain open and one is now formally
-unexplained.** `docs/part57-kickoff.md` is the LIVE hand-off; performance stays parked in
-`perf-state-parked.md`; the evidence is `open-items.md` 00o):
-
-* **THE STENCIL TEST IS IMPLEMENTED AND IT WAS ENTIRELY ABSENT.** `stencilTestEnable`
-  appeared ZERO times in this renderer while RB_DEPTHCONTROL bit 0 is `stencil_enable` —
-  our own comment said so and the code read bits 1, 2 and 4..6 and stepped over it.
-  Censused on the operator's own frames: **350 of 1980 and 326 of 1823 draws enable it.**
-  Their report identified the consequence — cutting a zombie in half gave *"two full zombie
-  and the blood is a square"* — and the mechanism: the game draws the WHOLE body twice and
-  masks each copy, so nothing masking it yields both whole bodies AND the unclipped
-  cross-section cap, two symptoms from one cause. Verdict on the fix: *"isn't as bad but far
-  from perfect"*, with captures showing a correctly shaped lower half and a correct
-  decapitation. **What is still wrong is ASKED AND UNANSWERED** — do not guess it from the
-  images, three were examined and the defect could not be seen in them.
-* **BOTH REGISTER LAYOUTS WERE CONFIRMED BY COHERENCE, NOT FROM A DOCUMENT.** Decoded with
-  the assumed bit layout the title's stencil states come out as a matched PAIR —
-  `ALWAYS/KEEP/REPLACE` writing reference 254 through `sr=00FFFFFE`, and `EQUAL/KEEP/KEEP`
-  painting only where 254 was written. A wrong layout produces random ops, not a mask-write
-  beside a mask-test. Same method located the polygon offset registers, and it is the method
-  this port had to learn twice (gotcha: RB_COLORCONTROL is 0x2202, and Fable 2 reads the
-  offset enables from 0x2205, which is RB_BLENDCONTROL1 here).
-* **VULKAN VALIDATION CAUGHT THREE DEFECTS THAT NO GATE, NO COUNTER AND NO PICTURE COULD**,
-  and the first is the one to remember: **`dsi.dynamicStateCount` was hardcoded to 3 while
-  the array had grown to 4**, so the polygon offset committed earlier NEVER DECLARED its
-  dynamic state and was working only on driver leniency — inert, with every gate passing.
-  The other two: calling a dynamic-state setter for state a pipeline specifies STATICALLY is
-  illegal (VUID-vkCmdDraw-None-08608, and its message says so plainly once READ rather than
-  guessed at — two rounds were spent fixing the opposite), and a skip-if-unchanged cache does
-  not survive a pipeline bind because binding a pipeline with static state makes the matching
-  dynamic state undefined. Validation on the outdoor route is now **6 `topology-08773` and
-  nothing else**, against a standing baseline of 20+6. **Gotchas 366, 367, 368.**
-* **REFUTED 1 — Z-FIGHTING.** The decal flicker's camera-motion dependence is the classic
-  signature, and the polygon offset was a genuine gap in BOTH this port and Fable 2's. The
-  census found it real and reaching exactly the right draws (178+48 single-quad alpha-blended
-  draws, i.e. decals). **It fixed nothing.** The positive control settled it:
-  `CZ_VK_POLY_OFFSET_SCALE=10000` visibly lifts decals in front of walls and zombies, and the
-  operator's verdict there was *"when they are not floating they flicker"*. A ten-thousand-fold
-  depth bias does not stop it. The offset is KEPT as correct emulation and fixes nothing
-  reported.
-* **REFUTED 2 — THE MIP CHAIN.** The unifying story was that low mip levels decode wrong
-  (colour for the sign, alpha for the bunting) and that mip SELECTION oscillating under
-  camera motion explained the decal flicker while a still camera pinned it. It fits every
-  symptom and it is wrong: `CZ_VK_NO_MIPS=1` **engaged** (mip-rejection lines 8 -> 0) and the
-  operator's verdict was *"gas is still black and everything still is like before"*. The
-  plumbing was checked afterwards and is correct. **A hypothesis that fits every symptom
-  should be tested first and advocated second.**
-* **THE DECAL FLICKER IS NOW FORMALLY UNEXPLAINED**, with its constraints written down: only
-  under camera motion, stable in BOTH states when still, not depth, not mip data. **The
-  instrument gap that stopped the analysis is that F8's burst carries no PER-DRAW CENSUS**,
-  so a decal seen blinking could not be asked whether its draw was issued. That is part 57's
-  first build.
-* **THE DISTANCE DEFECTS HAVE THE OPERATOR'S OWN STEER AND A NEW FACT.** Their steer: the
-  sign/canopy class is *"similar to our last issue that was like that"* — item 00i, which
-  part 45 traced to our translation dropping PS interpolants so 217 shaders sampled diffuse
-  at ONE TEXEL (a single texel is a flat colour; a dark one is BLACK, which is the symptom
-  exactly). And the captures establish that **17 pixel shaders appear only in the far frame
-  and 9 only in the near one — this title swaps pixel shaders BY DISTANCE**, so the far view
-  is different code rather than the same shader minified.
-* **NEW INSTRUMENTS**: **`F8` records every presented frame for a second**
-  (`CZ_BURST_DUMP`, read with `tools/burst_read.py`) — built because a flicker cannot be
-  shown in a screenshot, and built to DISCRIMINATE (its manifest carries the draw count and
-  fingerprints so "issued and discarded" separates from "never issued"). `SAFE=1` on
-  `tools/play_session.sh` holds god mode, no-death and ZOMBIES IGNORE ALL HUMANS so a capture
-  session is not a fight. The draw census gained **`po=`, `su=`, `dc=`, `sr=`** — the four
-  fields that made both register layouts confirmable.
-* **Gates**: `--smoke` OK, Vulkan validation **6 `topology-08773`** (below the 20+6
-  baseline), E3 **+0.8823** with 4 of 5 agreeing on layout on the polygon-offset build. **The
-  full gate sweep on the FINAL stencil build is OWED** — the operator was mid-session when
-  part 56 closed and the gates compete for the GPU.
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 55's** — part 57 moved part 55's out in the same commit that added its own block, part 55 moved part 53's

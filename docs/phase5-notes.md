@@ -12156,3 +12156,46 @@ worsens at −0.02 → the gore sits centimeters from the boundary, our clip err
 precision scale, and the hunt moves into the dot's arithmetic; no change at ±0.02 while
 ±0.05 visibly moves the cut → **the clip branch closes** and the suspect becomes the
 §4 interlock (depth LESS/EQUAL interplay across the four passes).
+
+### 6. THE SESSION RAN, THE CLIP BRANCH CLOSED, AND THE REAL DEFECT WAS FACING — fixed
+### and operator-confirmed the same evening
+
+The ladder ran as designed (four arms, every arm's SHIFTED counter equal to its publish
+counter, cache misses 0) and the operator's verdict was **no visual change anywhere on
+it** — still see-through at 0, +0.02, −0.02, and at +0.05, where a cap sitting on the
+plane would have had 5 cm of clearance. With §2's space proof, that CLOSES the clip
+branch: no plausible perturbation of the planes changes the symptom. Their report also
+carried the constraint that pointed at the truth: *"can sometime seems like they are
+closed with gore but are not if you look properly with camera"* — the seal was
+VIEW-DEPENDENT, not absent.
+
+The arm's censuses then found the pass the part-57 analysis never saw: **the cap is a
+6-vertex QUAD, stencil-tested EQUAL** (dc=00700217, mask=F, z LESS; a mask=0 LEQUAL
+twin) **against the per-piece ref the §4 two-sided passes WRITE** — tester refs matching
+writer refs one-for-one in the same frame (checked on capture_f17686: writers 25-2C,
+testers 25-2B, all matched). Part 56's "the blood is a square" was this quad unmasked.
+
+A stencil mask written by front-REPLACE/back-ZERO depends on which side of a triangle
+is FRONT — and facing had NO OTHER CONSUMER in this renderer: culling is permanently
+NONE (a deliberate phase-5 decision whose own comment warned about exactly this
+interaction), the title censuses su=00080008 (cull off, FACE=0) on EVERY draw of a
+frame, and `rs.frontFace` was hardcoded CCW, unverifiable until part 56 gave facing its
+first consumer. Whether Xenos FACE=0 lands on Vulkan's CCW or CW in the shared y-down
+screen space is settleable only by experiment (both pipelines flip y in their viewport
+— hardware's own PA_CL_VPORT_YSCALE is −360 — so the screen-space geometry is
+identical; only the naming of "front" was in question). **The experiment:
+CZ_VK_STENCIL_FLIP_FACES=1 (front=CW), one arm, 48 two-sided pipelines built, and the
+operator's verdict: "Yes it is perfect now"** — cuts sealed from every angle.
+
+**FRONT=CW IS NOW THE DEFAULT**; `CZ_VK_STENCIL_CCW_FRONT=1` is the same-binary control
+arm and the FLIP_FACES experiment variable is retired unread. The doubled-slab
+residual was not re-observed in any of this part's three sessions; it stays on 00q's
+watch list with the part-57 shelf-life note.
+
+Practical notes from the session: severed pieces despawn in ~3 s (hardcoded — no
+corpse-persistence tunable among the 393), so the way to analyze a cut is F9 liberally
+plus an immediate F8 burst; and the ±0.05 shift arms' "positive control" prediction (a
+visible ~10 cm doubled band) was WRONG in presentation — the ragdoll halves separate,
+so each piece just gets 5 cm longer, which reads as "the same" at play distance. The
+engagement evidence that mattered was the counters, not the picture (gotcha 151 the
+right way round).

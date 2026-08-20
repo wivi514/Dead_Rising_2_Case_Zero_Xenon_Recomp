@@ -4269,3 +4269,81 @@ subject is VISUAL BUGS; **performance is parked in `docs/perf-state-parked.md`**
   **Plus the two rows this part had to invent**: the flat-cache verifier (0 of 48.5 M,
   poison 81.7%) and the constant-memo verifier (0 of 117,521 and 0 of 119,019, poison
   100.0000%).
+
+
+
+## Part 56 status block (moved from CLAUDE.md by part 58, per the two-block rule)
+
+Where the port is, as of 2026-08-19 (part 56 CLOSED — **A PICTURE SESSION DRIVEN END TO END
+BY OPERATOR CAPTURES. It implemented the STENCIL TEST, which this renderer had never honoured
+on ~18% of a gameplay frame's draws, and REFUTED TWO of its own hypotheses about the other
+defects. Three of the four reported defects remain open and one is now formally
+unexplained.** `docs/part57-kickoff.md` is the LIVE hand-off; performance stays parked in
+`perf-state-parked.md`; the evidence is `open-items.md` 00o):
+
+* **THE STENCIL TEST IS IMPLEMENTED AND IT WAS ENTIRELY ABSENT.** `stencilTestEnable`
+  appeared ZERO times in this renderer while RB_DEPTHCONTROL bit 0 is `stencil_enable` —
+  our own comment said so and the code read bits 1, 2 and 4..6 and stepped over it.
+  Censused on the operator's own frames: **350 of 1980 and 326 of 1823 draws enable it.**
+  Their report identified the consequence — cutting a zombie in half gave *"two full zombie
+  and the blood is a square"* — and the mechanism: the game draws the WHOLE body twice and
+  masks each copy, so nothing masking it yields both whole bodies AND the unclipped
+  cross-section cap, two symptoms from one cause. Verdict on the fix: *"isn't as bad but far
+  from perfect"*, with captures showing a correctly shaped lower half and a correct
+  decapitation. **What is still wrong is ASKED AND UNANSWERED** — do not guess it from the
+  images, three were examined and the defect could not be seen in them.
+* **BOTH REGISTER LAYOUTS WERE CONFIRMED BY COHERENCE, NOT FROM A DOCUMENT.** Decoded with
+  the assumed bit layout the title's stencil states come out as a matched PAIR —
+  `ALWAYS/KEEP/REPLACE` writing reference 254 through `sr=00FFFFFE`, and `EQUAL/KEEP/KEEP`
+  painting only where 254 was written. A wrong layout produces random ops, not a mask-write
+  beside a mask-test. Same method located the polygon offset registers, and it is the method
+  this port had to learn twice (gotcha: RB_COLORCONTROL is 0x2202, and Fable 2 reads the
+  offset enables from 0x2205, which is RB_BLENDCONTROL1 here).
+* **VULKAN VALIDATION CAUGHT THREE DEFECTS THAT NO GATE, NO COUNTER AND NO PICTURE COULD**,
+  and the first is the one to remember: **`dsi.dynamicStateCount` was hardcoded to 3 while
+  the array had grown to 4**, so the polygon offset committed earlier NEVER DECLARED its
+  dynamic state and was working only on driver leniency — inert, with every gate passing.
+  The other two: calling a dynamic-state setter for state a pipeline specifies STATICALLY is
+  illegal (VUID-vkCmdDraw-None-08608, and its message says so plainly once READ rather than
+  guessed at — two rounds were spent fixing the opposite), and a skip-if-unchanged cache does
+  not survive a pipeline bind because binding a pipeline with static state makes the matching
+  dynamic state undefined. Validation on the outdoor route is now **6 `topology-08773` and
+  nothing else**, against a standing baseline of 20+6. **Gotchas 366, 367, 368.**
+* **REFUTED 1 — Z-FIGHTING.** The decal flicker's camera-motion dependence is the classic
+  signature, and the polygon offset was a genuine gap in BOTH this port and Fable 2's. The
+  census found it real and reaching exactly the right draws (178+48 single-quad alpha-blended
+  draws, i.e. decals). **It fixed nothing.** The positive control settled it:
+  `CZ_VK_POLY_OFFSET_SCALE=10000` visibly lifts decals in front of walls and zombies, and the
+  operator's verdict there was *"when they are not floating they flicker"*. A ten-thousand-fold
+  depth bias does not stop it. The offset is KEPT as correct emulation and fixes nothing
+  reported.
+* **REFUTED 2 — THE MIP CHAIN.** The unifying story was that low mip levels decode wrong
+  (colour for the sign, alpha for the bunting) and that mip SELECTION oscillating under
+  camera motion explained the decal flicker while a still camera pinned it. It fits every
+  symptom and it is wrong: `CZ_VK_NO_MIPS=1` **engaged** (mip-rejection lines 8 -> 0) and the
+  operator's verdict was *"gas is still black and everything still is like before"*. The
+  plumbing was checked afterwards and is correct. **A hypothesis that fits every symptom
+  should be tested first and advocated second.**
+* **THE DECAL FLICKER IS NOW FORMALLY UNEXPLAINED**, with its constraints written down: only
+  under camera motion, stable in BOTH states when still, not depth, not mip data. **The
+  instrument gap that stopped the analysis is that F8's burst carries no PER-DRAW CENSUS**,
+  so a decal seen blinking could not be asked whether its draw was issued. That is part 57's
+  first build.
+* **THE DISTANCE DEFECTS HAVE THE OPERATOR'S OWN STEER AND A NEW FACT.** Their steer: the
+  sign/canopy class is *"similar to our last issue that was like that"* — item 00i, which
+  part 45 traced to our translation dropping PS interpolants so 217 shaders sampled diffuse
+  at ONE TEXEL (a single texel is a flat colour; a dark one is BLACK, which is the symptom
+  exactly). And the captures establish that **17 pixel shaders appear only in the far frame
+  and 9 only in the near one — this title swaps pixel shaders BY DISTANCE**, so the far view
+  is different code rather than the same shader minified.
+* **NEW INSTRUMENTS**: **`F8` records every presented frame for a second**
+  (`CZ_BURST_DUMP`, read with `tools/burst_read.py`) — built because a flicker cannot be
+  shown in a screenshot, and built to DISCRIMINATE (its manifest carries the draw count and
+  fingerprints so "issued and discarded" separates from "never issued"). `SAFE=1` on
+  `tools/play_session.sh` holds god mode, no-death and ZOMBIES IGNORE ALL HUMANS so a capture
+  session is not a fight. The draw census gained **`po=`, `su=`, `dc=`, `sr=`** — the four
+  fields that made both register layouts confirmable.
+* **Gates**: `--smoke` OK, Vulkan validation **6 `topology-08773`** (below the 20+6
+  baseline), E3 **+0.8823** with 4 of 5 agreeing on layout on the polygon-offset build. **The
+  full gate sweep on the FINAL stencil build is OWED** — the operator was mid-session when
+  part 56 closed and the gates compete for the GPU.

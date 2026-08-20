@@ -3908,3 +3908,20 @@ From phase C part 18 (the frame rate — and none of it was work):
      all. Verify a captured matrix's structural shape (perspective vs ortho, which row
      is w) before using it — and before declaring data missing, write the question as
      algebra and see what cancels.
+
+372. **A HARDCODED ORIENTATION WITH ZERO CONSUMERS IS A LATENT COIN FLIP — it becomes a
+     defect the day a consumer appears, and nothing about the intervening years of
+     correct pictures was evidence.** This renderer hardcoded `frontFace = CCW` next to
+     `cullMode = NONE`; with culling off and no shader reading gl_FrontFacing, triangle
+     facing touched nothing for the whole phase (the title's own su=00080008 on every
+     draw meant hardware never culled either). Part 56 gave facing its FIRST consumer —
+     two-sided stencil, front REPLACE / back ZERO — and the unverified bit surfaced as
+     a view-dependent see-through in sliced zombies two parts later, because the
+     complemented stencil mask failed the gore quad's EQUAL test exactly where the cap
+     belonged. The pre-part-58 comment even named the interaction ("front-face bit
+     interacts with the viewport's Y sign") and deferred it to "when there is a picture
+     to check against" — but no ordinary picture can check it: only a facing CONSUMER
+     can. When such a bit is finally consumed, treat its value as unmeasured whatever
+     the code says, and settle it by experiment (one arm: "it is perfect now"). For
+     the record: Xenos FACE=0 + a D3D-convention y-flip on both sides lands on
+     Vulkan CLOCKWISE front.

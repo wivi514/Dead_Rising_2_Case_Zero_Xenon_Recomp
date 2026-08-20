@@ -1881,16 +1881,19 @@ CZ_VK_CLIP_SHIFT=m translate every enabled plane's boundary OUTWARD (kept side g
                    RESULT (part 58, operator): no visual change anywhere on the
                    ladder 0/+0.05/+0.02/-0.02 — the CLIP BRANCH IS CLOSED for the
                    slicing residuals.
-CZ_VK_STENCIL_FLIP_FACES=1  declare front=CW instead of the hardcoded CCW — the
-                   facing arm for the see-through cut. Facing's ONLY consumer in
-                   this renderer is the two-sided stencil (culling is permanently
-                   NONE, and the title censuses su=00080008 — cull off, FACE=0 — on
-                   every draw of a frame), so this bit has never been checked against
-                   hardware. The gore cap is a 6-vert quad stencil-tested EQUAL
-                   against a per-piece ref the two-sided passes write front-REPLACE/
-                   back-ZERO; swapped facing complements the written region and
-                   fails the quad exactly at the cap, view-dependently. Counter:
-                   `pipeline: two-sided stencil built with FRONT=CW (...)`.
+CZ_VK_STENCIL_CCW_FRONT=1  restore the pre-part-58 facing (front=CCW) — the
+                   same-binary CONTROL ARM for the slicing fix. Front=CW is the
+                   DEFAULT since part 58: facing's only consumer in this renderer is
+                   the two-sided stencil (culling is permanently NONE, and the title
+                   censuses su=00080008 — cull off, FACE=0 — on every draw), and the
+                   gore cap is a 6-vert quad stencil-tested EQUAL against a per-piece
+                   ref the two-sided passes write front-REPLACE/back-ZERO. With CCW
+                   the mask complements and the quad fails exactly at the cap,
+                   view-dependently — the see-through cut. Operator on the CW arm:
+                   "it is perfect now". (The experiment variable
+                   CZ_VK_STENCIL_FLIP_FACES is RETIRED and no longer read.) Counters:
+                   `pipeline: two-sided stencil built (facing matters here)` and,
+                   under the arm, `... built with FRONT=CCW (control arm)`.
 ```
 
 ## Mip levels (part 39)

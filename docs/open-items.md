@@ -3147,3 +3147,17 @@ surviving a resolve.
   geometry — and both stencil funcs are ALWAYS (nothing tests stencil among the four).
 * Sign (R6) and decal-flicker items: unchanged from 00p, both still waiting on their
   external events.
+
+**00q RESOLUTION, same day: THE SEE-THROUGH CUT IS FIXED — it was TRIANGLE FACING, not
+clip.** The ladder ran and changed nothing at any rung (all counters engaged), closing
+the clip branch; the censuses then found the sealing pass part 57 never saw — the gore
+cap is a 6-vert QUAD stencil-tested EQUAL against the per-piece ref the two-sided
+passes write front-REPLACE/back-ZERO (tester refs match writer refs in-frame). Facing
+has no other consumer in this renderer (culling permanently NONE, su=00080008 on every
+draw), so the hardcoded CCW front sat unverifiable until part 56 wired two-sided
+stencil — inverted, the stencil mask complements and the quad fails exactly at the cap,
+view-dependently, which was the operator's report verbatim. One arm flipped it;
+operator: **"Yes it is perfect now."** FRONT=CW is the default;
+`CZ_VK_STENCIL_CCW_FRONT=1` is the control arm. `phase5-notes.md` §6cn §6. Remaining on
+watch: the part-57 doubled-slab sighting was not re-observed in any part-58 session —
+an observation with a shelf life, re-open if it shows.
