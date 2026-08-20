@@ -183,6 +183,15 @@ def read_census(dirname, seq):
     The key is (ps, v0, verts): v0 is the first vertex of the draw's STREAM, so
     draws sharing one batched buffer share a v0 — those are tracked by COUNT per
     frame instead, which still detects a drop (the count moves).
+
+    THE RING CAVEAT (part 57, measured): this title TRIPLE-BUFFERS its decal
+    geometry — the same batch rotates through three stream addresses, each live
+    every third frame — so a (ps, v0, verts) key legitimately toggles as the
+    address rotates under it. When census lines carry va= (part-57 builds), the
+    toggling report below is cross-checked per CLASS: if the union of a decal
+    class's keys covers every frame, the draws ARE issued every frame and the
+    toggling is the ring, not a drop. The first burst read without this check
+    reported "never issued" for draws that were issued every frame.
     """
     import collections
     cen = os.path.join(dirname, f"burst{seq}_census.txt")
@@ -242,15 +251,33 @@ def read_census(dirname, seq):
                   f"po={meta[key]['po']} s0={meta[key]['s0']}  "
                   f"in {present}/{nf} frames, {trans} in/out transitions"
                   f"{'  <- DECAL-SHAPED' if decal(key) else ''}")
-    if n_decal_keys and not n_decal_toggling:
-        print("  CENSUS VERDICT: every decal-shaped draw was ISSUED on every census "
-              "frame. A decal that blinks on screen is being discarded AFTER issue — "
-              "depth, stencil, alpha or a render-state difference, not a missing draw.")
-    elif n_decal_toggling:
-        print("  CENSUS VERDICT: decal-shaped draws come and go across the burst's "
-              "frames — the dark frames are frames the draw was NEVER ISSUED. Look at "
-              "the guest's own issuing (visibility, predication, bin masks), not at "
-              "depth or blend state.")
+    # The ring cross-check: group decal-class draws by (ps, verts, s0) — the fields the
+    # buffer rotation does NOT move — and ask whether each CLASS covers every frame.
+    classes = collections.defaultdict(set)   # (ps, verts, s0) -> frames present
+    for key in meta:
+        if not decal(key):
+            continue
+        cls = (key[0], key[2], meta[key]['s0'])
+        for f in order:
+            if frames[f].get(key, 0):
+                classes[cls].add(f)
+    gaps = {cls: nf - len(fs) for cls, fs in classes.items()}
+    n_class_gaps = sum(1 for g in gaps.values() if g)
+    if classes:
+        print(f"  decal CLASSES (ps, verts, s0), ring-rotation folded out: "
+              f"{len(classes)}, with frames missing: {n_class_gaps}")
+    if n_decal_keys and not n_class_gaps:
+        print("  CENSUS VERDICT: every decal class was ISSUED on every census frame "
+              "(per-key toggling is the title's triple-buffer ring rotating, not a "
+              "drop). A decal that blinks on screen is issued and then lost — look at "
+              "OUR handling of the rotating buffers first (the stream store and its "
+              "frame-ahead guard; CZ_VK_NO_PARALLEL_GUARD=1 is the arm), then depth/"
+              "stencil/alpha state.")
+    elif n_class_gaps:
+        print("  CENSUS VERDICT: decal classes have frames with NO issue at all — the "
+              "dark frames are frames the draw was NEVER ISSUED. Look at the guest's "
+              "own issuing (visibility, predication, bin masks), not at depth or "
+              "blend state.")
 
 
 if __name__ == "__main__":

@@ -3081,3 +3081,35 @@ one pass and testing it in a later one while our EDRAM handling clears or reuses
 depth/stencil image in between; the two-sided reading (`ds.back = ds.front` when
 RB_DEPTHCONTROL bit 7 is clear is an INTERPRETATION, not a measurement); and the stencil not
 surviving a resolve.
+
+
+## 00p. PART 57: where the three part-56 defects stand now (the full record is
+## phase5-notes §6cm; every measurement below is from OPERATOR sessions)
+
+* **ZOMBIE SLICING — the doubling is FIXED, two residuals remain, mechanism scoped.**
+  User clip planes are implemented (the VS computes ClipDistance[6] from planes the
+  runtime publishes at SharedConstants+2080; `XE_USER_CLIP_PLANES` second-cache arm,
+  poison-proven in both directions). The halves separate now. Residuals: the cut is
+  see-through (the gore plug that seals it is clipped away) and a thin slab sometimes
+  shows on both halves. CZ_VK_CLIP_BIAS measured the scale: +0.01 of a plane's magnitude
+  un-clips the WHOLE body, so the plug lives on a sub-0.01 margin around dot=0. **Next:
+  derive the correct dot SPACE from the ten captures' plane values + poses — do not fit
+  an epsilon.** The 00o two-sided-stencil suspicion is retired: the gore-plug draws use
+  two-sided stencil and our pipeline reads those fields correctly.
+* **THE GAS SIGN (operator's #1) — attributed, shader exonerated, suspect narrowed to
+  far-LOD texture CONTENT, hardware trace R6 filed and blocking.** Far sign =
+  `ps=57d441f53fc93ad7` + letters `ps=86ac6569ea0d700d` (draw-ID, no inference). Our
+  translation of the first is instruction-for-instruction faithful to the capture's
+  disassembly. A live dump seconds after an operator F9 shows the letters' 32x16 DXT1
+  mostly BLACK with garbage in guest memory, its 64x64 companion incoherent at every
+  extent — same tool decodes the neighbouring 256x256 perfectly. R6 (one single-frame
+  trace at the far viewpoint) says whether hardware's guest memory holds the same bytes
+  (-> our sampling) or different ones (-> our streaming/level machine, and the right
+  bytes to aim for). `docs/xenia-capture-requests.md`.
+* **THE DECAL FLICKER — "never issued" is RETRACTED; the title triple-buffers.** The
+  burst census + the va= field established a 3-address rotating ring for decal geometry
+  with per-address content constant; folded by class, decal draws are issued EVERY
+  frame. A blinking decal is issued-and-lost, prime suspect the cross-frame stream store
+  + frame-ahead guard against a 3-frame ring (`CZ_VK_NO_PARALLEL_GUARD=1` is the ready
+  A/B). The defect DID NOT FIRE in either part-57 session — recorded as an observation,
+  not a fix; the arm waits for the next sighting.

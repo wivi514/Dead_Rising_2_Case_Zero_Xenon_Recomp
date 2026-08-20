@@ -1824,6 +1824,14 @@ CZ_BURST_CENSUS=0  decline the burst's PER-DRAW CENSUS (part 57; default ON with
                    Census lines (burst AND capture) now carry v0= — the first vertex's
                    first three dwords as floats: a decal's shader/blend/texture are
                    shared by dozens of draws, its WORLD POSITION is what identifies it.
+                   And va= — the stream's guest address — because v0 alone conflated
+                   two mechanisms: the first va-carrying burst showed this title
+                   TRIPLE-BUFFERS its decal geometry (three rotating addresses, each
+                   live every third frame, content constant per address), so a
+                   (ps, v0) key toggles legitimately as the ring rotates under it.
+                   burst_read.py folds the ring out by CLASS (ps, verts, s0) before
+                   saying anything about dropped draws — its first verdict without
+                   that said "never issued" about draws issued every frame.
 ```
 
 ## User clip planes (part 57 — the zombie-slicing mechanism)
@@ -1852,6 +1860,15 @@ CZ_VK_CLIP_POISON=1  publish plane 0 = (0,0,0,-1) on EVERY draw: dot = -w, negat
                    plumbing, epilogue) without needing a sliced zombie (gotcha 30).
                    Counters: `draw: user clip plane N published` per plane index,
                    `draw: CZ_VK_CLIP_POISON plane published`.
+CZ_VK_CLIP_BIAS=eps  shift every enabled plane OUTWARD by eps of its own magnitude —
+                   the boundary-error arm for the slicing residuals (the gore plug
+                   that seals a cut lies exactly ON the plane). Part 57 measured the
+                   scale: the whole zombie spans LESS THAN ~0.01 of a plane's
+                   magnitude in clip distance, so eps=0.01 un-clips the entire body
+                   ("back to two complete zombies") while eps=0 clips the plug away
+                   (see-through cut). The right correction is smaller than 0.01 and
+                   should be DERIVED (which space the dot belongs in), not fitted.
+                   Counter: `draw: user clip plane BIASED (CZ_VK_CLIP_BIAS)`.
 ```
 
 ## Mip levels (part 39)

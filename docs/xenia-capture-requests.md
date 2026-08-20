@@ -416,3 +416,33 @@ play / a save?**
 The R5 capture (fresh-jump stand-still F4) is still welcome as belt-and-
 braces — it would show whether hardware's own DebugJump batch decision
 matches ours — but it is no longer the blocking measurement.
+
+## R6 (part 57): ONE single-frame trace at the FAR gas-sign viewpoint
+
+**The question it settles**: whether the GAS sign's black-letters defect is in the
+CONTENT of the far-LOD textures (our streaming/level machine filling guest memory
+with something other than hardware's) or in our GPU pipeline (untile/format/sampler).
+
+Part 57 exhausted the self-serviceable half:
+* the sign was ATTRIBUTED with the draw-ID pass — the far disc+letters are
+  `ps=57d441f53fc93ad7` (batched far-LOD material) and `ps=86ac6569ea0d700d`
+  (the letters, s0 = a 32x16 tiled DXT1);
+* our translation of `57d441f53fc93ad7` was read instruction-by-instruction against
+  the capture's own disassembly — FAITHFUL, the shader code is exonerated;
+* a live dump of the letters' 32x16 (109EF000, taken seconds after an operator F9,
+  standing still) decodes to 68.8% black with garbage, and its companion 64x64
+  (11FA0000) decodes to shredded stripes AT EVERY CANDIDATE EXTENT — while the same
+  dump's 256x256 lightmap decodes perfectly with the same tool, so the decode method
+  is validated and the CONTENT ITSELF is the anomaly;
+* the content matches nothing in `pro_z02_gas_text_flicker{,_LOD}.tex` in any
+  endianness (though per-record compression inside .tex could hide a match).
+
+**The ask**: stand at the far viewpoint where the sign's letters are broken (the
+part-56 capture_012174 spot — down the street, sign small), single-frame .xtr trace,
+same protocol as the R2 seven. The trace carries the letters draw's fetch constants
+AND the texture bytes hardware sampled; `tools/xtr_draw_bindings.py` reads both.
+* If hardware's bytes at the letters' s0 differ from our dump -> the defect is in OUR
+  loading (streaming level machine / file layer), and hardware's bytes show what the
+  content should be.
+* If they MATCH ours -> the tiny-texture content is legitimate and the defect is in
+  our sampling of it (and the census's fetch fields for that draw become the diff).

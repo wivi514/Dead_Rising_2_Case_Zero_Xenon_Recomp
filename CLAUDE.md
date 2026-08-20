@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part57-kickoff.md`.** State the rule as well as the name, because this line said
+    `part58-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -732,6 +732,66 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-19 (part 57 CLOSED — **TWO OPERATOR SESSIONS ANSWERED ALL
+THREE PICTURE ITEMS: USER CLIP PLANES went in and the slicing doubling is FIXED, the GAS
+sign was ATTRIBUTED and its shader EXONERATED against the capture's own disassembly, and
+the decal "never issued" verdict was REVERSED by one added census field.** `docs/part58-kickoff.md`
+is the LIVE hand-off; the full record is `phase5-notes.md` §6cm; per-defect state is
+`open-items.md` 00p; performance stays parked in `perf-state-parked.md`):
+
+* **USER CLIP PLANES EXIST NOW, COMPUTED BY THE VERTEX SHADERS** — Vulkan has no
+  fixed-function planes, so XenosRecomp (local patch, a gap SHARED with Fable 2) emits an
+  `XE_USER_CLIP_PLANES` epilogue dotting the raw exported clip position against six planes
+  the runtime publishes at SharedConstants+2080 from PA_CL_UCP_0..5. Null cache
+  byte-identical; 104/104 VS carry ClipDistance with the define, 335/335 PS unchanged;
+  `assets/shader_spv_clip_a2m` is the play cache (a2m + clip, one change per experiment).
+  **The poison pair proved the chain before any zombie was asked** (gotcha 30 both ways):
+  CZ_VK_CLIP_POISON blanked the picture on the clip cache — operator: *"cannot see anything
+  and can hear main menu"*, validation ZERO non-topology lines — and changed nothing on
+  stock. **Verdict: the halves SEPARATE** (plane 0 on 750,632 slicing-arm draws) where part
+  56 gave two whole doubled bodies.
+* **THE SLICING RESIDUALS ARE SCOPED, NOT GUESSED**: the cut is see-through (the GORE PLUG
+  that seals it is clipped away) and a thin slab sometimes doubles. The ten-capture census
+  decoded the game's whole technique — depth-prepass + z-EQUAL colour per half, then
+  two-sided-stencil gore plugs (front REPLACE/back ZERO, per-piece ref; our pipeline reads
+  those fields, retiring 00o's `ds.back` suspicion) — and **CZ_VK_CLIP_BIAS measured the
+  margin: +0.01 of a plane's magnitude un-clips the ENTIRE body** (*"no longer see
+  through/hollow but now back to two complete zombies"*), so the plug lives on a sub-0.01
+  boundary where a systematic SPACE error in our dot eats it. Part 58 derives the right
+  space from the captured planes + poses offline — no fitted epsilon.
+* **THE GAS SIGN IS ATTRIBUTED AND ITS SHADER IS EXONERATED.** Draw-ID at the operator's
+  own far viewpoint: the far disc+letters are `ps=57d441f53fc93ad7` (2,401-vert batched
+  far-LOD material) and `ps=86ac6569ea0d700d` (letters) — the part-56 "17 far-only" set
+  difference was a red herring, both appear near too. **Our translation of the first was
+  read instruction-by-instruction against Xenia's own disassembly: FAITHFUL** — the step
+  part 27 named is finally taken. The suspect is now the CONTENT of the tiny far-LOD
+  textures (16x16/32x16/64x8 sub-tile tiled DXT1s): a live dump seconds after an operator
+  F9 (the follow-up script fires it itself) shows the letters' 32x16 mostly BLACK with
+  garbage while the same dump's 256x256 decodes perfectly with the same tool. **R6 — one
+  hardware single-frame trace at the far viewpoint — is FILED and decides content vs
+  pipeline** (`xenia-capture-requests.md`). Also learned: XenosRecomp silently drops
+  getCompTexLOD/setTexLOD (156 of our PS carry the idiom; benign here).
+* **THE DECAL "DROP" VERDICT IS REVERSED AND THE TITLE'S TRIPLE-BUFFERING ESTABLISHED.**
+  The new burst per-draw census first read "decals not issued on dark frames"; adding va=
+  (stream address) showed a 3-address ROTATING RING with content constant per address —
+  folded by class, decal draws are issued EVERY frame. A blinking decal is
+  issued-and-lost; prime suspect is our cross-frame stream store + frame-ahead guard
+  against a 3-frame ring, `CZ_VK_NO_PARALLEL_GUARD=1` is the ready A/B. **The defect did
+  not fire in either session** (*"now they are all working"*) — an observation with a
+  shelf life, not a fix; nothing shipped this part explains it.
+* **New instruments**: the burst census (`CZ_BURST_CENSUS`, `_EVERY`; ring-aware
+  burst_read verdicts — its first verdict was WRONG and is retracted in place), census
+  fields v0=/va=, `CZ_VK_NO_CLIP_PLANES` / `CZ_VK_CLIP_POISON` / `CZ_VK_CLIP_BIAS`, the
+  chained four-arm session script with both poison controls FIRST, and the follow-up
+  script's SELF-FIRING live_texdump watcher (fires within ~2 s of every F9 — keep it in
+  every capture session). The null-cache diff also caught `vs_c17bbebf65383249` sitting
+  in the dumps but missing from the cache — **the cache is 440**.
+* **Gates**: all runtime verification ran WINDOWED through the operator (their
+  instruction — "do not run it headless, let me do it"): validation clean on the clip
+  cache, cache misses 0 everywhere, every arm's engagement counted. `--smoke` passes.
+  The headless sweep (E3, A5, PM4 oracles) was not re-run — the changes are inert
+  without the clip cache selected; run it when a part changes the default path.
+
 Where the port is, as of 2026-08-19 (part 56 CLOSED — **A PICTURE SESSION DRIVEN END TO END
 BY OPERATOR CAPTURES. It implemented the STENCIL TEST, which this renderer had never honoured
 on ~18% of a gameplay frame's draws, and REFUTED TWO of its own hypotheses about the other
@@ -806,113 +866,8 @@ unexplained.** `docs/part57-kickoff.md` is the LIVE hand-off; performance stays 
   full gate sweep on the FINAL stencil build is OWED** — the operator was mid-session when
   part 56 closed and the gates compete for the GPU.
 
-Where the port is, as of 2026-08-18 (part 55 CLOSED — **THE OPERATOR ASKED FOR
-MULTITHREADING AND THE BIGGEST THING ON THE CRITICAL THREAD TURNED OUT NOT TO BE
-PARALLELISABLE WORK AT ALL: a quarter of the pump thread was `std::unordered_map` and
-`std::map`. Deleting it took their frame −13%; a per-window memo on the ALU constant copy
-took another −2 to −3%; −18% in total at the load they actually play, with none of the
-plan's three parallel items built.** `docs/part56-kickoff.md` is the LIVE hand-off and its
-subject is VISUAL BUGS; **performance is parked in `docs/perf-state-parked.md`**; read
-`phase5-notes.md` §6cl):
-
-* **THE OPERATOR SET THE SUBJECT AND THE CONSTRAINT.** *"I want us to focus on making it so
-  the game properly use multithread and dispose of the load properly"*, plus *"even if we
-  really needed the 16 core we should still leave core empty for user background item and
-  all. So we should do it smart and depend on amount of core the user has instead of aiming
-  for my machine."* Both were answered: the ceiling is 5-6 busy threads and not 16, and
-  there is now **one `ThreadBudget` for the whole runtime** sized from PHYSICAL cores
-  (counted as distinct (package, core) pairs, intersected with the process's affinity mask),
-  minus 2 reserved for the OS and the player, minus 3 already committed, capped at 6.
-  **Zero is a first-class configuration** — a 4-core laptop runs the serial path, which is
-  correct and not degraded. `CZ_WORKERS=N` is the one knob, and every run prints
-  `[threads] machine: 8 physical cores, 16 logical cpus -> budget 3 workers`. Gotchas 358,
-  359. **The arithmetic correction matters on its own: every "N of 16 cores" figure written
-  here since part 50 counted logical THREADS**, so the process at 3.75 cores was using 47%
-  of that machine and not 23%.
-* **ITEM C — "split `UploadStream` before assuming anything about it" — WAS FILED AS THE
-  CHEAPEST THING ON THE LIST AND IT REWROTE THE PART.** It could not be split with a
-  `ProfScope`: the path is taken ~33,000 times a crowd frame and two clock reads at ~20 ns
-  is 1.3 ms a frame, larger than several of the phases it would separate (gotcha 7). So it
-  was split with `perf` and the DWARF line table the RelWithDebInfo build already carries —
-  `tools/part55_srcline.py`, free, and at -O2 it attributes INLINED callees to their own
-  lines. **89% of `UploadStream` was the hash-map lookup: 41.24% `std::equal_to`, 36.92%
-  `_M_find_before_node`, 10.49% the prime MODULO — 13.1% of the whole pump thread.** The
-  same tool then found 17.9% of `DoDraw` in a `std::map` (the shader table, probed twice a
-  draw) and ~76% of `UploadTexture` in three more. **Roughly a quarter of the pump thread
-  was container lookups**, larger than any item in the plan. Gotchas 360, 361, 362.
-* **FIVE TABLES ARE NOW FLAT OPEN-ADDRESSED**, with two details that would have been silent
-  defects: the key is passed through a splitmix64 finalizer (with a power-of-two mask the
-  low bits ARE the bucket, and these keys' low bits are an endian code and the bottom of a
-  byte count), and clearing is a GENERATION BUMP rather than a memset, with the tombstone
-  flag in the top bit of the same word so a probe still reads one array.
-  **`CZ_VK_NO_FLAT_CACHE=1` restores the maps exactly**; `CZ_VK_VERIFY_FLAT_CACHE=1` runs
-  both and compares every lookup — **0 of 48.5 M disagreed** — and its poison arm reads
-  **81.7%**, which is what licenses reading the zero at all (gotcha 30). `_int_malloc` went
-  from 2.11% of the pump to **0.02%**.
-* **THE ALU CONSTANT COPY IS MEMOISED PER WINDOW, AND THE FIRST DESIGN WAS REFUTED BY ITS
-  OWN PRE-REGISTERED KILL THRESHOLD.** It copies 8 KB per draw — ~57 MB/frame and over
-  5 GB/s at the operator's soak, and the two hottest source LINES on the pump thread once
-  the containers stopped hiding them. Predicted ~60% reuse from the packet census
-  (`DRAW_INDX` 2,353/frame vs `LOAD_ALU_CONSTANT` 890/frame), "below 30% not worth its
-  risk" written down first, **measured 3.6-7.1%** — because constants are also written by
-  ordinary type-0 REGISTER RUNS, 40.1% of all packets, which that opcode census cannot see.
-  **Splitting the stamp into the two constant windows takes it to 32-36%**, on the
-  hypothesis that the VERTEX window is rewritten per draw (a world matrix per object) while
-  the PIXEL window sits still — confirmed by the per-half counter on the operator's own
-  machine: **VS 2.9%, PS 61.0%**. Gotcha 365: a hypothesis that splits a cost needs a
-  per-part counter or the explanation is a story. Verifier **0 of 117,521 and 0 of 119,019**,
-  poison **100.0000%**.
-* **MEASURED ON THE OPERATOR'S OWN SOAKS, FOUR CHAINED TWO-ARM SESSIONS, AT ~7,000 DRAWS IN
-  THE HEAVIEST PLACE THEY KNOW: ~12.8 ms -> ~11.0 (flat containers, −13%) -> ~10.5 (constant
-  memo, −2 to −3%) — about −18%, 80 fps -> 95.** Their framing is why the roaming campaign
-  was abandoned mid-run: *"I'll do your campaign with soak at the spot that hit the cpu the
-  most so we just get 2x 3minutes soak instead of hours of testing in unstable environment
-  with autochuck."* `tools/part55_chained_ab.sh` is that harness; arms are one env var each.
-* **AND THE HEADLINE HAD TO BE RETRACTED WITHIN THE HOUR, BY THE PERSON WHO WROTE THE RULE.**
-  Mid-soak, arm 1 was compared against the PREVIOUS session's control and reported as
-  −5.5%; arm 2 of the same session said −2 to −3%, which is what had been predicted before
-  the run. **Gotcha 364: an arm's number is meaningless until its OWN control arm has run**,
-  and the pull is strongest when the older number is recent, from the same harness and at a
-  similar draw count — it looks like a control and it is not one. **Every session also
-  landed its two soaks 4-7% apart in draw count**, which moved a headline in both directions
-  across the part; project with each arm's own within-arm slope and quote both projections.
-* **THE OPERATOR'S "SHOULDN'T GEOMETRY BE IN VRAM" IS A REAL GAP AND THE ANSWER IS NO —
-  ~14% SLOWER, and the reason is structural to recompilers.** Images were already
-  `DEVICE_LOCAL`; the 512 MB stream store and the per-frame arena were not, so every draw
-  fetched vertices across PCIe. Their RTX 3070 exposes `DEVICE_LOCAL | HOST_VISIBLE |
-  HOST_COHERENT` over all 8 GiB (Resizable BAR), so the switch is one line — and it took the
-  frame from 11.18 to 12.80 ms draw-matched. **A game engine uploads a mesh once and draws
-  it a hundred times, so the GPU's fetch dominates; a RECOMPILER re-uploads its shader
-  constants every draw because the guest writes its register file every draw** — ~85 MB/frame
-  of CPU writes, cached at 30+ GB/s in RAM against write-combined PCIe at a third of that.
-  Gotcha 363, plus a section in `reusability.md` written for whoever ports Case West.
-  `CZ_VK_VRAM_STREAMS=1` is kept as the arm. **Two corollaries: the calculus FLIPS once the
-  per-draw constant upload is gone, and CPU-visible device memory is WRITE-ONLY** — a read
-  is an uncached fetch across the bus, and this port found a function at 5.31% of its
-  critical thread reading three vertices back out of the buffer, free in RAM and ruinous in
-  VRAM with nothing naming the cause.
-* **A STUTTER THE OPERATOR REPORTED WAS INVESTIGATED PROPERLY RATHER THAN ATTRIBUTED.**
-  Their first session: the flat arm *"is stuttering a lot"* while moving, and its log lost
-  ~7 seconds inside one 10-second window. The tables were COUNTED (20 grows, 31.41 ms total
-  over a whole run, worst 15.04 ms — three visible hitches, not seven seconds), the headless
-  campaigns were asked and DISAGREED with the report (18 frames over 50 ms in the flat arm
-  against 39 in the map arm), and the arm ORDER was reversed, which is the control the first
-  session could not have. On the re-test every log's worst mean-over-median window is
-  1.45-1.47x on a 2 ms menu frame, and their verdict was *"arm 2 has same amount of stutter
-  as arm 1 but framerate is higher"*. **The tables were A stutter source and not THE one**;
-  pre-sizing them to the measured high-water mark takes the run's grow bill to 1 grow /
-  0.06 ms. Two things changed between the sessions, so the credit is NOT awarded cleanly.
-* **Gates at close: ALL CLEAN, re-run whole.** `--smoke`; switch gate 0 defects; dimension
-  census 0 disagreements; both PM4 oracles on B1; **E3 best of five +0.8763, 4 of 5 agreeing
-  on layout**; `no translated shader` 0; `truncated=0`; **A5 exit 0, 4 permutation windows,
-  0 real**; deepest file **#83 `cinezombie.big`**; shader-cache NAME diff shows only
-  `ps_926c15dd20571cf1`, the known lost-microcode entry — **the cache is 439**, unchanged.
-  **Plus the two rows this part had to invent**: the flat-cache verifier (0 of 48.5 M,
-  poison 81.7%) and the constant-memo verifier (0 of 117,521 and 0 of 119,019, poison
-  100.0000%).
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`** — part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 55's** — part 57 moved part 55's out in the same commit that added its own block, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

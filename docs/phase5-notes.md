@@ -11946,3 +11946,116 @@ same-session control:
 parallel items the plan was built around.** §0 of `perf-plan-part55.md` predicted "roughly a
 third off the frame" from parallelism with a ceiling of 5-6 busy threads; half of that
 arrived from deleting work instead, on the same one thread. Gotcha 362.
+
+## 6cm. Part 57: THE OPERATOR'S SESSION ANSWERED ALL THREE PICTURE ITEMS AT ONCE — the
+## clip planes went in and separated the halves, the sign was ATTRIBUTED and its shader
+## EXONERATED, and the decal "drop" verdict was reversed by one added census field
+
+Part 57 executed `part57-kickoff.md` in the operator's order, with two operator sessions
+(four chained arms, then a follow-up) doing all runtime verification — no headless game
+runs, at the operator's instruction.
+
+### 1. User clip planes (the zombie-slicing mechanism) — BUILT, PROVEN, and the residual
+### is MEASURED to be a boundary error at a known scale
+
+Vulkan has no fixed-function user clip planes, so the translated VERTEX SHADERS now
+compute them: XenosRecomp (local patch) emits an `XE_USER_CLIP_PLANES` epilogue dotting
+the RAW exported clip position (above the g_PosScale window->NDC fold) against six plane
+equations at SharedConstants+2080, exported as ClipDistance[6]. The runtime publishes
+only the planes PA_CL_CLIP_CNTL enables (planes at 0x2388, part 56's register-dump find),
+zeroes the block per draw (a zero plane dots to 0 = KEPT), and enables shaderClipDistance
+only if the device has it. Null-checked byte-identical without the define; 104/104 VS
+declare the builtin with it, 335/335 PS unchanged. `assets/shader_spv_clip_a2m` is the
+cache a play session should select — a2m + clip, so the operator's part-46 foliage choice
+is not silently reverted (one change per experiment).
+
+**The poison pair proved the chain end to end before any zombie was asked**: plane
+(0,0,0,-1) on every draw (CZ_VK_CLIP_POISON=1) blanked the whole picture on the clip
+cache — the operator: *"cannot see anything and can hear main menu"*, 3.5 M draws
+poisoned, Vulkan validation ZERO non-topology lines — and changed NOTHING on the stock
+cache (13.1 M draws poisoned). Gotcha 30 done right for once: both controls ran before
+the experiment.
+
+**The verdict**: *"The zombie slice in two parts but not properly but better then how it
+was"* — the halves SEPARATE now (plane 0 published on 750,632 draws in the slicing arm),
+where part 56's build gave two whole doubled bodies. Two residuals, in their words:
+*"we can see through the zombies from the cut"* and *"sometime two times the same part
+on each cut half"*.
+
+**The census of their ten F9s decodes the game's whole technique** (clip-enabled draws
+only): a DEPTH-ONLY PREPASS of each clipped half (mask=0, z write, LEQUAL) + a colour
+pass at z EQUAL (mask=F, no stencil) — 468 draws each — then small 18-30-vert GORE-PLUG
+meshes drawn TWO-SIDED (RB_DEPTHCONTROL bit 7 SET, front zpass=REPLACE with a per-piece
+stencil ref, back zpass=ZERO) that seal the cut. Our two-sided stencil path reads exactly
+those fields, so the part-56 `ds.back = ds.front` suspicion is retired for this case.
+
+**Both residuals fit one mechanism and the bias arm measured its scale**: the plug lies
+exactly ON the plane. CZ_VK_CLIP_BIAS=eps shifts every plane outward by eps of its own
+magnitude; at eps=0.01 the operator reported *"no longer see through/hollow but now back
+to two complete zombies"* — i.e. +0.01·|P| un-clips the ENTIRE body, so the whole zombie
+spans LESS than ~0.01 of a plane's magnitude in clip distance, and the cut lives on a
+razor-thin margin where any systematic error in our dot eats the plug. The fix is NOT a
+fitted eps: the right question is which SPACE the dot belongs in, and the ten captures'
+plane values + pose matrices are the data to derive it offline (part 58's first job).
+
+### 2. The GAS sign (the operator's #1) — attributed by draw-ID, shader exonerated by
+### disassembly, and the suspect narrowed to the far-LOD texture CONTENT
+
+The draw-ID pass at the operator's own far viewpoint (arm 3, five F9s) identified the
+sign directly — no inference: the far disc+letters are **`ps=57d441f53fc93ad7`** (a
+2,401-vert batched far-LOD prop material) and **`ps=86ac6569ea0d700d`** (the letters).
+The part-56 "17 far-only shaders" set-difference was a red herring for the sign — both
+shaders appear in near frames too, drawing other distant props.
+
+**Our translation of `57d441f53fc93ad7` was read against Xenia's own disassembly of the
+microcode, instruction by instruction: FAITHFUL** — including the co-issued scalar pairs,
+the setp/jmp three-way lighting select, the squared-diffuse gamma round trip and the
+swizzled export. The step part 27 named and never took is now taken, and the shader code
+is exonerated. (Same read established XenosRecomp silently DROPS getCompTexLOD/setTexLOD
+— 156 of our pixel shaders carry the idiom — benign here because our tfetch ignores
+register LOD and the shadow atlas is single-level, but worth knowing.)
+
+**The remaining suspect is the CONTENT of the tiny far-LOD textures** — every one of
+these materials samples sub-tile tiled DXT1s (16x16, 32x16, 64x8, pitchBlk=4 = one full
+tile). The follow-up session's self-firing live dump (a watcher runs live_texdump within
+seconds of every F9) caught the letters' s0 (109EF000, 32x16) at 68.8% BLACK with garbage
+— and the picture from the same press shows the letters black with the magenta/yellow/
+cyan mosaic on the G. Its companion 64x64 decodes to shredded stripes at EVERY candidate
+extent, while the SAME dump's 256x256 lightmap decodes perfectly with the same tool
+(decoder validated on the spot). The bytes match nothing in
+`pro_z02_gas_text_flicker{,_LOD}.tex` in any endianness. Either our streaming/level
+machine fills these slots with the wrong bytes, or the layout is something the fetch
+constant does not describe. **R6 (one hardware single-frame trace at the far viewpoint)
+is filed and decides which side of the fence** — `docs/xenia-capture-requests.md`.
+
+### 3. The decal flicker — the "never issued" verdict is REVERSED, and the title's
+### triple-buffering is established
+
+The burst's new per-draw census (built this part: every draw of every burst frame, one
+file per burst, frame-prefixed lines aligned with the PPMs; CZ_BURST_CENSUS=0 declines)
+first showed every decal draw toggling between v0=0/0/0 and its world position in
+exactly complementary frame sets — read then as "never issued on the dark frames".
+**Adding ONE FIELD (va=, the stream's guest address) reversed the reading**: the title
+TRIPLE-BUFFERS its decal geometry — three rotating addresses, each live every third
+frame, content CONSTANT per address — and folded by class (ps, verts, s0) the decal
+draws are issued on EVERY frame. burst_read.py now folds the ring out before concluding
+anything (its first verdict was wrong about draws issued every frame).
+
+So when a decal blinks, it is issued-and-lost, and the prime suspect is OUR handling of
+a 3-frame buffer ring: the cross-frame stream store and its frame-ahead parallel guard
+(CZ_VK_NO_PARALLEL_GUARD=1 is the ready A/B). **The defect did not fire this session**
+— *"went everywhere I knew decals where not working and now they are all working"* —
+which is recorded as an observation with a shelf life, not a fix: nothing shipped this
+part explains it, the flicker was always camera-motion-dependent and intermittent, and
+the arm is ready for the next time it shows.
+
+### The session mechanics worth keeping
+
+* **The four-arm chained script with both poison controls FIRST** meant the slicing
+  verdict arm could not be a null test — 30 seconds of operator time per control.
+* **The self-firing texture dump** (watcher on the capture census, live_texdump within
+  ~2 s of F9, operator standing still) removes the timing coordination that gotcha 285
+  is about. Keep it in every capture session script.
+* **A capture with no photograph is a real cost**: the draw-ID run answers WHICH draw
+  but cannot show WHAT it looked like that day; the follow-up's plain F9 at the same
+  spot is what tied the attribution to the live symptom.
