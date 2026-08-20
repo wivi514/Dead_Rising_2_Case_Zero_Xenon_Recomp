@@ -9914,19 +9914,35 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = -1.0f;
             COUNT("draw: CZ_VK_CLIP_POISON plane published");
         }
-        // CZ_VK_CLIP_BIAS=<eps> — shift every enabled plane OUTWARD by eps, in units of
-        // the plane's own magnitude. The arm-4 residuals (seeing THROUGH the cut, and a
-        // thin slab of the body kept by BOTH halves) share one candidate mechanism: the
-        // gore plug that seals the cut sits exactly ON the plane, where any small error
-        // in our clip-space dot lands it a hair negative. If a small positive bias
-        // restores the plug and a small negative one worsens it, the mechanism is
-        // confirmed as boundary error; if the bias changes nothing, the plug is being
-        // lost some other way. A DIAGNOSTIC ARM, not a fix — a bias that "looks right"
-        // is a fitted constant, and the real question would become which SPACE the dot
-        // belongs in.
+        // CZ_VK_CLIP_BIAS=<eps> — adds eps*|P| to every enabled plane's w. KEPT ONLY AS
+        // HISTORY: part 58's offline derivation (tools/clip_plane_space.py) showed this
+        // does not shift the plane at all. The captured planes have c ~ -d (a unit view
+        // plane pushed through Proj^-T blows z/w up by ~1/zn and they cancel), so an
+        // increment landing only in w lands ENTIRELY in the view plane's z-COEFFICIENT
+        // — a ROTATION, worth 0.8-8 METERS of boundary at the zombie for eps=0.01,
+        // which is why part 57's eps=0.01 "un-clipped the whole body": it measured the
+        // rotation, not any margin. Use CZ_VK_CLIP_SHIFT below instead.
         static const float clipBias = []() -> float {
             const char* b = Env("CZ_VK_CLIP_BIAS");
             return b ? strtof(b, nullptr) : 0.0f;
+        }();
+        // CZ_VK_CLIP_SHIFT=<meters> — translate every enabled plane's boundary OUTWARD
+        // (kept side grows) by a true view-space distance. The correct margin probe the
+        // bias arm was meant to be: part 58 proved the register planes are unit view
+        // planes under the scene projection (88/88 at |n| = 1.000 +/- 0.0003), so a
+        // view-space translation by delta meters is Dplane = Proj^-T * (0,0,0,delta):
+        //     c += delta / P23,   d -= P22 * delta / P23
+        // with P22 = zf/(zf-zn) = 1.0001 and P23 = -zn*zf/(zf-zn) = -0.10001 — the
+        // scene camera's z row, DERIVED FROM THE CAPTURES by clip_plane_space.py (zn
+        // 0.1, zf 1000), not assumed. Every clip-enabled draw in the part-57 set is
+        // under that projection. A DIAGNOSTIC ARM, not a fix: if the see-through cut
+        // heals at +0.01..0.05 and worsens at the negative, the gore plug sits within
+        // centimeters of the boundary and our dot errs at precision scale; if +/-0.05
+        // changes nothing, the plug is lost by a non-clip mechanism and the clip branch
+        // is CLOSED.
+        static const float clipShift = []() -> float {
+            const char* s = Env("CZ_VK_CLIP_SHIFT");
+            return s ? strtof(s, nullptr) : 0.0f;
         }();
         const uint32_t ucpEna = regs[xenos::kPaClClipCntl] & 0x3F;
         if (!noClipPlanes && ucpEna)
@@ -9944,6 +9960,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                                             p[3] * p[3]);
                     p[3] += clipBias * mag;
                     COUNT("draw: user clip plane BIASED (CZ_VK_CLIP_BIAS)");
+                }
+                if (clipShift != 0.0f)
+                {
+                    float* p = reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
+                    constexpr float kP22 = 1.0001f;    // zf/(zf-zn), zn=0.1 zf=1000
+                    constexpr float kP23 = -0.10001f;  // -zn*zf/(zf-zn)
+                    p[2] += clipShift / kP23;
+                    p[3] -= kP22 * clipShift / kP23;
+                    COUNT("draw: user clip plane SHIFTED (CZ_VK_CLIP_SHIFT)");
                 }
                 switch (i)
                 {
