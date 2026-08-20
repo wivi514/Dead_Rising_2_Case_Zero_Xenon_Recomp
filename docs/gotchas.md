@@ -3865,3 +3865,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      0783{7,8,9}`, a draw reading undefined state, which a driver may service in a way that
      looks entirely correct until it does not. State caches keyed only on the VALUE are
      wrong here; the pipeline bind has to invalidate them.
+
+369. **A SIDE EFFECT ON THE RIGHT OF `||` IS A WRITE THAT HAPPENS ONLY WHEN THE LEFT SIDE
+     IS FALSE.** The window published its drawable size as
+     `if (nw != W.exchange(nw) || nh != H.exchange(nh)) print;` — on the very first
+     publish the width exchange returned "changed", the `||` short-circuited, and the
+     HEIGHT ATOMIC WAS NEVER WRITTEN, while the print (built from locals) said
+     "1280x720". Everything downstream was self-consistent with the lie: the renderer
+     read (1280, 0), clamped the zero to the surface minimum, built a 1280x1 swapchain,
+     and the compositor stretched it over the window — and the guard that would have
+     rebuilt it was itself gated on both values being non-zero, so nothing ever fired.
+     The operator's workaround was the diagnosis: a manual resize re-ran the publish
+     with the width now EQUAL, which finally let the height write execute. Three rules:
+     never put a side-effecting expression after `&&`/`||`; a log line printed from
+     LOCALS is not evidence the state was stored (read the atomic back if the line is
+     load-bearing); and when a defect's workaround is "poke it once and it stays fixed",
+     look for a once-only path that half-ran. Found by reading the stuck process's
+     atomics live (gdb x/2wd on the mangled symbols): W=1280, H=0 — one read that ended
+     three sessions of deduction.

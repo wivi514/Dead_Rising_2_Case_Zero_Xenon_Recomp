@@ -91,3 +91,18 @@ smoke gate passes. The headless gate sweep (E3, A5, PM4 oracles, dimension censu
 NOT re-run this part — the renderer changes are inert without the clip cache selected,
 and the operator's instruction stands; run the sweep when a part next changes the
 default path, or ask them for one gate session.
+
+## 6. BETWEEN PARTS: the launch-stretch is FIXED (operator-verified, three launches)
+
+The operator's "everything is stretched at launch until you resize" was a 1280x1
+swapchain built from a drawable height that was NEVER PUBLISHED — both atomic exchanges
+sat inside one `||` and the height one short-circuited away on the first publish
+(gotcha 369, commit a49981d). Verified fixed from the first frame. Kept hardening:
+CreateSwapchain logs want/current/min/max every creation; no swapchain is created
+before the drawable is published; a creation disagreeing with the window retries
+(capped, loud). Part 55's stutter session and part 54's present A/Bs all ran with the
+window at its INITIAL size unless someone resized — any measurement that depended on
+the swapchain matching a resized window was fine (resize re-published), but a
+launch-and-measure run's swapchain was 1280x1 with the compositor scaling; the readback
+path was unaffected. Treat pre-fix swapchain-arm numbers at DEFAULT window size with
+that in mind.
