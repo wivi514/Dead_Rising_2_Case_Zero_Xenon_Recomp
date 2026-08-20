@@ -147,6 +147,44 @@ std::string VfsResolveExisting(const std::string& guestPath)
         return {};
 
     std::error_code ec;
+
+    // THE PATCHED-ASSET OVERLAY (part 60). assets/game_patched/ mirrors the package
+    // tree and holds the files tools/gen_pc_options.py generates — the repacked
+    // fecmn.big whose options_pc.txt is rewritten for the resurrected PC options
+    // screen, and the string banks with our added value strings. A file that exists
+    // there wins over the shipped one; everything else falls through untouched.
+    //
+    // The overlay keys on the TRANSLATED path so it composes with both the `game:`
+    // and `d:` spellings, and it is checked BEFORE the shipped file so that "the
+    // patched archive failed to parse" can never silently degrade into "the shipped
+    // menu came up" — a wrong patched file should be seen, not masked (gotcha 5).
+    // CZ_NO_PATCHED_ASSETS=1 is the control arm: the shipped data, byte for byte.
+    static const bool overlayOff = getenv("CZ_NO_PATCHED_ASSETS") != nullptr;
+    if (!overlayOff)
+    {
+        std::string gameRoot;
+        {
+            std::lock_guard lock(g_mutex);
+            auto it = g_mounts.find("game");
+            if (it != g_mounts.end())
+                gameRoot = it->second;
+        }
+        if (!gameRoot.empty() && direct.rfind(gameRoot + "/", 0) == 0)
+        {
+            const std::string patched =
+                gameRoot + "_patched/" + direct.substr(gameRoot.size() + 1);
+            if (fs::exists(patched, ec))
+            {
+                KLOG("VFS: '%s' served from the PATCHED overlay -> %s "
+                     "(CZ_NO_PATCHED_ASSETS=1 restores the shipped file)\n",
+                     guestPath.c_str(), patched.c_str());
+                std::lock_guard lock(g_mutex);
+                g_resolved.emplace(guestPath, patched);
+                return patched;
+            }
+        }
+    }
+
     std::string answer;
     if (fs::exists(direct, ec))
     {
