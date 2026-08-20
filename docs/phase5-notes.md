@@ -12199,3 +12199,54 @@ visible ~10 cm doubled band) was WRONG in presentation — the ragdoll halves se
 so each piece just gets 5 cm longer, which reads as "the same" at play distance. The
 engagement evidence that mattered was the counters, not the picture (gotcha 151 the
 right way round).
+
+## 6co. Part 59: R6 answered the distance class — SMALL PACKED TEXTURES, base included
+
+**The verdict on R6's fork: BOTH branches were half-right, and the real defect was a
+third thing.** Hardware's bytes at the letters' s0 are OUR bytes (base level
+byte-identical between the trace and a live dump at the same spot, same session) — so
+the "content" branch closed: the streaming/file layer is exonerated, the murky 68.8%
+black data is legitimate. But the content is legitimate *for the tile region we were
+reading*, which is NOT the base level: **a texture whose shorter dimension is <= 16
+texels packs its WHOLE mip chain — level 0 included — into one 32x32-block tile at
+fixed offsets, with `mipAddr = 0`.** A 32x16's level 0 sits at block (0,4); ours read
+(0,0), the tile's sub-4x4-tail scrap region, and the `t.mipAddress &&` gate skipped
+the chain upload entirely. 79 distinct textures in the R6 street frame are in the
+class — the entire tiny far-LOD sheet population, which is why the symptom presented
+as "the distance class".
+
+**How it was pinned, in evidence order (one operator session + one trace, no guesses):**
+1. `xtr_draw_bindings.py` on R6: the letters draw is 2,663 verts, s0 = 32x16 DXT1,
+   mips 0..2, packed=1, mipAddr=0 — and the operator's same-spot F9 in OUR runtime
+   showed the identical draw (same vert count, same fetch shape) at our address.
+2. `--dump-texture` + `live_texdump.py`: hardware's 8 KB tile vs ours — bytes 0..4112
+   IDENTICAL, 452 differing in the tail region (both machines' guests agree on all
+   content that matters). Content branch closed.
+3. `packed_mip_derive.py` re-run on R6 re-confirmed the part-41 square tail table
+   (378/378 unanimous). A blind joint brute force (`packed_base_derive.py`) converged
+   per-texture but voted inconsistently across textures — self-similar content gives
+   false minima, so the blind search was abandoned for the authoritative rule.
+4. Xenia's `GetPackedMipOffset` (texture_util.cc, BSD-3 — transcription + licence
+   recorded at `PackedLevelOffset` in vk_renderer.cpp) — VERIFIED, not trusted: it
+   reproduces the part-41 square table exactly, and over the R6 class 69/70
+   informative chains are consistent at its offsets (letters chain scores 3.5 where
+   our old (0,0) base read scores 57.7; divergence threshold 48).
+5. Census over the class (76 mipAddr=0 packed DXT textures with bytes in the trace):
+   69 consistent, 1 marginal (26.9), 4 flat, 2 without bytes.
+
+**The fix (commit cf62229):** `PackedLevelOffset()` + two changes in UploadTexture —
+level 0's untile reads at (base0X, base0Y), and a new small-packed chain branch
+uploads levels 1..mipMax from the same tile. Counters: `texture: small-packed BASE
+read at its tile offset`, `mip: small-packed level TAKEN`. Control arm:
+`CZ_VK_NO_PACKED_SMALL=1` (both halves off, same binary). First operator session:
+1,662 base reads, 2,404 levels taken, no missing shaders, and the verdict — **"Work
+really well now."** The part-57 suspicion "content of the tiny far-LOD textures" is
+retracted in place: the content was never wrong, our READ of it was.
+
+**For Case West:** this transfers verbatim — the class is a hardware layout fact, not
+a title fact. Lift `PackedLevelOffset` and both call sites together, and keep the
+verification recipe (square-table cross-check + chain-consistency census on any trace).
+
+Also this part: the operator's F9-paired census/live-dump protocol worked end to end
+on first use at a NEW location — the whole diagnosis above consumed one trace and one
+15-minute play session. R6 is fulfilled; strike it from `xenia-capture-requests.md`.

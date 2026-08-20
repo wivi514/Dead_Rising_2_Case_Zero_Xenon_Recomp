@@ -3161,3 +3161,20 @@ operator: **"Yes it is perfect now."** FRONT=CW is the default;
 `CZ_VK_STENCIL_CCW_FRONT=1` is the control arm. `phase5-notes.md` §6cn §6. Remaining on
 watch: the part-57 doubled-slab sighting was not re-observed in any part-58 session —
 an observation with a shelf life, re-open if it shows.
+
+## 00r. PART 59: THE DISTANCE CLASS (gas sign) IS FIXED — small packed textures
+
+The R6 trace closed item 00's oldest distance defect in one session. The far-LOD
+"black letters / garbage" class was neither texture content (byte-identical to
+hardware's — the part-57 content suspicion is retracted in §6co) nor the shader
+(exonerated in part 57): **any texture with a dimension <= 16 texels packs its whole
+chain, LEVEL 0 INCLUDED, into one tile at fixed offsets with mipAddr=0** — our
+renderer read level 0 at the tile origin (the scrap region) and skipped the chain.
+79 distinct textures in one street frame. Fixed in commit cf62229
+(`PackedLevelOffset`, verified 69/70 chains + the 378/378 square table before
+shipping); first session read 1,662 base-offset reads / 2,404 packed levels taken;
+operator: **"Work really well now."** Control arm `CZ_VK_NO_PACKED_SMALL=1`.
+Full record: `phase5-notes.md` §6co. R6 is FULFILLED — no outstanding capture request.
+
+Still open from the part-56/57/58 chain: the decal flicker (waiting on a sighting;
+F8 burst + CZ_VK_NO_PARALLEL_GUARD=1 A/B ready) and the doubled-slab watch (00q).

@@ -283,3 +283,9 @@ ANSWERS IT: hardware shows fully textured buildings at every distance — the fl
 panel look at range is OUR defect. The PNGs also show hardware's foliage as proper
 alpha cutouts (the shard-tree comparison), and each .xtr carries full register state
 at the foliage draws — the oracle for the alpha-mode question (RB_COLORCONTROL).
+
+## R6_gas_sign (delivered 2026-08-20)
+One single-frame F4 trace at the far gas-sign viewpoint (`gas_station_sign.xtr`,
+81 MB, trace #13691) + frame-locked 1280x720 PNG + full session shader dump
+(291 distinct: 236 PS + 55 VS). Fulfills capture request R6; the analysis and the
+fix it produced are `docs/phase5-notes.md` §6co (small packed textures).

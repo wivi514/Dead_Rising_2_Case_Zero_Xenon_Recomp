@@ -417,7 +417,13 @@ The R5 capture (fresh-jump stand-still F4) is still welcome as belt-and-
 braces — it would show whether hardware's own DebugJump batch decision
 matches ours — but it is no longer the blocking measurement.
 
-## R6 (part 57): ONE single-frame trace at the FAR gas-sign viewpoint
+## R6 (part 57): ONE single-frame trace at the FAR gas-sign viewpoint — FULFILLED 2026-08-20
+
+**Delivered as `Xenia logs/R6_gas_sign/` and it answered the question in one part**:
+the content branch closed (bytes identical), and the real defect was a THIRD thing —
+small packed textures, level 0 included, read at the wrong tile offset. Fixed same
+day, operator-confirmed. `phase5-notes.md` §6co. THERE IS NO OUTSTANDING CAPTURE
+REQUEST.
 
 **The question it settles**: whether the GAS sign's black-letters defect is in the
 CONTENT of the far-LOD textures (our streaming/level machine filling guest memory

@@ -96,7 +96,7 @@ if [ -n "${SAFE:-}" ]; then
     extra+=(CZ_DEBUG_MENU=1 "CZ_DEBUG_FLAGS=$SAFE_FLAGS")
 fi
 if [ -z "${PLAIN:-}" ]; then
-    extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
+    extra+=("CZ_SHADER_SPV=$ROOT/assets/shader_spv_clip_a2m" CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1)
 fi
 
 echo "==================================================================="
