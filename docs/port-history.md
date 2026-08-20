@@ -4347,3 +4347,84 @@ unexplained.** `docs/part57-kickoff.md` is the LIVE hand-off; performance stays 
   baseline), E3 **+0.8823** with 4 of 5 agreeing on layout on the polygon-offset build. **The
   full gate sweep on the FINAL stencil build is OWED** — the operator was mid-session when
   part 56 closed and the gates compete for the GPU.
+
+
+## Part 59 (2026-08-20): the sweep, Night Run 1, and R6 closing the distance class
+
+Three threads in one day. (1) The gate sweep owed since part 58's front=CW default:
+all seven gates green (E3 +0.9596 identity, A5 0 real, PM4 oracles clean, dim census,
+truncated=0). (2) Night Run 1, the operator-requested overnight campaign: memo value
+replicated, guard4 refuted, clip cache partially attributed (+0.20 ms at 5k draws),
+and the ALU constant census (owed item 4) — range-copy dead, gather-copy ~10x
+(`perf-nightrun1.md`). (3) The operator delivered the R6 gas-sign trace and the
+distance class closed the same day: SMALL PACKED TEXTURES — any texture with a
+dimension <= 16 packs its whole chain, level 0 included, into one tile at mipAddr=0;
+ours read level 0 at the tile origin and skipped the chain. Fixed in cf62229
+(`PackedLevelOffset`, verified 69/70 chains + the part-41 square table 378/378);
+operator: "Work really well now." Full records: `phase5-notes.md` §6co, `open-items.md`
+00r. Prep for part 60 found `options_pc.txt` — a complete shipped PC graphics menu —
+in `fecmn.big`. Operator instructions recorded this part: Fable 2 is not a 3D
+reference; the next subject is waking that menu (display mode, resolution, shadow
+tiers).
+
+## The part-57 status block, moved out of CLAUDE.md by part 59
+
+Where the port is, as of 2026-08-19 (part 57 CLOSED — **TWO OPERATOR SESSIONS ANSWERED ALL
+THREE PICTURE ITEMS: USER CLIP PLANES went in and the slicing doubling is FIXED, the GAS
+sign was ATTRIBUTED and its shader EXONERATED against the capture's own disassembly, and
+the decal "never issued" verdict was REVERSED by one added census field.** `docs/part58-kickoff.md`
+is the LIVE hand-off; the full record is `phase5-notes.md` §6cm; per-defect state is
+`open-items.md` 00p; performance stays parked in `perf-state-parked.md`):
+
+* **USER CLIP PLANES EXIST NOW, COMPUTED BY THE VERTEX SHADERS** — Vulkan has no
+  fixed-function planes, so XenosRecomp (local patch, a gap SHARED with Fable 2) emits an
+  `XE_USER_CLIP_PLANES` epilogue dotting the raw exported clip position against six planes
+  the runtime publishes at SharedConstants+2080 from PA_CL_UCP_0..5. Null cache
+  byte-identical; 104/104 VS carry ClipDistance with the define, 335/335 PS unchanged;
+  `assets/shader_spv_clip_a2m` is the play cache (a2m + clip, one change per experiment).
+  **The poison pair proved the chain before any zombie was asked** (gotcha 30 both ways):
+  CZ_VK_CLIP_POISON blanked the picture on the clip cache — operator: *"cannot see anything
+  and can hear main menu"*, validation ZERO non-topology lines — and changed nothing on
+  stock. **Verdict: the halves SEPARATE** (plane 0 on 750,632 slicing-arm draws) where part
+  56 gave two whole doubled bodies.
+* **THE SLICING RESIDUALS ARE SCOPED, NOT GUESSED**: the cut is see-through (the GORE PLUG
+  that seals it is clipped away) and a thin slab sometimes doubles. The ten-capture census
+  decoded the game's whole technique — depth-prepass + z-EQUAL colour per half, then
+  two-sided-stencil gore plugs (front REPLACE/back ZERO, per-piece ref; our pipeline reads
+  those fields, retiring 00o's `ds.back` suspicion) — and **CZ_VK_CLIP_BIAS measured the
+  margin: +0.01 of a plane's magnitude un-clips the ENTIRE body** (*"no longer see
+  through/hollow but now back to two complete zombies"*), so the plug lives on a sub-0.01
+  boundary where a systematic SPACE error in our dot eats it. Part 58 derives the right
+  space from the captured planes + poses offline — no fitted epsilon.
+* **THE GAS SIGN IS ATTRIBUTED AND ITS SHADER IS EXONERATED.** Draw-ID at the operator's
+  own far viewpoint: the far disc+letters are `ps=57d441f53fc93ad7` (2,401-vert batched
+  far-LOD material) and `ps=86ac6569ea0d700d` (letters) — the part-56 "17 far-only" set
+  difference was a red herring, both appear near too. **Our translation of the first was
+  read instruction-by-instruction against Xenia's own disassembly: FAITHFUL** — the step
+  part 27 named is finally taken. The suspect is now the CONTENT of the tiny far-LOD
+  textures (16x16/32x16/64x8 sub-tile tiled DXT1s): a live dump seconds after an operator
+  F9 (the follow-up script fires it itself) shows the letters' 32x16 mostly BLACK with
+  garbage while the same dump's 256x256 decodes perfectly with the same tool. **R6 — one
+  hardware single-frame trace at the far viewpoint — is FILED and decides content vs
+  pipeline** (`xenia-capture-requests.md`). Also learned: XenosRecomp silently drops
+  getCompTexLOD/setTexLOD (156 of our PS carry the idiom; benign here).
+* **THE DECAL "DROP" VERDICT IS REVERSED AND THE TITLE'S TRIPLE-BUFFERING ESTABLISHED.**
+  The new burst per-draw census first read "decals not issued on dark frames"; adding va=
+  (stream address) showed a 3-address ROTATING RING with content constant per address —
+  folded by class, decal draws are issued EVERY frame. A blinking decal is
+  issued-and-lost; prime suspect is our cross-frame stream store + frame-ahead guard
+  against a 3-frame ring, `CZ_VK_NO_PARALLEL_GUARD=1` is the ready A/B. **The defect did
+  not fire in either session** (*"now they are all working"*) — an observation with a
+  shelf life, not a fix; nothing shipped this part explains it.
+* **New instruments**: the burst census (`CZ_BURST_CENSUS`, `_EVERY`; ring-aware
+  burst_read verdicts — its first verdict was WRONG and is retracted in place), census
+  fields v0=/va=, `CZ_VK_NO_CLIP_PLANES` / `CZ_VK_CLIP_POISON` / `CZ_VK_CLIP_BIAS`, the
+  chained four-arm session script with both poison controls FIRST, and the follow-up
+  script's SELF-FIRING live_texdump watcher (fires within ~2 s of every F9 — keep it in
+  every capture session). The null-cache diff also caught `vs_c17bbebf65383249` sitting
+  in the dumps but missing from the cache — **the cache is 440**.
+* **Gates**: all runtime verification ran WINDOWED through the operator (their
+  instruction — "do not run it headless, let me do it"): validation clean on the clip
+  cache, cache misses 0 everywhere, every arm's engagement counted. `--smoke` passes.
+  The headless sweep (E3, A5, PM4 oracles) was not re-run — the changes are inert
+  without the clip cache selected; run it when a part changes the default path.

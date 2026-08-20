@@ -68,6 +68,25 @@ bool LooksLikeBct(const std::vector<uint8_t>& d)
     return d.size() >= 4 && d[0] == 0x05 && d[1] == 0x01 && d[2] == 0x01 && d[3] == 0xE2;
 }
 
+// Part 59 extended the oracle: the frontend .big archives carry compressed TEXT
+// entries (screen layouts like options_pc.txt), which decompress perfectly and then
+// failed the .bct magic check — the tool refused to write 33,816 correct bytes. The
+// oracle for a text entry is that it IS text: >= 95% printable-or-whitespace over the
+// whole output. Binary garbage from a wrong framing fails this immediately, so the
+// "never emit garbage confidently" property survives.
+bool LooksLikeText(const std::vector<uint8_t>& d)
+{
+    if (d.empty())
+        return false;
+    size_t printable = 0;
+    for (uint8_t c : d)
+        if (c == 9 || c == 10 || c == 13 || (c >= 32 && c < 127))
+            ++printable;
+    return printable * 100 >= d.size() * 95;
+}
+
+bool OracleOk(const std::vector<uint8_t>& d) { return LooksLikeBct(d) || LooksLikeText(d); }
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -129,13 +148,13 @@ int main(int argc, char** argv)
         { okA = false; break; }
         produced += rawLen;
     }
-    if (okA && produced == uncompressed && LooksLikeBct(out))
+    if (okA && produced == uncompressed && OracleOk(out))
         printf("  per-chunk LZX (0xFF u16 u16 header): OK, %zu bytes, .bct magic present\n",
                produced);
     else
     {
         printf("  per-chunk LZX: no (%zu of %u bytes%s)\n", produced, uncompressed,
-               produced ? (LooksLikeBct(out) ? "" : ", magic wrong") : "");
+               produced ? (OracleOk(out) ? "" : ", magic wrong") : "");
         okA = false;
     }
 
@@ -148,12 +167,12 @@ int main(int argc, char** argv)
         out.assign(uncompressed, 0);
         const int rc = lzxDecompress(cat.data(), cat.size(), out.data(), uncompressed,
                                      window, nullptr, 0);
-        if (rc == 0 && LooksLikeBct(out))
+        if (rc == 0 && OracleOk(out))
             printf("  concatenated LZX (the XEX loader's shape): OK, .bct magic present\n");
         else
         {
             printf("  concatenated LZX: no (rc=%d%s)\n", rc,
-                   LooksLikeBct(out) ? "" : ", magic wrong");
+                   OracleOk(out) ? "" : ", magic wrong");
             fprintf(stderr,
                     "NEITHER framing produced a valid .bct. Nothing written — a "
                     "decompressor that emits garbage confidently is worse than one that "

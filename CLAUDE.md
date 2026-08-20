@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part59-kickoff.md`.** State the rule as well as the name, because this line said
+    `part60-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -732,6 +732,51 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-20 (part 59 CLOSED — **THREE THREADS, ALL LANDED IN ONE
+DAY: the owed GATE SWEEP ran all green; NIGHT RUN 1 (the operator-requested overnight
+perf campaign) answered the parked plan's owed items 1/2/4; and the operator's R6 trace
+closed the GAS-SIGN / DISTANCE CLASS the same day it was delivered.** `docs/part60-kickoff.md`
+is the LIVE hand-off (subject: wake the shipped PC graphics menu); the R6 record is
+`phase5-notes.md` §6co; per-defect state is `open-items.md` 00r; performance stays parked
+in `perf-state-parked.md`, updated by Night Run 1's §6):
+
+* **THE DISTANCE CLASS WAS NEITHER CONTENT NOR SHADER — IT WAS THE PACKED-TILE LAYOUT.**
+  Any texture whose shorter dimension is <= 16 texels packs its WHOLE mip chain, LEVEL 0
+  INCLUDED, into one 32x32-block tile (mipAddr=0): a 32x16's base sits at block (0,4),
+  ours read (0,0) — the tile's scrap region — and the `mipAddress &&` gate skipped the
+  chain upload entirely. 79 distinct textures in one street frame are in the class (the
+  whole tiny far-LOD sheet population). Bytes were exonerated first: hardware's letters
+  base is BYTE-IDENTICAL to our live dump at the same spot. `PackedLevelOffset`
+  (transcribed from Xenia's GetPackedMipOffset, BSD-3 recorded, then VERIFIED — it
+  reproduces part 41's brute-forced square table 378/378 and 69/70 R6 chains are
+  consistent at its offsets) fixed both halves in commit cf62229. First session: 1,662
+  base-offset reads, 2,404 packed levels taken, operator: "Work really well now."
+  `CZ_VK_NO_PACKED_SMALL=1` is the control arm. R6 is FULFILLED; no outstanding request.
+* **NIGHT RUN 1** (unattended, 24/24 runs engaged, null floor <= 0.4% on draw-banded
+  window medians): the constant memo's value REPLICATED (+1.8-2.2% cost to remove),
+  `CZ_VK_GUARD_WORKERS=4` is REFUTED (slower than budget-3), the clip cache costs
+  +0.20 ms/+3.0% at the 5,000-draw band (partial attribution — part 56's dynamic-state
+  calls stay co-suspect), and the ALU CONSTANT CENSUS killed item C's range-copy design
+  while pricing the GATHER design at ~10x (median 9 VS / 27 PS registers read of 256;
+  a0-indexing on only 22 VS, 0 PS). Two instrument facts with a shelf life: the
+  DebugJump landing is BIMODAL (~2,500 or ~5,000+ draws per run), and the uncapped
+  headless load runs the GPU at 75-85% — near the limiter — so CPU deltas read
+  compressed there. `docs/perf-nightrun1.md` is the record.
+* **The gate sweep (owed since part 58's default change): ALL GREEN** — E3 +0.9596
+  identity, A5 exit 0 (4 permutation / 0 real), both PM4 oracles 0 disagreements, dim
+  census clean, truncated=0, no-translated-shader 0. One trap recorded: a parked
+  no-input boot drifts into the attract loop, so the E-gate scans the frame dump for the
+  logo card (~frame 5,000) rather than trusting the final frame.
+* **Part 60 is prepped and the discovery is made**: `fecmn.big` ships BOTH the live
+  Visuals screen (whose ONLY setting is the dead Gamma meter) and **`options_pc.txt` —
+  a complete PC graphics menu (Resolution, DisplayMode, VSync, Shadow Low/Med/High,
+  more)**. The DebugJump precedent applies. `big_decompress` gained a text oracle for
+  the frontend layouts. Operator instruction recorded: do NOT consult Fable 2 for
+  renderer behavior — this port's own history is the reference.
+* **Gates**: `--smoke` OK after every change; picture verification WINDOWED through the
+  operator (three sessions: fix verdict, 1440p play). The sweep above covers part 56's
+  owed one too (same binary lineage).
+
 Where the port is, as of 2026-08-19 (part 58 CLOSED — **THE SLICING SEE-THROUGH IS FIXED
 AND IT WAS TRIANGLE FACING. One offline derivation answered the kickoff's space question
 (there was NO space error), the operator's shift ladder closed the whole clip branch, and
@@ -779,68 +824,8 @@ per-defect state is `open-items.md` 00q; performance stays parked in
   instruction is that they run the game, so it is the first ask of part 59.
 
 
-Where the port is, as of 2026-08-19 (part 57 CLOSED — **TWO OPERATOR SESSIONS ANSWERED ALL
-THREE PICTURE ITEMS: USER CLIP PLANES went in and the slicing doubling is FIXED, the GAS
-sign was ATTRIBUTED and its shader EXONERATED against the capture's own disassembly, and
-the decal "never issued" verdict was REVERSED by one added census field.** `docs/part58-kickoff.md`
-is the LIVE hand-off; the full record is `phase5-notes.md` §6cm; per-defect state is
-`open-items.md` 00p; performance stays parked in `perf-state-parked.md`):
-
-* **USER CLIP PLANES EXIST NOW, COMPUTED BY THE VERTEX SHADERS** — Vulkan has no
-  fixed-function planes, so XenosRecomp (local patch, a gap SHARED with Fable 2) emits an
-  `XE_USER_CLIP_PLANES` epilogue dotting the raw exported clip position against six planes
-  the runtime publishes at SharedConstants+2080 from PA_CL_UCP_0..5. Null cache
-  byte-identical; 104/104 VS carry ClipDistance with the define, 335/335 PS unchanged;
-  `assets/shader_spv_clip_a2m` is the play cache (a2m + clip, one change per experiment).
-  **The poison pair proved the chain before any zombie was asked** (gotcha 30 both ways):
-  CZ_VK_CLIP_POISON blanked the picture on the clip cache — operator: *"cannot see anything
-  and can hear main menu"*, validation ZERO non-topology lines — and changed nothing on
-  stock. **Verdict: the halves SEPARATE** (plane 0 on 750,632 slicing-arm draws) where part
-  56 gave two whole doubled bodies.
-* **THE SLICING RESIDUALS ARE SCOPED, NOT GUESSED**: the cut is see-through (the GORE PLUG
-  that seals it is clipped away) and a thin slab sometimes doubles. The ten-capture census
-  decoded the game's whole technique — depth-prepass + z-EQUAL colour per half, then
-  two-sided-stencil gore plugs (front REPLACE/back ZERO, per-piece ref; our pipeline reads
-  those fields, retiring 00o's `ds.back` suspicion) — and **CZ_VK_CLIP_BIAS measured the
-  margin: +0.01 of a plane's magnitude un-clips the ENTIRE body** (*"no longer see
-  through/hollow but now back to two complete zombies"*), so the plug lives on a sub-0.01
-  boundary where a systematic SPACE error in our dot eats it. Part 58 derives the right
-  space from the captured planes + poses offline — no fitted epsilon.
-* **THE GAS SIGN IS ATTRIBUTED AND ITS SHADER IS EXONERATED.** Draw-ID at the operator's
-  own far viewpoint: the far disc+letters are `ps=57d441f53fc93ad7` (2,401-vert batched
-  far-LOD material) and `ps=86ac6569ea0d700d` (letters) — the part-56 "17 far-only" set
-  difference was a red herring, both appear near too. **Our translation of the first was
-  read instruction-by-instruction against Xenia's own disassembly: FAITHFUL** — the step
-  part 27 named is finally taken. The suspect is now the CONTENT of the tiny far-LOD
-  textures (16x16/32x16/64x8 sub-tile tiled DXT1s): a live dump seconds after an operator
-  F9 (the follow-up script fires it itself) shows the letters' 32x16 mostly BLACK with
-  garbage while the same dump's 256x256 decodes perfectly with the same tool. **R6 — one
-  hardware single-frame trace at the far viewpoint — is FILED and decides content vs
-  pipeline** (`xenia-capture-requests.md`). Also learned: XenosRecomp silently drops
-  getCompTexLOD/setTexLOD (156 of our PS carry the idiom; benign here).
-* **THE DECAL "DROP" VERDICT IS REVERSED AND THE TITLE'S TRIPLE-BUFFERING ESTABLISHED.**
-  The new burst per-draw census first read "decals not issued on dark frames"; adding va=
-  (stream address) showed a 3-address ROTATING RING with content constant per address —
-  folded by class, decal draws are issued EVERY frame. A blinking decal is
-  issued-and-lost; prime suspect is our cross-frame stream store + frame-ahead guard
-  against a 3-frame ring, `CZ_VK_NO_PARALLEL_GUARD=1` is the ready A/B. **The defect did
-  not fire in either session** (*"now they are all working"*) — an observation with a
-  shelf life, not a fix; nothing shipped this part explains it.
-* **New instruments**: the burst census (`CZ_BURST_CENSUS`, `_EVERY`; ring-aware
-  burst_read verdicts — its first verdict was WRONG and is retracted in place), census
-  fields v0=/va=, `CZ_VK_NO_CLIP_PLANES` / `CZ_VK_CLIP_POISON` / `CZ_VK_CLIP_BIAS`, the
-  chained four-arm session script with both poison controls FIRST, and the follow-up
-  script's SELF-FIRING live_texdump watcher (fires within ~2 s of every F9 — keep it in
-  every capture session). The null-cache diff also caught `vs_c17bbebf65383249` sitting
-  in the dumps but missing from the cache — **the cache is 440**.
-* **Gates**: all runtime verification ran WINDOWED through the operator (their
-  instruction — "do not run it headless, let me do it"): validation clean on the clip
-  cache, cache misses 0 everywhere, every arm's engagement counted. `--smoke` passes.
-  The headless sweep (E3, A5, PM4 oracles) was not re-run — the changes are inert
-  without the clip cache selected; run it when a part changes the default path.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 55's** — part 57 moved part 55's out in the same commit that added its own block, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 57's** — part 59 moved part 57's out in the same commit that added its own block, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
