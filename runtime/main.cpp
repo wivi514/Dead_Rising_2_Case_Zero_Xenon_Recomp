@@ -36,6 +36,7 @@
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
 #include "gpu/vk_renderer.h"
+#include "host/settings.h"
 #include "host/window.h"
 #include "kernel/audio.h"
 #include "kernel/content.h"
@@ -230,6 +231,11 @@ int main(int argc, char** argv)
         // directory cannot be created says so at startup instead of at the moment the
         // player tries to save.
         ContentSetRootFromGameDir(gameDir);
+        // The graphics settings the resurrected PC options screen writes (part 60).
+        // Loaded here — after the save root exists, BEFORE Host_WindowInit — because
+        // the display mode is a window-creation decision. Env vars win over the file
+        // at each consumer.
+        Settings_Load(ContentSaveRoot() + "/cz_settings.txt");
     }
 
     // Load the XEX image into guest memory at its link base.

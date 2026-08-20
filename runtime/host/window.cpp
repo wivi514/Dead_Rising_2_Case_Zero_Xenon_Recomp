@@ -124,6 +124,7 @@ void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *
 #include <SDL_vulkan.h>
 
 #include "../gpu/vk_renderer.h"
+#include "settings.h"
 
 namespace {
 
@@ -200,6 +201,43 @@ void PublishDrawableSize()
                         "frame time from this run\n",
                 nw, nh, g_renderer ? "readback" : "swapchain");
 }
+// Apply a display mode to the live window. WINDOW THREAD ONLY (the SDL rule this
+// whole file exists to keep): Host_WindowInit calls it once after creation for the
+// persisted mode, and the loop calls it when the PC options screen changes the
+// setting mid-run. The resulting SIZE_CHANGED event flows through the normal event
+// path, so PublishDrawableSize fires and the swapchain rebuilds itself exactly as it
+// does for a manual resize — no second resize path to keep correct.
+void ApplyDisplayModeNow(CzDisplayMode m)
+{
+    if (!g_window)
+        return;
+    switch (m)
+    {
+        case CzDisplayMode::Windowed:
+            SDL_SetWindowFullscreen(g_window, 0);
+            break;
+        case CzDisplayMode::Borderless:
+            SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+            break;
+        case CzDisplayMode::Fullscreen:
+        {
+            // Exclusive fullscreen AT THE DESKTOP MODE, never at the window's current
+            // size: mode-switching a 2560-wide desktop to 1280x720 because that was
+            // the creation size is the classic wrong spelling of "Fullscreen".
+            SDL_DisplayMode dm{};
+            const int display = SDL_GetWindowDisplayIndex(g_window);
+            if (SDL_GetDesktopDisplayMode(display < 0 ? 0 : display, &dm) == 0)
+                SDL_SetWindowDisplayMode(g_window, &dm);
+            SDL_SetWindowFullscreen(g_window, SDL_WINDOW_FULLSCREEN);
+            break;
+        }
+    }
+    fprintf(stderr, "[host] display mode -> %s\n",
+            m == CzDisplayMode::Windowed ? "windowed"
+            : m == CzDisplayMode::Borderless ? "borderless fullscreen"
+                                             : "fullscreen");
+}
+
 SDL_GameController* g_controller = nullptr;
 SDL_JoystickID      g_controllerId = -1;
 bool g_inputTrace = false;
@@ -746,7 +784,23 @@ bool Host_WindowInit()
         else
             fprintf(stderr, "[host] CZ_WINDOW_SIZE=%s is not a usable WxH — IGNORED.\n", ws);
     }
-    const Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+    // The persisted display mode (part 60's PC options screen). CZ_WINDOW_SIZE and
+    // CZ_WINDOW_MAXIMIZED are measurement controls and win over it: a run pinning the
+    // window for an A/B must not have the settings file silently un-pin it.
+    Uint32 modeFlag = 0;
+    if (!getenv("CZ_WINDOW_SIZE") && !getenv("CZ_WINDOW_MAXIMIZED"))
+    {
+        switch (Settings_DisplayMode())
+        {
+            case CzDisplayMode::Borderless: modeFlag = SDL_WINDOW_FULLSCREEN_DESKTOP; break;
+            case CzDisplayMode::Fullscreen: modeFlag = SDL_WINDOW_FULLSCREEN_DESKTOP; break;
+            case CzDisplayMode::Windowed: default: break;
+        }
+        // Exclusive fullscreen is applied AFTER creation (below): creating directly
+        // with SDL_WINDOW_FULLSCREEN would mode-switch the display to the window's
+        // 1280x720 creation size, which is never what "Fullscreen" means today.
+    }
+    const Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | modeFlag |
                                (g_wantVulkanSwapchain ? SDL_WINDOW_VULKAN : 0u) |
                                (getenv("CZ_WINDOW_MAXIMIZED") ? SDL_WINDOW_MAXIMIZED : 0u);
     g_window = SDL_CreateWindow("Dead Rising 2: Case Zero", SDL_WINDOWPOS_CENTERED,
@@ -775,6 +829,11 @@ bool Host_WindowInit()
         SDL_Quit();
         return false;
     }
+
+    // The persisted EXCLUSIVE fullscreen upgrades the borderless creation flag here,
+    // once the window exists to measure its display against (see the flags comment).
+    if (modeFlag != 0 && Settings_DisplayMode() == CzDisplayMode::Fullscreen)
+        ApplyDisplayModeNow(CzDisplayMode::Fullscreen);
 
     // No SDL_RENDERER_PRESENTVSYNC. The guest's swap rate is the frame clock here
     // (one XE_SWAP per frame, verified against B1), and a vsync-paced present would
@@ -1169,6 +1228,11 @@ void Host_WindowRun()
                     break;
             }
         }
+
+        // A display-mode change from the PC options screen (part 60). The verb runs on
+        // a guest thread; the SDL calls have to happen HERE, on the window thread.
+        if (const int pending = Settings_ConsumePendingDisplayMode(); pending >= 0)
+            ApplyDisplayModeNow(CzDisplayMode(pending));
 
         // CZ_WINDOW_RESIZE_AT=SECS:WxH — THE POSITIVE CONTROL FOR THE SWAPCHAIN REBUILD.
         //

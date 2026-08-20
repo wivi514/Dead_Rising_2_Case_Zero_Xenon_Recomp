@@ -438,6 +438,11 @@ void ContentSetRootFromGameDir(const std::string& gameDir)
          ec ? " (COULD NOT BE CREATED — saving will fail)" : "");
 }
 
+std::string ContentSaveRoot()
+{
+    return g_saveRoot.string();
+}
+
 // XamContentAggregateCreateEnumerator — xam ordinal 0x279, resolved dynamically.
 //
 // Written against the raw context rather than through GUEST_FUNCTION_HOOK because it

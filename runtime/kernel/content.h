@@ -16,6 +16,10 @@
 // unless CZ_SAVE_DIR says otherwise.
 void ContentSetRootFromGameDir(const std::string& gameDir);
 
+// The resolved save root, for anything else that persists player-owned state next
+// to the saves (part 60's settings file). Empty until ContentSetRootFromGameDir.
+std::string ContentSaveRoot();
+
 // Complete an XOVERLAPPED in place (kernel/imports.cpp owns the struct layout, which
 // is transcribed there from the title's OWN XGetOverlappedResult). A XAM export that
 // takes an overlapped is ASYNCHRONOUS when the caller supplies one: it must fill the

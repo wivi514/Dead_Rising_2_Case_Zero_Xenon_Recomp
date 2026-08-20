@@ -4,6 +4,7 @@
 #include "pump_stats.h"
 #include "drawid_ps_spv.h"
 #include "xenos.h"
+#include "../host/settings.h"
 #include "../host/window.h"
 #include "../cpu/thread_budget.h"
 
@@ -1118,6 +1119,15 @@ uint32_t ResScale()
             fprintf(stderr,
                     "[vk] CZ_VK_RES_SCALE=%s is out of range (1..%u) — IGNORED.\n", n,
                     kMaxScale);
+        }
+        // No env var: the persisted setting from the PC options screen (part 60).
+        // Env wins above so a CZ_VK_RES A/B arm can never be silently overridden by
+        // whatever the menu last wrote.
+        if (const uint32_t fromFile = Settings_RenderScale(); fromFile > 1)
+        {
+            fprintf(stderr, "[vk] render scale %ux from cz_settings.txt (%ux%u)\n",
+                    fromFile, kBaseW * fromFile, kBaseH * fromFile);
+            return fromFile;
         }
         return 1;
     }();
@@ -7164,8 +7174,13 @@ bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
     std::vector<VkPresentModeKHR> modes(mcount);
     vkGetPhysicalDeviceSurfacePresentModesKHR(R->physical, R->swap.surface, &mcount,
                                               modes.data());
+    // FIFO if the arm asks for it (env wins), else if the PC options screen's VSync
+    // setting asks for it — FIFO IS vsync here, the display paces the queue — else
+    // MAILBOX, the part-54 default. The swapchain is rebuilt on any resize, so a
+    // mid-run VSync change takes effect by requesting a rebuild (the verb handler
+    // does), not by anything special here.
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;   // always supported
-    if (!EnvOn("CZ_VK_SWAPCHAIN_FIFO"))
+    if (!EnvOn("CZ_VK_SWAPCHAIN_FIFO") && !Settings_VSync())
         for (VkPresentModeKHR m : modes)
             if (m == VK_PRESENT_MODE_MAILBOX_KHR)
             {
