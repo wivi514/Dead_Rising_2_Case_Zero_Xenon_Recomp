@@ -30,6 +30,16 @@ elsewhere, whenever both are available — because (b) has a bill and (a) does n
 
 The process uses **~3.3 of 8 PHYSICAL cores**; the pump thread is the critical path.
 
+**Part-58 spot check (2026-08-19, two operator runs, CZ_FPS_LOG only, clip cache):**
+82–86 fps / 11.8–12.3 ms at 7,000–7,600 median draws — about +1.3–1.6 ms over this
+table's closing ~10.5 ms. NOT a regression of any one change: a run with and a run
+without the capture/burst wiring read the same (the instruments are exonerated), part
+58's facing fix is an enum with no per-frame work, and the candidates are the PICTURE
+features shipped since part 55 parked — chiefly the clip-plane cache (six plane dots
+per vertex in all 104 VS, plus a per-draw plane-block zero+publish), plus part 56's
+per-draw dynamic-state calls. Unmeasured individually; the one-variable A/B when this
+work resumes is stock a2m cache vs clip cache, same session, chained.
+
 ---
 
 ## 1. THE PUMP THREAD AS IT NOW STANDS
