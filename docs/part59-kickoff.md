@@ -14,7 +14,12 @@
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (their part-57 instruction,
 > reaffirmed by practice in part 58 — three windowed sessions, zero headless game runs).
 >
-> Performance stays PARKED in `docs/perf-state-parked.md`.
+> Performance stays PARKED in `docs/perf-state-parked.md` — and it got a part-58 SPOT
+> CHECK (recorded there): 82–86 fps at 7,000–7,600 median draws on the final build,
+> identical with and without the capture wiring, so no part-58 regression and no
+> instrument cost; the ~1.5 ms over part 55's close is attributed to the picture
+> features shipped since (chiefly the clip cache) and the stock-vs-clip-cache A/B is
+> the first experiment whenever performance resumes. Do not re-run the spot check.
 
 ---
 
