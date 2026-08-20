@@ -184,8 +184,18 @@ void PublishDrawableSize()
     if (w <= 0 || h <= 0)
         return;
     const uint32_t nw = uint32_t(w), nh = uint32_t(h);
-    if (nw != g_drawableW.exchange(nw, std::memory_order_acq_rel) ||
-        nh != g_drawableH.exchange(nh, std::memory_order_acq_rel))
+    // BOTH exchanges must run UNCONDITIONALLY. The first version had them inside one
+    // `||`, and `||` short-circuits: on the very first publish the width exchange
+    // returned "changed", so the HEIGHT EXCHANGE ON THE RIGHT NEVER EXECUTED — height
+    // stayed 0 while this line printed "1280x720" from the locals. The pump then read
+    // (1280, 0), clamped the zero to the surface minimum, and built a 1280x1 swapchain
+    // the compositor smeared over the window: the launch-stretch defect, fixed by any
+    // manual resize because a resize re-runs this with the width now equal, which let
+    // the height write finally execute. A side effect on the right of `||` is a write
+    // that happens only when the left side is false.
+    const uint32_t ow = g_drawableW.exchange(nw, std::memory_order_acq_rel);
+    const uint32_t oh = g_drawableH.exchange(nh, std::memory_order_acq_rel);
+    if (nw != ow || nh != oh)
         fprintf(stderr, "[host] window drawable %ux%u (%s present) — quote this with any "
                         "frame time from this run\n",
                 nw, nh, g_renderer ? "readback" : "swapchain");

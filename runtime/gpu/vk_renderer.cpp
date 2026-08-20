@@ -2532,6 +2532,9 @@ struct SwapchainState
     // Set when a present reported SUBOPTIMAL or OUT_OF_DATE; consumed at the top of the
     // next frame's blit, where tearing the old objects down is safe.
     bool rebuildWanted = false;
+    // Consecutive creations whose extent disagreed with the window drawable (the
+    // launch-stretch guard) — reset to 0 by any creation that matches.
+    uint32_t mismatchRetries = 0;
     // The F4 debug overlay. All of it is allocated the first time the menu is opened and
     // never in a run that does not open it.
     Image overlay;          // the composited panel, uploaded and blitted
@@ -6951,6 +6954,19 @@ bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
         extent.height = std::clamp(wantH, caps.minImageExtent.height,
                                    caps.maxImageExtent.height);
     }
+    // SAY WHAT THE SURFACE CLAIMED, every time. The operator's "everything is stretched
+    // at launch until you resize the window" was a swapchain created at 1280x1 and then
+    // NEVER rebuilt, and the log carried no way to tell whether the 1 came from a
+    // binding currentExtent, a lying maxImageExtent, or a zero want clamped to min —
+    // three different bugs with three different fixes. Creations are rare; this is one
+    // line per creation.
+    fprintf(stderr,
+            "[vk] swapchain caps: want %ux%u, currentExtent %ux%u, min %ux%u, "
+            "max %ux%u -> using %ux%u\n",
+            wantW, wantH, caps.currentExtent.width, caps.currentExtent.height,
+            caps.minImageExtent.width, caps.minImageExtent.height,
+            caps.maxImageExtent.width, caps.maxImageExtent.height,
+            extent.width, extent.height);
     // A minimised window reports a zero extent, and creating a zero-extent swapchain is
     // invalid. Report it as "no swapchain right now" and let the present path drop the
     // frame; the next resize rebuilds.
@@ -7141,6 +7157,17 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
     // shape: never let a silent tolerance stand in for a decision).
     uint32_t dw = 0, dh = 0;
     Host_VulkanDrawableSize(&dw, &dh);
+    // NEVER CREATE AT AN UNKNOWN SIZE. The first present can arrive before the window
+    // thread has published the drawable size; creating then hands the surface whatever
+    // the half-configured compositor claims (the launch-stretch defect: a 1280x1
+    // swapchain smeared over a 1280x720 window until a manual resize rebuilt it).
+    // Dropping the frame instead costs one black frame at boot and is COUNTED.
+    if (!R->swap.swapchain && (!dw || !dh))
+    {
+        R->swap.acquireFails++;
+        Count("swap: drawable size not yet published, frame DROPPED");
+        return;
+    }
     const bool sizeChanged =
         R->swap.swapchain && dw && dh &&
         (dw != R->swap.width || dh != R->swap.height);
@@ -7158,6 +7185,34 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
             Count("swap: swapchain unavailable, frame DROPPED");
             return;
         }
+        // A LEGAL SWAPCHAIN CAN STILL BE THE WRONG ONE. When the surface's binding
+        // currentExtent disagrees with the window (Wayland mid-configure), creation
+        // "succeeds" at a size the compositor will scale — the launch stretch. Ask for
+        // a retry next present until it converges; the cap keeps a compositor that
+        // genuinely pins a different size from turning this into a rebuild-per-frame
+        // loop, and giving up is said out loud because a silent tolerance here is how
+        // this defect survived a whole part.
+        if (dw && dh && (R->swap.width != dw || R->swap.height != dh))
+        {
+            if (R->swap.mismatchRetries < 300)
+            {
+                R->swap.mismatchRetries++;
+                R->swap.rebuildWanted = true;
+                Count("swap: created at a size the window disagrees with — retrying");
+            }
+            else if (R->swap.mismatchRetries == 300)
+            {
+                R->swap.mismatchRetries++;
+                fprintf(stderr,
+                        "[vk] swapchain is pinned at %ux%u while the window drawable is "
+                        "%ux%u after 300 retries — giving up; the compositor will scale "
+                        "(this is the launch-stretch defect, and on this machine it "
+                        "should never happen)\n",
+                        R->swap.width, R->swap.height, dw, dh);
+            }
+        }
+        else
+            R->swap.mismatchRetries = 0;
     }
 
     VkSemaphore acq = R->swap.acquireSem[R->swap.acquireIndex];
