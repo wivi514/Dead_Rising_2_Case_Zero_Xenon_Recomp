@@ -182,11 +182,31 @@ configuration as well as a workload.
 
 ## 5. WHAT IS OWED, if someone picks this up cold
 
-1. **A second soak pair for the constant memo.** −2 to −3% is near the resolution limit of
-   one pair (the memo arm drifted ~1.5% within itself). The mechanism counters are solid;
-   the frame-time figure is the soft one.
-2. **A `CZ_VK_GUARD_WORKERS=4` vs budget-3 pair.** The thread budget silently changed part
-   53's measured configuration and the cost has never been measured.
+1. ~~**A second soak pair for the constant memo.**~~ **DONE (Night Run 1, 2026-08-20)**:
+   removing the memo costs +1.8 to +2.2% at the headless soak, 4-5x that campaign's
+   ≤0.4% null floor — direction and rough size replicate part 55. The operator-soak
+   magnitude stays the authoritative one.
+2. ~~**A `CZ_VK_GUARD_WORKERS=4` vs budget-3 pair.**~~ **DONE (Night Run 1)**: guard4
+   read +4.5% SLOWER at the heavy band (one pair) and ≈ floor at light. No evidence for
+   restoring 4; keep budget-3 and do not spend an operator session on this.
 3. **Item A's ORDER GATE, before item A.** It does not exist and nothing else can catch that
-   class of defect.
-4. **The ALU constant usage census** over the 439 shader modules, before item C.
+   class of defect. **Still owed — deliberately not built unattended.**
+4. ~~**The ALU constant usage census** over the 439 shader modules, before item C.~~
+   **DONE (Night Run 1 phase 0, `tools/alu_const_census.py`)** — and it SPLITS item C:
+   the range-copy design is DEAD (median PS span 255/256 — the c255 tonemap cluster),
+   the GATHER design is alive at ~10x (median 9 VS / 27 PS registers read of 256;
+   `a0`-indexing forces full copy on only 22 VS, 0 PS). Item C, if built, is a
+   per-shader register list in the sidecar + a gather copy + a verify arm shaped like
+   the memo's.
+
+## 6. NIGHT RUN 1 (2026-08-20) — what changed in this document
+
+`docs/perf-nightrun1.md` is the record; `~/DR2CZ-troubleshooting/nightrun1-2026-08-19/`
+holds the logs. Beyond the owed items above: the clip cache measurably costs +0.20 ms /
++3.0% at a ~5,000-draw headless band (one pair) and ≈ nothing at 2,500 — consistent
+with a per-vertex cost, probably NOT the whole ~1.5 ms of §0's part-58 spot check, so
+part 56's per-draw dynamic-state calls remain the co-suspect. The stock-vs-clip
+operator chained A/B stays the first resume experiment and now has a headless prior.
+Methodology: the DebugJump landing is bimodal (~2,500 or ~5,000+ draws per run), and
+the headless uncapped load runs the GPU at 75-85% — near the limiter — so CPU deltas
+read compressed there; the ≤0.4% banded null floor is the good news to reuse.

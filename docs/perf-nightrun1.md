@@ -110,6 +110,35 @@ registers hold stale bytes — safe exactly because the census says the shader n
 reads them, which makes the census itself load-bearing and means item C's runtime must
 carry a verify arm comparing gather vs full copy (same shape as the memo's).
 
-### Phase 1 — the night's four A/Bs
+### Phase 1 — the night's four A/Bs (completed 03:42, all 24 runs engaged)
 
-*(written by the session that reads `SUMMARY.txt` — pending)*
+Engagement was clean across the board: WAITJUMP fired in every run, 71 fps windows per
+run, `missing shaders: 0` everywhere, and the arm counters prove each arm engaged (the
+`nomemo` runs read `0.0% served`, the `guard4` runs print a different `[threads]` line).
+
+**Two facts about the instrument before the numbers:**
+* **The DebugJump landing is BIMODAL** — 11 of 24 runs landed in a ~2,500-draw state
+  and 13 in a ~5,000-5,800 one (spawn variance; gotcha 159 in route form). The draw-band
+  matching absorbs it, but it means most HEAVY-band comparisons below rest on ONE run
+  per side; only the light bands carry 2-3 runs a side. A future night should double
+  reps or gate on the landing class.
+* **This load is near GPU-limited**: P0, 1965 MHz flat, 75-85% utilisation, ~98 W in
+  every run (not the P8 sleep artifact — quoted per run in `checks.txt`). A CPU-side
+  saving is partly absorbed by the GPU here, so these deltas READ LOW relative to the
+  operator's CPU-bound frame. Direction survives; magnitude does not transfer.
+
+| experiment | light band (~2,500 draws) | heavy band (~5,000) | verdict |
+|---|---|---|---|
+| **N0 null** | −0.1 to −0.4% | −0.4% | **the floor is ≤0.4%** on banded window medians — far tighter than the historical 10-13% frame-time floor, which is what soak + median windows + draw-banding buys |
+| **N1 clip cache** | +0.4% (≈ floor) | **+3.0% (+0.20 ms)** | the clip cache costs REAL time and it scales with load (per-vertex plane dots) — but the heavy band is one run per side, and +0.20 ms at 5,000 draws does not obviously fill the operator's ~1.5 ms gap at 7,000+. Reads as "part of the attribution, probably not all of it"; part 56's per-draw dynamic-state calls stay live as the co-suspect. The decisive test remains the operator chained A/B |
+| **N2 guard workers** | ≈ floor (weak bands) | **guard4 +4.5% SLOWER** (one pair) | no evidence for restoring 4; weak evidence the budget's 3 is actually better on this 8-core box. Owed item 2 closes as "keep budget-3; do not spend an operator session on this" |
+| **N3 memo replication** | **nomemo +1.8 to +2.2% slower** (multi-run, 4-5x the floor) | no overlapping bands (bimodality) | the memo's value REPLICATES in the direction and rough size of part 55's −2 to −3%. Owed item 1 satisfied at this load; the operator-soak figure stays the authoritative magnitude |
+
+One more number worth keeping: the memo's own counter says the full constant copy at
+this uncapped load is multi-GB/s (heavy runs: ~1.4-1.5 TB NOT copied per 12-min run at
+~38% served) — the traffic item C's gather design would cut ~10x further per Phase 0.
+
+**Routing back into `perf-state-parked.md`:** item C is re-priced by the census
+(gather-only), owed items 1 and 2 are answered as above, and N1's partial attribution
+plus the dynamic-state co-suspect belong to the stock-vs-clip operator A/B that was
+already the first resume experiment.
