@@ -95,6 +95,7 @@
 #include "../kernel/memory.h"
 #include "../kernel/heap.h"
 #include "../host/window.h"
+#include "pc_options.h"
 #include "ppc_recomp_shared.h"
 
 // `ppc_recomp_shared.h` declares only the WEAK alias, never the real body, so the
@@ -1944,6 +1945,9 @@ PPC_FUNC(sub_824A2470)
 PPC_FUNC(sub_827F6D40)
 {
     g_frontendTransitionManager = ctx.r3.u32;
+    // Part 60: may rewrite r4 (Visuals -> OptionsPC) and tracks whether the PC
+    // options screen is the one being opened. Before the hash local on purpose.
+    PcOptions_FilterScreenTransition(ctx, base);
     const uint32_t hash = ctx.r4.u32;
     if (getenv("CZ_SCREEN_TRACE"))
     {

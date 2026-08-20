@@ -7309,9 +7309,16 @@ bool CreateSwapchain(uint32_t wantW, uint32_t wantH)
 // only call in this path that can block, and blocking as late as possible means the CPU
 // has already done the frame's whole recording before it ever waits on the presentation
 // engine. With MAILBOX and three images it does not wait at all.
+// An atomic separate from R->swap.rebuildWanted because that bool belongs to the pump
+// thread; this one can be set from the guest thread running a menu verb. The exported
+// setter is defined at global scope near VkRenderer_DumpStats.
+std::atomic<bool> g_swapRebuildRequest{ false };
+
 void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
 {
     R->swap.acquired = UINT32_MAX;
+    if (g_swapRebuildRequest.exchange(false, std::memory_order_acq_rel))
+        R->swap.rebuildWanted = true;
 
     // REBUILD WHEN THE WINDOW HAS CHANGED SIZE — and the reason this is a size COMPARISON
     // rather than a reaction to a driver return code is the defect it fixes.
@@ -14825,6 +14832,12 @@ void VkRenderer_D3DSwap(uint8_t* base)
     // The front buffer is the destination of the resolve the title just performed
     // (PreSwapResolve immediately precedes every Swap), so no side channel names it.
     DoSwapImpl(base, R->lastResolveDest, R->targetWidth, R->targetHeight);
+}
+
+// See vk_renderer.h — the live-VSync seam (part 60).
+void VkRenderer_RequestSwapchainRebuild()
+{
+    g_swapRebuildRequest.store(true, std::memory_order_release);
 }
 
 void VkRenderer_DumpStats()

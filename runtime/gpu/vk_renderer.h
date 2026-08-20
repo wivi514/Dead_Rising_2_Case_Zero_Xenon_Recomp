@@ -61,6 +61,12 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
 // instead of a hunt.
 void VkRenderer_DumpStats();
 
+// Ask the swapchain to rebuild at the next present even though the drawable size is
+// unchanged — the seam a live VSync change needs (part 60): the present mode is a
+// property of the swapchain, so FIFO<->MAILBOX means recreating it. Callable from
+// any thread; a no-op in the readback present arm.
+void VkRenderer_RequestSwapchainRebuild();
+
 // ===================================================================================
 // Phase C (the D3D pivot): the SAME renderer driven from the API line
 // ===================================================================================
