@@ -4635,6 +4635,66 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
     return slot;
 }
 
+// PACKED LEVEL OFFSETS — where a mip level (LEVEL 0 INCLUDED) sits inside the shared
+// 32x32-unit tile, in UNITS (blocks for DXT). Once a texture's shorter dimension is
+// <= 16 texels the whole chain packs into one tile, and that includes the base: a
+// 32x16 DXT1's level 0 lives at block (0,4), not (0,0). Reading level 0 at the tile
+// origin — what this renderer did until part 59 — reads the sub-4x4 tail region and
+// padding, which is why every tiny far-LOD sheet (the gas sign's letters and disc,
+// 79 distinct textures in one R6 street frame) painted as dark garbage at distance.
+//
+// The layout rule is transcribed from Xenia's GetPackedMipOffset
+// (src/xenia/gpu/texture_util.cc, BSD-3-Clause — a ~20-line layout fact, licence
+// recorded here per the project rule), and then VERIFIED against hardware's own bytes
+// rather than trusted (gotcha 308):
+//   * its square-tail half reproduces tools/packed_mip_derive.py's independently
+//     brute-forced table EXACTLY ((4,0)/(2,0)/(1,0), 378/378 votes on the R6 trace);
+//   * over the R6 trace's whole mipAddr=0 class, 69 of 70 informative textures form
+//     a consistent mip chain at these offsets (score <= 24 where our old (0,0) base
+//     read scores 57.7 on the letters texture), 1 marginal at 26.9 — which the
+//     endpoint-luma divergence guard polices at upload anyway.
+// The 3D z-packing arm of the original is deliberately not carried: depth is 1 on
+// every texture this path takes, and a 3D packed texture should decline loudly.
+static bool PackedLevelOffset(uint32_t width, uint32_t height, uint32_t blockDim,
+                              uint32_t mip, uint32_t& xUnits, uint32_t& yUnits)
+{
+    auto log2ceil = [](uint32_t v) {
+        uint32_t l = 0;
+        while ((1u << l) < v)
+            ++l;
+        return l;
+    };
+    const uint32_t log2w = log2ceil(width);
+    const uint32_t log2h = log2ceil(height);
+    const uint32_t log2size = std::min(log2w, log2h);
+    if (log2size > 4 + mip)
+        return false;                       // this level is not packed
+    const uint32_t packedBase = (log2size > 4) ? (log2size - 4) : 0;
+    const uint32_t packedMip = mip - packedBase;
+    uint32_t xTexels = 0, yTexels = 0;
+    if (packedMip < 3)
+    {
+        // Wider than tall lays the packed levels out vertically (offsets in Y);
+        // taller-or-square horizontally (offsets in X). 16 >> packedMip texels.
+        if (log2w > log2h)
+            yTexels = 16u >> packedMip;
+        else
+            xTexels = 16u >> packedMip;
+    }
+    else
+    {
+        const uint32_t off =
+            (1u << ((log2w > log2h ? log2w : log2h) - packedBase)) >> (packedMip - 2);
+        if (log2w > log2h)
+            xTexels = off;
+        else
+            yTexels = off;
+    }
+    xUnits = xTexels / blockDim;
+    yUnits = yTexels / blockDim;
+    return true;
+}
+
 // Upload the texture a fetch constant describes and return its bindless slot, or 0 for
 // the dummy. Cached on the fetch constant's own six dwords: if none of them changed the
 // texture is the same texture, and if any did it is a different one. Keying on the base
@@ -5278,6 +5338,20 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     const uint64_t dstBytes = faceDstBytes * layers;
     std::vector<uint8_t> pixels(dstBytes);
 
+    // A SMALL PACKED TEXTURE'S BASE IS NOT AT THE TILE ORIGIN (part 59, the R6
+    // gas-sign trace). When packed_mips is set and the shorter dimension is <= 16,
+    // level 0 itself sits at a packed offset inside the shared tile — see
+    // PackedLevelOffset above for the rule, its provenance and its verification.
+    // CZ_VK_NO_PACKED_SMALL=1 is the same-binary control arm for the whole feature
+    // (this offset AND the mipAddr=0 chain below).
+    static const bool noPackedSmall = EnvOn("CZ_VK_NO_PACKED_SMALL");
+    uint32_t base0X = 0, base0Y = 0;
+    const bool smallPacked =
+        !noPackedSmall && t.packedMips && t.tiled && layers == 1 &&
+        PackedLevelOffset(t.width, t.height, blockDim, 0, base0X, base0Y);
+    if (smallPacked)
+        Count("texture: small-packed BASE read at its tile offset");
+
     // The whole untile below is written for one face. Six faces is that loop six times
     // over, with both cursors advanced by their own stride — so the loop was lifted out
     // rather than the body being duplicated, and a 2D texture takes exactly the path it
@@ -5313,7 +5387,10 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         for (uint32_t y = 0; y < unitH; y++)
             for (uint32_t x = 0; x < unitW; x++)
             {
-                const uint32_t unit = Tiled2DOffset(x, y, srcPitchUnits, log2bpu);
+                // base0X/base0Y shift a small-packed texture's level 0 to its packed
+                // position inside the shared tile; both are 0 on the ordinary path.
+                const uint32_t unit =
+                    Tiled2DOffset(base0X + x, base0Y + y, srcPitchUnits, log2bpu);
                 const uint64_t off = uint64_t(unit) * bytesPerUnit;
                 // Bounded by ONE FACE, not by the whole source: `src` already points at
                 // this face, so a unit past `faceBytes` would be read out of the next
@@ -5615,6 +5692,68 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 chainOff += lFootprint;
         }
         Count(levelCount > 1 ? "mip: chain uploaded" : "mip: chain declared but no level taken");
+    }
+    else if (!noMips && layers == 1 && smallPacked && !t.mipAddress && t.mipMax >= 1)
+    {
+        // THE SMALL-PACKED CHAIN (part 59, the R6 gas-sign trace). A texture whose
+        // shorter dimension is <= 16 carries its WHOLE chain — base and mips — inside
+        // the one tile at `t.address`, with `mipAddr = 0`, so the `t.mipAddress` gate
+        // above skipped these chains entirely for the whole of phase 5. Every level is
+        // read from the base tile at PackedLevelOffset's position. 79 distinct
+        // textures in one R6 street frame are in this class; the sign's letters and
+        // disc far-LOD sheets are the worked examples (phase5-notes §6co).
+        //
+        // The mostly-empty and divergence guards of the unpacked walk are not
+        // repeated here: the layout is not an accumulation model that can drift —
+        // it was verified per-class against hardware bytes (69/70 informative chains
+        // consistent, see PackedLevelOffset), and a small-packed level never shares
+        // a tile with another texture's data the way an accumulated offset can.
+        uint32_t log2bpu = 0;
+        while ((1u << log2bpu) < bytesPerUnit)
+            ++log2bpu;
+        for (uint32_t level = 1; level <= t.mipMax && level < 16; level++)
+        {
+            const uint32_t lw = std::max(1u, t.width >> level);
+            const uint32_t lh = std::max(1u, t.height >> level);
+            if (lw < blockDim || lh < blockDim)
+            {
+                // Below one block the offset cannot be block-aligned; same decline
+                // as the unpacked tail's.
+                Count("mip: small-packed sub-block level — chain ends");
+                break;
+            }
+            uint32_t px = 0, py = 0;
+            if (!PackedLevelOffset(t.width, t.height, blockDim, level, px, py))
+            {
+                Count("mip: small-packed level claims UNPACKED — chain ends");
+                break;
+            }
+            const uint32_t luW = (lw + blockDim - 1) / blockDim;
+            const uint32_t luH = (lh + blockDim - 1) / blockDim;
+            const uint64_t lDstBytes = uint64_t(luW) * luH * bytesPerUnit;
+            const size_t at = pixels.size();
+            pixels.resize(at + size_t(lDstBytes));
+            uint8_t* ldst = pixels.data() + at;
+            const uint8_t* lsrc = base + va;        // the SAME tile level 0 came from
+            for (uint32_t y = 0; y < luH; y++)
+                for (uint32_t x = 0; x < luW; x++)
+                {
+                    const uint64_t off =
+                        uint64_t(Tiled2DOffset(px + x, py + y, srcPitchUnits,
+                                               log2bpu)) * bytesPerUnit;
+                    if (off + bytesPerUnit > faceBytes)
+                        continue;
+                    CopySwapped(&ldst[(uint64_t(y) * luW + x) * bytesPerUnit],
+                                lsrc + off, bytesPerUnit, t.endian);
+                }
+            VkBufferImageCopy c{};
+            c.bufferOffset = at;
+            c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
+            c.imageExtent = { lw, lh, 1 };
+            copies.push_back(c);
+            levelCount = level + 1;
+            Count("mip: small-packed level TAKEN");
+        }
     }
     else if (!noMips && layers == 6 && t.mipMax >= 1)
     {
