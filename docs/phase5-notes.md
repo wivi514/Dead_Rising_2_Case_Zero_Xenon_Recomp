@@ -11994,7 +11994,12 @@ exactly ON the plane. CZ_VK_CLIP_BIAS=eps shifts every plane outward by eps of i
 magnitude; at eps=0.01 the operator reported *"no longer see through/hollow but now back
 to two complete zombies"* — i.e. +0.01·|P| un-clips the ENTIRE body, so the whole zombie
 spans LESS than ~0.01 of a plane's magnitude in clip distance, and the cut lives on a
-razor-thin margin where any systematic error in our dot eats the plug. The fix is NOT a
+razor-thin margin where any systematic error in our dot eats the plug. **[RETRACTED IN
+PART 58, §6cn §3: the bias arm ROTATES the plane rather than shifting it — c ≈ −d, so
+eps·|P| added to w lands entirely in the view plane's z-coefficient, 0.8–8 METERS of
+boundary at eps=0.01. "Un-clips the whole body" measured that rotation; the plug's
+margin was never measured, and the space question is answered: no space error exists.]**
+The fix is NOT a
 fitted eps: the right question is which SPACE the dot belongs in, and the ten captures'
 plane values + pose matrices are the data to derive it offline (part 58's first job).
 
@@ -12059,3 +12064,95 @@ the arm is ready for the next time it shows.
 * **A capture with no photograph is a real cost**: the draw-ID run answers WHICH draw
   but cannot show WHAT it looked like that day; the follow-up's plain F9 at the same
   spot is what tied the attribution to the live symptom.
+
+## 6cn. Part 58: the clip-plane SPACE question is answered OFFLINE and the answer is
+## "there was no space error" — the pose files' missing view matrix turned out not to
+## be needed, part 57's margin inference is retracted, and the probe is rebuilt in meters
+
+Part 58 executed `part58-kickoff.md` §1 — derive which space the hardware dots a user
+clip plane in, from the ten part-57 captures — and the derivation refuted the section's
+own premise. Everything below is from `tools/clip_plane_space.py` over
+`~/DR2CZ-troubleshooting/part57-operator/clip_slice/`; no game run was needed.
+
+### 1. The poses did NOT capture the scene camera — and the trick that made that not matter
+
+All ten .pose files' bvc0-3 ("the biggest draw — the SCENE camera. Prefer these") hold an
+ORTHOGRAPHIC matrix: bvc3 = (0,0,0,1), and it maps the player_pos inside a unit box —
+checked, not assumed. In every capture the frame's biggest draw was the 25k-vert ground
+draw INTO THE SHADOW MAP, so the "biggest draw" heuristic caught the light in all ten
+frames. The scene VIEW matrix is simply not in the data.
+
+It is also not needed. If the register plane P is dotted against clip = Proj·v, then
+dot(P, Proj·v) = dot(Projᵀ·P, v): **Projᵀ alone re-expresses the plane against
+view-space positions**, and view space is a rigid transform of world space, so lengths
+there are true meters. The projection IS in the poses (the FIRST draw's vc0-3 is a clean
+perspective: row3 = (0,0,1,0), 45°, 16:9, zn=0.1, zf=1000).
+
+### 2. The verdict: 88/88 planes are unit view-space planes — clip space confirmed, no error to fix
+
+Projᵀ·P for every distinct plane in the ten censuses (88 planes: body planes and the
+gore/cap set) gives |normal| in [0.951, 0.999]. The residual pattern is itself a
+measurement: mostly-z planes sit at ~0.998 while xy-heavy planes sit at exactly ~0.951,
+the signature of the x/y scales being off by one COMMON factor — the plane-building
+camera is not the pose's first-draw 45° camera. One two-parameter fit (xy scale ×1.0520,
+z row ×0.99999) puts **every plane at |n| = 1.000 ± 0.0003 RMS**, and the fitted camera
+is fov 42.98°, aspect exactly 16:9.
+
+So the game normalizes a view-space plane and hands D3D its image under Proj⁻ᵀ — i.e.
+the register planes are EXACTLY clip-space planes, hardware dots them against the raw VS
+export, and our translated-VS dot (`dot(oPos, g_ClipPlane(n))` above the g_PosScale
+fold) is the same number. **The kickoff's "systematic SPACE error eats the plug" is
+refuted.** The see-through cut and the doubled slab have another cause.
+
+### 3. Two retractions in place
+
+* **§6cm's margin inference is WRONG** ("+0.01·|P| un-clips the ENTIRE body, so the
+  whole zombie spans LESS than ~0.01 of a plane's magnitude"). CZ_VK_CLIP_BIAS adds
+  eps·|P| to the plane's w. The captured planes have c ≈ −d (a unit view plane through
+  Proj⁻ᵀ blows z and w up by ~1/zn = 10× each, nearly cancelling), and q_z = c·P22 + d
+  — so an increment landing only in d lands ENTIRELY in the view plane's z-coefficient.
+  The arm ROTATES the plane; at eps=0.01 the boundary at the plane's own camera distance
+  moves **0.8–8 meters** (per-plane column in the tool output). "Un-clips the whole
+  body" measured that rotation, not any margin. The plug's real clearance has never been
+  measured.
+* The pose format's "prefer bvc" guidance mis-labels these ten captures (see §1); the
+  matrix SHAPE test (perspective vs ortho row 3) is what `clip_plane_space.py` runs
+  before trusting either block, and `pose_read.py`'s docstring promise should be read
+  with that in mind.
+
+### 4. What the census read established about the game's slicing technique (new this part)
+
+Per piece and per tile, in draw order (frame 9351; same structure in all ten):
+
+1. **two-sided stencil+depth write** — dc=047087B7 (z LEQUAL, zwrite, stencil front
+   ALWAYS/KEEP/REPLACE, back ALWAYS/KEEP/ZERO), mask=0, ref 0xB0+i, clipped by the
+   piece's BODY plane;
+2. **visible gore paint** — dc=04708797 (z LESS, zwrite, same two-sided stencil ops),
+   mask=F, blend opaque (00010001), alpha test OFF (cc=AA000007), ref 0xAC+i, clipped by
+   a **SECOND plane ~40° off the body's** (view-space angle measured per piece);
+3. **body depth prepass** — dc=00700736 (LEQUAL, zwrite), mask=0, body plane;
+4. **body color** — dc=00700722 (EQUAL, no zwrite), mask=F, alpha blend 07060706, alpha
+   test GREATER (cc=AA00000C), body plane.
+
+The gore pass uses the SAME vs, ps AND textures as the body color pass — the gore look
+must come from interior geometry of the piece mesh — and both stencil funcs are ALWAYS:
+**nothing in the four passes tests stencil**; the refs (0xB0+i / 0xAC+i per piece) are
+presumably read by a later effect. All four passes su=00080008 (no face culling). Two
+tiles repeat the sequence. Whatever heals the residuals must respect this interlock: the
+cut's final color is pass-2 output surviving because passes 3-4 are clipped away there.
+
+### 5. The rebuilt probe, in true meters, with its own controls
+
+`CZ_VK_CLIP_SHIFT=<meters>` translates every enabled plane's boundary outward by a true
+view-space distance: Δplane = Proj⁻ᵀ·(0,0,0,δ) = (0, 0, δ/P23, −P22·δ/P23), with P22 =
+1.0001 and P23 = −0.10001 read from the captures, and |n|=1 (measured) making δ meters.
+Numerically verified: q_z unchanged to 3e-5·δ, q_w moves by exactly δ.
+
+`tools/part58_operator_session.sh` is the ladder, four chained arms on the clip cache:
+**0** (same-session baseline) / **+0.05** (positive control: both halves' kept sets grow
+5 cm each, so a ~10 cm doubled band MUST appear at every cut — arm engagement is visible
+by construction) / **+0.02** / **−0.02** (the probes). Readout: heals at +0.02 and
+worsens at −0.02 → the gore sits centimeters from the boundary, our clip errs at
+precision scale, and the hunt moves into the dot's arithmetic; no change at ±0.02 while
+±0.05 visibly moves the cut → **the clip branch closes** and the suspect becomes the
+§4 interlock (depth LESS/EQUAL interplay across the four passes).

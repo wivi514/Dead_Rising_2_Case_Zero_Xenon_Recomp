@@ -1860,15 +1860,24 @@ CZ_VK_CLIP_POISON=1  publish plane 0 = (0,0,0,-1) on EVERY draw: dot = -w, negat
                    plumbing, epilogue) without needing a sliced zombie (gotcha 30).
                    Counters: `draw: user clip plane N published` per plane index,
                    `draw: CZ_VK_CLIP_POISON plane published`.
-CZ_VK_CLIP_BIAS=eps  shift every enabled plane OUTWARD by eps of its own magnitude —
-                   the boundary-error arm for the slicing residuals (the gore plug
-                   that seals a cut lies exactly ON the plane). Part 57 measured the
-                   scale: the whole zombie spans LESS THAN ~0.01 of a plane's
-                   magnitude in clip distance, so eps=0.01 un-clips the entire body
-                   ("back to two complete zombies") while eps=0 clips the plug away
-                   (see-through cut). The right correction is smaller than 0.01 and
-                   should be DERIVED (which space the dot belongs in), not fitted.
+CZ_VK_CLIP_BIAS=eps  adds eps·|P| to every enabled plane's w. RETIRED AS A PROBE IN
+                   PART 58 (kept as history): the captured planes have c ≈ −d, so the
+                   whole increment lands in the VIEW plane's z-coefficient — the arm
+                   ROTATES the plane, moving the boundary 0.8–8 METERS at eps=0.01,
+                   which is what part 57's "un-clips the entire body" measured. The
+                   margin inference read from this ladder is retracted (§6cn §3,
+                   gotcha 370). Use CZ_VK_CLIP_SHIFT.
                    Counter: `draw: user clip plane BIASED (CZ_VK_CLIP_BIAS)`.
+CZ_VK_CLIP_SHIFT=m translate every enabled plane's boundary OUTWARD (kept side grows)
+                   by m true view-space METERS — the probe CLIP_BIAS was meant to be:
+                   Δplane = Proj⁻ᵀ·(0,0,0,m) = (0, 0, m/P23, −P22·m/P23), z-row
+                   constants (zn=0.1, zf=1000) derived from the part-57 captures by
+                   tools/clip_plane_space.py, which also proved |n_view|=1 for all 88
+                   captured planes (so m IS meters). Positive control is built into
+                   the ladder: at +0.05 both halves of a cut keep 5 cm past the plane,
+                   so a ~10 cm doubled band must appear; tools/part58_operator_session.sh
+                   runs 0 / +0.05 / +0.02 / −0.02 chained. A DIAGNOSTIC ARM, not a fix.
+                   Counter: `draw: user clip plane SHIFTED (CZ_VK_CLIP_SHIFT)`.
 ```
 
 ## Mip levels (part 39)

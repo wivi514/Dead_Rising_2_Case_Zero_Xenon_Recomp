@@ -3113,3 +3113,37 @@ surviving a resolve.
   + frame-ahead guard against a 3-frame ring (`CZ_VK_NO_PARALLEL_GUARD=1` is the ready
   A/B). The defect DID NOT FIRE in either part-57 session — recorded as an observation,
   not a fix; the arm waits for the next sighting.
+
+## 00q. PART 58: the slicing residuals' space hypothesis is REFUTED offline; the margin
+## probe is rebuilt correctly and waits on one operator ladder
+
+* **THE DOT SPACE IS SETTLED — IT WAS ALREADY RIGHT.** 00p's "derive the correct dot
+  SPACE from the ten captures" is done (`tools/clip_plane_space.py`) and the answer is
+  that no space error exists: all 88 distinct captured planes are UNIT VIEW-SPACE
+  planes under the scene projection (|n| = 1.000 ± 0.0003 RMS after one two-parameter
+  fit — fov 42.98°, 16:9 exact; the pose's first-draw 45° matrix is a different
+  camera). The register planes are exactly clip-space planes, our raw-oPos dot is
+  hardware's dot, and the view matrix the poses failed to capture (all ten bvc blocks
+  are the SHADOW pass's ortho — the "biggest draw" heuristic caught the shadow ground
+  draw every time) was never needed: Projᵀ alone maps a plane to view space, where
+  meters are true.
+* **00p's margin claim is RETRACTED** ("the plug lives on a sub-0.01 margin"): the
+  CZ_VK_CLIP_BIAS arm it was read from adds eps·|P| to w, and because the captured
+  planes have c ≈ −d, that increment lands entirely in the view plane's z-COEFFICIENT
+  — a ROTATION worth 0.8–8 m of boundary at eps=0.01, which is what "un-clips the whole
+  body" actually measured. The plug's clearance has never been measured.
+* **The probe that measures it is built**: `CZ_VK_CLIP_SHIFT=<meters>` translates every
+  enabled plane's boundary by true view-space meters (Δplane = Proj⁻ᵀ·(0,0,0,δ), z-row
+  constants derived from the captures). `tools/part58_operator_session.sh` is the
+  ladder: 0 / +0.05 (positive control — a ~10 cm doubled band must appear) / +0.02 /
+  −0.02. Heals at +0.02, worsens at −0.02 → the gore sits centimeters from the boundary
+  and our clip errs at precision scale. No change at ±0.02 while ±0.05 moves → **the
+  clip branch CLOSES** and the suspect becomes the four-pass interlock, which part 58's
+  census read established: per piece and per tile, the order is two-sided stencil
+  write (dc=047087B7, refs 0xB0+i, BODY plane) → visible gore paint (dc=04708797, z
+  LESS, refs 0xAC+i, a SECOND plane ~40° off the body's) → body depth prepass
+  (00700736) → body color at EQUAL (00700722, alpha test on). The gore pass uses the
+  SAME ps and textures as the body — the gore look must come from mesh interior
+  geometry — and both stencil funcs are ALWAYS (nothing tests stencil among the four).
+* Sign (R6) and decal-flicker items: unchanged from 00p, both still waiting on their
+  external events.

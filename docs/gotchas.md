@@ -3883,3 +3883,28 @@ From phase C part 18 (the frame rate — and none of it was work):
      look for a once-only path that half-ran. Found by reading the stuck process's
      atomics live (gdb x/2wd on the mangled symbols): W=1280, H=0 — one read that ended
      three sessions of deduction.
+
+370. **AN INCREMENT APPLIED IN A PROJECTIVE SPACE IS NOT A SHIFT — where coefficients
+     nearly cancel, it is a ROTATION in the Euclidean one.** Part 57's clip-plane bias
+     arm added eps·|P| to the plane's w and its ladder was read as "eps=0.01 un-clips
+     the whole body, so the body spans <0.01·|P| of margin". Wrong by two orders and in
+     KIND: the captured clip planes have c ≈ −d (a unit view plane through Proj⁻ᵀ blows
+     both up by ~1/zn, nearly cancelling), so the whole w-increment lands in the VIEW
+     plane's z-coefficient — a rotation moving the boundary 0.8–8 METERS at the zombie
+     for eps=0.01. The ladder measured the rotation, not any margin. Before reading a
+     parameter sweep, transform the parameter into the space where the geometry lives
+     and ask what the increment DOES there; a translation by true meters is
+     Proj⁻ᵀ·(0,0,0,δ) — two coefficients, not one (`CZ_VK_CLIP_SHIFT`).
+
+371. **A CAPTURED MATRIX IS A SHAPE BEFORE IT IS A VALUE — and the matrix you are
+     blocked on may cancel out of the question.** All ten part-57 poses' "biggest draw =
+     the scene camera" blocks hold the SHADOW pass's ORTHO matrix (row3 = (0,0,0,1); it
+     maps the player inside a unit box — the check costs one dot product), because the
+     frame's biggest draw was the ground drawn INTO the shadow map every time. The
+     part-58 derivation looked blocked on the missing view matrix and was not:
+     dot(P, Proj·v) = dot(Projᵀ·P, v), so the projection ALONE re-expresses a clip
+     plane against view space, where a rigid transform of the world makes lengths true
+     meters and "is the normal unit?" becomes a space test needing no view matrix at
+     all. Verify a captured matrix's structural shape (perspective vs ortho, which row
+     is w) before using it — and before declaring data missing, write the question as
+     algebra and see what cancels.
