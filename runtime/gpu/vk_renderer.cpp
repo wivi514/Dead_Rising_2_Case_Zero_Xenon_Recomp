@@ -6264,7 +6264,21 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         rs.depthBiasClamp = 0.0f;
     }
     rs.cullMode = VK_CULL_MODE_NONE;
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    // WHICH WAY IS FRONT — unverified until part 58, and the only consumer is the
+    // TWO-SIDED STENCIL (culling is NONE above, so facing never touched a pixel before
+    // part 56 wired ds.front/ds.back). The part-58 captures put the whole slicing
+    // see-through on this bit: the gore cap is a 6-vert quad stencil-tested EQUAL
+    // against a per-piece ref that the two-sided passes WRITE (front REPLACE / back
+    // ZERO) — swap front and back and the written region complements, failing the
+    // quad's test exactly where the cap belongs, view-dependently, which is the
+    // operator's report verbatim. The title censuses at su=00080008 on EVERY draw of a
+    // frame (cull 00, FACE=0): whether Xenos FACE=0 lands on Vulkan's CCW or CW in the
+    // shared y-down screen space is a coin toss no document here settles, so it is an
+    // ARM first: CZ_VK_STENCIL_FLIP_FACES=1 declares front=CW. If the caps become
+    // solid from every angle under the arm, flip the default WITH the verdict recorded.
+    static const bool flipFaces = EnvOn("CZ_VK_STENCIL_FLIP_FACES");
+    rs.frontFace =
+        flipFaces ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo ms{
@@ -6322,6 +6336,13 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
             ds.back.failOp = XenosStencilOp((key.depthControl >> 23) & 7);
             ds.back.passOp = XenosStencilOp((key.depthControl >> 26) & 7);
             ds.back.depthFailOp = XenosStencilOp((key.depthControl >> 29) & 7);
+            // The engagement counter for CZ_VK_STENCIL_FLIP_FACES: a two-sided
+            // pipeline was BUILT while the arm was on. Pipeline creation, not the
+            // draw, because facing is pipeline state — if this never fires, no
+            // two-sided state was met and the arm's verdict means nothing.
+            if (flipFaces)
+                COUNT("pipeline: two-sided stencil built with FRONT=CW "
+                      "(CZ_VK_STENCIL_FLIP_FACES)");
         }
         else
         {
