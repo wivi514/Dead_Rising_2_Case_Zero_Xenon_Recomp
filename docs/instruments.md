@@ -1878,6 +1878,19 @@ CZ_VK_CLIP_SHIFT=m translate every enabled plane's boundary OUTWARD (kept side g
                    so a ~10 cm doubled band must appear; tools/part58_operator_session.sh
                    runs 0 / +0.05 / +0.02 / −0.02 chained. A DIAGNOSTIC ARM, not a fix.
                    Counter: `draw: user clip plane SHIFTED (CZ_VK_CLIP_SHIFT)`.
+                   RESULT (part 58, operator): no visual change anywhere on the
+                   ladder 0/+0.05/+0.02/-0.02 — the CLIP BRANCH IS CLOSED for the
+                   slicing residuals.
+CZ_VK_STENCIL_FLIP_FACES=1  declare front=CW instead of the hardcoded CCW — the
+                   facing arm for the see-through cut. Facing's ONLY consumer in
+                   this renderer is the two-sided stencil (culling is permanently
+                   NONE, and the title censuses su=00080008 — cull off, FACE=0 — on
+                   every draw of a frame), so this bit has never been checked against
+                   hardware. The gore cap is a 6-vert quad stencil-tested EQUAL
+                   against a per-piece ref the two-sided passes write front-REPLACE/
+                   back-ZERO; swapped facing complements the written region and
+                   fails the quad exactly at the cap, view-dependently. Counter:
+                   `pipeline: two-sided stencil built with FRONT=CW (...)`.
 ```
 
 ## Mip levels (part 39)
