@@ -9181,9 +9181,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 const uint32_t d = __builtin_bswap32(p[k]);
                 memcpy(&v[k], &d, 4);
             }
+            // The stream ADDRESS beside its first vertex, because the two separate
+            // mechanisms v0 alone cannot: part 57's first bursts found every decal
+            // draw alternating near-every-frame between v0=0/0/0 and its world
+            // position, in exactly complementary frame sets — which is EITHER the
+            // game ping-ponging two buffers (two addresses, one of whose first slot
+            // is unused) OR one buffer being rewritten in place while our walk reads
+            // it (one address whose CONTENT alternates). Same v0, opposite fixes.
             psbindAt += snprintf(psbindLine + psbindAt, sizeof psbindLine - psbindAt,
-                                 " v0=%g/%g/%g", double(v[0]), double(v[1]),
-                                 double(v[2]));
+                                 " va=%08X v0=%g/%g/%g", sva, double(v[0]),
+                                 double(v[1]), double(v[2]));
             break;
         }
     }
@@ -9852,6 +9859,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             p[0] = 0.0f; p[1] = 0.0f; p[2] = 0.0f; p[3] = -1.0f;
             COUNT("draw: CZ_VK_CLIP_POISON plane published");
         }
+        // CZ_VK_CLIP_BIAS=<eps> — shift every enabled plane OUTWARD by eps, in units of
+        // the plane's own magnitude. The arm-4 residuals (seeing THROUGH the cut, and a
+        // thin slab of the body kept by BOTH halves) share one candidate mechanism: the
+        // gore plug that seals the cut sits exactly ON the plane, where any small error
+        // in our clip-space dot lands it a hair negative. If a small positive bias
+        // restores the plug and a small negative one worsens it, the mechanism is
+        // confirmed as boundary error; if the bias changes nothing, the plug is being
+        // lost some other way. A DIAGNOSTIC ARM, not a fix — a bias that "looks right"
+        // is a fitted constant, and the real question would become which SPACE the dot
+        // belongs in.
+        static const float clipBias = []() -> float {
+            const char* b = Env("CZ_VK_CLIP_BIAS");
+            return b ? strtof(b, nullptr) : 0.0f;
+        }();
         const uint32_t ucpEna = regs[xenos::kPaClClipCntl] & 0x3F;
         if (!noClipPlanes && ucpEna)
         {
@@ -9861,6 +9882,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     continue;
                 memcpy(shared + kSharedClipPlanes + i * 16,
                        &regs[xenos::kPaClUcp0X + i * 4], 16);
+                if (clipBias != 0.0f)
+                {
+                    float* p = reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
+                    const float mag = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2] +
+                                            p[3] * p[3]);
+                    p[3] += clipBias * mag;
+                    COUNT("draw: user clip plane BIASED (CZ_VK_CLIP_BIAS)");
+                }
                 switch (i)
                 {
                     case 0: COUNT("draw: user clip plane 0 published"); break;
