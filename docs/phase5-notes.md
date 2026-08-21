@@ -12372,8 +12372,12 @@ operator-driven; the night's headless verdicts held except where noted.
 
 * Aspect-fit bars and 21:9: good — "almost perfect", with the revisions below as the
   gap. The projection patch, HUD self-centering, tiling and flanks all held in play.
-* The shadow LOW vs HIGH LOOK verdict is STILL OWED — the operator flipped tiers
-  (finding the freeze below) and confirmed the fix, but never judged edge blockiness.
+* ~~The shadow LOW vs HIGH LOOK verdict is STILL OWED~~ — CLOSED at the part's end:
+  **"Shadow on high is much sharper"** (operator, after the freeze fix let them
+  compare properly). The tier ladder does what it says. The clamp fix was also
+  confirmed the same way ("the game open at proper resolution"), and the eight
+  late-game shaders are provisionally passed — the operator owns flagging them if a
+  future playthrough shows one wrong.
 * The operator then COMPLETED THE WHOLE GAME in one sitting — the deepest run this
   port has ever hosted — with CZ_SHADER_DUMP armed: nine new shaders captured and
   folded in (cache 440 -> 449, census green). Late-game content had never been

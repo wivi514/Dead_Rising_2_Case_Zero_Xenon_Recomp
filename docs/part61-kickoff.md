@@ -9,10 +9,12 @@
 > report was the ordered-ladder WRAP (gotcha 377, ladders clamp now), and the
 > operator COMPLETED THE WHOLE GAME with the shader dump armed (cache 449).
 > **The next part's work is `docs/rt-and-fov-plan.md` (§3), FOV slider first.**
-> Still owed from part 60: the shadow LOW vs HIGH LOOK verdict (§0.3), one
-> confirmation that the menu no longer "opens on 720p" after the clamp fix, and
-> the first look at whatever the eight late-game shaders draw (they were missing
-> during the playthrough; next launch has them).
+> **NOTHING IS OWED FROM PART 60 ANYMORE** — the operator's closing verdicts:
+> "Shadow on high is much sharper" (the tier LOOK works as designed), "the game
+> open at proper resolution" (the clamp fix confirmed), and the eight late-game
+> shaders are provisionally passed — the operator will flag them if a future
+> playthrough shows them wrong, which is the right ownership for content only
+> they can reach.
  Part 60 shipped the
 > host settings panel over the game's own options hub (the shipped OptionsPC screen is
 > a SHELL — layout and strings present, verbs compiled out), and its overnight run
