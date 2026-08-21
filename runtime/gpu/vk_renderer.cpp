@@ -7496,11 +7496,50 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
     // scales, which is the same filtered-down supersampling the SDL path got for free
     // from SDL_RenderCopy. LINEAR for that reason — NEAREST would alias the 2x image
     // down into a 720p window and make the resolution knob look like a downgrade.
+    //
+    // ASPECT-FIT AS OF PART 60: the destination is the largest centered rectangle
+    // that keeps the frame's shape, not the whole swapchain — a 16:9 frame on the
+    // operator's 21:9 display gets black side bars instead of being stretched, which
+    // is what every shipped PC game does. `CZ_VK_STRETCH=1` is the control arm and
+    // restores the pre-part-60 full-extent blit. The bars are CLEARED every frame
+    // they exist, because a reused swapchain image still holds whatever was blitted
+    // into it the last time around — including a stale frame from before a resize.
+    static const bool stretchArm = EnvOn("CZ_VK_STRETCH");
+    int32_t fitX = 0, fitY = 0;
+    uint32_t fitW = R->swap.width, fitH = R->swap.height;
+    if (!stretchArm)
+        Host_AspectFitRect(width, height, R->swap.width, R->swap.height, fitX, fitY,
+                           fitW, fitH);
+    const bool hasBars =
+        fitX != 0 || fitY != 0 || fitW != R->swap.width || fitH != R->swap.height;
+    if (hasBars)
+    {
+        VkClearColorValue black{};
+        VkImageSubresourceRange all{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCmdClearColorImage(R->cmd, R->swap.images[index],
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+        // The blit below overwrites the cleared center, so ordering the clear first
+        // needs a barrier to keep the two transfer writes from racing on the same
+        // pixels.
+        VkImageMemoryBarrier clearDone{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        clearDone.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        clearDone.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        clearDone.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        clearDone.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        clearDone.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearDone.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearDone.image = R->swap.images[index];
+        clearDone.subresourceRange = all;
+        vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                             1, &clearDone);
+    }
     VkImageBlit blit{};
     blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     blit.srcOffsets[1] = { int32_t(width), int32_t(height), 1 };
     blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    blit.dstOffsets[1] = { int32_t(R->swap.width), int32_t(R->swap.height), 1 };
+    blit.dstOffsets[0] = { fitX, fitY, 0 };
+    blit.dstOffsets[1] = { fitX + int32_t(fitW), fitY + int32_t(fitH), 1 };
     vkCmdBlitImage(R->cmd, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    R->swap.images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                    VK_FILTER_LINEAR);

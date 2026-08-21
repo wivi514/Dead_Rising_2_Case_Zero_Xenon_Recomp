@@ -1620,6 +1620,20 @@ CZ_VK_SWAPCHAIN_DUMP=dir  **the picture gate for the arm above**, every 64th SWA
                    this at night. It requests `TRANSFER_SRC` on the swapchain images, which
                    the default arm does not, so it is a different swapchain: read it as a
                    picture gate, never as a frame time
+CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** The
+                   default since part 60 is that the presented frame keeps its aspect
+                   ratio inside the window: the largest centered rectangle of the
+                   frame's shape, with BLACK bars filling the rest (side bars for a
+                   16:9 frame on a 21:9 display, top/bottom for the reverse) — what
+                   every shipped PC game does. This arm restores the pre-part-60
+                   full-window stretch. One shared computation (`Host_AspectFitRect`
+                   in host/window.h) feeds BOTH present paths — the swapchain blit and
+                   the SDL readback copy — so the two arms cannot drift; each path
+                   reads this variable itself. Presentation-only: internal rendering,
+                   readback instruments and the E3 gate (which read the pre-present
+                   frame) are untouched, which also means NO headless gate can see
+                   this — the picture verdict is the operator's (part-54 lesson: a
+                   present-path change is invisible to every readback-walking gate)
 CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
                    frame into a staging buffer before the window and the picture
                    instruments read it, the way the present path did for fifty-two parts.

@@ -1414,7 +1414,36 @@ void Host_WindowRun()
                     {
                         SDL_UpdateTexture(g_frameTexture, nullptr, g_pixelsFront.data(),
                                           int(g_pixelsWidth) * 4);
-                        SDL_RenderCopy(g_renderer, g_frameTexture, nullptr, nullptr);
+                        // ASPECT-FIT AS OF PART 60 (same rule and same arm as the
+                        // swapchain path — Host_AspectFitRect in window.h is the one
+                        // shared computation): the frame keeps its shape inside the
+                        // window and the bars are black. `CZ_VK_STRETCH=1` restores
+                        // the old full-window stretch. The clear runs only when bars
+                        // exist, because SDL keeps the previous frame's pixels in the
+                        // bar regions otherwise.
+                        static const bool stretchArm =
+                            getenv("CZ_VK_STRETCH") != nullptr;
+                        SDL_Rect dst{ 0, 0, 0, 0 };
+                        SDL_Rect* dstPtr = nullptr;
+                        if (!stretchArm)
+                        {
+                            int ow = 0, oh = 0;
+                            SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
+                            int32_t fx = 0, fy = 0;
+                            uint32_t fw = 0, fh = 0;
+                            Host_AspectFitRect(g_pixelsWidth, g_pixelsHeight,
+                                               uint32_t(ow > 0 ? ow : 0),
+                                               uint32_t(oh > 0 ? oh : 0), fx, fy, fw,
+                                               fh);
+                            if (fx || fy || int(fw) != ow || int(fh) != oh)
+                            {
+                                SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 0xFF);
+                                SDL_RenderClear(g_renderer);
+                            }
+                            dst = { fx, fy, int(fw), int(fh) };
+                            dstPtr = &dst;
+                        }
+                        SDL_RenderCopy(g_renderer, g_frameTexture, nullptr, dstPtr);
                         blitted = true;
                     }
                 }

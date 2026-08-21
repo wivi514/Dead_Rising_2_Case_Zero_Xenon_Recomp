@@ -79,6 +79,49 @@ void Host_WindowRun();
 // guest in it, which is indistinguishable from a hang.
 void Host_RequestQuit(const char* why);
 
+// ASPECT-CORRECT PRESENTATION (part 60). The fitted rectangle for presenting a
+// srcW x srcH frame inside a dstW x dstH window without changing its shape: the
+// largest centered rectangle with the source's aspect ratio that fits. A 16:9
+// frame on a 21:9 display gets side bars; a 21:9 frame on a 16:9 display gets
+// top/bottom bars. This is the ONE computation both present paths share — the
+// Vulkan swapchain blit and the SDL readback copy — because two copies of an
+// aspect division are how the two arms drift into showing different pictures.
+// `CZ_VK_STRETCH=1` is the control arm (each caller checks it); stretch was the
+// only behavior before part 60.
+//
+// Inline and header-only on purpose: it is called once per presented frame from
+// two modules and pure arithmetic, and 64-bit intermediates keep 5120x2880-scale
+// products out of overflow.
+inline void Host_AspectFitRect(uint32_t srcW, uint32_t srcH, uint32_t dstW,
+                               uint32_t dstH, int32_t& x, int32_t& y, uint32_t& w,
+                               uint32_t& h)
+{
+    if (!srcW || !srcH || !dstW || !dstH)
+    {
+        x = y = 0;
+        w = dstW;
+        h = dstH;
+        return;
+    }
+    if (uint64_t(srcW) * dstH >= uint64_t(dstW) * srcH)
+    {
+        // Source is at least as wide as the window, proportionally: full width,
+        // letterbox (top/bottom bars).
+        w = dstW;
+        h = uint32_t(uint64_t(dstW) * srcH / srcW);
+    }
+    else
+    {
+        // Window is wider than the source: full height, pillarbox (side bars).
+        h = dstH;
+        w = uint32_t(uint64_t(dstH) * srcW / srcH);
+    }
+    if (!w) w = 1;
+    if (!h) h = 1;
+    x = int32_t(dstW - w) / 2;
+    y = int32_t(dstH - h) / 2;
+}
+
 // One XInput-shaped pad state, in XInput's units and sign conventions (NOT SDL's —
 // see the axis note in window.cpp).
 struct HostPadState
