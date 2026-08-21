@@ -56,3 +56,14 @@ void Settings_SetShadowTier(int tier);
 // (A direct SDL call from the guest thread that runs the menu verb would violate
 // the one-thread rule that window.cpp exists to keep.)
 int  Settings_ConsumePendingDisplayMode();
+
+// The HOST-RENDERED settings panel (part 60's pivot). The shipped PC options
+// screen turned out to be a shell — layout and strings present, every behavior
+// (input, focus, exit handshake) compiled out of the 360 XEX — so the menu the
+// operator asked for is drawn by the host over the game's own options hub and
+// driven from the pad seam. This state lives HERE because both sides need it:
+// window.cpp draws it, the guest-side input pump mutates it.
+bool Settings_OverlayVisible();
+void Settings_SetOverlayVisible(bool on);
+int  Settings_OverlaySelection();          // 0..3
+void Settings_SetOverlaySelection(int row);

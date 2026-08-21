@@ -85,7 +85,18 @@ bool LooksLikeText(const std::vector<uint8_t>& d)
     return printable * 100 >= d.size() * 95;
 }
 
-bool OracleOk(const std::vector<uint8_t>& d) { return LooksLikeBct(d) || LooksLikeText(d); }
+// Part 60 widened the oracle again: preload4.big NESTS whole .big archives as
+// compressed entries (fecmn.big — how the frontend layouts actually load), and a
+// decompressed nested archive is neither a .bct nor text. Its own magic is the check.
+bool LooksLikeBig(const std::vector<uint8_t>& d)
+{
+    return d.size() >= 4 && d[0] == 0x06 && d[1] == 0x05 && d[2] == 0x04 && d[3] == 0x03;
+}
+
+bool OracleOk(const std::vector<uint8_t>& d)
+{
+    return LooksLikeBct(d) || LooksLikeText(d) || LooksLikeBig(d);
+}
 
 } // namespace
 

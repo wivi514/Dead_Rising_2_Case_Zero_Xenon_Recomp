@@ -140,10 +140,9 @@ void Settings_SetRenderScale(uint32_t s)
         return;
     g_state.renderScale = s;
     SaveLocked();
-    // No live apply: the render targets, the resolve chain and every scaled scissor
-    // are built around the scale at renderer init. The menu says "applies after
-    // restart" for this row, which is the kickoff's sanctioned v1 and what plenty of
-    // shipped games do.
+    // Live apply happens through VkRenderer_RequestRenderScale, called by whoever
+    // changed the setting — the renderer swaps its scale-dependent resources at
+    // the next frame boundary (part 60).
 }
 
 void Settings_SetVSync(bool on)
@@ -165,4 +164,32 @@ void Settings_SetShadowTier(int tier)
 int Settings_ConsumePendingDisplayMode()
 {
     return g_pendingDisplayMode.exchange(-1, std::memory_order_acq_rel);
+}
+
+namespace
+{
+std::atomic<bool> g_overlayVisible{ false };
+std::atomic<int> g_overlaySelection{ 0 };
+}
+
+bool Settings_OverlayVisible()
+{
+    return g_overlayVisible.load(std::memory_order_acquire);
+}
+
+void Settings_SetOverlayVisible(bool on)
+{
+    g_overlayVisible.store(on, std::memory_order_release);
+    if (on)
+        g_overlaySelection.store(0, std::memory_order_release);
+}
+
+int Settings_OverlaySelection()
+{
+    return g_overlaySelection.load(std::memory_order_acquire);
+}
+
+void Settings_SetOverlaySelection(int row)
+{
+    g_overlaySelection.store(row, std::memory_order_release);
 }

@@ -1945,9 +1945,15 @@ PPC_FUNC(sub_824A2470)
 PPC_FUNC(sub_827F6D40)
 {
     g_frontendTransitionManager = ctx.r3.u32;
-    // Part 60: may rewrite r4 (Visuals -> OptionsPC) and tracks whether the PC
-    // options screen is the one being opened. Before the hash local on purpose.
-    PcOptions_FilterScreenTransition(ctx, base);
+    // Part 60: selecting Visuals opens the HOST settings panel — the transition is
+    // swallowed entirely (return 0, the dispatcher's own "not handled") and the
+    // options hub stays alive underneath. May instead rewrite r4 in the
+    // CZ_PCOPT_NATIVE arm. Before the hash local on purpose.
+    if (PcOptions_FilterScreenTransition(ctx, base))
+    {
+        ctx.r3.u64 = 0;
+        return;
+    }
     const uint32_t hash = ctx.r4.u32;
     if (getenv("CZ_SCREEN_TRACE"))
     {

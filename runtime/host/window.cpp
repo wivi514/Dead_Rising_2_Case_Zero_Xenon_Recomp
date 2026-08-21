@@ -349,6 +349,7 @@ const char* Glyph(char c)
         case ':': return "00000011000110000000011000110000000";
         case '/': return "00001000100001000100010001000010000";
         case '>': return "10000010000010000010001000100010000";
+        case '<': return "00001000100010001000001000001000001";
         default:  return nullptr;
     }
 }
@@ -364,10 +365,83 @@ const char* Glyph(char c)
 // until an operator reports that the menu "looks different in the other mode". So the
 // LAYOUT is here, once, and it emits rectangles to whatever wants them; the two backends
 // are a `SDL_RenderFillRect` and a memory fill, and neither knows anything about menus.
+// THE SETTINGS PANEL (part 60) — same one-layout-two-backends contract as the
+// debug overlay below, same rect sink, so it works identically in the readback
+// and swapchain present arms. Drawn over the game's own Help & Options hub: the
+// shipped PC options screen is a shell (its input, focus and exit handshake were
+// compiled out of the 360 XEX), so the menu is HOST property end to end — drawn
+// here, driven from the pad seam in cpu/pc_options.cpp, persisted by settings.cpp.
+template <typename Rect>
+void EmitSettingsOverlay(int w, int h, Rect&& rect)
+{
+    const int panelW = 640, panelH = 300;
+    const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
+    if (panelW <= 0 || panelH <= 0)
+        return;
+    rect(panelX, panelY, panelW, panelH, 20, 22, 26, 235);
+    rect(panelX, panelY, panelW, 2, 200, 170, 60, 255);
+    rect(panelX, panelY + panelH - 2, panelW, 2, 200, 170, 60, 255);
+    rect(panelX, panelY, 2, panelH, 200, 170, 60, 255);
+    rect(panelX + panelW - 2, panelY, 2, panelH, 200, 170, 60, 255);
+
+    auto text = [&](int tx, int ty, const std::string& str, int scale,
+                    uint8_t r, uint8_t g, uint8_t b) {
+        for (char c : str)
+        {
+            if (const char* bits = Glyph(c))
+                for (int row = 0; row < 7; ++row)
+                    for (int col = 0; col < 5; ++col)
+                        if (bits[row * 5 + col] == '1')
+                            rect(tx + col * scale, ty + row * scale, scale, scale,
+                                 r, g, b, 255);
+            tx += 6 * scale;
+        }
+    };
+
+    text(panelX + 20, panelY + 16, "PC SETTINGS", 3, 245, 235, 200);
+    text(panelX + 20, panelY + 46, "UP/DOWN ROW   LEFT/RIGHT CHANGE   B CLOSE", 2,
+         160, 160, 170);
+
+    static const char* kResNames[] = { "1280 X 720", "2560 X 1440",
+                                       "3840 X 2160", "5120 X 2880" };
+    static const char* kModeNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
+    static const char* kOnOff[] = { "OFF", "ON" };
+    static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
+    const uint32_t scale = Settings_RenderScale();
+    const char* rows[4][2] = {
+        { "RESOLUTION", kResNames[(scale >= 1 && scale <= 4 ? scale : 1) - 1] },
+        { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
+        { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
+        { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
+    };
+    const int sel = Settings_OverlaySelection();
+    for (int i = 0; i < 4; ++i)
+    {
+        const int y = panelY + 86 + i * 40;
+        if (i == sel)
+            rect(panelX + 12, y - 6, panelW - 24, 30, 70, 55, 20, 255);
+        text(panelX + 28, y, rows[i][0], 2, i == sel ? 255 : 200,
+             i == sel ? 240 : 200, i == sel ? 180 : 205);
+        std::string value = std::string("< ") + rows[i][1] + " >";
+        text(panelX + panelW - 28 - int(value.size()) * 12, y, value, 2,
+             i == sel ? 255 : 190, i == sel ? 240 : 210, i == sel ? 120 : 210);
+    }
+    text(panelX + 20, panelY + panelH - 30,
+         "RESOLUTION: NEXT LAUNCH - SHADOWS: NOT WIRED YET", 2, 150, 140, 120);
+}
+
 template <typename Rect>
 void EmitDebugOverlay(int w, int h, Rect&& rect)   // rect(x,y,w,h,r,g,b,a)
 {
     // Caller holds g_debugOverlayMutex.
+    if (Settings_OverlayVisible())
+    {
+        // The settings panel BORROWS this whole path — emit, both backends, the
+        // swapchain blit — instead of duplicating it. Debug menu and settings
+        // panel are never wanted at once; if both are up, settings wins.
+        EmitSettingsOverlay(w, h, rect);
+        return;
+    }
     const int panelX = 24, panelY = 24;
     const int panelW = w > 760 ? 720 : w - 48;
     const int panelH = h - 48;
@@ -418,7 +492,8 @@ void EmitDebugOverlay(int w, int h, Rect&& rect)   // rect(x,y,w,h,r,g,b,a)
 void DrawDebugOverlay()
 {
     std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
-    if (!g_debugOverlayVisible.load(std::memory_order_acquire))
+    if (!g_debugOverlayVisible.load(std::memory_order_acquire) &&
+        !Settings_OverlayVisible())
         return;
     int w = 0, h = 0;
     SDL_GetRendererOutputSize(g_renderer, &w, &h);
@@ -1008,7 +1083,8 @@ bool Host_DebugOverlayRender(std::vector<uint8_t>& rgba, uint32_t& width, uint32
     // and the caller scales the returned rectangle to whatever the window is.
     constexpr int kW = 1280, kH = 720;
     std::lock_guard<std::mutex> lock(g_debugOverlayMutex);
-    if (!g_active || !g_debugOverlayVisible.load(std::memory_order_acquire))
+    if (!g_active || (!g_debugOverlayVisible.load(std::memory_order_acquire) &&
+                      !Settings_OverlayVisible()))
         return false;
 
     // The panel's rectangle, computed the same way EmitDebugOverlay does. Taken from its

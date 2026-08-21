@@ -1094,9 +1094,20 @@ bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 //
 //   CZ_VK_RES=2560x1440   the resolution, said the way a player says it
 //   CZ_VK_RES_SCALE=2     the same thing as a multiplier
+// The LIVE scale value. 0 until the first ResScale() call computes the boot
+// value; changed afterwards only by ApplyPendingRenderScale at a frame boundary
+// (part 60: the settings panel's resolution row applies immediately).
+std::atomic<uint32_t> g_resScaleLive{ 0 };
+// True when an env var chose the scale: the measurement arm wins and menu
+// requests are refused loudly rather than silently overriding an A/B.
+bool g_resScaleLocked = false;
+std::atomic<uint32_t> g_resScalePending{ 0 };
+
 uint32_t ResScale()
 {
-    static const uint32_t s = [] () -> uint32_t {
+    if (const uint32_t live = g_resScaleLive.load(std::memory_order_relaxed))
+        return live;
+    const uint32_t s = [] () -> uint32_t {
         constexpr uint32_t kBaseW = 1280, kBaseH = 720, kMaxScale = 4;
         if (const char* r = Env("CZ_VK_RES"))
         {
@@ -1104,7 +1115,10 @@ uint32_t ResScale()
             if (sscanf(r, "%ux%u", &w, &h) == 2 && w && h && w % kBaseW == 0 &&
                 h % kBaseH == 0 && w / kBaseW == h / kBaseH &&
                 w / kBaseW >= 1 && w / kBaseW <= kMaxScale)
+            {
+                g_resScaleLocked = true;
                 return w / kBaseW;
+            }
             fprintf(stderr,
                     "[vk] CZ_VK_RES=%s is not an integer multiple of this title's own "
                     "1280x720 (up to %ux) — IGNORED, rendering at 1280x720. Try %s.\n",
@@ -1115,7 +1129,10 @@ uint32_t ResScale()
         {
             const long v = strtol(n, nullptr, 10);
             if (v >= 1 && v <= long(kMaxScale))
+            {
+                g_resScaleLocked = true;
                 return uint32_t(v);
+            }
             fprintf(stderr,
                     "[vk] CZ_VK_RES_SCALE=%s is out of range (1..%u) — IGNORED.\n", n,
                     kMaxScale);
@@ -1131,6 +1148,7 @@ uint32_t ResScale()
         }
         return 1;
     }();
+    g_resScaleLive.store(s, std::memory_order_relaxed);
     return s;
 }
 // A guest extent, in host pixels. Every use is a guest coordinate crossing into Vulkan.
@@ -2423,6 +2441,11 @@ struct Snapshot
     // chose to keep it in. Deriving it by division would work and would put a scale
     // factor at every one of those sites instead of at the two that create the image.
     uint32_t guestW = 0, guestH = 0;
+    // The resolution scale the host image was built at. A LIVE scale change
+    // (part 60's settings panel) rebuilds each snapshot lazily through the same
+    // path a guest-extent change does; comparing the stored scale is what makes
+    // that trigger without touching the store eagerly at switch time.
+    uint32_t builtScale = 1;
     uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
     uint64_t frameSeen = 0;
     // Keyed (width << 16) | height. Refreshed from `image` by whatever resolve next
@@ -2458,6 +2481,7 @@ struct CubeSnapshot
     Image image;               // six layers, CUBE view, registered in set 2
     uint32_t slot = 0;         // index into set 2's heap, NOT set 0's
     uint32_t faceExtent = 0;   // one face is faceExtent x faceExtent
+    uint32_t builtScale = 1;   // rebuild trigger on a live resolution change
     uint32_t faceStride = 0;   // guest bytes between one face's base and the next
     // Which faces have ever been copied in, as a bitmask. A COUNTER, because "the cube
     // is bound" and "the cube has six faces in it" are different claims and the second
@@ -4476,7 +4500,8 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
         // A face's extent is part of its identity for the same reason a snapshot's is:
         // a different extent at the same address is a different surface, and copying
         // into the old image would leave the previous one's pixels around the edge.
-        if (it->second.faceExtent != t.width)
+        // The build scale is identity too, since part 60's live resolution switch.
+        if (it->second.faceExtent != t.width || it->second.builtScale != ResScale())
         {
             Count("texture: CUBE snapshot extent changed — declined");
             return 0;
@@ -4498,6 +4523,7 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
 
     CubeSnapshot cube;
     cube.faceExtent = t.width;
+    cube.builtScale = ResScale();
     cube.faceStride = faceStride;
     cube.slot = R->nextCubeSlot++;
     // R8G8B8A8_UNORM, matching what a colour resolve snapshot is stored as: vkCmdCopyImage
@@ -11750,7 +11776,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         // partial overwrite leaves the previous surface's pixels around the edge of
         // the new one, which reads as a ghosting artefact with no obvious source.
         if (it != R->snapshots.end() &&
-            (it->second.guestW != w || it->second.guestH != h))
+            (it->second.guestW != w || it->second.guestH != h ||
+             it->second.builtScale != ResScale()))
         {
             vkDeviceWaitIdle(R->device);
             vkDestroyImageView(R->device, it->second.image.view, nullptr);
@@ -11778,6 +11805,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             s.fromDepth = fromDepth;
             s.guestW = w;
             s.guestH = h;
+            s.builtScale = ResScale();
             // A depth snapshot keeps the EDRAM depth buffer's own format, because
             // vkCmdCopyImage is only defined between identical depth formats — there
             // is no copy from a depth image into a colour one. It is viewed through
@@ -14780,11 +14808,139 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
 
 } // namespace
 
+// See vk_renderer.h — the settings panel's resolution row (part 60).
+void VkRenderer_RequestRenderScale(uint32_t scale)
+{
+    if (scale >= 1 && scale <= 4)
+        g_resScalePending.store(scale, std::memory_order_release);
+}
+
+namespace
+{
+
+// Apply a pending live resolution change, BETWEEN frames on the pump thread — the
+// only moment the scale may move, because every extent inside a frame assumes it
+// is constant. The EDRAM pair is rebuilt here; every resolve snapshot and the
+// rendered cube map carry the scale they were built at and rebuild themselves
+// lazily through their existing resize paths; the readback buffers grow if the
+// new frame no longer fits (they never shrink — memory is cheaper than another
+// resize path).
+void ApplyPendingRenderScale()
+{
+    const uint32_t want = g_resScalePending.exchange(0, std::memory_order_acq_rel);
+    if (!want || !R || want == ResScale())
+        return;
+    if (g_resScaleLocked)
+    {
+        fprintf(stderr, "[vk] render-scale change to %ux REFUSED: CZ_VK_RES/"
+                        "CZ_VK_RES_SCALE pin the scale for this run (the "
+                        "measurement arm wins over the menu)\n", want);
+        return;
+    }
+    vkDeviceWaitIdle(R->device);
+
+    auto destroyImage = [&](Image& im) {
+        if (im.view)
+            vkDestroyImageView(R->device, im.view, nullptr);
+        if (im.image)
+            vkDestroyImage(R->device, im.image, nullptr);
+        if (im.memory)
+            vkFreeMemory(R->device, im.memory, nullptr);
+        im = Image{};
+    };
+    const uint32_t before = ResScale();
+    destroyImage(R->color);
+    destroyImage(R->depth);
+    g_resScaleLive.store(want, std::memory_order_relaxed);
+
+    const uint32_t edramH = R->edramHeight;   // guest rows, decided at bring-up
+    if (!CreateImage(R->color, RS(R->targetWidth), RS(edramH),
+                     VK_FORMAT_R8G8B8A8_UNORM,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT) ||
+        !CreateImage(R->depth, RS(R->targetWidth), RS(edramH),
+                     VK_FORMAT_D24_UNORM_S8_UINT,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+    {
+        // A renderer with no EDRAM stand-in cannot draw at all — say so and stop
+        // feeding it rather than crash on the first pass.
+        fprintf(stderr, "[vk] LIVE RESCALE FAILED at %ux — renderer disabled\n", want);
+        g_active = false;
+        return;
+    }
+    NameImage(R->color, "EDRAM colour %ux%u", RS(R->targetWidth), RS(edramH));
+    NameImage(R->depth, "EDRAM depth %ux%u", RS(R->targetWidth), RS(edramH));
+
+    // Flush EVERY snapshot and rendered cube NOW, inside the one device idle this
+    // switch already paid for. The first version left them to the lazy per-entry
+    // rebuild path — which calls vkDeviceWaitIdle PER SNAPSHOT, and a street frame
+    // holds dozens of live snapshots, so the seconds after a resolution change
+    // were a stutter festival the operator read as a freeze. Erased entries
+    // recreate fresh on their next resolve with no further stalls.
+    size_t flushed = 0;
+    for (auto& [key, snap] : R->snapshots)
+    {
+        vkDestroyImageView(R->device, snap.image.view, nullptr);
+        vkDestroyImage(R->device, snap.image.image, nullptr);
+        vkFreeMemory(R->device, snap.image.memory, nullptr);
+        for (auto& [size, view] : snap.views)
+        {
+            (void)size;
+            vkDestroyImageView(R->device, view.image.view, nullptr);
+            vkDestroyImage(R->device, view.image.image, nullptr);
+            vkFreeMemory(R->device, view.image.memory, nullptr);
+        }
+        ++flushed;
+    }
+    R->snapshots.clear();
+    for (auto& [key, cube] : R->cubeSnapshots)
+    {
+        vkDestroyImageView(R->device, cube.image.view, nullptr);
+        vkDestroyImage(R->device, cube.image.image, nullptr);
+        vkFreeMemory(R->device, cube.image.memory, nullptr);
+        ++flushed;
+    }
+    R->cubeSnapshots.clear();
+    if (flushed)
+        fprintf(stderr, "[vk] live rescale flushed %zu snapshot surfaces in one "
+                        "stall\n", flushed);
+
+    const uint64_t need =
+        std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
+                 uint64_t(RS(4096)) * RS(1024)) * 4;
+    auto growBuffer = [&](Buffer& b, const char* what) {
+        if (b.size >= need)
+            return;
+        vkDestroyBuffer(R->device, b.buffer, nullptr);
+        vkFreeMemory(R->device, b.memory, nullptr);
+        b = Buffer{};
+        if (!CreateBuffer(b, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          ReadbackMemoryProps(), false))
+            fprintf(stderr, "[vk] LIVE RESCALE: %s regrow FAILED — readback-side "
+                            "features will truncate at this scale\n", what);
+    };
+    growBuffer(R->readback, "snapshot readback");
+    for (uint32_t i = 0; i < R->framesInFlight; ++i)
+        growBuffer(R->frames[i].present, "present readback");
+    R->presentPixels.resize(size_t(RS(R->targetWidth)) * RS(R->targetHeight) * 4);
+
+    fprintf(stderr, "[vk] render scale %ux -> %ux LIVE (%ux%u); snapshots and the "
+                    "cube map rebuild lazily over the next frames\n",
+            before, want, RS(R->targetWidth), RS(R->targetHeight));
+}
+
+} // namespace
+
 void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
                        uint32_t height)
 {
     if (!g_active || g_d3dMode)
         return;
+    ApplyPendingRenderScale();
     DoSwapImpl(base, frontBuffer, width, height);
 }
 

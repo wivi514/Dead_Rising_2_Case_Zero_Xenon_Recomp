@@ -67,6 +67,11 @@ void VkRenderer_DumpStats();
 // any thread; a no-op in the readback present arm.
 void VkRenderer_RequestSwapchainRebuild();
 
+// Change the internal render scale (1..4 over 1280x720) at the next frame
+// boundary — the settings panel's resolution row (part 60). Refused loudly when
+// CZ_VK_RES/CZ_VK_RES_SCALE pin the scale for a measurement run.
+void VkRenderer_RequestRenderScale(uint32_t scale);
+
 // ===================================================================================
 // Phase C (the D3D pivot): the SAME renderer driven from the API line
 // ===================================================================================
