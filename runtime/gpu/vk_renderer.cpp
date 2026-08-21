@@ -1171,9 +1171,113 @@ uint32_t ResScale()
     g_resScaleLive.store(s, std::memory_order_relaxed);
     return s;
 }
+// ===================================================================================
+// 21:9 WIDE MODE (part 60 night item 3)
+// ===================================================================================
+// The arithmetic that makes it exact where it matters: 21:9 of 720 rows is 1680x720,
+// and 1680 = 1280 * 21/16 with 640 -> 840 also exact — so the wide mode multiplies
+// every RENDER-PIPELINE X extent by 21/16 on top of the integer scene scale, and the
+// title's two 640-wide tile scissors stay whole pixels. The tile boundary is clip
+// x = 0, which a horizontal fov change preserves, so the title's own two-tile binning
+// survives untouched. Surfaces read from GUEST MEMORY never scale (the part-41/45
+// invariant); the cube map stays SQUARE (Vulkan requires it) and its faces are
+// squeezed by a blit instead — see CopyFaceIntoCube.
+//
+// The wider PICTURE comes from the projection patch (PatchWideProjection below): the
+// scene projection's x scale shrinks by 16/21, which widens the horizontal fov so the
+// 21/16-wider frame carries new content at the flanks instead of a stretch. Content
+// the title's own CPU culling rejected for its 16:9 frustum can pop at the extreme
+// flanks — the standard ultrawide trade, stated up front.
+//
+// BOOT-LATCHED on purpose (`aspect=1` in cz_settings.txt applies at the next launch):
+// every render-pipeline surface, the EDRAM stand-in and the readback buffers take
+// their width from this. `CZ_VK_WIDE=1`/`CZ_VK_WIDE=0` is the env arm and wins over
+// the file.
+bool WideMode()
+{
+    static const bool wide = [] {
+        if (const char* e = Env("CZ_VK_WIDE"))
+        {
+            const bool on = atoi(e) != 0;
+            fprintf(stderr, "[vk] CZ_VK_WIDE=%s — %s (env wins over the settings "
+                            "file)\n", e, on ? "21:9 wide mode" : "16:9");
+            return on;
+        }
+        if (Settings_Aspect() == 1)
+        {
+            fprintf(stderr, "[vk] 21:9 wide mode from cz_settings.txt (aspect=1) — "
+                            "internal frame %ux%u\n", 1680 * ResScale(),
+                    720 * ResScale());
+            return true;
+        }
+        return false;
+    }();
+    return wide;
+}
+// 21/16 in wide mode, 1 otherwise, as a rational so every extent conversion is done
+// in integers. TRUNCATING division, and that is load-bearing: floor(a)+floor(b) <=
+// floor(a+b), so a region's converted offset+extent can never overrun the converted
+// surface it sits in (a rounded division has no such guarantee, and the overrun is a
+// Vulkan out-of-bounds copy). The scene chain (1280, 640, 320, 160) converts exactly;
+// the luminance tail's odd widths lose at most a right-edge pixel, which the clear
+// value already owns.
+inline uint32_t WideMulNum() { return WideMode() ? 21u : 16u; }
+
 // A guest extent, in host pixels. Every use is a guest coordinate crossing into Vulkan.
+// RS/RSi are the UNIFORM (Y, and everything square) forms; RSX/RSXi convert X extents
+// of render-pipeline surfaces and pick up the 21/16 in wide mode. HostX is the same
+// conversion at an explicit scale, for the shadow tier's per-pass scale and for a
+// snapshot's own builtScale.
+inline uint32_t HostX(uint32_t v, uint32_t scale)
+{
+    return (v * scale * WideMulNum()) >> 4;
+}
+inline int32_t HostXi(int32_t v, uint32_t scale)
+{
+    return int32_t((int64_t(v) * scale * WideMulNum()) / 16);
+}
 inline uint32_t RS(uint32_t v) { return v * ResScale(); }
 inline int32_t RSi(int32_t v) { return v * int32_t(ResScale()); }
+inline uint32_t RSX(uint32_t v) { return HostX(v, ResScale()); }
+inline int32_t RSXi(int32_t v) { return HostXi(v, ResScale()); }
+
+// THE 16:9 SCENE PROJECTION, recognized structurally in a VS constant window's c0..c3.
+// The shape is the one part 58's pose work measured (tools/pose_read.py,
+// clip_plane_space.py): row 3 exactly (0,0,1,0) — w_clip = z_view, a perspective —
+// rows 0/1 diagonal, and |xscale/yscale| = 9/16 exactly, because this title's scene
+// cameras are all 16:9 whatever their fov. The shadow orthos (row 3 = (0,0,0,1)) and
+// the CUBE FACE cameras (1:1 ratio) fail the test and stay untouched, which is what
+// keeps shadows and reflections correct in wide mode.
+inline bool Is169Perspective(const uint32_t* c)
+{
+    float m[16];
+    memcpy(m, c, sizeof m);
+    if (m[12] != 0.0f || m[13] != 0.0f || m[14] != 1.0f || m[15] != 0.0f)
+        return false;
+    if (m[1] != 0.0f || m[2] != 0.0f || m[3] != 0.0f || m[4] != 0.0f ||
+        m[6] != 0.0f || m[7] != 0.0f || m[8] != 0.0f || m[9] != 0.0f)
+        return false;
+    if (m[0] == 0.0f || m[5] == 0.0f)
+        return false;
+    const float ratio = std::fabs(m[0] / m[5]);
+    return std::fabs(ratio - 0.5625f) <= 0.002f;   // 9/16, small float slack
+}
+
+// Widen the horizontal fov of a recognized scene projection by scaling its x row by
+// 16/21 — the wide frame then carries NEW content at the flanks instead of a stretch.
+// Called on the VS constant window as it is copied into the arena (and on the verify
+// arm's recompute, so the memo verifier compares patched against patched). Returns
+// whether it patched, so the caller can count.
+inline bool PatchWideProjection(uint32_t* c)
+{
+    if (!Is169Perspective(c))
+        return false;
+    float a;
+    memcpy(&a, c, 4);
+    a *= 16.0f / 21.0f;
+    memcpy(c, &a, 4);
+    return true;
+}
 
 // ===================================================================================
 // THE CONTENT GUARDS, ON OTHER CORES — part 53, plan item 1.1
@@ -4530,28 +4634,42 @@ void RefreshSnapshotView(VkCommandBuffer cb, Image& src, SnapshotView& view,
 // were written with — the snapshot because other passes sample it as an ordinary 2D
 // surface in the same frame, the cube because a draw may sample it immediately.
 //
-// The extent is the intersection of the two. A face is bounded by the snapshot that
-// feeds it: if the guest resolved a 32x32 region into a 64x64 face's address we copy
-// what exists rather than reading 64 rows out of a 32-row image, and the shortfall is
+// The mapping is GUEST-space: the source snapshot represents guestW x guestH texels of
+// the face, and they land in the same guest region of the (square, uniformly-scaled)
+// cube layer, clamped to the face — if the guest resolved a 32x32 region into a 64x64
+// face's address we fill that quarter rather than stretching it, and the shortfall is
 // visible as a face that is only partly filled rather than as undefined content.
-void CopyFaceIntoCube(VkCommandBuffer cb, Image& src, CubeSnapshot& cube, uint32_t face)
+//
+// A BLIT rather than a copy since wide mode (part 60): a Vulkan cube image must be
+// SQUARE, so cube faces are the one render-pipeline surface whose X does NOT widen —
+// the face's snapshot arrives 21/16 wider than the cube layer wants and the blit
+// squeezes it back. At 16:9 the extents are equal and the blit degenerates to the old
+// copy exactly.
+void CopyFaceIntoCube(VkCommandBuffer cb, const Snapshot& snap, CubeSnapshot& cube,
+                      uint32_t face)
 {
-    const uint32_t w = std::min(src.width, cube.faceExtent);
-    const uint32_t h = std::min(src.height, cube.faceExtent);
-    if (!w || !h || face >= 6)
+    const Image& src = snap.image;
+    const uint32_t dstW =
+        std::min(snap.guestW * snap.builtScale, cube.faceExtent);
+    const uint32_t dstH =
+        std::min(snap.guestH * snap.builtScale, cube.faceExtent);
+    if (!dstW || !dstH || !src.width || !src.height || face >= 6)
         return;
-    Barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(cb, const_cast<Image&>(src), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
     Barrier(cb, cube.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
-    VkImageCopy c{};
-    c.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-    c.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, face, 1 };
-    c.extent = { w, h, 1 };
-    vkCmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, cube.image.image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+    VkImageBlit b{};
+    b.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    b.srcOffsets[1] = { int32_t(src.width), int32_t(src.height), 1 };
+    b.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, face, 1 };
+    b.dstOffsets[1] = { int32_t(dstW), int32_t(dstH), 1 };
+    vkCmdBlitImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, cube.image.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     Barrier(cb, cube.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
-    Barrier(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+    Barrier(cb, const_cast<Image&>(src), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
     cube.facesFilled |= 1u << face;
 }
 
@@ -4641,7 +4759,7 @@ uint32_t CubeSnapshotSlot(const xenos::TextureFetch& t, uint32_t faceStride)
             auto s = R->snapshots.find(basePhys + f * faceStride);
             if (s == R->snapshots.end())
                 continue;
-            CopyFaceIntoCube(cb, s->second.image, cube, f);
+            CopyFaceIntoCube(cb, s->second, cube, f);
         }
     });
 
@@ -4722,7 +4840,7 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
     // `snap.builtScale`, NOT RS(): a shadow-tier snapshot (part 60) is built below the
     // scene scale, and a view larger than its source would make RefreshSnapshotView
     // copy rows the source image does not have.
-    if (!CreateImage(view.image, snap.builtScale * w, snap.builtScale * h,
+    if (!CreateImage(view.image, HostX(w, snap.builtScale), snap.builtScale * h,
                      snap.image.format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -4733,7 +4851,7 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
         Count("texture: snapshot view image creation FAILED");
         return 0;
     }
-    NameImage(view.image, "snapshot view %ux%u slot %u%s", snap.builtScale * w,
+    NameImage(view.image, "snapshot view %ux%u slot %u%s", HostX(w, snap.builtScale),
               snap.builtScale * h, view.slot, snap.fromDepth ? " DEPTH" : "");
 
     VkDescriptorImageInfo ii{};
@@ -7663,9 +7781,15 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
         {
             const size_t bytes = size_t(ow) * oh * 4;
             const double sc = double(R->swap.height) / double(baseH);
-            const int32_t dx0 = int32_t(std::max(0.0, ox * sc));
+            // Centered horizontally when the window is wider than the panel's 16:9
+            // logical frame (a 21:9 window, part 60): the height ratio alone would
+            // park a "centered" panel left of the window's center.
+            const double offX =
+                std::max(0.0, (double(R->swap.width) - double(baseW) * sc) / 2.0);
+            const int32_t dx0 = int32_t(std::max(0.0, offX + ox * sc));
             const int32_t dy0 = int32_t(std::max(0.0, oy * sc));
-            const int32_t dx1 = int32_t(std::min(double(R->swap.width), (ox + ow) * sc));
+            const int32_t dx1 =
+                int32_t(std::min(double(R->swap.width), offX + (ox + ow) * sc));
             const int32_t dy1 = int32_t(std::min(double(R->swap.height), (oy + oh) * sc));
             const bool fits = dx1 > dx0 && dy1 > dy0;
 
@@ -9224,6 +9348,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
             for (uint32_t i = 0; i < 256 * 4; i++)
                 dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
+            // 21:9 (part 60): widen a recognized scene projection's fov in the copy the
+            // shaders will read. Patching HERE means memo hits reuse already-patched
+            // bytes, so every draw of a frame sees one consistent projection.
+            if (WideMode() && PatchWideProjection(dst))
+                COUNT("draw: scene projection widened to 21:9");
             R->constMemoVsValid = true;
             R->constMemoVsVersion = vsVersion;
             R->constMemoVsBase = vsBase;
@@ -9252,6 +9381,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 scratch[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
             for (uint32_t i = 0; i < 256 * 4; i++)
                 scratch[256 * 4 + i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+            // The recompute must apply the same wide-mode patch the real copy does, or
+            // the verifier would report every patched projection as a memo defect.
+            if (WideMode())
+                PatchWideProjection(scratch.data());
             if (g_constMemoVerifyPoison)
                 scratch[0] ^= 0x40000000u;
             const uint32_t* haveVs =
@@ -10290,6 +10423,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     continue;
                 memcpy(shared + kSharedClipPlanes + i * 16,
                        &regs[xenos::kPaClUcp0X + i * 4], 16);
+                // 21:9 (part 60): the guest computed this plane in the CLIP SPACE of
+                // ITS projection, and the patched projection scales oPos.x by 16/21 —
+                // so the published plane's x coefficient is scaled by the inverse,
+                // which makes dot(plane', oPos_patched) == dot(plane, oPos_original)
+                // and keeps the gore/slice cuts exactly where the game put them. Only
+                // when THIS draw's projection is one the patch recognizes; the shadow
+                // orthos' planes (if any) pass through untouched.
+                if (WideMode() &&
+                    Is169Perspective(&regs[xenos::kAluConstantBase + memoVsBase * 4]))
+                {
+                    float* p =
+                        reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
+                    p[0] *= 21.0f / 16.0f;
+                    COUNT("draw: user clip plane compensated for the wide projection");
+                }
                 if (clipBias != 0.0f)
                 {
                     float* p = reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
@@ -10565,13 +10713,18 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
     if (drawScale != ResScale())
         Count("draw: shadow-pass draw at a reduced shadow tier");
-    if (drawScale != 1)
+    // X and Y separately since wide mode (part 60): X picks up the 21/16 on top of
+    // the scale, exactly as every host-extent conversion in this file does, so the
+    // geometry maps onto the widened surfaces without a seam. The float form is
+    // exact for the fraction itself; only the surfaces' integer extents truncate.
+    if (drawScale != 1 || WideMode())
     {
-        const float rs = float(drawScale);
-        viewport.x *= rs;
-        viewport.y *= rs;
-        viewport.width *= rs;
-        viewport.height *= rs;
+        const float rsx = float(drawScale) * float(WideMulNum()) / 16.0f;
+        const float rsy = float(drawScale);
+        viewport.x *= rsx;
+        viewport.y *= rsy;
+        viewport.width *= rsx;
+        viewport.height *= rsy;
     }
     // Height may legitimately be NEGATIVE now (the Y flip above), so the check is on
     // magnitude. Testing `height <= 0` here would silently drop every single draw.
@@ -10610,9 +10763,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // scale or a reduced-tier cascade would be clipped against a rectangle
         // larger than anything it renders (harmless) — and the strip clears inside
         // the pass would paint OUTSIDE the reduced cascade (not harmless).
-        scissor.offset = { int32_t(winX) * int32_t(drawScale),
+        // X through HostX so the tile scissors land on the widened surface exactly
+        // (640 -> 840 at the base scale in wide mode).
+        scissor.offset = { HostXi(int32_t(winX), drawScale),
                           int32_t(winY) * int32_t(drawScale) };
-        scissor.extent = { (std::min(winX1, R->edramWidth) - winX) * drawScale,
+        scissor.extent = { HostX(std::min(winX1, R->edramWidth) - winX, drawScale),
                            (std::min(winY1, R->edramHeight) - winY) * drawScale };
     }
 
@@ -11662,8 +11817,12 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // converts a guest extent to host pixels goes through these instead of RS/RSi.
     const uint32_t resScale =
         IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
+    // X and Y split for wide mode, at this resolve's own scale — the same HostX every
+    // other extent conversion uses, so a snapshot, its copy region and the EDRAM the
+    // pass rendered into cannot disagree by a pixel.
     auto RZ = [resScale](uint32_t v) { return v * resScale; };
-    auto RZi = [resScale](int32_t v) { return v * int32_t(resScale); };
+    auto RZx = [resScale](uint32_t v) { return HostX(v, resScale); };
+    auto RZxi = [resScale](int32_t v) { return HostXi(v, resScale); };
     if (resScale != ResScale())
         Count("resolve: shadow surface resolved at a reduced shadow tier");
     if (srcSelect == 4)
@@ -11964,7 +12123,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE
             };
-            if (CreateImage(s.image, RZ(w), RZ(h),
+            if (CreateImage(s.image, RZx(w), RZ(h),
                             fromDepth ? R->depth.format : VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -12016,7 +12175,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     fprintf(stderr,
                             "[vk] shadow-tier snapshot %08X: %ux%u host (guest %ux%u, "
                             "shadow scale %ux, scene scale %ux)\n",
-                            baseKey, RZ(w), RZ(h), w, h, resScale, ResScale());
+                            baseKey, RZx(w), RZ(h), w, h, resScale, ResScale());
                 it = R->snapshots.emplace(key, std::move(s)).first;
                 Count("resolve: snapshot created");
             }
@@ -12052,10 +12211,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // surface, which is what `dstX`/`dstY` carry.
             VkImageCopy copy{};
             copy.srcSubresource = { aspect, 0, 0, 1 };
-            copy.srcOffset = { RZi(int32_t(copyX)), RZi(int32_t(copyY)), 0 };
+            copy.srcOffset = { RZxi(int32_t(copyX)), int32_t(copyY * resScale), 0 };
             copy.dstSubresource = { aspect, 0, 0, 1 };
-            copy.dstOffset = { RZi(int32_t(dstX)), RZi(int32_t(dstY)), 0 };
-            copy.extent = { RZ(copyW), RZ(copyH), 1 };
+            copy.dstOffset = { RZxi(int32_t(dstX)), int32_t(dstY * resScale), 0 };
+            copy.extent = { RZx(copyW), RZ(copyH), 1 };
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
@@ -12090,7 +12249,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     auto cube = R->cubeSnapshots.find(owner->second.first);
                     if (cube != R->cubeSnapshots.end())
                     {
-                        CopyFaceIntoCube(R->cmd, it->second.image, cube->second,
+                        CopyFaceIntoCube(R->cmd, it->second, cube->second,
                                          owner->second.second);
                         cube->second.frameSeen = R->frame;
                         Count("resolve: refreshed a face of a rendered CUBE MAP");
@@ -12217,8 +12376,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         if (scopedClear && copyW && copyH)
         {
             VkClearRect rect{};
-            rect.rect.offset = { RZi(int32_t(copyX)), RZi(int32_t(copyY)) };
-            rect.rect.extent = { RZ(copyW), RZ(copyH) };
+            rect.rect.offset = { RZxi(int32_t(copyX)), int32_t(copyY * resScale) };
+            rect.rect.extent = { RZx(copyW), RZ(copyH) };
             rect.baseArrayLayer = 0;
             rect.layerCount = 1;
             // vkCmdClearAttachments needs a render pass; outside one the region form is
@@ -12235,8 +12394,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
             VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
-            ri.renderArea = { { RZi(int32_t(copyX)), RZi(int32_t(copyY)) },
-                              { RZ(copyW), RZ(copyH) } };
+            ri.renderArea = { { RZxi(int32_t(copyX)), int32_t(copyY * resScale) },
+                              { RZx(copyW), RZ(copyH) } };
             ri.layerCount = 1;
             ri.pDepthAttachment = &depthAtt;
             ri.pStencilAttachment = &depthAtt;
@@ -12291,7 +12450,7 @@ bool InitCommon()
     R->edramWidth = R->targetWidth;
     R->edramHeight = edramH;
     // THE HOST EXTENT IS SCALED; `edramWidth`/`edramHeight` below stay in guest pixels.
-    if (!CreateImage(R->color, RS(R->targetWidth), RS(edramH),
+    if (!CreateImage(R->color, RSX(R->targetWidth), RS(edramH),
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -12299,7 +12458,7 @@ bool InitCommon()
         // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
         // buffer rather than the colour one (its shadow cascades and the scene depth
         // its depth-of-field pass reads back) — see DoResolve.
-        !CreateImage(R->depth, RS(R->targetWidth), RS(edramH),
+        !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -12309,8 +12468,8 @@ bool InitCommon()
         fprintf(stderr, "[vk] render target creation FAILED\n");
         return false;
     }
-    NameImage(R->color, "EDRAM colour %ux%u", RS(R->targetWidth), RS(edramH));
-    NameImage(R->depth, "EDRAM depth %ux%u", RS(R->targetWidth), RS(edramH));
+    NameImage(R->color, "EDRAM colour %ux%u", RSX(R->targetWidth), RS(edramH));
+    NameImage(R->depth, "EDRAM depth %ux%u", RSX(R->targetWidth), RS(edramH));
 
     // A depth snapshot is sampled through the same bindless heap and the same single
     // linear sampler as every other texture, so the device has to be able to filter
@@ -12450,8 +12609,8 @@ bool InitCommon()
                       // is 4096x1024, and the dump SKIPS anything that does not fit,
                       // which would have made the one surface under investigation the
                       // one surface absent from the directory.
-                      std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
-                               uint64_t(RS(4096)) * RS(1024)) * 4,
+                      std::max(uint64_t(RSX(R->targetWidth)) * RS(R->targetHeight),
+                               uint64_t(RSX(4096)) * RS(1024)) * 4,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
@@ -12467,8 +12626,8 @@ bool InitCommon()
     for (uint32_t i = 0; i < R->framesInFlight; ++i)
     {
         if (!CreateBuffer(R->frames[i].present,
-                          std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
-                                   uint64_t(RS(4096)) * RS(1024)) * 4,
+                          std::max(uint64_t(RSX(R->targetWidth)) * RS(R->targetHeight),
+                                   uint64_t(RSX(4096)) * RS(1024)) * 4,
                           VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReadbackMemoryProps(), false))
         {
             fprintf(stderr, "[vk] present readback buffer %u allocation FAILED\n", i);
@@ -12648,7 +12807,7 @@ bool InitCommon()
     if (!LoadShaders())
         return false;
 
-    R->presentPixels.resize(size_t(RS(R->targetWidth)) * RS(R->targetHeight) * 4);
+    R->presentPixels.resize(size_t(RSX(R->targetWidth)) * RS(R->targetHeight) * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
     // The three readers of the per-pass snapshot-input list, asked once. See the
@@ -12773,9 +12932,9 @@ bool InitCommon()
                 "guest's geometry is unchanged and the rasterisation target is not. The "
                 "present readback is %ux the bytes — %.1f MB/frame — so read `readback` "
                 "in CZ_VK_PROFILE before quoting a frame time.\n",
-                RS(R->targetWidth), RS(R->targetHeight), ResScale(),
+                RSX(R->targetWidth), RS(R->targetHeight), ResScale(),
                 ResScale() * ResScale(),
-                double(RS(R->targetWidth)) * RS(R->targetHeight) * 4.0 / 1048576.0);
+                double(RSX(R->targetWidth)) * RS(R->targetHeight) * 4.0 / 1048576.0);
     if (g_profileOn)
         fprintf(stderr, "[vkprof] frame CPU profile ON\n");
     return true;
@@ -12953,7 +13112,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // In HOST pixels: `frontWidth`/`frontHeight` are what the guest resolved and
     // `targetWidth`/`targetHeight` are what it thinks the screen is, and the image in
     // front of us is neither if a resolution scale is in force.
-    const uint32_t width0 = RS(R->haveFrontSnapshot ? R->frontWidth : R->targetWidth);
+    const uint32_t width0 = RSX(R->haveFrontSnapshot ? R->frontWidth : R->targetWidth);
     const uint32_t height0 = RS(R->haveFrontSnapshot ? R->frontHeight : R->targetHeight);
     Count(R->haveFrontSnapshot ? "swap: presented the front-buffer resolve"
                                : "swap: presented raw EDRAM (no resolve matched)");
@@ -15009,12 +15168,12 @@ void ApplyPendingRenderScale()
     g_resScaleLive.store(want, std::memory_order_relaxed);
 
     const uint32_t edramH = R->edramHeight;   // guest rows, decided at bring-up
-    if (!CreateImage(R->color, RS(R->targetWidth), RS(edramH),
+    if (!CreateImage(R->color, RSX(R->targetWidth), RS(edramH),
                      VK_FORMAT_R8G8B8A8_UNORM,
                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT) ||
-        !CreateImage(R->depth, RS(R->targetWidth), RS(edramH),
+        !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -15027,8 +15186,8 @@ void ApplyPendingRenderScale()
         g_active = false;
         return;
     }
-    NameImage(R->color, "EDRAM colour %ux%u", RS(R->targetWidth), RS(edramH));
-    NameImage(R->depth, "EDRAM depth %ux%u", RS(R->targetWidth), RS(edramH));
+    NameImage(R->color, "EDRAM colour %ux%u", RSX(R->targetWidth), RS(edramH));
+    NameImage(R->depth, "EDRAM depth %ux%u", RSX(R->targetWidth), RS(edramH));
 
     // Flush EVERY snapshot and rendered cube NOW, inside the one device idle this
     // switch already paid for. The first version left them to the lazy per-entry
@@ -15065,8 +15224,8 @@ void ApplyPendingRenderScale()
                         "stall\n", flushed);
 
     const uint64_t need =
-        std::max(uint64_t(RS(R->targetWidth)) * RS(R->targetHeight),
-                 uint64_t(RS(4096)) * RS(1024)) * 4;
+        std::max(uint64_t(RSX(R->targetWidth)) * RS(R->targetHeight),
+                 uint64_t(RSX(4096)) * RS(1024)) * 4;
     auto growBuffer = [&](Buffer& b, const char* what) {
         if (b.size >= need)
             return;
@@ -15081,11 +15240,11 @@ void ApplyPendingRenderScale()
     growBuffer(R->readback, "snapshot readback");
     for (uint32_t i = 0; i < R->framesInFlight; ++i)
         growBuffer(R->frames[i].present, "present readback");
-    R->presentPixels.resize(size_t(RS(R->targetWidth)) * RS(R->targetHeight) * 4);
+    R->presentPixels.resize(size_t(RSX(R->targetWidth)) * RS(R->targetHeight) * 4);
 
     fprintf(stderr, "[vk] render scale %ux -> %ux LIVE (%ux%u); snapshots and the "
                     "cube map rebuild lazily over the next frames\n",
-            before, want, RS(R->targetWidth), RS(R->targetHeight));
+            before, want, RSX(R->targetWidth), RS(R->targetHeight));
 }
 
 } // namespace

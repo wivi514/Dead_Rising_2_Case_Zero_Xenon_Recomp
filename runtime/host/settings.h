@@ -47,12 +47,14 @@ bool          Settings_VSync();
 int           Settings_ShadowTier();    // 0=low 1=medium 2=high
 int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never binds),
                                         // else 30/60/90/120/240/480
+int           Settings_Aspect();        // 0=16:9 (the title's own), 1=21:9 wide
 
 void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);
 void Settings_SetShadowTier(int tier);
 void Settings_SetFpsCap(int fps);
+void Settings_SetAspect(int aspect);
 
 // The live-apply seam for the display mode: window.cpp polls this from its own
 // thread each loop and applies + clears it. Returns -1 when nothing is pending.

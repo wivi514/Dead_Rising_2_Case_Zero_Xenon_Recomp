@@ -766,12 +766,31 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
                 }
+                case 5:
+                {
+                    // 16:9 <-> 21:9. Two values, so dir does not matter. The 21:9
+                    // entry is only offered when the DISPLAY is actually wider than
+                    // 16:9 (night item 4's rule applied to this row): on a 16:9
+                    // monitor the wide frame would just be letterboxed smaller.
+                    uint32_t dw = 0, dh = 0;
+                    if (!Settings_Aspect() && Host_DisplaySize(&dw, &dh) && dw && dh &&
+                        uint64_t(dw) * 9 <= uint64_t(dh) * 16)
+                    {
+                        fprintf(stderr, "[pcopt] 21:9 refused — the display is not "
+                                        "wider than 16:9\n");
+                        break;
+                    }
+                    Settings_SetAspect(Settings_Aspect() ? 0 : 1);
+                    fprintf(stderr, "[pcopt] aspect %s — next launch\n",
+                            Settings_Aspect() ? "21:9" : "16:9");
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 4)) % 5;
+            sel = (sel + ((pressed & kDown) ? 1 : 5)) % 6;
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

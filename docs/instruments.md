@@ -1634,6 +1634,34 @@ CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** Th
                    frame) are untouched, which also means NO headless gate can see
                    this — the picture verdict is the operator's (part-54 lesson: a
                    present-path change is invisible to every readback-walking gate)
+CZ_VK_WIDE=1|0     **the env arm for 21:9 wide mode** (part 60 night item 3), winning
+                   over the settings file's `aspect=` row. BOOT-LATCHED — the mode
+                   reshapes every render-pipeline surface, so it applies at launch
+                   like the render scale. What it does: every render-pipeline X
+                   extent is multiplied 21/16 on top of the scene scale (1280 ->
+                   1680, the two 640 tile scissors -> 840 each, exact; truncating
+                   division everywhere so converted offset+extent can never overrun
+                   a converted surface), and every VS constant window whose c0..c3
+                   is a 16:9 PERSPECTIVE (row3 = (0,0,1,0), diagonal rows 0/1,
+                   |xscale/yscale| = 9/16 — the part-58 pose structure) gets its
+                   x row scaled 16/21 at the arena copy, which widens the horizontal
+                   fov so the flanks carry NEW content instead of a stretch. Shadow
+                   orthos and cube-face cameras (1:1) fail the test and stay
+                   untouched; the cube map must stay SQUARE (Vulkan), so cube faces
+                   are the one surface whose X does not widen — CopyFaceIntoCube
+                   became a blit that squeezes the wider face snapshot back. UCP
+                   planes are published with their x coefficient scaled 21/16 for
+                   recognized draws, which keeps dot(plane, oPos) exactly what the
+                   game computed (the gore cuts stay put). The frontend's own UI
+                   comes out CENTERED for free — it is drawn under a 16:9
+                   perspective the patch recognizes (measured on the attract screen:
+                   copyright center 32.8% -> 36.9% predicted, 37% observed).
+                   Counters: "scene projection widened to 21:9", "user clip plane
+                   compensated for the wide projection". Known trades, stated up
+                   front: content the title's CPU culling rejected for its 16:9
+                   frustum can pop at the extreme flanks, and the title's own
+                   2-tile binning survives because the tile boundary is clip x = 0,
+                   which the fov change preserves
 CZ_VK_SHADOW_TIER=0|1|2  **the measurement arm for the Shadow Quality row** (part 60
                    night item 2), and it WINS over the settings file. 2 = High = the
                    scene scale (bit-identical to the pre-part-60 renderer — the

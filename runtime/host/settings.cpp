@@ -18,6 +18,7 @@ struct State
     bool vsync = false;         // false = MAILBOX (the part-54 default), true = FIFO
     int shadowTier = 2;         // the title rendered at full shadow resolution until now
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
+    int aspect = 0;             // 0 = 16:9 (the title's own), 1 = 21:9 (part 60 wide mode)
 };
 
 // The frame-cap values the panel offers. A set rather than a range because the vblank
@@ -57,9 +58,10 @@ void SaveLocked()
             "render_scale=%u\n"     // 1..4 over 1280x720
             "vsync=%d\n"
             "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
-            "fps_cap=%d\n",        // 0 = off, else 30/60/90/120/240/480
+            "fps_cap=%d\n"         // 0 = off, else 30/60/90/120/240/480
+            "aspect=%d\n",         // 0 = 16:9, 1 = 21:9 (applies at next launch)
             int(g_state.displayMode), g_state.renderScale, g_state.vsync ? 1 : 0,
-            g_state.shadowTier, g_state.fpsCap);
+            g_state.shadowTier, g_state.fpsCap, g_state.aspect);
     fclose(f);
 }
 
@@ -95,6 +97,8 @@ void Settings_Load(const std::string& path)
             g_state.vsync = v != 0;
         else if (!strcmp(key, "shadow_tier") && v >= 0 && v <= 2)
             g_state.shadowTier = int(v);
+        else if (!strcmp(key, "aspect") && v >= 0 && v <= 1)
+            g_state.aspect = int(v);
         else if (!strcmp(key, "fps_cap"))
         {
             if (ValidFpsCap(v))
@@ -148,6 +152,12 @@ int Settings_FpsCap()
     return g_state.fpsCap;
 }
 
+int Settings_Aspect()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.aspect;
+}
+
 void Settings_SetDisplayMode(CzDisplayMode m)
 {
     {
@@ -184,6 +194,18 @@ void Settings_SetShadowTier(int tier)
         return;
     g_state.shadowTier = tier;
     SaveLocked();
+}
+
+void Settings_SetAspect(int aspect)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (aspect < 0 || aspect > 1)
+        return;
+    g_state.aspect = aspect;
+    SaveLocked();
+    // Applies at the NEXT LAUNCH: the wide mode reshapes every render-pipeline
+    // surface, and the renderer latches it once at boot (WideMode in
+    // vk_renderer.cpp) the way the render scale is latched.
 }
 
 void Settings_SetFpsCap(int fps)
