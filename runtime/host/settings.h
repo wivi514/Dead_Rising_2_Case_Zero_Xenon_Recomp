@@ -49,6 +49,10 @@ bool          Settings_VSync();
 int           Settings_ShadowTier();    // 0=low 1=medium 2=high
 int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never binds),
                                         // else 30/60/90/120/240/480
+int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
+                                        // ADJUSTMENT from the game's own camera,
+                                        // -10..+30 in steps of 1; 0 = OG, the
+                                        // default and the bit-identical control
 int           Settings_Aspect();        // LEGACY: 1 when the internal res is wider than
                                         // 16:9. Derived; new code reads Settings_InternalRes
 
@@ -72,6 +76,7 @@ void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);
 void Settings_SetShadowTier(int tier);
 void Settings_SetFpsCap(int fps);
+void Settings_SetFov(int deg);
 void Settings_SetAspect(int aspect);
 
 // The live-apply seam for the display mode: window.cpp polls this from its own
@@ -88,5 +93,5 @@ int  Settings_ConsumePendingDisplayMode();
 // window.cpp draws it, the guest-side input pump mutates it.
 bool Settings_OverlayVisible();
 void Settings_SetOverlayVisible(bool on);
-int  Settings_OverlaySelection();          // 0..3
+int  Settings_OverlaySelection();          // 0..5 (six rows as of part 61)
 void Settings_SetOverlaySelection(int row);

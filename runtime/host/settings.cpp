@@ -20,6 +20,7 @@ struct State
     bool vsync = false;         // false = MAILBOX (the part-54 default), true = FIFO
     int shadowTier = 2;         // the title rendered at full shadow resolution until now
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
+    int fov = 0;                // degrees of fov adjustment, -10..+30; 0 = OG (part 61)
     int aspect = 0;             // 0 = 16:9 (the title's own), 1 = 21:9 (part 60 wide mode)
 };
 
@@ -63,9 +64,11 @@ void SaveLocked()
             "vsync=%d\n"
             "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
             "fps_cap=%d\n"         // 0 = off, else 30/60/90/120/240/480
+            "fov=%d\n"             // field-of-view adjustment in degrees, -10..+30, 0 = OG
             "aspect=%d\n",         // 0 = 16:9, 1 = 21:9 (applies at next launch)
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
-            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.aspect);
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov,
+            g_state.aspect);
     fclose(f);
 }
 
@@ -129,6 +132,14 @@ void Settings_Load(const std::string& path)
                 fprintf(stderr, "[settings] fps_cap=%ld is not one of "
                                 "0/30/60/90/120/240/480 — using OFF\n", v);
         }
+        else if (!strcmp(key, "fov"))
+        {
+            if (v >= -10 && v <= 30)
+                g_state.fov = int(v);
+            else
+                fprintf(stderr, "[settings] fov=%ld is outside -10..+30 — "
+                                "using OG (0)\n", v);
+        }
         // Unknown keys: ignored on purpose — see the header comment.
     }
     fclose(f);
@@ -157,9 +168,9 @@ void Settings_Load(const std::string& path)
     if (g_state.renderScale > 4) g_state.renderScale = 4;
     g_state.aspect = uint64_t(g_state.resW) * 9 > uint64_t(g_state.resH) * 16 ? 1 : 0;
     fprintf(stderr, "[settings] %s: display_mode=%d res=%ux%u vsync=%d "
-                    "shadow_tier=%d fps_cap=%d\n", path.c_str(),
+                    "shadow_tier=%d fps_cap=%d fov=%d\n", path.c_str(),
             int(g_state.displayMode), g_state.resW, g_state.resH,
-            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap);
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov);
 }
 
 void Settings_Save()
@@ -202,6 +213,23 @@ int Settings_Aspect()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_state.aspect;
+}
+
+int Settings_Fov()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.fov;
+}
+
+void Settings_SetFov(int deg)
+{
+    if (deg < -10 || deg > 30)
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.fov = deg;
+    SaveLocked();
+    // Applied LIVE: the renderer re-reads the value once per frame (the shadow-tier
+    // pattern) in FovHalfRadThisFrame, vk_renderer.cpp.
 }
 
 // See settings.h for the rule. The caps: 2880 tall / 6880 wide is 4x the title's

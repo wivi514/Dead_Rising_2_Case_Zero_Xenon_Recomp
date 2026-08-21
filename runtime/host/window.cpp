@@ -448,7 +448,7 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 340;
+    const int panelW = 640, panelH = 380;   // 380: six rows since part 61 (FOV)
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -494,15 +494,21 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     char capName[8] = "OFF";
     if (const int cap = Settings_FpsCap(); cap > 0)
         snprintf(capName, sizeof capName, "%d", cap);
-    const char* rows[5][2] = {
+    // The FOV row shows "OG" at 0 — the plan's language for "exactly the game's own
+    // camera" — and a signed degree adjustment otherwise. Applies LIVE.
+    char fovName[8] = "OG";
+    if (const int fov = Settings_Fov(); fov != 0)
+        snprintf(fovName, sizeof fovName, "%+d", fov);
+    const char* rows[6][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
         { "FRAME CAP", capName },
+        { "FIELD OF VIEW", fovName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

@@ -433,9 +433,10 @@ bool PcOptions_FilterScreenTransition(PPCContext& ctx, uint8_t* base)
         // the defect is presentation-side; if the store is wrong, grep up for the
         // writer.
         fprintf(stderr, "[pcopt] Visuals -> host settings panel (open %llu) — "
-                        "showing res=%ux%u mode=%d vsync=%d tier=%d cap=%d\n",
+                        "showing res=%ux%u mode=%d vsync=%d tier=%d cap=%d fov=%+d\n",
                 (unsigned long long)(++opens), rw, rh, int(Settings_DisplayMode()),
-                Settings_VSync() ? 1 : 0, Settings_ShadowTier(), Settings_FpsCap());
+                Settings_VSync() ? 1 : 0, Settings_ShadowTier(), Settings_FpsCap(),
+                Settings_Fov());
         return true;
     }
     if (hash == kOptionsVisual)
@@ -795,12 +796,27 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
                 }
+                case 5:
+                {
+                    // FIELD OF VIEW (part 61): degrees of adjustment, -10..+30,
+                    // one degree per press, clamped at the ends (ordered ladder —
+                    // gotcha 377). Applies LIVE: the renderer re-reads the value
+                    // once per frame and patches recognized scene projections.
+                    int fov = Settings_Fov() + dir;
+                    if (fov < -10)
+                        fov = -10;
+                    if (fov > 30)
+                        fov = 30;
+                    Settings_SetFov(fov);
+                    fprintf(stderr, "[pcopt] fov %+d — live\n", fov);
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 4)) % 5;
+            sel = (sel + ((pressed & kDown) ? 1 : 5)) % 6;
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

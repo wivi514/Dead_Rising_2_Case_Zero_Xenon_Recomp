@@ -11,6 +11,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -1278,6 +1279,96 @@ inline bool PatchWideProjection(uint32_t* c)
     memcpy(&a, c, 4);
     a /= WideFovFactor();
     memcpy(c, &a, 4);
+    return true;
+}
+
+// The ratio B'/B the slider applies to a recognized projection's y scale:
+// the game's vertical half-fov is atan(1/|B|), the patched one adds halfRad, and
+// B' = 1/tan(patched half-fov). Clamped so the patched half-fov stays inside
+// (0.5°, 89°) — outside that a tan pole would flip or explode the projection.
+// Sign-safe: computed on |B|, and a RATIO carries no sign, so a y-flipped
+// projection keeps its flip.
+inline float FovScaleRatio(float b, float halfRad)
+{
+    const float ab = std::fabs(b);
+    if (!(ab > 0.0f))
+        return 1.0f;
+    float half = std::atan(1.0f / ab) + halfRad;
+    constexpr float kMinHalf = 0.0087266f;   // 0.5 degrees
+    constexpr float kMaxHalf = 1.5533430f;   // 89 degrees
+    if (half < kMinHalf)
+        half = kMinHalf;
+    if (half > kMaxHalf)
+        half = kMaxHalf;
+    return (1.0f / std::tan(half)) / ab;
+}
+
+// CZ_VK_FOV_CENSUS=1 — print every DISTINCT recognized projection (A, B, and the
+// z-row terms m10/m11, which encode zn/zf) the first time it is seen. The question
+// it answers (part 61): does the title's UI ride the SAME projection as the 3D
+// scene, or a structurally distinguishable one? The wide patch WANTS to catch UI
+// (that is the part-60 self-centering); a fov slider that catches UI shrinks the
+// HUD, so if the two populations separate on a structural field, the fov patch can
+// exempt the UI's. Env-gated and first-occurrence-only: free when off, and a
+// bounded number of lines when on.
+inline void FovCensus(const uint32_t* c, uint32_t depthControl)
+{
+    static const bool on = Env("CZ_VK_FOV_CENSUS") != nullptr;
+    if (!on || !Is169Perspective(c))
+        return;
+    static std::mutex mu;
+    static std::map<std::array<uint32_t, 5>, uint64_t> seen;
+    static uint64_t calls = 0;
+    // Key: the projection's A/B and z-row terms, PLUS the draw's depth-test and
+    // depth-write enables (RB_DEPTHCONTROL bits 1 and 2). The state bits are in the
+    // key because the projection alone turned out not to discriminate — one shared
+    // projection serves the whole frame — so the question became whether SCENE and
+    // UI populations separate on depth state instead.
+    const std::array<uint32_t, 5> key{ c[0], c[5], c[10], c[11],
+                                       depthControl & 0x6 };
+    std::lock_guard<std::mutex> lock(mu);
+    const bool fresh = ++seen[key] == 1;
+    ++calls;
+    if (fresh)
+    {
+        float a, b, z0, z1;
+        memcpy(&a, &c[0], 4);
+        memcpy(&b, &c[5], 4);
+        memcpy(&z0, &c[10], 4);
+        memcpy(&z1, &c[11], 4);
+        fprintf(stderr, "[fov-census] #%zu A=%.6f B=%.6f m10=%.6f m11=%.6f "
+                        "(vfov=%.2f deg) ztest=%u zwrite=%u\n", seen.size(), a, b,
+                z0, z1, 2.0 * std::atan(1.0 / std::fabs(b)) * 57.29578,
+                (depthControl >> 1) & 1, (depthControl >> 2) & 1);
+    }
+    // The population counts, dumped periodically — first-occurrence lines name the
+    // variants; this says how many draws each variant actually carries.
+    if (calls % 200000 == 0)
+        for (const auto& [k, n] : seen)
+            fprintf(stderr, "[fov-census] count: A=%08X B=%08X z=%08X/%08X "
+                            "depth=%X -> %llu draws\n", k[0], k[1], k[2], k[3],
+                    k[4], (unsigned long long)n);
+}
+
+// Apply the slider to a recognized 16:9 scene projection: B scales by the ratio and
+// A scales by the SAME ratio so the aspect is untouched — which is also what keeps
+// Is169Perspective true afterwards, so this composes with PatchWideProjection
+// (ORDER: fov first, wide second; the wide patch then divides A alone). Same call
+// sites and same memo/verify discipline as the wide patch above.
+inline bool PatchFovProjection(uint32_t* c, float halfRad)
+{
+    if (halfRad == 0.0f || !Is169Perspective(c))
+        return false;
+    float a, b;
+    memcpy(&a, c + 0, 4);
+    memcpy(&b, c + 5, 4);
+    const float r = FovScaleRatio(b, halfRad);
+    if (r == 1.0f)
+        return false;
+    a *= r;
+    b *= r;
+    memcpy(c + 0, &a, 4);
+    memcpy(c + 5, &b, 4);
     return true;
 }
 
@@ -3335,6 +3426,44 @@ void ShadowRes(uint32_t& sw, uint32_t& sh)
     }
     sw = cachedW;
     sh = cachedH;
+}
+
+// THE FOV SLIDER (part 61, docs/rt-and-fov-plan.md §0). The settings row carries N
+// degrees of ADJUSTMENT to the game's own camera (-10..+30, 0 = OG); this returns
+// N/2 in radians — the term added to the projection's vertical HALF-fov by
+// PatchFovProjection — re-read once per FRAME (the shadow-tier pattern above) so a
+// live menu change applies at the next frame boundary while every draw within one
+// frame sees one value. That per-frame latch is also what keeps the constant memo
+// safe: the memo never survives a frame (constMemoFrame), so patched bytes can
+// never be reused under a different slider value. `CZ_VK_FOV=N` is the measurement
+// arm and wins over the file (including CZ_VK_FOV=0, which PINS the slider off).
+float FovHalfRadThisFrame()
+{
+    static const bool envSet = Env("CZ_VK_FOV") != nullptr;
+    static const int envDeg = [] {
+        if (const char* e = Env("CZ_VK_FOV"))
+        {
+            const long d = strtol(e, nullptr, 10);
+            if (d >= -10 && d <= 30)
+            {
+                fprintf(stderr, "[vk] CZ_VK_FOV=%ld — the env arm wins over the "
+                                "settings file's fov\n", d);
+                return int(d);
+            }
+            fprintf(stderr, "[vk] CZ_VK_FOV=%s is outside -10..+30 — IGNORED, "
+                            "slider pinned to OG\n", e);
+        }
+        return 0;
+    }();
+    static uint64_t cachedFrame = ~0ull;
+    static float cachedHalfRad = 0.0f;
+    if (cachedFrame != R->frame)
+    {
+        cachedFrame = R->frame;
+        const int deg = envSet ? envDeg : Settings_Fov();
+        cachedHalfRad = float(deg) * 0.00872664626f;   // pi/360: degrees -> half-radians
+    }
+    return cachedHalfRad;
 }
 
 // The cross-frame store's index, through one seam so the container is a runtime choice.
@@ -9372,6 +9501,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     const bool psHit = memoOn && R->constMemoPsValid &&
                        R->constMemoPsVersion == psVersion &&
                        R->constMemoPsBase == memoPsBase;
+    // Per DRAW (not per memo miss — a copy-site census would only count constant
+    // CHANGES and miss every memo-hit draw's depth state), on the RAW register
+    // window: which recognized projections exist and what depth state their draws
+    // carry. Env-gated; one static bool test per draw when off.
+    FovCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+              regs[xenos::kRbDepthControl]);
     g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
     g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
     // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
@@ -9417,9 +9552,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
             for (uint32_t i = 0; i < 256 * 4; i++)
                 dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
-            // 21:9 (part 60): widen a recognized scene projection's fov in the copy the
-            // shaders will read. Patching HERE means memo hits reuse already-patched
-            // bytes, so every draw of a frame sees one consistent projection.
+            // 21:9 (part 60) and the FOV slider (part 61): patch a recognized scene
+            // projection in the copy the shaders will read. Patching HERE means memo
+            // hits reuse already-patched bytes, so every draw of a frame sees one
+            // consistent projection. ORDER MATTERS and is fov FIRST: the fov patch
+            // scales A and B by one ratio (aspect preserved, so the projection still
+            // recognizes as 16:9), then the wide patch divides A alone.
+            if (PatchFovProjection(dst, FovHalfRadThisFrame()))
+                COUNT("draw: scene projection fov-adjusted (slider)");
             if (WideMode() && PatchWideProjection(dst))
                 COUNT("draw: scene projection widened to 21:9");
             R->constMemoVsValid = true;
@@ -9450,8 +9590,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 scratch[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
             for (uint32_t i = 0; i < 256 * 4; i++)
                 scratch[256 * 4 + i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
-            // The recompute must apply the same wide-mode patch the real copy does, or
-            // the verifier would report every patched projection as a memo defect.
+            // The recompute must apply the same patches the real copy does, in the
+            // same order, or the verifier would report every patched projection as a
+            // memo defect.
+            PatchFovProjection(scratch.data(), FovHalfRadThisFrame());
             if (WideMode())
                 PatchWideProjection(scratch.data());
             if (g_constMemoVerifyPoison)
@@ -10492,20 +10634,37 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     continue;
                 memcpy(shared + kSharedClipPlanes + i * 16,
                        &regs[xenos::kPaClUcp0X + i * 4], 16);
-                // 21:9 (part 60): the guest computed this plane in the CLIP SPACE of
-                // ITS projection, and the patched projection scales oPos.x by 16/21 —
-                // so the published plane's x coefficient is scaled by the inverse,
-                // which makes dot(plane', oPos_patched) == dot(plane, oPos_original)
-                // and keeps the gore/slice cuts exactly where the game put them. Only
-                // when THIS draw's projection is one the patch recognizes; the shadow
+                // 21:9 (part 60) and the FOV slider (part 61): the guest computed
+                // this plane in the CLIP SPACE of ITS projection, and the patched
+                // projection scales clip coordinates — oPos.x by r*(16/21), oPos.y
+                // by r, where r is the fov ratio — so the published plane's x and y
+                // coefficients are scaled by the inverses, which makes
+                // dot(plane', oPos_patched) == dot(plane, oPos_original) and keeps
+                // the gore/slice cuts exactly where the game put them. Only when
+                // THIS draw's projection is one the patch recognizes; the shadow
                 // orthos' planes (if any) pass through untouched.
-                if (WideMode() &&
+                const float ucpFovHalf = FovHalfRadThisFrame();
+                if ((WideMode() || ucpFovHalf != 0.0f) &&
                     Is169Perspective(&regs[xenos::kAluConstantBase + memoVsBase * 4]))
                 {
                     float* p =
                         reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
-                    p[0] *= WideFovFactor();
-                    COUNT("draw: user clip plane compensated for the wide projection");
+                    if (ucpFovHalf != 0.0f)
+                    {
+                        float b;
+                        memcpy(&b,
+                               &regs[xenos::kAluConstantBase + memoVsBase * 4 + 5], 4);
+                        const float r = FovScaleRatio(b, ucpFovHalf);
+                        p[0] /= r;
+                        p[1] /= r;
+                        COUNT("draw: user clip plane compensated for the fov slider");
+                    }
+                    if (WideMode())
+                    {
+                        p[0] *= WideFovFactor();
+                        COUNT("draw: user clip plane compensated for the wide "
+                              "projection");
+                    }
                 }
                 if (clipBias != 0.0f)
                 {
