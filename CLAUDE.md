@@ -735,9 +735,10 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
 SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a
 SHELL (layout + strings present, verbs compiled out), so the menu is a HOST panel over
-the game's own Options hub — six rows: Resolution (display-clamped), Display Mode,
-VSync, Shadow Quality (LIVE tiers), Frame Cap (LIVE, microsecond vblank period), and
-Aspect 16:9/21:9.** `docs/part61-kickoff.md` is the LIVE hand-off (subject: the
+the game's own Options hub — five rows: Resolution (display-clamped, BOTH aspects in
+one list per the operator's morning revision — 1280x720/1680x720/2560x1440/3360x1440
+on their display, selecting sets scale+aspect for the next launch), Display Mode,
+VSync, Shadow Quality (LIVE tiers), Frame Cap (LIVE, microsecond vblank period).** `docs/part61-kickoff.md` is the LIVE hand-off (subject: the
 operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotchas
 373-375):
 

@@ -708,28 +708,33 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
             {
                 case 0:
                 {
-                    // The offered list is CLAMPED TO THE DISPLAY (part 60 night item
-                    // 4): no 5120x2880 entry on a 1440p monitor. Unknown display
-                    // (headless, or SDL said nothing) means no clamp — refusing to
-                    // step with no evidence would be the opposite failure.
-                    int maxScale = 4;
+                    // ONE list, BOTH aspects (the operator's revision of the night's
+                    // separate ASPECT row): step through kCzResolutions, skipping
+                    // entries the DISPLAY cannot show (night item 4's clamp, now on
+                    // each entry's own w x h — a 21:9 entry appears exactly when it
+                    // fits). Unknown display (headless) means no clamp — refusing to
+                    // step with no evidence would be the opposite failure. Selecting
+                    // an entry persists BOTH render_scale and aspect; applies at the
+                    // next launch (the live path froze the operator's machine twice
+                    // and stays parked).
                     uint32_t dw = 0, dh = 0;
-                    if (Host_DisplaySize(&dw, &dh) && dw && dh)
+                    const bool haveDisplay = Host_DisplaySize(&dw, &dh) && dw && dh;
+                    auto fits = [&](const CzResolutionEntry& e) {
+                        return !haveDisplay || (e.w <= dw && e.h <= dh);
+                    };
+                    int at = Settings_ResolutionIndex(Settings_RenderScale(),
+                                                      Settings_Aspect());
+                    for (int step = 0; step < kCzResolutionCount; ++step)
                     {
-                        maxScale = 1;
-                        while (maxScale < 4 && 1280u * (maxScale + 1) <= dw &&
-                               720u * (maxScale + 1) <= dh)
-                            ++maxScale;
+                        at = (at + dir + kCzResolutionCount) % kCzResolutionCount;
+                        if (fits(kCzResolutions[at]))
+                            break;
                     }
-                    const int s = int(Settings_RenderScale()) - 1;
-                    const int n = (s + dir + maxScale) % maxScale;
-                    Settings_SetRenderScale(uint32_t(n + 1));
-                    // NOT applied live: the live path (VkRenderer_RequestRenderScale)
-                    // froze the frame on the operator's machine twice and was
-                    // reverted on their call — the machinery stays in the renderer
-                    // for a future part; the setting lands at the next launch.
-                    fprintf(stderr, "[pcopt] resolution %ux%u — next launch\n",
-                            1280 * (n + 1), 720 * (n + 1));
+                    const CzResolutionEntry& e = kCzResolutions[at];
+                    Settings_SetRenderScale(e.scale);
+                    Settings_SetAspect(e.aspect);
+                    fprintf(stderr, "[pcopt] resolution %ux%u (%s) — next launch\n",
+                            e.w, e.h, e.aspect ? "21:9" : "16:9");
                     break;
                 }
                 case 1:
@@ -766,31 +771,12 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
                 }
-                case 5:
-                {
-                    // 16:9 <-> 21:9. Two values, so dir does not matter. The 21:9
-                    // entry is only offered when the DISPLAY is actually wider than
-                    // 16:9 (night item 4's rule applied to this row): on a 16:9
-                    // monitor the wide frame would just be letterboxed smaller.
-                    uint32_t dw = 0, dh = 0;
-                    if (!Settings_Aspect() && Host_DisplaySize(&dw, &dh) && dw && dh &&
-                        uint64_t(dw) * 9 <= uint64_t(dh) * 16)
-                    {
-                        fprintf(stderr, "[pcopt] 21:9 refused — the display is not "
-                                        "wider than 16:9\n");
-                        break;
-                    }
-                    Settings_SetAspect(Settings_Aspect() ? 0 : 1);
-                    fprintf(stderr, "[pcopt] aspect %s — next launch\n",
-                            Settings_Aspect() ? "21:9" : "16:9");
-                    break;
-                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 5)) % 6;
+            sel = (sel + ((pressed & kDown) ? 1 : 4)) % 5;
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

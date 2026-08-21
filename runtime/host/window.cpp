@@ -400,7 +400,7 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 380;
+    const int panelW = 640, panelH = 340;
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -428,27 +428,34 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     text(panelX + 20, panelY + 46, "UP/DOWN ROW   LEFT/RIGHT CHANGE   B CLOSE", 2,
          160, 160, 170);
 
-    static const char* kResNames[] = { "1280 X 720", "2560 X 1440",
-                                       "3840 X 2160", "5120 X 2880" };
     static const char* kModeNames[] = { "WINDOW", "BORDERLESS", "FULLSCREEN" };
     static const char* kOnOff[] = { "OFF", "ON" };
     static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
     const uint32_t scale = Settings_RenderScale();
+    // The Resolution row shows the ONE entry matching the persisted (scale, aspect)
+    // pair — both aspects live in the same list (the operator's revision: pick
+    // 3360x1440 instead of toggling a separate ASPECT row). The table is
+    // kCzResolutions in settings.h, shared with the stepper in pc_options.cpp.
+    char resName[20];
+    {
+        const CzResolutionEntry& e =
+            kCzResolutions[Settings_ResolutionIndex(scale, Settings_Aspect())];
+        snprintf(resName, sizeof resName, "%u X %u", e.w, e.h);
+    }
     // The frame cap's display name. Values come from the validated set in
     // settings.cpp, so the fallback only fires on a hand-edited file mid-run.
     char capName[8] = "OFF";
     if (const int cap = Settings_FpsCap(); cap > 0)
         snprintf(capName, sizeof capName, "%d", cap);
-    const char* rows[6][2] = {
-        { "RESOLUTION", kResNames[(scale >= 1 && scale <= 4 ? scale : 1) - 1] },
+    const char* rows[5][2] = {
+        { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
         { "FRAME CAP", capName },
-        { "ASPECT", Settings_Aspect() ? "21:9" : "16:9" },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 5; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

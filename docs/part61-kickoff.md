@@ -20,13 +20,15 @@ One command (the panel is on the game's own `Options` hub; open it there):
 cd runtime/build && ./cz_runtime
 ```
 
-The operator's checklist, one line each — the six panel rows are: RESOLUTION,
-DISPLAY MODE, VSYNC, SHADOW QUALITY, FRAME CAP, ASPECT:
+The operator's checklist, one line each — the five panel rows are: RESOLUTION
+(both aspects in one list — the operator's revision), DISPLAY MODE, VSYNC, SHADOW
+QUALITY, FRAME CAP:
 
 1. **Black bars** (item 1): fullscreen on the 21:9 display with a 16:9 setting —
    equal side bars, no stretch. `CZ_VK_STRETCH=1` restores the old stretch if a
    comparison is wanted.
-2. **21:9** (item 3): set ASPECT to 21:9, restart, play — full-bleed, wider view (not
+2. **21:9** (item 3): pick a 21:9 entry (1680x720 / 3360x1440) in the RESOLUTION
+   row, restart, play — full-bleed, wider view (not
    stretch), HUD centered, reflections/shadows sane, no seam at screen center, no
    flank artifacts. Watch for pop-in at the extreme flanks (the title's own CPU
    culling is 16:9 — expected, note severity). `CZ_VK_WIDE=0` kills it without

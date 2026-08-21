@@ -49,6 +49,42 @@ int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never bin
                                         // else 30/60/90/120/240/480
 int           Settings_Aspect();        // 0=16:9 (the title's own), 1=21:9 wide
 
+// THE RESOLUTION MENU (part 60, operator revision): ONE row lists every internal
+// resolution, BOTH aspects interleaved — "1280x720, 1680x720, 2560x1440, ..." —
+// and selecting an entry sets BOTH render_scale and aspect, applying at the next
+// launch. The table lives here because two files render/step it (window.cpp shows
+// the current entry, pc_options.cpp steps it) and two copies of a list is how a
+// menu gains an entry in one and not the other. Order is ascending by height then
+// width, the way games list modes.
+struct CzResolutionEntry
+{
+    uint32_t scale;   // 1..4 over the title's 1280x720
+    int aspect;       // 0 = 16:9, 1 = 21:9 (the wide mode's 21/16 X factor)
+    uint32_t w, h;    // the resulting internal size, for display and display-clamp
+};
+inline constexpr CzResolutionEntry kCzResolutions[] = {
+    { 1, 0, 1280, 720 },  { 1, 1, 1680, 720 },
+    { 2, 0, 2560, 1440 }, { 2, 1, 3360, 1440 },
+    { 3, 0, 3840, 2160 }, { 3, 1, 5040, 2160 },
+    { 4, 0, 5120, 2880 }, { 4, 1, 6720, 2880 },
+};
+inline constexpr int kCzResolutionCount =
+    int(sizeof kCzResolutions / sizeof *kCzResolutions);
+
+// The index of the entry matching the persisted (render_scale, aspect) pair, so the
+// panel and the stepper agree on "current". A pair the table lacks falls back to the
+// same scale at 16:9, then to 1280x720.
+inline int Settings_ResolutionIndex(uint32_t scale, int aspect)
+{
+    for (int i = 0; i < kCzResolutionCount; ++i)
+        if (kCzResolutions[i].scale == scale && kCzResolutions[i].aspect == aspect)
+            return i;
+    for (int i = 0; i < kCzResolutionCount; ++i)
+        if (kCzResolutions[i].scale == scale && kCzResolutions[i].aspect == 0)
+            return i;
+    return 0;
+}
+
 void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);
