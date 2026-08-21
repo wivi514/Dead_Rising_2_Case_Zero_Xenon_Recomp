@@ -89,7 +89,15 @@ QUALITY, FRAME CAP:
 * Tier A/B, wide A/B: headless halves done (engagement + no breakage); operator
   halves owed above.
 
-## 3. After the verdicts, the standing list (unchanged from part 60)
+## 3. THE NEXT PLAN IS `docs/rt-and-fov-plan.md` (operator instruction, 2026-08-21)
+
+Ray-traced AO / lighting / shadows / GI as per-effect OG / RT LOW / MED / HIGH rows,
+plus a Field of View slider. The plan is staged (FOV first, then probe -> geometry
+census -> shadows -> AO -> lighting/GI), every stage has its arm and its honest
+refusal, and NOTHING in the RT stages starts before the stage-1 census numbers
+exist. Read the plan before estimating anything about it.
+
+## 4. After the verdicts, the standing list (unchanged from part 60)
 
 * Decal flicker: waiting on a sighting; F8 burst + `CZ_VK_NO_PARALLEL_GUARD=1` ready.
 * Doubled-slab watch (00q): F9 + immediate F8 on any sighting.
