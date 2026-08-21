@@ -397,9 +397,14 @@ not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and two ope
 (the military arrival, then Still Creek end to end) recovered TEN of the eleven. The last,
 `ps_926c15dd20571cf1`, samples only sets 0 and 3 — an ordinary 2D shader, so nothing
 depends on it. A lost dump is a location nobody has replayed, not a permanent loss.
-**The cache is 436 and it has grown on EVERY session that reached new ground.** 335 from
+**The cache is 449, and on 2026-08-21 the operator COMPLETED THE WHOLE GAME in one
+sitting with `CZ_SHADER_DUMP` armed** — nine shaders surfaced across that run (three
+mid-town, five late, one in the endgame), which is the closest this cache has ever
+been to a completeness claim. The claim still has a shelf life (gotcha 13): eras no
+run has entered — trial mode, other save states, error screens — can still hold
+shaders nobody has counted. Growth trail: 335 from
 the captures, 337 with our own dump, then 339, 353, 370, 371, 391, 394, 397, 402, 409, 411,
-419, 424, 430, 435, 436 — 23 of those from two operator play sessions on 2026-08-08 alone, and
+419, 424, 430, 435, 436, 440, 449 — 23 of those from two operator play sessions on 2026-08-08 alone, and
 **11 more from part 39's operator evening, of which THREE were never reported missing by
 any run and only the name-diff gate found them**, once the whole-frame black
 stopped hiding the parts of the map nobody had visited. **Treat "the cache is complete"
