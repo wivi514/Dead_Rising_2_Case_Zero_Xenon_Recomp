@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part60-kickoff.md`.** State the rule as well as the name, because this line said
+    `part61-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -732,6 +732,45 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
+SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a
+SHELL (layout + strings present, verbs compiled out), so the menu is a HOST panel over
+the game's own Options hub — six rows: Resolution (display-clamped), Display Mode,
+VSync, Shadow Quality (LIVE tiers), Frame Cap (LIVE, microsecond vblank period), and
+Aspect 16:9/21:9.** `docs/part61-kickoff.md` is the LIVE hand-off (subject: the
+operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotchas
+373-375):
+
+* **Aspect-fit presentation is the DEFAULT** — black bars instead of stretch on both
+  present paths, one shared computation (`Host_AspectFitRect`); `CZ_VK_STRETCH=1` is
+  the control arm.
+* **Shadow tiers are wired and LIVE**: the cascade pass is identified by its measured
+  EDRAM pitch (1040 = a 1024-wide surface; census — nothing else uses it), the same
+  predicate scales draws and resolves, High = scene scale (bit-identical control),
+  Med/Low = half/quarter floored at 1x. `CZ_VK_SHADOW_TIER` wins over the file.
+  Headless halves verified (atlas at 1x vs 2x host, 18.8M draws counted, frames
+  intact); Low-vs-High blockiness is the operator's.
+* **21:9 works headlessly end to end**: every render-pipeline X extent * 21/16
+  (TRUNCATING — gotcha 373), the 16:9-perspective discriminator patches the scene
+  projection's fov (350k patches on the outdoor route), UCP planes compensated so
+  gore cuts stay put, cube maps stay square via a face blit. **The planned HUD
+  mechanism was refuted by measurement — the title's UI sits under the recognized
+  perspective and centers ITSELF** (gotcha 374; two independent measurements land on
+  the centering prediction). Same attract backdrop 16:9-vs-wide shows new flank
+  geometry, not stretch. `CZ_VK_WIDE` env arm; `aspect=1` next-launch.
+* **Frame cap row applies within one pump tick** — the vblank period is a live atomic
+  in MICROSECONDS (90 fps needs 5,555 us; the old ms knob would have served 100 —
+  gotcha 375); env pins it and the menu is refused loudly under a pin; CZ_FPS_CAP=30
+  still reproduces shipped pacing bit for bit. Stated cost: a live change leaves the
+  guest's cached refresh stale until restart.
+* **Gates at close**: `--smoke` green after every commit; A5 diff exit 0 (4
+  permutation / 0 real); validation-armed wide boot shows ONLY the pre-existing
+  point-list PointSize VUID class (6, same as the 16:9 control — now a named cheap
+  open item); E3 identity re-run at close (see §6cp / the closing commit).
+* **All picture verdicts of the night are HEADLESS; the operator's morning checklist
+  is `part61-kickoff.md` §0.** Commit-hygiene note: items 4+5 share one commit
+  (893749b), documented in its message.
+
 Where the port is, as of 2026-08-20 (part 59 CLOSED — **THREE THREADS, ALL LANDED IN ONE
 DAY: the owed GATE SWEEP ran all green; NIGHT RUN 1 (the operator-requested overnight
 perf campaign) answered the parked plan's owed items 1/2/4; and the operator's R6 trace
@@ -776,53 +815,6 @@ in `perf-state-parked.md`, updated by Night Run 1's §6):
 * **Gates**: `--smoke` OK after every change; picture verification WINDOWED through the
   operator (three sessions: fix verdict, 1440p play). The sweep above covers part 56's
   owed one too (same binary lineage).
-
-Where the port is, as of 2026-08-19 (part 58 CLOSED — **THE SLICING SEE-THROUGH IS FIXED
-AND IT WAS TRIANGLE FACING. One offline derivation answered the kickoff's space question
-(there was NO space error), the operator's shift ladder closed the whole clip branch, and
-the same session's captures found the real mechanism — a stencil-masked gore quad whose
-mask our inverted front/back complemented. Operator on the fix: "Yes it is perfect now."**
-`docs/part59-kickoff.md` is the LIVE hand-off; the full record is `phase5-notes.md` §6cn;
-per-defect state is `open-items.md` 00q; performance stays parked in
-`perf-state-parked.md`):
-
-* **THE CLIP-SPACE QUESTION IS ANSWERED OFFLINE, WITHOUT THE VIEW MATRIX THE POSES
-  FAILED TO CAPTURE** (all ten bvc blocks are the SHADOW pass's ortho — the "biggest
-  draw" heuristic caught the shadow ground draw every time). The view matrix cancels:
-  dot(P, Proj·v) = dot(Projᵀ·P, v), so the projection alone re-expresses a captured
-  plane against view space, where lengths are true meters. **All 88 distinct captured
-  planes are UNIT view-space normals (1.000 ± 0.0003 RMS)** under one fitted scene
-  projection (fov 42.98°, 16:9 exact — not the pose first-draw's 45°): the register
-  planes are exactly clip-space planes, our raw-oPos dot is hardware's dot.
-  `tools/clip_plane_space.py`; gotcha 371.
-* **PART 57's MARGIN INFERENCE IS RETRACTED AND ITS BIAS ARM RETIRED AS A PROBE**: the
-  captured planes have c ≈ −d, so CZ_VK_CLIP_BIAS's `w += eps·|P|` lands entirely in
-  the view plane's z-COEFFICIENT — a ROTATION worth 0.8–8 m of boundary at eps=0.01,
-  which is what "un-clips the whole body" measured. The meters-true replacement is
-  `CZ_VK_CLIP_SHIFT` (Δplane = Proj⁻ᵀ·(0,0,0,δ)); the operator ran the ladder
-  0/+0.05/+0.02/−0.02, every arm's counter engaged, **nothing changed → the clip
-  branch is CLOSED**. Gotcha 370.
-* **THE REAL MECHANISM, FOUND IN THE LADDER'S OWN CENSUSES**: the cut is sealed by a
-  6-vert QUAD stencil-tested EQUAL against a per-piece ref that the two-sided passes
-  WRITE (front REPLACE / back ZERO; tester refs match writer refs in-frame). A
-  two-sided-written mask depends on FACING — and facing had no other consumer in this
-  renderer (culling permanently NONE; the title censuses su=00080008, cull off FACE=0,
-  on every draw), so the hardcoded CCW front sat unverifiable until part 56 wired the
-  stencil, then surfaced as the view-dependent see-through the operator described
-  verbatim. One arm settled the coin toss and **FRONT=CW IS NOW THE DEFAULT**;
-  `CZ_VK_STENCIL_CCW_FRONT=1` is the same-binary control arm. Gotcha 372.
-* **On watch, not chased**: the part-57 doubled-slab sighting did not re-appear in any
-  of part 58's three operator sessions; severed pieces despawn in ~3 s (hardcoded, no
-  tunable) so the analysis route for any future cut defect is F9 + an immediate F8
-  burst. The ±0.05 arms' predicted "visible doubled band" was wrong in presentation
-  (ragdoll halves separate; each just gets 5 cm longer) — the engagement evidence that
-  counted was the counters.
-* **Gates**: `--smoke` OK after every change; all picture verification WINDOWED through
-  the operator (three sessions this part). **The headless sweep (E3, A5, PM4 oracles,
-  dimension census) is OWED**: part 58 changed a DEFAULT (front=CW), which is exactly
-  the condition part 57 named for re-running it — but the operator's standing
-  instruction is that they run the game, so it is the first ask of part 59.
-
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 57's** — part 59 moved part 57's out in the same commit that added its own block, part 57 moved part 55's out the same way, part 55 moved part 53's

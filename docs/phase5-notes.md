@@ -12250,3 +12250,106 @@ verification recipe (square-table cross-check + chain-consistency census on any 
 Also this part: the operator's F9-paired census/live-dump protocol worked end to end
 on first use at a NEW location — the whole diagnosis above consumed one trace and one
 15-minute play session. R6 is fulfilled; strike it from `xenia-capture-requests.md`.
+
+## §6cp — Part 60's night run: aspect-fit presentation, shadow tiers, frame cap, display clamp, 21:9 (2026-08-20 overnight)
+
+The operator's instruction, verbatim: *"21:9 support. also apply black bar if we select
+like 16:9 resolution on 21:9 screen like all other games do instead of stretch to fit.
+and also make so we change shadow resolution with the shadow settings."* Plus two panel
+items added to the plan the same evening (display-filtered resolution list, frame-cap
+row). `docs/part60-night-plan.md` is the plan; every item landed. All picture verdicts
+below are HEADLESS ones and the operator's morning check is the authority on each.
+
+### 1. Aspect-correct presentation (default; `CZ_VK_STRETCH=1` restores the old stretch)
+
+One shared computation (`Host_AspectFitRect`, host/window.h) feeds both present paths:
+swapchain (clear-to-black + centered blit rect, with a transfer/transfer barrier
+between clear and blit) and SDL readback (black clear + centered dest rect). The clear
+only runs when bars exist, so a 16:9 window is byte-identical to before. No headless
+gate can see a present-path change (part-54 lesson) — operator verdict owed.
+
+### 2. Shadow tiers (the Shadow Quality row is LIVE; `CZ_VK_SHADOW_TIER` is the arm)
+
+The investigation answer the kickoff asked for: **the cascades rode CZ_VK_RES with
+everything else** — cascade draws render into the shared EDRAM at scene scale and the
+4096x1024 atlas snapshot is built at RS(). The tier gives the shadow pass its own
+scale (High = scene, Medium = half, Low = quarter, floor 1x — at 720p the knob is
+honestly inert and the panel footer says so).
+
+**The pass predicate is a measured fact, not an assumption**: a CZ_VK_VIEWPORT_TRACE
+census over the outdoor route shows the cascade pass and nothing else on
+`surfacePitch=1040, msaa=0` (surfaceInfo=10000410) — the main draws at
+depthControl=16/97/B7, the 1024x16 strip clear at 72, and the pass's vte=00 full
+clears. 1040 = 13*80: EDRAM pitch aligns to the 80-pixel tile, so the pitch MEANS "a
+1024-wide surface", and the cascade is this title's only one. The same predicate on
+the same live register scales draws AND resolves, so the two sides cannot disagree;
+the settings row is re-read once per FRAME so draws and resolves within a frame agree
+and the row applies live (the atlas snapshot rebuilds through the same path a guest
+resize takes).
+
+Verified headlessly at 2560x1440: tier 0 builds the atlas 4096x1024 host where tier 2
+builds 8192x2048 (`[vk] shadow-tier snapshot` lines carry both), 18.8M cascade draws
+and 118,800 resolves counted at the reduced scale, whole-frame dumps intact in both
+arms, shadows present. Snapshot views now build at the snapshot's own `builtScale` —
+required once a snapshot can be below scene scale.
+
+### 3. 21:9 wide mode (`aspect=1` in cz_settings.txt, next launch; `CZ_VK_WIDE` env arm)
+
+Three mechanisms, one commit each side of the seam:
+
+* **RSX/RSY split**: every render-pipeline X extent is `(v * scale * 21) / 16`,
+  TRUNCATING — floor(a)+floor(b) <= floor(a+b), so a converted offset+extent can
+  never overrun a converted surface (a rounded division has no such guarantee and the
+  overrun is a Vulkan OOB copy). 1280 -> 1680 and the 640 tiles -> 840 exact; the
+  luminance tail's odd widths lose at most a right-edge pixel. The tile boundary is
+  clip x = 0, which the fov change preserves — the title's own two-tile binning
+  survives unmodified (verified: no seam in any wide dump).
+* **The projection patch**: a VS constant window whose c0..c3 has row3 = (0,0,1,0),
+  diagonal rows 0/1 and |xscale/yscale| = 9/16 (the part-58 pose structure) gets its
+  x row scaled 16/21 in the arena copy — the memo then reuses patched bytes, and the
+  verify arm's recompute applies the same patch so CZ_VK_VERIFY_CONST_MEMO stays
+  clean. Shadow orthos (row3 = (0,0,0,1)) and cube-face cameras (1:1) fail the test
+  and stay untouched. UCP planes are published with plane.x scaled 21/16 for
+  recognized draws, which makes dot(plane', oPos_patched) == dot(plane, oPos_orig) —
+  the gore cuts stay where the game put them.
+* **Cube faces stay square** (Vulkan requires it): the one surface whose X does not
+  widen. CopyFaceIntoCube became a guest-space BLIT — at 16:9 it degenerates to the
+  old copy exactly; in wide mode it squeezes the 21/16-wider face snapshot back into
+  the square layer.
+
+**The surprise worth recording: the UI centered itself.** The plan budgeted a
+window-coordinate HUD-centering mechanism (+200 guest-pixel offset, with a real risk
+of catching post-chain quads). Measurement says it is not needed for the frontend: the
+title draws its UI under a 16:9 PERSPECTIVE the patch recognizes, so UI x positions
+map x -> 0.5 + (x - 0.5) * 16/21 — centered, not stretched. Attract-screen copyright
+center 32.8% (16:9) -> 36.9% predicted by centering, 37% measured in the wide dump;
+full-span stretch predicts 32.8% and is refuted. 51,688 projection patches fired in a
+100 s title boot.
+
+Verified headlessly: the wide title dump is 3360x1440 = 21:9 exact; the SAME attract
+backdrop at 16:9 vs wide shows NEW geometry at both flanks (casino sign, hydrant,
+tree, fence right; gate and truck left) with undistorted central content; a
+validation-armed wide boot shows exactly the same single VUID class as the 16:9
+control (the pre-existing point-list PointSize pipeline complaint, 6 in each arm — no
+new validation defects).
+
+### 4+5. Display-clamped resolution list; frame cap row
+
+`Host_DisplaySize` publishes the desktop mode of the window's display (refreshed at
+the 1 Hz title-bar cadence — covers monitor drags with no display-event machinery);
+the panel clamps its Resolution stepping to it, ResScale clamps the persisted value on
+load, and the 21:9 row is refused on a not-wider-than-16:9 display. Env arms are never
+clamped. The frame cap: the vblank period became a LIVE ATOMIC IN MICROSECONDS —
+90/240/480 do not land on integer milliseconds (90 fps needs 5,555 us; the ms knob
+would have silently served 100) — with `Vd_SetFpsCapLive` as the row's applier, the
+pump re-reading the period every tick, and the env vars pinning it (menu refused
+loudly). The env CZ_FPS_CAP path keeps the truncating-millisecond arithmetic, so
+CZ_FPS_CAP=30 still reproduces the shipped 16 ms pacing bit for bit. The one stated
+cost: the guest caches our reported refresh rate at bring-up, so a LIVE cap change
+leaves that cached Hz stale until next launch (boot-time file values have no skew).
+
+### The commit-hygiene note
+
+Items 4 and 5 landed in one commit (893749b) against the one-change-per-commit rule —
+both are panel rows from the same operator request and the message documents each
+separately, but the next session should not read that commit as one feature.

@@ -3925,3 +3925,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      the code says, and settle it by experiment (one arm: "it is perfect now"). For
      the record: Xenos FACE=0 + a D3D-convention y-flip on both sides lands on
      Vulkan CLOCKWISE front.
+
+373. **A UNIFORM SCALE FACTOR THAT BECOMES PER-AXIS MUST TRUNCATE, NOT ROUND — because
+     floor(a)+floor(b) <= floor(a+b) and round has no such guarantee.** The 21:9 mode
+     converts guest X extents by *21/16, and every converted (offset, extent) pair
+     must stay inside its converted surface: with truncation that is a theorem, with
+     round-half-up it fails on odd widths and the failure is a Vulkan out-of-bounds
+     image copy that only a validation run reports. When one number becomes a
+     conversion applied in several places, prove the composition property once and
+     name it at the definition, or every call site is a separate off-by-one bet. The
+     cost of truncation — a right-edge pixel lost on the odd-width tail of a halving
+     chain — is bounded and visible; the cost of rounding is UB.
+
+374. **BEFORE BUILDING A COMPENSATION MECHANISM, MEASURE WHETHER THE PRIMARY CHANGE
+     ALREADY COMPENSATES.** The 21:9 plan budgeted a HUD-centering mechanism (offset
+     window-coordinate draws, with a real risk of catching post-chain quads in the
+     same net). Measurement on the first wide dump showed the title draws its
+     frontend UI under a 16:9 PERSPECTIVE the projection patch already recognizes —
+     so the patch centers the UI as a side effect (x -> 0.5 + (x-0.5)*16/21;
+     copyright center 32.8% -> predicted 36.9%, measured 37%, where stretch predicts
+     32.8%). The mechanism would have been dead code at best and a post-chain defect
+     at worst. Generalization of 362 (the plan's parallel items lost to a simpler
+     deletion): run the cheapest arm of the plan BEFORE building its next mechanism.
+
+375. **A KNOB WHOSE UNITS QUANTIZE THE VALUE SILENTLY SERVES A DIFFERENT VALUE — list
+     the rungs the units can express before offering a menu of values.** The frame
+     cap's period was integer milliseconds; a 90 fps cap needs a 5,555 us period, and
+     the ms knob would have delivered 5 ms = 100 fps with no error anywhere. The
+     menu's value list (30/60/90/120/240/480) was chosen BEFORE checking which of
+     those the machinery could land on — the plan caught it only because the night
+     plan pre-registered the trap ("90 would become 100"). When a UI offers discrete
+     values, derive each value's actual realization in the mechanism's own units and
+     refuse or relabel the ones that do not exist.
