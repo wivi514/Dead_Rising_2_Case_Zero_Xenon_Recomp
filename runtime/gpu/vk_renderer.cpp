@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -2634,6 +2635,22 @@ struct CubeSnapshot
 // describe the frame being RECORDED, not the pixels being looked at. `frame_compare.py`
 // aligns two runs by exactly those fingerprints, so an off-by-one here does not look like
 // a bug, it looks like a picture regression. Captured at submit, read at present.
+// An image whose owner replaced it mid-frame, kept alive until every command
+// buffer that could reference it has retired. THE REASON THIS EXISTS is the
+// shadow-tier freeze (part 60): the snapshot-resize path destroyed the old atlas
+// with a vkDeviceWaitIdle, but a wait-idle only covers SUBMITTED work — the frame
+// being RECORDED had already sampled the old image in earlier passes, so the
+// submit that followed referenced destroyed handles. That is undefined behavior
+// that presented as a wedged queue (the operator: "it froze the game"), and the
+// per-resize wait-idle was ALSO the stutter the live-rescale path documents. A
+// retired image is destroyed once `retireFrame + framesInFlight + 1 <= R->frame`,
+// by which point its last possible referencing fence has been waited.
+struct RetiredImage
+{
+    uint64_t retireFrame = 0;
+    Image image;
+};
+
 struct FrameSlot
 {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -3085,6 +3102,7 @@ struct Renderer
     // slot each time, i.e. gotcha 192's descriptor-heap exhaustion. A fetch picks the
     // one it meant by its own FORMAT: `k_24_8` and `k_24_8_FLOAT` are depth surfaces.
     std::unordered_map<uint32_t, Snapshot> snapshots;
+    std::deque<RetiredImage> retired;   // see RetiredImage
     uint32_t nextTextureSlot = 1; // slot 0 is the dummy
     // Descriptor set 2 is its OWN unbounded array of TextureCube views, so it has its own
     // slot space. Sharing `nextTextureSlot` would work but would waste the sparser heap's
@@ -3294,7 +3312,17 @@ void ShadowRes(uint32_t& sw, uint32_t& sh)
     if (!cachedW || cachedFrame != R->frame)
     {
         cachedFrame = R->frame;
-        const int tier = envTier >= 0 ? envTier : Settings_ShadowTier();
+        int tier = envTier >= 0 ? envTier : Settings_ShadowTier();
+        // CZ_TEST_TIER_FLIP=N — cycle the tier 2,1,0 every N frames, headlessly
+        // exercising the LIVE flip the panel row performs (the shadow-tier freeze's
+        // repro arm: the resize path destroys and rebuilds the atlas mid-run on
+        // every boundary this crosses).
+        static const long flipEvery = [] {
+            const char* e = Env("CZ_TEST_TIER_FLIP");
+            return e ? strtol(e, nullptr, 10) : 0;
+        }();
+        if (flipEvery > 0)
+            tier = 2 - int((R->frame / uint64_t(flipEvery)) % 3);
         uint32_t w, h;
         InternalRes(w, h);
         uint32_t th = tier == 2 ? h : tier == 1 ? h / 2 : h / 4;
@@ -4638,6 +4666,35 @@ void RefreshSnapshotView(VkCommandBuffer cb, Image& src, SnapshotView& view,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
     Barrier(cb, view.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
     Barrier(cb, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, aspect);
+}
+
+// See RetiredImage: queue an image for destruction once no in-flight or
+// in-recording command buffer can reference it, and clear the owner's handle.
+void RetireImage(Image& im)
+{
+    if (im.image || im.view || im.memory)
+        R->retired.push_back({ R->frame, im });
+    im = Image{};
+}
+
+// Destroy every retired image whose last possible referencing frame has been
+// fence-waited. Called at the present boundary, right after the oldest frame's
+// fence wait — the one moment the age arithmetic below is known true.
+void DrainRetiredImages()
+{
+    while (!R->retired.empty() &&
+           R->retired.front().retireFrame + R->framesInFlight + 1 <= R->frame)
+    {
+        Image& im = R->retired.front().image;
+        if (im.view)
+            vkDestroyImageView(R->device, im.view, nullptr);
+        if (im.image)
+            vkDestroyImage(R->device, im.image, nullptr);
+        if (im.memory)
+            vkFreeMemory(R->device, im.memory, nullptr);
+        R->retired.pop_front();
+        Count("retired image destroyed after its fences");
+    }
 }
 
 // Copy one resolve snapshot into one FACE of a cube snapshot, in the command buffer
@@ -8092,6 +8149,7 @@ int RetireOldestFrame()
         vkWaitForFences(R->device, 1, &fs.fence, VK_TRUE, UINT64_MAX);
     }
     fs.inFlight = false;
+    DrainRetiredImages();
     return int(oldest);
 }
 
@@ -12096,20 +12154,17 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             (it->second.guestW != w || it->second.guestH != h ||
              it->second.builtW != passW || it->second.builtH != passH))
         {
-            vkDeviceWaitIdle(R->device);
-            vkDestroyImageView(R->device, it->second.image.view, nullptr);
-            vkDestroyImage(R->device, it->second.image.image, nullptr);
-            vkFreeMemory(R->device, it->second.image.memory, nullptr);
-            // The views go with it: they are copies of an image that no longer exists,
-            // and a surface whose extent changed is a different surface. Their bindless
-            // slots are NOT recycled, for the same reason the snapshot's is not — slot
-            // recycling is open-items 3b and needs deferred destruction to be safe.
+            // RETIRED, not destroyed — and NO wait-idle. Draws recorded earlier in
+            // THIS frame may sample the old image (their descriptors stay valid
+            // because the image stays alive), and a wait-idle here could not have
+            // protected them anyway: it only covers submitted work, which is the
+            // whole shadow-tier freeze (see RetiredImage). The old bindless slots
+            // are still not recycled (open-items 3b).
+            RetireImage(it->second.image);
             for (auto& [size, view] : it->second.views)
             {
                 (void)size;
-                vkDestroyImageView(R->device, view.image.view, nullptr);
-                vkDestroyImage(R->device, view.image.image, nullptr);
-                vkFreeMemory(R->device, view.image.memory, nullptr);
+                RetireImage(view.image);
             }
             R->snapshots.erase(it);
             it = R->snapshots.end();
