@@ -3117,6 +3117,10 @@ struct Renderer
     // otherwise the device's maxSamplerAnisotropy limit, read so a sampler never
     // asks for more than the device names.
     float anisoLimit = 0.0f;
+    // RT stage 0 (part 61): the capability probe's answer — the device carries the
+    // three ray-query extensions. Probe only; nothing is enabled until an RT stage
+    // ships, and the future RT settings rows consult this to show UNSUPPORTED.
+    bool rtSupported = false;
     // Part 41 item 1b: per-fetch samplers. Key = the fetch constant's own
     // mag/min/mip/aniso fields (dword3 bits 19..27); value = the sampler's index in
     // the set-3 heap. Index 0 stays the plain trilinear REPEAT sampler, which is
@@ -4052,6 +4056,45 @@ bool CreateDevice()
             VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion),
             VK_VERSION_PATCH(props.apiVersion));
     vkGetPhysicalDeviceMemoryProperties(R->physical, &R->memProps);
+
+    // RT STAGE 0 — THE CAPABILITY PROBE (part 61, docs/rt-and-fov-plan.md §1).
+    // Ray-query hybrid RT (the retrofit form the plan commits to: no RT pipeline,
+    // no shader binding table) needs three device extensions plus the
+    // bufferDeviceAddress feature this renderer already requires. PROBE ONLY —
+    // nothing is enabled and no behaviour changes; the answer is a named log line
+    // and a stored bool the future RT rows consult, so a machine that lacks the
+    // pieces shows UNSUPPORTED rows instead of a row that pretends (the
+    // gamma-slider rule). `CZ_VK_RT=0` will be the whole-feature kill arm and
+    // `CZ_VK_RT_FORCE=1` the probe override once RT stages exist; stage 0 records
+    // the probe so those arms have a fact to act on.
+    {
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(R->physical, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> exts(extCount);
+        vkEnumerateDeviceExtensionProperties(R->physical, nullptr, &extCount,
+                                             exts.data());
+        auto hasExt = [&](const char* name) {
+            for (const auto& e : exts)
+                if (!strcmp(e.extensionName, name))
+                    return true;
+            return false;
+        };
+        const bool accel = hasExt("VK_KHR_acceleration_structure");
+        const bool rayQuery = hasExt("VK_KHR_ray_query");
+        const bool deferredOps = hasExt("VK_KHR_deferred_host_operations");
+        R->rtSupported = accel && rayQuery && deferredOps;
+        if (R->rtSupported)
+            fprintf(stderr, "[vk] RT probe: ray query SUPPORTED "
+                            "(acceleration_structure + ray_query + "
+                            "deferred_host_operations all present)\n");
+        else
+            fprintf(stderr, "[vk] RT probe: ray query UNSUPPORTED — missing:%s%s%s "
+                            "(future RT rows will refuse to leave OG on this "
+                            "device)\n",
+                    accel ? "" : " VK_KHR_acceleration_structure",
+                    rayQuery ? "" : " VK_KHR_ray_query",
+                    deferredOps ? "" : " VK_KHR_deferred_host_operations");
+    }
 
     // Size the bindless heap from the device, not from a constant (see g_maxDescriptors).
     // The clamp is a memory decision rather than a Vulkan one: a slot costs nothing on
