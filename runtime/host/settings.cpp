@@ -73,6 +73,11 @@ void SaveLocked()
 
 void Settings_Load(const std::string& path)
 {
+    // CZ_TEST_PANEL=1 — open the settings panel immediately, headlessly: the
+    // presentation repro for "the row shows 720p at open while the store says
+    // otherwise". Display-only; no input needed.
+    if (getenv("CZ_TEST_PANEL"))
+        Settings_SetOverlayVisible(true);
     std::lock_guard<std::mutex> lock(g_mutex);
     g_path = path;
     FILE* f = fopen(path.c_str(), "r");

@@ -740,7 +740,15 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     for (int i = 0; i < count; ++i)
                         if (modes[i * 2] == cw && modes[i * 2 + 1] == ch)
                             at = i;
-                    at = (at + dir + count) % count;
+                    // CLAMPED at the ends, no wrap — the operator's "it always
+                    // shows 720p when I open it": their resolution was the LAST
+                    // list entry, so the first right-press wrapped to the smallest
+                    // every time, three sessions running. An ordered ladder clamps.
+                    at += dir;
+                    if (at < 0)
+                        at = 0;
+                    if (at >= count)
+                        at = count - 1;
                     Settings_SetInternalRes(modes[at * 2], modes[at * 2 + 1]);
                     fprintf(stderr, "[pcopt] resolution %ux%u — next launch\n",
                             modes[at * 2], modes[at * 2 + 1]);
@@ -775,7 +783,14 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     for (int i = 0; i < kNumCaps; ++i)
                         if (kCaps[i] == Settings_FpsCap())
                             at = i;
-                    const int cap = kCaps[(at + dir + kNumCaps) % kNumCaps];
+                    // Clamped like the resolution ladder — wrapping an ordered
+                    // list is the same first-press surprise.
+                    at += dir;
+                    if (at < 0)
+                        at = 0;
+                    if (at >= kNumCaps)
+                        at = kNumCaps - 1;
+                    const int cap = kCaps[at];
                     Settings_SetFpsCap(cap);
                     Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
