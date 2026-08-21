@@ -45,11 +45,14 @@ CzDisplayMode Settings_DisplayMode();
 uint32_t      Settings_RenderScale();   // 1..4, multiplier over the title's 1280x720
 bool          Settings_VSync();
 int           Settings_ShadowTier();    // 0=low 1=medium 2=high
+int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never binds),
+                                        // else 30/60/90/120/240/480
 
 void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);
 void Settings_SetVSync(bool on);
 void Settings_SetShadowTier(int tier);
+void Settings_SetFpsCap(int fps);
 
 // The live-apply seam for the display mode: window.cpp polls this from its own
 // thread each loop and applies + clears it. Returns -1 when nothing is pending.

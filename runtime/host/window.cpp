@@ -106,6 +106,7 @@ bool Host_VulkanSwapchainWanted() { return false; }
 std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
 bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; }
+bool Host_DisplaySize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; return false; }
 
 #else
 
@@ -201,6 +202,31 @@ void PublishDrawableSize()
                         "frame time from this run\n",
                 nw, nh, g_renderer ? "readback" : "swapchain");
 }
+// THE DISPLAY'S OWN SIZE (part 60 night item 4) — the desktop mode of whichever
+// display the window currently sits on, published for the settings panel so its
+// Resolution row only offers sizes the player's screen can show. Refreshed from the
+// window thread (SDL rule) at init and once a second from the title-bar block, which
+// also covers the window being dragged to another monitor without needing a
+// display-event subscription of its own. Zero until the window exists; consumers
+// treat unknown as "no clamp".
+std::atomic<uint32_t> g_displayW{ 0 }, g_displayH{ 0 };
+
+void PublishDisplaySize()
+{
+    if (!g_window)
+        return;
+    const int index = SDL_GetWindowDisplayIndex(g_window);
+    SDL_DisplayMode mode{};
+    if (index < 0 || SDL_GetDesktopDisplayMode(index, &mode) != 0 || mode.w <= 0 ||
+        mode.h <= 0)
+        return;
+    const uint32_t ow = g_displayW.exchange(uint32_t(mode.w), std::memory_order_acq_rel);
+    const uint32_t oh = g_displayH.exchange(uint32_t(mode.h), std::memory_order_acq_rel);
+    if (ow != uint32_t(mode.w) || oh != uint32_t(mode.h))
+        fprintf(stderr, "[host] display %d is %dx%d — the settings panel clamps its "
+                        "resolution list to this\n", index, mode.w, mode.h);
+}
+
 // Apply a display mode to the live window. WINDOW THREAD ONLY (the SDL rule this
 // whole file exists to keep): Host_WindowInit calls it once after creation for the
 // persisted mode, and the loop calls it when the PC options screen changes the
@@ -374,7 +400,7 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 300;
+    const int panelW = 640, panelH = 340;
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -408,14 +434,20 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     static const char* kOnOff[] = { "OFF", "ON" };
     static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
     const uint32_t scale = Settings_RenderScale();
-    const char* rows[4][2] = {
+    // The frame cap's display name. Values come from the validated set in
+    // settings.cpp, so the fallback only fires on a hand-edited file mid-run.
+    char capName[8] = "OFF";
+    if (const int cap = Settings_FpsCap(); cap > 0)
+        snprintf(capName, sizeof capName, "%d", cap);
+    const char* rows[5][2] = {
         { "RESOLUTION", kResNames[(scale >= 1 && scale <= 4 ? scale : 1) - 1] },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
+        { "FRAME CAP", capName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 5; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)
@@ -426,8 +458,14 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
         text(panelX + panelW - 28 - int(value.size()) * 12, y, value, 2,
              i == sel ? 255 : 190, i == sel ? 240 : 210, i == sel ? 120 : 210);
     }
+    // The Shadow row is LIVE as of part 60 (the renderer re-reads the tier each
+    // frame), but the tier scales are floored at the title's own 1280x720 base — so
+    // at render scale 1 every tier is 1x and the row is honestly inert, which the
+    // footer says rather than letting a dead row pretend (the gamma-slider rule).
     text(panelX + 20, panelY + panelH - 30,
-         "RESOLUTION: NEXT LAUNCH - SHADOWS: NOT WIRED YET", 2, 150, 140, 120);
+         scale > 1 ? "RESOLUTION: NEXT LAUNCH - SHADOW: LIVE"
+                   : "RESOLUTION: NEXT LAUNCH - SHADOW INERT AT 720P",
+         2, 150, 140, 120);
 }
 
 template <typename Rect>
@@ -998,6 +1036,7 @@ bool Host_WindowInit()
                 wantVsync ? " CZ_HOST_VSYNC=1 is IGNORED here." : "");
     }
     PublishDrawableSize();
+    PublishDisplaySize();
 
     fprintf(stderr, "[host] window %dx%d up on SDL video driver '%s'.\n", kDefaultWidth,
             kDefaultHeight, SDL_GetCurrentVideoDriver());
@@ -1174,6 +1213,18 @@ void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h)
 {
     if (w) *w = g_drawableW.load(std::memory_order_acquire);
     if (h) *h = g_drawableH.load(std::memory_order_acquire);
+}
+
+// See window.h: the desktop size of the display the window is on, for the settings
+// panel's resolution clamp. False (and zeros) until the window thread has published
+// one, which headless runs never do — the caller treats that as "no clamp".
+bool Host_DisplaySize(uint32_t* w, uint32_t* h)
+{
+    const uint32_t dw = g_displayW.load(std::memory_order_acquire);
+    const uint32_t dh = g_displayH.load(std::memory_order_acquire);
+    if (w) *w = dw;
+    if (h) *h = dh;
+    return dw && dh;
 }
 
 bool Host_PadState(uint32_t userIndex, HostPadState& out)
@@ -1470,6 +1521,9 @@ void Host_WindowRun()
             std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTitle).count();
         if (sinceTitle >= 1000)
         {
+            // Cheap and covers monitor drags: the display the window sits on is
+            // re-queried at the title-bar cadence rather than via display events.
+            PublishDisplaySize();
             const double fps = double(presented - framesAtLastTitle) * 1000.0 / double(sinceTitle);
             framesAtLastTitle = presented;
             lastTitle = now;

@@ -17,7 +17,16 @@ struct State
     uint32_t renderScale = 1;
     bool vsync = false;         // false = MAILBOX (the part-54 default), true = FIFO
     int shadowTier = 2;         // the title rendered at full shadow resolution until now
+    int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
 };
+
+// The frame-cap values the panel offers. A set rather than a range because the vblank
+// period only lands exactly on these (docs/part60-night-plan.md item 5), and a value
+// written by hand into the file that is not one of them is clamped to OFF loudly.
+bool ValidFpsCap(long v)
+{
+    return v == 0 || v == 30 || v == 60 || v == 90 || v == 120 || v == 240 || v == 480;
+}
 
 std::mutex g_mutex;
 State g_state;
@@ -47,9 +56,10 @@ void SaveLocked()
             "display_mode=%d\n"     // 0 windowed, 1 borderless, 2 fullscreen
             "render_scale=%u\n"     // 1..4 over 1280x720
             "vsync=%d\n"
-            "shadow_tier=%d\n",     // 0 low, 1 medium, 2 high
+            "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
+            "fps_cap=%d\n",        // 0 = off, else 30/60/90/120/240/480
             int(g_state.displayMode), g_state.renderScale, g_state.vsync ? 1 : 0,
-            g_state.shadowTier);
+            g_state.shadowTier, g_state.fpsCap);
     fclose(f);
 }
 
@@ -85,12 +95,21 @@ void Settings_Load(const std::string& path)
             g_state.vsync = v != 0;
         else if (!strcmp(key, "shadow_tier") && v >= 0 && v <= 2)
             g_state.shadowTier = int(v);
+        else if (!strcmp(key, "fps_cap"))
+        {
+            if (ValidFpsCap(v))
+                g_state.fpsCap = int(v);
+            else
+                fprintf(stderr, "[settings] fps_cap=%ld is not one of "
+                                "0/30/60/90/120/240/480 — using OFF\n", v);
+        }
         // Unknown keys: ignored on purpose — see the header comment.
     }
     fclose(f);
     fprintf(stderr, "[settings] %s: display_mode=%d render_scale=%u vsync=%d "
-                    "shadow_tier=%d\n", path.c_str(), int(g_state.displayMode),
-            g_state.renderScale, g_state.vsync ? 1 : 0, g_state.shadowTier);
+                    "shadow_tier=%d fps_cap=%d\n", path.c_str(),
+            int(g_state.displayMode), g_state.renderScale, g_state.vsync ? 1 : 0,
+            g_state.shadowTier, g_state.fpsCap);
 }
 
 void Settings_Save()
@@ -121,6 +140,12 @@ int Settings_ShadowTier()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_state.shadowTier;
+}
+
+int Settings_FpsCap()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.fpsCap;
 }
 
 void Settings_SetDisplayMode(CzDisplayMode m)
@@ -159,6 +184,17 @@ void Settings_SetShadowTier(int tier)
         return;
     g_state.shadowTier = tier;
     SaveLocked();
+}
+
+void Settings_SetFpsCap(int fps)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!ValidFpsCap(fps))
+        return;
+    g_state.fpsCap = fps;
+    SaveLocked();
+    // Live apply goes through Vd_SetFpsCapLive, called by the panel handler that
+    // changed the setting — the store stays appliance-free like every other row.
 }
 
 int Settings_ConsumePendingDisplayMode()

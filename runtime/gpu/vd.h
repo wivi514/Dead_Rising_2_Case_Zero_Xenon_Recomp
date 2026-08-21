@@ -147,6 +147,12 @@ VdGraphicsState Vd_GetState();
 struct _XVIDEO_MODE;
 void Vd_FillVideoMode(_XVIDEO_MODE* mode);
 
+// The settings panel's Frame Cap row (part 60): re-cap the game live by moving the
+// vblank PERIOD (the lever — the ceiling is two vblanks whatever the period is).
+// fps=0 means OFF (the 1 ms period whose 2 ms ceiling never binds). Refused loudly
+// when CZ_FPS_CAP/CZ_VBLANK_MS pins the period for a measurement.
+void Vd_SetFpsCapLive(int fps);
+
 // True once the guest has registered an interrupt callback and the pump is live.
 bool Vd_PumpRunning();
 

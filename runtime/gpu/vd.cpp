@@ -30,6 +30,7 @@
 #include "pm4.h"
 #include "pump_stats.h"
 #include "vk_renderer.h"
+#include "../host/settings.h"
 
 // kernel/imports.cpp — the clock sources the timestamp bundle is refreshed from.
 uint64_t KernelSystemTime();
@@ -166,44 +167,61 @@ int g_fpsCapValue = -1;
 // two, which is what `docs/phase5-notes.md` §6am asks for.
 //
 // `CZ_VBLANK_MS` still overrides this outright, for experiments.
-int VblankPeriodMs()
+//
+// A LIVE ATOMIC IN MICROSECONDS as of part 60 (night item 5), for two reasons that
+// arrived together. LIVE: the settings panel's Frame Cap row applies without a
+// restart, so the pump re-reads the period every iteration instead of latching it at
+// start-up. MICROSECONDS: the menu's 90/240/480 rungs do not land on an integer
+// millisecond at all — 90 fps needs a 5,555 us period, and the old millisecond knob
+// would have silently rounded it to 5 ms = 100 fps (the plan's own trap, named in
+// advance). The env vars still win and PIN the period — a live menu must never move
+// a measurement arm — and the env path keeps the old truncating-millisecond
+// arithmetic exactly, so `CZ_FPS_CAP=30` still reproduces the shipped 16 ms pacing
+// bit for bit.
+//
+// THE ONE COST OF A LIVE CHANGE, stated rather than buried: the guest caches the
+// refresh rate we report (Vd_FillVideoMode -> dev+21764) at display bring-up and
+// never re-reads it. A menu change therefore leaves that cached Hz stale until the
+// next launch; the stale direction that matters (told a LOW rate, given a HIGH one)
+// can make the title's swap scheduler add a spurious due-tick occasionally (see the
+// RefreshRate note in Vd_FillVideoMode). A boot-time file value has no such skew —
+// the filler reads the live period.
+std::atomic<int> g_vblankPeriodUs{ 0 };   // 0 = not yet initialized
+bool g_vblankPeriodLocked = false;        // an env var chose it; the menu is refused
+
+int VblankPeriodUs()
 {
-    static const int ms = [] {
-        if (const char* e = getenv("CZ_VBLANK_MS"))
-            return std::max(1, atoi(e));
-        // ~~60 fps IS THE DEFAULT as of part 49~~ — **500 as of part 53**, on the
-        // operator's instruction again, and for a reason that only became true in part 53:
-        // their frame went UNDER the 16 ms ceiling that a 60 fps cap imposes, so the cap
-        // started rounding them down. Their measured soak is 14.44 ms of work, which at a
-        // period of 8 ms presents at exactly 16.0 — 62.5 fps where the work supports 69 —
-        // and a 6.8 ms light-zone frame presents at 16.0 as well.
-        //
-        // AND THE LEVER IS THE PERIOD, NOT THE CEILING, which is the part worth reading
-        // twice: raising the cap to 120 or 250 leaves that 14.44 ms frame presenting at
-        // 16.0 all the same, because the ladder's STEP is the period and neither 4 nor 2
-        // divides finely enough there. Only a 1 ms period moves it (to 15.0). Measured on
-        // their machine with every instrument off (`phase5-notes.md` §6cj §13):
-        //
-        //   menus 166 fps | light zones 119-147 | ordinary play 83-114 | their soak 69-71
-        //
-        // THE COST, stated rather than buried: the period is also the guest's vblank ISR
-        // cadence, so this fires it 1000 times a second against 125 at the old default. It
-        // measured 0.0% of the pump at a 4 ms period. `CZ_FPS_CAP=60` is the same-binary
-        // control arm for this change and `CZ_FPS_CAP=30` still restores the shipped
-        // pacing exactly — see the note on the division below.
-        const char* c = getenv("CZ_FPS_CAP");
-        const int fps = c ? atoi(c) : 500;
-        // The title's interval is 2, so the period that caps at `fps` is 1000/(2*fps).
-        // TRUNCATING division, not rounding, and that is load-bearing: it makes 30 fps
-        // come out at exactly 16 ms — the period this runtime has used since phase 1 —
-        // so the control arm reproduces the shipped pacing bit for bit rather than
-        // approximately. 60 -> 8, 45 -> 11, 30 -> 16, 20 -> 25.
-        if (fps >= 20 && fps <= 500)
-            return std::max(1, 1000 / (2 * fps));
-        return 16;
-    }();
-    return ms;
+    int us = g_vblankPeriodUs.load(std::memory_order_relaxed);
+    if (us)
+        return us;
+    if (const char* e = getenv("CZ_VBLANK_MS"))
+    {
+        us = std::max(1, atoi(e)) * 1000;
+        g_vblankPeriodLocked = true;
+    }
+    else if (const char* c = getenv("CZ_FPS_CAP"))
+    {
+        // The measurement arm, in the old integer-millisecond arithmetic on purpose
+        // (truncating: 60 -> 8 ms, 30 -> 16 ms — the shipped pacing exactly).
+        const int fps = atoi(c);
+        g_vblankPeriodLocked = true;
+        us = (fps >= 20 && fps <= 500) ? std::max(1, 1000 / (2 * fps)) * 1000 : 16000;
+    }
+    else if (const int fps = Settings_FpsCap(); fps > 0)
+    {
+        // The panel's persisted cap. Microsecond arithmetic: the cap is two vblanks
+        // (the title's own interval), so the period that caps at `fps` is 500000/fps
+        // us — 90 -> 5555, 240 -> 2083, 480 -> 1041, each within 0.1% of exact where
+        // the millisecond ladder missed 90 by 11%.
+        us = std::max(1000, 500000 / fps);
+    }
+    else
+        us = 1000;   // OFF: the part-53 500-ceiling that never binds
+    g_vblankPeriodUs.store(us, std::memory_order_relaxed);
+    return us;
 }
+
+int VblankPeriodMs() { return std::max(1, VblankPeriodUs() / 1000); }
 // How many times the field had to be written. 1 means the title set it once at start-up
 // and never touched it again; a number that climbs means the title is actively setting
 // it back and the cap is fighting it, which is a fact worth knowing rather than
@@ -572,6 +590,9 @@ void GraphicsInterruptPump()
         // WAIT_REG_MEMs are released by the swap-queue walker inside this very ISR
         // (part 5), so a late vblank is a late release is a longer frame is a later
         // vblank. Breaking that loop is worth 2.0x on its own (§6am).
+        // The LIVE period (part 60): re-read every iteration so the settings panel's
+        // Frame Cap row applies mid-run. One relaxed atomic load per tick.
+        const int periodUs = VblankPeriodUs();
         static const bool wallClockVblank = getenv("CZ_VBLANK_TICKCOUNT") == nullptr;
         if (wallClockVblank)
         {
@@ -583,8 +604,8 @@ void GraphicsInterruptPump()
             // never let the debt grow without bound, or a single long stall would buy
             // a burst of hundreds. Four periods is the cap because that is already
             // longer than any frame this title has.
-            nextVblankAt += std::chrono::milliseconds(vblankMs);
-            const auto floorAt = now - std::chrono::milliseconds(vblankMs * 4);
+            nextVblankAt += std::chrono::microseconds(periodUs);
+            const auto floorAt = now - std::chrono::microseconds(periodUs * 4);
             if (nextVblankAt < floorAt)
                 nextVblankAt = floorAt;
         }
@@ -594,9 +615,9 @@ void GraphicsInterruptPump()
             // cannot silently round to zero here and stop the tick-count vblank arm
             // from ever firing.
             sinceVblankUs += tickUs;
-            if (sinceVblankUs < vblankMs * 1000)
+            if (sinceVblankUs < periodUs)
                 continue;
-            sinceVblankUs -= vblankMs * 1000;
+            sinceVblankUs -= periodUs;
         }
 
         // CZ_RING_TRACE=1: the words the command processor runs on, sampled once a
@@ -922,6 +943,32 @@ void VdSetSystemCommandBufferGpuIdentifierAddress_x(uint32_t address)
 
 } // namespace
 
+// The Frame Cap row's applier (part 60 night item 5). Called from the settings
+// panel's input handler when the row changes; the pump re-reads the period every
+// iteration, so this takes effect within one tick. The env vars PIN the period —
+// a measurement arm silently moved by a menu is an A/B that cannot be trusted —
+// so with CZ_FPS_CAP or CZ_VBLANK_MS set this refuses loudly and changes nothing.
+void Vd_SetFpsCapLive(int fps)
+{
+    VblankPeriodUs();   // resolve the initial value (and the locked flag) first
+    if (g_vblankPeriodLocked)
+    {
+        fprintf(stderr, "[vd] frame cap menu change REFUSED — CZ_FPS_CAP/CZ_VBLANK_MS "
+                        "pins the period for this run\n");
+        return;
+    }
+    const int us = fps > 0 ? std::max(1000, 500000 / fps) : 1000;
+    g_vblankPeriodUs.store(us, std::memory_order_relaxed);
+    char capName[16];
+    if (fps > 0)
+        snprintf(capName, sizeof capName, "%d fps", fps);
+    else
+        snprintf(capName, sizeof capName, "OFF");
+    fprintf(stderr, "[vd] frame cap now %s — vblank period %d us (cap %d us; the "
+                    "guest's cached refresh rate updates at the next launch)\n",
+            capName, us, 2 * us);
+}
+
 PumpStats PumpStats_Read()
 {
     return PumpStats{ g_pumpTicks.load(std::memory_order_relaxed),
@@ -954,7 +1001,7 @@ void Vd_FillVideoMode(XVIDEO_MODE* mode)
     // by one. Told 60 while being given 125, that heuristic reads over 100% and can add
     // a spurious tick — i.e. the wrong belief costs a frame, silently and only
     // sometimes, which is the worst shape of defect this project deals in.
-    const float hz = 1000.0f / float(VblankPeriodMs());
+    const float hz = 1000000.0f / float(VblankPeriodUs());
     uint32_t hzBits;
     static_assert(sizeof hzBits == sizeof hz, "float/uint32 pun");
     memcpy(&hzBits, &hz, sizeof hzBits);

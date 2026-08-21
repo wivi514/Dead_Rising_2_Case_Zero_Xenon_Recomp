@@ -1140,10 +1140,30 @@ uint32_t ResScale()
         // No env var: the persisted setting from the PC options screen (part 60).
         // Env wins above so a CZ_VK_RES A/B arm can never be silently overridden by
         // whatever the menu last wrote.
-        if (const uint32_t fromFile = Settings_RenderScale(); fromFile > 1)
+        if (uint32_t fromFile = Settings_RenderScale(); fromFile > 1)
         {
-            fprintf(stderr, "[vk] render scale %ux from cz_settings.txt (%ux%u)\n",
-                    fromFile, kBaseW * fromFile, kBaseH * fromFile);
+            // Clamped to the DISPLAY on load (night item 4): a settings file written
+            // on one monitor must not strand an impossible size on another. Env arms
+            // above are deliberately not clamped — measurement wins — and an unknown
+            // display (headless) clamps nothing.
+            uint32_t dw = 0, dh = 0;
+            if (Host_DisplaySize(&dw, &dh))
+            {
+                uint32_t maxScale = 1;
+                while (maxScale < kMaxScale && kBaseW * (maxScale + 1) <= dw &&
+                       kBaseH * (maxScale + 1) <= dh)
+                    ++maxScale;
+                if (fromFile > maxScale)
+                {
+                    fprintf(stderr, "[vk] render scale %ux from cz_settings.txt is "
+                                    "larger than the %ux%u display — clamped to %ux\n",
+                            fromFile, dw, dh, maxScale);
+                    fromFile = maxScale;
+                }
+            }
+            if (fromFile > 1)
+                fprintf(stderr, "[vk] render scale %ux from cz_settings.txt (%ux%u)\n",
+                        fromFile, kBaseW * fromFile, kBaseH * fromFile);
             return fromFile;
         }
         return 1;
@@ -3112,6 +3132,68 @@ struct Renderer
 
 Renderer* R = nullptr;
 
+// ===================================================================================
+// SHADOW-RESOLUTION TIERS — the Shadow Quality row, wired (part 60 night item 2)
+// ===================================================================================
+// Until part 60 the shadow cascades rode CZ_VK_RES with everything else: the cascade
+// pass renders into the shared EDRAM at the scene scale and the 4096x1024 atlas
+// snapshot is created at RS(). The tier gives the SHADOW pass its own scale — High is
+// the scene scale, Medium half of it, Low a quarter, floored at 1x of the title's own
+// base — applied to the cascade draws' viewport/scissor and to the atlas resolve's
+// copy extents and snapshot size, so the snapshot and its normalized-UV fetches stay
+// consistent at any tier. At scale 1 every tier floors to 1x and the knob is honestly
+// inert (said so in the panel); at 1440p High=2x Med/Low=1x; at 4K the spread is
+// 4x/2x/1x.
+//
+// THE PASS IS IDENTIFIED BY ITS EDRAM SURFACE PITCH, measured, not assumed: a
+// CZ_VK_VIEWPORT_TRACE census over the outdoor DebugJump route shows the cascade
+// pass — and nothing else in the frame — bound to surfacePitch=1040, msaa=0
+// (surfaceInfo=10000410; the main draws at depthControl=16/97/B7, the strip and
+// full-extent clears included). 1040 is not arbitrary: EDRAM pitch aligns to the
+// 80-pixel tile, and 1024 rounds up to 13*80 = 1040 — i.e. the pitch MEANS "a
+// 1024-wide EDRAM surface", and this title's only 1024-wide surface is the shadow
+// cascade. The same predicate serves DoDraw and DoResolve, reading the same live
+// register, so a pass can never be drawn at one scale and resolved at another.
+inline bool IsShadowSurface(const uint32_t* regs)
+{
+    return (regs[xenos::kRbSurfaceInfo] & 0x3FFF) == 1040 &&
+           ((regs[xenos::kRbSurfaceInfo] >> 16) & 3) == 0;
+}
+
+// The shadow pass's own resolution scale this frame. `CZ_VK_SHADOW_TIER=0|1|2` is the
+// measurement arm and wins over the settings file (the env-wins rule every consumer of
+// settings.h enforces); otherwise the panel's persisted Shadow Quality row drives it,
+// re-read once per FRAME so a menu change applies live while draws and resolves within
+// one frame always agree. Tier 2 (High, the scene scale) is the default and is
+// bit-identical to the pre-part-60 renderer, which is what makes it the control arm.
+uint32_t ShadowScaleThisFrame()
+{
+    static const int envTier = [] {
+        if (const char* e = Env("CZ_VK_SHADOW_TIER"))
+        {
+            const long t = strtol(e, nullptr, 10);
+            if (t >= 0 && t <= 2)
+            {
+                fprintf(stderr, "[vk] CZ_VK_SHADOW_TIER=%ld — the env arm wins over "
+                                "the settings file's shadow_tier\n", t);
+                return int(t);
+            }
+            fprintf(stderr, "[vk] CZ_VK_SHADOW_TIER=%s is not 0..2 — IGNORED\n", e);
+        }
+        return -1;
+    }();
+    static uint64_t cachedFrame = ~0ull;
+    static uint32_t cached = 0;
+    if (!cached || cachedFrame != R->frame)
+    {
+        cachedFrame = R->frame;
+        const int tier = envTier >= 0 ? envTier : Settings_ShadowTier();
+        const uint32_t rs = ResScale();
+        cached = std::max(1u, tier == 2 ? rs : tier == 1 ? rs / 2 : rs / 4);
+    }
+    return cached;
+}
+
 // The cross-frame store's index, through one seam so the container is a runtime choice.
 // A raw pointer rather than an iterator because that is what both containers can return
 // and because every caller wanted `->second` anyway. It stays valid until the next
@@ -4637,7 +4719,11 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
     // snapshot into it and the snapshot is scaled. A guest-sized view here would serve
     // the top-left 1/scale^2 of the surface, which reads as a zoomed texture and not as
     // a missing one.
-    if (!CreateImage(view.image, RS(w), RS(h), snap.image.format,
+    // `snap.builtScale`, NOT RS(): a shadow-tier snapshot (part 60) is built below the
+    // scene scale, and a view larger than its source would make RefreshSnapshotView
+    // copy rows the source image does not have.
+    if (!CreateImage(view.image, snap.builtScale * w, snap.builtScale * h,
+                     snap.image.format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
                      aspect, VK_IMAGE_VIEW_TYPE_2D, 1, 1,
@@ -4647,8 +4733,8 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
         Count("texture: snapshot view image creation FAILED");
         return 0;
     }
-    NameImage(view.image, "snapshot view %ux%u slot %u%s", RS(w), RS(h), view.slot,
-              snap.fromDepth ? " DEPTH" : "");
+    NameImage(view.image, "snapshot view %ux%u slot %u%s", snap.builtScale * w,
+              snap.builtScale * h, view.slot, snap.fromDepth ? " DEPTH" : "");
 
     VkDescriptorImageInfo ii{};
     ii.imageView = view.image.view;
@@ -10472,9 +10558,16 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // `posScale` shares with them must stay resolution-independent or the geometry would
     // land in a corner of the enlarged target. One multiply, at the boundary.
     // A negative height (the Y flip above) keeps its sign through it.
-    if (ResScale() != 1)
+    // The SHADOW pass scales by its own tier instead of the scene scale (part 60);
+    // the resolve that copies the cascade out uses the same predicate on the same
+    // register, which is what keeps the two sides of the surface consistent.
+    const uint32_t drawScale =
+        IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
+    if (drawScale != ResScale())
+        Count("draw: shadow-pass draw at a reduced shadow tier");
+    if (drawScale != 1)
     {
-        const float rs = float(ResScale());
+        const float rs = float(drawScale);
         viewport.x *= rs;
         viewport.y *= rs;
         viewport.width *= rs;
@@ -10513,9 +10606,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // resolution scale existed. Identical at scale 1.
     if (winX1 > winX && winY1 > winY && winX < R->edramWidth && winY < R->edramHeight)
     {
-        scissor.offset = { RSi(int32_t(winX)), RSi(int32_t(winY)) };
-        scissor.extent = { RS(std::min(winX1, R->edramWidth) - winX),
-                           RS(std::min(winY1, R->edramHeight) - winY) };
+        // `drawScale`, not RS(): a shadow-pass scissor must clip at the tier's own
+        // scale or a reduced-tier cascade would be clipped against a rectangle
+        // larger than anything it renders (harmless) — and the strip clears inside
+        // the pass would paint OUTSIDE the reduced cascade (not harmless).
+        scissor.offset = { int32_t(winX) * int32_t(drawScale),
+                          int32_t(winY) * int32_t(drawScale) };
+        scissor.extent = { (std::min(winX1, R->edramWidth) - winX) * drawScale,
+                           (std::min(winY1, R->edramHeight) - winY) * drawScale };
     }
 
     // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
@@ -11558,6 +11656,16 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     static const bool noDepthResolve = EnvOn("CZ_VK_NO_DEPTH_RESOLVE");
     const uint32_t srcSelect = control & 7;
     const bool fromDepth = srcSelect == 4 && !noDepthResolve;
+    // The shadow tier (part 60): this resolve copies at the scale the pass RENDERED
+    // at, decided by the same surface-pitch predicate DoDraw used for its draws —
+    // same register, same frame, so the two cannot disagree. Everything below that
+    // converts a guest extent to host pixels goes through these instead of RS/RSi.
+    const uint32_t resScale =
+        IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
+    auto RZ = [resScale](uint32_t v) { return v * resScale; };
+    auto RZi = [resScale](int32_t v) { return v * int32_t(resScale); };
+    if (resScale != ResScale())
+        Count("resolve: shadow surface resolved at a reduced shadow tier");
     if (srcSelect == 4)
         Count("resolve: source is the DEPTH buffer");
     else if (srcSelect != 0)
@@ -11816,7 +11924,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         // the new one, which reads as a ghosting artefact with no obvious source.
         if (it != R->snapshots.end() &&
             (it->second.guestW != w || it->second.guestH != h ||
-             it->second.builtScale != ResScale()))
+             it->second.builtScale != resScale))
         {
             vkDeviceWaitIdle(R->device);
             vkDestroyImageView(R->device, it->second.image.view, nullptr);
@@ -11844,7 +11952,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             s.fromDepth = fromDepth;
             s.guestW = w;
             s.guestH = h;
-            s.builtScale = ResScale();
+            s.builtScale = resScale;
             // A depth snapshot keeps the EDRAM depth buffer's own format, because
             // vkCmdCopyImage is only defined between identical depth formats — there
             // is no copy from a depth image into a colour one. It is viewed through
@@ -11856,7 +11964,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                 VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE
             };
-            if (CreateImage(s.image, RS(w), RS(h),
+            if (CreateImage(s.image, RZ(w), RZ(h),
                             fromDepth ? R->depth.format : VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -11901,6 +12009,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
                 NameImage(s.image, "resolve snapshot %08X %ux%u%s slot %u", baseKey, w, h,
                           fromDepth ? " DEPTH" : "", s.slot);
+                // The tier-engagement line the overnight gate greps for: HOST extents,
+                // the tier scale and the scene scale, on the one surface the tier
+                // governs. One line per (re)creation, not per frame.
+                if (resScale != ResScale())
+                    fprintf(stderr,
+                            "[vk] shadow-tier snapshot %08X: %ux%u host (guest %ux%u, "
+                            "shadow scale %ux, scene scale %ux)\n",
+                            baseKey, RZ(w), RZ(h), w, h, resScale, ResScale());
                 it = R->snapshots.emplace(key, std::move(s)).first;
                 Count("resolve: snapshot created");
             }
@@ -11936,10 +12052,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // surface, which is what `dstX`/`dstY` carry.
             VkImageCopy copy{};
             copy.srcSubresource = { aspect, 0, 0, 1 };
-            copy.srcOffset = { RSi(int32_t(copyX)), RSi(int32_t(copyY)), 0 };
+            copy.srcOffset = { RZi(int32_t(copyX)), RZi(int32_t(copyY)), 0 };
             copy.dstSubresource = { aspect, 0, 0, 1 };
-            copy.dstOffset = { RSi(int32_t(dstX)), RSi(int32_t(dstY)), 0 };
-            copy.extent = { RS(copyW), RS(copyH), 1 };
+            copy.dstOffset = { RZi(int32_t(dstX)), RZi(int32_t(dstY)), 0 };
+            copy.extent = { RZ(copyW), RZ(copyH), 1 };
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
@@ -12101,8 +12217,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         if (scopedClear && copyW && copyH)
         {
             VkClearRect rect{};
-            rect.rect.offset = { RSi(int32_t(copyX)), RSi(int32_t(copyY)) };
-            rect.rect.extent = { RS(copyW), RS(copyH) };
+            rect.rect.offset = { RZi(int32_t(copyX)), RZi(int32_t(copyY)) };
+            rect.rect.extent = { RZ(copyW), RZ(copyH) };
             rect.baseArrayLayer = 0;
             rect.layerCount = 1;
             // vkCmdClearAttachments needs a render pass; outside one the region form is
@@ -12119,8 +12235,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
             VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
-            ri.renderArea = { { RSi(int32_t(copyX)), RSi(int32_t(copyY)) },
-                              { RS(copyW), RS(copyH) } };
+            ri.renderArea = { { RZi(int32_t(copyX)), RZi(int32_t(copyY)) },
+                              { RZ(copyW), RZ(copyH) } };
             ri.layerCount = 1;
             ri.pDepthAttachment = &depthAtt;
             ri.pStencilAttachment = &depthAtt;

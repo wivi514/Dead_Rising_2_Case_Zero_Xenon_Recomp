@@ -218,6 +218,14 @@ bool Host_VulkanCreateSurface(void* instance, uint64_t* outSurface);
 // size. The swapchain is created at this extent and re-created when it changes.
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
 
+// The desktop size of the DISPLAY the window currently sits on (part 60): what the
+// settings panel clamps its resolution list against, so the menu reads like a game's
+// and not like a debug knob — no 5120x2880 entry on a 1440p monitor. Refreshed by the
+// window thread once a second, which also covers a window dragged between monitors.
+// Returns false (and zeros) when no window has published one — headless runs — and
+// every consumer treats that as "no clamp" rather than refusing.
+bool Host_DisplaySize(uint32_t* w, uint32_t* h);
+
 // The debug overlay, rasterised into an RGBA8 buffer for a caller that has no
 // SDL_Renderer — i.e. the Vulkan swapchain present path, which is the default since part
 // 54. Returns false when the menu is not open, in which case nothing is written.

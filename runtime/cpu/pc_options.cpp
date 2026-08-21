@@ -56,6 +56,8 @@
 
 #include "../kernel/memory.h"
 #include "../host/settings.h"
+#include "../host/window.h"
+#include "../gpu/vd.h"
 #include "../gpu/vk_renderer.h"
 #include "pc_options.h"
 #include "ppc_recomp_shared.h"
@@ -698,21 +700,29 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
         lastAction = now;
         constexpr uint32_t kUp = 0x0001, kDown = 0x0002, kLeft = 0x0004,
                            kRight = 0x0008, kB = 0x2000, kA = 0x1000;
-        int sel = Settings_OverlaySelection();
-        if (pressed & (kUp | kDown))
-        {
-            sel = (sel + ((pressed & kDown) ? 1 : 3)) % 4;
-            Settings_SetOverlaySelection(sel);
-        }
-        else if (pressed & (kLeft | kRight))
-        {
-            const int dir = (pressed & kRight) ? 1 : -1;
-            switch (sel)
+        // One applier for both input styles (Left/Right and the console-style A
+        // step): the first version was two hand-copied switch blocks, which is how
+        // a fifth row lands in one and not the other. `dir` is +1 or -1.
+        auto applyRow = [](int row, int dir) {
+            switch (row)
             {
                 case 0:
                 {
+                    // The offered list is CLAMPED TO THE DISPLAY (part 60 night item
+                    // 4): no 5120x2880 entry on a 1440p monitor. Unknown display
+                    // (headless, or SDL said nothing) means no clamp — refusing to
+                    // step with no evidence would be the opposite failure.
+                    int maxScale = 4;
+                    uint32_t dw = 0, dh = 0;
+                    if (Host_DisplaySize(&dw, &dh) && dw && dh)
+                    {
+                        maxScale = 1;
+                        while (maxScale < 4 && 1280u * (maxScale + 1) <= dw &&
+                               720u * (maxScale + 1) <= dh)
+                            ++maxScale;
+                    }
                     const int s = int(Settings_RenderScale()) - 1;
-                    const int n = (s + dir + 4) % 4;
+                    const int n = (s + dir + maxScale) % maxScale;
                     Settings_SetRenderScale(uint32_t(n + 1));
                     // NOT applied live: the live path (VkRenderer_RequestRenderScale)
                     // froze the frame on the operator's machine twice and was
@@ -736,55 +746,44 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                 {
                     const int t = (Settings_ShadowTier() + dir + 3) % 3;
                     Settings_SetShadowTier(t);
+                    // Applied live: the renderer re-reads the tier once per frame
+                    // (ShadowScaleThisFrame) and the atlas snapshot rebuilds itself
+                    // through the same path a guest resize takes.
+                    break;
+                }
+                case 4:
+                {
+                    // The frame cap ladder. OFF is first so the default reads as
+                    // "nothing capped", matching the part-54 500-ceiling default.
+                    static const int kCaps[] = { 0, 30, 60, 90, 120, 240, 480 };
+                    constexpr int kNumCaps = int(sizeof kCaps / sizeof *kCaps);
+                    int at = 0;
+                    for (int i = 0; i < kNumCaps; ++i)
+                        if (kCaps[i] == Settings_FpsCap())
+                            at = i;
+                    const int cap = kCaps[(at + dir + kNumCaps) % kNumCaps];
+                    Settings_SetFpsCap(cap);
+                    Vd_SetFpsCapLive(cap);   // applies within one pump tick
                     break;
                 }
             }
-        }
-        else if (pressed & kA)
+        };
+        int sel = Settings_OverlaySelection();
+        if (pressed & (kUp | kDown))
         {
-            // A steps the selected value forward, console-style.
-            goto step_forward;
+            sel = (sel + ((pressed & kDown) ? 1 : 4)) % 5;
+            Settings_SetOverlaySelection(sel);
         }
+        else if (pressed & (kLeft | kRight))
+            applyRow(sel, (pressed & kRight) ? 1 : -1);
+        else if (pressed & kA)
+            applyRow(sel, 1);   // A steps the selected value forward, console-style
         else if (pressed & kB)
         {
             // B closes. The hub underneath never saw any of this input; it
             // resumes untouched.
             Settings_SetOverlayVisible(false);
             fprintf(stderr, "[pcopt] settings panel closed\n");
-        }
-        return;
-    step_forward:
-        buttons = kRight;   // fall through below is not possible; re-enter logic
-        {
-            const int dir = 1;
-            int selRow = Settings_OverlaySelection();
-            switch (selRow)
-            {
-                case 0:
-                {
-                    const int s = int(Settings_RenderScale()) - 1;
-                    const int n = (s + dir + 4) % 4;
-                    Settings_SetRenderScale(uint32_t(n + 1));
-                    // NOT applied live: the live path (VkRenderer_RequestRenderScale)
-                    // froze the frame on the operator's machine twice and was
-                    // reverted on their call — the machinery stays in the renderer
-                    // for a future part; the setting lands at the next launch.
-                    fprintf(stderr, "[pcopt] resolution %ux%u — next launch\n",
-                            1280 * (n + 1), 720 * (n + 1));
-                    break;
-                }
-                case 1:
-                    Settings_SetDisplayMode(
-                        CzDisplayMode((int(Settings_DisplayMode()) + 1) % 3));
-                    break;
-                case 2:
-                    Settings_SetVSync(!Settings_VSync());
-                    VkRenderer_RequestSwapchainRebuild();
-                    break;
-                case 3:
-                    Settings_SetShadowTier((Settings_ShadowTier() + 1) % 3);
-                    break;
-            }
         }
         return;
     }
