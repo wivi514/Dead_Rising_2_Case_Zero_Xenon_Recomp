@@ -1634,12 +1634,19 @@ CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** Th
                    frame) are untouched, which also means NO headless gate can see
                    this — the picture verdict is the operator's (part-54 lesson: a
                    present-path change is invisible to every readback-walking gate)
-CZ_VK_WIDE=1|0     **the env arm for 21:9 wide mode** (part 60 night item 3), winning
-                   over the settings file's `aspect=` row. BOOT-LATCHED — the mode
+CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
+                   over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch
-                   like the render scale. What it does: every render-pipeline X
-                   extent is multiplied 21/16 on top of the scene scale (1280 ->
-                   1680, the two 640 tile scissors -> 840 each, exact; truncating
+                   like the render scale. The X factor is N/32 with N DERIVED FROM
+                   THE DISPLAY's own aspect (the operator's revision: their
+                   3440x1440 panel is 21.5:9 -> N=43 -> internal 3440x1440 native
+                   full-bleed; headless/16:9-display fallback N=42 = exactly the
+                   21/16 the night's verified runs used, so headless arms are
+                   unchanged). `CZ_VK_WIDE_NUM=33..64` pins N for measurement.
+                   Original night form: every render-pipeline X
+                   extent multiplied 21/16 on top of the scene scale (1280 ->
+                   1680, the two 640 tile scissors -> 840 each, exact for ANY N
+                   because 640*s*N/32 = 20*s*N; truncating
                    division everywhere so converted offset+extent can never overrun
                    a converted surface), and every VS constant window whose c0..c3
                    is a 16:9 PERSPECTIVE (row3 = (0,0,1,0), diagonal rows 0/1,

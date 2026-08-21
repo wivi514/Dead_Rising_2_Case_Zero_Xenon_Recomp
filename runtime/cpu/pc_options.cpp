@@ -722,19 +722,22 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     auto fits = [&](const CzResolutionEntry& e) {
                         return !haveDisplay || (e.w <= dw && e.h <= dh);
                     };
-                    int at = Settings_ResolutionIndex(Settings_RenderScale(),
+                    CzResolutionEntry list[8];
+                    const int count = Settings_ResolutionList(list);
+                    int at = Settings_ResolutionIndex(list, count,
+                                                      Settings_RenderScale(),
                                                       Settings_Aspect());
-                    for (int step = 0; step < kCzResolutionCount; ++step)
+                    for (int step = 0; step < count; ++step)
                     {
-                        at = (at + dir + kCzResolutionCount) % kCzResolutionCount;
-                        if (fits(kCzResolutions[at]))
+                        at = (at + dir + count) % count;
+                        if (fits(list[at]))
                             break;
                     }
-                    const CzResolutionEntry& e = kCzResolutions[at];
+                    const CzResolutionEntry& e = list[at];
                     Settings_SetRenderScale(e.scale);
                     Settings_SetAspect(e.aspect);
                     fprintf(stderr, "[pcopt] resolution %ux%u (%s) — next launch\n",
-                            e.w, e.h, e.aspect ? "21:9" : "16:9");
+                            e.w, e.h, e.aspect ? "wide" : "16:9");
                     break;
                 }
                 case 1:

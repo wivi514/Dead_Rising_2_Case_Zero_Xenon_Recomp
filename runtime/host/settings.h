@@ -49,38 +49,66 @@ int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never bin
                                         // else 30/60/90/120/240/480
 int           Settings_Aspect();        // 0=16:9 (the title's own), 1=21:9 wide
 
-// THE RESOLUTION MENU (part 60, operator revision): ONE row lists every internal
-// resolution, BOTH aspects interleaved — "1280x720, 1680x720, 2560x1440, ..." —
-// and selecting an entry sets BOTH render_scale and aspect, applying at the next
-// launch. The table lives here because two files render/step it (window.cpp shows
-// the current entry, pc_options.cpp steps it) and two copies of a list is how a
-// menu gains an entry in one and not the other. Order is ascending by height then
-// width, the way games list modes.
+// THE RESOLUTION MENU (part 60, operator revisions). ONE row lists every internal
+// resolution, BOTH aspects interleaved, selecting an entry sets render_scale AND
+// aspect, applying at the next launch. The WIDE entries are derived from the
+// DISPLAY'S OWN aspect (the operator's second revision: their 3440x1440 panel is
+// 21.5:9, and the hardcoded exact-21:9 3360x1440 left 40 px bars each side — the
+// menu should show THEIR resolutions, the way every game's does). The wide width is
+// 1280 * scale * N / 32 with N picked so the internal frame matches the display's
+// aspect at that height; N stays within [33..64] and every division is TRUNCATING
+// (gotcha 373). With no display (headless) N falls back to 42 — exactly the 21/16
+// the night's verified wide runs used, so headless arms are unchanged.
 struct CzResolutionEntry
 {
     uint32_t scale;   // 1..4 over the title's 1280x720
-    int aspect;       // 0 = 16:9, 1 = 21:9 (the wide mode's 21/16 X factor)
+    int aspect;       // 0 = 16:9, 1 = wide (the display-derived N/32 X factor)
     uint32_t w, h;    // the resulting internal size, for display and display-clamp
 };
-inline constexpr CzResolutionEntry kCzResolutions[] = {
-    { 1, 0, 1280, 720 },  { 1, 1, 1680, 720 },
-    { 2, 0, 2560, 1440 }, { 2, 1, 3360, 1440 },
-    { 3, 0, 3840, 2160 }, { 3, 1, 5040, 2160 },
-    { 4, 0, 5120, 2880 }, { 4, 1, 6720, 2880 },
-};
-inline constexpr int kCzResolutionCount =
-    int(sizeof kCzResolutions / sizeof *kCzResolutions);
+
+// The wide X numerator over 32. Cached on first use; the display is queried through
+// the window seam, so the value is stable for the process (a monitor drag mid-run
+// changes the NEXT launch's list, matching apply-at-next-launch semantics).
+// CZ_VK_WIDE_NUM=n (33..64) overrides for measurement.
+uint32_t Settings_WideNumerator();
+
+// The internal size a (scale, aspect) pair produces — THE formula the renderer's
+// RSX uses, kept in one place so the menu can never advertise a size the renderer
+// will not produce.
+inline void Settings_ResolutionFor(uint32_t scale, int aspect, uint32_t& w,
+                                   uint32_t& h)
+{
+    h = 720 * scale;
+    w = aspect ? (1280 * scale * Settings_WideNumerator()) / 32 : 1280 * scale;
+}
+
+// The full 8-entry list (4 scales x 2 aspects), ascending by height then width.
+// The caller applies the display clamp; this is the unclamped truth.
+inline int Settings_ResolutionList(CzResolutionEntry out[8])
+{
+    int n = 0;
+    for (uint32_t s = 1; s <= 4; ++s)
+        for (int a = 0; a <= 1; ++a)
+        {
+            out[n].scale = s;
+            out[n].aspect = a;
+            Settings_ResolutionFor(s, a, out[n].w, out[n].h);
+            ++n;
+        }
+    return n;
+}
 
 // The index of the entry matching the persisted (render_scale, aspect) pair, so the
 // panel and the stepper agree on "current". A pair the table lacks falls back to the
 // same scale at 16:9, then to 1280x720.
-inline int Settings_ResolutionIndex(uint32_t scale, int aspect)
+inline int Settings_ResolutionIndex(const CzResolutionEntry* list, int count,
+                                    uint32_t scale, int aspect)
 {
-    for (int i = 0; i < kCzResolutionCount; ++i)
-        if (kCzResolutions[i].scale == scale && kCzResolutions[i].aspect == aspect)
+    for (int i = 0; i < count; ++i)
+        if (list[i].scale == scale && list[i].aspect == aspect)
             return i;
-    for (int i = 0; i < kCzResolutionCount; ++i)
-        if (kCzResolutions[i].scale == scale && kCzResolutions[i].aspect == 0)
+    for (int i = 0; i < count; ++i)
+        if (list[i].scale == scale && list[i].aspect == 0)
             return i;
     return 0;
 }

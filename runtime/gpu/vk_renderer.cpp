@@ -1205,23 +1205,27 @@ bool WideMode()
         }
         if (Settings_Aspect() == 1)
         {
-            fprintf(stderr, "[vk] 21:9 wide mode from cz_settings.txt (aspect=1) — "
-                            "internal frame %ux%u\n", 1680 * ResScale(),
-                    720 * ResScale());
+            uint32_t w = 0, h = 0;
+            Settings_ResolutionFor(ResScale(), 1, w, h);
+            fprintf(stderr, "[vk] wide mode from cz_settings.txt (aspect=1) — "
+                            "internal frame %ux%u (X factor %u/32, display-derived)\n",
+                    w, h, Settings_WideNumerator());
             return true;
         }
         return false;
     }();
     return wide;
 }
-// 21/16 in wide mode, 1 otherwise, as a rational so every extent conversion is done
-// in integers. TRUNCATING division, and that is load-bearing: floor(a)+floor(b) <=
-// floor(a+b), so a region's converted offset+extent can never overrun the converted
-// surface it sits in (a rounded division has no such guarantee, and the overrun is a
-// Vulkan out-of-bounds copy). The scene chain (1280, 640, 320, 160) converts exactly;
-// the luminance tail's odd widths lose at most a right-edge pixel, which the clear
-// value already owns.
-inline uint32_t WideMulNum() { return WideMode() ? 21u : 16u; }
+// The wide X factor as a rational over 32, so every extent conversion is done in
+// integers: N/32 in wide mode (N display-derived, Settings_WideNumerator — 43 on the
+// operator's 21.5:9 panel, 42 = the exact 21/16 headlessly), 32/32 otherwise.
+// TRUNCATING division, and that is load-bearing: floor(a)+floor(b) <= floor(a+b), so
+// a region's converted offset+extent can never overrun the converted surface it sits
+// in (a rounded division has no such guarantee, and the overrun is a Vulkan
+// out-of-bounds copy). The scene chain (1280, 640, 320, 160) converts exactly for
+// ANY N (640*s*N/32 = 20*s*N); the luminance tail's odd widths lose at most a
+// right-edge pixel, which the clear value already owns.
+inline uint32_t WideMulNum() { return WideMode() ? Settings_WideNumerator() : 32u; }
 
 // A guest extent, in host pixels. Every use is a guest coordinate crossing into Vulkan.
 // RS/RSi are the UNIFORM (Y, and everything square) forms; RSX/RSXi convert X extents
@@ -1230,11 +1234,11 @@ inline uint32_t WideMulNum() { return WideMode() ? 21u : 16u; }
 // snapshot's own builtScale.
 inline uint32_t HostX(uint32_t v, uint32_t scale)
 {
-    return (v * scale * WideMulNum()) >> 4;
+    return (v * scale * WideMulNum()) >> 5;
 }
 inline int32_t HostXi(int32_t v, uint32_t scale)
 {
-    return int32_t((int64_t(v) * scale * WideMulNum()) / 16);
+    return int32_t((int64_t(v) * scale * WideMulNum()) / 32);
 }
 inline uint32_t RS(uint32_t v) { return v * ResScale(); }
 inline int32_t RSi(int32_t v) { return v * int32_t(ResScale()); }
@@ -1264,17 +1268,18 @@ inline bool Is169Perspective(const uint32_t* c)
 }
 
 // Widen the horizontal fov of a recognized scene projection by scaling its x row by
-// 16/21 — the wide frame then carries NEW content at the flanks instead of a stretch.
-// Called on the VS constant window as it is copied into the arena (and on the verify
-// arm's recompute, so the memo verifier compares patched against patched). Returns
-// whether it patched, so the caller can count.
+// 32/N (the inverse of the surface widening) — the wide frame then carries NEW
+// content at the flanks instead of a stretch. Called on the VS constant window as it
+// is copied into the arena (and on the verify arm's recompute, so the memo verifier
+// compares patched against patched). Returns whether it patched, so the caller can
+// count.
 inline bool PatchWideProjection(uint32_t* c)
 {
     if (!Is169Perspective(c))
         return false;
     float a;
     memcpy(&a, c, 4);
-    a *= 16.0f / 21.0f;
+    a *= 32.0f / float(Settings_WideNumerator());
     memcpy(c, &a, 4);
     return true;
 }
@@ -10435,7 +10440,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 {
                     float* p =
                         reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
-                    p[0] *= 21.0f / 16.0f;
+                    p[0] *= float(Settings_WideNumerator()) / 32.0f;
                     COUNT("draw: user clip plane compensated for the wide projection");
                 }
                 if (clipBias != 0.0f)
@@ -10719,7 +10724,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // exact for the fraction itself; only the surfaces' integer extents truncate.
     if (drawScale != 1 || WideMode())
     {
-        const float rsx = float(drawScale) * float(WideMulNum()) / 16.0f;
+        const float rsx = float(drawScale) * float(WideMulNum()) / 32.0f;
         const float rsy = float(drawScale);
         viewport.x *= rsx;
         viewport.y *= rsy;

@@ -438,9 +438,9 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // kCzResolutions in settings.h, shared with the stepper in pc_options.cpp.
     char resName[20];
     {
-        const CzResolutionEntry& e =
-            kCzResolutions[Settings_ResolutionIndex(scale, Settings_Aspect())];
-        snprintf(resName, sizeof resName, "%u X %u", e.w, e.h);
+        uint32_t rw = 0, rh = 0;
+        Settings_ResolutionFor(scale, Settings_Aspect(), rw, rh);
+        snprintf(resName, sizeof resName, "%u X %u", rw, rh);
     }
     // The frame cap's display name. Values come from the validated set in
     // settings.cpp, so the fallback only fires on a hand-edited file mid-run.

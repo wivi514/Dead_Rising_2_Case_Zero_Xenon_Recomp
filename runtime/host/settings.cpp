@@ -2,6 +2,7 @@
 // env-wins rule its consumers enforce.
 
 #include "settings.h"
+#include "window.h"
 
 #include <atomic>
 #include <cstdio>
@@ -156,6 +157,46 @@ int Settings_Aspect()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_state.aspect;
+}
+
+// See settings.h. Derivation: the wide internal width at height 720*s is
+// 1280*s*N/32 = 40*s*N, and matching the display's aspect at that height means
+// N = round(displayW * 18 / displayH) — for the operator's 3440x1440 that is
+// exactly 43 (3440 = 40*2*43, and the title's 640 tile becomes 860, whole pixels
+// for ANY N because 640*s*N/32 = 20*s*N). Clamped to [33..64]: below 33 the
+// display is not wider than 16:9 and wide mode has nothing to offer; 64 (a 32:9
+// super-ultrawide) is the widest the projection patch has any business feeding
+// this title's culling. 42 (= 21/16 exactly, the night's verified factor) is the
+// no-display fallback so headless arms are byte-identical to the verified runs.
+uint32_t Settings_WideNumerator()
+{
+    static const uint32_t n = [] () -> uint32_t {
+        if (const char* e = getenv("CZ_VK_WIDE_NUM"))
+        {
+            const long v = strtol(e, nullptr, 10);
+            if (v >= 33 && v <= 64)
+            {
+                fprintf(stderr, "[settings] CZ_VK_WIDE_NUM=%ld — wide X factor %ld/32 "
+                                "(env wins)\n", v, v);
+                return uint32_t(v);
+            }
+            fprintf(stderr, "[settings] CZ_VK_WIDE_NUM=%s is not 33..64 — IGNORED\n", e);
+        }
+        uint32_t dw = 0, dh = 0;
+        if (Host_DisplaySize(&dw, &dh) && dw && dh &&
+            uint64_t(dw) * 9 > uint64_t(dh) * 16)
+        {
+            const uint32_t num = uint32_t(
+                (uint64_t(dw) * 720 * 32 + uint64_t(dh) * 640) / (uint64_t(dh) * 1280));
+            const uint32_t clamped = num < 33 ? 33 : num > 64 ? 64 : num;
+            fprintf(stderr, "[settings] wide X factor %u/32 from the %ux%u display "
+                            "(wide internal width at scale s = %u*s)\n",
+                    clamped, dw, dh, 40 * clamped);
+            return clamped;
+        }
+        return 42;   // exact 21:9, the headless / 16:9-display fallback
+    }();
+    return n;
 }
 
 void Settings_SetDisplayMode(CzDisplayMode m)
