@@ -3986,3 +3986,29 @@ From phase C part 18 (the frame rate — and none of it was work):
      shown them — the report describes an experience, not a state, and the
      open-diagnostic that settled this printed the state at exactly the moment the
      experience began.
+
+378. **A DRAW-COUNT SHARE SAYS NOTHING ABOUT PICTURE COVERAGE — auxiliary passes
+     multiply the denominator and instancing compresses the visible pass.** Part
+     61's census found only ~2% of draws carry the recognized scene projection in
+     their VS window, which read as "the projection patch misses 98% of the
+     scene" — and the frame refuted it: a +15 fov arm moved the ENTIRE visible
+     world coherently, because the other 98% of draws are shadow cascades, cube
+     faces, depth-only and post work that SHOULD not be patched, while the
+     visible pass is ~90 heavily-batched draws. The wide-mode patch had shipped a
+     part earlier on the same 2% and was operator-verdicted good — the share
+     never mattered. When a population share and a shipped feature's success
+     contradict each other, render the two arms and LOOK before believing either;
+     the picture was one conversion command and settled in minutes what three
+     census re-readings could not.
+
+379. **A STATE-BIT SPLIT OF A POPULATION IS NOT A SEMANTIC CLASSIFIER — verify
+     what the minority class actually CONTAINS before exempting it.** Part 61
+     wanted "UI = ztest-off" so the fov slider could leave the HUD alone; the
+     census obliged with a clean three-way depth-state split — and the ztest-off
+     class was 81% of recognized draws OUTDOORS, in a frame visibly dominated by
+     solid geometry: it holds sky, particles, decals and other scene-space
+     content that must move with the camera, plus the few dozen HUD draws.
+     Exempting it would have torn effects off the world. The bit answered "which
+     draws skip the depth test", not "which draws are UI" — a classifier is only
+     as semantic as the thing it reads, and the cheap check is the population
+     COUNT against what the eye sees in one frame of that era.

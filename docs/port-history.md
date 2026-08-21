@@ -4476,3 +4476,50 @@ per-defect state is `open-items.md` 00q; performance stays parked in
   dimension census) is OWED**: part 58 changed a DEFAULT (front=CW), which is exactly
   the condition part 57 named for re-running it — but the operator's standing
   instruction is that they run the game, so it is the first ask of part 59.
+
+## Part 59 status block (moved from CLAUDE.md by part 61, per the two-block rule)
+
+Where the port is, as of 2026-08-20 (part 59 CLOSED — **THREE THREADS, ALL LANDED IN ONE
+DAY: the owed GATE SWEEP ran all green; NIGHT RUN 1 (the operator-requested overnight
+perf campaign) answered the parked plan's owed items 1/2/4; and the operator's R6 trace
+closed the GAS-SIGN / DISTANCE CLASS the same day it was delivered.** `docs/part60-kickoff.md`
+is the LIVE hand-off (subject: wake the shipped PC graphics menu); the R6 record is
+`phase5-notes.md` §6co; per-defect state is `open-items.md` 00r; performance stays parked
+in `perf-state-parked.md`, updated by Night Run 1's §6):
+
+* **THE DISTANCE CLASS WAS NEITHER CONTENT NOR SHADER — IT WAS THE PACKED-TILE LAYOUT.**
+  Any texture whose shorter dimension is <= 16 texels packs its WHOLE mip chain, LEVEL 0
+  INCLUDED, into one 32x32-block tile (mipAddr=0): a 32x16's base sits at block (0,4),
+  ours read (0,0) — the tile's scrap region — and the `mipAddress &&` gate skipped the
+  chain upload entirely. 79 distinct textures in one street frame are in the class (the
+  whole tiny far-LOD sheet population). Bytes were exonerated first: hardware's letters
+  base is BYTE-IDENTICAL to our live dump at the same spot. `PackedLevelOffset`
+  (transcribed from Xenia's GetPackedMipOffset, BSD-3 recorded, then VERIFIED — it
+  reproduces part 41's brute-forced square table 378/378 and 69/70 R6 chains are
+  consistent at its offsets) fixed both halves in commit cf62229. First session: 1,662
+  base-offset reads, 2,404 packed levels taken, operator: "Work really well now."
+  `CZ_VK_NO_PACKED_SMALL=1` is the control arm. R6 is FULFILLED; no outstanding request.
+* **NIGHT RUN 1** (unattended, 24/24 runs engaged, null floor <= 0.4% on draw-banded
+  window medians): the constant memo's value REPLICATED (+1.8-2.2% cost to remove),
+  `CZ_VK_GUARD_WORKERS=4` is REFUTED (slower than budget-3), the clip cache costs
+  +0.20 ms/+3.0% at the 5,000-draw band (partial attribution — part 56's dynamic-state
+  calls stay co-suspect), and the ALU CONSTANT CENSUS killed item C's range-copy design
+  while pricing the GATHER design at ~10x (median 9 VS / 27 PS registers read of 256;
+  a0-indexing on only 22 VS, 0 PS). Two instrument facts with a shelf life: the
+  DebugJump landing is BIMODAL (~2,500 or ~5,000+ draws per run), and the uncapped
+  headless load runs the GPU at 75-85% — near the limiter — so CPU deltas read
+  compressed there. `docs/perf-nightrun1.md` is the record.
+* **The gate sweep (owed since part 58's default change): ALL GREEN** — E3 +0.9596
+  identity, A5 exit 0 (4 permutation / 0 real), both PM4 oracles 0 disagreements, dim
+  census clean, truncated=0, no-translated-shader 0. One trap recorded: a parked
+  no-input boot drifts into the attract loop, so the E-gate scans the frame dump for the
+  logo card (~frame 5,000) rather than trusting the final frame.
+* **Part 60 is prepped and the discovery is made**: `fecmn.big` ships BOTH the live
+  Visuals screen (whose ONLY setting is the dead Gamma meter) and **`options_pc.txt` —
+  a complete PC graphics menu (Resolution, DisplayMode, VSync, Shadow Low/Med/High,
+  more)**. The DebugJump precedent applies. `big_decompress` gained a text oracle for
+  the frontend layouts. Operator instruction recorded: do NOT consult Fable 2 for
+  renderer behavior — this port's own history is the reference.
+* **Gates**: `--smoke` OK after every change; picture verification WINDOWED through the
+  operator (three sessions: fix verdict, 1440p play). The sweep above covers part 56's
+  owed one too (same binary lineage).

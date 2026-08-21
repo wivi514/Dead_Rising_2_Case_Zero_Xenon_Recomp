@@ -12427,3 +12427,75 @@ report) — ask once at the next session open.
 `docs/rt-and-fov-plan.md` (a91239c) is the operator-commissioned next plan: RT
 shadows/AO/lighting/GI as OG/RT-LOW/MED/HIGH rows plus a FOV slider, staged with a
 capability probe, a geometry census prerequisite, and pre-registered kill thresholds.
+
+## §6cr — Part 61: the FIELD OF VIEW slider ships, and RT stage 0 (2026-08-21 evening)
+
+The first two stages of `docs/rt-and-fov-plan.md`, in the plan's own order. All
+headless verification below; **the operator's comfort pass is owed** (§0's verify
+clause) and is the first item of part 62.
+
+### The FOV slider (plan §0) — SHIPPED (5b9fbba)
+
+`fov=N` in cz_settings.txt (-10..+30 degrees of adjustment, 0 = OG the default), a
+sixth panel row (OG / +N / -N, one degree per press, clamped ladder per gotcha 377),
+applied LIVE by a per-frame re-read (the shadow-tier pattern — and the per-frame
+latch is also the memo-safety argument: the constant memo never crosses a frame, so
+patched bytes cannot be reused under a different slider value). The patch composes
+with the part-60 wide patch — fov FIRST (scales A and B by one ratio, preserving
+both the aspect and Is169Perspective recognition), wide second (divides A alone).
+UCP planes generalize the part-60 compensation to both axes. `CZ_VK_FOV=N` wins
+over the file; =0 pins the slider off.
+
+**Verified, all three legs, same binary:**
+
+* **Null**: a CZ_VK_FOV=0 run's copyright card is **md5-IDENTICAL** to an OG run's
+  (`7d38d4e0...`), across two processes — and the card is byte-stable within a run,
+  which is what makes the cross-run identity meaningful.
+* **Positive, quantitative**: the copyright card's text center-offset scales
+  (-176,161) -> (-126,115) = ratios **0.716 / 0.714** against the predicted
+  tan(22.5°)/tan(30°) = **0.7174** at +15. Same measurement part 60 used for wide.
+* **Positive, scene**: OG-vs-+15 outdoor pair (military camp crowd, ~6,200 draws) —
+  the whole world coherently wider (bus fully visible with tents above, new
+  foreground rows, no misregistration), composed with wide mode at the operator's
+  3440x1440. 455,592 patch engagements. Evidence:
+  `~/DR2CZ-troubleshooting/part61-fov/`.
+
+### What the census established on the way (CZ_VK_FOV_CENSUS, two runs)
+
+* **This title's scene camera is ONE projection**: vfov exactly 45.00°
+  (B = -(1+√2)), zn 0.1 / zf 1000, bit-identical across title, menus and the
+  outdoor crowd — 1 distinct value in 1.6M recognized draws. The window base is
+  effectively always 0 (24 moved-window draws of 89.9M).
+* **~2% of draws carry it, and that 2% is the entire visible scene** (gotcha 378).
+  The other 98% are shadow cascade / cube face / depth-only / post work — correctly
+  untouched by recognition.
+* **The HUD/UI rides the SAME projection** (there is no other), so the slider
+  scales the HUD toward center by the fov ratio — measured 0.738/0.698 on the
+  outdoor HUD, 0.716/0.714 on the copyright card, vs 0.717 predicted. **A
+  depth-state exemption was designed, measured and REFUTED in one session**
+  (gotcha 379): outdoors 81% of recognized draws are ztest-off and they are
+  scene-space (sky/effects/decals), so exempting ztest-off would tear effects off
+  the world. **The HUD scaling ships as a stated trade**, like the plan's cutscene
+  trade; if the operator objects, the next discriminator candidate is the HUD's
+  own pixel-shader set, not a render-state bit.
+* Census population counts are per-DRAW on the raw register window (a copy-site
+  census would count constant CHANGES and miss every memo-hit draw's state).
+
+### RT stage 0 (plan §1) — the probe is in (4cc4f4a), and the answer is YES
+
+Device-extension probe at CreateDevice, log + `Renderer::rtSupported`, nothing
+enabled. **The operator's machine: RTX 3070, driver 610.43.03, Vulkan 1.4 —
+VK_KHR_acceleration_structure + ray_query + deferred_host_operations all present.**
+Ray-query hybrid RT is available; mid-high Ampere throughput class (2nd-gen RT
+cores) — LOW/MED tiers at 1440p realistic, HIGH needs the stage-2 pricing pass
+before promises.
+
+### Gates at close
+
+`--smoke` green after every commit. A5 diff on the final binary: **exit 0, 4
+permutation windows, 0 real** (same shape as parts 59/60). E gate, default arm
+pinned by env (CZ_VK_RES=1280x720 CZ_VK_WIDE=0): logo card **+0.9599 identity**
+vs E2 (standing number +0.9597-0.9599), found by scanning the dump per part 59's
+attract-drift trap. PM4 oracles and dim census untouched (no pm4.cpp or shader
+cache changes). The one un-gateable path, as always: the panel row's look in a
+real window — operator's first open shows it.

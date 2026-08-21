@@ -16,6 +16,15 @@ OG is exactly today's renderer and stays the default and the control arm.**
 
 ## 0. The FOV slider (ships first, independent of everything below)
 
+> **SHIPPED IN PART 61** (5b9fbba; record `phase5-notes.md` §6cr). All three
+> verify legs green headlessly (null byte-identical, card ratios 0.716/0.714 vs
+> 0.7174 predicted at +15, whole-scene coherence outdoors composed with wide
+> mode). **One design revision against this section, measured not chosen: the
+> HUD scales with the slider** — the title has exactly ONE recognized projection
+> game-wide (vfov 45.00°, census), the UI rides it, and the depth-state
+> exemption candidate was refuted (gotchas 378-379). Ships as a stated trade;
+> operator comfort pass owed.
+
 **What exists already**: the wide-mode projection patch (part 60) — a structural
 recognizer for the title's 16:9 scene perspectives (`Is169Perspective`) and a patch
 point in the VS constant copy where every recognized projection can be modified before
@@ -50,6 +59,13 @@ byte-identical to OG (the null). Operator: comfort pass, and a slice check with 
 slider off-zero.
 
 ## 1. RT stage 0 — the capability probe and the honest refusal
+
+> **DONE IN PART 61** (4cc4f4a). The probe runs at CreateDevice and stores
+> `Renderer::rtSupported`; the operator's RTX 3070 (Ampere, driver 610.43.03)
+> carries all three extensions — ray-query hybrid RT is AVAILABLE. Tier-budget
+> class: mid-high Ampere; price tiers in stage 2 before promising HIGH. The
+> CZ_VK_RT / CZ_VK_RT_FORCE arms land with the first RT row (nothing to kill
+> yet).
 
 Vulkan ray tracing needs `VK_KHR_acceleration_structure` +
 `VK_KHR_ray_query` (the recommended retrofit form: ray queries from an ordinary

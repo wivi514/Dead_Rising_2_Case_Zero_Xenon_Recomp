@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part61-kickoff.md`.** State the rule as well as the name, because this line said
+    `part62-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -737,6 +737,40 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-21 evening (part 61 CLOSED — **THE FOV SLIDER
+SHIPPED AND RT STAGE 0 ANSWERED YES: a sixth panel row (FIELD OF VIEW, -10..+30
+degrees, LIVE, clamped ladder), verified headlessly on all three legs — null
+byte-identical, copyright-card ratios 0.716/0.714 vs 0.7174 predicted at +15,
+whole-scene coherence outdoors composed with wide mode — and the RT capability
+probe found the operator's RTX 3070 carries every ray-query extension.**
+`docs/part62-kickoff.md` is the LIVE hand-off (subject: the operator's FOV
+verdict, then RT stage 1); the record is `phase5-notes.md` §6cr; gotchas 378-379):
+
+* **The census behind it changed the design once, by measurement**: this title has
+  ONE scene projection game-wide (vfov exactly 45.00°, B = -(1+√2), zn 0.1/zf 1000,
+  bit-identical across title/menus/outdoor crowd; window base always 0). The HUD/UI
+  ride it, so **the slider scales the HUD toward center by the fov ratio — shipped
+  as a STATED TRADE** after the depth-state exemption was refuted (81% of the
+  projection's ztest-off draws outdoors are sky/effects/decals, not UI — a carve-out
+  would tear effects off the world, gotcha 379). ~2% of draws carry the projection
+  and that 2% IS the visible scene; the 98% are shadow/cube/depth/post passes
+  (gotcha 378: a draw-count share says nothing about picture coverage).
+* **Mechanics**: fov patch FIRST (scales A and B by one ratio — aspect and
+  recognition preserved), wide patch second; UCP planes compensated on both axes;
+  per-frame latch (the shadow-tier pattern) makes the row LIVE and keeps the
+  constant memo safe (it never crosses a frame). `CZ_VK_FOV=N` env wins over the
+  file (=0 pins off); `CZ_VK_FOV_CENSUS=1` is the projection census.
+* **RT stage 0 (plan §1) is DONE**: probe at CreateDevice, `Renderer::rtSupported`,
+  nothing enabled. RTX 3070 / driver 610.43.03 / Vulkan 1.4: acceleration_structure
+  + ray_query + deferred_host_operations ALL PRESENT. Next stage gate: nothing in
+  RT stages 2-4 starts before stage 1's geometry census numbers exist.
+* **Owed to part 62**: the operator's comfort pass, the HUD-trade verdict, a slice
+  check off zero, and a cutscene look (cutscene cameras widen with the slider —
+  the plan's stated trade; they have never been censused separately).
+* **Gates at close**: `--smoke` green after every commit; A5 diff exit 0
+  (4 permutation / 0 real); E gate +0.9599 identity vs E2 at the default arm;
+  PM4 oracles and dim census untouched by this part (part 59's green stands).
+
 Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
 SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a
 SHELL (layout + strings present, verbs compiled out), so the menu is a HOST panel over
@@ -789,53 +823,8 @@ operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotch
   `docs/rt-and-fov-plan.md`** (RT shadows/AO/lighting/GI rows + FOV slider, operator
   instruction). Commit-hygiene note: items 4+5 share one commit (893749b).
 
-Where the port is, as of 2026-08-20 (part 59 CLOSED — **THREE THREADS, ALL LANDED IN ONE
-DAY: the owed GATE SWEEP ran all green; NIGHT RUN 1 (the operator-requested overnight
-perf campaign) answered the parked plan's owed items 1/2/4; and the operator's R6 trace
-closed the GAS-SIGN / DISTANCE CLASS the same day it was delivered.** `docs/part60-kickoff.md`
-is the LIVE hand-off (subject: wake the shipped PC graphics menu); the R6 record is
-`phase5-notes.md` §6co; per-defect state is `open-items.md` 00r; performance stays parked
-in `perf-state-parked.md`, updated by Night Run 1's §6):
-
-* **THE DISTANCE CLASS WAS NEITHER CONTENT NOR SHADER — IT WAS THE PACKED-TILE LAYOUT.**
-  Any texture whose shorter dimension is <= 16 texels packs its WHOLE mip chain, LEVEL 0
-  INCLUDED, into one 32x32-block tile (mipAddr=0): a 32x16's base sits at block (0,4),
-  ours read (0,0) — the tile's scrap region — and the `mipAddress &&` gate skipped the
-  chain upload entirely. 79 distinct textures in one street frame are in the class (the
-  whole tiny far-LOD sheet population). Bytes were exonerated first: hardware's letters
-  base is BYTE-IDENTICAL to our live dump at the same spot. `PackedLevelOffset`
-  (transcribed from Xenia's GetPackedMipOffset, BSD-3 recorded, then VERIFIED — it
-  reproduces part 41's brute-forced square table 378/378 and 69/70 R6 chains are
-  consistent at its offsets) fixed both halves in commit cf62229. First session: 1,662
-  base-offset reads, 2,404 packed levels taken, operator: "Work really well now."
-  `CZ_VK_NO_PACKED_SMALL=1` is the control arm. R6 is FULFILLED; no outstanding request.
-* **NIGHT RUN 1** (unattended, 24/24 runs engaged, null floor <= 0.4% on draw-banded
-  window medians): the constant memo's value REPLICATED (+1.8-2.2% cost to remove),
-  `CZ_VK_GUARD_WORKERS=4` is REFUTED (slower than budget-3), the clip cache costs
-  +0.20 ms/+3.0% at the 5,000-draw band (partial attribution — part 56's dynamic-state
-  calls stay co-suspect), and the ALU CONSTANT CENSUS killed item C's range-copy design
-  while pricing the GATHER design at ~10x (median 9 VS / 27 PS registers read of 256;
-  a0-indexing on only 22 VS, 0 PS). Two instrument facts with a shelf life: the
-  DebugJump landing is BIMODAL (~2,500 or ~5,000+ draws per run), and the uncapped
-  headless load runs the GPU at 75-85% — near the limiter — so CPU deltas read
-  compressed there. `docs/perf-nightrun1.md` is the record.
-* **The gate sweep (owed since part 58's default change): ALL GREEN** — E3 +0.9596
-  identity, A5 exit 0 (4 permutation / 0 real), both PM4 oracles 0 disagreements, dim
-  census clean, truncated=0, no-translated-shader 0. One trap recorded: a parked
-  no-input boot drifts into the attract loop, so the E-gate scans the frame dump for the
-  logo card (~frame 5,000) rather than trusting the final frame.
-* **Part 60 is prepped and the discovery is made**: `fecmn.big` ships BOTH the live
-  Visuals screen (whose ONLY setting is the dead Gamma meter) and **`options_pc.txt` —
-  a complete PC graphics menu (Resolution, DisplayMode, VSync, Shadow Low/Med/High,
-  more)**. The DebugJump precedent applies. `big_decompress` gained a text oracle for
-  the frontend layouts. Operator instruction recorded: do NOT consult Fable 2 for
-  renderer behavior — this port's own history is the reference.
-* **Gates**: `--smoke` OK after every change; picture verification WINDOWED through the
-  operator (three sessions: fix verdict, 1440p play). The sweep above covers part 56's
-  owed one too (same binary lineage).
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 57's** — part 59 moved part 57's out in the same commit that added its own block, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 59's** — part 61 moved part 59's out in the same commit that added its own block, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

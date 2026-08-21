@@ -1634,6 +1634,40 @@ CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** Th
                    frame) are untouched, which also means NO headless gate can see
                    this — the picture verdict is the operator's (part-54 lesson: a
                    present-path change is invisible to every readback-walking gate)
+CZ_VK_FOV=N        **the measurement arm for the FIELD OF VIEW slider** (part 61,
+                   rt-and-fov-plan §0), winning over the settings file's `fov=`
+                   value — including `CZ_VK_FOV=0`, which PINS the slider off. N =
+                   degrees of adjustment to the game's own camera, -10..+30 (the
+                   game's scene vfov is a fixed 45.00 deg — B = -(1+sqrt 2), one
+                   bit-identical projection across title, menus and the outdoor
+                   crowd, run-1 census). The patch: for a recognized 16:9
+                   perspective, B' = 1/tan(atan(1/|B|) + N*pi/360), A scales by the
+                   same ratio (aspect — and recognition — preserved, so it composes
+                   with the wide patch: fov FIRST, wide second). Re-read once per
+                   frame (the shadow-tier pattern), so the menu row applies LIVE;
+                   the constant memo never crosses a frame, so patched bytes cannot
+                   be reused under a different value. UCP planes are compensated on
+                   BOTH axes (p.x and p.y divided by the fov ratio) so gore cuts
+                   stay put off zero. Counter: "draw: scene projection fov-adjusted
+                   (slider)"; null verified BYTE-IDENTICAL (fov=0 copyright card
+                   md5-equal to an OG run's). KNOWN TRADE, measured in part 61: the
+                   HUD and frontend UI ride the same (only) projection, so they
+                   scale toward center by the fov ratio (+15 -> 0.717, confirmed on
+                   the copyright card at 0.716/0.714 per axis and on the outdoor
+                   HUD at 0.738/0.698) — a depth-state exemption was REFUTED (81%
+                   of recognized draws outdoors are ztest-off scene-space content:
+                   sky/effects, not UI; exempting them would tear effects off the
+                   world)
+CZ_VK_FOV_CENSUS=1 print every DISTINCT recognized 16:9 projection the draw path
+                   sees — A, B, the z-row terms (zn/zf) and the draws' depth-state
+                   split, with periodic population counts (part 61). The instrument
+                   that established: ONE projection serves the whole game so far
+                   (vfov 45.00 deg exactly, zn 0.1 / zf 1000), ~2% of draws carry
+                   it in their VS window (the rest are shadow/cube/depth/post
+                   passes and composed transforms) yet that 2% is the entire
+                   visible scene, and its ztest-off majority is scene-space, not
+                   UI. Free when off; first-occurrence prints + a count dump every
+                   200k recognized draws when on
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch
