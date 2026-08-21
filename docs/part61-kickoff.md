@@ -75,8 +75,15 @@ DISPLAY MODE, VSYNC, SHADOW QUALITY, FRAME CAP, ASPECT:
   6 each). **That VUID is now a named open item — cheap to fix (write PointSize in
   the vertex shader when topology is point list, or enable maintenance5); nobody has
   looked at whether point sprites render correctly.**
-* A5 diff + E3 identity: re-run at the close of the night (results in §6cp /
-  the night's closing commit if this file predates them — check `git log`).
+* A5 diff at close: **exit 0, 4 permutation windows, 0 real** — same shape as part
+  59's sweep. E gate at close, default arm (16:9, scale 1): logo card
+  **+0.9599 identity** against `E2_title_screen_logo.png` (the standing number is
+  +0.9597), attract background +0.8974 identity against E3 (attract camera moment
+  varies run to run; layout agrees). PM4 oracles and the dim census were NOT re-run:
+  nothing in the night touched pm4.cpp or the shader cache (part 59's green stands).
+* The one code path no headless gate can exercise: the swapchain overlay's
+  horizontal centering in wider-than-16:9 windows (needs a window) — the operator
+  sees it the first time they press F4 or open the panel on the 21:9 display.
 * Tier A/B, wide A/B: headless halves done (engagement + no breakage); operator
   halves owed above.
 

@@ -12353,3 +12353,12 @@ leaves that cached Hz stale until next launch (boot-time file values have no ske
 Items 4 and 5 landed in one commit (893749b) against the one-change-per-commit rule —
 both are panel rows from the same operator request and the message documents each
 separately, but the next session should not read that commit as one feature.
+
+### §6cp closing gates (2026-08-21, 01:00)
+
+A5 diff on the final build: exit 0, 4 permutation / 0 real. E gate, default arm:
+logo card +0.9599 IDENTITY vs E2 (standing number +0.9597), attract background
++0.8974 identity vs E3 (the attract camera moment varies; layout agrees). PM4
+oracles / dim census deliberately not re-run — nothing touched pm4.cpp or the
+shader cache tonight. --smoke green after every commit. The one path no headless
+gate can reach: the swapchain overlay's horizontal centering on a wide window.
