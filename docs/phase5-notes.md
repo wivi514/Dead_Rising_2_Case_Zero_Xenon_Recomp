@@ -12362,3 +12362,64 @@ logo card +0.9599 IDENTITY vs E2 (standing number +0.9597), attract background
 oracles / dim census deliberately not re-run — nothing touched pm4.cpp or the
 shader cache tonight. --smoke green after every commit. The one path no headless
 gate can reach: the swapchain overlay's horizontal centering on a wide window.
+
+## §6cq — Part 60's operator day (2026-08-21): verdicts, three revisions, the tier freeze, and a completed game
+
+The morning-and-day session that followed the night run. Everything below is
+operator-driven; the night's headless verdicts held except where noted.
+
+### The verdicts
+
+* Aspect-fit bars and 21:9: good — "almost perfect", with the revisions below as the
+  gap. The projection patch, HUD self-centering, tiling and flanks all held in play.
+* The shadow LOW vs HIGH LOOK verdict is STILL OWED — the operator flipped tiers
+  (finding the freeze below) and confirmed the fix, but never judged edge blockiness.
+* The operator then COMPLETED THE WHOLE GAME in one sitting — the deepest run this
+  port has ever hosted — with CZ_SHADER_DUMP armed: nine new shaders captured and
+  folded in (cache 440 -> 449, census green). Late-game content had never been
+  rendered before this session; no visual complaints were filed from it (not the same
+  claim as "none exist" — nobody was looking for defects during play).
+
+### Revision 1-3: the Resolution row (operator iterations, each committed separately)
+
+1. One list instead of a separate ASPECT row (0f49719).
+2. Wide entries derived from the DISPLAY's aspect — their 3440x1440 is 21.5:9, not
+   21:9; N/32 factor, native full-bleed (81b2bd4).
+3. "1920x1080 and 2560x1080 are missing" -> the real gap: the renderer only did
+   integer multiples of 720 rows. The scale core became RATIONAL (Y by H/720, X by
+   W/1280, truncating — gotcha 373 holds for any fixed rational; the 640 tile is
+   exact for any even width) and the row now lists THE DISPLAY'S OWN MODE LIST via
+   SDL enumeration, filtered to what the renderer can honestly produce (>= 16:9,
+   even width, 720..2880 rows; their panel: 7 modes). res_w/res_h are the store's
+   primary keys; legacy files convert on load. First fractional config
+   (CZ_VK_RES=1920x1080) validated clean (05f5271).
+
+### THE SHADOW-TIER FREEZE, and deferred image retirement (7241a71)
+
+Flipping Shadow Quality to Low in play froze the picture while the guest kept
+running. Mechanism (from structure + the live-rescale path's own history): the
+snapshot-resize path destroyed the old atlas behind a vkDeviceWaitIdle — which only
+covers SUBMITTED work; the frame being RECORDED had already sampled the old atlas,
+so the following submit referenced destroyed handles. Fix: RetireImage /
+DrainRetiredImages — replaced images queue with their retire frame and are destroyed
+only after retireFrame + framesInFlight + 1 <= R->frame, at the present boundary
+after the oldest fence wait; NO wait-idle remains in the resize path, so a tier flip
+is now also stall-free. Stress arm CZ_TEST_TIER_FLIP=N cycled 48 live rebuilds over
+the outdoor route under validation: clean. Operator re-tested the same place: no
+freeze. Gotcha 376.
+
+### "The menu always shows 720p when I open it" — the wrap (e2a0029)
+
+Three sessions of logs showed the store CORRECT at every open (the open-diagnostic
+line proved it) while the complaint persisted. The real shape: the operator's
+resolution was the LAST list entry, so their first right-press WRAPPED to the
+smallest entry every time — experienced as "it opens on 720p". Ordered ladders
+(Resolution, Frame Cap) now clamp at the ends; small cyclic rows keep wrapping.
+Gotcha 377. Confirmation of the clamp fix by the operator is implicit (no further
+report) — ask once at the next session open.
+
+### Next
+
+`docs/rt-and-fov-plan.md` (a91239c) is the operator-commissioned next plan: RT
+shadows/AO/lighting/GI as OG/RT-LOW/MED/HIGH rows plus a FOV slider, staged with a
+capability probe, a geometry census prerequisite, and pre-registered kill thresholds.

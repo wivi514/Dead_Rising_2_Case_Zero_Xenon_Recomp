@@ -773,9 +773,21 @@ operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotch
   permutation / 0 real); validation-armed wide boot shows ONLY the pre-existing
   point-list PointSize VUID class (6, same as the 16:9 control — now a named cheap
   open item); E3 identity re-run at close (see §6cp / the closing commit).
-* **All picture verdicts of the night are HEADLESS; the operator's morning checklist
-  is `part61-kickoff.md` §0.** Commit-hygiene note: items 4+5 share one commit
-  (893749b), documented in its message.
+* **THE OPERATOR DAY THAT FOLLOWED (2026-08-21, §6cq): verdicts in, three Resolution
+  revisions, one freeze fixed, one game completed.** Bars + 21:9 good; the Resolution
+  row now lists THE DISPLAY'S OWN MODES with a RATIONAL scale core (Y by H/720, X by
+  W/1280, truncating — 1920x1080 and every >= 16:9 display mode from 720..2880 rows
+  works; res_w/res_h are the settings keys, legacy files convert). The live
+  shadow-tier flip FROZE the game — vkDeviceWaitIdle does not cover the RECORDING
+  command buffer (gotcha 376) — fixed by deferred image retirement
+  (RetireImage/DrainRetiredImages; stress arm CZ_TEST_TIER_FLIP, 48 live rebuilds
+  clean under validation, operator re-tested the same spot). "The menu opens on
+  720p" was the ordered-ladder WRAP from the last entry (gotcha 377; ladders clamp
+  now). The operator then COMPLETED THE WHOLE GAME with CZ_SHADER_DUMP armed: cache
+  440 -> 449. Owed: the shadow Low-vs-High LOOK, the clamp-fix confirmation, and
+  first sight of the eight late-game shaders. **THE NEXT PLAN IS
+  `docs/rt-and-fov-plan.md`** (RT shadows/AO/lighting/GI rows + FOV slider, operator
+  instruction). Commit-hygiene note: items 4+5 share one commit (893749b).
 
 Where the port is, as of 2026-08-20 (part 59 CLOSED — **THREE THREADS, ALL LANDED IN ONE
 DAY: the owed GATE SWEEP ran all green; NIGHT RUN 1 (the operator-requested overnight

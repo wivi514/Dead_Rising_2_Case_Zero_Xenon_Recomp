@@ -1,6 +1,19 @@
-# Part 61 kickoff — the operator's verdict on the part-60 night run, then the list
+# Part 61 kickoff — the RT + FOV plan (the part-60 verdicts are IN)
 
-> **THIS IS THE LIVE HAND-OFF**, superseding `part60-kickoff.md`. Part 60 shipped the
+> **THIS IS THE LIVE HAND-OFF**, superseding `part60-kickoff.md`. **UPDATED at the
+> close of the 2026-08-21 operator day** — most of §0's checks are DONE (record:
+> `phase5-notes.md` §6cq): bars and 21:9 verdicted good, the Resolution row went
+> through three operator revisions (ending at: the DISPLAY'S OWN MODE LIST with
+> RATIONAL internal scaling — 1920x1080 works now), the live shadow-tier flip froze
+> and was fixed by DEFERRED IMAGE RETIREMENT (gotcha 376), the "opens on 720p"
+> report was the ordered-ladder WRAP (gotcha 377, ladders clamp now), and the
+> operator COMPLETED THE WHOLE GAME with the shader dump armed (cache 449).
+> **The next part's work is `docs/rt-and-fov-plan.md` (§3), FOV slider first.**
+> Still owed from part 60: the shadow LOW vs HIGH LOOK verdict (§0.3), one
+> confirmation that the menu no longer "opens on 720p" after the clamp fix, and
+> the first look at whatever the eight late-game shaders draw (they were missing
+> during the playthrough; next launch has them).
+ Part 60 shipped the
 > host settings panel over the game's own options hub (the shipped OptionsPC screen is
 > a SHELL — layout and strings present, verbs compiled out), and its overnight run
 > landed all five night-plan items (`docs/part60-night-plan.md`, record in

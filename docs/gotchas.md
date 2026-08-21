@@ -3957,3 +3957,32 @@ From phase C part 18 (the frame rate — and none of it was work):
      plan pre-registered the trap ("90 would become 100"). When a UI offers discrete
      values, derive each value's actual realization in the mechanism's own units and
      refuse or relabel the ones that do not exist.
+
+376. **vkDeviceWaitIdle DOES NOT COVER THE COMMAND BUFFER YOU ARE STILL RECORDING —
+     destroy-then-rebuild mid-frame is UB against your own earlier passes.** The
+     snapshot-resize path waited idle and destroyed the old shadow atlas; the frame
+     being recorded had already sampled it, and the submit that followed referenced
+     destroyed handles — a wedged queue the operator read as a hard freeze, with the
+     guest running underneath. The wait-idle also cost a stall PER RESIZE (the
+     live-rescale path had already documented that stutter chain "read as a freeze"
+     and nobody generalized it). The fix shape is standard and transfers: deferred
+     retirement — stamp replaced objects with the current frame and destroy them
+     only after every fence that could reference them has been waited (retireFrame +
+     framesInFlight + 1 <= frame, drained at the present boundary). Any Vulkan
+     resource replaced mid-frame needs this; validation catches the destroyed-handle
+     use, but only if a run actually flips the state mid-frame — which is why the
+     repro arm (CZ_TEST_TIER_FLIP) exists and why a LIVE-changeable setting must be
+     exercised LIVE in its verification, not only per-run (the tier A/B fixed the
+     tier per run and could never have found this).
+
+377. **A WRAPPING ORDERED LIST READS AS A RESET when the current value is the last
+     entry — and the complaint will describe the OPEN, not the press.** "The menu
+     always shows 720p when I open it": three sessions of logs proved the store
+     correct at every open; the operator's value was the last list entry, so their
+     first right-press wrapped to the smallest — indistinguishable, from the
+     player's seat, from the menu opening wrong. Two transferables: ordered ladders
+     clamp at their ends (wrap only small cyclic sets), and when a user report
+     contradicts the state you can prove, model what their FIRST ACTION would have
+     shown them — the report describes an experience, not a state, and the
+     open-diagnostic that settled this printed the state at exactly the moment the
+     experience began.

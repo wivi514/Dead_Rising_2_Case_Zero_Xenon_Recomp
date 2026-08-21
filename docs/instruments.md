@@ -1669,6 +1669,16 @@ CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    frustum can pop at the extreme flanks, and the title's own
                    2-tile binning survives because the tile boundary is clip x = 0,
                    which the fov change preserves
+CZ_TEST_TIER_FLIP=N  cycle the shadow tier 2/1/0 every N frames — the LIVE flip the
+                   panel row performs, exercised headlessly. Built as the repro arm
+                   for the shadow-tier freeze (gotcha 376): the per-run tier A/B
+                   fixed the tier per run and structurally could not find a defect
+                   that only a MID-FRAME state change triggers. Any live-changeable
+                   renderer setting needs an arm of this shape in its verification
+CZ_TEST_PANEL=1    open the host settings panel at boot, no input needed — the
+                   presentation repro for panel-display questions (the panel is only
+                   drawn by the PRESENT paths, so a headless run shows it in no
+                   frame dump; use windowed)
 CZ_VK_SHADOW_TIER=0|1|2  **the measurement arm for the Shadow Quality row** (part 60
                    night item 2), and it WINS over the settings file. 2 = High = the
                    scene scale (bit-identical to the pre-part-60 renderer — the
