@@ -15,7 +15,8 @@ namespace
 struct State
 {
     CzDisplayMode displayMode = CzDisplayMode::Windowed;
-    uint32_t renderScale = 1;
+    uint32_t resW = 1280, resH = 720;   // the INTERNAL resolution (primary since rev 3)
+    uint32_t renderScale = 1;           // legacy mirror, kept in sync for old readers
     bool vsync = false;         // false = MAILBOX (the part-54 default), true = FIFO
     int shadowTier = 2;         // the title rendered at full shadow resolution until now
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
@@ -56,13 +57,15 @@ void SaveLocked()
             "# Written by the in-game PC Settings screen; safe to edit by hand.\n"
             "# Env vars (CZ_VK_RES, CZ_VK_SWAPCHAIN_FIFO, ...) always win over this file.\n"
             "display_mode=%d\n"     // 0 windowed, 1 borderless, 2 fullscreen
-            "render_scale=%u\n"     // 1..4 over 1280x720
+            "res_w=%u\n"            // internal render resolution (primary)
+            "res_h=%u\n"
+            "render_scale=%u\n"     // legacy mirror: round(res_h/720), for old builds
             "vsync=%d\n"
             "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
             "fps_cap=%d\n"         // 0 = off, else 30/60/90/120/240/480
             "aspect=%d\n",         // 0 = 16:9, 1 = 21:9 (applies at next launch)
-            int(g_state.displayMode), g_state.renderScale, g_state.vsync ? 1 : 0,
-            g_state.shadowTier, g_state.fpsCap, g_state.aspect);
+            int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.aspect);
     fclose(f);
 }
 
@@ -80,6 +83,9 @@ void Settings_Load(const std::string& path)
         return;
     }
     char line[256];
+    bool sawResWH = false;
+    uint32_t legacyScale = 0;
+    int legacyAspect = -1;
     while (fgets(line, sizeof(line), f))
     {
         if (line[0] == '#')
@@ -92,14 +98,24 @@ void Settings_Load(const std::string& path)
         const long v = strtol(eq + 1, nullptr, 10);
         if (!strcmp(key, "display_mode") && v >= 0 && v <= 2)
             g_state.displayMode = CzDisplayMode(v);
+        else if (!strcmp(key, "res_w") && v > 0)
+        {
+            g_state.resW = uint32_t(v);
+            sawResWH = true;
+        }
+        else if (!strcmp(key, "res_h") && v > 0)
+        {
+            g_state.resH = uint32_t(v);
+            sawResWH = true;
+        }
         else if (!strcmp(key, "render_scale") && v >= 1 && v <= 4)
-            g_state.renderScale = uint32_t(v);
+            legacyScale = uint32_t(v);
         else if (!strcmp(key, "vsync"))
             g_state.vsync = v != 0;
         else if (!strcmp(key, "shadow_tier") && v >= 0 && v <= 2)
             g_state.shadowTier = int(v);
         else if (!strcmp(key, "aspect") && v >= 0 && v <= 1)
-            g_state.aspect = int(v);
+            legacyAspect = int(v);
         else if (!strcmp(key, "fps_cap"))
         {
             if (ValidFpsCap(v))
@@ -111,10 +127,34 @@ void Settings_Load(const std::string& path)
         // Unknown keys: ignored on purpose — see the header comment.
     }
     fclose(f);
-    fprintf(stderr, "[settings] %s: display_mode=%d render_scale=%u vsync=%d "
+    // A file from before revision 3 has no res_w/res_h: convert its scale+aspect
+    // pair. The wide width uses the exact-21:9 42/32 factor the old build meant —
+    // the display-derived width takes over the next time the menu writes.
+    if (!sawResWH && legacyScale)
+    {
+        g_state.resH = 720 * legacyScale;
+        g_state.resW = legacyAspect == 1 ? (1280 * legacyScale * 42) / 32
+                                         : 1280 * legacyScale;
+        fprintf(stderr, "[settings] legacy render_scale=%u aspect=%d converted to "
+                        "%ux%u\n", legacyScale, legacyAspect < 0 ? 0 : legacyAspect,
+                g_state.resW, g_state.resH);
+    }
+    if (!Settings_ValidInternalRes(g_state.resW, g_state.resH))
+    {
+        fprintf(stderr, "[settings] res %ux%u is not one this renderer can produce — "
+                        "using 1280x720\n", g_state.resW, g_state.resH);
+        g_state.resW = 1280;
+        g_state.resH = 720;
+    }
+    // Keep the legacy mirrors coherent for old readers of the struct.
+    g_state.renderScale = (g_state.resH + 360) / 720;
+    if (g_state.renderScale < 1) g_state.renderScale = 1;
+    if (g_state.renderScale > 4) g_state.renderScale = 4;
+    g_state.aspect = uint64_t(g_state.resW) * 9 > uint64_t(g_state.resH) * 16 ? 1 : 0;
+    fprintf(stderr, "[settings] %s: display_mode=%d res=%ux%u vsync=%d "
                     "shadow_tier=%d fps_cap=%d\n", path.c_str(),
-            int(g_state.displayMode), g_state.renderScale, g_state.vsync ? 1 : 0,
-            g_state.shadowTier, g_state.fpsCap);
+            int(g_state.displayMode), g_state.resW, g_state.resH,
+            g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap);
 }
 
 void Settings_Save()
@@ -159,45 +199,33 @@ int Settings_Aspect()
     return g_state.aspect;
 }
 
-// See settings.h. Derivation: the wide internal width at height 720*s is
-// 1280*s*N/32 = 40*s*N, and matching the display's aspect at that height means
-// N = round(displayW * 18 / displayH) — for the operator's 3440x1440 that is
-// exactly 43 (3440 = 40*2*43, and the title's 640 tile becomes 860, whole pixels
-// for ANY N because 640*s*N/32 = 20*s*N). Clamped to [33..64]: below 33 the
-// display is not wider than 16:9 and wide mode has nothing to offer; 64 (a 32:9
-// super-ultrawide) is the widest the projection patch has any business feeding
-// this title's culling. 42 (= 21/16 exactly, the night's verified factor) is the
-// no-display fallback so headless arms are byte-identical to the verified runs.
-uint32_t Settings_WideNumerator()
+// See settings.h for the rule. The caps: 2880 tall / 6880 wide is 4x the title's
+// frame in each direction, the same ceiling the integer path had.
+bool Settings_ValidInternalRes(uint32_t w, uint32_t h)
 {
-    static const uint32_t n = [] () -> uint32_t {
-        if (const char* e = getenv("CZ_VK_WIDE_NUM"))
-        {
-            const long v = strtol(e, nullptr, 10);
-            if (v >= 33 && v <= 64)
-            {
-                fprintf(stderr, "[settings] CZ_VK_WIDE_NUM=%ld — wide X factor %ld/32 "
-                                "(env wins)\n", v, v);
-                return uint32_t(v);
-            }
-            fprintf(stderr, "[settings] CZ_VK_WIDE_NUM=%s is not 33..64 — IGNORED\n", e);
-        }
-        uint32_t dw = 0, dh = 0;
-        if (Host_DisplaySize(&dw, &dh) && dw && dh &&
-            uint64_t(dw) * 9 > uint64_t(dh) * 16)
-        {
-            const uint32_t num = uint32_t(
-                (uint64_t(dw) * 720 * 32 + uint64_t(dh) * 640) / (uint64_t(dh) * 1280));
-            const uint32_t clamped = num < 33 ? 33 : num > 64 ? 64 : num;
-            fprintf(stderr, "[settings] wide X factor %u/32 from the %ux%u display "
-                            "(wide internal width at scale s = %u*s)\n",
-                    clamped, dw, dh, 40 * clamped);
-            return clamped;
-        }
-        return 42;   // exact 21:9, the headless / 16:9-display fallback
-    }();
-    return n;
+    return h >= 720 && h <= 2880 && (w & 1) == 0 && w >= 1280 && w <= 6880 &&
+           uint64_t(w) * 9 >= uint64_t(h) * 16;
 }
+
+void Settings_InternalRes(uint32_t& w, uint32_t& h)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    w = g_state.resW;
+    h = g_state.resH;
+}
+
+void Settings_SetInternalRes(uint32_t w, uint32_t h)
+{
+    if (!Settings_ValidInternalRes(w, h))
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.resW = w;
+    g_state.resH = h;
+    g_state.renderScale = std::min(4u, std::max(1u, (h + 360) / 720));
+    g_state.aspect = uint64_t(w) * 9 > uint64_t(h) * 16 ? 1 : 0;
+    SaveLocked();
+}
+
 
 void Settings_SetDisplayMode(CzDisplayMode m)
 {
@@ -215,6 +243,9 @@ void Settings_SetRenderScale(uint32_t s)
     if (s < 1 || s > 4)
         return;
     g_state.renderScale = s;
+    // Legacy path (the parked guest-screen arm): keep the primary in step.
+    g_state.resH = 720 * s;
+    g_state.resW = g_state.aspect ? (1280 * s * 42) / 32 : 1280 * s;
     SaveLocked();
     // Live apply happens through VkRenderer_RequestRenderScale, called by whoever
     // changed the setting — the renderer swaps its scale-dependent resources at

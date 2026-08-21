@@ -1094,156 +1094,153 @@ bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 //
 //   CZ_VK_RES=2560x1440   the resolution, said the way a player says it
 //   CZ_VK_RES_SCALE=2     the same thing as a multiplier
-// The LIVE scale value. 0 until the first ResScale() call computes the boot
-// value; changed afterwards only by ApplyPendingRenderScale at a frame boundary
-// (part 60: the settings panel's resolution row applies immediately).
-std::atomic<uint32_t> g_resScaleLive{ 0 };
-// True when an env var chose the scale: the measurement arm wins and menu
+// THE INTERNAL RESOLUTION — an explicit WIDTH x HEIGHT since operator revision 3
+// (the menu lists the display's own modes, and 1920x1080 is no integer multiple of
+// 1280x720). The renderer scales RATIONALLY and TRUNCATING: Y extents by H/720, X
+// extents by W/1280 — floor(a)+floor(b) <= floor(a+b) holds for any fixed rational
+// (gotcha 373), so a converted offset+extent can never overrun a converted surface,
+// and the title's two 640-wide tile scissors stay exact for any EVEN width
+// (640*W/1280 = W/2). 16:9 integer multiples reproduce the old integer path bit for
+// bit. Latched at boot; changed only by ApplyPendingRenderScale between frames.
+// 0 until the first InternalRes() call computes the boot value.
+std::atomic<uint32_t> g_internalW{ 0 }, g_internalH{ 0 };
+// True when an env var chose the resolution: the measurement arm wins and menu
 // requests are refused loudly rather than silently overriding an A/B.
 bool g_resScaleLocked = false;
 std::atomic<uint32_t> g_resScalePending{ 0 };
 
-uint32_t ResScale()
+void InternalRes(uint32_t& w, uint32_t& h)
 {
-    if (const uint32_t live = g_resScaleLive.load(std::memory_order_relaxed))
-        return live;
-    const uint32_t s = [] () -> uint32_t {
-        constexpr uint32_t kBaseW = 1280, kBaseH = 720, kMaxScale = 4;
-        if (const char* r = Env("CZ_VK_RES"))
+    w = g_internalW.load(std::memory_order_relaxed);
+    h = g_internalH.load(std::memory_order_relaxed);
+    if (w && h)
+        return;
+    uint32_t bw = 0, bh = 0;
+    // CZ_VK_RES=WxH — any resolution the store validates (even width, H 720..2880,
+    // at least 16:9). The old integer-multiple forms still parse, so every recipe
+    // in the docs is unchanged.
+    if (const char* r = Env("CZ_VK_RES"))
+    {
+        uint32_t pw = 0, ph = 0;
+        if (sscanf(r, "%ux%u", &pw, &ph) == 2 && Settings_ValidInternalRes(pw, ph))
         {
-            uint32_t w = 0, h = 0;
-            if (sscanf(r, "%ux%u", &w, &h) == 2 && w && h && w % kBaseW == 0 &&
-                h % kBaseH == 0 && w / kBaseW == h / kBaseH &&
-                w / kBaseW >= 1 && w / kBaseW <= kMaxScale)
-            {
-                g_resScaleLocked = true;
-                return w / kBaseW;
-            }
-            fprintf(stderr,
-                    "[vk] CZ_VK_RES=%s is not an integer multiple of this title's own "
-                    "1280x720 (up to %ux) — IGNORED, rendering at 1280x720. Try %s.\n",
-                    r, kMaxScale, "1280x720, 2560x1440, 3840x2160 or 5120x2880");
-            return 1;
+            g_resScaleLocked = true;
+            bw = pw;
+            bh = ph;
         }
+        else
+            fprintf(stderr, "[vk] CZ_VK_RES=%s is not a resolution this renderer can "
+                            "produce (even width, height 720..2880, at least 16:9) — "
+                            "IGNORED, rendering at 1280x720.\n", r);
+    }
+    if (!bw)
         if (const char* n = Env("CZ_VK_RES_SCALE"))
         {
             const long v = strtol(n, nullptr, 10);
-            if (v >= 1 && v <= long(kMaxScale))
+            if (v >= 1 && v <= 4)
             {
                 g_resScaleLocked = true;
-                return uint32_t(v);
+                bw = 1280 * uint32_t(v);
+                bh = 720 * uint32_t(v);
             }
-            fprintf(stderr,
-                    "[vk] CZ_VK_RES_SCALE=%s is out of range (1..%u) — IGNORED.\n", n,
-                    kMaxScale);
+            else
+                fprintf(stderr, "[vk] CZ_VK_RES_SCALE=%s is out of range (1..4) — "
+                                "IGNORED.\n", n);
         }
-        // No env var: the persisted setting from the PC options screen (part 60).
-        // Env wins above so a CZ_VK_RES A/B arm can never be silently overridden by
-        // whatever the menu last wrote.
-        if (uint32_t fromFile = Settings_RenderScale(); fromFile > 1)
+    if (!bw)
+    {
+        // The persisted setting from the PC options screen. Env wins above so an
+        // A/B arm can never be silently overridden by whatever the menu last wrote.
+        Settings_InternalRes(bw, bh);
+        // Clamped to the DISPLAY on load: a settings file written on one monitor
+        // must not strand an impossible size on another. Env arms are deliberately
+        // not clamped (measurement wins); unknown display (headless) clamps nothing.
+        uint32_t dw = 0, dh = 0;
+        if (Host_DisplaySize(&dw, &dh) && (bw > dw || bh > dh))
         {
-            // Clamped to the DISPLAY on load (night item 4): a settings file written
-            // on one monitor must not strand an impossible size on another. Env arms
-            // above are deliberately not clamped — measurement wins — and an unknown
-            // display (headless) clamps nothing.
-            uint32_t dw = 0, dh = 0;
-            if (Host_DisplaySize(&dw, &dh))
-            {
-                uint32_t maxScale = 1;
-                while (maxScale < kMaxScale && kBaseW * (maxScale + 1) <= dw &&
-                       kBaseH * (maxScale + 1) <= dh)
-                    ++maxScale;
-                if (fromFile > maxScale)
-                {
-                    fprintf(stderr, "[vk] render scale %ux from cz_settings.txt is "
-                                    "larger than the %ux%u display — clamped to %ux\n",
-                            fromFile, dw, dh, maxScale);
-                    fromFile = maxScale;
-                }
-            }
-            if (fromFile > 1)
-                fprintf(stderr, "[vk] render scale %ux from cz_settings.txt (%ux%u)\n",
-                        fromFile, kBaseW * fromFile, kBaseH * fromFile);
-            return fromFile;
+            fprintf(stderr, "[vk] %ux%u from cz_settings.txt is larger than the "
+                            "%ux%u display — clamped to 1280x720\n", bw, bh, dw, dh);
+            bw = 1280;
+            bh = 720;
         }
-        return 1;
-    }();
-    g_resScaleLive.store(s, std::memory_order_relaxed);
-    return s;
+        if (bw != 1280 || bh != 720)
+            fprintf(stderr, "[vk] internal resolution %ux%u from cz_settings.txt\n",
+                    bw, bh);
+    }
+    // The legacy wide arms, applied ON TOP so their headless A/B recipes survive:
+    // CZ_VK_WIDE=1 widens to the exact-21:9 width (the night's verified 21/16),
+    // CZ_VK_WIDE=0 forces 16:9, CZ_VK_WIDE_NUM=n picks the numerator over 32.
+    if (const char* e = Env("CZ_VK_WIDE"))
+    {
+        uint32_t num = atoi(e) != 0 ? 42u : 32u;
+        if (const char* wn = Env("CZ_VK_WIDE_NUM"))
+        {
+            const long v = strtol(wn, nullptr, 10);
+            if (v >= 33 && v <= 64 && num != 32)
+                num = uint32_t(v);
+        }
+        bw = ((uint64_t(bh) * 1280 / 720) * num / 32) & ~1u;
+        fprintf(stderr, "[vk] CZ_VK_WIDE=%s%s — internal %ux%u (env wins)\n", e,
+                num != 32 && num != 42 ? " (CZ_VK_WIDE_NUM)" : "", bw, bh);
+    }
+    if (!Settings_ValidInternalRes(bw, bh))
+    {
+        bw = 1280;
+        bh = 720;
+    }
+    g_internalW.store(bw, std::memory_order_relaxed);
+    g_internalH.store(bh, std::memory_order_relaxed);
+    w = bw;
+    h = bh;
 }
-// ===================================================================================
-// 21:9 WIDE MODE (part 60 night item 3)
-// ===================================================================================
-// The arithmetic that makes it exact where it matters: 21:9 of 720 rows is 1680x720,
-// and 1680 = 1280 * 21/16 with 640 -> 840 also exact — so the wide mode multiplies
-// every RENDER-PIPELINE X extent by 21/16 on top of the integer scene scale, and the
-// title's two 640-wide tile scissors stay whole pixels. The tile boundary is clip
-// x = 0, which a horizontal fov change preserves, so the title's own two-tile binning
-// survives untouched. Surfaces read from GUEST MEMORY never scale (the part-41/45
-// invariant); the cube map stays SQUARE (Vulkan requires it) and its faces are
-// squeezed by a blit instead — see CopyFaceIntoCube.
-//
-// The wider PICTURE comes from the projection patch (PatchWideProjection below): the
-// scene projection's x scale shrinks by 16/21, which widens the horizontal fov so the
-// 21/16-wider frame carries new content at the flanks instead of a stretch. Content
-// the title's own CPU culling rejected for its 16:9 frustum can pop at the extreme
-// flanks — the standard ultrawide trade, stated up front.
-//
-// BOOT-LATCHED on purpose (`aspect=1` in cz_settings.txt applies at the next launch):
-// every render-pipeline surface, the EDRAM stand-in and the readback buffers take
-// their width from this. `CZ_VK_WIDE=1`/`CZ_VK_WIDE=0` is the env arm and wins over
-// the file.
-bool WideMode()
-{
-    static const bool wide = [] {
-        if (const char* e = Env("CZ_VK_WIDE"))
-        {
-            const bool on = atoi(e) != 0;
-            fprintf(stderr, "[vk] CZ_VK_WIDE=%s — %s (env wins over the settings "
-                            "file)\n", e, on ? "21:9 wide mode" : "16:9");
-            return on;
-        }
-        if (Settings_Aspect() == 1)
-        {
-            uint32_t w = 0, h = 0;
-            Settings_ResolutionFor(ResScale(), 1, w, h);
-            fprintf(stderr, "[vk] wide mode from cz_settings.txt (aspect=1) — "
-                            "internal frame %ux%u (X factor %u/32, display-derived)\n",
-                    w, h, Settings_WideNumerator());
-            return true;
-        }
-        return false;
-    }();
-    return wide;
-}
-// The wide X factor as a rational over 32, so every extent conversion is done in
-// integers: N/32 in wide mode (N display-derived, Settings_WideNumerator — 43 on the
-// operator's 21.5:9 panel, 42 = the exact 21/16 headlessly), 32/32 otherwise.
-// TRUNCATING division, and that is load-bearing: floor(a)+floor(b) <= floor(a+b), so
-// a region's converted offset+extent can never overrun the converted surface it sits
-// in (a rounded division has no such guarantee, and the overrun is a Vulkan
-// out-of-bounds copy). The scene chain (1280, 640, 320, 160) converts exactly for
-// ANY N (640*s*N/32 = 20*s*N); the luminance tail's odd widths lose at most a
-// right-edge pixel, which the clear value already owns.
-inline uint32_t WideMulNum() { return WideMode() ? Settings_WideNumerator() : 32u; }
+inline uint32_t InternalW() { uint32_t w, h; InternalRes(w, h); return w; }
+inline uint32_t InternalH() { uint32_t w, h; InternalRes(w, h); return h; }
 
-// A guest extent, in host pixels. Every use is a guest coordinate crossing into Vulkan.
-// RS/RSi are the UNIFORM (Y, and everything square) forms; RSX/RSXi convert X extents
-// of render-pipeline surfaces and pick up the 21/16 in wide mode. HostX is the same
-// conversion at an explicit scale, for the shadow tier's per-pass scale and for a
-// snapshot's own builtScale.
-inline uint32_t HostX(uint32_t v, uint32_t scale)
+// The LEGACY integer view, for the parked live-scale seam and a few logs: the
+// nearest whole multiple of 720 rows. New code converts extents with RS/RSX or the
+// per-pass forms below, never with this.
+uint32_t ResScale()
 {
-    return (v * scale * WideMulNum()) >> 5;
+    return std::min(4u, std::max(1u, (InternalH() + 360) / 720));
 }
-inline int32_t HostXi(int32_t v, uint32_t scale)
+
+// A guest extent, in host pixels — Y by H/720, X by W/1280, truncating (see the
+// header comment above). The Pass* forms take an explicit internal resolution, for
+// the shadow tier's per-pass size and for a snapshot's own build size.
+inline uint32_t PassY(uint32_t v, uint32_t ph) { return uint32_t(uint64_t(v) * ph / 720); }
+inline int32_t PassYi(int32_t v, uint32_t ph)
 {
-    return int32_t((int64_t(v) * scale * WideMulNum()) / 32);
+    return int32_t(int64_t(v) * int64_t(ph) / 720);
 }
-inline uint32_t RS(uint32_t v) { return v * ResScale(); }
-inline int32_t RSi(int32_t v) { return v * int32_t(ResScale()); }
-inline uint32_t RSX(uint32_t v) { return HostX(v, ResScale()); }
-inline int32_t RSXi(int32_t v) { return HostXi(v, ResScale()); }
+inline uint32_t PassX(uint32_t v, uint32_t pw)
+{
+    return uint32_t(uint64_t(v) * pw / 1280);
+}
+inline int32_t PassXi(int32_t v, uint32_t pw)
+{
+    return int32_t(int64_t(v) * int64_t(pw) / 1280);
+}
+inline uint32_t RS(uint32_t v) { return PassY(v, InternalH()); }
+inline int32_t RSi(int32_t v) { return PassYi(v, InternalH()); }
+inline uint32_t RSX(uint32_t v) { return PassX(v, InternalW()); }
+inline int32_t RSXi(int32_t v) { return PassXi(v, InternalW()); }
+
+// Wider than 16:9? Exact comparison on purpose: a 16:9 internal resolution must
+// take the bit-identical legacy path (no projection patch, no UCP compensation).
+inline bool WideMode()
+{
+    uint32_t w, h;
+    InternalRes(w, h);
+    return uint64_t(w) * 9 > uint64_t(h) * 16;
+}
+// The horizontal fov factor the wide frame carries relative to 16:9 at the same
+// height: k = (W/1280) / (H/720) = 9W/16H. 1.0 at 16:9 by construction.
+inline float WideFovFactor()
+{
+    uint32_t w, h;
+    InternalRes(w, h);
+    return (9.0f * float(w)) / (16.0f * float(h));
+}
 
 // THE 16:9 SCENE PROJECTION, recognized structurally in a VS constant window's c0..c3.
 // The shape is the one part 58's pose work measured (tools/pose_read.py,
@@ -1267,19 +1264,18 @@ inline bool Is169Perspective(const uint32_t* c)
     return std::fabs(ratio - 0.5625f) <= 0.002f;   // 9/16, small float slack
 }
 
-// Widen the horizontal fov of a recognized scene projection by scaling its x row by
-// 32/N (the inverse of the surface widening) — the wide frame then carries NEW
-// content at the flanks instead of a stretch. Called on the VS constant window as it
-// is copied into the arena (and on the verify arm's recompute, so the memo verifier
-// compares patched against patched). Returns whether it patched, so the caller can
-// count.
+// Widen the horizontal fov of a recognized scene projection by the inverse of the
+// surface widening — the wide frame then carries NEW content at the flanks instead
+// of a stretch. Called on the VS constant window as it is copied into the arena
+// (and on the verify arm's recompute, so the memo verifier compares patched against
+// patched). Returns whether it patched, so the caller can count.
 inline bool PatchWideProjection(uint32_t* c)
 {
     if (!Is169Perspective(c))
         return false;
     float a;
     memcpy(&a, c, 4);
-    a *= 32.0f / float(Settings_WideNumerator());
+    a /= WideFovFactor();
     memcpy(c, &a, 4);
     return true;
 }
@@ -2570,11 +2566,11 @@ struct Snapshot
     // chose to keep it in. Deriving it by division would work and would put a scale
     // factor at every one of those sites instead of at the two that create the image.
     uint32_t guestW = 0, guestH = 0;
-    // The resolution scale the host image was built at. A LIVE scale change
-    // (part 60's settings panel) rebuilds each snapshot lazily through the same
-    // path a guest-extent change does; comparing the stored scale is what makes
-    // that trigger without touching the store eagerly at switch time.
-    uint32_t builtScale = 1;
+    // The PASS internal resolution the host image was built at (the scene's, or
+    // the shadow tier's). A live change rebuilds each snapshot lazily through the
+    // same path a guest-extent change does; comparing the stored pair is what
+    // makes that trigger without touching the store eagerly at switch time.
+    uint32_t builtW = 1280, builtH = 720;
     uint32_t slot = 0;   // bindless heap index, so a fetch can be served without a copy
     uint64_t frameSeen = 0;
     // Keyed (width << 16) | height. Refreshed from `image` by whatever resolve next
@@ -3269,13 +3265,15 @@ inline bool IsShadowSurface(const uint32_t* regs)
            ((regs[xenos::kRbSurfaceInfo] >> 16) & 3) == 0;
 }
 
-// The shadow pass's own resolution scale this frame. `CZ_VK_SHADOW_TIER=0|1|2` is the
-// measurement arm and wins over the settings file (the env-wins rule every consumer of
-// settings.h enforces); otherwise the panel's persisted Shadow Quality row drives it,
-// re-read once per FRAME so a menu change applies live while draws and resolves within
-// one frame always agree. Tier 2 (High, the scene scale) is the default and is
-// bit-identical to the pre-part-60 renderer, which is what makes it the control arm.
-uint32_t ShadowScaleThisFrame()
+// The shadow pass's own internal resolution this frame. `CZ_VK_SHADOW_TIER=0|1|2`
+// is the measurement arm and wins over the settings file (the env-wins rule);
+// otherwise the panel's persisted Shadow Quality row drives it, re-read once per
+// FRAME so a menu change applies live while draws and resolves within one frame
+// always agree. Tier 2 (High) is the scene resolution — bit-identical to the
+// pre-tier renderer, the control arm. Medium halves the HEIGHT (floored at the
+// title's own 720) and Low quarters it; the width follows so the pass keeps the
+// scene's aspect.
+void ShadowRes(uint32_t& sw, uint32_t& sh)
 {
     static const int envTier = [] {
         if (const char* e = Env("CZ_VK_SHADOW_TIER"))
@@ -3292,15 +3290,23 @@ uint32_t ShadowScaleThisFrame()
         return -1;
     }();
     static uint64_t cachedFrame = ~0ull;
-    static uint32_t cached = 0;
-    if (!cached || cachedFrame != R->frame)
+    static uint32_t cachedW = 0, cachedH = 0;
+    if (!cachedW || cachedFrame != R->frame)
     {
         cachedFrame = R->frame;
         const int tier = envTier >= 0 ? envTier : Settings_ShadowTier();
-        const uint32_t rs = ResScale();
-        cached = std::max(1u, tier == 2 ? rs : tier == 1 ? rs / 2 : rs / 4);
+        uint32_t w, h;
+        InternalRes(w, h);
+        uint32_t th = tier == 2 ? h : tier == 1 ? h / 2 : h / 4;
+        if (th < 720)
+            th = 720;
+        cachedH = th;
+        cachedW = uint32_t(uint64_t(w) * th / h);
+        if ((cachedW & 1) != 0)
+            --cachedW;   // even, so the tile arithmetic stays whole pixels
     }
-    return cached;
+    sw = cachedW;
+    sh = cachedH;
 }
 
 // The cross-frame store's index, through one seam so the container is a runtime choice.
@@ -4655,9 +4661,9 @@ void CopyFaceIntoCube(VkCommandBuffer cb, const Snapshot& snap, CubeSnapshot& cu
 {
     const Image& src = snap.image;
     const uint32_t dstW =
-        std::min(snap.guestW * snap.builtScale, cube.faceExtent);
+        std::min(PassY(snap.guestW, snap.builtH), cube.faceExtent);
     const uint32_t dstH =
-        std::min(snap.guestH * snap.builtScale, cube.faceExtent);
+        std::min(PassY(snap.guestH, snap.builtH), cube.faceExtent);
     if (!dstW || !dstH || !src.width || !src.height || face >= 6)
         return;
     Barrier(cb, const_cast<Image&>(src), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -4842,10 +4848,10 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
     // snapshot into it and the snapshot is scaled. A guest-sized view here would serve
     // the top-left 1/scale^2 of the surface, which reads as a zoomed texture and not as
     // a missing one.
-    // `snap.builtScale`, NOT RS(): a shadow-tier snapshot (part 60) is built below the
-    // scene scale, and a view larger than its source would make RefreshSnapshotView
-    // copy rows the source image does not have.
-    if (!CreateImage(view.image, HostX(w, snap.builtScale), snap.builtScale * h,
+    // The snapshot's OWN build resolution, not the scene's: a shadow-tier snapshot
+    // (part 60) is built below the scene size, and a view larger than its source
+    // would make RefreshSnapshotView copy rows the source image does not have.
+    if (!CreateImage(view.image, PassX(w, snap.builtW), PassY(h, snap.builtH),
                      snap.image.format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                          VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -4856,8 +4862,8 @@ uint32_t SnapshotViewSlot(Snapshot& snap, uint32_t w, uint32_t h)
         Count("texture: snapshot view image creation FAILED");
         return 0;
     }
-    NameImage(view.image, "snapshot view %ux%u slot %u%s", HostX(w, snap.builtScale),
-              snap.builtScale * h, view.slot, snap.fromDepth ? " DEPTH" : "");
+    NameImage(view.image, "snapshot view %ux%u slot %u%s", PassX(w, snap.builtW),
+              PassY(h, snap.builtH), view.slot, snap.fromDepth ? " DEPTH" : "");
 
     VkDescriptorImageInfo ii{};
     ii.imageView = view.image.view;
@@ -10440,7 +10446,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 {
                     float* p =
                         reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
-                    p[0] *= float(Settings_WideNumerator()) / 32.0f;
+                    p[0] *= WideFovFactor();
                     COUNT("draw: user clip plane compensated for the wide projection");
                 }
                 if (clipBias != 0.0f)
@@ -10711,21 +10717,22 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // `posScale` shares with them must stay resolution-independent or the geometry would
     // land in a corner of the enlarged target. One multiply, at the boundary.
     // A negative height (the Y flip above) keeps its sign through it.
-    // The SHADOW pass scales by its own tier instead of the scene scale (part 60);
-    // the resolve that copies the cascade out uses the same predicate on the same
-    // register, which is what keeps the two sides of the surface consistent.
-    const uint32_t drawScale =
-        IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
-    if (drawScale != ResScale())
+    // The SHADOW pass renders at its own tier resolution instead of the scene's
+    // (part 60); the resolve that copies the cascade out uses the same predicate on
+    // the same register, which is what keeps the two sides of the surface
+    // consistent. X and Y scale separately (rational, W/1280 and H/720) since the
+    // internal resolution stopped being a multiple of the title's frame.
+    uint32_t passW, passH;
+    if (IsShadowSurface(regs))
+        ShadowRes(passW, passH);
+    else
+        InternalRes(passW, passH);
+    if (passH != InternalH())
         Count("draw: shadow-pass draw at a reduced shadow tier");
-    // X and Y separately since wide mode (part 60): X picks up the 21/16 on top of
-    // the scale, exactly as every host-extent conversion in this file does, so the
-    // geometry maps onto the widened surfaces without a seam. The float form is
-    // exact for the fraction itself; only the surfaces' integer extents truncate.
-    if (drawScale != 1 || WideMode())
+    if (passW != 1280 || passH != 720)
     {
-        const float rsx = float(drawScale) * float(WideMulNum()) / 32.0f;
-        const float rsy = float(drawScale);
+        const float rsx = float(passW) / 1280.0f;
+        const float rsy = float(passH) / 720.0f;
         viewport.x *= rsx;
         viewport.y *= rsy;
         viewport.width *= rsx;
@@ -10764,16 +10771,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // resolution scale existed. Identical at scale 1.
     if (winX1 > winX && winY1 > winY && winX < R->edramWidth && winY < R->edramHeight)
     {
-        // `drawScale`, not RS(): a shadow-pass scissor must clip at the tier's own
-        // scale or a reduced-tier cascade would be clipped against a rectangle
-        // larger than anything it renders (harmless) — and the strip clears inside
-        // the pass would paint OUTSIDE the reduced cascade (not harmless).
-        // X through HostX so the tile scissors land on the widened surface exactly
-        // (640 -> 840 at the base scale in wide mode).
-        scissor.offset = { HostXi(int32_t(winX), drawScale),
-                          int32_t(winY) * int32_t(drawScale) };
-        scissor.extent = { HostX(std::min(winX1, R->edramWidth) - winX, drawScale),
-                           (std::min(winY1, R->edramHeight) - winY) * drawScale };
+        // The PASS's own resolution, not the scene's: a shadow-pass scissor must
+        // clip at the tier's own size or the strip clears inside the pass would
+        // paint OUTSIDE the reduced cascade. Truncating rational conversion keeps
+        // the tile scissors exact for any even width (640*W/1280 = W/2).
+        scissor.offset = { PassXi(int32_t(winX), passW),
+                          PassYi(int32_t(winY), passH) };
+        scissor.extent = { PassX(std::min(winX1, R->edramWidth) - winX, passW),
+                           PassY(std::min(winY1, R->edramHeight) - winY, passH) };
     }
 
     // CZ_VK_VIEWPORT_TRACE=1 — every DISTINCT viewport setup, once each. A per-draw
@@ -11816,19 +11821,20 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     static const bool noDepthResolve = EnvOn("CZ_VK_NO_DEPTH_RESOLVE");
     const uint32_t srcSelect = control & 7;
     const bool fromDepth = srcSelect == 4 && !noDepthResolve;
-    // The shadow tier (part 60): this resolve copies at the scale the pass RENDERED
-    // at, decided by the same surface-pitch predicate DoDraw used for its draws —
-    // same register, same frame, so the two cannot disagree. Everything below that
-    // converts a guest extent to host pixels goes through these instead of RS/RSi.
-    const uint32_t resScale =
-        IsShadowSurface(regs) ? ShadowScaleThisFrame() : ResScale();
-    // X and Y split for wide mode, at this resolve's own scale — the same HostX every
-    // other extent conversion uses, so a snapshot, its copy region and the EDRAM the
-    // pass rendered into cannot disagree by a pixel.
-    auto RZ = [resScale](uint32_t v) { return v * resScale; };
-    auto RZx = [resScale](uint32_t v) { return HostX(v, resScale); };
-    auto RZxi = [resScale](int32_t v) { return HostXi(v, resScale); };
-    if (resScale != ResScale())
+    // The shadow tier (part 60): this resolve copies at the resolution the pass
+    // RENDERED at, decided by the same surface-pitch predicate DoDraw used for its
+    // draws — same register, same frame, so the two cannot disagree. Everything
+    // below that converts a guest extent to host pixels goes through these.
+    uint32_t passW, passH;
+    if (IsShadowSurface(regs))
+        ShadowRes(passW, passH);
+    else
+        InternalRes(passW, passH);
+    auto RZ = [passH](uint32_t v) { return PassY(v, passH); };
+    auto RZx = [passW](uint32_t v) { return PassX(v, passW); };
+    auto RZxi = [passW](int32_t v) { return PassXi(v, passW); };
+    auto RZyi = [passH](int32_t v) { return PassYi(v, passH); };
+    if (passH != InternalH())
         Count("resolve: shadow surface resolved at a reduced shadow tier");
     if (srcSelect == 4)
         Count("resolve: source is the DEPTH buffer");
@@ -12088,7 +12094,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         // the new one, which reads as a ghosting artefact with no obvious source.
         if (it != R->snapshots.end() &&
             (it->second.guestW != w || it->second.guestH != h ||
-             it->second.builtScale != resScale))
+             it->second.builtW != passW || it->second.builtH != passH))
         {
             vkDeviceWaitIdle(R->device);
             vkDestroyImageView(R->device, it->second.image.view, nullptr);
@@ -12116,7 +12122,8 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             s.fromDepth = fromDepth;
             s.guestW = w;
             s.guestH = h;
-            s.builtScale = resScale;
+            s.builtW = passW;
+            s.builtH = passH;
             // A depth snapshot keeps the EDRAM depth buffer's own format, because
             // vkCmdCopyImage is only defined between identical depth formats — there
             // is no copy from a depth image into a colour one. It is viewed through
@@ -12176,11 +12183,12 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 // The tier-engagement line the overnight gate greps for: HOST extents,
                 // the tier scale and the scene scale, on the one surface the tier
                 // governs. One line per (re)creation, not per frame.
-                if (resScale != ResScale())
+                if (passH != InternalH())
                     fprintf(stderr,
                             "[vk] shadow-tier snapshot %08X: %ux%u host (guest %ux%u, "
-                            "shadow scale %ux, scene scale %ux)\n",
-                            baseKey, RZx(w), RZ(h), w, h, resScale, ResScale());
+                            "shadow pass %ux%u, scene %ux%u)\n",
+                            baseKey, RZx(w), RZ(h), w, h, passW, passH, InternalW(),
+                            InternalH());
                 it = R->snapshots.emplace(key, std::move(s)).first;
                 Count("resolve: snapshot created");
             }
@@ -12216,9 +12224,9 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // surface, which is what `dstX`/`dstY` carry.
             VkImageCopy copy{};
             copy.srcSubresource = { aspect, 0, 0, 1 };
-            copy.srcOffset = { RZxi(int32_t(copyX)), int32_t(copyY * resScale), 0 };
+            copy.srcOffset = { RZxi(int32_t(copyX)), RZyi(int32_t(copyY)), 0 };
             copy.dstSubresource = { aspect, 0, 0, 1 };
-            copy.dstOffset = { RZxi(int32_t(dstX)), int32_t(dstY * resScale), 0 };
+            copy.dstOffset = { RZxi(int32_t(dstX)), RZyi(int32_t(dstY)), 0 };
             copy.extent = { RZx(copyW), RZ(copyH), 1 };
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -12381,7 +12389,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
         if (scopedClear && copyW && copyH)
         {
             VkClearRect rect{};
-            rect.rect.offset = { RZxi(int32_t(copyX)), int32_t(copyY * resScale) };
+            rect.rect.offset = { RZxi(int32_t(copyX)), RZyi(int32_t(copyY)) };
             rect.rect.extent = { RZx(copyW), RZ(copyH) };
             rect.baseArrayLayer = 0;
             rect.layerCount = 1;
@@ -12399,7 +12407,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
             VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
-            ri.renderArea = { { RZxi(int32_t(copyX)), int32_t(copyY * resScale) },
+            ri.renderArea = { { RZxi(int32_t(copyX)), RZyi(int32_t(copyY)) },
                               { RZx(copyW), RZ(copyH) } };
             ri.layerCount = 1;
             ri.pDepthAttachment = &depthAtt;
@@ -15170,7 +15178,15 @@ void ApplyPendingRenderScale()
     const uint32_t before = ResScale();
     destroyImage(R->color);
     destroyImage(R->depth);
-    g_resScaleLive.store(want, std::memory_order_relaxed);
+    // The parked live path speaks integer scales; preserve the current aspect.
+    {
+        uint32_t w, h;
+        InternalRes(w, h);
+        const uint32_t nh = 720 * want;
+        const uint32_t nw = (uint32_t(uint64_t(w) * nh / h)) & ~1u;
+        g_internalW.store(nw, std::memory_order_relaxed);
+        g_internalH.store(nh, std::memory_order_relaxed);
+    }
 
     const uint32_t edramH = R->edramHeight;   // guest rows, decided at bring-up
     if (!CreateImage(R->color, RSX(R->targetWidth), RS(edramH),

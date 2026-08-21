@@ -226,6 +226,12 @@ void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h);
 // every consumer treats that as "no clamp" rather than refusing.
 bool Host_DisplaySize(uint32_t* w, uint32_t* h);
 
+// The display's usable MODE LIST: distinct WxH pairs the display reports AND the
+// renderer can produce (Settings_ValidInternalRes), ascending, written as w,h pairs
+// into `wh` (2*maxPairs u32 capacity). Returns the pair count; 0 when headless or
+// not yet published — the caller falls back to a synthesized list.
+int Host_DisplayModeList(uint32_t* wh, int maxPairs);
+
 // The debug overlay, rasterised into an RGBA8 buffer for a caller that has no
 // SDL_Renderer — i.e. the Vulkan swapchain present path, which is the default since part
 // 54. Returns false when the menu is not open, in which case nothing is written.

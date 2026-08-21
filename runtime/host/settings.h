@@ -42,76 +42,30 @@ void Settings_Load(const std::string& path);
 void Settings_Save();
 
 CzDisplayMode Settings_DisplayMode();
-uint32_t      Settings_RenderScale();   // 1..4, multiplier over the title's 1280x720
+uint32_t      Settings_RenderScale();   // LEGACY view of the internal res: round(H/720).
+                                        // Kept for the shadow-tier footer and the parked
+                                        // guest-screen arm; new code reads Settings_InternalRes
 bool          Settings_VSync();
 int           Settings_ShadowTier();    // 0=low 1=medium 2=high
 int           Settings_FpsCap();        // 0=OFF (the 500 ceiling that never binds),
                                         // else 30/60/90/120/240/480
-int           Settings_Aspect();        // 0=16:9 (the title's own), 1=21:9 wide
+int           Settings_Aspect();        // LEGACY: 1 when the internal res is wider than
+                                        // 16:9. Derived; new code reads Settings_InternalRes
 
-// THE RESOLUTION MENU (part 60, operator revisions). ONE row lists every internal
-// resolution, BOTH aspects interleaved, selecting an entry sets render_scale AND
-// aspect, applying at the next launch. The WIDE entries are derived from the
-// DISPLAY'S OWN aspect (the operator's second revision: their 3440x1440 panel is
-// 21.5:9, and the hardcoded exact-21:9 3360x1440 left 40 px bars each side — the
-// menu should show THEIR resolutions, the way every game's does). The wide width is
-// 1280 * scale * N / 32 with N picked so the internal frame matches the display's
-// aspect at that height; N stays within [33..64] and every division is TRUNCATING
-// (gotcha 373). With no display (headless) N falls back to 42 — exactly the 21/16
-// the night's verified wide runs used, so headless arms are unchanged.
-struct CzResolutionEntry
-{
-    uint32_t scale;   // 1..4 over the title's 1280x720
-    int aspect;       // 0 = 16:9, 1 = wide (the display-derived N/32 X factor)
-    uint32_t w, h;    // the resulting internal size, for display and display-clamp
-};
-
-// The wide X numerator over 32. Cached on first use; the display is queried through
-// the window seam, so the value is stable for the process (a monitor drag mid-run
-// changes the NEXT launch's list, matching apply-at-next-launch semantics).
-// CZ_VK_WIDE_NUM=n (33..64) overrides for measurement.
-uint32_t Settings_WideNumerator();
-
-// The internal size a (scale, aspect) pair produces — THE formula the renderer's
-// RSX uses, kept in one place so the menu can never advertise a size the renderer
-// will not produce.
-inline void Settings_ResolutionFor(uint32_t scale, int aspect, uint32_t& w,
-                                   uint32_t& h)
-{
-    h = 720 * scale;
-    w = aspect ? (1280 * scale * Settings_WideNumerator()) / 32 : 1280 * scale;
-}
-
-// The full 8-entry list (4 scales x 2 aspects), ascending by height then width.
-// The caller applies the display clamp; this is the unclamped truth.
-inline int Settings_ResolutionList(CzResolutionEntry out[8])
-{
-    int n = 0;
-    for (uint32_t s = 1; s <= 4; ++s)
-        for (int a = 0; a <= 1; ++a)
-        {
-            out[n].scale = s;
-            out[n].aspect = a;
-            Settings_ResolutionFor(s, a, out[n].w, out[n].h);
-            ++n;
-        }
-    return n;
-}
-
-// The index of the entry matching the persisted (render_scale, aspect) pair, so the
-// panel and the stepper agree on "current". A pair the table lacks falls back to the
-// same scale at 16:9, then to 1280x720.
-inline int Settings_ResolutionIndex(const CzResolutionEntry* list, int count,
-                                    uint32_t scale, int aspect)
-{
-    for (int i = 0; i < count; ++i)
-        if (list[i].scale == scale && list[i].aspect == aspect)
-            return i;
-    for (int i = 0; i < count; ++i)
-        if (list[i].scale == scale && list[i].aspect == 0)
-            return i;
-    return 0;
-}
+// THE INTERNAL RESOLUTION (part 60, operator revision 3). The store carries an
+// explicit WIDTH x HEIGHT instead of a scale+aspect pair, because the menu now
+// lists the DISPLAY'S OWN MODES (the operator: "show all resolution compatible
+// with the player monitor" — 1920x1080 and friends, which no integer multiple of
+// 1280x720 can express). The renderer scales RATIONALLY: Y by H/720, X by W/1280,
+// both TRUNCATING (gotcha 373's overrun guarantee holds for any fixed rational).
+// Valid: any height from 720 to 2880 (the rational converters do not care whether
+// H/720 is "nice" — 900 works as well as 1080), width even, at least 16:9 for the
+// height (narrower would need a sub-1 X factor and a fov CROP, which this port
+// refuses rather than ships), and at most 6880 wide. Legacy render_scale/aspect keys still load and are
+// converted, so an existing cz_settings.txt keeps its meaning.
+bool Settings_ValidInternalRes(uint32_t w, uint32_t h);
+void Settings_InternalRes(uint32_t& w, uint32_t& h);
+void Settings_SetInternalRes(uint32_t w, uint32_t h);
 
 void Settings_SetDisplayMode(CzDisplayMode m);
 void Settings_SetRenderScale(uint32_t s);

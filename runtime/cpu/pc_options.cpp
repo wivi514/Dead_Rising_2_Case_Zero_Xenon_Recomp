@@ -425,8 +425,17 @@ bool PcOptions_FilterScreenTransition(PPCContext& ctx, uint8_t* base)
         // headless repro, where the synthetic press outlives the transition.
         g_prevButtons = ~0u;
         static uint64_t opens = 0;
-        fprintf(stderr, "[pcopt] Visuals -> host settings panel (open %llu)\n",
-                (unsigned long long)(++opens));
+        uint32_t rw = 0, rh = 0;
+        Settings_InternalRes(rw, rh);
+        // The values the panel is ABOUT TO SHOW, logged at every open — the
+        // instrument for the operator's "it resets to 720p when I reopen" report:
+        // if this line says the store is right while the screen shows defaults,
+        // the defect is presentation-side; if the store is wrong, grep up for the
+        // writer.
+        fprintf(stderr, "[pcopt] Visuals -> host settings panel (open %llu) — "
+                        "showing res=%ux%u mode=%d vsync=%d tier=%d cap=%d\n",
+                (unsigned long long)(++opens), rw, rh, int(Settings_DisplayMode()),
+                Settings_VSync() ? 1 : 0, Settings_ShadowTier(), Settings_FpsCap());
         return true;
     }
     if (hash == kOptionsVisual)
@@ -708,36 +717,33 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
             {
                 case 0:
                 {
-                    // ONE list, BOTH aspects (the operator's revision of the night's
-                    // separate ASPECT row): step through kCzResolutions, skipping
-                    // entries the DISPLAY cannot show (night item 4's clamp, now on
-                    // each entry's own w x h — a 21:9 entry appears exactly when it
-                    // fits). Unknown display (headless) means no clamp — refusing to
-                    // step with no evidence would be the opposite failure. Selecting
-                    // an entry persists BOTH render_scale and aspect; applies at the
-                    // next launch (the live path froze the operator's machine twice
-                    // and stays parked).
-                    uint32_t dw = 0, dh = 0;
-                    const bool haveDisplay = Host_DisplaySize(&dw, &dh) && dw && dh;
-                    auto fits = [&](const CzResolutionEntry& e) {
-                        return !haveDisplay || (e.w <= dw && e.h <= dh);
-                    };
-                    CzResolutionEntry list[8];
-                    const int count = Settings_ResolutionList(list);
-                    int at = Settings_ResolutionIndex(list, count,
-                                                      Settings_RenderScale(),
-                                                      Settings_Aspect());
-                    for (int step = 0; step < count; ++step)
-                    {
-                        at = (at + dir + count) % count;
-                        if (fits(list[at]))
-                            break;
-                    }
-                    const CzResolutionEntry& e = list[at];
-                    Settings_SetRenderScale(e.scale);
-                    Settings_SetAspect(e.aspect);
-                    fprintf(stderr, "[pcopt] resolution %ux%u (%s) — next launch\n",
-                            e.w, e.h, e.aspect ? "wide" : "16:9");
+                    // THE DISPLAY'S OWN MODE LIST (operator revision 3): step
+                    // through every distinct size the monitor reports that the
+                    // renderer can produce — 1920x1080 and friends included, which
+                    // no integer multiple of 1280x720 could express. Fallback when
+                    // no display list exists (headless, or SDL said nothing): the
+                    // synthesized 16:9 ladder, so the row still steps. Selecting
+                    // persists the size; applies at the next launch (the live path
+                    // froze the operator's machine twice and stays parked).
+                    uint32_t modes[64];
+                    int count = Host_DisplayModeList(modes, 32);
+                    if (count == 0)
+                        for (uint32_t sc = 1; sc <= 4; ++sc)
+                        {
+                            modes[count * 2] = 1280 * sc;
+                            modes[count * 2 + 1] = 720 * sc;
+                            ++count;
+                        }
+                    uint32_t cw = 0, ch = 0;
+                    Settings_InternalRes(cw, ch);
+                    int at = 0;
+                    for (int i = 0; i < count; ++i)
+                        if (modes[i * 2] == cw && modes[i * 2 + 1] == ch)
+                            at = i;
+                    at = (at + dir + count) % count;
+                    Settings_SetInternalRes(modes[at * 2], modes[at * 2 + 1]);
+                    fprintf(stderr, "[pcopt] resolution %ux%u — next launch\n",
+                            modes[at * 2], modes[at * 2 + 1]);
                     break;
                 }
                 case 1:

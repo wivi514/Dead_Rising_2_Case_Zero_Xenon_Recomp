@@ -107,6 +107,7 @@ std::vector<const char*> Host_VulkanInstanceExtensions() { return {}; }
 bool Host_VulkanCreateSurface(void*, uint64_t*) { return false; }
 void Host_VulkanDrawableSize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; }
 bool Host_DisplaySize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; return false; }
+int Host_DisplayModeList(uint32_t*, int) { return 0; }
 
 #else
 
@@ -114,6 +115,7 @@ bool Host_DisplaySize(uint32_t* w, uint32_t* h) { if (w) *w = 0; if (h) *h = 0; 
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <vector>
 
@@ -211,6 +213,15 @@ void PublishDrawableSize()
 // treat unknown as "no clamp".
 std::atomic<uint32_t> g_displayW{ 0 }, g_displayH{ 0 };
 
+// The display's MODE LIST (part 60, operator revision 3): every distinct WxH the
+// display reports that the renderer can honestly produce (Settings_ValidInternalRes)
+// and that fits the desktop, ascending — what the Resolution row offers, the way a
+// game's own menu mirrors the monitor's list. Guarded by its own mutex because the
+// window thread rewrites it on monitor drags while the guest thread's panel input
+// reads it.
+std::mutex g_displayModesMutex;
+std::vector<std::pair<uint32_t, uint32_t>> g_displayModes;
+
 void PublishDisplaySize()
 {
     if (!g_window)
@@ -225,6 +236,43 @@ void PublishDisplaySize()
     if (ow != uint32_t(mode.w) || oh != uint32_t(mode.h))
         fprintf(stderr, "[host] display %d is %dx%d — the settings panel clamps its "
                         "resolution list to this\n", index, mode.w, mode.h);
+
+    // The mode list, refreshed whenever the desktop size changed (first publish
+    // included). SDL reports one entry per (size, refresh, format); the menu wants
+    // distinct sizes, so dedupe. Modes the renderer cannot express (odd widths,
+    // sub-720 heights, narrower than 16:9 — the 4:3 and 5:4 legacy modes) are
+    // filtered here so the panel never offers a row it cannot honor.
+    if (ow != uint32_t(mode.w) || oh != uint32_t(mode.h))
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> modes;
+        const int n = SDL_GetNumDisplayModes(index);
+        for (int i = 0; i < n; ++i)
+        {
+            SDL_DisplayMode m{};
+            if (SDL_GetDisplayMode(index, i, &m) != 0 || m.w <= 0 || m.h <= 0)
+                continue;
+            const uint32_t w = uint32_t(m.w), h = uint32_t(m.h);
+            if (!Settings_ValidInternalRes(w, h))
+                continue;
+            if (w > uint32_t(mode.w) || h > uint32_t(mode.h))
+                continue;
+            if (std::find(modes.begin(), modes.end(), std::make_pair(w, h)) ==
+                modes.end())
+                modes.emplace_back(w, h);
+        }
+        std::sort(modes.begin(), modes.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.second != b.second ? a.second < b.second
+                                                  : a.first < b.first;
+                  });
+        fprintf(stderr, "[host] display %d offers %zu usable modes:", index,
+                modes.size());
+        for (const auto& [w, h] : modes)
+            fprintf(stderr, " %ux%u", w, h);
+        fprintf(stderr, "\n");
+        std::lock_guard<std::mutex> lock(g_displayModesMutex);
+        g_displayModes = std::move(modes);
+    }
 }
 
 // Apply a display mode to the live window. WINDOW THREAD ONLY (the SDL rule this
@@ -432,14 +480,13 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     static const char* kOnOff[] = { "OFF", "ON" };
     static const char* kTiers[] = { "LOW", "MEDIUM", "HIGH" };
     const uint32_t scale = Settings_RenderScale();
-    // The Resolution row shows the ONE entry matching the persisted (scale, aspect)
-    // pair — both aspects live in the same list (the operator's revision: pick
-    // 3360x1440 instead of toggling a separate ASPECT row). The table is
-    // kCzResolutions in settings.h, shared with the stepper in pc_options.cpp.
+    // The Resolution row shows the persisted internal resolution directly (operator
+    // revision 3: the value IS a width x height, stepped through the display's own
+    // mode list in pc_options.cpp).
     char resName[20];
     {
         uint32_t rw = 0, rh = 0;
-        Settings_ResolutionFor(scale, Settings_Aspect(), rw, rh);
+        Settings_InternalRes(rw, rh);
         snprintf(resName, sizeof resName, "%u X %u", rw, rh);
     }
     // The frame cap's display name. Values come from the validated set in
@@ -1233,6 +1280,21 @@ bool Host_DisplaySize(uint32_t* w, uint32_t* h)
     if (w) *w = dw;
     if (h) *h = dh;
     return dw && dh;
+}
+
+int Host_DisplayModeList(uint32_t* wh, int maxPairs)
+{
+    std::lock_guard<std::mutex> lock(g_displayModesMutex);
+    int n = 0;
+    for (const auto& [w, h] : g_displayModes)
+    {
+        if (n >= maxPairs)
+            break;
+        wh[n * 2] = w;
+        wh[n * 2 + 1] = h;
+        ++n;
+    }
+    return n;
 }
 
 bool Host_PadState(uint32_t userIndex, HostPadState& out)
