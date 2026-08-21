@@ -95,6 +95,35 @@ projection the discriminator misses (present as a layer at the wrong width),
 non-multiple-of-16 guest scissor X values (present as 1px seams), and the DoF/
 blur taps whose screen-fraction footprint is already accepted behavior at 2x.
 
+## 4. Resolution list filtered to the player's display
+
+**What**: the panel's Resolution row only offers sizes the player's screen can
+actually show — no 5120x2880 entry on a 1440p monitor, the way shipped games
+enumerate display modes. The internal renderer can always downsample, but the
+menu should read like a game's, not like a debug knob.
+
+**How**: the window thread queries the desktop display mode at startup (and on
+SDL's display-changed event) and publishes it; the panel clamps the offered
+scale list to entries whose output fits the display (with the 21:9 entries
+gated on the display actually being wider than 16:9). The saved setting is
+clamped on load too, so a monitor swap cannot strand an impossible value.
+
+## 5. Frame cap row — OFF / 30 / 60 / 90 / 120 / 240 / 480
+
+**What**: a panel row for the frame cap, persisted like the rest. OFF maps to
+the part-54 default (the 500-ceiling that never binds — honest label because it
+IS off in effect).
+
+**How**: the cap machinery already exists in gpu/vd.cpp (vblank period x
+present interval, period is the lever — the part-53 memory). Tonight makes the
+period a live atomic the pump re-reads, so the row applies immediately;
+`CZ_FPS_CAP` stays the measurement arm and wins over the file. One real
+constraint to solve honestly: the vblank cadence is integer milliseconds today,
+so 90/240/480 need the cadence in microseconds or they silently land on the
+nearest integer-ms rung (90 would become 100). If the microsecond cadence
+costs more than it looks, the row ships with the caps that land exactly
+(30/60/120/240/500-as-OFF at 16/8/4/2 ms) and says so.
+
 ## Standing tail for the night
 
 - Gates after each item: `--smoke`; the A5 diff once more before morning (the
@@ -104,4 +133,6 @@ blur taps whose screen-fraction footprint is already accepted behavior at 2x.
   trailer finding, the panel pivot) into `phase5-notes.md` + `gotchas.md`
   candidates; refresh `part61-kickoff.md` at close.
 - Morning hand-off: one launch command; the operator checks (a) bars on 16:9
-  fullscreen, (b) 21:9 mode look, (c) shadow Low vs High, (d) panel rows honest.
+  fullscreen, (b) 21:9 mode look, (c) shadow Low vs High, (d) the resolution
+  list matching their display, (e) the frame cap taking effect live, (f) panel
+  rows honest.
