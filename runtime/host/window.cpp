@@ -400,7 +400,7 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 340;
+    const int panelW = 640, panelH = 380;
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -439,15 +439,16 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     char capName[8] = "OFF";
     if (const int cap = Settings_FpsCap(); cap > 0)
         snprintf(capName, sizeof capName, "%d", cap);
-    const char* rows[5][2] = {
+    const char* rows[6][2] = {
         { "RESOLUTION", kResNames[(scale >= 1 && scale <= 4 ? scale : 1) - 1] },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
         { "FRAME CAP", capName },
+        { "ASPECT", Settings_Aspect() ? "21:9" : "16:9" },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

@@ -1634,6 +1634,24 @@ CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** Th
                    frame) are untouched, which also means NO headless gate can see
                    this — the picture verdict is the operator's (part-54 lesson: a
                    present-path change is invisible to every readback-walking gate)
+CZ_VK_SHADOW_TIER=0|1|2  **the measurement arm for the Shadow Quality row** (part 60
+                   night item 2), and it WINS over the settings file. 2 = High = the
+                   scene scale (bit-identical to the pre-part-60 renderer — the
+                   control); 1 = Medium = half; 0 = Low = quarter, all floored at 1x
+                   of the title's own 1280x720 — so at render scale 1 every tier is
+                   1x and the knob is honestly inert. The shadow pass is identified
+                   by its EDRAM surface pitch (1040 = a 1024-wide surface, this
+                   title's cascades and nothing else — measured by viewport census,
+                   not assumed), and the SAME predicate on the SAME live register
+                   drives both the draws' viewport/scissor scale and the atlas
+                   resolve's copy/snapshot scale, so the two sides cannot disagree.
+                   Engagement is a grep, not an argument: `[vk] shadow-tier snapshot`
+                   lines carry host extents, and two counters ("shadow-pass draw at a
+                   reduced shadow tier", "resolve: shadow surface resolved at a
+                   reduced shadow tier") count the work. Verified on the outdoor
+                   route at CZ_VK_RES=2560x1440: tier 0 builds the 4096x1024 atlas at
+                   1x host where tier 2 builds 2x, 18.8M draws / 118,800 resolves
+                   engaged, whole-frame dumps intact in both arms
 CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
                    frame into a staging buffer before the window and the picture
                    instruments read it, the way the present path did for fifty-two parts.
