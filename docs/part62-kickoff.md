@@ -17,7 +17,14 @@
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (standing instruction),
 > and the Fable 2 port is NOT a renderer reference (operator instruction, part 59).
 
-## 0. The operator session this kickoff wants — TWO verdicts
+> **VERDICTS ARE IN (late night)**: "It works" — both culling gaps closed
+> (slider + wide-mode, §6ct + addendum). The one cost: **turn-stutter under the
+> over-widened frustum, operator-deferred** ("we'll fix that later") — filed in
+> perf-state-parked.md with its mechanism and candidate directions. Remaining
+> §0 asks (gore cut off zero, cutscene look — now a 21:9 crop by design, aiming
+> behaviour) stay open for a future session but block nothing.
+
+## 0. The operator session this kickoff wants — TWO verdicts (DONE, see above)
 
 Launch plainly (`cd runtime/build && ./cz_runtime`). FIELD OF VIEW is the sixth
 panel row (Options hub), LIVE, one degree per press.
@@ -68,10 +75,10 @@ panel row (Options hub), LIVE, one degree per press.
 ## 2. Gates
 
 * `--smoke` green after every commit (943227d included).
-* Part 61's close ran A5 (exit 0, 4 permutation / 0 real) and E gate (+0.9599
-  identity) on the pre-composite binary; 943227d touches only the draw path.
-  **The pair is owed a re-run at this part's close** (standing rule). PM4
-  oracles / dim census remain untouched.
+* **Close gates re-run on the FINAL binary (22195be lineage): A5 exit 0
+  (4 permutation / 0 real), E gate +0.9599 identity** — the standing numbers
+  exactly. PM4 oracles / dim census remain untouched (no pm4.cpp or shader
+  cache changes anywhere in parts 61-62).
 
 ## 3. After the verdicts: RT stage 1 — the geometry census (plan §2)
 
@@ -91,6 +98,7 @@ position-format census over the fetch machinery. The part-61 census pattern
   clamped — but on another config it would silently step the resolution).
 * Decal flicker: waiting on a sighting; F8 burst + `CZ_VK_NO_PARALLEL_GUARD=1`.
 * Doubled-slab watch (00q): F9 + immediate F8 on any sighting.
-* Performance PARKED (`perf-state-parked.md`).
+* Performance PARKED (`perf-state-parked.md`) — now including part 62's
+  turn-stutter item (the wide-culling over-widen's upload bursts).
 * Live-resolution switch parked; point-list PointSize VUID class named, cheap,
   unowned.

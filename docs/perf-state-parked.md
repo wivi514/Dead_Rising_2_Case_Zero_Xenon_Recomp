@@ -210,3 +210,18 @@ operator chained A/B stays the first resume experiment and now has a headless pr
 Methodology: the DebugJump landing is bimodal (~2,500 or ~5,000+ draws per run), and
 the headless uncapped load runs the GPU at 75-85% — near the limiter — so CPU deltas
 read compressed there; the ≤0.4% banded null floor is the good news to reuse.
+
+## Item added by part 62 (2026-08-21): turn-stutter under the wide-culling over-widen
+
+The wide-mode culling fix (22195be, §6ct addendum) over-widens the game camera
+by k=1.34 in tan space (both axes — the game frustum has one scalar), so the
+culled volume is ~1.8x and camera TURNS hit first-sight upload spikes: the
+operator reports "much worse when turning the camera with big stutter", and
+explicitly deferred it ("we'll fix that later"). The submitted-draw rise at
+stand-still is modest (5,538 -> 5,798 at the DebugJump camp); the stutter is a
+TURN phenomenon, i.e. upload bursts, not steady-state draw cost. Candidate
+directions, cheapest measurement first: (1) profile a turn with CZ_VK_PROFILE
+to see which phase spikes (textures? streams? guards?); (2) budgeted uploads
+per frame; (3) horizontal-only frustum widening if the engine exposes a second
+scalar; (4) smaller k at high slider values. The whole feature's control arms:
+CZ_NO_GAME_FOV=1 (substitution off) and CZ_VK_WIDE=0 (16:9).

@@ -12633,3 +12633,18 @@ RECORD: wide-mode cutscenes now show slightly less top/bottom instead of more
 sides — a deliberate treatment change. Verified: guest camera 67.64° exact at
 fov=10/k=1.34375, UI untouched, framing identical to the 53° build, max draws
 5,538 -> 5,798. 16:9 bit-identical.
+
+### §6ct closing — the operator's verdicts (2026-08-21 late night)
+
+**"It works"** — both culling gaps closed (the slider's and wide-mode's), the
+sides no longer pop. **"performance is much worse when turning the camera with
+big stutter but it works and we'll fix that later"** — the operator's explicit
+deferral. The stutter's likely mechanism, recorded for the parked ledger: the
+over-widened frustum culls ~1.8x the volume (k=1.34 in both axes in tan space),
+so a camera turn brings many more first-sight objects per second — texture and
+stream uploads spike on turns. Candidate mitigations when performance resumes:
+(a) over-widen HORIZONTALLY only if a second frustum-shaping scalar exists (the
+vertical over-cull is pure waste — measure first whether the game exposes an
+aspect for the frustum); (b) upload-rate smoothing (budgeted texture uploads per
+frame); (c) accept a smaller k when the slider is high. Item filed in
+perf-state-parked.md.

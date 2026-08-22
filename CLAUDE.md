@@ -768,10 +768,20 @@ re-scoped slider and the new wide look — then RT stage 1); records `phase5-not
   ray-query extensions — hybrid RT AVAILABLE; stages 2-4 wait on stage 1's census,
   whose hardest question §6cs answered free (world meshes are WORLD-SPACE streams —
   BLAS-ready; the view matrix is extractable from any composite).
-* **Owed**: operator verdicts on the world-only slider AND the new unstretched wide
-  look; gore-cut check off zero; cutscene look (composites widen — stated trade);
-  A5/E gate re-run at the part-62 close (943227d touches only the draw path;
-  part 61's pair was green: A5 exit 0 / 4 permutation, E +0.9599 identity).
+* **THE VERDICTS CAME IN THE SAME NIGHT AND FORCED TWO MORE MECHANISMS (§6ct +
+  addendum): the slider is now GAME-SIDE** — the roaming camera's fov is a
+  behavior param node read at ONE getter site (sub_8246BF48 / lr 0x8246E31C);
+  the hook enforces authored+N there, so the game renders AND CULLS wide, HUD
+  and cutscenes untouched (8d3de05; the node is STATE — capture authored at
+  first sight, enforce absolute, never +=). **In wide mode the substitution
+  also over-widens by k=9W/16H in tan space and the composite wide patch flips
+  to row1*k** (22195be) — the 21:9 flank-culling gap (view 34% wider than the
+  frustum since the unstretch) closes; cutscenes become a 21:9 crop by design.
+  **Operator: "It works."** Cost: turn-stutter from the over-widened frustum's
+  first-sight upload bursts — operator-deferred, filed in perf-state-parked.md.
+  Renderer-side fov patch = measurement arm only (CZ_VK_FOV); CZ_NO_GAME_FOV=1
+  is the game-side control arm. Still open, non-blocking: gore cut off zero,
+  aiming behaviour, the cutscene-crop look.
 
 Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
 SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a
