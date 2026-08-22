@@ -87,6 +87,22 @@ is the whole step.
 
 ## 2. RT stage 1 — the geometry investigation (no pixels change)
 
+> **DONE IN PART 63 — the record with every number is `phase5-notes.md` §6cu,
+> the instrument is `CZ_VK_RT_CENSUS=1`, and the verdict is GO for stage 2,
+> cheaper than this section budgeted.** Highlights: world position data is
+> **100% float3** at 28-32 B stride (the short4 possibility does not exist
+> here); **96.8% triangle strips, 100% 16-bit indices**; **98.1% of world bytes
+> are BLAS-once stable** (the rewritten set is CLOSED at 79 tiny streams,
+> 1.2 MB); TLAS scale ~2,100-2,600 instances / ~1.2-1.4M unique triangles at
+> the heaviest measured crowd; and the world-transform investigation below was
+> never needed — §6cs had already shown world streams are WORLD-SPACE (identity
+> instance transforms) and the census's bounds scan survived its refutation
+> check. The skinned exclusion is STRUCTURAL: actors carry an affine at c0-3,
+> so the composite gate is itself the rigid-world filter. BLAS input reuses the
+> persist-cache's own buffers (one usage bit away); the only data
+> transformation stage 2 needs anywhere is strip→list index expansion over
+> 2.7 MB of cumulative u16 indices.
+
 Everything RT needs geometry in WORLD space; everything this renderer has is guest
 STREAMS in object space plus per-draw VS constants. The recommended retrofit shape
 (the one RTX-Remix-class injectors use) is: **BLAS per stable mesh in object space,

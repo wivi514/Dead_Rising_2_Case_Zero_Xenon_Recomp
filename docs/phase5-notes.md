@@ -12648,3 +12648,139 @@ vertical over-cull is pure waste — measure first whether the game exposes an
 aspect for the frustum); (b) upload-rate smoothing (budgeted texture uploads per
 frame); (c) accept a smaller k when the slider is high. Item filed in
 perf-state-parked.md.
+
+## §6cu — Part 63: RT stage 1, the geometry census (2026-08-21 night)
+
+The plan section is `rt-and-fov-plan.md` §2; the instrument is `CZ_VK_RT_CENSUS=1`
+(instruments.md; commits 816b816, 6b27481, 064b242). Zero renderer changes — a
+per-draw census on the raw register window (the CZ_VK_FOV_CENSUS discipline: per
+draw, never per memo miss) that classifies every draw's VS window by
+`SceneXformForm` and, for WORLD draws (form 2, the P*V composite of §6cs),
+censuses the position attribute, the position stream's cross-frame content
+stability, the per-frame working set, and the stream's world-space bounds at
+first sight. A DIAGNOSTIC ARM (gotcha 7): it full-FNV-hashes every distinct
+world stream once a frame; no frame time from a census run is quotable.
+
+Three runs, all on the DebugJump route (F2 → Case 0-2, lands by the military
+camp in a full crowd): run 1 standing, 7,200 world frames deep
+(`/tmp/rtcensus.log`, transcribed here); run 2 identical, replicating run 1 and
+adding the extent×depVS split (4,106 vs 4,167 streams, 64.2 vs 67.4 MB — the
+census reproduces run to run); run 3 a 600 s `CZ_AUTOCHUCK=EXPLORER` roam for
+the streaming-churn number and the shadow/skinned split.
+
+### The numbers (run 1 final; run 2 agrees)
+
+* **Draw population**: 41.8M draws total — **72% composite (world)**, 2.2% raw
+  (UI), 25.7% other. Of the other class (run 2): "affine" 11.8M + cube-face
+  126k. §6cs's enumeration warned the affine class merges TWO populations — the
+  shadow-cascade ORTHOS (a P*V with an ortho P also has zero row3 xyz norm) and
+  the skinned actors — so run 3's binary splits them by the cascade's measured
+  EDRAM pitch (1040, part 60's tier predicate). World draws are 95% depth-writing.
+* **Position format: 100.0% fmt 57 = float3** (29.2M draws declared + 0.73M
+  quad-list draws whose position is a DEPENDENT fetch — particles/impostors;
+  0.6% point sprites with no position vfetch at all; **zero unreadable, zero
+  other formats**). The short4-scaled possibility the plan held open does not
+  exist in this title's world geometry. Stride 7-8 dwords (28-32 B) throughout
+  the censused population.
+* **Topology: 96.8% triangle strips**, 2.4% quad lists (the DEP-position
+  particles), 0.6% points, 0.15% triangle lists. **Indices: 100% 16-bit** (29.2M
+  idx16 draws, ZERO idx32), 3.1% auto-indexed. Cumulative distinct index
+  buffers: 1,658, **2.7 MB total**.
+* **The rigid/skinned split — the BLAS-once predicate**: 4,167 distinct world
+  position streams; **STABLE 2,914 (67.4 MB, 3.14M verts)**; **REWRITTEN a
+  CLOSED SET of 79 streams, 1.2 MB** — closed by 5,000 world frames and never
+  grew again; all small (980 B-22 KB, 35-800 verts), stride 7, one address
+  neighborhood (0xA70xx000), rewritten ~90% of the frames they appear
+  (CPU-deformed smallware — flags/wires/sway class); **seen-once 1,174 streams,
+  0.1 MB** (transient effect slivers). By bytes: **98.1% of world geometry is
+  BLAS-once stable.** The rewrite detector is not blind: those 79 fired it
+  thousands of times (gotcha 30's requirement — the instrument has been seen to
+  fail a stream).
+* **Per-frame working set at the camp crowd**: world draws avg 4,209 / max
+  5,234 (NOTE: every scene draw is issued per 640-wide TILE, so unique scene
+  draws ≈ half — TLAS instances ~2,100-2,600); distinct position streams avg
+  ~600 / max 701; stream bytes avg 35-37 MB / max 50 MB; drawn triangles avg
+  2.3M / max 2.88M (again ÷2 for tiles → ~1.15-1.44M unique).
+* **World-space confirmed, and the outliers are named**: the first-sight bounds
+  scan (65,536-vertex cap, float3/float4 only) puts the composite population in
+  one shared coordinate frame — z spans ±550, y -47..360, with only 27% of
+  streams centered within 100 units of the origin (the title-era backdrop
+  clusters there; the outdoor population sits at its world positions). The two
+  absurd global extremes (±6.3M) are **three named streams, all stride 3
+  (12 B position-only), 1.5-11.5 KB** — junk-coordinate effect buffers, not
+  world geometry, and they replicate across runs. §6cs's world-space conclusion
+  survives its refutation check.
+* **Where the bytes live (run 2's extent×depVS split)**: <5-unit extent = 430
+  plainVS streams / 32 MB + 269 depVS streams / 14.4 MB (world-placed prop
+  meshes, individually baked to world coordinates); 5-50 units = 389 / 15.1 MB
+  (street/terrain chunks); the 50-500 and >500 buckets hold THOUSANDS of
+  streams (1,544 + 1,469) but only 3.1 MB — tiny far-flung effect geometry.
+  Byte-dominant world geometry is small rigid props, not monolithic terrain.
+
+### What this prices for stage 2 (the go/no-go)
+
+GO, and cheaper than the plan budgeted:
+
+1. **BLAS input needs NO new geometry path.** Position = float3 at fixed stride
+   in the SAME arena/persist-cache buffers the raster path already uploads
+   (dword-swapped, GPU-resident); those buffers are created with
+   VERTEX|INDEX|STORAGE usage + optional device address (line ~3839), so BLAS
+   consumption is one usage bit
+   (`VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR`) and
+   zero extra copies. The only data transformation anywhere is strip→list index
+   expansion (2.7 MB of u16 cumulative — microseconds of CPU per BLAS, done
+   once).
+2. **BLAS identity = the persist-cache identity**, as the plan hoped: key
+   (va,size,endian) + the content stamp the guards already compute. 98.1% of
+   bytes are build-once; the 79 rewritten streams (1.2 MB) are excluded (or
+   refit later — they are cosmetic smallware). Streams are WORLD-SPACE, so every
+   TLAS instance carries the IDENTITY transform — no per-draw matrix hunt, the
+   investigation §2 budgeted simply does not exist (§6cs answered it free).
+3. **TLAS scale is trivial**: ~2,100-2,600 instances, ~1.2-1.4M unique
+   triangles at the heaviest measured crowd. Well inside per-frame TLAS rebuild
+   budgets on the operator's RTX 3070 (stage 0: all ray-query extensions
+   present). BLAS residency: the whole cumulative stable set is 67 MB of source
+   geometry (BLAS typically 1-2x that) — tens of MB live, hundreds cumulative
+   worst case, against 8 GB VRAM, through the part-60 deferred-retire path.
+4. **The skinned exclusion is structural, not heuristic**: skinned actors carry
+   an AFFINE at c0-3 (§6cs), so they never enter the world class — the census's
+   composite gate IS the "rigid world only" filter stage 2 wants. Zombies cast
+   no RT shadows in stage 2 (the OG cascade remains the fallback per the plan);
+   run 3 sizes that exclusion (the affine-minus-cascade draw count).
+5. **Named risks, stated in advance**: (a) alpha-tested foliage (the A2M trees)
+   traced as opaque will over-shadow — first tier ships opaque-only BLAS and
+   says so; (b) stream-address reuse across streaming means BLAS identity MUST
+   include the content stamp, never the key alone (the part-39 texture-address
+   lesson); (c) the DEP-position quads (2.4% of draws, particles) and point
+   sprites are not in the TLAS — cosmetically invisible for shadow purposes;
+   (d) strip degenerates become zero-area triangles in the BLAS — harmless but
+   counted, not assumed.
+
+### §6cu addendum — run 3, the roam: churn, and the skinned exclusion sized
+
+The 600 s `CZ_AUTOCHUCK=EXPLORER` roam (15,000 world frames, the whole-map
+route, AutoChuck re-asserted through 2 title-AI overrides; run 3's binary
+carries the shadow/skinned split):
+
+* **The form-0 split, resolved**: of 15.6M form-0 draws, **90.1% is the shadow
+  cascade** (pitch-1040), **8.1% is the skinned actors** (1.26M draws — **3.0%
+  of scene draws**; only ~20% of them depth-writing, so the class includes
+  transparent actor passes, not just bodies), 1.3% cube faces, 0.5%
+  unclassified residue. Stage 2's "zombies stay OG" exclusion is 3% of the
+  scene by draws — and it is STRUCTURAL (the affine form), not a heuristic.
+* **Streaming churn — the BLAS build budget**: the stable set grows to 7,826
+  streams / 84.5 MB / 4.53M verts over the whole roam — sustained **~13 new
+  stable streams (~150 KB of geometry) per second** while exploring, mean
+  stable stream ~11 KB. Distinct index buffers churn faster: 17,805 cumulative,
+  5.9 MB. Both are trivially inside an async-build budget; eviction goes
+  through the part-60 deferred-retire path as the plan already mandates.
+* **The rewritten class stays smallware over the whole map**: 79 standing →
+  134 roaming, 1.4 MB total — the CPU-deformed population is map-wide but never
+  grows past kilobytes-per-member. Seen-once transients: 14,693 streams,
+  1.2 MB (effect slivers; they never enter a BLAS).
+* **Worst frame observed anywhere**: 7,034 world draws / 46.8 MB / 3.46M drawn
+  tris (÷2 for tiles → ~1.7M unique) — the TLAS ceiling for pricing tiers.
+* Gates on all three runs: `no translated shader` = 0; the routes' standing
+  proof lines (WAITJUMP release, DebugJump request, EXPLORER engagement) all
+  present. Logs preserved as `/tmp/rtcensus{,2,3}.log` for the session; the
+  numbers above are transcribed here because /tmp is a tmpfs.
