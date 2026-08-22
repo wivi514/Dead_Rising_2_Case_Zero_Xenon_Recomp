@@ -9324,6 +9324,11 @@ struct StreamRec
 
 std::mutex g_mu;
 uint64_t g_drawsTotal = 0, g_formDraws[3] = {};
+// Form 0 split: skinned actors carry an AFFINE at c0-3 (row3 = (0,0,0,1), zero xyz
+// norm — §6cs's miss dump), so zombies are not composite draws at all; the affine
+// count is the size of stage 2's "skinned actors stay OG" exclusion. Cube faces are
+// the 1:1-ratio cameras; the rest is shadow orthos and anything unrecognized.
+uint64_t g_affineDraws = 0, g_affineZwrite = 0, g_cubeDraws = 0, g_otherDraws = 0;
 uint64_t g_zwriteComposite = 0;
 uint64_t g_primHist[16] = {};
 // fmt | signed<<8 | integer<<9 | indirect<<10 — the exact tuple a BLAS builder binds.
@@ -9371,6 +9376,11 @@ void Dump()
             (unsigned long long)g_drawsTotal, (unsigned long long)g_formDraws[2],
             (unsigned long long)g_formDraws[1], (unsigned long long)g_formDraws[0],
             (unsigned long long)g_zwriteComposite);
+    fprintf(stderr,
+            "[rt-census]   form0 split: affine(skinned)=%llu (zwrite=%llu) "
+            "cubeface=%llu other(shadow/etc)=%llu\n",
+            (unsigned long long)g_affineDraws, (unsigned long long)g_affineZwrite,
+            (unsigned long long)g_cubeDraws, (unsigned long long)g_otherDraws);
     fprintf(stderr, "[rt-census] world prims:");
     static const char* primName[16] = { "?",     "point", "line",  "linestrip",
                                         "trilist", "trifan", "tristrip", "?",
@@ -9616,6 +9626,35 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
     float bEff;
     const int form = SceneXformForm(vsWindow, bEff);
     ++g_formDraws[form];
+    if (form == 0)
+    {
+        // Subclassify: affine (skinned actor / bone-space draw), cube-face camera
+        // (unit view row, ~1:1 row ratio), or other (shadow orthos, the rest).
+        float m[16];
+        memcpy(m, vsWindow, sizeof m);
+        auto dot3 = [&](int r, int s) {
+            return m[r * 4 + 0] * m[s * 4 + 0] + m[r * 4 + 1] * m[s * 4 + 1] +
+                   m[r * 4 + 2] * m[s * 4 + 2];
+        };
+        const float n3sq = dot3(3, 3);
+        if (n3sq < 0.004f)
+        {
+            ++g_affineDraws;
+            if ((depthControl >> 2) & 1)
+                ++g_affineZwrite;
+        }
+        else if (std::fabs(n3sq - 1.0f) < 0.004f)
+        {
+            const float n0 = std::sqrt(dot3(0, 0)), n1 = std::sqrt(dot3(1, 1));
+            if (n1 > 0.0f && std::fabs(n0 / n1 - 1.0f) < 0.01f)
+                ++g_cubeDraws;
+            else
+                ++g_otherDraws;
+        }
+        else
+            ++g_otherDraws;
+        return;
+    }
     if (form != 2)
         return;
     ++g_frameWorldDraws;
