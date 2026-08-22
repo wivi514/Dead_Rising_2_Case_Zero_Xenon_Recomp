@@ -26,7 +26,29 @@ Next, in order:
      flushes, ~370 TLAS instances/frame, zero key collisions, zero unreadable
      positions, zero refused endians; the traced atlas is recognizably a shadow
      map (trees, poles, buildings in the light's frame).
-   What is OPEN: **the traced map over-shadows.** Real rays read 63.72 against
+   **THE LARGEST TERM WAS FOUND AND FIXED IN PART 64: the light matrix was bound
+   by RECENCY and that binding is false.** The cascade pass is not a
+   single-matrix pass — a distinctness count read **0 slices with one c0-3 and
+   28,704 with several** — so each slice was traced through one of many frames of
+   reference. Binding it by DATAFLOW instead (capture only from cascade draws of
+   streams the SCENE pass has vouched for as world-space, §6cs) accepted
+   1,293,758 draws and rejected 849,840 object-transform ones, and moved the
+   arm **63.71 → 72.00** outdoor median luma with coverage **86.3% → 61.3%**.
+   `CZ_VK_RT_ANY_MATRIX=1` is the control arm. Two companion checks cleared and
+   refuted their hypotheses in the same run: the matrix inverse is correct to
+   2.38e-07, and last-write-wins is dead.
+
+   What is OPEN: **the traced map still over-shadows, by less.** 72.00 against
+   OG's 80.61 (all-shadow floor 61.2-61.4). §6cv 7d names the one refinement
+   that decides the next fix — the distinctness count now runs AFTER the filter,
+   and its answer is a number: **ONE** distinct world-vouched matrix per slice
+   means the selection is exact and the residual is elsewhere (depth convention
+   or slice rectangle); **FOUR** means the title renders all four cascades before
+   resolving any, every matrix is legitimate, and what is left is the
+   slice↔matrix PAIRING rather than the selection. Read that number first.
+
+   The earlier framing, kept because both mechanisms are real and neither was the
+   largest: Real rays read 63.72 against
    OG's 80.61 — 86% of the way to fully shadowed — and `CZ_VK_RT_BIAS=0.05`
    (33x the default) recovers it only to 73.89, which is a bias large enough to
    detach shadows from casters. So the traced-vs-raster disagreement is
