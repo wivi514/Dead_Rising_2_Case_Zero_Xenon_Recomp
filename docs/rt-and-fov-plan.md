@@ -133,6 +133,34 @@ whether stages 2-4 are cheap or dear, and its numbers replace guesses.
 
 ## 3. RT stage 2 — ray-traced SHADOWS (the first visible tier)
 
+> **BUILT IN PART 64 (2026-08-22). The record is `phase5-notes.md` §6cv; the
+> hand-off is `part65-kickoff.md`; the backlog entry is `open-items.md` 0v.**
+> The fork below was decided by measurement in an afternoon, exactly as this
+> section asked: **route (a) works and needs no shader patch at all** —
+> `CZ_VK_SHADOW_FILL`'s two polarities move the outdoor median luma in opposite
+> directions (80.61 -> 61.43 at 0.0, 81.46 at 1.0), so the atlas snapshot IS
+> where the title's shadow term reads, and the convention is standard (near =
+> occluder). The whole ray path was then shown to reach that term: the poison
+> control (all-shadow written by the TRACE PIPELINE) lands on the direct fill's
+> number to 0.25 luma.
+>
+> **What this section did NOT anticipate, and it is the open item**: the title's
+> own cascade is **52.8% empty** — it draws CASTERS, not the world — while the
+> collector traces everything the camera sees, so real rays read 63.72 against
+> OG's 80.61 and the world shadows itself. An atlas diff (nearer on 49.6% of
+> texels, farther on 1.3%) says we are a superset adding near geometry.
+> `CZ_VK_RT_CASTERS=cascade` and `CZ_VK_RT_COVERAGE=1` are the arms built to
+> close it; their first numbers are in §6cv.
+>
+> **And one thing to weigh before the next tier is designed**: tracing INTO the
+> 4096x1024 atlas cannot beat the atlas's resolution, so route (a)'s ceiling is
+> exact depths and missing occluders — not soft shadows and not per-pixel ones.
+> The tier ladder below (MEDIUM = full-res, HIGH = soft) therefore belongs to
+> route (b), and every piece part 64 built (BLAS, TLAS, the sun-matrix capture,
+> the arms, the `rt` profiler phase) is reusable by it unchanged. The panel row
+> ships OG / RT LOW only and refuses MED/HIGH at the setter until the ladder is
+> priced on the operator's machine, which is what §6 asks for.
+
 First because it needs the least: one ray per pixel toward one light, and the light
 is KNOWN — the cascade pass's view matrix is the sun's (vc12-14 of the shadow pass,
 already understood by pose_read). The recommended hybrid form:
