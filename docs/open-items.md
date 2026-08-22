@@ -7,6 +7,48 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0v. **RT SHADOWS (stage 2) — THE INJECTION ROUTE IS PROVEN, THE OCCLUDER CONTENT
+   IS NOT. This is the first item of part 65.** The full record is
+   `phase5-notes.md` §6cv; the arms are in `instruments.md`. What is CLOSED, by
+   measurement, and must not be re-derived:
+   * **The atlas snapshot is where the title's shadow term reads.**
+     `CZ_VK_SHADOW_FILL=0.0` takes the outdoor median luma 80.61 -> 61.43 and
+     `=1.0` reads 81.46 — two polarities, opposite directions. Route (a) of
+     `rt-and-fov-plan.md` §3 needs NO shader patch; route (b) is not required
+     to get pixels on screen (it is still the route to per-pixel quality —
+     see below).
+   * **The convention is STANDARD** (near = occluder). `CZ_VK_RT_INVERT` exists
+     for the other answer and is not needed here.
+   * **The trace pipeline's writes reach that term**: `CZ_VK_RT_POISON=1` lands
+     at 61.18 against the direct fill's 61.43 — the same measured extreme,
+     reached through the whole BLAS/TLAS/ray-query path.
+   * **The plumbing engages and holds**: 1,380-1,433 BLASes, ~33 MB, zero pool
+     flushes, ~370 TLAS instances/frame, zero key collisions, zero unreadable
+     positions, zero refused endians; the traced atlas is recognizably a shadow
+     map (trees, poles, buildings in the light's frame).
+   What is OPEN: **the traced map over-shadows.** Real rays read 63.72 against
+   OG's 80.61 — 86% of the way to fully shadowed — and `CZ_VK_RT_BIAS=0.05`
+   (33x the default) recovers it only to 73.89, which is a bias large enough to
+   detach shadows from casters. So the traced-vs-raster disagreement is
+   SYSTEMATIC. The leading explanation, and the arm built to test it:
+   **the title's own cascade probably contains far fewer casters than the
+   camera's world set** (an engine routinely keeps receivers — the whole street
+   surface — out of its own shadow map), so filling every "no occluder" texel
+   with the entire world shadows the world against itself.
+   `CZ_VK_RT_CASTERS=cascade` traces the pitch-1040 pass's OWN casters instead,
+   and `CZ_VK_RT_COVERAGE=1` (a precise occlusion query around the trace draw)
+   reports what fraction of each slice the traced depths WIN. Read them in that
+   order; both runs were queued at part 64's close and their numbers belong in
+   §6cv when they land.
+   **And know what route (a) can and cannot buy, before spending another part on
+   it**: tracing INTO the 4096x1024 atlas cannot beat the atlas's resolution, so
+   its ceiling is exact depths and missing occluders, not soft or per-pixel
+   shadows. The plan's route (b) — patch the ~dozen shadow-sampling PS to read a
+   screen-space traced factor — is where the quality tier lives, and every piece
+   built in part 64 (BLAS, TLAS, the sun-matrix capture, the arms) is reusable
+   by it unchanged. Decide (a)-vs-(b) on the caster arm's result, not on effort
+   already spent.
+
 0u. **THE DoF COMPOSITE — DOWNGRADED IN PART 42: the "hardware contradiction"
    mostly dissolved, and what remains is two bounded residues.** Part 41's
    framing ("hardware runs the same shader/constants yet its 40-60 m storefront
