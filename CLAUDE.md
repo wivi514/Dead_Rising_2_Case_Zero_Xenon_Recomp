@@ -757,18 +757,31 @@ the arms are in `instruments.md`; the lessons are gotchas 381-383):
   zero refused endians, and the traced atlas is recognizably a shadow map. Two
   defects the FIRST validation run named were fixed the same hour (TLAS created-size
   tracking; the trace pass invalidating the main path's bound-state cache).
-* **The open defect, fully diagnosed: we trace the CAMERA's world, the title casts
-  from a much smaller set.** Real rays read **63.72** against OG's 80.61 — 86% of the
-  way to fully shadowed. Diffing our traced atlas against the raster one (both dumped
-  at the same stationary camp, greys converted back through the printed 24-bit range)
-  puts us NEARER on **49.6%** of texels and FARTHER on **1.3%** — a superset adding
-  near geometry, not a subset missing far geometry — and asking the same dumps what
-  holds no occluder finds the title's own cascade **52.8% EMPTY** against our 37.0%.
-  Its cascade draws CASTERS; the street and terrain are receivers and are kept out, so
-  every texel we fill converts a lit region to a shadowed one.
-  `CZ_VK_RT_CASTERS=cascade` is the fix candidate and `CZ_VK_RT_COVERAGE=1` (86.3%
-  today) is the number that judges it. **Do not ask the operator for a LOOK verdict
-  until this is fixed** — the arm currently shadows the world against itself.
+* **THREE REAL DEFECTS WERE FOUND AND FIXED AND NONE OF THEM MOVED THE PICTURE**,
+  which is the part's most important sentence. Each rests on a count that does not
+  drift; each fix is right on its own terms; on COMPLETE runs all the arms are
+  indistinguishable at **66.1-66.4** outdoor median luma against OG's **80.61**
+  (all-shadow floor 61.2). They are: junk geometry at ±6.3M units entering the BLAS
+  (gated); the title's own cascade being **52.8% EMPTY** because it draws CASTERS not
+  receivers (`CZ_VK_RT_CASTERS=cascade`); and the light matrix being bound by
+  RECENCY when the cascade pass carries SEVERAL distinct c0-3 per slice — **0 slices
+  with one against 28,704 with several** — now bound by DATAFLOW
+  (`CZ_VK_RT_ANY_MATRIX=1` is the control; the clean same-binary A/B reads +0.66
+  luma). Keep all three, re-buy none, expect none to be the answer.
+* **AND THE MID-SESSION NUMBERS THAT SAID OTHERWISE ARE RETRACTED (§6cv 7e).** They
+  were read from `CZ_VK_FRAME_STATS` files still being written and from cumulative
+  `[rt]` counters mid-run: the same arm reads 63.71 at 4,663 outdoor frames and 66.34
+  at 6,484, or 72.00 at 1,212 and 66.40 complete; coverage reads ~86% early and
+  52-54% at exit. **A partial read on this route measures a different PLACE, not a
+  noisier version of the same one** (gotchas 384-385). Gate every read on the process
+  having EXITED and quote the frame count beside every median.
+* **Open, and part 65's first job: every RT arm over-shadows by ~14 luma and the
+  cause is none of the three above.** Two suspects survive, neither tested, both
+  cheap: the DEPTH CONVENTION (the guest's viewport Z scale/offset are decoded
+  NOWHERE in this renderer, which hardcodes minDepth 0 / maxDepth 1) and the SLICE
+  RECTANGLE. One number separates them — the `[rt]` line's world-vouched distinctness
+  count, now taken after the dataflow filter. **Do not ask the operator for a LOOK
+  verdict yet**; the arm still shadows the world against itself.
 * **Know route (a)'s ceiling before spending another part on it**: tracing INTO the
   4096x1024 atlas cannot beat the atlas's resolution, so it buys exact depths and
   missing occluders, never soft or per-pixel shadows. Route (b) (patch the ~dozen
