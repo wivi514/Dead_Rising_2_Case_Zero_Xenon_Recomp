@@ -1,0 +1,1300 @@
+{
+ "_generatedBy": "tools/shadow_shader_census.py --hlsl --json <this>",
+ "_shapes": "pcf4 = four +/-0.5 taps compared > receiverDepth and bilinearly weighted; tap1 = one centre tap feeding saturate((receiver - sampled) * k - bias). Both are monotonic and saturating, so substituting 1.0 at every atlas tap reads as LIT and 0.0 as OCCLUDED in all of them",
+ "_traces": 20,
+ "_what": "pixel shaders that sample the shadow cascade atlas, by declared texture fetch slot; the oracle is hardware's own register file in the R2/R3/R4/R6 .xtr traces, so the slots are HARDWARE's, not ours",
+ "atlasShape": [
+  4096,
+  1024
+ ],
+ "shaders": {
+  "ps_026c5454f36a6de6": {
+   "draws": 220,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 10
+  },
+  "ps_02ea5ec28f18c0f4": {
+   "draws": 26,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 5
+  },
+  "ps_05926ddf925d25ae": {
+   "draws": 2,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 1
+  },
+  "ps_08179f5c6c86e407": {
+   "draws": 238,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 8
+  },
+  "ps_12e6e6317ff43c01": {
+   "draws": 2904,
+   "shapes": {
+    "2": "pcf4",
+    "4": "tap1"
+   },
+   "slots": [
+    2,
+    4
+   ],
+   "traces": 20
+  },
+  "ps_152f70d5c97f22f7": {
+   "draws": 10,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 4
+  },
+  "ps_16ea77665257ada9": {
+   "draws": 16,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 7
+  },
+  "ps_1757fe94a16b903b": {
+   "draws": 73,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 9
+  },
+  "ps_185442b28c295b29": {
+   "draws": 306,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_1c68e9aff9cc696c": {
+   "draws": 4,
+   "shapes": {
+    "5": "pcf4",
+    "7": "tap1"
+   },
+   "slots": [
+    5,
+    7
+   ],
+   "traces": 1
+  },
+  "ps_1df89c82fec309c8": {
+   "draws": 6,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 1
+  },
+  "ps_1e52b30ce7bf9434": {
+   "draws": 20,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 5
+  },
+  "ps_1ef8a9a31bd6a97f": {
+   "draws": 31,
+   "shapes": {
+    "5": "tap1"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 7
+  },
+  "ps_1f11652a939e84fd": {
+   "draws": 48,
+   "shapes": {
+    "4": "tap1"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_23164e43af4e8dc4": {
+   "draws": 12,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 4
+  },
+  "ps_2376229f6f01ad05": {
+   "draws": 2,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_23b962cbdc9d42bc": {
+   "draws": 5,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_290c65345428502f": {
+   "draws": 10,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_298aa7395b6595de": {
+   "draws": 172,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 16
+  },
+  "ps_2cd28ba561a99405": {
+   "draws": 180,
+   "shapes": {
+    "2": "pcf4",
+    "4": "tap1"
+   },
+   "slots": [
+    2,
+    4
+   ],
+   "traces": 6
+  },
+  "ps_31a757663d28c105": {
+   "draws": 4,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 2
+  },
+  "ps_31bb47ea55e88cb6": {
+   "draws": 8,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_31c6db6f96a874a2": {
+   "draws": 14,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 4
+  },
+  "ps_36a8ebe6d34f0038": {
+   "draws": 190,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 9
+  },
+  "ps_387a8fcf8409720e": {
+   "draws": 86,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 4
+  },
+  "ps_3da9454d30a3a225": {
+   "draws": 80,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 19
+  },
+  "ps_3e7e71e4a779fe6b": {
+   "draws": 198,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 15
+  },
+  "ps_41c3feecf1cb775c": {
+   "draws": 198,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 17
+  },
+  "ps_4447daa9df434bbc": {
+   "draws": 1942,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 19
+  },
+  "ps_450653898c032730": {
+   "draws": 5362,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 18
+  },
+  "ps_45109c37a74df5c1": {
+   "draws": 195,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 19
+  },
+  "ps_4796cb371c33e1e2": {
+   "draws": 92,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 13
+  },
+  "ps_4a738678e129ca44": {
+   "draws": 4,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 1
+  },
+  "ps_4b36db7ddbe2f2c8": {
+   "draws": 4,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_4ce026edda5f0a13": {
+   "draws": 6,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 2
+  },
+  "ps_4d2ac8618715bdbe": {
+   "draws": 4,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_4f94bf9f41830f5e": {
+   "draws": 536,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 17
+  },
+  "ps_522e2b166969c4cd": {
+   "draws": 560,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 20
+  },
+  "ps_52debbf8eb5e2307": {
+   "draws": 456,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 8
+  },
+  "ps_5668a1922d655f4d": {
+   "draws": 10,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_58b0eea132d155c9": {
+   "draws": 40,
+   "shapes": {
+    "6": "tap1"
+   },
+   "slots": [
+    6
+   ],
+   "traces": 4
+  },
+  "ps_5b94d9453d9edafa": {
+   "draws": 30,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 9
+  },
+  "ps_60cba147292d5b5c": {
+   "draws": 21,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 5
+  },
+  "ps_60e14ce6c3ad5f45": {
+   "draws": 4,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_64fa548f72912be1": {
+   "draws": 43,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 4
+  },
+  "ps_661344bb635caa82": {
+   "draws": 56,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 14
+  },
+  "ps_67b8718c28987db7": {
+   "draws": 6,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_6f6e41f59b50bd99": {
+   "draws": 544,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 15
+  },
+  "ps_7073347a713668e2": {
+   "draws": 24,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 4
+  },
+  "ps_717429917129516c": {
+   "draws": 19,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_71af1e22095d3c2b": {
+   "draws": 202,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 2
+  },
+  "ps_71d569a46634d72a": {
+   "draws": 66,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 4
+  },
+  "ps_77479fb1bd121512": {
+   "draws": 20,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_7815731ce8a92ad4": {
+   "draws": 7512,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 18
+  },
+  "ps_790283523afcaf20": {
+   "draws": 3632,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 20
+  },
+  "ps_7c4132308e852ed9": {
+   "draws": 22,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 8
+  },
+  "ps_7d2f8f33deec1b65": {
+   "draws": 910,
+   "shapes": {
+    "7": "pcf4",
+    "9": "tap1"
+   },
+   "slots": [
+    7,
+    9
+   ],
+   "traces": 20
+  },
+  "ps_7debb5493ab87e13": {
+   "draws": 64,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_7f1c9b745af7040d": {
+   "draws": 1,
+   "shapes": {
+    "7": "tap1"
+   },
+   "slots": [
+    7
+   ],
+   "traces": 1
+  },
+  "ps_8452bb656149204e": {
+   "draws": 10,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 2
+  },
+  "ps_848c08f3c8a9309d": {
+   "draws": 36,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 5
+  },
+  "ps_8602b5fd69289893": {
+   "draws": 2005,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 20
+  },
+  "ps_861d32db6c0f0556": {
+   "draws": 33,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 8
+  },
+  "ps_873195b6d16d6ade": {
+   "draws": 18,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 4
+  },
+  "ps_89318c399f1cd8d5": {
+   "draws": 2,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_89a530dc93807b38": {
+   "draws": 224,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 9
+  },
+  "ps_89e11a5dc39280d2": {
+   "draws": 2,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_8b78eb923924eac5": {
+   "draws": 32,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 3
+  },
+  "ps_8ce76d5ae8769f91": {
+   "draws": 4,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 2
+  },
+  "ps_8e425990c88ac434": {
+   "draws": 40,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 20
+  },
+  "ps_8e4feb65d9708236": {
+   "draws": 2,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_8e5b7c3364b61a56": {
+   "draws": 28,
+   "shapes": {
+    "5": "pcf4",
+    "7": "tap1"
+   },
+   "slots": [
+    5,
+    7
+   ],
+   "traces": 4
+  },
+  "ps_94540a6ce999f133": {
+   "draws": 4,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_95a4a972ac0b6268": {
+   "draws": 4,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_9b52484943cf218e": {
+   "draws": 2,
+   "shapes": {
+    "6": "tap1"
+   },
+   "slots": [
+    6
+   ],
+   "traces": 1
+  },
+  "ps_a0654b8119db394f": {
+   "draws": 16,
+   "shapes": {
+    "7": "pcf4"
+   },
+   "slots": [
+    7
+   ],
+   "traces": 5
+  },
+  "ps_a1c274d9b9307286": {
+   "draws": 4,
+   "shapes": {
+    "4": "pcf4",
+    "6": "tap1"
+   },
+   "slots": [
+    4,
+    6
+   ],
+   "traces": 1
+  },
+  "ps_a255ad0aad0e0bd5": {
+   "draws": 1,
+   "shapes": {
+    "4": "tap1"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_aa7b6dcff7437b20": {
+   "draws": 178,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 18
+  },
+  "ps_ab0be6df24bfa3fe": {
+   "draws": 2,
+   "shapes": {
+    "4": "tap1"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_ab3a6ccc2b0b5fca": {
+   "draws": 123,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 19
+  },
+  "ps_ad2d8362c47d9e45": {
+   "draws": 458,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 18
+  },
+  "ps_ad65b98593f95926": {
+   "draws": 172,
+   "shapes": {
+    "3": "pcf4",
+    "5": "tap1"
+   },
+   "slots": [
+    3,
+    5
+   ],
+   "traces": 20
+  },
+  "ps_ae8131dd9d348bf9": {
+   "draws": 52,
+   "shapes": {
+    "7": "pcf4",
+    "9": "tap1"
+   },
+   "slots": [
+    7,
+    9
+   ],
+   "traces": 5
+  },
+  "ps_ae8568fff88b0d85": {
+   "draws": 4,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 1
+  },
+  "ps_b01aa708b9bf3f4b": {
+   "draws": 45,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 2
+  },
+  "ps_b5e7d2f2a3983ca3": {
+   "draws": 140,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 15
+  },
+  "ps_b99cf07e07e538d2": {
+   "draws": 16,
+   "shapes": {
+    "4": "pcf4",
+    "6": "tap1"
+   },
+   "slots": [
+    4,
+    6
+   ],
+   "traces": 3
+  },
+  "ps_bb46275438b05a7f": {
+   "draws": 24,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 11
+  },
+  "ps_bb481ab2bfe0d243": {
+   "draws": 350,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_bb6e67619e26c0d4": {
+   "draws": 383,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 16
+  },
+  "ps_bef8ed5e741ff434": {
+   "draws": 57,
+   "shapes": {
+    "7": "tap1"
+   },
+   "slots": [
+    7
+   ],
+   "traces": 7
+  },
+  "ps_c3ae0ec7855c4a18": {
+   "draws": 2912,
+   "shapes": {
+    "2": "pcf4",
+    "4": "tap1"
+   },
+   "slots": [
+    2,
+    4
+   ],
+   "traces": 20
+  },
+  "ps_c3f7068b46ed7560": {
+   "draws": 8,
+   "shapes": {
+    "5": "tap1"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 1
+  },
+  "ps_c52c034558ddd2eb": {
+   "draws": 2,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 1
+  },
+  "ps_c5925f27fde6d1fd": {
+   "draws": 6,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_c6cacc02ea8fa475": {
+   "draws": 481,
+   "shapes": {
+    "4": "tap1"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 9
+  },
+  "ps_c73e887f27973182": {
+   "draws": 1042,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 18
+  },
+  "ps_c9796b0a42f12f1b": {
+   "draws": 12,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_c9ca4f73ba93d023": {
+   "draws": 14,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 1
+  },
+  "ps_cafc6f9aa740d91a": {
+   "draws": 1270,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 19
+  },
+  "ps_ccfc2c9712fff1c3": {
+   "draws": 758,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 17
+  },
+  "ps_cd9645bae45d1704": {
+   "draws": 57,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 12
+  },
+  "ps_cef1ee005c484cdc": {
+   "draws": 34,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 9
+  },
+  "ps_cf4e4243ca9eed8d": {
+   "draws": 10,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 4
+  },
+  "ps_d14d5425fa2c31cc": {
+   "draws": 42,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 13
+  },
+  "ps_d197e54b11f1d76c": {
+   "draws": 4,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 2
+  },
+  "ps_d4609f2df48bcc48": {
+   "draws": 602,
+   "shapes": {
+    "5": "pcf4",
+    "7": "tap1"
+   },
+   "slots": [
+    5,
+    7
+   ],
+   "traces": 20
+  },
+  "ps_d5668bf1a75f972e": {
+   "draws": 2,
+   "shapes": {
+    "5": "pcf4"
+   },
+   "slots": [
+    5
+   ],
+   "traces": 1
+  },
+  "ps_da22f8e733f93114": {
+   "draws": 16,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 3
+  },
+  "ps_dc4cb6371ac4d3f8": {
+   "draws": 30,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 9
+  },
+  "ps_df70508f4ed0423c": {
+   "draws": 46,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 8
+  },
+  "ps_dfd2618a6933fe34": {
+   "draws": 3,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 2
+  },
+  "ps_e1e2af38bb749788": {
+   "draws": 6,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 2
+  },
+  "ps_e2c3ca8c13351984": {
+   "draws": 22,
+   "shapes": {
+    "1": "pcf4"
+   },
+   "slots": [
+    1
+   ],
+   "traces": 4
+  },
+  "ps_e3fe53b8b2807f66": {
+   "draws": 266,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 8
+  },
+  "ps_e7b627a3ffb39b66": {
+   "draws": 8,
+   "shapes": {
+    "3": "pcf4",
+    "5": "tap1"
+   },
+   "slots": [
+    3,
+    5
+   ],
+   "traces": 1
+  },
+  "ps_e867298a78aea2b5": {
+   "draws": 28,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 4
+  },
+  "ps_e8c1ef5cfe3d5805": {
+   "draws": 380,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 15
+  },
+  "ps_e9a9981cc58494a4": {
+   "draws": 6,
+   "shapes": {
+    "3": "pcf4",
+    "5": "tap1"
+   },
+   "slots": [
+    3,
+    5
+   ],
+   "traces": 2
+  },
+  "ps_ea2cd381e6e3e3f6": {
+   "draws": 201,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 19
+  },
+  "ps_ef4cbafca035daee": {
+   "draws": 1068,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 15
+  },
+  "ps_f156671f5bfd0126": {
+   "draws": 8,
+   "shapes": {
+    "2": "pcf4",
+    "4": "tap1"
+   },
+   "slots": [
+    2,
+    4
+   ],
+   "traces": 1
+  },
+  "ps_f16a27a1b04a0103": {
+   "draws": 1268,
+   "shapes": {
+    "2": "pcf4"
+   },
+   "slots": [
+    2
+   ],
+   "traces": 19
+  },
+  "ps_f8b1af5a2fe6279a": {
+   "draws": 36,
+   "shapes": {
+    "4": "pcf4"
+   },
+   "slots": [
+    4
+   ],
+   "traces": 9
+  },
+  "ps_ff49bf06d48b8e01": {
+   "draws": 51,
+   "shapes": {
+    "3": "pcf4"
+   },
+   "slots": [
+    3
+   ],
+   "traces": 3
+  }
+ }
+}
