@@ -1802,6 +1802,52 @@ CZ_VK_RT_FACTOR_POISON=1  **the positive control for route (b)**, and the first
                    must darken. A frame that does NOT change means the
                    substitution never reached it and nothing measured afterwards
                    means anything (gotcha 386). Diagnostic arm
+CZ_VK_RT_FACTOR_SOURCE=depth  **WHERE THE RECEIVER COMES FROM** (part 66), and
+                   the same-binary control arm for the part-66 fix. The default
+                   is a PRIMARY RAY into the TLAS; `depth` restores part 65's
+                   reconstruction from the scene depth buffer, which on this
+                   title reads its CLEAR VALUE every time the pass runs — there
+                   is no scene Z prepass, the first draw of the scene pass
+                   already samples the shadow atlas
+                   (`tools/rt_depth_order_census.py`, 20 traces). So the control
+                   arm's expected result is NO SHADOWS, and that is the point:
+                   it is the picture-side confirmation of the census
+CZ_VK_RT_FACTOR_DEBUG=N  **THE LADDER**, which splits the factor pass into its
+                   links and turns each into a picture, because a frame looks
+                   identical under every one of the failures. Each mode states
+                   what a PASS looks like in `runtime/gpu/rt_factor.hlsl`; read
+                   the arms with `tools/part65_luma_read.py`, whose calibration
+                   points are all-lit 99.86 and all-shadow 90.16.
+                     1     depth mask (depth source; on this title it CANNOT pass)
+                     2     world checker, 4 units, pinned to the world
+                     3, 7  unbiased rays / rays straight down
+                     4     all-shadow via the selector, touching no texture — the
+                           control that separates "the sample is broken" from
+                           "the selector never arrived"
+                     5, 6  depth bypass at a fixed clip z
+                     8, 9  does z vary / what is z
+                     10,11 |world| and the perspective denominator (depth source)
+                     12,13 the colour buffer's luminance / "is there ANY colour"
+                           — **RETRACTED as evidence**: `g_colour` was never
+                           written (a three-element write array passed with a
+                           count of two, which the validation layer reported from
+                           the first draw), so both modes read an unwritten
+                           descriptor. Valid again from part 66 on
+                     14    a screen-space stripe touching no texture: does the
+                           round trip carry SPATIAL detail at all
+                     15,16 `GetDimensions` on the depth / colour binding. The
+                           extent comes from the descriptor, not the contents, so
+                           it separates "a real image that reads far/black" from
+                           "the descriptor references nothing" — the assumption
+                           every other sampling mode shares. PASS = the frame
+                           goes dark
+                     17    **THE GATE** (part 66): does the PRIMARY RAY find the
+                           world? PASS = a black world under a lit sky. Forces
+                           the primary path whatever the source is set to
+                     18    how far each primary hit is, saturate(t/500). PASS = a
+                           gradient. It separates "the rays hit something" from
+                           "the rays hit the right thing" — a TLAS full of junk at
+                           the origin passes 17 and reads flat here
 CZ_VK_RT_FACTOR_SCALE=N  the factor image at 1/N of the EDRAM extent, overriding
                    the tier's own choice (RT LOW = 2, RT MEDIUM/HIGH = 1)
 CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the

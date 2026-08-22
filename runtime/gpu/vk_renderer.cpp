@@ -11936,29 +11936,55 @@ VkPipelineLayout g_pipeLayout = VK_NULL_HANDLE;
 VkPipeline g_pipe = VK_NULL_HANDLE;
 VkDescriptorPool g_pool = VK_NULL_HANDLE;
 VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
+// The acceleration structure each set was last written with, so a redundant write into
+// a set the command buffer has already bound is skipped rather than being undefined
+// behaviour. See the note at the write site.
+VkAccelerationStructureKHR g_setAs[kMaxFramesInFlight] = {};
 bool g_failed = false;
 
-// Engagement, per gotcha 151 and gotcha 386. `g_valid` is cleared at every resolve, not
-// once a frame: this title renders in two 640-wide tiles, so the depth buffer holds the
-// finished prepass for ONE tile at a time and a factor computed for the other tile's
-// region would be a picture of the wrong depth.
+// WHERE THE RECEIVER COMES FROM (part 66). The primary-ray source needs no depth
+// buffer, which is what makes route (b) work on this title at all — see the long note
+// at the top of rt_factor.hlsl. `CZ_VK_RT_FACTOR_SOURCE=depth` is the same-binary
+// control arm and restores part 65's depth-buffer reconstruction exactly.
+bool PrimarySource()
+{
+    static const bool depth = [] {
+        const char* e = Env("CZ_VK_RT_FACTOR_SOURCE");
+        return e && (e[0] == 'd' || e[0] == 'D');
+    }();
+    return !depth;
+}
+
+// Engagement, per gotcha 151 and gotcha 386.
+//
+// Under the DEPTH source `g_valid` is cleared at every resolve, not once a frame: this
+// title renders in two 640-wide tiles, so the depth buffer describes ONE tile at a time
+// and a factor computed for the other tile's region would be a picture of the wrong
+// depth.
+//
+// Under the PRIMARY-RAY source there is nothing per-tile to be wrong about — the pass
+// reads only the scene composite and the TLAS, both of which are per-frame — so it runs
+// ONCE a frame instead of the measured 3.01 times, and the frame roll below is what
+// clears it. That is a two-thirds saving on the most expensive thing this feature does,
+// taken because the dependency went away, not as an optimisation.
 bool g_valid = false;
+uint64_t g_ranFrame = ~0ull;
 uint64_t g_passes = 0, g_drawsServed = 0, g_noScene = 0, g_noLight = 0, g_noTlas = 0,
          g_singular = 0;
 // WHEN IN THE FRAME THE PASS FIRES, and how much of the frame is still to come.
 //
-// The depth arm of the ladder (CZ_VK_RT_FACTOR_DEBUG=1) should have turned the world
-// black and left the sky lit. The operator reports it unchanged, which says the depth
-// sample reads FAR everywhere — and the most likely reason is timing, not plumbing:
-// this title renders its shadow cascades into the SAME EDRAM depth buffer before
-// resolving them to the atlas, so R->depth holds light-space depth until the scene's
-// own Z prepass overwrites it. A factor pass that fires before that prepass has
-// finished reads either the cascade's depth or the clear value, and the clear value is
-// FAR, which is exactly "everything lit".
+// Added in part 65 to test "the pass fires before the scene's Z prepass has filled the
+// depth buffer", and never read — the runs that could have printed it were taken before
+// the counter existed. Part 66 answered the same question a better way, offline against
+// hardware (`tools/rt_depth_order_census.py`): THERE IS NO SCENE Z PREPASS. Across all
+// twenty `.xtr` world traces the first draw of the scene pass already samples the
+// cascade atlas, with zero depth-writing draws before it and ~5,200 after it. The
+// depth buffer is at its clear value whenever this pass fires, and no trigger can
+// change that — which is why the receiver now comes from a primary ray instead.
 //
-// So: record the draw index within the frame at which the pass fired, against the
-// frame's eventual total. Firing at draw 40 of 7,000 and firing at draw 4,000 of 7,000
-// are completely different bugs and the picture cannot tell them apart.
+// The counter stays because it is the engagement evidence for the trigger itself, and
+// because under the primary-ray source it should now read ONE sample per frame rather
+// than the 3.01 the depth source produced.
 uint64_t g_fireAtSum = 0, g_frameDrawSum = 0, g_fireSamples = 0;
 uint64_t g_fireAtMin = ~0ull, g_fireAtMax = 0;
 // How many atlas-sampling draws were DECLINED as prepass (empty colour mask). Counted
@@ -12000,7 +12026,11 @@ void NoteSceneMatrix(const uint32_t* vsWindow)
     }
 }
 
-void Invalidate() { g_valid = false; }
+void Invalidate()
+{
+    if (!PrimarySource())
+        g_valid = false;
+}
 
 bool EnsureResources()
 {
@@ -12247,7 +12277,17 @@ bool EnsureResources()
         w[1].descriptorCount = 1;
         w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
         w[1].pImageInfo = &si2;
-        vkUpdateDescriptorSets(R->device, 2, w, 0, nullptr);
+        // THREE, not two. This read `2` over a three-element array from the day the
+        // pass was written, so `g_colour` was never bound — and the validation layer
+        // said so on the very first draw of every RT run
+        // (`VUID-vkCmdDraw-None-08114`: "the descriptor ... Binding 3 ... variable
+        // g_colour is being used in draw but has never been updated"). Nobody read it,
+        // and the ladder's modes 12 and 13 — the colour control that was supposed to be
+        // the DEPTH probe's independent check — were reading an unwritten descriptor.
+        // Their readings are retracted. Same shape as the `dynamicStateCount` defect
+        // three parts ago: an array and its count will drift, and the drift makes a
+        // feature silently inert rather than loud.
+        vkUpdateDescriptorSets(R->device, uint32_t(std::size(w)), w, 0, nullptr);
     }
     // 128 bytes: eight float4 (see rt_factor.hlsl's Push). That is exactly the
     // Vulkan-guaranteed minimum maxPushConstantsSize, so it needs no capability check
@@ -12364,6 +12404,15 @@ bool EnsureResources()
 // the TITLE'S OWN draw order rather than a guess about where its Z prepass ended.
 void Run(uint8_t* base)
 {
+    // The frame roll. Run() is called at EVERY atlas-sampling colour draw and returns
+    // immediately when the factor is already valid, so this is the one place that sees
+    // every frame without another hook — and under the primary-ray source it is the
+    // only thing that clears validity.
+    if (g_ranFrame != R->frame)
+    {
+        g_ranFrame = R->frame;
+        g_valid = false;
+    }
     if (g_valid || !Active())
         return;
     ProfScope _pRt(&g_prof.rt);
@@ -12491,24 +12540,39 @@ void Run(uint8_t* base)
     static const int dbg = Env("CZ_VK_RT_FACTOR_DEBUG")
                                ? atoi(Env("CZ_VK_RT_FACTOR_DEBUG"))
                                : 0;
-    pc[26] = float(dbg); pc[27] = 0.0f;
+    pc[26] = float(dbg);
+    pc[27] = PrimarySource() ? 1.0f : 0.0f;
     // camera at the last float4
     float pc2[4] = { cam[0], cam[1], cam[2], 0.0f };
 
     // This slot's TLAS into this pass's own descriptor set. rtshadow owns the structure;
     // both passes read it, neither writes the other's descriptors.
-    VkWriteDescriptorSetAccelerationStructureKHR wa{
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR
-    };
-    wa.accelerationStructureCount = 1;
-    wa.pAccelerationStructures = &rtshadow::g_tlas[R->frameSlot];
-    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    w.pNext = &wa;
-    w.dstSet = g_sets[R->frameSlot];
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+    //
+    // ONLY WHEN THE HANDLE ACTUALLY CHANGED. Under the depth source this pass runs
+    // three times a frame (once per resolve), and rewriting a set that the RECORDING
+    // command buffer already bound is undefined behaviour without UPDATE_AFTER_BIND —
+    // the validation layer reported it as "VkDescriptorSet ... was destroyed or updated
+    // without UPDATE_AFTER_BIND" and then declared the whole command buffer invalid,
+    // which is the cascade of `commandBuffer-recording` errors part 65's validation runs
+    // are full of. Skipping the redundant write is enough: the structure is rebuilt at
+    // most once a frame, and a frame slot's previous command buffer has been reset
+    // before this frame records into it, so the one write that does happen is legal.
+    if (g_setAs[R->frameSlot] != rtshadow::g_tlas[R->frameSlot])
+    {
+        VkWriteDescriptorSetAccelerationStructureKHR wa{
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR
+        };
+        wa.accelerationStructureCount = 1;
+        wa.pAccelerationStructures = &rtshadow::g_tlas[R->frameSlot];
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.pNext = &wa;
+        w.dstSet = g_sets[R->frameSlot];
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+        g_setAs[R->frameSlot] = rtshadow::g_tlas[R->frameSlot];
+    }
 
     Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -12556,13 +12620,14 @@ void Run(uint8_t* base)
     g_fireAtMax = std::max(g_fireAtMax, uint64_t(R->drawsThisFrame));
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
-                "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d "
+                "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d src=%s "
                 "tlasInst=%u dbg=%d sun=(%.3f %.3f %.3f) won %u/%u slice votes, "
                 "%llu switches "
                 "len=%.1f bias=%.3f/%.3f skips: noScene=%llu noLight=%llu noTlas=%llu "
                 "singular=%llu%s\n",
                 (unsigned long long)g_passes, (unsigned long long)g_drawsServed, tier,
                 g_factor.width, g_factor.height, rays,
+                PrimarySource() ? "primary-ray" : "depth-buffer",
                 rtshadow::g_tlasInstances, dbg, sun[0], sun[1], sun[2],
                 rtshadow::g_sunVotes, rtshadow::g_frameVoteCount,
                 (unsigned long long)rtshadow::g_sunSwitches, len, b1, b2,
@@ -19399,9 +19464,11 @@ void VkRenderer_DumpStats()
         fprintf(stderr,
                 "[rtb] the factor pass fires at draw %llu of ~%llu on average "
                 "(min %llu, max %llu); %llu atlas draws DECLINED as Z-prepass "
-                "(empty colour mask). EARLY means the scene's own Z prepass has not "
-                "filled the depth buffer yet and the sample reads the clear value or "
-                "the cascade's own depth — both of which read as FAR, i.e. LIT.\n",
+                "(empty colour mask). This title has NO scene Z prepass "
+                "(tools/rt_depth_order_census.py, 20 traces), so under the DEPTH source "
+                "the sample here is always the clear value — far, i.e. LIT. The "
+                "primary-ray source does not care where in the frame this number "
+                "lands.\n",
                 (unsigned long long)(rtfactor::g_fireAtSum / rtfactor::g_fireSamples),
                 (unsigned long long)(rtfactor::g_frameDrawSum / rtfactor::g_fireSamples),
                 (unsigned long long)rtfactor::g_fireAtMin,

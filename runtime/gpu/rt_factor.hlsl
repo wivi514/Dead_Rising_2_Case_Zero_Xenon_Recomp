@@ -18,12 +18,44 @@
 // stage, and reusing the graphics path means no compute pipeline layout, no separate
 // queue reasoning, and one shape of code to read.
 //
-// WHEN IT RUNS, and why that is not a heuristic: at the first draw of a pass that
+// WHERE THE RECEIVER COMES FROM — and this is the whole of part 66.
+//
+// ~~WHEN IT RUNS, and why that is not a heuristic: at the first draw of a pass that
 // samples the atlas. This title issues a real Z PREPASS — 233,155 depth-only draws
 // against 148,150 colour-mode ones over a boot (§6u) — so by the time its own first
-// shadow-sampling draw is recorded, the depth buffer holds the finished scene depth
-// for the region being shaded. The game's own draw order is the trigger; nothing here
-// guesses where the prepass ended.
+// shadow-sampling draw is recorded, the depth buffer holds the finished scene
+// depth.~~ **RETRACTED, against hardware, by tools/rt_depth_order_census.py.**
+//
+// That count was over a whole BOOT and says nothing about ORDER inside a frame. Walked
+// in stream order across all twenty `.xtr` world traces, the picture is the opposite:
+// the 233,155 depth-only draws are the SHADOW CASCADE (EDRAM depth base 0, pitch 1040,
+// RB_MODECONTROL 5, colour mask 0 — ~969 a frame), and the scene pass (base 736, pitch
+// 640) has **NO prepass at all**. In every trace the FIRST draw of the scene pass
+// already samples the cascade atlas, with 0 depth-writing draws before it and ~5,200
+// (about 2.0 million vertices) after it.
+//
+// So when this pass fires, the scene depth buffer is at its CLEAR VALUE. That is
+// exactly, and completely, what part 65's ladder measured: mode 8's dither said the
+// sampled depth does not vary and mode 9's mean said the value is 1.0. The descriptor
+// was never the suspect it looked like.
+//
+// The fix cannot be a better trigger, because no moment exists at which the depth is
+// both complete and still ahead of the draws that need it. It is to stop needing the
+// depth buffer: fire a PRIMARY RAY from the camera through the pixel into the same
+// TLAS the shadow ray uses, and take its closest hit as the receiver. The TLAS is
+// built from the PREVIOUS frame's draws (`rtshadow::g_prevKeys`), so it is fully
+// populated at the moment the pass runs, whatever the title's draw order is — the
+// defect is impossible by construction rather than timed around, which is the same
+// argument that chose route (b) over route (a).
+//
+// What it costs, stated rather than hidden: the TLAS holds only opaque depth-writing
+// draws, so a pixel covered by a skinned actor or by alpha-tested foliage receives the
+// factor of the opaque surface BEHIND it. Those meshes already cast no RT shadow
+// (§2 of the part-66 hand-off), so the tier is consistent with itself; adding them is
+// the MED/HIGH feature it always was, and it fixes both halves at once.
+//
+// `CZ_VK_RT_FACTOR_SOURCE=depth` restores the depth-buffer reconstruction as a
+// same-binary control arm.
 //
 // Compiled by tools/build_rt_shaders.sh (XenosRecomp's own DXC) into rt_factor_spv.h,
 // which is committed — the runtime build does not need DXC.
@@ -45,7 +77,10 @@ struct Push
                      //     radians — packed because 112 bytes is the guaranteed push
                      //     constant size and this was the last field
     float4 view;     // xy = 1 / factor-image size (SV_Position -> uv);
-                     // z  = CZ_VK_RT_FACTOR_DEBUG mode (0 = off); w unused
+                     // z  = CZ_VK_RT_FACTOR_DEBUG mode (0 = off);
+                     // w  = WHERE THE RECEIVER COMES FROM. 0 = the scene depth buffer
+                     //      (part 65's route, kept as the control arm), 1 = a PRIMARY
+                     //      RAY into the TLAS. See the header note above PsMain.
     float4 camera;   // xyz = camera world position (for the toward-camera bias), w = 0
 };
 [[vk::push_constant]] Push pc;
@@ -155,6 +190,24 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     //      shadowed.
     if (dbg == 14)
         return frac(uv.x * 8.0) < 0.5 ? 0.0 : 1.0;
+    //  15, 16  IS THE DESCRIPTOR REAL? `GetDimensions` reads the EXTENT, which comes
+    //      from the descriptor and not from the image's contents, so it separates "the
+    //      descriptor references a real image whose contents are genuinely far or
+    //      black" from "the descriptor references nothing" — the one thing modes 1, 8,
+    //      9, 12 and 13 all share and none of them can test. PASS = the frame goes
+    //      DARK (a bound image reports a width). Part 66 added these after finding
+    //      `g_colour` had never been written at all: the pass allocated a
+    //      three-element VkWriteDescriptorSet array and passed a count of TWO, which
+    //      the validation layer had been reporting since the feature was built
+    //      (`VUID-vkCmdDraw-None-08114`, "has never been updated"). Modes 12 and 13
+    //      were reading an unwritten descriptor, so their readings say nothing.
+    if (dbg == 15 || dbg == 16)
+    {
+        uint dw, dh;
+        if (dbg == 15) g_depth.GetDimensions(dw, dh);
+        else           g_colour.GetDimensions(dw, dh);
+        return dw > 16 ? 0.0 : 1.0;
+    }
     if (dbg == 13)
     {
         float3 c = g_colour.SampleLevel(g_point, uv, 0.0).rgb;
@@ -170,21 +223,98 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     if (dbg == 9)
         return saturate(z);
 
-    // Nothing was drawn here — sky, or a region this tile's prepass did not cover.
-    // 1.0 is LIT, which is the honest failure: the frame loses a shadow rather than
-    // gaining a black one.
-    if (z >= 0.999999)
-        return 1.0;
-
     // The renderer's viewport has NEGATIVE height, so NDC +1 is the TOP row and a
     // fragment's uv.y runs down from there. Getting this backwards mirrors every
     // shadow vertically, which is a thing that looks plausible in a still.
-    float4 clip = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
-    float w = dot(pc.invRow3, clip);
-    if (abs(w) < 1e-12)
-        return 1.0;
-    float3 world = float3(dot(pc.invRow0, clip), dot(pc.invRow1, clip),
-                          dot(pc.invRow2, clip)) / w;
+    const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+    float3 world;
+    // Mode 11 reports this and it exists only on the depth route; hoisted rather than
+    // deleted so the control arm keeps every probe it had.
+    float pdiv = 0.0;
+    // Modes 17 and 18 force the primary path whatever the source is set to: an
+    // instrument that silently does nothing under half its configurations is not an
+    // instrument, and the depth source is exactly the configuration someone would pair
+    // with them by accident.
+    if (pc.view.w != 0.0 || dbg == 17 || dbg == 18)
+    {
+        // ---- THE PRIMARY RAY. The receiver is the closest TLAS hit along the camera
+        // ray through this pixel, which needs no depth buffer and therefore has no
+        // moment at which it is too early to run. Unproject the pixel at both ends of
+        // the clip volume: the near point is the origin, and the segment between them
+        // is exactly the view frustum's extent at this pixel, so TMax needs no guess.
+        float4 cN = float4(ndc, 0.0, 1.0);
+        float4 cF = float4(ndc, 1.0, 1.0);
+        float wN = dot(pc.invRow3, cN);
+        float wF = dot(pc.invRow3, cF);
+        if (abs(wN) < 1e-12 || abs(wF) < 1e-12)
+            return 1.0;
+        float3 pN = float3(dot(pc.invRow0, cN), dot(pc.invRow1, cN),
+                           dot(pc.invRow2, cN)) / wN;
+        float3 pF = float3(dot(pc.invRow0, cF), dot(pc.invRow1, cF),
+                           dot(pc.invRow2, cF)) / wF;
+        float3 seg = pF - pN;
+        float segLen = length(seg);
+        if (!(segLen > 1e-6))
+            return 1.0;
+
+        RayDesc pr;
+        pr.Origin = pN;
+        pr.Direction = seg / segLen;
+        pr.TMin = 0.0;
+        pr.TMax = segLen;
+        // NOT `ACCEPT_FIRST_HIT_AND_END_SEARCH`: the shadow ray wants any hit, the
+        // primary ray wants the CLOSEST one, and using the shadow ray's flags here
+        // would place the receiver on whichever triangle the traversal reached first.
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> pq;
+        pq.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, pr);
+        // A LOOP, not a single call. `ACCEPT_FIRST_HIT_AND_END_SEARCH` lets the shadow
+        // ray below get away with one Proceed(); a closest-hit query must be driven to
+        // completion or it reports whatever traversal had reached when it stopped.
+        while (pq.Proceed())
+            ;
+        bool hit = pq.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+
+        //  17  DOES THE PRIMARY RAY FIND THE WORLD? `hit ? shadow : lit`. PASS = the
+        //      world turns black and the sky stays lit — the same picture mode 1 was
+        //      supposed to produce and never did. THIS IS THE GATE: no build goes to
+        //      the operator until this arm lands near the all-shadow calibration
+        //      (90.2) rather than near the all-lit one (99.9). Part 65 handed over
+        //      three builds without meeting the equivalent gate and spent three of the
+        //      operator's sessions learning it was not met.
+        //  18  HOW FAR is the hit — saturate(t / 500). A gradient that gets darker
+        //      toward the camera, i.e. a depth image made entirely of rays. It
+        //      separates "the rays hit something" from "the rays hit the right thing":
+        //      a TLAS full of junk geometry at the origin reads uniformly black here
+        //      while mode 17 still passes.
+        if (dbg == 17)
+            return hit ? 0.0 : 1.0;
+        if (dbg == 18)
+            return hit ? saturate(pq.CommittedRayT() / 500.0) : 1.0;
+
+        if (!hit)
+            return 1.0;                   // sky, or geometry the TLAS does not carry
+        world = pN + pr.Direction * pq.CommittedRayT();
+    }
+    else
+    {
+        // ---- THE DEPTH BUFFER, part 65's route. Kept as the same-binary control arm
+        // (`CZ_VK_RT_FACTOR_SOURCE=depth`) and NOT as a fallback: on this title it is
+        // known to read its clear value at the moment this pass runs, so a silent
+        // fallback to it would be a silent fallback to "no shadows".
+        //
+        // Nothing was drawn here — sky, or a region this pass ran ahead of.
+        // 1.0 is LIT, which is the honest failure: the frame loses a shadow rather
+        // than gaining a black one.
+        if (z >= 0.999999)
+            return 1.0;
+        float4 clip = float4(ndc, z, 1.0);
+        pdiv = dot(pc.invRow3, clip);
+        if (abs(pdiv) < 1e-12)
+            return 1.0;
+        world = float3(dot(pc.invRow0, clip), dot(pc.invRow1, clip),
+                       dot(pc.invRow2, clip)) / pdiv;
+    }
 
     //  10  HOW BIG is the reconstructed position — saturate(length(world)/1000). The
     //      town is ~1,100 units across (§6cu), so a correct reconstruction lands
@@ -194,10 +324,12 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     //      the other — or from a broken depth read — in the frame itself.
     //  11  the perspective divide's own denominator, saturate(|w|). If this is ~0 the
     //      division that follows produces infinities whatever the rest of the matrix is.
+    //      DEPTH SOURCE ONLY — the primary ray has no perspective divide, and reads 0
+    //      (all-shadow) there, which is the honest answer rather than a plausible one.
     if (dbg == 10)
         return saturate(length(world) / 1000.0);
     if (dbg == 11)
-        return saturate(abs(w));
+        return saturate(abs(pdiv));
     if (dbg == 2)
     {
         float3 c = floor(world / 4.0);
