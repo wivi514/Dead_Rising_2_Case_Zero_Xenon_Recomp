@@ -10,12 +10,16 @@
 > and the Fable 2 port is NOT a renderer reference (operator instruction, part
 > 59). Part 64's runs were headless MEASUREMENT — luma statistics, atlas dumps,
 > occlusion queries — which is the part-61/62 practice for instruments. **The
-> LOOK verdict has not been asked for.** Part 64 closed with the arm at 72.00
-> outdoor median luma against OG's 80.61, having started at 63.7 next to an
-> all-shadow floor of 61.2 — so it is no longer shadowing the world against
-> itself, but whether the remaining 8.6 is correct added shadowing or residual
-> defect is exactly the question §1 item 0 settles cheaply first. Do that, then
-> ask.
+> LOOK verdict has not been asked for and should not be yet**: on complete runs
+> every RT arm sits at 66.1-66.4 outdoor median luma against OG's 80.61, next to
+> an all-shadow floor of 61.2. The arm still over-shadows heavily and an operator
+> session would only re-report that.
+>
+> **READ §6cv 7e BEFORE ANY OF THE NUMBERS BELOW.** Part 64 quoted three
+> "improvements" that were read from stats files still being written, and all
+> three dissolved when the runs finished. Every median in this document is now
+> from an EXITED process and carries its frame count; keep it that way
+> (gotcha 384).
 
 ## 0. Read these first, and do not re-measure them
 
@@ -41,46 +45,46 @@
   mechanism that is real and immaterial is worth as much to the next session as
   one that is real and decisive — it stops the item being re-bought.
 
-* **The largest term was found and fixed at part 64's close: the light matrix
-  was bound by RECENCY and that binding is false.** A distinctness count read
-  **0 slices with one c0-3 and 28,704 with several** — the cascade pass is not a
-  single-matrix pass. Binding by DATAFLOW (capture only from cascade draws of
-  streams the SCENE pass has vouched for as world-space) moved the arm
-  **63.71 → 72.00** outdoor median luma, coverage **86.3% → 61.3%**, accepting
-  1,293,758 draws and rejecting 849,840 object-transform ones.
-  `CZ_VK_RT_ANY_MATRIX=1` is the control arm. In the same run the matrix inverse
-  self-check cleared its hypothesis (2.38e-07), so that candidate is closed too.
+* **Three real defects were found and fixed, and NONE of them moved the
+  picture.** Each rests on a count that does not drift; each fix is right on its
+  own terms; on complete runs the three arms are indistinguishable.
+  * junk geometry at ±6.3M units entering the BLAS — gated;
+  * the title's cascade being **52.8% EMPTY** (it draws casters, not receivers)
+    — `CZ_VK_RT_CASTERS=cascade`;
+  * the light matrix bound by RECENCY, when the cascade pass carries **several**
+    distinct c0-3 per slice (**0 slices with one, 28,704 with several**) — now
+    bound by DATAFLOW, with `CZ_VK_RT_ANY_MATRIX=1` as the control.
+  Keep all three, re-buy none of them, expect none of them to be the answer.
+  The matrix-inverse self-check also cleared its own hypothesis in the same run
+  (worst |M·M⁻¹ − I| = 2.38e-07), so that candidate is closed.
 
 ## 1. The work, in order
 
-0. **READ ONE NUMBER FIRST — it decides which fix you build.** The `[rt]` line's
+0. **READ ONE NUMBER FIRST — it halves the search.** The `[rt]` line's
    `slice matrix (WORLD-VOUCHED ONLY)` count now runs after the dataflow filter
    and prints the mean distinct count. **ONE** distinct matrix per slice means
-   the selection is exact and the residual (72.00 against OG's 80.61) is
-   elsewhere — the surviving suspects are the depth convention and the slice
-   rectangle. **FOUR** means the title renders all four cascades before resolving
-   any of them: every matrix is legitimate, one per cascade, and what is left is
-   the slice↔matrix PAIRING, whose fix is different in kind (associate each
-   captured matrix with the resolve that follows the draws it belongs to, in
-   order, rather than by recency). Part 64 queued a run for this and it may
-   already be in `phase5-notes.md` §6cv 7d.
+   the slice↔matrix pairing is right and the remaining suspect is the DEPTH
+   CONVENTION — the guest's viewport Z scale/offset (`PA_CL_VTE_CNTL`'s Z bits,
+   `kPaClVportZScale`/`ZOffset`) are decoded NOWHERE in this renderer, which
+   hardcodes minDepth 0 / maxDepth 1. **FOUR** means the title renders all four
+   cascades before resolving any of them: every matrix legitimate, one per
+   cascade, and the defect is the PAIRING, whose fix is an ordered association
+   of each matrix with the resolve that follows its draws, not recency.
 
 1. **The three statistics that judge this arm, in this order** (all are in §6cv
    with their part-64 values, so the job is to re-read them after any change):
-   * `CZ_VK_RT_COVERAGE=1`'s won-fraction. **61.3%** after the binding fix, from
-     86.3% before it. The caster arm was measured and helps only a little
-     (86.4% / 66.14 luma) — the occluder set is real but was never the largest
-     term, which is why §6cv §6's second reading turned out to be the right one.
+   * `CZ_VK_RT_COVERAGE=1`'s won-fraction, read AT EXIT: **54.2% / 52.8% /
+     52.4%** for the three arms. (Read mid-run it says ~86% — the counter is
+     cumulative and the early frames are menus with tiny slices.)
    * the atlas diff — `CZ_VK_SNAP_DUMP` on an RT run and an OG run at the same
      stationary camp, then convert the stretched greys back through the printed
      24-bit range. **Report BOTH tails** (gotcha 382): today nearer 49.6% /
      farther 1.3%.
-   * outdoor median `meanLuma` against OG's **80.61**; the arm is at **72.00**
-     today. Expect RT to sit somewhat BELOW OG — real added occluders darken a
-     scene — but nowhere near the all-shadow floor of **61.2-61.4**. Whether
-     72.00 is already "correct with added shadows" or still over-shadowed is a
-     LOOK question, and it is the first thing worth an operator's eye once the
-     number above says the selection is exact.
+   * outdoor median `meanLuma` with its FRAME COUNT, against OG's **80.61**
+     (n=11,243). The arms are at **66.34** (n=6,484), **66.14** (n=10,991) and
+     **66.40** (n=6,550). Expect a correct RT arm to sit somewhat below OG — real
+     added occluders darken a scene — but nowhere near the all-shadow floor of
+     **61.2-61.4**, which is where these sit.
 2. **Re-price the bias.** `CZ_VK_RT_BIAS=0.05` was worth +10 luma on the BROKEN
    build (63.72 → 73.89) purely by hiding a wrong transform; that reading is
    retired. On the fixed build the default 0.0015 has never been swept. Sweep it
