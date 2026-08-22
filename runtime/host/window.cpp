@@ -1,4 +1,5 @@
 #include "window.h"
+#include "../gpu/vk_renderer.h"
 
 #include <atomic>
 #include <cstdio>
@@ -448,7 +449,7 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 380;   // 380: six rows since part 61 (FOV)
+    const int panelW = 640, panelH = 420;   // 420: seven rows since part 64 (RT)
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -499,16 +500,23 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     char fovName[8] = "OG";
     if (const int fov = Settings_Fov(); fov != 0)
         snprintf(fovName, sizeof fovName, "%+d", fov);
-    const char* rows[6][2] = {
+    // The RT SHADOWS row (part 64): OG is exactly today's renderer and the
+    // default; RT LOW is the traced cascade. UNSUPPORTED when the device probe
+    // failed — the row then refuses to move (the gamma-slider rule). MED/HIGH
+    // wait for LOW's operator verdict and a priced ladder (rt-and-fov-plan §3).
+    const char* rtName = !VkRenderer_RtAvailable() ? "UNSUPPORTED"
+                         : Settings_RtShadows() ? "RT LOW" : "OG";
+    const char* rows[7][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
         { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
         { "FRAME CAP", capName },
         { "FIELD OF VIEW", fovName },
+        { "RT SHADOWS", rtName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 7; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)

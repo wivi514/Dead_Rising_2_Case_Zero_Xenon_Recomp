@@ -811,12 +811,31 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     fprintf(stderr, "[pcopt] fov %+d — live\n", fov);
                     break;
                 }
+                case 6:
+                {
+                    // RT SHADOWS (part 64): OG <-> RT LOW. Refused, loudly, on a
+                    // device without ray query — the row shows UNSUPPORTED and a
+                    // press must not silently write a setting the renderer will
+                    // ignore. Applies LIVE (rtshadow::TierThisFrame re-reads it).
+                    if (!VkRenderer_RtAvailable())
+                    {
+                        fprintf(stderr, "[pcopt] rt shadows: UNSUPPORTED on this "
+                                        "device — row refused\n");
+                        break;
+                    }
+                    const int rt = Settings_RtShadows() ? 0 : 1;   // two values: toggle
+                    (void)dir;
+                    Settings_SetRtShadows(rt);
+                    fprintf(stderr, "[pcopt] rt shadows %s — live\n",
+                            rt ? "RT LOW" : "OG");
+                    break;
+                }
             }
         };
         int sel = Settings_OverlaySelection();
         if (pressed & (kUp | kDown))
         {
-            sel = (sel + ((pressed & kDown) ? 1 : 5)) % 6;
+            sel = (sel + ((pressed & kDown) ? 1 : 6)) % 7;
             Settings_SetOverlaySelection(sel);
         }
         else if (pressed & (kLeft | kRight))

@@ -53,6 +53,9 @@ int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
                                         // ADJUSTMENT from the game's own camera,
                                         // -10..+30 in steps of 1; 0 = OG, the
                                         // default and the bit-identical control
+int           Settings_RtShadows();     // RT SHADOWS row (part 64): 0 = OG (the
+                                        // raster cascade, default), 1 = RT LOW.
+                                        // Env CZ_VK_RT_SHADOWS wins over this.
 int           Settings_Aspect();        // LEGACY: 1 when the internal res is wider than
                                         // 16:9. Derived; new code reads Settings_InternalRes
 
@@ -77,6 +80,7 @@ void Settings_SetVSync(bool on);
 void Settings_SetShadowTier(int tier);
 void Settings_SetFpsCap(int fps);
 void Settings_SetFov(int deg);
+void Settings_SetRtShadows(int tier);
 void Settings_SetAspect(int aspect);
 
 // The live-apply seam for the display mode: window.cpp polls this from its own

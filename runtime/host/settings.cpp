@@ -22,6 +22,9 @@ struct State
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
     int fov = 0;                // degrees of fov adjustment, -10..+30; 0 = OG (part 61)
     int aspect = 0;             // 0 = 16:9 (the title's own), 1 = 21:9 (part 60 wide mode)
+    int rtShadows = 0;          // 0 = OG (default), 1 = RT LOW (part 64). MED/HIGH are
+                                // refused until the tier ladder is priced on the
+                                // operator's machine (rt-and-fov-plan.md §3).
 };
 
 // The frame-cap values the panel offers. A set rather than a range because the vblank
@@ -65,10 +68,11 @@ void SaveLocked()
             "shadow_tier=%d\n"     // 0 low, 1 medium, 2 high
             "fps_cap=%d\n"         // 0 = off, else 30/60/90/120/240/480
             "fov=%d\n"             // field-of-view adjustment in degrees, -10..+30, 0 = OG
-            "aspect=%d\n",         // 0 = 16:9, 1 = 21:9 (applies at next launch)
+            "aspect=%d\n"          // 0 = 16:9, 1 = 21:9 (applies at next launch)
+            "rt_shadows=%d\n",     // 0 = OG, 1 = RT LOW (needs a ray-query device)
             int(g_state.displayMode), g_state.resW, g_state.resH, g_state.renderScale,
             g_state.vsync ? 1 : 0, g_state.shadowTier, g_state.fpsCap, g_state.fov,
-            g_state.aspect);
+            g_state.aspect, g_state.rtShadows);
     fclose(f);
 }
 
@@ -122,6 +126,8 @@ void Settings_Load(const std::string& path)
             g_state.vsync = v != 0;
         else if (!strcmp(key, "shadow_tier") && v >= 0 && v <= 2)
             g_state.shadowTier = int(v);
+        else if (!strcmp(key, "rt_shadows") && v >= 0 && v <= 1)
+            g_state.rtShadows = int(v);
         else if (!strcmp(key, "aspect") && v >= 0 && v <= 1)
             legacyAspect = int(v);
         else if (!strcmp(key, "fps_cap"))
@@ -219,6 +225,22 @@ int Settings_Fov()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_state.fov;
+}
+
+int Settings_RtShadows()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.rtShadows;
+}
+
+void Settings_SetRtShadows(int tier)
+{
+    if (tier < 0 || tier > 1)
+        return;   // MED/HIGH do not exist yet; refusing is honest (the gamma rule)
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_state.rtShadows = tier;
+    SaveLocked();
+    // Applied LIVE: rtshadow::TierThisFrame re-reads it per frame, vk_renderer.cpp.
 }
 
 void Settings_SetFov(int deg)

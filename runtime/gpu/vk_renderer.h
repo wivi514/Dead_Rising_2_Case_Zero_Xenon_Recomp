@@ -72,6 +72,12 @@ void VkRenderer_RequestSwapchainRebuild();
 // CZ_VK_RES/CZ_VK_RES_SCALE pin the scale for a measurement run.
 void VkRenderer_RequestRenderScale(uint32_t scale);
 
+// RT stage 2 (part 64): true when the device was created with ray query (probe
+// passed and CZ_VK_RT did not veto). The settings panel's RT SHADOWS row consults
+// it to show UNSUPPORTED and refuse to move — a row that pretends is the gamma
+// slider again. Safe to call before init (false then).
+bool VkRenderer_RtAvailable();
+
 // The wide-mode horizontal factor k = (9*W)/(16*H) of the internal resolution
 // (1.0 at 16:9). Exported for the game-side fov substitution (cpu/camera_fov.cpp,
 // part 62): in wide mode the game's fov is over-widened by k in tan space so its
