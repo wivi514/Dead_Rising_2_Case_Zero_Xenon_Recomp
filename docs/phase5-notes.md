@@ -13702,3 +13702,75 @@ Gates at close, on the final binary with RT off (the shipped default): `--smoke`
 OK; A5 exit 0 (4 permutation windows, 0 real); `shader_dim_census.py` clean on
 all six caches; the RT caches differ from their plain rebuilds in exactly 126
 modules each; **validation identical between the RT arm and its null**.
+
+
+### 9. THE OPERATOR'S SESSIONS — the gate passed, and then three attempts at one bug
+
+**Session 2's report, in the operator's words: the poison arm darkened the world
+("maybe shadow on floor everywhere"), and every other arm had NO shadows — "no
+shadows from zombies or object".** Both halves are findings.
+
+**The gate PASSED.** Poison darkening the frame is the whole purpose of that arm:
+it says our factor image is read by all 126 patched shaders and drives the
+title's own shadow term. That is route (b)'s injection point proven, the same
+standard route (a)'s `CZ_VK_SHADOW_FILL` met, and it is the one result that could
+have killed the route outright.
+
+**And then: no shadows at all — not wrong ones, absent ones.** The cause was in
+the logs of both sessions and nobody had printed enough to see it. In gameplay
+the captured sun read **(-0.010, 1.000, 0.020) with a 3587.7-unit light volume**:
+straight down, over a town §6cu measured at ~1,100 units across. Two effects
+compound into exactly "no shadows" — a vertical sun puts every shadow directly
+underneath its caster, and the ray-origin bias derived from that volume
+(0.0015 x 3587.7 = **5.4 world units**) lifts the ray start clear of a zombie or
+a van before the ray is cast at all.
+
+Route (a) never met this because it CONSUMED the matrix at each cascade resolve;
+route (b) reads at draw time and never consumes, so the capture became
+last-write-wins over the whole frame.
+
+**Three attempts, and the two failures are what make the third principled:**
+
+1. **Latch at a cascade resolve** — the pairing route (a) had for free. The new
+   direction census came back **3 distinct** on a gameplay run:
+   (-0.381, 0.812, -0.443) vol 20.6 x33,644 and (-0.366, 0.548, -0.752) vol 61.2
+   x6,540 — the sun at two times of day — plus the vertical one, vol 3587 x3,800.
+   Something else shares the cascade pass's configuration and resolves too.
+2. **Bind the atlas by DATAFLOW**, to the surface the census's own shaders fetch
+   (headless: one candidate, `1439B000` 4096x1024, 7.5M fetches — the same guest
+   shape the hardware traces measured, so a two-sided agreement). The gameplay run
+   returned **the same three directions**: the intruder resolves INTO that
+   surface. Right, and insufficient.
+3. **Dumping the atlas said why.** It holds THREE populated cascade slices of the
+   street — power lines, lamppost, trees, at three visibly different scales — plus
+   an empty fourth quarter. Whatever carries the vertical matrix is sharing the
+   sun's own 4096x1024 destination, so no property of the DESTINATION can separate
+   them.
+
+**What cannot be shared is the DIRECTION.** Every cascade of one directional
+light points the same way however different their volumes (20.6 and 61.2 here for
+the same sun), so within a frame the sun is the direction the most slices agree
+on and a minority is a different light. That is a property of directional lights,
+not a tuned cut-off, and being per-frame it tracks the time of day for free —
+which is required, since the census shows the sun at two elevations in one
+session. A tie keeps the standing direction, so one stray slice can never flip
+the sun.
+
+**And it works.** Gameplay now reads `sun=(-0.363 0.544 -0.756) won 3/2 slice
+votes`, 3 switches over 40,435 factor passes, and the bias falls from **5.382 to
+0.159 world units** because it is derived from a 106-unit volume instead of a
+3,588-unit one. A 33-degree sun is what that scene's low orange light wants.
+
+The pictures agree, at the same spot in the same session, seven minutes apart
+(`~/DR2CZ-troubleshooting/part65-sunfix/`): **before**, the street is uniformly
+flat — no shadow under the van, under Chuck, under either zombie, and no band
+along the right-hand sidewalk. **After**, all of those are present and the
+sidewalk carries a long shadow from the buildings. The operator's verdict on
+shape — acne, detachment, tier differences — is still owed.
+
+**The lesson, and it is the part that transfers**: printing only the LAST value
+of a captured binding hid this for two sessions. The distinct-value census that
+found it is the same instrument shape as part 64's slice-matrix count and this
+part's scene-composite check — and it was added only after the picture said
+something was wrong. A binding worth trusting is worth counting from the day it
+is written.
