@@ -13347,6 +13347,58 @@ sample and warns against LOOKING as measurement; the complement is equally true
 and was the expensive half here: a number is one statistic, and for a question
 about WHICH SURFACES it is the blind one.
 
+### 7j. The bias is not the lever either, and the INVARIANCE is the finding
+
+The sweep, on the replace+caster build, complete runs:
+
+| `CZ_VK_RT_BIAS` | n | median meanLuma |
+|---|---|---|
+| 0.0015 (default) | 9,381 | 64.35 |
+| 0.01 (6.7x) | 9,063 | 64.79 |
+
+**A 6.7-fold bias increase moved 0.44 luma against a 16-luma gap.** Put that
+next to every other arm this part built and the pattern is the result:
+
+| what was changed | median meanLuma |
+|---|---|
+| OG | **80.61** |
+| union, camera's world set | 66.34 |
+| union, title's caster set | 66.14 |
+| union, dataflow-bound matrix | 66.40 |
+| replace, caster set, bias 0.0015 | 65.98 / 64.35 |
+| replace, caster set, bias 0.01 | 64.79 |
+| all-shadow floor | 61.18 |
+
+**Every configuration lands in 64-66.** Occluder set, union versus replacement,
+the matrix binding, the bounds gate, the bias — five independent knobs, and the
+frame does not care about any of them. That invariance is worth more than any
+single arm: it says the darkening is not a parameter that is mis-set, it is a
+property of what this route DOES. Route (a) writes a depth that the title's own
+comparison reads as "occluded" for essentially every surface, and nothing
+available on this route changes that.
+
+**The one hypothesis this part did not get to test**, recorded so it is not
+lost: that a slice's traced content is written into the correct QUARTER of the
+atlas but paired with a different cascade's matrix — which would look exactly
+like this (a plausible shadow map, wrong for the cascade the receiver reads,
+insensitive to every knob). The distinctness count cannot catch it: it verifies
+that one matrix governs a slice, not that the matrix BELONGS to that slice. The
+test is a content comparison between our traced quarter and the raster quarter
+it replaced, per cascade index, and it is the first thing to run if anyone
+returns to route (a).
+
+**The honest recommendation, though, is not to.** §8's ceiling note said route
+(a) buys exact depths and missing occluders and can never buy soft or per-pixel
+shadows; this part now adds that it cannot buy correct ones either, because
+writing the MAP means every receiver in the map occludes itself and there is no
+receiver-side offset to apply. Route (b) — patch the ~dozen shadow-sampling
+pixel shaders to read a screen-space traced FACTOR — does not have this problem
+by construction: the factor is computed per receiving pixel, from that pixel's
+own position, so a surface cannot shadow itself. Every piece part 64 built
+(BLAS, TLAS, the sun-matrix capture and its dataflow binding, the arms, the
+profiler phase) is reusable by it unchanged. **That is the recommendation to put
+to the operator.**
+
 ### 8. Where part 64 leaves it
 
 **Closed by measurement** (complete runs, large n): the injection route, the
