@@ -776,19 +776,28 @@ the arms are in `instruments.md`; the lessons are gotchas 381-383):
   noisier version of the same one** (gotchas 384-385). Gate every read on the process
   having EXITED and quote the frame count beside every median.
 * **Open, and part 65's first job: every RT arm over-shadows by ~14 luma and the
-  cause is none of the three above.** Two suspects survive, neither tested, both
-  cheap: the DEPTH CONVENTION (the guest's viewport Z scale/offset are decoded
-  NOWHERE in this renderer, which hardcodes minDepth 0 / maxDepth 1) and the SLICE
-  RECTANGLE. One number separates them — the `[rt]` line's world-vouched distinctness
-  count, now taken after the dataflow filter. **Do not ask the operator for a LOOK
-  verdict yet**; the arm still shadows the world against itself.
+  cause is none of the three above.** Two suspects were named and **one was
+  eliminated in the part's last run**: the slice<->matrix PAIRING is exact
+  (10,192 slices carried exactly ONE world-vouched c0-3, 0 carried several), so the
+  ordered-association fix must not be built. **The last named suspect is the DEPTH
+  CONVENTION** — `PA_CL_VTE_CNTL`'s Z bits and `kPaClVportZScale`/`ZOffset` are
+  decoded NOWHERE in this renderer, which hardcodes minDepth 0 / maxDepth 1 while
+  the trace writes a raw NDC z; the two agree with EACH OTHER, which is exactly why
+  the traced atlas looks right, and both would disagree with the title's
+  receiver-side comparison. Printing three registers on a cascade draw settles it.
+  **Do not ask the operator for a LOOK verdict yet**; the arm still shadows the
+  world against itself.
+* **Gates at close** (final binary, RT off = the shipped default): `--smoke` OK;
+  **A5 exit 0, 4 permutation windows, 0 real**; `no translated shader` = 0 on the
+  plain boot and all three RT runs; unlowered switches 0 defects; shader dim census
+  0 disagreements. Carry-overs unchanged from parts 62-63.
 * **Know route (a)'s ceiling before spending another part on it**: tracing INTO the
   4096x1024 atlas cannot beat the atlas's resolution, so it buys exact depths and
   missing occluders, never soft or per-pixel shadows. Route (b) (patch the ~dozen
   shadow-sampling PS to read a screen-space traced factor) is where a quality tier
   lives, and every piece built here is reusable by it unchanged. The panel's RT
   SHADOWS row ships OG / RT LOW only, refusing MED/HIGH at the setter until the
-  ladder is priced. Carry-overs unchanged from parts 62-63.
+  ladder is priced.
 
 Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
 GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
