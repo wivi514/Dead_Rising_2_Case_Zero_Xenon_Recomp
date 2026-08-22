@@ -9329,6 +9329,7 @@ uint64_t g_drawsTotal = 0, g_formDraws[3] = {};
 // count is the size of stage 2's "skinned actors stay OG" exclusion. Cube faces are
 // the 1:1-ratio cameras; the rest is shadow orthos and anything unrecognized.
 uint64_t g_affineDraws = 0, g_affineZwrite = 0, g_cubeDraws = 0, g_otherDraws = 0;
+uint64_t g_shadowDraws = 0;
 uint64_t g_zwriteComposite = 0;
 uint64_t g_primHist[16] = {};
 // fmt | signed<<8 | integer<<9 | indirect<<10 — the exact tuple a BLAS builder binds.
@@ -9377,10 +9378,11 @@ void Dump()
             (unsigned long long)g_formDraws[1], (unsigned long long)g_formDraws[0],
             (unsigned long long)g_zwriteComposite);
     fprintf(stderr,
-            "[rt-census]   form0 split: affine(skinned)=%llu (zwrite=%llu) "
-            "cubeface=%llu other(shadow/etc)=%llu\n",
-            (unsigned long long)g_affineDraws, (unsigned long long)g_affineZwrite,
-            (unsigned long long)g_cubeDraws, (unsigned long long)g_otherDraws);
+            "[rt-census]   form0 split: shadow(pitch1040)=%llu affine(skinned)=%llu "
+            "(zwrite=%llu) cubeface=%llu other=%llu\n",
+            (unsigned long long)g_shadowDraws, (unsigned long long)g_affineDraws,
+            (unsigned long long)g_affineZwrite, (unsigned long long)g_cubeDraws,
+            (unsigned long long)g_otherDraws);
     fprintf(stderr, "[rt-census] world prims:");
     static const char* primName[16] = { "?",     "point", "line",  "linestrip",
                                         "trilist", "trifan", "tristrip", "?",
@@ -9639,9 +9641,19 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
         const float n3sq = dot3(3, 3);
         if (n3sq < 0.004f)
         {
-            ++g_affineDraws;
-            if ((depthControl >> 2) & 1)
-                ++g_affineZwrite;
+            // Shadow ORTHO composites also have a zero row3 xyz norm, so "affine"
+            // alone merges the cascade pass with the skinned actors. The cascade is
+            // identified by its measured EDRAM pitch (1040 — part 60's tier
+            // predicate, nothing else in the frame uses it); what remains is the
+            // skinned-actor population, the size of stage 2's exclusion.
+            if ((regs[xenos::kRbSurfaceInfo] & 0x3FFF) == 1040)
+                ++g_shadowDraws;
+            else
+            {
+                ++g_affineDraws;
+                if ((depthControl >> 2) & 1)
+                    ++g_affineZwrite;
+            }
         }
         else if (std::fabs(n3sq - 1.0f) < 0.004f)
         {
