@@ -13137,6 +13137,32 @@ Stating both branches with their predicted numbers, before the run, is the point
 this section has already once (in §7) named a real mechanism that turned out not
 to be the material one.
 
+**The full run of the fix — and it is the largest single improvement of the part:**
+
+| arm (all `CZ_VK_RT_SHADOWS=1`, camp crowd) | coverage won | outdoor median luma |
+|---|---|---|
+| scene occluders, last-write-wins matrix | 86.3% | 63.71 |
+| the title's own casters (`CZ_VK_RT_CASTERS=cascade`) | 86.4% | 66.14 |
+| **dataflow-bound matrix** | **61.3%** | **72.00** |
+| OG (no RT) | — | 80.61 |
+| all-shadow floor (poison / fill) | — | 61.2-61.4 |
+
+Over the whole run the filter accepted **1,293,758** world-vouched draws and
+rejected **849,840** object-transform ones. So the false binding was worth
+**+8.3 luma of the 17-luma gap** and a quarter of the coverage — much the
+largest term found, and it confirms the diagnosis rather than merely being
+consistent with it.
+
+**One caution recorded because it nearly became a wrong conclusion.** The atlas
+DIFF of this arm against OG reads essentially unchanged (nearer 49.6%, p05
+-0.090, at-far 36.9% vs 37.0%) even though the run-wide coverage fell by a
+quarter and the luma moved 8 points. That is not a contradiction, it is the
+difference between **one dumped frame and a whole run** — the F9 dump lands
+wherever it lands, and gotcha 133 says one frame of an animated scene is one
+sample. The run-wide statistics are the ones to quote; the single-frame diff was
+the right instrument for FINDING the defect and is the wrong one for measuring a
+fix.
+
 ### 8. Where part 64 leaves it
 
 Closed by measurement: the injection route, the depth convention, that the trace
