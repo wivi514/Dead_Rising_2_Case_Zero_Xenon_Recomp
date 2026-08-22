@@ -13057,6 +13057,55 @@ before either number landed and is aimed exactly at the second: it traces the
 pitch-1040 pass's own casters, which is by construction the same population the
 raster atlas holds.
 
+### 7c. THE ROOT CAUSE: the light matrix was bound by RECENCY, and that binding is false
+
+§7b's occluder-set story was measured and it is real, but it is not the whole
+defect — `CZ_VK_RT_CASTERS=cascade` traces the title's own casters (190 TLAS
+instances against the scene set's 363) and reads **66.14** against the scene
+arm's **63.71**, an improvement of 2.4 luma against a gap to OG of 17. Something
+else was wrong, and it was wrong in a way no choice of occluder set could fix.
+
+Two checks went in, both of the "ask what would REFUTE this" kind rather than
+the "does it look plausible" kind, and one run answered both:
+
+* **The inverse is correct.** The trace inverts the captured matrix in doubles
+  and the shader reads the result row-major; inversion code silently returns the
+  transpose when fed the other convention, and a transposed inverse still
+  produces rays, still fills the atlas and still looks like a shadow map.
+  Multiplying it back out: worst `|M*Minv - I|` = **2.38e-07**. Eliminated
+  cleanly, and logged on success as well as failure — a check that only prints
+  when it fails cannot be told apart from a check that never ran.
+* **The slice-matrix binding is REFUTED.** The design assumed every rigid draw
+  in a cascade slice carries the same c0-3 (the sun's view-projection), so
+  last-write-wins pairs each resolve with its slice's matrix. Counting DISTINCT
+  matrices between resolves: **0 slices had ONE, every slice had SEVERAL.**
+
+So each slice was being traced through *one of several* frames of reference,
+picked by recency. That is the systematic depth disagreement §6 predicted and
+§7 mis-attributed, and it explains the shape of everything else: why a 33x bias
+half-worked (it hides a wrong transform where the error happens to be small),
+why the bounds gate changed nothing, and why the caster arm helped only a
+little — **both of those change WHAT is traced; neither changes the transform it
+is traced through.**
+
+**The fix is to bind by dataflow, and the oracle is the scene pass.** A stream
+the scene pass draws under a world-space composite is world-space (§6cs); when
+the CASCADE pass draws those same bytes, its c0-3 must therefore be the pure
+light view-projection with no per-object world matrix folded in. Capturing only
+from cascade draws of streams the scene pass has already vouched for selects
+exactly the right matrix, and the draws whose c0-3 carries an object transform
+are exactly the ones that fail the test. `CZ_VK_RT_ANY_MATRIX=1` restores
+last-write-wins as the same-binary control arm.
+
+**The lesson, and it is one this project has written down before**
+(bind-symbol-tables-by-dataflow, in the session memory since part 39): *pairing a
+value with the nearest write is off by one, and the question is what would
+refute the binding, not what confirms it.* Here the binding looked confirmed by
+the strongest evidence available — the traced atlas is recognizably a shadow map,
+with the same trees, poles and buildings as the raster one — because a wrong
+transform among several related ones still produces a plausible picture. It took
+a COUNT to refute it, and the count is four lines.
+
 ### 8. Where part 64 leaves it
 
 Closed by measurement: the injection route, the depth convention, that the trace
