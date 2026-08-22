@@ -16,14 +16,18 @@ OG is exactly today's renderer and stays the default and the control arm.**
 
 ## 0. The FOV slider (ships first, independent of everything below)
 
-> **SHIPPED IN PART 61** (5b9fbba; record `phase5-notes.md` §6cr). All three
-> verify legs green headlessly (null byte-identical, card ratios 0.716/0.714 vs
-> 0.7174 predicted at +15, whole-scene coherence outdoors composed with wide
-> mode). **One design revision against this section, measured not chosen: the
-> HUD scales with the slider** — the title has exactly ONE recognized projection
-> game-wide (vfov 45.00°, census), the UI rides it, and the depth-state
-> exemption candidate was refuted (gotchas 378-379). Ships as a stated trade;
-> operator comfort pass owed.
+> **SHIPPED IN PART 61 (5b9fbba), CORRECTED THE SAME NIGHT IN PART 62
+> (943227d; the record is `phase5-notes.md` §6cs)**: the part-61 form patched
+> only the raw projection, which is the UI/frontend — the WORLD rides a
+> view-projection COMPOSITE at c0-3 that this plan (and part 60's wide patch)
+> never anticipated. The shipped design is **composite-only fov**: the world
+> moves, the HUD stays pixel-static — better than this section's design, no
+> HUD trade needed (`CZ_VK_FOV_RAW=1` restores UI-scaling for A/B). "The
+> game's vertical half-fov is atan(1/B)" holds with B = the composite's OWN
+> ||row1|| (the gameplay camera is 41.64°, not the raw form's 45°, with a
+> per-camera zoom). Null byte-identical; same-run flip is the verification
+> form (gotcha 378 rewritten). Operator verdicts owed on the re-scoped slider
+> AND on wide-mode gameplay, which the composite fix unstretched.
 
 **What exists already**: the wide-mode projection patch (part 60) — a structural
 recognizer for the title's 16:9 scene perspectives (`Is169Perspective`) and a patch

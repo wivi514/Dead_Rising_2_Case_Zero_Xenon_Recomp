@@ -737,39 +737,41 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-21 evening (part 61 CLOSED — **THE FOV SLIDER
-SHIPPED AND RT STAGE 0 ANSWERED YES: a sixth panel row (FIELD OF VIEW, -10..+30
-degrees, LIVE, clamped ladder), verified headlessly on all three legs — null
-byte-identical, copyright-card ratios 0.716/0.714 vs 0.7174 predicted at +15,
-whole-scene coherence outdoors composed with wide mode — and the RT capability
-probe found the operator's RTX 3070 carries every ray-query extension.**
-`docs/part62-kickoff.md` is the LIVE hand-off (subject: the operator's FOV
-verdict, then RT stage 1); the record is `phase5-notes.md` §6cr; gotchas 378-379):
+Where the port is, as of 2026-08-21 night (part 61 CLOSED, and **PART 62's SAME-NIGHT
+CORRECTION IS THE HEADLINE: the operator's first live session refuted part 61's
+slider in one sentence ("only impact the UI... in game it doesn't do anything"), and
+the miss-dump found why — THE WORLD'S DRAWS CARRY A VIEW-PROJECTION COMPOSITE P*V AT
+c0-3, not the raw projection; part 61's fov patch AND part 60's wide patch only ever
+matched the raw form (= UI + frontend). Commit 943227d recognizes both forms: the
+fov slider is COMPOSITE-ONLY (world moves, HUD pixel-static — the operator's exact
+requested scope) and 21:9 GAMEPLAY IS UNSTRETCHED FOR THE FIRST TIME (it had been
+stretched ~34% since part 60 — only the frontend was ever truly widened).**
+`docs/part62-kickoff.md` is the LIVE hand-off (subject: two operator verdicts — the
+re-scoped slider and the new wide look — then RT stage 1); records `phase5-notes.md`
+§6cs (+ retractions in §6cr/§6cp), gotchas 378-rewritten/379/380):
 
-* **The census behind it changed the design once, by measurement**: this title has
-  ONE scene projection game-wide (vfov exactly 45.00°, B = -(1+√2), zn 0.1/zf 1000,
-  bit-identical across title/menus/outdoor crowd; window base always 0). The HUD/UI
-  ride it, so **the slider scales the HUD toward center by the fov ratio — shipped
-  as a STATED TRADE** after the depth-state exemption was refuted (81% of the
-  projection's ztest-off draws outdoors are sky/effects/decals, not UI — a carve-out
-  would tear effects off the world, gotcha 379). ~2% of draws carry the projection
-  and that 2% IS the visible scene; the 98% are shadow/cube/depth/post passes
-  (gotcha 378: a draw-count share says nothing about picture coverage).
-* **Mechanics**: fov patch FIRST (scales A and B by one ratio — aspect and
-  recognition preserved), wide patch second; UCP planes compensated on both axes;
-  per-frame latch (the shadow-tier pattern) makes the row LIVE and keeps the
-  constant memo safe (it never crosses a frame). `CZ_VK_FOV=N` env wins over the
-  file (=0 pins off); `CZ_VK_FOV_CENSUS=1` is the projection census.
-* **RT stage 0 (plan §1) is DONE**: probe at CreateDevice, `Renderer::rtSupported`,
-  nothing enabled. RTX 3070 / driver 610.43.03 / Vulkan 1.4: acceleration_structure
-  + ray_query + deferred_host_operations ALL PRESENT. Next stage gate: nothing in
-  RT stages 2-4 starts before stage 1's geometry census numbers exist.
-* **Owed to part 62**: the operator's comfort pass, the HUD-trade verdict, a slice
-  check off zero, and a cutscene look (cutscene cameras widen with the slider —
-  the plan's stated trade; they have never been censused separately).
-* **Gates at close**: `--smoke` green after every commit; A5 diff exit 0
-  (4 permutation / 0 real); E gate +0.9599 identity vs E2 at the default arm;
-  PM4 oracles and dim census untouched by this part (part 59's green stands).
+* **Two forms, cleanly split, all measured**: raw projection = ONE bit-identical
+  matrix game-wide (vfov 45.00°, zn 0.1/zf 1000, ~2% of draws — UI and frontend);
+  world = P*V composites (gameplay camera vfov 41.64°, per-camera zoom, 95%
+  depth-writing). `SceneXformForm()` recognizes composites by P's surviving
+  structure (unit view row, 9/16 row-norm ratio, orthogonality, z-row
+  proportionality); shadow orthos / skinning affines / cube-face cameras fail it by
+  construction — all enumerated in the miss dump BEFORE the recognizer was written.
+* **Verification method lesson (gotcha 378 rewritten)**: part 61's "whole scene
+  widened" was CAMERA DRIFT between two processes — a projection change is verified
+  by a SAME-RUN flip (`CZ_TEST_FOV_FLIP=N`; meandiff alternates ~4/~40 across flip
+  boundaries with the camera held). Composite-only run: 17.4M composite patches,
+  raw counter ZERO, HUD pixel-identical across states.
+* **The FOV slider (5b9fbba + 943227d)**: sixth panel row, -10..+30, LIVE; null
+  byte-identical; UI ratio measurements stand (0.716/0.714 vs 0.7174 at +15 — now
+  the CZ_VK_FOV_RAW arm's signature). RT stage 0 (4cc4f4a): RTX 3070 carries all
+  ray-query extensions — hybrid RT AVAILABLE; stages 2-4 wait on stage 1's census,
+  whose hardest question §6cs answered free (world meshes are WORLD-SPACE streams —
+  BLAS-ready; the view matrix is extractable from any composite).
+* **Owed**: operator verdicts on the world-only slider AND the new unstretched wide
+  look; gore-cut check off zero; cutscene look (composites widen — stated trade);
+  A5/E gate re-run at the part-62 close (943227d touches only the draw path;
+  part 61's pair was green: A5 exit 0 / 4 permutation, E +0.9599 identity).
 
 Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
 SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a

@@ -12333,6 +12333,13 @@ validation-armed wide boot shows exactly the same single VUID class as the 16:9
 control (the pre-existing point-list PointSize pipeline complaint, 6 in each arm — no
 new validation defects).
 
+> **PART-62 CORRECTION (2026-08-21, §6cs): this verification was TRUE OF THE
+> FRONTEND AND SILENT ABOUT GAMEPLAY.** The attract backdrop rides the raw
+> projection the patch recognizes; the WORLD'S draws ride a view-projection
+> COMPOSITE this patch never matched, so 21:9 GAMEPLAY geometry was stretched
+> ~34% from this night until part 62's composite recognizer (commit 943227d).
+> Gotcha 380. The frontend claims above stand.
+
 ### 4+5. Display-clamped resolution list; frame cap row
 
 `Host_DisplaySize` publishes the desktop mode of the window's display (refreshed at
@@ -12454,11 +12461,13 @@ over the file; =0 pins the slider off.
 * **Positive, quantitative**: the copyright card's text center-offset scales
   (-176,161) -> (-126,115) = ratios **0.716 / 0.714** against the predicted
   tan(22.5°)/tan(30°) = **0.7174** at +15. Same measurement part 60 used for wide.
-* **Positive, scene**: OG-vs-+15 outdoor pair (military camp crowd, ~6,200 draws) —
-  the whole world coherently wider (bus fully visible with tents above, new
-  foreground rows, no misregistration), composed with wide mode at the operator's
-  3440x1440. 455,592 patch engagements. Evidence:
-  `~/DR2CZ-troubleshooting/part61-fov/`.
+* ~~**Positive, scene**: OG-vs-+15 outdoor pair — the whole world coherently
+  wider...~~ **RETRACTED IN §6cs (same evening): this was CAMERA DRIFT between
+  two processes read as a positive result** (gotcha 378 as rewritten). The world
+  had not moved — the operator's first live session refuted it in one sentence,
+  and the miss dump found the real mechanism (the world rides a view-projection
+  COMPOSITE the part-61 recognizer never matched). The null and the card
+  measurements above stand — they are UI, which really was patched.
 
 ### What the census established on the way (CZ_VK_FOV_CENSUS, two runs)
 
@@ -12466,18 +12475,17 @@ over the file; =0 pins the slider off.
   (B = -(1+√2)), zn 0.1 / zf 1000, bit-identical across title, menus and the
   outdoor crowd — 1 distinct value in 1.6M recognized draws. The window base is
   effectively always 0 (24 moved-window draws of 89.9M).
-* **~2% of draws carry it, and that 2% is the entire visible scene** (gotcha 378).
-  The other 98% are shadow cascade / cube face / depth-only / post work — correctly
-  untouched by recognition.
-* **The HUD/UI rides the SAME projection** (there is no other), so the slider
-  scales the HUD toward center by the fov ratio — measured 0.738/0.698 on the
-  outdoor HUD, 0.716/0.714 on the copyright card, vs 0.717 predicted. **A
-  depth-state exemption was designed, measured and REFUTED in one session**
-  (gotcha 379): outdoors 81% of recognized draws are ztest-off and they are
-  scene-space (sky/effects/decals), so exempting ztest-off would tear effects off
-  the world. **The HUD scaling ships as a stated trade**, like the plan's cutscene
-  trade; if the operator objects, the next discriminator candidate is the HUD's
-  own pixel-shader set, not a render-state bit.
+* ~~**~2% of draws carry it, and that 2% is the entire visible scene**~~
+  **RETRACTED in §6cs: the 2% is the UI/frontend, and the visible world rides the
+  P*V composite** (gotcha 378 rewritten, gotcha 380). The census numbers were
+  right; the "picture proof" that argued them away was camera drift.
+* **The HUD/UI rides the raw projection** ~~(there is no other)~~ — **"there is
+  no other" is retracted in §6cs**: the world rides the composite, which is a
+  CLEAN two-form split, and the shipped design became composite-only fov (world
+  moves, HUD pixel-static — no trade needed after all). The ratio measurements
+  stand (0.738/0.698 outdoor HUD, 0.716/0.714 card, vs 0.717 predicted) — they
+  are what the CZ_VK_FOV_RAW arm reproduces. The depth-state refutation
+  (gotcha 379) also stands: ztest-off was never a UI discriminator; the FORM is.
 * Census population counts are per-DRAW on the raw register window (a copy-site
   census would count constant CHANGES and miss every memo-hit draw's state).
 
@@ -12499,3 +12507,68 @@ vs E2 (standing number +0.9597-0.9599), found by scanning the dump per part 59's
 attract-drift trap. PM4 oracles and dim census untouched (no pm4.cpp or shader
 cache changes). The one un-gateable path, as always: the panel row's look in a
 real window — operator's first open shows it.
+
+## §6cs — Part 62: the operator's one-sentence refutation, the COMPOSITE, and the real fix (2026-08-21 night)
+
+**The operator's first live session with the part-61 slider: "field of view only
+impact the UI which is the only thing it should not impact. In game it doesn't do
+anything."** That sentence refuted §6cr's scene claim (whose "picture proof" was
+camera drift between two processes — gotcha 378 rewritten in place) and started the
+part-62 investigation, which closed the same evening with the mechanism found,
+fixed, and verified.
+
+### The discovery (CZ_VK_FOV_MISS, fourteen matrices)
+
+A miss-dump of DISTINCT unrecognized VS windows found the world immediately:
+**world draws carry the full view-projection composite P*V at c0-3** (V's
+translation in the fourth column), and P's structure survives the product —
+unit row3 (= view rotation row v2), ||row0||/||row1|| = 9/16 EXACTLY, rows 0/1
+orthogonal to row3, row2.xyz = ~1.0001 * row3.xyz (the zn 0.1 / zf 1000 z-row).
+The same dump enumerated the classes that must NOT match: shadow orthos and
+skinning affines (row3 = (0,0,0,1), zero xyz norm) and the six cube-face cameras
+(ratio 1:1). One more camera fact: the composite's effective vfov is **41.64°**
+(bEff 2.630) — the gameplay camera never was the raw form's 45.00°; the two
+populations do not even share a fov.
+
+### The fix (943227d) — SceneXformForm, both patches, both forms
+
+* **Wide**: composite row0 scales WHOLE (translation included). **This closed a
+  part-60 defect nobody had named: 21:9 gameplay geometry had been stretched
+  ~34% since the wide mode shipped** — the raw-only patch caught the frontend
+  (where it was verified) and never the world. 33.0M composite widenings per
+  outdoor route; §6cp carries the correction in place.
+* **Fov: COMPOSITE-ONLY by default** — the two-form split IS the UI
+  discriminator part 61 hunted (and 379's depth-state candidate could never be):
+  the world moves, the HUD/UI stays pixel-static. `CZ_VK_FOV_RAW=1` restores
+  both-forms (the A/B arm). The fov ratio uses each window's OWN effective B, so
+  the slider composes with the game's per-camera zoom. UCP compensation mirrors
+  the patch scope exactly.
+
+### The verification (same-run flip — the part's method lesson)
+
+`CZ_TEST_FOV_FLIP=128` alternates 0/+20 inside ONE process: consecutive dumps
+alternate meandiff ~4 (animation) / ~40 (the flip) — loud, camera-held, and
+immune to the drift that fooled part 61. Composite-only run: **17.4M composite
+patches, raw counter ZERO**, and the cross-state pair shows the world swinging
+while both HUD elements sit pixel-identical; sky/mountains/effects all move with
+the world (no raw-form scene stragglers on this route). The both-forms build's
+pair measured the HUD scaling at 0.659/0.645 vs 0.650 predicted for +20 — kept
+as the CZ_VK_FOV_RAW arm's signature. Evidence:
+`~/DR2CZ-troubleshooting/part62-fov-composite/` (indexed).
+
+### What this hands RT stage 1 for free
+
+The composite answers stage-1 questions ahead of schedule: static world meshes
+enter the VS in **WORLD space** (P*V, no per-draw world matrix at c0-3), so
+their streams are BLAS-ready as-is, and the VIEW matrix is extractable per frame
+from any composite (row3 = v2; rows 0/1 recover v0/v1 after dividing by A_eff,
+B_eff). The per-draw window churn (VS memo 3.2%) is bone/skinning state, not
+transforms.
+
+### Owed
+
+The operator's verdicts, now on TWO things: the fov slider as re-scoped
+(world-only), and **wide-mode gameplay, which just changed appearance** — it was
+stretched, it is now true wider-view. Gates re-run owed with the next close
+(the A5/E pair was green on the part-61 binary; this commit touches only the
+draw path, but the standing rule applies).

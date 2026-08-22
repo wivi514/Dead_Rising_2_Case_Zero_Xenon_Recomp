@@ -3987,19 +3987,22 @@ From phase C part 18 (the frame rate — and none of it was work):
      open-diagnostic that settled this printed the state at exactly the moment the
      experience began.
 
-378. **A DRAW-COUNT SHARE SAYS NOTHING ABOUT PICTURE COVERAGE — auxiliary passes
-     multiply the denominator and instancing compresses the visible pass.** Part
-     61's census found only ~2% of draws carry the recognized scene projection in
-     their VS window, which read as "the projection patch misses 98% of the
-     scene" — and the frame refuted it: a +15 fov arm moved the ENTIRE visible
-     world coherently, because the other 98% of draws are shadow cascades, cube
-     faces, depth-only and post work that SHOULD not be patched, while the
-     visible pass is ~90 heavily-batched draws. The wide-mode patch had shipped a
-     part earlier on the same 2% and was operator-verdicted good — the share
-     never mattered. When a population share and a shipped feature's success
-     contradict each other, render the two arms and LOOK before believing either;
-     the picture was one conversion command and settled in minutes what three
-     census re-readings could not.
+378. **RETRACTED IN PART 62, and the retraction is the better lesson: A TWO-RUN
+     PICTURE PAIR CANNOT VERIFY A PROJECTION CHANGE — camera drift between
+     processes wears a positive result's clothes.** As written, this entry said
+     part 61's census (2% of draws carry the recognized projection) was
+     misleading because "the frame proved" the +15 arm moved the whole world.
+     THE FRAME PROVED NO SUCH THING: the differences between the two runs'
+     outdoor frames were camera drift, the world had NOT moved, and the census
+     was RIGHT — the 2% was the UI, the world rides a different form (see 380),
+     and the operator's first live session refuted the feature in one sentence.
+     The original entry even contained the tell it ignored: the same suspicious
+     census had to be argued away to keep the picture's verdict. Transferables:
+     verify any projection/camera change with a SAME-RUN flip arm
+     (CZ_TEST_FOV_FLIP — alternate the state every N frames; the camera holds
+     and two dumped frames answer the question), and when a census and a
+     picture disagree, the census is per-draw ground truth while a cross-run
+     picture is one drifted sample (gotcha 133 in a new costume).
 
 379. **A STATE-BIT SPLIT OF A POPULATION IS NOT A SEMANTIC CLASSIFIER — verify
      what the minority class actually CONTAINS before exempting it.** Part 61
@@ -4012,3 +4015,19 @@ From phase C part 18 (the frame rate — and none of it was work):
      draws skip the depth test", not "which draws are UI" — a classifier is only
      as semantic as the thing it reads, and the cheap check is the population
      COUNT against what the eye sees in one frame of that era.
+
+380. **A STRUCTURAL RECOGNIZER VERIFIED IN ONE ERA SILENTLY MISSES THE FORM THE
+     REST OF THE GAME USES — census every era AGAINST the recognizer before
+     believing its coverage.** Part 60's wide patch recognized the raw 16:9
+     projection, was verified on the frontend (attract backdrop: real flank
+     geometry), and shipped. The world's draws never carry that form: they carry
+     the full view-projection COMPOSITE P*V — so 21:9 GAMEPLAY geometry was
+     stretched ~34% for two parts while the menus were perfect, and the fov
+     slider built on the same recognizer moved only the UI. The composite was
+     recognizable all along (P's structure survives the product: unit view row,
+     9/16 row-norm ratio, z-row proportionality) and one CZ_VK_FOV_MISS dump of
+     fourteen unmatched matrices found it in minutes. Two transferables: when a
+     patch's engagement counter is high but its EFFECT is reported absent,
+     suspect TWO populations wearing one name — count per form, not per patch;
+     and a verification run must sample the era the feature is FOR (the
+     frontend was the era the recipe reached, not the era the operator plays).

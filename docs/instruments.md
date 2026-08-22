@@ -1635,39 +1635,50 @@ CZ_VK_STRETCH=1    **the control arm for part 60's aspect-fit presentation.** Th
                    this — the picture verdict is the operator's (part-54 lesson: a
                    present-path change is invisible to every readback-walking gate)
 CZ_VK_FOV=N        **the measurement arm for the FIELD OF VIEW slider** (part 61,
-                   rt-and-fov-plan §0), winning over the settings file's `fov=`
+                   re-scoped in part 62), winning over the settings file's `fov=`
                    value — including `CZ_VK_FOV=0`, which PINS the slider off. N =
-                   degrees of adjustment to the game's own camera, -10..+30 (the
-                   game's scene vfov is a fixed 45.00 deg — B = -(1+sqrt 2), one
-                   bit-identical projection across title, menus and the outdoor
-                   crowd, run-1 census). The patch: for a recognized 16:9
-                   perspective, B' = 1/tan(atan(1/|B|) + N*pi/360), A scales by the
-                   same ratio (aspect — and recognition — preserved, so it composes
-                   with the wide patch: fov FIRST, wide second). Re-read once per
-                   frame (the shadow-tier pattern), so the menu row applies LIVE;
-                   the constant memo never crosses a frame, so patched bytes cannot
-                   be reused under a different value. UCP planes are compensated on
-                   BOTH axes (p.x and p.y divided by the fov ratio) so gore cuts
-                   stay put off zero. Counter: "draw: scene projection fov-adjusted
-                   (slider)"; null verified BYTE-IDENTICAL (fov=0 copyright card
-                   md5-equal to an OG run's). KNOWN TRADE, measured in part 61: the
-                   HUD and frontend UI ride the same (only) projection, so they
-                   scale toward center by the fov ratio (+15 -> 0.717, confirmed on
-                   the copyright card at 0.716/0.714 per axis and on the outdoor
-                   HUD at 0.738/0.698) — a depth-state exemption was REFUTED (81%
-                   of recognized draws outdoors are ztest-off scene-space content:
-                   sky/effects, not UI; exempting them would tear effects off the
-                   world)
-CZ_VK_FOV_CENSUS=1 print every DISTINCT recognized 16:9 projection the draw path
-                   sees — A, B, the z-row terms (zn/zf) and the draws' depth-state
-                   split, with periodic population counts (part 61). The instrument
-                   that established: ONE projection serves the whole game so far
-                   (vfov 45.00 deg exactly, zn 0.1 / zf 1000), ~2% of draws carry
-                   it in their VS window (the rest are shadow/cube/depth/post
-                   passes and composed transforms) yet that 2% is the entire
-                   visible scene, and its ztest-off majority is scene-space, not
-                   UI. Free when off; first-occurrence prints + a count dump every
-                   200k recognized draws when on
+                   degrees of adjustment, -10..+30. **COMPOSITE-ONLY since part
+                   62**: the world's draws carry the view-projection composite P*V
+                   at c0-3 (gameplay camera vfov 41.64°) and the HUD/UI carry the
+                   raw 45.00° projection — the slider patches ONLY composites, so
+                   the world changes and the HUD stays pixel-static (the operator's
+                   requested scope; verified by same-run flip, 17.4M composite
+                   patches with the raw counter at zero). The ratio uses each
+                   window's OWN effective B (= ||row1||), so it composes with the
+                   game's per-camera zoom, with the wide patch (fov FIRST, wide
+                   second) and with the memo (per-frame latch; the memo never
+                   crosses a frame). UCP planes compensated on both axes, same
+                   scope as the patch. Null verified byte-identical (part 61's
+                   card md5). Counters, per form: "COMPOSITE viewproj
+                   fov-adjusted (slider)" / "raw projection fov-adjusted (slider)"
+                   (the latter only under CZ_VK_FOV_RAW)
+CZ_VK_FOV_RAW=1    restore the part-61 BOTH-FORMS fov behaviour: the raw form
+                   (HUD, frontend UI, attract backdrops) scales too, by the
+                   measured 0.650-at-+20 signature (0.659/0.645 observed). The A/B
+                   arm for the composite-only default, and the fallback if a
+                   raw-form SCENE element ever misregisters against the
+                   fov-shifted world (none seen on the DebugJump route)
+CZ_VK_FOV_CENSUS=1 classify every draw's VS window: raw projection / composite /
+                   neither, with depth-state splits and periodic counts (part 61,
+                   forms in part 62). Composites aggregate under a form marker —
+                   their values change per camera per frame. What it established:
+                   the raw form is ONE bit-identical matrix game-wide (vfov 45.00,
+                   zn 0.1/zf 1000, ~2% of draws — the UI and frontend), and the
+                   world is composites (95% depth-writing). Free when off
+CZ_VK_FOV_MISS=N   print the first N DISTINCT unrecognized windows' c0..c3 as a
+                   4x4 with row norms and the ||row0||/||row1|| ratio — the
+                   part-62 instrument that found the composite in fourteen
+                   matrices, and the one to reach for when a recognizer's
+                   engagement is high but its effect is reported absent
+                   (gotcha 380: suspect two populations wearing one name)
+CZ_TEST_FOV_FLIP=N alternate the fov between 0 and +20 every N frames in ONE
+                   process — the verification form for ANY projection change,
+                   because a two-run picture pair is confounded by camera drift
+                   (it manufactured part 61's false scene positive, gotcha 378).
+                   Consecutive CZ_VK_FRAME_DUMP frames alternate meandiff ~4
+                   (animation) / ~40 (the flip) on the DebugJump crowd; the
+                   cross-state pair answers "did the WORLD move" with the camera
+                   held. Same family as CZ_TEST_TIER_FLIP
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch
@@ -1697,12 +1708,19 @@ CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    comes out CENTERED for free — it is drawn under a 16:9
                    perspective the patch recognizes (measured on the attract screen:
                    copyright center 32.8% -> 36.9% predicted, 37% observed).
-                   Counters: "scene projection widened to 21:9", "user clip plane
-                   compensated for the wide projection". Known trades, stated up
-                   front: content the title's CPU culling rejected for its 16:9
+                   Counters: "raw projection widened to 21:9" / "COMPOSITE
+                   viewproj widened to 21:9" (per-form since part 62), "user clip
+                   plane compensated for the wide projection". Known trades, stated
+                   up front: content the title's CPU culling rejected for its 16:9
                    frustum can pop at the extreme flanks, and the title's own
                    2-tile binning survives because the tile boundary is clip x = 0,
-                   which the fov change preserves
+                   which the fov change preserves.
+                   **PART-62 CORRECTION (gotcha 380): until commit 943227d the
+                   patch recognized only the RAW projection — the frontend — and
+                   21:9 GAMEPLAY geometry was stretched ~34%, because the world
+                   rides the P*V composite. Both forms patch now (33.0M composite
+                   widenings per outdoor route); every wide-mode picture claim
+                   dated before part 62 describes the frontend only**
 CZ_TEST_TIER_FLIP=N  cycle the shadow tier 2/1/0 every N frames — the LIVE flip the
                    panel row performs, exercised headlessly. Built as the repro arm
                    for the shadow-tier freeze (gotcha 376): the per-run tier A/B

@@ -1,95 +1,91 @@
-# Part 62 kickoff — the FOV verdict, then RT stage 1 (the geometry census)
+# Part 62 kickoff — the composite fix is in; two verdicts wanted, then RT stage 1
 
-> **THIS IS THE LIVE HAND-OFF**, superseding `part61-kickoff.md`. Part 61 shipped
-> the first two stages of `docs/rt-and-fov-plan.md`: the **FIELD OF VIEW slider**
-> (sixth panel row, live, verified headlessly on all three legs) and the **RT
-> stage-0 capability probe** (the operator's RTX 3070 carries every required
-> extension — ray-query hybrid RT is AVAILABLE). The record is
-> `phase5-notes.md` §6cr; gotchas 378-379 are the part's two instrument lessons.
+> **THIS IS THE LIVE HAND-OFF**, superseding `part61-kickoff.md`. **UPDATED the
+> same night it was written**: the operator's first session refuted part 61's
+> slider ("field of view only impact the UI... In game it doesn't do anything"),
+> and the investigation that followed found and fixed the real mechanism in one
+> evening — **the world's draws carry a view-projection COMPOSITE at c0-3, not
+> the raw projection; both the fov slider and part 60's wide patch only ever
+> matched the raw form (= the UI and frontend)**. Commit 943227d recognizes and
+> patches both forms; the fov slider is COMPOSITE-ONLY (world moves, HUD
+> pixel-static — the operator's requested scope), and **21:9 gameplay geometry
+> is unstretched for the first time** (it had been stretched ~34% since part
+> 60; only the frontend was ever truly widened). Records: `phase5-notes.md`
+> §6cs (the discovery), §6cr + §6cp carry retractions in place, gotchas 378
+> (rewritten), 380. Evidence: `~/DR2CZ-troubleshooting/part62-fov-composite/`.
 >
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (standing instruction),
 > and the Fable 2 port is NOT a renderer reference (operator instruction, part 59).
 
-## 0. The operator session this kickoff wants
+## 0. The operator session this kickoff wants — TWO verdicts
 
-Launch plainly (`cd runtime/build && ./cz_runtime`). The panel is on the game's
-own Options hub; the new row is FIELD OF VIEW (sixth, below FRAME CAP).
+Launch plainly (`cd runtime/build && ./cz_runtime`). FIELD OF VIEW is the sixth
+panel row (Options hub), LIVE, one degree per press.
 
-1. **Comfort pass** (plan §0's owed verify): play with the slider at a few values
-   (+10 and +20 are good probes; LEFT/RIGHT one degree per press, clamped at
-   -10/+30). It applies LIVE — no restart. `CZ_VK_FOV=0` pins it off if anything
-   looks wrong.
-2. **THE ONE TRADE TO JUDGE, stated up front: the HUD scales with the slider.**
-   The title draws its HUD/UI through the same (only) scene projection — vfov
-   45.00°, one bit-identical matrix game-wide, census-proven — so at +15 the HUD
-   sits ~72% of its normal size, drawn toward center; at -10 it grows. This was
-   MEASURED, not guessed (card and HUD both land on the predicted ratio to a
-   point), and the obvious exemption was refuted: 81% of the projection's
-   ztest-off draws are sky/effects/decals, so a depth-state carve-out tears
-   effects off the world (gotcha 379). If the HUD scaling is unacceptable, say so
-   — the next discriminator candidate is the HUD's own pixel-shader set, a real
-   (part-sized) investigation, and the slider is still useful meanwhile at small
-   values.
-3. **Slice check off zero** (plan §0): with the slider at +15, cut a zombie —
-   gore planes are compensated on both axes, so cuts should stay put. A slicing
-   defect ONLY with the slider off zero points at that compensation
-   (`CZ_VK_FOV=0` is the discriminator).
-4. **Cutscenes**: cutscene cameras are recognized perspectives and WILL widen
-   with the slider (plan's stated trade). If that looks wrong, note it — gating
-   the patch on gameplay needs a cutscene-vs-gameplay discriminator nobody has
-   measured yet.
+1. **The fov slider, re-scoped**: in the world, slide to +10/+20 — the WORLD
+   should now widen visibly and the HUD should not move at all. (Headless
+   same-camera flip verified both; the comfort call is the operator's.)
+   `CZ_VK_FOV=0` pins it off; `CZ_VK_FOV_RAW=1` restores the old
+   UI-scales-too behaviour if wanted for comparison.
+2. **Wide-mode gameplay just changed appearance**: the world at 3440x1440 is now
+   a true wider view instead of a ~34% horizontal stretch. This is a fix of a
+   two-part-old defect, but it LOOKS different from what the operator has been
+   playing — the verdict on the new look is owed. (If anything seems wrong
+   outdoors at 21:9, `CZ_VK_WIDE=0` for a 16:9 control; the frontend is
+   unchanged either way.)
+3. **Slice check with the slider off zero** (unchanged ask): gore cuts should
+   stay put — the UCP compensation now covers composites too.
+4. **Cutscenes with the slider off zero**: cutscene cameras are composites like
+   the gameplay camera, so they WILL widen (the plan's stated trade). Note if
+   that looks wrong.
 
-## 1. What part 61 established (do not re-derive)
+## 1. What parts 61-62 established (do not re-derive)
 
-* **One projection serves the whole game so far**: vfov exactly 45.00°
-  (B = -(1+√2)), zn 0.1 / zf 1000, bit-identical across title, menus, outdoor
-  crowd. Window base is effectively always 0 (24 moved of 89.9M draws).
-  `CZ_VK_FOV_CENSUS=1` re-measures on new ground (cutscenes and aim-cameras have
-  NOT been censused — a second distinct projection would show up there first).
-* **~2% of draws carry that projection and they ARE the visible scene** — the
-  98% are shadow/cube/depth/post passes, correctly untouched (gotcha 378: a
-  draw-count share says nothing about picture coverage).
-* **The fov patch composes with wide mode** (fov first, wide second — the fov
-  ratio preserves recognition) and with the constant memo (per-frame latch; the
-  memo never crosses a frame). Null is byte-identical; the verify arm recomputes
-  with both patches in order.
-* **Evidence**: `~/DR2CZ-troubleshooting/part61-fov/` (indexed).
+* **Two transform forms, cleanly split**: the raw 16:9 projection (ONE
+  bit-identical matrix game-wide — vfov 45.00°, zn 0.1/zf 1000, ~2% of draws) is
+  the UI/frontend; the world rides P*V composites (gameplay camera vfov 41.64°,
+  per-camera zoom on top, 95% depth-writing draws). `SceneXformForm()` in
+  vk_renderer.cpp is the recognizer; its four conditions are measured, not
+  assumed (miss-dump, §6cs). Shadow orthos, skinning affines and cube-face
+  cameras fail it by construction — also measured.
+* **The fov slider patches composites only** (default); wide patches both forms
+  (the raw-form UI centering in wide is a wanted part-60 feature). UCP
+  compensation mirrors each patch's scope.
+* **Verification method for any projection change: the SAME-RUN flip**
+  (`CZ_TEST_FOV_FLIP=N`). A two-run picture pair is camera drift wearing a
+  positive result (gotcha 378 rewritten) — part 61 shipped a false scene claim
+  on exactly that.
+* **The depth-state UI discriminator stays refuted** (gotcha 379); the FORM is
+  the discriminator.
+* Instruments: `CZ_VK_FOV_CENSUS` (per-form classification), `CZ_VK_FOV_MISS=N`
+  (the discovery instrument), per-form patch counters.
 
-## 2. Gates at close of part 61
+## 2. Gates
 
-* `--smoke` green after every commit.
-* A5 diff (gate run, final binary): **exit 0, 4 permutation windows, 0 real** —
-  same shape as parts 59/60.
-* E gate (default arm pinned by env: CZ_VK_RES=1280x720 CZ_VK_WIDE=0): logo card
-  **+0.9599 identity** vs E2 (standing +0.9597-0.9599), found by scanning the
-  dump for the card per part 59's attract-drift trap.
-* PM4 oracles and dim census NOT re-run — nothing touched pm4.cpp or the shader
-  cache in part 61 (part 59's green stands).
+* `--smoke` green after every commit (943227d included).
+* Part 61's close ran A5 (exit 0, 4 permutation / 0 real) and E gate (+0.9599
+  identity) on the pre-composite binary; 943227d touches only the draw path.
+  **The pair is owed a re-run at this part's close** (standing rule). PM4
+  oracles / dim census remain untouched.
 
 ## 3. After the verdicts: RT stage 1 — the geometry census (plan §2)
 
-The plan section is the spec; read it first. Zero renderer changes — a census
-tool and a doc section that decide whether RT stages 2-4 are cheap or dear.
-What already exists that stage 1 reuses (the section a kickoff owes):
-
-* **BLAS identity = the persist-cache identity** — the content guards already
-  compute per-frame change stamps per stream; "guard held steady across frames"
-  is the rigid-mesh predicate, free.
-* **tools/pose_read.py** knows c0-3 proj / c12-14 view; the world matrix's
-  registers are UNMAPPED — part 61 adds one hard fact: the VS window is
-  per-draw (VS memo hit 3.2%), so per-draw world state definitely lives in the
-  window; bind it by dataflow (diff two frames of one moving prop), not by
-  adjacency.
-* **The fetch machinery** already decodes vertex declarations per draw — the
-  position-format census is a walk over existing decode, not new parsing.
-* The part-61 census pattern (per-DRAW on the raw register window, not per
-  memo-miss) is the right shape for any stage-1 counting.
+The plan section is the spec. **§6cs already answered its hardest question for
+free**: static world meshes enter the VS in WORLD SPACE (the c0-3 composite is
+P*V — there is no per-draw world matrix in the transform), so their vertex
+streams are BLAS-ready as-is, and the VIEW matrix is extractable per frame from
+any composite (row3 = v2; rows 0/1 = A_eff*v0, B_eff*v1). What stage 1 still
+owes: the rigid-vs-skinned split via the content guards' change stamps, and the
+position-format census over the fetch machinery. The part-61 census pattern
+(per-DRAW on the raw register window) is the right counting shape.
 
 ## 4. Standing list (unchanged)
 
+* Suspected input leak at panel open: every open immediately logs one
+  Resolution-row write (harmless at the operator's config — last list entry,
+  clamped — but on another config it would silently step the resolution).
 * Decal flicker: waiting on a sighting; F8 burst + `CZ_VK_NO_PARALLEL_GUARD=1`.
 * Doubled-slab watch (00q): F9 + immediate F8 on any sighting.
-* Performance PARKED (`perf-state-parked.md`; supervised items: A's order gate,
-  C's gather design).
-* Live-resolution switch parked (apply-at-next-launch is the operator's call).
-* The point-list PointSize VUID class (6 per boot) — named, cheap, unowned.
+* Performance PARKED (`perf-state-parked.md`).
+* Live-resolution switch parked; point-list PointSize VUID class named, cheap,
+  unowned.
