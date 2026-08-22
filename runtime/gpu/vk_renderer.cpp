@@ -10294,10 +10294,17 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
         if (!cascadeCaster)
             return;
     }
-    else if (CascadeCasters())
-        return;   // under the cascade arm the camera's world draws are not casters
     else if (form != 2)
         return;
+    // NOTE the ordering below: under the caster default a world draw is NOT a BLAS
+    // candidate, but it must still be WALKED, because the scene pass is the oracle
+    // that vouches for the light matrix (`g_worldStreams`). Returning here — which
+    // the first version of the caster default did — starves that set, so no cascade
+    // draw is ever world-vouched, no matrix is ever captured, and NOTHING TRACES.
+    // The run then reads exactly OG's luma, which looks like a perfect fix and is
+    // an inert arm (gotcha 151: the `[rt] slices` line was simply absent, and that
+    // absence is what caught it). The early-out for the caster mode is therefore
+    // taken AFTER the stream key is computed and recorded, not before.
     if (!((depthControl >> 2) & 1))
         return;   // not depth-writing: not an occluder
     const uint32_t cc = regs[xenos::kRbColorControl];
@@ -10346,7 +10353,14 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     const uint64_t streamKey = (uint64_t(sva) << 32) |
                                (uint64_t(vbytes & 0x3FFFFFFFu) << 2) | (vf.endian & 3);
     if (!cascadeCaster)
-        g_worldStreams.insert(streamKey);   // the scene pass draws this world-space
+    {
+        // The scene pass draws these bytes world-space: that is what vouches for
+        // the light matrix a cascade draw of the SAME bytes carries.
+        g_worldStreams.insert(streamKey);
+        // ...and under the caster default that is ALL a world draw contributes.
+        if (CascadeCasters())
+            return;
+    }
     // The content stamp is the persist store's OWN guard — the raster path's change
     // detector, computed once per first-touch there, so it is free here and the two
     // paths cannot disagree about which bytes are current. A stream with no entry
