@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part63-kickoff.md`.** State the rule as well as the name, because this line said
+    `part64-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -737,6 +737,37 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
+GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
+THE PLAN BUDGETED.** `docs/part64-kickoff.md` is the LIVE hand-off (subject: RT stage 2 —
+ray-traced shadows, LOW tier first); the record with every number is `phase5-notes.md`
+§6cu + addendum; the instrument is `CZ_VK_RT_CENSUS=1` (instruments.md); zero renderer
+changes):
+
+* **The world's geometry is BLAS-ready almost by accident**: position data is **100%
+  float3 at 28-32 B stride** (the short4 possibility does not exist here), **96.8%
+  triangle strips, 100% 16-bit indices**, and it lives in the SAME persist-cache
+  buffers the raster path uploads — one usage bit away from BLAS build input, zero
+  copies. The only data transformation stage 2 needs anywhere is strip→list index
+  expansion (2.7-5.9 MB of u16 cumulative).
+* **98.1% of world bytes are BLAS-once stable** (full-FNV cross-frame content check;
+  the rewritten class is 134 map-wide smallware streams, 1.4 MB); streams are
+  WORLD-SPACE (§6cs confirmed by the census's bounds scan surviving its refutation
+  check — the three ±6.3M outliers are named 12 B-stride junk streams), so every TLAS
+  instance is the IDENTITY transform. TLAS scale: ~2,100-2,600 instances typical,
+  worst observed frame 7,034 world draws / 3.46M drawn tris (÷2 for the 640-wide
+  tiles). Roam churn ~13 new stable streams (~150 KB)/s — async-build trivial.
+* **The skinned exclusion is STRUCTURAL, and it is 3.0% of scene draws**: actors carry
+  an AFFINE at c0-3 (§6cs), so the composite gate is itself the rigid-world filter;
+  the form-0 bucket split by the pitch-1040 predicate reads 90.1% shadow cascade /
+  8.1% skinned / 1.3% cube faces. Zombies cast no RT shadows in stage 2 (OG cascade
+  stays the fallback) and the panel note can now quote the size of that hole.
+* Three census runs (two standing at the camp crowd — replicating to within 2% on
+  every cumulative number — one 600 s EXPLORER roam), `no translated shader` = 0 on
+  all three; gates at close: `--smoke` green, A5 exit 0, E identity (see the closing
+  commit). Carry-overs unchanged from part 62 (turn-stutter parked, fov small
+  verdicts, panel input leak).
+
 Where the port is, as of 2026-08-21 night (part 61 CLOSED, and **PART 62's SAME-NIGHT
 CORRECTION IS THE HEADLINE: the operator's first live session refuted part 61's
 slider in one sentence ("only impact the UI... in game it doesn't do anything"), and
@@ -746,7 +777,7 @@ matched the raw form (= UI + frontend). Commit 943227d recognizes both forms: th
 fov slider is COMPOSITE-ONLY (world moves, HUD pixel-static — the operator's exact
 requested scope) and 21:9 GAMEPLAY IS UNSTRETCHED FOR THE FIRST TIME (it had been
 stretched ~34% since part 60 — only the frontend was ever truly widened).**
-`docs/part63-kickoff.md` is the LIVE hand-off (subject: RT stage 1, the geometry census); records `phase5-notes.md`
+`docs/part62-kickoff.md` was the hand-off (superseded by part 63's close; see the block above); records `phase5-notes.md`
 §6cs (+ retractions in §6cr/§6cp), gotchas 378-rewritten/379/380):
 
 * **Two forms, cleanly split, all measured**: raw projection = ONE bit-identical
@@ -782,60 +813,8 @@ stretched ~34% since part 60 — only the frontend was ever truly widened).**
   is the game-side control arm. Still open, non-blocking: gore cut off zero,
   aiming behaviour, the cutscene-crop look.
 
-Where the port is, as of 2026-08-21 (part 60 CLOSED overnight — **THE SETTINGS MENU
-SHIPPED AND THE WHOLE NIGHT PLAN LANDED: the shipped OptionsPC screen proved to be a
-SHELL (layout + strings present, verbs compiled out), so the menu is a HOST panel over
-the game's own Options hub — five rows: Resolution (display-clamped, BOTH aspects in
-one list per the operator's morning revision — 1280x720/1680x720/2560x1440/3360x1440
-on their display, selecting sets scale+aspect for the next launch), Display Mode,
-VSync, Shadow Quality (LIVE tiers), Frame Cap (LIVE, microsecond vblank period).** `docs/part61-kickoff.md` is the LIVE hand-off (subject: the
-operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotchas
-373-375):
-
-* **Aspect-fit presentation is the DEFAULT** — black bars instead of stretch on both
-  present paths, one shared computation (`Host_AspectFitRect`); `CZ_VK_STRETCH=1` is
-  the control arm.
-* **Shadow tiers are wired and LIVE**: the cascade pass is identified by its measured
-  EDRAM pitch (1040 = a 1024-wide surface; census — nothing else uses it), the same
-  predicate scales draws and resolves, High = scene scale (bit-identical control),
-  Med/Low = half/quarter floored at 1x. `CZ_VK_SHADOW_TIER` wins over the file.
-  Headless halves verified (atlas at 1x vs 2x host, 18.8M draws counted, frames
-  intact); Low-vs-High blockiness is the operator's.
-* **21:9 works headlessly end to end**: every render-pipeline X extent * 21/16
-  (TRUNCATING — gotcha 373), the 16:9-perspective discriminator patches the scene
-  projection's fov (350k patches on the outdoor route), UCP planes compensated so
-  gore cuts stay put, cube maps stay square via a face blit. **The planned HUD
-  mechanism was refuted by measurement — the title's UI sits under the recognized
-  perspective and centers ITSELF** (gotcha 374; two independent measurements land on
-  the centering prediction). Same attract backdrop 16:9-vs-wide shows new flank
-  geometry, not stretch. `CZ_VK_WIDE` env arm; `aspect=1` next-launch.
-* **Frame cap row applies within one pump tick** — the vblank period is a live atomic
-  in MICROSECONDS (90 fps needs 5,555 us; the old ms knob would have served 100 —
-  gotcha 375); env pins it and the menu is refused loudly under a pin; CZ_FPS_CAP=30
-  still reproduces shipped pacing bit for bit. Stated cost: a live change leaves the
-  guest's cached refresh stale until restart.
-* **Gates at close**: `--smoke` green after every commit; A5 diff exit 0 (4
-  permutation / 0 real); validation-armed wide boot shows ONLY the pre-existing
-  point-list PointSize VUID class (6, same as the 16:9 control — now a named cheap
-  open item); E3 identity re-run at close (see §6cp / the closing commit).
-* **THE OPERATOR DAY THAT FOLLOWED (2026-08-21, §6cq): verdicts in, three Resolution
-  revisions, one freeze fixed, one game completed.** Bars + 21:9 good; the Resolution
-  row now lists THE DISPLAY'S OWN MODES with a RATIONAL scale core (Y by H/720, X by
-  W/1280, truncating — 1920x1080 and every >= 16:9 display mode from 720..2880 rows
-  works; res_w/res_h are the settings keys, legacy files convert). The live
-  shadow-tier flip FROZE the game — vkDeviceWaitIdle does not cover the RECORDING
-  command buffer (gotcha 376) — fixed by deferred image retirement
-  (RetireImage/DrainRetiredImages; stress arm CZ_TEST_TIER_FLIP, 48 live rebuilds
-  clean under validation, operator re-tested the same spot). "The menu opens on
-  720p" was the ordered-ladder WRAP from the last entry (gotcha 377; ladders clamp
-  now). The operator then COMPLETED THE WHOLE GAME with CZ_SHADER_DUMP armed: cache
-  440 -> 449. Owed: the shadow Low-vs-High LOOK, the clamp-fix confirmation, and
-  first sight of the eight late-game shaders. **THE NEXT PLAN IS
-  `docs/rt-and-fov-plan.md`** (RT shadows/AO/lighting/GI rows + FOV slider, operator
-  instruction). Commit-hygiene note: items 4+5 share one commit (893749b).
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 59's** — part 61 moved part 59's out in the same commit that added its own block, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 60's** — part 63 moved part 60's out in the same commit that added its own block, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
