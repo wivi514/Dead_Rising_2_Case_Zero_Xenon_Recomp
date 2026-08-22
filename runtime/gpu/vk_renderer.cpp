@@ -10962,6 +10962,10 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     vkCmdDraw(R->cmd, 3, 1, 0, 0);
     vkCmdEndRendering(R->cmd);
     ++g_slicesTraced;
+    // CONSUME the matrix: each slice's own draws must recapture it, so a slice
+    // that rendered nothing is skipped (and counted) rather than traced with the
+    // previous slice's frustum painted into the wrong quarter of the atlas.
+    g_lightMValid = false;
 
     if ((g_slicesTraced & 1023) == 1)
         fprintf(stderr,
