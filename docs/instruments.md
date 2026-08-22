@@ -1696,6 +1696,63 @@ CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §
                    distinct world stream's bytes, so never quote a frame time
                    from a run carrying it. Free when off (one static bool per
                    draw)
+CZ_VK_SHADOW_FILL=<f>  **RT stage 2's injection experiment, and the standing
+                   proof that the shadow ATLAS SNAPSHOT is where the title's
+                   shadow term reads** (part 64; rt-and-fov-plan §3 route (a)).
+                   Overwrites the atlas snapshot's depths with the constant f
+                   right after each cascade resolve. Measured on the DebugJump
+                   route, ~11k outdoor frames per arm: f=0.0 takes the outdoor
+                   median luma 80.6 -> 61.4 (the whole world shadowed), f=1.0
+                   reads 79.6 ~ baseline (shadows removed) — so the convention
+                   is STANDARD (near = occluder; the stored depth is the
+                   nearest occluder's, compared with LESS). A DIAGNOSTIC ARM,
+                   never a fix; unset = off = the shipped renderer
+CZ_VK_RT=0         **the master RT kill** (parts 61/64). With it set the device
+                   is created WITHOUT the three ray-query extensions — exactly
+                   the pre-part-64 device — whatever the settings row or any
+                   other env says. Default when the stage-0 probe passes:
+                   extensions ENABLED (an enabled extension changes no recorded
+                   command; every RT pass still needs its own arm to run).
+                   CZ_VK_RT_FORCE=1 overrides the probe for driver experiments
+                   and may fail device creation loudly, which is the point
+CZ_VK_RT_SHADOWS=1 **ray-traced shadows, LOW tier** (part 64; the record is
+                   phase5-notes §6cv). Env wins over the panel's RT SHADOWS
+                   row. Collects opaque depth-writing world draws (form-2
+                   composite; alpha-test/A2M, dynamic smallware, DEP-position
+                   and non-float3 forms all excluded with counters), builds
+                   BLASes once per (stream identity + persist guard + index
+                   identity) under a per-frame budget, rebuilds an identity-
+                   transform TLAS each frame from the previous frame's world
+                   set, and ray-traces each just-resolved cascade slice's
+                   DEPTHS from the slice's own captured sun matrix — the depth
+                   test unions the traced and raster occluder sets, so
+                   everything excluded from the TLAS keeps its raster shadow.
+                   `[rt]` prints engagement every 1024 slices. Needs a
+                   ray-query device (the row shows UNSUPPORTED otherwise)
+CZ_VK_RT_POISON=1  **the positive control** for the traced-cascade path (the
+                   CZ_VK_CUBE_POISON pattern): the trace pass writes the
+                   all-shadow depth everywhere it runs, so the world must
+                   darken like CZ_VK_SHADOW_FILL=0 for as long as the pass's
+                   writes actually reach the shadow term. Diagnostic arm
+CZ_VK_RT_INVERT=1  flips the traced-depth polarity AND the trace pass's compare
+                   op, for a title whose cascade ran reversed. The fill
+                   experiment measured Case Zero as STANDARD, so this arm is
+                   kept as the one-run answer if a scene ever disagrees —
+                   never set it on the strength of an argument
+CZ_VK_RT_BIAS=<f>  the traced depth's bias in NDC-z units (default 0.0015).
+                   The raster cascade's depths carry the title's own polygon
+                   offset from rasterization; traced depths have none, so an
+                   unbiased trace self-shadows every surface the moment its
+                   depth wins the union. Tune against stills, then leave alone
+CZ_VK_RT_BUILD_MB=N  per-frame BLAS build budget in source-geometry MB
+                   (default 8). First engagement in a crowd owes ~35-50 MB of
+                   working set, so the TLAS warms over a few frames rather
+                   than stalling one; the census's roam churn (~150 KB/s)
+                   never touches the budget again
+CZ_VK_RT_BLAS_MB=N cap on the pooled BLAS arena (default 1024). Overflow
+                   FLUSHES the whole pool loudly and rebuilds from the live
+                   set under the budget — crude, counted, and far above the
+                   census's ~85 MB whole-roam source-set price
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch

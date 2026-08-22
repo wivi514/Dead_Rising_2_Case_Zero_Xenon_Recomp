@@ -9939,6 +9939,8 @@ uint64_t g_collectFrame = ~0ull;
 // last-write-wins pairs each resolve with its own slice's matrix.
 float g_lightM[16];
 bool g_lightMValid = false;
+float g_lightPolyScale = 0.0f, g_lightPolyOffset = 0.0f;
+bool g_polyLogged = false;
 
 // Per-frame trace state.
 uint64_t g_tlasFrame = ~0ull;
@@ -10053,6 +10055,25 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             {
                 memcpy(g_lightM, m, sizeof g_lightM);
                 g_lightMValid = true;
+                // The title's OWN polygon offset at this cascade draw — the bias
+                // its receiver-side comparison was written against, and therefore
+                // the floor for the traced depths' bias (a traced depth without it
+                // wins the union at the true surface and self-shadows the world;
+                // the first RT run measured exactly that, median 61.0 vs 80.6).
+                // F32(offset) is already in [0,1] depth units (the raster path
+                // multiplies by 2^24 only because Vulkan's constantFactor is in
+                // minimum-resolvable-difference units).
+                g_lightPolyScale = F32(regs[xenos::kPaSuPolyOffsetFrontScale]);
+                g_lightPolyOffset = F32(regs[xenos::kPaSuPolyOffsetFrontOffset]);
+                if (!g_polyLogged && (g_lightPolyScale != 0.0f ||
+                                      g_lightPolyOffset != 0.0f))
+                {
+                    g_polyLogged = true;
+                    fprintf(stderr,
+                            "[rt] cascade poly offset: scale=%g offset=%g "
+                            "(depth units)\n",
+                            g_lightPolyScale, g_lightPolyOffset);
+                }
             }
         }
         return;
@@ -10958,9 +10979,13 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     push.region[1] = float(ry);
     push.region[2] = float(rw);
     push.region[3] = float(rh);
-    static const float bias = Env("CZ_VK_RT_BIAS")
-                                  ? float(atof(Env("CZ_VK_RT_BIAS")))
-                                  : 0.0015f;
+    // The bias = the title's own cascade polygon offset (captured with the
+    // matrix — its receiver comparison assumes it) plus a slope allowance for
+    // the slope-scaled half rays cannot reproduce, env-tunable for the sweep.
+    static const float extraBias = Env("CZ_VK_RT_BIAS")
+                                       ? float(atof(Env("CZ_VK_RT_BIAS")))
+                                       : 0.0015f;
+    const float bias = g_lightPolyOffset + extraBias;
     static const bool poison = EnvOn("CZ_VK_RT_POISON");
     static const bool invert = EnvOn("CZ_VK_RT_INVERT");
     push.misc[0] = bias;
