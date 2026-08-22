@@ -1819,7 +1819,15 @@ CZ_VK_RT_FACTOR_DEBUG=N  **THE LADDER**, which splits the factor pass into its
                    the arms with `tools/part65_luma_read.py`, whose calibration
                    points are all-lit 99.86 and all-shadow 90.16.
                      1     depth mask (depth source; on this title it CANNOT pass)
-                     2     world checker, 4 units, pinned to the world
+                     2     world checker, 4 units, pinned to the world. **It had
+                           never validly run before part 66** — the depth route
+                           fed it a cleared buffer. On the primary ray it is the
+                           one arm that asks whether our world positions are
+                           world positions, and it PASSES: a single still shows
+                           the near field as a checkerboard on the ground with
+                           correct perspective foreshortening, which a
+                           screen-locked pattern cannot produce. The converging
+                           wedges further out are expected moiré
                      3, 7  unbiased rays / rays straight down
                      4     all-shadow via the selector, touching no texture — the
                            control that separates "the sample is broken" from
@@ -1847,6 +1855,15 @@ CZ_VK_RT_FACTOR_DEBUG=N  **THE LADDER**, which splits the factor pass into its
                            it passed perfectly while every row was 427 px out of
                            place. Run 14 and 19 TOGETHER — agreeing is the
                            result, either alone is not (gotcha 394)
+                     20    **HEMISPHERE OCCLUSION from EIGHT FIXED directions,
+                           the sun deliberately not involved** — an instrument
+                           must not depend on its subject. THE ARM THAT ANSWERED
+                           PART 66: outdoors it reads 97.3% fully open, mean
+                           0.987, i.e. no direction above a receiver is occluded
+                           and no sun vector could have produced a shadow. High
+                           here with ~0 along the sun would have meant the sun
+                           was wrong; low here means the structure has no
+                           occluders
                      17    **THE GATE** (part 66): does the PRIMARY RAY find the
                            world? PASS = a black world under a lit sky. Forces
                            the primary path whatever the source is set to
@@ -1879,6 +1896,13 @@ CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the
 CZ_VK_RT_CONE=<rad>  the sun's angular radius for the cone sample (default
                    0.02 rad; the real sun is ~0.00465). A LOOK control, not
                    astronomy. Only read when rays > 1
+CZ_VK_RT_SUN_FLIP=1  negate the sun direction. **Tried and NOT a fix** (part
+                   66): it reads 72.2% shadowed, but the dumped factor is a
+                   UNIFORM BLANKET over the receiver silhouette — column profile
+                   flat, range 0.11 — because a flipped sun points the ray at the
+                   ground and every receiver self-hits. Kept because a sign is
+                   worth being able to ask about, and because the way it FAILS
+                   (a blanket, not a shadow field) is the shape to recognise
 CZ_VK_RT_FACTOR_BIAS=<f>   the ray origin's offset along the sun, in WORLD units
 CZ_VK_RT_FACTOR_CAMBIAS=<f>  the ray origin's offset toward the camera, in world
                    units. Two offsets because they answer different failures:

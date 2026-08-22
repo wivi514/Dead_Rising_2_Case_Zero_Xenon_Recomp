@@ -43,11 +43,38 @@ Next, in order:
    fixes both halves at once. `CZ_VK_RT_FACTOR_SOURCE=depth` is the control arm
    and **its expected result is no shadows at all**.
 
-   **STILL OWED, and it is the whole of the next part: one operator session.**
-   `tools/part66_operator_session.sh`, seven arms, **arm 1
-   (`CZ_VK_RT_FACTOR_DEBUG=17`, "does the primary ray find the world") GATES
-   the rest** — a black world under a lit sky, or stop. Part 65 handed over
-   three builds without a met gate and burned three sessions learning it.
+   **THE FIVE OPERATOR SESSIONS RAN, AND THEY LOCATED THE DEFECT.** §6cx §7-8.
+   In order: the operator found a **427-pixel vertical misalignment** in one
+   sentence on the first arm (fixed; part 65's spatial control was a horizontal
+   stripe and structurally blind to it, gotcha 394); `CZ_VK_RT_FACTOR_READBACK`
+   then read our own factor image directly and settled four links in ninety
+   minutes — poison 100.0% shadowed (the instrument's own control), the stripe
+   pair a clean transpose in both axes, the primary ray finding a receiver on
+   **85.2%** of the screen with a mask matching the captured frame's skyline, and
+   the real path at **0.9%**; four arms on the shadow ray exonerated its length,
+   its bias and its direction; and mode 20 — hemisphere occlusion from eight
+   FIXED directions, the sun not involved — read **97.3% fully open, mean 0.987**.
+
+   **THE ANSWER: no direction above a receiver is occluded, so no sun vector
+   could ever have produced a shadow. The TLAS is effectively a ground plane.**
+   The sun, the ray, the bias, the length, the world reconstruction (mode 2's
+   checker is perspective-correct and world-locked), the alignment and the
+   injection are all exonerated by measurement.
+
+   **Two retractions from those sessions, both mine**: "the ray length is the
+   biggest effect yet" was read off a frame-1228 partial file and reads 0.9%
+   complete (gotcha 384, quoted at the operator earlier in the same session);
+   and session 3's skyline silhouette was read as proof the TLAS contains the
+   world — **a bare ground plane produces the identical silhouette** (gotcha 395).
+
+   **PART 67'S FIRST MOVE IS A CENSUS, NOT A BUILD, and both halves are
+   offline**: what the ~700 accepted instances ARE (a histogram of their vertical
+   extents says in one pass whether the structure is a flat sheet), and which
+   filter eats the buildings — `collected=10.9M skips: dyn=19.0M alpha=3.2M
+   bounds=5026`, i.e. `dyn` is 57% of every draw the collector sees and `alpha`
+   10%. `tools/rt_depth_order_census.py` is the model: the `.xtr` traces say what
+   hardware draws for the scene, and our own counters say what we did with each
+   class.
 
    **WHAT PART 65 SHIPPED.** Route (b) is complete end to end: the census (126 pixel shaders, 140
    fetch slots, measured against hardware's own register file in twenty `.xtr`

@@ -13987,3 +13987,160 @@ the raster shadow LOW-vs-HIGH look verdict owed since part 60.
 * An instrument built to be another instrument's independent control is worth
   validating BEFORE it is quoted; modes 12 and 13 were exactly that and were broken
   from birth in a way the validation layer announced on the first draw.
+
+### 7. THE OPERATOR SESSIONS — five of them, and what each one actually settled
+
+Everything above (§1-6) was established offline. The rest of part 66 was run by the
+operator, and it moved route (b) from "nothing happens and we have four theories" to a
+single, specific, offline-chaseable defect. **Two of the five sessions were spent on my
+own errors and both are recorded here in full, because the errors are the reusable part.**
+
+#### Session 1 — the operator found a 427-pixel misalignment in one sentence
+
+Arm 1 was `CZ_VK_RT_FACTOR_DEBUG=17` and the report was:
+
+> *"took a f9 capture the shadows move with me and with the camera. Pretty sure the
+> shadow are in the form of the mountain in the distance"*
+
+That is a complete diagnosis and it is arithmetic. At the operator's settings the
+internal resolution is **3440x1440** and the EDRAM depth attachment is **3440x2048** —
+`RS(edramH)` pads for the tallest surface the title needs, the 4096x1024 cascade.
+`EnsureResources` sized the factor image from the DEPTH extent (1720x1024) while the pass
+paints its rows across the whole viewport, and `Publish` handed the patched shaders
+`1 / depth.height`. So a surface at screen row y read the factor computed for row
+`1440/2048 * y`: content dragged down from higher in the frame, **427 px at the bottom of
+a 1440-tall frame**. Distant terrain sits high in the frame, which is exactly a
+mountain-shaped mask sliding over nearer surfaces.
+
+Both ends use the viewport now; the worst vertical error goes **427.5 px -> 0.00 px**,
+checked at five rows offline. The pass-ready line prints all three extents and the ratio,
+because two of them silently disagreeing is what cost the session.
+
+**Why part 65 could not have found it.** Mode 14 — the control written to answer "does
+the round trip carry SPATIAL detail" — is `frac(uv.x * 8.0)`, a purely HORIZONTAL stripe.
+It is invariant under a vertical error, so it landed exactly on the 50/50 midpoint and
+was quoted as proof the lookup was sound while every row was in the wrong place. Mode 19
+is its vertical twin and the two are now run as ONE result (gotcha 394).
+
+#### Session 2 — the same picture, and a latent bug in my own harness
+
+Arms 3 and 4 with the fix in place looked unchanged to the operator, so the misalignment
+was **a** bug and not **the** bug. Two arms of that session never launched at all:
+`run()` forwarded everything after the tag to `env`, including the human description, and
+GNU `env` accepts any argument containing `=` as an assignment. Descriptions written
+"PASS = ..." were silently absorbed and their arms ran; the first description written
+WITHOUT an `=` was treated as the command to execute and its arm died in 0.1 s with a
+129-byte log — while the script printed "ARM x done." and carried on (gotcha 396). Both
+session scripts now refuse to continue on a log under 4 KB, and print it.
+
+#### Session 3 — READ THE FACTOR ITSELF, and four of five links fall
+
+The instrument that should have existed in route (b)'s first hour.
+`CZ_VK_RT_FACTOR_READBACK=N` copies the factor image into a host-visible buffer in the
+SAME command buffer as the pass and histograms it one frame later. Every previous arm
+read the factor THROUGH the 126 patched shaders and then through the title's own
+lighting, where the entire range from lit to fully shadowed is about a tenth of the
+frame's luma. Three sessions went into interpreting a faint answer through a lossy
+channel (gotcha 397).
+
+| arm | reading | what it settles |
+|---|---|---|
+| poison | **100.0% shadowed**, all mass in the bottom octile | the instrument is honest — its own positive control, run FIRST and gating the rest |
+| stripeX | 49.8%, **8 vertical bands, rows flat** | |
+| stripeY | 50.0%, **8 horizontal bands, cols flat** | a clean transpose: identical pitch and duty cycle, each flat on the other axis. **The two-sided alignment proof this feature never had** |
+| hit17 | **85.2% shadowed** outdoors | the primary ray finds a receiver on 85% of the screen |
+| real | **0.9% shadowed / 99.1% lit** | the ray toward the sun escapes |
+
+`hit17`'s dumped mask, matched against the operator's own captured frame five frames
+away, resolves the one thing the stripes cannot — ORIENTATION. Sky reads MISS, world
+reads HIT, and the boundary undulates over the rooftops in the right places.
+
+**This is the first time in this project that any test has shown a ray hitting
+geometry.** Part 64 recorded the ray path as "proven end to end" on `CZ_VK_RT_POISON`,
+which returns a constant before a ray is fired; parts 65 and 66 inherited the claim
+unexamined.
+
+#### Session 4 — four arms on the shadow ray, two of them designed badly by me
+
+| arm | shadowed | verdict |
+|---|---|---|
+| down (mode 7, straight down 10x) | 38.3% | **a bad control.** It zeroes the bias, so the origin sits exactly on the surface it fires into and a coplanar hit at t=0 is numerically a coin flip. 38% is self-intersection noise, and the operator saw it as "some noise depending on where I am" |
+| flip (`CZ_VK_RT_SUN_FLIP=1`) | 72.2% | **not a fix.** The dumped mask is a UNIFORM BLANKET over the receiver silhouette — column profile flat, range 0.11. Negating the sun points the ray at the ground, so every receiver self-hits |
+| long (2000 units vs 116.5) | **0.9%** | no effect. Ray length is irrelevant |
+| unbias | 11.3% | early only, inconclusive |
+
+**A RETRACTION.** Mid-session I called `long` "the biggest effect yet" and reasoned that
+84% of receivers were shadowed — off a reading at frame 1228 of a file still being
+written. The completed reading is 0.9%, identical to the real path. That is gotcha 384
+exactly, and I had quoted gotcha 384 at the operator earlier in the same session before
+walking into it. **A partial read of these files measures a different PLACE.**
+
+What the arms do jointly establish: rays going DOWN hit, rays going UP escape. That is a
+ray tracer behaving correctly in a world that is below and a sky that is above.
+
+#### Session 5 — the world checker, and the answer
+
+The operator's observation is what produced this session, and it named the gap:
+
+> *"The ray might be tracing but it ain't doing it with the right behaviour — in all of
+> them the shadow moved with me and the camera and nothing else produced shadow except
+> what I would suppose is a skyline shadow."*
+
+Every arm to that point validated HIT-OR-MISS. None validated that the hit POSITION was a
+sane world position, or that the SUN VECTOR — derived from the cascade matrix, a
+different matrix in a space nobody had ever checked against the one the TLAS and the
+camera ray agree on — pointed anywhere meaningful.
+
+* **mode 2, the world checker, REVIVED.** It had never validly run: under the depth route
+  it was fed a cleared buffer, so it could only ever show nothing. On the primary ray it
+  is the one arm that asks whether our world positions are world positions. **PASS**, and
+  a single still proves it: the near field is a checkerboard lying on the ground with
+  correct perspective foreshortening, receding to the horizon. A screen-locked pattern
+  cannot produce perspective. The giant converging wedges further out are the expected
+  moiré — 4-unit cells go sub-pixel at distance and alias into a low-frequency beat.
+* **mode 20, hemisphere occlusion from EIGHT FIXED directions with the sun not involved**
+  (an instrument must not depend on its subject). Outdoors: **97.3% fully open, mean
+  0.987 — 1.3% average occlusion over the whole upper hemisphere.**
+
+### 8. THE ANSWER, AND A SECOND RETRACTION
+
+**No direction above a receiver is occluded, so no sun vector could ever have produced a
+shadow.** The sun is exonerated; so is the ray, the bias, the ray length, the world
+reconstruction, the alignment and the injection.
+
+**The TLAS is effectively a ground plane.** And that exposes an inference made too
+confidently earlier the same night: session 3's skyline silhouette was read as proof that
+the TLAS contains the world. **It is not.** A bare ground plane plus distant terrain
+produces exactly that silhouette — the primary ray hits *something* on 85% of the screen,
+but where the vertical structures are missing it simply hits the ground behind them.
+Ground-only is consistent with every measurement of the night: primary rays hit, AO reads
+1.3%, sun rays escape (gotcha 395).
+
+So the defect is upstream of the ray entirely: **the collector admits the ground and
+drops the world's vertical geometry.** ~700 static opaque meshes a frame for a whole town,
+against `dyn` at 57% of all draws seen and `alpha` at 10%
+(`collected=10.9M skips: dyn=19.0M alpha=3.2M bounds=5026`).
+
+**Part 67's first move is a census, not a build**, and both halves are offline:
+what the ~700 instances ARE (their vertical extents say in one histogram whether the TLAS
+is a flat sheet), and which filter eats the buildings. `tools/rt_depth_order_census.py`'s
+shape is the model — the `.xtr` traces carry the draws hardware issues for the scene, and
+our own collector counters say what we did with each class.
+
+### 9. The transferable half of part 66
+
+* **A one-axis control cannot detect a one-axis error** (gotcha 394). The horizontal
+  stripe passed for three sessions against a vertical displacement of 30% of the screen.
+  Spatial controls come in pairs.
+* **A silhouette proves occupancy, not content** (gotcha 395). "The mask matches the
+  skyline" felt like proof the world was in the ray structure and was consistent with a
+  bare ground plane.
+* **An argument list that accepts prose will eventually eat an arm** (gotcha 396), and an
+  arm that never ran must not print "done".
+* **Read the artifact, not its effect through a lossy channel** (gotcha 397). One
+  histogram of our own image settled in ninety seconds what eleven ladder modes could not
+  in three sessions, because every one of them was reading a tenth of a luma point.
+* **A count over a run is not an order within a frame** (gotcha 392) — §1.
+* And the two the operator supplied by looking: the 427 px misalignment, and the
+  "nothing is world-locked" observation that produced session 5. Three headless
+  statistics had not named either.

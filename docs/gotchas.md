@@ -4213,3 +4213,68 @@ From phase C part 18 (the frame rate — and none of it was work):
      the cheap discriminator when it is genuinely the descriptor (the extent comes
      from the descriptor, not from memory) — but the cheaper move is to ask what
      ELSE would produce exactly the clear value, and to check the timing first.
+
+394. **A ONE-AXIS CONTROL CANNOT DETECT A ONE-AXIS ERROR — SPATIAL CONTROLS COME
+     IN PAIRS.** Route (b) computes a screen-space value that patched shaders look
+     up at their own position, and the control written to prove that round trip
+     carried spatial detail was `frac(uv.x * 8.0)` — eight vertical stripes. It
+     landed on the 50/50 midpoint exactly, every time, for three sessions. It was
+     quoted as proof the lookup was sound. Meanwhile the factor image was sized
+     from a 2048-tall EDRAM attachment while the shaders divided by it and the
+     scene was 1440 tall, so every row was read **427 pixels out of place at the
+     bottom of the frame** — 30% of the screen. A pattern that varies only in x
+     is invariant under a displacement in y; the control could not have failed.
+     The operator found it by looking, in one sentence, on the first arm
+     ("the shadows move with me and with the camera ... in the form of the
+     mountain in the distance"). Add the transposed twin and run BOTH: agreeing
+     is the result, either alone is not. Same family as gotcha 30 — a test that
+     cannot fail has not been shown capable of failing — but the failure is
+     geometric and therefore invisible in the number.
+
+395. **A SILHOUETTE PROVES OCCUPANCY, NOT CONTENT.** A debug mode that returned
+     "did the primary ray hit anything" produced a mask whose boundary was a
+     perfect skyline: sky read MISS, world read HIT, and the edge undulated over
+     the rooftops in exactly the right places when matched against a captured
+     frame. That was read as proof the ray-tracing structure contained the world,
+     and the investigation moved downstream. It proved nothing of the kind: **a
+     bare ground plane plus distant terrain produces an identical silhouette**,
+     because a ray aimed at a missing building simply hits the ground behind it.
+     The structure turned out to hold essentially only the ground, which is
+     consistent with every measurement taken — hits on 85% of the screen, 1.3%
+     hemisphere occlusion, and shadow rays escaping. When a mask matches an
+     expected outline, ask what ELSE would produce the same outline before
+     concluding the contents are right; the cheap follow-up is a probe of the
+     thing you actually care about (here, occlusion in directions chosen without
+     reference to the light).
+
+396. **AN ARGUMENT LIST THAT ACCEPTS PROSE WILL EVENTUALLY EAT AN ARM — and an
+     arm that never ran must not print "done".** A session harness passed every
+     argument after the tag through to `env`, human description included. GNU
+     `env` treats any argument containing an `=` as an assignment, so
+     descriptions written "PASS = ..." were silently absorbed and their arms ran
+     perfectly. The first description written without an `=` became the command
+     to execute; that arm died in 0.1 s with a 129-byte log, and the harness
+     printed "ARM x done." and started the next one. A latent bug in every arm of
+     every session, hidden for a whole session by punctuation, and it cost the
+     operator two launches. Two fixes, both cheap: prose is its own positional
+     parameter and is never forwarded, and the harness refuses to continue when
+     an arm's log comes back implausibly small — the same class as gotcha 386, a
+     feature that is silently inert reads exactly like a feature that did
+     nothing.
+
+397. **READ THE ARTIFACT, NOT ITS EFFECT THROUGH A LOSSY CHANNEL.** Route (b)
+     computes a shadow factor into an image of our own, which 126 patched shaders
+     then sample and the title's own lighting then applies. Eleven ladder modes,
+     three operator sessions and two retracted conclusions went into inferring
+     what that image contained by looking at the resulting frame — a channel in
+     which the entire range from "fully lit" to "fully shadowed" is about a tenth
+     of the frame's median luma (99.9 -> 90.2). A twenty-line readback that
+     copies the image into a host buffer and prints mean, shadowed share and
+     octiles answered it in ninety seconds, and split the remaining problem
+     cleanly in half: mostly lit means the rays are not hitting, mostly shadowed
+     means the fault is downstream. **If a feature produces an intermediate you
+     own, instrument the intermediate on the day you write it**, and give the
+     readback its own positive control (here a poison arm that must read 100%)
+     before believing anything it says. Corollary for the dump: record the copy
+     into the same command buffer as the pass that produced it — an immediate
+     submit photographs the state before the pass has executed.
