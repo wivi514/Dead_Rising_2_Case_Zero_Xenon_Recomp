@@ -1,187 +1,233 @@
-# Part 65 kickoff — RT shadows: the occluder set, then the operator's verdict
+# Part 65 kickoff — RT shadows, ROUTE (B): a screen-space traced factor
 
 > **THIS IS THE LIVE HAND-OFF**, superseding `part64-kickoff.md`. Part 64
-> (2026-08-21 night → 2026-08-22) built RT stage 2 end to end and diagnosed the
-> one defect standing between it and an operator session. The record with every
-> number is `phase5-notes.md` §6cv; the backlog entry is `open-items.md` 0v; the
-> arms are in `instruments.md`; the transferable lessons are gotchas 381-383.
+> (2026-08-21 night → 2026-08-22) built RT stage 2 end to end on **route (a)**
+> (write depths into the title's own cascade atlas), proved the injection point,
+> put it in front of the operator twice, and **concluded by measurement that
+> route (a) cannot produce correct shadows**. Part 65's subject, set by the
+> operator, is **route (b)**.
+>
+> The full record is `phase5-notes.md` §6cv — read **§7j first, it is the
+> verdict**, then §7f (the operator's session) and §7e (a retraction that
+> matters). The backlog entry is `open-items.md` 0v; the arms are in
+> `instruments.md`; the transferable lessons are gotchas 381-386.
 >
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (standing instruction),
 > and the Fable 2 port is NOT a renderer reference (operator instruction, part
-> 59). Part 64's runs were headless MEASUREMENT — luma statistics, atlas dumps,
-> occlusion queries — which is the part-61/62 practice for instruments. **The
-> LOOK verdict has not been asked for and should not be yet**: on complete runs
-> every RT arm sits at 66.1-66.4 outdoor median luma against OG's 80.61, next to
-> an all-shadow floor of 61.2. The arm still over-shadows heavily and an operator
-> session would only re-report that.
->
-> **READ §6cv 7e BEFORE ANY OF THE NUMBERS BELOW.** Part 64 quoted three
-> "improvements" that were read from stats files still being written, and all
-> three dissolved when the runs finished. Every median in this document is now
-> from an EXITED process and carries its frame count; keep it that way
-> (gotcha 384).
+> 59). Part 64's two operator sessions are why this part exists at all: their
+> eleven-word description named a mechanism three headless statistics had missed.
 
-## 0. Read these first, and do not re-measure them
+---
 
-`phase5-notes.md` §6cv is the whole record. The facts it closes:
+## 0. Why route (a) was abandoned — do not re-derive any of this
 
-* **The injection point is the shadow ATLAS SNAPSHOT, and it needs no shader
-  patch.** `CZ_VK_SHADOW_FILL=0.0` → outdoor median luma 80.61 → 61.43;
-  `=1.0` → 81.46. Two polarities, opposite directions.
-* **The convention is STANDARD** (near = occluder). `CZ_VK_RT_INVERT` exists for
-  the other answer and is not needed here.
-* **The trace pipeline's writes reach the title's shadow term.**
-  `CZ_VK_RT_POISON=1` reads 61.18 against the direct fill's 61.43 — the same
-  measured extreme through the whole BLAS/TLAS/ray-query path.
+Route (a) writes depths into the 4096x1024 shadow atlas the title samples, so
+the title's own comparison applies them. It works as a MECHANISM and that is
+proven, not assumed:
+
+* **The injection point is real.** `CZ_VK_SHADOW_FILL=0.0` takes the outdoor
+  median luma 80.61 → 61.43 and `=1.0` reads 81.46 — two polarities, opposite
+  directions, ~11k outdoor frames an arm. No shader patch is needed to make the
+  title's shadow term read what we write, and the convention is STANDARD
+  (near = occluder).
+* **The whole ray path reaches that term.** `CZ_VK_RT_POISON=1` (all-shadow
+  written by the trace pipeline) reads 61.18 against the direct fill's 61.43 —
+  the same measured extreme, through BLAS + TLAS + ray query + composite.
 * **The plumbing engages and holds**: ~1,400 BLASes, ~33 MB, zero pool flushes,
-  ~370-530 TLAS instances/frame, zero key collisions, zero unreadable positions,
-  zero refused endians, and a traced atlas that is recognizably a shadow map.
-* **Two real but SECONDARY causes of the over-shadowing, both measured and both
-  smaller than they looked**: junk-coordinate streams at ±6.3M units (gated;
-  worth 63.72 → 63.71, i.e. nothing measurable — hygiene, not a fix), and
-  structurally, **the title's own cascade is 52.8% EMPTY because it draws
-  CASTERS, not the world** while we trace everything the camera sees (worth
-  63.71 → 66.14 via `CZ_VK_RT_CASTERS=cascade`). Both are recorded because a
-  mechanism that is real and immaterial is worth as much to the next session as
-  one that is real and decisive — it stops the item being re-bought.
+  ~200-530 TLAS instances/frame, zero key collisions, zero unreadable positions,
+  zero refused endians.
 
-* **Three real defects were found and fixed, and NONE of them moved the
-  picture.** Each rests on a count that does not drift; each fix is right on its
-  own terms; on complete runs the three arms are indistinguishable.
-  * junk geometry at ±6.3M units entering the BLAS — gated;
-  * the title's cascade being **52.8% EMPTY** (it draws casters, not receivers)
-    — `CZ_VK_RT_CASTERS=cascade`;
-  * the light matrix bound by RECENCY, when the cascade pass carries **several**
-    distinct c0-3 per slice (**0 slices with one, 28,704 with several**) — now
-    bound by DATAFLOW, with `CZ_VK_RT_ANY_MATRIX=1` as the control.
-  Keep all three, re-buy none of them, expect none of them to be the answer.
-  The matrix-inverse self-check also cleared its own hypothesis in the same run
-  (worst |M·M⁻¹ − I| = 2.38e-07), so that candidate is closed.
+**And it cannot be made correct.** The operator's report — *"pretty much like
+shadow squares following where the player is and normal shadow still on"* —
+named the mechanism: **self-shadowing**. Writing the MAP means every receiver
+inside the map is compared against itself and comes out occluded, and route (a)
+has no receiver-side offset to apply. Five independent knobs were then tried and
+**the frame does not care about any of them**:
 
-## 1. The work, in order
+| what was changed | median meanLuma (n) |
+|---|---|
+| OG | **80.61** (11,243) |
+| union, camera's world set | 66.34 (6,484) |
+| union, the title's own casters | 66.14 (10,991) |
+| union, dataflow-bound light matrix | 66.40 (6,550) |
+| replace, casters, bias 0.0015 | 65.98 (11,211) / 64.35 (9,381) |
+| replace, casters, bias 0.01 (6.7x) | 64.79 (9,063) |
+| all-shadow floor (poison / fill) | 61.18 (10,865) |
 
-0. **THAT NUMBER WAS READ AT PART 64'S CLOSE AND THE ANSWER IS ONE.** 10,192
-   cascade slices carried exactly ONE world-vouched c0-3 and 0 carried several
-   (1,293,132 accepted draws, 825,134 rejected object-transform ones). The
-   slice↔matrix pairing is exact and the matrix selection is provably right, so
-   **that branch is closed — do not build the ordered-association fix.**
+A 6.7-fold bias change moved 0.44 luma against a 16-luma gap. Stills say the
+same thing in one glance: the white vans and the quarantine bus are bright under
+OG and uniformly grey under RT — **every LIT surface shadows itself.**
 
-   **START HERE INSTEAD: the DEPTH CONVENTION, and it is one line to check.**
-   `PA_CL_VTE_CNTL`'s Z-enable bits and `kPaClVportZScale` / `kPaClVportZOffset`
-   are decoded NOWHERE in this renderer: the raster path hardcodes
-   `minDepth = 0, maxDepth = 1` and the trace pass writes a raw NDC z. Those two
-   agree with EACH OTHER — which is exactly why the traced atlas looks right —
-   and both would disagree with what the title's receiver-side shadow comparison
-   expects if the cascade sets those terms. Print the three registers on a
-   cascade draw. It either names the defect or eliminates the last named
-   suspect, and either outcome is worth more than another arm.
+**Everything route (a) built is reusable by route (b) unchanged**, which is why
+none of it is deleted: the BLAS/TLAS construction, the sun-matrix capture and
+its dataflow binding, the pooled AS allocator, every arm, and the `rt` profiler
+phase.
 
-1. **The three statistics that judge this arm, in this order** (all are in §6cv
-   with their part-64 values, so the job is to re-read them after any change):
-   * `CZ_VK_RT_COVERAGE=1`'s won-fraction, read AT EXIT: **54.2% / 52.8% /
-     52.4%** for the three arms. (Read mid-run it says ~86% — the counter is
-     cumulative and the early frames are menus with tiny slices.)
-   * the atlas diff — `CZ_VK_SNAP_DUMP` on an RT run and an OG run at the same
-     stationary camp, then convert the stretched greys back through the printed
-     24-bit range. **Report BOTH tails** (gotcha 382): today nearer 49.6% /
-     farther 1.3%.
-   * outdoor median `meanLuma` with its FRAME COUNT, against OG's **80.61**
-     (n=11,243). The arms are at **66.34** (n=6,484), **66.14** (n=10,991) and
-     **66.40** (n=6,550). Expect a correct RT arm to sit somewhat below OG — real
-     added occluders darken a scene — but nowhere near the all-shadow floor of
-     **61.2-61.4**, which is where these sit.
-2. **Re-price the bias.** `CZ_VK_RT_BIAS=0.05` was worth +10 luma on the BROKEN
-   build (63.72 → 73.89) purely by hiding a wrong transform; that reading is
-   retired. On the fixed build the default 0.0015 has never been swept. Sweep it
-   against stills, not luma alone — a bias large enough to move luma is large
-   enough to detach shadows from their casters, and only a picture shows that.
-   `CZ_VK_RT_CASTERS=cascade` should also be re-measured on the fixed build: its
-   +2.4 luma was measured under the false binding and may be worth more or
-   nothing now.
-3. **Then, and only then, the operator session.** Ask for OG vs RT LOW
-   side by side; fold in **the shadow Low-vs-High LOOK verdict owed since part
-   60**, which the same session can judge. Wire `CZ_VK_PROFILE` into the launch
-   (their frame is ~2x the headless one) and read the `rt` phase.
-4. **Price the tier ladder before promising MED/HIGH.** The panel refuses them at
-   the setter today, which is the honest state; MED/HIGH need a measured ms cost
-   on the operator's machine first (plan §6's rule).
+**One hypothesis was never tested**, recorded so it is not lost rather than
+because it is recommended: that a slice's traced content lands in the correct
+QUARTER of the atlas but is paired with a different cascade's matrix. That would
+look exactly like this and the distinctness counter cannot catch it — it
+verifies that ONE matrix governs a slice, not that the matrix BELONGS to that
+slice. The test is a per-cascade-index content comparison between our traced
+quarter and the raster quarter it replaced. Cheap, and the only reason to
+revisit route (a).
 
-## 1b. WHAT PART 64 CONCLUDED AFTER THE OPERATOR'S SESSION — read this before §1
+---
 
-The work above §1 was written before the operator played it. They did, and the
-result changes the recommendation rather than refining it. `phase5-notes.md`
-§6cv 7f-7j is the record; the short version:
+## 1. Route (b), the spec
 
-* Their description — *"shadow squares following where the player is and normal
-  shadow still on"* — named the mechanism in eleven words after three headless
-  statistics had failed to: **self-shadowing**, uniform across the traced area.
-* The settings became ONE row on their instruction (LOW/MEDIUM/HIGH/RT LOW/RT
-  MEDIUM/RT HIGH, RT replacing the raster shadow), and RT now clears the cascade
-  rather than unioning with it.
-* **Five independent knobs were then tried and the frame does not care about any
-  of them**: occluder set, union vs replace, the matrix binding, the bounds
-  gate, and a 6.7x bias sweep. Every configuration lands at 64-66 median luma
-  against OG's 80.61. Stills show it plainly — the white vans and the bus go
-  uniformly grey, i.e. every LIT surface shadows itself.
-* That invariance is the finding: it is not a parameter mis-set, it is what
-  route (a) does. Writing the shadow MAP means every receiver in the map
-  occludes itself and there is no receiver-side offset available.
+**Compute a shadow factor per RECEIVING PIXEL, in screen space, and have the
+shadow-sampling pixel shaders read that instead of comparing against the
+atlas.** A surface cannot shadow itself when the ray starts at that surface and
+is offset along its own normal — the defect above becomes impossible by
+construction rather than tuned away. It is also the only route that can ever do
+soft or per-pixel shadows: the atlas route is capped at the atlas's resolution
+however many rays it fires.
 
-**So the recommended first action of part 65 is NOT to keep tuning route (a).**
-It is to put route (b) to the operator: patch the ~dozen shadow-sampling pixel
-shaders to read a screen-space traced FACTOR. The factor is computed per
-receiving pixel from that pixel's own position, so a surface cannot shadow
-itself — the defect is impossible by construction rather than tuned away. Every
-piece part 64 built is reusable by it unchanged: BLAS, TLAS, the sun-matrix
-capture and its dataflow binding, all the arms, the `rt` profiler phase.
+### Step 1 — CENSUS FIRST: which shaders sample the cascade atlas, and where
 
-If route (a) is revisited anyway, run ONE test first: compare our traced quarter
-of the atlas against the raster quarter it replaced, per cascade index. The
-untested hypothesis is that a slice's content is written to the right quarter
-but paired with another cascade's matrix, which would look exactly like this and
-which the distinctness count cannot catch (it verifies one matrix per slice, not
-that the matrix belongs to that slice).
+**Build nothing before this returns a list.** The atlas is resolve destination
+`1439B000` (4096x1024 guest; 11008x2048 host at the operator's internal
+resolution). Wanted, per pixel-shader hash: does it fetch that address, at which
+`tfetchConsts` slot, and on how many draws a frame.
 
-## 2. The decision this part should make consciously
+The machinery exists. The sidecars carry `tfetchConsts` and `tfetchDims`
+(`tools/shader_dim_census.py` reads them), and the renderer already resolves
+each fetch's address per draw in its texture-binding walk — so a counter keyed
+on (psHash, slot) when the fetch address matches the atlas is a small diagnostic
+arm in the same shape as `CZ_VK_DIM_CENSUS`. **Report counts, not impressions**:
+the plan's "~a dozen shaders" is a guess that has never been measured, and this
+project has been wrong about a population size before (gotcha 3).
 
-Route (a) — what part 64 built — traces INTO the 4096x1024 atlas, so **its
-ceiling is the atlas's resolution**: exact depths and missing occluders, never
-soft or per-pixel shadows. The plan's route (b) — patch the ~dozen
-shadow-sampling PS to read a screen-space traced factor — is where a quality
-tier actually lives, and **every piece part 64 built is reusable by it
-unchanged** (BLAS, TLAS, the sun-matrix capture, the arms, the profiler phase).
+Free cross-check: Xenia's `dump_shaders` writes `.ucode.*` disassembly beside
+each blob, so the shadow compare can be READ in the microcode of the named
+shaders instead of inferred.
 
-Decide (a)-vs-(b) on the fixed build's numbers and the operator's verdict, not on
-effort already spent. A defensible outcome of part 65 is "(a) is correct and
-cheap, ship it as LOW, and (b) becomes MED/HIGH" — and so is "(a)'s ceiling is
-too low to be worth a row; (b) is the tier".
+### Step 2 — the factor pass
 
-## 3. Carry-overs (non-blocking, ask when convenient)
+A compute or fullscreen pass, once the frame's scene depth exists:
+
+* **Reconstruct world position** from the scene depth. The scene camera's
+  view-projection is available and already recognized: world draws carry the
+  composite P*V at c0-3 (§6cs, `SceneXformForm` form 2), and part 64 shipped an
+  `Invert4x4` whose self-check reads `|M·M⁻¹ − I| = 2.38e-07` and logs on
+  success as well as failure.
+* **Sun direction** from the cascade's light matrix — captured and DATAFLOW-BOUND
+  in part 64 (`g_lightM`). Do NOT use last-write-wins: that binding was refuted
+  outright (0 slices carried one c0-3, 28,704 carried several; half the cascade
+  pass's ortho-shaped matrices are per-object composites). The fix uses the scene
+  pass as the oracle — a stream the scene pass draws world-space vouches for the
+  matrix a cascade draw of the same bytes carries.
+* **Ray-query toward the sun** from position + a normal-offset origin, write a
+  factor texture. Tiers become expressible here, which is the whole point: LOW =
+  half-res, 1 ray, temporal only; MED = full-res, 1 ray, bilateral filter;
+  HIGH = cone-sampled sun radius, 2-4 rays, i.e. genuinely soft.
+
+### Step 3 — the injection: a shader VARIANT CACHE
+
+This port already has the mechanism AND the precedent, so do not invent one.
+`CZ_DXC_DEFINES` builds a second SPIR-V cache and `CZ_SHADER_SPV` selects it;
+the part-33 NaN family (`XE_FLOOR_IS_NAN`, `XE_NAN_IN_PAINT`,
+`XE_NAN_VS_KILL_IN`) and `assets/shader_spv_pre45` are all this shape. Build
+lines and readings are in `docs/xenonrecomp-upstream-bugs.md`.
+
+* Build a variant cache in which the named shaders' atlas compare is replaced by
+  a load from our factor image at `SV_Position.xy`.
+* The runtime binds the factor image and selects the variant cache only while an
+  RT tier is active, so the stock cache and the default path are untouched.
+* **The null must be byte-identical**: with RT off the run uses the stock cache
+  and must be instruction-path identical to today.
+
+### Gates and arms
+
+* `CZ_VK_RT=0` stays the master arm (device created exactly as pre-part-64).
+* A poisoned factor (all-black) must darken the frame — the `CZ_VK_CUBE_POISON`
+  pattern, and part 64's poison landed on the fill's number to 0.25 luma, so
+  this control is known capable of firing.
+* **An engagement counter on the factor pass, re-checked after every change that
+  COMBINES two others** (gotcha 386: part 64 shipped a build measuring 80.61
+  against a control's 80.61 — a flawless-looking fix that was the feature
+  silently switched off, caught only by an engagement line reading zero).
+* Validation with the RT extensions on; the PM4 oracles untouched; `--smoke`;
+  A5 exit 0; `no translated shader` = 0; `shader_dim_census.py` clean.
+
+---
+
+## 2. Measurement discipline this part must not repeat
+
+Part 64 lost an hour to two mistakes, both now gotchas:
+
+* **384 — read only EXITED processes.** `CZ_VK_FRAME_STATS` is appended to while
+  the run continues and the `[rt]` counters are cumulative. On these routes a
+  partial read measures a DIFFERENT PLACE in the level, not a noisier version of
+  the same one: the same arm read 63.71 at 4,663 outdoor frames and 66.34 at
+  6,484; another 72.00 at 1,212 and 66.40 complete; coverage ~86% early and
+  52.8% at exit. Three "findings" were built on partials and all three
+  dissolved. Gate every read on a `done` flag the runner writes (not `pgrep`,
+  which races the next queued run), quote the frame COUNT beside every median,
+  and run the control to the same depth.
+* **385/386 — a proven mechanism is not a proven arm**, and a number that
+  matches the control EXACTLY is inertness until a counter says otherwise.
+
+And the positive lesson, which is why this part exists: **on a question about
+SHAPE, or about WHICH SURFACES, the operator's eye is not a slower instrument —
+it is the only one.** Three statistics agreed the frame was 14 luma dark and not
+one of them could say the white vans had gone grey.
+
+---
+
+## 3. The settings row, as the operator specified it
+
+Shipped in part 64 and unchanged by route (b): **ONE row**, `SHADOW`, values
+`LOW / MEDIUM / HIGH / RT LOW / RT MEDIUM / RT HIGH`. Values 0-2 are the raster
+tiers with RT off; 3-5 select an RT tier which **replaces** the raster shadow.
+The raster tier is remembered while an RT value is selected, so stepping back
+down returns the quality the player had. On a device without ray query the
+ladder stops at HIGH and the footer says why.
+
+Their words: *"for shadow we'll have the normal settings and then RT low, rt
+medium and rt high in the same settings since normal shadow would be removed to
+be replaced by the RT shadow if a rt settings is selected."*
+
+**The trade replacement creates is what gives MED/HIGH something real to be**:
+anything not in the TLAS casts no shadow — skinned actors (zombies, Chuck) and
+alpha-tested foliage. On route (b) the tiers can buy that back (MED adds the
+deformed streams, HIGH adds skinned actors with per-frame BLAS rebuilds) as well
+as buying softness. Do not offer a rung before it is priced in ms on the
+operator's machine (plan §6).
+
+---
+
+## 4. Carry-overs (non-blocking, ask when convenient)
 
 * **Turn-stutter under the wide-culling over-widen — operator-deferred**, filed
   in `perf-state-parked.md` (part 62). If the operator asks for it, THAT is the
   part's work instead.
 * Small open verdicts from parts 61-62: a gore cut with the fov slider off zero;
   aiming behaviour under the slider; the cutscene 21:9 CROP look.
+* **Owed since part 60**: the shadow Low-vs-High LOOK verdict — fold it into the
+  first operator session that judges an RT tier.
 * Suspected input leak at panel open (one Resolution-row write per open).
 * Performance PARKED (`perf-state-parked.md`).
 * Decal flicker: waiting on a sighting; F8 burst + `CZ_VK_NO_PARALLEL_GUARD=1`.
 * Doubled-slab watch (00q): F9 + immediate F8 on any sighting.
-* Live-resolution switch parked; point-list PointSize VUID class named, cheap,
-  unowned — note it is now the ONLY validation class the RT arm leaves behind
-  (part 64 fixed the two its first validation run caught).
+* Live-resolution switch parked; the point-list PointSize VUID class is now the
+  ONLY validation class the RT work leaves behind (part 64 fixed the two its
+  first validation run named).
 * Shader cache 449; any run reaching new ground carries `CZ_SHADER_DUMP`
   (`~/DR2CZ-troubleshooting/ucode-dumps`, never `/tmp`).
 
-## 4. Practical notes from part 64's session
+## 5. Practical notes from part 64's session
 
-* **`/tmp` is a tmpfs and `CZ_VK_FRAME_DUMP` at 3440x1440 is ~15 MB a frame.**
-  A three-arm campaign with dumps every 96 frames filled it and killed the shell
-  mid-part. Dump to `~/DR2CZ-troubleshooting/`, or read `meanLuma` out of
-  `CZ_VK_FRAME_STATS` — which is already per-frame, already outdoor-filterable
-  by draw count, and costs nothing extra.
-* **The atlas is `1439B000`**, dumped at the internal resolution (11008x2048 at
-  3440x1440). `CZ_VK_SNAP_DUMP` writes it with the 24-bit range in the log line;
-  that range is what makes the greys convertible back to depth.
-* The RT arms are all headless-safe and all off by default. `CZ_VK_RT=0` creates
-  the pre-part-64 device exactly, which is the arm to quote against.
+* **`/tmp` is a tmpfs and a 3440x1440 frame dump is ~15 MB.** A three-arm
+  campaign with dumps filled it and killed the shell mid-part. Dump to
+  `~/DR2CZ-troubleshooting/`, or read `meanLuma` out of `CZ_VK_FRAME_STATS`,
+  which is per-frame and outdoor-filterable by draw count at no extra cost.
+* The shadow atlas is resolve destination **`1439B000`**; `CZ_VK_SNAP_DUMP`
+  writes it with its 24-bit range on the log line, and that range is what makes
+  the contrast-stretched greys convertible back to depth (gotcha 383).
+* Part 64's stills and atlas dumps are preserved in
+  `~/DR2CZ-troubleshooting/part64-bias/` and `part64-fill-experiment/`.
+* The operator launch script is `~/DR2CZ-troubleshooting/launch-part64-rt.sh` —
+  note it deliberately does NOT set `CZ_VK_RT_SHADOWS`, because the env arm wins
+  over the panel row and would freeze the live toggle the session depends on.
