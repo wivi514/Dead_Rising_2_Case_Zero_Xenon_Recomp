@@ -13285,6 +13285,44 @@ each rung buys back a named exclusion is a better ladder than one that just
 raises a ray count — and on this route the ray count cannot buy softness anyway
 (§8's ceiling note). `CZ_VK_RT_UNION=1` restores the union as the control arm.
 
+### 7h. What replacement actually measured, and the knob that is left
+
+Complete runs on the REPLACE + caster-set build (the configuration §7f argues
+for), all read after the process exited:
+
+| arm | n | median meanLuma |
+|---|---|---|
+| OG | 11,243 | 80.61 |
+| union + camera's world set (what the operator saw) | 6,484-10,991 | 66.1-66.4 |
+| **replace + caster set, default bias 0.0015** | 11,211 | **65.98** |
+| all-shadow floor | 10,865 | 61.18 |
+
+**Replacement alone did not move it**, and that is worth stating plainly against
+the expectation in §7f: removing the union removed the *double* shadow system
+the operator saw, but the traced map on its own still darkens the world to the
+same degree. So "the world shadows itself" survives restricting the occluder set
+to the title's own casters — which means the title's cascade DOES contain the
+large receiver surfaces (the atlas's diagonal gradient across slices 1-2 is a
+ground plane seen from the sun), and it tolerates them because its receiver-side
+comparison carries a bias that our exact ray-traced depths do not need to have
+earned.
+
+That makes the BIAS the remaining knob rather than a tuning detail, and it is
+being swept against STILLS rather than luma — because on this defect luma cannot
+tell the two failure directions apart: a bias too small leaves the world
+self-shadowed, a bias too large deletes the shadows entirely, and **both read as
+a move toward OG's 80.61**. This is the same trap as §7e in a different costume,
+and the same rule applies: pick the statistic that can distinguish the outcomes,
+or look at the picture.
+
+**One more inert-arm scare, recorded because the pattern is now three-for-three
+in this part** (gotcha 386): combining the caster default with the dataflow
+matrix binding made the caster branch return before the code that feeds the
+binding's oracle, so no matrix was ever captured and **not one slice traced**.
+The run read 80.61 on 11,433 frames — OG's number to the decimal, which looks
+like a perfect fix. Only the ABSENCE of the `[rt] slices` engagement line caught
+it.
+
 ### 8. Where part 64 leaves it
 
 **Closed by measurement** (complete runs, large n): the injection route, the
