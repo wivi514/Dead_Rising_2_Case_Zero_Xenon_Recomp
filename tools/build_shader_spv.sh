@@ -45,6 +45,19 @@ for x in "$SYNTH"/*.xshd; do
         "$XENOS/XenosRecomp/shader_common.h" > "$SYNTH/$n.xenos.log" 2>&1; then
     echo "FAILED (XenosRecomp): $n"; failed="$failed $n"; continue
   fi
+  # CZ_HLSL_PATCH=<script> — a per-shader hook on the TRANSLATED HLSL, before DXC.
+  # It exists for route (b)'s RT shadows (tools/patch_rt_shadow_hlsl.py), which has to
+  # rewrite named texture fetches in 126 of these shaders; doing it here rather than in
+  # XenosRecomp keeps the shared recompiler untouched and makes the result an ordinary
+  # second cache selected with CZ_SHADER_SPV. A patch that FAILS drops its shader from
+  # the cache rather than shipping it unpatched, because an unpatched shadow sampler is
+  # a surface that silently keeps the old shadow (gotcha 386).
+  if [ -n "${CZ_HLSL_PATCH:-}" ]; then
+    if ! $CZ_HLSL_PATCH "$SYNTH/$n.hlsl" "$n" >> "$SYNTH/patch.log" 2>&1; then
+      echo "FAILED (CZ_HLSL_PATCH): $n"; sed -n '$p' "$SYNTH/patch.log" | sed 's/^/    /'
+      failed="$failed $n"; rm -f "$OUT/$n.spv" "$OUT/$n.meta.json"; continue
+    fi
+  fi
   case "$n" in vs_*) target="vs_6_0" ;; *) target="ps_6_0" ;; esac
   # No -fvk-invert-y. The Xenos vertex shader emits clip coordinates in D3D
   # convention and the renderer folds the window->NDC mapping itself (see
