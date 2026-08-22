@@ -737,67 +737,58 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT STAGE 2 IS BUILT END TO
-END AND THE COMPOSITE ROUTE IS PROVEN; THE OCCLUDER SET IS THE ONE THING BETWEEN IT
-AND AN OPERATOR SESSION.** `docs/part65-kickoff.md` is the LIVE hand-off; the record
-with every number is `phase5-notes.md` §6cv; the backlog entry is `open-items.md` 0v;
-the arms are in `instruments.md`; the lessons are gotchas 381-383):
+Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT SHADOWS: ROUTE (a) WAS
+BUILT END TO END, PROVEN AS A MECHANISM, AND THEN CLOSED AS UNWORKABLE BY
+MEASUREMENT. ROUTE (b) IS PART 65's SUBJECT, by the operator's decision.**
+`docs/part65-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md`
+§6cv — **§7j is the verdict, §7f is the operator's session, §7e is a retraction
+that matters**; the backlog entry is `open-items.md` 0v; the arms are in
+`instruments.md`; the lessons are gotchas 381-386):
 
-* **The injection point is the shadow ATLAS SNAPSHOT and it needs NO shader patch** —
-  the plan's route (a), settled in an afternoon as the kickoff asked.
-  `CZ_VK_SHADOW_FILL=0.0` takes the outdoor median luma **80.61 → 61.43** and `=1.0`
-  reads **81.46**: two polarities, opposite directions, ~11k outdoor frames an arm.
-  The convention is STANDARD (near = occluder); `CZ_VK_RT_INVERT` is not needed here.
-* **The whole ray path reaches the title's shadow term**, which is the strongest form
-  this evidence can take: `CZ_VK_RT_POISON=1` (all-shadow written by the TRACE
-  PIPELINE) reads **61.18** against the direct fill's 61.43 — the same measured
-  extreme, through BLAS + TLAS + ray query + composite.
-* **The plumbing engages and holds**: ~1,400 BLASes / ~33 MB / zero pool flushes /
-  ~370-530 TLAS instances a frame / zero key collisions / zero unreadable positions /
-  zero refused endians, and the traced atlas is recognizably a shadow map. Two
-  defects the FIRST validation run named were fixed the same hour (TLAS created-size
-  tracking; the trace pass invalidating the main path's bound-state cache).
-* **THREE REAL DEFECTS WERE FOUND AND FIXED AND NONE OF THEM MOVED THE PICTURE**,
-  which is the part's most important sentence. Each rests on a count that does not
-  drift; each fix is right on its own terms; on COMPLETE runs all the arms are
-  indistinguishable at **66.1-66.4** outdoor median luma against OG's **80.61**
-  (all-shadow floor 61.2). They are: junk geometry at ±6.3M units entering the BLAS
-  (gated); the title's own cascade being **52.8% EMPTY** because it draws CASTERS not
-  receivers (`CZ_VK_RT_CASTERS=cascade`); and the light matrix being bound by
-  RECENCY when the cascade pass carries SEVERAL distinct c0-3 per slice — **0 slices
-  with one against 28,704 with several** — now bound by DATAFLOW
-  (`CZ_VK_RT_ANY_MATRIX=1` is the control; the clean same-binary A/B reads +0.66
-  luma). Keep all three, re-buy none, expect none to be the answer.
-* **AND THE MID-SESSION NUMBERS THAT SAID OTHERWISE ARE RETRACTED (§6cv 7e).** They
-  were read from `CZ_VK_FRAME_STATS` files still being written and from cumulative
-  `[rt]` counters mid-run: the same arm reads 63.71 at 4,663 outdoor frames and 66.34
-  at 6,484, or 72.00 at 1,212 and 66.40 complete; coverage reads ~86% early and
-  52-54% at exit. **A partial read on this route measures a different PLACE, not a
-  noisier version of the same one** (gotchas 384-385). Gate every read on the process
-  having EXITED and quote the frame count beside every median.
-* **Open, and part 65's first job: every RT arm over-shadows by ~14 luma and the
-  cause is none of the three above.** Two suspects were named and **one was
-  eliminated in the part's last run**: the slice<->matrix PAIRING is exact
-  (10,192 slices carried exactly ONE world-vouched c0-3, 0 carried several), so the
-  ordered-association fix must not be built. **The last named suspect is the DEPTH
-  CONVENTION** — `PA_CL_VTE_CNTL`'s Z bits and `kPaClVportZScale`/`ZOffset` are
-  decoded NOWHERE in this renderer, which hardcodes minDepth 0 / maxDepth 1 while
-  the trace writes a raw NDC z; the two agree with EACH OTHER, which is exactly why
-  the traced atlas looks right, and both would disagree with the title's
-  receiver-side comparison. Printing three registers on a cascade draw settles it.
-  **Do not ask the operator for a LOOK verdict yet**; the arm still shadows the
-  world against itself.
+* **Proven, and not to be re-derived**: the shadow ATLAS SNAPSHOT is where the
+  title's shadow term reads and needs NO shader patch — `CZ_VK_SHADOW_FILL=0.0`
+  takes the outdoor median luma **80.61 → 61.43** and `=1.0` reads **81.46** (two
+  polarities, opposite directions, ~11k outdoor frames an arm); the convention is
+  STANDARD (near = occluder); and the WHOLE ray path reaches that term —
+  `CZ_VK_RT_POISON=1` reads **61.18** against the direct fill's 61.43, i.e. the
+  same measured extreme through BLAS + TLAS + ray query + composite. The plumbing
+  engages and holds (~1,400 BLASes, ~33 MB, zero pool flushes, zero collisions).
+* **Closed as unworkable: route (a) SELF-SHADOWS BY CONSTRUCTION.** Writing the
+  shadow MAP means every receiver inside it is compared against itself, and there
+  is no receiver-side offset to apply. **Five independent knobs — occluder set,
+  union vs replacement, the light-matrix binding, a bounds gate, and a 6.7x bias
+  sweep — all land at 64-66 median outdoor luma against OG's 80.61**, floor 61.2.
+  The operator named the mechanism in one sentence (*"shadow squares following
+  where the player is and normal shadow still on"*) after three headless
+  statistics had failed to, and stills show every LIT surface greyed. **Do not
+  re-open this by tuning.**
+* **Three real defects were found and fixed on the way and NONE moved the
+  picture** — keep the fixes, re-buy none, expect none to be an answer: junk
+  ±6.3M-unit geometry entering the BLAS (gated); the title's own cascade being
+  **52.8% EMPTY** because it draws CASTERS not receivers (now the default set);
+  and the light matrix bound by RECENCY when the cascade pass carries several
+  distinct c0-3 per slice (**0 slices with one against 28,704 with several**),
+  now bound by DATAFLOW with the scene pass as the oracle.
+* **AND MANY MID-SESSION NUMBERS WERE RETRACTED (§6cv 7e).** They were read from
+  `CZ_VK_FRAME_STATS` files still being written and from cumulative counters
+  mid-run: the same arm reads 63.71 at 4,663 outdoor frames and 66.34 at 6,484,
+  or 72.00 at 1,212 and 66.40 complete. **A partial read on these routes measures
+  a different PLACE, not a noisier version of the same one** (gotchas 384-386;
+  386 is the build that measured 80.61 against a control's 80.61 because the
+  feature was silently inert).
+* **Shipped and staying**: the operator's settings revision — **ONE `SHADOW`
+  row**, LOW/MEDIUM/HIGH then RT LOW/MEDIUM/HIGH, where an RT value REPLACES the
+  raster shadow and the raster tier is remembered underneath. RT is OFF by
+  default, so nothing the operator plays is affected.
+* **Route (b) is the live direction**: compute the shadow factor per RECEIVING
+  PIXEL in screen space and patch the atlas-sampling pixel shaders to read it —
+  the defect is impossible by construction, and it is the only route that can do
+  soft or per-pixel shadows. Everything part 64 built is reusable unchanged.
+  **Step 1 is a CENSUS of which shaders fetch `1439B000` and at which slot; build
+  nothing before it returns a list.**
 * **Gates at close** (final binary, RT off = the shipped default): `--smoke` OK;
-  **A5 exit 0, 4 permutation windows, 0 real**; `no translated shader` = 0 on the
-  plain boot and all three RT runs; unlowered switches 0 defects; shader dim census
-  0 disagreements. Carry-overs unchanged from parts 62-63.
-* **Know route (a)'s ceiling before spending another part on it**: tracing INTO the
-  4096x1024 atlas cannot beat the atlas's resolution, so it buys exact depths and
-  missing occluders, never soft or per-pixel shadows. Route (b) (patch the ~dozen
-  shadow-sampling PS to read a screen-space traced factor) is where a quality tier
-  lives, and every piece built here is reusable by it unchanged. The panel's RT
-  SHADOWS row ships OG / RT LOW only, refusing MED/HIGH at the setter until the
-  ladder is priced.
+  **A5 exit 0**; unlowered switches 0 defects; shader dim census 0 disagreements;
+  `no translated shader` = 0. Carry-overs unchanged from parts 62-63.
 
 Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
 GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
