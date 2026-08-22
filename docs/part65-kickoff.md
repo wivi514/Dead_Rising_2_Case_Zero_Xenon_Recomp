@@ -10,9 +10,12 @@
 > and the Fable 2 port is NOT a renderer reference (operator instruction, part
 > 59). Part 64's runs were headless MEASUREMENT — luma statistics, atlas dumps,
 > occlusion queries — which is the part-61/62 practice for instruments. **The
-> LOOK verdict has not been asked for and must not be asked for until the
-> occluder set is fixed**, because today the arm shadows the world against
-> itself and an operator session would only re-report that.
+> LOOK verdict has not been asked for.** Part 64 closed with the arm at 72.00
+> outdoor median luma against OG's 80.61, having started at 63.7 next to an
+> all-shadow floor of 61.2 — so it is no longer shadowing the world against
+> itself, but whether the remaining 8.6 is correct added shadowing or residual
+> defect is exactly the question §1 item 0 settles cheaply first. Do that, then
+> ask.
 
 ## 0. Read these first, and do not re-measure them
 
@@ -29,12 +32,14 @@
 * **The plumbing engages and holds**: ~1,400 BLASes, ~33 MB, zero pool flushes,
   ~370-530 TLAS instances/frame, zero key collisions, zero unreadable positions,
   zero refused endians, and a traced atlas that is recognizably a shadow map.
-* **The cause of the over-shadowing, in two parts, both measured**:
-  junk-coordinate streams at ±6.3M units (gated in part 64,
-  `bounds=` counter, 66,095 rejections in one run), and — structurally — **the
-  title's own cascade is 52.8% EMPTY because it draws CASTERS, not the world**,
-  while we trace everything the camera sees. Filling that emptiness converts lit
-  regions to shadowed ones; 15.8 points of the atlas changed meaning that way.
+* **Two real but SECONDARY causes of the over-shadowing, both measured and both
+  smaller than they looked**: junk-coordinate streams at ±6.3M units (gated;
+  worth 63.72 → 63.71, i.e. nothing measurable — hygiene, not a fix), and
+  structurally, **the title's own cascade is 52.8% EMPTY because it draws
+  CASTERS, not the world** while we trace everything the camera sees (worth
+  63.71 → 66.14 via `CZ_VK_RT_CASTERS=cascade`). Both are recorded because a
+  mechanism that is real and immaterial is worth as much to the next session as
+  one that is real and decisive — it stops the item being re-bought.
 
 * **The largest term was found and fixed at part 64's close: the light matrix
   was bound by RECENCY and that binding is false.** A distinctness count read
@@ -60,9 +65,8 @@
    order, rather than by recency). Part 64 queued a run for this and it may
    already be in `phase5-notes.md` §6cv 7d.
 
-1. **Read the runs part 64 queued at close** — `CZ_VK_RT_CASTERS=cascade`
-   (the fix candidate) and the bounds-gated default. Their numbers belong in
-   §6cv. The three statistics that matter, in this order:
+1. **The three statistics that judge this arm, in this order** (all are in §6cv
+   with their part-64 values, so the job is to re-read them after any change):
    * `CZ_VK_RT_COVERAGE=1`'s won-fraction. **61.3%** after the binding fix, from
      86.3% before it. The caster arm was measured and helps only a little
      (86.4% / 66.14 luma) — the occluder set is real but was never the largest
@@ -77,9 +81,14 @@
      72.00 is already "correct with added shadows" or still over-shadowed is a
      LOOK question, and it is the first thing worth an operator's eye once the
      number above says the selection is exact.
-2. **If the caster arm works, make it the default** and re-price the bias: the
-   0.05 that half-recovered the broken build is a peter-panning bias and should
-   come back down once the map is right. Sweep it against stills, not luma alone.
+2. **Re-price the bias.** `CZ_VK_RT_BIAS=0.05` was worth +10 luma on the BROKEN
+   build (63.72 → 73.89) purely by hiding a wrong transform; that reading is
+   retired. On the fixed build the default 0.0015 has never been swept. Sweep it
+   against stills, not luma alone — a bias large enough to move luma is large
+   enough to detach shadows from their casters, and only a picture shows that.
+   `CZ_VK_RT_CASTERS=cascade` should also be re-measured on the fixed build: its
+   +2.4 luma was measured under the false binding and may be worth more or
+   nothing now.
 3. **Then, and only then, the operator session.** Ask for OG vs RT LOW
    side by side; fold in **the shadow Low-vs-High LOOK verdict owed since part
    60**, which the same session can judge. Wire `CZ_VK_PROFILE` into the launch
@@ -97,7 +106,7 @@ shadow-sampling PS to read a screen-space traced factor — is where a quality
 tier actually lives, and **every piece part 64 built is reusable by it
 unchanged** (BLAS, TLAS, the sun-matrix capture, the arms, the profiler phase).
 
-Decide (a)-vs-(b) on the caster arm's numbers and the operator's verdict, not on
+Decide (a)-vs-(b) on the fixed build's numbers and the operator's verdict, not on
 effort already spent. A defensible outcome of part 65 is "(a) is correct and
 cheap, ship it as LOW, and (b) becomes MED/HIGH" — and so is "(a)'s ceiling is
 too low to be worth a row; (b) is the tier".
