@@ -26,29 +26,44 @@ Next, in order:
      flushes, ~370 TLAS instances/frame, zero key collisions, zero unreadable
      positions, zero refused endians; the traced atlas is recognizably a shadow
      map (trees, poles, buildings in the light's frame).
-   **THE LARGEST TERM WAS FOUND AND FIXED IN PART 64: the light matrix was bound
-   by RECENCY and that binding is false.** The cascade pass is not a
-   single-matrix pass — a distinctness count read **0 slices with one c0-3 and
-   28,704 with several** — so each slice was traced through one of many frames of
-   reference. Binding it by DATAFLOW instead (capture only from cascade draws of
-   streams the SCENE pass has vouched for as world-space, §6cs) accepted
-   1,293,758 draws and rejected 849,840 object-transform ones, and moved the
-   arm **63.71 → 72.00** outdoor median luma with coverage **86.3% → 61.3%**.
-   `CZ_VK_RT_ANY_MATRIX=1` is the control arm. Two companion checks cleared and
-   refuted their hypotheses in the same run: the matrix inverse is correct to
-   2.38e-07, and last-write-wins is dead.
+   **THREE REAL DEFECTS WERE FOUND AND FIXED IN PART 64 AND NONE OF THEM MOVED
+   THE PICTURE.** Each was established by a count that does not drift, each fix
+   is right on its own terms, and on complete runs all three arms are
+   indistinguishable — 66.34 / 66.14 / 66.40 outdoor median luma against OG's
+   80.61 (all-shadow floor 61.2). They are: junk geometry with million-unit
+   coordinates entering the BLAS (gated); the title's own cascade being 52.8%
+   EMPTY because it draws casters not receivers (`CZ_VK_RT_CASTERS=cascade`);
+   and the light matrix being bound by RECENCY when the cascade pass carries
+   SEVERAL distinct c0-3 per slice — 0 slices with one against 28,704 with
+   several — now bound by dataflow instead (`CZ_VK_RT_ANY_MATRIX=1` is the
+   control). Keep all three; do not re-buy any of them; do not expect them to
+   be the answer.
 
-   What is OPEN: **the traced map still over-shadows, by less.** 72.00 against
-   OG's 80.61 (all-shadow floor 61.2-61.4). §6cv 7d names the one refinement
-   that decides the next fix — the distinctness count now runs AFTER the filter,
-   and its answer is a number: **ONE** distinct world-vouched matrix per slice
-   means the selection is exact and the residual is elsewhere (depth convention
-   or slice rectangle); **FOUR** means the title renders all four cascades before
-   resolving any, every matrix is legitimate, and what is left is the
-   slice↔matrix PAIRING rather than the selection. Read that number first.
+   **The mid-session numbers that said otherwise are RETRACTED** (§6cv 7e): they
+   were read from stats files still being written, and a partial read on this
+   route measures a different PLACE, not a noisier version of the same one
+   (gotcha 384).
 
-   The earlier framing, kept because both mechanisms are real and neither was the
-   largest: Real rays read 63.72 against
+   What is OPEN: **every RT arm over-shadows by ~14 luma and the cause is none
+   of the three above.** Two suspects survive, neither tested, both cheap:
+   * **the DEPTH CONVENTION** — the guest's viewport Z scale/offset
+     (`PA_CL_VTE_CNTL` bits for Z, `kPaClVportZScale`/`ZOffset`) are decoded
+     NOWHERE in this renderer; the raster path hardcodes minDepth 0 / maxDepth 1.
+     If the cascade sets them, our rasterized depths and our traced depths could
+     still agree with each other while both disagree with what the title's
+     receiver-side comparison expects.
+   * **the SLICE RECTANGLE** — whether the region a slice is traced over really
+     is the region its captured matrix describes. The refined distinctness count
+     (now taken AFTER the dataflow filter, printing the mean) answers this
+     directly: ONE world-vouched matrix per slice means the pairing is right and
+     the depth convention is the remaining suspect; FOUR means the title renders
+     all four cascades before resolving any, and the slice<->matrix pairing needs
+     an ordered association rather than recency.
+   **Read that number first** — it is one line of one run and it halves the
+   search.
+
+   The original framing, kept because the mechanisms are real even though the
+   attribution was not: Real rays read 63.72 against
    OG's 80.61 — 86% of the way to fully shadowed — and `CZ_VK_RT_BIAS=0.05`
    (33x the default) recovers it only to 73.89, which is a bias large enough to
    detach shadows from casters. So the traced-vs-raster disagreement is
