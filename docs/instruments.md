@@ -1701,12 +1701,14 @@ CZ_VK_SHADOW_FILL=<f>  **RT stage 2's injection experiment, and the standing
                    shadow term reads** (part 64; rt-and-fov-plan §3 route (a)).
                    Overwrites the atlas snapshot's depths with the constant f
                    right after each cascade resolve. Measured on the DebugJump
-                   route, ~11k outdoor frames per arm: f=0.0 takes the outdoor
-                   median luma 80.6 -> 61.4 (the whole world shadowed), f=1.0
-                   reads 79.6 ~ baseline (shadows removed) — so the convention
-                   is STANDARD (near = occluder; the stored depth is the
-                   nearest occluder's, compared with LESS). A DIAGNOSTIC ARM,
-                   never a fix; unset = off = the shipped renderer
+                   route, all runs read AFTER they exited (gotcha 384): f=0.0
+                   takes the outdoor median luma **80.61 (n=11,243) -> 61.43
+                   (n=11,915)** — the whole world shadowed — and f=1.0 reads
+                   **81.46 (n=8,796)**, at or just above baseline. Two
+                   polarities, opposite directions, so the convention is
+                   STANDARD (near = occluder; the stored depth is the nearest
+                   occluder's, compared with LESS). A DIAGNOSTIC ARM, never a
+                   fix; unset = off = the shipped renderer
 CZ_VK_RT=0         **the master RT kill** (parts 61/64). With it set the device
                    is created WITHOUT the three ray-query extensions — exactly
                    the pre-part-64 device — whatever the settings row or any
@@ -1753,6 +1755,35 @@ CZ_VK_RT_BLAS_MB=N cap on the pooled BLAS arena (default 1024). Overflow
                    FLUSHES the whole pool loudly and rebuilds from the live
                    set under the budget — crude, counted, and far above the
                    census's ~85 MB whole-roam source-set price
+CZ_VK_RT_CASTERS=cascade  build the TLAS from the title's OWN shadow casters
+                   (the pitch-1040 pass) instead of the camera's world draws.
+                   Motivated by a measurement — the title's cascade is 52.8%
+                   EMPTY because it draws casters, not receivers — and it does
+                   change what is traced (190 TLAS instances against 363), but
+                   on complete runs it moves the picture by 0.2 luma. Keep as
+                   an arm; do not assume it is the fix (§6cv 7e)
+CZ_VK_RT_COVERAGE=1  a PRECISE occlusion query around the trace draw: what
+                   fraction of each cascade slice's samples a TRACED depth won
+                   against the raster cascade's. **Cumulative — read it at
+                   EXIT**, where the arms read 52-54%; mid-run it says ~86%
+                   because the early frames are menus with tiny slices. Its own
+                   arm because it serializes the GPU
+CZ_VK_RT_ANY_MATRIX=1  the control arm for the DATAFLOW light-matrix binding:
+                   restores last-write-wins, which a count refuted outright (0
+                   cascade slices carried ONE c0-3, 28,704 carried several, so
+                   the cascade pass is not a single-matrix pass and half its
+                   ortho-shaped matrices are per-object composites). The
+                   default now captures only from cascade draws of streams the
+                   SCENE pass has vouched for as world-space. Right on
+                   correctness grounds; worth +0.66 luma in the clean
+                   same-binary A/B, i.e. nothing (§6cv 7e)
+CZ_VK_RT_BOUNDS_CAP=<f>  the extent above which a stream is refused entry to
+                   the BLAS (default 50000, against a town that fits in
+                   ~1,100). It exists because §6cu's census named three
+                   junk-coordinate streams at +-6.3M units that pass every
+                   structural test the collector applies. Hygiene: the
+                   rejections are real and counted (`bounds=`), and the picture
+                   does not move
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch
