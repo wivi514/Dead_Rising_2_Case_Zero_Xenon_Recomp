@@ -22,11 +22,13 @@
 Launch plainly (`cd runtime/build && ./cz_runtime`). FIELD OF VIEW is the sixth
 panel row (Options hub), LIVE, one degree per press.
 
-1. **The fov slider, re-scoped**: in the world, slide to +10/+20 — the WORLD
-   should now widen visibly and the HUD should not move at all. (Headless
-   same-camera flip verified both; the comfort call is the operator's.)
-   `CZ_VK_FOV=0` pins it off; `CZ_VK_FOV_RAW=1` restores the old
-   UI-scales-too behaviour if wanted for comparison.
+1. **The fov slider, now GAME-SIDE (§6ct, same night)**: the operator's culling
+   report ("everything on the side gets culled") retired the renderer-side
+   mechanism — the slider now feeds the game's own camera, which renders AND
+   CULLS at the widened fov, live, with the HUD and cutscenes untouched by
+   construction. Verified headless: fov=10 -> scene at exactly 53.00°, UI at
+   45.00°, draws +11%. In the world, slide to +10/+20 — wider view, no side
+   pop-in, HUD still. `CZ_NO_GAME_FOV=1` is the control arm.
 2. **Wide-mode gameplay just changed appearance**: the world at 3440x1440 is now
    a true wider view instead of a ~34% horizontal stretch. This is a fix of a
    two-part-old defect, but it LOOKS different from what the operator has been
@@ -34,10 +36,13 @@ panel row (Options hub), LIVE, one degree per press.
    outdoors at 21:9, `CZ_VK_WIDE=0` for a 16:9 control; the frontend is
    unchanged either way.)
 3. **Slice check with the slider off zero** (unchanged ask): gore cuts should
-   stay put — the UCP compensation now covers composites too.
-4. **Cutscenes with the slider off zero**: cutscene cameras are composites like
-   the gameplay camera, so they WILL widen (the plan's stated trade). Note if
-   that looks wrong.
+   stay put.
+4. **Cutscenes**: with the game-side mechanism cutscene cameras keep their
+   authored fov (separate camera nodes — the old renderer-patch trade is
+   RETIRED). A cutscene look is still worth one glance.
+5. **Aiming**: if the aim camera's fov looks unadjusted or snaps while the
+   slider is off zero, say so — other camera nodes can be added to the
+   substitution trivially (it is per-node by construction).
 
 ## 1. What parts 61-62 established (do not re-derive)
 

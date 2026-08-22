@@ -2180,3 +2180,16 @@ CZ_PM4_VERIFY_POISON=1  the POSITIVE CONTROL for that verifier: corrupt one dwor
                    shipped a comparison that could only ever read 100%). Measured: the
                    verifier reports the corruption immediately, naming the register, the
                    position in the run and the packet source
+
+CZ_NO_GAME_FOV=1   **the control arm for the game-side fov slider** (part 62,
+                   §6ct). Default ON: the fov= setting substitutes the roaming
+                   camera's behavior param at its one getter call site
+                   (lr 0x8246E31C in sub_8246BF48), so the game renders AND
+                   culls at the widened fov, live, HUD and cutscenes untouched.
+                   With this arm set the substitution is off and CZ_VK_FOV (the
+                   renderer-side patch) is the comparison mechanism
+CZ_FOV_PARAM_TRACE=1  print each distinct (lr, value) pair through the camera
+                   param getter once — the census that found the fov call site
+CZ_FOV_PROP_TRACE=1   print every FOV-named property registration through the
+                   universal binder sub_82375518 with its live field address —
+                   the instrument that enumerated all 132 named camera configs

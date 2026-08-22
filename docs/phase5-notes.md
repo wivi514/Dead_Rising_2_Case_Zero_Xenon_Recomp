@@ -12572,3 +12572,45 @@ The operator's verdicts, now on TWO things: the fov slider as re-scoped
 stretched, it is now true wider-view. Gates re-run owed with the next close
 (the A5/E pair was green on the part-61 binary; this commit touches only the
 draw path, but the standing rule applies).
+
+## §6ct — Part 62, same night: the culling verdict and the GAME-SIDE fov (8d3de05)
+
+**The operator, on the composite slider: "everything on the side get culled since
+the game is fixed pov normally can you fix that?"** — the plan's stated culling
+trade, now unacceptable in play. Fixed the same night by handing the fov to the
+game itself: the world renders AND culls wide, and every renderer-side trade
+(HUD, cutscenes) retires with it.
+
+### The hunt, as a method record (every step a live measurement)
+
+1. Static image scan for fov constants: nothing (the value is data-driven).
+2. Property-binder hook (`sub_82375518`): registered camera configs enumerated —
+   132 named cameras with live values (OverShoulderCam 43°, SniperCam ranges,
+   the whole poker suite) — but the roaming camera was NONE of them by poke.
+3. **The decisive instrument: a poke-test of every 43.0-encoded float in guest
+   memory against the PER-FRAME view-projection** (the VP scratch at 0x40002af0
+   holds the live composite; bEff = cot(vfov/2) is the oracle, 0.15 s per
+   candidate, 50 deduped candidates): ONE address moved the camera — a camera
+   BEHAVIOR PARAM node ('param_1', vtable 0x82062A94). Culling follows the poke:
+   draws 4,984 -> 5,309 at 43 -> 60°.
+4. An (lr,value) census of the universal param getter `sub_8246BF48` found
+   exactly ONE call site reading that node (lr 0x8246E31C).
+
+### The fix and its one hard lesson
+
+Substitute at that site, driven by the existing `fov=` setting. **The node is
+STATE, not a constant** — the game writes its smoothed fov back through it, and
+the first form (read+N, call, restore) COMPOUNDED to the 120° clamp in seconds.
+The shipped form captures the authored value at FIRST SIGHT per node and
+enforces base+N absolutely (slider 0 = authored exactly). Verified: fov=10 ->
+scene at EXACTLY 53.00° (bEff 2.00569), UI at 45.00° untouched, draws 4,984 ->
+5,538, stable. Cutscene/minigame cameras are separate nodes that never flow
+through this site — authored fov preserved (better than the renderer patch,
+whose cutscene widening was a stated trade).
+
+The renderer-side composite patch (§6cs) becomes a measurement arm only
+(CZ_VK_FOV / CZ_TEST_FOV_FLIP); Settings_Fov feeds ONLY the game-side path.
+CZ_NO_GAME_FOV=1 is the control arm. Owed: the operator's play verdict, and the
+wide-mode (21:9) flank culling remains its own pre-existing trade — the game
+frustum is 16:9 whatever the fov; a culling-only over-widen is a possible future
+item, priced separately.
