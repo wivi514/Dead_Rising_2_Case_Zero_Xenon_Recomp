@@ -13153,6 +13153,34 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
+            // RT STAGE 2's INJECTION EXPERIMENT (part 64; rt-and-fov-plan.md §3,
+            // route (a)). CZ_VK_SHADOW_FILL=<depth 0..1> overwrites the shadow
+            // ATLAS snapshot's depths with a constant right after each cascade
+            // resolve lands — the image is still TRANSFER_DST, so the fill costs
+            // one clear and no extra barriers — and the title's own shadow
+            // comparison then runs against OUR value instead of the rasterized
+            // cascade's. This is the cheapest possible test of the injection
+            // point: if the atlas is where the shadow term reads, one polarity
+            // must shadow the whole world and the other must unshadow it, and a
+            // frame that moves under NEITHER refutes the injection point itself
+            // before anything is built on it. It doubles as stage 2's standing
+            // POSITIVE CONTROL (the CZ_VK_CUBE_POISON pattern): the all-shadow
+            // value must darken the frame for as long as the atlas is the
+            // composite route. A DIAGNOSTIC ARM, never a fix; unset = off = the
+            // shipped renderer.
+            static const float shadowFill = []() -> float {
+                const char* e = Env("CZ_VK_SHADOW_FILL");
+                return e ? float(atof(e)) : -1.0f;
+            }();
+            if (fromDepth && IsShadowSurface(regs) && shadowFill >= 0.0f)
+            {
+                VkClearDepthStencilValue cv{ shadowFill, 0 };
+                VkImageSubresourceRange range{ VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                vkCmdClearDepthStencilImage(R->cmd, it->second.image.image,
+                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                            &cv, 1, &range);
+                Count("resolve: shadow atlas depth FILLED (CZ_VK_SHADOW_FILL)");
+            }
             // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
