@@ -106,6 +106,42 @@
    the setter today, which is the honest state; MED/HIGH need a measured ms cost
    on the operator's machine first (plan §6's rule).
 
+## 1b. WHAT PART 64 CONCLUDED AFTER THE OPERATOR'S SESSION — read this before §1
+
+The work above §1 was written before the operator played it. They did, and the
+result changes the recommendation rather than refining it. `phase5-notes.md`
+§6cv 7f-7j is the record; the short version:
+
+* Their description — *"shadow squares following where the player is and normal
+  shadow still on"* — named the mechanism in eleven words after three headless
+  statistics had failed to: **self-shadowing**, uniform across the traced area.
+* The settings became ONE row on their instruction (LOW/MEDIUM/HIGH/RT LOW/RT
+  MEDIUM/RT HIGH, RT replacing the raster shadow), and RT now clears the cascade
+  rather than unioning with it.
+* **Five independent knobs were then tried and the frame does not care about any
+  of them**: occluder set, union vs replace, the matrix binding, the bounds
+  gate, and a 6.7x bias sweep. Every configuration lands at 64-66 median luma
+  against OG's 80.61. Stills show it plainly — the white vans and the bus go
+  uniformly grey, i.e. every LIT surface shadows itself.
+* That invariance is the finding: it is not a parameter mis-set, it is what
+  route (a) does. Writing the shadow MAP means every receiver in the map
+  occludes itself and there is no receiver-side offset available.
+
+**So the recommended first action of part 65 is NOT to keep tuning route (a).**
+It is to put route (b) to the operator: patch the ~dozen shadow-sampling pixel
+shaders to read a screen-space traced FACTOR. The factor is computed per
+receiving pixel from that pixel's own position, so a surface cannot shadow
+itself — the defect is impossible by construction rather than tuned away. Every
+piece part 64 built is reusable by it unchanged: BLAS, TLAS, the sun-matrix
+capture and its dataflow binding, all the arms, the `rt` profiler phase.
+
+If route (a) is revisited anyway, run ONE test first: compare our traced quarter
+of the atlas against the raster quarter it replaced, per cascade index. The
+untested hypothesis is that a slice's content is written to the right quarter
+but paired with another cascade's matrix, which would look exactly like this and
+which the distinctness count cannot catch (it verifies one matrix per slice, not
+that the matrix belongs to that slice).
+
 ## 2. The decision this part should make consciously
 
 Route (a) — what part 64 built — traces INTO the 4096x1024 atlas, so **its
