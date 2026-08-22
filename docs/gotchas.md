@@ -4069,3 +4069,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      the conversion is four lines. Look to find the surface, then convert to
      judge it (gotcha 133 one instrument along: one frame is one sample, and a
      stretched frame is one sample of the wrong statistic).
+
+384. **A STATS FILE IS BEING WRITTEN WHILE YOU READ IT, AND EVERY STATISTIC IN IT
+     DRIFTS WITH RUN DEPTH — quote only runs that have EXITED.** Part 64 read
+     `CZ_VK_FRAME_STATS` medians and cumulative log counters from runs still in
+     progress, repeatedly, and every one of those numbers was wrong in the same
+     direction the route drifts: an arm read at 4,663 outdoor frames scored 63.71
+     and the SAME run at 6,484 scored 66.34; another read 72.00 at 1,212 frames
+     and 66.40 complete; a cumulative coverage counter read 86.4% early and 52.8%
+     at exit. Three "findings" were built on those partials and all three
+     dissolved. The route walks through different scenery as it goes, so a
+     partial read is not a noisy estimate of the final value, it is a measurement
+     of a DIFFERENT PLACE — no amount of averaging fixes it. Gate every read on
+     the process having exited (a `done` flag the runner writes, not `pgrep`
+     which races the next run), and put the frame COUNT next to every median you
+     quote so a reader can see it was complete. This is gotcha 50/51/86 one level
+     down: the control is not just the old binary run NOW, it is the old binary
+     run TO THE SAME DEPTH.
+
+385. **AN ARM WHOSE MECHANISM IS PROVABLY REAL CAN STILL MOVE THE PICTURE BY
+     NOTHING, AND THE MECHANISM'S PROOF IS NOT THE ARM'S PROOF.** Part 64
+     established three true facts about this title by direct count — junk
+     geometry with million-unit coordinates enters the BLAS; the title's own
+     shadow cascade is 52.8% empty because it draws casters not receivers; and
+     the cascade pass carries SEVERAL distinct c0-3 matrices per slice, so
+     binding the light matrix by recency is false (0 slices with one, 28,704 with
+     several). Each was measured, each is a genuine defect, and each produced a
+     fix. On complete runs **none of the three moved the frame's brightness
+     measurably** — every arm sits at 66.1-66.4 against OG's 80.61. The counts
+     prove the mechanisms exist; only an end-to-end measurement proves one
+     MATTERS, and the gap between those two claims is where a session quietly
+     spends a part. Say "this mechanism is real and its effect is undemonstrated"
+     rather than letting the mechanism's evidence stand in for the arm's.
