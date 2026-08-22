@@ -11155,13 +11155,22 @@ void BuildFrameStructures(uint8_t* base)
     };
     wa.accelerationStructureCount = 1;
     wa.pAccelerationStructures = &g_tlas[slot];
-    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    w.pNext = &wa;
-    w.dstSet = g_sets[slot];
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+    // ONLY IF ROUTE (A) HAS A SET TO WRITE. This function builds the structures for
+    // BOTH routes, but the descriptor set below belongs to the atlas trace pass, which
+    // on route (b) is never created — `EnsurePipeline` is only reached from
+    // `TraceSlice`. Writing a VK_NULL_HANDLE dstSet is not a wrong picture: it took the
+    // process down inside the driver on the first RT boot. Route (b) points its own set
+    // at `g_tlas[slot]` itself.
+    if (g_sets[slot] != VK_NULL_HANDLE)
+    {
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.pNext = &wa;
+        w.dstSet = g_sets[slot];
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+    }
     g_tlasReady = true;
 }
 
@@ -12088,6 +12097,14 @@ void Run(uint8_t* base)
     }
     if (!EnsureResources())
         return;
+    // OUT OF THE RENDER PASS FIRST. `BuildFrameStructures` issues
+    // `vkCmdBuildAccelerationStructuresKHR` and an acceleration-structure-build
+    // barrier, and both are illegal inside a `vkCmdBeginRendering` instance
+    // (VUID-vkCmdBuildAccelerationStructuresKHR-renderpass,
+    // VUID-vkCmdPipelineBarrier-srcStageMask-09556). Route (a) never hit this because it
+    // ran from DoResolve, which has already ended rendering; route (b) runs from DoDraw,
+    // which has not. Caught by CZ_VK_VALIDATION on the first boot with RT armed.
+    EndRendering();
     rtshadow::FrameRoll();
     if (rtshadow::g_tlasFrame != R->frame)
     {
@@ -12202,7 +12219,6 @@ void Run(uint8_t* base)
     w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
 
-    EndRendering();
     Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
