@@ -10091,6 +10091,128 @@ uint64_t g_collectFrame = ~0ull;
 // last-write-wins pairs each resolve with its own slice's matrix.
 float g_lightM[16];
 bool g_lightMValid = false;
+// ROUTE (B)'s SUN MATRIX, and it is deliberately NOT `g_lightM` (part 65, after the
+// operator's second session).
+//
+// Route (a) consumed `g_lightM` at each cascade RESOLVE, so a slice could only ever be
+// traced with a matrix captured on the way to that slice. Route (b) reads at DRAW time
+// and never consumes, which turns the capture into last-write-wins over the WHOLE
+// frame — and this title draws something else ortho-shaped after the cascades. In
+// gameplay the captured direction read **(-0.010, 1.000, 0.020) with a 3587.7-unit
+// volume**: straight down, over a town §6cu measured at ~1,100 units across. That is
+// the shape of a top-down MAP render, not a sun. Near the menus, where that thing does
+// not draw, the same capture reads (-0.381, 0.812, -0.443) with a 61.0-unit volume —
+// a plausible sun.
+//
+// The consequence was not wrong shadows, it was NO shadows, and the two causes compound:
+// a vertical sun casts every shadow directly under its caster, and the ray-origin bias
+// derived from that volume (0.0015 * 3587.7 = 5.4 world units) lifts the origin clear of
+// a zombie or a van before the ray is cast at all.
+//
+// So route (b) latches its own copy at the moment a shadow-atlas RESOLVE happens —
+// exactly the pairing route (a) had for free — which by construction excludes anything
+// that never resolves into the cascade atlas.
+float g_sunM[16];
+bool g_sunMValid = false;
+uint64_t g_sunLatched = 0;
+// IS THE LATCHED DIRECTION STABLE? Every cascade of one sun must agree on direction
+// however much their volumes differ, so a second distinct direction is an intruder in
+// the capture — which is precisely the defect above, and it was invisible because only
+// the last one was ever printed. Quantised to ~2 degrees; at most eight kept.
+struct SunObs
+{
+    float dir[3];
+    float len;
+    uint64_t count;
+};
+SunObs g_sunObs[8];
+uint32_t g_sunObsCount = 0;
+
+// WHICH RESOLVE DESTINATION IS THE ATLAS THE SHADOW SHADERS ACTUALLY READ.
+//
+// Latching the sun at "a resolve from a pitch-1040 pass" was not enough: the gameplay
+// run's direction census came back **3 distinct** — the sun at two times of day plus a
+// (-0.010, 1.000, 0.020) vertical at a 3587-unit volume — because something else in
+// this title uses the same pass configuration and resolves too. Filtering on the
+// volume would be a magic threshold, so the binding is by DATAFLOW instead, the same
+// discipline the light matrix needed in part 64: the atlas is the depth surface that
+// the shaders the census NAMED are fetching. Nothing else can be it by definition.
+//
+// Kept as a small table with counts rather than a single value, so the binding is
+// checkable at exit instead of assumed — and so a run where two candidates compete
+// says so rather than silently picking one.
+struct AtlasCand
+{
+    uint32_t addr = 0;
+    uint32_t w = 0, h = 0;
+    uint64_t fetches = 0;
+};
+AtlasCand g_atlasCands[8];
+uint32_t g_atlasCandCount = 0;
+uint32_t g_atlasAddr = 0;
+
+// Called from the texture walk for a shader that HAS a route (b) variant — i.e. one the
+// census found sampling the cascade atlas — once per declared depth-format fetch.
+void NoteAtlasFetch(uint32_t addr, uint32_t w, uint32_t h)
+{
+    addr &= 0x1FFFFFFF;
+    if (!addr)
+        return;
+    for (uint32_t i = 0; i < g_atlasCandCount; ++i)
+        if (g_atlasCands[i].addr == addr)
+        {
+            ++g_atlasCands[i].fetches;
+            goto chosen;
+        }
+    if (g_atlasCandCount < 8)
+    {
+        AtlasCand& c = g_atlasCands[g_atlasCandCount++];
+        c.addr = addr;
+        c.w = w;
+        c.h = h;
+        c.fetches = 1;
+    }
+chosen:
+    // The atlas is the LARGEST of them by area: these shaders also fetch the
+    // scene-sized depth (the depth-of-field input), and a cascade atlas holding several
+    // square slices side by side is always the bigger surface. Ties go to the more
+    // fetched one. Recomputed rather than latched so a first-frame oddity cannot pin it.
+    {
+        uint64_t best = 0;
+        for (uint32_t i = 0; i < g_atlasCandCount; ++i)
+        {
+            const uint64_t area = uint64_t(g_atlasCands[i].w) * g_atlasCands[i].h;
+            if (area > best)
+            {
+                best = area;
+                g_atlasAddr = g_atlasCands[i].addr;
+            }
+        }
+    }
+}
+
+// Record one observed sun direction. Called from the latch, never per draw.
+void NoteSunDirection(const float* dir, float len)
+{
+    for (uint32_t i = 0; i < g_sunObsCount; ++i)
+    {
+        const float d = dir[0] * g_sunObs[i].dir[0] + dir[1] * g_sunObs[i].dir[1] +
+                        dir[2] * g_sunObs[i].dir[2];
+        if (d > 0.9994f)          // ~2 degrees
+        {
+            ++g_sunObs[i].count;
+            return;
+        }
+    }
+    if (g_sunObsCount >= 8)
+        return;
+    SunObs& o = g_sunObs[g_sunObsCount++];
+    o.dir[0] = dir[0];
+    o.dir[1] = dir[1];
+    o.dir[2] = dir[2];
+    o.len = len;
+    o.count = 1;
+}
 float g_lightPolyScale = 0.0f, g_lightPolyOffset = 0.0f;
 bool g_polyLogged = false;
 // IS THE CAPTURED MATRIX ACTUALLY THE SLICE'S, or one object's?
@@ -11366,6 +11488,46 @@ bool Invert4x4(const float* m, float* out)
     return true;
 }
 
+// Latch the sun for route (b): copy whatever cascade matrix the draws leading to THIS
+// resolve captured, and record its direction so a second, disagreeing one is visible
+// rather than merely last. Cheap and per resolve (a handful a frame), not per draw.
+void LatchSun(uint32_t dstBase)
+{
+    // ONLY the surface the shadow-sampling shaders fetch. Until the first such fetch has
+    // been seen (frame 1) nothing is latched, which costs one frame of "no shadows" and
+    // is why `noLight` is nonzero at the start of every run.
+    if (!g_atlasAddr || (dstBase & 0x1FFFFFFF) != g_atlasAddr)
+        return;
+    if (!g_lightMValid)
+        return;
+    float inv[16];
+    if (!Invert4x4(g_lightM, inv))
+        return;
+    // The two world points that map to the near and far ends of the light volume at
+    // its centre. Light TRAVELS p0 -> p1, so the direction toward the sun is -(p1-p0).
+    float p[2][3];
+    for (int e = 0; e < 2; ++e)
+    {
+        const float c[4] = { 0.0f, 0.0f, float(e), 1.0f };
+        float w = inv[12] * c[0] + inv[13] * c[1] + inv[14] * c[2] + inv[15] * c[3];
+        for (int i = 0; i < 3; ++i)
+            p[e][i] = inv[i * 4 + 0] * c[0] + inv[i * 4 + 1] * c[1] +
+                      inv[i * 4 + 2] * c[2] + inv[i * 4 + 3] * c[3];
+        if (std::fabs(w) > 1e-12f)
+            for (int i = 0; i < 3; ++i)
+                p[e][i] /= w;
+    }
+    const float d[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2] };
+    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(len > 1e-6f))
+        return;
+    const float dir[3] = { -d[0] / len, -d[1] / len, -d[2] / len };
+    NoteSunDirection(dir, len);
+    memcpy(g_sunM, g_lightM, sizeof g_sunM);
+    g_sunMValid = true;
+    ++g_sunLatched;
+}
+
 // Trace one just-resolved cascade slice: build the frame's structures if this is
 // the frame's first slice, then render the ray-query pass into the slice's
 // rectangle of the snapshot image. Called from DoResolve with the snapshot still
@@ -12087,11 +12249,12 @@ void Run(uint8_t* base)
         ++g_noScene;
         return;
     }
-    if (!rtshadow::g_lightMValid)
+    if (!rtshadow::g_sunMValid)
     {
-        // No cascade drew this frame — there is no sun direction to trace toward, and
-        // guessing one would paint shadows in an arbitrary direction. The taps then read
-        // the white dummy, i.e. LIT, and this counts.
+        // No cascade has RESOLVED yet — there is no sun direction to trace toward, and
+        // the last ortho-shaped matrix to be drawn is demonstrably not a substitute for
+        // one (see rtshadow::g_sunM). The taps then read the white dummy, i.e. LIT, and
+        // this counts.
         ++g_noLight;
         return;
     }
@@ -12119,7 +12282,7 @@ void Run(uint8_t* base)
 
     float invScene[16], invLight[16];
     if (!rtshadow::Invert4x4(g_sceneM, invScene) ||
-        !rtshadow::Invert4x4(rtshadow::g_lightM, invLight))
+        !rtshadow::Invert4x4(rtshadow::g_sunM, invLight))
     {
         ++g_singular;
         return;
@@ -13246,11 +13409,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // replaces.
     auto bindTextures = [&](const std::vector<uint32_t>& consts,
                             const std::vector<uint32_t>& dims) {
+        // ROUTE (B)'s ATLAS BINDING (part 65). `ps.moduleRt` is non-null for exactly the
+        // shaders the census found sampling the cascade atlas, so their own declared
+        // depth-format fetches are what the atlas IS — no address, no threshold, and no
+        // dependence on this run allocating it where the last one did.
+        const bool rtSampler = &consts == &ps.tfetchConsts && ps.moduleRt;
         for (size_t i = 0; i < consts.size(); i++)
         {
             const uint32_t constIdx = consts[i];
             if (constIdx >= 16)
                 continue;
+            if (rtSampler)
+            {
+                const xenos::TextureFetch tf = xenos::DecodeTextureFetch(regs, constIdx);
+                if (tf.type == 2 && (tf.format == xenos::kFmt_24_8 ||
+                                     tf.format == xenos::kFmt_24_8_FLOAT))
+                    rtshadow::NoteAtlasFetch(tf.address, tf.width, tf.height);
+            }
             uint32_t dim = 1; // 2D
             if (dims.size() == consts.size())
                 dim = dims[i];
@@ -15770,6 +15945,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // keeping whichever occluder is nearer the sun, so raster content
             // (skinned actors, foliage, everything the TLAS excludes) survives.
             // Inert to one test when the tier is OG.
+            // ROUTE (B)'s SUN LATCH, and it must happen BEFORE TraceSlice, which
+            // consumes `g_lightMValid` on route (a). This is the whole fix for the
+            // "no shadows at all" the operator's second session reported: only a
+            // matrix that was captured on the way to a CASCADE RESOLVE can be the
+            // sun's, and last-write-wins over a frame was picking up a top-down
+            // ortho that is not one. See the g_sunM comment.
+            if (fromDepth && IsShadowSurface(regs))
+                rtshadow::LatchSun(baseKey);
             if (fromDepth && IsShadowSurface(regs))
                 rtshadow::TraceSlice(base, it->second, RZxi(int32_t(dstX)),
                                      RZyi(int32_t(dstY)), RZx(copyW), RZ(copyH));
@@ -19045,6 +19228,36 @@ void VkRenderer_DumpStats()
     // a build whose A/B measured a flawless fix and was the feature silently switched
     // off (gotcha 386); the cheapest defence against repeating that is a count that
     // cannot be confused with a configuration.
+    // THE ATLAS BINDING, printed so it is checkable rather than assumed. One row means
+    // the shadow-sampling shaders fetch exactly one depth surface; the chosen one is
+    // marked, and a competing candidate is visible instead of silently losing.
+    if (rtshadow::g_atlasCandCount)
+    {
+        fprintf(stderr, "[rtb] depth surfaces fetched by the shadow shaders "
+                        "(the largest is taken as the cascade atlas):\n");
+        for (uint32_t i = 0; i < rtshadow::g_atlasCandCount; ++i)
+            fprintf(stderr, "[rtb]   %08X %5ux%-5u  %llu fetches%s\n",
+                    rtshadow::g_atlasCands[i].addr, rtshadow::g_atlasCands[i].w,
+                    rtshadow::g_atlasCands[i].h,
+                    (unsigned long long)rtshadow::g_atlasCands[i].fetches,
+                    rtshadow::g_atlasCands[i].addr == rtshadow::g_atlasAddr
+                        ? "   <-- ATLAS" : "");
+    }
+
+    // EVERY SUN DIRECTION THE LATCH SAW, not just the last. One row is the answer;
+    // two rows means something that is not the sun's cascade is being captured, which
+    // is exactly what cost the operator's second session (§6cw §9).
+    if (rtshadow::g_sunObsCount)
+    {
+        fprintf(stderr, "[rtb] sun directions latched (%llu latches, %u distinct — "
+                        "MORE THAN ONE means a non-cascade ortho is in the capture):\n",
+                (unsigned long long)rtshadow::g_sunLatched, rtshadow::g_sunObsCount);
+        for (uint32_t i = 0; i < rtshadow::g_sunObsCount; ++i)
+            fprintf(stderr, "[rtb]   (%+.3f %+.3f %+.3f) volume %.1f  x%llu\n",
+                    rtshadow::g_sunObs[i].dir[0], rtshadow::g_sunObs[i].dir[1],
+                    rtshadow::g_sunObs[i].dir[2], rtshadow::g_sunObs[i].len,
+                    (unsigned long long)rtshadow::g_sunObs[i].count);
+    }
     if (rtfactor::g_passes || rtfactor::g_noScene || rtfactor::g_noLight ||
         rtfactor::g_noTlas || rtfactor::g_singular)
         fprintf(stderr,
