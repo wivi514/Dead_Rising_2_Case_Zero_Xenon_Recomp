@@ -81,7 +81,13 @@ struct Push
                      // w  = WHERE THE RECEIVER COMES FROM. 0 = the scene depth buffer
                      //      (part 65's route, kept as the control arm), 1 = a PRIMARY
                      //      RAY into the TLAS. See the header note above PsMain.
-    float4 camera;   // xyz = camera world position (for the toward-camera bias), w = 0
+    float4 camera;   // xyz = camera world position (for the toward-camera bias);
+                     // w   = the depth image's uv.y scale. `uv` below is normalised over
+                     //       the VIEWPORT, because that is the space the patched shaders
+                     //       look up in; the EDRAM depth attachment is TALLER than the
+                     //       viewport (padded for the cascade), so the control arm's
+                     //       depth sample has to be scaled back into it. The last free
+                     //       float in the guaranteed 128-byte block.
 };
 [[vk::push_constant]] Push pc;
 
@@ -109,8 +115,13 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     if (pc.params.z != 0.0)
         return 0.0;                       // POISON: everything shadowed. Positive control.
 
+    // uv is over the VIEWPORT — the same space `Publish` puts the patched shaders in.
+    // Getting these two ends into different spaces is the defect the operator found on
+    // the first arm of part 66's first session; see EnsureResources in vk_renderer.cpp.
     float2 uv = fragPos.xy * pc.view.xy;
-    float z = g_depth.SampleLevel(g_point, uv, 0.0).x;
+    // ...and the depth attachment is taller than the viewport, so its own sample needs
+    // the ratio back. Only the control arm reads this.
+    float z = g_depth.SampleLevel(g_point, float2(uv.x, uv.y * pc.camera.w), 0.0).x;
 
     // CZ_VK_RT_FACTOR_DEBUG — THE LADDER THAT SPLITS THIS PASS INTO ITS LINKS.
     //
@@ -190,6 +201,16 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     //      shadowed.
     if (dbg == 14)
         return frac(uv.x * 8.0) < 0.5 ? 0.0 : 1.0;
+    //  19  THE VERTICAL TWIN OF 14, and the control that would have saved a session.
+    //      Mode 14 asked "does the round trip carry SPATIAL detail" with a horizontal
+    //      stripe and answered yes — while every row of the factor was being read
+    //      1440/2048 of the way up the frame, because a horizontal pattern is invariant
+    //      under a vertical error. PASS = eight clean HORIZONTAL bands, and — the part
+    //      that matters — the SAME eight bands as mode 14 rotated, in the same places.
+    //      Run 14 and 19 together; agreeing is the result, either one alone is not
+    //      (gotcha 394).
+    if (dbg == 19)
+        return frac(uv.y * 8.0) < 0.5 ? 0.0 : 1.0;
     //  15, 16  IS THE DESCRIPTOR REAL? `GetDimensions` reads the EXTENT, which comes
     //      from the descriptor and not from the image's contents, so it separates "the
     //      descriptor references a real image whose contents are genuinely far or

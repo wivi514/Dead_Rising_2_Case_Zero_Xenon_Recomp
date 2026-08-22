@@ -11978,7 +11978,11 @@ bool PrimarySource()
         const char* e = Env("CZ_VK_RT_FACTOR_SOURCE");
         return e && (e[0] == 'd' || e[0] == 'D');
     }();
-    return !depth;
+    // A control arm that is silently addressing the wrong texels is worse than no
+    // control arm. The vertical ratio is carried in a push constant; the horizontal one
+    // has nowhere left to go in the 128-byte block, so if the widths ever disagree the
+    // arm refuses instead of guessing. It says so once, at pass creation.
+    return !depth || R->depth.width != InternalW();
 }
 
 // Engagement, per gotcha 151 and gotcha 386.
@@ -12075,15 +12079,33 @@ bool EnsureResources()
     }();
     const uint32_t scale = envScale ? envScale
                                     : (rtshadow::TierThisFrame() <= 1 ? 2u : 1u);
-    // SIZED AGAINST THE EDRAM DEPTH IMAGE, not against the internal resolution. They
-    // are the same whenever the guest's target is 1280x720, and they are NOT when the
-    // EDRAM has been grown for a taller surface — and the two places this extent is
-    // used (the depth sample here, and SV_Position -> uv in the patched shaders) have to
-    // agree with each other or every lookup is offset by the ratio.
+    // SIZED AGAINST THE VIEWPORT, NOT AGAINST THE EDRAM DEPTH IMAGE — and part 66's
+    // operator session is what corrected this. The old comment here claimed the two
+    // "are the same whenever the guest's target is 1280x720"; they are not, and never
+    // were. The EDRAM depth is `RSX(targetWidth) x RS(edramH)` where `edramH` is padded
+    // for the tallest surface the title needs (the 4096x1024 cascade), so at the
+    // operator's 3440x1440 it is 3440x**2048**. The factor image was therefore 1720x1024
+    // while the scene it describes is 1440 tall.
+    //
+    // That is a 1440/2048 = 0.703 VERTICAL mismatch between the two ends of the round
+    // trip: this pass paints its rows across the whole viewport, and `Publish` handed
+    // the patched shaders `1 / depth.height`, so a surface at screen row y read the
+    // factor computed for row 0.703*y — content dragged down from higher in the frame.
+    // The operator named it in one sentence on the first arm of the first session:
+    // "the shadows move with me and with the camera ... in the form of the mountain in
+    // the distance". Distant terrain sits high in the frame; its mask landed on nearer
+    // surfaces and slid with the camera.
+    //
+    // It is VERTICAL ONLY — the widths agree — which is exactly why part 65's spatial
+    // control could not see it: mode 14 is `frac(uv.x * 8)`, a horizontal stripe, and it
+    // landed perfectly on the midpoint while every row was in the wrong place
+    // (gotcha 394). Mode 19 is its vertical twin and exists so this class cannot recur.
     if (!R->depth.image || !R->depth.width || !R->depth.height)
         return false;
-    const uint32_t w = std::max(1u, R->depth.width / scale);
-    const uint32_t h = std::max(1u, R->depth.height / scale);
+    if (!InternalW() || !InternalH())
+        return false;
+    const uint32_t w = std::max(1u, InternalW() / scale);
+    const uint32_t h = std::max(1u, InternalH() / scale);
     // The depth VIEW belongs to a particular VkImage, and the EDRAM depth is recreated
     // whenever the resolution row or a taller surface changes its extent. Keyed on the
     // handle rather than on the size, because a recreated image of the same size is a
@@ -12419,9 +12441,19 @@ bool EnsureResources()
         g_failed = true;
         return false;
     }
-    fprintf(stderr, "[rtb] factor pass ready: %ux%u R8, heap slot %u, sampler %u, "
-                    "%u shader variants\n",
-            w, h, g_factorSlot, g_factorSampler, R->rtVariants);
+    // ALL THREE EXTENTS, because two of them silently disagreeing is what cost part 66
+    // its first operator session. `viewport` is what the factor describes, `edram` is the
+    // attachment the depth lives in, and `depthUvY` is the ratio the control arm needs.
+    fprintf(stderr, "[rtb] factor pass ready: %ux%u R8 (viewport %ux%u, EDRAM %ux%u, "
+                    "depth uv.y x%.4f), heap slot %u, sampler %u, %u shader variants\n",
+            w, h, InternalW(), InternalH(), R->depth.width, R->depth.height,
+            double(InternalH()) / double(std::max(1u, R->depth.height)),
+            g_factorSlot, g_factorSampler, R->rtVariants);
+    if (R->depth.width != InternalW())
+        fprintf(stderr, "[rtb] the EDRAM depth is %u wide against a %u viewport — the "
+                        "CZ_VK_RT_FACTOR_SOURCE=depth control arm cannot address it and "
+                        "is DISABLED; the shipped primary-ray path is unaffected.\n",
+                R->depth.width, InternalW());
     return true;
 }
 
@@ -12568,6 +12600,10 @@ void Run(uint8_t* base)
     // offset every lookup by the tier's scale factor.
     pc[24] = 1.0f / float(g_factor.width);
     pc[25] = 1.0f / float(g_factor.height);
+    // uv is normalised over the VIEWPORT; the depth image is the taller EDRAM
+    // attachment, so the control arm's sample needs the ratio. The last free float in
+    // the 128-byte block (see the Push struct) carries it.
+    const float depthUvY = float(InternalH()) / float(std::max(1u, R->depth.height));
     // CZ_VK_RT_FACTOR_DEBUG=1|2|3 — the link-splitting ladder; see rt_factor.hlsl for
     // what each mode's PASS looks like. Off (0) is the shipped path.
     static const int dbg = Env("CZ_VK_RT_FACTOR_DEBUG")
@@ -12576,7 +12612,7 @@ void Run(uint8_t* base)
     pc[26] = float(dbg);
     pc[27] = PrimarySource() ? 1.0f : 0.0f;
     // camera at the last float4
-    float pc2[4] = { cam[0], cam[1], cam[2], 0.0f };
+    float pc2[4] = { cam[0], cam[1], cam[2], depthUvY };
 
     // This slot's TLAS into this pass's own descriptor set. rtshadow owns the structure;
     // both passes read it, neither writes the other's descriptors.
@@ -12683,11 +12719,13 @@ bool Publish(uint8_t* shared)
     float* f = reinterpret_cast<float*>(shared + kSharedRtShadow + 8);
     u[0] = g_factorSlot;
     u[1] = g_factorSampler;
-    // SV_Position is in EDRAM pixels while the factor image may be half that; the uv is
-    // normalised over the EDRAM extent, not over the factor, and the factor pass's own
-    // `view.xy` carries the same two numbers.
-    f[0] = 1.0f / float(std::max(1u, R->depth.width));
-    f[1] = 1.0f / float(std::max(1u, R->depth.height));
+    // THE VIEWPORT, not the EDRAM extent. A shadow-sampling draw is a scene material
+    // draw, so its SV_Position runs over the scene viewport at the EDRAM origin — and
+    // the factor image now covers exactly that. Dividing by the EDRAM height instead
+    // (which is padded for the cascade) put every lookup 1440/2048 of the way up the
+    // frame; see the long note in EnsureResources.
+    f[0] = 1.0f / float(std::max(1u, InternalW()));
+    f[1] = 1.0f / float(std::max(1u, InternalH()));
     ++g_drawsServed;
     return true;
 }

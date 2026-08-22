@@ -18,10 +18,17 @@
 # says, STOP, and the log plus the frame-stats file are the whole answer.
 #
 #   arm 0  A5 kernel gate, headless, ~90 s, no window. Nothing for you to do.
-#   arm 1  GATE — "does the primary ray find the world?"  (CZ_VK_RT_FACTOR_DEBUG=17)
-#          PASS = the WORLD IS BLACK and only the SKY is lit.
-#          FAIL = the frame looks normal -> the rays are not hitting the scene, and
-#                 nothing after this can work. Say so and stop.
+#   arm 1  ALIGNMENT, horizontal  (CZ_VK_RT_FACTOR_DEBUG=14)  eight VERTICAL bands
+#   arm 2  ALIGNMENT, vertical    (CZ_VK_RT_FACTOR_DEBUG=19)  eight HORIZONTAL bands,
+#          the same width and evenly spaced. THESE TWO ARE ONE RESULT: arm 1 alone
+#          passed all through part 65 while every row was 427 px out of place, because
+#          a horizontal stripe cannot see a vertical error.
+#   arm 3  GATE — "does the primary ray find the world?"  (CZ_VK_RT_FACTOR_DEBUG=17)
+#          PASS = the WORLD DARKENS and the SKY does not. NOT black: a fully shadowed
+#          frame is ambient-lit, which calibrates at 90.2 median luma against 99.9 for
+#          fully lit — about a tenth darker, obvious in an A/B and easy to talk
+#          yourself into by eye. Compare it against arm 8 (RT off).
+#          FAIL = nothing darkens at all -> the rays are not hitting the scene.
 #   arm 2  how FAR is each hit                            (CZ_VK_RT_FACTOR_DEBUG=18)
 #          PASS = a smooth gradient, darker near the camera and brighter into the
 #                 distance — a depth image made entirely of rays. It separates "the
@@ -100,17 +107,27 @@ if [ "$S" -le 0 ]; then
     echo
 fi
 
-[ "$S" -le 1 ] && run gate17 "GATE — PASS = BLACK WORLD, LIT SKY." \
+# THE ALIGNMENT PAIR, AND THEY ARE ONLY EVIDENCE TOGETHER. Session 1 of part 66 shipped
+# with the factor image sized from the EDRAM depth (3440x2048) while the patched shaders
+# looked up over the viewport (3440x1440) — a 427-pixel vertical drag at the bottom of
+# the frame. Part 65's spatial control was `frac(uv.x * 8)`, a HORIZONTAL stripe, which
+# is invariant under a vertical error and passed perfectly throughout. So the control is
+# now two arms whose results have to AGREE (gotcha 394).
+[ "$S" -le 1 ] && run align14 "eight clean VERTICAL bands, evenly spaced." \
+    CZ_VK_RT_SHADOWS=1 CZ_VK_RT_FACTOR_DEBUG=14
+[ "$S" -le 2 ] && run align19 "eight clean HORIZONTAL bands — SAME spacing as arm 1." \
+    CZ_VK_RT_SHADOWS=1 CZ_VK_RT_FACTOR_DEBUG=19
+[ "$S" -le 3 ] && run gate17 "GATE — PASS = the world DARKENS, the sky does not." \
     CZ_VK_RT_SHADOWS=1 CZ_VK_RT_FACTOR_DEBUG=17
-[ "$S" -le 2 ] && run dist18 "PASS = a distance GRADIENT, dark near, bright far." \
+[ "$S" -le 4 ] && run dist18 "PASS = a distance GRADIENT, dark near, bright far." \
     CZ_VK_RT_SHADOWS=1 CZ_VK_RT_FACTOR_DEBUG=18
-[ "$S" -le 3 ] && run rtlow  "THE PICTURE — RT LOW. Shape questions in the header." \
+[ "$S" -le 5 ] && run rtlow  "THE PICTURE — RT LOW. Shape questions in the header." \
     CZ_VK_RT_SHADOWS=1
-[ "$S" -le 4 ] && run rthigh "RT HIGH — four rays, soft shadow." \
+[ "$S" -le 6 ] && run rthigh "RT HIGH — four rays, soft shadow." \
     CZ_VK_RT_SHADOWS=3
-[ "$S" -le 5 ] && run depthsrc "CONTROL — the depth-buffer source. Expect NO shadows." \
+[ "$S" -le 7 ] && run depthsrc "CONTROL — the depth-buffer source. Expect NO shadows." \
     CZ_VK_RT_SHADOWS=1 CZ_VK_RT_FACTOR_SOURCE=depth
-[ "$S" -le 6 ] && run off "RT OFF — the shipped default, plus the raster LOW-vs-HIGH look."
+[ "$S" -le 8 ] && run off "RT OFF — the shipped default, plus the raster LOW-vs-HIGH look."
 
 echo "  all arms done. Everything is in $OUT/"
 echo
