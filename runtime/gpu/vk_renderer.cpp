@@ -10075,13 +10075,30 @@ bool Active()
 
 // Which population feeds the TLAS. `scene` (default) is the camera's world draws;
 // `cascade` is the title's own shadow casters — see the g_curCascadeKeys comment.
+// THE CASCADE'S OWN CASTERS ARE NOW THE DEFAULT, and the reason is a property of
+// route (a) rather than a tuning preference.
+//
+// The title's shadow map is compared against the receiver's own light-space depth.
+// If a surface is IN our traced map, its traced depth IS its receiver depth, so the
+// comparison shadows it against itself — and route (a) cannot fix that the way a
+// screen-space pass would (there is no receiver-side offset to apply; we write the
+// map, not the factor). The title avoids it by keeping receivers OUT of its cascade:
+// the street and the terrain are 52.8% of the map's emptiness (§6cv 7b).
+//
+// So the correct occluder set for this route is the one the title itself
+// rasterizes. Tracing the camera's world instead puts every receiver into the map
+// and the world shadows itself — which is exactly what the operator saw: "shadow
+// squares following where the player is", the cascade footprint darkening as a
+// block because everything inside it occludes itself.
+//
+// CZ_VK_RT_CASTERS=scene restores the camera's world set as the control arm.
 bool CascadeCasters()
 {
-    static const bool on = [] {
+    static const bool sceneSet = [] {
         const char* e = Env("CZ_VK_RT_CASTERS");
-        return e && !strcmp(e, "cascade");
+        return e && !strcmp(e, "scene");
     }();
-    return on;
+    return !sceneSet;
 }
 
 void FrameRoll()
@@ -10241,6 +10258,30 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
                             "[rt] cascade poly offset: scale=%g offset=%g "
                             "(depth units)\n",
                             g_lightPolyScale, g_lightPolyOffset);
+                }
+                // THE VIEWPORT Z TERMS, printed once. This renderer decodes
+                // PA_CL_VTE_CNTL's X and Y enables and IGNORES its Z ones
+                // entirely, hardcoding minDepth 0 / maxDepth 1 — so our raster
+                // cascade and our ray trace agree with each other by
+                // construction (which is exactly why the traced atlas looks
+                // right) and would BOTH disagree with the title's own
+                // receiver-side comparison if the cascade sets a Z scale or
+                // offset. One line, and it either names the last suspect or
+                // eliminates it (§6cv 8).
+                {
+                    static bool zLogged = false;
+                    if (!zLogged)
+                    {
+                        zLogged = true;
+                        const uint32_t vte = regs[xenos::kPaClVteCntl];
+                        fprintf(stderr,
+                                "[rt] cascade viewport Z: VTE=%02X (zscale_ena=%d "
+                                "zoffset_ena=%d) zscale=%g zoffset=%g — this "
+                                "renderer applies NEITHER (minDepth 0, maxDepth 1)\n",
+                                vte & 0x3F, (vte >> 4) & 1, (vte >> 5) & 1,
+                                F32(regs[xenos::kPaClVportZScale]),
+                                F32(regs[xenos::kPaClVportZOffset]));
+                    }
                 }
                 // ...and, under the cascade-caster arm, this draw's own geometry
                 // is a caster. The ortho-composite test above is what makes that
@@ -11180,6 +11221,7 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
         ++g_slicesNoTlas;
         return;
     }
+    static const bool invertConv = EnvOn("CZ_VK_RT_INVERT");
     float inv[16];
     if (!Invert4x4(g_lightM, inv))
     {
@@ -11236,10 +11278,30 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     Barrier(R->cmd, snap.image, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             VK_IMAGE_ASPECT_DEPTH_BIT);
 
+    // REPLACE THE RASTER CASCADE, DO NOT UNION WITH IT (part 64, the operator's
+    // spec: "normal shadow would be removed to be replaced by the RT shadow if a
+    // rt settings is selected").
+    //
+    // The first build depth-tested the traced depths AGAINST the raster ones, so
+    // the two occluder sets unioned — which is why the operator saw "shadow
+    // squares following where the player is AND normal shadow still on". Clearing
+    // the slice to FAR first makes the traced result the whole answer: whatever
+    // the rays find is the shadow map, and nothing of the raster pass survives
+    // inside the slice.
+    //
+    // THE TRADE, STATED RATHER THAN DISCOVERED: everything not in the TLAS now
+    // casts NO shadow at all — skinned actors (zombies, Chuck) and alpha-tested
+    // foliage, which the union used to cover for. That hole is visible and it is
+    // the honest consequence of replacement; closing it is what the RT MEDIUM and
+    // HIGH rungs are for (they add the dynamic and skinned populations).
+    // CZ_VK_RT_UNION=1 restores the union as the same-binary control arm.
+    static const bool unionMode = EnvOn("CZ_VK_RT_UNION");
     VkRenderingAttachmentInfo da{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
     da.imageView = snap.rtAttachView;
     da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    da.loadOp = unionMode ? VK_ATTACHMENT_LOAD_OP_LOAD
+                          : VK_ATTACHMENT_LOAD_OP_CLEAR;
+    da.clearValue.depthStencil = { invertConv ? 0.0f : 1.0f, 0 };
     da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
     ri.renderArea = { { rx, ry }, { rw, rh } };
@@ -11272,7 +11334,7 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                                        : 0.0015f;
     const float bias = g_lightPolyOffset + extraBias;
     static const bool poison = EnvOn("CZ_VK_RT_POISON");
-    static const bool invert = EnvOn("CZ_VK_RT_INVERT");
+    const bool invert = invertConv;
     push.misc[0] = bias;
     push.misc[1] = poison ? 1.0f : 0.0f;
     push.misc[2] = invert ? 1.0f : 0.0f;
