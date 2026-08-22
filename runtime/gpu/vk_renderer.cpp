@@ -3,6 +3,7 @@
 #include "pm4.h"
 #include "pump_stats.h"
 #include "drawid_ps_spv.h"
+#include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
 #include "../host/settings.h"
@@ -100,7 +101,20 @@ constexpr uint32_t kSharedVfetchTable = 544;
 // and a zero plane dots to distance 0, which Vulkan KEEPS — so a draw with no planes
 // enabled clips nothing by construction, and only the enabled planes are ever written.
 constexpr uint32_t kSharedClipPlanes = 544 + 96 * 16;                 // 2080
-constexpr uint32_t kSharedSize = kSharedClipPlanes + 6 * 16;          // 2176
+
+// ROUTE (B)'s SCREEN-SPACE SHADOW FACTOR (part 65). Four words:
+//   +0  uint  descriptor index of the factor image in the 2D bindless heap (0 = the
+//             white dummy, which reads as LIT — the honest failure)
+//   +4  uint  sampler index
+//   +8  float 1 / factor-image width      SV_Position.xy * these two = the lookup uv
+//   +12 float 1 / factor-image height
+// Read by the helper tools/patch_rt_shadow_hlsl.py injects into the 126 shaders the
+// census found sampling the cascade atlas. THE OFFSET IS DUPLICATED IN THAT TOOL
+// (RT_BLOCK) and a disagreement does not fail — it reads a neighbouring word as a
+// descriptor index, which is a valid index into the same heap, so the shader samples a
+// real but wrong texture. Change both or neither.
+constexpr uint32_t kSharedRtShadow = kSharedClipPlanes + 6 * 16;      // 2176
+constexpr uint32_t kSharedSize = kSharedRtShadow + 16;                // 2192
 
 // BOTH stages get 256 float4 registers, and the pixel shader's 256 is load-bearing.
 //
@@ -2046,6 +2060,13 @@ struct VertexAttribute
 struct ShaderMeta
 {
     VkShaderModule module = VK_NULL_HANDLE;
+    // ROUTE (B)'s VARIANT (part 65), from assets/shader_spv_rt: the same shader with
+    // its shadow-atlas taps redirected to our screen-space factor. Null for the 323
+    // shaders the census found do NOT sample the atlas, and null for every shader when
+    // the RT cache is absent — the pipeline key only sets its RT bit when this is
+    // non-null, so a missing variant cache degrades to the stock renderer rather than
+    // to a shader that is not there.
+    VkShaderModule moduleRt = VK_NULL_HANDLE;
     bool isVertex = false;
     std::vector<VertexAttribute> attributes; // vertex shaders only
     std::vector<uint32_t> interpolators;
@@ -2191,6 +2212,9 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
 // memcmp so that adding a field cannot be forgotten in an equality operator — the
 // classic way to get two different states sharing one pipeline, which renders as a
 // draw quietly using the previous draw's blend mode.
+constexpr uint32_t kPassDrawId = 1u << 0;
+constexpr uint32_t kPassRtShadow = 1u << 1;
+
 struct PipelineKey
 {
     uint64_t vsHash;
@@ -2207,11 +2231,17 @@ struct PipelineKey
     // creation. 1 = the clip is compiled in. The THRESHOLD stays per-draw (shared
     // constants +272), so one pipeline serves every ref value.
     uint32_t alphaTest;
-    // THE DRAW-ID PASS (part 39). 1 = this draw's fragment stage is replaced by
-    // drawid_ps.hlsl, which writes the draw's own index instead of its colour. It is a
-    // pipeline dimension for the same reason alphaTest is: the fragment module and the
-    // blend state are baked at creation. Off by default and on for exactly one frame.
-    uint32_t drawIdPass;
+    // WHICH FRAGMENT MODULE THIS DRAW GETS, as a bitfield. A pipeline dimension for
+    // the same reason alphaTest is: the module and the blend state are baked at
+    // creation. Both bits are off by default.
+    //   bit 0  kPassDrawId (part 39) — the fragment stage is replaced by drawid_ps.hlsl,
+    //          which writes the draw's own index instead of its colour, for exactly one
+    //          armed frame.
+    //   bit 1  kPassRtShadow (part 65) — the fragment stage is the assets/shader_spv_rt
+    //          variant, whose shadow-atlas taps read our screen-space factor instead.
+    // A BITFIELD RATHER THAN A SECOND FIELD because PipelineKey has to stay
+    // padding-free (see PipelineKeyHash) and 56 bytes is what that costs today.
+    uint32_t passFlags;
     // THE POLYGON OFFSET, as a pipeline dimension rather than dynamic state (part 56).
     // Dynamic would have been cheaper in principle — the value varies per draw — but a
     // declared dynamic state MUST be set before EVERY draw with that pipeline, and this
@@ -3285,6 +3315,9 @@ struct Renderer
     // point). rtEnabled is the fact new code gates on; rtSupported is only the
     // probe.
     bool rtEnabled = false;
+    // How many pixel shaders got a route (b) variant module. Zero means RT shadows
+    // cannot engage whatever the settings row says, and the tier read says so once.
+    uint32_t rtVariants = 0;
     uint32_t rtScratchAlign = 256;   // minAccelerationStructureScratchOffsetAlignment
     PFN_vkCreateAccelerationStructureKHR pfnCreateAS = nullptr;
     PFN_vkDestroyAccelerationStructureKHR pfnDestroyAS = nullptr;
@@ -4759,6 +4792,91 @@ bool LoadShaders()
     }
     fprintf(stderr, "[vk] %zu shader modules loaded%s\n", R->shadersMap.size(),
             dropped ? " (see the DROPPED lines above)" : "");
+
+    // ROUTE (B)'s VARIANT CACHE (part 65). A sibling directory built by
+    //   CZ_HLSL_PATCH="python3 tools/patch_rt_shadow_hlsl.py" \
+    //       tools/build_shader_spv.sh <ucode dir> assets/shader_spv_rt
+    // holding the SAME shaders with the 140 shadow-atlas taps the census found
+    // redirected to our screen-space factor image. Its absence is not an error: the
+    // pipeline key only sets the RT bit for a shader that HAS a variant, so a runtime
+    // without this directory simply cannot turn RT shadows on.
+    //
+    // ONLY THE MODULES THAT ACTUALLY DIFFER ARE CREATED, decided by comparing the
+    // bytes rather than by trusting the map file. That is what makes the printed count
+    // an ENGAGEMENT counter rather than a directory listing: a variant cache built
+    // without the patch hook reads 0 here and says so, where a count of 449 would look
+    // exactly like a working one (gotcha 386 — part 64 shipped a build that measured a
+    // flawless fix because the feature was silently off).
+    {
+        std::error_code ec;
+        std::filesystem::path rtDir;
+        if (const char* env = Env("CZ_SHADER_SPV_RT"))
+            rtDir = env;
+        else
+            rtDir = dir.parent_path() / (dir.filename().string() + "_rt");
+        uint32_t variants = 0, same = 0, missing = 0;
+        if (std::filesystem::is_directory(rtDir, ec))
+        {
+            for (const auto& e : std::filesystem::directory_iterator(dir))
+            {
+                if (e.path().extension() != ".spv")
+                    continue;
+                const std::string name = e.path().stem().string();
+                const std::filesystem::path rtPath = rtDir / (name + ".spv");
+                if (!std::filesystem::exists(rtPath, ec))
+                {
+                    ++missing;
+                    continue;
+                }
+                std::ifstream fa(e.path(), std::ios::binary), fb(rtPath, std::ios::binary);
+                std::vector<char> a((std::istreambuf_iterator<char>(fa)), {});
+                std::vector<char> b((std::istreambuf_iterator<char>(fb)), {});
+                if (a == b)
+                {
+                    ++same;
+                    continue;
+                }
+                if (b.size() < 4 || (b.size() % 4))
+                {
+                    fprintf(stderr, "[vk] RT variant %s.spv is not a SPIR-V module\n",
+                            name.c_str());
+                    continue;
+                }
+                VkShaderModuleCreateInfo ci{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+                ci.codeSize = b.size();
+                ci.pCode = reinterpret_cast<const uint32_t*>(b.data());
+                VkShaderModule m = VK_NULL_HANDLE;
+                if (vkCreateShaderModule(R->device, &ci, nullptr, &m) != VK_SUCCESS)
+                {
+                    fprintf(stderr, "[vk] vkCreateShaderModule failed for the RT variant "
+                                    "of %s\n", name.c_str());
+                    continue;
+                }
+                const uint64_t h = HashFromName(name);
+                if (ShaderMeta* fm = R->shaders.Find(h))
+                    fm->moduleRt = m;
+                auto it = R->shadersMap.find(h);
+                if (it != R->shadersMap.end())
+                    it->second.moduleRt = m;
+                ++variants;
+            }
+            R->rtVariants = variants;
+            fprintf(stderr, "[vk] RT shadow variant cache: %s — %u variant module(s), "
+                            "%u identical, %u absent\n",
+                    rtDir.string().c_str(), variants, same, missing);
+            if (!variants)
+                fprintf(stderr, "[vk] ... zero variants DIFFER from the stock cache. The "
+                                "RT cache was built without CZ_HLSL_PATCH; RT shadows "
+                                "cannot engage.\n");
+        }
+        else
+        {
+            fprintf(stderr, "[vk] no RT shadow variant cache at %s — RT shadows "
+                            "unavailable (build it with CZ_HLSL_PATCH, see "
+                            "tools/patch_rt_shadow_hlsl.py)\n",
+                    rtDir.string().c_str());
+        }
+    }
     return R->shaders.Size() != 0;
 }
 
@@ -7290,7 +7408,8 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // PAINTED, so a draw that writes no colour must write no ID (gotcha 30: the check
     // that catches this is looking at the instrument's own first output and asking
     // whether it could be wrong).
-    cb.blendEnable = !key.drawIdPass && !(cb.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+    cb.blendEnable = !(key.passFlags & kPassDrawId) &&
+                     !(cb.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
                        cb.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO &&
                        cb.srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE &&
                        cb.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO)
@@ -7344,7 +7463,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // same vertex input, same depth test and write, same cull — so the ID image has the
     // SAME VISIBILITY as the picture it is explaining. Change any of that and the map
     // stops describing the frame it is supposed to describe.
-    stages[1].module = key.drawIdPass ? R->drawIdModule : ps.module;
+    stages[1].module = (key.passFlags & kPassDrawId) ? R->drawIdModule
+                       : (key.passFlags & kPassRtShadow) && ps.moduleRt ? ps.moduleRt
+                                                                       : ps.module;
     stages[1].pName = "main";
 
     // g_SpecConstants (constant_id 0) on the FRAGMENT stage. Only the alpha-test bit is
@@ -7358,7 +7479,7 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     specInfo.pMapEntries = &specMap;
     specInfo.dataSize = sizeof specValue;
     specInfo.pData = &specValue;
-    if (key.alphaTest && !key.drawIdPass)
+    if (key.alphaTest && !(key.passFlags & kPassDrawId))
         stages[1].pSpecializationInfo = &specInfo;
 
     const VkFormat colorFormat = R->color.format;
@@ -10073,6 +10194,25 @@ bool Active()
     return R->rtEnabled && TierThisFrame() > 0;
 }
 
+// WHICH ROUTE (part 65). `b` (default) is the screen-space factor in namespace
+// rtfactor; `a` is this file's atlas trace, kept as the same-binary control arm and as
+// the record of a mechanism that was proven to work and proven not to be correct
+// (§6cv §7j). The choice is read once — it changes which passes exist, not a per-frame
+// value.
+bool RouteB()
+{
+    static const bool b = [] {
+        const char* e = Env("CZ_VK_RT_ROUTE");
+        const bool a = e && (*e == 'a' || *e == 'A');
+        if (e)
+            fprintf(stderr, "[rt] CZ_VK_RT_ROUTE=%s — %s\n", e,
+                    a ? "route (a), the atlas trace (part 64's, retained as the control)"
+                      : "route (b), the screen-space factor");
+        return !a;
+    }();
+    return b;
+}
+
 // Which population feeds the TLAS. `scene` (default) is the camera's world draws;
 // `cascade` is the title's own shadow casters — see the g_curCascadeKeys comment.
 // THE CASCADE'S OWN CASTERS ARE NOW THE DEFAULT, and the reason is a property of
@@ -10092,13 +10232,24 @@ bool Active()
 // block because everything inside it occludes itself.
 //
 // CZ_VK_RT_CASTERS=scene restores the camera's world set as the control arm.
+//
+// AND ON ROUTE (B) THE DEFAULT IS THE OTHER WAY. Everything above is a property of
+// writing the MAP: a receiver inside it is compared against itself. Route (b) computes
+// the factor at the receiving pixel and offsets the ray origin off that surface, so the
+// self-shadow cannot happen and the correct occluder set is simply everything that can
+// block the sun — the camera's world. `CZ_VK_RT_CASTERS=cascade|scene` overrides on
+// either route.
 bool CascadeCasters()
 {
-    static const bool sceneSet = [] {
+    static const int mode = [] {
         const char* e = Env("CZ_VK_RT_CASTERS");
-        return e && !strcmp(e, "scene");
+        if (e && !strcmp(e, "scene"))
+            return 0;
+        if (e && !strcmp(e, "cascade"))
+            return 1;
+        return -1;
     }();
-    return !sceneSet;
+    return mode >= 0 ? mode == 1 : !RouteB();
 }
 
 void FrameRoll()
@@ -11214,7 +11365,7 @@ bool Invert4x4(const float* m, float* out)
 void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t rw,
                 uint32_t rh)
 {
-    if (!Active() || !rw || !rh)
+    if (!Active() || RouteB() || !rw || !rh)
         return;
     ProfScope _pRt(&g_prof.rt);
     FrameRoll();
@@ -11468,6 +11619,614 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
 }
 } // namespace rtshadow
 
+// ===================================================================================
+// RT STAGE 2, ROUTE (B) (part 65): the SCREEN-SPACE SHADOW FACTOR
+// ===================================================================================
+//
+// Route (a) — above — writes traced depths into the cascade atlas and lets the title's
+// own comparison make the shadows. It works as a mechanism and cannot be made correct:
+// writing the MAP means every receiver inside the map is compared against itself, and
+// there is no receiver-side offset to apply. Five independent knobs all landed at 64-66
+// median outdoor luma against the original's 80.61 (§6cv §7j).
+//
+// This is the replacement. One fullscreen pass computes, per RECEIVING PIXEL, whether
+// the sun is visible from that pixel's own world position — reconstructed from the
+// scene depth, then pushed off the surface before the ray starts, which is the offset
+// route (a) had nowhere to put. `tools/patch_rt_shadow_hlsl.py` redirects the 140
+// shadow-atlas taps the census found in 126 pixel shaders
+// (`config/rt_shadow_slots.json`) to read the result at their own SV_Position, through
+// a second SPIR-V cache selected per pipeline. With RT off nothing here runs and the
+// stock modules are bound.
+//
+// THREE THINGS THIS ROUTE DOES NOT NEED, each of which cost part 64 real time:
+//   * the slice <-> matrix PAIRING. Route (b) needs only the sun's DIRECTION, and every
+//     cascade's light matrix carries the same one, so which cascade the captured matrix
+//     belongs to cannot matter.
+//   * the depth CONVENTION and the viewport Z terms. Nothing is written into a depth
+//     buffer; the answer is a visibility bit.
+//   * the occluder set being the title's own casters. That default existed only to keep
+//     receivers out of the map they were compared against. Here the correct set is the
+//     camera's world — everything that can block the sun — so `CZ_VK_RT_CASTERS`
+//     defaults the other way on this route.
+//
+// Arms: CZ_VK_RT_ROUTE=a|b (default b) chooses the route; CZ_VK_RT_FACTOR_POISON=1
+// writes the all-shadow factor (the positive control — the world MUST darken);
+// CZ_VK_RT_FACTOR_SCALE=N renders the factor at 1/N; CZ_VK_RT_FACTOR_BIAS and
+// CZ_VK_RT_FACTOR_CAMBIAS are the two ray-origin offsets; CZ_VK_RT_RAY_LEN overrides
+// the ray length. All pump-thread-only state.
+namespace rtfactor
+{
+// The scene's world->clip composite, captured from a world draw's own vertex constants
+// (SceneXformForm form 2 — §6cs). Unlike the cascade's, this binding is not ambiguous:
+// the form test REJECTS the skinning affines and the shadow orthos outright, and every
+// world draw of a frame carries the same camera composite because the geometry is
+// world-space with identity transforms. The distinct-value counter below is the check
+// on that claim rather than a decoration — if a frame ever carries two, this says so.
+float g_sceneM[16];
+bool g_sceneMValid = false;
+uint64_t g_sceneMFrame = ~0ull;
+uint64_t g_sceneDistinctThisFrame = 0, g_framesOneMatrix = 0, g_framesManyMatrix = 0;
+
+Image g_factor;
+uint32_t g_factorSlot = 0;          // index in the 2D bindless heap, 0 = the white dummy
+uint32_t g_factorSampler = 0;       // index in the sampler heap
+VkImageView g_depthView = VK_NULL_HANDLE;
+VkSampler g_depthSampler = VK_NULL_HANDLE;
+VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
+VkPipelineLayout g_pipeLayout = VK_NULL_HANDLE;
+VkPipeline g_pipe = VK_NULL_HANDLE;
+VkDescriptorPool g_pool = VK_NULL_HANDLE;
+VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
+bool g_failed = false;
+
+// Engagement, per gotcha 151 and gotcha 386. `g_valid` is cleared at every resolve, not
+// once a frame: this title renders in two 640-wide tiles, so the depth buffer holds the
+// finished prepass for ONE tile at a time and a factor computed for the other tile's
+// region would be a picture of the wrong depth.
+bool g_valid = false;
+uint64_t g_passes = 0, g_drawsServed = 0, g_noScene = 0, g_noLight = 0, g_noTlas = 0,
+         g_singular = 0;
+
+bool Active()
+{
+    return R->rtEnabled && R->rtVariants && rtshadow::RouteB() &&
+           rtshadow::TierThisFrame() > 0 && !g_failed;
+}
+
+// Capture the scene composite. Called from DoDraw for every draw whose vertex window
+// passes the form test, which is cheap (it is the same predicate the fov patch already
+// evaluates) and is the ONLY producer of this matrix.
+void NoteSceneMatrix(const uint32_t* vsWindow)
+{
+    if (R->frame != g_sceneMFrame)
+    {
+        if (g_sceneMFrame != ~0ull)
+        {
+            if (g_sceneDistinctThisFrame > 1)
+                ++g_framesManyMatrix;
+            else if (g_sceneDistinctThisFrame == 1)
+                ++g_framesOneMatrix;
+        }
+        g_sceneMFrame = R->frame;
+        g_sceneDistinctThisFrame = 0;
+        g_sceneMValid = false;
+    }
+    float m[16];
+    memcpy(m, vsWindow, sizeof m);
+    if (!g_sceneMValid || memcmp(m, g_sceneM, sizeof m) != 0)
+    {
+        memcpy(g_sceneM, m, sizeof m);
+        g_sceneMValid = true;
+        ++g_sceneDistinctThisFrame;
+    }
+}
+
+void Invalidate() { g_valid = false; }
+
+bool EnsureResources()
+{
+    if (g_failed)
+        return false;
+    // THE TIER LADDER, and it is the whole reason route (b) has one. LOW halves the
+    // factor's resolution and fires one ray (a hard shadow at a quarter of the cost);
+    // MEDIUM is full resolution, one ray; HIGH is full resolution with the sun's
+    // angular radius CONE-SAMPLED over four rays, which is the first genuinely soft
+    // shadow either route could produce. Route (a) could express none of this — it was
+    // capped at the atlas's own resolution however many rays it fired.
+    static const uint32_t envScale = [] {
+        const char* e = Env("CZ_VK_RT_FACTOR_SCALE");
+        const long v = e ? strtol(e, nullptr, 10) : 0;
+        return uint32_t(v >= 1 && v <= 4 ? v : 0);
+    }();
+    const uint32_t scale = envScale ? envScale
+                                    : (rtshadow::TierThisFrame() <= 1 ? 2u : 1u);
+    const uint32_t w = std::max(1u, InternalW() / scale);
+    const uint32_t h = std::max(1u, InternalH() / scale);
+    if (g_factor.image && g_factor.width == w && g_factor.height == h && g_pipe)
+        return true;
+
+    if (g_factor.image)
+    {
+        // The scene resolution changed under us (the resolution row, or the shadow
+        // tier's pass size). Retire the old image the deferred way — an image still
+        // referenced by a command buffer in flight cannot be destroyed here (gotcha
+        // 376, part 60's own version of this mistake).
+        RetireImage(g_factor);   // clears the handle itself
+    }
+    if (!CreateImage(g_factor, w, h, VK_FORMAT_R8_UNORM,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT))
+    {
+        fprintf(stderr, "[rtb] factor image %ux%u creation FAILED — route (b) idle\n",
+                w, h);
+        g_failed = true;
+        return false;
+    }
+    NameImage(g_factor, "RT shadow factor %ux%u", w, h);
+
+    // Publish it into the 2D bindless heap so the patched material shaders can sample
+    // it exactly like any other texture — no new descriptor set, no change to the
+    // pipeline layout the stock shaders were compiled against.
+    if (!g_factorSlot)
+    {
+        if (R->nextTextureSlot >= g_maxDescriptors)
+        {
+            fprintf(stderr, "[rtb] bindless heap full — route (b) idle\n");
+            g_failed = true;
+            return false;
+        }
+        g_factorSlot = R->nextTextureSlot++;
+    }
+    {
+        VkDescriptorImageInfo ii{};
+        ii.imageView = g_factor.view;
+        ii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        wr.dstSet = R->sets[0];
+        wr.dstBinding = 0;
+        wr.dstArrayElement = g_factorSlot;
+        wr.descriptorCount = 1;
+        wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        wr.pImageInfo = &ii;
+        vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+    }
+    // Its own sampler in the shared heap: LINEAR so the 2x2 taps the title already
+    // performs land between texels rather than on one, CLAMP because the lookup is a
+    // screen position and a wrapped edge would sample the far side of the frame.
+    if (!g_factorSampler)
+    {
+        VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = si.addressModeV = si.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VkSampler s = VK_NULL_HANDLE;
+        if (vkCreateSampler(R->device, &si, nullptr, &s) != VK_SUCCESS ||
+            R->samplerCount >= g_maxDescriptors)
+        {
+            fprintf(stderr, "[rtb] factor sampler creation FAILED — route (b) idle\n");
+            g_failed = true;
+            return false;
+        }
+        g_factorSampler = R->samplerCount++;
+        VkDescriptorImageInfo ii{};
+        ii.sampler = s;
+        VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        wr.dstSet = R->sets[3];
+        wr.dstBinding = 0;
+        wr.dstArrayElement = g_factorSampler;
+        wr.descriptorCount = 1;
+        wr.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        wr.pImageInfo = &ii;
+        vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
+    }
+    if (g_pipe)
+        return true;
+
+    // A DEPTH-ONLY VIEW of the EDRAM depth buffer. The image is tracked with both
+    // aspects everywhere else, and a combined depth+stencil view cannot be sampled at
+    // all — a validation error, not a wrong picture, but one worth naming here because
+    // the image handle is shared with the attachment path.
+    {
+        VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vi.image = R->depth.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = R->depth.format;
+        vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(R->device, &vi, nullptr, &g_depthView) != VK_SUCCESS)
+        {
+            fprintf(stderr, "[rtb] depth view creation FAILED — route (b) idle. The "
+                            "EDRAM depth image needs VK_IMAGE_USAGE_SAMPLED_BIT.\n");
+            g_failed = true;
+            return false;
+        }
+        VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        si.magFilter = si.minFilter = VK_FILTER_NEAREST;   // a depth is not interpolable
+        si.addressModeU = si.addressModeV = si.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vkCreateSampler(R->device, &si, nullptr, &g_depthSampler);
+    }
+
+    VkDescriptorSetLayoutBinding b[3]{};
+    b[0].binding = 0;
+    b[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    b[0].descriptorCount = 1;
+    b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[1].binding = 1;
+    b[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    b[1].descriptorCount = 1;
+    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[2].binding = 2;
+    b[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    b[2].descriptorCount = 1;
+    b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo li{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+    };
+    li.bindingCount = 3;
+    li.pBindings = b;
+    if (vkCreateDescriptorSetLayout(R->device, &li, nullptr, &g_setLayout) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    VkDescriptorPoolSize ps[3] = {
+        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kMaxFramesInFlight },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxFramesInFlight },
+        { VK_DESCRIPTOR_TYPE_SAMPLER, kMaxFramesInFlight },
+    };
+    VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    pci.maxSets = kMaxFramesInFlight;
+    pci.poolSizeCount = 3;
+    pci.pPoolSizes = ps;
+    if (vkCreateDescriptorPool(R->device, &pci, nullptr, &g_pool) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        ai.descriptorPool = g_pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &g_setLayout;
+        if (vkAllocateDescriptorSets(R->device, &ai, &g_sets[i]) != VK_SUCCESS)
+        {
+            g_failed = true;
+            return false;
+        }
+        VkDescriptorImageInfo di{};
+        di.imageView = g_depthView;
+        di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo si2{};
+        si2.sampler = g_depthSampler;
+        VkWriteDescriptorSet w[2]{};
+        w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[0].dstSet = g_sets[i];
+        w[0].dstBinding = 1;
+        w[0].descriptorCount = 1;
+        w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        w[0].pImageInfo = &di;
+        w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[1].dstSet = g_sets[i];
+        w[1].dstBinding = 2;
+        w[1].descriptorCount = 1;
+        w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        w[1].pImageInfo = &si2;
+        vkUpdateDescriptorSets(R->device, 2, w, 0, nullptr);
+    }
+    // 128 bytes: eight float4 (see rt_factor.hlsl's Push). That is exactly the
+    // Vulkan-guaranteed minimum maxPushConstantsSize, so it needs no capability check
+    // and has no room to grow — a ninth field has to become a uniform buffer.
+    VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128 };
+    VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &g_setLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(R->device, &pli, nullptr, &g_pipeLayout) != VK_SUCCESS)
+    {
+        g_failed = true;
+        return false;
+    }
+    auto makeModule = [&](const uint32_t* words, size_t bytes) {
+        VkShaderModuleCreateInfo mi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        mi.codeSize = bytes;
+        mi.pCode = words;
+        VkShaderModule m = VK_NULL_HANDLE;
+        vkCreateShaderModule(R->device, &mi, nullptr, &m);
+        return m;
+    };
+    VkShaderModule vs = makeModule(kRtFactorVsSpv, sizeof kRtFactorVsSpv);
+    VkShaderModule fs = makeModule(kRtFactorPsSpv, sizeof kRtFactorPsSpv);
+    if (!vs || !fs)
+    {
+        g_failed = true;
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "VsMain";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "PsMain";
+    VkPipelineVertexInputStateCreateInfo vi{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    };
+    VkPipelineInputAssemblyStateCreateInfo ia{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+    };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+    };
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+    };
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+    };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+    };
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+    };
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dsi{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+    };
+    dsi.dynamicStateCount = uint32_t(std::size(dyn));   // never hardcode the count
+    dsi.pDynamicStates = dyn;
+    const VkFormat cf = VK_FORMAT_R8_UNORM;
+    VkPipelineRenderingCreateInfo pri{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    pri.colorAttachmentCount = 1;
+    pri.pColorAttachmentFormats = &cf;
+    VkGraphicsPipelineCreateInfo gp{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    gp.pNext = &pri;
+    gp.stageCount = 2;
+    gp.pStages = stages;
+    gp.pVertexInputState = &vi;
+    gp.pInputAssemblyState = &ia;
+    gp.pViewportState = &vp;
+    gp.pRasterizationState = &rs;
+    gp.pMultisampleState = &ms;
+    gp.pDepthStencilState = &ds;
+    gp.pColorBlendState = &cb;
+    gp.pDynamicState = &dsi;
+    gp.layout = g_pipeLayout;
+    const VkResult r =
+        vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &gp, nullptr, &g_pipe);
+    vkDestroyShaderModule(R->device, vs, nullptr);
+    vkDestroyShaderModule(R->device, fs, nullptr);
+    if (r != VK_SUCCESS)
+    {
+        fprintf(stderr, "[rtb] factor pipeline creation failed (%d) — route (b) idle\n",
+                int(r));
+        g_failed = true;
+        return false;
+    }
+    fprintf(stderr, "[rtb] factor pass ready: %ux%u R8, heap slot %u, sampler %u, "
+                    "%u shader variants\n",
+            w, h, g_factorSlot, g_factorSampler, R->rtVariants);
+    return true;
+}
+
+// Compute the factor for the region the depth buffer currently describes. Called from
+// DoDraw at the first shadow-atlas-sampling draw after each resolve, so the trigger is
+// the TITLE'S OWN draw order rather than a guess about where its Z prepass ended.
+void Run(uint8_t* base)
+{
+    if (g_valid || !Active())
+        return;
+    ProfScope _pRt(&g_prof.rt);
+    if (!g_sceneMValid)
+    {
+        ++g_noScene;
+        return;
+    }
+    if (!rtshadow::g_lightMValid)
+    {
+        // No cascade drew this frame — there is no sun direction to trace toward, and
+        // guessing one would paint shadows in an arbitrary direction. The taps then read
+        // the white dummy, i.e. LIT, and this counts.
+        ++g_noLight;
+        return;
+    }
+    if (!EnsureResources())
+        return;
+    rtshadow::FrameRoll();
+    if (rtshadow::g_tlasFrame != R->frame)
+    {
+        rtshadow::g_tlasFrame = R->frame;
+        rtshadow::BuildFrameStructures(base);
+    }
+    if (!rtshadow::g_tlasReady)
+    {
+        ++g_noTlas;
+        return;
+    }
+
+    float invScene[16], invLight[16];
+    if (!rtshadow::Invert4x4(g_sceneM, invScene) ||
+        !rtshadow::Invert4x4(rtshadow::g_lightM, invLight))
+    {
+        ++g_singular;
+        return;
+    }
+    // The sun direction, from the light matrix's own z axis. p0/p1 are the world points
+    // that map to the near and far ends of the light volume at its centre; the light
+    // TRAVELS from p0 to p1, so the direction TOWARD the sun is the negation. Only the
+    // direction is used, which is why this route does not care which cascade the matrix
+    // came from.
+    auto unproject = [](const float* inv, float z, float* out) {
+        const float c[4] = { 0.0f, 0.0f, z, 1.0f };
+        float w = 0.0f;
+        for (int i = 0; i < 3; ++i)
+            out[i] = inv[i * 4 + 0] * c[0] + inv[i * 4 + 1] * c[1] +
+                     inv[i * 4 + 2] * c[2] + inv[i * 4 + 3] * c[3];
+        w = inv[12] * c[0] + inv[13] * c[1] + inv[14] * c[2] + inv[15] * c[3];
+        if (std::fabs(w) > 1e-12f)
+            for (int i = 0; i < 3; ++i)
+                out[i] /= w;
+    };
+    float p0[3], p1[3];
+    unproject(invLight, 0.0f, p0);
+    unproject(invLight, 1.0f, p1);
+    float d[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+    const float dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!(dl > 1e-6f))
+    {
+        ++g_singular;
+        return;
+    }
+    const float sun[3] = { -d[0] / dl, -d[1] / dl, -d[2] / dl };
+
+    // The camera's world position: the scene composite's inverse applied to the clip
+    // origin at the near plane. Used only for the toward-the-camera ray-origin offset.
+    float cam[3];
+    unproject(invScene, 0.0f, cam);
+
+    static const float rayLen = Env("CZ_VK_RT_RAY_LEN")
+                                    ? float(atof(Env("CZ_VK_RT_RAY_LEN")))
+                                    : 0.0f;
+    static const float bias = Env("CZ_VK_RT_FACTOR_BIAS")
+                                  ? float(atof(Env("CZ_VK_RT_FACTOR_BIAS")))
+                                  : 0.0f;
+    static const float camBias = Env("CZ_VK_RT_FACTOR_CAMBIAS")
+                                     ? float(atof(Env("CZ_VK_RT_FACTOR_CAMBIAS")))
+                                     : 0.0f;
+    static const bool poison = EnvOn("CZ_VK_RT_FACTOR_POISON");
+    // THE DEFAULTS ARE DERIVED FROM THE LIGHT VOLUME, not typed in. This project has no
+    // measurement of the title's world unit, and a bias in the wrong units is either
+    // inert (acne everywhere) or a peter-pan (shadows detached from their casters) —
+    // and both look like a broken feature rather than a mis-set knob. The cascade's own
+    // depth extent is the one length scale the frame hands us.
+    const float len = rayLen > 0.0f ? rayLen : dl;
+    const float b1 = bias > 0.0f ? bias : dl * 0.0015f;
+    const float b2 = camBias > 0.0f ? camBias : dl * 0.0005f;
+
+    // 28 floats = the first seven float4 of the shader's Push; `pc2` is the eighth.
+    // Split only because the camera position is computed after the rest.
+    float pc[28];
+    for (int i = 0; i < 16; ++i)
+        pc[i] = invScene[i];
+    pc[16] = sun[0]; pc[17] = sun[1]; pc[18] = sun[2]; pc[19] = len;
+    // Rays and the cone half-angle, packed as rays*1000 + radians (see the shader).
+    // The sun's true angular radius is ~0.00465 rad; this is a LOOK control, not
+    // astronomy, so the default is much wider and named as such.
+    static const float coneRad = Env("CZ_VK_RT_CONE")
+                                     ? float(atof(Env("CZ_VK_RT_CONE")))
+                                     : 0.02f;
+    const int tier = rtshadow::TierThisFrame();
+    static const int envRays = Env("CZ_VK_RT_RAYS") ? atoi(Env("CZ_VK_RT_RAYS")) : 0;
+    const int rays = envRays > 0 ? std::min(envRays, 4) : (tier >= 3 ? 4 : 1);
+    pc[20] = b1; pc[21] = b2; pc[22] = poison ? 1.0f : 0.0f;
+    pc[23] = float(rays) * 1000.0f + (rays > 1 ? coneRad : 0.0f);
+    pc[24] = 1.0f / float(g_factor.width);
+    pc[25] = 1.0f / float(g_factor.height);
+    pc[26] = 0.0f; pc[27] = 0.0f;
+    // camera at the last float4
+    float pc2[4] = { cam[0], cam[1], cam[2], 0.0f };
+
+    // This slot's TLAS into this pass's own descriptor set. rtshadow owns the structure;
+    // both passes read it, neither writes the other's descriptors.
+    VkWriteDescriptorSetAccelerationStructureKHR wa{
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR
+    };
+    wa.accelerationStructureCount = 1;
+    wa.pAccelerationStructures = &rtshadow::g_tlas[R->frameSlot];
+    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    w.pNext = &wa;
+    w.dstSet = g_sets[R->frameSlot];
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+
+    EndRendering();
+    Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VkRenderingAttachmentInfo att{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    att.imageView = g_factor.view;
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { 0, 0 }, { g_factor.width, g_factor.height } };
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    vkCmdBeginRendering(R->cmd, &ri);
+    VkViewport vpp{ 0.0f, 0.0f, float(g_factor.width), float(g_factor.height), 0.0f, 1.0f };
+    VkRect2D sc{ { 0, 0 }, { g_factor.width, g_factor.height } };
+    vkCmdSetViewport(R->cmd, 0, 1, &vpp);
+    vkCmdSetScissor(R->cmd, 0, 1, &sc);
+    vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 1,
+                            &g_sets[R->frameSlot], 0, nullptr);
+    vkCmdPushConstants(R->cmd, g_pipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112, pc);
+    vkCmdPushConstants(R->cmd, g_pipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 112, 16, pc2);
+    vkCmdDraw(R->cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(R->cmd);
+    Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    // THE STATE CACHE IS NOW A LIE — same reason as route (a)'s trace pass: this pass
+    // bound its own pipeline, layout, viewport, scissor and set 0, and the main path's
+    // cache would let the next draw skip re-binding all of them.
+    R->bound = {};
+    g_valid = true;
+    ++g_passes;
+    if ((g_passes & 2047) == 1)
+        fprintf(stderr,
+                "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d "
+                "tlasInst=%u sun=(%.3f %.3f %.3f) "
+                "len=%.1f bias=%.3f/%.3f skips: noScene=%llu noLight=%llu noTlas=%llu "
+                "singular=%llu%s\n",
+                (unsigned long long)g_passes, (unsigned long long)g_drawsServed, tier,
+                g_factor.width, g_factor.height, rays,
+                rtshadow::g_tlasInstances, sun[0], sun[1], sun[2], len, b1, b2,
+                (unsigned long long)g_noScene, (unsigned long long)g_noLight,
+                (unsigned long long)g_noTlas, (unsigned long long)g_singular,
+                poison ? " POISON" : "");
+}
+
+// What the patched shaders must be told: where the factor is and how to address it.
+// Returns false when the pass has not produced anything this draw can read, which
+// leaves the shared block's descriptor index at 0 — the white dummy, i.e. LIT.
+bool Publish(uint8_t* shared)
+{
+    if (!g_valid || !g_factorSlot)
+        return false;
+    uint32_t* u = reinterpret_cast<uint32_t*>(shared + kSharedRtShadow);
+    float* f = reinterpret_cast<float*>(shared + kSharedRtShadow + 8);
+    u[0] = g_factorSlot;
+    u[1] = g_factorSampler;
+    // SV_Position is in RENDER-target pixels while the factor image may be smaller; the
+    // uv is normalised over the SCENE, not over the factor, so the scale is the scene's.
+    f[0] = 1.0f / float(std::max(1u, InternalW()));
+    f[1] = 1.0f / float(std::max(1u, InternalH()));
+    ++g_drawsServed;
+    return true;
+}
+} // namespace rtfactor
+
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
@@ -11624,14 +12383,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     key.blendControl = regs[xenos::kRbBlendControl0];
     // CZ_VK_DRAW_ID: for ONE armed frame every draw paints its own index. See
     // tools/drawid_ps.hlsl for why this exists and tools/drawid_read.py for reading it.
-    key.drawIdPass = R->drawIdArmed ? 1u : 0u;
-    if (key.drawIdPass)
+    key.passFlags = R->drawIdArmed ? kPassDrawId : 0u;
+    // ROUTE (B) (part 65): this draw's fragment stage becomes the variant whose
+    // shadow-atlas taps read our screen-space factor. Gated on the shader HAVING a
+    // variant, so a runtime without assets/shader_spv_rt keeps the stock module and the
+    // key keeps its old value — the null is byte-identical rather than nearly so.
+    if (ps.moduleRt && rtfactor::Active())
+    {
+        key.passFlags |= kPassRtShadow;
+        Count("draw: bound the RT SHADOW shader variant");
+    }
+    if (key.passFlags & kPassDrawId)
         R->drawIdActive = true;
     // AN ARM WITH NO COUNTER CANNOT BE SHOWN TO HAVE ENGAGED (gotcha 151). The first
     // version of this instrument had none, and its first output was read for twenty
     // minutes as if it were a map before a same-address comparison against a normal run
     // showed the two were IDENTICAL — the pass had never run.
-    if (key.drawIdPass)
+    if (key.passFlags & kPassDrawId)
         Count("draw: painted its INDEX (CZ_VK_DRAW_ID)");
     // CZ_VK_FORCE_COLORMASK=1 — treat every draw as writing all four channels.
     //
@@ -11852,6 +12620,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // and is not, if what it does is per-frame heavy.
     ProfScope _pBegin(&g_prof.otherBegin);
     BeginFrame();
+    // ROUTE (B)'s FACTOR PASS, at the first draw of the pass that samples the cascade
+    // atlas — `ps.moduleRt` is non-null for exactly the 126 shaders the census found
+    // doing that, so the TITLE'S OWN draw order is the trigger and nothing here has to
+    // guess where its Z prepass ended. Idempotent within a pass; `Invalidate()` at each
+    // resolve is what makes the second 640-wide tile recompute against its own depth.
+    if (ps.moduleRt)
+        rtfactor::Run(base);
     BeginRendering();
 
     // --- constants -----------------------------------------------------------------
@@ -11912,6 +12687,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
     rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
                       regs[xenos::kRbDepthControl], vs, draw, regs, base);
+    // ROUTE (B) needs the SCENE composite to turn a depth sample back into a world
+    // position. Same raw window, same per-draw discipline; the form test rejects the
+    // skinning affines and the shadow orthos, so this cannot capture one of those.
+    if (rtfactor::Active())
+    {
+        float bEff;
+        if (SceneXformForm(&regs[xenos::kAluConstantBase + memoVsBase * 4], bEff) == 2)
+            rtfactor::NoteSceneMatrix(&regs[xenos::kAluConstantBase + memoVsBase * 4]);
+    }
     g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
     g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
     // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
@@ -12117,6 +12901,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         memset(shared, 0, kSharedSize);
     }
+    // ROUTE (B): where the factor image is and how to address it. Returns false — and
+    // leaves the descriptor index at the memset's zero, which is the white dummy and
+    // reads as LIT — whenever the pass did not produce anything this draw can read.
+    if (ps.moduleRt && rtfactor::Active())
+        rtfactor::Publish(shared);
 
     // The fetch-constant walk (part 48 tier 3), closed by hand at the bool/loop constant
     // files below. `UploadTexture` opens its own `textures` scope inside this one, so
@@ -14922,6 +15711,11 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             if (fromDepth && IsShadowSurface(regs))
                 rtshadow::TraceSlice(base, it->second, RZxi(int32_t(dstX)),
                                      RZyi(int32_t(dstY)), RZx(copyW), RZ(copyH));
+            // ROUTE (B): a resolve ends a pass, and this title renders in two 640-wide
+            // tiles, so the depth buffer is about to describe a DIFFERENT region. A
+            // factor computed for the previous tile would be a picture of the wrong
+            // depth over the new one — recompute at the next atlas-sampling draw.
+            rtfactor::Invalidate();
             // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
@@ -15167,11 +15961,17 @@ bool InitCommon()
         // TRANSFER_SRC because 18.4% of this title's resolves copy out of the DEPTH
         // buffer rather than the colour one (its shadow cascades and the scene depth
         // its depth-of-field pass reads back) — see DoResolve.
+        // SAMPLED only when the device came up with ray tracing, which is what route
+        // (b)'s factor pass needs to read the scene depth. Conditional rather than
+        // unconditional because a usage bit can change a driver's depth compression
+        // decision, and `CZ_VK_RT=0` — the master arm since part 64 — must stay a
+        // bit-for-bit description of the pre-RT renderer.
         !CreateImage(R->depth, RSX(R->targetWidth), RS(edramH),
                      VK_FORMAT_D24_UNORM_S8_UINT,
                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                         (R->rtEnabled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
                      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
     {
         fprintf(stderr, "[vk] render target creation FAILED\n");
@@ -18162,6 +18962,26 @@ void VkRenderer_DumpStats()
                     note);
         }
     }
+
+    // ROUTE (B)'s ENGAGEMENT LINE, always on when an RT tier ever ran. Part 64 shipped
+    // a build whose A/B measured a flawless fix and was the feature silently switched
+    // off (gotcha 386); the cheapest defence against repeating that is a count that
+    // cannot be confused with a configuration.
+    if (rtfactor::g_passes || rtfactor::g_noScene || rtfactor::g_noLight ||
+        rtfactor::g_noTlas || rtfactor::g_singular)
+        fprintf(stderr,
+                "[rtb] TOTAL: %llu factor passes, %llu draws served, %u variant "
+                "modules; skipped noScene=%llu noLight=%llu noTlas=%llu singular=%llu. "
+                "Scene composite: %llu frames carried ONE, %llu carried SEVERAL (any "
+                "'several' means the world/camera binding is not what §6cs measured)\n",
+                (unsigned long long)rtfactor::g_passes,
+                (unsigned long long)rtfactor::g_drawsServed, R->rtVariants,
+                (unsigned long long)rtfactor::g_noScene,
+                (unsigned long long)rtfactor::g_noLight,
+                (unsigned long long)rtfactor::g_noTlas,
+                (unsigned long long)rtfactor::g_singular,
+                (unsigned long long)rtfactor::g_framesOneMatrix,
+                (unsigned long long)rtfactor::g_framesManyMatrix);
 
     // WHERE THE DIMENSION LIVES IN THE FETCH CONSTANT, read off the two classes the
     // shader partitions every fetch into. `always1` is the AND, `always0` is the
