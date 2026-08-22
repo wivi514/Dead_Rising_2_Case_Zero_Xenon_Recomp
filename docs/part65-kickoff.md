@@ -60,16 +60,21 @@
 
 ## 1. The work, in order
 
-0. **READ ONE NUMBER FIRST — it halves the search.** The `[rt]` line's
-   `slice matrix (WORLD-VOUCHED ONLY)` count now runs after the dataflow filter
-   and prints the mean distinct count. **ONE** distinct matrix per slice means
-   the slice↔matrix pairing is right and the remaining suspect is the DEPTH
-   CONVENTION — the guest's viewport Z scale/offset (`PA_CL_VTE_CNTL`'s Z bits,
-   `kPaClVportZScale`/`ZOffset`) are decoded NOWHERE in this renderer, which
-   hardcodes minDepth 0 / maxDepth 1. **FOUR** means the title renders all four
-   cascades before resolving any of them: every matrix legitimate, one per
-   cascade, and the defect is the PAIRING, whose fix is an ordered association
-   of each matrix with the resolve that follows its draws, not recency.
+0. **THAT NUMBER WAS READ AT PART 64'S CLOSE AND THE ANSWER IS ONE.** 10,192
+   cascade slices carried exactly ONE world-vouched c0-3 and 0 carried several
+   (1,293,132 accepted draws, 825,134 rejected object-transform ones). The
+   slice↔matrix pairing is exact and the matrix selection is provably right, so
+   **that branch is closed — do not build the ordered-association fix.**
+
+   **START HERE INSTEAD: the DEPTH CONVENTION, and it is one line to check.**
+   `PA_CL_VTE_CNTL`'s Z-enable bits and `kPaClVportZScale` / `kPaClVportZOffset`
+   are decoded NOWHERE in this renderer: the raster path hardcodes
+   `minDepth = 0, maxDepth = 1` and the trace pass writes a raw NDC z. Those two
+   agree with EACH OTHER — which is exactly why the traced atlas looks right —
+   and both would disagree with what the title's receiver-side shadow comparison
+   expects if the cascade sets those terms. Print the three registers on a
+   cascade draw. It either names the defect or eliminates the last named
+   suspect, and either outcome is worth more than another arm.
 
 1. **The three statistics that judge this arm, in this order** (all are in §6cv
    with their part-64 values, so the job is to re-read them after any change):

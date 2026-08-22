@@ -52,15 +52,16 @@ Next, in order:
      If the cascade sets them, our rasterized depths and our traced depths could
      still agree with each other while both disagree with what the title's
      receiver-side comparison expects.
-   * **the SLICE RECTANGLE** — whether the region a slice is traced over really
-     is the region its captured matrix describes. The refined distinctness count
-     (now taken AFTER the dataflow filter, printing the mean) answers this
-     directly: ONE world-vouched matrix per slice means the pairing is right and
-     the depth convention is the remaining suspect; FOUR means the title renders
-     all four cascades before resolving any, and the slice<->matrix pairing needs
-     an ordered association rather than recency.
-   **Read that number first** — it is one line of one run and it halves the
-   search.
+   * ~~**the SLICE RECTANGLE / the slice<->matrix pairing**~~ — **ELIMINATED at
+     part 64's close.** The refined distinctness count (taken AFTER the dataflow
+     filter) reads 10,192 slices with exactly ONE world-vouched c0-3 and 0 with
+     several. The pairing is exact; do not build the ordered-association fix.
+
+   So the depth convention is the LAST NAMED SUSPECT, and checking it is one
+   line: print `PA_CL_VTE_CNTL`, `kPaClVportZScale` and `kPaClVportZOffset` on a
+   cascade draw. Our raster path and our trace pass agree with each other by
+   construction — which is why the traced atlas looks right — and would both
+   disagree with the title's receiver if the cascade sets those terms.
 
    The original framing, kept because the mechanisms are real even though the
    attribution was not: Real rays read 63.72 against
