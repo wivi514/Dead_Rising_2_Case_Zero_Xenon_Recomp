@@ -126,3 +126,37 @@ Resizable BAR: **~14% slower**.
     the arithmetic.
   * and unconditionally: **CPU-visible device memory is WRITE-ONLY.** A read of it is an
     uncached fetch across the bus. Audit every read before switching a buffer over.
+
+### 3. Retrofitting ray tracing onto a recompiled title: what part 64 proved transfers
+
+Case Zero's RT stage 2 (`phase5-notes.md` §6cv) is unfinished as a picture, but
+several of its findings are about the SHAPE of the problem rather than about this
+title, and they should save Case West most of a part:
+
+* **A recompiled renderer is already most of a BLAS pipeline.** Guest vertex
+  streams are uploaded dword-swapped and GPU-resident with a content guard that
+  says per frame whether the bytes changed. That guard is the BLAS-freshness test
+  and the buffers are the build input — one usage bit
+  (`ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR`) and a device address,
+  zero geometry copies. Include the content stamp in the BLAS identity, never the
+  address alone: streaming reuses addresses.
+* **Pool the acceleration structures.** A crowd is thousands of BLASes and drivers
+  cap total allocations around 4,096; one `VkDeviceMemory` per BLAS exhausts the
+  allocator with textures still to serve. Sub-allocate from ~64 MB chunks.
+* **Injecting through the title's OWN shadow atlas works and needs no shader
+  patch** — write depths into the resolve snapshot the title samples and its own
+  comparison applies them. Prove the injection point with a constant FILL at both
+  polarities BEFORE building anything: two runs, and it also becomes the standing
+  positive control. But know the ceiling: tracing into the atlas cannot beat the
+  atlas's resolution, so soft or per-pixel shadows need the shader-patch route.
+* **The shadow pass is NOT a single-matrix pass.** Do not take "the light's
+  view-projection" from the most recent cascade draw — count the distinct
+  matrices per slice first. In Case Zero every slice carried several, and half of
+  them were per-object composites. Select by dataflow (a stream the scene pass
+  draws world-space vouches for the matrix its cascade draw carries), and verify
+  the inverse against the identity while you are there.
+* **Budget the measurement, not just the build.** Every statistic here — median
+  luma, coverage, cumulative counters — drifts with how far a run got, so an
+  arm needs a same-binary control run back to back and a frame count quoted
+  beside every number (gotchas 384-385). Part 64 spent an hour on three
+  "improvements" that were partial reads.
