@@ -10049,14 +10049,23 @@ uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
          g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0,
          g_skipNoValidPos = 0;
 
+// ONCE PER FRAME, NOT ONCE PER DRAW — the shadow tier's pattern, and here it is
+// load-bearing rather than tidy: `Active()` is consulted by the per-draw collector,
+// so reading the settings store directly would take its mutex ~7,000 times a frame
+// on the pump thread, in EVERY run including the ones with RT off. This project has
+// spent whole parts taking that class of cost off this exact thread (part 55).
+// The value is still applied LIVE — one frame of latency on a menu toggle.
 int TierThisFrame()
 {
-    // Env wins over the settings row, per the standing rule. The row lands with the
-    // panel commit; until a row exists the env var is the only door.
-    static const char* e = Env("CZ_VK_RT_SHADOWS");
-    if (e)
-        return atoi(e);
-    return Settings_RtShadows();
+    static const char* e = Env("CZ_VK_RT_SHADOWS");   // env wins, standing rule
+    static int cached = 0;
+    static uint64_t cachedFrame = ~0ull;
+    if (cachedFrame != R->frame)
+    {
+        cachedFrame = R->frame;
+        cached = e ? atoi(e) : Settings_RtShadows();
+    }
+    return cached;
 }
 
 bool Active()
