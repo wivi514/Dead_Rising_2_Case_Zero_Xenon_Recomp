@@ -13236,11 +13236,26 @@ measurably** (§7e).
 
 **Open, and it is the whole of part 65's first job**: every RT arm over-shadows
 by ~14 luma (66.1-66.4 against OG's 80.61, all-shadow floor 61.2) and the cause
-is not any of the three things that looked like it. The surviving suspects,
-neither yet tested, are the DEPTH CONVENTION (the guest's viewport Z terms are
-decoded nowhere in this renderer) and the SLICE RECTANGLE (whether a slice's
-traced region really is the region its matrix describes). Both are cheap to test
-and neither needs new machinery.
+is not any of the three things that looked like it.
+
+**One of the two surviving suspects was eliminated in the part's last run, and
+the answer is clean.** The refined distinctness count — taken AFTER the dataflow
+filter, so it asks "how many distinct WORLD-VOUCHED matrices does one slice
+see" — reads **10,192 slices with exactly ONE, and 0 with several**, from
+1,293,132 accepted draws against 825,134 rejected object-transform ones. The
+branch this section pre-registered as "FOUR => the title renders all cascades
+before resolving any, and the defect is the slice<->matrix PAIRING" is therefore
+**refuted**: the pairing is exact and the matrix selection is now provably right.
+
+So the remaining suspect is the one the pre-registration named against it: **the
+DEPTH CONVENTION.** `PA_CL_VTE_CNTL`'s Z-enable bits and
+`kPaClVportZScale`/`kPaClVportZOffset` are decoded NOWHERE in this renderer —
+the raster path hardcodes `minDepth = 0, maxDepth = 1` and the trace pass writes
+a raw NDC z. Those two agree with EACH OTHER, which is why the traced atlas
+looks right, and both would disagree with what the title's receiver-side
+comparison expects if the cascade sets those terms. **The first thing to do in
+part 65 is print those three registers on a cascade draw**; it is one line and
+it either names the defect or eliminates the last named suspect.
 
 **Gates at close, on the final binary** (the one carrying all five fixes, with
 RT off — which is the shipped default, since both the env arm and the panel row
