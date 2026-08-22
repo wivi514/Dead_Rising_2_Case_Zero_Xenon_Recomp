@@ -9966,6 +9966,25 @@ float g_lightM[16];
 bool g_lightMValid = false;
 float g_lightPolyScale = 0.0f, g_lightPolyOffset = 0.0f;
 bool g_polyLogged = false;
+// IS THE CAPTURED MATRIX ACTUALLY THE SLICE'S, or one object's?
+//
+// The whole trace rests on an unverified binding: that every rigid draw in a
+// cascade slice carries the SAME c0-3 (the sun's view-projection), so
+// last-write-wins pairs each resolve with its slice's matrix. That is what
+// world-space geometry implies (§6cs) — but "implies" is not "was checked", and
+// if some props are object-space with a per-object world matrix folded into
+// c0-3, such a composite is still ortho-shaped, still passes the capture test,
+// and would leave the whole slice traced in one prop's local frame. Asking what
+// would REFUTE the binding rather than what confirms it is the standing rule.
+//
+// So: count the DISTINCT matrices seen between resolves. One means the binding
+// holds. More means last-write-wins is picking one of several and the trace's
+// frame of reference is wrong — which no choice of occluder set could explain
+// and which would look exactly like the measured defect.
+float g_sliceFirstM[16];
+bool g_sliceHaveFirst = false;
+uint64_t g_sliceMatrixDraws = 0, g_sliceMatrixDistinct = 0;
+uint64_t g_sliceOneMatrix = 0, g_sliceManyMatrix = 0;
 
 // Per-frame trace state.
 uint64_t g_tlasFrame = ~0ull;
@@ -10112,6 +10131,22 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             const float n3 = m[12] * m[12] + m[13] * m[13] + m[14] * m[14];
             if (n3 < 0.004f && std::fabs(m[15] - 1.0f) < 0.01f)
             {
+                ++g_sliceMatrixDraws;
+                if (!g_sliceHaveFirst)
+                {
+                    memcpy(g_sliceFirstM, m, sizeof g_sliceFirstM);
+                    g_sliceHaveFirst = true;
+                    g_sliceMatrixDistinct = 1;
+                }
+                else
+                {
+                    bool same = true;
+                    for (int k = 0; k < 16 && same; ++k)
+                        same = std::fabs(m[k] - g_sliceFirstM[k]) <=
+                               1e-4f * (1.0f + std::fabs(g_sliceFirstM[k]));
+                    if (!same)
+                        ++g_sliceMatrixDistinct;
+                }
                 memcpy(g_lightM, m, sizeof g_lightM);
                 g_lightMValid = true;
                 // The title's OWN polygon offset at this cascade draw — the bias
@@ -11190,6 +11225,14 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     // run — the main pipeline statically uses sets the trace layout never bound).
     R->bound = {};
     ++g_slicesTraced;
+    // The binding check's verdict for this slice, then reset for the next one.
+    if (g_sliceMatrixDistinct > 1)
+        ++g_sliceManyMatrix;
+    else
+        ++g_sliceOneMatrix;
+    g_sliceHaveFirst = false;
+    g_sliceMatrixDistinct = 0;
+    g_sliceMatrixDraws = 0;
     // CONSUME the matrix: each slice's own draws must recapture it, so a slice
     // that rendered nothing is skipped (and counted) rather than traced with the
     // previous slice's frustum painted into the wrong quarter of the atlas.
@@ -11216,6 +11259,12 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_slicesNoMatrix,
                 (unsigned long long)g_slicesNoTlas, poison ? " POISON" : "",
                 invert ? " INVERT" : "");
+    fprintf(stderr,
+            "[rt]   slice matrix binding: %llu slices had ONE c0-3, %llu had "
+            "SEVERAL (several = last-write-wins is picking one of many and the "
+            "trace's frame of reference is wrong)\n",
+            (unsigned long long)g_sliceOneMatrix,
+            (unsigned long long)g_sliceManyMatrix);
     if (g_covTotal)
         fprintf(stderr,
                 "[rt]   coverage: traced depths WON %.2f%% of censused slice "
