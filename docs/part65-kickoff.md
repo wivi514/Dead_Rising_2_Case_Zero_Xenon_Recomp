@@ -36,22 +36,47 @@
   while we trace everything the camera sees. Filling that emptiness converts lit
   regions to shadowed ones; 15.8 points of the atlas changed meaning that way.
 
+* **The largest term was found and fixed at part 64's close: the light matrix
+  was bound by RECENCY and that binding is false.** A distinctness count read
+  **0 slices with one c0-3 and 28,704 with several** — the cascade pass is not a
+  single-matrix pass. Binding by DATAFLOW (capture only from cascade draws of
+  streams the SCENE pass has vouched for as world-space) moved the arm
+  **63.71 → 72.00** outdoor median luma, coverage **86.3% → 61.3%**, accepting
+  1,293,758 draws and rejecting 849,840 object-transform ones.
+  `CZ_VK_RT_ANY_MATRIX=1` is the control arm. In the same run the matrix inverse
+  self-check cleared its hypothesis (2.38e-07), so that candidate is closed too.
+
 ## 1. The work, in order
 
-1. **Read the two runs part 64 queued at close** — `CZ_VK_RT_CASTERS=cascade`
+0. **READ ONE NUMBER FIRST — it decides which fix you build.** The `[rt]` line's
+   `slice matrix (WORLD-VOUCHED ONLY)` count now runs after the dataflow filter
+   and prints the mean distinct count. **ONE** distinct matrix per slice means
+   the selection is exact and the residual (72.00 against OG's 80.61) is
+   elsewhere — the surviving suspects are the depth convention and the slice
+   rectangle. **FOUR** means the title renders all four cascades before resolving
+   any of them: every matrix is legitimate, one per cascade, and what is left is
+   the slice↔matrix PAIRING, whose fix is different in kind (associate each
+   captured matrix with the resolve that follows the draws it belongs to, in
+   order, rather than by recency). Part 64 queued a run for this and it may
+   already be in `phase5-notes.md` §6cv 7d.
+
+1. **Read the runs part 64 queued at close** — `CZ_VK_RT_CASTERS=cascade`
    (the fix candidate) and the bounds-gated default. Their numbers belong in
    §6cv. The three statistics that matter, in this order:
-   * `CZ_VK_RT_COVERAGE=1`'s won-fraction. Today it is **86.3%**. If the caster
-     arm does not take it well under 20%, the occluder set is not the whole
-     story and §6cv §6's second reading applies (our ray disagrees with our own
-     rasterizer about geometry both agree on).
+   * `CZ_VK_RT_COVERAGE=1`'s won-fraction. **61.3%** after the binding fix, from
+     86.3% before it. The caster arm was measured and helps only a little
+     (86.4% / 66.14 luma) — the occluder set is real but was never the largest
+     term, which is why §6cv §6's second reading turned out to be the right one.
    * the atlas diff — `CZ_VK_SNAP_DUMP` on an RT run and an OG run at the same
      stationary camp, then convert the stretched greys back through the printed
      24-bit range. **Report BOTH tails** (gotcha 382): today nearer 49.6% /
      farther 1.3%.
-   * outdoor median `meanLuma` against OG's **80.61**. Expect RT to sit somewhat
-     BELOW it — real added occluders darken a scene — but nowhere near the
-     all-shadow floor of **61.2-61.4**.
+   * outdoor median `meanLuma` against OG's **80.61**; the arm is at **72.00**
+     today. Expect RT to sit somewhat BELOW OG — real added occluders darken a
+     scene — but nowhere near the all-shadow floor of **61.2-61.4**. Whether
+     72.00 is already "correct with added shadows" or still over-shadowed is a
+     LOOK question, and it is the first thing worth an operator's eye once the
+     number above says the selection is exact.
 2. **If the caster arm works, make it the default** and re-price the bias: the
    0.05 that half-recovered the broken build is a peter-panning bias and should
    come back down once the map is right. Sweep it against stills, not luma alone.
