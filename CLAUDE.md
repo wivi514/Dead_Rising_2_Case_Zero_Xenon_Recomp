@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part62-kickoff.md`.** State the rule as well as the name, because this line said
+    `part63-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -746,8 +746,7 @@ matched the raw form (= UI + frontend). Commit 943227d recognizes both forms: th
 fov slider is COMPOSITE-ONLY (world moves, HUD pixel-static — the operator's exact
 requested scope) and 21:9 GAMEPLAY IS UNSTRETCHED FOR THE FIRST TIME (it had been
 stretched ~34% since part 60 — only the frontend was ever truly widened).**
-`docs/part62-kickoff.md` is the LIVE hand-off (subject: two operator verdicts — the
-re-scoped slider and the new wide look — then RT stage 1); records `phase5-notes.md`
+`docs/part63-kickoff.md` is the LIVE hand-off (subject: RT stage 1, the geometry census); records `phase5-notes.md`
 §6cs (+ retractions in §6cr/§6cp), gotchas 378-rewritten/379/380):
 
 * **Two forms, cleanly split, all measured**: raw projection = ONE bit-identical
