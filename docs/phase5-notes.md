@@ -13182,7 +13182,13 @@ missing):
 | scene occluders + bounds gate | 6,484 | 6,478 | **66.34** | 54.2% |
 | `CZ_VK_RT_CASTERS=cascade` | 10,991 | 6,967 | **66.14** | 52.8% |
 | dataflow-bound matrix | 6,550 | 6,829 | **66.40** | 52.4% |
+| ...its SAME-BINARY control (`CZ_VK_RT_ANY_MATRIX=1`) | 11,406 | 6,595 | **65.74** | — |
 | all-shadow floor (poison / fill) | 10,865 / 11,915 | — | 61.18 / 61.43 | — |
+
+The last pair is the only methodologically clean comparison in the table — one
+binary, two arms, back to back — and it reads **+0.66 luma against a 14-luma
+gap**, with the two arms 4,856 frames apart in route depth, i.e. inside the
+spread that depth alone produces. That is the number that settles it.
 
 **The three arms are indistinguishable from each other.** The mid-run numbers
 this section quoted — 63.71, 66.14, 72.00, and coverage 86.3% → 61.3% — were
