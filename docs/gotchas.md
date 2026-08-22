@@ -4031,3 +4031,41 @@ From phase C part 18 (the frame rate — and none of it was work):
      suspect TWO populations wearing one name — count per form, not per patch;
      and a verification run must sample the era the feature is FOR (the
      frontend was the era the recipe reached, not the era the operator plays).
+
+381. **A CENSUS THAT PRICES A FEATURE ALSO NAMES ITS OUTLIERS, AND THE OUTLIERS
+     ARE THAT FEATURE'S FIRST DEFECT — put the exclusion in the CONSUMER, not in
+     the prose.** Part 63's geometry census reported the world inside z ±550 and
+     named the exceptions in passing: three streams at ±6.3M units, "junk-
+     coordinate effect buffers, not world geometry". Part 64's BLAS collector
+     then applied six structural tests (float3 position, sane stride, opaque,
+     depth-writing, content-stable, world-form composite) and **every one of them
+     passed on those streams**, because each asks what KIND of draw it is and the
+     defect is about where its vertices ARE. A triangle spanning millions of units
+     is nearer to the sun than the whole town wherever it covers the shadow map,
+     which is exactly what the atlas diff measured. The general form: when a
+     census calls part of its population junk, that sentence is a specification
+     for the code that consumes the census, and leaving it in the document means
+     the next part re-discovers it as a picture bug.
+
+382. **"OUR OUTPUT IS NEARER" AND "OUR OUTPUT IS FARTHER" ARE DIFFERENT
+     DIAGNOSES — measure BOTH tails, because the one that reads ~zero is what
+     eliminates a whole class of explanation.** Part 64's traced shadow map was
+     compared against the raster one it replaces: nearer on 49.6% of texels,
+     farther on 1.3%. The nearer half alone would have been read as bias or acne
+     (and a 33x bias sweep did move the frame, which made that reading look
+     right). It was the 1.3% that mattered: a subset missing far occluders MUST
+     show a large farther tail, so its absence killed every "we left something
+     out" hypothesis in one number and turned the question into "what did we put
+     IN". Report a signed difference as two tails and a percentile, never as a
+     mean — a mean of ±0.09 and 0.000 is 0.000 and says nothing.
+
+383. **A PICTURE OF A DEPTH BUFFER IS CONTRAST-STRETCHED, SO TWO THAT LOOK
+     IDENTICAL CAN DIFFER BY A TENTH OF THE RANGE WHERE IT MATTERS.** The OG and
+     traced shadow atlases were visually the same — same trees, poles and
+     building silhouettes in all three occupied slices — while half their texels
+     disagreed by up to 9% of the depth range. A shadow comparison works at
+     ~1e-4; the eye works on the stretch. The dump already prints the 24-bit
+     range next to the image precisely so the greys can be converted back, and
+     the conversion is four lines. Look to find the surface, then convert to
+     judge it (gotcha 133 one instrument along: one frame is one sample, and a
+     stretched frame is one sample of the wrong statistic).
