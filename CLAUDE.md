@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part64-kickoff.md`.** State the rule as well as the name, because this line said
+    `part65-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -737,6 +737,46 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT STAGE 2 IS BUILT END TO
+END AND THE COMPOSITE ROUTE IS PROVEN; THE OCCLUDER SET IS THE ONE THING BETWEEN IT
+AND AN OPERATOR SESSION.** `docs/part65-kickoff.md` is the LIVE hand-off; the record
+with every number is `phase5-notes.md` §6cv; the backlog entry is `open-items.md` 0v;
+the arms are in `instruments.md`; the lessons are gotchas 381-383):
+
+* **The injection point is the shadow ATLAS SNAPSHOT and it needs NO shader patch** —
+  the plan's route (a), settled in an afternoon as the kickoff asked.
+  `CZ_VK_SHADOW_FILL=0.0` takes the outdoor median luma **80.61 → 61.43** and `=1.0`
+  reads **81.46**: two polarities, opposite directions, ~11k outdoor frames an arm.
+  The convention is STANDARD (near = occluder); `CZ_VK_RT_INVERT` is not needed here.
+* **The whole ray path reaches the title's shadow term**, which is the strongest form
+  this evidence can take: `CZ_VK_RT_POISON=1` (all-shadow written by the TRACE
+  PIPELINE) reads **61.18** against the direct fill's 61.43 — the same measured
+  extreme, through BLAS + TLAS + ray query + composite.
+* **The plumbing engages and holds**: ~1,400 BLASes / ~33 MB / zero pool flushes /
+  ~370-530 TLAS instances a frame / zero key collisions / zero unreadable positions /
+  zero refused endians, and the traced atlas is recognizably a shadow map. Two
+  defects the FIRST validation run named were fixed the same hour (TLAS created-size
+  tracking; the trace pass invalidating the main path's bound-state cache).
+* **The open defect, fully diagnosed: we trace the CAMERA's world, the title casts
+  from a much smaller set.** Real rays read **63.72** against OG's 80.61 — 86% of the
+  way to fully shadowed. Diffing our traced atlas against the raster one (both dumped
+  at the same stationary camp, greys converted back through the printed 24-bit range)
+  puts us NEARER on **49.6%** of texels and FARTHER on **1.3%** — a superset adding
+  near geometry, not a subset missing far geometry — and asking the same dumps what
+  holds no occluder finds the title's own cascade **52.8% EMPTY** against our 37.0%.
+  Its cascade draws CASTERS; the street and terrain are receivers and are kept out, so
+  every texel we fill converts a lit region to a shadowed one.
+  `CZ_VK_RT_CASTERS=cascade` is the fix candidate and `CZ_VK_RT_COVERAGE=1` (86.3%
+  today) is the number that judges it. **Do not ask the operator for a LOOK verdict
+  until this is fixed** — the arm currently shadows the world against itself.
+* **Know route (a)'s ceiling before spending another part on it**: tracing INTO the
+  4096x1024 atlas cannot beat the atlas's resolution, so it buys exact depths and
+  missing occluders, never soft or per-pixel shadows. Route (b) (patch the ~dozen
+  shadow-sampling PS to read a screen-space traced factor) is where a quality tier
+  lives, and every piece built here is reusable by it unchanged. The panel's RT
+  SHADOWS row ships OG / RT LOW only, refusing MED/HIGH at the setter until the
+  ladder is priced. Carry-overs unchanged from parts 62-63.
+
 Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
 GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
 THE PLAN BUDGETED.** `docs/part64-kickoff.md` is the LIVE hand-off (subject: RT stage 2 —
@@ -768,53 +808,8 @@ changes):
   commit). Carry-overs unchanged from part 62 (turn-stutter parked, fov small
   verdicts, panel input leak).
 
-Where the port is, as of 2026-08-21 night (part 61 CLOSED, and **PART 62's SAME-NIGHT
-CORRECTION IS THE HEADLINE: the operator's first live session refuted part 61's
-slider in one sentence ("only impact the UI... in game it doesn't do anything"), and
-the miss-dump found why — THE WORLD'S DRAWS CARRY A VIEW-PROJECTION COMPOSITE P*V AT
-c0-3, not the raw projection; part 61's fov patch AND part 60's wide patch only ever
-matched the raw form (= UI + frontend). Commit 943227d recognizes both forms: the
-fov slider is COMPOSITE-ONLY (world moves, HUD pixel-static — the operator's exact
-requested scope) and 21:9 GAMEPLAY IS UNSTRETCHED FOR THE FIRST TIME (it had been
-stretched ~34% since part 60 — only the frontend was ever truly widened).**
-`docs/part62-kickoff.md` was the hand-off (superseded by part 63's close; see the block above); records `phase5-notes.md`
-§6cs (+ retractions in §6cr/§6cp), gotchas 378-rewritten/379/380):
-
-* **Two forms, cleanly split, all measured**: raw projection = ONE bit-identical
-  matrix game-wide (vfov 45.00°, zn 0.1/zf 1000, ~2% of draws — UI and frontend);
-  world = P*V composites (gameplay camera vfov 41.64°, per-camera zoom, 95%
-  depth-writing). `SceneXformForm()` recognizes composites by P's surviving
-  structure (unit view row, 9/16 row-norm ratio, orthogonality, z-row
-  proportionality); shadow orthos / skinning affines / cube-face cameras fail it by
-  construction — all enumerated in the miss dump BEFORE the recognizer was written.
-* **Verification method lesson (gotcha 378 rewritten)**: part 61's "whole scene
-  widened" was CAMERA DRIFT between two processes — a projection change is verified
-  by a SAME-RUN flip (`CZ_TEST_FOV_FLIP=N`; meandiff alternates ~4/~40 across flip
-  boundaries with the camera held). Composite-only run: 17.4M composite patches,
-  raw counter ZERO, HUD pixel-identical across states.
-* **The FOV slider (5b9fbba + 943227d)**: sixth panel row, -10..+30, LIVE; null
-  byte-identical; UI ratio measurements stand (0.716/0.714 vs 0.7174 at +15 — now
-  the CZ_VK_FOV_RAW arm's signature). RT stage 0 (4cc4f4a): RTX 3070 carries all
-  ray-query extensions — hybrid RT AVAILABLE; stages 2-4 wait on stage 1's census,
-  whose hardest question §6cs answered free (world meshes are WORLD-SPACE streams —
-  BLAS-ready; the view matrix is extractable from any composite).
-* **THE VERDICTS CAME IN THE SAME NIGHT AND FORCED TWO MORE MECHANISMS (§6ct +
-  addendum): the slider is now GAME-SIDE** — the roaming camera's fov is a
-  behavior param node read at ONE getter site (sub_8246BF48 / lr 0x8246E31C);
-  the hook enforces authored+N there, so the game renders AND CULLS wide, HUD
-  and cutscenes untouched (8d3de05; the node is STATE — capture authored at
-  first sight, enforce absolute, never +=). **In wide mode the substitution
-  also over-widens by k=9W/16H in tan space and the composite wide patch flips
-  to row1*k** (22195be) — the 21:9 flank-culling gap (view 34% wider than the
-  frustum since the unstretch) closes; cutscenes become a 21:9 crop by design.
-  **Operator: "It works."** Cost: turn-stutter from the over-widened frustum's
-  first-sight upload bursts — operator-deferred, filed in perf-state-parked.md.
-  Renderer-side fov patch = measurement arm only (CZ_VK_FOV); CZ_NO_GAME_FOV=1
-  is the game-side control arm. Still open, non-blocking: gore cut off zero,
-  aiming behaviour, the cutscene-crop look.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PART 60's** — part 63 moved part 60's out in the same commit that added its own block, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-62's** — part 64 moved parts 61/62's out in the same commit that added its own block, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

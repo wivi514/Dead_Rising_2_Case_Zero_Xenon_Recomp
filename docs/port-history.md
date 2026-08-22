@@ -4575,3 +4575,48 @@ operator's morning verdicts); the night record is `phase5-notes.md` §6cp; gotch
   first sight of the eight late-game shaders. **THE NEXT PLAN IS
   `docs/rt-and-fov-plan.md`** (RT shadows/AO/lighting/GI rows + FOV slider, operator
   instruction). Commit-hygiene note: items 4+5 share one commit (893749b).
+
+Where the port is, as of 2026-08-21 night (part 61 CLOSED, and **PART 62's SAME-NIGHT
+CORRECTION IS THE HEADLINE: the operator's first live session refuted part 61's
+slider in one sentence ("only impact the UI... in game it doesn't do anything"), and
+the miss-dump found why — THE WORLD'S DRAWS CARRY A VIEW-PROJECTION COMPOSITE P*V AT
+c0-3, not the raw projection; part 61's fov patch AND part 60's wide patch only ever
+matched the raw form (= UI + frontend). Commit 943227d recognizes both forms: the
+fov slider is COMPOSITE-ONLY (world moves, HUD pixel-static — the operator's exact
+requested scope) and 21:9 GAMEPLAY IS UNSTRETCHED FOR THE FIRST TIME (it had been
+stretched ~34% since part 60 — only the frontend was ever truly widened).**
+`docs/part62-kickoff.md` was the hand-off (superseded by part 63's close; see the block above); records `phase5-notes.md`
+§6cs (+ retractions in §6cr/§6cp), gotchas 378-rewritten/379/380):
+
+* **Two forms, cleanly split, all measured**: raw projection = ONE bit-identical
+  matrix game-wide (vfov 45.00°, zn 0.1/zf 1000, ~2% of draws — UI and frontend);
+  world = P*V composites (gameplay camera vfov 41.64°, per-camera zoom, 95%
+  depth-writing). `SceneXformForm()` recognizes composites by P's surviving
+  structure (unit view row, 9/16 row-norm ratio, orthogonality, z-row
+  proportionality); shadow orthos / skinning affines / cube-face cameras fail it by
+  construction — all enumerated in the miss dump BEFORE the recognizer was written.
+* **Verification method lesson (gotcha 378 rewritten)**: part 61's "whole scene
+  widened" was CAMERA DRIFT between two processes — a projection change is verified
+  by a SAME-RUN flip (`CZ_TEST_FOV_FLIP=N`; meandiff alternates ~4/~40 across flip
+  boundaries with the camera held). Composite-only run: 17.4M composite patches,
+  raw counter ZERO, HUD pixel-identical across states.
+* **The FOV slider (5b9fbba + 943227d)**: sixth panel row, -10..+30, LIVE; null
+  byte-identical; UI ratio measurements stand (0.716/0.714 vs 0.7174 at +15 — now
+  the CZ_VK_FOV_RAW arm's signature). RT stage 0 (4cc4f4a): RTX 3070 carries all
+  ray-query extensions — hybrid RT AVAILABLE; stages 2-4 wait on stage 1's census,
+  whose hardest question §6cs answered free (world meshes are WORLD-SPACE streams —
+  BLAS-ready; the view matrix is extractable from any composite).
+* **THE VERDICTS CAME IN THE SAME NIGHT AND FORCED TWO MORE MECHANISMS (§6ct +
+  addendum): the slider is now GAME-SIDE** — the roaming camera's fov is a
+  behavior param node read at ONE getter site (sub_8246BF48 / lr 0x8246E31C);
+  the hook enforces authored+N there, so the game renders AND CULLS wide, HUD
+  and cutscenes untouched (8d3de05; the node is STATE — capture authored at
+  first sight, enforce absolute, never +=). **In wide mode the substitution
+  also over-widens by k=9W/16H in tan space and the composite wide patch flips
+  to row1*k** (22195be) — the 21:9 flank-culling gap (view 34% wider than the
+  frustum since the unstretch) closes; cutscenes become a 21:9 crop by design.
+  **Operator: "It works."** Cost: turn-stutter from the over-widened frustum's
+  first-sight upload bursts — operator-deferred, filed in perf-state-parked.md.
+  Renderer-side fov patch = measurement arm only (CZ_VK_FOV); CZ_NO_GAME_FOV=1
+  is the game-side control arm. Still open, non-blocking: gore cut off zero,
+  aiming behaviour, the cutscene-crop look.
