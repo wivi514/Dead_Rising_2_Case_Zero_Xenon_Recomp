@@ -9991,7 +9991,7 @@ float g_sliceFirstM[16];
 bool g_sliceHaveFirst = false;
 uint64_t g_sliceMatrixDraws = 0, g_sliceMatrixDistinct = 0;
 uint64_t g_sliceOneMatrix = 0, g_sliceManyMatrix = 0;
-uint64_t g_matrixBound = 0, g_matrixRejected = 0;
+uint64_t g_matrixBound = 0, g_matrixRejected = 0, g_sliceDistinctSum = 0;
 
 // Per-frame trace state.
 uint64_t g_tlasFrame = ~0ull;
@@ -10164,21 +10164,6 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             if (n3 < 0.004f && std::fabs(m[15] - 1.0f) < 0.01f)
             {
                 ++g_sliceMatrixDraws;
-                if (!g_sliceHaveFirst)
-                {
-                    memcpy(g_sliceFirstM, m, sizeof g_sliceFirstM);
-                    g_sliceHaveFirst = true;
-                    g_sliceMatrixDistinct = 1;
-                }
-                else
-                {
-                    bool same = true;
-                    for (int k = 0; k < 16 && same; ++k)
-                        same = std::fabs(m[k] - g_sliceFirstM[k]) <=
-                               1e-4f * (1.0f + std::fabs(g_sliceFirstM[k]));
-                    if (!same)
-                        ++g_sliceMatrixDistinct;
-                }
                 // BIND IT BY DATAFLOW, NOT BY RECENCY. The binding check refuted
                 // last-write-wins outright: EVERY slice carries several distinct
                 // ortho-shaped c0-3 matrices, so "the most recent one" traced each
@@ -10200,6 +10185,38 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
                 static const bool anyMatrix = EnvOn("CZ_VK_RT_ANY_MATRIX");
                 if (anyMatrix || g_worldStreams.count(posStreamKey))
                 {
+                    // THE DISTINCTNESS COUNT BELONGS HERE, AFTER THE FILTER, and
+                    // the first version had it before — so "several" counted the
+                    // object transforms the filter exists to reject and could not
+                    // answer the question that matters: how many distinct
+                    // WORLD-VOUCHED matrices does one slice see?
+                    //
+                    // ONE means the selection is now exact and any residual error
+                    // is elsewhere (the depth convention or the slice rectangle).
+                    // FOUR means the title renders all four cascades before
+                    // resolving any of them — every matrix legitimate, one per
+                    // cascade, and the remaining defect is the slice<->matrix
+                    // PAIRING rather than the selection, which needs a different
+                    // fix (associate each matrix with the resolve that follows the
+                    // draws it belongs to, in order).
+                    if (!g_sliceHaveFirst)
+                    {
+                        memcpy(g_sliceFirstM, m, sizeof g_sliceFirstM);
+                        g_sliceHaveFirst = true;
+                        g_sliceMatrixDistinct = 1;
+                    }
+                    else
+                    {
+                        bool same = true;
+                        for (int k = 0; k < 16 && same; ++k)
+                            same = std::fabs(m[k] - g_sliceFirstM[k]) <=
+                                   1e-4f * (1.0f + std::fabs(g_sliceFirstM[k]));
+                        if (!same)
+                        {
+                            ++g_sliceMatrixDistinct;
+                            memcpy(g_sliceFirstM, m, sizeof g_sliceFirstM);
+                        }
+                    }
                     memcpy(g_lightM, m, sizeof g_lightM);
                     g_lightMValid = true;
                     ++g_matrixBound;
@@ -11317,7 +11334,10 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     ++g_slicesTraced;
     // The binding check's verdict for this slice, then reset for the next one.
     if (g_sliceMatrixDistinct > 1)
+    {
         ++g_sliceManyMatrix;
+        g_sliceDistinctSum += g_sliceMatrixDistinct;
+    }
     else
         ++g_sliceOneMatrix;
     g_sliceHaveFirst = false;
@@ -11350,10 +11370,15 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_slicesNoTlas, poison ? " POISON" : "",
                 invert ? " INVERT" : "");
     fprintf(stderr,
-            "[rt]   slice matrix: %llu slices ONE c0-3 / %llu SEVERAL; captured "
-            "from %llu world-vouched draws, rejected %llu object-transform ones\n",
+            "[rt]   slice matrix (WORLD-VOUCHED ONLY): %llu slices ONE c0-3 / %llu "
+            "SEVERAL (mean %.2f distinct where several); captured from %llu draws, "
+            "rejected %llu object-transform ones. FOUR distinct => the title "
+            "renders all cascades before resolving any, and the defect left is the "
+            "slice<->matrix PAIRING, not the selection\n",
             (unsigned long long)g_sliceOneMatrix,
             (unsigned long long)g_sliceManyMatrix,
+            g_sliceManyMatrix ? double(g_sliceDistinctSum) / double(g_sliceManyMatrix)
+                              : 0.0,
             (unsigned long long)g_matrixBound,
             (unsigned long long)g_matrixRejected);
     if (g_covTotal)
