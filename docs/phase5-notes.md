@@ -13219,6 +13219,72 @@ read it, and the control is the old binary run to the same DEPTH) and 385 (a
 mechanism proven by direct count is not the same claim as an arm proven by
 end-to-end measurement — say which one you have).
 
+### 7f. THE OPERATOR'S LIVE SESSION — the description that beat every headless number
+
+They ran it and reported, verbatim: *"saw how it was pretty much like shadow
+squares following where the player is and normal shadow still on"*, plus a
+correction to the settings design (§7g).
+
+**Those eleven words did more than a day of measurement.** "Shadow SQUARES
+FOLLOWING THE PLAYER" is the cascade footprint itself — the cascades are
+camera-centred, so a uniformly-wrong traced depth darkens exactly the area they
+cover and slides with the player. That is a *shape*, and no luma median can
+express a shape. It says the error is uniform across the traced footprint rather
+than attached to any object, which is the signature of **self-shadowing**: a
+surface that is IN the traced map has its traced depth equal to the depth the
+receiver computes for itself, so the title's own comparison shadows it against
+itself.
+
+And "normal shadow STILL ON" named a design decision as a defect. The trace was
+depth-tested against the raster content so the two occluder sets UNIONED — my
+choice, made so the exclusions (skinned actors, foliage) would keep their raster
+shadows for free. Seen in play it just looks like two shadow systems at once.
+
+**Which closes the investigation §7-§7e left open, and the answer is structural,
+not numerical.** Route (a) writes the shadow MAP, not a shadow factor, so there
+is no receiver-side offset available — unlike a screen-space pass, it cannot
+exclude the receiver from its own occlusion test. The title solves this by
+keeping receivers OUT of its cascade: the street and terrain are most of the
+52.8% emptiness §7b measured and mistook for an opportunity. **§7b had the fact
+and drew the opposite conclusion from it** — it read "the map is half empty" as
+"we can add occluders there" when it meant "those surfaces are deliberately not
+occluders."
+
+So the correct occluder set for this route is the one the title itself
+rasterizes, and `CZ_VK_RT_CASTERS=cascade` is now the DEFAULT rather than an arm
+(`=scene` is the control). The last suspect §6cv 8 named — the depth convention —
+was eliminated in the same hour by printing the registers: **VTE=3F with
+zscale=1, zoffset=0, i.e. identity.** It was never the cause.
+
+**The lesson, and it belongs next to gotcha 385**: three headless statistics
+(median luma, coverage fraction, atlas diff) all said "we over-shadow" and none
+of them could say *in what shape*, which is the property that named the
+mechanism. The operator's eye is not a slower version of the instruments; on a
+question about SHAPE it is a different instrument, and the cheapest one.
+
+### 7g. The settings design, corrected by the operator
+
+Also from that session: *"for shadow we'll have the normal settings and then RT
+low, rt medium and rt high in the same settings since normal shadow would be
+removed to be replaced by the RT shadow if a rt settings is selected."*
+
+Part 64 had shipped TWO rows — SHADOW QUALITY (LOW/MEDIUM/HIGH) and RT SHADOWS
+(OG / RT LOW) — which implies the two can be combined, and the first build
+literally did combine them (the union above). One row makes the exclusivity
+structural: values 0-2 are the raster tiers with RT off, 3-5 select an RT tier
+that REPLACES the raster cascade. The raster tier is remembered while an RT
+value is selected, so stepping back down returns the quality the player had.
+
+**The trade this creates, stated in advance rather than discovered in play**:
+under replacement, anything not in the TLAS casts NO shadow at all — skinned
+actors (zombies, Chuck) and alpha-tested foliage, which the union had been
+covering for. That is the honest consequence and it is what gives the MEDIUM and
+HIGH rungs something real to be: MEDIUM adds the dynamic/deformed streams,
+HIGH adds the skinned actors with per-frame BLAS rebuilds. A tier ladder where
+each rung buys back a named exclusion is a better ladder than one that just
+raises a ray count — and on this route the ray count cannot buy softness anyway
+(§8's ceiling note). `CZ_VK_RT_UNION=1` restores the union as the control arm.
+
 ### 8. Where part 64 leaves it
 
 **Closed by measurement** (complete runs, large n): the injection route, the
