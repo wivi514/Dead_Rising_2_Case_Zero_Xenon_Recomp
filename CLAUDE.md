@@ -792,6 +792,17 @@ arms are in `instruments.md`; the lessons are gotchas 387-390):
   stale, so their draws were SKIPPED in every session for three parts (gotcha
   390); and the last sidecar-less cache entry was rebuilt from microcode part 64
   recovered.
+* **The first validation boot with RT armed CRASHED, and the layer named all
+  three causes** — an AS build inside a render pass, its barrier, and a
+  `vkUpdateDescriptorSets` with a null `dstSet` (route (a)'s descriptor set,
+  which route (b) never creates). Fixed; the RT arm and a plain `CZ_VKDRAW=1`
+  boot now produce **identical validation output**. This is the fifth defect
+  `CZ_VK_VALIDATION=1` has caught that nothing else could.
+* **Engagement, headless, boot to title — NOT a picture claim**: 7,131 factor
+  passes, **1,921,744 draws served through the 126 variant modules**, 243-573
+  TLAS instances, sun (-0.381, 0.812, -0.443), zero `noTlas`/`singular`. The
+  scene-composite binding check reads **2,343 frames with ONE composite, 0 with
+  SEVERAL** — the check part 64's light matrix failed outright.
 * **Gates at close** (RT off = the shipped default): `--smoke` OK; **A5 exit 0**
   (4 permutation windows, 0 real); `shader_dim_census.py` clean on every cache;
   each RT cache differs from a plain rebuild in **exactly the census's 126

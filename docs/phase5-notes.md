@@ -13653,6 +13653,52 @@ do shadows sit under their casters, is there acne, do shadows detach — because
 that is the class of question part 64 proved a headless statistic cannot answer
 and the operator's eye answers in one sentence.
 
+### 7. The first validation boot, which is why the operator's evening was not lost
+
+`CZ_VK_VALIDATION=1` on the first headless boot with RT armed **SIGSEGV'd inside
+the driver**, and the layer named all three causes before it did:
+
+* `vkCmdBuildAccelerationStructuresKHR` and its barrier issued INSIDE a
+  `vkCmdBeginRendering` instance. Route (a) never hit this because it built from
+  DoResolve, which has already ended rendering; route (b) builds from DoDraw,
+  which has not.
+* **`vkUpdateDescriptorSets` with `dstSet == VK_NULL_HANDLE` — the crash.**
+  `BuildFrameStructures` builds for both routes but then pointed ROUTE (A)'s
+  descriptor set at the new TLAS, and on route (b) that set is never created
+  (`EnsurePipeline` is only reached from `TraceSlice`).
+
+Both fixed, and verified against a same-binary null: the RT arm and a plain
+`CZ_VKDRAW=1` boot now produce **byte-for-byte the same validation output** —
+3 PointSize (the known pre-existing class) plus a shutdown-time
+`commandBuffer-recording` burst present in BOTH arms, which is a real but
+unrelated teardown race worth its own item. Route (b) adds none.
+
+This is the fifth defect `CZ_VK_VALIDATION=1` has caught that nothing else
+could, and the first that would have cost the operator a whole evening on arm 1.
+
+### 8. Engagement, measured headlessly — and it is NOT a picture claim
+
+From that same boot-to-title run, which is what an engagement counter is for:
+
+| | |
+|---|---|
+| factor passes | **7,131** |
+| draws served through the 126 variant modules | **1,921,744** |
+| TLAS instances | 243-573 |
+| sun direction | (-0.381, 0.812, -0.443) — up, as a sun should be |
+| `noTlas` / `singular` skips | 0 / 0 |
+| `noLight` skips | 753 (menus and early frames, before any cascade draws) |
+| **scene-composite binding check** | **2,343 frames carried ONE composite, 0 carried SEVERAL** |
+
+That last row is the check part 64's light matrix FAILED (0 slices with one
+c0-3, 28,704 with several), and it is why route (b) needs no dataflow oracle for
+its own matrix: the form test alone is discriminating here.
+
+**None of this says the shadows are right.** It says the feature runs, reaches
+the frame's shaders, and is fed inputs that are not obviously wrong. What it
+looks like is arm 2's question and only the operator can answer it.
+
 Gates at close, on the final binary with RT off (the shipped default): `--smoke`
-OK; A5 exit 0; `shader_dim_census.py` clean on all six caches; the RT caches
-differ from their plain rebuilds in exactly 126 modules each.
+OK; A5 exit 0 (4 permutation windows, 0 real); `shader_dim_census.py` clean on
+all six caches; the RT caches differ from their plain rebuilds in exactly 126
+modules each; **validation identical between the RT arm and its null**.
