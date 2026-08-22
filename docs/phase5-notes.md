@@ -13215,13 +13215,31 @@ end-to-end measurement — say which one you have).
 
 ### 8. Where part 64 leaves it
 
-Closed by measurement: the injection route, the depth convention, that the trace
-pipeline's writes reach the shadow term, that the plumbing engages and holds, and
-the CAUSE of the over-shadowing. Built and queued at close: the bounds-gate run
-(the candidate fix, with an atlas dump so it can be diffed against the OG atlas
-by the same method that found the defect) and the `CZ_VK_RT_CASTERS=cascade`
-discriminator. Their numbers, and the operator's LOOK verdict, are part 65's
-first work — open item 0v carries the handover.
+**Closed by measurement** (complete runs, large n): the injection route, the
+depth convention, that the trace pipeline's writes reach the title's shadow term,
+and that the plumbing engages and holds.
+
+**Established as FACTS about the title, by counts that do not drift** — each a
+real defect, none shown to matter to the picture: junk geometry with
+million-unit coordinates enters the BLAS; the title's own cascade is 52.8% empty
+because it draws casters, not receivers; and the cascade pass carries several
+distinct c0-3 matrices per slice, so binding the light matrix by recency is
+false (0 slices with one, 28,704 with several). All three now have fixes in the
+tree, all three are right on their own terms, and **none of them moved the frame
+measurably** (§7e).
+
+**Open, and it is the whole of part 65's first job**: every RT arm over-shadows
+by ~14 luma (66.1-66.4 against OG's 80.61, all-shadow floor 61.2) and the cause
+is not any of the three things that looked like it. The surviving suspects,
+neither yet tested, are the DEPTH CONVENTION (the guest's viewport Z terms are
+decoded nowhere in this renderer) and the SLICE RECTANGLE (whether a slice's
+traced region really is the region its matrix describes). Both are cheap to test
+and neither needs new machinery.
+
+**Do the measurement properly this time** (gotcha 384): gate every read on the
+process having exited, quote the frame count beside every median, and run the
+control to the SAME depth. An hour of this part was spent building on numbers
+that were measurements of a different place in the level.
 
 One thing to decide there before spending another part on route (a): tracing
 INTO the 4096x1024 atlas cannot beat the atlas's resolution, so its ceiling is
