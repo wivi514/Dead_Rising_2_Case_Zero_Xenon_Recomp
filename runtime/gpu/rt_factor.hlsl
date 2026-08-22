@@ -53,6 +53,15 @@ struct Push
 [[vk::binding(0, 0)]] RaytracingAccelerationStructure g_tlas;
 [[vk::binding(1, 0)]] Texture2D<float4> g_depth;
 [[vk::binding(2, 0)]] SamplerState g_point;
+// THE DEPTH PROBE'S OWN CONTROL (part 65). Three probes agreed the sampled depth is
+// uniformly 1.0, and every one of them shares a single untested assumption: that this
+// pass can sample an EDRAM attachment at all. The colour buffer is the same kind of
+// image, sampled through the same descriptor set, the same sampler and the same uv — but
+// its contents are known to vary, because it is the picture. If mode 12 is uniform too,
+// the fault is the sampling path and not the depth; if it varies, the depth image really
+// does read far everywhere and the question moves back to WHEN we read it.
+// An instrument must not depend on its subject, and until now this one did.
+[[vk::binding(3, 0)]] Texture2D<float4> g_colour;
 
 float4 VsMain(uint vid : SV_VertexID) : SV_Position
 {
@@ -130,6 +139,32 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     //                       falls out of meanLuma. Reading a buffer's contents through a
     //                       statistic the harness already collects, instead of building
     //                       a readback for it.
+    //  14  THE MISSING CONTROL: a pure SCREEN-SPACE STRIPE, touching no texture at
+    //      all. Every arm that has ever worked here — poison, and the selector control
+    //      — writes a UNIFORM factor, and every arm that failed writes a factor that
+    //      VARIES across the screen. That pattern was staring at this ladder for hours
+    //      and none of its modes tested it: if the patched shaders read our factor at a
+    //      constant or wrong coordinate, a uniform factor still lands perfectly and a
+    //      varying one averages away to nothing. PASS = obvious banding. FAIL = the
+    //      round trip cannot carry spatial detail and no ray, depth or matrix is at
+    //      fault.
+    //  13  the colour control, as a BINARY question. Mode 12 returned the colour's
+    //      luminance and could not discriminate: a working sample returning a realistic
+    //      ~0.3 and a broken one returning 0.0 both land near the all-shadow arm. Asking
+    //      "is there ANY colour here" separates them — working reads as LIT, broken as
+    //      shadowed.
+    if (dbg == 14)
+        return frac(uv.x * 8.0) < 0.5 ? 0.0 : 1.0;
+    if (dbg == 13)
+    {
+        float3 c = g_colour.SampleLevel(g_point, uv, 0.0).rgb;
+        return (c.r + c.g + c.b) > 0.003 ? 1.0 : 0.0;
+    }
+    if (dbg == 12)
+    {
+        float3 c = g_colour.SampleLevel(g_point, uv, 0.0).rgb;
+        return saturate(dot(c, float3(0.299, 0.587, 0.114)));
+    }
     if (dbg == 8)
         return frac(z * 1024.0) < 0.5 ? 0.0 : 1.0;
     if (dbg == 9)

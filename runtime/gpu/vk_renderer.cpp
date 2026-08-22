@@ -12165,7 +12165,7 @@ bool EnsureResources()
     if (g_pipe)
         return true;
 
-    VkDescriptorSetLayoutBinding b[3]{};
+    VkDescriptorSetLayoutBinding b[4]{};
     b[0].binding = 0;
     b[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     b[0].descriptorCount = 1;
@@ -12178,10 +12178,17 @@ bool EnsureResources()
     b[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     b[2].descriptorCount = 1;
     b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // The colour buffer — CZ_VK_RT_FACTOR_DEBUG=12's control for the depth read. Always
+    // bound, never sampled outside that mode; a descriptor a shader does not read costs
+    // nothing and an UNBOUND one a shader might read is undefined behaviour.
+    b[3].binding = 3;
+    b[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    b[3].descriptorCount = 1;
+    b[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutCreateInfo li{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
     };
-    li.bindingCount = 3;
+    li.bindingCount = 4;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(R->device, &li, nullptr, &g_setLayout) != VK_SUCCESS)
     {
@@ -12190,7 +12197,7 @@ bool EnsureResources()
     }
     VkDescriptorPoolSize ps[3] = {
         { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kMaxFramesInFlight },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxFramesInFlight },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kMaxFramesInFlight * 2 },
         { VK_DESCRIPTOR_TYPE_SAMPLER, kMaxFramesInFlight },
     };
     VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -12218,7 +12225,16 @@ bool EnsureResources()
         di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         VkDescriptorImageInfo si2{};
         si2.sampler = g_depthSampler;
-        VkWriteDescriptorSet w[2]{};
+        VkDescriptorImageInfo ci2{};
+        ci2.imageView = R->color.view;
+        ci2.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w[3]{};
+        w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[2].dstSet = g_sets[i];
+        w[2].dstBinding = 3;
+        w[2].descriptorCount = 1;
+        w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        w[2].pImageInfo = &ci2;
         w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[0].dstSet = g_sets[i];
         w[0].dstBinding = 1;
@@ -12496,6 +12512,8 @@ void Run(uint8_t* base)
 
     Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_ASPECT_COLOR_BIT);
     Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
 
