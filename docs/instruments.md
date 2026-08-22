@@ -1679,6 +1679,23 @@ CZ_TEST_FOV_FLIP=N alternate the fov between 0 and +20 every N frames in ONE
                    (animation) / ~40 (the flip) on the DebugJump crowd; the
                    cross-state pair answers "did the WORLD move" with the camera
                    held. Same family as CZ_TEST_TIER_FLIP
+CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §2,
+                   the record is phase5-notes §6cu). Per DRAW on the raw register
+                   window, same discipline as CZ_VK_FOV_CENSUS: classifies each
+                   draw's VS window (composite = world / raw = UI / other), and for
+                   WORLD draws censuses the position attribute's format (the first
+                   vfetch — XenosRecomp's usage assignment is positional), the
+                   position stream's cross-frame content stability (full FNV per
+                   distinct stream per frame -> STABLE / REWRITTEN / seen-once,
+                   the BLAS-once predicate), per-frame working set (world draws =
+                   TLAS instances, distinct streams and bytes = BLAS residency,
+                   triangles), index widths, and a first-sight bounds scan of
+                   float positions (the world-space-vs-object-space check).
+                   Prints at world frame 30 and every 600 world frames after. A
+                   DIAGNOSTIC ARM (gotcha 7): the per-frame hashing walks every
+                   distinct world stream's bytes, so never quote a frame time
+                   from a run carrying it. Free when off (one static bool per
+                   draw)
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch

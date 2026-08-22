@@ -28,6 +28,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <unistd.h>
@@ -9269,6 +9270,437 @@ static uint32_t SamplerIndexForFetch(const uint32_t* regs, uint32_t constIdx)
     return idx;
 }
 
+// ===================================================================================
+// CZ_VK_RT_CENSUS=1 — RT stage 1's geometry census (docs/rt-and-fov-plan.md §2).
+// ===================================================================================
+// The three questions a BLAS/TLAS retrofit needs answered by measurement before any
+// acceleration-structure code exists, asked per DRAW on the raw register window (a
+// copy-site census would count constant CHANGES and miss every memo-hit draw —
+// part 61's lesson; CZ_VK_FOV_CENSUS is the worked example this follows):
+//
+//   1. POSITION FORMATS. A BLAS builder consumes exactly what this histogram returns,
+//      nothing speculative (gotcha 5). The position attribute is the shader's FIRST
+//      vfetch — XenosRecomp's usage assignment is positional (the first vfetch is
+//      POSITION0, synth_shader_container.py), so attributes[0] is position whether it
+//      is a declared input (location 0) or a dependent in-shader fetch (location -1).
+//   2. RIGID vs SKINNED. "The stream's bytes held across frames" is the BLAS-once
+//      predicate. Content is hashed once per distinct stream per frame — a full FNV
+//      over the guest bytes, so this census is a DIAGNOSTIC ARM (gotcha 7): never
+//      quote a frame time from a run carrying it. Three classes fall out: STABLE
+//      (seen in 2+ frames, never rewritten — BLAS built once), REWRITTEN (content
+//      changed under a recurring key — skinned or dynamic, excluded from stage 2),
+//      and SEEN-ONCE (transient/churning addresses — also excluded).
+//   3. WORKING-SET SIZE. Distinct world position streams and their bytes per frame
+//      (BLAS residency), world draws per frame (TLAS instance count), triangles per
+//      frame (trace cost), index widths (BLAS build input).
+//
+// "World draw" = the VS window carries the P*V composite (SceneXformForm form 2,
+// phase5-notes §6cs); the raw form is UI/frontend, and form 0 covers shadow orthos,
+// skinning affines and cube-face cameras. §6cs concluded composite-draw streams are
+// WORLD-SPACE (no per-draw world matrix at c0-3); the per-stream bounds scan at first
+// sight is the check that could refute that — object-space streams would cluster
+// around their own origins, world-space ones share Still Creek's one coordinate frame.
+namespace rtcensus
+{
+struct StreamRec
+{
+    uint64_t bytes = 0;
+    uint32_t strideDw = 0, offsetDw = 0, fmt = 0;
+    uint32_t framesSeen = 0, rewrites = 0;
+    uint64_t draws = 0;
+    uint64_t lastHash = 0;
+    bool haveHash = false;
+    bool indirectPos = false;
+    bool zwrite = false;
+    bool haveBounds = false;
+    // The VS binding this stream any draw referenced it under carried a dependent
+    // (in-shader) fetch. NOT a skinning proof by itself — particles and instancing
+    // take that path too — but a content-stable stream can still be a GPU-skinned
+    // actor's BIND-POSE (bone state rides the constants, §6cs), so stability alone
+    // cannot say "world-space rigid". depVS + a small extent is the actor signature.
+    bool depVS = false;
+    float mn[3] = {}, mx[3] = {};
+};
+
+std::mutex g_mu;
+uint64_t g_drawsTotal = 0, g_formDraws[3] = {};
+uint64_t g_zwriteComposite = 0;
+uint64_t g_primHist[16] = {};
+// fmt | signed<<8 | integer<<9 | indirect<<10 — the exact tuple a BLAS builder binds.
+std::map<uint32_t, uint64_t> g_fmtHist;
+uint64_t g_posNone = 0, g_posUnreadable = 0;
+std::unordered_map<uint64_t, StreamRec> g_streams;
+std::unordered_map<uint64_t, uint64_t> g_indexBufs; // key -> bytes
+uint64_t g_idxDraws16 = 0, g_idxDraws32 = 0, g_autoDraws = 0;
+// Per-frame working set, folded into the aggregates at the frame boundary.
+uint64_t g_lastFrame = ~0ull;
+std::unordered_set<uint64_t> g_frameKeys, g_frameIdxKeys;
+uint64_t g_frameWorldDraws = 0, g_frameTris = 0, g_frameStreamBytes = 0;
+// Aggregates over frames that carried at least one world draw.
+uint64_t g_worldFrames = 0;
+uint64_t g_sumWorldDraws = 0, g_maxWorldDraws = 0;
+uint64_t g_sumStreams = 0, g_maxStreams = 0;
+uint64_t g_sumStreamBytes = 0, g_maxStreamBytes = 0;
+uint64_t g_sumTris = 0, g_maxTris = 0;
+
+const char* FmtName(uint32_t f)
+{
+    switch (f)
+    {
+        case 57: return "float3";
+        case 38: return "float4";
+        case 37: return "float2";
+        case 36: return "float1";
+        case 32: return "half4";
+        case 31: return "half2";
+        case 26: return "short4";
+        case 25: return "short2";
+        case 6:  return "ubyte4";
+        case 7:  return "dec10";
+        case 16: return "packed10_11_11";
+        case 33: return "int32";
+        default: return "?";
+    }
+}
+
+void Dump()
+{
+    fprintf(stderr,
+            "[rt-census] draws: total=%llu composite(world)=%llu raw(UI)=%llu "
+            "other(shadow/affine/cube)=%llu; world zwrite=%llu\n",
+            (unsigned long long)g_drawsTotal, (unsigned long long)g_formDraws[2],
+            (unsigned long long)g_formDraws[1], (unsigned long long)g_formDraws[0],
+            (unsigned long long)g_zwriteComposite);
+    fprintf(stderr, "[rt-census] world prims:");
+    static const char* primName[16] = { "?",     "point", "line",  "linestrip",
+                                        "trilist", "trifan", "tristrip", "?",
+                                        "rect",  "?",     "?",     "?",
+                                        "?",     "quad",  "?",     "?" };
+    for (int i = 0; i < 16; i++)
+        if (g_primHist[i])
+            fprintf(stderr, " %s=%llu", primName[i], (unsigned long long)g_primHist[i]);
+    fprintf(stderr, "\n[rt-census] world position formats (draws):");
+    for (const auto& [k, n] : g_fmtHist)
+        fprintf(stderr, " fmt%u(%s)%s%s%s=%llu", k & 0xFF, FmtName(k & 0xFF),
+                (k & 0x100) ? "/signed" : "", (k & 0x200) ? "/int" : "",
+                (k & 0x400) ? "/DEP" : "", (unsigned long long)n);
+    fprintf(stderr, " noPos=%llu unreadable=%llu\n", (unsigned long long)g_posNone,
+            (unsigned long long)g_posUnreadable);
+    // The rigid/skinned split, the census's core deliverable.
+    uint64_t stable = 0, stableBytes = 0, stableVerts = 0;
+    uint64_t rewritten = 0, rewrittenBytes = 0;
+    uint64_t once = 0, onceBytes = 0;
+    uint64_t bounded = 0, nearOrigin = 0;
+    float wmn[3] = { 1e30f, 1e30f, 1e30f }, wmx[3] = { -1e30f, -1e30f, -1e30f };
+    for (const auto& [k, s] : g_streams)
+    {
+        if (s.rewrites)
+        {
+            ++rewritten;
+            rewrittenBytes += s.bytes;
+        }
+        else if (s.framesSeen >= 2)
+        {
+            ++stable;
+            stableBytes += s.bytes;
+            if (s.strideDw)
+                stableVerts += s.bytes / (uint64_t(s.strideDw) * 4);
+        }
+        else
+        {
+            ++once;
+            onceBytes += s.bytes;
+        }
+        if (s.haveBounds)
+        {
+            ++bounded;
+            float c[3], n2 = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                c[i] = 0.5f * (s.mn[i] + s.mx[i]);
+                n2 += c[i] * c[i];
+                wmn[i] = std::min(wmn[i], s.mn[i]);
+                wmx[i] = std::max(wmx[i], s.mx[i]);
+            }
+            if (n2 < 100.0f * 100.0f)
+                ++nearOrigin;
+        }
+    }
+    fprintf(stderr,
+            "[rt-census] streams: total=%zu STABLE=%llu (%.1f MB, %llu verts) "
+            "REWRITTEN=%llu (%.1f MB) seenOnce=%llu (%.1f MB)\n",
+            g_streams.size(), (unsigned long long)stable, stableBytes / 1048576.0,
+            (unsigned long long)stableVerts, (unsigned long long)rewritten,
+            rewrittenBytes / 1048576.0, (unsigned long long)once,
+            onceBytes / 1048576.0);
+    if (g_worldFrames)
+        fprintf(stderr,
+                "[rt-census] per-frame (over %llu world frames): worldDraws avg=%llu "
+                "max=%llu; distinct pos streams avg=%llu max=%llu; stream bytes "
+                "avg=%.1f MB max=%.1f MB; tris avg=%llu max=%llu\n",
+                (unsigned long long)g_worldFrames,
+                (unsigned long long)(g_sumWorldDraws / g_worldFrames),
+                (unsigned long long)g_maxWorldDraws,
+                (unsigned long long)(g_sumStreams / g_worldFrames),
+                (unsigned long long)g_maxStreams,
+                double(g_sumStreamBytes / g_worldFrames) / 1048576.0,
+                double(g_maxStreamBytes) / 1048576.0,
+                (unsigned long long)(g_sumTris / g_worldFrames),
+                (unsigned long long)g_maxTris);
+    uint64_t idxBytes = 0;
+    for (const auto& [k, b] : g_indexBufs)
+        idxBytes += b;
+    fprintf(stderr,
+            "[rt-census] indices: draws idx16=%llu idx32=%llu auto=%llu; distinct "
+            "index buffers=%zu (%.1f MB)\n",
+            (unsigned long long)g_idxDraws16, (unsigned long long)g_idxDraws32,
+            (unsigned long long)g_autoDraws, g_indexBufs.size(), idxBytes / 1048576.0);
+    if (bounded)
+        fprintf(stderr,
+                "[rt-census] bounds (%llu float streams scanned): world "
+                "[%.0f %.0f %.0f]..[%.0f %.0f %.0f]; centered near origin "
+                "(|c|<100): %llu of %llu\n",
+                (unsigned long long)bounded, wmn[0], wmn[1], wmn[2], wmx[0], wmx[1],
+                wmx[2], (unsigned long long)nearOrigin, (unsigned long long)bounded);
+    // Outliers by name: a -6e6 coordinate in the global bounds is either a real
+    // skydome-scale mesh or a stream whose "position" is not a position — either way
+    // the TLAS wants it identified, not averaged in.
+    {
+        int listedBig = 0;
+        for (const auto& [k, s] : g_streams)
+        {
+            if (!s.haveBounds || listedBig >= 4)
+                continue;
+            float ext = 0;
+            for (int i = 0; i < 3; i++)
+                ext = std::max(ext, s.mx[i] - s.mn[i]);
+            if (ext <= 100000.0f)
+                continue;
+            fprintf(stderr,
+                    "[rt-census]   huge-extent: va=%08X bytes=%llu strideDw=%u "
+                    "[%.0f %.0f %.0f]..[%.0f %.0f %.0f]%s\n",
+                    uint32_t(k >> 32), (unsigned long long)s.bytes, s.strideDw,
+                    s.mn[0], s.mn[1], s.mn[2], s.mx[0], s.mx[1], s.mx[2],
+                    s.depVS ? " depVS" : "");
+            ++listedBig;
+        }
+    }
+    // Extent buckets x depVS — the split that separates world-baked meshes (large
+    // extent, no bone fetches) from bind-pose actor candidates (small extent, depVS).
+    {
+        uint64_t bucket[2][4] = {};   // [depVS][ <5 / 5-50 / 50-500 / >500 ]
+        uint64_t bbytes[2][4] = {};
+        for (const auto& [k, s] : g_streams)
+        {
+            if (!s.haveBounds)
+                continue;
+            float ext = 0;
+            for (int i = 0; i < 3; i++)
+                ext = std::max(ext, s.mx[i] - s.mn[i]);
+            const int b = ext < 5.0f ? 0 : ext < 50.0f ? 1 : ext < 500.0f ? 2 : 3;
+            ++bucket[s.depVS ? 1 : 0][b];
+            bbytes[s.depVS ? 1 : 0][b] += s.bytes;
+        }
+        for (int d = 0; d < 2; d++)
+            fprintf(stderr,
+                    "[rt-census]   extents %s: <5=%llu(%.1fMB) 5-50=%llu(%.1fMB) "
+                    "50-500=%llu(%.1fMB) >500=%llu(%.1fMB)\n",
+                    d ? "depVS(bone-candidate)" : "plainVS",
+                    (unsigned long long)bucket[d][0], bbytes[d][0] / 1048576.0,
+                    (unsigned long long)bucket[d][1], bbytes[d][1] / 1048576.0,
+                    (unsigned long long)bucket[d][2], bbytes[d][2] / 1048576.0,
+                    (unsigned long long)bucket[d][3], bbytes[d][3] / 1048576.0);
+    }
+    // Name the rewritten population (bounded lines) — if it is zombies, these are the
+    // streams stage 2 excludes; if it is something structural, that changes the plan.
+    int listed = 0;
+    for (const auto& [k, s] : g_streams)
+    {
+        if (!s.rewrites || listed >= 12)
+            continue;
+        fprintf(stderr,
+                "[rt-census]   rewritten: va=%08X bytes=%llu strideDw=%u fmt=%u(%s)%s "
+                "rewrites=%u/%u frames draws=%llu\n",
+                uint32_t(k >> 32), (unsigned long long)s.bytes, s.strideDw, s.fmt & 0xFF,
+                FmtName(s.fmt & 0xFF), (s.fmt & 0x400) ? " DEP" : "", s.rewrites,
+                s.framesSeen, (unsigned long long)s.draws);
+        ++listed;
+    }
+}
+
+// The bounds scan, once per stream at first sight, capped at 65,536 vertices. Floats
+// arrive guest-big-endian; a bswap per dword is the same read the v0 fingerprint uses.
+void ScanBounds(StreamRec& rec, const uint8_t* p, uint64_t bytes)
+{
+    const uint64_t strideB = uint64_t(rec.strideDw) * 4;
+    if (!strideB)
+        return;
+    uint64_t n = bytes / strideB;
+    if (n > 65536)
+        n = 65536;
+    bool any = false;
+    for (uint64_t i = 0; i < n; ++i)
+    {
+        const uint8_t* v = p + i * strideB + uint64_t(rec.offsetDw) * 4;
+        if (v + 12 > p + bytes)
+            break;
+        float f[3];
+        bool ok = true;
+        for (int k = 0; k < 3; ++k)
+        {
+            uint32_t d;
+            memcpy(&d, v + k * 4, 4);
+            d = __builtin_bswap32(d);
+            memcpy(&f[k], &d, 4);
+            // A NaN or an absurd magnitude means this vertex is not a world position
+            // (padding, a degenerate slot) — skip it rather than poison the bounds.
+            if (!std::isfinite(f[k]) || std::fabs(f[k]) > 1e7f)
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok)
+            continue;
+        if (!any)
+            for (int k = 0; k < 3; ++k)
+                rec.mn[k] = rec.mx[k] = f[k];
+        else
+            for (int k = 0; k < 3; ++k)
+            {
+                rec.mn[k] = std::min(rec.mn[k], f[k]);
+                rec.mx[k] = std::max(rec.mx[k], f[k]);
+            }
+        any = true;
+    }
+    rec.haveBounds = any;
+}
+} // namespace rtcensus
+
+void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
+                      const ShaderMeta& vs, const Pm4Draw& draw, const uint32_t* regs,
+                      uint8_t* base)
+{
+    static const bool on = Env("CZ_VK_RT_CENSUS") != nullptr;
+    if (!on)
+        return;
+    using namespace rtcensus;
+    std::lock_guard<std::mutex> lock(g_mu);
+    // Frame boundary: fold the finished frame's working set into the aggregates. Only
+    // frames with at least one world draw count toward the per-frame numbers — menu
+    // and frontend frames would drag every average toward zero and answer nothing.
+    const uint64_t frame = R->frame;
+    if (frame != g_lastFrame)
+    {
+        if (g_lastFrame != ~0ull && g_frameWorldDraws)
+        {
+            ++g_worldFrames;
+            g_sumWorldDraws += g_frameWorldDraws;
+            g_maxWorldDraws = std::max(g_maxWorldDraws, g_frameWorldDraws);
+            const uint64_t ds = g_frameKeys.size();
+            g_sumStreams += ds;
+            g_maxStreams = std::max(g_maxStreams, ds);
+            g_sumStreamBytes += g_frameStreamBytes;
+            g_maxStreamBytes = std::max(g_maxStreamBytes, g_frameStreamBytes);
+            g_sumTris += g_frameTris;
+            g_maxTris = std::max(g_maxTris, g_frameTris);
+            if (g_worldFrames == 30 || g_worldFrames % 600 == 0)
+                Dump();
+        }
+        g_frameKeys.clear();
+        g_frameIdxKeys.clear();
+        g_frameWorldDraws = g_frameTris = g_frameStreamBytes = 0;
+        g_lastFrame = frame;
+    }
+    ++g_drawsTotal;
+    float bEff;
+    const int form = SceneXformForm(vsWindow, bEff);
+    ++g_formDraws[form];
+    if (form != 2)
+        return;
+    ++g_frameWorldDraws;
+    if ((depthControl >> 2) & 1)
+        ++g_zwriteComposite;
+    ++g_primHist[draw.primType & 15];
+    switch (draw.primType)
+    {
+        case xenos::kTriangleList: g_frameTris += draw.indexCount / 3; break;
+        case xenos::kTriangleStrip:
+        case xenos::kTriangleFan:
+            g_frameTris += draw.indexCount >= 3 ? draw.indexCount - 2 : 0;
+            break;
+        case xenos::kRectangleList: g_frameTris += draw.indexCount / 3 * 2; break;
+        case xenos::kQuadList: g_frameTris += draw.indexCount / 4 * 2; break;
+        default: break;
+    }
+    if (draw.indexed)
+    {
+        ++(draw.index32 ? g_idxDraws32 : g_idxDraws16);
+        const uint64_t ibytes = uint64_t(draw.indexCount) * (draw.index32 ? 4 : 2);
+        const uint64_t ikey = (uint64_t(draw.indexVa) << 32) | (ibytes & 0xFFFFFFFFu);
+        if (g_frameIdxKeys.insert(ikey).second)
+        {
+            uint64_t& b = g_indexBufs[ikey];
+            b = std::max(b, ibytes);
+        }
+    }
+    else
+        ++g_autoDraws;
+    // The position attribute: the first vfetch, declared or dependent (see header).
+    if (vs.attributes.empty() || vs.attributes[0].fetchSlot >= 96)
+    {
+        ++g_posNone;
+        return;
+    }
+    const VertexAttribute& pos = vs.attributes[0];
+    const uint32_t fmtKey = (pos.format & 0xFF) | (pos.isSigned ? 0x100 : 0) |
+                            (pos.isInteger ? 0x200 : 0) | (pos.indirect ? 0x400 : 0);
+    ++g_fmtHist[fmtKey];
+    const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(pos.fetchSlot));
+    const uint32_t sva = PhysToVa(vf.address);
+    const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
+    if (!vf.address || !bytes || !GuestRangeOk(sva, bytes))
+    {
+        ++g_posUnreadable;
+        return;
+    }
+    // The same identity UploadStream uses (disjoint bit packing — a collision would
+    // merge two meshes' records), so the census's classes translate directly onto the
+    // persist cache's keys when stage 2 builds on them.
+    const uint64_t key = (uint64_t(sva) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
+                         (vf.endian & 3);
+    StreamRec& rec = g_streams[key];
+    ++rec.draws;
+    if (rec.framesSeen == 0)
+    {
+        rec.bytes = bytes;
+        rec.strideDw = pos.strideDwords;
+        rec.offsetDw = pos.offsetDwords;
+        rec.fmt = fmtKey;
+        rec.indirectPos = pos.indirect != 0;
+    }
+    if ((depthControl >> 2) & 1)
+        rec.zwrite = true;
+    for (const VertexAttribute& a : vs.attributes)
+        if (a.indirect)
+        {
+            rec.depVS = true;
+            break;
+        }
+    if (g_frameKeys.insert(key).second)
+    {
+        g_frameStreamBytes += bytes;
+        ++rec.framesSeen;
+        const uint64_t h = StreamHash(base + sva, size_t(bytes), 0);
+        if (rec.haveHash && h != rec.lastHash)
+            ++rec.rewrites;
+        rec.lastHash = h;
+        rec.haveHash = true;
+        if (!rec.haveBounds && (pos.format == 57 || pos.format == 38) && !pos.indirect)
+            ScanBounds(rec, base + sva, bytes);
+    }
+}
+
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
@@ -9705,6 +10137,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // carry. Env-gated; one static bool test per draw when off.
     FovCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
               regs[xenos::kRbDepthControl]);
+    // RT stage 1's geometry census — same per-draw, raw-window discipline as
+    // FovCensus, and inert to one static bool test when unarmed.
+    RtGeometryCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+                     regs[xenos::kRbDepthControl], vs, draw, regs, base);
     g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
     g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
     // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
