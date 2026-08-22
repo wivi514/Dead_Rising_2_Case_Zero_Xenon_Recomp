@@ -9956,6 +9956,12 @@ std::unordered_set<uint64_t> g_curKeys, g_prevKeys;
 // That second reading is the valuable one: it is our own rasterizer acting as the
 // oracle for our own ray, on geometry both provably agree about.
 std::unordered_set<uint64_t> g_curCascadeKeys, g_prevCascadeKeys;
+// STREAM KEYS PROVEN WORLD-SPACE by the scene pass — the oracle for the light
+// matrix. See the capture site: a cascade draw of one of these streams has a
+// c0-3 that is the pure light view-projection, because the same bytes are drawn
+// in world space by the scene pass. Keyed on the persist identity (va,size,
+// endian), NOT the BLAS key, because it is the STREAM that is world-space.
+std::unordered_set<uint64_t> g_worldStreams;
 uint64_t g_collectFrame = ~0ull;
 
 // The captured cascade matrix: the LAST ortho composite seen on a pitch-1040 draw
@@ -9985,6 +9991,7 @@ float g_sliceFirstM[16];
 bool g_sliceHaveFirst = false;
 uint64_t g_sliceMatrixDraws = 0, g_sliceMatrixDistinct = 0;
 uint64_t g_sliceOneMatrix = 0, g_sliceManyMatrix = 0;
+uint64_t g_matrixBound = 0, g_matrixRejected = 0;
 
 // Per-frame trace state.
 uint64_t g_tlasFrame = ~0ull;
@@ -10127,6 +10134,22 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
         // fail the test and never overwrite the capture.
         if (IsShadowSurface(regs))
         {
+            // This draw's position stream, decoded here because the matrix capture
+            // below is bound to it (see the capture comment). Cheap: two register
+            // reads and a shift, on a pass that is ~13% of draws.
+            uint64_t posStreamKey = 0;
+            if (!vs.attributes.empty() && vs.attributes[0].fetchSlot < 96 &&
+                !vs.attributes[0].indirect)
+            {
+                const xenos::VertexFetch cvf =
+                    xenos::DecodeVertexFetch(regs, FetchSlot(vs.attributes[0].fetchSlot));
+                const uint32_t csva = PhysToVa(cvf.address);
+                const uint64_t cbytes = uint64_t(cvf.sizeDwords) * 4;
+                if (cvf.address && cbytes)
+                    posStreamKey = (uint64_t(csva) << 32) |
+                                   (uint64_t(cbytes & 0x3FFFFFFFu) << 2) |
+                                   (cvf.endian & 3);
+            }
             const float* m = reinterpret_cast<const float*>(vsWindow);
             const float n3 = m[12] * m[12] + m[13] * m[13] + m[14] * m[14];
             if (n3 < 0.004f && std::fabs(m[15] - 1.0f) < 0.01f)
@@ -10147,8 +10170,33 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
                     if (!same)
                         ++g_sliceMatrixDistinct;
                 }
-                memcpy(g_lightM, m, sizeof g_lightM);
-                g_lightMValid = true;
+                // BIND IT BY DATAFLOW, NOT BY RECENCY. The binding check refuted
+                // last-write-wins outright: EVERY slice carries several distinct
+                // ortho-shaped c0-3 matrices, so "the most recent one" traced each
+                // slice through one of many frames of reference — which is the
+                // systematic depth disagreement the atlas diff measured, and why
+                // neither the bounds gate nor the caster arm could fix it.
+                //
+                // The oracle is the scene pass. A stream the scene pass draws under
+                // a world-space composite (§6cs) is world-space; when the CASCADE
+                // pass draws those same bytes, its c0-3 must therefore be the pure
+                // light view-projection, with no per-object world matrix folded in.
+                // So capture only from cascade draws of streams the scene pass has
+                // already vouched for. Draws whose c0-3 carries an object transform
+                // are exactly the ones that fail this test.
+                //
+                // CZ_VK_RT_ANY_MATRIX=1 restores last-write-wins as the same-binary
+                // control arm, so the change can be shown to be what moved the
+                // picture.
+                static const bool anyMatrix = EnvOn("CZ_VK_RT_ANY_MATRIX");
+                if (anyMatrix || g_worldStreams.count(posStreamKey))
+                {
+                    memcpy(g_lightM, m, sizeof g_lightM);
+                    g_lightMValid = true;
+                    ++g_matrixBound;
+                }
+                else
+                    ++g_matrixRejected;
                 // The title's OWN polygon offset at this cascade draw — the bias
                 // its receiver-side comparison was written against, and therefore
                 // the floor for the traced depths' bias (a traced depth without it
@@ -10230,6 +10278,8 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     }
     const uint64_t streamKey = (uint64_t(sva) << 32) |
                                (uint64_t(vbytes & 0x3FFFFFFFu) << 2) | (vf.endian & 3);
+    if (!cascadeCaster)
+        g_worldStreams.insert(streamKey);   // the scene pass draws this world-space
     // The content stamp is the persist store's OWN guard — the raster path's change
     // detector, computed once per first-touch there, so it is free here and the two
     // paths cannot disagree about which bytes are current. A stream with no entry
@@ -11291,11 +11341,12 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_slicesNoTlas, poison ? " POISON" : "",
                 invert ? " INVERT" : "");
     fprintf(stderr,
-            "[rt]   slice matrix binding: %llu slices had ONE c0-3, %llu had "
-            "SEVERAL (several = last-write-wins is picking one of many and the "
-            "trace's frame of reference is wrong)\n",
+            "[rt]   slice matrix: %llu slices ONE c0-3 / %llu SEVERAL; captured "
+            "from %llu world-vouched draws, rejected %llu object-transform ones\n",
             (unsigned long long)g_sliceOneMatrix,
-            (unsigned long long)g_sliceManyMatrix);
+            (unsigned long long)g_sliceManyMatrix,
+            (unsigned long long)g_matrixBound,
+            (unsigned long long)g_matrixRejected);
     if (g_covTotal)
         fprintf(stderr,
                 "[rt]   coverage: traced depths WON %.2f%% of censused slice "
