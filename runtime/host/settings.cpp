@@ -22,9 +22,9 @@ struct State
     int fpsCap = 0;             // 0 = OFF, i.e. the part-54 500-ceiling that never binds
     int fov = 0;                // degrees of fov adjustment, -10..+30; 0 = OG (part 61)
     int aspect = 0;             // 0 = 16:9 (the title's own), 1 = 21:9 (part 60 wide mode)
-    int rtShadows = 0;          // 0 = OG (default), 1 = RT LOW (part 64). MED/HIGH are
-                                // refused until the tier ladder is priced on the
-                                // operator's machine (rt-and-fov-plan.md §3).
+    int rtShadows = 0;          // 0 = none (default), 1/2/3 = RT LOW/MED/HIGH.
+                                // Non-zero REPLACES the raster cascade (part 64,
+                                // operator's spec).
 };
 
 // The frame-cap values the panel offers. A set rather than a range because the vblank
@@ -227,6 +227,33 @@ int Settings_Fov()
     return g_state.fov;
 }
 
+// The panel's single SHADOW row. 0..2 are the raster tiers (RT off); 3..5 select
+// RT LOW/MEDIUM/HIGH, which REPLACE the raster cascade rather than adding to it.
+// The raster tier is REMEMBERED while an RT value is selected, so stepping back
+// down the row returns the quality the player had rather than resetting it.
+int Settings_ShadowRow()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_state.rtShadows ? 2 + g_state.rtShadows : g_state.shadowTier;
+}
+
+void Settings_SetShadowRow(int row)
+{
+    if (row < 0 || row > 5)
+        return;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (row < 3)
+        {
+            g_state.rtShadows = 0;
+            g_state.shadowTier = row;
+        }
+        else
+            g_state.rtShadows = row - 2;
+        SaveLocked();
+    }
+}
+
 int Settings_RtShadows()
 {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -235,8 +262,8 @@ int Settings_RtShadows()
 
 void Settings_SetRtShadows(int tier)
 {
-    if (tier < 0 || tier > 1)
-        return;   // MED/HIGH do not exist yet; refusing is honest (the gamma rule)
+    if (tier < 0 || tier > 3)
+        return;
     std::lock_guard<std::mutex> lock(g_mutex);
     g_state.rtShadows = tier;
     SaveLocked();

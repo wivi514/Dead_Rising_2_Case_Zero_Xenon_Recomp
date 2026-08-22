@@ -449,7 +449,8 @@ const char* Glyph(char c)
 template <typename Rect>
 void EmitSettingsOverlay(int w, int h, Rect&& rect)
 {
-    const int panelW = 640, panelH = 420;   // 420: seven rows since part 64 (RT)
+    const int panelW = 640, panelH = 380;   // 380: six rows — part 64 merged the RT
+                                            // tiers INTO the shadow row
     const int panelX = (w - panelW) / 2, panelY = (h - panelH) / 2 - 30;
     if (panelW <= 0 || panelH <= 0)
         return;
@@ -500,23 +501,28 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     char fovName[8] = "OG";
     if (const int fov = Settings_Fov(); fov != 0)
         snprintf(fovName, sizeof fovName, "%+d", fov);
-    // The RT SHADOWS row (part 64): OG is exactly today's renderer and the
-    // default; RT LOW is the traced cascade. UNSUPPORTED when the device probe
-    // failed — the row then refuses to move (the gamma-slider rule). MED/HIGH
-    // wait for LOW's operator verdict and a priced ladder (rt-and-fov-plan §3).
-    const char* rtName = !VkRenderer_RtAvailable() ? "UNSUPPORTED"
-                         : Settings_RtShadows() ? "RT LOW" : "OG";
-    const char* rows[7][2] = {
+    // ONE SHADOW ROW (part 64, operator's revision): the raster tiers and the RT
+    // tiers are values of the SAME setting, because selecting an RT value REPLACES
+    // the normal shadow rather than adding to it — "normal shadow would be removed
+    // to be replaced by the RT shadow if a rt settings is selected". Two rows
+    // implied you could have both, which is what the first build actually did.
+    //
+    // On a device without ray query the RT values are not offered at all: the row
+    // stops at HIGH and the footer says why. Better than showing values that
+    // refuse to move (the gamma-slider rule) when the whole class is unavailable.
+    static const char* kShadowRow[] = { "LOW",    "MEDIUM",    "HIGH",
+                                        "RT LOW", "RT MEDIUM", "RT HIGH" };
+    const int shadowRow = Settings_ShadowRow();
+    const char* rows[6][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
         { "VSYNC", kOnOff[Settings_VSync() ? 1 : 0] },
-        { "SHADOW QUALITY", kTiers[Settings_ShadowTier() % 3] },
+        { "SHADOW", kShadowRow[shadowRow % 6] },
         { "FRAME CAP", capName },
         { "FIELD OF VIEW", fovName },
-        { "RT SHADOWS", rtName },
     };
     const int sel = Settings_OverlaySelection();
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 6; ++i)
     {
         const int y = panelY + 86 + i * 40;
         if (i == sel)
@@ -532,8 +538,10 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // at render scale 1 every tier is 1x and the row is honestly inert, which the
     // footer says rather than letting a dead row pretend (the gamma-slider rule).
     text(panelX + 20, panelY + panelH - 30,
-         scale > 1 ? "RESOLUTION: NEXT LAUNCH - SHADOW: LIVE"
-                   : "RESOLUTION: NEXT LAUNCH - SHADOW INERT AT 720P",
+         !VkRenderer_RtAvailable()
+             ? "RESOLUTION: NEXT LAUNCH - NO RAY QUERY: RT SHADOWS UNAVAILABLE"
+             : (scale > 1 ? "RESOLUTION: NEXT LAUNCH - SHADOW: LIVE"
+                          : "RESOLUTION: NEXT LAUNCH - SHADOW INERT AT 720P"),
          2, 150, 140, 120);
 }
 

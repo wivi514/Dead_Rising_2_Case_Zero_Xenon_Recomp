@@ -53,9 +53,18 @@ int           Settings_Fov();           // FIELD OF VIEW (part 61): degrees of
                                         // ADJUSTMENT from the game's own camera,
                                         // -10..+30 in steps of 1; 0 = OG, the
                                         // default and the bit-identical control
-int           Settings_RtShadows();     // RT SHADOWS row (part 64): 0 = OG (the
-                                        // raster cascade, default), 1 = RT LOW.
+int           Settings_RtShadows();     // RT tier (part 64): 0 = none (the raster
+                                        // cascade), 1/2/3 = RT LOW/MEDIUM/HIGH.
                                         // Env CZ_VK_RT_SHADOWS wins over this.
+                                        // NON-ZERO REPLACES the raster shadow — the
+                                        // operator's spec: one SHADOW row whose RT
+                                        // values remove the normal shadow rather
+                                        // than adding to it.
+// The single SHADOW row the panel shows (operator revision, part 64): index 0..5 =
+// LOW / MEDIUM / HIGH / RT LOW / RT MEDIUM / RT HIGH, derived from the two stored
+// values above so an existing cz_settings.txt keeps its meaning.
+int           Settings_ShadowRow();
+void          Settings_SetShadowRow(int row);
 int           Settings_Aspect();        // LEGACY: 1 when the internal res is wider than
                                         // 16:9. Derived; new code reads Settings_InternalRes
 
