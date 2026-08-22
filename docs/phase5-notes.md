@@ -12946,3 +12946,79 @@ nothing else does:
 Pre-registering both readings here, before the runs land, is the point: the
 project has paid before for an instrument whose result could be read as
 confirming whatever was expected (gotcha 30).
+
+### 6. THE MEASUREMENT THAT ACTUALLY SETTLED IT: diff the two atlases
+
+The occlusion query was the right instinct and the wrong instrument — there was
+a cheaper, sharper one already built. `CZ_VK_SNAP_DUMP` writes every resolve
+snapshot of a frame, INCLUDING the 4096x1024 cascade atlas (11008x2048 at the
+operator's internal resolution), and prints its 24-bit range. Two runs on the
+same stationary camp — one OG, one RT — therefore produce the two atlases side
+by side, and the stretched greys can be converted back to normalized depth
+because the range is in the log.
+
+Looked at as pictures they are nearly the same: trees, power lines and the same
+building silhouettes in all three occupied slices. **That similarity is exactly
+what makes the numbers necessary** — a shadow comparison works at ~1e-4 and a
+contrast-stretched image cannot show it (gotcha 133's shape: looking is one
+sample, and here it is one sample of the wrong statistic). Sampled on a
+17-texel grid, 78,408 samples:
+
+| | share |
+|---|---|
+| RT depth NEARER than raster (by >0.002) | **49.6%** |
+| within +-0.002 | 49.1% |
+| RT depth FARTHER | **1.3%** |
+
+with the 5th percentile of the difference at **-0.090** — nine percent of the
+whole depth range nearer, three orders of magnitude too large for acne.
+
+Both halves of that table matter. Nearer on half the atlas rules out bias as the
+cause. Farther on only 1.3% rules out the shape everyone expects from an
+exclusion list: **we are not a SUBSET missing far occluders, we are a SUPERSET
+adding NEAR ones.** So the question stops being "what did we leave out of the
+TLAS" and becomes "what did we put in that the title never casts from".
+
+### 7. The answer §6cu had already written down, a part before it was needed
+
+The stage-1 census's first-sight bounds scan put the world inside z +-550 and
+y -47..360 — and named the exceptions: *"the two absurd global extremes (+-6.3M)
+are three named streams, all stride 3 (12 B position-only), 1.5-11.5 KB — junk-
+coordinate effect buffers, not world geometry, and they replicate across runs."*
+
+Those streams pass **every** structural test the stage-2 collector applies:
+float3 position, sane stride, opaque, depth-writing, content-stable, world-form
+composite. Nothing in the exclusion list was ever going to catch them, because
+every exclusion was about what KIND of draw it is and this is about where its
+vertices ARE. A triangle spanning millions of units is nearer to the sun than
+the entire town over whatever part of the map it covers — which is the measured
+signature exactly.
+
+The gate is a first-sight bounds scan with the cap at 100,000 against a town
+that fits in ~1,100, so it rejects junk and cannot quietly clip real geometry,
+and rejections are COUNTED (`bounds=` in the `[rt]` line): a silent filter here
+would be indistinguishable from the census being wrong about the population.
+`CZ_VK_RT_BOUNDS_CAP` overrides it.
+
+**The transferable lesson, and it is the one to carry into Case West's RT work:**
+the census that prices a feature also names its outliers, and the outliers are
+the feature's first defect. §6cu wrote "not world geometry" as an aside in a
+paragraph about whether streams are world-space; a part later that aside WAS the
+bug. When a census names something junk, the code that consumes the census has to
+name it too — the exclusion belongs in the consumer, not in the prose.
+
+### 8. Where part 64 leaves it
+
+Closed by measurement: the injection route, the depth convention, that the trace
+pipeline's writes reach the shadow term, that the plumbing engages and holds, and
+the CAUSE of the over-shadowing. Built and queued at close: the bounds-gate run
+(the candidate fix, with an atlas dump so it can be diffed against the OG atlas
+by the same method that found the defect) and the `CZ_VK_RT_CASTERS=cascade`
+discriminator. Their numbers, and the operator's LOOK verdict, are part 65's
+first work — open item 0v carries the handover.
+
+One thing to decide there before spending another part on route (a): tracing
+INTO the 4096x1024 atlas cannot beat the atlas's resolution, so its ceiling is
+exact depths and missing occluders — not soft, not per-pixel. The plan's route
+(b) is where a quality tier lives, and every piece built here (BLAS, TLAS, the
+sun-matrix capture, all the arms) is reusable by it unchanged.
