@@ -13106,6 +13106,37 @@ with the same trees, poles and buildings as the raster one — because a wrong
 transform among several related ones still produces a plausible picture. It took
 a COUNT to refute it, and the count is four lines.
 
+### 7d. The dataflow binding is real and discriminating — and it is not sufficient
+
+First run of the fix, at the camp: **45,526 cascade draws were world-vouched and
+captured from, 44,149 were REJECTED as carrying an object transform.** So
+roughly half of this pass's ortho-shaped c0-3 matrices are per-object
+composites, which is a substantive fact about the title independent of what the
+fix buys: the cascade pass is NOT a single-matrix pass, and any future work that
+wants "the sun's view-projection" from it must select, never take the latest.
+
+The coverage it buys is real but partial: **86.3% → 81.7%.** So a second thing
+is still wrong, and the same instrument narrows it — even after the filter,
+slices still show SEVERAL distinct matrices. There are two candidates and they
+are cleanly separable by one refinement part 65 should make first:
+
+* **The distinctness count is taken before the accept/reject test**, so "several"
+  today includes the rejected object transforms. Move it after the test and the
+  number becomes "how many distinct WORLD-VOUCHED matrices does a slice see" —
+  which is the question that matters.
+* If that refined count is **one**, the remaining error is elsewhere entirely
+  (and the surviving suspects are the depth convention and the slice rectangle).
+  If it is **four**, the explanation is almost certainly that the title renders
+  all four cascades before resolving any of them: the matrices would then all be
+  legitimate sun view-projections, one per cascade, and the defect is the
+  slice↔matrix PAIRING rather than the matrix selection. The fix for that is
+  different in kind — associate each captured matrix with the resolve that
+  follows the draws it belongs to, in order, rather than by recency.
+
+Stating both branches with their predicted numbers, before the run, is the point;
+this section has already once (in §7) named a real mechanism that turned out not
+to be the material one.
+
 ### 8. Where part 64 leaves it
 
 Closed by measurement: the injection route, the depth convention, that the trace
