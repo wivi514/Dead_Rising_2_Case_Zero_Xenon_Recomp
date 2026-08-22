@@ -4437,6 +4437,14 @@ bool CreateDevice()
         // Same pattern as anisotropy: ask only if the device has it, and name its
         // absence out loud, because on such a device the clip-plane cache would fail
         // pipeline creation rather than silently not clip.
+        // Precise occlusion queries — CZ_VK_RT_COVERAGE's sample counts (part 64).
+        // Asked for only when the device has it; its absence is a named fact, not
+        // a silently meaningless percentage.
+        if (haveF.occlusionQueryPrecise)
+            f2.features.occlusionQueryPrecise = VK_TRUE;
+        else
+            fprintf(stderr, "[vk] device lacks occlusionQueryPrecise — "
+                            "CZ_VK_RT_COVERAGE cannot report sample counts\n");
         if (haveF.shaderClipDistance)
             f2.features.shaderClipDistance = VK_TRUE;
         else
@@ -9971,6 +9979,25 @@ struct RetiredAs
 };
 std::deque<RetiredAs> g_retiredAs;
 
+// HOW MUCH OF THE SLICE OUR DEPTHS ACTUALLY WON (CZ_VK_RT_COVERAGE=1).
+//
+// The number that separates the two explanations of an over-shadowed frame. The
+// trace pass is depth-tested, so an occlusion query around its one draw counts
+// exactly the samples where a TRACED depth beat the raster cascade's — i.e. where
+// we ADDED an occluder. A few percent means we are adding real shadows and the
+// darkening is somewhere else; most of the slice means our depths are
+// systematically nearer than the raster's and the geometry or the depth
+// convention is wrong, not the bias.
+//
+// Deliberately its own arm rather than always-on: it is a GPU stall (the results
+// are read one frame later, but the pool still serializes) and this is a
+// diagnostic, not a shipping counter.
+VkQueryPool g_queryPool = VK_NULL_HANDLE;
+uint32_t g_queryNext = 0;
+constexpr uint32_t kMaxQueries = 64;
+uint64_t g_qFrame = ~0ull;
+uint64_t g_covWon = 0, g_covTotal = 0;
+
 // Engagement counters (gotcha 151: an arm with no counter cannot be shown to have
 // engaged). Plain adds — this is per-draw code.
 uint64_t g_slicesTraced = 0, g_slicesNoMatrix = 0, g_slicesNoTlas = 0;
@@ -10994,7 +11021,52 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
     push.misc[3] = 0.0f;
     vkCmdPushConstants(R->cmd, g_pipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof push, &push);
+    static const bool coverage = EnvOn("CZ_VK_RT_COVERAGE");
+    uint32_t query = UINT32_MAX;
+    if (coverage)
+    {
+        if (!g_queryPool)
+        {
+            VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qi.queryType = VK_QUERY_TYPE_OCCLUSION;
+            qi.queryCount = kMaxQueries;
+            vkCreateQueryPool(R->device, &qi, nullptr, &g_queryPool);
+        }
+        // One frame's worth of slices, then read the whole batch back at the next
+        // frame's first slice — by then the fence for that frame has been waited
+        // on, so WAIT here would never block. Reset on the same command buffer.
+        if (g_queryPool && R->frame != g_qFrame)
+        {
+            if (g_qFrame != ~0ull && g_queryNext)
+            {
+                uint64_t res[kMaxQueries * 2] = {};
+                if (vkGetQueryPoolResults(
+                        R->device, g_queryPool, 0, g_queryNext, sizeof res, res,
+                        sizeof(uint64_t) * 2,
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) ==
+                    VK_SUCCESS)
+                    for (uint32_t i = 0; i < g_queryNext; ++i)
+                        if (res[i * 2 + 1])
+                            g_covWon += res[i * 2];
+            }
+            g_qFrame = R->frame;
+            g_queryNext = 0;
+            vkCmdResetQueryPool(R->cmd, g_queryPool, 0, kMaxQueries);
+        }
+        if (g_queryPool && g_queryNext < kMaxQueries)
+        {
+            query = g_queryNext++;
+            g_covTotal += uint64_t(rw) * rh;
+            // PRECISE, or the result is only "some samples passed" and the
+            // percentage below would be meaningless (the whole point is the
+            // fraction, not the fact).
+            vkCmdBeginQuery(R->cmd, g_queryPool, query,
+                            VK_QUERY_CONTROL_PRECISE_BIT);
+        }
+    }
     vkCmdDraw(R->cmd, 3, 1, 0, 0);
+    if (query != UINT32_MAX)
+        vkCmdEndQuery(R->cmd, g_queryPool, query);
     vkCmdEndRendering(R->cmd);
     // THE STATE CACHE IS NOW A LIE: this pass bound its own pipeline, layout,
     // viewport, scissor and set 0, and the main path's cache would let the next
@@ -11025,6 +11097,14 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_slicesNoMatrix,
                 (unsigned long long)g_slicesNoTlas, poison ? " POISON" : "",
                 invert ? " INVERT" : "");
+    if (g_covTotal)
+        fprintf(stderr,
+                "[rt]   coverage: traced depths WON %.2f%% of censused slice "
+                "samples (%llu of %llu) — a few %% = we add occluders; most of "
+                "the slice = our depths are systematically nearer than the "
+                "raster's\n",
+                100.0 * double(g_covWon) / double(g_covTotal),
+                (unsigned long long)g_covWon, (unsigned long long)g_covTotal);
 }
 } // namespace rtshadow
 
