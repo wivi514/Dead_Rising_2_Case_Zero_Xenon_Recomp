@@ -9952,6 +9952,11 @@ VkDescriptorPool g_pool = VK_NULL_HANDLE;
 VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
 VkAccelerationStructureKHR g_tlas[kMaxFramesInFlight] = {};
 Buffer g_tlasBuf[kMaxFramesInFlight];
+// The AS OBJECT's created size binds separately from its buffer's: an instance
+// count growing within the buffer's 2x slack still needs a NEW object
+// (VUID 10126, caught by the first validation run — the buffer test alone let
+// a 168064-byte TLAS receive a 181888-byte build).
+VkDeviceSize g_tlasSize[kMaxFramesInFlight] = {};
 Buffer g_instBuf[kMaxFramesInFlight];
 Buffer g_staging[kMaxFramesInFlight];
 Buffer g_scratch[kMaxFramesInFlight];
@@ -10615,18 +10620,22 @@ void BuildFrameStructures(uint8_t* base)
                           &ti, &instCount, &tsz);
     // The slot's TLAS is recreated only when it outgrows its buffer; otherwise the
     // same object is rebuilt in place each frame (spec-legal for mode BUILD).
-    if (!g_tlas[slot] || g_tlasBuf[slot].size < tsz.accelerationStructureSize)
+    if (!g_tlas[slot] || g_tlasSize[slot] < tsz.accelerationStructureSize)
     {
         if (g_tlas[slot])
             g_retiredAs.push_back({ R->frame, g_tlas[slot], Buffer{} });
         g_tlas[slot] = VK_NULL_HANDLE;
-        if (g_tlasBuf[slot].buffer)
-            RetireBufferAs(VK_NULL_HANDLE, g_tlasBuf[slot]);
-        if (!CreateBuffer(g_tlasBuf[slot], tsz.accelerationStructureSize * 2,
-                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true))
-            return;
+        g_tlasSize[slot] = 0;
+        if (g_tlasBuf[slot].size < tsz.accelerationStructureSize)
+        {
+            if (g_tlasBuf[slot].buffer)
+                RetireBufferAs(VK_NULL_HANDLE, g_tlasBuf[slot]);
+            if (!CreateBuffer(g_tlasBuf[slot], tsz.accelerationStructureSize * 2,
+                              VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true))
+                return;
+        }
         VkAccelerationStructureCreateInfoKHR ci{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR
         };
@@ -10635,6 +10644,7 @@ void BuildFrameStructures(uint8_t* base)
         ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
         if (R->pfnCreateAS(R->device, &ci, nullptr, &g_tlas[slot]) != VK_SUCCESS)
             return;
+        g_tlasSize[slot] = tsz.accelerationStructureSize;
     }
     // The BLAS builds and this TLAS build are separated by the barrier above, so
     // the same scratch region is safely reused; only its SIZE needs to cover both.
@@ -10961,6 +10971,11 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                        sizeof push, &push);
     vkCmdDraw(R->cmd, 3, 1, 0, 0);
     vkCmdEndRendering(R->cmd);
+    // THE STATE CACHE IS NOW A LIE: this pass bound its own pipeline, layout,
+    // viewport, scissor and set 0, and the main path's cache would let the next
+    // draw skip re-binding all of them (VUID 08600 x40 on the first validation
+    // run — the main pipeline statically uses sets the trace layout never bound).
+    R->bound = {};
     ++g_slicesTraced;
     // CONSUME the matrix: each slice's own draws must recapture it, so a slice
     // that rendered nothing is skipped (and counted) rather than traced with the
