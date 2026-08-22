@@ -12446,7 +12446,12 @@ void Run(uint8_t* base)
     // offset every lookup by the tier's scale factor.
     pc[24] = 1.0f / float(g_factor.width);
     pc[25] = 1.0f / float(g_factor.height);
-    pc[26] = 0.0f; pc[27] = 0.0f;
+    // CZ_VK_RT_FACTOR_DEBUG=1|2|3 — the link-splitting ladder; see rt_factor.hlsl for
+    // what each mode's PASS looks like. Off (0) is the shipped path.
+    static const int dbg = Env("CZ_VK_RT_FACTOR_DEBUG")
+                               ? atoi(Env("CZ_VK_RT_FACTOR_DEBUG"))
+                               : 0;
+    pc[26] = float(dbg); pc[27] = 0.0f;
     // camera at the last float4
     float pc2[4] = { cam[0], cam[1], cam[2], 0.0f };
 
@@ -12503,13 +12508,13 @@ void Run(uint8_t* base)
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
                 "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d "
-                "tlasInst=%u sun=(%.3f %.3f %.3f) won %u/%u slice votes, "
+                "tlasInst=%u dbg=%d sun=(%.3f %.3f %.3f) won %u/%u slice votes, "
                 "%llu switches "
                 "len=%.1f bias=%.3f/%.3f skips: noScene=%llu noLight=%llu noTlas=%llu "
                 "singular=%llu%s\n",
                 (unsigned long long)g_passes, (unsigned long long)g_drawsServed, tier,
                 g_factor.width, g_factor.height, rays,
-                rtshadow::g_tlasInstances, sun[0], sun[1], sun[2],
+                rtshadow::g_tlasInstances, dbg, sun[0], sun[1], sun[2],
                 rtshadow::g_sunVotes, rtshadow::g_frameVoteCount,
                 (unsigned long long)rtshadow::g_sunSwitches, len, b1, b2,
                 (unsigned long long)g_noScene, (unsigned long long)g_noLight,

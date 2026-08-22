@@ -44,7 +44,8 @@ struct Push
                      // w = rays (1, 2 or 4) x 1000 + the sun's angular radius in
                      //     radians — packed because 112 bytes is the guaranteed push
                      //     constant size and this was the last field
-    float4 view;     // xy = 1 / factor-image size (SV_Position -> uv); zw unused
+    float4 view;     // xy = 1 / factor-image size (SV_Position -> uv);
+                     // z  = CZ_VK_RT_FACTOR_DEBUG mode (0 = off); w unused
     float4 camera;   // xyz = camera world position (for the toward-camera bias), w = 0
 };
 [[vk::push_constant]] Push pc;
@@ -66,6 +67,35 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
 
     float2 uv = fragPos.xy * pc.view.xy;
     float z = g_depth.SampleLevel(g_point, uv, 0.0).x;
+
+    // CZ_VK_RT_FACTOR_DEBUG — THE LADDER THAT SPLITS THIS PASS INTO ITS LINKS.
+    //
+    // It exists because "the world darkens under poison but nothing shadows with a real
+    // factor" says the factor is ~1.0 everywhere, and that has three possible causes in
+    // series: the DEPTH READ, the WORLD RECONSTRUCTION, or the RAY. A frame is the same
+    // picture under all three, so no amount of looking at it can separate them. Each
+    // mode is a positive control for exactly one link and states what a PASS looks like:
+    //
+    //   1  depth mask      — everything with geometry goes black, the sky stays lit.
+    //                        PASS = a black world under a lit sky. If nothing darkens,
+    //                        the depth sample is not returning the scene's depth and
+    //                        nothing downstream can work.
+    //   2  world checker   — a 4-unit checkerboard in WORLD space. PASS = a regular grid
+    //                        painted on the ground that stays PINNED to the world as the
+    //                        camera moves. If it swims with the camera, or the squares
+    //                        are wildly uneven, the inverse view-projection is wrong.
+    //                        The scale is deliberately the same order as the light
+    //                        volume (~106 units), so a wrong world SCALE shows as
+    //                        squares that are absurdly large or invisible.
+    //   3  unbiased rays   — the ray path with zero origin offset and a 10x length.
+    //                        PASS = heavy over-shadowing (self-hits everywhere), which
+    //                        is what an unbiased shadow ray is supposed to produce. If
+    //                        this is still fully lit, the rays miss regardless of bias
+    //                        and the fault is in the TLAS or the ray construction.
+    const int dbg = int(pc.view.z);
+    if (dbg == 1)
+        return z >= 0.999999 ? 1.0 : 0.0;
+
     // Nothing was drawn here — sky, or a region this tile's prepass did not cover.
     // 1.0 is LIT, which is the honest failure: the frame loses a shadow rather than
     // gaining a black one.
@@ -82,6 +112,12 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     float3 world = float3(dot(pc.invRow0, clip), dot(pc.invRow1, clip),
                           dot(pc.invRow2, clip)) / w;
 
+    if (dbg == 2)
+    {
+        float3 c = floor(world / 4.0);
+        return frac((c.x + c.y + c.z) * 0.5) > 0.25 ? 1.0 : 0.0;
+    }
+
     // TWO OFFSETS, and they answer different failure modes. Along the SUN: the standard
     // shadow-acne offset, the one route (a) had no place to put. Toward the CAMERA: a
     // depth-buffer reconstruction is only as precise as D24 at this range, and the
@@ -89,7 +125,9 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     // no sun-side offset can rescue at a grazing sun.
     float3 toCam = pc.camera.xyz - world;
     float camLen = max(length(toCam), 1e-6);
-    float3 origin = world + pc.sun.xyz * pc.params.x + (toCam / camLen) * pc.params.y;
+    float bias0 = dbg == 3 ? 0.0 : pc.params.x;
+    float bias1 = dbg == 3 ? 0.0 : pc.params.y;
+    float3 origin = world + pc.sun.xyz * bias0 + (toCam / camLen) * bias1;
 
     // THE TIER, and what it buys. One ray is a hard shadow. Two or four spread across
     // the sun's angular radius give a real penumbra — which the patched shaders can
@@ -121,7 +159,7 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
         ray.Origin = origin;
         ray.Direction = dir;
         ray.TMin = 0.0;
-        ray.TMax = pc.sun.w;
+        ray.TMax = dbg == 3 ? pc.sun.w * 10.0 : pc.sun.w;
         // FORCE_OPAQUE: the TLAS holds only draws the collector screened to be opaque
         // depth-writers, and there is no any-hit shading on this path.
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
