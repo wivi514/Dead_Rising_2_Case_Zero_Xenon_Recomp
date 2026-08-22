@@ -12657,7 +12657,15 @@ void Run(uint8_t* base)
         ++g_singular;
         return;
     }
-    const float sun[3] = { -d[0] / dl, -d[1] / dl, -d[2] / dl };
+    // CZ_VK_RT_SUN_FLIP=1 — negate the sun. THE ARM THAT DECIDES A SIGN, and there was
+    // no way to ask this question before part 66's session narrowed the fault to the
+    // shadow ray. The direction is derived from the light matrix's own z axis and then
+    // NEGATED on the argument that the light travels from near to far; if that argument
+    // is backwards, every shadow ray fires into the ground (everything shadowed) or into
+    // the sky (nothing shadowed, which is what is measured) and no amount of bias or
+    // length tuning can tell the two apart from the picture.
+    static const float sunSign = EnvOn("CZ_VK_RT_SUN_FLIP") ? 1.0f : -1.0f;
+    const float sun[3] = { sunSign * d[0] / dl, sunSign * d[1] / dl, sunSign * d[2] / dl };
 
     // The camera's world position: the scene composite's inverse applied to the clip
     // origin at the near plane. Used only for the toward-the-camera ray-origin offset.

@@ -405,7 +405,12 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
         // depth-writers, and there is no any-hit shading on this path.
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
         q.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ray);
-        q.Proceed();
+        // Documented to return false on the first call under FORCE_OPAQUE +
+        // ACCEPT_FIRST_HIT, so one call is the usual shadow-ray idiom — but this is the
+        // one link part 66's session has NOT been able to exonerate, and a loop costs
+        // nothing on a query that terminates immediately. Not claimed as a fix.
+        while (q.Proceed())
+            ;
         lit += q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
     }
     return lit / float(rays);
