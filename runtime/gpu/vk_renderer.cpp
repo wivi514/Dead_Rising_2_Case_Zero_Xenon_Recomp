@@ -1244,6 +1244,7 @@ inline float WideFovFactor()
     return (9.0f * float(w)) / (16.0f * float(h));
 }
 
+
 // THE 16:9 SCENE PROJECTION, recognized structurally in a VS constant window's c0..c3.
 // The shape is the one part 58's pose work measured (tools/pose_read.py,
 // clip_plane_space.py): row 3 exactly (0,0,1,0) — w_clip = z_view, a perspective —
@@ -1322,26 +1323,44 @@ inline int SceneXformForm(const uint32_t* c, float& bEff)
     return 2;
 }
 
-// Widen the horizontal fov of a recognized scene transform by the inverse of the
-// surface widening — the wide frame then carries NEW content at the flanks instead
-// of a stretch. Called on the VS constant window as it is copied into the arena
-// (and on the verify arm's recompute, so the memo verifier compares patched against
-// patched). Returns whether it patched, so the caller can count. Raw form: A alone
-// is m[0]. Composite: "A" is the whole of row0 INCLUDING its translation component
-// (row0 = A * v0-with-translation), so all four components scale.
+// Make a recognized scene transform correct for the wide surface. TWO FORMS, TWO
+// TREATMENTS since the culling fix (part 62, §6cu):
+//
+// RAW form (UI, frontend scenes): divide A — the classic vert-plus widen, which
+// is also what self-centers the UI (part 60). Unchanged.
+//
+// COMPOSITE form (the world): MULTIPLY ROW1 BY k (narrow the vertical) instead
+// of dividing row0. Proportions on the wide surface are identical either way
+// (A/B ends at 9/(16k) both ways); the difference is which absolute fov the
+// surface shows — and the game-side fov substitution (cpu/camera_fov.cpp) now
+// OVER-WIDENS the roaming camera by k in tan space, so narrowing the vertical
+// back yields the same picture as before WITH the game's own 16:9 culling
+// frustum covering the whole 21:9 view (the operator's flank pop-in, twice
+// reported). Cameras that are NOT over-widened (cutscenes, minigames) come out
+// as a constant-horizontal 21:9 CROP — the standard cinematic treatment, and
+// crucially one whose visible region the game's frustum always covers, so the
+// pre-existing cutscene flank gap closes too. Row1 scales WHOLE (translation
+// component included — row1 = B * v1-with-translation).
 inline int PatchWideProjection(uint32_t* c)
 {
     float bEff;
     const int form = SceneXformForm(c, bEff);
     if (form == 0)
         return 0;
+    if (form == 1)
+    {
+        float a;
+        memcpy(&a, c, 4);
+        a /= WideFovFactor();
+        memcpy(c, &a, 4);
+        return 1;
+    }
     float m[4];
-    memcpy(m, c, sizeof m);
-    const int n = form == 1 ? 1 : 4;
-    for (int i = 0; i < n; i++)
-        m[i] /= WideFovFactor();
-    memcpy(c, m, sizeof(float) * n);
-    return form;
+    memcpy(m, c + 4, sizeof m);
+    for (int i = 0; i < 4; i++)
+        m[i] *= WideFovFactor();
+    memcpy(c + 4, m, sizeof m);
+    return 2;
 }
 
 // The ratio B'/B the slider applies to a recognized projection's y scale:
@@ -10857,7 +10876,13 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     }
                     if (WideMode())
                     {
-                        p[0] *= WideFovFactor();
+                        // Mirrors the wide patch exactly (part 62 §6cu): raw form
+                        // scales oPos.x by 1/k -> plane.x scales by k; composite
+                        // form scales oPos.y by k -> plane.y scales by 1/k.
+                        if (ucpForm == 1)
+                            p[0] *= WideFovFactor();
+                        else
+                            p[1] /= WideFovFactor();
                         COUNT("draw: user clip plane compensated for the wide "
                               "projection");
                     }
@@ -15739,6 +15764,11 @@ void VkRenderer_D3DSwap(uint8_t* base)
 void VkRenderer_RequestSwapchainRebuild()
 {
     g_swapRebuildRequest.store(true, std::memory_order_release);
+}
+
+float VkRenderer_WideFovFactor()
+{
+    return WideMode() ? WideFovFactor() : 1.0f;
 }
 
 void VkRenderer_DumpStats()

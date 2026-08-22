@@ -26,6 +26,9 @@
 #include <utility>
 #include <cstring>
 
+#include <cmath>
+
+#include "../gpu/vk_renderer.h"
 #include "../host/settings.h"
 #include "ppc_recomp_shared.h"
 
@@ -81,6 +84,16 @@ PPC_FUNC(sub_8246BF48)
         static std::map<uint32_t, uint32_t> baseBits;   // node -> authored value
         static bool wasActive = false;
         const int fovAdj = Settings_Fov();
+        // THE WIDE-MODE OVER-WIDEN (part 62, second operator report — §6cu). The
+        // 21:9 view is k = (9W)/(16H) wider in tan space than the game's 16:9
+        // frustum, so at ANY slider value the flanks show regions the game
+        // believes are off-screen (before the composite unstretch this was
+        // hidden — the view WAS the 16:9 frustum, stretched). The substitution
+        // therefore hands the game v' = 2*atan(k * tan(v/2)) — its 16:9 frustum
+        // then covers the 21:9 view's horizontal exactly — and the renderer's
+        // composite wide patch narrows the projection back vertically, so the
+        // picture is unchanged while the culling covers all of it.
+        const float wideK = VkRenderer_WideFovFactor();
         std::lock_guard<std::mutex> lock(mu);
         auto it = baseBits.find(ctx.r3.u32);
         if (it == baseBits.end())
@@ -89,7 +102,7 @@ PPC_FUNC(sub_8246BF48)
             memcpy(&bits, base + ctx.r3.u32 + 0x14, 4);
             it = baseBits.emplace(ctx.r3.u32, bits).first;
         }
-        if (fovAdj != 0 || wasActive)
+        if (fovAdj != 0 || wideK != 1.0f || wasActive)
         {
             float v;
             uint32_t sw = __builtin_bswap32(it->second);
@@ -99,15 +112,23 @@ PPC_FUNC(sub_8246BF48)
                 v = 10.0f;
             if (v > 120.0f)
                 v = 120.0f;
+            if (wideK != 1.0f)
+            {
+                v = 2.0f * std::atan(wideK * std::tan(v * 0.00872664626f)) *
+                    57.2957795f;
+                if (v > 150.0f)
+                    v = 150.0f;
+            }
             memcpy(&sw, &v, 4);
             sw = __builtin_bswap32(sw);
             memcpy(base + ctx.r3.u32 + 0x14, &sw, 4);
-            if (fovAdj != 0 && !wasActive)
+            if (!wasActive)
             {
                 wasActive = true;
-                fprintf(stderr, "[fovgame] game-side fov ACTIVE: base+%d deg at "
-                                "the camera param getter (node %08X)\n", fovAdj,
-                        ctx.r3.u32);
+                fprintf(stderr, "[fovgame] game-side fov ACTIVE at the camera "
+                                "param getter: base%+d deg, wide-culling factor "
+                                "%.4f -> %.2f deg (node %08X)\n", fovAdj, wideK,
+                        v, ctx.r3.u32);
             }
         }
     }

@@ -72,6 +72,13 @@ void VkRenderer_RequestSwapchainRebuild();
 // CZ_VK_RES/CZ_VK_RES_SCALE pin the scale for a measurement run.
 void VkRenderer_RequestRenderScale(uint32_t scale);
 
+// The wide-mode horizontal factor k = (9*W)/(16*H) of the internal resolution
+// (1.0 at 16:9). Exported for the game-side fov substitution (cpu/camera_fov.cpp,
+// part 62): in wide mode the game's fov is over-widened by k in tan space so its
+// own 16:9 CULLING frustum covers the 21:9 view, and the renderer narrows the
+// projection back vertically. Depends only on settings/env, safe before init.
+float VkRenderer_WideFovFactor();
+
 // ===================================================================================
 // Phase C (the D3D pivot): the SAME renderer driven from the API line
 // ===================================================================================
