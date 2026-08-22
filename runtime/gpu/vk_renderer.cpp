@@ -10020,7 +10020,7 @@ uint64_t g_covWon = 0, g_covTotal = 0;
 uint64_t g_slicesTraced = 0, g_slicesNoMatrix = 0, g_slicesNoTlas = 0;
 uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
          g_skipDynamic = 0, g_skipNew = 0, g_skipEndian = 0, g_collected = 0,
-         g_keyCollisions = 0, g_degenerate = 0;
+         g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0;
 
 int TierThisFrame()
 {
@@ -10261,6 +10261,57 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     {
         pit->second.seenFrame = R->frame;
         return;
+    }
+    // THE BOUNDS GATE, and it exists because §6cu already named its target.
+    //
+    // The stage-1 census's first-sight bounds scan reported the world population
+    // inside z +-550 / y -47..360, "with only the two absurd global extremes
+    // (+-6.3M) ... three named streams, all stride 3 (12 B position-only) —
+    // junk-coordinate effect buffers, not world geometry". Those pass every
+    // structural test this collector applies (float3, sane stride, opaque,
+    // depth-writing, content-stable), so without this they enter the BLAS — and a
+    // triangle spanning millions of units is NEARER to the sun than the entire
+    // town over whatever part of the map it covers, which is precisely the
+    // measured defect: a diff of the traced atlas against the raster one puts our
+    // depth NEARER on 49.6% of texels and farther on 1.3%, i.e. we are a superset
+    // adding near geometry rather than a subset missing far geometry.
+    //
+    // The cap is deliberately far outside the measured world (100k against a
+    // town that fits in ~1.1k) so it rejects junk and cannot quietly clip real
+    // geometry, and every rejection is COUNTED — a silent filter here would be
+    // indistinguishable from the census being wrong about the population.
+    {
+        static const float boundsCap = Env("CZ_VK_RT_BOUNDS_CAP")
+                                           ? float(atof(Env("CZ_VK_RT_BOUNDS_CAP")))
+                                           : 100000.0f;
+        const uint32_t stride = pos.strideDwords * 4;
+        const uint32_t verts = stride ? uint32_t(vbytes / stride) : 0;
+        const uint32_t scan = std::min(verts, 4096u);   // first sight only, capped
+        bool absurd = false;
+        for (uint32_t i = 0; i < scan && !absurd; ++i)
+        {
+            const uint8_t* v = base + sva + size_t(i) * stride + pos.offsetDwords * 4;
+            for (int c = 0; c < 3; ++c)
+            {
+                uint32_t w;
+                memcpy(&w, v + c * 4, 4);
+                w = __builtin_bswap32(w);   // guest big-endian, as uploaded
+                float f;
+                memcpy(&f, &w, 4);
+                if (!std::isfinite(f) || std::fabs(f) > boundsCap)
+                {
+                    absurd = true;
+                    break;
+                }
+            }
+        }
+        if (absurd)
+        {
+            ++g_skipBounds;
+            g_curKeys.erase(key);
+            g_curCascadeKeys.erase(key);
+            return;
+        }
     }
     Pending p;
     p.streamKey = streamKey;
@@ -11126,7 +11177,7 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 "[rt] slices=%llu tlasInst=%u blas=%zu (%.1f MB, built=%llu, "
                 "flushes=%llu) pending=%zu collected=%llu skips: alpha=%llu "
                 "prim=%llu pos=%llu range=%llu dyn=%llu new=%llu endian=%llu "
-                "collide=%llu degen=%llu noMatrix=%llu noTlas=%llu%s%s\n",
+                "bounds=%llu collide=%llu degen=%llu noMatrix=%llu noTlas=%llu%s%s\n",
                 (unsigned long long)g_slicesTraced, g_tlasInstances, g_blas.size(),
                 double(g_blasBytes) / (1 << 20), (unsigned long long)g_blasBuilt,
                 (unsigned long long)g_blasFlushes, g_pending.size(),
@@ -11134,6 +11185,7 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_skipPrim, (unsigned long long)g_skipPosForm,
                 (unsigned long long)g_skipRange, (unsigned long long)g_skipDynamic,
                 (unsigned long long)g_skipNew, (unsigned long long)g_skipEndian,
+                (unsigned long long)g_skipBounds,
                 (unsigned long long)g_keyCollisions,
                 (unsigned long long)g_degenerate,
                 (unsigned long long)g_slicesNoMatrix,
