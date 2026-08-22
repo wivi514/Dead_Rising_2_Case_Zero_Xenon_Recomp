@@ -10020,7 +10020,8 @@ uint64_t g_covWon = 0, g_covTotal = 0;
 uint64_t g_slicesTraced = 0, g_slicesNoMatrix = 0, g_slicesNoTlas = 0;
 uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
          g_skipDynamic = 0, g_skipNew = 0, g_skipEndian = 0, g_collected = 0,
-         g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0;
+         g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0,
+         g_skipNoValidPos = 0;
 
 int TierThisFrame()
 {
@@ -10283,31 +10284,53 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     {
         static const float boundsCap = Env("CZ_VK_RT_BOUNDS_CAP")
                                            ? float(atof(Env("CZ_VK_RT_BOUNDS_CAP")))
-                                           : 100000.0f;
+                                           : 50000.0f;
         const uint32_t stride = pos.strideDwords * 4;
         const uint32_t verts = stride ? uint32_t(vbytes / stride) : 0;
-        const uint32_t scan = std::min(verts, 4096u);   // first sight only, capped
-        bool absurd = false;
-        for (uint32_t i = 0; i < scan && !absurd; ++i)
+        const uint32_t scan = std::min(verts, 4096u);
+        // THE TEST IS THE STREAM'S EXTENT, NOT ANY ONE VERTEX, and the difference
+        // matters: the census's own scan skips non-finite and absurd vertices as
+        // "padding, a degenerate slot" precisely because REAL meshes contain them
+        // (unreferenced tail slots), so a per-vertex veto rejects real geometry —
+        // the first version of this gate did exactly that, 66,095 times in one run.
+        // Junk streams have no valid vertices at all, or an extent in the millions;
+        // a real mesh with padding has a small extent among its valid ones. Both
+        // outcomes are counted separately, because "we threw away geometry" and
+        // "we threw away junk" must never share a number.
+        float mn[3] = {}, mx[3] = {};
+        bool any = false;
+        for (uint32_t i = 0; i < scan; ++i)
         {
             const uint8_t* v = base + sva + size_t(i) * stride + pos.offsetDwords * 4;
+            float f[3];
+            bool ok = true;
             for (int c = 0; c < 3; ++c)
             {
                 uint32_t w;
                 memcpy(&w, v + c * 4, 4);
                 w = __builtin_bswap32(w);   // guest big-endian, as uploaded
-                float f;
-                memcpy(&f, &w, 4);
-                if (!std::isfinite(f) || std::fabs(f) > boundsCap)
+                memcpy(&f[c], &w, 4);
+                if (!std::isfinite(f[c]) || std::fabs(f[c]) > 1e7f)
                 {
-                    absurd = true;
+                    ok = false;
                     break;
                 }
             }
+            if (!ok)
+                continue;
+            for (int c = 0; c < 3; ++c)
+            {
+                mn[c] = any ? std::min(mn[c], f[c]) : f[c];
+                mx[c] = any ? std::max(mx[c], f[c]) : f[c];
+            }
+            any = true;
         }
-        if (absurd)
+        float extent = 0.0f;
+        for (int c = 0; c < 3; ++c)
+            extent = std::max(extent, mx[c] - mn[c]);
+        if (!any || extent > boundsCap)
         {
-            ++g_skipBounds;
+            ++(any ? g_skipBounds : g_skipNoValidPos);
             g_curKeys.erase(key);
             g_curCascadeKeys.erase(key);
             return;
@@ -11177,7 +11200,8 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 "[rt] slices=%llu tlasInst=%u blas=%zu (%.1f MB, built=%llu, "
                 "flushes=%llu) pending=%zu collected=%llu skips: alpha=%llu "
                 "prim=%llu pos=%llu range=%llu dyn=%llu new=%llu endian=%llu "
-                "bounds=%llu collide=%llu degen=%llu noMatrix=%llu noTlas=%llu%s%s\n",
+                "bounds=%llu nopos=%llu collide=%llu degen=%llu noMatrix=%llu "
+                "noTlas=%llu%s%s\n",
                 (unsigned long long)g_slicesTraced, g_tlasInstances, g_blas.size(),
                 double(g_blasBytes) / (1 << 20), (unsigned long long)g_blasBuilt,
                 (unsigned long long)g_blasFlushes, g_pending.size(),
@@ -11186,6 +11210,7 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
                 (unsigned long long)g_skipRange, (unsigned long long)g_skipDynamic,
                 (unsigned long long)g_skipNew, (unsigned long long)g_skipEndian,
                 (unsigned long long)g_skipBounds,
+                (unsigned long long)g_skipNoValidPos,
                 (unsigned long long)g_keyCollisions,
                 (unsigned long long)g_degenerate,
                 (unsigned long long)g_slicesNoMatrix,
