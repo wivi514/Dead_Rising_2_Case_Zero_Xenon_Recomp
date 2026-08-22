@@ -12994,11 +12994,30 @@ vertices ARE. A triangle spanning millions of units is nearer to the sun than
 the entire town over whatever part of the map it covers — which is the measured
 signature exactly.
 
-The gate is a first-sight bounds scan with the cap at 100,000 against a town
-that fits in ~1,100, so it rejects junk and cannot quietly clip real geometry,
-and rejections are COUNTED (`bounds=` in the `[rt]` line): a silent filter here
-would be indistinguishable from the census being wrong about the population.
-`CZ_VK_RT_BOUNDS_CAP` overrides it.
+The gate is a first-sight bounds scan, rejections COUNTED (`bounds=` in the
+`[rt]` line): a silent filter here would be indistinguishable from the census
+being wrong about the population. `CZ_VK_RT_BOUNDS_CAP` overrides it.
+
+**Two corrections to this section, both from running it.**
+
+*It was written per-VERTEX and that is wrong.* The first version vetoed a whole
+stream on a single out-of-range vertex and fired 66,095 times in one run — because
+the census's own scan skips non-finite and absurd vertices as "padding, a
+degenerate slot" precisely since REAL meshes contain them (unreferenced tail
+slots). A per-vertex veto therefore throws away real geometry, the opposite of
+the defect it was written for. It now computes the bounds the census's way and
+decides on the stream's EXTENT (cap 50k against a town that fits in ~1.1k), with
+"no valid position at all" counted separately from "extent too large" — "we threw
+away geometry" and "we threw away junk" must never share a number.
+
+*And the gate is hygiene, not the fix.* With it on, the outdoor median reads
+**63.71** against the ungated **63.72** — i.e. no measurable change. The junk
+streams are real and they do not belong in a BLAS, but they were never the
+material contributor; §7b below is. Worth stating plainly because the diagnosis
+in §7 was CORRECT about the mechanism ("a superset adding near geometry") and
+WRONG about which member of the superset mattered, and a plausible mechanism
+that fails to move the number is exactly the kind of finding this project has
+paid for accepting before (gotcha 30).
 
 **The transferable lesson, and it is the one to carry into Case West's RT work:**
 the census that prices a feature also names its outliers, and the outliers are
