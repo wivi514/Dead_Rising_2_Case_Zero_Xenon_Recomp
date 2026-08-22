@@ -13057,7 +13057,15 @@ before either number landed and is aimed exactly at the second: it traces the
 pitch-1040 pass's own casters, which is by construction the same population the
 raster atlas holds.
 
-### 7c. THE ROOT CAUSE: the light matrix was bound by RECENCY, and that binding is false
+### 7c. ~~THE ROOT CAUSE~~ A FALSE BINDING, REAL BUT NOT THE CAUSE: the light matrix was bound by RECENCY
+
+> **The heading originally read "THE ROOT CAUSE" and that was wrong.** The
+> binding IS false and the fix IS right — the counts below do not drift — but it
+> moved the frame by 0.66 luma against a 14-luma gap in the clean same-binary
+> A/B (§7e), and route (a) turned out to be unworkable for a different reason
+> entirely (§7j). Corrected in the heading rather than only in a later section,
+> because a reader skimming section titles would otherwise carry away the one
+> claim this record most needs to retract.
 
 §7b's occluder-set story was measured and it is real, but it is not the whole
 defect — `CZ_VK_RT_CASTERS=cascade` traces the title's own casters (190 TLAS
@@ -13401,58 +13409,61 @@ to the operator.**
 
 ### 8. Where part 64 leaves it
 
-**Closed by measurement** (complete runs, large n): the injection route, the
-depth convention, that the trace pipeline's writes reach the title's shadow term,
-and that the plumbing engages and holds.
+**Closed by measurement** (complete runs, large n): the injection point — the
+atlas snapshot IS where the title's shadow term reads and needs no shader patch;
+the convention (standard, near = occluder); that the whole ray path reaches that
+term (the poison control landing on the direct fill's number); and that the
+plumbing engages and holds.
 
 **Established as FACTS about the title, by counts that do not drift** — each a
-real defect, none shown to matter to the picture: junk geometry with
-million-unit coordinates enters the BLAS; the title's own cascade is 52.8% empty
-because it draws casters, not receivers; and the cascade pass carries several
-distinct c0-3 matrices per slice, so binding the light matrix by recency is
-false (0 slices with one, 28,704 with several). All three now have fixes in the
-tree, all three are right on their own terms, and **none of them moved the frame
-measurably** (§7e).
+real defect, each now fixed, **none of which moved the picture**: junk geometry
+with million-unit coordinates enters the BLAS; the title's own cascade is 52.8%
+empty because it draws casters, not receivers; and the cascade pass carries
+several distinct c0-3 matrices per slice, so binding the light matrix by recency
+is false (0 slices with one, 28,704 with several).
 
-**Open, and it is the whole of part 65's first job**: every RT arm over-shadows
-by ~14 luma (66.1-66.4 against OG's 80.61, all-shadow floor 61.2) and the cause
-is not any of the three things that looked like it.
+**Two suspects were named and BOTH eliminated**, which is what forced the
+verdict rather than another round of tuning:
+* the slice↔matrix PAIRING — refuted. The distinctness count taken after the
+  dataflow filter reads **10,192 slices with exactly ONE world-vouched c0-3 and
+  0 with several** (1,293,132 accepted draws, 825,134 rejected object-transform
+  ones). The selection is provably exact; do not build the ordered-association
+  fix.
+* the DEPTH CONVENTION — eliminated. Printing the registers on a cascade draw:
+  **VTE=3F with zscale=1, zoffset=0, i.e. IDENTITY.** The renderer ignoring the
+  viewport Z terms costs nothing here because there is nothing to ignore.
 
-**One of the two surviving suspects was eliminated in the part's last run, and
-the answer is clean.** The refined distinctness count — taken AFTER the dataflow
-filter, so it asks "how many distinct WORLD-VOUCHED matrices does one slice
-see" — reads **10,192 slices with exactly ONE, and 0 with several**, from
-1,293,132 accepted draws against 825,134 rejected object-transform ones. The
-branch this section pre-registered as "FOUR => the title renders all cascades
-before resolving any, and the defect is the slice<->matrix PAIRING" is therefore
-**refuted**: the pairing is exact and the matrix selection is now provably right.
+**THE VERDICT (§7j): route (a) cannot produce correct shadows, and the reason is
+structural.** Writing the shadow MAP means every receiver inside it is compared
+against itself and there is no receiver-side offset to apply. Five independent
+knobs — occluder set, union vs replacement, the matrix binding, the bounds gate,
+a 6.7x bias sweep — all land at 64-66 median outdoor luma against OG's 80.61,
+floor 61.2. **The invariance is the finding**: it is not a parameter mis-set, it
+is what the route does.
 
-So the remaining suspect is the one the pre-registration named against it: **the
-DEPTH CONVENTION.** `PA_CL_VTE_CNTL`'s Z-enable bits and
-`kPaClVportZScale`/`kPaClVportZOffset` are decoded NOWHERE in this renderer —
-the raster path hardcodes `minDepth = 0, maxDepth = 1` and the trace pass writes
-a raw NDC z. Those two agree with EACH OTHER, which is why the traced atlas
-looks right, and both would disagree with what the title's receiver-side
-comparison expects if the cascade sets those terms. **The first thing to do in
-part 65 is print those three registers on a cascade draw**; it is one line and
-it either names the defect or eliminates the last named suspect.
+**Route (b) is the live direction and part 65's subject** (the operator's
+decision): compute the factor per RECEIVING PIXEL in screen space and patch the
+atlas-sampling pixel shaders to read it. The defect is impossible by
+construction — the ray starts at the receiving surface and is offset along its
+own normal — and it is the only route that can do soft or per-pixel shadows,
+since route (a) is capped at the atlas's resolution however many rays it fires.
+Everything built here is reusable unchanged. `docs/part65-kickoff.md` carries the
+spec; its step 1 is a CENSUS of which shaders fetch `1439B000` and at which
+slot, and nothing should be built before that returns a list.
 
-**Gates at close, on the final binary** (the one carrying all five fixes, with
-RT off — which is the shipped default, since both the env arm and the panel row
-default to OG): `--smoke` OK; **A5 exit 0, 4 permutation windows, 0 real**;
-`no translated shader` = 0 on the plain boot and on all three RT runs;
-`find_unlowered_switches.py` 0 defects (2 benign thunks);
-`shader_dim_census.py` 0 disagreements, 338 2D / 100 cube. The renderer's
-default path is untouched by this part: with `CZ_VK_RT_SHADOWS` unset nothing in
-`rtshadow` runs beyond one per-frame tier read.
+**Shipped and staying**: the operator's settings revision — ONE `SHADOW` row,
+LOW/MEDIUM/HIGH then RT LOW/MEDIUM/HIGH, an RT value REPLACING the raster shadow
+with the raster tier remembered underneath. RT is OFF by default.
 
-**Do the measurement properly this time** (gotcha 384): gate every read on the
-process having exited, quote the frame count beside every median, and run the
-control to the SAME depth. An hour of this part was spent building on numbers
-that were measurements of a different place in the level.
+**Gates at close, on the final binary** (RT off = the shipped default): `--smoke`
+OK; **A5 exit 0**; `no translated shader` = 0 on the plain boot and every RT run;
+`find_unlowered_switches.py` 0 defects (2 benign thunks); `shader_dim_census.py`
+0 disagreements. With `CZ_VK_RT_SHADOWS` unset nothing in `rtshadow` runs beyond
+one per-frame tier read.
 
-One thing to decide there before spending another part on route (a): tracing
-INTO the 4096x1024 atlas cannot beat the atlas's resolution, so its ceiling is
-exact depths and missing occluders — not soft, not per-pixel. The plan's route
-(b) is where a quality tier lives, and every piece built here (BLAS, TLAS, the
-sun-matrix capture, all the arms) is reusable by it unchanged.
+**And do the measurement properly next time** (gotchas 384-386): gate every read
+on the process having EXITED, quote the frame count beside every median, run the
+control to the same depth, and re-check the engagement counter after combining
+two separately-verified changes. An hour of this part was spent building on
+numbers that were measurements of a different place in the level, and one build
+that measured a perfect fix was the feature silently switched off.
