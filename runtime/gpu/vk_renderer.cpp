@@ -3,6 +3,7 @@
 #include "pm4.h"
 #include "pump_stats.h"
 #include "drawid_ps_spv.h"
+#include "rt_shadow_spv.h"
 #include "xenos.h"
 #include "../host/settings.h"
 #include "../host/window.h"
@@ -309,6 +310,10 @@ struct ProfilePhases
     uint64_t otherBegin = 0;    // BeginFrame + BeginRendering + the three arena allocs
     uint64_t otherTail = 0;     // bool/loop constants, the viewport decode, the censuses
     uint64_t draws = 0;       // how many draws those numbers are spread over
+    // RT stage 2 (part 64): the whole ray-traced-shadow path — BLAS/TLAS builds
+    // recorded and the trace pass — measured from day one per the plan's rule.
+    // EXCLUSIVE like every scope; zero in any run at tier OG.
+    uint64_t rt = 0;
     uint64_t scopes = 0;      // ProfScope closes — the profiler's own bill, see ProfScope
     // Pipeline creation, which lives INSIDE `drawOther` and is the only thing in there
     // that costs milliseconds. Separated because a first-visit stutter and a per-draw
@@ -2819,6 +2824,11 @@ struct Snapshot
     // formats — so a change of source has to rebuild the image, exactly as a change of
     // extent does.
     bool fromDepth = false;
+    // RT stage 2 (part 64): the trace pass renders INTO a depth snapshot, and an
+    // attachment view must not carry the sampled view's (R,R,R,1) swizzle — so the
+    // shadow atlas gets one identity-swizzle depth view, created at first trace and
+    // retired with the image in the resize path.
+    VkImageView rtAttachView = VK_NULL_HANDLE;
 };
 
 // A cube map the TITLE RENDERS ITSELF: six resolve snapshots assembled into the six
@@ -9847,6 +9857,1133 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
     }
 }
 
+// ===================================================================================
+// RT STAGE 2 (part 64): ray-traced shadows through the cascade atlas — route (a)
+// ===================================================================================
+//
+// The design in one paragraph, against §6cu's measured facts. World geometry is
+// 100% float3 / u16-strip streams in ONE shared world coordinate frame (identity
+// instance transforms), 98.1% of it content-stable, so: a BLAS is built once per
+// (stream identity + persist-guard content stamp + index identity) tuple from a
+// staging copy of the guest bytes; a TLAS of identity-transform instances is rebuilt
+// each frame from the PREVIOUS frame's world-draw set (the cascade resolves come
+// before this frame's world draws, so last frame's set is the freshest complete
+// one); and the trace itself is a fullscreen-triangle FRAGMENT pass with a ray query
+// per texel, rendered INTO the just-resolved cascade slice with the depth test set
+// so a traced hit only lands where it is NEARER the sun than the raster depth. The
+// title's own shadow comparison then produces the shadows — no translated shader is
+// touched, and everything the TLAS excludes (skinned actors, alpha-tested foliage,
+// dynamic smallware) keeps its raster shadow because the union costs nothing.
+//
+// Exclusions are STRUCTURAL, per the plan: non-composite draws never enter (the
+// affine c0-3 form is the skinned population, §6cs), non-depth-writing draws are
+// not occluders, alpha-test/A2M draws would over-shadow traced-opaque (stated
+// trade: they stay raster-only), and streams the persist store has caught being
+// rewritten (`dynamic`) are the CPU-deformed smallware class the census closed at
+// 134 members.
+//
+// Arms: CZ_VK_RT_SHADOWS=1 engages (env wins over the settings row);
+// CZ_VK_RT=0 keeps the device itself OG; CZ_VK_RT_POISON=1 writes the all-shadow
+// value from the trace pipeline (the positive control — must darken the world);
+// CZ_VK_RT_INVERT=1 flips the depth polarity if the CZ_VK_SHADOW_FILL experiment
+// reads the convention the other way. All pump-thread-only state — DoDraw and
+// DoResolve run on the pump, so none of this locks.
+namespace rtshadow
+{
+struct Blas
+{
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
+    uint64_t lastFrame = 0;
+    uint32_t tris = 0;
+    // Identity echo: the map key is an FNV mix, so the true tuple is kept and
+    // checked on every hit — a collision is counted and treated as a miss, never
+    // silently traced with another mesh's BLAS.
+    uint64_t streamKey = 0, idxKey = 0, vGuard = 0, iGuard = 0;
+};
+
+struct Pending
+{
+    uint64_t streamKey = 0, idxKey = 0, vGuard = 0, iGuard = 0;
+    uint32_t posVa = 0, posBytes = 0, strideDw = 0, offsetDw = 0, vEndian = 0;
+    uint32_t idxVa = 0, idxCount = 0, iEndian = 0;
+    uint32_t prim = 0;
+    bool indexed = false;
+    uint64_t seenFrame = 0;
+};
+
+// The AS POOL: acceleration structures are placed at offsets inside big chunks
+// rather than one VkDeviceMemory each, because a crowd's ~2,600 BLASes against the
+// driver's ~4096 maxMemoryAllocationCount would exhaust the allocator with textures
+// still to serve. No per-BLAS eviction in stage 2 — the census prices the whole
+// roam's stable set at ~85 MB of source geometry, far under the cap — but the cap
+// exists and overflowing it FLUSHES everything (counted, logged), which is correct
+// if crude: every live key re-pends through Collect and rebuilds under the budget.
+struct AsChunk
+{
+    Buffer buf;
+    VkDeviceSize cursor = 0;
+};
+
+std::unordered_map<uint64_t, Blas> g_blas;
+std::vector<AsChunk> g_chunks;
+VkDeviceSize g_blasBytes = 0;
+uint64_t g_blasBuilt = 0, g_blasFlushes = 0;
+std::unordered_map<uint64_t, Pending> g_pending;
+std::unordered_set<uint64_t> g_curKeys, g_prevKeys;
+uint64_t g_collectFrame = ~0ull;
+
+// The captured cascade matrix: the LAST ortho composite seen on a pitch-1040 draw
+// before this slice's resolve. Rigid cascade draws all carry the slice's own sun
+// view-projection at c0-3 (world-space streams, identity transforms — §6cs), so
+// last-write-wins pairs each resolve with its own slice's matrix.
+float g_lightM[16];
+bool g_lightMValid = false;
+
+// Per-frame trace state.
+uint64_t g_tlasFrame = ~0ull;
+bool g_tlasReady = false;
+uint32_t g_tlasInstances = 0;
+
+VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
+VkPipelineLayout g_pipeLayout = VK_NULL_HANDLE;
+VkPipeline g_pipe = VK_NULL_HANDLE;
+VkDescriptorPool g_pool = VK_NULL_HANDLE;
+VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
+VkAccelerationStructureKHR g_tlas[kMaxFramesInFlight] = {};
+Buffer g_tlasBuf[kMaxFramesInFlight];
+Buffer g_instBuf[kMaxFramesInFlight];
+Buffer g_staging[kMaxFramesInFlight];
+Buffer g_scratch[kMaxFramesInFlight];
+
+struct RetiredAs
+{
+    uint64_t frame = 0;
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE;
+    Buffer buf;
+};
+std::deque<RetiredAs> g_retiredAs;
+
+// Engagement counters (gotcha 151: an arm with no counter cannot be shown to have
+// engaged). Plain adds — this is per-draw code.
+uint64_t g_slicesTraced = 0, g_slicesNoMatrix = 0, g_slicesNoTlas = 0;
+uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
+         g_skipDynamic = 0, g_skipNew = 0, g_skipEndian = 0, g_collected = 0,
+         g_keyCollisions = 0, g_degenerate = 0;
+
+int TierThisFrame()
+{
+    // Env wins over the settings row, per the standing rule. The row lands with the
+    // panel commit; until a row exists the env var is the only door.
+    static const char* e = Env("CZ_VK_RT_SHADOWS");
+    if (e)
+        return atoi(e);
+    return Settings_RtShadows();
+}
+
+bool Active()
+{
+    return R->rtEnabled && TierThisFrame() > 0;
+}
+
+void FrameRoll()
+{
+    if (R->frame != g_collectFrame)
+    {
+        g_prevKeys.swap(g_curKeys);
+        g_curKeys.clear();
+        g_collectFrame = R->frame;
+    }
+}
+
+void DrainRetiredAs()
+{
+    while (!g_retiredAs.empty() &&
+           g_retiredAs.front().frame + R->framesInFlight + 1 <= R->frame)
+    {
+        RetiredAs& r = g_retiredAs.front();
+        if (r.as)
+            R->pfnDestroyAS(R->device, r.as, nullptr);
+        if (r.buf.buffer)
+        {
+            vkDestroyBuffer(R->device, r.buf.buffer, nullptr);
+            vkFreeMemory(R->device, r.buf.memory, nullptr);
+        }
+        g_retiredAs.pop_front();
+    }
+}
+
+void RetireBufferAs(VkAccelerationStructureKHR as, Buffer& buf)
+{
+    g_retiredAs.push_back({ R->frame, as, buf });
+    buf = Buffer{};
+}
+
+inline uint64_t Mix(uint64_t h, uint64_t v)
+{
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return h;
+}
+
+// Collect one draw. Called beside the censuses in DoDraw, on the raw register
+// window; inert to one Active() test per draw when the tier is OG.
+void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& vs,
+             const Pm4Draw& draw, const uint32_t* regs, uint8_t* base)
+{
+    if (!Active())
+        return;
+    FrameRoll();
+    float bEff;
+    const int form = SceneXformForm(vsWindow, bEff);
+    if (form == 0)
+    {
+        // The cascade's sun matrix: pitch-1040 pass, ortho composite (row3 xyz ~ 0,
+        // w ~ 1). Skinned cascade draws that carry something else at c0-3 simply
+        // fail the test and never overwrite the capture.
+        if (IsShadowSurface(regs))
+        {
+            const float* m = reinterpret_cast<const float*>(vsWindow);
+            const float n3 = m[12] * m[12] + m[13] * m[13] + m[14] * m[14];
+            if (n3 < 0.004f && std::fabs(m[15] - 1.0f) < 0.01f)
+            {
+                memcpy(g_lightM, m, sizeof g_lightM);
+                g_lightMValid = true;
+            }
+        }
+        return;
+    }
+    if (form != 2)
+        return;
+    if (!((depthControl >> 2) & 1))
+        return;   // not depth-writing: not an occluder
+    const uint32_t cc = regs[xenos::kRbColorControl];
+    if (cc & 0x18)   // alpha test (bit 3) or A2M (bit 4): opaque-only BLAS, stated
+    {
+        ++g_skipAlpha;
+        return;
+    }
+    if (vs.attributes.empty())
+    {
+        ++g_skipPosForm;
+        return;
+    }
+    const VertexAttribute& pos = vs.attributes[0];
+    if (pos.location < 0 || pos.indirect || pos.format != 57 || !pos.strideDwords ||
+        pos.fetchSlot >= 96)
+    {
+        ++g_skipPosForm;
+        return;
+    }
+    const uint32_t prim = draw.primType;
+    if (prim != xenos::kTriangleStrip && prim != xenos::kTriangleList)
+    {
+        ++g_skipPrim;
+        return;
+    }
+    if (draw.indexed && draw.index32)
+    {
+        ++g_skipPrim;   // census: zero idx32 world draws; refuse rather than guess
+        return;
+    }
+    const xenos::VertexFetch vf =
+        xenos::DecodeVertexFetch(regs, FetchSlot(pos.fetchSlot));
+    const uint32_t sva = PhysToVa(vf.address);
+    const uint64_t vbytes = uint64_t(vf.sizeDwords) * 4;
+    if (!vf.address || !vbytes || !GuestRangeOk(sva, vbytes))
+    {
+        ++g_skipRange;
+        return;
+    }
+    if (vf.endian != 2 && vf.endian != 0)
+    {
+        ++g_skipEndian;   // the census read 8-in-32 everywhere; anything else is
+        return;           // refused loudly-by-counter, never guessed (gotcha 5)
+    }
+    const uint64_t streamKey = (uint64_t(sva) << 32) |
+                               (uint64_t(vbytes & 0x3FFFFFFFu) << 2) | (vf.endian & 3);
+    // The content stamp is the persist store's OWN guard — the raster path's change
+    // detector, computed once per first-touch there, so it is free here and the two
+    // paths cannot disagree about which bytes are current. A stream with no entry
+    // yet is one the raster path meets THIS draw; it is skipped for one frame
+    // rather than stamped with a guess.
+    Renderer::PersistEntry* pe = PersistFind(streamKey);
+    if (!pe)
+    {
+        ++g_skipNew;
+        return;
+    }
+    if (pe->dynamic)
+    {
+        ++g_skipDynamic;   // the rewritten smallware class stays raster-only
+        return;
+    }
+    const uint64_t vGuard = pe->guard;
+    uint64_t idxKey = 0, iGuard = 0;
+    if (draw.indexed)
+    {
+        const uint64_t ibytes = uint64_t(draw.indexCount) * 2;
+        if (!GuestRangeOk(draw.indexVa, ibytes))
+        {
+            ++g_skipRange;
+            return;
+        }
+        idxKey = (uint64_t(draw.indexVa) << 32) |
+                 (uint64_t(ibytes & 0x3FFFFFFFu) << 2) | (draw.indexEndian & 3);
+        Renderer::PersistEntry* ie = PersistFind(idxKey);
+        if (!ie)
+        {
+            ++g_skipNew;
+            return;
+        }
+        if (ie->dynamic)
+        {
+            ++g_skipDynamic;
+            return;
+        }
+        iGuard = ie->guard;
+    }
+    uint64_t key = Mix(0x52545348, streamKey);
+    key = Mix(key, vGuard);
+    key = Mix(key, idxKey);
+    key = Mix(key, iGuard);
+    key = Mix(key, (uint64_t(draw.indexCount) << 16) | (prim << 8) |
+                       (pos.offsetDwords << 4) | pos.strideDwords);
+    ++g_collected;
+    g_curKeys.insert(key);
+    auto bit = g_blas.find(key);
+    if (bit != g_blas.end())
+    {
+        if (bit->second.streamKey != streamKey || bit->second.idxKey != idxKey ||
+            bit->second.vGuard != vGuard || bit->second.iGuard != iGuard)
+        {
+            ++g_keyCollisions;   // treat as absent; never trace another mesh's BLAS
+            g_curKeys.erase(key);
+            return;
+        }
+        bit->second.lastFrame = R->frame;
+        return;
+    }
+    auto pit = g_pending.find(key);
+    if (pit != g_pending.end())
+    {
+        pit->second.seenFrame = R->frame;
+        return;
+    }
+    Pending p;
+    p.streamKey = streamKey;
+    p.idxKey = idxKey;
+    p.vGuard = vGuard;
+    p.iGuard = iGuard;
+    p.posVa = sva;
+    p.posBytes = uint32_t(vbytes);
+    p.strideDw = pos.strideDwords;
+    p.offsetDw = pos.offsetDwords;
+    p.vEndian = vf.endian;
+    p.idxVa = draw.indexVa;
+    p.idxCount = draw.indexCount;
+    p.iEndian = draw.indexEndian;
+    p.prim = prim;
+    p.indexed = draw.indexed;
+    p.seenFrame = R->frame;
+    g_pending.emplace(key, p);
+}
+
+// Endian-correct u16 index read straight from guest memory, mirroring what
+// CopySwapped does for the raster copy of the same buffer.
+inline uint16_t IdxAt(const uint8_t* p, uint32_t i, uint32_t endian)
+{
+    switch (endian & 3)
+    {
+        case 1:   // 8-in-16
+            return uint16_t((p[i * 2] << 8) | p[i * 2 + 1]);
+        case 2:   // 8-in-32: bytes of each dword reversed — the u16 pair swaps too
+        {
+            const uint32_t j = (i ^ 1) * 2;   // the partner u16 in the dword
+            return uint16_t((p[j] << 8) | p[j + 1]);
+        }
+        case 3:   // 16-in-32: the pair swaps, bytes within each u16 do not
+        {
+            const uint32_t j = (i ^ 1) * 2;
+            return uint16_t(p[j] | (p[j + 1] << 8));
+        }
+        default:
+            return uint16_t(p[i * 2] | (p[i * 2 + 1] << 8));
+    }
+}
+
+// Grow a host-visible or device-local buffer to at least `need`, retiring the old
+// one through the fence-aware queue (commands recorded earlier this frame may
+// still reference it).
+bool EnsureBuffer(Buffer& b, VkDeviceSize need, VkBufferUsageFlags usage,
+                  VkMemoryPropertyFlags props, const char* what)
+{
+    if (b.buffer && b.size >= need)
+        return true;
+    VkDeviceSize sz = std::max<VkDeviceSize>(b.size ? b.size * 2 : (1u << 20), need);
+    if (b.buffer)
+        RetireBufferAs(VK_NULL_HANDLE, b);
+    if (!CreateBuffer(b, sz, usage, props, true))
+    {
+        fprintf(stderr, "[rt] cannot allocate %s (%llu bytes) — RT shadows idle\n",
+                what, (unsigned long long)sz);
+        return false;
+    }
+    return true;
+}
+
+// Place an acceleration structure of `size` bytes in the AS pool, creating a chunk
+// when needed. Returns a created (empty) AS handle and its device address.
+bool PlaceAs(VkDeviceSize size, VkAccelerationStructureTypeKHR type,
+             VkAccelerationStructureKHR* as, VkDeviceAddress* addr, Buffer** buf,
+             VkDeviceSize* offset)
+{
+    const VkDeviceSize aligned = (size + 255) & ~VkDeviceSize(255);
+    constexpr VkDeviceSize kChunk = 64ull << 20;
+    AsChunk* c = nullptr;
+    if (!g_chunks.empty() && g_chunks.back().cursor + aligned <= g_chunks.back().buf.size)
+        c = &g_chunks.back();
+    else
+    {
+        AsChunk nc;
+        const VkDeviceSize sz = std::max(kChunk, aligned);
+        if (!CreateBuffer(nc.buf, sz,
+                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true))
+        {
+            fprintf(stderr, "[rt] AS pool chunk allocation failed (%llu MB)\n",
+                    (unsigned long long)(sz >> 20));
+            return false;
+        }
+        g_chunks.push_back(nc);
+        c = &g_chunks.back();
+    }
+    VkAccelerationStructureCreateInfoKHR ci{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR
+    };
+    ci.buffer = c->buf.buffer;
+    ci.offset = c->cursor;
+    ci.size = size;
+    ci.type = type;
+    if (R->pfnCreateAS(R->device, &ci, nullptr, as) != VK_SUCCESS)
+        return false;
+    VkAccelerationStructureDeviceAddressInfoKHR ai{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR
+    };
+    ai.accelerationStructure = *as;
+    *addr = R->pfnGetASAddress(R->device, &ai);
+    if (buf)
+        *buf = &c->buf;
+    if (offset)
+        *offset = c->cursor;
+    c->cursor += aligned;
+    g_blasBytes += aligned;
+    return true;
+}
+
+// Everything over: retire every chunk and AS, clear the map. Live keys re-pend
+// through Collect on their next draw and rebuild under the per-frame budget.
+void FlushAll()
+{
+    for (auto& [k, b] : g_blas)
+        if (b.as)
+            g_retiredAs.push_back({ R->frame, b.as, Buffer{} });
+    g_blas.clear();
+    for (auto& c : g_chunks)
+        RetireBufferAs(VK_NULL_HANDLE, c.buf);
+    g_chunks.clear();
+    g_blasBytes = 0;
+    ++g_blasFlushes;
+    fprintf(stderr, "[rt] BLAS pool over its cap — flushed (flush #%llu)\n",
+            (unsigned long long)g_blasFlushes);
+}
+
+// Build the frame's structures into R->cmd: the budgeted batch of missing BLASes,
+// then the TLAS over last frame's world set. Called once per frame from the first
+// traced slice; the caller has already done BeginFrame + EndRendering.
+void BuildFrameStructures(uint8_t* base)
+{
+    DrainRetiredAs();
+    const uint32_t slot = R->frameSlot;
+    static const VkDeviceSize buildBudget =
+        (Env("CZ_VK_RT_BUILD_MB") ? strtoull(Env("CZ_VK_RT_BUILD_MB"), nullptr, 10)
+                                  : 8ull)
+        << 20;
+    static const VkDeviceSize blasCap =
+        (Env("CZ_VK_RT_BLAS_MB") ? strtoull(Env("CZ_VK_RT_BLAS_MB"), nullptr, 10)
+                                 : 1024ull)
+        << 20;
+    if (g_blasBytes > blasCap)
+        FlushAll();
+
+    // ---- choose the batch: pending keys drawn last frame, budget in source bytes
+    std::vector<uint64_t> batch;
+    VkDeviceSize batchBytes = 0;
+    for (uint64_t key : g_prevKeys)
+    {
+        auto it = g_pending.find(key);
+        if (it == g_pending.end())
+            continue;
+        const Pending& p = it->second;
+        const VkDeviceSize need = p.posBytes + VkDeviceSize(p.idxCount) * 6 + 64;
+        if (batchBytes + need > buildBudget && !batch.empty())
+            continue;
+        batch.push_back(key);
+        batchBytes += need;
+    }
+    // Prune pending entries nothing has drawn for ten seconds; they would
+    // otherwise pin guest addresses forever.
+    if ((R->frame & 255) == 0)
+        for (auto it = g_pending.begin(); it != g_pending.end();)
+            it = (it->second.seenFrame + 600 < R->frame) ? g_pending.erase(it)
+                                                         : std::next(it);
+
+    struct Built
+    {
+        uint64_t key;
+        VkAccelerationStructureGeometryKHR geom;
+        VkAccelerationStructureBuildRangeInfoKHR range;
+        VkAccelerationStructureBuildGeometryInfoKHR info;
+        VkDeviceSize scratchSize = 0, asSize = 0;
+        uint32_t tris = 0, maxVertex = 0;
+        VkDeviceSize vtxAt = 0, idxAt = 0;
+    };
+    std::vector<Built> builds;
+    builds.reserve(batch.size());
+
+    // ---- staging: copy + expand under one cursor, then one buffer fill
+    if (!batch.empty() &&
+        EnsureBuffer(g_staging[slot], std::max<VkDeviceSize>(batchBytes, 1u << 20),
+                     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     "RT staging"))
+    {
+        Buffer& stg = g_staging[slot];
+        VkDeviceSize at = 0;
+        for (uint64_t key : batch)
+        {
+            const Pending& p = g_pending[key];
+            if (!GuestRangeOk(p.posVa, p.posBytes) ||
+                (p.indexed && !GuestRangeOk(p.idxVa, uint64_t(p.idxCount) * 2)))
+            {
+                ++g_skipRange;
+                continue;
+            }
+            const uint32_t stride = p.strideDw * 4;
+            const uint32_t vertCount = p.posBytes / stride;
+            if (!vertCount)
+                continue;
+            // Vertex bytes, dword-swapped exactly as the raster upload swaps them.
+            const VkDeviceSize vtxAt = (at + 15) & ~VkDeviceSize(15);
+            if (vtxAt + p.posBytes > stg.size)
+                break;   // budget said this fits; a resize raced it — next frame
+            const uint32_t* srcDw = reinterpret_cast<const uint32_t*>(base + p.posVa);
+            uint32_t* dstDw = reinterpret_cast<uint32_t*>(stg.mapped + vtxAt);
+            const uint32_t ndw = p.posBytes / 4;
+            if (p.vEndian == 2)
+                for (uint32_t i = 0; i < ndw; ++i)
+                    dstDw[i] = __builtin_bswap32(srcDw[i]);
+            else
+                memcpy(dstDw, srcDw, p.posBytes);
+            at = vtxAt + p.posBytes;
+            // Index expansion: strip -> list (restart-aware), list -> verbatim,
+            // auto-indexed -> implicit strip. Degenerates are dropped and counted.
+            const VkDeviceSize idxAt = (at + 15) & ~VkDeviceSize(15);
+            uint16_t* out = reinterpret_cast<uint16_t*>(stg.mapped + idxAt);
+            const VkDeviceSize outCap = (stg.size - idxAt) / 2;
+            uint32_t tris = 0;
+            uint32_t maxVertex = 0;
+            const uint8_t* ip = p.indexed ? base + p.idxVa : nullptr;
+            auto idx = [&](uint32_t i) -> uint32_t {
+                return p.indexed ? IdxAt(ip, i, p.iEndian) : i;
+            };
+            if (p.prim == xenos::kTriangleList)
+            {
+                for (uint32_t i = 0; i + 2 < p.idxCount; i += 3)
+                {
+                    const uint32_t a = idx(i), b = idx(i + 1), c = idx(i + 2);
+                    if (a == 0xFFFF || b == 0xFFFF || c == 0xFFFF)
+                        continue;
+                    if (a == b || b == c || a == c ||
+                        a >= vertCount || b >= vertCount || c >= vertCount)
+                    {
+                        ++g_degenerate;
+                        continue;
+                    }
+                    if (VkDeviceSize(tris + 1) * 3 > outCap)
+                        break;
+                    out[tris * 3] = uint16_t(a);
+                    out[tris * 3 + 1] = uint16_t(b);
+                    out[tris * 3 + 2] = uint16_t(c);
+                    maxVertex = std::max({ maxVertex, a, b, c });
+                    ++tris;
+                }
+            }
+            else   // triangle strip
+            {
+                uint32_t run = 0;   // indices since the last restart
+                uint32_t v0 = 0, v1 = 0;
+                for (uint32_t i = 0; i < p.idxCount; ++i)
+                {
+                    const uint32_t v = idx(i);
+                    if (v == 0xFFFF)
+                    {
+                        run = 0;
+                        continue;
+                    }
+                    if (run >= 2)
+                    {
+                        const uint32_t a = v0, b = v1, c = v;
+                        if (a != b && b != c && a != c && a < vertCount &&
+                            b < vertCount && c < vertCount)
+                        {
+                            if (VkDeviceSize(tris + 1) * 3 > outCap)
+                                break;
+                            out[tris * 3] = uint16_t(a);
+                            out[tris * 3 + 1] = uint16_t(b);
+                            out[tris * 3 + 2] = uint16_t(c);
+                            maxVertex = std::max({ maxVertex, a, b, c });
+                            ++tris;
+                        }
+                        else
+                            ++g_degenerate;
+                    }
+                    v0 = v1;
+                    v1 = v;
+                    ++run;
+                }
+            }
+            if (!tris)
+            {
+                g_pending.erase(key);   // nothing traceable in it; do not retry
+                continue;
+            }
+            at = idxAt + VkDeviceSize(tris) * 6;
+
+            Built bd{};
+            bd.key = key;
+            bd.tris = tris;
+            bd.maxVertex = maxVertex;
+            bd.vtxAt = vtxAt;
+            bd.idxAt = idxAt;
+            bd.geom = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+            bd.geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            bd.geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            auto& t = bd.geom.geometry.triangles;
+            t = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR };
+            t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            t.vertexData.deviceAddress = stg.address + vtxAt + p.offsetDw * 4;
+            t.vertexStride = stride;
+            t.maxVertex = maxVertex;
+            t.indexType = VK_INDEX_TYPE_UINT16;
+            t.indexData.deviceAddress = stg.address + idxAt;
+            bd.info = {
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR
+            };
+            bd.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            bd.info.flags =
+                VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            bd.info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            bd.info.geometryCount = 1;
+            bd.info.pGeometries = &bd.geom;
+            VkAccelerationStructureBuildSizesInfoKHR sz{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
+            };
+            R->pfnGetASBuildSizes(R->device,
+                                  VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                  &bd.info, &tris, &sz);
+            bd.asSize = sz.accelerationStructureSize;
+            bd.scratchSize = sz.buildScratchSize;
+            bd.range = { tris, 0, 0, 0 };
+            builds.push_back(bd);
+        }
+
+        // ---- scratch for the whole batch, then create + record the builds
+        VkDeviceSize scratchNeed = 0;
+        for (const Built& bd : builds)
+            scratchNeed = ((scratchNeed + R->rtScratchAlign - 1) &
+                           ~VkDeviceSize(R->rtScratchAlign - 1)) +
+                          bd.scratchSize;
+        if (!builds.empty() &&
+            EnsureBuffer(g_scratch[slot], std::max<VkDeviceSize>(scratchNeed, 1u << 20),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "RT scratch"))
+        {
+            std::vector<VkAccelerationStructureBuildGeometryInfoKHR> infos;
+            std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges;
+            VkDeviceSize scratchAt = 0;
+            for (Built& bd : builds)
+            {
+                VkAccelerationStructureKHR as;
+                VkDeviceAddress addr;
+                if (!PlaceAs(bd.asSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                             &as, &addr, nullptr, nullptr))
+                    continue;
+                scratchAt = (scratchAt + R->rtScratchAlign - 1) &
+                            ~VkDeviceSize(R->rtScratchAlign - 1);
+                bd.info.dstAccelerationStructure = as;
+                bd.info.scratchData.deviceAddress =
+                    g_scratch[slot].address + scratchAt;
+                scratchAt += bd.scratchSize;
+                bd.info.pGeometries = &bd.geom;   // re-point: vector may have moved
+                infos.push_back(bd.info);
+                ranges.push_back(&bd.range);
+                const Pending& p = g_pending[bd.key];
+                Blas nb;
+                nb.as = as;
+                nb.address = addr;
+                nb.lastFrame = R->frame;
+                nb.tris = bd.tris;
+                nb.streamKey = p.streamKey;
+                nb.idxKey = p.idxKey;
+                nb.vGuard = p.vGuard;
+                nb.iGuard = p.iGuard;
+                g_blas.emplace(bd.key, nb);
+                g_pending.erase(bd.key);
+                ++g_blasBuilt;
+            }
+            if (!infos.empty())
+                R->pfnCmdBuildAS(R->cmd, uint32_t(infos.size()), infos.data(),
+                                 ranges.data());
+        }
+    }
+
+    // ---- barrier: BLAS builds before the TLAS build reads them
+    VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    mb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                       VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    vkCmdPipelineBarrier(R->cmd,
+                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1,
+                         &mb, 0, nullptr, 0, nullptr);
+
+    // ---- the TLAS: identity-transform instances over last frame's world set
+    std::vector<VkAccelerationStructureInstanceKHR> inst;
+    inst.reserve(g_prevKeys.size());
+    for (uint64_t key : g_prevKeys)
+    {
+        auto it = g_blas.find(key);
+        if (it == g_blas.end())
+            continue;
+        it->second.lastFrame = R->frame;
+        VkAccelerationStructureInstanceKHR in{};
+        in.transform = { { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } } };
+        in.mask = 0xFF;
+        in.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        in.accelerationStructureReference = it->second.address;
+        inst.push_back(in);
+    }
+    g_tlasInstances = uint32_t(inst.size());
+    g_tlasReady = false;
+    if (inst.empty())
+        return;
+    const VkDeviceSize instBytes = inst.size() * sizeof(inst[0]);
+    if (!EnsureBuffer(g_instBuf[slot], instBytes,
+                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      "RT instances"))
+        return;
+    memcpy(g_instBuf[slot].mapped, inst.data(), instBytes);
+
+    VkAccelerationStructureGeometryKHR ig{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR
+    };
+    ig.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    ig.geometry.instances = {
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR
+    };
+    ig.geometry.instances.data.deviceAddress = g_instBuf[slot].address;
+    VkAccelerationStructureBuildGeometryInfoKHR ti{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR
+    };
+    ti.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    ti.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    ti.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    ti.geometryCount = 1;
+    ti.pGeometries = &ig;
+    const uint32_t instCount = uint32_t(inst.size());
+    VkAccelerationStructureBuildSizesInfoKHR tsz{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
+    };
+    R->pfnGetASBuildSizes(R->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                          &ti, &instCount, &tsz);
+    // The slot's TLAS is recreated only when it outgrows its buffer; otherwise the
+    // same object is rebuilt in place each frame (spec-legal for mode BUILD).
+    if (!g_tlas[slot] || g_tlasBuf[slot].size < tsz.accelerationStructureSize)
+    {
+        if (g_tlas[slot])
+            g_retiredAs.push_back({ R->frame, g_tlas[slot], Buffer{} });
+        g_tlas[slot] = VK_NULL_HANDLE;
+        if (g_tlasBuf[slot].buffer)
+            RetireBufferAs(VK_NULL_HANDLE, g_tlasBuf[slot]);
+        if (!CreateBuffer(g_tlasBuf[slot], tsz.accelerationStructureSize * 2,
+                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true))
+            return;
+        VkAccelerationStructureCreateInfoKHR ci{
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR
+        };
+        ci.buffer = g_tlasBuf[slot].buffer;
+        ci.size = tsz.accelerationStructureSize;
+        ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        if (R->pfnCreateAS(R->device, &ci, nullptr, &g_tlas[slot]) != VK_SUCCESS)
+            return;
+    }
+    // The BLAS builds and this TLAS build are separated by the barrier above, so
+    // the same scratch region is safely reused; only its SIZE needs to cover both.
+    if (!EnsureBuffer(g_scratch[slot], tsz.buildScratchSize,
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "RT scratch"))
+        return;
+    ti.dstAccelerationStructure = g_tlas[slot];
+    ti.scratchData.deviceAddress = g_scratch[slot].address;
+    VkAccelerationStructureBuildRangeInfoKHR trange{ instCount, 0, 0, 0 };
+    const VkAccelerationStructureBuildRangeInfoKHR* trp = &trange;
+    R->pfnCmdBuildAS(R->cmd, 1, &ti, &trp);
+
+    // ---- barrier: the TLAS before the fragment stage's ray queries
+    VkMemoryBarrier tb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    tb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    tb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(R->cmd,
+                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &tb, 0, nullptr,
+                         0, nullptr);
+
+    // ---- point this slot's descriptor at this slot's TLAS
+    VkWriteDescriptorSetAccelerationStructureKHR wa{
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR
+    };
+    wa.accelerationStructureCount = 1;
+    wa.pAccelerationStructures = &g_tlas[slot];
+    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    w.pNext = &wa;
+    w.dstSet = g_sets[slot];
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+    g_tlasReady = true;
+}
+
+// The trace pipeline: depth-only dynamic rendering, fullscreen triangle, ray query
+// in the fragment shader. Created once, lazily.
+bool EnsurePipeline()
+{
+    if (g_pipe)
+        return true;
+    VkDescriptorSetLayoutBinding b{};
+    b.binding = 0;
+    b.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    b.descriptorCount = 1;
+    b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo sli{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+    };
+    sli.bindingCount = 1;
+    sli.pBindings = &b;
+    if (vkCreateDescriptorSetLayout(R->device, &sli, nullptr, &g_setLayout) !=
+        VK_SUCCESS)
+        return false;
+    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                             kMaxFramesInFlight };
+    VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    pci.maxSets = kMaxFramesInFlight;
+    pci.poolSizeCount = 1;
+    pci.pPoolSizes = &ps;
+    if (vkCreateDescriptorPool(R->device, &pci, nullptr, &g_pool) != VK_SUCCESS)
+        return false;
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        VkDescriptorSetAllocateInfo ai{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO
+        };
+        ai.descriptorPool = g_pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &g_setLayout;
+        if (vkAllocateDescriptorSets(R->device, &ai, &g_sets[i]) != VK_SUCCESS)
+            return false;
+    }
+    VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 96 };
+    VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &g_setLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(R->device, &pli, nullptr, &g_pipeLayout) != VK_SUCCESS)
+        return false;
+
+    auto makeModule = [&](const uint32_t* words, size_t bytes) {
+        VkShaderModuleCreateInfo mi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        mi.codeSize = bytes;
+        mi.pCode = words;
+        VkShaderModule m = VK_NULL_HANDLE;
+        vkCreateShaderModule(R->device, &mi, nullptr, &m);
+        return m;
+    };
+    VkShaderModule vs = makeModule(kRtShadowVsSpv, sizeof kRtShadowVsSpv);
+    VkShaderModule fs = makeModule(kRtShadowPsSpv, sizeof kRtShadowPsSpv);
+    if (!vs || !fs)
+        return false;
+
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "VsMain";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "PsMain";
+    VkPipelineVertexInputStateCreateInfo vi{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    };
+    VkPipelineInputAssemblyStateCreateInfo ia{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+    };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
+    };
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO
+    };
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO
+    };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
+    };
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    // LESS keeps whichever occluder is nearer the sun; under the inverted
+    // convention (CZ_VK_RT_INVERT, decided by the CZ_VK_SHADOW_FILL experiment)
+    // nearer is GREATER. The shader flips its outputs from the same flag.
+    static const bool invert = EnvOn("CZ_VK_RT_INVERT");
+    ds.depthCompareOp = invert ? VK_COMPARE_OP_GREATER : VK_COMPARE_OP_LESS;
+    VkPipelineColorBlendStateCreateInfo cb{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
+    };
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dsi{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+    };
+    dsi.dynamicStateCount = uint32_t(std::size(dyn));   // gotcha: never hardcode
+    dsi.pDynamicStates = dyn;
+    VkPipelineRenderingCreateInfo pri{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO
+    };
+    pri.depthAttachmentFormat = R->depth.format;
+    VkGraphicsPipelineCreateInfo gp{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    gp.pNext = &pri;
+    gp.stageCount = 2;
+    gp.pStages = stages;
+    gp.pVertexInputState = &vi;
+    gp.pInputAssemblyState = &ia;
+    gp.pViewportState = &vp;
+    gp.pRasterizationState = &rs;
+    gp.pMultisampleState = &ms;
+    gp.pDepthStencilState = &ds;
+    gp.pColorBlendState = &cb;
+    gp.pDynamicState = &dsi;
+    gp.layout = g_pipeLayout;
+    const VkResult r =
+        vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &gp, nullptr, &g_pipe);
+    vkDestroyShaderModule(R->device, vs, nullptr);
+    vkDestroyShaderModule(R->device, fs, nullptr);
+    if (r != VK_SUCCESS)
+    {
+        fprintf(stderr, "[rt] trace pipeline creation failed (%d) — RT shadows idle\n",
+                int(r));
+        return false;
+    }
+    fprintf(stderr, "[rt] trace pipeline created (depth format %u, %s convention)\n",
+            unsigned(R->depth.format), invert ? "INVERTED" : "standard");
+    return true;
+}
+
+// Invert the captured 4x4 (clip = M * (pos,1), rows in m[0..3], m[4..7], ...) in
+// doubles. Returns false on a singular matrix — the slice is skipped and counted,
+// never traced with garbage.
+bool Invert4x4(const float* m, float* out)
+{
+    double a[16];
+    for (int i = 0; i < 16; ++i)
+        a[i] = m[i];
+    double inv[16];
+    inv[0] = a[5]*a[10]*a[15] - a[5]*a[11]*a[14] - a[9]*a[6]*a[15] +
+             a[9]*a[7]*a[14] + a[13]*a[6]*a[11] - a[13]*a[7]*a[10];
+    inv[4] = -a[4]*a[10]*a[15] + a[4]*a[11]*a[14] + a[8]*a[6]*a[15] -
+             a[8]*a[7]*a[14] - a[12]*a[6]*a[11] + a[12]*a[7]*a[10];
+    inv[8] = a[4]*a[9]*a[15] - a[4]*a[11]*a[13] - a[8]*a[5]*a[15] +
+             a[8]*a[7]*a[13] + a[12]*a[5]*a[11] - a[12]*a[7]*a[9];
+    inv[12] = -a[4]*a[9]*a[14] + a[4]*a[10]*a[13] + a[8]*a[5]*a[14] -
+              a[8]*a[6]*a[13] - a[12]*a[5]*a[10] + a[12]*a[6]*a[9];
+    inv[1] = -a[1]*a[10]*a[15] + a[1]*a[11]*a[14] + a[9]*a[2]*a[15] -
+             a[9]*a[3]*a[14] - a[13]*a[2]*a[11] + a[13]*a[3]*a[10];
+    inv[5] = a[0]*a[10]*a[15] - a[0]*a[11]*a[14] - a[8]*a[2]*a[15] +
+             a[8]*a[3]*a[14] + a[12]*a[2]*a[11] - a[12]*a[3]*a[10];
+    inv[9] = -a[0]*a[9]*a[15] + a[0]*a[11]*a[13] + a[8]*a[1]*a[15] -
+             a[8]*a[3]*a[13] - a[12]*a[1]*a[11] + a[12]*a[3]*a[9];
+    inv[13] = a[0]*a[9]*a[14] - a[0]*a[10]*a[13] - a[8]*a[1]*a[14] +
+              a[8]*a[2]*a[13] + a[12]*a[1]*a[10] - a[12]*a[2]*a[9];
+    inv[2] = a[1]*a[6]*a[15] - a[1]*a[7]*a[14] - a[5]*a[2]*a[15] +
+             a[5]*a[3]*a[14] + a[13]*a[2]*a[7] - a[13]*a[3]*a[6];
+    inv[6] = -a[0]*a[6]*a[15] + a[0]*a[7]*a[14] + a[4]*a[2]*a[15] -
+             a[4]*a[3]*a[14] - a[12]*a[2]*a[7] + a[12]*a[3]*a[6];
+    inv[10] = a[0]*a[5]*a[15] - a[0]*a[7]*a[13] - a[4]*a[1]*a[15] +
+              a[4]*a[3]*a[13] + a[12]*a[1]*a[7] - a[12]*a[3]*a[5];
+    inv[14] = -a[0]*a[5]*a[14] + a[0]*a[6]*a[13] + a[4]*a[1]*a[14] -
+              a[4]*a[2]*a[13] - a[12]*a[1]*a[6] + a[12]*a[2]*a[5];
+    inv[3] = -a[1]*a[6]*a[11] + a[1]*a[7]*a[10] + a[5]*a[2]*a[11] -
+             a[5]*a[3]*a[10] - a[9]*a[2]*a[7] + a[9]*a[3]*a[6];
+    inv[7] = a[0]*a[6]*a[11] - a[0]*a[7]*a[10] - a[4]*a[2]*a[11] +
+             a[4]*a[3]*a[10] + a[8]*a[2]*a[7] - a[8]*a[3]*a[6];
+    inv[11] = -a[0]*a[5]*a[11] + a[0]*a[7]*a[9] + a[4]*a[1]*a[11] -
+              a[4]*a[3]*a[9] - a[8]*a[1]*a[7] + a[8]*a[3]*a[5];
+    inv[15] = a[0]*a[5]*a[10] - a[0]*a[6]*a[9] - a[4]*a[1]*a[10] +
+              a[4]*a[2]*a[9] + a[8]*a[1]*a[6] - a[8]*a[2]*a[5];
+    const double det = a[0]*inv[0] + a[1]*inv[4] + a[2]*inv[8] + a[3]*inv[12];
+    if (std::fabs(det) < 1e-12)
+        return false;
+    const double d = 1.0 / det;
+    for (int i = 0; i < 16; ++i)
+        out[i] = float(inv[i] * d);
+    return true;
+}
+
+// Trace one just-resolved cascade slice: build the frame's structures if this is
+// the frame's first slice, then render the ray-query pass into the slice's
+// rectangle of the snapshot image. Called from DoResolve with the snapshot still
+// in TRANSFER_DST; leaves it in DEPTH_STENCIL_ATTACHMENT_OPTIMAL for the caller's
+// SHADER_READ_ONLY barrier to move on (Barrier tracks the live layout).
+void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t rw,
+                uint32_t rh)
+{
+    if (!Active() || !rw || !rh)
+        return;
+    ProfScope _pRt(&g_prof.rt);
+    FrameRoll();
+    if (!g_lightMValid)
+    {
+        ++g_slicesNoMatrix;
+        return;
+    }
+    if (!EnsurePipeline())
+        return;
+    if (g_tlasFrame != R->frame)
+    {
+        g_tlasFrame = R->frame;
+        BuildFrameStructures(base);
+    }
+    if (!g_tlasReady)
+    {
+        ++g_slicesNoTlas;
+        return;
+    }
+    float inv[16];
+    if (!Invert4x4(g_lightM, inv))
+    {
+        ++g_slicesNoMatrix;
+        return;
+    }
+
+    // The attachment view: the sampled view carries the (R,R,R,1) swizzle, which an
+    // attachment must not, so each snapshot gets one identity-swizzle depth view,
+    // created here and retired with the image (see the resize path in DoResolve).
+    if (!snap.rtAttachView)
+    {
+        VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vi.image = snap.image.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = R->depth.format;
+        vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(R->device, &vi, nullptr, &snap.rtAttachView) !=
+            VK_SUCCESS)
+            return;
+    }
+
+    Barrier(R->cmd, snap.image, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    VkRenderingAttachmentInfo da{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    da.imageView = snap.rtAttachView;
+    da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea = { { rx, ry }, { rw, rh } };
+    ri.layerCount = 1;
+    ri.pDepthAttachment = &da;
+    vkCmdBeginRendering(R->cmd, &ri);
+    vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipe);
+    VkViewport vpo{ float(rx), float(ry), float(rw), float(rh), 0.0f, 1.0f };
+    VkRect2D sc{ { rx, ry }, { rw, rh } };
+    vkCmdSetViewport(R->cmd, 0, 1, &vpo);
+    vkCmdSetScissor(R->cmd, 0, 1, &sc);
+    vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0,
+                            1, &g_sets[R->frameSlot], 0, nullptr);
+    struct Push
+    {
+        float inv[16];
+        float region[4];
+        float misc[4];
+    } push;
+    memcpy(push.inv, inv, sizeof inv);
+    push.region[0] = float(rx);
+    push.region[1] = float(ry);
+    push.region[2] = float(rw);
+    push.region[3] = float(rh);
+    static const float bias = Env("CZ_VK_RT_BIAS")
+                                  ? float(atof(Env("CZ_VK_RT_BIAS")))
+                                  : 0.0015f;
+    static const bool poison = EnvOn("CZ_VK_RT_POISON");
+    static const bool invert = EnvOn("CZ_VK_RT_INVERT");
+    push.misc[0] = bias;
+    push.misc[1] = poison ? 1.0f : 0.0f;
+    push.misc[2] = invert ? 1.0f : 0.0f;
+    push.misc[3] = 0.0f;
+    vkCmdPushConstants(R->cmd, g_pipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof push, &push);
+    vkCmdDraw(R->cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(R->cmd);
+    ++g_slicesTraced;
+
+    if ((g_slicesTraced & 1023) == 1)
+        fprintf(stderr,
+                "[rt] slices=%llu tlasInst=%u blas=%zu (%.1f MB, built=%llu, "
+                "flushes=%llu) pending=%zu collected=%llu skips: alpha=%llu "
+                "prim=%llu pos=%llu range=%llu dyn=%llu new=%llu endian=%llu "
+                "collide=%llu degen=%llu noMatrix=%llu noTlas=%llu%s%s\n",
+                (unsigned long long)g_slicesTraced, g_tlasInstances, g_blas.size(),
+                double(g_blasBytes) / (1 << 20), (unsigned long long)g_blasBuilt,
+                (unsigned long long)g_blasFlushes, g_pending.size(),
+                (unsigned long long)g_collected, (unsigned long long)g_skipAlpha,
+                (unsigned long long)g_skipPrim, (unsigned long long)g_skipPosForm,
+                (unsigned long long)g_skipRange, (unsigned long long)g_skipDynamic,
+                (unsigned long long)g_skipNew, (unsigned long long)g_skipEndian,
+                (unsigned long long)g_keyCollisions,
+                (unsigned long long)g_degenerate,
+                (unsigned long long)g_slicesNoMatrix,
+                (unsigned long long)g_slicesNoTlas, poison ? " POISON" : "",
+                invert ? " INVERT" : "");
+}
+} // namespace rtshadow
+
 // The register file and shader bindings are PARAMETERS, not globals: the PM4 feed
 // passes pm4.cpp's, the D3D feed (phase C) passes the private file its walker built
 // from the title's own flush output. Everything below is feed-agnostic.
@@ -10287,6 +11424,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // FovCensus, and inert to one static bool test when unarmed.
     RtGeometryCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
                      regs[xenos::kRbDepthControl], vs, draw, regs, base);
+    // RT stage 2 (part 64): collect world draws into the BLAS/TLAS working set and
+    // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
+    rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+                      regs[xenos::kRbDepthControl], vs, draw, regs, base);
     g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
     g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
     // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
@@ -13128,6 +14269,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 (void)size;
                 RetireImage(view.image);
             }
+            if (it->second.rtAttachView)
+            {
+                // The RT trace pass's attachment view rides the image's lifetime;
+                // wrap it so the fence-aware queue destroys it with the image.
+                Image v{};
+                v.view = it->second.rtAttachView;
+                RetireImage(v);
+            }
             R->snapshots.erase(it);
             it = R->snapshots.end();
             Count("resolve: snapshot resized");
@@ -13156,7 +14305,12 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                             fromDepth ? R->depth.format : VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                VK_IMAGE_USAGE_SAMPLED_BIT,
+                                VK_IMAGE_USAGE_SAMPLED_BIT |
+                                // RT stage 2 traces INTO depth snapshots; the bit
+                                // costs nothing when nothing renders into it.
+                                ((fromDepth && R->rtEnabled)
+                                     ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                     : 0),
                             fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                       : VK_IMAGE_ASPECT_COLOR_BIT,
                             VK_IMAGE_VIEW_TYPE_2D, 1, 1,
@@ -13276,6 +14430,14 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                                             &cv, 1, &range);
                 Count("resolve: shadow atlas depth FILLED (CZ_VK_SHADOW_FILL)");
             }
+            // RT STAGE 2 (part 64): ray-trace this just-resolved cascade slice.
+            // The pass renders into the slice's own rectangle with the depth test
+            // keeping whichever occluder is nearer the sun, so raster content
+            // (skinned actors, foliage, everything the TLAS excludes) survives.
+            // Inert to one test when the tier is OG.
+            if (fromDepth && IsShadowSurface(regs))
+                rtshadow::TraceSlice(base, it->second, RZxi(int32_t(dstX)),
+                                     RZyi(int32_t(dstY)), RZx(copyW), RZ(copyH));
             // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
@@ -13476,6 +14638,11 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
 // ===================================================================================
 // The public seam
 // ===================================================================================
+bool VkRenderer_RtAvailable()
+{
+    return R && R->rtEnabled;
+}
+
 bool VkRenderer_Active() { return g_active; }
 
 namespace {
@@ -15339,19 +16506,19 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                        g_prof.textures + recordTotal + otherTotal;
             const uint64_t submitTotal =
                 g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
-            const uint64_t known =
-                drawTotal + submitTotal + g_prof.readback + g_prof.frameStats;
+            const uint64_t known = drawTotal + submitTotal + g_prof.readback +
+                                   g_prof.frameStats + g_prof.rt;
             fprintf(stderr,
                     "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
                     "[constants %.1f streams %.1f textures %.1f record %.1f other "
                     "%.1f] submit %.1f%% [call %.1f gpu %.1f] readback %.1f%% "
-                    "outside %.1f%%\n",
+                    "rt %.1f%% outside %.1f%%\n",
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
                     pct(drawTotal), pct(g_prof.constants), pct(g_prof.streams),
                     pct(g_prof.textures), pct(recordTotal), pct(otherTotal),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
-                    pct(g_prof.readback), 100.0 - pct(known));
+                    pct(g_prof.readback), pct(g_prof.rt), 100.0 - pct(known));
 
             // THE INSTRUMENT'S OWN BILL, on its own line so it can never be read as
             // part of the game's frame. It is charged to the run that asked for it and
