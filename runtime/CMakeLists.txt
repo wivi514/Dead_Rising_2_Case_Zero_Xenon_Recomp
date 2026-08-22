@@ -141,6 +141,7 @@ add_executable(cz_runtime
     cpu/guest_probe.cpp
     cpu/debug_tunables.cpp
     cpu/pc_options.cpp               # part 60: the resurrected PC graphics menu
+    cpu/camera_fov.cpp               # part 62: the fov-property watch (culling fix)
     cpu/thread_budget.cpp
     kernel/klog.cpp
     kernel/memory.cpp

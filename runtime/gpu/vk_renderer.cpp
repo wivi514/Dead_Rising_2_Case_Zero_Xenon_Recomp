@@ -3556,15 +3556,14 @@ void ShadowRes(uint32_t& sw, uint32_t& sh)
     sh = cachedH;
 }
 
-// THE FOV SLIDER (part 61, docs/rt-and-fov-plan.md §0). The settings row carries N
-// degrees of ADJUSTMENT to the game's own camera (-10..+30, 0 = OG); this returns
-// N/2 in radians — the term added to the projection's vertical HALF-fov by
-// PatchFovProjection — re-read once per FRAME (the shadow-tier pattern above) so a
-// live menu change applies at the next frame boundary while every draw within one
-// frame sees one value. That per-frame latch is also what keeps the constant memo
-// safe: the memo never survives a frame (constMemoFrame), so patched bytes can
-// never be reused under a different slider value. `CZ_VK_FOV=N` is the measurement
-// arm and wins over the file (including CZ_VK_FOV=0, which PINS the slider off).
+// THE RENDERER-SIDE FOV PATCH IS A MEASUREMENT ARM ONLY as of part 62: the
+// settings row drives the GAME-SIDE substitution (cpu/camera_fov.cpp), which
+// widens rendering AND the title's own CPU culling — this renderer patch could
+// only widen rendering, and the un-widened culling popped objects at the flanks
+// (the operator's report). `CZ_VK_FOV=N` still applies the renderer patch (the
+// A/B arm and the composite-analysis instrument), and CZ_TEST_FOV_FLIP still
+// exercises it; the Settings_Fov() source is deliberately GONE from here — two
+// mechanisms driving one slider would double-apply.
 float FovHalfRadThisFrame()
 {
     static const bool envSet = Env("CZ_VK_FOV") != nullptr;
@@ -3599,7 +3598,7 @@ float FovHalfRadThisFrame()
     if (cachedFrame != R->frame)
     {
         cachedFrame = R->frame;
-        int deg = envSet ? envDeg : Settings_Fov();
+        int deg = envSet ? envDeg : 0;
         if (flipEvery > 0)
             deg = (R->frame / uint64_t(flipEvery)) % 2 ? 20 : 0;
         cachedHalfRad = float(deg) * 0.00872664626f;   // pi/360: degrees -> half-radians
