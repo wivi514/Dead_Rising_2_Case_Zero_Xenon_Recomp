@@ -13163,6 +13163,56 @@ sample. The run-wide statistics are the ones to quote; the single-frame diff was
 the right instrument for FINDING the defect and is the wrong one for measuring a
 fix.
 
+### 7e. RETRACTION: every per-arm number in §7-§7d was read from a RUNNING process
+
+**All three "fixes" above are undemonstrated, and the numbers that appeared to
+demonstrate them were partial reads.** `CZ_VK_FRAME_STATS` is appended to while
+the run continues and the `[rt]` counters are cumulative, and this session read
+both from processes that had not exited — repeatedly. The route walks through
+different scenery as it goes, so a partial read is not a noisy estimate of the
+final value, it is a measurement of a DIFFERENT PLACE.
+
+What the same runs say when they have EXITED (outdoor frames, draws >= 3,000;
+the frame count is quoted with every median because that is the thing that was
+missing):
+
+| arm | n | mean draws | median meanLuma | whole-run coverage |
+|---|---|---|---|---|
+| OG (no RT) | 11,243 | 6,923 | **80.61** | — |
+| scene occluders + bounds gate | 6,484 | 6,478 | **66.34** | 54.2% |
+| `CZ_VK_RT_CASTERS=cascade` | 10,991 | 6,967 | **66.14** | 52.8% |
+| dataflow-bound matrix | 6,550 | 6,829 | **66.40** | 52.4% |
+| all-shadow floor (poison / fill) | 10,865 / 11,915 | — | 61.18 / 61.43 | — |
+
+**The three arms are indistinguishable from each other.** The mid-run numbers
+this section quoted — 63.71, 66.14, 72.00, and coverage 86.3% → 61.3% — were
+read at 4,663, 10,991, 1,212 and various depths respectively; the same runs read
+at exit are 66.34, 66.14, 66.40 and 54.2% → 52.4%. Specifically retracted:
+
+* **§7's bounds gate** — correct hygiene (junk geometry with million-unit
+  coordinates genuinely enters the BLAS and genuinely should not), effect on the
+  picture **undemonstrated**.
+* **§7b's caster arm** — the underlying fact stands and is worth keeping (the
+  title's cascade IS 52.8% empty because it draws casters, not receivers; that
+  is measured from the atlas dumps, which are single frames read at rest rather
+  than growing files). Its effect on the picture is **undemonstrated**: 66.14
+  against 66.34.
+* **§7d's "+8.3 luma, the largest single fix"** — **withdrawn entirely.** The
+  binding it fixes is provably false (0 slices with one c0-3 against 28,704 with
+  several, a count that does not drift), and the fix is right on correctness
+  grounds, but it moved the frame by 0.06 luma against a 14-luma gap.
+
+**What still stands, because those runs were complete**: the fill experiment
+(80.61 / 61.43 / 81.46), the poison control (61.18), the plumbing counters, the
+atlas diff and the empty-cascade measurement. And the standing fact: **every RT
+arm over-shadows by ~14 luma and nothing built in part 64 has been shown to
+change that.**
+
+The two transferable halves are gotchas 384 (a stats file is written while you
+read it, and the control is the old binary run to the same DEPTH) and 385 (a
+mechanism proven by direct count is not the same claim as an arm proven by
+end-to-end measurement — say which one you have).
+
 ### 8. Where part 64 leaves it
 
 Closed by measurement: the injection route, the depth convention, that the trace
