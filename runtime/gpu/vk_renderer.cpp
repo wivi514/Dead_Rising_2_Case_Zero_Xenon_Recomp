@@ -3481,6 +3481,9 @@ struct Renderer
 
     uint64_t frame = 0;
     uint64_t drawsThisFrame = 0;
+    // The previous frame's final count — the only complete denominator available
+    // mid-frame, and what tells an instrument firing at draw N whether N is early.
+    uint64_t lastFrameDraws = 0;
     // Per-frame content fingerprints, for the frame-alignment metric.
     //
     // `drawFingerprint` is FNV over every draw's (vs, ps, primitive, index count) —
@@ -7777,6 +7780,7 @@ void BeginFrame()
     // the frame budget can absorb rather than a function of how much geometry streamed
     // in this second (which is what made the unbounded version cost 66.8 MB/frame).
     R->probeBudgetLeft = Renderer::kGuardProbeBudget;
+    R->lastFrameDraws = R->drawsThisFrame;
     R->drawsThisFrame = 0;
     // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
     // of the whole RUN, so a .pose would carry a camera from some frame minutes earlier
@@ -11941,6 +11945,26 @@ bool g_failed = false;
 bool g_valid = false;
 uint64_t g_passes = 0, g_drawsServed = 0, g_noScene = 0, g_noLight = 0, g_noTlas = 0,
          g_singular = 0;
+// WHEN IN THE FRAME THE PASS FIRES, and how much of the frame is still to come.
+//
+// The depth arm of the ladder (CZ_VK_RT_FACTOR_DEBUG=1) should have turned the world
+// black and left the sky lit. The operator reports it unchanged, which says the depth
+// sample reads FAR everywhere — and the most likely reason is timing, not plumbing:
+// this title renders its shadow cascades into the SAME EDRAM depth buffer before
+// resolving them to the atlas, so R->depth holds light-space depth until the scene's
+// own Z prepass overwrites it. A factor pass that fires before that prepass has
+// finished reads either the cascade's depth or the clear value, and the clear value is
+// FAR, which is exactly "everything lit".
+//
+// So: record the draw index within the frame at which the pass fired, against the
+// frame's eventual total. Firing at draw 40 of 7,000 and firing at draw 4,000 of 7,000
+// are completely different bugs and the picture cannot tell them apart.
+uint64_t g_fireAtSum = 0, g_frameDrawSum = 0, g_fireSamples = 0;
+uint64_t g_fireAtMin = ~0ull, g_fireAtMax = 0;
+// How many atlas-sampling draws were DECLINED as prepass (empty colour mask). Counted
+// rather than silent, because it is the whole of the fix and a run where it reads zero
+// would mean this title's prepass does not look the way §6u measured it.
+uint64_t g_declinedPrepass = 0;
 
 bool Active()
 {
@@ -12505,6 +12529,13 @@ void Run(uint8_t* base)
     R->bound = {};
     g_valid = true;
     ++g_passes;
+    // R->drawsThisFrame is the count RECORDED so far this frame; the previous frame's
+    // total is the only complete denominator available at this moment.
+    g_fireAtSum += R->drawsThisFrame;
+    g_frameDrawSum += R->lastFrameDraws;
+    ++g_fireSamples;
+    g_fireAtMin = std::min(g_fireAtMin, uint64_t(R->drawsThisFrame));
+    g_fireAtMax = std::max(g_fireAtMax, uint64_t(R->drawsThisFrame));
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
                 "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d "
@@ -12936,13 +12967,40 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // and is not, if what it does is per-frame heavy.
     ProfScope _pBegin(&g_prof.otherBegin);
     BeginFrame();
-    // ROUTE (B)'s FACTOR PASS, at the first draw of the pass that samples the cascade
-    // atlas — `ps.moduleRt` is non-null for exactly the 126 shaders the census found
-    // doing that, so the TITLE'S OWN draw order is the trigger and nothing here has to
-    // guess where its Z prepass ended. Idempotent within a pass; `Invalidate()` at each
-    // resolve is what makes the second 640-wide tile recompute against its own depth.
+    // ROUTE (B)'s FACTOR PASS, at the first COLOUR-WRITING draw of the pass that samples
+    // the cascade atlas.
+    //
+    // `ps.moduleRt` is non-null for exactly the 126 shaders the census found sampling
+    // the atlas, so the TITLE'S OWN draw order is the trigger. THE COLOUR MASK IS THE
+    // OTHER HALF OF IT, and leaving it out is what made the whole feature read as "no
+    // shadows anywhere": this title issues a real Z PREPASS — 61% of its draws, §6u's
+    // 233,155 depth-only against 148,150 colour-mode — and a prepass draw binds the
+    // SAME material pixel shader with an empty colour mask. So the pass was firing
+    // inside the prepass, at draw 831 of ~2,480 measured, and sampling a depth buffer
+    // that was still mostly the clear value. A cleared depth is FAR, far is "no
+    // occluder", and every pixel came out LIT.
+    //
+    // A colour-writing draw cannot precede the prepass that shades it, so this is the
+    // title's own statement that its depth is ready — still no guessing, just the
+    // right question asked of the same draw stream.
     if (ps.moduleRt)
-        rtfactor::Run(base);
+    {
+        // THE GATE IS RB_MODECONTROL's edram_mode, not the colour mask. §6u split this
+        // title's 38.6% empty-colour-mask draws by exactly this register and found
+        // 233,155 of them in DEPTH-ONLY mode — and a depth-only draw can still carry a
+        // non-empty mask, which is why a colour-mask gate declined ZERO of them and the
+        // pass kept firing at draw ~832 of ~2,490, inside the prepass. The depth buffer
+        // is cleared for the scene at the cascade resolve, so a factor computed there
+        // samples the CLEAR VALUE — far, "no occluder", every pixel lit. That is the
+        // whole of "no shadows anywhere", and three probes agree the sampled depth was
+        // uniformly 1.0.
+        //
+        // 4 = kColorDepth (a real shading draw), 5 = kDepth (the prepass), 6 = kCopy.
+        if (key.modeControl == 4)
+            rtfactor::Run(base);
+        else
+            ++rtfactor::g_declinedPrepass;
+    }
     BeginRendering();
 
     // --- constants -----------------------------------------------------------------
@@ -19319,6 +19377,19 @@ void VkRenderer_DumpStats()
     // a build whose A/B measured a flawless fix and was the feature silently switched
     // off (gotcha 386); the cheapest defence against repeating that is a count that
     // cannot be confused with a configuration.
+    if (rtfactor::g_fireSamples)
+        fprintf(stderr,
+                "[rtb] the factor pass fires at draw %llu of ~%llu on average "
+                "(min %llu, max %llu); %llu atlas draws DECLINED as Z-prepass "
+                "(empty colour mask). EARLY means the scene's own Z prepass has not "
+                "filled the depth buffer yet and the sample reads the clear value or "
+                "the cascade's own depth — both of which read as FAR, i.e. LIT.\n",
+                (unsigned long long)(rtfactor::g_fireAtSum / rtfactor::g_fireSamples),
+                (unsigned long long)(rtfactor::g_frameDrawSum / rtfactor::g_fireSamples),
+                (unsigned long long)rtfactor::g_fireAtMin,
+                (unsigned long long)rtfactor::g_fireAtMax,
+                (unsigned long long)rtfactor::g_declinedPrepass);
+
     // THE ATLAS BINDING, printed so it is checkable rather than assumed. One row means
     // the shadow-sampling shaders fetch exactly one depth surface; the chosen one is
     // marked, and a competing candidate is visible instead of silently losing.

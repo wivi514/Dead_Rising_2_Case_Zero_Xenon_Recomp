@@ -92,9 +92,48 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     //                        is what an unbiased shadow ray is supposed to produce. If
     //                        this is still fully lit, the rays miss regardless of bias
     //                        and the fault is in the TLAS or the ray construction.
+    //   4  selector control — return all-shadow unconditionally, WITHOUT reading the
+    //                        depth. It is poison reached through the debug parameter
+    //                        instead of the poison one, which is the only way to tell
+    //                        "the depth read is broken" from "the debug selector never
+    //                        arrived": those two produce the same unchanged frame under
+    //                        modes 1-3, and an instrument that cannot fail visibly is
+    //                        not an instrument (gotcha 30).
+    //   5,6  depth BYPASS — reconstruct from a FIXED clip z (0.99 / 0.999) instead of
+    //                        the sampled one, so the world position, the TLAS and the
+    //                        ray are exercised with the depth read taken out of the
+    //                        chain. PASS = the frame darkens somewhere. That separates
+    //                        "the depth read is the only broken link" from "everything
+    //                        downstream is broken too", which modes 1 and 3 cannot,
+    //                        because a bad depth and a bad reconstruction both end in
+    //                        rays that hit nothing.
+    //   7  straight down    — the ray fires at (0,-1,0) from the reconstructed point
+    //                        with a 10x length, independent of the sun. Nearly every
+    //                        pixel sits above ground, so PASS = heavy darkening. It is
+    //                        the TLAS's own control: if 5/6 darken and 7 does not, the
+    //                        structure is empty rather than the direction wrong.
     const int dbg = int(pc.view.z);
+    if (dbg == 4)
+        return 0.0;
     if (dbg == 1)
         return z >= 0.999999 ? 1.0 : 0.0;
+    if (dbg == 5) z = 0.99;
+    if (dbg == 6) z = 0.999;
+    //   8  does z VARY?   — a 1/1024 dither on the sampled depth. If z changes at all
+    //                       across the screen this is a strong half-and-half pattern and
+    //                       the luma lands BETWEEN the all-lit and all-shadow arms; if z
+    //                       is constant it is uniformly one or the other. It needs to
+    //                       know nothing about the depth's scale or convention, which is
+    //                       what makes it usable when both are in doubt.
+    //   9  what IS z?     — return the sampled depth as the factor, so the frame's own
+    //                       shadow term becomes proportional to it and the MEAN DEPTH
+    //                       falls out of meanLuma. Reading a buffer's contents through a
+    //                       statistic the harness already collects, instead of building
+    //                       a readback for it.
+    if (dbg == 8)
+        return frac(z * 1024.0) < 0.5 ? 0.0 : 1.0;
+    if (dbg == 9)
+        return saturate(z);
 
     // Nothing was drawn here — sky, or a region this tile's prepass did not cover.
     // 1.0 is LIT, which is the honest failure: the frame loses a shadow rather than
@@ -112,6 +151,18 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     float3 world = float3(dot(pc.invRow0, clip), dot(pc.invRow1, clip),
                           dot(pc.invRow2, clip)) / w;
 
+    //  10  HOW BIG is the reconstructed position — saturate(length(world)/1000). The
+    //      town is ~1,100 units across (§6cu), so a correct reconstruction lands
+    //      mid-range. Reading all-dark means the positions collapse to the origin;
+    //      all-lit means they blow up. Both are what a wrong matrix convention or a
+    //      near-zero perspective divide look like, and neither is distinguishable from
+    //      the other — or from a broken depth read — in the frame itself.
+    //  11  the perspective divide's own denominator, saturate(|w|). If this is ~0 the
+    //      division that follows produces infinities whatever the rest of the matrix is.
+    if (dbg == 10)
+        return saturate(length(world) / 1000.0);
+    if (dbg == 11)
+        return saturate(abs(w));
     if (dbg == 2)
     {
         float3 c = floor(world / 4.0);
@@ -125,8 +176,8 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     // no sun-side offset can rescue at a grazing sun.
     float3 toCam = pc.camera.xyz - world;
     float camLen = max(length(toCam), 1e-6);
-    float bias0 = dbg == 3 ? 0.0 : pc.params.x;
-    float bias1 = dbg == 3 ? 0.0 : pc.params.y;
+    float bias0 = (dbg == 3 || dbg == 7) ? 0.0 : pc.params.x;
+    float bias1 = (dbg == 3 || dbg == 7) ? 0.0 : pc.params.y;
     float3 origin = world + pc.sun.xyz * bias0 + (toCam / camLen) * bias1;
 
     // THE TIER, and what it buys. One ray is a hard shadow. Two or four spread across
@@ -155,11 +206,13 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
     for (int i = 0; i < rays; ++i)
     {
         float3 dir = normalize(pc.sun.xyz + (tx * kOffsets[i].x + ty * kOffsets[i].y) * cone);
+        if (dbg == 7)
+            dir = float3(0.0, -1.0, 0.0);
         RayDesc ray;
         ray.Origin = origin;
         ray.Direction = dir;
         ray.TMin = 0.0;
-        ray.TMax = dbg == 3 ? pc.sun.w * 10.0 : pc.sun.w;
+        ray.TMax = (dbg == 3 || dbg == 7) ? pc.sun.w * 10.0 : pc.sun.w;
         // FORCE_OPAQUE: the TLAS holds only draws the collector screened to be opaque
         // depth-writers, and there is no any-hit shading on this path.
         RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
