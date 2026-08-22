@@ -13323,6 +13323,30 @@ The run read 80.61 on 11,433 frames — OG's number to the decimal, which looks
 like a perfect fix. Only the ABSENCE of the `[rt] slices` engagement line caught
 it.
 
+### 7i. The stills, which show the mechanism plainly where no number did
+
+Matched outdoor stills of the camp (RT replace+casters at the default bias
+0.0015, against an OG still from the same route) settle what the medians only
+implied. **Look at the white vans and the quarantine bus**: bright white under
+OG, uniformly greyed under RT. The ground, the tents, the fence — everything
+comes down by roughly the same amount.
+
+That is not "shadows are too dark" and it is not "there are too many shadows".
+It is **every lit surface shadowing itself**, which is what a shadow map
+containing the receivers produces once the comparison has no bias to spare. And
+it explains why the operator's "squares" became a uniform dimming when the
+occluder set changed: with the camera's world set the self-shadowing was
+localized to the cascade footprint (a square that follows the player); with the
+title's own caster set, which covers the whole scene, it is everywhere at once.
+
+**Worth recording as method**: three headless statistics agreed the frame was
+~14 luma dark and none of them could say WHICH surfaces. One pair of stills,
+looked at for ten seconds, says "the white vans are grey" — and that sentence
+names the mechanism. The project's own rule (gotcha 133) says one frame is one
+sample and warns against LOOKING as measurement; the complement is equally true
+and was the expensive half here: a number is one statistic, and for a question
+about WHICH SURFACES it is the blind one.
+
 ### 8. Where part 64 leaves it
 
 **Closed by measurement** (complete runs, large n): the injection route, the
