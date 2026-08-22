@@ -12784,3 +12784,144 @@ carries the shadow/skinned split):
   proof lines (WAITJUMP release, DebugJump request, EXPLORER engagement) all
   present. Logs preserved as `/tmp/rtcensus{,2,3}.log` for the session; the
   numbers above are transcribed here because /tmp is a tmpfs.
+
+## §6cv — Part 64: RT stage 2, ray-traced shadows (2026-08-21 night)
+
+The plan section is `rt-and-fov-plan.md` §3; the hand-off that ordered the work is
+`part64-kickoff.md`. **The composite route is PROVEN and the whole pipeline
+engages; the LOOK is not shippable yet — the traced depths over-shadow, and that
+is the open item this section hands on.** Everything below is measured on the
+DebugJump route (F2 → Case 0-2, the military camp crowd), outdoor frames only
+(>= 3,000 draws), `meanLuma` read from `CZ_VK_FRAME_STATS` over ~5,000-12,000
+frames an arm.
+
+### 1. The injection experiment came first, and it answered two questions at once
+
+The kickoff's first ordered decision was the plan's (a)-vs-(b) fork: synthesize
+the atlas's DEPTHS (no shader touched) versus patching the ~dozen shadow-sampling
+pixel shaders. `CZ_VK_SHADOW_FILL=<f>` overwrites the shadow atlas snapshot's
+depths with a constant right after each cascade resolve — five lines, one clear,
+no barriers, because the image is still `TRANSFER_DST` at that point.
+
+| arm | outdoor frames | median meanLuma |
+|---|---|---|
+| OG (no fill) | 11,243 | **80.61** |
+| `CZ_VK_SHADOW_FILL=0.0` | 11,915 | **61.43** |
+| `CZ_VK_SHADOW_FILL=1.0` | 8,796 | **81.46** |
+
+Both polarities moved and they moved in opposite directions, which is what makes
+this a measurement rather than a demonstration: **the atlas snapshot IS where the
+title's shadow term reads** (route (a) needs no shader patch at all), and the
+convention is STANDARD — the stored value is the nearest occluder's depth, near
+means occluded. `CZ_VK_RT_INVERT` was built for the other answer and is not
+needed here; it stays as the one-run answer if a scene ever disagrees, rather
+than as an argument. The stills confirm it visually: the `fill=0` frame is the
+same scene under ambient light only, uniformly darker, with no other change.
+
+**A second, larger use fell out of it for free.** The same arm is stage 2's
+standing positive control, and the poison control below lands on its number to
+within 0.25 luma — so "the trace pass's writes reach the shadow term" is a
+measured fact and not a hope.
+
+### 2. What shipped
+
+Five commits, in the kickoff's order:
+
+* **`CZ_VK_SHADOW_FILL`** — the experiment above.
+* **Device-level ray query** behind `CZ_VK_RT`. Stage 0 probed and stored the
+  answer; stage 2 needs the device actually created with the three extensions and
+  the two feature bits, which is creation-time (part 54's swapchain lesson). The
+  default when the probe passes is ENABLED — an enabled extension changes no
+  recorded command — with `CZ_VK_RT=0` as the master arm creating exactly the
+  pre-part-64 device, and `CZ_VK_RT_FORCE=1` overriding the probe for driver
+  experiments. Five entry points resolved by name; a null resolve turns RT off,
+  never the renderer. The operator's RTX 3070 reports scratch alignment 128.
+* **The trace shader** (`runtime/gpu/rt_shadow.hlsl` → a COMMITTED
+  `rt_shadow_spv.h`, built by `tools/build_rt_shaders.sh`). The runtime build must
+  not depend on a sibling repo's compiler, and the only DXC on this machine lives
+  inside the XenosRecomp checkout. A fullscreen triangle writes `SV_Depth` from a
+  ray query. The ray construction leans on one measured fact and needs no forward
+  matrix: **a cascade's c0-3 is an ORTHO composite, so it is affine in z, and a
+  ray from the texel's NDC at z=0 to the same texel at z=1 has hit parameter
+  t == the hit's NDC depth.** The CPU inverts the captured matrix in doubles and
+  passes the inverse's rows.
+* **The rtshadow module** (`vk_renderer.cpp`, behind `CZ_VK_RT_SHADOWS=1`):
+  per-draw collection of opaque depth-writing WORLD draws (form-2 composite),
+  BLAS per (stream identity + persist-cache content guard + index identity) built
+  from a staging copy under a per-frame budget, an identity-transform TLAS rebuilt
+  each frame from the PREVIOUS frame's world set, and the trace pass rendered into
+  each just-resolved cascade slice. **The depth test unions the occluder sets** —
+  a traced hit only lands where it is nearer the sun than the raster cascade's
+  content — so skinned actors, alpha-tested foliage and dynamic smallware keep
+  their raster shadows for free rather than needing a fallback path.
+* **The panel row** — a seventh row, OG / RT LOW, persisted and live, showing
+  UNSUPPORTED and refusing to move on a device without ray query. MED/HIGH are
+  refused at the setter until LOW has an operator verdict and a priced ladder.
+
+Design points worth lifting for Case West: the BLAS pool is CHUNKED (one
+`VkDeviceMemory` per 64 MB, not one per BLAS — ~2,600 BLASes in a crowd against
+the driver's ~4,096 allocation cap would exhaust the allocator with textures still
+to serve); BLAS identity carries the persist store's OWN content guard, so the
+raster path's change detector and the BLAS's freshness test cannot disagree and
+stream-address reuse (part 39's lesson) cannot serve another mesh's geometry; and
+every exclusion is a named counter rather than a silent filter.
+
+### 3. It engages, and the numbers say by how much
+
+At the camp crowd, ~10k slices in: **1,380-1,433 BLASes, 32.7-33.6 MB of
+acceleration structure, zero pool flushes, 366-373 TLAS instances a frame, zero
+pending after warm-up, zero key collisions, zero unreadable positions, zero
+refused endians.** The skip counters name the excluded populations exactly as the
+census predicted them: alpha-test/A2M 4.98M draws, dynamic smallware 11.5M,
+degenerate strip triangles 515,664, unsupported primitives 21,562.
+
+The traced atlas is recognizable as a shadow map — trees, power lines and
+buildings in the light's frame across three of the four slices — which is the
+cheapest possible confirmation that the world-space identity-transform assumption
+of §6cs/§6cu holds all the way into a BLAS.
+
+### 4. The positive control, and the defect it makes precise
+
+| arm | outdoor frames | median meanLuma |
+|---|---|---|
+| OG | 11,243 | 80.61 |
+| `CZ_VK_RT_POISON=1` (all-shadow from the TRACE PIPELINE) | 10,865 | **61.18** |
+| `CZ_VK_SHADOW_FILL=0.0` (all-shadow by direct clear) | 11,915 | 61.43 |
+| `CZ_VK_RT_SHADOWS=1` (real rays) | 4,791-4,859 | **63.72-65.48** |
+
+The poison control landing on the direct fill's number to 0.25 luma is the
+strongest form this evidence can take: it is not merely that something changed,
+it is that the trace pipeline can drive the shadow term to the *same measured
+extreme* as writing the atlas by hand. **The composite route is closed.**
+
+And that is exactly what makes the real-ray reading a defect rather than an
+ambiguity: 63.7 is 86% of the way from OG to fully shadowed. **The world is very
+nearly all in shadow.** Two things it is NOT, both measured rather than argued:
+
+* it is **not the bias** — the cascade's own `PA_SU_POLY_OFFSET_FRONT_*` registers
+  are ZERO (the capture logs the value the first time it is non-zero and the line
+  never printed), and raising `CZ_VK_RT_BIAS` from 0.0015 moved the median by
+  ~1.8 luma, i.e. within the run-to-run spread;
+* it is **not a polarity error** — the fill experiment settled the convention
+  independently, and under a flipped convention the frame would have gone
+  *lighter*, not darker.
+
+### 5. The instrument that will decide it (built, running at close)
+
+`CZ_VK_RT_COVERAGE=1` puts a PRECISE occlusion query around the trace draw, which
+counts exactly the samples where a traced depth beat the raster cascade's — the
+fraction of the slice we WON. It separates the two remaining explanations and
+nothing else does:
+
+* **a few percent won** → we are adding real occluders, the traced geometry is
+  where it should be, and the darkening comes from somewhere other than the map's
+  content (a receiver-side convention, or texels the raster cascade deliberately
+  left far);
+* **most of the slice won** → our depths are systematically nearer than the
+  raster's for the SAME surfaces, which cannot be a bias at this magnitude and
+  points at the depth convention (the viewport Z terms this renderer does not
+  decode) or at a subset of streams that are not world-space after all.
+
+Pre-registering both readings here, before the runs land, is the point: the
+project has paid before for an instrument whose result could be read as
+confirming whatever was expected (gotcha 30).
