@@ -11110,6 +11110,37 @@ void TraceSlice(uint8_t* base, Snapshot& snap, int32_t rx, int32_t ry, uint32_t 
         ++g_slicesNoMatrix;
         return;
     }
+    // IS IT THE INVERSE, OR ITS TRANSPOSE? Matrix inversion code is written for
+    // one storage convention and silently returns the transposed answer when fed
+    // the other — and a transposed inverse still produces rays, still fills the
+    // atlas, and still looks like a shadow map at a glance. So multiply it back
+    // out ONCE and check for the identity under the SAME row-major reading the
+    // shader uses (world_i = dot(invRow_i, clip)). Logged once either way: a
+    // check that only prints on failure cannot be distinguished from a check
+    // that never ran (gotcha 30).
+    {
+        static bool checked = false;
+        if (!checked)
+        {
+            checked = true;
+            float worst = 0.0f;
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                {
+                    float acc = 0.0f;
+                    for (int k = 0; k < 4; ++k)
+                        acc += g_lightM[r * 4 + k] * inv[k * 4 + c];
+                    worst = std::max(worst, std::fabs(acc - (r == c ? 1.0f : 0.0f)));
+                }
+            fprintf(stderr,
+                    "[rt] light matrix inverse self-check: worst |M*Minv - I| = "
+                    "%.3g %s\n",
+                    worst,
+                    worst < 1e-3f ? "(OK — row-major inverse, as the shader reads it)"
+                                  : "(FAILED — the shader is tracing through the "
+                                    "WRONG transform)");
+        }
+    }
 
     // The attachment view: the sampled view carries the (R,R,R,1) swizzle, which an
     // attachment must not, so each snapshot gets one identity-swizzle depth view,
