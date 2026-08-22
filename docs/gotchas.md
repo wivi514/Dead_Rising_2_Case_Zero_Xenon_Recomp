@@ -4101,3 +4101,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      MATTERS, and the gap between those two claims is where a session quietly
      spends a part. Say "this mechanism is real and its effect is undemonstrated"
      rather than letting the mechanism's evidence stand in for the arm's.
+
+386. **AN ARM THAT READS EXACTLY LIKE ITS CONTROL IS AN INERT ARM UNTIL A COUNTER
+     SAYS OTHERWISE — and "exactly" is the tell.** Part 64 combined two RT changes
+     (trace the title's own casters; bind the light matrix by dataflow) and the
+     result read **80.61 median luma on 11,433 frames against a control's 80.61**,
+     which looks like the over-shadowing defect fixed perfectly. Nothing had
+     traced: the caster change returned from the world-draw branch before the code
+     that populates the dataflow oracle, so no cascade draw was ever vouched, no
+     light matrix was ever captured, and not one slice ran. The luma could not
+     distinguish "the fix works" from "the feature is switched off", because both
+     produce the control's picture EXACTLY. What caught it was the **absence of
+     the engagement log line** — a counter that prints only when the feature does
+     something, so silence is a reading. Two rules: when a change lands on the
+     control's number to the decimal, suspect inertness before success; and a
+     feature composed of two changes needs its engagement counter re-checked
+     after they are combined, because each was verified alone (gotcha 151 with a
+     sharper edge — an arm with no counter cannot be shown to have engaged, and
+     an arm that reproduces the control cannot be shown to have engaged EITHER).
