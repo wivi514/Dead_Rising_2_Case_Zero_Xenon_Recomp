@@ -13007,6 +13007,37 @@ paragraph about whether streams are world-space; a part later that aside WAS the
 bug. When a census names something junk, the code that consumes the census has to
 name it too — the exclusion belongs in the consumer, not in the prose.
 
+### 7b. And the second half of the cause, from the same two dumps
+
+The same conversion, asked a different question — what fraction of each atlas
+holds NO occluder at all (depth at far):
+
+| atlas | at FAR (no occluder) | in the near half |
+|---|---|---|
+| the title's own RASTER cascade | **52.8%** | 9.0% |
+| our TRACED cascade | **37.0%** | 10.8% |
+
+**Over half of the title's shadow map is deliberately empty.** Its cascade pass
+draws CASTERS, not the world: the street surface, the terrain and most of what a
+camera sees are receivers and are kept out. Our collector has no way to know
+that — a ground chunk is an opaque, depth-writing, content-stable world draw like
+any other — so a ray through an empty texel finds the ground and writes it, and
+**every texel we fill that the title left empty converts a LIT region into a
+shadowed one.** 15.8 percentage points of the atlas changed meaning that way.
+
+That is also what reconciles the two coverage figures, which look inconsistent
+until the empty half is accounted for: `CZ_VK_RT_COVERAGE=1` reports the traced
+depths winning **86.3%** of slice samples, while the atlas diff finds only 49.6%
+NEARER by a margin. The rest is won by a hair on texels where both maps hold the
+same surface — real, harmless, and invisible in the diff's tolerance.
+
+So the defect has two components and both are now named: junk-coordinate streams
+(gated, §7) and, structurally, **the occluder SET — we trace the camera's world,
+the title casts from a much smaller set.** `CZ_VK_RT_CASTERS=cascade` was built
+before either number landed and is aimed exactly at the second: it traces the
+pitch-1040 pass's own casters, which is by construction the same population the
+raster atlas holds.
+
 ### 8. Where part 64 leaves it
 
 Closed by measurement: the injection route, the depth convention, that the trace
