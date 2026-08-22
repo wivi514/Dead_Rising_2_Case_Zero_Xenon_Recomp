@@ -4119,3 +4119,53 @@ From phase C part 18 (the frame rate — and none of it was work):
      after they are combined, because each was verified alone (gotcha 151 with a
      sharper edge — an arm with no counter cannot be shown to have engaged, and
      an arm that reproduces the control cannot be shown to have engaged EITHER).
+
+387. **A BINDING THAT LIVES IN A REGISTER CANNOT BE READ OFF THE PROGRAM — BUT A
+     GPU TRACE IS THE PROGRAM AND THE REGISTERS TOGETHER.** Part 65 needed to know
+     which pixel shaders sample the shadow cascade atlas and at which texture
+     fetch slot. That is unanswerable from the shader bank: the microcode says
+     "fetch slot 3", and WHAT slot 3 holds is a fetch constant the guest writes at
+     runtime. The obvious plan was an instrumented run and an operator session. It
+     was not needed — a `.xtr` carries hardware's own register file per draw
+     alongside the bound shader, so the whole census fell out of twenty capture
+     files already on disc, in minutes, with HARDWARE rather than our own renderer
+     as the oracle. Before scheduling a run to observe a runtime binding, ask
+     whether a trace you already hold contains both halves of it. Generalises
+     [[ask-the-whole-capture-set-not-one-capture]]: the captures answer questions
+     they were not taken for.
+
+388. **A REGISTER FILE HANDED TO A DRAW IS NOT THE SET OF THINGS THAT DRAW USES.**
+     The same census, counted naively by "does any of this draw's 32 texture fetch
+     constants point at the atlas", found 768 (shader, slot) pairs. Intersected
+     with each shader's OWN declared fetch slots it found 140. The other 628 are
+     constants simply left set by an earlier draw — the guest never clears them,
+     and there is no reason it should. A per-draw census over a register file must
+     be filtered by what the bound program actually READS, or it over-reports by
+     whatever the state-leakage rate happens to be (here 6x). Same family as
+     gotcha 25 (a grep that cannot match is not a clean result) from the other
+     side: a match that cannot mean anything is not a finding.
+
+389. **WHEN A CODE PATTERN VARIES, LOOK FOR THE ALGEBRAIC IDENTITY INSTEAD OF
+     ENUMERATING THE PATTERNS.** Route (b) needed the title's own 2x2 PCF weights
+     neutralised in 116 shaders so a substituted tap value would survive as a
+     continuous number rather than being binarised. The emitted weight products
+     came in **thirteen distinct swizzle pairings**, so no pattern match could
+     cover them and enumerating them would have been a permanent maintenance
+     surface. But every pairing is a product of two components each drawn from
+     {a, b, 1-a, 1-b} — so setting a = b = 0.5 makes all four components 0.5 and
+     every product 0.25 **whatever the swizzle**. One substitution, provably
+     complete, no enumeration. When a transformation has to survive many
+     syntactic shapes, find the value that makes them all agree.
+
+390. **A VARIANT SHADER CACHE DRIFTS FROM THE ONE IT WAS FORKED FROM, AND THE
+     DRIFT IS SILENT.** This port builds arm caches (`_a2m`, `_clip`,
+     `_clip_a2m`, ...) beside the stock one and selects them with an env var. The
+     stock cache grew to 449 shaders as operator runs found new ground; the cache
+     `tools/play_session.sh` actually selects held **439**, and had since
+     2026-08-19. The ten missing are ABSENT rather than stale, so every draw bound
+     to one printed `no translated shader` and was SKIPPED — in every operator
+     session for three parts. CLAUDE.md already documents the two-line membership
+     diff that catches this; it had only ever been run against the STOCK cache.
+     Every cache a run can select needs the membership gate, not just the default
+     one — and the gate to run is the NAME diff, because the counts can match
+     while the sets do not (gotcha 264's shape).

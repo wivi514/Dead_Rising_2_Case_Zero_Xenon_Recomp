@@ -1784,6 +1784,59 @@ CZ_VK_RT_BOUNDS_CAP=<f>  the extent above which a stream is refused entry to
                    structural test the collector applies. Hygiene: the
                    rejections are real and counted (`bounds=`), and the picture
                    does not move
+CZ_VK_RT_ROUTE=a|b **WHICH ROUTE** (part 65). `b` is the default and the live
+                   direction: compute the shadow factor per RECEIVING PIXEL in
+                   screen space and have the 126 atlas-sampling pixel shaders
+                   read that. `a` is part 64's atlas trace — a proven mechanism
+                   that CANNOT be correct (writing the map means every receiver
+                   in it is compared against itself; five knobs all landed at
+                   64-66 median outdoor luma against 80.61, §6cv §7j) — kept as
+                   the same-binary control arm. Everything above with `TRACE` or
+                   `CASCADE` in its description belongs to route (a) and is inert
+                   on the default; `CZ_VK_RT_CASTERS` defaults the OTHER way on
+                   route (b), because the reason to prefer the title's own
+                   casters was a property of writing the map
+CZ_VK_RT_FACTOR_POISON=1  **the positive control for route (b)**, and the first
+                   arm of any session that judges it: the factor pass writes
+                   all-shadow everywhere, so every surface taking a sun shadow
+                   must darken. A frame that does NOT change means the
+                   substitution never reached it and nothing measured afterwards
+                   means anything (gotcha 386). Diagnostic arm
+CZ_VK_RT_FACTOR_SCALE=N  the factor image at 1/N of the EDRAM extent, overriding
+                   the tier's own choice (RT LOW = 2, RT MEDIUM/HIGH = 1)
+CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the
+                   rest 1). More than one spreads them over CZ_VK_RT_CONE
+CZ_VK_RT_CONE=<rad>  the sun's angular radius for the cone sample (default
+                   0.02 rad; the real sun is ~0.00465). A LOOK control, not
+                   astronomy. Only read when rays > 1
+CZ_VK_RT_FACTOR_BIAS=<f>   the ray origin's offset along the sun, in WORLD units
+CZ_VK_RT_FACTOR_CAMBIAS=<f>  the ray origin's offset toward the camera, in world
+                   units. Two offsets because they answer different failures:
+                   along the sun is the classic acne offset (the one route (a)
+                   had nowhere to put), toward the camera covers a
+                   depth-reconstructed point landing fractionally BEHIND its own
+                   surface, which no sun-side offset rescues at a grazing sun.
+                   Both DEFAULT FROM THE LIGHT VOLUME (0.0015 and 0.0005 of the
+                   cascade's depth extent) rather than being typed in — this
+                   project has never measured the title's world unit, and a bias
+                   in the wrong units is either inert or a peter-pan, both of
+                   which read as a broken feature rather than a mis-set knob
+CZ_VK_RT_RAY_LEN=<f>  the ray's TMax in world units; default is the cascade's own
+                   depth extent
+CZ_SHADER_SPV_RT=<dir>  where the route (b) VARIANT cache lives. Default is the
+                   selected cache's name with `_rt` appended, so
+                   `CZ_SHADER_SPV=assets/shader_spv_clip_a2m` automatically pairs
+                   with `assets/shader_spv_clip_a2m_rt` and turning RT on does
+                   not also change the foliage or the slicing. Build one with:
+                     CZ_DXC_DEFINES="-D XE_ALPHA_TO_MASK=1 -D XE_USER_CLIP_PLANES=1" \
+                     CZ_HLSL_PATCH="python3 $PWD/tools/patch_rt_shadow_hlsl.py" \
+                     tools/build_shader_spv.sh ~/DR2CZ-troubleshooting/ucode-dumps \
+                         assets/shader_spv_clip_a2m_rt
+                   The gate is that EXACTLY 126 of the 449 modules differ from a
+                   plain rebuild of the same microcode, and that they are the
+                   census's population — no more, none missing. A cache built
+                   without the hook loads with `0 variant module(s)` and the
+                   panel's RT rungs disappear rather than doing nothing
 CZ_VK_WIDE=1|0     **the env arm for wide mode** (part 60 night item 3), winning
                    over the settings file's `aspect=` value. BOOT-LATCHED — the mode
                    reshapes every render-pipeline surface, so it applies at launch

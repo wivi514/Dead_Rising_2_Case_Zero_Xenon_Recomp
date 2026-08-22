@@ -4620,3 +4620,34 @@ stretched ~34% since part 60 — only the frontend was ever truly widened).**
   Renderer-side fov patch = measurement arm only (CZ_VK_FOV); CZ_NO_GAME_FOV=1
   is the game-side control arm. Still open, non-blocking: gore cut off zero,
   aiming behaviour, the cutscene-crop look.
+
+Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
+GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
+THE PLAN BUDGETED.** `docs/part64-kickoff.md` is the LIVE hand-off (subject: RT stage 2 —
+ray-traced shadows, LOW tier first); the record with every number is `phase5-notes.md`
+§6cu + addendum; the instrument is `CZ_VK_RT_CENSUS=1` (instruments.md); zero renderer
+changes):
+
+* **The world's geometry is BLAS-ready almost by accident**: position data is **100%
+  float3 at 28-32 B stride** (the short4 possibility does not exist here), **96.8%
+  triangle strips, 100% 16-bit indices**, and it lives in the SAME persist-cache
+  buffers the raster path uploads — one usage bit away from BLAS build input, zero
+  copies. The only data transformation stage 2 needs anywhere is strip→list index
+  expansion (2.7-5.9 MB of u16 cumulative).
+* **98.1% of world bytes are BLAS-once stable** (full-FNV cross-frame content check;
+  the rewritten class is 134 map-wide smallware streams, 1.4 MB); streams are
+  WORLD-SPACE (§6cs confirmed by the census's bounds scan surviving its refutation
+  check — the three ±6.3M outliers are named 12 B-stride junk streams), so every TLAS
+  instance is the IDENTITY transform. TLAS scale: ~2,100-2,600 instances typical,
+  worst observed frame 7,034 world draws / 3.46M drawn tris (÷2 for the 640-wide
+  tiles). Roam churn ~13 new stable streams (~150 KB)/s — async-build trivial.
+* **The skinned exclusion is STRUCTURAL, and it is 3.0% of scene draws**: actors carry
+  an AFFINE at c0-3 (§6cs), so the composite gate is itself the rigid-world filter;
+  the form-0 bucket split by the pitch-1040 predicate reads 90.1% shadow cascade /
+  8.1% skinned / 1.3% cube faces. Zombies cast no RT shadows in stage 2 (OG cascade
+  stays the fallback) and the panel note can now quote the size of that hole.
+* Three census runs (two standing at the camp crowd — replicating to within 2% on
+  every cumulative number — one 600 s EXPLORER roam), `no translated shader` = 0 on
+  all three; gates at close: `--smoke` green, A5 exit 0, E identity (see the closing
+  commit). Carry-overs unchanged from part 62 (turn-stutter parked, fov small
+  verdicts, panel input leak).

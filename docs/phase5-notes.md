@@ -13467,3 +13467,192 @@ control to the same depth, and re-check the engagement counter after combining
 two separately-verified changes. An hour of this part was spent building on
 numbers that were measurements of a different place in the level, and one build
 that measured a perfect fix was the feature silently switched off.
+
+## §6cw — Part 65: RT shadows, ROUTE (B) — the screen-space traced factor (2026-08-22)
+
+Part 64 proved route (a) end to end and closed it by measurement: writing traced
+depths into the title's own cascade atlas means every receiver inside the map is
+compared against itself, and five independent knobs all landed at 64-66 median
+outdoor luma against the original's 80.61 (§6cv §7j). The operator chose route
+(b) as this part's subject: **compute the shadow factor per RECEIVING PIXEL in
+screen space and patch the atlas-sampling pixel shaders to read it.** The defect
+is impossible there by construction — the ray starts at the receiving surface and
+is offset off it — and it is the only route that can be soft or per-pixel.
+
+`docs/part65-kickoff.md` gated everything on step 1: *"a CENSUS of which shaders
+fetch the atlas and at which slot; build nothing before it returns a list."*
+
+### 1. THE CENSUS — 126 shaders, not "a dozen", and the oracle is offline
+
+`tools/shadow_shader_census.py`. The plan's guess was an order of magnitude out,
+which is the same shape of error as gotcha 3 (XenonAnalyse's zero jump tables
+against our 234) and it changes the whole design: no hand-written per-shader
+patch is possible at this population.
+
+**The oracle is hardware and it needed no new capture.** "Fetch slot N holds the
+atlas" is a RUNTIME fact — it lives in a texture fetch constant, not in the
+microcode — so it cannot be read off the shader bank at all. But a `.xtr` carries
+hardware's own register file per draw, and `tools/xtr_draw_bindings.py` has
+decoded exactly that since part 26. Twenty single-frame world traces
+(R2/R3/R4/R6, 691,330 fetch rows) were enough. This is the
+[[ask-the-whole-capture-set-not-one-capture]] pattern again: a question filed as
+needing an operator run was already answered by captures on disc.
+
+Measured:
+
+| | |
+|---|---|
+| depth-format surfaces in the whole title | **exactly two**: a 4096x1024 `k_24_8` cascade atlas and the 1280x720 scene depth the DoF pass reads |
+| the atlas's address | `1812F000` on hardware, `1439B000` in our runtime — so the census identifies it **BY SHAPE**, and Case West will differ again |
+| pixel shaders sampling it | **126** |
+| (shader, slot) pairs | **140** — slots 0,1,2,3,4,5,6,7 and 9 all appear, and 14 shaders sample it at TWO slots |
+| atlas-sampling draws across the 20 traces | 42,620 |
+
+**Two filters, both load-bearing.** A draw's register file carries all 32 fetch
+constants whether the bound shader declares them or not, so raw address matching
+over-reports by 6x — **768 undeclared (shader, slot) pairs** against the 140 real
+ones, every one of them a constant simply left set by an earlier draw. The census
+intersects with each shader's own `tfetchConsts` sidecar. And two shaders read
+that address as a COLOUR `.xyz` straight to `oC0` — a blit, not a shadow read;
+they are reported separately and excluded.
+
+### 2. WHAT THE SHADERS DO WITH THE VALUE — the finding the whole route rests on
+
+`--hlsl` translates each named shader through XenosRecomp and classifies what the
+fetched value FEEDS. There are only two shapes:
+
+* **`pcf4` — 116 of the 140 uses.** Four taps at exactly `(-0.5,-0.5)`,
+  `(0.5,-0.5)`, `(-0.5,0.5)`, `(0.5,0.5)`, each compared `> receiverDepth`, the
+  four booleans then weighted by `getWeights2D` on the same slot. A hand-rolled
+  2x2 PCF.
+* **`tap1` — 24 uses.** One centre tap feeding
+  `saturate((receiver - sampled) * k - bias)` — a linear ramp, not a compare.
+
+**Both are MONOTONIC and both SATURATE.** That is the finding: returning 1.0 at
+every atlas tap reads as LIT in all 140 uses and 0.0 reads as OCCLUDED in all 140,
+whatever the weighting and wherever in the shader the compare happens to sit. One
+substitution serves the entire population with no per-shader special case. Nothing
+about this was inferable from the plan; it took reading the translated code of all
+126.
+
+### 3. THE SUBSTITUTION, and the second half of it that buys SOFTNESS
+
+`tools/patch_rt_shadow_hlsl.py` rewrites the named calls in XenosRecomp's HLSL
+before DXC, so the product is an ordinary second SPIR-V cache selected with
+`CZ_SHADER_SPV` — the mechanism the part-33 NaN family and `shader_spv_pre45`
+already use. `build_shader_spv.sh` gained a `CZ_HLSL_PATCH` hook; the shared
+recompiler is untouched, which matters because XenosRecomp is Case West's too.
+
+A binary tap value would make the result binary however it is weighted, which
+would cap route (b) at hard shadows and make the tier ladder meaningless. The
+weights are recoverable, though, and **in a way that does not depend on the
+shader**: the emitted code builds its four bilinear products as
+`w.<4swizzle> * w.<4swizzle>` from components each of which is one of
+{a, b, 1-a, 1-b} (the `1-x` form is emitted as `pc(255).w - w.x`, pc255.w being
+the literal 1.0). A census over the 116 `pcf4` uses found **thirteen distinct
+swizzle pairings**, so no pattern match could ever cover them.
+
+Set a = b = 0.5 and all four components are 0.5, so **every product is 0.25
+whatever the swizzle**. The shader computes the plain mean of its four taps, and
+per-tap dither thresholds turn that mean into a five-level quantisation of a
+continuous factor. `getWeights2D` on a flagged slot is therefore patched to
+return `0.5.xx`. The ceiling is stated rather than hidden: five levels, and the
+`tap1` family stays binary because it has no filter to borrow.
+
+**Verified by byte comparison, not by trust**: against a plain rebuild of the
+same microcode, **exactly 126 of 449 modules differ, and they are exactly the
+census's population** — no extra, none missing. A shader in the map whose call
+sites do not all rewrite exits 1 and is DROPPED from the cache rather than
+shipped unpatched, because an unpatched shadow sampler is a surface that silently
+keeps the old shadow while every counter says RT is on — gotcha 386's failure
+exactly.
+
+**The shared-constant offset the injected helper reads is not written down
+twice.** The tool parses `kSharedRtShadow` out of `runtime/gpu/vk_renderer.cpp`,
+because that particular duplication fails QUIETLY: a stale offset loads a
+neighbouring word as a descriptor index, which is a valid index into the same
+bindless heap, so the shader samples a real but wrong texture instead of erroring.
+
+### 4. THE FACTOR PASS, and three things route (b) does not need
+
+`runtime/gpu/rt_factor.hlsl`, one fullscreen fragment pass. It reconstructs each
+pixel's world position from the scene depth and the scene view-projection, pushes
+the ray origin off that surface, and ray-queries the TLAS route (a) already
+builds. Everything part 64 built — BLAS/TLAS construction, the pooled allocator,
+the sun-matrix capture and its dataflow binding, every arm, the `rt` profiler
+phase — is reused unchanged.
+
+Three of part 64's hardest problems simply do not exist here, and each cost that
+part real time:
+
+* **the slice<->matrix PAIRING.** Route (b) uses only the sun's DIRECTION, and
+  every cascade's light matrix carries the same one. Which cascade the captured
+  matrix belongs to cannot matter.
+* **the depth CONVENTION and the viewport Z terms.** Nothing is written into a
+  depth buffer; the answer is a visibility bit.
+* **the occluder SET.** `CZ_VK_RT_CASTERS` defaulted to the title's own casters
+  on route (a) only because that kept receivers out of the map they were compared
+  against. Here the correct set is everything that can block the sun — the
+  camera's world — so the default flips.
+
+**The trigger is the title's own draw order, not a heuristic.** The pass runs at
+the first draw of a pass whose pixel shader has a variant — which by construction
+is one of the 126 the census found. This title issues a real Z prepass (§6u:
+233,155 depth-only draws against 148,150 colour-mode), so by the time its own
+first shadow-sampling draw is recorded the depth buffer holds the finished scene
+depth for the region being shaded. It is invalidated at every RESOLVE, so the
+second of this title's two 640-wide tiles recomputes against its own depth rather
+than reading a factor made from the other tile's.
+
+**The tier ladder becomes expressible, which is why the row has three RT rungs.**
+RT LOW is half-resolution and one ray; RT MEDIUM full-resolution, one ray; RT HIGH
+full-resolution with the sun's angular radius cone-sampled over four rays — the
+first genuinely soft shadow either route could produce, since route (a) was capped
+at the atlas's resolution however many rays it fired. The cone offsets are FIXED
+rather than jittered per pixel: this renderer has no temporal accumulation to
+resolve noise into shading, and per-pixel jitter would also break the frame
+determinism `tools/frame_determinism.py` depends on. It bands the penumbra
+instead, which is visible and honest.
+
+**The biases default from the light volume rather than being typed in.** This
+project has never measured the title's world unit, and a bias in the wrong units
+is either inert (acne everywhere) or a peter-pan (shadows detached from their
+casters) — and both read as a broken feature rather than as a mis-set knob, which
+is how a whole session gets spent on the wrong question.
+
+### 5. Three defects found on the way, none of them part 65's subject
+
+* **The play cache was TEN SHADERS SHORT.** `assets/shader_spv_clip_a2m` — the
+  cache `tools/play_session.sh` selects, and therefore the one every operator
+  session since 2026-08-19 has run on — held 439 modules against the stock
+  cache's 449. The ten are ABSENT, not different, so every draw bound to one of
+  them printed `no translated shader` and was SKIPPED. `shader_spv_clip` (439)
+  and `shader_spv_a2m` (440) were short the same way; all three are rebuilt at
+  449. **The membership check that catches this is two lines and this repo
+  already documents it** (CLAUDE.md's name-diff gate) — it was simply never run
+  against the variant caches, only against the stock one.
+* **One stock cache entry was stale**: `ps_926c15dd20571cf1`, the shader CLAUDE.md
+  still describes as having lost microcode. Its microcode was recovered on
+  2026-08-21 (part 64's operator session) but its cache entry dated from
+  2026-08-15 and carried no `tfetchDims` sidecar. Rebuilt; `shader_dim_census.py`
+  now names no sidecar-less entries at all.
+* **`PipelineKey::drawIdPass` had to become a bitfield** (`passFlags`) rather than
+  gain a neighbour, because the key must stay padding-free for its `memcmp` and
+  its byte-wise hash to be correct — adding a fourteenth `uint32_t` to a struct
+  containing two `uint64_t` inserts four bytes of uninitialised padding and
+  silently breaks the pipeline cache.
+
+### 6. What is NOT established
+
+**Nothing about the picture.** All runtime verification goes through the operator
+(standing instruction), and the session is chained in
+`tools/part65_operator_session.sh`: arm 1 is the poison positive control and
+GATES the rest, arm 2 is the live panel toggle on one scene, arm 3 is an
+exaggerated cone. The questions to it are about SHAPE — do lit surfaces stay lit,
+do shadows sit under their casters, is there acne, do shadows detach — because
+that is the class of question part 64 proved a headless statistic cannot answer
+and the operator's eye answers in one sentence.
+
+Gates at close, on the final binary with RT off (the shipped default): `--smoke`
+OK; A5 exit 0; `shader_dim_census.py` clean on all six caches; the RT caches
+differ from their plain rebuilds in exactly 126 modules each.

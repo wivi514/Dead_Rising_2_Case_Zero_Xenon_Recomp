@@ -11671,6 +11671,7 @@ Image g_factor;
 uint32_t g_factorSlot = 0;          // index in the 2D bindless heap, 0 = the white dummy
 uint32_t g_factorSampler = 0;       // index in the sampler heap
 VkImageView g_depthView = VK_NULL_HANDLE;
+VkImage g_depthOf = VK_NULL_HANDLE;      // which image g_depthView was made from
 VkSampler g_depthSampler = VK_NULL_HANDLE;
 VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
 VkPipelineLayout g_pipeLayout = VK_NULL_HANDLE;
@@ -11740,9 +11741,26 @@ bool EnsureResources()
     }();
     const uint32_t scale = envScale ? envScale
                                     : (rtshadow::TierThisFrame() <= 1 ? 2u : 1u);
-    const uint32_t w = std::max(1u, InternalW() / scale);
-    const uint32_t h = std::max(1u, InternalH() / scale);
-    if (g_factor.image && g_factor.width == w && g_factor.height == h && g_pipe)
+    // SIZED AGAINST THE EDRAM DEPTH IMAGE, not against the internal resolution. They
+    // are the same whenever the guest's target is 1280x720, and they are NOT when the
+    // EDRAM has been grown for a taller surface — and the two places this extent is
+    // used (the depth sample here, and SV_Position -> uv in the patched shaders) have to
+    // agree with each other or every lookup is offset by the ratio.
+    if (!R->depth.image || !R->depth.width || !R->depth.height)
+        return false;
+    const uint32_t w = std::max(1u, R->depth.width / scale);
+    const uint32_t h = std::max(1u, R->depth.height / scale);
+    // The depth VIEW belongs to a particular VkImage, and the EDRAM depth is recreated
+    // whenever the resolution row or a taller surface changes its extent. Keyed on the
+    // handle rather than on the size, because a recreated image of the same size is a
+    // different object and the old view would be dangling.
+    if (g_depthView && g_depthOf != R->depth.image)
+    {
+        vkDestroyImageView(R->device, g_depthView, nullptr);
+        g_depthView = VK_NULL_HANDLE;
+    }
+    if (g_factor.image && g_factor.width == w && g_factor.height == h && g_pipe &&
+        g_depthView)
         return true;
 
     if (g_factor.image)
@@ -11820,13 +11838,11 @@ bool EnsureResources()
         wr.pImageInfo = &ii;
         vkUpdateDescriptorSets(R->device, 1, &wr, 0, nullptr);
     }
-    if (g_pipe)
-        return true;
-
     // A DEPTH-ONLY VIEW of the EDRAM depth buffer. The image is tracked with both
     // aspects everywhere else, and a combined depth+stencil view cannot be sampled at
     // all — a validation error, not a wrong picture, but one worth naming here because
     // the image handle is shared with the attachment path.
+    if (!g_depthView)
     {
         VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         vi.image = R->depth.image;
@@ -11840,12 +11856,36 @@ bool EnsureResources()
             g_failed = true;
             return false;
         }
-        VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-        si.magFilter = si.minFilter = VK_FILTER_NEAREST;   // a depth is not interpolable
-        si.addressModeU = si.addressModeV = si.addressModeW =
-            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        vkCreateSampler(R->device, &si, nullptr, &g_depthSampler);
+        g_depthOf = R->depth.image;
+        if (!g_depthSampler)
+        {
+            VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+            si.magFilter = si.minFilter = VK_FILTER_NEAREST;  // a depth is not filterable
+            si.addressModeU = si.addressModeV = si.addressModeW =
+                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            vkCreateSampler(R->device, &si, nullptr, &g_depthSampler);
+        }
+        // Every already-allocated set points at the OLD view. Rewriting them here is
+        // what makes the recreation above safe; a set left pointing at a destroyed view
+        // is not a wrong picture, it is undefined behaviour.
+        for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (!g_sets[i])
+                continue;
+            VkDescriptorImageInfo di{};
+            di.imageView = g_depthView;
+            di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = g_sets[i];
+            w.dstBinding = 1;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            w.pImageInfo = &di;
+            vkUpdateDescriptorSets(R->device, 1, &w, 0, nullptr);
+        }
     }
+    if (g_pipe)
+        return true;
 
     VkDescriptorSetLayoutBinding b[3]{};
     b[0].binding = 0;
@@ -12136,6 +12176,11 @@ void Run(uint8_t* base)
     const int rays = envRays > 0 ? std::min(envRays, 4) : (tier >= 3 ? 4 : 1);
     pc[20] = b1; pc[21] = b2; pc[22] = poison ? 1.0f : 0.0f;
     pc[23] = float(rays) * 1000.0f + (rays > 1 ? coneRad : 0.0f);
+    // THIS PASS RASTERIZES AT THE FACTOR'S OWN RESOLUTION, so its SV_Position runs
+    // 0..factorSize and the normaliser is the factor's. `Publish` hands the patched
+    // material shaders 1/EDRAM instead, because THEIR SV_Position is in EDRAM pixels.
+    // Both end at uv in [0,1] over the same screen; using one pair for both would
+    // offset every lookup by the tier's scale factor.
     pc[24] = 1.0f / float(g_factor.width);
     pc[25] = 1.0f / float(g_factor.height);
     pc[26] = 0.0f; pc[27] = 0.0f;
@@ -12218,10 +12263,11 @@ bool Publish(uint8_t* shared)
     float* f = reinterpret_cast<float*>(shared + kSharedRtShadow + 8);
     u[0] = g_factorSlot;
     u[1] = g_factorSampler;
-    // SV_Position is in RENDER-target pixels while the factor image may be smaller; the
-    // uv is normalised over the SCENE, not over the factor, so the scale is the scene's.
-    f[0] = 1.0f / float(std::max(1u, InternalW()));
-    f[1] = 1.0f / float(std::max(1u, InternalH()));
+    // SV_Position is in EDRAM pixels while the factor image may be half that; the uv is
+    // normalised over the EDRAM extent, not over the factor, and the factor pass's own
+    // `view.xy` carries the same two numbers.
+    f[0] = 1.0f / float(std::max(1u, R->depth.width));
+    f[1] = 1.0f / float(std::max(1u, R->depth.height));
     ++g_drawsServed;
     return true;
 }
@@ -15918,7 +15964,23 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
 // ===================================================================================
 bool VkRenderer_RtAvailable()
 {
-    return R && R->rtEnabled;
+    // TWO REQUIREMENTS, not one. The device has to support ray query AND the shader
+    // variant cache has to be present with real variants in it — route (b) makes the
+    // shadows in the material shaders, so a runtime with ray query and no
+    // `assets/shader_spv_rt` would offer three RT rungs that change nothing. Route (a)
+    // needs no variants (it writes the atlas), so the developer arm still works.
+    return R && R->rtEnabled && (R->rtVariants || !rtshadow::RouteB());
+}
+
+// Why the ladder stops, for the panel footer: 0 = it does not, 1 = no ray query,
+// 2 = ray query but no shader variants.
+int VkRenderer_RtUnavailableReason()
+{
+    if (!R || !R->rtEnabled)
+        return 1;
+    if (!R->rtVariants && rtshadow::RouteB())
+        return 2;
+    return 0;
 }
 
 bool VkRenderer_Active() { return g_active; }

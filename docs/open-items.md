@@ -7,10 +7,25 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS PART 65's
-   SUBJECT** (the operator's decision). The record is `phase5-notes.md` §6cv
-   (§7j is the verdict), the hand-off is `docs/part65-kickoff.md`, the arms are
-   in `instruments.md`, the lessons are gotchas 381-386.
+0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT AND
+   AWAITING THE OPERATOR'S EYE.** The records are `phase5-notes.md` §6cv (route
+   (a), §7j is the verdict) and **§6cw (route (b), part 65)**; the hand-off is
+   `docs/part66-kickoff.md`; the arms are in `instruments.md`; the lessons are
+   gotchas 381-386 and **387-390**.
+
+   **WHAT PART 65 SHIPPED, and what is still owed.** Route (b) is complete end
+   to end and has never been looked at: the census (126 pixel shaders, 140
+   fetch slots, measured against hardware's own register file in twenty `.xtr`
+   world traces — the plan guessed "a dozen"), the shader substitution
+   (`tools/patch_rt_shadow_hlsl.py`, a second SPIR-V cache, exactly 126 of 449
+   modules differ), the factor pass (`runtime/gpu/rt_factor.hlsl`) and the tier
+   ladder (LOW half-res 1 ray / MEDIUM full-res 1 ray / HIGH four rays over the
+   sun's disc). **What is owed is one operator session**,
+   `tools/part65_operator_session.sh` — arm 1 is the poison positive control and
+   GATES the other two, arm 2 is the live panel toggle on one scene. The
+   questions are about SHAPE (do lit surfaces stay lit, do shadows sit under
+   their casters, is there acne, do shadows detach), because that is the class
+   part 64 proved a headless statistic cannot answer.
 
    **Proven and not to be re-derived**: the shadow ATLAS SNAPSHOT is where the
    title's shadow term reads and needs NO shader patch (`CZ_VK_SHADOW_FILL=0.0`
@@ -42,13 +57,15 @@ Next, in order:
    per-cascade-index content comparison between our traced quarter and the
    raster quarter it replaced.
 
-   **Route (b), the live direction**: compute the factor per RECEIVING PIXEL in
-   screen space and patch the atlas-sampling pixel shaders to read it. The
-   defect is impossible by construction, and it is the only route that can do
-   soft or per-pixel shadows (route (a) is capped at the atlas's resolution).
-   Step 1 is a CENSUS of which shaders fetch `1439B000` and at which slot —
-   build nothing before it returns a list. Everything part 64 built is reusable
-   unchanged. See the kickoff for the full spec.
+   **Route (b), BUILT in part 65** (§6cw): compute the factor per RECEIVING
+   PIXEL in screen space and patch the atlas-sampling pixel shaders to read it.
+   The defect is impossible by construction, and it is the only route that can
+   do soft or per-pixel shadows. Everything part 64 built is reused unchanged,
+   and three of that part's hardest problems do not exist here — the
+   slice<->matrix pairing (only the sun's DIRECTION is used), the depth
+   convention (nothing is written to a depth buffer) and the occluder set (the
+   reason to prefer the title's own casters was a property of writing the map).
+   `CZ_VK_RT_ROUTE=a` restores part 64's atlas trace as the control arm.
 
 0u. **THE DoF COMPOSITE — DOWNGRADED IN PART 42: the "hardware contradiction"
    mostly dissolved, and what remains is two bounded residues.** Part 41's

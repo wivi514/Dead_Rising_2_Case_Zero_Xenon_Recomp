@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 368 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 390 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part65-kickoff.md`.** State the rule as well as the name, because this line said
+    `part66-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -389,14 +389,27 @@ per-slot texture dimension is derivable both from our ucode parse and from DXC's
 `OpDecorate ... DescriptorSet` words, so a disagreement means one of the two decodes is
 wrong. Run it after any cache rebuild; exit 1 is a real defect:
 ```
-python3 tools/shader_dim_census.py             # 310 modules 2D, 94 cube, 0 disagreements
+python3 tools/shader_dim_census.py             # 339 modules 2D, 100 cube, 0 disagreements
+python3 tools/shader_dim_census.py assets/shader_spv_clip_a2m   # and every ARM cache
 ```
 It also names the sidecars carrying no `tfetchDims` at all — cache entries built before
-part 25 whose microcode is gone. **Keep ucode dumps in `~/DR2CZ-troubleshooting/ucode-dumps`,
+part 25 whose microcode is gone. **That list is now EMPTY**: the last member,
+`ps_926c15dd20571cf1`, had its microcode recovered in part 64's operator session and its
+entry rebuilt in part 65.
+**AND THE NAME-DIFF GATE APPLIES TO EVERY ARM CACHE, NOT JUST THE STOCK ONE**
+(gotcha 390). Part 65 found `assets/shader_spv_clip_a2m` — the cache
+`tools/play_session.sh` actually selects — holding 439 modules against the stock 449
+since 2026-08-19, the ten ABSENT rather than stale, so every draw bound to one printed
+`no translated shader` and was skipped in every operator session for three parts. All
+six caches are now 449. **Keep ucode dumps in `~/DR2CZ-troubleshooting/ucode-dumps`,
 not in `/tmp`**, which is a tmpfs: eleven entries were lost that way and two operator runs
 (the military arrival, then Still Creek end to end) recovered TEN of the eleven. The last,
 `ps_926c15dd20571cf1`, samples only sets 0 and 3 — an ordinary 2D shader, so nothing
-depends on it. A lost dump is a location nobody has replayed, not a permanent loss.
+depends on it. ~~A lost dump is a location nobody has replayed, not a permanent loss.~~
+**And that last one is no longer lost**: part 64's operator session dumped it, and part
+65 rebuilt its cache entry (which had been carrying no `tfetchDims` sidecar since
+2026-08-15). Eleven of eleven recovered — a lost dump really is only a location nobody
+has replayed.
 **The cache is 449, and on 2026-08-21 the operator COMPLETED THE WHOLE GAME in one
 sitting with `CZ_SHADER_DUMP` armed** — nine shaders surfaced across that run (three
 mid-town, five late, one in the endgame), which is the closest this cache has ever
@@ -737,6 +750,53 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 65 CLOSED — **RT SHADOWS, ROUTE (B) IS
+BUILT END TO END AND HAS NEVER BEEN LOOKED AT. The one thing owed is an operator
+session, and it is scripted.** `docs/part66-kickoff.md` is the LIVE hand-off; the
+record is `phase5-notes.md` §6cw; the backlog entry is `open-items.md` 0v; the
+arms are in `instruments.md`; the lessons are gotchas 387-390):
+
+* **The census answered step 1 offline, against HARDWARE, in minutes** — the
+  binding "fetch slot N holds the shadow atlas" lives in a register, not in the
+  microcode, so it looked like it needed an instrumented run; a `.xtr` carries
+  hardware's register file per draw, so twenty capture files already on disc
+  settled it (gotcha 387). **126 pixel shaders, 140 (shader, slot) pairs**,
+  42,620 draws — against the plan's guess of "a dozen". Slots 0-7 and 9 all
+  appear. `tools/shadow_shader_census.py`, `config/rt_shadow_slots.json`.
+* **Only TWO use shapes exist and both are monotonic and saturating**: `pcf4`
+  (116 uses — four ±0.5 taps compared `> receiverDepth`, bilinearly weighted) and
+  `tap1` (24 uses — one centre tap feeding `saturate((receiver−sampled)*k−bias)`).
+  So **one substitution serves all 140**: 1.0 at every atlas tap reads as LIT
+  everywhere, 0.0 as OCCLUDED, whatever the weighting.
+* **The weights are patched too, and that is what buys SOFTNESS.** The emitted
+  2x2 products come in THIRTEEN swizzle pairings, so no pattern match covers
+  them — but every one is a product of two of {a,b,1−a,1−b}, so forcing
+  `getWeights2D` to 0.5 makes every product 0.25 whatever the swizzle and the
+  shader computes a plain mean (gotcha 389). Five levels, stated as the ceiling.
+* **Shipped**: `tools/patch_rt_shadow_hlsl.py` + a `CZ_HLSL_PATCH` hook in
+  `build_shader_spv.sh` (the shared recompiler untouched);
+  `runtime/gpu/rt_factor.hlsl`; the renderer wiring (a variant module per shader,
+  `PipelineKey::passFlags`, the pass triggered by the title's OWN first
+  atlas-sampling draw and invalidated at every resolve). The tier ladder is real
+  now — RT LOW half-res 1 ray, MEDIUM full-res 1 ray, **HIGH four rays over the
+  sun's disc**, which route (a) could never express.
+* **Three of part 64's hardest problems do not exist on route (b)**: the
+  slice↔matrix pairing (only the sun's DIRECTION is used), the depth convention
+  (nothing is written to a depth buffer) and the occluder set (preferring the
+  title's own casters was a property of writing the map).
+* **The null is byte-identical**: with `CZ_VK_RT=0`, or no variant cache, or the
+  SHADOW row on a raster tier, nothing runs and the stock modules are bound. The
+  EDRAM depth gains `SAMPLED_BIT` only on a ray-query device.
+* **Found and fixed on the way, unrelated to RT**: the operator's play cache
+  (`shader_spv_clip_a2m`) was TEN SHADERS SHORT since 2026-08-19 — absent, not
+  stale, so their draws were SKIPPED in every session for three parts (gotcha
+  390); and the last sidecar-less cache entry was rebuilt from microcode part 64
+  recovered.
+* **Gates at close** (RT off = the shipped default): `--smoke` OK; **A5 exit 0**
+  (4 permutation windows, 0 real); `shader_dim_census.py` clean on every cache;
+  each RT cache differs from a plain rebuild in **exactly the census's 126
+  modules** — no extra, none missing. Carry-overs unchanged from parts 62-64.
+
 Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT SHADOWS: ROUTE (a) WAS
 BUILT END TO END, PROVEN AS A MECHANISM, AND THEN CLOSED AS UNWORKABLE BY
 MEASUREMENT. ROUTE (b) IS PART 65's SUBJECT, by the operator's decision.**
@@ -790,39 +850,8 @@ that matters**; the backlog entry is `open-items.md` 0v; the arms are in
   **A5 exit 0**; unlowered switches 0 defects; shader dim census 0 disagreements;
   `no translated shader` = 0. Carry-overs unchanged from parts 62-63.
 
-Where the port is, as of 2026-08-21 late night (part 63 CLOSED — **RT STAGE 1, THE
-GEOMETRY CENSUS, IS DONE AND THE VERDICT IS GO FOR STAGE 2 (RT shadows), CHEAPER THAN
-THE PLAN BUDGETED.** `docs/part64-kickoff.md` is the LIVE hand-off (subject: RT stage 2 —
-ray-traced shadows, LOW tier first); the record with every number is `phase5-notes.md`
-§6cu + addendum; the instrument is `CZ_VK_RT_CENSUS=1` (instruments.md); zero renderer
-changes):
-
-* **The world's geometry is BLAS-ready almost by accident**: position data is **100%
-  float3 at 28-32 B stride** (the short4 possibility does not exist here), **96.8%
-  triangle strips, 100% 16-bit indices**, and it lives in the SAME persist-cache
-  buffers the raster path uploads — one usage bit away from BLAS build input, zero
-  copies. The only data transformation stage 2 needs anywhere is strip→list index
-  expansion (2.7-5.9 MB of u16 cumulative).
-* **98.1% of world bytes are BLAS-once stable** (full-FNV cross-frame content check;
-  the rewritten class is 134 map-wide smallware streams, 1.4 MB); streams are
-  WORLD-SPACE (§6cs confirmed by the census's bounds scan surviving its refutation
-  check — the three ±6.3M outliers are named 12 B-stride junk streams), so every TLAS
-  instance is the IDENTITY transform. TLAS scale: ~2,100-2,600 instances typical,
-  worst observed frame 7,034 world draws / 3.46M drawn tris (÷2 for the 640-wide
-  tiles). Roam churn ~13 new stable streams (~150 KB)/s — async-build trivial.
-* **The skinned exclusion is STRUCTURAL, and it is 3.0% of scene draws**: actors carry
-  an AFFINE at c0-3 (§6cs), so the composite gate is itself the rigid-world filter;
-  the form-0 bucket split by the pitch-1040 predicate reads 90.1% shadow cascade /
-  8.1% skinned / 1.3% cube faces. Zombies cast no RT shadows in stage 2 (OG cascade
-  stays the fallback) and the panel note can now quote the size of that hole.
-* Three census runs (two standing at the camp crowd — replicating to within 2% on
-  every cumulative number — one 600 s EXPLORER roam), `no translated shader` = 0 on
-  all three; gates at close: `--smoke` green, A5 exit 0, E identity (see the closing
-  commit). Carry-overs unchanged from part 62 (turn-stutter parked, fov small
-  verdicts, panel input leak).
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-62's** — part 64 moved parts 61/62's out in the same commit that added its own block, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-63's** — part 65 moved part 63's out in the same commit that added its own block, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

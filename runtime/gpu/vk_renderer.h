@@ -77,6 +77,9 @@ void VkRenderer_RequestRenderScale(uint32_t scale);
 // it to show UNSUPPORTED and refuse to move — a row that pretends is the gamma
 // slider again. Safe to call before init (false then).
 bool VkRenderer_RtAvailable();
+// 0 = RT is offered, 1 = the device has no ray query, 2 = it has ray query but the
+// route (b) shader variant cache (assets/shader_spv_rt) is missing or unpatched.
+int VkRenderer_RtUnavailableReason();
 
 // The wide-mode horizontal factor k = (9*W)/(16*H) of the internal resolution
 // (1.0 at 16:9). Exported for the game-side fov substitution (cpu/camera_fov.cpp,

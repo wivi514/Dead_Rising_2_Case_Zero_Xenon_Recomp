@@ -537,9 +537,15 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // frame), but the tier scales are floored at the title's own 1280x720 base — so
     // at render scale 1 every tier is 1x and the row is honestly inert, which the
     // footer says rather than letting a dead row pretend (the gamma-slider rule).
+    // A dead rung must say WHY it is dead, and the two reasons need different words:
+    // a device without ray query cannot be fixed by the user, a missing shader variant
+    // cache is one build command away (tools/patch_rt_shadow_hlsl.py).
+    const int rtWhy = VkRenderer_RtUnavailableReason();
     text(panelX + 20, panelY + panelH - 30,
-         !VkRenderer_RtAvailable()
+         rtWhy == 1
              ? "RESOLUTION: NEXT LAUNCH - NO RAY QUERY: RT SHADOWS UNAVAILABLE"
+         : rtWhy == 2
+             ? "RESOLUTION: NEXT LAUNCH - NO RT SHADER CACHE: SEE THE LOG"
              : (scale > 1 ? "RESOLUTION: NEXT LAUNCH - SHADOW: LIVE"
                           : "RESOLUTION: NEXT LAUNCH - SHADOW INERT AT 720P"),
          2, 150, 140, 120);
