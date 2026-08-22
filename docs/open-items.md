@@ -7,85 +7,48 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0v. **RT SHADOWS (stage 2) — THE INJECTION ROUTE IS PROVEN, THE OCCLUDER CONTENT
-   IS NOT. This is the first item of part 65.** The full record is
-   `phase5-notes.md` §6cv; the arms are in `instruments.md`. What is CLOSED, by
-   measurement, and must not be re-derived:
-   * **The atlas snapshot is where the title's shadow term reads.**
-     `CZ_VK_SHADOW_FILL=0.0` takes the outdoor median luma 80.61 -> 61.43 and
-     `=1.0` reads 81.46 — two polarities, opposite directions. Route (a) of
-     `rt-and-fov-plan.md` §3 needs NO shader patch; route (b) is not required
-     to get pixels on screen (it is still the route to per-pixel quality —
-     see below).
-   * **The convention is STANDARD** (near = occluder). `CZ_VK_RT_INVERT` exists
-     for the other answer and is not needed here.
-   * **The trace pipeline's writes reach that term**: `CZ_VK_RT_POISON=1` lands
-     at 61.18 against the direct fill's 61.43 — the same measured extreme,
-     reached through the whole BLAS/TLAS/ray-query path.
-   * **The plumbing engages and holds**: 1,380-1,433 BLASes, ~33 MB, zero pool
-     flushes, ~370 TLAS instances/frame, zero key collisions, zero unreadable
-     positions, zero refused endians; the traced atlas is recognizably a shadow
-     map (trees, poles, buildings in the light's frame).
-   **THREE REAL DEFECTS WERE FOUND AND FIXED IN PART 64 AND NONE OF THEM MOVED
-   THE PICTURE.** Each was established by a count that does not drift, each fix
-   is right on its own terms, and on complete runs all three arms are
-   indistinguishable — 66.34 / 66.14 / 66.40 outdoor median luma against OG's
-   80.61 (all-shadow floor 61.2). They are: junk geometry with million-unit
-   coordinates entering the BLAS (gated); the title's own cascade being 52.8%
-   EMPTY because it draws casters not receivers (`CZ_VK_RT_CASTERS=cascade`);
-   and the light matrix being bound by RECENCY when the cascade pass carries
-   SEVERAL distinct c0-3 per slice — 0 slices with one against 28,704 with
-   several — now bound by dataflow instead (`CZ_VK_RT_ANY_MATRIX=1` is the
-   control). Keep all three; do not re-buy any of them; do not expect them to
-   be the answer.
+0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS PART 65's
+   SUBJECT** (the operator's decision). The record is `phase5-notes.md` §6cv
+   (§7j is the verdict), the hand-off is `docs/part65-kickoff.md`, the arms are
+   in `instruments.md`, the lessons are gotchas 381-386.
 
-   **The mid-session numbers that said otherwise are RETRACTED** (§6cv 7e): they
-   were read from stats files still being written, and a partial read on this
-   route measures a different PLACE, not a noisier version of the same one
-   (gotcha 384).
+   **Proven and not to be re-derived**: the shadow ATLAS SNAPSHOT is where the
+   title's shadow term reads and needs NO shader patch (`CZ_VK_SHADOW_FILL=0.0`
+   → outdoor median luma 80.61 → 61.43, `=1.0` → 81.46); the convention is
+   STANDARD (near = occluder); the whole BLAS/TLAS/ray-query path reaches that
+   term (`CZ_VK_RT_POISON=1` → 61.18 against the fill's 61.43); and the plumbing
+   engages and holds (~1,400 BLASes, ~33 MB, zero flushes/collisions).
 
-   What is OPEN: **every RT arm over-shadows by ~14 luma and the cause is none
-   of the three above.** Two suspects survive, neither tested, both cheap:
-   * **the DEPTH CONVENTION** — the guest's viewport Z scale/offset
-     (`PA_CL_VTE_CNTL` bits for Z, `kPaClVportZScale`/`ZOffset`) are decoded
-     NOWHERE in this renderer; the raster path hardcodes minDepth 0 / maxDepth 1.
-     If the cascade sets them, our rasterized depths and our traced depths could
-     still agree with each other while both disagree with what the title's
-     receiver-side comparison expects.
-   * ~~**the SLICE RECTANGLE / the slice<->matrix pairing**~~ — **ELIMINATED at
-     part 64's close.** The refined distinctness count (taken AFTER the dataflow
-     filter) reads 10,192 slices with exactly ONE world-vouched c0-3 and 0 with
-     several. The pairing is exact; do not build the ordered-association fix.
+   **Closed as unworkable**: route (a) SELF-SHADOWS by construction — writing
+   the map means every receiver in it is compared against itself, with no
+   receiver-side offset available. Five independent knobs (occluder set, union
+   vs replace, the light-matrix binding, a bounds gate, a 6.7x bias sweep) all
+   land at 64-66 median luma against OG's 80.61. Stills show every LIT surface
+   greyed. Do not re-open this by tuning.
 
-   So the depth convention is the LAST NAMED SUSPECT, and checking it is one
-   line: print `PA_CL_VTE_CNTL`, `kPaClVportZScale` and `kPaClVportZOffset` on a
-   cascade draw. Our raster path and our trace pass agree with each other by
-   construction — which is why the traced atlas looks right — and would both
-   disagree with the title's receiver if the cascade sets those terms.
+   **Real defects found and FIXED along the way, each on a count that does not
+   drift, none of which moved the picture** — keep them, re-buy none:
+   junk ±6.3M-unit geometry entering the BLAS (gated); the title's cascade being
+   52.8% EMPTY because it draws casters not receivers (`CZ_VK_RT_CASTERS`, now
+   the default); and the light matrix bound by RECENCY when the cascade pass
+   carries several distinct c0-3 per slice (0 slices with one against 28,704
+   with several) — now bound by DATAFLOW with the scene pass as oracle
+   (`CZ_VK_RT_ANY_MATRIX=1` is the control).
 
-   The original framing, kept because the mechanisms are real even though the
-   attribution was not: Real rays read 63.72 against
-   OG's 80.61 — 86% of the way to fully shadowed — and `CZ_VK_RT_BIAS=0.05`
-   (33x the default) recovers it only to 73.89, which is a bias large enough to
-   detach shadows from casters. So the traced-vs-raster disagreement is
-   SYSTEMATIC. The leading explanation, and the arm built to test it:
-   **the title's own cascade probably contains far fewer casters than the
-   camera's world set** (an engine routinely keeps receivers — the whole street
-   surface — out of its own shadow map), so filling every "no occluder" texel
-   with the entire world shadows the world against itself.
-   `CZ_VK_RT_CASTERS=cascade` traces the pitch-1040 pass's OWN casters instead,
-   and `CZ_VK_RT_COVERAGE=1` (a precise occlusion query around the trace draw)
-   reports what fraction of each slice the traced depths WIN. Read them in that
-   order; both runs were queued at part 64's close and their numbers belong in
-   §6cv when they land.
-   **And know what route (a) can and cannot buy, before spending another part on
-   it**: tracing INTO the 4096x1024 atlas cannot beat the atlas's resolution, so
-   its ceiling is exact depths and missing occluders, not soft or per-pixel
-   shadows. The plan's route (b) — patch the ~dozen shadow-sampling PS to read a
-   screen-space traced factor — is where the quality tier lives, and every piece
-   built in part 64 (BLAS, TLAS, the sun-matrix capture, the arms) is reusable
-   by it unchanged. Decide (a)-vs-(b) on the caster arm's result, not on effort
-   already spent.
+   **The one untested hypothesis**, kept as the sole reason to revisit route (a):
+   a slice's content written to the right atlas QUARTER but paired with another
+   cascade's matrix. The distinctness counter cannot catch it — it verifies one
+   matrix per slice, not that the matrix belongs to that slice. The test is a
+   per-cascade-index content comparison between our traced quarter and the
+   raster quarter it replaced.
+
+   **Route (b), the live direction**: compute the factor per RECEIVING PIXEL in
+   screen space and patch the atlas-sampling pixel shaders to read it. The
+   defect is impossible by construction, and it is the only route that can do
+   soft or per-pixel shadows (route (a) is capped at the atlas's resolution).
+   Step 1 is a CENSUS of which shaders fetch `1439B000` and at which slot —
+   build nothing before it returns a list. Everything part 64 built is reusable
+   unchanged. See the kickoff for the full spec.
 
 0u. **THE DoF COMPOSITE — DOWNGRADED IN PART 42: the "hardware contradiction"
    mostly dissolved, and what remains is two bounded residues.** Part 41's
