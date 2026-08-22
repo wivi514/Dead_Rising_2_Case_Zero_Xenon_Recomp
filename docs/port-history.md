@@ -4651,3 +4651,56 @@ changes):
   all three; gates at close: `--smoke` green, A5 exit 0, E identity (see the closing
   commit). Carry-overs unchanged from part 62 (turn-stutter parked, fov small
   verdicts, panel input leak).
+
+Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT SHADOWS: ROUTE (a) WAS
+BUILT END TO END, PROVEN AS A MECHANISM, AND THEN CLOSED AS UNWORKABLE BY
+MEASUREMENT. ROUTE (b) IS PART 65's SUBJECT, by the operator's decision.**
+`docs/part65-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md`
+§6cv — **§7j is the verdict, §7f is the operator's session, §7e is a retraction
+that matters**; the backlog entry is `open-items.md` 0v; the arms are in
+`instruments.md`; the lessons are gotchas 381-386):
+
+* **Proven, and not to be re-derived**: the shadow ATLAS SNAPSHOT is where the
+  title's shadow term reads and needs NO shader patch — `CZ_VK_SHADOW_FILL=0.0`
+  takes the outdoor median luma **80.61 → 61.43** and `=1.0` reads **81.46** (two
+  polarities, opposite directions, ~11k outdoor frames an arm); the convention is
+  STANDARD (near = occluder); and the WHOLE ray path reaches that term —
+  `CZ_VK_RT_POISON=1` reads **61.18** against the direct fill's 61.43, i.e. the
+  same measured extreme through BLAS + TLAS + ray query + composite. The plumbing
+  engages and holds (~1,400 BLASes, ~33 MB, zero pool flushes, zero collisions).
+* **Closed as unworkable: route (a) SELF-SHADOWS BY CONSTRUCTION.** Writing the
+  shadow MAP means every receiver inside it is compared against itself, and there
+  is no receiver-side offset to apply. **Five independent knobs — occluder set,
+  union vs replacement, the light-matrix binding, a bounds gate, and a 6.7x bias
+  sweep — all land at 64-66 median outdoor luma against OG's 80.61**, floor 61.2.
+  The operator named the mechanism in one sentence (*"shadow squares following
+  where the player is and normal shadow still on"*) after three headless
+  statistics had failed to, and stills show every LIT surface greyed. **Do not
+  re-open this by tuning.**
+* **Three real defects were found and fixed on the way and NONE moved the
+  picture** — keep the fixes, re-buy none, expect none to be an answer: junk
+  ±6.3M-unit geometry entering the BLAS (gated); the title's own cascade being
+  **52.8% EMPTY** because it draws CASTERS not receivers (now the default set);
+  and the light matrix bound by RECENCY when the cascade pass carries several
+  distinct c0-3 per slice (**0 slices with one against 28,704 with several**),
+  now bound by DATAFLOW with the scene pass as the oracle.
+* **AND MANY MID-SESSION NUMBERS WERE RETRACTED (§6cv 7e).** They were read from
+  `CZ_VK_FRAME_STATS` files still being written and from cumulative counters
+  mid-run: the same arm reads 63.71 at 4,663 outdoor frames and 66.34 at 6,484,
+  or 72.00 at 1,212 and 66.40 complete. **A partial read on these routes measures
+  a different PLACE, not a noisier version of the same one** (gotchas 384-386;
+  386 is the build that measured 80.61 against a control's 80.61 because the
+  feature was silently inert).
+* **Shipped and staying**: the operator's settings revision — **ONE `SHADOW`
+  row**, LOW/MEDIUM/HIGH then RT LOW/MEDIUM/HIGH, where an RT value REPLACES the
+  raster shadow and the raster tier is remembered underneath. RT is OFF by
+  default, so nothing the operator plays is affected.
+* **Route (b) is the live direction**: compute the shadow factor per RECEIVING
+  PIXEL in screen space and patch the atlas-sampling pixel shaders to read it —
+  the defect is impossible by construction, and it is the only route that can do
+  soft or per-pixel shadows. Everything part 64 built is reusable unchanged.
+  **Step 1 is a CENSUS of which shaders fetch `1439B000` and at which slot; build
+  nothing before it returns a list.**
+* **Gates at close** (final binary, RT off = the shipped default): `--smoke` OK;
+  **A5 exit 0**; unlowered switches 0 defects; shader dim census 0 disagreements;
+  `no translated shader` = 0. Carry-overs unchanged from parts 62-63.

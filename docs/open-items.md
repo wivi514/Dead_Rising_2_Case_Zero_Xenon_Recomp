@@ -7,14 +7,49 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT AND
-   AWAITING THE OPERATOR'S EYE.** The records are `phase5-notes.md` §6cv (route
-   (a), §7j is the verdict) and **§6cw (route (b), part 65)**; the hand-off is
-   `docs/part66-kickoff.md`; the arms are in `instruments.md`; the lessons are
-   gotchas 381-386 and **387-390**.
+0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT, ITS
+   "NO SHADOWS" DEFECT IS DIAGNOSED AND FIXED, AND THE PICTURE HAS STILL NEVER
+   BEEN LOOKED AT.** The records are `phase5-notes.md` §6cv (route (a), §7j is
+   the verdict), §6cw (route (b) built, part 65) and **§6cx (part 66 — why it
+   produced nothing, and the fix)**; the hand-off is `docs/part67-kickoff.md`;
+   the arms are in `instruments.md`; the lessons are gotchas 381-386, 387-390
+   and **391-393**.
 
-   **WHAT PART 65 SHIPPED, and what is still owed.** Route (b) is complete end
-   to end and has never been looked at: the census (126 pixel shaders, 140
+   **PART 66'S FINDING, which supersedes the part-66 kickoff's §0 entirely:
+   THIS TITLE HAS NO SCENE Z PREPASS.** The factor pass reconstructed the
+   receiver from the scene depth buffer and fired at the title's own first
+   atlas-sampling draw, on the strength of §6u's "233,155 depth-only draws over
+   a boot". Walked in ORDER across all twenty `.xtr` world traces
+   (`tools/rt_depth_order_census.py`), those depth-only draws are the SHADOW
+   CASCADE — a different EDRAM depth surface, its own pitch, edram_mode 5,
+   colour mask 0, ~969 a frame — and the scene pass has no prepass at all: its
+   **first draw already samples the cascade atlas**, with 0 depth-writing draws
+   before it and ~5,200 (2.0M verts) after it. So the depth buffer was at its
+   CLEAR VALUE every time the pass ran, which is exactly what ladder modes 8
+   and 9 measured. The part-66 kickoff's "the live suspect is the pass's
+   texture bindings" is **refuted**, and its mode 12/13 colour evidence is
+   **retracted** — `g_colour` was never bound (a three-element write array
+   passed with a count of two, which the validation layer reported on the first
+   draw of every RT run).
+
+   **The fix, shipped**: the receiver is now the closest hit of a PRIMARY RAY
+   from the camera into the same TLAS the shadow ray uses. The TLAS is built
+   from the PREVIOUS frame's draws, so it is populated whatever the title's
+   draw order is — impossible by construction rather than timed around. It also
+   removes the per-resolve invalidation (3.01 passes a frame become 1). Its
+   known cost: pixels covered by skinned actors or alpha-tested foliage take the
+   factor of the surface behind them, because those meshes are not in the TLAS —
+   the same hole that already makes them cast no shadow, and buying them back
+   fixes both halves at once. `CZ_VK_RT_FACTOR_SOURCE=depth` is the control arm
+   and **its expected result is no shadows at all**.
+
+   **STILL OWED, and it is the whole of the next part: one operator session.**
+   `tools/part66_operator_session.sh`, seven arms, **arm 1
+   (`CZ_VK_RT_FACTOR_DEBUG=17`, "does the primary ray find the world") GATES
+   the rest** — a black world under a lit sky, or stop. Part 65 handed over
+   three builds without a met gate and burned three sessions learning it.
+
+   **WHAT PART 65 SHIPPED.** Route (b) is complete end to end: the census (126 pixel shaders, 140
    fetch slots, measured against hardware's own register file in twenty `.xtr`
    world traces — the plan guessed "a dozen"), the shader substitution
    (`tools/patch_rt_shadow_hlsl.py`, a second SPIR-V cache, exactly 126 of 449

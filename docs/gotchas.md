@@ -4169,3 +4169,47 @@ From phase C part 18 (the frame rate — and none of it was work):
      Every cache a run can select needs the membership gate, not just the default
      one — and the gate to run is the NAME diff, because the counts can match
      while the sets do not (gotcha 264's shape).
+
+391. **A COUNTER ADDED IN THE SAME COMMIT AS THE THING IT MEASURES IS USUALLY
+     NEVER READ.** Part 65 suspected its shadow-factor pass was firing before the
+     scene's depth buffer was filled, and added exactly the right instrument:
+     `[rtb] the factor pass fires at draw %llu of ~%llu (min %llu, max %llu)`,
+     with a sentence in the format string saying what EARLY would mean. It shipped
+     in the same commit as four new ladder modes. Every ladder run already on disc
+     predated it, the next session's runs were about the ladder, and the number —
+     831 of 2,480, which is the answer — appeared in three scratch logs and in no
+     document. The hand-off was written around a different theory entirely.
+     A counter is read when someone GOES LOOKING for it, and the moment they go
+     looking is while the question is live. Add it, then re-run the arm that
+     motivated it **in the same sitting**, and put the number in the hand-off even
+     when it agrees with what you already believed. See also gotcha 151 (an arm
+     with no counter cannot be shown to have engaged) — this is its second half:
+     a counter nobody reads is an arm with no counter.
+
+392. **A COUNT OVER A RUN IS NOT AN ORDER WITHIN A FRAME.** A design decision —
+     "fire the screen-space pass at the title's own first shadow-sampling draw,
+     because by then the Z prepass has filled the depth buffer" — rested on a
+     measured fact: 233,155 depth-only draws against 148,150 colour-mode ones over
+     a boot. The number was correct and it answered a question nobody had asked.
+     Walked in ORDER, the depth-only draws turn out to be the shadow CASCADE
+     (a different EDRAM depth surface, its own pitch, edram_mode 5, colour mask 0),
+     and the scene pass has no prepass at all: its FIRST draw already samples the
+     cascade atlas, with zero depth-writing draws before it and ~5,200 after it.
+     Everything downstream — a pass reading a buffer at its clear value — followed
+     from that, and three operator sessions and an eleven-rung shader ladder went
+     into chasing it as a plumbing defect. **When a design rests on sequence,
+     measure sequence.** A histogram cannot refute an ordering claim, and a probe
+     inside a shader sees one moment and cannot see order at all — but a GPU trace
+     preserves the whole frame's stream, so the question is usually answerable
+     offline against hardware in an afternoon (gotcha 387).
+
+393. **A SILENT SAMPLE IS NOT A CLEAR VALUE, AND A CLEAR VALUE IS NOT A BROKEN
+     BINDING — but they read identically, so name both before choosing.** A probe
+     reporting "the sampled depth is uniformly 1.0" has at least two explanations
+     that no amount of looking at the frame separates: the descriptor references
+     nothing, or the image really does hold its clear value at that moment. The
+     project spent a part on the first because it was the more interesting one,
+     and the tell for the second was sitting in its own log. `GetDimensions()` is
+     the cheap discriminator when it is genuinely the descriptor (the extent comes
+     from the descriptor, not from memory) — but the cheaper move is to ask what
+     ELSE would produce exactly the clear value, and to check the timing first.

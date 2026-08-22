@@ -13774,3 +13774,216 @@ found it is the same instrument shape as part 64's slice-matrix count and this
 part's scene-composite check — and it was added only after the picture said
 something was wrong. A binding worth trusting is worth counting from the day it
 is written.
+
+---
+
+## §6cx — Part 66: THIS TITLE HAS NO Z PREPASS, and that was the whole defect (2026-08-22)
+
+Part 65 closed with route (b) built end to end, the injection PROVEN (the poison arm
+darkens the world, so our factor image is read by all 126 patched shaders and drives
+the title's own shadow term) and the factor computing **1.0 — lit — everywhere**. Its
+ladder narrowed the fault to a very sharp shape:
+
+> Everything the shader computes ITSELF works — a uniform constant lands exactly, a
+> stripe pattern lands exactly halfway. Everything it SAMPLES comes back empty: the
+> depth reads exactly 1.0 and the colour buffer reads ~0, through the same descriptor
+> set, sampler, uv and barrier.
+
+and named the live suspect as **the pass's texture bindings**, with `GetDimensions()`
+as the next probe.
+
+That suspect is refuted, one of its two supporting readings is retracted outright, and
+the real cause was answerable offline in an afternoon with no instrumented run at all.
+
+### 1. The finding: there is no scene Z prepass, and the first scene draw already samples the atlas
+
+The factor pass reconstructs the receiver's world position from the SCENE DEPTH BUFFER.
+Its trigger — the title's own first shadow-atlas-sampling draw — was justified in
+`rt_factor.hlsl`'s header like this:
+
+> This title issues a real Z PREPASS — 233,155 depth-only draws against 148,150
+> colour-mode ones over a boot (§6u) — so by the time its own first shadow-sampling
+> draw is recorded, the depth buffer holds the finished scene depth.
+
+**That count is over a whole BOOT and says nothing about ORDER inside a frame.** A
+`.xtr` world trace carries hardware's entire draw stream for one frame in order, with
+the register file at every draw, so the ordering question is answerable against
+hardware from twenty files already on disc — the same move that turned part 65's shader
+census from "needs an instrumented run" into a morning's work (gotcha 387).
+
+`tools/rt_depth_order_census.py` walks each trace, records per draw the depth surface
+it renders into (RB_DEPTH_INFO's EDRAM tile base plus RB_SURFACE_INFO's pitch), whether
+it can write depth (RB_DEPTHCONTROL bit 2), its colour write mask and its edram mode,
+and whether the bound pixel shader DECLARES a fetch slot holding the cascade atlas. The
+atlas is identified by SHAPE, and the declared-slot filter is load-bearing for the same
+reason it is in `shadow_shader_census.py` — a draw's register file carries all 32 fetch
+constants whether the shader reads them or not, so raw address matching over-reports
+about 6x.
+
+The frame's real structure, from `gas_station_sign` and identical in kind across all
+twenty:
+
+| depth base | pitch | mode | mask | z-write | draws | what it is |
+|---|---|---|---|---|---|---|
+| 0 | 1040 | 5 (kDepth) | 0 | yes | 969 | **the shadow cascade** |
+| 736 | 640 | 4 (kColorDepth) | F | yes | 5,170 | the scene |
+| 736 | 640 | 4 | F | no | 200 | the scene's non-writing draws |
+
+**The 233,155 "depth-only draws" §6u counted are the SHADOW CASCADE.** The scene pass
+has no prepass at all. And in every trace:
+
+> the **FIRST draw of the scene pass already samples the cascade atlas** — 0
+> depth-writing draws before it, ~5,200 draws and ~2.0 million vertices after it.
+
+So the scene depth buffer is at its CLEAR VALUE whenever the factor pass fires. That is
+exactly, and completely, what the ladder measured: mode 8's 1/1024 dither said the
+sampled depth does not vary and mode 9 said its mean is 1.0. Both were honest readings
+of a cleared buffer, and the descriptor was never the suspect it looked like.
+
+Part 65's own instrument had already said this and nobody read it. The line
+
+> `[rtb] the factor pass fires at draw 831 of ~2480 on average (min 501, max 2042).
+> EARLY means the scene's own Z prepass has not filled the depth buffer yet and the
+> sample reads the clear value ... i.e. LIT.`
+
+was added in the same commit as ladder modes 8-11 and appears in three logs in the
+part-65 scratchpad. Every ladder run in `~/DR2CZ-troubleshooting/part65-ladder/`
+predates the counter, so the number never reached the hand-off. **A counter added and
+not read is a counter that does not exist** (gotcha 391).
+
+### 2. Why no trigger could have fixed it, and what replaced it
+
+There is no moment at which the depth is both complete and still ahead of the draws
+that need it: the receivers ARE the shadow-sampling draws, and they begin at draw one
+of the scene pass. Firing later serves the early draws a stale factor; firing at the
+resolve and reusing it next frame is a full frame of lag, which at the operator's
+3440-wide window and a normal turn rate is on the order of a hundred pixels of
+misalignment.
+
+**So the pass stopped needing a depth buffer.** The receiver is now the closest hit of
+a **PRIMARY RAY** from the camera through the pixel into the same TLAS the shadow ray
+already uses. The TLAS is built from the PREVIOUS frame's draws (`rtshadow::g_prevKeys`
+— `BuildFrameStructures` batches `live = g_prevKeys`), so it is fully populated at the
+moment the pass runs, whatever the title's draw order is. The defect is impossible by
+construction rather than timed around, which is the same argument that chose route (b)
+over route (a) in the first place.
+
+Three consequences, all of them good:
+
+* the world reconstruction, the depth convention and the "when does the prepass end"
+  question all leave the problem together;
+* **the per-resolve invalidation goes away.** It existed because the depth buffer
+  describes one 640-wide tile at a time; a primary ray reads only the scene composite
+  and the TLAS, both per-frame. The measured **3.01 passes a frame becomes 1** — a
+  two-thirds saving on the most expensive thing the feature does, taken because the
+  dependency vanished, not as an optimisation;
+* on route (b) the TLAS was already built from the CAMERA's world set rather than the
+  title's cascade casters (`CascadeCasters()` returns `!RouteB()`), which is exactly
+  the set a primary ray needs. Nothing had to change there.
+
+**What it costs, stated rather than hidden:** the TLAS holds only opaque depth-writing
+draws, so a pixel covered by a skinned actor or by alpha-tested foliage receives the
+factor of the opaque surface BEHIND it. Those meshes already cast no RT shadow (the
+MED/HIGH feature §2 of the part-66 hand-off prices), so the tier is at least consistent
+with itself, and buying them back now fixes both halves at once. Whether it LOOKS bad
+is a question for the operator and is arm 3 of the session.
+
+`CZ_VK_RT_FACTOR_SOURCE=depth` restores part 65's reconstruction as the same-binary
+control arm, and **its expected result is NO SHADOWS** — the picture-side confirmation
+of the census.
+
+### 3. Two validation defects, both sitting in part 65's own logs, unread
+
+`~/.../scratchpad/p65/val_m1.log` etc. were validation runs of the ladder modes. Their
+first `[rtb]` line is followed immediately by:
+
+```
+vkCmdDraw(): the descriptor [VkDescriptorSet ..., Set 0, Binding 3, Index 0,
+variable "g_colour"] is being used in draw but has never been updated via
+vkUpdateDescriptorSets() or a similar call.
+```
+
+**`g_colour` was never bound.** The pass fills a three-element `VkWriteDescriptorSet`
+array and calls `vkUpdateDescriptorSets(device, 2, w, ...)`, so `w[2]` — binding 3 —
+never lands. That is the same defect shape as the `dynamicStateCount` hardcode three
+parts ago: *an array and its count will drift*, and the drift makes a feature silently
+inert rather than loud.
+
+**Ladder modes 12 and 13 are therefore retracted.** They were the colour control — the
+instrument built specifically so the depth probe would not depend on its own subject —
+and they were reading an unwritten descriptor. §0 of the part-66 hand-off reads mode
+13's 90.81 as "the colour sample returns BLACK, so the fault is the sampling path"; it
+says nothing of the kind. (There was a second, innocent reading available for it too
+and nobody looked for one: the factor pass fires at the first scene draw, when the
+colour buffer genuinely IS still at its black clear.)
+
+The second, immediately after:
+
+```
+VkDescriptorSet ... was destroyed or updated without UPDATE_AFTER_BIND
+```
+
+The pass rewrites its own descriptor set with this frame's TLAS on every invocation,
+and under the depth source it runs three times a frame — so invocations 2 and 3 update
+a set the RECORDING command buffer already bound, which is undefined behaviour and
+which the layer follows with the whole `commandBuffer-recording` cascade those logs are
+full of (20 of every message). The write is now skipped when the acceleration-structure
+handle has not changed, which is enough: the structure is rebuilt at most once a frame
+and a frame slot's previous command buffer has been reset before this frame records
+into it.
+
+Neither defect explains the uniform 1.0 — the depth binding was written correctly and
+was never rewritten. They are recorded because they were free to find, because one of
+them invalidated a load-bearing reading, and because this is the **sixth** defect
+`CZ_VK_VALIDATION=1` has caught that nothing else could. The lesson is narrower than
+"run validation": part 65 DID run it, three times, and the output was collected and not
+read.
+
+### 4. The ladder, extended, and the gate part 66 owes the operator
+
+| mode | what it asks | PASS looks like |
+|---|---|---|
+| 15, 16 | `GetDimensions` on the depth / colour binding — the extent comes from the DESCRIPTOR, not the contents | the frame goes dark |
+| **17** | **does the PRIMARY RAY find the world?** | **a black world under a lit sky — THE GATE** |
+| 18 | how far is each primary hit, `saturate(t/500)` | a distance gradient |
+
+15/16 are the probe part 65's hand-off asked for, and they are still worth having: they
+test the one assumption modes 1, 8, 9, 12 and 13 all shared. 17 is the replacement for
+mode 1 as the gate, and 18 exists because 17 alone cannot tell "the rays hit something"
+from "the rays hit the right thing" — a TLAS full of junk geometry at the origin passes
+17 and reads flat black at 18. Modes 17 and 18 force the primary path whatever
+`CZ_VK_RT_FACTOR_SOURCE` says, because an instrument that silently does nothing under
+half its configurations is not an instrument.
+
+**The collector census now prints on route (b).** `[rt] ... skips: alpha=... bounds=...`
+— how much of the world entered the BLAS/TLAS — printed only from `TraceSlice`, route
+(a)'s path, so through three parts the live route could not see the one population it
+depends on. With a primary ray that number stops being informational: a chunk of world
+absent from the TLAS is not a missing shadow, it is a pixel that reads SKY and therefore
+LIT, which in the frame is indistinguishable from "the rays are broken".
+
+### 5. What is owed, and the order
+
+`tools/part66_operator_session.sh`, seven arms, **arm 1 (mode 17) gating the rest**.
+Part 65 handed over three builds without a met gate and spent three of the operator's
+sessions discovering it; the script says so in its header and stops there if it fails.
+Arm 5 is the depth-source control whose expected result is nothing, and arm 6 carries
+the raster shadow LOW-vs-HIGH look verdict owed since part 60.
+
+### 6. The transferable half
+
+* **A count over a run is not an ORDER within a frame** (gotcha 392). "233,155
+  depth-only draws" is true, was measured correctly, and answered a question nobody
+  had asked: it says a lot of depth-only drawing happens, not that any of it happens
+  before the draws that need it. When a design rests on sequence, measure sequence.
+* **A trace answers "when", not just "what"** (gotcha 387's second half). Twenty
+  capture files already on disc settled in one afternoon what three operator sessions
+  and an eleven-rung shader ladder could not, because a `.xtr` preserves the draw
+  ORDER and a runtime probe inside the shader can only ever see the state at one
+  moment.
+* **A counter added in the same commit as the thing it measures is usually never
+  read** (gotcha 391) — every run that could have printed the fire-at-draw line
+  predated it, and the number went into no document.
+* An instrument built to be another instrument's independent control is worth
+  validating BEFORE it is quoted; modes 12 and 13 were exactly that and were broken
+  from birth in a way the validation layer announced on the first draw.

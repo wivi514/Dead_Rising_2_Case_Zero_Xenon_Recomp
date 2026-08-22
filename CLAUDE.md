@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part66-kickoff.md`.** State the rule as well as the name, because this line said
+    `part67-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -750,6 +750,71 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 66 CLOSED — **THE "NO SHADOWS" DEFECT IS
+DIAGNOSED AND FIXED, AGAINST HARDWARE, WITH NO INSTRUMENTED RUN: THIS TITLE HAS NO
+SCENE Z PREPASS. The picture has still never been looked at, and the session that
+does it is written.** `docs/part67-kickoff.md` is the LIVE hand-off; the record is
+`phase5-notes.md` §6cx; the backlog entry is `open-items.md` 0v; the arms are in
+`instruments.md`; the lessons are gotchas 391-393):
+
+* **THE FINDING, and it refutes the part-66 hand-off's own suspect.** Route (b)'s
+  factor pass reconstructed the receiver from the SCENE DEPTH BUFFER and fired at
+  the title's own first atlas-sampling draw, justified by §6u's *"233,155
+  depth-only draws over a boot"*. That count is over a RUN and says nothing about
+  ORDER within a frame. `tools/rt_depth_order_census.py` walks all twenty `.xtr`
+  world traces in stream order: those depth-only draws are the **shadow cascade**
+  (EDRAM depth base 0, pitch 1040, `RB_MODECONTROL` 5, colour mask 0, ~969 a
+  frame), and the scene pass (base 736, pitch 640) has **no prepass at all** — its
+  **first draw already samples the cascade atlas**, with **0 depth-writing draws
+  before it and ~5,200 (2.0M verts) after it**. The depth buffer was at its CLEAR
+  VALUE every time the pass ran, which is exactly what part 65's ladder modes 8
+  and 9 measured. Twenty files already on disc, an afternoon, no run (gotcha 392).
+* **THE FIX: the receiver is now the closest hit of a PRIMARY RAY** from the
+  camera into the same TLAS the shadow ray uses. The TLAS is built from the
+  PREVIOUS frame's draws, so it is populated whatever the title's draw order is —
+  impossible by construction rather than timed around, the same argument that
+  chose route (b) over route (a). The depth convention, the world reconstruction
+  and "when does the prepass end" all leave the problem together, and the
+  per-resolve invalidation goes with them: **3.01 passes a frame become 1**.
+  `CZ_VK_RT_FACTOR_SOURCE=depth` is the same-binary control and **its expected
+  result is no shadows**.
+* **Its cost, stated rather than hidden**: the TLAS holds only opaque
+  depth-writers, so pixels covered by skinned actors or alpha-tested foliage take
+  the factor of the surface behind them. The same hole already makes them cast no
+  shadow; buying them back fixes both halves at once, and that is the MED/HIGH
+  tier feature. How bad it LOOKS is arm 3's question.
+* **TWO VALIDATION DEFECTS, both in part 65's own logs, unread.** `g_colour` was
+  **never bound** — a three-element `VkWriteDescriptorSet` array passed with a
+  count of two, reported as `VUID-vkCmdDraw-None-08114` on the first draw of every
+  RT run — so **ladder modes 12 and 13 are RETRACTED**; they were the colour
+  control built specifically so the depth probe would not depend on its own
+  subject, and they read an unwritten descriptor. And the pass rewrote its
+  descriptor set while the RECORDING command buffer held it, which the layer
+  followed with its whole `commandBuffer-recording` cascade. Both fixed. Sixth
+  defect `CZ_VK_VALIDATION=1` has caught that nothing else could — and the lesson
+  is narrower than "run validation": part 65 ran it three times and collected the
+  output without reading it.
+* **The ladder grew a GATE.** 15/16 `GetDimensions` on each binding (the probe
+  the last hand-off asked for, testing the one assumption every sampling mode
+  shares); **17 "does the primary ray find the world" — PASS is a black world
+  under a lit sky, and no build goes to the operator until it lands near the
+  all-shadow calibration**; 18 the hit distance, which separates "the rays hit
+  something" from "the rays hit the right thing". The **collector census now
+  prints on route (b)** — it printed only from route (a)'s `TraceSlice` for three
+  parts, and with a primary ray "how much world is in the TLAS" stops being
+  informational: absent world reads as SKY, i.e. LIT.
+* **WHAT IS OWED IS THE OPERATOR SESSION, and it is written**:
+  `tools/part66_operator_session.sh`, seven chained arms, **arm 1 gating the
+  rest**, arm 5 the depth-source control, arm 6 the raster LOW-vs-HIGH look
+  verdict owed since part 60.
+* **Gates at close** (RT off = the shipped default; nothing outside the RT pass
+  changed): `--smoke` OK; the generated PS module carries two
+  `OpRayQueryInitializeKHR` and two `OpImageQuerySize`, so the new code compiled
+  rather than folding away; the census tool runs over 20 traces and prints its own
+  verdict. **A5 is arm 0 of the session** rather than run here, per the standing
+  instruction that the game is the operator's. Carry-overs unchanged from parts
+  62-65.
+
 Where the port is, as of 2026-08-22 (part 65 CLOSED — **RT SHADOWS, ROUTE (B) IS
 BUILT END TO END AND HAS NEVER BEEN LOOKED AT. The one thing owed is an operator
 session, and it is scripted.** `docs/part66-kickoff.md` is the LIVE hand-off; the
@@ -808,61 +873,8 @@ arms are in `instruments.md`; the lessons are gotchas 387-390):
   each RT cache differs from a plain rebuild in **exactly the census's 126
   modules** — no extra, none missing. Carry-overs unchanged from parts 62-64.
 
-Where the port is, as of 2026-08-22 (part 64 CLOSED — **RT SHADOWS: ROUTE (a) WAS
-BUILT END TO END, PROVEN AS A MECHANISM, AND THEN CLOSED AS UNWORKABLE BY
-MEASUREMENT. ROUTE (b) IS PART 65's SUBJECT, by the operator's decision.**
-`docs/part65-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md`
-§6cv — **§7j is the verdict, §7f is the operator's session, §7e is a retraction
-that matters**; the backlog entry is `open-items.md` 0v; the arms are in
-`instruments.md`; the lessons are gotchas 381-386):
-
-* **Proven, and not to be re-derived**: the shadow ATLAS SNAPSHOT is where the
-  title's shadow term reads and needs NO shader patch — `CZ_VK_SHADOW_FILL=0.0`
-  takes the outdoor median luma **80.61 → 61.43** and `=1.0` reads **81.46** (two
-  polarities, opposite directions, ~11k outdoor frames an arm); the convention is
-  STANDARD (near = occluder); and the WHOLE ray path reaches that term —
-  `CZ_VK_RT_POISON=1` reads **61.18** against the direct fill's 61.43, i.e. the
-  same measured extreme through BLAS + TLAS + ray query + composite. The plumbing
-  engages and holds (~1,400 BLASes, ~33 MB, zero pool flushes, zero collisions).
-* **Closed as unworkable: route (a) SELF-SHADOWS BY CONSTRUCTION.** Writing the
-  shadow MAP means every receiver inside it is compared against itself, and there
-  is no receiver-side offset to apply. **Five independent knobs — occluder set,
-  union vs replacement, the light-matrix binding, a bounds gate, and a 6.7x bias
-  sweep — all land at 64-66 median outdoor luma against OG's 80.61**, floor 61.2.
-  The operator named the mechanism in one sentence (*"shadow squares following
-  where the player is and normal shadow still on"*) after three headless
-  statistics had failed to, and stills show every LIT surface greyed. **Do not
-  re-open this by tuning.**
-* **Three real defects were found and fixed on the way and NONE moved the
-  picture** — keep the fixes, re-buy none, expect none to be an answer: junk
-  ±6.3M-unit geometry entering the BLAS (gated); the title's own cascade being
-  **52.8% EMPTY** because it draws CASTERS not receivers (now the default set);
-  and the light matrix bound by RECENCY when the cascade pass carries several
-  distinct c0-3 per slice (**0 slices with one against 28,704 with several**),
-  now bound by DATAFLOW with the scene pass as the oracle.
-* **AND MANY MID-SESSION NUMBERS WERE RETRACTED (§6cv 7e).** They were read from
-  `CZ_VK_FRAME_STATS` files still being written and from cumulative counters
-  mid-run: the same arm reads 63.71 at 4,663 outdoor frames and 66.34 at 6,484,
-  or 72.00 at 1,212 and 66.40 complete. **A partial read on these routes measures
-  a different PLACE, not a noisier version of the same one** (gotchas 384-386;
-  386 is the build that measured 80.61 against a control's 80.61 because the
-  feature was silently inert).
-* **Shipped and staying**: the operator's settings revision — **ONE `SHADOW`
-  row**, LOW/MEDIUM/HIGH then RT LOW/MEDIUM/HIGH, where an RT value REPLACES the
-  raster shadow and the raster tier is remembered underneath. RT is OFF by
-  default, so nothing the operator plays is affected.
-* **Route (b) is the live direction**: compute the shadow factor per RECEIVING
-  PIXEL in screen space and patch the atlas-sampling pixel shaders to read it —
-  the defect is impossible by construction, and it is the only route that can do
-  soft or per-pixel shadows. Everything part 64 built is reusable unchanged.
-  **Step 1 is a CENSUS of which shaders fetch `1439B000` and at which slot; build
-  nothing before it returns a list.**
-* **Gates at close** (final binary, RT off = the shipped default): `--smoke` OK;
-  **A5 exit 0**; unlowered switches 0 defects; shader dim census 0 disagreements;
-  `no translated shader` = 0. Carry-overs unchanged from parts 62-63.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-63's** — part 65 moved part 63's out in the same commit that added its own block, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-64's** — part 66 moved part 64's out in the same commit that added its own block, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
