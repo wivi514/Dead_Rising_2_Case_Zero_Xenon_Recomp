@@ -12898,13 +12898,34 @@ And that is exactly what makes the real-ray reading a defect rather than an
 ambiguity: 63.7 is 86% of the way from OG to fully shadowed. **The world is very
 nearly all in shadow.** Two things it is NOT, both measured rather than argued:
 
-* it is **not the bias** — the cascade's own `PA_SU_POLY_OFFSET_FRONT_*` registers
-  are ZERO (the capture logs the value the first time it is non-zero and the line
-  never printed), and raising `CZ_VK_RT_BIAS` from 0.0015 moved the median by
-  ~1.8 luma, i.e. within the run-to-run spread;
 * it is **not a polarity error** — the fill experiment settled the convention
   independently, and under a flipped convention the frame would have gone
-  *lighter*, not darker.
+  *lighter*, not darker;
+* it is **not the title's own cascade bias** — its `PA_SU_POLY_OFFSET_FRONT_*`
+  registers are ZERO (the capture logs the value the first time it is non-zero
+  and the line never printed), so there is no offset of the title's to inherit.
+
+**RETRACTION, in place, of a claim this section made an hour earlier.** It said
+"it is not the bias", on the strength of 65.48 against 63.72 — and those two runs
+are the SAME bias configuration (the poly-offset commit added zero, because the
+register is zero), so that pair measured run-to-run spread and nothing else. It
+was a comparison that could not have answered the question, presented as though
+it had (gotcha 30's shape, on my own instrument). The arm that CAN answer it:
+
+| `CZ_VK_RT_BIAS` | outdoor frames | median meanLuma |
+|---|---|---|
+| 0.0015 (default) | 4,791 | 63.72 |
+| 0.05 (33x) | 10,026 | **73.89** |
+| — (OG baseline) | 11,243 | 80.61 |
+
+So the bias matters enormously and the default is far too small for this atlas.
+That reframes the defect rather than closing it: 0.05 in NDC-z is a very large
+bias, the kind that detaches shadows from their casters (peter-panning), so
+needing it says the disagreement between a traced depth and the raster depth
+beneath it is SYSTEMATIC, not float noise. A frame at 73.9 is also not
+necessarily wrong — RT shadows legitimately darken a scene by adding occluders
+the 4096x1024 raster map missed — which is exactly why the next number has to be
+the coverage fraction and not another luma.
 
 ### 5. The instrument that will decide it (built, running at close)
 
