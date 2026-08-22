@@ -3262,9 +3262,25 @@ struct Renderer
     // asks for more than the device names.
     float anisoLimit = 0.0f;
     // RT stage 0 (part 61): the capability probe's answer — the device carries the
-    // three ray-query extensions. Probe only; nothing is enabled until an RT stage
-    // ships, and the future RT settings rows consult this to show UNSUPPORTED.
+    // three ray-query extensions. The RT settings rows consult this to show
+    // UNSUPPORTED.
     bool rtSupported = false;
+    // RT stage 2 (part 64): the probe's answer ACTED ON. When the probe passes and
+    // CZ_VK_RT=0 is not set, the device is created WITH the three extensions and
+    // the two feature bits, and the five entry points below resolve — enabling an
+    // extension changes no recorded command, so the OG picture is untouched, and
+    // `CZ_VK_RT=0` remains the master arm under which the device is created exactly
+    // as before part 64. CZ_VK_RT_FORCE=1 overrides the probe (a diagnostic arm for
+    // driver experiments — device creation may then fail loudly, which is the
+    // point). rtEnabled is the fact new code gates on; rtSupported is only the
+    // probe.
+    bool rtEnabled = false;
+    uint32_t rtScratchAlign = 256;   // minAccelerationStructureScratchOffsetAlignment
+    PFN_vkCreateAccelerationStructureKHR pfnCreateAS = nullptr;
+    PFN_vkDestroyAccelerationStructureKHR pfnDestroyAS = nullptr;
+    PFN_vkGetAccelerationStructureBuildSizesKHR pfnGetASBuildSizes = nullptr;
+    PFN_vkCmdBuildAccelerationStructuresKHR pfnCmdBuildAS = nullptr;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR pfnGetASAddress = nullptr;
     // Part 41 item 1b: per-fetch samplers. Key = the fetch constant's own
     // mag/min/mip/aniso fields (dword3 bits 19..27); value = the sampler's index in
     // the set-3 heap. Index 0 stays the plain trilinear REPEAT sampler, which is
@@ -4353,6 +4369,32 @@ bool CreateDevice()
     v13.dynamicRendering = VK_TRUE;
     v13.pNext = &v12;
 
+    // RT STAGE 2 (part 64): act on stage 0's probe. See the rtEnabled comment in the
+    // Renderer struct for the arms; the decision is made HERE because extensions and
+    // features are creation-time, like the swapchain's window flag (part 54's lesson).
+    {
+        bool wantRt = R->rtSupported;
+        if (const char* e = Env("CZ_VK_RT"); e && atoi(e) == 0)
+            wantRt = false;
+        if (EnvOn("CZ_VK_RT_FORCE"))
+            wantRt = true;
+        R->rtEnabled = wantRt;
+    }
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeat{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR
+    };
+    asFeat.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR rqFeat{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR
+    };
+    rqFeat.rayQuery = VK_TRUE;
+    if (R->rtEnabled)
+    {
+        asFeat.pNext = v13.pNext;
+        rqFeat.pNext = &asFeat;
+        v13.pNext = &rqFeat;
+    }
+
     VkPhysicalDeviceFeatures2 f2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
     f2.pNext = &v13;
     f2.features.shaderInt64 = VK_TRUE;
@@ -4429,14 +4471,67 @@ bool CreateDevice()
     dci.pNext = &f2;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qi;
-    const char* devExts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    std::vector<const char*> devExts;
     if (R->wantSwapchain)
+        devExts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (R->rtEnabled)
     {
-        dci.enabledExtensionCount = 1;
-        dci.ppEnabledExtensionNames = devExts;
+        devExts.push_back("VK_KHR_acceleration_structure");
+        devExts.push_back("VK_KHR_ray_query");
+        devExts.push_back("VK_KHR_deferred_host_operations");
     }
+    dci.enabledExtensionCount = uint32_t(devExts.size());
+    dci.ppEnabledExtensionNames = devExts.empty() ? nullptr : devExts.data();
     VK_CHECK(vkCreateDevice(R->physical, &dci, nullptr, &R->device), "vkCreateDevice");
     vkGetDeviceQueue(R->device, R->queueFamily, 0, &R->queue);
+    if (R->rtEnabled)
+    {
+        // The five entry points stage 2 uses, plus the scratch alignment the BLAS
+        // builder must honour. Resolved by name because they are extension commands;
+        // a null here would mean the loader disagrees with the extension list we
+        // just created the device with, so it is checked, named and fatal to RT
+        // (never to the renderer).
+        auto dp = [&](const char* name) {
+            return vkGetDeviceProcAddr(R->device, name);
+        };
+        R->pfnCreateAS = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
+            dp("vkCreateAccelerationStructureKHR"));
+        R->pfnDestroyAS = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+            dp("vkDestroyAccelerationStructureKHR"));
+        R->pfnGetASBuildSizes =
+            reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
+                dp("vkGetAccelerationStructureBuildSizesKHR"));
+        R->pfnCmdBuildAS = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+            dp("vkCmdBuildAccelerationStructuresKHR"));
+        R->pfnGetASAddress =
+            reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+                dp("vkGetAccelerationStructureDeviceAddressKHR"));
+        if (!R->pfnCreateAS || !R->pfnDestroyAS || !R->pfnGetASBuildSizes ||
+            !R->pfnCmdBuildAS || !R->pfnGetASAddress)
+        {
+            fprintf(stderr, "[vk] RT: an acceleration-structure entry point did not "
+                            "resolve — RT is OFF this run\n");
+            R->rtEnabled = false;
+        }
+        else
+        {
+            VkPhysicalDeviceAccelerationStructurePropertiesKHR asProps{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR
+            };
+            VkPhysicalDeviceProperties2 p2{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2
+            };
+            p2.pNext = &asProps;
+            vkGetPhysicalDeviceProperties2(R->physical, &p2);
+            R->rtScratchAlign =
+                std::max(asProps.minAccelerationStructureScratchOffsetAlignment, 1u);
+            fprintf(stderr, "[vk] RT: device created WITH ray query "
+                            "(scratch alignment %u)\n", R->rtScratchAlign);
+        }
+    }
+    else if (R->rtSupported)
+        fprintf(stderr, "[vk] RT: supported but OFF (CZ_VK_RT=0) — device created "
+                        "exactly as before part 64\n");
     // Resolves to null when the extension was not enabled, which is every run without
     // CZ_VK_VALIDATION — NameObject is then a branch on a null pointer and nothing else.
     R->setObjectName = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
