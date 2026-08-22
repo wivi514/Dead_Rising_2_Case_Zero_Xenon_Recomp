@@ -10128,6 +10128,36 @@ struct SunObs
 SunObs g_sunObs[8];
 uint32_t g_sunObsCount = 0;
 
+// THE PER-FRAME VOTE, which is what actually chooses the matrix (part 65, third
+// attempt — and the first two are why this one is not a threshold).
+//
+// Attempt 1 latched at any cascade resolve: the intruder resolves too. Attempt 2 bound
+// the atlas by dataflow, to the surface the census's own shaders fetch: the intruder
+// resolves INTO THAT SURFACE. A dump of the atlas says why — it holds THREE populated
+// cascade slices of the street plus an empty fourth quarter, so whatever the vertical
+// (-0.010, 1.000, 0.020) matrix belongs to is sharing the same 4096x1024 destination.
+//
+// What cannot be shared is the DIRECTION. Every cascade of one directional light points
+// the same way however much their volumes differ (here 20.6 and 61.2 for the same sun),
+// so within one frame the sun is the direction the most slices agree on and a minority
+// is a different light. That is a physical fact about directional lights, not a tuned
+// cut-off, and it tracks the time of day for free because the vote is per frame.
+//
+// A frame with a single latch cannot out-vote itself, so a tie keeps the direction
+// already chosen: one stray slice can never flip the sun on its own.
+struct SunVote
+{
+    float dir[3];
+    float m[16];
+    uint32_t votes;
+};
+SunVote g_frameVotes[8];
+uint32_t g_frameVoteCount = 0;
+uint64_t g_voteFrame = ~0ull;
+float g_sunDir[3] = { 0.0f, 0.0f, 0.0f };
+uint32_t g_sunVotes = 0;
+uint64_t g_sunSwitches = 0;
+
 // WHICH RESOLVE DESTINATION IS THE ATLAS THE SHADOW SHADERS ACTUALLY READ.
 //
 // Latching the sun at "a resolve from a pitch-1040 pass" was not enough: the gameplay
@@ -11523,9 +11553,62 @@ void LatchSun(uint32_t dstBase)
         return;
     const float dir[3] = { -d[0] / len, -d[1] / len, -d[2] / len };
     NoteSunDirection(dir, len);
-    memcpy(g_sunM, g_lightM, sizeof g_sunM);
-    g_sunMValid = true;
     ++g_sunLatched;
+
+    if (R->frame != g_voteFrame)
+    {
+        g_voteFrame = R->frame;
+        g_frameVoteCount = 0;
+    }
+    SunVote* v = nullptr;
+    for (uint32_t i = 0; i < g_frameVoteCount; ++i)
+    {
+        const SunVote& e = g_frameVotes[i];
+        if (dir[0] * e.dir[0] + dir[1] * e.dir[1] + dir[2] * e.dir[2] > 0.9994f)
+        {
+            v = &g_frameVotes[i];
+            break;
+        }
+    }
+    if (!v)
+    {
+        if (g_frameVoteCount >= 8)
+            return;
+        v = &g_frameVotes[g_frameVoteCount++];
+        v->dir[0] = dir[0];
+        v->dir[1] = dir[1];
+        v->dir[2] = dir[2];
+        v->votes = 0;
+    }
+    memcpy(v->m, g_lightM, sizeof v->m);   // the freshest matrix for this direction
+    ++v->votes;
+
+    // The winner of THIS frame. A tie keeps the standing direction, so a lone stray
+    // slice cannot flip the sun and a genuine change of time of day still carries.
+    const SunVote* best = nullptr;
+    for (uint32_t i = 0; i < g_frameVoteCount; ++i)
+    {
+        const SunVote& e = g_frameVotes[i];
+        if (!best || e.votes > best->votes)
+        {
+            best = &e;
+            continue;
+        }
+        if (e.votes == best->votes && g_sunMValid &&
+            e.dir[0] * g_sunDir[0] + e.dir[1] * g_sunDir[1] + e.dir[2] * g_sunDir[2] >
+                0.9994f)
+            best = &e;
+    }
+    if (!best)
+        return;
+    if (g_sunMValid &&
+        best->dir[0] * g_sunDir[0] + best->dir[1] * g_sunDir[1] +
+                best->dir[2] * g_sunDir[2] <= 0.9994f)
+        ++g_sunSwitches;
+    memcpy(g_sunM, best->m, sizeof g_sunM);
+    memcpy(g_sunDir, best->dir, sizeof g_sunDir);
+    g_sunVotes = best->votes;
+    g_sunMValid = true;
 }
 
 // Trace one just-resolved cascade slice: build the frame's structures if this is
@@ -12420,12 +12503,15 @@ void Run(uint8_t* base)
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
                 "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d "
-                "tlasInst=%u sun=(%.3f %.3f %.3f) "
+                "tlasInst=%u sun=(%.3f %.3f %.3f) won %u/%u slice votes, "
+                "%llu switches "
                 "len=%.1f bias=%.3f/%.3f skips: noScene=%llu noLight=%llu noTlas=%llu "
                 "singular=%llu%s\n",
                 (unsigned long long)g_passes, (unsigned long long)g_drawsServed, tier,
                 g_factor.width, g_factor.height, rays,
-                rtshadow::g_tlasInstances, sun[0], sun[1], sun[2], len, b1, b2,
+                rtshadow::g_tlasInstances, sun[0], sun[1], sun[2],
+                rtshadow::g_sunVotes, rtshadow::g_frameVoteCount,
+                (unsigned long long)rtshadow::g_sunSwitches, len, b1, b2,
                 (unsigned long long)g_noScene, (unsigned long long)g_noLight,
                 (unsigned long long)g_noTlas, (unsigned long long)g_singular,
                 poison ? " POISON" : "");
@@ -19249,9 +19335,11 @@ void VkRenderer_DumpStats()
     // is exactly what cost the operator's second session (§6cw §9).
     if (rtshadow::g_sunObsCount)
     {
-        fprintf(stderr, "[rtb] sun directions latched (%llu latches, %u distinct — "
-                        "MORE THAN ONE means a non-cascade ortho is in the capture):\n",
-                (unsigned long long)rtshadow::g_sunLatched, rtshadow::g_sunObsCount);
+        fprintf(stderr, "[rtb] sun directions latched (%llu latches, %u distinct, "
+                        "%llu vote switches — more than one direction is EXPECTED here "
+                        "and the per-frame majority is what chooses):\n",
+                (unsigned long long)rtshadow::g_sunLatched, rtshadow::g_sunObsCount,
+                (unsigned long long)rtshadow::g_sunSwitches);
         for (uint32_t i = 0; i < rtshadow::g_sunObsCount; ++i)
             fprintf(stderr, "[rtb]   (%+.3f %+.3f %+.3f) volume %.1f  x%llu\n",
                     rtshadow::g_sunObs[i].dir[0], rtshadow::g_sunObs[i].dir[1],
