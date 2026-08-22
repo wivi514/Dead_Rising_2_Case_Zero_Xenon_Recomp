@@ -814,8 +814,9 @@ ray-tracing structure is effectively A GROUND PLANE.** Five operator sessions.
 
 Where the port is, as of 2026-08-22 (part 65 CLOSED — **RT SHADOWS, ROUTE (B) IS
 BUILT END TO END AND HAS NEVER BEEN LOOKED AT. The one thing owed is an operator
-session, and it is scripted.** `docs/part66-kickoff.md` is the LIVE hand-off; the
-record is `phase5-notes.md` §6cw; the backlog entry is `open-items.md` 0v; the
+session, and it is scripted.** That session RAN, in part 66 — five of them — and
+`part66-kickoff.md` WAS the hand-off then; the live one is named above.
+The record is `phase5-notes.md` §6cw; the backlog entry is `open-items.md` 0v; the
 arms are in `instruments.md`; the lessons are gotchas 387-390):
 
 * **The census answered step 1 offline, against HARDWARE, in minutes** — the
@@ -878,7 +879,11 @@ live part and one part back, per the 2026-08-08 split's rule, and **part 53 move
 **Part 51 had to move four at once**, because parts 47-50 each added a block without
 retiring one and nobody noticed: this file is loaded into every session whole, and the cost is not its size, it is
 that a reader cannot tell which block is current. Same defect as a stale LIVE pointer
-(gotcha 13). If you are adding a block, move one out in the same commit.
+(gotcha 13). If you are adding a block, move one out in the same commit — **and put the
+retained block's kickoff pointer into the PAST TENSE while you are there.** Part 66 found
+this file asserting "is the LIVE hand-off" twice, once in the live block and once in the
+part-back block that had been true a day earlier. Two live pointers misroute a reader
+exactly as reliably as one stale pointer does.
 
 * **The recompilation is clean and has been since phase 0**: 57,808 functions, 228 TUs,
   zero unrecognized instructions, zero dropped branches, zero unlowered switch
