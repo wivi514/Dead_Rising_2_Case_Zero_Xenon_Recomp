@@ -351,10 +351,65 @@ float PsMain(float4 fragPos : SV_Position) : SV_Target0
         return saturate(length(world) / 1000.0);
     if (dbg == 11)
         return saturate(abs(pdiv));
+    //   2  THE WORLD CHECKER, and it has never validly run. Under the depth route it was
+    //      fed a cleared depth buffer, so it could only ever have shown nothing. On the
+    //      primary ray `world` is a real hit point, which makes this the ONE arm that
+    //      asks whether our world positions are world positions: PASS = a grid PAINTED
+    //      ON THE GROUND that stays PINNED as the camera moves. FAIL = it swims with the
+    //      camera, which is the operator's own description of every arm so far
+    //      ("the shadow moved with me and the camera"). The scale is chosen against the
+    //      light volume (~100 units), so a wrong world SCALE shows as squares that are
+    //      absurdly large or invisible rather than as a subtle error.
     if (dbg == 2)
     {
         float3 c = floor(world / 4.0);
         return frac((c.x + c.y + c.z) * 0.5) > 0.25 ? 1.0 : 0.0;
+    }
+
+    //  20  IS THE SCENE OCCLUDED AT ALL — ambient occlusion over the upper hemisphere,
+    //      eight FIXED world directions, nothing to do with the sun. This is the probe
+    //      that separates the three surviving explanations for "the sun ray hits
+    //      nothing", which no arm so far can tell apart:
+    //
+    //        high here, low along the sun  -> the scene HAS occluders and the SUN
+    //                                         DIRECTION is wrong. The sun comes from the
+    //                                         cascade matrix, a different matrix in a
+    //                                         possibly different space from the one the
+    //                                         TLAS and the camera ray agree on — and
+    //                                         nothing has ever checked that they agree.
+    //        low here too                  -> the TLAS genuinely has no occluders above
+    //                                         its receivers, i.e. the collector's
+    //                                         `dyn`/`alpha` filters dropped everything
+    //                                         that casts a shadow in this scene.
+    //        ~0 here                       -> rays from a receiver hit nothing in ANY
+    //                                         direction and the earlier arms were all
+    //                                         self-intersection.
+    //
+    //      Fixed directions rather than the sun's, because the whole point is to ask the
+    //      question WITHOUT the sun in it — an instrument must not depend on its subject.
+    if (dbg == 20)
+    {
+        const float3 kDirs[8] = {
+            float3( 0.000, 1.000,  0.000), float3( 0.700, 0.500,  0.510),
+            float3(-0.700, 0.500,  0.510), float3( 0.700, 0.500, -0.510),
+            float3(-0.700, 0.500, -0.510), float3( 0.000, 0.500,  0.866),
+            float3( 0.000, 0.500, -0.866), float3( 0.866, 0.500,  0.000)
+        };
+        float open = 0.0;
+        for (int k = 0; k < 8; ++k)
+        {
+            RayDesc ar;
+            ar.Origin = world + kDirs[k] * pc.params.x;   // the same bias the sun ray uses
+            ar.Direction = kDirs[k];
+            ar.TMin = 0.0;
+            ar.TMax = pc.sun.w;
+            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> aq;
+            aq.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ar);
+            while (aq.Proceed())
+                ;
+            open += aq.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
+        }
+        return open / 8.0;
     }
 
     // TWO OFFSETS, and they answer different failure modes. Along the SUN: the standard
