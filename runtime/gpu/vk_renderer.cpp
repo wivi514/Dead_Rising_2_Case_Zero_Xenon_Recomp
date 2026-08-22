@@ -10326,6 +10326,14 @@ uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
          g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0,
          g_skipNoValidPos = 0;
 
+// WHAT THE COLLECTOR ACCEPTED AND WHAT IT THREW AWAY. This census existed from part
+// 64 and printed only from `TraceSlice`, which is route (a)'s path — so on the LIVE
+// route it was invisible. Part 66 made it load-bearing: with the receiver coming from
+// a primary ray, a world missing from the TLAS is not a missing shadow, it is a pixel
+// that reads SKY and therefore LIT. "How much of the world is in there" is now the
+// first number to look at when the picture is unchanged.
+void PrintCollectorCensus(const char* who);
+
 // ONCE PER FRAME, NOT ONCE PER DRAW — the shadow tier's pattern, and here it is
 // load-bearing rather than tidy: `Active()` is consulted by the per-draw collector,
 // so reading the settings store directly would take its mutex ~7,000 times a frame
@@ -10406,6 +10414,24 @@ bool CascadeCasters()
         return -1;
     }();
     return mode >= 0 ? mode == 1 : !RouteB();
+}
+
+void PrintCollectorCensus(const char* who)
+{
+    fprintf(stderr,
+            "[rt] %s: tlasInst=%u blas=%zu (%.1f MB, built=%llu, flushes=%llu) "
+            "pending=%zu prevKeys=%zu collected=%llu skips: alpha=%llu prim=%llu "
+            "pos=%llu range=%llu dyn=%llu new=%llu endian=%llu bounds=%llu "
+            "nopos=%llu collide=%llu degen=%llu\n",
+            who, g_tlasInstances, g_blas.size(), double(g_blasBytes) / (1 << 20),
+            (unsigned long long)g_blasBuilt, (unsigned long long)g_blasFlushes,
+            g_pending.size(), g_prevKeys.size(), (unsigned long long)g_collected,
+            (unsigned long long)g_skipAlpha, (unsigned long long)g_skipPrim,
+            (unsigned long long)g_skipPosForm, (unsigned long long)g_skipRange,
+            (unsigned long long)g_skipDynamic, (unsigned long long)g_skipNew,
+            (unsigned long long)g_skipEndian, (unsigned long long)g_skipBounds,
+            (unsigned long long)g_skipNoValidPos,
+            (unsigned long long)g_keyCollisions, (unsigned long long)g_degenerate);
 }
 
 void FrameRoll()
@@ -12618,6 +12644,8 @@ void Run(uint8_t* base)
     ++g_fireSamples;
     g_fireAtMin = std::min(g_fireAtMin, uint64_t(R->drawsThisFrame));
     g_fireAtMax = std::max(g_fireAtMax, uint64_t(R->drawsThisFrame));
+    if ((g_passes & 2047) == 1)
+        rtshadow::PrintCollectorCensus("collector");
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
                 "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d src=%s "
@@ -19509,6 +19537,8 @@ void VkRenderer_DumpStats()
     }
     if (rtfactor::g_passes || rtfactor::g_noScene || rtfactor::g_noLight ||
         rtfactor::g_noTlas || rtfactor::g_singular)
+    {
+        rtshadow::PrintCollectorCensus("collector TOTAL");
         fprintf(stderr,
                 "[rtb] TOTAL: %llu factor passes, %llu draws served, %u variant "
                 "modules; skipped noScene=%llu noLight=%llu noTlas=%llu singular=%llu. "
@@ -19522,6 +19552,7 @@ void VkRenderer_DumpStats()
                 (unsigned long long)rtfactor::g_singular,
                 (unsigned long long)rtfactor::g_framesOneMatrix,
                 (unsigned long long)rtfactor::g_framesManyMatrix);
+    }
 
     // WHERE THE DIMENSION LIVES IN THE FETCH CONSTANT, read off the two classes the
     // shader partitions every fetch into. `always1` is the AND, `always0` is the
