@@ -1266,20 +1266,82 @@ inline bool Is169Perspective(const uint32_t* c)
     return std::fabs(ratio - 0.5625f) <= 0.002f;   // 9/16, small float slack
 }
 
-// Widen the horizontal fov of a recognized scene projection by the inverse of the
+// THE SECOND FORM, found in part 62 by the miss-dump after the operator's live A/B
+// proved the fov slider moved ONLY the UI: **the world's draws do not carry the raw
+// projection at c0..c3 — they carry the full VIEW-PROJECTION COMPOSITE P*V**, with
+// V's translation in the fourth column. Only ~2% of draws (UI, frontend scenes, a
+// few effects) use the raw form; every world mesh rides the composite, which is why
+// part 60's wide patch — raw-form only — left GAMEPLAY geometry stretched at 21:9
+// while the frontend (where it was verified) was correct. The composite is
+// recognizable because P's structure survives the product:
+//   row0 = A * v0        (v0 = view rotation row, unit)  -> ||row0|| = A_eff
+//   row1 = B * v1                                        -> ||row1|| = B_eff
+//   row2 = p22 * v2 + p23 * (0,0,0,1)                    -> row2.xyz ~ 1.0001*row3.xyz
+//   row3 = v2            (unit; w_clip = z_view)
+// so: unit row3, ||row0||/||row1|| = 9/16 exactly, rows 0/1 orthogonal to row3, and
+// row2.xyz proportional to row3.xyz with factor ~zf/(zf-zn) ~ 1. The shadow orthos
+// and skinning affines fail on row3 = (0,0,0,1) (zero xyz norm) and the six cube
+// face cameras fail on ratio 1:1 — measured in the same dump, entries 2-6/8-14.
+// A_eff/B_eff vary per composite (the game applies a uniform xy zoom on top of the
+// 45° base), which is why the fov math must use the composite's OWN B_eff.
+//
+// Returns 0 = not a scene transform, 1 = raw projection, 2 = composite; bEff is
+// the |B| the fov arithmetic should use for this window.
+inline int SceneXformForm(const uint32_t* c, float& bEff)
+{
+    if (Is169Perspective(c))
+    {
+        float b;
+        memcpy(&b, c + 5, 4);
+        bEff = std::fabs(b);
+        return 1;
+    }
+    float m[16];
+    memcpy(m, c, sizeof m);
+    auto dot3 = [&](int r, int s) {
+        return m[r * 4 + 0] * m[s * 4 + 0] + m[r * 4 + 1] * m[s * 4 + 1] +
+               m[r * 4 + 2] * m[s * 4 + 2];
+    };
+    const float n3sq = dot3(3, 3);
+    if (std::fabs(n3sq - 1.0f) > 0.004f)     // unit view row; orthos/affines are 0
+        return 0;
+    const float n0 = std::sqrt(dot3(0, 0)), n1 = std::sqrt(dot3(1, 1));
+    if (!(n0 > 0.0f) || !(n1 > 0.0f))
+        return 0;
+    if (std::fabs(n0 / n1 - 0.5625f) > 0.002f)   // 9/16; cube faces read 1.0
+        return 0;
+    if (std::fabs(dot3(0, 3)) > 0.01f * n0 || std::fabs(dot3(1, 3)) > 0.01f * n1)
+        return 0;                                // rows 0/1 must be ⊥ the view row
+    const float f = dot3(2, 3);                  // row2.xyz = f * row3.xyz, f ~ p22
+    if (f < 0.9f || f > 1.1f)
+        return 0;
+    for (int i = 0; i < 3; i++)
+        if (std::fabs(m[8 + i] - f * m[12 + i]) > 0.01f)
+            return 0;
+    bEff = n1;
+    return 2;
+}
+
+// Widen the horizontal fov of a recognized scene transform by the inverse of the
 // surface widening — the wide frame then carries NEW content at the flanks instead
 // of a stretch. Called on the VS constant window as it is copied into the arena
 // (and on the verify arm's recompute, so the memo verifier compares patched against
-// patched). Returns whether it patched, so the caller can count.
-inline bool PatchWideProjection(uint32_t* c)
+// patched). Returns whether it patched, so the caller can count. Raw form: A alone
+// is m[0]. Composite: "A" is the whole of row0 INCLUDING its translation component
+// (row0 = A * v0-with-translation), so all four components scale.
+inline int PatchWideProjection(uint32_t* c)
 {
-    if (!Is169Perspective(c))
-        return false;
-    float a;
-    memcpy(&a, c, 4);
-    a /= WideFovFactor();
-    memcpy(c, &a, 4);
-    return true;
+    float bEff;
+    const int form = SceneXformForm(c, bEff);
+    if (form == 0)
+        return 0;
+    float m[4];
+    memcpy(m, c, sizeof m);
+    const int n = form == 1 ? 1 : 4;
+    for (int i = 0; i < n; i++)
+        m[i] /= WideFovFactor();
+    memcpy(c, m, sizeof(float) * n);
+    return form;
 }
 
 // The ratio B'/B the slider applies to a recognized projection's y scale:
@@ -1311,36 +1373,78 @@ inline float FovScaleRatio(float b, float halfRad)
 // HUD, so if the two populations separate on a structural field, the fov patch can
 // exempt the UI's. Env-gated and first-occurrence-only: free when off, and a
 // bounded number of lines when on.
+// CZ_VK_FOV_MISS=N — print the first N DISTINCT unrecognized VS windows' c0..c3
+// as a 4x4, with row norms and the ||row0||/||row1|| ratio. The question (part 62):
+// the operator's live A/B proved the fov patch does NOT move the world — so what
+// DO the world draws carry at c0..c3? If it is a composed view-projection built
+// from the known 45° P, then rows 0/1 are A- and B-scaled ROTATION rows:
+// ||row0||/||row1|| = 9/16 exactly and row3 is unit — recognizable and patchable.
+inline void FovMissDump(const uint32_t* c, uint32_t depthControl)
+{
+    static const long want = [] {
+        const char* e = Env("CZ_VK_FOV_MISS");
+        return e ? strtol(e, nullptr, 10) : 0;
+    }();
+    if (want <= 0)
+        return;
+    static std::mutex mu;
+    static std::set<std::array<uint32_t, 4>> seen;
+    std::lock_guard<std::mutex> lock(mu);
+    if (long(seen.size()) >= want)
+        return;
+    const std::array<uint32_t, 4> key{ c[0], c[5], c[10], c[15] };
+    if (!seen.insert(key).second)
+        return;
+    float m[16];
+    memcpy(m, c, sizeof m);
+    auto norm = [&](int r) {
+        return std::sqrt(m[r * 4 + 0] * m[r * 4 + 0] + m[r * 4 + 1] * m[r * 4 + 1] +
+                         m[r * 4 + 2] * m[r * 4 + 2]);
+    };
+    const float n0 = norm(0), n1 = norm(1), n3 = norm(3);
+    fprintf(stderr,
+            "[fov-miss] #%zu depth=%X ratio01=%.4f n0=%.4f n1=%.4f n3=%.4f\n"
+            "  [% .4f % .4f % .4f % .4f]\n  [% .4f % .4f % .4f % .4f]\n"
+            "  [% .4f % .4f % .4f % .4f]\n  [% .4f % .4f % .4f % .4f]\n",
+            seen.size(), depthControl & 0x7, n1 > 0 ? n0 / n1 : 0.0f, n0, n1, n3,
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+}
+
 inline void FovCensus(const uint32_t* c, uint32_t depthControl)
 {
     static const bool on = Env("CZ_VK_FOV_CENSUS") != nullptr;
-    if (!on || !Is169Perspective(c))
+    if (!on)
         return;
+    float bEff = 0.0f;
+    const int form = SceneXformForm(c, bEff);
+    if (form == 0)
+    {
+        FovMissDump(c, depthControl);
+        return;
+    }
     static std::mutex mu;
     static std::map<std::array<uint32_t, 5>, uint64_t> seen;
     static uint64_t calls = 0;
-    // Key: the projection's A/B and z-row terms, PLUS the draw's depth-test and
-    // depth-write enables (RB_DEPTHCONTROL bits 1 and 2). The state bits are in the
-    // key because the projection alone turned out not to discriminate — one shared
-    // projection serves the whole frame — so the question became whether SCENE and
-    // UI populations separate on depth state instead.
-    const std::array<uint32_t, 5> key{ c[0], c[5], c[10], c[11],
-                                       depthControl & 0x6 };
+    // Key: for the RAW form, the projection's A/B and z-row terms (bit-stable and
+    // few). For the COMPOSITE form the matrix values change with the camera every
+    // frame, so keying on them would grow the map without bound — composites
+    // aggregate under a form marker. Both keys carry the draw's depth-test and
+    // depth-write enables (RB_DEPTHCONTROL bits 1 and 2).
+    const std::array<uint32_t, 5> key =
+        form == 1 ? std::array<uint32_t, 5>{ c[0], c[5], c[10], c[11],
+                                             depthControl & 0x6 }
+                  : std::array<uint32_t, 5>{ 0xC0320051u, 0, 0, 0,
+                                             depthControl & 0x6 };
     std::lock_guard<std::mutex> lock(mu);
     const bool fresh = ++seen[key] == 1;
     ++calls;
     if (fresh)
-    {
-        float a, b, z0, z1;
-        memcpy(&a, &c[0], 4);
-        memcpy(&b, &c[5], 4);
-        memcpy(&z0, &c[10], 4);
-        memcpy(&z1, &c[11], 4);
-        fprintf(stderr, "[fov-census] #%zu A=%.6f B=%.6f m10=%.6f m11=%.6f "
-                        "(vfov=%.2f deg) ztest=%u zwrite=%u\n", seen.size(), a, b,
-                z0, z1, 2.0 * std::atan(1.0 / std::fabs(b)) * 57.29578,
+        fprintf(stderr, "[fov-census] #%zu form=%s bEff=%.6f (vfov=%.2f deg) "
+                        "ztest=%u zwrite=%u\n", seen.size(),
+                form == 1 ? "raw" : "composite", bEff,
+                2.0 * std::atan(1.0 / bEff) * 57.29578,
                 (depthControl >> 1) & 1, (depthControl >> 2) & 1);
-    }
     // The population counts, dumped periodically — first-occurrence lines name the
     // variants; this says how many draws each variant actually carries.
     if (calls % 200000 == 0)
@@ -1350,26 +1454,46 @@ inline void FovCensus(const uint32_t* c, uint32_t depthControl)
                     k[4], (unsigned long long)n);
 }
 
-// Apply the slider to a recognized 16:9 scene projection: B scales by the ratio and
-// A scales by the SAME ratio so the aspect is untouched — which is also what keeps
-// Is169Perspective true afterwards, so this composes with PatchWideProjection
-// (ORDER: fov first, wide second; the wide patch then divides A alone). Same call
-// sites and same memo/verify discipline as the wide patch above.
-inline bool PatchFovProjection(uint32_t* c, float halfRad)
+// Apply the slider to a recognized scene transform: both fov-carrying rows scale by
+// one ratio so the aspect is untouched — which is also what keeps recognition true
+// afterwards, so this composes with PatchWideProjection (ORDER: fov first, wide
+// second; the wide patch then scales the x row alone). Same call sites and same
+// memo/verify discipline as the wide patch above. The ratio is computed from the
+// window's OWN effective B (composites carry a per-camera zoom on top of the 45°
+// base), so the slider means the same thing whatever the game's camera is doing.
+// Raw form: scale m[0] and m[5]. Composite: scale rows 0 and 1 whole (8 floats —
+// the translation components are A- and B-scaled too, measured in the miss dump).
+inline int PatchFovProjection(uint32_t* c, float halfRad)
 {
-    if (halfRad == 0.0f || !Is169Perspective(c))
-        return false;
-    float a, b;
-    memcpy(&a, c + 0, 4);
-    memcpy(&b, c + 5, 4);
-    const float r = FovScaleRatio(b, halfRad);
+    if (halfRad == 0.0f)
+        return 0;
+    float bEff;
+    const int form = SceneXformForm(c, bEff);
+    // COMPOSITE ONLY by default (part 62): the world rides the composite and the
+    // HUD/UI ride the raw form, so patching only form 2 gives the slider exactly
+    // the scope the operator asked for — the world changes, the HUD does not.
+    // (Wide mode still patches both: its raw-form UI centering is a wanted
+    // feature.) `CZ_VK_FOV_RAW=1` restores the part-61 both-forms behaviour — the
+    // A/B arm, and the fallback if a raw-form SCENE element (sky? an effect?)
+    // turns up misregistered against the fov-shifted world.
+    static const bool rawToo = Env("CZ_VK_FOV_RAW") != nullptr;
+    if (form == 0 || (form == 1 && !rawToo))
+        return 0;
+    const float r = FovScaleRatio(bEff, halfRad);
     if (r == 1.0f)
-        return false;
-    a *= r;
-    b *= r;
-    memcpy(c + 0, &a, 4);
-    memcpy(c + 5, &b, 4);
-    return true;
+        return 0;
+    float m[8];
+    memcpy(m, c, sizeof m);
+    if (form == 1)
+    {
+        m[0] *= r;
+        m[5] *= r;
+    }
+    else
+        for (int i = 0; i < 8; i++)
+            m[i] *= r;
+    memcpy(c, m, sizeof m);
+    return form;
 }
 
 // ===================================================================================
@@ -3459,12 +3583,25 @@ float FovHalfRadThisFrame()
         }
         return 0;
     }();
+    // CZ_TEST_FOV_FLIP=N — alternate the slider between 0 and +20 every N frames,
+    // in ONE process. The part-62 lesson made this mandatory kit: a two-run picture
+    // A/B of a projection change is confounded by camera drift between runs (that is
+    // exactly how part 61 convinced itself the world moved when only the UI did),
+    // where a same-run flip holds the camera and makes "did the WORLD change"
+    // answerable from two dumped frames. Same shape as CZ_TEST_TIER_FLIP
+    // (live-settings need live verification).
+    static const long flipEvery = [] {
+        const char* e = Env("CZ_TEST_FOV_FLIP");
+        return e ? strtol(e, nullptr, 10) : 0;
+    }();
     static uint64_t cachedFrame = ~0ull;
     static float cachedHalfRad = 0.0f;
     if (cachedFrame != R->frame)
     {
         cachedFrame = R->frame;
-        const int deg = envSet ? envDeg : Settings_Fov();
+        int deg = envSet ? envDeg : Settings_Fov();
+        if (flipEvery > 0)
+            deg = (R->frame / uint64_t(flipEvery)) % 2 ? 20 : 0;
         cachedHalfRad = float(deg) * 0.00872664626f;   // pi/360: degrees -> half-radians
     }
     return cachedHalfRad;
@@ -9601,10 +9738,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // consistent projection. ORDER MATTERS and is fov FIRST: the fov patch
             // scales A and B by one ratio (aspect preserved, so the projection still
             // recognizes as 16:9), then the wide patch divides A alone.
-            if (PatchFovProjection(dst, FovHalfRadThisFrame()))
-                COUNT("draw: scene projection fov-adjusted (slider)");
-            if (WideMode() && PatchWideProjection(dst))
-                COUNT("draw: scene projection widened to 21:9");
+            switch (PatchFovProjection(dst, FovHalfRadThisFrame()))
+            {
+                case 1: COUNT("draw: raw projection fov-adjusted (slider)"); break;
+                case 2: COUNT("draw: COMPOSITE viewproj fov-adjusted (slider)"); break;
+            }
+            if (WideMode())
+                switch (PatchWideProjection(dst))
+                {
+                    case 1: COUNT("draw: raw projection widened to 21:9"); break;
+                    case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
+                }
             R->constMemoVsValid = true;
             R->constMemoVsVersion = vsVersion;
             R->constMemoVsBase = vsBase;
@@ -10686,18 +10830,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 // the gore/slice cuts exactly where the game put them. Only when
                 // THIS draw's projection is one the patch recognizes; the shadow
                 // orthos' planes (if any) pass through untouched.
+                // Part 62: recognition covers BOTH forms (raw projection and the
+                // view-projection composite the world's draws actually carry), and
+                // the fov ratio uses the window's own effective B — the same
+                // arithmetic the patch itself applies.
                 const float ucpFovHalf = FovHalfRadThisFrame();
-                if ((WideMode() || ucpFovHalf != 0.0f) &&
-                    Is169Perspective(&regs[xenos::kAluConstantBase + memoVsBase * 4]))
+                float ucpBEff = 0.0f;
+                const int ucpForm =
+                    (WideMode() || ucpFovHalf != 0.0f)
+                        ? SceneXformForm(
+                              &regs[xenos::kAluConstantBase + memoVsBase * 4],
+                              ucpBEff)
+                        : 0;
+                if (ucpForm != 0)
                 {
                     float* p =
                         reinterpret_cast<float*>(shared + kSharedClipPlanes + i * 16);
-                    if (ucpFovHalf != 0.0f)
+                    // The fov compensation mirrors the patch's scope exactly:
+                    // composite-only unless CZ_VK_FOV_RAW widens the patch too.
+                    static const bool ucpRawToo = Env("CZ_VK_FOV_RAW") != nullptr;
+                    if (ucpFovHalf != 0.0f && (ucpForm == 2 || ucpRawToo))
                     {
-                        float b;
-                        memcpy(&b,
-                               &regs[xenos::kAluConstantBase + memoVsBase * 4 + 5], 4);
-                        const float r = FovScaleRatio(b, ucpFovHalf);
+                        const float r = FovScaleRatio(ucpBEff, ucpFovHalf);
                         p[0] /= r;
                         p[1] /= r;
                         COUNT("draw: user clip plane compensated for the fov slider");
