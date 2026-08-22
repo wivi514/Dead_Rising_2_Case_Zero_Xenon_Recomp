@@ -13242,6 +13242,15 @@ decoded nowhere in this renderer) and the SLICE RECTANGLE (whether a slice's
 traced region really is the region its matrix describes). Both are cheap to test
 and neither needs new machinery.
 
+**Gates at close, on the final binary** (the one carrying all five fixes, with
+RT off — which is the shipped default, since both the env arm and the panel row
+default to OG): `--smoke` OK; **A5 exit 0, 4 permutation windows, 0 real**;
+`no translated shader` = 0 on the plain boot and on all three RT runs;
+`find_unlowered_switches.py` 0 defects (2 benign thunks);
+`shader_dim_census.py` 0 disagreements, 338 2D / 100 cube. The renderer's
+default path is untouched by this part: with `CZ_VK_RT_SHADOWS` unset nothing in
+`rtshadow` runs beyond one per-frame tier read.
+
 **Do the measurement properly this time** (gotcha 384): gate every read on the
 process having exited, quote the frame count beside every median, and run the
 control to the SAME depth. An hour of this part was spent building on numbers
