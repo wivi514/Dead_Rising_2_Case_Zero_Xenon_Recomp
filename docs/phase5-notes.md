@@ -12614,3 +12614,22 @@ CZ_NO_GAME_FOV=1 is the control arm. Owed: the operator's play verdict, and the
 wide-mode (21:9) flank culling remains its own pre-existing trade — the game
 frustum is 16:9 whatever the fov; a culling-only over-widen is a possible future
 item, priced separately.
+
+### §6ct addendum — the SECOND gap: wide-mode culling (22195be)
+
+The operator, after the game-side slider: **"Still culling everything on side of
+camera."** The slider gap was closed; the remaining pop-in was the WIDE-MODE gap
+— at 21:9 the view is k = 9W/16H = 1.34x wider in tan space than the game's
+16:9 frustum at any slider value, hidden until the composite unstretch (before
+it, the stretched view WAS the frustum). Fix: the substitution over-widens the
+game camera to v' = 2·atan(k·tan(v/2)) — its 16:9 frustum then covers the 21:9
+horizontal — and the composite wide patch flips to MULTIPLY ROW1 BY k (narrow
+the vertical back) instead of dividing row0. Same surface proportions, same
+final picture for the roaming camera, culling covers all of it. Not-over-widened
+cameras (cutscenes/minigames) become a constant-horizontal 21:9 CROP — the
+standard cinematic treatment, whose visible region the frustum always covers,
+closing the pre-existing cutscene flank gap as well. NOTE FOR THE OPERATOR
+RECORD: wide-mode cutscenes now show slightly less top/bottom instead of more
+sides — a deliberate treatment change. Verified: guest camera 67.64° exact at
+fov=10/k=1.34375, UI untouched, framing identical to the 53° build, max draws
+5,538 -> 5,798. 16:9 bit-identical.
