@@ -76,11 +76,17 @@ S="${START:-0}"
 
 # One arm. `tag` names the log, the still directory and the frame-stats file that
 # tools/part65_luma_read.py reads; the extra env is per-arm.
+# `desc` is its OWN parameter and must never reach `env`. It did, for one whole session:
+# everything after the tag was forwarded, and GNU `env` accepts any argument containing
+# an `=` as an assignment — so descriptions reading "PASS = ..." were silently absorbed
+# and those arms ran, while the first description written WITHOUT an `=` was treated as
+# the command to execute and its arm died in 0.1 s. A latent bug in every arm, hidden
+# for a session by punctuation.
 run() {
-    local tag="$1"; shift
+    local tag="$1" desc="$2"; shift 2
     mkdir -p "$OUT/$tag"
     echo "==================================================================="
-    echo "  ARM $tag        $*"
+    echo "  ARM $tag        $desc"
     echo "==================================================================="
     ( cd "$ROOT/runtime/build" && env \
         CZ_VKDRAW=1 CZ_DEBUG_MENU=1 CZ_FPS_CAP=500 \
@@ -90,6 +96,16 @@ run() {
         "CZ_VK_FRAME_STATS=$OUT/fs_$tag.txt" \
         "$@" \
         ./cz_runtime > "$OUT/$tag.log" 2>&1 )
+    # AN ARM THAT NEVER RAN MUST NOT LOOK LIKE AN ARM THAT SHOWED NOTHING. A 129-byte
+    # log and an empty capture directory printed "done" in the transcript, which is the
+    # same failure class as a silently inert feature (gotcha 386) — and the operator is
+    # the one who pays for it, in a session spent looking at nothing.
+    if [ "$(wc -c < "$OUT/$tag.log")" -lt 4096 ]; then
+        echo "  !! ARM $tag DID NOT RUN — its log is only $(wc -c < "$OUT/$tag.log") bytes:"
+        sed 's/^/     /' "$OUT/$tag.log"
+        echo "  !! stopping the session; nothing after this would mean anything."
+        exit 3
+    fi
     echo "  ARM $tag done."
     grep -a "\[rtb\] passes=" "$OUT/$tag.log" | tail -1 | sed 's/^/  /'
     grep -a "factor pass fires" "$OUT/$tag.log" | sed 's/^/  /'

@@ -11968,6 +11968,29 @@ VkDescriptorSet g_sets[kMaxFramesInFlight] = {};
 VkAccelerationStructureKHR g_setAs[kMaxFramesInFlight] = {};
 bool g_failed = false;
 
+// CZ_VK_RT_FACTOR_READBACK=N — READ THE FACTOR IMAGE ITSELF, every N passes.
+//
+// WHY THIS EXISTS, and it should have existed from the first hour of route (b). Every
+// instrument in the eleven-rung ladder reads the factor THROUGH the 126 patched shaders
+// and then through the title's own lighting, where the entire dynamic range between
+// "fully lit" and "fully shadowed" is about a tenth of the frame's luma (99.9 -> 90.2).
+// So every arm has been asking a picture a question the picture answers faintly, and
+// three sessions went into interpreting the answers. The factor is OUR image; reading it
+// directly splits the remaining problem exactly in half and needs no eye at all:
+//
+//   mostly 1.0  -> the rays are not hitting. The fault is the TLAS or the ray.
+//   mostly 0.0  -> the factor is right and the fault is downstream, in the injection.
+//   structured  -> read the shape; it is a picture of what the rays actually found.
+//
+// One host-visible buffer per frame slot, copied in the SAME command buffer as the pass
+// so it cannot photograph the wrong moment, and read one full frame later — the slot's
+// fence has been waited by then, which is what makes the read legal rather than lucky.
+Buffer g_rb[kMaxFramesInFlight];
+uint64_t g_rbFilled[kMaxFramesInFlight] = {};   // the frame each buffer was written in
+uint32_t g_rbW = 0, g_rbH = 0;
+uint64_t g_rbEvery = 0;
+const char* g_rbDir = nullptr;
+
 // WHERE THE RECEIVER COMES FROM (part 66). The primary-ray source needs no depth
 // buffer, which is what makes route (b) work on this title at all — see the long note
 // at the top of rt_factor.hlsl. `CZ_VK_RT_FACTOR_SOURCE=depth` is the same-binary
@@ -12137,6 +12160,46 @@ bool EnsureResources()
         return false;
     }
     NameImage(g_factor, "RT shadow factor %ux%u", w, h);
+
+    // The readback buffers follow the factor's extent, so a resolution change resizes
+    // them with it. TRANSFER_DST because the copy writes into them.
+    static bool rbInit = false;
+    if (!rbInit)
+    {
+        rbInit = true;
+        const char* e = Env("CZ_VK_RT_FACTOR_READBACK");
+        g_rbEvery = e ? strtoull(e, nullptr, 10) : 0;
+        g_rbDir = Env("CZ_VK_RT_FACTOR_PGM");
+    }
+    if (g_rbEvery && (g_rbW != w || g_rbH != h))
+    {
+        for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+        {
+            if (g_rb[i].buffer)
+            {
+                vkDestroyBuffer(R->device, g_rb[i].buffer, nullptr);
+                vkFreeMemory(R->device, g_rb[i].memory, nullptr);
+                g_rb[i] = Buffer{};
+            }
+            g_rbFilled[i] = 0;
+            if (!CreateBuffer(g_rb[i], VkDeviceSize(w) * h,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              false))
+            {
+                fprintf(stderr, "[rtb] factor readback buffer FAILED — the arm is off\n");
+                g_rbEvery = 0;
+                break;
+            }
+        }
+        g_rbW = w;
+        g_rbH = h;
+        if (g_rbEvery)
+            fprintf(stderr, "[rtb] factor readback armed: %ux%u every %llu passes%s\n",
+                    w, h, (unsigned long long)g_rbEvery,
+                    g_rbDir ? " (+ PGMs)" : "");
+    }
 
     // Publish it into the 2D bindless heap so the patched material shaders can sample
     // it exactly like any other texture — no new descriptor set, no change to the
@@ -12475,11 +12538,55 @@ void RollFrame()
     }
 }
 
+// Histogram whatever this slot's buffer holds, and optionally write it as a PGM. Called
+// at the top of the pass, so what it reads is at least one full frame old and therefore
+// complete.
+void DrainReadback(uint32_t slot)
+{
+    if (!g_rbFilled[slot] || !g_rb[slot].mapped || !g_rbW || !g_rbH)
+        return;
+    const uint64_t writtenAt = g_rbFilled[slot];
+    g_rbFilled[slot] = 0;
+    const uint8_t* px = g_rb[slot].mapped;
+    const size_t n = size_t(g_rbW) * g_rbH;
+    uint64_t sum = 0, zero = 0, one = 0, bins[8] = {};
+    for (size_t i = 0; i < n; ++i)
+    {
+        const uint8_t v = px[i];
+        sum += v;
+        zero += (v < 8);
+        one += (v > 247);
+        ++bins[v >> 5];
+    }
+    fprintf(stderr,
+            "[rtb] FACTOR IMAGE frame %llu: %ux%u mean=%.3f  shadowed(<0.03)=%.1f%%  "
+            "lit(>0.97)=%.1f%%  octiles",
+            (unsigned long long)writtenAt, g_rbW, g_rbH,
+            double(sum) / double(n) / 255.0, 100.0 * double(zero) / double(n),
+            100.0 * double(one) / double(n));
+    for (uint64_t b : bins)
+        fprintf(stderr, " %.1f", 100.0 * double(b) / double(n));
+    fprintf(stderr, "%%\n");
+    if (g_rbDir)
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/factor_%06llu.pgm", g_rbDir,
+                 (unsigned long long)writtenAt);
+        if (FILE* f = fopen(path, "wb"))
+        {
+            fprintf(f, "P5\n%u %u\n255\n", g_rbW, g_rbH);
+            fwrite(px, 1, n, f);
+            fclose(f);
+        }
+    }
+}
+
 void Run(uint8_t* base)
 {
     RollFrame();
     if (g_valid || !Active())
         return;
+    DrainReadback(R->frameSlot);
     ProfScope _pRt(&g_prof.rt);
     if (!g_sceneMValid)
     {
@@ -12672,6 +12779,21 @@ void Run(uint8_t* base)
     vkCmdPushConstants(R->cmd, g_pipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 112, 16, pc2);
     vkCmdDraw(R->cmd, 3, 1, 0, 0);
     vkCmdEndRendering(R->cmd);
+    // The readback copy goes in HERE, in the same command buffer as the pass that
+    // produced the image — a separate immediate submit would photograph the factor
+    // before this frame's pass had executed, which is the mistake gotcha 385 is about.
+    if (g_rbEvery && g_rb[R->frameSlot].mapped && (g_passes % g_rbEvery) == 0)
+    {
+        Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy bc{};
+        bc.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        bc.imageExtent = { g_factor.width, g_factor.height, 1 };
+        vkCmdCopyImageToBuffer(R->cmd, g_factor.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               g_rb[R->frameSlot].buffer, 1, &bc);
+        g_rbFilled[R->frameSlot] = R->frame;
+    }
     Barrier(R->cmd, g_factor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
     // THE STATE CACHE IS NOW A LIE — same reason as route (a)'s trace pass: this pass

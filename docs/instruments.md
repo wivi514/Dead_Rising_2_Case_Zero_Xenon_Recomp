@@ -1841,6 +1841,12 @@ CZ_VK_RT_FACTOR_DEBUG=N  **THE LADDER**, which splits the factor pass into its
                            "the descriptor references nothing" — the assumption
                            every other sampling mode shares. PASS = the frame
                            goes dark
+                     19    the VERTICAL twin of 14, and the control that would
+                           have saved part 66's first session: 14 is
+                           `frac(uv.x*8)`, invariant under a vertical error, and
+                           it passed perfectly while every row was 427 px out of
+                           place. Run 14 and 19 TOGETHER — agreeing is the
+                           result, either alone is not (gotcha 394)
                      17    **THE GATE** (part 66): does the PRIMARY RAY find the
                            world? PASS = a black world under a lit sky. Forces
                            the primary path whatever the source is set to
@@ -1848,6 +1854,24 @@ CZ_VK_RT_FACTOR_DEBUG=N  **THE LADDER**, which splits the factor pass into its
                            gradient. It separates "the rays hit something" from
                            "the rays hit the right thing" — a TLAS full of junk at
                            the origin passes 17 and reads flat here
+CZ_VK_RT_FACTOR_READBACK=N  **READ THE FACTOR IMAGE ITSELF**, every N passes:
+                   mean, the share below 0.03 (shadowed) and above 0.97 (lit),
+                   and octiles, printed as `[rtb] FACTOR IMAGE`. Added in part
+                   66 after three sessions spent inferring the factor from the
+                   frame — every other instrument route (b) has reads it THROUGH
+                   the 126 patched shaders and the title's own lighting, where
+                   the whole range from lit to fully shadowed is about a tenth of
+                   the frame's luma. This splits the problem in half with no eye
+                   involved: mostly LIT means the rays are not hitting, mostly
+                   SHADOWED means the factor is right and the fault is downstream.
+                   Its own positive control is `CZ_VK_RT_FACTOR_POISON=1`, which
+                   must read ~100% shadowed — run it FIRST and believe nothing
+                   else until it does. The copy is recorded into the same command
+                   buffer as the pass and read one full frame later, after the
+                   slot's fence; an immediate submit would photograph the image
+                   before the pass had executed
+CZ_VK_RT_FACTOR_PGM=<dir>  additionally write each reading as a PGM. `/tmp` is a
+                   tmpfs — use `~/DR2CZ-troubleshooting/`
 CZ_VK_RT_FACTOR_SCALE=N  the factor image at 1/N of the EDRAM extent, overriding
                    the tier's own choice (RT LOW = 2, RT MEDIUM/HIGH = 1)
 CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the
