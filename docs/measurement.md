@@ -251,3 +251,24 @@ we walk are the bytes hardware walked — that was finding 39's whole lesson (go
 and the live counter for it is `ring: indirect buffers truncated=` in `CZ_RING_TRACE`,
 which must be **0**.
 
+## Is the depth buffer full yet? — the ORDER inside a hardware frame
+
+`tools/rt_depth_order_census.py` walks the twenty `.xtr` world traces in stream order
+and, for the first draw that samples a named surface, reports how many earlier draws
+wrote the depth surface that draw renders into. It exists because a design decision
+rested on "by then the Z prepass has finished" and the only evidence for it was a COUNT
+over a whole boot, which cannot speak to order (gotcha 392). It printed the opposite:
+this title has no scene Z prepass, and the first draw of the scene pass already samples
+the shadow atlas.
+
+```
+tools/rt_depth_order_census.py                    # every world trace, with a verdict
+tools/rt_depth_order_census.py --trace <one.xtr> --verbose   # the per-draw timeline
+```
+
+Two filters are load-bearing and are the reusable part. The cascade atlas is identified
+by SHAPE (the widest depth-format fetch whose width is a multiple of its height), not
+by an address, because hardware's is `1812F000` and ours is `1439B000`. And a draw
+counts as sampling it only if the atlas sits in a slot the bound shader's own sidecar
+DECLARES — a register file carries all 32 fetch constants whether the shader reads them
+or not, so raw address matching over-reports about 6x.

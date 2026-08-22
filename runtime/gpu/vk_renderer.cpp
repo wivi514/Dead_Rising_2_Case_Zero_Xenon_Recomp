@@ -12428,17 +12428,24 @@ bool EnsureResources()
 // Compute the factor for the region the depth buffer currently describes. Called from
 // DoDraw at the first shadow-atlas-sampling draw after each resolve, so the trigger is
 // the TITLE'S OWN draw order rather than a guess about where its Z prepass ended.
-void Run(uint8_t* base)
+// The frame roll, called from BOTH entry points. Under the primary-ray source this is
+// the only thing that clears validity, so it must not sit behind the `modeControl == 4`
+// gate that guards `Run` — an atlas-sampling draw in a depth-only pass would then be
+// served the PREVIOUS frame's factor image. That gate has declined 0 draws in every run
+// so far, which is a reason to expect the path to be dead and not a reason to leave it
+// wrong.
+void RollFrame()
 {
-    // The frame roll. Run() is called at EVERY atlas-sampling colour draw and returns
-    // immediately when the factor is already valid, so this is the one place that sees
-    // every frame without another hook — and under the primary-ray source it is the
-    // only thing that clears validity.
     if (g_ranFrame != R->frame)
     {
         g_ranFrame = R->frame;
         g_valid = false;
     }
+}
+
+void Run(uint8_t* base)
+{
+    RollFrame();
     if (g_valid || !Active())
         return;
     ProfScope _pRt(&g_prof.rt);
@@ -12669,6 +12676,7 @@ void Run(uint8_t* base)
 // leaves the shared block's descriptor index at 0 — the white dummy, i.e. LIT.
 bool Publish(uint8_t* shared)
 {
+    RollFrame();
     if (!g_valid || !g_factorSlot)
         return false;
     uint32_t* u = reinterpret_cast<uint32_t*>(shared + kSharedRtShadow);
