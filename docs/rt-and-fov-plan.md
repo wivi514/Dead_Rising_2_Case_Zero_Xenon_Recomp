@@ -133,8 +133,45 @@ whether stages 2-4 are cheap or dear, and its numbers replace guesses.
 
 ## 3. RT stage 2 — ray-traced SHADOWS (the first visible tier)
 
-> **BUILT IN PART 64 (2026-08-22). The record is `phase5-notes.md` §6cv; the
-> hand-off is `part65-kickoff.md`; the backlog entry is `open-items.md` 0v.**
+> **ROUTE (a) BUILT AND THEN ABANDONED IN PART 64 (2026-08-22); ROUTE (b) IS THE
+> LIVE DIRECTION AND IS PART 65's SUBJECT, by the operator's decision.** The
+> record is `phase5-notes.md` §6cv (§7j is the verdict); the hand-off is
+> `part65-kickoff.md`; the backlog entry is `open-items.md` 0v.
+>
+> **THE FORK BELOW IS RESOLVED, AND NOT THE WAY THIS SECTION GUESSED.** It
+> called (b) "the recommended route" and (a) "the fallback that touches no
+> shader", and told the next session to "decide by trying (a) in an afternoon —
+> it is measurable in stills". That instruction was exactly right and it is what
+> settled it: (a) was built, its injection point was PROVEN (the fill
+> experiment's two polarities, and a poison control landing on the fill's own
+> number), and then **five independent knobs failed to make it correct**.
+> Occluder set, union vs replacement, the light-matrix binding, a bounds gate,
+> and a 6.7x bias sweep: every configuration lands at 64-66 median outdoor luma
+> against OG's 80.61, with an all-shadow floor of 61.2.
+>
+> **The reason is structural and this section did not anticipate it**: writing
+> the shadow MAP means every receiver inside the map is compared against itself,
+> so it self-shadows, and route (a) has no receiver-side offset to apply. The
+> operator named it in one sentence — *"shadow squares following where the
+> player is and normal shadow still on"* — after three headless statistics had
+> failed to. Route (b) does not have the defect BY CONSTRUCTION: the factor is
+> computed per receiving pixel from that pixel's own position, so a surface
+> cannot occlude itself.
+>
+> Everything (a) built is reusable by (b) unchanged — BLAS/TLAS, the sun-matrix
+> capture and its dataflow binding, the pooled AS allocator, the arms, the `rt`
+> profiler phase. **And the tier ladder below belongs to (b)**: on (a) the rungs
+> were not even expressible, because a depth map cannot carry softness however
+> many rays are fired.
+>
+> The panel presentation also changed on the operator's instruction, and the
+> plan's header should be read with it: **not a separate RT row per effect for
+> shadows, but ONE `SHADOW` row** whose values are LOW/MEDIUM/HIGH then RT
+> LOW/MEDIUM/HIGH, where selecting an RT value REPLACES the raster shadow.
+>
+> ---
+>
+> *(the original part-64 banner follows, kept because its measured facts stand)*
 > The fork below was decided by measurement in an afternoon, exactly as this
 > section asked: **route (a) works and needs no shader patch at all** —
 > `CZ_VK_SHADOW_FILL`'s two polarities move the outdoor median luma in opposite
