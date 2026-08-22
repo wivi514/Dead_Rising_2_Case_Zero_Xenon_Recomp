@@ -9939,6 +9939,23 @@ VkDeviceSize g_blasBytes = 0;
 uint64_t g_blasBuilt = 0, g_blasFlushes = 0;
 std::unordered_map<uint64_t, Pending> g_pending;
 std::unordered_set<uint64_t> g_curKeys, g_prevKeys;
+// THE CASCADE'S OWN CASTERS (CZ_VK_RT_CASTERS=cascade), collected from the
+// pitch-1040 pass instead of from the camera's world draws.
+//
+// This is the DISCRIMINATOR for an over-shadowed frame, and it is worth more than
+// either outcome on its own. The title's shadow map contains the objects the title
+// chose to cast; the camera's world set is a different population entirely (it
+// includes every receiver — the whole street surface — which an engine routinely
+// keeps OUT of its own cascade). Tracing the cascade's own set means our traced
+// depths and the raster depths under them describe the SAME surfaces, so:
+//   * if the frame stops over-shadowing, the occluder SET was the defect and this
+//     is the correct default;
+//   * if it still over-shadows, our depth for a surface disagrees with our own
+//     raster of that same surface — which no choice of occluder set can explain,
+//     and the bug is in the depth math or the slice mapping.
+// That second reading is the valuable one: it is our own rasterizer acting as the
+// oracle for our own ray, on geometry both provably agree about.
+std::unordered_set<uint64_t> g_curCascadeKeys, g_prevCascadeKeys;
 uint64_t g_collectFrame = ~0ull;
 
 // The captured cascade matrix: the LAST ortho composite seen on a pitch-1040 draw
@@ -10020,12 +10037,25 @@ bool Active()
     return R->rtEnabled && TierThisFrame() > 0;
 }
 
+// Which population feeds the TLAS. `scene` (default) is the camera's world draws;
+// `cascade` is the title's own shadow casters — see the g_curCascadeKeys comment.
+bool CascadeCasters()
+{
+    static const bool on = [] {
+        const char* e = Env("CZ_VK_RT_CASTERS");
+        return e && !strcmp(e, "cascade");
+    }();
+    return on;
+}
+
 void FrameRoll()
 {
     if (R->frame != g_collectFrame)
     {
         g_prevKeys.swap(g_curKeys);
         g_curKeys.clear();
+        g_prevCascadeKeys.swap(g_curCascadeKeys);
+        g_curCascadeKeys.clear();
         g_collectFrame = R->frame;
     }
 }
@@ -10069,6 +10099,7 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     FrameRoll();
     float bEff;
     const int form = SceneXformForm(vsWindow, bEff);
+    bool cascadeCaster = false;
     if (form == 0)
     {
         // The cascade's sun matrix: pitch-1040 pass, ortho composite (row3 xyz ~ 0,
@@ -10101,11 +10132,20 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
                             "(depth units)\n",
                             g_lightPolyScale, g_lightPolyOffset);
                 }
+                // ...and, under the cascade-caster arm, this draw's own geometry
+                // is a caster. The ortho-composite test above is what makes that
+                // safe: a SKINNED cascade draw carries an affine at c0-3, fails
+                // it, and never reaches here — the same structural exclusion the
+                // world path uses, one pass over.
+                cascadeCaster = CascadeCasters();
             }
         }
-        return;
+        if (!cascadeCaster)
+            return;
     }
-    if (form != 2)
+    else if (CascadeCasters())
+        return;   // under the cascade arm the camera's world draws are not casters
+    else if (form != 2)
         return;
     if (!((depthControl >> 2) & 1))
         return;   // not depth-writing: not an occluder
@@ -10202,7 +10242,7 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     key = Mix(key, (uint64_t(draw.indexCount) << 16) | (prim << 8) |
                        (pos.offsetDwords << 4) | pos.strideDwords);
     ++g_collected;
-    g_curKeys.insert(key);
+    (cascadeCaster ? g_curCascadeKeys : g_curKeys).insert(key);
     auto bit = g_blas.find(key);
     if (bit != g_blas.end())
     {
@@ -10210,7 +10250,7 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             bit->second.vGuard != vGuard || bit->second.iGuard != iGuard)
         {
             ++g_keyCollisions;   // treat as absent; never trace another mesh's BLAS
-            g_curKeys.erase(key);
+            (cascadeCaster ? g_curCascadeKeys : g_curKeys).erase(key);
             return;
         }
         bit->second.lastFrame = R->frame;
@@ -10370,9 +10410,11 @@ void BuildFrameStructures(uint8_t* base)
         FlushAll();
 
     // ---- choose the batch: pending keys drawn last frame, budget in source bytes
+    const std::unordered_set<uint64_t>& live =
+        CascadeCasters() ? g_prevCascadeKeys : g_prevKeys;
     std::vector<uint64_t> batch;
     VkDeviceSize batchBytes = 0;
-    for (uint64_t key : g_prevKeys)
+    for (uint64_t key : live)
     {
         auto it = g_pending.find(key);
         if (it == g_pending.end())
@@ -10616,8 +10658,8 @@ void BuildFrameStructures(uint8_t* base)
 
     // ---- the TLAS: identity-transform instances over last frame's world set
     std::vector<VkAccelerationStructureInstanceKHR> inst;
-    inst.reserve(g_prevKeys.size());
-    for (uint64_t key : g_prevKeys)
+    inst.reserve(live.size());
+    for (uint64_t key : live)
     {
         auto it = g_blas.find(key);
         if (it == g_blas.end())
