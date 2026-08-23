@@ -98,9 +98,27 @@ instance transform.
 This binary now prints `largest admitted meshes by WORLD extent`, and
 `tools/part70_bounds_cap.sh` sweeps `CZ_VK_RT_BOUNDS_CAP` 50000/5000/1000/200 beside it.
 `tools/rt_tlas_census.py` answers the same question OFFLINE over hardware's own frames
-for the static world. Part 70's result is in `phase5-notes.md` §6dc §9.
+for the static world.
 
-Then the bisection, which is one dump:
+> **PART 70 RAN THIS TOO, and the result is: a real anomaly, NAMED, that is not the
+> defect.** The census finds a **4,950-unit mesh at (2234 7 -107), stream
+> `va=B576A378`** — 4.5x the town, 6.4x the next largest, centred outside a world box of
+> `x[-610 324]`, sailing through a 50,000-unit cap. Removing it (cap 5000 -> 1000) moves
+> the shadowed share **0.6 points**, inside the ~1-point route-variance floor. The only
+> real move is at cap 200, which deletes every building and costs 2.6 points. Record in
+> `phase5-notes.md` §6dc §9. **The mesh is still worth understanding** — nothing should
+> be 4.5x the town — but it is not making a slab.
+
+## 1c. THE CAVEAT ON BOTH OF PART 70'S REFUTATIONS, and it decides what to do next
+
+**The headless route reads 12-16% shadowed. The operator's settle-0 arm, the run that
+produced the slab, read 39.7%.** This camera is not showing the defect at anything like
+its reported strength, so both nulls are evidence about THIS location and no further —
+gotcha 172 in a new place, and the "an A/B measures the load it sampled" family.
+
+So the next move is not another mechanism to sweep. It is **the factor image dumped
+where the defect actually appears**, which costs the operator nothing beyond standing
+there:
 
 ```
 CZ_VK_RT_FACTOR_READBACK=64 CZ_VK_RT_FACTOR_PGM=~/DR2CZ-troubleshooting/part71-factor

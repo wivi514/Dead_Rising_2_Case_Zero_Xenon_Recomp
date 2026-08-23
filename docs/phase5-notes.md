@@ -15084,6 +15084,60 @@ straight boundary" looks like as a profile, and it is unchanged by a 34x ray. Th
 statement about the population or the pass, not about the ray — which is what the
 bounds-cap sweep and the new per-mesh extent census (§9) go after.
 
+### 9. THE BOUNDS CAP: a genuine anomaly is NAMED, and it is not the defect either
+
+`part69-night-plan.md` §2 named "ONE ENORMOUS ADMITTED MESH" as the likeliest mechanism
+and shelved it because mode 18 rendered a correct depth image. **Mode 18 cannot settle
+it** — it traces the PRIMARY ray, so it images only what the camera can see, and an
+occluder above the scene or outside the view contributes nothing to it while still
+blocking every shadow ray. So the census was built (§2.2's own request) and the cap
+swept.
+
+**The census immediately names an outlier**, and it is real:
+
+```
+4949.9 units (object 4949.9) at (2234 7 -107)   stream va=B576A378
+ 854.5 units (object  854.5) at (-610 -1 -60)
+ 776.3 units ...                                 (the rest are 589-854)
+```
+
+A **4,950-unit mesh** — 4.5x the whole town, 6.4x the next largest, centred 2,234 units
+outside a frame whose world box is `x[-610 324] z[-681 107]` — sailing through a bounds
+cap of 50,000. Object extent equals world extent throughout, so none of these carries a
+scale in its instance transform.
+
+**And removing it changes nothing measurable.** `tools/part70_bounds_cap.sh`:
+
+| `CZ_VK_RT_BOUNDS_CAP` | largest admitted | `tlasInst` | shadowed(<0.03) |
+|---|---|---|---|
+| 50000 (default) | 4949.9 | 3857 | 16.4 % |
+| 5000 | 4949.9 | 3809 | 15.8-16.0 % |
+| **1000** | **854.5** | 3688 | 15.2-15.3 % |
+| 200 | 188.5 | 3898 | 12.6 % |
+
+The 4,950 mesh is in at 5000 and out at 1000, and that step moves the share **0.6
+points** — inside the ~1-point route-variance floor §8 measured. The only real move is
+at cap 200, which removes every building in the town and legitimately costs 2.6 points;
+`tlasInst` even rises there, which is more route variance. **So the enormous mesh is an
+anomaly worth having named and it is not producing a slab of shadow.**
+
+### 9b. AND THE LIMIT OF BOTH OF TONIGHT'S REFUTATIONS, stated rather than buried
+
+**The headless route's shadowed share is 12-16%. The operator's settle-0 arm, the run
+that produced the slab, was 39.7%.** This camera is not showing the defect at anything
+like its reported strength, so a null here is evidence about THIS location and no more.
+Both of §8's and §9's refutations are sound as far as they reach and neither is a
+frame-wide exoneration — the same trap in a new place (gotcha 172, and the "an A/B
+measures the load it sampled" family).
+
+What that makes the next move is not another mechanism to sweep. It is **getting the
+factor image dumped where the defect actually appears**, which needs the operator to
+stand there and costs them nothing (`CZ_VK_RT_FACTOR_READBACK=64` plus
+`CZ_VK_RT_FACTOR_PGM=<dir>`, read afterwards with `tools/rt_factor_pgm_read.py`). If the
+straight edge is in the factor PGM the defect is in the pass; if the PGM is smooth and
+the edge appears only in the frame, it is in the transform the 126 patched shaders use
+to address it, which part 66 already found 427 pixels out once.
+
 ### 7. Where that leaves the shadow defect
 
 The straight-line signature is still unexplained, and the sun is no longer a candidate

@@ -794,10 +794,17 @@ it stands**):
   (the control), and the per-cluster FRAME RANGES are disjoint — a light that changed with
   the scene, not a selection that flipped (gotcha 413).
 * **So structure, receiver and sun are all now demonstrably correct and the straight-line
-  signature has survived all three.** What is left is the RAY (bias, length) and the
-  CONSUMPTION (how the factor image reaches the 126 patched shaders); `part71-kickoff.md`
-  §1 is a one-dump bisection between them. Part 67's exonerations of the bias and the ray
-  length are still void (gotcha 172).
+  signature has survived all three.** Part 70 then killed two more mechanisms with
+  pre-registered sweeps: **the RAY LENGTH** (34x from 88 to 3000 moves the shadowed share
+  one point, non-monotonically — noise) and **"one enormous admitted occluder"**, which
+  named a real 4,950-unit mesh at `(2234 7 -107)`, 4.5x the town and outside its world
+  box, and then showed that removing it moves the share 0.6 points.
+* **THE CAVEAT THAT DECIDES PART 71: the headless route reads 12-16% shadowed where the
+  operator's slab arm read 39.7%.** This camera is not showing the defect, so both nulls
+  are about THIS location and no further. The next move is the FACTOR IMAGE dumped where
+  the defect appears (`CZ_VK_RT_FACTOR_PGM`, read with `rt_factor_pgm_read.py`): the edge
+  in the PGM means the pass, a smooth PGM means the transform the 126 shaders address it
+  with. `part71-kickoff.md` §1c.
 * **Two retractions in place**: the edge-density gate in `phase5-notes.md` §6da §7 (its
   SIGN was wrong) and `part69_rt_geometry_session.sh`'s "tlasInst should be CLOSE" note
   (the occurrence-ordinal identity makes a large gap the design's own prediction).
