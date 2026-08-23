@@ -7,8 +7,46 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0w. **THE STUTTER REMAINDER — 165-315 ms gameplay frames that pipeline compilation does
-   NOT explain (part 72).** Opened unasked-for by session A. Part 71 attributed the felt
+0w. **THE STUTTER REMAINDER — and it is NOT in gameplay. It is in the MENU/LOAD era
+   (part 72, re-scoped from the operator session's own logs).**
+
+   **RE-SCOPED 2026-08-23, and the first framing was wrong.** This item opened as
+   "165-315 ms *gameplay* frames", generalised from a single outlier. Binning every
+   `[fps]` window of the eight-arm operator session by draw count — shipped-build arms
+   only, `verify`/`poison` excluded because they do double work by design — says the
+   opposite:
+
+   | era | n | median-of-worst | max | median frame | `>2x med` |
+   |---|---|---|---|---|---|
+   | menu (<200 draws) | 12 | **291.7 ms** | 386.9 | 5.73 ms | 13.9% |
+   | load / frontend (200-2000) | 4 | **238.7 ms** | 604.0 | 7.12 ms | 9.7% |
+   | light gameplay (2000-6000) | 11 | 31.9 ms | 36.4 | 11.22 ms | 0.3% |
+   | heavy gameplay (6000+) | 51 | 32.1 ms | 301.9 | 26.63 ms | **0.0%** |
+
+   **HEAVY GAMEPLAY IS SMOOTH.** Its median-of-worst is 32.1 ms against a 26.63 ms median
+   frame — the median plus about 5 ms — and `>2x med` is **0.0% across 51 windows**. The
+   one 301.9 ms outlier is 1 of 51 and is most likely an asset-streaming event.
+   **Every recurring hitch lives below ~2,000 draws**, where the median window still
+   contains a ~290 ms frame despite a 5.7 ms median.
+
+   So this is not a frame-path item at all and no per-draw work will touch it. It belongs
+   with loading, streaming, texture upload and frontend work.
+
+   **AND IT MAY BE THE SAME THING AS THE MENU FLICKER.** The carry-over item "a main-menu
+   zombie flicker, unattributed" lives in exactly the era this binning names, and
+   `tools/part69_menu_flicker.sh` has never run with a working control. Two unexplained
+   menu-era defects are more likely one than two; whoever picks either up should look at
+   both together.
+
+   **Do NOT add an instrument first.** The renderer already prints per-frame counters for
+   the arena, the descriptor pools, the stream store and texture uploads, and the pipeline
+   census already proves the per-frame-table shape works — part 71 nailed the 3,891 ms
+   frame with exactly that. The cheap next step is a per-frame top-N table for ONE more
+   candidate (texture upload bytes is the obvious first), not a new probe on the draw path
+   (gotcha 7 — the profiler alone costs the same order as what is being hunted).
+
+   Original framing, kept because generalising from one outlier is the mistake worth
+   remembering: opened unasked-for by session A. Part 71 attributed the felt
    post-load stutter to pipeline compilation on the pump thread, and for the 3,891 ms frame
    that is confirmed. But with compilation down to **51 ms for an entire run**, the
    `nocache` arm still shows a **173 ms frame at 7,400 draws** while its worst compilation
