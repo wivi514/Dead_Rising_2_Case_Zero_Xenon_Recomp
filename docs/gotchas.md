@@ -4602,3 +4602,41 @@ From phase C part 18 (the frame rate — and none of it was work):
      construction. **The fix costs one run: put the control arm LAST.** Generally — when
      arms warm something shared, the arm order IS a variable, and the cheapest way to prove
      it is not the variable is to run them backwards.
+
+423. **AN ARM THAT REMOVES THE DEFECT *AND* THE FIX PRICES NEITHER.** Part 71 measured the
+     21:9 culling over-widen with `CZ_NO_GAME_FOV=1` and read +1,930 draws of 9,817, which
+     the plan carried forward as "≈4.8 ms of 28 — the best-priced item we have". But that
+     arm turns off the *whole* fov substitution, and the substitution does two things: it
+     widens the frustum horizontally (the part-62 fix, which is being KEPT) and vertically
+     (the waste, which is the item). The configuration the item would actually reach has
+     the arm's vertical and today's horizontal, so its frustum is a strict SUBSET of
+     today's and a strict SUPERSET of the arm's — **the recoverable draws are strictly
+     fewer than the arm's difference**, by containment and with no model needed. Two models
+     put it near half. **Before quoting an arm difference as an item's value, ask what ELSE
+     that arm turned off**; the answer is almost never nothing, and here it roughly halved
+     the number that had put the item first in the plan. Same family as gotcha 415
+     (`CZ_VK_WIDE=0` also dropping 26% of the pixels) and it bit the very next part.
+
+424. **A LIVE PROPERTY TRACE CANNOT PROVE A PROPERTY DOES NOT EXIST.** The question was
+     whether this engine's camera carries an aspect ratio as well as a fov; the instrument
+     to hand was `CZ_FOV_PROP_TRACE=1`, which prints named-property registrations as a run
+     constructs them. A null from it would have been a fact about the route taken, not
+     about the game — the boot path constructs a fraction of the classes. **The scan over
+     the image answers it once and for everything**: walk `.text` for calls to the
+     universal binders and reconstruct each site's name pointer from the preceding
+     `lis`/`addi` chain (`tools/find_named_properties.py`, 2,056 sites, 1,966 names).
+     Exactly one `Aspect` in the whole game, on a 2D spawn box, against sixty-odd camera
+     configs registering `FOV`. **Print the RECOVERY RATE with the answer** (95.6% here) —
+     a null from a scanner that could only read 40% of its sites is not a null, and this is
+     gotcha 3 in the shape it takes when the detector is your own.
+
+425. **A GEOMETRIC PREDICATE INSIDE A HUGE TRANSLATION UNIT STILL DESERVES A UNIT TEST.**
+     The vertical-waste census is fifteen lines of "project eight corners and compare
+     against ±w". A sign error in it does not crash, does not look wrong, and reports a
+     plausible number that no operator session can audit — the worst failure shape this
+     project has, because it consumes a session and produces a confident wrong decision.
+     There was no seam to link against, so the arithmetic was copied verbatim into
+     `tools/vcull_predicate_test.cpp` with thirteen boxes whose classification follows from
+     the projection's own geometry. **The duplication is the price of having a gate at
+     all**, and it is worth paying: the test caught a wrong expectation on its first run and
+     screams (0 -> 6 failures) when one comparison's sign is flipped (gotcha 30).

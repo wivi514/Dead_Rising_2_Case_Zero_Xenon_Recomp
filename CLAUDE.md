@@ -187,7 +187,9 @@ mask; trust the microcode's own swizzles.
     supersedes every earlier kickoff on "where the port is". **It is currently
     `part72-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
     **`docs/perf-plan-part72.md`** (which supersedes `perf-plan-part71.md`, kept because it
-    was executed and records its own two retractions in place). `part71-kickoff.md`
+    was executed and records its own two retractions in place; **part 72's plan now carries
+    two of its own — §1a, that item 1's price was an upper bound, and §1b, that route (a)
+    is dead**). `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
@@ -782,12 +784,66 @@ now switch to fixing performance issue."* **RT shadows are PARKED, NOT DELETED**
 settings panel no longer offers the three RT rungs and a persisted `rt_shadows=N` no
 longer engages the feature; `CZ_VK_RT_MENU=1` restores the rows and `CZ_VK_RT_SHADOWS=N`
 still engages it directly. Both arms print the line that proves which one is running. The
-feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. **THE LIVE PLAN
-IS `docs/perf-plan-part71.md`.**
+feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. ~~**THE LIVE PLAN
+IS `docs/perf-plan-part71.md`.**~~ **THE LIVE PLAN IS `docs/perf-plan-part72.md`** — part
+71's was executed and is kept for its two in-place retractions. (This line said
+"part71" for one part after it stopped being true, which is the two-live-pointers defect
+the block-rotation note at the bottom of this file describes; gotcha 13.)
 
-Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.** The plan is
+Where the port is, as of 2026-08-23 (**PART 72 IS IN PROGRESS — PERFORMANCE, and its first
+session was ALL DESK WORK.** `docs/part72-kickoff.md` is the LIVE hand-off, the plan is
+**`docs/perf-plan-part72.md`** and it now carries two part-72 corrections in place, the
+record is `phase5-notes.md` **§6de**, the lessons are gotchas **423-425**. **No runtime
+session has been run** — all runtime verification goes through the operator, and §6de §5
+is the sitting that is owed):
+
+* **THE PLAN'S CHEAPEST ROUTE FOR ITS BIGGEST ITEM IS DEAD, AND IT COST AN AFTERNOON
+  RATHER THAN A SESSION.** §1 route (a) was *"find the game's aspect scalar and widen that
+  instead"* — the fix that would make the 21:9 culling over-widen free rather than a
+  picture trade. **The engine has no aspect scalar.** `tools/find_named_properties.py`
+  (new, and it transfers to Case West unchanged) scans `.text` for all six universal
+  property binders and recovers each site's name: **2,056 sites, 1,966 names (95.6%)**, and
+  the whole image holds **exactly one `Aspect`** — `+0x24` on **`cZombieSpawnRegion`**,
+  beside `X/Y/Width/Height`, a 2D spawn box. Sixty-odd camera configs register `FOV` and
+  nothing aspect-shaped. Two more independent lines agree: the image's single `1.777778`
+  belongs to the **UI** layout system, and the renderer's own `Is169Perspective` already
+  said every scene camera is 16:9 whatever its fov. **A live property trace could never
+  have proved this** — its null would have been a fact about the route (gotcha 424).
+* **AND THE ITEM'S PRICE WAS AN UPPER BOUND PRESENTED AS A VALUE.** Part 71 measured it
+  with `CZ_NO_GAME_FOV=1` (+1,930 draws of 9,817, "≈4.8 ms of 28"), but **that arm removes
+  the HORIZONTAL widening too** — which is the part-62 fix and is being kept. The
+  configuration a horizontal-only fix reaches has the arm's vertical and today's
+  horizontal, so its frustum is a strict subset of today's and a strict superset of the
+  arm's: **strictly fewer than 1,930 draws recoverable**, by containment. Two models put it
+  near half — **≈2.5-2.8 ms, not 4.8**, and probably less. It still clears its own
+  700-draw kill threshold, so the item lives; what changes is that it no longer dominates
+  the plan on an unmeasured number (gotcha 423).
+* **SO IT IS NOW MEASURED RATHER THAN MODELLED: `CZ_VK_VCULL_CENSUS=1`.** For every world
+  draw it projects the position stream's own object-space box by the FINAL projection —
+  rebuilt by calling `PatchFovProjection` then `PatchWideProjection`, the same two
+  functions the upload path calls, so it cannot drift from what the shaders see — and
+  counts the draws landing entirely outside the clip volume in Y. Those produce no pixel:
+  **the ceiling on what any vertical-cull fix recovers, with no horizontal confound.**
+  Untestable draws are counted and printed beside the result (gotcha 25) and every
+  uncertainty resolves toward "not wasted", so the output stays a ceiling.
+* **Two controls and an offline gate.** `CZ_VK_VCULL_SCALE=f` is MECHANICAL (small f must
+  drive the count up, large f to zero — monotone both ways or the census is blind);
+  `CZ_NO_GAME_FOV=1` is SEMANTIC (the vertical waste must fall sharply). The predicate has
+  `tools/vcull_predicate_test.cpp` — thirteen boxes classified from the projection's own
+  geometry, **confirmed capable of failing** (one flipped sign: 0 -> 6 failures), because a
+  sign error there would report a plausible number no operator session could audit
+  (gotcha 425). A DIAGNOSTIC ARM with a bill; never quote a frame time from a run carrying
+  it, and it is folded away with every other per-draw hook when unarmed.
+* **Recovered for a future route (b)**, so it is not re-derived: the active scene camera is
+  a **stride-0x98** record at `[[[r3+0xd60] + view*0x38C] + 0x348] + [r3+0x10c8]*0x98`, and
+  **`cam+0x68` is the fov in degrees**. There are **no `frustum`/`cull` strings in the
+  image**, so route (b)'s cull hooking has no debug surface to grep for.
+* **Gates:** `--smoke` OK; `vcull_predicate_test` 13/13. **A5 is owed**, carried since
+  part 67 — no kernel path has changed in 67-72.
+
+Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it executed was
 `docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
-414-422. **Both operator sessions have been RUN and read** —
+414-422. **Both operator sessions were RUN and read** —
 `tools/part71_perf_session.sh` and `tools/part71_pipeline_session.sh`):
 
 * **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
@@ -861,54 +917,8 @@ Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.**
   cache's NAME diff empty; `rt_world_xform_census.py` 104 of 104. **A5 is owed**, carried
   since part 67 — no kernel path has changed in 67-71.
 
-Where the port is, as of 2026-08-23 (part 70 CLOSED — **THE SUN IS CLOSED AND IT WAS
-NEVER WRONG: part 69's "the Z flips between headless and windowed" was a CONFOUND, and
-hardware states the sun twice in the same draw's constant file.** `docs/part71-kickoff.md`
-is the LIVE hand-off; the record is `phase5-notes.md` §6dc; the backlog entry is
-`open-items.md` 0v; the lessons are gotchas 411-413 and **410's example is retracted where
-it stands**):
-
-* **Zero of the 36 archived RT logs contain a DebugJump request or synthetic input.**
-  Every one is an operator run from THEIR save, while every run on the other side of the
-  partition spawns at a fixed story point — two different places and story times in a game
-  with a day cycle. The arm LABEL named one difference and there were three (gotcha 411).
-* **`tools/xtr_sun_oracle.py` asks hardware, over all twenty `.xtr` traces.** The title's
-  own `pc(23)`, its own cascade sampling matrix's depth row, and **the runtime's own
-  decomposition of the cascade RENDER matrix** agree to **0.00 degrees, twenty of twenty**,
-  on 567-1101 draws each. The method was sound and the matrix was the right one.
-* **The runtime now reads the title's own constant** (`rtshadow::NoteGuestSun`), bound
-  two-sidedly — a block qualifies only when its own cascade matrix agrees with `c23` — with
-  `CZ_VK_RT_SUN_SRC=cascade` the same-binary control arm and the decomposition retained as
-  the fallback. In-runtime the two agree to 0.0 degrees over 33,332 latches and 8,422 bound
-  frames, **zero rejections**. **This is an architectural simplification, not a picture
-  fix**; what it buys is that §6cw's intruder can never win a frame again.
-* **The DebugJump destination sweep proves it end to end.** Four destinations, THREE
-  distinct suns — and **destination 3 latches `(-0.347 +0.520 -0.780)` HEADLESSLY**, the
-  same negative-Z vector part 69 attributed to being windowed. The title's own constant
-  agrees in all four with **zero rejections**, the menu-era light is identical in all four
-  (the control), and the per-cluster FRAME RANGES are disjoint — a light that changed with
-  the scene, not a selection that flipped (gotcha 413).
-* **So structure, receiver and sun are all now demonstrably correct and the straight-line
-  signature has survived all three.** Part 70 then killed two more mechanisms with
-  pre-registered sweeps: **the RAY LENGTH** (34x from 88 to 3000 moves the shadowed share
-  one point, non-monotonically — noise) and **"one enormous admitted occluder"**, which
-  named a real 4,950-unit mesh at `(2234 7 -107)`, 4.5x the town and outside its world
-  box, and then showed that removing it moves the share 0.6 points.
-* **THE CAVEAT THAT DECIDES PART 71: the headless route reads 12-16% shadowed where the
-  operator's slab arm read 39.7%.** This camera is not showing the defect, so both nulls
-  are about THIS location and no further. The next move is the FACTOR IMAGE dumped where
-  the defect appears (`CZ_VK_RT_FACTOR_PGM`, read with `rt_factor_pgm_read.py`): the edge
-  in the PGM means the pass, a smooth PGM means the transform the 126 shaders address it
-  with. `part71-kickoff.md` §1c.
-* **Two retractions in place**: the edge-density gate in `phase5-notes.md` §6da §7 (its
-  SIGN was wrong) and `part69_rt_geometry_session.sh`'s "tlasInst should be CLOSE" note
-  (the occurrence-ordinal identity makes a large gap the design's own prediction).
-* **Gates at close** (RT off = the shipped default): `--smoke` OK; `shader_dim_census.py`
-  clean on all sixteen caches and the play cache's NAME diff empty; `rt_world_xform_census.py`
-  104 of 104. **A5 is owed**, carried since part 67.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-69's** — part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-70's** — part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

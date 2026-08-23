@@ -36,7 +36,13 @@ without another session, and it is the reason §1 is first.
 
 ---
 
-## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ≈4.8 ms of 28, and it is the operator's own complaint
+## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ~~≈4.8 ms of 28~~ **an upper bound of 4.8 ms; the value is ≈2.5-2.8 ms**, and it is the operator's own complaint
+
+> **CORRECTED IN PART 72, AND ROUTE (a) IS DEAD.** Two changes, both below and both in
+> place: the ≈4.8 ms figure is an UPPER BOUND rather than the item's value, because the
+> arm it was measured with removes the horizontal widening as well as the vertical
+> over-widen (§1a); and the engine has no aspect scalar to widen, settled by a census over
+> the whole image rather than by a run (§1b). `phase5-notes.md` **§6de**.
 
 ### What it is
 
@@ -58,12 +64,68 @@ substitution OFF  7,890 draws   23.94 ms
                  +1,930 draws  (+24.4%)
 ```
 
-At ~2.5 us/draw that is **≈4.8 ms of a 28 ms frame — 17%.** Larger than every item in
-`perf-state-parked.md` §2 except item A, at a fraction of item A's risk.
+At ~2.5 us/draw that is ≈4.8 ms of a 28 ms frame.
 
 **The two arms render different draw sets, so 28.05 − 23.94 is NOT the item's value** —
 that difference also contains whatever the extra geometry costs downstream. The draw-count
-delta times the measured slope is the honest estimate and it is what is quoted above.
+delta times the measured slope is the honest estimate for *the arm*.
+
+### 1a. RETRACTION (part 72): 1,930 draws is an UPPER BOUND, not the item's value
+
+**`CZ_NO_GAME_FOV=1` removes more than the defect.** It turns off the *whole*
+substitution, and that includes the **horizontal** widening — which is the part-62 fix,
+the thing that stops the flanks popping in, and which is being kept. With
+`t = tan(v/2)` and `k = 9W/16H = 1.34375`:
+
+| | horizontal half-tan | vertical half-tan | draws |
+|---|---|---|---|
+| `CZ_NO_GAME_FOV=1` (the arm) | `(16/9)·t` | `t` | 7,890 |
+| shipped today | `(16/9)·k·t` | `k·t` | 9,817 |
+| **what a horizontal-only fix reaches** | `(16/9)·k·t` | `t` | **strictly between** |
+
+The wanted frustum has the arm's vertical and today's horizontal, so it is a strict subset
+of today's and a strict superset of the arm's: **the recoverable draws are strictly fewer
+than 1,930.** That is containment, not a model. Two models put it near half — linear in
+tan-space area gives 1,105 recovered, a power law fitted to the two measured points gives
+1,017 — i.e. **≈2.5-2.8 ms, not 4.8**, and probably less, because in an outdoor town the
+horizontal flanks hold buildings and crowds while the vertical extension holds sky and
+near ground.
+
+**It still clears its own 700-draw / 1.75 ms kill threshold**, so the item lives. What
+changes is that it no longer dominates the plan on an unmeasured number, and its ordering
+against items 3 and 4 is a live question.
+
+**So measure it instead of modelling it: `CZ_VK_VCULL_CENSUS=1`** counts the world draws
+that land entirely off-screen in Y — the ceiling on what any vertical-cull fix recovers,
+with no horizontal confound. Two controls (`CZ_VK_VCULL_SCALE` mechanical,
+`CZ_NO_GAME_FOV=1` semantic) and an offline gate for its predicate
+(`tools/vcull_predicate_test.cpp`). `phase5-notes.md` §6de §3.
+
+### 1b. ROUTE (a) IS DEAD (part 72) — the engine has no aspect scalar
+
+~~**(a) FIND THE GAME'S ASPECT SCALAR AND WIDEN THAT INSTEAD.**~~ **KILLED, by the kill
+this section pre-registered, and it cost one afternoon of desk work rather than a
+session.** Three independent lines, all in `phase5-notes.md` §6de §1:
+
+* `tools/find_named_properties.py` (new) scans `.text` for all six universal property
+  binders — **2,056 sites, 1,966 names recovered (95.6%)** — and the whole image contains
+  **exactly one `Aspect`**: `+0x24` on **`cZombieSpawnRegion`**, beside `X/Y/Width/Height`.
+  A 2D spawn box. Sixty-odd camera configs register `FOV` and nothing aspect-shaped.
+* The image's single `1.777778` constant belongs to the **UI** layout system
+  (`1.7778 / aspect`, gated on widescreen booleans); there is no 16:9 constant on the
+  scene-projection path at all, so the scene aspect is computed rather than stored.
+* The renderer's own `Is169Perspective` already said it: `|xscale/yscale| = 9/16` exactly,
+  *"because this title's scene cameras are all 16:9 whatever their fov"*. An aspect
+  identical across every camera in the game is not a per-camera tunable.
+
+There are also **no `frustum`/`cull` strings in the image**, so route (b) has no debug
+surface to grep for. What part 72 did recover for a future (b) attempt: the active scene
+camera is a **stride-0x98** record at
+`[[[r3+0xd60] + view*0x38C] + 0x348] + [r3+0x10c8]*0x98`, and **`cam+0x68` is the fov in
+degrees** (read at `0x82791710`, × 0.5 × deg2rad, into `tan` at `0x8280F878`).
+
+**The original text of route (a) is kept below because its reasoning is what a Case West
+port should re-run — the answer is title-specific, the method is not.**
 
 ### The route, in the order to try it
 
@@ -286,12 +348,22 @@ its success path, which would have made the CPU/GPU arm unreportable on every ru
    construction, and part 71's table shows new state combinations arriving across thirteen
    consecutive frames, so there is nothing for a predictor to have seen. §2b is rewritten
    around persisting the state SET and warming it at load.
-3. **Offline**: `tools/gdis.py` on `sub_8246BF48` and the camera param structure, looking
-   for an aspect field (§1 route (a)).
+3. ~~**Offline**: `tools/gdis.py` on `sub_8246BF48` and the camera param structure, looking
+   for an aspect field (§1 route (a)).~~ **DONE, and it KILLED route (a)** — a census over
+   the whole image beats a look at one function: there is exactly one `Aspect` property in
+   the game and it belongs to `cZombieSpawnRegion`. §1b. It also forced §1a's retraction of
+   this item's price.
 4. **Then one operator sitting**, chained, `CZ_FPS_LOG` only, their heaviest spot:
    * `ORDER=cold,warm,nocache tools/part71_pipeline_session.sh` — 90 s, closes §2a;
-   * plus a `CZ_FOV_PROP_TRACE=1` run with the widened filter if §1 route (a) is live —
-     it needs one boot and the frontend, not a soak.
+   * ~~plus a `CZ_FOV_PROP_TRACE=1` run with the widened filter if §1 route (a) is live —
+     it needs one boot and the frontend, not a soak.~~ **CANCELLED** — route (a) is dead
+     offline (§1b), and a live property trace could only ever have reported what one route
+     constructs where the census answered over the whole image.
+   * **plus the vertical-waste census, which is what now prices item 1** (§1a): one soak at
+     their heaviest spot with `CZ_VK_VCULL_CENSUS=1`, the same soak with
+     `CZ_VK_VCULL_CENSUS=1 CZ_NO_GAME_FOV=1` (semantic control), and two short runs at
+     `CZ_VK_VCULL_SCALE=0.02` and `=50` (mechanical control, both directions). **Frame
+     times from these runs are worthless by construction** — the counts are the result.
 
 **Copy `tools/part71_perf_session.sh` for any new arm rather than writing a harness from
 scratch**: every arm proves it engaged from a line the feature prints, the harness refuses

@@ -1739,6 +1739,47 @@ CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §
                    distinct world stream's bytes, so never quote a frame time
                    from a run carrying it. Free when off (one static bool per
                    draw)
+CZ_VK_VCULL_CENSUS=1  **the vertical-waste census — what the 21:9 culling
+                   over-widen actually costs** (part 72; perf-plan-part72 §1a,
+                   the record is phase5-notes §6de). Per DRAW on the raw
+                   register window, same discipline as CZ_VK_RT_CENSUS: for
+                   every WORLD draw (SceneXformForm form 2) it projects the
+                   position stream's own object-space bounding box by the FINAL
+                   projection — rebuilt by calling PatchFovProjection then
+                   PatchWideProjection, the same two functions the upload path
+                   calls, so it cannot drift from what the shaders see — and
+                   counts the draws whose box lands entirely outside the clip
+                   volume in Y. Those draws produce no pixel; they are the
+                   CEILING on what any vertical-cull fix can recover.
+                   **WHY IT EXISTS**: part 71 priced the item from the
+                   CZ_NO_GAME_FOV=1 arm, but that arm also removes the
+                   HORIZONTAL widening, which is the part-62 fix and is being
+                   kept — so 1,930 draws is an upper bound, not a value. Prints
+                   the untestable count beside the result (a census that
+                   silently dropped half its population would report the same
+                   confident number, gotcha 25), and resolves every uncertainty
+                   toward "not wasted" so the output stays a ceiling. Prints at
+                   world frame 30, every 600 after, and from
+                   VkRenderer_DumpStats so a soak ending off a boundary still
+                   lands the number. A DIAGNOSTIC ARM (gotcha 7): a map lookup
+                   and ~100 flops per world draw on the pump thread, ~9,800
+                   times a frame — **never quote a frame time from a run
+                   carrying it**. Free when off (one static bool per draw, and
+                   its arm is in part 71's hook-fold word)
+CZ_VK_VCULL_SCALE=<f>  **the MECHANICAL control for the census above.** Scales
+                   the clip bound the test uses. Small f must drive the count
+                   UP (nearly every off-centre box is outside a tiny volume),
+                   large f must drive it to ZERO. Monotone in both directions,
+                   or the census is blind and its number means nothing
+                   (gotcha 30). Not a measurement — it says so in its own
+                   startup line. The SEMANTIC control is CZ_NO_GAME_FOV=1,
+                   which removes the over-widen entirely: the vertical waste
+                   must fall sharply, and if it does not, the census is
+                   measuring something else. The predicate itself has an
+                   OFFLINE gate, tools/vcull_predicate_test.cpp — thirteen
+                   boxes whose classification follows from the projection's
+                   geometry rather than from the code, confirmed capable of
+                   failing (one flipped sign takes it from 0 failures to 6)
 CZ_VK_SHADOW_FILL=<f>  **RT stage 2's injection experiment, and the standing
                    proof that the shadow ATLAS SNAPSHOT is where the title's
                    shadow term reads** (part 64; rt-and-fov-plan §3 route (a)).

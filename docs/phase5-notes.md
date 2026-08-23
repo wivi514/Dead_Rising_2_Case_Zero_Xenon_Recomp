@@ -15412,3 +15412,173 @@ in `perf-state-parked.md` §2 except item A, and it buys correctness the game it
 not need at the flanks. `perf-state-parked.md`'s part-62 addendum already names the fix:
 horizontal-only widening if the engine exposes a second scalar, or a smaller k. This is
 now the best-priced item in the plan and it was measured as a side effect of a turn test.
+
+## §6de — Part 72: the aspect scalar does not exist, and item 1's price was an upper bound (2026-08-23)
+
+**All offline.** The plan (`docs/perf-plan-part72.md`) §7 opens part 72 with three
+free desk items before any operator time; items 1 and 2 were closed during part 71's
+write-up, and this section is item 3 plus one correction it forced.
+
+### 1. §1 ROUTE (a) IS DEAD: THE ENGINE HAS NO ASPECT SCALAR
+
+The plan's cheapest route for the wide-culling over-widen was *"find the game's aspect
+scalar and widen that instead"* — which would have made the item free rather than a
+picture trade, because widening the aspect gives exactly the right frustum in both axes
+where widening the fov widens both. The pre-registered kill was: **if no aspect-shaped
+property exists, say so and go to (b). Do not spend a second session searching.**
+
+It does not exist. Three independent lines, and they were cheap:
+
+**(a) THE NAMED-PROPERTY CENSUS OVER THE WHOLE IMAGE.** `tools/find_named_properties.py`
+(new, and it transfers to Case West unchanged) scans `.text` for calls to the six
+universal property binders and reconstructs each site's name pointer and field offset
+from the preceding `lis`/`addi` chain. **2,056 registration sites, 1,966 names recovered
+(95.6%)** — the recovery rate is printed, because a null answer is only as strong as the
+fraction of sites the scanner could read (gotcha 3).
+
+The whole image contains **exactly one `Aspect`**:
+
+```
+8258D5A8 B1  'Aspect' field=+0x24
+```
+
+and it is not a camera. The registration function `sub_8258D538` binds five properties on
+one object — `X/+0x14, Y/+0x18, Width/+0x1c, Height/+0x20, Aspect/+0x24` — and the class
+descriptor carrying that function's pointer at `0x8203ADE0` names it: **`cZombieSpawnRegion`**.
+A 2D spawn box. Meanwhile **sixty-odd camera configs register `FOV`** (plus `FOV_Min`,
+`FOV_Max`, `FOV_Default`, `FOV_Rate`, `FOV_Dampen`, `FOV0..FOV49`, `FOVG01..03`) and not
+one of them registers anything aspect-shaped.
+
+This is the answer the live instrument could not give. `CZ_FOV_PROP_TRACE=1` only reports
+what a run actually constructs, so its null would have been a fact about the route rather
+than about the game.
+
+**(b) THE 16:9 CONSTANT IS THE UI'S, NOT THE CAMERA'S.** The image holds exactly one
+`1.777778` float (`0x82072020`) and its five users are all the 2D layout system —
+`1.7778 / aspect` gated on widescreen booleans at `+0xCC`/`+0xCD`, storing into `+0x84`.
+Of the two `0.5625` constants, `0x820CC690` has **zero** referencing instructions and
+`0x82069BA4`'s two users are in the same UI region. **There is no 16:9 constant on the
+scene-projection path at all**, which means the scene aspect is computed (viewport W/H is
+the obvious candidate, and 1280/720 is exactly 16/9) rather than stored.
+
+**(c) THE RENDERER'S OWN STRUCTURAL CENSUS ALREADY SAID SO**, and it was sitting in a
+comment the whole time: `Is169Perspective` requires `|xscale/yscale| = 9/16` **exactly**,
+*"because this title's scene cameras are all 16:9 whatever their fov"*. An aspect that is
+identical across every camera in the game is not a per-camera tunable.
+
+There are also **no `frustum`/`cull` strings anywhere in the image**, so route (b) —
+cull-side asymmetry — is as expensive as the plan feared; the engine's culling has no
+debug surface to grep for.
+
+**What was recovered for a future attempt at (b)**, so it does not have to be re-derived:
+the active scene camera is a **stride-0x98 record** reached as
+`[[[r3+0xd60] + view*0x38C] + 0x348] + [r3+0x10c8]*0x98`, and **`cam+0x68` is the fov in
+degrees** — read at `0x82791710`, multiplied by `0.5` and by the image's single
+`deg2rad` constant (`0x8200ACEC`) and handed to `tan` at `0x8280F878`. Other fields seen:
+`+0x28` a pointer to a stride-0xA0 array, `+0x34/+0x35` bytes, `+0x38..0x44` a 4-float
+vector.
+
+### 2. THE CORRECTION: `≈4.8 ms` IS AN UPPER BOUND, AND IT IS ROUGHLY TWICE THE VALUE
+
+`perf-plan-part72.md` §1 and §6dd §11 both price item 1 at **"+1,930 draws of 9,817,
+≈4.8 ms of 28"**, taken from part 71 session 1's `nogamefov` arm. That number is the
+difference between two configurations, and **the arm removes more than the defect**:
+`CZ_NO_GAME_FOV=1` turns off the *whole* substitution, which includes the **horizontal**
+widening — and the horizontal widening is the part-62 fix, the thing that stops the flanks
+popping in. It is being kept.
+
+The three configurations, in tan space, with `t = tan(v/2)` and `k = 9W/16H = 1.34375`:
+
+| | horizontal half-tan | vertical half-tan | draws |
+|---|---|---|---|
+| `CZ_NO_GAME_FOV=1` (the arm) | `(16/9)·t` | `t` | 7,890 |
+| shipped today | `(16/9)·k·t` | `k·t` | 9,817 |
+| **what a horizontal-only fix reaches** | `(16/9)·k·t` | `t` | **?** |
+
+The wanted frustum has the arm's vertical and today's horizontal, so it is a strict
+**subset** of today's frustum and a strict **superset** of the arm's. Therefore its draw
+count lies strictly between 7,890 and 9,817 and **the recoverable draws are strictly fewer
+than 1,930.** That is containment, not a model — it needs no assumption about how the
+geometry is distributed.
+
+Two models put it near half. Treating draws as linear in tan-space area gives 8,712
+(**1,105 recovered**); a power law fitted to the two measured points (`β = 0.370`) gives
+8,800 (**1,017 recovered**). At ~2.5 us/draw that is **≈2.5-2.8 ms of a 28 ms frame, not
+4.8**. Both models assume the scene responds the same way to horizontal and vertical
+widening, and there is reason to think it does not — in an outdoor town the horizontal
+flanks hold buildings and crowds while the vertical extension holds sky above and near
+ground below, so the vertical over-widen plausibly admits *fewer* objects per unit of
+solid angle and the true figure is lower still.
+
+**This does not kill item 1** — its pre-registered threshold is 700 draws / 1.75 ms and
+even the pessimistic reading clears it — but it stops item 1 dominating the plan on a
+number that was never measured, and it means the ordering against items 3 and 4 is now a
+live question rather than a settled one.
+
+### 3. SO MEASURE IT: THE VERTICAL-WASTE CENSUS
+
+`CZ_VK_VCULL_CENSUS=1`. For every world draw (`SceneXformForm` form 2 — the population
+the game's frustum culls) it projects the position stream's own object-space bounding box
+by the **final** projection and counts the draws whose box lands entirely outside the clip
+volume in Y. Those draws produce no pixel. **They are the ceiling on what any vertical-cull
+fix can recover**, and unlike the arm difference they do not confound the horizontal
+widening being kept.
+
+Three things make it honest rather than plausible:
+
+* **The final projection is rebuilt by calling the same two functions the upload path
+  calls, in the same order** (`PatchFovProjection` then `PatchWideProjection`), not by
+  reimplementing the arithmetic — so it cannot drift from what the shaders see the day
+  either patch changes.
+* **The bounds come from the RT census's own `ScanBounds`** (float3 declared positions
+  only, dependent fetches excluded — a skinned actor's bind-pose bounds say nothing about
+  where it is drawn), and every draw it *cannot* test is counted and printed as
+  `untestable`. A census that silently dropped half its population would report the same
+  confident number (gotcha 25).
+* **Every uncertainty resolves toward "not wasted"**: a box with any corner at or behind
+  the eye is counted on-screen. The output is a ceiling, so it must never over-count.
+
+**Two controls, because an instrument that has never been shown capable of moving is not
+an instrument** (gotcha 30):
+
+* **MECHANICAL** — `CZ_VK_VCULL_SCALE=f` scales the clip bound the test uses. Small `f`
+  must drive the count up, large `f` must drive it to zero. Monotone in both directions or
+  the census is blind.
+* **SEMANTIC** — `CZ_NO_GAME_FOV=1` removes the over-widen entirely, so the vertical waste
+  must **fall sharply**. If it does not, this is measuring something else. It also prints
+  a horizontal figure as context: the horizontal widening is the fix and is kept, so that
+  number should be small.
+
+**The predicate has an offline gate**, `tools/vcull_predicate_test.cpp` — thirteen boxes
+whose classification follows from the projection's geometry rather than from the code,
+including one sitting inside the over-widen band. A sign error there would not crash, would
+not look wrong, and would report a plausible number no operator session could audit.
+**Confirmed capable of failing**: flipping one comparison (`cy <= by` -> `cy <= -by`) takes
+it from 0 failures to 6.
+
+It is a **diagnostic arm and it has a bill** — a map lookup and ~100 flops per world draw
+on the pump thread, ~9,800 times a frame. Never quote a frame time from a run carrying it
+(gotcha 7). Off by default, and folded away with every other per-draw hook when unarmed,
+so it costs one static bool test when off — its arm is in part 71's fold word, which is
+the OR of every hook's own arm.
+
+### 4. GATES
+
+`--smoke` OK. `tools/vcull_predicate_test.cpp` 13/13. No runtime session was run: all
+runtime verification goes through the operator (standing instruction), and §5 below is
+what that sitting should be.
+
+### 5. WHAT THE NEXT OPERATOR SITTING IS
+
+Unchanged from the plan's §7 item 4 except that route (a)'s `CZ_FOV_PROP_TRACE` run is
+**cancelled** — it was answered offline and more completely than a run could have.
+
+1. `ORDER=cold,warm,nocache tools/part71_pipeline_session.sh` — 90 s, closes §2a
+   (whether the pipeline-cache win is the cache OBJECT or a driver-side on-disk cache).
+2. A soak at their heaviest spot with `CZ_VK_VCULL_CENSUS=1`, then the same soak with
+   `CZ_VK_VCULL_CENSUS=1 CZ_NO_GAME_FOV=1` (the semantic control), plus one short run at
+   `CZ_VK_VCULL_SCALE=0.02` and one at `=50` (the mechanical control). Frame times from
+   these are worthless by construction; the counts are the result.
+
+That prices item 1 honestly, and the decision it feeds is whether to spend a session on
+route (b)'s cull hooking or hand the operator route (c)'s picture trade.

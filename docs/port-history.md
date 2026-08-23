@@ -4974,3 +4974,50 @@ backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
 * **Gates at close** (RT off = the shipped default): the validation gate is clean to
   `passes=6145` and is now the cheapest standing gate this feature has; `--smoke` OK;
   `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**
+
+
+Where the port is, as of 2026-08-23 (part 70 CLOSED — **THE SUN IS CLOSED AND IT WAS
+NEVER WRONG: part 69's "the Z flips between headless and windowed" was a CONFOUND, and
+hardware states the sun twice in the same draw's constant file.** `docs/part71-kickoff.md`
+is the LIVE hand-off; the record is `phase5-notes.md` §6dc; the backlog entry is
+`open-items.md` 0v; the lessons are gotchas 411-413 and **410's example is retracted where
+it stands**):
+
+* **Zero of the 36 archived RT logs contain a DebugJump request or synthetic input.**
+  Every one is an operator run from THEIR save, while every run on the other side of the
+  partition spawns at a fixed story point — two different places and story times in a game
+  with a day cycle. The arm LABEL named one difference and there were three (gotcha 411).
+* **`tools/xtr_sun_oracle.py` asks hardware, over all twenty `.xtr` traces.** The title's
+  own `pc(23)`, its own cascade sampling matrix's depth row, and **the runtime's own
+  decomposition of the cascade RENDER matrix** agree to **0.00 degrees, twenty of twenty**,
+  on 567-1101 draws each. The method was sound and the matrix was the right one.
+* **The runtime now reads the title's own constant** (`rtshadow::NoteGuestSun`), bound
+  two-sidedly — a block qualifies only when its own cascade matrix agrees with `c23` — with
+  `CZ_VK_RT_SUN_SRC=cascade` the same-binary control arm and the decomposition retained as
+  the fallback. In-runtime the two agree to 0.0 degrees over 33,332 latches and 8,422 bound
+  frames, **zero rejections**. **This is an architectural simplification, not a picture
+  fix**; what it buys is that §6cw's intruder can never win a frame again.
+* **The DebugJump destination sweep proves it end to end.** Four destinations, THREE
+  distinct suns — and **destination 3 latches `(-0.347 +0.520 -0.780)` HEADLESSLY**, the
+  same negative-Z vector part 69 attributed to being windowed. The title's own constant
+  agrees in all four with **zero rejections**, the menu-era light is identical in all four
+  (the control), and the per-cluster FRAME RANGES are disjoint — a light that changed with
+  the scene, not a selection that flipped (gotcha 413).
+* **So structure, receiver and sun are all now demonstrably correct and the straight-line
+  signature has survived all three.** Part 70 then killed two more mechanisms with
+  pre-registered sweeps: **the RAY LENGTH** (34x from 88 to 3000 moves the shadowed share
+  one point, non-monotonically — noise) and **"one enormous admitted occluder"**, which
+  named a real 4,950-unit mesh at `(2234 7 -107)`, 4.5x the town and outside its world
+  box, and then showed that removing it moves the share 0.6 points.
+* **THE CAVEAT THAT DECIDES PART 71: the headless route reads 12-16% shadowed where the
+  operator's slab arm read 39.7%.** This camera is not showing the defect, so both nulls
+  are about THIS location and no further. The next move is the FACTOR IMAGE dumped where
+  the defect appears (`CZ_VK_RT_FACTOR_PGM`, read with `rt_factor_pgm_read.py`): the edge
+  in the PGM means the pass, a smooth PGM means the transform the 126 shaders address it
+  with. `part71-kickoff.md` §1c.
+* **Two retractions in place**: the edge-density gate in `phase5-notes.md` §6da §7 (its
+  SIGN was wrong) and `part69_rt_geometry_session.sh`'s "tlasInst should be CLOSE" note
+  (the occurrence-ordinal identity makes a large gap the design's own prediction).
+* **Gates at close** (RT off = the shipped default): `--smoke` OK; `shader_dim_census.py`
+  clean on all sixteen caches and the play cache's NAME diff empty; `rt_world_xform_census.py`
+  104 of 104. **A5 is owed**, carried since part 67.
