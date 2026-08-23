@@ -407,13 +407,31 @@ not before; if C works, E is a second win for one item's risk.
 > second, independent reason for it** — and a reason to re-read A's design after C is
 > priced rather than before.
 >
-> **BLOCKER 3, not yet investigated:** with dynamic rendering, a scope that executes
-> secondary command buffers may not also contain inline drawing commands. This renderer
-> opens its rendering scope lazily inside `DoDraw` and closes it for resolves and copies,
-> so the frame is a sequence of scopes with inline work between them. Whether the draws
-> partition cleanly into per-scope contiguous ranges is a question someone should answer
-> BEFORE writing a recorder, and it is answerable offline by counting scopes and their
-> draw runs.
+> **BLOCKER 3 — ANSWERED OFFLINE (part 72), AND THE ANSWER IS FAVOURABLE.** The concern
+> was that a dynamic-rendering scope executing secondary command buffers may not also
+> contain inline drawing commands, and this renderer opens its scope lazily inside
+> `DoDraw` and closes it for resolves. **That structure is exactly what item A wants.** A
+> "pass" is by construction a MAXIMAL CONTIGUOUS RUN OF DRAWS bounded by resolves — the
+> renderer already counts it as `R->drawsThisPass` — so the partition into contiguous
+> ranges is not something to engineer, it already exists.
+>
+> Sizing, from the operator session's own counters (no new run):
+>
+> ```
+> 89,122,216 draws / 15,250 frames = 5,844 draws per frame   (run average, menus included)
+>    731,386 resolves / 15,250     =    48.0 rendering scopes per frame
+>                                  =     122 draws per pass on average
+> ```
+>
+> **48 contiguous ranges a frame averaging ~122 draws** is ample granularity for a 3-worker
+> pool: workers can take whole passes, and only the biggest passes need splitting.
+>
+> **What is still unknown is the DISTRIBUTION, and it is the thing that decides the item.**
+> A mean of 122 is consistent with "48 passes of 122" and with "two passes of 2,800 and 46
+> of 5", and those price completely differently — the second has almost no parallelism to
+> find. `R->drawsThisPass` is already computed at every resolve, so a per-frame histogram
+> is a handful of lines and no new probe (and this project has been caught by a mean
+> standing in for a distribution twice this part already — gotchas 428, 434).
 
 ### The design and the gate
 
