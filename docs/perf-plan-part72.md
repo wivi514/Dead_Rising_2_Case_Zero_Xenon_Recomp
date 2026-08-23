@@ -264,7 +264,38 @@ data in the user's cache directory and unbounded growth there is our bug.
 
 ---
 
-## 3. ITEM 3 — THE LAST NAMED SUSPECT FOR THE PART-58 REGRESSION, and it still has no arm
+## 3. ITEM 3 — ~~THE LAST NAMED SUSPECT FOR THE PART-58 REGRESSION~~ **CLOSED (part 72), and the pre-registration asked for the wrong statistic**
+
+> **THE COUNTER PRINTED AND THE ITEM IS DEAD — but NOT by the rule this section
+> pre-registered, which is the part worth reading.**
+>
+> ```
+> [vk]   stencil dynamic-state sets skipped: 83.5% (of 5,279,507 stencil-enabled draws)
+> [vk]   binds skipped per draw: ... (of 83,272,047 draws)
+> ```
+>
+> §3 pre-registered: *"if the skip rate is above 90%, kill this item"*. **83.5% is below
+> 90%, so the rule says keep it.** Price it anyway and it is nothing:
+>
+> | | |
+> |---|---|
+> | stencil-enabled draws | 5,279,507 — **6.34%** of all draws |
+> | re-issued (16.5% of those) | 871,119 |
+> | `vkCmdSet*` calls | 2,613,356 over ~8,541 frames = **306 per frame** |
+> | cost at 20-100 ns/call | **0.006-0.031 ms of a 26.3 ms frame (0.02-0.12%)** |
+>
+> **The skip RATE was the wrong statistic and the pre-registration should have been on the
+> absolute call count.** A cache serving 83.5% sounds mediocre; what decides the item is
+> that the population it serves is 6.34% of draws to begin with, so even a cache serving
+> ZERO percent would cost ~0.19 ms. The threshold was set on the number that was easy to
+> collect rather than the one the decision turns on — gotcha 434.
+>
+> **So: item 3 is closed, the arm §3 asks for is NOT worth building, and part 58's
+> remaining +0.5 ms or so is formally UNATTRIBUTED** — which is what this section said to
+> declare if the item died. The hook fold accounted for +0.74 ms of it and the operating
+> point has moved underneath the rest (gotcha 419).
+
+### The original text, kept because its reasoning is what mis-set the threshold
 
 Part 58 saw +1.3-1.6 ms appear between part 55's close and then. Part 71 eliminated the
 clip-plane cache (+0.09 ms at the operator's load, against Night Run 1's headless +3.0%),

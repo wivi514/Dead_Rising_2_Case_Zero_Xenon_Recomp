@@ -4748,3 +4748,15 @@ From phase C part 18 (the frame rate — and none of it was work):
      accept the question is unanswerable on a warmed machine and say so. The absolute cost
      here fell 17,827 -> 59 ms across one day, which is the real finding: the only run that
      was ever expensive is the first one anybody ever does.
+
+434. **PRE-REGISTER THE THRESHOLD ON THE STATISTIC THE DECISION TURNS ON, NOT THE ONE THAT
+     IS EASY TO COLLECT.** Part 72's plan gated an item on a cache's SKIP RATE — "kill it
+     if above 90%" — and the counter came back at 83.5%, so the rule said keep it. Pricing
+     it properly killed it instantly: the population that cache serves is **6.34% of
+     draws**, so the whole item is 306 driver calls a frame, **0.006-0.031 ms of a 26 ms
+     frame**. Even a cache serving zero percent would have cost ~0.19 ms. The rate was
+     collected because the counter already existed; the decision always turned on the
+     absolute call count, which needed one multiplication nobody did. **A pre-registered
+     threshold is only as good as its statistic**, and the tell is that the rate has no
+     units the frame budget recognises. Sibling of gotcha 237 (a mean frame time measures
+     the pacing floor, not your change) and of `measure-the-shape-not-just-the-share`.
