@@ -185,14 +185,14 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part72-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
-    **`docs/perf-plan-part72.md`** (which supersedes `perf-plan-part71.md`, kept because it
-    was executed and records its own two retractions in place; **part 72's plan now carries
-    three of its own — §1a, that item 1's price was an upper bound, §1b, that route (a) is
-    dead, and §2, that part 71's pipeline-cache attribution was wrong**).
-    **`docs/part72-fix-plan.md` IS THE LIVE FIX LIST** and is the first thing to read after
-    this file: it carries what part 72's two operator sittings established, what was fixed
-    offline, and the ONE short sitting still owed. `part71-kickoff.md`
+    `part73-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
+    **`docs/perf-plan-autonomous.md` — THE LIVE PLAN**, built on the operator's standing
+    authorisation to run ONE route unattended (`tools/autoroute.sh`). Beside it:
+    `perf-plan-part72.md` is the ITEM TABLE (carrying four part-72 retractions in place),
+    `part72-fix-plan.md` is what the operator sittings established, and
+    `perf-state-parked.md` is the reference the item designs come from and is NOT
+    superseded. **`docs/part73-kickoff.md` says how all four relate and is the first thing
+    to read after this file.** `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
@@ -793,18 +793,19 @@ settings panel no longer offers the three RT rungs and a persisted `rt_shadows=N
 longer engages the feature; `CZ_VK_RT_MENU=1` restores the rows and `CZ_VK_RT_SHADOWS=N`
 still engages it directly. Both arms print the line that proves which one is running. The
 feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. ~~**THE LIVE PLAN
-IS `docs/perf-plan-part71.md`.**~~ **THE LIVE PLAN IS `docs/perf-plan-part72.md`** — part
-71's was executed and is kept for its two in-place retractions. (This line said
-"part71" for one part after it stopped being true, which is the two-live-pointers defect
-the block-rotation note at the bottom of this file describes; gotcha 13.)
+IS `docs/perf-plan-part71.md`.**~~ ~~**THE LIVE PLAN IS `docs/perf-plan-part72.md`**~~
+**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**; `perf-plan-part72.md` is the ITEM
+TABLE beside it and `part73-kickoff.md` says how they relate. (This line has now named the
+wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of
+this file describes, and the reason that note asks for the rule and not just the name;
+gotcha 13.)
 
-Where the port is, as of 2026-08-23 (**PART 72 IS IN PROGRESS — PERFORMANCE. Desk work plus
-TWO OPERATOR SITTINGS, both run, and each produced a RETRACTION.**
-`docs/part72-kickoff.md` is the LIVE hand-off, the plan is **`docs/perf-plan-part72.md`**
-(now carrying three part-72 corrections in place) and **`docs/part72-fix-plan.md` is the
-LIVE FIX LIST** — read it first, it says what was caught, what was fixed offline, and the
-ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk work) and
-**§6df** (the sessions); the lessons are gotchas **423-429**):
+Where the port is, as of 2026-08-23 (**PART 72 CLOSED — PERFORMANCE. Desk work, TWO
+OPERATOR SITTINGS and one autonomous run; FOUR retractions, two of them of part 72's own
+claims made the same day.** **`docs/part73-kickoff.md` IS THE LIVE HAND-OFF** and says how
+the four performance documents relate; the LIVE PLAN is **`docs/perf-plan-autonomous.md`**,
+built on the operator's standing authorisation to run one route unattended. Records:
+`phase5-notes.md` **§6de/§6df/§6dg/§6dh**; lessons: gotchas **423-434**):
 
 * **THE PLAN'S CHEAPEST ROUTE FOR ITS BIGGEST ITEM IS DEAD, AND IT COST AN AFTERNOON
   RATHER THAN A SESSION.** §1 route (a) was *"find the game's aspect scalar and widen that
@@ -848,7 +849,9 @@ ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk 
   **`cam+0x68` is the fov in degrees**. There are **no `frustum`/`cull` strings in the
   image**, so route (b)'s cull hooking has no debug surface to grep for.
 * **BOTH OPERATOR SITTINGS ARE NOW RUN, AND EACH PRODUCED A RETRACTION.**
-  **`docs/part72-fix-plan.md` IS THE LIVE FIX LIST**; the record is `phase5-notes.md`
+  **`docs/part72-fix-plan.md`** records what those sittings established (it was the live fix
+  list during part 72; **`docs/perf-plan-autonomous.md` is the live plan now**); the record
+  is `phase5-notes.md`
   **§6df**; the lessons are gotchas **426-429**.
 * **SESSION A RETRACTS PART 71's PIPELINE-CACHE HEADLINE.** Run with the control arm LAST
   (the run gotcha 422 asked for), and the **pipeline COUNT held at 484-513 across all seven
@@ -930,6 +933,25 @@ ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk 
   NO constants** (`efb229a`). `tools/part72_flicker_session.sh` has the three-arm
   discriminator, with `CZ_VK_GATHER_NO_C0_REFRESH=1` as a revert arm — **the operator's
   visual verdict on those arms is still owed**.
+* **THE OPERATOR AUTHORISED AUTONOMOUS RUNS ON ONE ROUTE** — DebugJump to Case 0-2 then
+  30 s of camera turning. `tools/autoroute.sh` is that route and the only place it is
+  written down; it runs **WINDOWED** (headless reads `readback` at 0.0% and windowed at
+  8-23%) and gates itself on reaching 5,000 draws. **It is a LIGHTER load than theirs —
+  4,890 draws/frame against 9,750 — so no number from it is a claim about their frame.**
+* **THE PASS HISTOGRAM KILLED ITEM A's DESIGN BEFORE ANYONE WROTE A RECORDER.** 28,632
+  frames, 1.47M passes, 140M draws: **1.35 passes/frame carry 63.6% of ALL draws** and the
+  mean big pass is **47% of a whole frame**, while **41 passes/frame are empty or
+  single-draw** and hold 0.6%. Whole-pass scheduling therefore caps at **~2.12x regardless
+  of worker count**; item A must split WITHIN a pass, paying full state re-establishment
+  three times instead of once, and its 1.5 ms kill threshold is no longer obviously
+  clearable. **The mean of 95 draws/pass hid all of this** — the histogram cost two
+  increments per resolve.
+* **A NEW ITEM FELL OUT OF IT: 41 near-empty render passes a frame**, each an
+  `EndRendering` + resolve + `BeginRendering` cycle (the left/right tiling and the post
+  chain are the obvious source). **Filed as a LEAD, not a result** — nobody knows what one
+  cycle costs, the resolve path is not separately timed, and `CZ_VK_PROFILE` costs the same
+  order as the thing being measured. One unconditional clock decides whether it is ~0.1 ms
+  and irrelevant or ~1 ms and the best-priced item on the board.
 * **Gates:** `--smoke` OK; `alu_const_gate.py` clean on all sixteen caches;
   `order_gate_test` 10/10; `vcull_predicate_test` **18/18** and confirmed capable of failing
   on a flipped comparison, a dropped placement and a transposed matrix read; harness
