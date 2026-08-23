@@ -15145,3 +15145,118 @@ for it. §6cy's exonerations of the ray-origin bias and the ray length were take
 a pile at the world origin (gotcha 172) and are still void; those are what `part69-night-plan.md`
 §3 items 2 and 3 ask for, and they need the operator's eye rather than a counter. What
 part 70 removes from the list is the one item that could be settled without one.
+
+## §6dd — Part 71: performance resumes, and the first item is work this project added itself (2026-08-23)
+
+The operator closed part 70 with *"We'll stop for now with trying to get ray tracing
+running. Disable that we can select it in game. We'll now switch to fixing performance
+issue."* RT shadows are parked (`open-items.md` 0v, `part71-kickoff.md`); the live plan is
+`docs/perf-plan-part71.md`. Asked which came first — the frame-time work or the turn
+stutter they reported and deferred — they chose **both, in one sitting**, which is what
+`tools/part71_perf_session.sh` is.
+
+### 1. The rule the part turns on, restated because it is easy to skip
+
+The frame at their soak has not been measured since part 58 and **thirteen parts have
+shipped since**. Every item in `perf-state-parked.md` §2 is priced against a ~10.5 ms
+baseline that no longer exists, and part 58 already saw +1.3-1.6 ms of it come back
+unattributed. So arm 1 is not an experiment, it is a denominator (gotchas 13, 50/51/86).
+
+### 2. THE ITEM: parts 59-70 hung five probes on the per-draw path, and one on the per-FETCH path
+
+`DoDraw` called `FovCensus`, `RtGeometryCensus`, `rtshadow::Collect`,
+`rtshadow::NoteGuestSun` and an `rtfactor::Active()` test on **every draw** — at the
+operator's soak ~35,000 calls a frame whose only job is to decide not to run. Part 55's
+entire −18% came from deleting work of exactly this shape (gotcha 362).
+
+**The per-fetch one is bigger and nobody had looked at it.** `rtshadow::NoteAtlasFetch`
+runs from the texture walk for every declared fetch of any shader that HAS an RT variant,
+guarded on `ps.moduleRt` and **not on whether RT is running** — a full
+`DecodeTextureFetch`, a linear scan of up to eight candidates and a recompute of the
+largest-by-area. A 100-second run of the shipped, parked build:
+
+```
+[rtb] depth surfaces fetched by the shadow shaders (the largest is taken as the cascade atlas):
+[rtb]   1439B000  4096x1024   9482873 fetches   <-- ATLAS
+```
+
+**9,482,873 register decodes in 100 seconds with the feature off**, feeding a diagnostic
+whose only consumer (`LatchSun`) needs `Active()` anyway.
+
+**The fold, shipped:** one word per FRAME instead of five (plus one per fetch) per draw,
+recomputed lazily on `R->frame` — the pattern `rtshadow::TierThisFrame` already uses, for
+the reason written on that function ("reading the settings store directly would take its
+mutex ~7,000 times a frame"). `CZ_VK_NO_HOOK_FOLD=1` restores the old pattern exactly.
+
+It is behaviour-preserving **by construction rather than by hope**: the word is the OR of
+every hook's own arm, so whenever any hook could do work the word is true and every call
+happens as before. Both inputs are per-frame constants — `rtshadow::Active()` is
+`rtEnabled` (fixed at device creation) AND `TierThisFrame()` (already cached on
+`R->frame`), and the two census arms are one-time `Env` reads — so it cannot drift inside
+a frame either. That property is also the identity gate: **with RT ON, `[vk] hook fold:`
+must read 0 folded.**
+
+### 3. TWO OF THE PLAN'S OWN ARMS WERE WRONG, and both errors are the same shape
+
+* **`CZ_VK_RT=0` does not bound the hooks.** The plan called it "the whole RT device off",
+  which is true of the device and false of the cost: `ps.moduleRt` is populated by the RT
+  variant cache loader with no reference to `rtEnabled`, so the 9.5 M fetch decodes all
+  still run. The arm would have measured ~nothing and read as "the hooks are free"
+  (gotcha 414).
+* **`CZ_VK_WIDE=0` is not the wide-culling arm on this machine.** Their `cz_settings.txt`
+  is 3440x1440, so it forces 2560x1440 — 26% fewer pixels. A resolution change wearing a
+  culling change's label, whose delta would have been mostly GPU (gotcha 415).
+  `CZ_NO_GAME_FOV=1` removes the same over-widen at a constant pixel count.
+
+Both were written before anyone read `cz_settings.txt` or followed the cost to its guard.
+Neither is a subtle failure — each would have produced a confident, wrong number.
+
+### 4. `CZ_FPS_LOG` grew a tail, because the stutter has only ever been FELT
+
+The steady-state draw cost of the over-widen barely moves (5,538 -> 5,798 at the
+DebugJump camp), so the reported stutter is an upload BURST on first sight — and a median
+is the statistic least able to see one (gotcha 237). The `[fps]` line now also carries
+`p99`, the window's `worst` frame and **the share of frames above 2x the window median**.
+It is free: the window's frame times are already sorted for the median.
+
+`tools/part54_fps_bins.py` gained a matching TAIL table, and **its regex makes the three
+fields optional on purpose** — every log this project recorded before today lacks them,
+and a regex that required them would have read zero windows out of parts 54-70's archived
+arms while looking exactly like a clean result (gotcha 25). Checked both ways against a
+synthetic old line and a real part-58 pair.
+
+### 5. The session, and the gates it enforces
+
+`tools/part71_perf_session.sh`, four arms on one snapshotted binary, `CZ_FPS_LOG` only,
+each a ~3 min stand-still soak at their heaviest spot followed by ~30 s of continuous
+camera turning:
+
+| arm | variable | question |
+|---|---|---|
+| `base` | — | the re-baseline (§0), fold ON |
+| `nofold` | `CZ_VK_NO_HOOK_FOLD=1` | prices the fold, **and is the pre-part-71 build**, so its median is what compares with part 58's 11.8-12.3 ms |
+| `noclip` | `CZ_SHADER_SPV=assets/shader_spv_a2m` | the clip-plane cache (Night Run 1's +0.20 ms / +3.0% headless prior) at the load that matters |
+| `nogamefov` | `CZ_NO_GAME_FOV=1` | the wide over-widen, and the turn stutter |
+
+**Every arm proves it engaged from a line the FEATURE prints, never from the variable, or
+the harness refuses to report it and exits non-zero** (gotcha 408). Two gates are
+two-sided: `nofold` must both announce itself and show `hook fold: 0 of`; `nogamefov` must
+both announce itself and show the ABSENCE of the substitution's own `[fovgame] ... ACTIVE`
+line. All four were tested against four deliberate breakages — an arm that ran as the
+default, a fold that folded nothing, a lost `NO_HOOK_FOLD`, a silent fov arm — and each
+was rejected (gotcha 30).
+
+**Preflight, before the operator spends twenty minutes on it:** the two shader caches the
+session switches between are NAME-diffed rather than counted (gotcha 390 — part 65 found
+the play cache ten modules short for three parts, and a skipped draw is both a wrong
+picture and a faster frame, the worst possible confound for a performance A/B), and
+`cz_settings.txt` is echoed with the fov arm declared inert only when the slider is at
+zero AND the resolution is 16:9, because either alone keeps the substitution live.
+
+### 6. Why the fold shipped before it was priced
+
+The plan asked for `tools/part55_srcline.py` first. `srcline` needs a run of the game and
+every run belongs to the operator, so profiling first and shipping-with-an-arm first cost
+the same one session — and only the second PRICES the item. **The kill threshold is
+unchanged and pre-registered: under 0.3 ms at the soak and the fold comes back out**
+(gotcha 416).

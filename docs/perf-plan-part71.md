@@ -58,7 +58,19 @@ chain in one session with `tools/part55_chained_ab.sh`:
 | 1.1 | the **clip-plane cache** — six plane dots per vertex in all 104 VS, plus a per-draw plane-block zero+publish | `CZ_SHADER_SPV=assets/shader_spv_a2m` (stock, no clip) against the default `_clip_a2m` | Night Run 1: **+0.20 ms / +3.0%** at a ~5,000-draw headless band, ≈0 at 2,500. Consistent with a per-vertex cost and **probably not the whole 1.5 ms** |
 | 1.2 | part 56's **per-draw dynamic-state calls** | **no arm exists — one is owed**, and it is the co-suspect Night Run 1 left standing | none |
 | 1.3 | the **wide-culling over-widen** (k=1.34 in tan space, so ~1.8x the culled volume) | `CZ_VK_WIDE=0`, `CZ_NO_GAME_FOV=1` | submitted draws 5,538 -> 5,798 at stand-still; the operator's complaint is a TURN phenomenon (§4) |
-| 1.4 | **parts 59-70's per-draw hooks**, part 70's included | `CZ_VK_RT=0` (the whole RT device off) as the crude bound; the finer arm is §2 | none — and nobody has looked at this |
+| 1.4 | **parts 59-70's per-draw hooks**, part 70's included | ~~`CZ_VK_RT=0`~~ **RETRACTED — see below.** The arm is `CZ_VK_NO_HOOK_FOLD=1`, built in part 71 | none — and nobody has looked at this |
+
+> **RETRACTION, part 71, in place: `CZ_VK_RT=0` DOES NOT BOUND THESE HOOKS.** It was
+> written here as "the whole RT device off", which is true of the device and false of the
+> cost. `ps.moduleRt` is populated by the RT variant cache loader with **no reference to
+> `rtEnabled`**, and `NoteAtlasFetch`'s guard was `ps.moduleRt` **alone** — so with
+> `CZ_VK_RT=0` every one of the 9.5 M-per-100 s fetch decodes below still runs, and the
+> arm's only effect is to make two already-false predicates false one compare sooner. It
+> would have measured ~nothing and the null would have read as "the hooks are free".
+> The general form is worth keeping: **an arm named after a FEATURE bounds the feature's
+> cost only if every piece of that cost is gated on the feature** — here one piece was
+> gated on the ASSET the feature loads, which outlives it.
+
 
 **1.4 is new and it is this project's own doing.** `DoDraw` now calls `FovCensus`,
 `RtGeometryCensus`, `rtshadow::Collect`, `rtshadow::NoteGuestSun` and two
@@ -197,15 +209,35 @@ sit between the last number and this one.
 ## 6. THE FIRST SESSION, concretely
 
 One operator sitting, chained arms, `CZ_FPS_LOG` only, their heaviest spot, three minutes
-each:
+each. **BUILT: `tools/part71_perf_session.sh`.** Two of the four arms named below were
+replaced, and both replacements are corrections rather than preferences:
 
-1. **current build, no arms** — the re-baseline (§0).
-2. **`CZ_SHADER_SPV=assets/shader_spv_a2m`** — the clip-cache arm (§1.1), the resume
-   experiment `perf-state-parked.md` §6 already names.
-3. **`CZ_VK_RT=0`** — the crude bound on parts 59-70's per-draw hooks (§1.4).
-4. **`CZ_VK_WIDE=0`** — the wide-culling arm (§1.3), which also lets them say whether the
-   turn stutter goes with it.
+1. **`base`** — current build, no arms, hook fold ON — the re-baseline (§0).
+2. **`nofold`** — `CZ_VK_NO_HOOK_FOLD=1` (§2, and §1.4's real arm). **This is also the
+   pre-part-71 build**, so its median is what compares with part 58's 11.8-12.3 ms, and
+   `base` minus it is the fold. Replaces `CZ_VK_RT=0`, retracted in §1.4 above.
+3. **`noclip`** — `CZ_SHADER_SPV=assets/shader_spv_a2m` — the clip-cache arm (§1.1), the
+   resume experiment `perf-state-parked.md` §6 already names.
+4. **`nogamefov`** — `CZ_NO_GAME_FOV=1`, the wide-mode over-widen off at a CONSTANT pixel
+   count. Replaces `CZ_VK_WIDE=0`: this operator's `cz_settings.txt` is 3440x1440, so
+   `CZ_VK_WIDE=0` would force 2560x1440 — a 26% resolution change wearing a culling
+   change's label, whose frame-time delta would be mostly GPU. §1.3 and §4 in one arm.
 
-Four arms, twelve minutes of soak plus menu time. Every arm prints a line that proves it
-engaged and the harness refuses to report one that does not (gotcha 408). **Nothing is
-built until that session is read.**
+Four arms, twelve minutes of soak plus menu time. **Each arm ends with ~30 s of continuous
+camera turning**, which is new: `CZ_FPS_LOG` now carries `p99`, the worst frame and the
+share above 2x the window median, so the same run answers §4's felt question and §0's
+measured one. Every arm prints a line that proves it engaged, the harness refuses to
+report one that does not and exits non-zero (gotcha 408), and all four gates were tested
+against deliberate breakages (gotcha 30). **Nothing further is built until that session is
+read.**
+
+### What part 71 built BEFORE that session, and why that is not a violation of the rule
+
+§2's fold is shipped **on** with `CZ_VK_NO_HOOK_FOLD=1` as its control arm, rather than
+measured first with `tools/part55_srcline.py` as this plan asked. The reason is that
+`srcline` needs a run of the game and every run belongs to the operator (standing
+instruction, part 57) — so "measure first" and "build first" cost the same one session,
+and shipping the arm means that session PRICES the item instead of only sizing it. The
+fold is behaviour-preserving by construction (its word is the OR of every hook's own arm),
+so the risk that argument was protecting against is not present. **The kill threshold
+stands unchanged: under 0.3 ms at the soak and it comes back out.**

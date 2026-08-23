@@ -1554,7 +1554,31 @@ CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing
                    prints the median because a mean on this title measures the pacing
                    floor rather than the change (gotcha 237), and the window's frame
                    count, so an interval covering a load screen is visible rather than
-                   averaged in. `tools/play_session.sh` is the session it exists for
+                   averaged in. `tools/play_session.sh` is the session it exists for.
+                   **PART 71 ADDED THE TAIL — `p99`, the window's `worst` frame, and the
+                   share of frames above 2x the window median** — because the operator's
+                   turn stutter is the one performance problem on this port that has only
+                   ever been FELT, and a median is the statistic least able to see one. It
+                   is free: the window's frame times are already sorted for the median, so
+                   this is two array reads and one pass over data in cache.
+                   `tools/part54_fps_bins.py` prints a matching TAIL table and treats the
+                   three fields as OPTIONAL, so parts 54-70's logs still bin (a regex that
+                   required them would have read zero windows out of every archived arm
+                   while looking like a clean result — gotcha 25)
+CZ_VK_NO_HOOK_FOLD=1  **the control arm for part 71's per-draw hook fold**, and the
+                   pre-part-71 renderer exactly. Parts 59-70 each hung a probe on
+                   `DoDraw` — `FovCensus`, `RtGeometryCensus`, `rtshadow::Collect`,
+                   `rtshadow::NoteGuestSun` and a `rtfactor::Active()` test — and with RT
+                   parked every one of them exists only to decide not to run: ~35,000
+                   calls a frame at the operator's soak. Worse, `rtshadow::NoteAtlasFetch`
+                   was called per declared FETCH of all 126 RT-variant shaders, guarded on
+                   `ps.moduleRt` and not on whether RT is running — **9,482,873 full
+                   `DecodeTextureFetch` decodes in a 100-second run of the shipped build**.
+                   The default folds all of it behind one word recomputed per FRAME; this
+                   arm restores the per-draw calls. `[vk] hook fold:` is the engagement
+                   counter and it is two-sided — with RT ON it must read **0 folded**,
+                   because the word is the OR of every hook's own arm and cannot be false
+                   while any of them could do work
 CZ_VK_NO_SWAPCHAIN=1  **the control arm for the present path, which since part 54 is a
                    real Vulkan swapchain BY DEFAULT** (plan §7, on the operator's decision
                    after judging both arms). It restores the readback path exactly — the
@@ -2588,7 +2612,19 @@ CZ_NO_GAME_FOV=1   **the control arm for the game-side fov slider** (part 62,
                    (lr 0x8246E31C in sub_8246BF48), so the game renders AND
                    culls at the widened fov, live, HUD and cutscenes untouched.
                    With this arm set the substitution is off and CZ_VK_FOV (the
-                   renderer-side patch) is the comparison mechanism
+                   renderer-side patch) is the comparison mechanism.
+                   **It is also part 71's TURN-STUTTER arm**, because part 62's wide-mode
+                   over-widen (k = 9W/16H in tan space, ~1.8x the culled volume) rides in
+                   the same substitution — and it is the right one where `CZ_VK_WIDE=0`
+                   is not: on a 3440x1440 setting `CZ_VK_WIDE=0` forces 2560x1440, so 26%
+                   of the pixels go with the culling and the frame-time delta is mostly
+                   GPU. This removes the over-widen at a constant pixel count. **Since
+                   part 71 it prints `[fov] CZ_NO_GAME_FOV=1 ...` when it takes effect**;
+                   pair that with the ABSENCE of the substitution's own `[fovgame] ...
+                   ACTIVE` line for a two-sided gate. It does change the draw SET (the
+                   game culls to its own narrower frustum), so by this project's
+                   admissibility rule its frame time is not comparable with an unarmed
+                   run's — read it for the tail statistics and the felt verdict
 CZ_FOV_PARAM_TRACE=1  print each distinct (lr, value) pair through the camera
                    param getter once — the census that found the fov call site
 CZ_FOV_PROP_TRACE=1   print every FOV-named property registration through the

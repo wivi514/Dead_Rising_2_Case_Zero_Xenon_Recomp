@@ -4498,3 +4498,39 @@ From phase C part 18 (the frame rate — and none of it was work):
      instrument rather than in the evidence — and the reason it recurs is that a counter
      is the cheapest thing to add and the ordering is only wanted later.
 
+414. **AN ARM NAMED AFTER A FEATURE BOUNDS THAT FEATURE'S COST ONLY IF EVERY PIECE OF THE
+     COST IS GATED ON THE FEATURE.** `docs/perf-plan-part71.md` §1.4 named `CZ_VK_RT=0`,
+     "the whole RT device off", as the crude bound on parts 59-70's per-draw hooks. It is
+     not one. The largest piece of that cost — a full texture-fetch-constant decode per
+     declared fetch of all 126 RT-variant shaders, 9,482,873 of them in a 100-second run
+     of the shipped build — was gated on `ps.moduleRt`, i.e. on whether the RT variant
+     SHADER CACHE loaded, which the loader does with no reference to `rtEnabled`. The arm
+     would have measured approximately nothing and its null would have read as "the hooks
+     are free". **Before trusting an arm, follow the cost to its guard and check that the
+     guard is the arm's variable** — a piece gated on an ASSET the feature loads outlives
+     the feature being switched off. Sibling of 408 (an arm that never engaged) and of 25
+     (a grep that cannot match): all three are instruments that report a clean zero
+     because they were never able to report anything else.
+
+415. **AN ARM THAT CHANGES A SECOND THING IS A DIFFERENT EXPERIMENT, AND THE SECOND THING
+     IS USUALLY THE BIGGER ONE.** `CZ_VK_WIDE=0` was the plan's arm for part 62's
+     wide-culling over-widen. On this operator's 3440x1440 setting it also forces the
+     internal resolution to 2560x1440 — **26% fewer pixels** — so its frame-time delta
+     would have been mostly GPU and would have been reported as a CPU culling saving.
+     `CZ_NO_GAME_FOV=1` removes the same over-widen at a constant pixel count. **Check
+     what an arm does on the CONFIGURATION IT WILL RUN ON, not in general**: the same
+     variable is a clean arm at 16:9 and a confounded one at 21:9, and the plan was
+     written before anyone read `cz_settings.txt`. Gotcha 349's "a present measurement has
+     two resolutions" is the same defect one layer down.
+
+416. **"MEASURE BEFORE BUILDING" AND "BUILD THEN MEASURE" COST THE SAME WHEN EVERY RUN
+     BELONGS TO SOMEONE ELSE — SO BUILD THE ARM.** Part 71's plan asked for
+     `tools/part55_srcline.py` on the per-draw hook chain before writing the fold. But
+     `srcline` needs a run of the game and the standing instruction is that the operator
+     drives every run, so profiling first and shipping-with-an-arm first both cost exactly
+     one operator session — and only the second one PRICES the item instead of sizing it.
+     The precondition is that the change be behaviour-preserving *by construction* (here
+     the fold's word is the OR of every hook's own arm, so it cannot be false while any
+     hook could do work), which is what the "measure first" rule was really protecting.
+     **Pre-registering the kill threshold is what keeps this honest** — under 0.3 ms and
+     it comes back out — and it is the half people drop.
