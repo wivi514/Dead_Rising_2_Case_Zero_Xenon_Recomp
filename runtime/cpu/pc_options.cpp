@@ -772,8 +772,17 @@ void PcOptions_Pump(PPCContext& ctx, uint8_t* base, uint32_t buttons)
                     // REPLACES the raster cascade. The ladder stops at HIGH on a
                     // device without ray query rather than offering values that
                     // cannot engage.
-                    const int span = VkRenderer_RtAvailable() ? 6 : 3;
-                    const int r = (Settings_ShadowRow() + dir + span) % span;
+                    // PARKED as of part 71 (operator instruction): the RT rungs are
+                    // not offered unless CZ_VK_RT_MENU=1, so the span is normally 3.
+                    // STEP FROM THE RASTER TIER when they are not offered — stepping
+                    // from Settings_ShadowRow() would start at `2 + rtShadows` for any
+                    // cz_settings.txt that still carries an RT choice, and the first
+                    // press would land somewhere unrelated. The stored RT value is left
+                    // alone so unparking restores it.
+                    const bool rt = VkRenderer_RtAvailable();
+                    const int span = rt ? 6 : 3;
+                    const int from = rt ? Settings_ShadowRow() : Settings_ShadowTier();
+                    const int r = (from + dir + span) % span;
                     Settings_SetShadowRow(r);
                     // Applied live on both halves: the renderer re-reads the raster
                     // tier once per frame (ShadowScaleThisFrame) and the RT tier the

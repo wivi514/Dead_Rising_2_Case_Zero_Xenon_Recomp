@@ -11293,6 +11293,38 @@ void PrintCollectorCensus(const char* who);
 // on the pump thread, in EVERY run including the ones with RT off. This project has
 // spent whole parts taking that class of cost off this exact thread (part 55).
 // The value is still applied LIVE — one frame of latency on a menu toggle.
+// IS RT SHADOWS OFFERED IN THE MENU AT ALL? PARKED as of part 71, on the operator's
+// instruction closing part 70: "We'll stop for now with trying to get ray tracing
+// running. Disable that we can select it in game."
+//
+// Parked, not deleted, and the distinction is deliberate. The feature works end to end —
+// the structure holds at `flushes=0` on the operator's own machine, the primary ray
+// resolves the real world, the sun is now read from the title's own constant — and what
+// is unresolved is the SHAPE of the shadow it produces (`open-items.md` 0v). Deleting it
+// would throw away five parts of instrumented mechanism to remove three rows from a
+// menu; parking it removes the rows and leaves every arm, census and gate exactly where
+// part 70 left them.
+//
+// `CZ_VK_RT_MENU=1` puts the rows back without a rebuild, and `CZ_VK_RT_SHADOWS=N` still
+// engages the feature directly whatever the menu says. Both are developer arms.
+//
+// The park is applied at the TIER, not only at the menu, because a `cz_settings.txt`
+// written before part 71 can carry `rt_shadows=2` — and a player whose saved file turns
+// on a feature the menu no longer lists has no way to turn it off. The stored value is
+// NOT rewritten: unparking restores the choice they made.
+bool MenuOffersRt()
+{
+    static const bool on = [] {
+        const char* e = Env("CZ_VK_RT_MENU");
+        const bool want = e && *e != '0' && *e != 'n' && *e != 'N';
+        if (want)
+            fprintf(stderr, "[rt] CZ_VK_RT_MENU=%s — the RT SHADOW rows are back in the "
+                            "settings panel (parked by default since part 71)\n", e);
+        return want;
+    }();
+    return on;
+}
+
 int TierThisFrame()
 {
     static const char* e = Env("CZ_VK_RT_SHADOWS");   // env wins, standing rule
@@ -11301,7 +11333,7 @@ int TierThisFrame()
     if (cachedFrame != R->frame)
     {
         cachedFrame = R->frame;
-        cached = e ? atoi(e) : Settings_RtShadows();
+        cached = e ? atoi(e) : (MenuOffersRt() ? Settings_RtShadows() : 0);
     }
     return cached;
 }
@@ -18332,18 +18364,24 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
 // ===================================================================================
 bool VkRenderer_RtAvailable()
 {
-    // TWO REQUIREMENTS, not one. The device has to support ray query AND the shader
+    // THREE REQUIREMENTS as of part 71. The feature has to be OFFERED (it is parked —
+    // see rtshadow::MenuOffersRt), the device has to support ray query, AND the shader
     // variant cache has to be present with real variants in it — route (b) makes the
     // shadows in the material shaders, so a runtime with ray query and no
     // `assets/shader_spv_rt` would offer three RT rungs that change nothing. Route (a)
     // needs no variants (it writes the atlas), so the developer arm still works.
-    return R && R->rtEnabled && (R->rtVariants || !rtshadow::RouteB());
+    return rtshadow::MenuOffersRt() && R && R->rtEnabled &&
+           (R->rtVariants || !rtshadow::RouteB());
 }
 
 // Why the ladder stops, for the panel footer: 0 = it does not, 1 = no ray query,
-// 2 = ray query but no shader variants.
+// 2 = ray query but no shader variants, 3 = PARKED (part 71). The order matters: park
+// first, because on a machine that can run RT perfectly well the honest answer is "we
+// turned it off", not "your device cannot".
 int VkRenderer_RtUnavailableReason()
 {
+    if (!rtshadow::MenuOffersRt())
+        return 3;
     if (!R || !R->rtEnabled)
         return 1;
     if (!R->rtVariants && rtshadow::RouteB())

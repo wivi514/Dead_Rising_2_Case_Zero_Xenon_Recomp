@@ -185,11 +185,20 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part71-kickoff.md`.** State the rule as well as the name, because this line said
+    `part71-kickoff.md` — but note that it hands over the RT SHADOW work, which the
+    operator PARKED at the end of part 70. The live SUBJECT is performance and its plan
+    is `docs/perf-plan-part71.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
-  - **PERFORMANCE IS PARKED AND `docs/perf-state-parked.md` IS THE ONE DOCUMENT THAT
+  - **PERFORMANCE IS THE LIVE SUBJECT AGAIN AS OF PART 71, AND `docs/perf-plan-part71.md`
+    IS THE PLAN** — the operator's instruction closing part 70: *"We'll stop for now with
+    trying to get ray tracing running. Disable that we can select it in game. We'll now
+    switch to fixing performance issue."* Its §0 is the rule the whole plan turns on: the
+    frame at their soak has not been measured since part 58 and thirteen parts have
+    shipped since, so **re-baseline before pricing any item**. `perf-state-parked.md`
+    below is NOT superseded — it is the reference the plan is built on.
+  - **~~PERFORMANCE IS PARKED AND~~ `docs/perf-state-parked.md` IS THE REFERENCE THAT
     RESUMES IT** — the operator's instruction closing part 55: *"Save all of what is needed
     for performance later on and all your finding. We'll switch to fixing the last few
     visual bugs for the next few sessions and we'll come back to performance later."* It
@@ -765,6 +774,15 @@ Highlights that change how we work:
 authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numbered
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
+
+**SUBJECT CHANGE, 2026-08-23, operator instruction closing part 70:** *"We'll stop for
+now with trying to get ray tracing running. Disable that we can select it in game. We'll
+now switch to fixing performance issue."* **RT shadows are PARKED, NOT DELETED** — the
+settings panel no longer offers the three RT rungs and a persisted `rt_shadows=N` no
+longer engages the feature; `CZ_VK_RT_MENU=1` restores the rows and `CZ_VK_RT_SHADOWS=N`
+still engages it directly. Both arms print the line that proves which one is running. The
+feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. **THE LIVE PLAN
+IS `docs/perf-plan-part71.md`.**
 
 Where the port is, as of 2026-08-23 (part 70 CLOSED — **THE SUN IS CLOSED AND IT WAS
 NEVER WRONG: part 69's "the Z flips between headless and windowed" was a CONFOUND, and

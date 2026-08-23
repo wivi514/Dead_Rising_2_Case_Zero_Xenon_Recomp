@@ -10,6 +10,18 @@
 >
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (standing instruction), and the
 > Fable 2 port is NOT a renderer reference (operator instruction, part 59).
+>
+> ---
+>
+> **BUT READ THIS FIRST: RT SHADOWS ARE PARKED AND THIS IS NOT THE LIVE SUBJECT.** The
+> operator closed part 70 with *"We'll stop for now with trying to get ray tracing
+> running. Disable that we can select it in game. We'll now switch to fixing performance
+> issue."* The settings panel no longer offers the RT rungs and a persisted
+> `rt_shadows=N` no longer engages the feature; `CZ_VK_RT_MENU=1` puts the rows back and
+> `CZ_VK_RT_SHADOWS=N` engages it directly. **The live plan is
+> `docs/perf-plan-part71.md`.** Everything below is the RT hand-off, kept intact and
+> accurate so the feature can be resumed from exactly where it stopped rather than
+> re-derived.
 
 ---
 

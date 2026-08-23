@@ -512,7 +512,15 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // refuse to move (the gamma-slider rule) when the whole class is unavailable.
     static const char* kShadowRow[] = { "LOW",    "MEDIUM",    "HIGH",
                                         "RT LOW", "RT MEDIUM", "RT HIGH" };
-    const int shadowRow = Settings_ShadowRow();
+    // WHEN THE RT RUNGS ARE NOT OFFERED, SHOW THE RASTER TIER, not the stored RT one.
+    // `Settings_ShadowRow()` reports `2 + rtShadows` whenever a saved `cz_settings.txt`
+    // carries a non-zero RT tier, so a file written while the rungs existed would print
+    // "RT MEDIUM" on a ladder that only goes to HIGH — and the first press would jump to
+    // an unrelated value. This was already reachable before part 71 parked the feature,
+    // on any device without ray query; parking it just made it the common case. The
+    // stored value is not touched, so unparking restores the player's choice.
+    const int shadowRow =
+        VkRenderer_RtAvailable() ? Settings_ShadowRow() : Settings_ShadowTier();
     const char* rows[6][2] = {
         { "RESOLUTION", resName },
         { "DISPLAY MODE", kModeNames[int(Settings_DisplayMode()) % 3] },
@@ -542,7 +550,9 @@ void EmitSettingsOverlay(int w, int h, Rect&& rect)
     // cache is one build command away (tools/patch_rt_shadow_hlsl.py).
     const int rtWhy = VkRenderer_RtUnavailableReason();
     text(panelX + 20, panelY + panelH - 30,
-         rtWhy == 1
+         rtWhy == 3
+             ? "RESOLUTION: NEXT LAUNCH - RT SHADOWS ARE OFF IN THIS BUILD"
+         : rtWhy == 1
              ? "RESOLUTION: NEXT LAUNCH - NO RAY QUERY: RT SHADOWS UNAVAILABLE"
          : rtWhy == 2
              ? "RESOLUTION: NEXT LAUNCH - NO RT SHADER CACHE: SEE THE LOG"

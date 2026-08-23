@@ -2016,6 +2016,16 @@ CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the
 CZ_VK_RT_CONE=<rad>  the sun's angular radius for the cone sample (default
                    0.02 rad; the real sun is ~0.00465). A LOOK control, not
                    astronomy. Only read when rays > 1
+CZ_VK_RT_MENU=1    **PUT THE RT SHADOW ROWS BACK IN THE SETTINGS PANEL.** They are
+                   PARKED as of part 71 on the operator's instruction ("disable that
+                   we can select it in game"): the panel's SHADOW row stops at HIGH,
+                   the footer says "RT SHADOWS ARE OFF IN THIS BUILD", and a
+                   `cz_settings.txt` still carrying `rt_shadows=N` no longer engages
+                   the feature — the stored value is NOT rewritten, so unparking
+                   restores the player's choice. This is a PARK, not a deletion:
+                   every arm, census and gate the feature has is untouched.
+                   `CZ_VK_RT_SHADOWS=N` engages it directly whatever the menu says,
+                   and both paths print the line that proves which is running
 CZ_VK_RT_SUN_SRC=cascade  **WHERE THE SUN'S DIRECTION COMES FROM.** The
                    default is the TITLE'S OWN pixel constant `c23`, a unit
                    direction it uploads and lights from; `cascade` restores the
