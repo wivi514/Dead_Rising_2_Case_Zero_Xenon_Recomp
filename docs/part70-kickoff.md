@@ -99,7 +99,7 @@ as one straight line across wall, van and ground.
 ## 6. Gates at part 69's close
 
 * **`CZ_VK_VALIDATION=1 CZ_VK_RT_SHADOWS=1 CZ_VK_RT_DYN_SETTLE=0` on the headless
-  outdoor route to `passes=4097`: no VUID but the known point-list `PointSize`
+  outdoor route, 300 s to `passes=6145`: no VUID but the known point-list `PointSize`
   one.** Four synchronisation VUIDs were found during this part and fixed
   (`phase5-notes.md` §6da §9); this run is the confirmation, taken at the exact
   pass count where the failing run had twenty of each. **Re-run it after any

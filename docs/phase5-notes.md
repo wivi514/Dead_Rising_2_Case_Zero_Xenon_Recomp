@@ -14646,7 +14646,7 @@ van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
   the first build. If the profile disagrees it moves to a compute pass and nothing above it
   changes.
 * **The closing gate run** (RT on, `CZ_VK_RT_DYN_SETTLE=0`, validation, headless outdoor
-  route to `passes=4097`): `tlasInst=3558`, `blas=4687 (80.7 MB, built=4703, flushes=0)`,
+  route, 300 s to `passes=6145`): `tlasInst=3558`, `blas=4687 (80.7 MB, built=4703, flushes=0)`,
   `verts direct=961 staged=0`, `refit=357209 (forced=5425 budgeted-out=17646 noSource=0
   topology=16)`, `baked=3742 rebaked=356793 bakePool=187.2 MB`, `conflict=2150`,
   `noDesc=0`, `outOfRange=0`, and no VUID but the point-list one.
@@ -14695,12 +14695,12 @@ a device fault would explain all four messages at once (`vkWaitForFences` return
 slot is marked retired, and the next submit resets a fence that never signalled).
 `Blas::builtFrame` now bars it.
 
-**AND IT WAS THE WHOLE OF IT.** With `Blas::builtFrame` in, the same configuration read at
-the same `[rtb] passes=4097` snapshot — the exact point where the failing run had twenty of
-each — reports **zero** of the four, leaving only the known point-list `PointSize` VUID
-this port has carried since part 68. The route reached the same place (`world box
-x[-420.6 323.8] y[-18.8 39.2] z[-681.5 0.0]`), so it is not a run that went somewhere
-quieter.
+**AND IT WAS THE WHOLE OF IT.** With `Blas::builtFrame` in, the same configuration reports
+**zero** of the four — at `passes=4097`, the exact point where the failing run had twenty
+of each, and on to `passes=6145`, which is as deep as the clean part-68 control run went.
+Only the known point-list `PointSize` VUID remains, which this port has carried since part
+68. The route reached the same place (`world box x[-420.6 323.8] y[-18.8 39.2]
+z[-681.5 0.0]`), so it is not a run that went somewhere quieter.
 
 The per-arm sweep that was running alongside is redundant now and was abandoned, with one
 reading kept because it is what narrowed the search: items 0 and 1 armed with refit and
