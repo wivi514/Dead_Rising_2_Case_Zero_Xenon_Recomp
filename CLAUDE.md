@@ -186,7 +186,8 @@ mask; trust the microcode's own swizzles.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
     `part72-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
-    `docs/perf-plan-part71.md` with part 71's corrections in place. `part71-kickoff.md`
+    **`docs/perf-plan-part72.md`** (which supersedes `perf-plan-part71.md`, kept because it
+    was executed and records its own two retractions in place). `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation

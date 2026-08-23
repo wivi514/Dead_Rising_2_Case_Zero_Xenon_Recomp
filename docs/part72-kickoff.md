@@ -3,8 +3,9 @@
 > **THIS IS THE LIVE HAND-OFF**, superseding `part71-kickoff.md` (which is the RT-shadow
 > hand-off and stays accurate for a feature that is PARKED, not deleted).
 >
-> **The live subject is PERFORMANCE** (operator instruction closing part 70). The plan is
-> `docs/perf-plan-part71.md` with part 71's corrections in place; the reference is
+> **The live subject is PERFORMANCE** (operator instruction closing part 70). **THE LIVE
+> PLAN IS `docs/perf-plan-part72.md`** — it supersedes `perf-plan-part71.md`, which is kept
+> because it was executed and records its own two retractions in place. The reference is
 > `docs/perf-state-parked.md`; the record is `phase5-notes.md` **§6dd**; the lessons are
 > gotchas **414-422**.
 >
@@ -40,6 +41,9 @@
 **This order is new and it is built from part 71's measurements, not from
 `perf-state-parked.md` §2's text**, which was written when the frame was believed to be
 ~10.5 ms at ~7,000 draws.
+
+**`docs/perf-plan-part72.md` §1-5 is this table with a design, arms and a pre-registered
+kill threshold for each. The summary:**
 
 | # | item | measured price | risk | arm |
 |---|---|---|---|---|

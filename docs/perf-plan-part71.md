@@ -1,5 +1,12 @@
 # The performance plan, part 71 — resuming from the parked state
 
+> **SUPERSEDED BY `docs/perf-plan-part72.md`.** This document was EXECUTED — both of its
+> operator sessions ran and are recorded in `phase5-notes.md` §6dd §7-11 — and it is kept
+> for two reasons: it records its own two retractions in place (§1.4's `CZ_VK_RT=0` and
+> §6's `CZ_VK_WIDE=0`, gotchas 414-415), and its §5 measurement rules are still correct.
+> **Its ITEM ORDER is superseded**, because §0's re-baseline found the operating point had
+> moved as well as the code.
+
 **Written on the operator's instruction closing part 70:** *"We'll stop for now with
 trying to get ray tracing running. Disable that we can select it in game. We'll now
 switch to fixing performance issue."*

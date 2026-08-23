@@ -21707,6 +21707,25 @@ void VkRenderer_DumpStats()
                 100.0 * double(R->skips.scissor) / double(d),
                 100.0 * double(R->skips.blend) / double(d),
                 100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
+    // THE STENCIL SKIP, ADDED IN PART 72's PREP — and it was COLLECTED SINCE PART 56 AND
+    // NEVER PRINTED, which is the defect this project keeps rediscovering (a counter you
+    // already pay for that no log carries). It is the deciding number for
+    // `perf-plan-part72.md` §3, the last named suspect for part 58's +1.3-1.6 ms: part 56
+    // clears `haveStencil` on EVERY pipeline bind, because binding a pipeline that
+    // specifies state statically makes the corresponding dynamic state undefined — and
+    // 26.4% of this title's draws bind a new pipeline. So the question is whether the
+    // three `vkCmdSetStencil*` calls collapse to their real change rate or are re-issued
+    // constantly, and only this line can answer it.
+    //
+    // The DENOMINATOR is stencil-enabled draws, not all draws: a draw with the stencil
+    // test off neither sets nor skips, and folding it into the total would report a
+    // healthy-looking 95% for a cache that never serves anything.
+    if (g_stencilDraws)
+        fprintf(stderr,
+                "[vk]   stencil dynamic-state sets skipped: %.1f%% (of %llu "
+                "stencil-enabled draws)\n",
+                100.0 * double(R->skips.stencil) / double(g_stencilDraws),
+                (unsigned long long)g_stencilDraws);
     // ...and the two the cache COVERS AS OF PART 47. The numbers were the measurement
     // that justified writing it (51.0% and 39.4% on the operator's own session, over
     // 16.17 M draws); they are now the count of calls the renderer did not make.
