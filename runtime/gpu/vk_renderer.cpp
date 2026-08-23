@@ -345,6 +345,17 @@ inline uint64_t ProfNow()
                                      .count())
                        : 0;
 }
+// THE SAME CLOCK, ALWAYS READ. `ProfNow` returns 0 unless `CZ_VK_PROFILE` is armed, and
+// the profiler costs 2-4 ms a frame — so anything it can measure is invisible in the runs
+// that matter, which are the operator's uninstrumented soaks. This is for the handful of
+// events a run has that are worth timing unconditionally because they happen ~500 times
+// in a whole session rather than 33,000 times a frame (part 71: pipeline creation).
+inline uint64_t NowNs()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
 // --- WHAT THE PROFILER ITSELF COSTS, and why that is a phase's worth of nanoseconds ----
 //
 // `docs/perf-plan-part50.md` §4 calls `other`'s residual — 206 ns/draw, unnamed after two
@@ -2604,6 +2615,66 @@ uint64_t g_constMemoPsHits = 0;
 uint64_t g_constMemoMisses = 0;
 uint64_t g_constMemoChecked = 0;
 uint64_t g_constMemoStale = 0;
+
+// ---- PART 71: THE PIPELINE-CREATION CENSUS -----------------------------------------
+//
+// WHY IT IS UNCONDITIONAL. The header comment on the creation site says this hypothesis
+// -- "first arrival somewhere costs a spike in `other`, and pipeline creation is the only
+// candidate with that shape" -- had been inferred THREE TIMES and never measured, and
+// then failed a pre-registered prediction at the casino. It gained a timer at that point,
+// gated on `CZ_VK_PROFILE`... which costs 2-4 ms a frame, so it is off in every session
+// whose stutter anyone has ever reported. Part 71's operator soak then produced a
+// **3,891 ms frame** and three more above 800 ms, all in the first fifty seconds, all in
+// the two arms that loaded a COLD shader set -- and the timer could say nothing, again.
+//
+// So this reads the clock unconditionally. The bill is two `steady_clock` reads per
+// pipeline creation and a run creates ~500 of them; that is ~20 microseconds in a
+// five-minute session, i.e. below anything this project can measure. An instrument that
+// is only armed when nobody is looking is not an instrument (gotcha 7's inverse).
+//
+// The TOP-FRAME table is the load-bearing part and not the totals: a session that spends
+// 4 seconds compiling pipelines spread evenly over 20,000 frames is invisible to a player,
+// and one that spends the same 4 seconds inside a single frame is the thing the operator
+// reported. Only a per-frame roll-up can tell those apart (gotcha 237 again, one level up
+// from frame times).
+uint64_t g_pipeCount = 0, g_pipeNs = 0, g_pipeWorstNs = 0, g_pipeWorstFrame = 0;
+uint64_t g_pipeCurFrame = ~0ull, g_pipeCurNs = 0;
+uint32_t g_pipeCurCount = 0;
+struct PipeFrameRec { uint64_t frame = 0; uint64_t ns = 0; uint32_t count = 0; };
+PipeFrameRec g_pipeTop[12];
+
+// Close the frame currently being accumulated and keep it if it is among the worst.
+void PipeFrameFlush()
+{
+    if (!g_pipeCurCount)
+        return;
+    uint32_t worst = 0;
+    for (uint32_t i = 1; i < 12; ++i)
+        if (g_pipeTop[i].ns < g_pipeTop[worst].ns)
+            worst = i;
+    if (g_pipeCurNs > g_pipeTop[worst].ns)
+        g_pipeTop[worst] = { g_pipeCurFrame, g_pipeCurNs, g_pipeCurCount };
+    g_pipeCurCount = 0;
+    g_pipeCurNs = 0;
+}
+
+void NotePipelineCreate(uint64_t ns, uint64_t frame)
+{
+    ++g_pipeCount;
+    g_pipeNs += ns;
+    if (ns > g_pipeWorstNs)
+    {
+        g_pipeWorstNs = ns;
+        g_pipeWorstFrame = frame;
+    }
+    if (g_pipeCurFrame != frame)
+    {
+        PipeFrameFlush();
+        g_pipeCurFrame = frame;
+    }
+    g_pipeCurNs += ns;
+    ++g_pipeCurCount;
+}
 
 // PART 71's hook fold — see the `hooksDraw` comment in the Renderer struct. These are
 // ENGAGEMENT counters: `folded` counts the per-draw hook blocks skipped and `foldedFetch`
@@ -7756,10 +7827,15 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // Cost when the profile is off: one bool test on a path that already builds a whole
     // VkGraphicsPipelineCreateInfo, i.e. nothing. This is not a hot path — that is the
     // entire hypothesis.
+    // PART 71: TIMED UNCONDITIONALLY. See the
+    // `NotePipelineCreate` comment for why the `g_profileOn` timer below was not enough —
+    // in short, it is off in every session whose stutter anyone has ever reported.
+    const uint64_t tw0 = NowNs();
     const uint64_t t0 = ProfNow();
     VkPipeline pipeline = VK_NULL_HANDLE;
     const VkResult r =
         vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline);
+    NotePipelineCreate(NowNs() - tw0, R->frame);
     if (g_profileOn)
     {
         g_prof.pipelineNs += ProfNow() - t0;
@@ -21428,6 +21504,30 @@ void VkRenderer_DumpStats()
             (unsigned long long)g_polyOffsetDraws,
             EnvOn("CZ_VK_NO_POLY_OFFSET") ? "  [CZ_VK_NO_POLY_OFFSET: none were applied]"
                                           : "");
+
+    // PART 71'S PIPELINE-CREATION CENSUS, printed on every run. The TOP-FRAME table is
+    // the point, not the totals: four seconds of compiling spread over 20,000 frames is
+    // invisible to a player and four seconds inside one frame is the thing the operator
+    // reported, and only a per-frame roll-up separates them.
+    {
+        PipeFrameFlush();          // include the frame in progress
+        fprintf(stderr,
+                "[vk]   pipeline creation: %llu pipelines, %.1f ms total, worst single "
+                "%.1f ms @frame %llu%s\n",
+                (unsigned long long)g_pipeCount, double(g_pipeNs) / 1e6,
+                double(g_pipeWorstNs) / 1e6, (unsigned long long)g_pipeWorstFrame,
+                "  [no pipeline cache]");
+        // Sorted by cost, worst first — a stall the player felt is a FRAME, so this is
+        // the table that lines up with a `[fps]` window's `worst`.
+        PipeFrameRec top[12];
+        std::copy(std::begin(g_pipeTop), std::end(g_pipeTop), std::begin(top));
+        std::sort(std::begin(top), std::end(top),
+                  [] (const PipeFrameRec& a, const PipeFrameRec& b) { return a.ns > b.ns; });
+        for (const PipeFrameRec& t : top)
+            if (t.count)
+                fprintf(stderr, "[vk]     frame %8llu: %7.1f ms building %u pipeline(s)\n",
+                        (unsigned long long)t.frame, double(t.ns) / 1e6, t.count);
+    }
 
     // PART 71's hook fold, printed on EVERY run for the same reason as the two above: the
     // operator's A/B harness runs without the profiler, so this line is the only thing
