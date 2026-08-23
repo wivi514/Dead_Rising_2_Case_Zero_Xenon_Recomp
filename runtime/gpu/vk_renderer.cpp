@@ -10516,12 +10516,12 @@ std::map<uint64_t, Rec> g_streams;
 uint64_t g_lastFrame = ~0ull;
 // Per-frame, reset at each frame boundary.
 uint64_t g_fScene = 0, g_fNoBounds = 0, g_fWasteV = 0, g_fWasteH = 0, g_fNear = 0,
-         g_fOn = 0, g_fDep = 0, g_fStale = 0, g_fNoXform = 0, g_fClassified = 0;
+         g_fOn = 0, g_fDep = 0, g_fStale = 0, g_fNoXform = 0, g_fClassified = 0, g_fPalette = 0;
 // Aggregates over frames that had at least one world draw.
 uint64_t g_frames = 0, g_sumScene = 0, g_sumNoBounds = 0, g_sumWasteV = 0,
          g_sumWasteH = 0, g_sumNear = 0, g_maxWasteV = 0, g_maxScene = 0,
          g_sumOn = 0, g_sumDep = 0, g_sumStale = 0, g_rescans = 0,
-         g_sumNoXform = 0, g_sumClassified = 0;
+         g_sumNoXform = 0, g_sumClassified = 0, g_sumPalette = 0;
 // THE PREVIOUS DUMP'S TOTALS, so the report can print a RATE and not only a mean.
 // Part 72's session read `62 draws/frame` off a cumulative mean whose entire content was
 // a 1,200-frame burst during the approach to the soak; the steady state was 1.0. A
@@ -10530,7 +10530,7 @@ uint64_t g_frames = 0, g_sumScene = 0, g_sumNoBounds = 0, g_sumWasteV = 0,
 struct Snap
 {
     uint64_t frames = 0, scene = 0, tested = 0, wasteV = 0, wasteH = 0, on = 0,
-             near_ = 0, dep = 0, noBounds = 0, noXform = 0;
+             near_ = 0, dep = 0, noBounds = 0, noXform = 0, palette = 0;
 };
 Snap g_prev;
 // A capped sample of draws the invariant below rejects, because a REFUSAL that does not
@@ -10573,6 +10573,9 @@ bool PlaceBox(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMeta& 
         return true;                // the table says this stream really is world-space
     if (vs.xfPalette)
         return false;               // see above: a batch has no single placement
+                                    // (counted separately by the caller — it is the
+                                    //  dominant decline, ~73% of world draws in the
+                                    //  .xtr oracle, so it must not hide in a total)
     const size_t at = size_t(vsWindow - regs);
     bool any = false;
     for (uint8_t i = 0; i < vs.xfCount; ++i)
@@ -10633,7 +10636,7 @@ void Dump()
     }
     const Snap now{ g_frames,   g_sumScene, g_sumClassified, g_sumWasteV,
                     g_sumWasteH, g_sumOn,    g_sumNear,       g_sumDep,
-                    g_sumNoBounds, g_sumNoXform };
+                    g_sumNoBounds, g_sumNoXform, g_sumPalette };
     const uint64_t df = now.frames - g_prev.frames;
     auto rate = [&](uint64_t cur, uint64_t prev) {
         return df ? double(cur - prev) / double(df) : 0.0;
@@ -10650,13 +10653,13 @@ void Dump()
             "ARE PER-FRAME RATES OVER THAT WINDOW, not run means\n",
             (unsigned long long)now.frames, (unsigned long long)df);
     fprintf(stderr,
-            "[vcull]   scene draws %.0f  CLASSIFIED %.0f (%.1f%%)   declined: no-bounds "
-            "%.0f  dependent-fetch %.0f  unplaceable %.0f  near-plane %.0f   "
-            "(stale-bounds rescans %llu)\n",
+            "[vcull]   scene draws %.0f  CLASSIFIED %.0f (%.1f%% — THE HEADLINE SPEAKS "
+            "FOR THIS SHARE ONLY)   declined: palette %.0f  no-bounds %.0f  "
+            "dependent-fetch %.0f  unplaceable %.0f  near-plane %.0f   (rescans %llu)\n",
             wScene, wTested, wScene > 0 ? 100.0 * wTested / wScene : 0.0,
-            rate(now.noBounds, g_prev.noBounds), rate(now.dep, g_prev.dep),
-            rate(now.noXform, g_prev.noXform), rate(now.near_, g_prev.near_),
-            (unsigned long long)g_rescans);
+            rate(now.palette, g_prev.palette), rate(now.noBounds, g_prev.noBounds),
+            rate(now.dep, g_prev.dep), rate(now.noXform, g_prev.noXform),
+            rate(now.near_, g_prev.near_), (unsigned long long)g_rescans);
 
     // THE SNAPSHOT ADVANCES HERE, before any early return. If it advanced only on the
     // success path, a refused dump would leave the next window measuring from the last
@@ -10747,13 +10750,14 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
             g_sumStale += g_fStale;
             g_sumNoXform += g_fNoXform;
             g_sumClassified += g_fClassified;
+            g_sumPalette += g_fPalette;
             g_maxWasteV = std::max(g_maxWasteV, g_fWasteV);
             g_maxScene = std::max(g_maxScene, g_fScene);
             if (g_frames == 30 || g_frames % 600 == 0)
                 Dump();
         }
         g_fScene = g_fNoBounds = g_fWasteV = g_fWasteH = g_fNear = 0;
-        g_fOn = g_fDep = g_fStale = g_fNoXform = g_fClassified = 0;
+        g_fOn = g_fDep = g_fStale = g_fNoXform = g_fClassified = g_fPalette = 0;
         g_lastFrame = frame;
     }
     float bEff;
@@ -10838,7 +10842,15 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
     float xf[12];
     if (!PlaceBox(vsWindow, regs, vs, xf))
     {
-        ++g_fNoXform;
+        // PALETTE IS THE DOMINANT DECLINE and is counted apart from the rest.
+        // `tools/vcull_xtr_oracle.py` over the twenty captures declines 34,184 palette
+        // draws against 12,560 it can classify — so this census speaks for roughly a
+        // quarter of the world, and a reader who cannot see that would take its headline
+        // for the whole population.
+        if (vs.xfKnown && vs.xfPalette)
+            ++g_fPalette;
+        else
+            ++g_fNoXform;
         return;
     }
 
