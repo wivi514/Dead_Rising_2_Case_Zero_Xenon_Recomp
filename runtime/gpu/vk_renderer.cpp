@@ -19112,6 +19112,21 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 // belongs to neither; dropping it costs one frame in a few hundred.
                 std::sort(frameUs.begin() + 1, frameUs.end());
                 const uint32_t medUs = frameUs[(frameUs.size() + 1) / 2];
+                // THE TAIL, added in part 71 for the operator's TURN STUTTER — the one
+                // performance problem on this port that has been reported as FELT rather
+                // than measured, and the one a median is least able to see (gotcha 237:
+                // read the distribution, not the centre). The window's frames are already
+                // sorted for the median, so p99 and the share above 2x the median are two
+                // array reads and one loop over data in cache — nothing this can cost is
+                // visible against a frame. Without them a soak and a 360-degree turn
+                // produce the same line and the stutter is unfalsifiable.
+                const size_t n = frameUs.size();
+                const uint32_t p99Us = frameUs[n - 1 - (n - 1) / 100];
+                uint32_t worstUs = frameUs.back();
+                size_t overTwice = 0;
+                for (size_t i = 1; i < n; ++i)
+                    if (frameUs[i] > 2 * medUs)
+                        ++overTwice;
                 uint32_t dMin = 0, dMed = 0, dMax = 0;
                 if (!frameDraws.empty())
                 {
@@ -19123,9 +19138,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 }
                 fprintf(stderr,
                         "[fps] %.1f fps mean (%.2f ms) | %.1f fps median (%.2f ms) | "
+                        "p99 %.2f ms | worst %.2f ms | >2x med %.1f%% | "
                         "%llu frames in %.1f s | draws med %u (%u..%u)\n",
                         double(frames) / elapsed, 1000.0 * elapsed / double(frames),
                         1e6 / double(medUs), double(medUs) / 1000.0,
+                        double(p99Us) / 1000.0, double(worstUs) / 1000.0,
+                        n > 1 ? 100.0 * double(overTwice) / double(n - 1) : 0.0,
                         (unsigned long long)frames, elapsed, dMed, dMin, dMax);
                 windowStart = now;
                 frames = 0;
