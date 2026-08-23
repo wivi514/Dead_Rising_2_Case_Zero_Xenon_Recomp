@@ -92,12 +92,25 @@ Named now so the session is read against a list rather than a hope:
 3. **Self-shadowing.** With the world placed, a receiver's own mesh is now in the
    structure at the receiver's own position. The origin bias exists for this and
    has never been tested against real geometry.
-4. **The alpha and skinned populations.** `alpha` is 6,842 draws of 46,820 in the
+4. **The PALETTE approximation, which is the one place part 67 knowingly guesses.**
+   Nine of the bank's shaders build the world matrix by blending `vc(base + a0)`
+   entries with three PER-VERTEX weights, and the runtime uses entry 0 with unit
+   weight. That is right for the static world — composing the second stage takes
+   `vs_b677dc3457f5b41a` (2,658 of the gas-station frame's 4,512 accepted draws)
+   to 99.5% of vertices on screen — but it is exactly what a SKINNED actor drawn
+   through the same shader would fail, landing the whole mesh at its root bone.
+   Part 63's "skinned exclusion is structural" rested on the c0-3 affine form,
+   which we now know does not apply here, so the exclusion may be weaker than
+   recorded. **`palette=` in the collector census is the population to watch**,
+   and a wrong-looking shadow under a zombie is the symptom. It is measurable
+   offline: extend `rt_tlas_census.py` to compare entry 0 against the true blend
+   per vertex.
+5. **The alpha and skinned populations.** `alpha` is 6,842 draws of 46,820 in the
    census and stays raster-only by a stated trade; a pixel covered by a skinned
    actor takes the factor of the opaque surface behind it. Both are MED/HIGH
    features and both are now worth pricing, because for the first time the
    opaque half is expected to work.
-5. **Cost.** Instances go from ~500 to ~4,500 a frame and that is ~4,500 hash
+6. **Cost.** Instances go from ~500 to ~4,500 a frame and that is ~4,500 hash
    inserts on the PUMP thread, which part 55 measured as the thread that matters.
    Only paid with RT armed. `CZ_VK_PROFILE` and a soak are the way to price it —
    do not quote a frame time from an arm carrying `CZ_VK_FRAME_STATS`.
