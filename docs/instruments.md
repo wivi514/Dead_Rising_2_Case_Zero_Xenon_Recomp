@@ -1739,6 +1739,32 @@ CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §
                    distinct world stream's bytes, so never quote a frame time
                    from a run carrying it. Free when off (one static bool per
                    draw)
+CZ_VK_ORDER_GATE=1 **the draw-order gate** (part 72; perf-plan-part72 §5, the
+                   precondition owed since part 55). Records one identity per draw
+                   (ordinal, pipeline, prim/count, index range, both shader
+                   hashes) in `DoDraw` order — PM4 stream order by construction —
+                   and hashes it against the SUBMISSION order at each frame
+                   boundary. **WHY IT EXISTS**: draw order on this title is
+                   SEMANTIC (the PM4 sequence decides blending, depth and the
+                   tiled resolve order), so a parallel command recorder that
+                   emits the same draws in a different order produces a wrong
+                   picture that no frame time, counter or era median would flag.
+                   On the serial path the two orders are identical by definition
+                   and the answer is always zero — which is the point: it is a
+                   PRECONDITION shipped proven, before the item it guards is
+                   written. The verdict prints on every stats dump. One uint64
+                   append per draw when armed, one static bool test when off
+CZ_VK_ORDER_POISON=N  **the gate's own control.** Transposes the Nth adjacent
+                   pair each frame — the exact defect a parallel recorder would
+                   introduce — and **the gate MUST then fail**. A zero here means
+                   the gate is blind, not that the order is right (gotcha 30).
+                   The hash's fatal failure mode is COMMUTATIVITY (an XOR-only or
+                   additive mix leaves a transposition invisible), and
+                   `tools/order_gate_test.cpp` checks that offline on the
+                   runtime's own arithmetic: all 3,999 adjacent transpositions in
+                   a 4,000-draw frame of near-duplicates detected, plus drops,
+                   duplicates, rotations and reversals, plus a control showing a
+                   commutative mix IS blind so the test is not vacuous
 CZ_VK_VCULL_CENSUS=1  **the vertical-waste census — what the 21:9 culling
                    over-widen actually costs** (part 72; perf-plan-part72 §1a,
                    the record is phase5-notes §6de). Per DRAW on the raw

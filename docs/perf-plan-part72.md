@@ -328,12 +328,27 @@ Still the largest single item (~40% of the pump: `DoDraw` plus the driver) and s
 riskiest. `perf-state-parked.md` §2 has the design. **Nothing about it changes except that
 it must be re-priced against 28 ms rather than 10.5.**
 
-**Its ORDER GATE must exist before any of it is written.** A per-frame ordered hash of
-(draw index, pipeline, vertex range) recorded by both the serial and the parallel path and
-compared. `perf-state-parked.md` §5 item 3 has called this owed since part 55 and it is
-still the right precondition: **there is no other gate that catches getting draw order
-wrong, and draw order on this title is semantic.** Build the gate, ship it on the SERIAL
-path with a poison arm proving it can fire, and only then start the item.
+~~**Its ORDER GATE must exist before any of it is written.**~~ **BUILT AND PROVEN IN PART 72
+(`28990f9`) — this precondition is CLOSED.** `CZ_VK_ORDER_GATE=1` records one identity per
+draw (ordinal, pipeline, prim/count, index range, both shader hashes) in `DoDraw` order —
+which is PM4 stream order by construction — and hashes it against the submission order at
+the frame boundary. A parallel path builds that second sequence from its secondaries and
+**nothing else has to change**.
+
+* `CZ_VK_ORDER_POISON=N` transposes one adjacent pair per frame and must make it fail; on
+  the serial path the two orders are identical by definition, so without the poison the
+  gate would be ceremony.
+* **The fatal failure mode was a commutative hash** — XOR-only or additive mixing leaves a
+  transposition invisible, so the gate would pass every misordered frame while looking like
+  it worked. `tools/order_gate_test.cpp` checks it on the runtime's own arithmetic over a
+  4,000-draw frame of near-duplicates: **all 3,999 adjacent transpositions detected, 0
+  missed**, plus drops, duplicates, rotations and reversals — and a control confirming a
+  commutative mix IS blind, so the test is not vacuous.
+* The verdict prints on every stats dump (the part-56 stencil-counter defect, avoided).
+
+**So the item's precondition is met and the item itself is now the next thing to write.**
+`perf-state-parked.md` §2 has the design; it must be re-priced against 28 ms rather than
+10.5.
 
 Thread budget: `ThreadBudget_Take("record", N, nullptr)`, never `hardware_concurrency()`
 (gotchas 358, 359). The operator's box is 8 physical / 16 logical and the whole budget is

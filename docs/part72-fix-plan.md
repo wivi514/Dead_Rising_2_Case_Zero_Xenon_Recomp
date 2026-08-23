@@ -290,6 +290,57 @@ and re-running them is spending operator time to confirm something already confi
 
 ---
 
+## 4b. WHAT WAS DONE OFFLINE AFTER THIS PLAN WAS WRITTEN
+
+The plan above says §1-§3 are desk work. They were, and two more things turned out to be
+desk work as well — both of which had been assumed to need the operator.
+
+### 4b.1 THE CENSUS FIX IS VERIFIED, WITHOUT A RUN (`3c7d528`)
+
+The placement fix shipped as a prediction, and under "all runtime verification goes through
+the operator" it would have sat unverified until the next sitting. It did not have to: the
+`.xtr` captures carry hardware's own draws with their own constant windows, so the census's
+arithmetic runs against them with no runtime at all — and the verdict comes from a source
+this project did not write. `tools/vcull_xtr_oracle.py`, over 12,560 classifiable world
+draws in 20 traces:
+
+| | on screen | off-V | off-H | near-plane |
+|---|---|---|---|---|
+| **placed** (the fix) | **84.6%** | 0.1% | 2.5% | 12.8% |
+| **unplaced** (the defect, `--no-placement`) | 12.2% | 2.4% | **59.1%** | 28.7% |
+
+84.6% + 12.8% near = **97.4%**, against part 67's independent 97.8% "intersects its own
+frustum" over 46,820 draws — the gap is definitional (this counts a near-plane straddle as
+not-on-screen, deliberately, so the output stays conservative). And the deliberate breakage
+reproduces the operator session's signature: a dominant off-H share, exactly what session B
+measured at 98.1%.
+
+**And it found a coverage problem the runtime was hiding.** 34,184 palette draws declined
+against 12,560 classified: **this census speaks for roughly a quarter of the world.**
+Declining them is still right (part 69 read 0 of 2,786 palette draws referencing a single
+matrix, so a box over a batch placed at entry 0 cannot answer a visibility question) — but
+the runtime folded palette into a generic "unplaceable" total where a reader would take the
+headline for the whole population. Palette now has its own line and the classified share is
+labelled **"THE HEADLINE SPEAKS FOR THIS SHARE ONLY"**.
+
+**What it cannot do:** these captures are hardware at 16:9 with the game's own fov, so they
+contain no wide-mode substitution and **cannot price item 1**. They validate the machinery,
+not the item.
+
+### 4b.2 THE ORDER GATE IS BUILT AND PROVEN (`28990f9`)
+
+§5's precondition, owed since part 55, is closed — and it was always desk work. See §5 of
+the plan for the mechanism. The part worth repeating here is the failure mode: **a
+commutative hash would have made the gate a placebo**, passing every misordered frame while
+looking like it worked, and "FNV is non-commutative" is exactly the kind of claim this
+project has a rule about measuring rather than asserting.
+`tools/order_gate_test.cpp` measures it: all 3,999 adjacent transpositions in a 4,000-draw
+frame of near-duplicates detected, plus drops, duplicates, rotations and reversals — and a
+control confirming a commutative mix IS blind, without which the test would pass for any
+hash at all.
+
+**So the largest item in the plan is now unblocked**, and it is the next thing to write.
+
 ## 5. THE TRANSFERABLE LESSONS, for the gotcha ledger and for Case West
 
 1. **A control added "because this should be small" is worth more than the headline it
@@ -304,3 +355,10 @@ and re-running them is spending operator time to confirm something already confi
 4. **A measurement whose error direction hides the effect cannot produce a null.** The
    census mis-places laterally, which is exactly the direction that hides vertical waste —
    so its small numbers are not evidence of a small effect.
+5. **"This needs an operator" is a claim worth re-testing before you accept it.** Two of
+   this part's verifications were assumed to need a sitting and turned out to be desk work:
+   the captures already contained hardware's own draws, and the order gate's one fatal
+   failure mode is a pure property of its hash. Both are now proven without an operator run.
+6. **A gate's fatal failure mode is usually a property you assumed rather than measured.**
+   For the order gate it was commutativity; for the census it was which space the vertices
+   were in. Neither would have announced itself.
