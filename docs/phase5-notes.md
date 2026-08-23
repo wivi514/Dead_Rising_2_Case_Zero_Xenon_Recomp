@@ -12510,6 +12510,24 @@ real window — operator's first open shows it.
 
 ## §6cs — Part 62: the operator's one-sentence refutation, the COMPOSITE, and the real fix (2026-08-21 night)
 
+
+> **RETRACTED IN PART 67, AND THE RETRACTION IS BEING FILED HERE IN PART 72 BECAUSE IT WAS
+> NEVER FILED HERE.** This section concludes that a composite-draw (`SceneXformForm` form 2)
+> position stream is WORLD-SPACE, on the reasoning that c0..c3 is a full view-projection so
+> there is no per-draw world matrix. **That is wrong.** c0..c3 is the CAMERA's
+> view-projection, and it is the same matrix whether the shader feeds it a world position
+> or an object position it transformed one line earlier — which is what this title's world
+> shaders do, from a row-major 4x3 at vc(8..10). Part 67 measured it over the twenty `.xtr`
+> world traces, 46,820 accepted draws: **100% carry a non-identity world translation, and
+> the fraction whose bounding box intersects the frustum it was drawn into goes from 0.1%
+> untransformed to 97.8% placed.** The placement machinery is
+> `config/rt_world_xform.json` + `ShaderMeta::xfCount/xfBase/xfPalette`; §6cy is part 67's
+> record.
+>
+> **Why this banner exists at all.** Part 67 recorded its refutation in a code comment and
+> in §6cy, not here — so §6cs stayed quotable, and part 72 quoted it, and built a census on
+> it that reproduced the 0.1% figure exactly before its own control caught it. Gotcha 429.
+
 **The operator's first live session with the part-61 slider: "field of view only
 impact the UI which is the only thing it should not impact. In game it doesn't do
 anything."** That sentence refuted §6cr's scene claim (whose "picture proof" was
@@ -15345,6 +15363,19 @@ plays, all of them are worth zero.
 
 ### 9. SESSION 2 — THE STUTTER IS PIPELINE COMPILATION, MEASURED, AND IT WAS **17.8 SECONDS**
 
+> **RETRACTED IN PART 72, IN ONE HALF.** The 17.8 seconds is real and the diagnosis of the
+> STUTTER is untouched — the 3,891 ms frame was pipeline compilation on the pump thread and
+> this section's own top-frame table proves it. **What is wrong is the attribution of the
+> fix.** This section reads the three arms as "no cache -> cold cache -> warm cache" and
+> credits our persisted `VkPipelineCache` with −97.5%. Part 72 ran the arms BACKWARDS, as
+> §11 below pre-registered, and the same-arm comparison across the two orderings says
+> otherwise: `cold` and `warm` move 1.4x and 1.2x with position (noise) while `nocache`
+> moves **346x** (36.457 -> 0.105 ms/pipeline). **It is a driver-side cache that persists
+> across processes**, and with it warm the control arm — `VK_NULL_HANDLE`, no cache at all
+> — is the FASTEST of all seven runs ever taken. Our cache looks like a 7.5x pessimization
+> on this driver, pending the one run that separates arm from position.
+> `docs/part72-fix-plan.md` §1; the record is §6df.
+
 `~/DR2CZ-troubleshooting/part71-pipeline/p71pipe_0823_1556_*.log`. All four arms engaged.
 
 | arm | pipeline creation, whole run | worst FRAME of compilation | worst `[fps]` frame |
@@ -15517,6 +15548,15 @@ live question rather than a settled one.
 
 ### 3. SO MEASURE IT: THE VERTICAL-WASTE CENSUS
 
+> **THE CENSUS AS DESCRIBED BELOW WAS WRONG, AND ITS OWN CONTROL CAUGHT IT THE SAME DAY.**
+> It projected the position stream's object-space box by the camera matrix **without
+> applying the shader's object->world transform**, because it was built on §6cs's
+> world-space conclusion — which part 67 had already refuted, in a code comment and in
+> §6cy but not in §6cs itself (gotcha 429). The claim below that its output "is a ceiling"
+> is therefore **false as shipped**: the mis-placement is lateral, which is the direction
+> that HIDES vertical waste. Fixed in commit `4b701e3`; §6df is the record, and
+> `docs/part72-fix-plan.md` §2 is the diagnosis.
+
 `CZ_VK_VCULL_CENSUS=1`. For every world draw (`SceneXformForm` form 2 — the population
 the game's frustum culls) it projects the position stream's own object-space bounding box
 by the **final** projection and counts the draws whose box lands entirely outside the clip
@@ -15582,3 +15622,157 @@ Unchanged from the plan's §7 item 4 except that route (a)'s `CZ_FOV_PROP_TRACE`
 
 That prices item 1 honestly, and the decision it feeds is whether to spend a session on
 route (b)'s cull hooking or hand the operator route (c)'s picture trade.
+
+## §6df — Part 72's two operator sessions: one retraction, one instrument that refuted itself (2026-08-23)
+
+**The fix list this produced is `docs/part72-fix-plan.md`**, and it is the live document for
+what happens next. This section is the evidence.
+
+Two sittings, chained, one snapshotted binary each, all seven arms engaged (the harnesses
+exit non-zero otherwise and neither did).
+
+### 1. SESSION A — THE PIPELINE CACHE IS NOT THE FIX. THE DRIVER'S OWN CACHE IS
+
+`ORDER=cold,warm,nocache` — the control arm LAST, which is exactly the run §6dd §11
+pre-registered and gotcha 422 asked for.
+
+**The pipeline COUNT held at 484-513 across all seven runs this project has ever taken**,
+which is what makes the comparison legitimate: the same population was created every time
+and only the cost per creation moved. That invariant is doing the work an A/B admissibility
+argument usually has to do by hand.
+
+| session | pos | arm | pipelines | total | **ms/pipeline** |
+|---|---|---|---|---|---|
+| part 71 | 1 | `nocache` | 489 | 17,827 ms | **36.457** |
+| part 71 | 2 | `cold` | 484 | 1,161 ms | 2.398 |
+| part 71 | 3 | `warm` | 490 | 451 ms | 0.920 |
+| part 71 | 4 | `lowres` | 491 | 477 ms | 0.970 |
+| **part 72** | 1 | `cold` | 490 | 821 ms | 1.676 |
+| **part 72** | 2 | `warm` | 513 | 403 ms | 0.786 |
+| **part 72** | 3 | `nocache` | 484 | **51 ms** | **0.105** |
+
+**Same arm, two positions** — and only one of them moves:
+
+```
+cold      2.398 -> 1.676     1.4x     (noise)
+warm      0.920 -> 0.786     1.2x     (noise)
+nocache  36.457 -> 0.105   346.0x
+```
+
+If POSITION were the variable, all three would move with it. Only the arm with **no cache
+object at all** did, so what changed is outside our process. The same 97-pipeline event at
+frame ~1250 cost **3,753.9 ms** in part 71 and **9.9 ms** in part 72, both with
+`VK_NULL_HANDLE`: a driver-side cache that persists across process exits. (RTX 3070,
+Vulkan 1.4.341. **No claim is made about where it lives** — nothing in `~/.cache/nvidia`
+was touched in the window, and `CZ_VK_NO_PIPELINE_CACHE=1` genuinely leaves
+`R->pipeCache == VK_NULL_HANDLE`, which was checked in the source rather than assumed.)
+
+**What is retracted:** §6dd §9's reading of its three arms, and gotcha 420's attribution.
+Both are retracted in place. **What survives:** the 17.8 seconds was real and is what a
+genuinely cold shader set costs; the diagnosis of the *stutter* (the 3,891 ms frame was
+compilation on the pump thread) is confirmed by §6dd §9's own top-frame table and is
+untouched; and the unconditional per-frame compilation census — the thing that made any of
+this visible after three unmeasured inferences — stays.
+
+**What is now open:** on a warm driver, `warm` costs 7.5x `nocache` per pipeline. That is
+still position-confounded within one sitting (positions 2 and 3), and `docs/part72-fix-plan.md`
+§1 pre-registers the two-arm run that decides it and the default flip that follows. **Do not
+change the default first**: one machine, one driver, one ordering.
+
+**And a second finding, unasked for.** With compilation at 51 ms for the whole run, the
+`nocache` arm still shows a **173 ms frame at 7,400 draws**, and its worst compilation frame
+is 9.9 ms. All three arms carry gameplay frames of 165-315 ms the top-frame table does not
+account for. Part 71 attributed the felt stutter to compilation and for the 3.9-second frame
+it was right; a 165-315 ms hitch survives the fix and is unexplained. Filed to
+`open-items.md`.
+
+### 2. SESSION B — THE CENSUS REFUTED ITSELF, AND THE CONTROL IS WHY
+
+Four arms: the measurement, its semantic control (`CZ_NO_GAME_FOV=1`), and both directions
+of its mechanical control.
+
+**Read as the census printed it, the answer looked clean and it was wrong twice over.**
+
+```
+[vcull] 9198 world frames  scene draws/frame 6391  TESTED 6009 (94.0%)
+[vcull]   ENTIRELY OFF-SCREEN VERTICALLY: 62 draws/frame (1.0% of tested)
+[vcull]   entirely off-screen horizontally: 5460 draws/frame (90.9% of tested)
+```
+
+**Error 1 — the headline was a cumulative mean, and the mean was a transient.** Multiplying
+each periodic line back out by its frame count:
+
+```
+frames   vert/f   V total   dV/df
+  1800        0         0     0.0
+  2400      184    441600   736.0     <- the entire signal is this burst
+  3000      188    564000   204.0
+  4200      135    567000     3.0
+  6000       95    570000     5.0
+  9198       62    570276     1.0
+```
+
+`V total` is **flat from frame 3,000**. Everything was accrued between frames 1,800 and
+3,000 — the approach to the soak — and the steady state, which is the load being
+characterised, is **1.0 draws a frame**. The decaying 62 is `C/n`. Gotcha 428.
+
+Re-read as steady-state rates, all four arms:
+
+| arm | tested/frame | vert waste | horz waste | (cumulative said) |
+|---|---|---|---|---|
+| `census` | 7,298 | **1.0** | 7,156 (98.1%) | vert 62, horz 5,460 |
+| `nofov` | 5,735 | **1.0** | 5,583 (97.3%) | vert 1, horz 4,329 |
+| `scalelow` (0.02) | 5,807 | 5,653 | 5,694 | — |
+| `scalehigh` (50) | 6,682 | 0 | 0 | — |
+
+The `62 -> 1` semantic response was **entirely the transient**: in steady state both census
+arms read 1.0 and the control discriminates nothing.
+
+**Error 2 — and the control is what found it.** The horizontal figure was added purely as a
+sanity channel with its expectation written into the format string ("the horizontal
+widening is the part-62 fix and is kept, so this should be small"). It read **98.1%**,
+leaving ~142 on-screen draws a frame to paint a scene submitting 9,750. The mechanical
+control proves the predicate itself is sound — 5,653 at `SCALE=0.02`, 0 at `SCALE=50`,
+monotone both ways, and `tools/vcull_predicate_test.cpp` passes and fails on a broken sign.
+So the **geometry going into it** was wrong, displaced laterally but not vertically.
+
+**The cause was in this repository already, and it is the reason this section matters more
+than its result.** `ShaderMeta`'s comment carries part 67's retraction of §6cs's
+world-space conclusion, with the number: boxes intersecting the frustum they were drawn
+into go from **0.1% untransformed to 97.8% placed**, over 46,820 draws. The census read
+1.9% on screen. It reproduced part 67's 0.1% figure, from part 67's mistake, one part after
+part 67 fixed it — because the retraction was filed in a code comment and in §6cy but never
+in §6cs, so §6cs stayed quotable and §6de quoted it that same morning. **§6cs now carries
+the banner it should have carried since part 67.** Gotcha 429.
+
+**So item 1 is UNPRICED.** It is not 4.8 ms (§6de §2's containment argument), probably not
+the 2.5-2.8 ms the models there suggested, and **this session did not measure it** — the
+mis-placement is lateral, which is the direction that hides vertical waste, so a small
+number from it is not evidence of a small effect.
+
+**What the session did establish, for free:** the pump's slope re-confirms at
+**2.35 us/draw** (30.6 ms at 9,750 draws against 25.0 ms at 7,370, with the census armed on
+both sides), against part 71's ~2.5; the substitution adds **+24%** scene draws
+(6,391 vs 5,172), matching part 71's +24.4% independently; and `>2x med` was **0.0% in all
+four arms** — the soak is steady, and the stutter is not in it.
+
+### 3. WHAT WAS FIXED, AND WHAT IS OWED
+
+Fixed offline the same day (commit `4b701e3`): the placement, per corner and composed
+across stages, declined-and-counted when unknown and for palette draws; windowed rates;
+an on-screen invariant that **refuses to print a headline below 50%** and prints a capped
+offender sample with each box's object AND placed centre; bounds re-scanned on content
+change; dependent-fetch draws excluded. The predicate gate grew five placement cases and is
+confirmed capable of failing on a flipped comparison, a dropped placement and a transposed
+matrix read — the last needing a SHEAR case, because every symmetric transform passes
+either way and a 90-degree yaw is its own inverse under transposition.
+
+Owed, and it is two short runs rather than another four-arm sitting:
+`ORDER=nocache,warm tools/part71_pipeline_session.sh` and a two-arm
+`tools/part72_vcull_session.sh`. `docs/part72-fix-plan.md` §4.
+
+### 4. GATES
+
+`--smoke` OK; predicate gate 18/18; harness selftest 12/12; `shader_dim_census.py` clean on
+all sixteen caches; `rt_world_xform_census.py` 104 of 104. Zero `no translated shader`
+across all seven operator arms. **A5 is owed**, carried since part 67.

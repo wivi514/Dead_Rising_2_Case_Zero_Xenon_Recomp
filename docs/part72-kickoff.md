@@ -24,6 +24,10 @@
   every item in `perf-state-parked.md` §2 is still worth what it says. At the LIGHT end it
   reverses (−24% at 2,000-2,499 draws).
 * **THE POST-LOAD STUTTER WAS PIPELINE COMPILATION AND IT WAS 17.8 SECONDS A SESSION.**
+  ~~A persisted `VkPipelineCache` takes it to 450.8 ms (−97.5%).~~ **THE FIX HALF IS
+  RETRACTED (part 72):** the 17.8 s is real, but a **driver-side** cache is what removes it,
+  and ours is a 7.5x pessimization once that is warm. `phase5-notes.md` §6df §1, gotcha 426,
+  `docs/part72-fix-plan.md` §1.
   This renderer passed `VK_NULL_HANDLE` at all three `vkCreateGraphicsPipelines` sites from
   phase 5 until part 71. `frame 1257: 3,753.9 ms building 97 pipeline(s)`. A persisted
   `VkPipelineCache` takes the run's total to **450.8 ms (−97.5%)** and the worst presented
@@ -45,7 +49,12 @@
 **`docs/perf-plan-part72.md` §1-5 is this table with a design, arms and a pre-registered
 kill threshold for each. The summary:**
 
-> **SESSION 1 IS RUN — ALL DESK WORK — AND IT MOVED ROW 1 TWICE.** Its price was an upper
+> **BOTH OPERATOR SITTINGS ARE RUN. The fix list is `docs/part72-fix-plan.md`, the record
+> is `phase5-notes.md` §6df, and the lessons are gotchas 426-429.** Row 1 is UNPRICED (the
+> census that was to price it refuted itself, and is fixed); row 2's question was answered
+> and INVERTED part 71's headline. Below is what session 1 established, which still stands.
+>
+> **SESSION 1 (desk work) MOVED ROW 1 TWICE.** Its price was an upper
 > bound, not a value (the arm removes the horizontal widening too, so the recoverable
 > draws are strictly fewer than 1,930 — ≈2.5-2.8 ms), and **route (a) is dead**: the engine
 > has no aspect scalar, settled by a census over the whole image. Both are retracted in
@@ -55,7 +64,7 @@ kill threshold for each. The summary:**
 
 | # | item | measured price | risk | arm |
 |---|---|---|---|---|
-| 1 | **the wide-culling over-widen** — ~~+1,930 draws (+24%)~~ **strictly fewer** | ~~≈4.8 ms~~ **≈2.5-2.8 ms, and now MEASURED not modelled** | low-med | `CZ_VK_VCULL_CENSUS=1` (+ 2 controls) |
+| 1 | **the wide-culling over-widen** — ~~+1,930 draws (+24%)~~ **strictly fewer** | ~~≈4.8 ms~~ ~~≈2.5-2.8 ms~~ **UNPRICED — the census refuted itself, see §1a** | low-med | `CZ_VK_VCULL_CENSUS=1` (fixed in `4b701e3`) |
 | 2 | item A, parallel command recording (`DoDraw` + driver, ~40% of the pump) | −3 to −5 ms *(re-price)* | **high** | none — **the ORDER GATE is owed first** |
 | 3 | item C, the constant GATHER (median 9 VS / 27 PS registers of 256) | ~28 MB/frame of copy | med | none yet |
 | 4 | item B, parallel texture untile | unpriced | med | none |
@@ -93,7 +102,7 @@ there is no over-widen to measure at all. `SELFTEST=1` runs the harness's own tw
 cases (four clean, eight deliberate breakages). **Read the controls before the headline**;
 if either fails the headline means nothing.
 
-## 2. The one measurement owed, and it costs 90 seconds
+## 2. ~~The one measurement owed~~ — RUN, AND IT INVERTED THE CONCLUSION (see §1a)
 
 **Part 71's three-step improvement has an unattributed middle step.** Pipeline compilation
 went 17,827 -> 1,160 -> 451 ms across arms run in that order, and the big step happened

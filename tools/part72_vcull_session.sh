@@ -32,6 +32,16 @@
 #   scalehigh   + CZ_VK_VCULL_SCALE=50. MECHANICAL CONTROL, the other direction: a huge
 #               clip bound must drive the count to ZERO.
 #
+# AFTER PART 72's FIRST SITTING, RUN ONLY TWO OF THEM: `ORDER=census,nofov`. The two
+# mechanical arms already fired correctly (5,653 at 0.02, 0 at 50, monotone both ways) and
+# the predicate they exercise is unchanged and has an OFFLINE gate that covers it —
+# repeating them spends operator time confirming something already confirmed. What the
+# first sitting actually caught was that the boxes were never PLACED (the census projected
+# object space by the camera matrix and read 98.1% of the world off-screen); that is fixed,
+# and the census now REFUSES to print a headline when its own on-screen invariant fails, so
+# a second failure names itself instead of hiding in a plausible number.
+# `docs/part72-fix-plan.md` §4.
+#
 # The two mechanical arms need ~30 s each, not a soak — they are asking whether the
 # predicate fires at all, and that is answered by the first `[vcull]` dump.
 #
@@ -71,7 +81,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/part72-vcull"
-ORDER="${ORDER:-census,nofov,scalelow,scalehigh}"
+ORDER="${ORDER:-census,nofov}"   # see the note above: the mechanical arms are done
 SECS="${SECS:-180}"
 FPS="${FPS:-500}"
 FLAGS="${FLAGS:-CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS}"
@@ -322,7 +332,15 @@ for a in "${arms[@]}"; do
     grep -a "game-side fov ACTIVE\|CZ_NO_GAME_FOV=1" "$f" | tail -1
     # THE RESULT. The last dump is the one with the most frames behind it.
     echo "  [vcull] last dump:"
-    grep -a "^\[vcull\]" "$f" | tail -4 | sed 's/^/    /'
+    grep -a "^\[vcull\]" "$f" | tail -6 | sed 's/^/    /'
+    # THE INVARIANT'S VERDICT, hoisted so it cannot be missed in the scroll. A refusal is
+    # not a failed run — it is the census declining to publish a number it cannot stand
+    # behind, and the offender lines beside it say why.
+    if grep -aq "REFUSING TO REPORT" "$f"; then
+        echo "  ** THE CENSUS REFUSED TO REPORT. Its on-screen invariant failed, so its"
+        echo "     vertical figure is NOT item 1's price. The offenders it named:"
+        grep -a "offender " "$f" | head -6 | sed 's/^/       /'
+    fi
     # THE DENOMINATOR, from the same run (gotcha 417): "1,000 wasted" means something
     # different at 9,800 draws than at 2,500, and these arms will not sit at the same load.
     echo "  [fps] windows (for the DRAW COUNTS — the frame times are inflated by the census):"

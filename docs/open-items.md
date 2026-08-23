@@ -7,6 +7,22 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
+0w. **THE STUTTER REMAINDER — 165-315 ms gameplay frames that pipeline compilation does
+   NOT explain (part 72).** Opened unasked-for by session A. Part 71 attributed the felt
+   post-load stutter to pipeline compilation on the pump thread, and for the 3,891 ms frame
+   that is confirmed. But with compilation down to **51 ms for an entire run**, the
+   `nocache` arm still shows a **173 ms frame at 7,400 draws** while its worst compilation
+   frame is 9.9 ms; all three of session A's arms carry 165-315 ms gameplay frames the
+   per-frame compilation table does not account for. Worth an item rather than a footnote
+   because the soak's `>2x med` is 0.0% and its `worst` sits within 2 ms of the median —
+   these are discrete events, which is the shape a user feels.
+   **Do NOT add an instrument first.** The renderer already prints per-frame counters for
+   the arena, the descriptor pools, the stream store and texture uploads, and `CZ_FPS_LOG`'s
+   `worst` already names the window; correlate an existing counter with it before building
+   a probe (gotcha 7 — the profiler alone costs 2-4 ms a frame, the same order as the thing
+   being hunted). Candidates, none tested: zone streaming / file I/O, texture upload bursts,
+   the bump arena growing, descriptor-pool exhaustion. Record: `phase5-notes.md` §6df §1.
+
 0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT, AND
    PART 67 FOUND AND FIXED THE REASON IT PRODUCED NOTHING. ONE OPERATOR SESSION
    IS OWED AND IT IS SCRIPTED.** The records are `phase5-notes.md` §6cv (route

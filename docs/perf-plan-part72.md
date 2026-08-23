@@ -20,7 +20,7 @@ are still correct and are not restated here.
 | internal resolution | **3440x1440** (their `cz_settings.txt`, fov slider +10, 21:9) |
 | CPU or GPU? | **CPU. A quarter of the pixels costs −6.8%** (28.09 -> 26.19, n=19/25) |
 | the pump's slope | **~2.5 us per submitted draw** at that load |
-| post-load stutter | **solved** — 17,827 -> 451 ms of pipeline compilation |
+| post-load stutter | **solved, but not by us** — the 17,827 ms was a cold DRIVER cache; see §2 |
 
 **Two things follow and neither is optional.**
 
@@ -36,7 +36,19 @@ without another session, and it is the reason §1 is first.
 
 ---
 
-## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ~~≈4.8 ms of 28~~ **an upper bound of 4.8 ms; the value is ≈2.5-2.8 ms**, and it is the operator's own complaint
+## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ~~≈4.8 ms of 28~~ ~~≈2.5-2.8 ms~~ **UNPRICED**
+
+> **STATUS AFTER PART 72'S OPERATOR SESSION: UNPRICED, AND THAT IS THE HONEST WORD FOR IT.**
+> §1a below is right that 4.8 ms is an upper bound. Its two models (≈1,017 and ≈1,105 draws
+> recovered) are **not** measurements and should not be quoted. The census built to settle
+> it — §1a's own recommendation — **refuted itself in the session**: it projected
+> object-space boxes by the camera matrix, read 98.1% of the world as off-screen, and its
+> horizontal control is the only reason that did not become this item's published price.
+> The mis-placement is LATERAL, which is the direction that hides vertical waste, so its
+> small vertical numbers are not evidence of a small effect. Fixed in `4b701e3`; re-ask
+> with the two-arm run in `docs/part72-fix-plan.md` §4. Record: `phase5-notes.md` §6df §2.
+
+**and it is the operator's own complaint**
 
 > **CORRECTED IN PART 72, AND ROUTE (a) IS DEAD.** Two changes, both below and both in
 > place: the ≈4.8 ms figure is an UPPER BOUND rather than the item's value, because the
@@ -167,7 +179,23 @@ sentence, not a percentage.
 
 ---
 
-## 2. ITEM 2 — FINISH THE PIPELINE-CACHE RESULT. 90 seconds of operator time, then a decision
+## 2. ITEM 2 — ~~FINISH THE PIPELINE-CACHE RESULT~~ **THE RESULT WAS FINISHED AND IT INVERTED**
+
+> **RUN, AND IT RETRACTS PART 71'S HEADLINE.** §2a's attribution run was executed with the
+> control arm LAST. The answer is (b): **a driver-side cache that persists across
+> processes**, not our file and not merely having a cache OBJECT. Same-arm across the two
+> orderings: `cold` moves 1.4x with position, `warm` 1.2x, **`nocache` 346x** — and with
+> the driver warm, passing `VK_NULL_HANDLE` is the cheapest of all seven runs ever taken
+> (0.105 ms/pipeline against `warm`'s 0.786). `phase5-notes.md` **§6df §1**, gotcha 426,
+> and the decision this now needs is `docs/part72-fix-plan.md` §1.
+>
+> **What that changes for §2b below: it makes it the ONLY answer.** A cold driver cache can
+> return on any driver update, new machine or cache eviction, and every user pays it on
+> first run — and our own cache demonstrably does not prevent it. §2b's kill threshold
+> ("drop this if the warm worst-frame is under 50 ms") is **withdrawn**: it was written
+> when our cache was believed to be the fix.
+
+## 2-OLD. The text as it stood before the run
 
 ### 2a. The attribution run, owed
 

@@ -188,8 +188,11 @@ mask; trust the microcode's own swizzles.
     `part72-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
     **`docs/perf-plan-part72.md`** (which supersedes `perf-plan-part71.md`, kept because it
     was executed and records its own two retractions in place; **part 72's plan now carries
-    two of its own — §1a, that item 1's price was an upper bound, and §1b, that route (a)
-    is dead**). `part71-kickoff.md`
+    three of its own — §1a, that item 1's price was an upper bound, §1b, that route (a) is
+    dead, and §2, that part 71's pipeline-cache attribution was wrong**).
+    **`docs/part72-fix-plan.md` IS THE LIVE FIX LIST** and is the first thing to read after
+    this file: it carries what part 72's two operator sittings established, what was fixed
+    offline, and the ONE short sitting still owed. `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
@@ -838,7 +841,42 @@ is the sitting that is owed):
   a **stride-0x98** record at `[[[r3+0xd60] + view*0x38C] + 0x348] + [r3+0x10c8]*0x98`, and
   **`cam+0x68` is the fov in degrees**. There are **no `frustum`/`cull` strings in the
   image**, so route (b)'s cull hooking has no debug surface to grep for.
-* **Gates:** `--smoke` OK; `vcull_predicate_test` 13/13. **A5 is owed**, carried since
+* **BOTH OPERATOR SITTINGS ARE NOW RUN, AND EACH PRODUCED A RETRACTION.**
+  **`docs/part72-fix-plan.md` IS THE LIVE FIX LIST**; the record is `phase5-notes.md`
+  **§6df**; the lessons are gotchas **426-429**.
+* **SESSION A RETRACTS PART 71's PIPELINE-CACHE HEADLINE.** Run with the control arm LAST
+  (the run gotcha 422 asked for), and the **pipeline COUNT held at 484-513 across all seven
+  runs ever taken**, which is what makes ms/pipeline comparable. Same arm, two positions:
+  `cold` 2.398 -> 1.676 (1.4x), `warm` 0.920 -> 0.786 (1.2x), **`nocache` 36.457 -> 0.105
+  (346x)**. Only the arm with NO cache object moved, so the mechanism is **outside the
+  process** — a driver-side cache that persists across process exits. With it warm,
+  `VK_NULL_HANDLE` is the CHEAPEST of the seven. **The 17.8 s and the stutter diagnosis
+  survive; the attribution does not.** Our cache looks like a 7.5x pessimization, pending
+  one two-arm run before any default flips (gotcha 426).
+* **SESSION B's CENSUS REFUTED ITSELF, AND THE CONTROL IS WHY.** The horizontal channel —
+  added purely as a sanity control with its expectation in the format string — read
+  **98.1%**, leaving ~142 on-screen draws to paint a scene submitting 9,750. The predicate
+  was fine (monotone both ways under `CZ_VK_VCULL_SCALE`); **the boxes were never PLACED.**
+  The cause was already in this repo: `ShaderMeta`'s comment carries part 67's retraction
+  of §6cs's world-space conclusion, with the number — boxes intersecting their own frustum
+  go **0.1% untransformed -> 97.8% placed**. The census read 1.9%. **§6cs now carries the
+  retraction banner it should have had since part 67** (gotcha 429). Fixed in `4b701e3`:
+  per-corner placement, declined-and-counted when unknown, palette draws declined, windowed
+  rates, and an on-screen invariant that REFUSES to print a headline below 50%.
+* **ITEM 1 IS UNPRICED** — not 4.8 ms, probably not 2.5-2.8, and this session did not
+  measure it. The mis-placement was lateral, which is the direction that HIDES vertical
+  waste, so its small numbers are not evidence of a small effect.
+* **Its headline was also a cumulative mean over a transient** — 62 draws/frame decaying as
+  `C/n` from a burst that ended at frame 3,000, where the steady state was **1.0**
+  (gotcha 428). Confirmed for free: the pump's slope re-reads at **2.35 us/draw** and the
+  substitution adds **+24%** scene draws, both matching part 71 independently.
+* **A NEW OPEN ITEM:** with compilation at 51 ms for a whole run, a **173 ms frame at 7,400
+  draws** remains. Pipeline compilation was the 3.9-second frame; a 165-315 ms gameplay
+  hitch survives the fix and is unexplained.
+* **Gates:** `--smoke` OK; `vcull_predicate_test` **18/18** and confirmed capable of failing
+  on a flipped comparison, a dropped placement and a transposed matrix read; harness
+  selftest 12/12; `shader_dim_census.py` clean; `rt_world_xform_census.py` 104 of 104; zero
+  `no translated shader` across all seven operator arms. **A5 is owed**, carried since
   part 67 — no kernel path has changed in 67-72.
 
 Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it executed was
@@ -867,7 +905,11 @@ Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it
   was gated behind `CZ_VK_PROFILE`, so it was off in every session whose stutter was ever
   reported — gotcha 418) and a persisted `VkPipelineCache`
   (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm).
-* **SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.** `pipeline creation: 489 pipelines,
+* **~~SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.~~ PART 72 RETRACTED THE FIX HALF OF THIS
+  (not the cost): the 17.8 s is real and it is what a genuinely cold shader set costs, but
+  a DRIVER-SIDE cache is what removes it and ours is a 7.5x pessimization once that is
+  warm. Gotcha 426, `phase5-notes.md` §6df §1.** The original text:
+  **SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.** `pipeline creation: 489 pipelines,
   **17,827.3 ms** total` with no cache, including `frame 1257: **3,753.9 ms** building 97
   pipeline(s)` — which IS session 1's unexplained 3,891 ms frame. Three times inferred,
   never measured, now settled by one unconditional clock read. With the cache seeded:

@@ -4573,7 +4573,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      which half moved.
 
 420. **BEFORE OPTIMISING A RENDERER, CHECK WHETHER IT PASSES `VK_NULL_HANDLE` AS THE
-     PIPELINE CACHE.** This one did, at all three creation sites, from the day the renderer
+     PIPELINE CACHE.**
+     **[PART 72 RETRACTS THE FIX, NOT THE COST.** The 17,827 ms is real and it is what a
+     genuinely cold shader set costs. A persisted *application* `VkPipelineCache` is NOT
+     what removed it: run the arms backwards and `nocache` — no cache object at all — is
+     the cheapest of the seven runs ever taken, 0.105 ms/pipeline against `warm`'s 0.786.
+     A **driver-side** cache that survives process exit is the mechanism. The lesson below
+     stands with its subject changed: grep for `VK_NULL_HANDLE` on day one, and then find
+     out whether the driver is already caching for you before you credit your own file.
+     **See gotcha 426.]**
+     This one did, at all three creation sites, from the day the renderer
      was written until part 71 — and it cost **17,827 ms of pipeline compilation in a
      five-minute session**, on the pump thread, including a single **3,753.9 ms frame that
      built 97 pipelines**. That is not a tuning opportunity, it is a missing line of
@@ -4640,3 +4649,48 @@ From phase C part 18 (the frame rate — and none of it was work):
      the projection's own geometry. **The duplication is the price of having a gate at
      all**, and it is worth paying: the test caught a wrong expectation on its first run and
      screams (0 -> 6 failures) when one comparison's sign is flipped (gotcha 30).
+
+426. **THE DRIVER MAY ALREADY BE CACHING FOR YOU, AND CREDITING YOUR OWN CACHE FOR ITS WORK
+     IS A ONE-ORDERING MISTAKE.** Part 71 measured pipeline compilation at
+     17,827 -> 1,161 -> 451 ms across `nocache, cold, warm` and read it as "our persisted
+     `VkPipelineCache` is worth −97.5%". Part 72 ran the same three arms as
+     `cold, warm, nocache`. The **pipeline COUNT held at 484-513 across all seven runs**,
+     which controls for the route, so ms/pipeline is comparable — and the same arm in two
+     positions says it all: `cold` 2.398 -> 1.676 (1.4x), `warm` 0.920 -> 0.786 (1.2x),
+     **`nocache` 36.457 -> 0.105 (346x)**. If POSITION were the variable, all three would
+     move. Only the one with no cache object did, so what changed is **outside the
+     process**: a driver-side cache that persists across runs. With it warm, passing
+     `VK_NULL_HANDLE` was the *fastest* of the seven. **Two rules.** Before crediting an
+     application cache, run the no-cache arm LAST — gotcha 422 said run them backwards and
+     this is what that buys. And find an invariant that makes the arms comparable (here,
+     the pipeline count) or the comparison is between routes, not configurations.
+
+427. **A CONTROL YOU ADD BECAUSE IT "SHOULD BE BORING" IS WORTH MORE THAN THE HEADLINE IT
+     ACCOMPANIES.** Part 72's vertical-waste census printed a horizontal figure purely as a
+     sanity control, with the expectation written into the format string: the horizontal
+     widening is kept, so the number should be small. It read **98.1%**, leaving ~142
+     on-screen draws to paint a scene submitting 9,750. That is the only reason a wrong
+     number was not published as the plan's biggest item's price — the headline itself
+     looked perfectly reasonable (62 draws/frame, falling to 1 under the semantic control).
+     **Give every instrument a channel whose value you can predict**, and make the
+     instrument REFUSE to report when that channel is wrong rather than leaving it to a
+     reader to notice.
+
+428. **A CUMULATIVE MEAN PRINTED EVERY N FRAMES LOOKS LIKE A TIME SERIES AND IS NOT ONE.**
+     The same census reported 184 -> 188 -> 157 -> 135 -> 118 -> ... -> 62 draws/frame and
+     it reads like a quantity settling down. Multiply back out and the TOTAL is flat from
+     frame 3,000: every one of those draws was accrued in a 1,200-frame burst during the
+     approach to the soak, and the steady state — the thing being measured — was **1.0 a
+     frame**. The decay is `C/n`. **Print the delta since the previous line**, and when
+     reading someone else's periodic average, multiply by the count and difference it
+     before believing the trend. Gotcha 237 is the same defect wearing a frame timer.
+
+429. **A RETRACTION FILED SOMEWHERE ELSE LEAVES THE ORIGINAL CLAIM QUOTABLE.** §6cs
+     concluded that composite-draw position streams are world-space. Part 67 refuted it
+     with 46,820 draws (boxes intersecting their own frustum: 0.1% untransformed, 97.8%
+     placed) and recorded the refutation in a CODE COMMENT and in §6cy — but not in §6cs.
+     Part 72 then read §6cs, cited it by name, and built a census on it that reproduced
+     part 67's 0.1% figure exactly. **Re-reading the source would not have caught it**, and
+     the "retract in place" rule this project already has is precisely the defence: the
+     correction has to land where the claim is, not only where the correcting work
+     happened. When a retraction spans documents, edit the ORIGINAL first.
