@@ -2016,6 +2016,25 @@ CZ_VK_RT_RAYS=N    rays per pixel, 1..4, overriding the tier (RT HIGH = 4, the
 CZ_VK_RT_CONE=<rad>  the sun's angular radius for the cone sample (default
                    0.02 rad; the real sun is ~0.00465). A LOOK control, not
                    astronomy. Only read when rays > 1
+CZ_VK_RT_SUN_SRC=cascade  **WHERE THE SUN'S DIRECTION COMES FROM.** The
+                   default is the TITLE'S OWN pixel constant `c23`, a unit
+                   direction it uploads and lights from; `cascade` restores the
+                   pre-part-70 derivation (capture a pitch-1040 draw's `c0-3`,
+                   pick among candidates by per-frame majority vote, invert,
+                   unproject, negate) as the same-binary control arm. The
+                   decomposition is also the FALLBACK for any frame before the
+                   constant block has been seen, so this never costs a run its
+                   shadows. Hardware settles which is right and it is not close:
+                   `tools/xtr_sun_oracle.py` reads `c23`, the title's own cascade
+                   sampling matrix and the render matrix out of all twenty
+                   `.xtr` traces and gets **0.00 degrees between all three, in
+                   twenty of twenty**. Every run prints both readings and the
+                   angle between them (`src=` and `vs-cascade=` on the `[rtb]
+                   passes=` line, plus two tables at exit with per-cluster FRAME
+                   RANGES) — a disagreement is the standing gate on this, and
+                   `blocks REJECTED for c23-vs-cascade disagreement` is nonzero
+                   only if the title's own two statements disagree in our
+                   runtime, which they never do on hardware
 CZ_VK_RT_SUN_FLIP=1  negate the sun direction. **Tried and NOT a fix** (part
                    66): it reads 72.2% shadowed, but the dumped factor is a
                    UNIFORM BLANKET over the receiver silhouette — column profile

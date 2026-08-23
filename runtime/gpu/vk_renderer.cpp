@@ -10449,11 +10449,19 @@ uint64_t g_sunLatched = 0;
 // however much their volumes differ, so a second distinct direction is an intruder in
 // the capture — which is precisely the defect above, and it was invisible because only
 // the last one was ever printed. Quantised to ~2 degrees; at most eight kept.
+// A DIRECTION AND WHEN IT WAS SEEN. The frame range is not decoration: this title has a
+// day cycle, so "two distinct directions over a run" has two completely different
+// explanations — a light that MOVED (each cluster owns a contiguous stretch of frames)
+// and a selection that FLIPS (the clusters interleave). A count alone cannot tell those
+// apart, and part 69 spent its closing hours on the wrong one of the two because the
+// census had no time axis (gotcha: a count over a run is not an ORDER).
 struct SunObs
 {
     float dir[3];
     float len;
     uint64_t count;
+    uint64_t firstFrame;
+    uint64_t lastFrame;
 };
 SunObs g_sunObs[8];
 uint32_t g_sunObsCount = 0;
@@ -10561,6 +10569,7 @@ void NoteSunDirection(const float* dir, float len)
         if (d > 0.9994f)          // ~2 degrees
         {
             ++g_sunObs[i].count;
+            g_sunObs[i].lastFrame = R->frame;
             return;
         }
     }
@@ -10572,7 +10581,122 @@ void NoteSunDirection(const float* dir, float len)
     o.dir[2] = dir[2];
     o.len = len;
     o.count = 1;
+    o.firstFrame = o.lastFrame = R->frame;
 }
+// THE TITLE'S OWN SUN DIRECTION, which is the ORACLE this feature spent five parts
+// without (part 70).
+//
+// Everything above derives the sun by DECOMPOSING a matrix: capture a cascade draw's
+// c0-3, invert it, unproject the light volume's near and far centres, negate the
+// difference. Three attempts were needed to pick the right matrix (§6cw), the third
+// being a per-frame majority VOTE, and the result still disagreed with itself — the
+// census reads two directions 24 degrees apart from cascades of one light, which is
+// physically impossible for a directional source.
+//
+// The title does not require any of that. It uploads a unit direction at PIXEL constant
+// c23 and its own world shaders light from it. `tools/xtr_sun_oracle.py` reads that
+// constant out of all twenty `.xtr` captures and cross-checks it against the two
+// matrices in the SAME draw's constant file:
+//
+//   pc(23)                                  (-0.3714 +0.5571 +0.7428)   the title saying it
+//   pc(28..31) cascade sampling matrix,     (-0.3714 +0.5571 +0.7428)   0.00 deg
+//     its depth row negated
+//   the pitch-1040 cascade RENDER matrix,   (-0.3714 +0.5571 +0.7428)   0.00 deg
+//     decomposed by the method above
+//
+// Twenty of twenty traces, 0.00 degrees, on 567-1101 render matrices each. So the
+// method is sound, the render matrix is the right matrix, and hardware's sun points at
+// **positive Z** — while every log this port has ever written latches the mirror of it
+// (`(-0.366 +0.548 -0.752)`, 1.2 degrees from the exact Z-flip of the truth). Whatever
+// our capture is picking up, hardware never draws it.
+//
+// Reading the constant removes the whole apparatus: no atlas binding, no vote, no
+// inversion, no sign argument. `CZ_VK_RT_SUN_SRC=cascade` restores the derived one as
+// the same-binary control arm.
+//
+// IDENTIFYING THE CONSTANT BLOCK IS ITSELF TWO-SIDED, because "c23 happens to hold a
+// unit vector" is not a binding (gotcha 3, and the standing rule that a decoded field
+// needs an independent check). A draw qualifies only when c23 AND c27 are unit vectors,
+// c28..c31 is an orthographic composite, and that matrix's own depth row agrees with
+// c23 to two degrees — the exact relationship hardware holds to 0.00 degrees in every
+// capture. Disagreements are COUNTED rather than dropped: a nonzero `mismatch` means
+// the block was found and the two halves of it do not agree, which is a different
+// finding from never finding it at all.
+bool Active();                 // defined below; NoteGuestSun is on the per-draw path
+float g_guestSun[3] = { 0.0f, 0.0f, 0.0f };
+bool g_guestSunValid = false;
+uint64_t g_guestSunFrame = ~0ull;
+uint64_t g_guestSunSamples = 0, g_guestSunMismatch = 0, g_guestSunProbes = 0;
+// Published by the factor pass each frame so the trace line and the exit census read
+// the SAME numbers the shader was handed, rather than recomputing them afterwards from
+// state that has since moved on.
+bool g_sunSrcGuest = false;
+float g_sunDisagree = -1.0f;   // degrees between the two readings, -1 = no guest sun yet
+SunObs g_gsunObs[8];
+uint32_t g_gsunObsCount = 0;
+
+void NoteGuestSun(const uint32_t* psWindow)
+{
+    if (!Active())
+        return;
+    // ONE SAMPLE A FRAME. The frame stamp is set only on a MATCH, so the scan keeps
+    // trying successive draws until the world block is bound and then costs a single
+    // integer compare for the rest of the frame — this is the per-draw path (33k calls
+    // a frame at the operator's load), so an unconditional four-float read is not free.
+    if (g_guestSunFrame == R->frame)
+        return;
+    ++g_guestSunProbes;
+    const float* c = reinterpret_cast<const float*>(psWindow);
+    const float* s = c + 23 * 4;
+    const float* v = c + 27 * 4;
+    const float sn = s[0] * s[0] + s[1] * s[1] + s[2] * s[2];
+    const float vn = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    if (!(sn > 0.98f && sn < 1.02f) || !(vn > 0.98f && vn < 1.02f))
+        return;
+    // c28..c31: the first cascade's world -> (u, v, depth) matrix. Row 3 == (0,0,0,1)
+    // is the orthographic test; row 2's xyz is the gradient of light-space depth in
+    // world space, i.e. the direction light TRAVELS, so its negation is the sun.
+    const float* m = c + 28 * 4;
+    if (!(std::fabs(m[12]) < 0.05f && std::fabs(m[13]) < 0.05f &&
+          std::fabs(m[14]) < 0.05f && std::fabs(m[15] - 1.0f) < 0.01f))
+        return;
+    const float gl = std::sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
+    if (!(gl > 1e-12f))
+        return;
+    const float row2[3] = { -m[8] / gl, -m[9] / gl, -m[10] / gl };
+    const float agree = row2[0] * s[0] + row2[1] * s[1] + row2[2] * s[2];
+    if (agree < 0.9994f)          // ~2 degrees, the same quantisation as the latch
+    {
+        ++g_guestSunMismatch;
+        return;
+    }
+    g_guestSunFrame = R->frame;
+    ++g_guestSunSamples;
+    const float sl = std::sqrt(sn);
+    const float dir[3] = { s[0] / sl, s[1] / sl, s[2] / sl };
+    g_guestSun[0] = dir[0];
+    g_guestSun[1] = dir[1];
+    g_guestSun[2] = dir[2];
+    g_guestSunValid = true;
+    for (uint32_t i = 0; i < g_gsunObsCount; ++i)
+        if (dir[0] * g_gsunObs[i].dir[0] + dir[1] * g_gsunObs[i].dir[1] +
+                dir[2] * g_gsunObs[i].dir[2] > 0.9994f)
+        {
+            ++g_gsunObs[i].count;
+            g_gsunObs[i].lastFrame = R->frame;
+            return;
+        }
+    if (g_gsunObsCount >= 8)
+        return;
+    SunObs& o = g_gsunObs[g_gsunObsCount++];
+    o.dir[0] = dir[0];
+    o.dir[1] = dir[1];
+    o.dir[2] = dir[2];
+    o.len = 0.0f;
+    o.count = 1;
+    o.firstFrame = o.lastFrame = R->frame;
+}
+
 float g_lightPolyScale = 0.0f, g_lightPolyOffset = 0.0f;
 bool g_polyLogged = false;
 // IS THE CAPTURED MATRIX ACTUALLY THE SLICE'S, or one object's?
@@ -14116,8 +14240,36 @@ void Run(uint8_t* base)
     // is backwards, every shadow ray fires into the ground (everything shadowed) or into
     // the sky (nothing shadowed, which is what is measured) and no amount of bias or
     // length tuning can tell the two apart from the picture.
-    static const float sunSign = EnvOn("CZ_VK_RT_SUN_FLIP") ? 1.0f : -1.0f;
-    const float sun[3] = { sunSign * d[0] / dl, sunSign * d[1] / dl, sunSign * d[2] / dl };
+    static const float sunFlip = EnvOn("CZ_VK_RT_SUN_FLIP") ? -1.0f : 1.0f;
+    // CZ_VK_RT_SUN_SRC=cascade — WHERE THE DIRECTION COMES FROM, and `guest` is the
+    // default as of part 70. The cascade decomposition above is retained as the
+    // same-binary control arm and as the fallback for any frame before the title's
+    // constant block has been seen, so a run never loses its shadows over this.
+    // rtshadow::NoteGuestSun carries the twenty-capture evidence for the change.
+    static const bool sunFromCascade = [] {
+        const char* e = Env("CZ_VK_RT_SUN_SRC");
+        const bool casc = e && (*e == 'c' || *e == 'C');
+        if (e)
+            fprintf(stderr, "[rtb] CZ_VK_RT_SUN_SRC=%s — the sun direction comes from "
+                            "%s\n", e,
+                    casc ? "the CASCADE MATRIX decomposition (the pre-part-70 arm)"
+                         : "the title's own pixel constant c23");
+        return casc;
+    }();
+    const bool sunFromGuest = !sunFromCascade && rtshadow::g_guestSunValid;
+    const float derived[3] = { -d[0] / dl, -d[1] / dl, -d[2] / dl };
+    const float* pick = sunFromGuest ? rtshadow::g_guestSun : derived;
+    const float sun[3] = { sunFlip * pick[0], sunFlip * pick[1], sunFlip * pick[2] };
+    // The two readings' disagreement, published every frame rather than reconstructed
+    // afterwards: it is the standing gate on this change and it is one dot product.
+    rtshadow::g_sunSrcGuest = sunFromGuest;
+    rtshadow::g_sunDisagree =
+        rtshadow::g_guestSunValid
+            ? std::acos(std::max(-1.0f, std::min(1.0f,
+                  rtshadow::g_guestSun[0] * derived[0] +
+                  rtshadow::g_guestSun[1] * derived[1] +
+                  rtshadow::g_guestSun[2] * derived[2]))) * 57.2957795f
+            : -1.0f;
 
     // The camera's world position: the scene composite's inverse applied to the clip
     // origin at the near plane. Used only for the toward-the-camera ray-origin offset.
@@ -14274,7 +14426,8 @@ void Run(uint8_t* base)
     if ((g_passes & 2047) == 1)
         fprintf(stderr,
                 "[rtb] passes=%llu drawsServed=%llu tier=%d %ux%u rays=%d src=%s "
-                "tlasInst=%u dbg=%d sun=(%.3f %.3f %.3f) won %u/%u slice votes, "
+                "tlasInst=%u dbg=%d sun=(%.3f %.3f %.3f) src=%s vs-cascade=%.1fdeg "
+                "won %u/%u slice votes, "
                 "%llu switches "
                 "len=%.1f bias=%.3f/%.3f skips: noScene=%llu noLight=%llu noTlas=%llu "
                 "singular=%llu%s\n",
@@ -14282,6 +14435,8 @@ void Run(uint8_t* base)
                 g_factor.width, g_factor.height, rays,
                 PrimarySource() ? "primary-ray" : "depth-buffer",
                 rtshadow::g_tlasInstances, dbg, sun[0], sun[1], sun[2],
+                rtshadow::g_sunSrcGuest ? "guest-c23" : "cascade",
+                rtshadow::g_sunDisagree,
                 rtshadow::g_sunVotes, rtshadow::g_frameVoteCount,
                 (unsigned long long)rtshadow::g_sunSwitches, len, b1, b2,
                 (unsigned long long)g_noScene, (unsigned long long)g_noLight,
@@ -14800,6 +14955,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
     rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
                       regs[xenos::kRbDepthControl], vs, draw, regs, base);
+    // THE TITLE'S OWN SUN, out of its PIXEL constant block — the oracle that replaces
+    // the cascade-matrix decomposition (see NoteGuestSun). One integer compare per draw
+    // once the frame's block has been found, and inert entirely when RT is off.
+    rtshadow::NoteGuestSun(&regs[xenos::kAluConstantBase + memoPsBase * 4]);
     // ROUTE (B) needs the SCENE composite to turn a depth sample back into a world
     // position. Same raw window, same per-draw discipline; the form test rejects the
     // skinning affines and the shadow orthos, so this cannot capture one of those.
@@ -21155,11 +21314,47 @@ void VkRenderer_DumpStats()
                 (unsigned long long)rtshadow::g_sunLatched, rtshadow::g_sunObsCount,
                 (unsigned long long)rtshadow::g_sunSwitches);
         for (uint32_t i = 0; i < rtshadow::g_sunObsCount; ++i)
-            fprintf(stderr, "[rtb]   (%+.3f %+.3f %+.3f) volume %.1f  x%llu\n",
+            fprintf(stderr, "[rtb]   (%+.3f %+.3f %+.3f) volume %.1f  x%llu  "
+                            "frames %llu..%llu\n",
                     rtshadow::g_sunObs[i].dir[0], rtshadow::g_sunObs[i].dir[1],
                     rtshadow::g_sunObs[i].dir[2], rtshadow::g_sunObs[i].len,
-                    (unsigned long long)rtshadow::g_sunObs[i].count);
+                    (unsigned long long)rtshadow::g_sunObs[i].count,
+                    (unsigned long long)rtshadow::g_sunObs[i].firstFrame,
+                    (unsigned long long)rtshadow::g_sunObs[i].lastFrame);
     }
+    // AND THE TITLE'S OWN ANSWER BESIDE IT — the standing gate on part 70's change.
+    // The two are independent readings of one physical quantity, so a disagreement is a
+    // defect in whichever is not the title's, and hardware has already said which that
+    // is (`tools/xtr_sun_oracle.py`, twenty of twenty at 0.00 degrees). Printed even
+    // when the cascade arm is selected, because the comparison is the point.
+    if (rtshadow::g_guestSunProbes)
+    {
+        fprintf(stderr,
+                "[rtb] the TITLE'S OWN sun (pixel constant c23, cross-checked against "
+                "its own cascade matrix): %llu frames bound, %u distinct, %llu probe "
+                "draws, %llu blocks REJECTED for c23-vs-cascade disagreement\n",
+                (unsigned long long)rtshadow::g_guestSunSamples,
+                rtshadow::g_gsunObsCount,
+                (unsigned long long)rtshadow::g_guestSunProbes,
+                (unsigned long long)rtshadow::g_guestSunMismatch);
+        for (uint32_t i = 0; i < rtshadow::g_gsunObsCount; ++i)
+            fprintf(stderr, "[rtb]   (%+.3f %+.3f %+.3f)  x%llu  frames %llu..%llu\n",
+                    rtshadow::g_gsunObs[i].dir[0], rtshadow::g_gsunObs[i].dir[1],
+                    rtshadow::g_gsunObs[i].dir[2],
+                    (unsigned long long)rtshadow::g_gsunObs[i].count,
+                    (unsigned long long)rtshadow::g_gsunObs[i].firstFrame,
+                    (unsigned long long)rtshadow::g_gsunObs[i].lastFrame);
+        if (rtshadow::g_sunDisagree >= 0.0f)
+            fprintf(stderr,
+                    "[rtb]   the two readings differ by %.1f degrees, and the pass used "
+                    "the %s one\n",
+                    rtshadow::g_sunDisagree,
+                    rtshadow::g_sunSrcGuest ? "TITLE'S" : "cascade-derived");
+    }
+    else if (rtshadow::g_sunObsCount)
+        fprintf(stderr, "[rtb] the title's own sun constant was NEVER PROBED — either "
+                        "RT was off for the whole run or no draw carried the world "
+                        "constant block\n");
     if (rtfactor::g_passes || rtfactor::g_noScene || rtfactor::g_noLight ||
         rtfactor::g_noTlas || rtfactor::g_singular)
     {
