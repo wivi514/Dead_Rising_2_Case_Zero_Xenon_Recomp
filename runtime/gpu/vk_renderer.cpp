@@ -16127,13 +16127,25 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // every slot holds the whole window.
     if (vsHit && R->constMemoVsFor != &vs)
     {
-        CopyConstWindow(reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt),
-                        regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
+        uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt);
+        CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
+        // AND RE-APPLY THE PROJECTION PATCHES, in the miss path's order. The slot being
+        // topped up already held PATCHED constants (the fov slider and the 21:9 wide
+        // patch rewrite c0..c3 on the miss path), and the gather above has just written
+        // RAW registers over them. Without this the slider and wide mode would silently
+        // stop working for any draw served by a slot another shader had filled — a
+        // picture defect with no error, produced by a performance change.
+        PatchFovProjection(dst, FovHalfRadThisFrame());
+        if (WideMode())
+            PatchWideProjection(dst);
         R->constMemoVsFor = &vs;
         ++g_gatherTopUp;
     }
     if (psHit && R->constMemoPsFor != &ps)
     {
+        // The PIXEL window carries no projection, so it needs no patch — stated rather
+        // than left to inference, because the asymmetry with the block above is exactly
+        // the kind of thing a later reader "tidies up".
         CopyConstWindow(reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoPsAt),
                         regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
         R->constMemoPsFor = &ps;
