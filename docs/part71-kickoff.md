@@ -35,7 +35,24 @@
 * Part 67's exonerations of the bias and the ray length were taken against a pile at the
   world origin and are **still void** (gotcha 172).
 
-## 1. Start here — THE SHADOW RAY IS 88 UNITS LONG IN A 1,100-UNIT TOWN
+## 1. Start here — and RAY LENGTH IS ALREADY REFUTED (part 70 ran it)
+
+> **The hypothesis below was tested and it is DEAD.** `tools/part70_ray_length.sh`, four
+> arms: `len=88.2 -> 15.7%` shadowed, `300 -> 14.8%`, `1000 -> 15.1%`, `3000 -> 15.6%`.
+> **A 34x change in ray length moves the share by one point, non-monotonically**, and
+> since `TMax` only grows a longer ray cannot find FEWER occluders for a fixed camera —
+> so the 300 arm's drop is route variance and it bounds the noise at ~1 point. Every arm
+> is inside it. Full record in `phase5-notes.md` §6dc §8; the reasoning is left standing
+> below because the shape argument is sound and only the premise was wrong.
+>
+> **What the same dumps did show, and it is the live thread:** the factor's profiles are
+> identical in all four arms and neither is flat — the column profile ramps dark on the
+> LEFT to bright on the RIGHT, the row profile is fully lit across the top ~30% and
+> darker below. A large-scale screen-position gradient is what a "flat slab with a hard
+> straight boundary" looks like as a profile, and a 34x ray does not touch it. Go after
+> the POPULATION and the PASS, not the ray: §1b.
+
+### The refuted hypothesis, kept for its shape argument
 
 The signature to explain (operator, part 69): *a flat slab with a hard straight boundary
 crossing a shipping container, tyres, cars, a chain-link fence and the ground without
@@ -66,7 +83,24 @@ no test (gotcha 172).
 edges in the dumped factor move outward or vanish. A flat share across a 34x range kills
 the hypothesis. Its result at part 70's close is in `phase5-notes.md` §6dc §8.
 
-If the length is not it, the fallback bisection is one dump:
+### 1b. THE LIVE THREAD — the occluder mode 18 cannot see, then the bisection
+
+**`CZ_VK_FACTOR_DEBUG=18` cannot exonerate the occluder population, and part 69 read it
+as if it could.** Mode 18 traces the PRIMARY ray, so it images only what the camera can
+see. A large occluder above the scene or behind the camera contributes nothing to that
+depth image and still blocks every shadow ray fired at the sun — and the signature that
+produces is exactly the reported one, a flat slab whose boundary is the mesh's own edge,
+straight in screen space because it belongs to the occluder rather than to the receiver.
+The bounds gate that should catch it screens the stream's OBJECT extent against 50,000
+units in a ~1,100-unit town, and is blind to a small mesh with a large SCALE in its
+instance transform.
+
+This binary now prints `largest admitted meshes by WORLD extent`, and
+`tools/part70_bounds_cap.sh` sweeps `CZ_VK_RT_BOUNDS_CAP` 50000/5000/1000/200 beside it.
+`tools/rt_tlas_census.py` answers the same question OFFLINE over hardware's own frames
+for the static world. Part 70's result is in `phase5-notes.md` §6dc §9.
+
+Then the bisection, which is one dump:
 
 ```
 CZ_VK_RT_FACTOR_READBACK=64 CZ_VK_RT_FACTOR_PGM=~/DR2CZ-troubleshooting/part71-factor

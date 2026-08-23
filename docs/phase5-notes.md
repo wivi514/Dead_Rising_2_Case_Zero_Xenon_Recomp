@@ -15046,6 +15046,44 @@ own cascade splits are `pc(45)/(46)` = 3, 6, 8, 12, 32, and beyond them it uses 
 static term. Corrected in place in `vk_renderer.cpp`'s `g_sunM` comment and in
 `part68-kickoff.md`.
 
+### 8. THE RAY LENGTH IS REFUTED — pre-registered, and it failed
+
+Reading `rt_factor.hlsl` gave a hypothesis with a shape argument behind it: the shadow
+ray's `TMax` is `pc.sun.w`, which defaults to the CASCADE'S depth extent (`len=88.2`
+here, and hardware's own cascade volumes are 63.4/67.1/89.7) in a town ~1,100 units
+across, whose far shadowing the title does with the 3,583-unit static term of §6b. And
+the set of receiver points whose fixed-length ray just clears an occluder is a PLANE in
+world space, which projects to a straight screen-space line that bends at nothing —
+the observed signature.
+
+`tools/part70_ray_length.sh`, four arms on the DebugJump route at settle 0, each arm
+proving its engagement from the `len=` the shader was actually handed:
+
+| `CZ_VK_RT_RAY_LEN` | `len=` | shadowed(<0.03), three readings |
+|---|---|---|
+| default | 88.2 | 15.7 / 15.7 / 15.8 % |
+| 300 | 300.0 | 14.9 / 14.8 / 14.8 % |
+| 1000 | 1000.0 | 15.2 / 15.1 / 15.1 % |
+| 3000 | 3000.0 | 15.8 / 15.6 / 15.6 % |
+
+**A 34x change in ray length moves the shadowed share by one point, non-monotonically.**
+The prediction was a monotonic rise; the 300 arm went DOWN, and since `TMax` only grows
+a longer ray cannot find fewer occluders for a fixed camera — so that drop is pure
+route/camera variance and it usefully bounds the noise at ~1 point. Every arm is inside
+it. **The ray length is not the limiter and the hypothesis is dead.**
+
+`part69-night-plan.md` §3 ranked it third for the wrong reason (it argued a short ray
+leaves "everything past it lit", where the real failure is far from the OCCLUDER, not
+far from the camera) and reached the right answer anyway.
+
+**What the same dumps DID show is worth carrying forward.** The factor's profiles are
+identical in all four arms and neither is flat: the column profile ramps dark on the
+LEFT to bright on the RIGHT, and the row profile is fully lit across the top ~30% and
+darker below. A large-scale screen-position gradient is what a "flat slab with a hard
+straight boundary" looks like as a profile, and it is unchanged by a 34x ray. That is a
+statement about the population or the pass, not about the ray — which is what the
+bounds-cap sweep and the new per-mesh extent census (§9) go after.
+
 ### 7. Where that leaves the shadow defect
 
 The straight-line signature is still unexplained, and the sun is no longer a candidate
