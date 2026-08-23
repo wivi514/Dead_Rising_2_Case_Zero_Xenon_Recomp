@@ -16125,7 +16125,15 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // it up before the hit is used. Costs nothing on the common case (the same shader
     // draws many times in a row) and nothing at all when the gather is off, because then
     // every slot holds the whole window.
-    if (vsHit && R->constMemoVsFor != &vs)
+    // ...AND NONE OF THIS RUNS WITH THE GATHER OFF. With the full copy the slot always
+    // holds the whole window, so a different shader needs nothing added — and more
+    // importantly, `CZ_VK_NO_CONST_GATHER=1` has to be the PRE-PART-72 RENDERER EXACTLY
+    // or it is not a control arm. Without this test it was doing full copies and re-patches
+    // on shader changes that the old path never did: 319,138 of them in the A/B's control
+    // arm, which is only 0.3% of its copies but is work the baseline never performed, and
+    // a control that does extra work overstates the treatment (gotcha 415's shape).
+    const bool topUp = !ConstGatherOff();
+    if (topUp && vsHit && R->constMemoVsFor != &vs)
     {
         uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt);
         CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
@@ -16155,7 +16163,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         R->constMemoVsFor = &vs;
         ++g_gatherTopUp;
     }
-    if (psHit && R->constMemoPsFor != &ps)
+    if (topUp && psHit && R->constMemoPsFor != &ps)
     {
         // The PIXEL window carries no projection, so it needs no patch — stated rather
         // than left to inference, because the asymmetry with the block above is exactly
