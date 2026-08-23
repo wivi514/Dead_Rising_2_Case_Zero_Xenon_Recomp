@@ -35,9 +35,31 @@ Next, in order:
    shader (read out of the microcode by `tools/rt_world_xform_census.py`, which
    is also a coverage gate). `CZ_VK_RT_OBJ_XFORM=0` is the same-binary control.
 
-   **What is owed: `tools/part67_placement_session.sh`** — five arms in two
-   pairs, four of which need no eye. The prediction is stated in §6cy §5 so a
-   run can refute it.
+   **PART 68 RAN THAT SESSION AND TWO MORE.** Every pre-registered prediction was
+   met — the hemisphere probe 0.987 -> 0.650, the shipped path 0.8% -> 14.6%
+   shadowed, with the `CZ_VK_RT_OBJ_XFORM=0` controls reproducing part 66 exactly
+   — and the placement was then EXONERATED offline against hardware
+   (`tools/rt_placement_render.py` lands 2.9M placed vertices on Chuck, the
+   zombies, the lamp posts and the kerb of hardware's own frame).
+
+   **The remaining defect is the POPULATION, and it has two halves.** The ray
+   structure rendered from the player's camera is a flat plain with distant
+   buildings — the primary ray sails past the foreground and the factor computed
+   behind it is painted onto near pixels ("misaligned", "seen through walls").
+   `dyn` costs 17-41% depending on where the camera is (`CZ_VK_RT_DYN_SETTLE=N`
+   admits the settled ones: `tlasInst` 2586 -> 3006, zero flushes), and the actors
+   are misplaced by the palette approximation — measured on the factor image at
+   **100.5 edge pixels per 1000 in the crowd against 10.6 on open road**.
+   `CZ_VK_RT_NO_PALETTE=1` removes that artifact and **60% of the world's
+   occluders** with it, so exclusion is a diagnostic and the blend is required.
+
+   **THE PLAN IS `docs/rt-remix-plan.md`**, taken from `docs/rtx-remix-prior-art.md`:
+   five items in the order they enable each other — bind the BLAS to the persist
+   store (one usage flag), an identity that survives a content change, BLAS refit,
+   the palette blend, then retire the workarounds AND re-ask part 67's
+   exonerations against the new structure (gotcha 172: the sun, ray length and
+   bias were all cleared against a pile at the origin, which is no test).
+   The hand-off is `docs/part69-kickoff.md`.
 
    **PART 66'S FINDING, which supersedes the part-66 kickoff's §0 entirely:
    THIS TITLE HAS NO SCENE Z PREPASS.** The factor pass reconstructed the

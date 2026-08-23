@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 400 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 402 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,9 +156,12 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 400-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 402-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
+  - **`rt-remix-plan.md`** — **the LIVE plan for the RT geometry work**, five items in
+    the order they enable each other, taken from `rtx-remix-prior-art.md` (which records
+    the licence: DXVK zlib/libpng, NVIDIA's `rtx_render/*` per-file MIT).
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
     work.** `d3d-kickoff.md` and `d3d-phase-c{,2..26}-kickoff.md` are the per-part
@@ -176,7 +179,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part68-kickoff.md`.** State the rule as well as the name, because this line said
+    `part69-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -757,10 +760,65 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 68 CLOSED — **THE PLACEMENT IS VERIFIED
+AGAINST HARDWARE AND THE REMAINING DEFECT IS THE POPULATION. The plan for it is
+taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` is
+the LIVE hand-off; the record is `phase5-notes.md` §6cz; the backlog entry is
+`open-items.md` 0v; the lessons are gotchas 401-402):
+
+* **Part 67's placement fix is confirmed in two same-binary pairs**: the
+  hemisphere probe **0.987 -> 0.650**, the shipped path **0.8% -> 14.6%
+  shadowed**, with `CZ_VK_RT_OBJ_XFORM=0` reproducing part 66 exactly. Every
+  prediction §6cy pre-registered was met.
+* **And the placement itself is EXONERATED OFFLINE AGAINST HARDWARE.**
+  `tools/rt_placement_render.py` projects the placed geometry through the camera
+  hardware itself used and splats it over the PNG the capture is frame-locked to:
+  2.9M vertices land on Chuck's torso, on every zombie, on the lamp posts, the
+  GAS sign, the kerb and the manhole cover.
+* **The remaining defect is the POPULATION.** Rendered from the player's camera,
+  the ray structure is a flat plain with distant buildings — the primary ray
+  sails past the foreground and the factor computed behind it is painted onto
+  near pixels. The signature is a shadow boundary running as ONE STRAIGHT LINE
+  across a wall, a van's roof, its side and the ground, bending at none of them.
+* **Two halves.** `dyn` (17-41%, location-dependent) never reaches the structure
+  — `CZ_VK_RT_DYN_SETTLE=N` admits the settled ones, `tlasInst` 2586 -> 3006 with
+  zero flushes. And the actors reach it in the wrong SHAPE, measured on the
+  factor image at **100.5 edge pixels per 1000 in the crowd against 10.6 on open
+  road** (isolated-pixel rate 0.35%, intermediate 0.00% — localised, not acne).
+* **`CZ_VK_RT_NO_PALETTE=1` removes that artifact and 60% of the world's
+  occluders with it** (`tlasInst` 2994 -> 1197), because the palette path is not
+  the actor path — it is the engine's MAIN WORLD SHADER, 2,658 of one frame's
+  4,512 accepted draws. Exclusion is a diagnostic; the blend is required. The
+  cheap shortcut is dead too: comparing palette entry 0 with entry 1 separates
+  nothing (63.4% / 69.8% over two traces).
+* **RTX REMIX, the operator's suggestion, read properly and licence first**
+  (`docs/rtx-remix-prior-art.md`): DXVK base zlib/libpng, NVIDIA's `rtx_render/*`
+  per-file MIT — both permissive. **`rtx.capture.correctBakedTransforms` exists
+  for, verbatim, "instanced meshes appear to all have identity xform matrices"** —
+  part 67's defect, named in NVIDIA's own options list. They read object
+  transforms from shader constants too (UE3 CTAB), which makes
+  `rt_world_xform_census.py` the standard move rather than a workaround.
+* **THE PLAN IS `docs/rt-remix-plan.md`**, five items in the order they enable
+  each other: bind the BLAS to the persist store (**one usage flag** — it already
+  has `deviceAddress = true` and already holds the vertices dword-swapped), an
+  identity that survives a content change, **BLAS refit** (`ALLOW_UPDATE` +
+  `validateUpdateMode`, `updateScratchSize` not `buildScratchSize`), the palette
+  blend, then retire the workarounds **and re-ask part 67's exonerations** — the
+  sun, ray length and bias were cleared against a pile at the origin, which is no
+  test (gotcha 172).
+* **Also open**: RT HIGH's four rays buy **no penumbra** (0.3% of pixels partially
+  shadowed); self-shadowing has never been tested against correctly-placed
+  geometry; instances went 500 -> ~3,000 a frame, on the PUMP thread.
+* **Gates at close** (RT off = the shipped default): `--smoke` OK;
+  `shader_dim_census.py` clean on all sixteen caches and the play cache's NAME
+  diff empty; `rt_world_xform_census.py` 104 of 104 and exit 1 on a planted gap.
+  **A5 is owed**, carried from part 67 — no kernel path changed in either.
+
 Where the port is, as of 2026-08-22 (part 67 CLOSED — **THE RT TLAS WAS NOT A GROUND
 PLANE, IT WAS THE WHOLE TOWN PILED AT THE ORIGIN: THE POSITION STREAMS ARE
 OBJECT-SPACE.** Found offline in an afternoon, fixed, and one scripted operator
-session is owed. `docs/part68-kickoff.md` is the LIVE hand-off; the record is
+session is owed. `docs/part68-kickoff.md` WAS the hand-off then; the live one is
+named above. The record is
 `phase5-notes.md` §6cy; the backlog entry is `open-items.md` 0v; the lessons are
 gotchas 398-400):
 
@@ -814,71 +872,8 @@ gotchas 398-400):
   world-transform census covers 104 of 104 and fails on a planted gap; the TLAS
   census runs over 20 traces and prints its verdict. **A5 is owed.**
 
-Where the port is, as of 2026-08-22 (part 66 CLOSED — **THE RT SHADOW DEFECT IS
-LOCATED AND EVERYTHING DOWNSTREAM OF IT IS EXONERATED BY MEASUREMENT: the
-ray-tracing structure is effectively A GROUND PLANE.** Five operator sessions.
-`docs/part67-kickoff.md` WAS the hand-off then; the live one is named above.
-The record is `phase5-notes.md`
-§6cx (§7 the session log, §8 the answer); the backlog entry is `open-items.md`
-0v; the lessons are gotchas 391-397):
-
-* **FIRST, OFFLINE, AGAINST HARDWARE: this title has NO SCENE Z PREPASS.** Route
-  (b) reconstructed the receiver from the scene depth buffer and fired at the
-  title's own first atlas-sampling draw, justified by §6u's "233,155 depth-only
-  draws over a boot". That is a count over a RUN and says nothing about ORDER in a
-  frame. `tools/rt_depth_order_census.py` walks all twenty `.xtr` world traces in
-  stream order: those depth-only draws are the **shadow cascade** (EDRAM depth base
-  0, pitch 1040, mode 5, mask 0, ~969/frame), and the scene pass (base 736, pitch
-  640) has **no prepass** — its first draw already samples the atlas, 0
-  depth-writers before it, ~5,200 after. The buffer was at its CLEAR VALUE every
-  time the pass ran, which is exactly what part 65's modes 8/9 measured. Twenty
-  files already on disc, an afternoon, no run (gotcha 392).
-* **THE FIX: the receiver is a PRIMARY RAY's closest hit** into the same TLAS the
-  shadow ray uses, built from the PREVIOUS frame's draws and so always populated.
-  Impossible-by-construction rather than timed around. Also removes the per-resolve
-  invalidation: **3.01 passes a frame become 1**.
-* **THE OPERATOR FOUND A 427-PIXEL MISALIGNMENT IN ONE SENTENCE** on the first arm
-  ("the shadows move with me and with the camera ... in the form of the mountain in
-  the distance"). The factor image was sized from the 3440x**2048** EDRAM depth
-  while the scene is 1440 tall and `Publish` divided by the EDRAM height. Fixed,
-  427.5 px -> 0.00. **Part 65's spatial control could not have caught it**: mode 14
-  is `frac(uv.x*8)`, invariant under a vertical error (gotcha 394). Mode 19 is its
-  twin and they now run as ONE result.
-* **`CZ_VK_RT_FACTOR_READBACK` — READ THE FACTOR IMAGE ITSELF, and it settled four
-  links in one session** where eleven ladder modes had not in three, because every
-  one of them read the factor through 126 shaders and the title's lighting, a
-  channel in which lit-to-shadowed is a tenth of a luma point (gotcha 397). Poison
-  **100.0%** shadowed (its own positive control); the stripe pair a clean transpose,
-  8 bands each, flat on the other axis; the primary ray **85.2%** with a mask
-  matching the captured frame's skyline; the real path **0.9%**.
-* **THE ANSWER — mode 20, hemisphere occlusion from EIGHT FIXED directions with the
-  sun deliberately excluded: 97.3% fully open, mean 0.987.** No direction above a
-  receiver is occluded, so **no sun vector could ever have produced a shadow**.
-  Exonerated by measurement: the sun, the ray, its length (2000 vs 116.5 units both
-  read 0.9%), the bias, the world reconstruction (mode 2's checker is
-  perspective-correct and world-locked), the alignment, and the injection.
-* **~700 static opaque meshes a frame for a whole town**, against `dyn=19.0M` (57%
-  of every draw the collector sees) and `alpha=3.2M` (10%). **Part 67's first move
-  is a CENSUS, not a build**: what those instances ARE (a histogram of vertical
-  extents), and which filter eats the buildings. Both offline.
-* **TWO RETRACTIONS, both mid-session and both mine**: "ray length is the biggest
-  effect yet" was a frame-1228 read of a file still being written and reads 0.9%
-  complete (gotcha 384 — quoted at the operator earlier the same session); and the
-  skyline silhouette was read as proof the TLAS holds the world, when **a bare
-  ground plane produces the identical silhouette** (gotcha 395).
-* **Also fixed, from part 65's own unread validation logs**: `g_colour` was NEVER
-  BOUND (a 3-element write array passed with a count of 2), so **ladder modes 12
-  and 13 are retracted**; and the descriptor set was rewritten while the recording
-  command buffer held it. Plus a harness bug that silently killed two arms because
-  GNU `env` accepts any argument containing `=` as an assignment (gotcha 396).
-* **Gates at close** (RT off = the shipped default; nothing outside the RT pass
-  changed): `--smoke` OK; **A5 exit 0** (4 permutation windows, 0 real);
-  `shader_dim_census.py` clean on all sixteen caches and the play caches' NAME diff
-  against stock empty; the census tool runs over 20 traces and prints its verdict.
-  Carry-overs unchanged from parts 62-65.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-65's** — part 67 moved part 65's out in the same commit that added its own block, part 66 moved part 64's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-66's** — part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

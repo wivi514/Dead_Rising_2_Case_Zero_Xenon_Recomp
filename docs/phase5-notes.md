@@ -14317,3 +14317,150 @@ RT is OFF by default and nothing outside the RT collector and the TLAS build cha
   Collect's chain in Collect's order is what made "our instance count equals the census's
   DISTINCT STREAM count" visible; a summary of the traces would not have.
 * And the part-66 instruction that produced all of it: **census first, build nothing.**
+
+## §6cz — Part 68: the placement is right, the population is not, and RTX Remix has the map (2026-08-22)
+
+Part 67 placed the RT occluders and handed over a five-arm session. Part 68 ran it, ran a
+second, and turned the operator's suggestion — *"RTX Remix is made to put all this rtx
+stuff in old games that doesn't have this in their engine, we should look at how they
+do it"* — into a plan. `docs/rt-remix-plan.md` is the deliverable; this is what it rests on.
+
+### 1. Part 67's fix is confirmed, in two same-binary pairs
+
+| arm | placement | mean | shadowed |
+|---|---|---|---|
+| hemisphere probe (mode 20) | **ON** | **0.650** | — |
+| the same, `CZ_VK_RT_OBJ_XFORM=0` | off | **0.988** | — |
+| the shipped path | **ON** | 0.854 | **14.6%** |
+| the same, placement off | off | 0.992 | **0.8%** |
+
+Every prediction §6cy pre-registered was met: the probe's mean fell clearly below part 66's
+0.987, the control reproduced it to three decimals, and the shipped path beat 0.9%
+sixteen-fold with its control returning to it. The placement is what moved them and nothing
+else can be.
+
+The `world box` line read a town in the placed arms (`x[-610 324] z[-532 107]`) and exactly
+zero in the control — matching the translation range the offline census read out of the
+captures.
+
+### 2. And the picture was still wrong, for a different reason
+
+The operator: *"the shadows move with me and with the camera"* was gone — *"shadow doesn't
+seem to move with camera"* — but *"seems really misaligned compared to where it should be
+and can be seen through walls"*.
+
+The mode-20 dump answers it in one image. **Rendered from the player's camera, the ray
+structure is a flat plain with distant buildings**: no vans, no wrecked cars, no fence, no
+Chuck. The primary ray sails past the whole foreground and lands on the ground behind it,
+so the factor computed there is painted onto the near object's pixels. The shipped path's
+overlay shows the signature exactly: a shadow boundary running as ONE PERFECTLY STRAIGHT
+LINE down a corrugated wall, across a van's roof, down its side and onto the ground,
+bending at none of those depth changes. A real shadow boundary must bend at every
+silhouette; a straight one means every receiver lies on a single plane.
+
+### 3. The placement itself is EXONERATED, offline, against hardware
+
+`tools/rt_placement_render.py` projects the accepted draws — placed by the same table the
+runtime uses — through the same camera matrix hardware used, and splats the vertices over
+the PNG the capture is frame-locked to. 2.9 million vertices land on Chuck's torso and
+legs, on every zombie in the crowd, on the lamp posts, the traffic light, the GAS sign, the
+planter box, the kerb and the manhole cover.
+
+So "the props are misplaced" is dead and the loss is a population problem.
+
+**A tooling lesson came with it.** The first version reread every vertex through
+`Memory.read`, which is a linear scan over the trace's chunks, and did not finish in 21
+minutes — the exact cost that had already been taken out of `rt_tlas_census.py` an hour
+earlier and put straight back. Fixed three ways: the fallback is capped and the number of
+thinly-sampled streams is printed (a silently thinned splat reads like a missing mesh), the
+census hands back the `Memory` it already built instead of the caller walking each 80 MB
+trace twice, and there is a progress line.
+
+### 4. `dyn` is a real loss and a smaller one than part 67 said
+
+`CZ_VK_RT_DYN_SETTLE=N` asks what the `dynamic` flag was standing in for: has this stream
+been STILL for N frames? The latch exists to choose the exact content guard, where never
+unlatching is right; reused as "CPU-deformed smallware, keep it out", it excludes a static
+van whose buffer the streaming system recycled once, for the rest of the run.
+
+The arm engages (`settledIn` 1.5M) and admits real geometry — `tlasInst` 2586 -> 3006 at
+settle 120, 3121 at settle 30 — for +34% BLAS memory and **zero flushes**.
+
+**But `dyn` is 17% here against the 41% part 67 quoted**, and the difference is location,
+not measurement error. A share read once is a fact about that place (gotcha 50's shape).
+
+### 5. The actor artifact, measured on the factor image rather than through the frame
+
+The operator: *"a lot of zombies that when they are in front of a shadow they do like SSR
+where the shadow doesn't work behind their silhouette"*.
+
+| region | shadowed | edge pixels / 1000px |
+|---|---|---|
+| **crowd, upper-left** | 58.1% | **100.5** |
+| open road, lower | 6.7% | **10.6** |
+| far street, centre | 14.5% | 70.9 |
+| right buildings | 14.3% | 28.6 |
+
+Ten times more fragmented where the crowd is, with the isolated-pixel rate at 0.35% and the
+intermediate share at 0.00%. **Localised to the actors; not acne, not noise.** The cause is
+the approximation part 67 shipped knowingly: a palette shader's world matrix is a blend of
+several entries by three PER-VERTEX weights and we use entry 0, so what enters the BLAS is
+the raw object-space mesh under one bone.
+
+Also visible in the same numbers: **RT HIGH's four rays buy no penumbra.** Its octiles read
+11.0 / 0 / 0.1 / 0.1 / 0 / 0.1 / 0 / 88.7 — 0.3% of pixels partially shadowed. Either the
+cone angle is too small to separate the rays or they are not spreading.
+
+### 6. The price check, and it changes the plan
+
+`CZ_VK_RT_NO_PALETTE=1` declines those draws. It cost **`tlasInst` 2994 -> 1197, 60% of the
+occluders**, and the offline census agrees: `vs_b677dc3457f5b41a` alone is 2,658 of the
+gas-station frame's 4,512 accepted draws. **The palette path is not the actor path, it is
+the engine's main world shader**, so exclusion is a diagnostic and doing the blend is
+required.
+
+**And the cheap shortcut is dead before anyone spends a session on it.** Detecting draws
+whose palette does not really vary — by comparing entry 0 against entry 1 — separates
+nothing: 63.4% and 69.8% of accepted draws in two traces have a distinct second entry.
+Either this world really is batched under a matrix palette, or those constants are
+unrelated for shaders that only use entry 0. `docs/rt-remix-plan.md` item 3 says which
+one-draw experiment settles it.
+
+### 7. RTX Remix, read properly — `docs/rtx-remix-prior-art.md`
+
+Licence first: DXVK base zlib/libpng, NVIDIA's `rtx_render/*` per-file MIT. Both
+permissive, so unlike UnleashedRecomp code *could* be lifted with attribution.
+
+The finding that matters most is confirmation, not technique:
+**`rtx.capture.correctBakedTransforms`** exists for, verbatim, *"instanced meshes appear to
+all have identity xform matrices"* — part 67's defect, named in NVIDIA's own options list,
+with the symmetrical failure (transforms baked INTO the vertices) as the other half of the
+same option. They also read object transforms from shader constants for shader-based
+engines (UE3 CTAB parsing), which makes `rt_world_xform_census.py` the standard move.
+
+Four things transfer, and they are the plan: **BLAS refit** (`ALLOW_UPDATE` +
+`validateUpdateMode`), **an identity that survives a content change** (`enableAlwaysCalculateAABB`
+— a content hash cannot identify a thing whose content changes), **doing the blend**
+(`dispatchSkinning`, `limitedBonesPerVertex=4`), and one of ours: **`R->persist` is already
+created with `deviceAddress = true` and already holds the vertices dword-swapped**, one
+usage flag away from being the BLAS vertex source directly (their `useBuffersDirectly`).
+
+### 8. Gates at close
+
+RT is OFF by default; nothing outside the RT collector and the TLAS build changed.
+
+* `--smoke` OK.
+* `shader_dim_census.py` clean on all sixteen caches; the play cache's NAME diff empty.
+* `rt_world_xform_census.py` covers 104 of 104 and exits 1 on a planted gap.
+* **A5 is still owed** — carried from part 67; no kernel path changed in either.
+
+### 9. The transferable half
+
+* **The prior art for a problem class is worth an hour before the fourth session on it**
+  (gotcha 401). One option name in NVIDIA's list described our bug exactly.
+* **A price check before a fix is worth its own session** (gotcha 402): `NO_PALETTE` was
+  built as a candidate fix and its real value was proving it cannot be one, at 60% of the
+  world.
+* And two repeats: a partial read measures a different place (I quoted a 21-minute job as
+  "3 to 5 minutes"), and `pgrep -f` matches the harness's own command line — it killed my
+  shell, from a gotcha already in my notes.

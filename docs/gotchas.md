@@ -4321,3 +4321,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      count of DISTINCT STREAMS, not of draws" visible. A census that merely
      summarised the traces would have missed it. **Re-run the subject, do not
      summarise it.**
+
+401. **SPEND AN HOUR ON THE PRIOR ART FOR THE PROBLEM CLASS BEFORE THE FOURTH
+     SESSION ON IT.** Four parts and eight operator sessions went into a
+     ray-traced shadow feature whose central defect — every acceleration-structure
+     instance carrying an identity transform because the position streams were
+     object-space — is described verbatim in NVIDIA's RTX Remix option list, in an
+     option that exists to fix it, together with its symmetrical twin (transforms
+     baked INTO the vertices). The same project's source answered three more of our
+     open questions in twenty minutes: how to keep an identity for geometry whose
+     content changes every frame, how to avoid rebuilding a structure per change,
+     and whether to exclude skinned meshes or skin them. **The rule is not "search
+     the web first"** — the census-against-hardware discipline is what actually
+     found our defect, and no document would have. It is that once a problem is
+     recognised as an INSTANCE OF A CLASS someone else has industrialised, an hour
+     reading their option names is worth more than another instrumented run. Record
+     the licence before reading the source, and take technique rather than code.
+
+402. **A PRICE CHECK ON A CANDIDATE FIX IS WORTH ITS OWN EXPERIMENT, AND ITS BEST
+     OUTCOME MAY BE PROVING THE CANDIDATE CANNOT SHIP.** An arm was built to
+     exclude a population that was visibly producing a defect. It removed the
+     defect and **60% of the world's occluders with it** — because the shader shape
+     being excluded was not the actor path it appeared to be, it was the engine's
+     main world shader, carrying 2,658 of one frame's 4,512 accepted draws. Had
+     that been discovered after building on the exclusion, a session and a design
+     would have gone with it. **Ask what a candidate fix COSTS before asking
+     whether it works**, and prefer a cost that is measurable from a counter
+     (`tlasInst` here) over one that needs an eye.
+     Corollary, from the same hour: a cheap discriminator that would have saved the
+     expensive fix should be *tested against the census before it is planned around*
+     — comparing palette entry 0 with entry 1 to find the draws that do not really
+     blend separated nothing, at 63% and 70% over two traces, and the test cost
+     five minutes where designing around it would have cost a session.

@@ -191,6 +191,38 @@ So the work is:
    — and only move it to a compute pass if the profile says so. This project has repeatedly
    found that the expensive-looking thing was not the cost (parts 47, 55).
 
+### What part 68 measured about this item, before anything was built
+
+**The palette path is not the actor path — it is the engine's MAIN WORLD SHADER.**
+`CZ_VK_RT_NO_PALETTE=1` in an operator session took `tlasInst` from **2994 to 1197**, a
+60% loss of occluders, and the offline census agrees to the point: `vs_b677dc3457f5b41a`
+alone carries 2,658 of the gas-station frame's 4,512 accepted draws. So exclusion cannot
+ship as anything but a diagnostic, and this item is REQUIRED rather than optional.
+
+**And the cheap shortcut is already dead.** The obvious saving would be to detect draws
+whose palette does not actually vary — a static building using entry 0 with unit weight is
+already handled exactly — by comparing palette entry 0 against entry 1 in the constant
+window. Measured over two traces:
+
+| | gas_station_sign | tanker |
+|---|---|---|
+| palette, entry 1 DIFFERS from entry 0 | 63.4% | 69.8% |
+| palette, entry 1 same as entry 0 | 9.9% | 9.9% |
+| `direct` (no palette) | 26.6% | 20.2% |
+
+Two thirds of accepted draws have a distinct second entry, so the test separates nothing.
+**It has two readings and they need different work**: either most of this world really is
+batched under a matrix palette (several props per buffer, each vertex indexed to its own
+matrix), or vc(base+3..base+5) simply holds unrelated constants for shaders that only ever
+use entry 0, making "differs" meaningless. **Settle that first, offline**: read the
+dependent fetch's actual per-vertex indices for one known draw and count how many distinct
+palette entries it references. One draw answers it.
+
+If it is the first reading, the shape of the fix changes: the placement is PER VERTEX, so
+the answer is to **bake world positions into the BLAS vertex data at staging time** and
+leave the instance transform at identity — which is what Remix's skinning compute pass
+does, and which costs us nothing extra because we already keep one BLAS per draw key.
+
 **Prediction:** the factor image's crowd-region edge density falls from 100.5/1000 toward
 the open-road figure of 10.6, with no change on open road. **That is the gate and it needs
 no eye** — `tools/` already has the measurement, it was run on part 68's capture, and the

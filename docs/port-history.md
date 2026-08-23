@@ -4763,3 +4763,66 @@ arms are in `instruments.md`; the lessons are gotchas 387-390):
   (4 permutation windows, 0 real); `shader_dim_census.py` clean on every cache;
   each RT cache differs from a plain rebuild in **exactly the census's 126
   modules** — no extra, none missing. Carry-overs unchanged from parts 62-64.
+
+Where the port is, as of 2026-08-22 (part 66 CLOSED — **THE RT SHADOW DEFECT IS
+LOCATED AND EVERYTHING DOWNSTREAM OF IT IS EXONERATED BY MEASUREMENT: the
+ray-tracing structure is effectively A GROUND PLANE.** Five operator sessions.
+`docs/part67-kickoff.md` WAS the hand-off then; the live one is named above.
+The record is `phase5-notes.md`
+§6cx (§7 the session log, §8 the answer); the backlog entry is `open-items.md`
+0v; the lessons are gotchas 391-397):
+
+* **FIRST, OFFLINE, AGAINST HARDWARE: this title has NO SCENE Z PREPASS.** Route
+  (b) reconstructed the receiver from the scene depth buffer and fired at the
+  title's own first atlas-sampling draw, justified by §6u's "233,155 depth-only
+  draws over a boot". That is a count over a RUN and says nothing about ORDER in a
+  frame. `tools/rt_depth_order_census.py` walks all twenty `.xtr` world traces in
+  stream order: those depth-only draws are the **shadow cascade** (EDRAM depth base
+  0, pitch 1040, mode 5, mask 0, ~969/frame), and the scene pass (base 736, pitch
+  640) has **no prepass** — its first draw already samples the atlas, 0
+  depth-writers before it, ~5,200 after. The buffer was at its CLEAR VALUE every
+  time the pass ran, which is exactly what part 65's modes 8/9 measured. Twenty
+  files already on disc, an afternoon, no run (gotcha 392).
+* **THE FIX: the receiver is a PRIMARY RAY's closest hit** into the same TLAS the
+  shadow ray uses, built from the PREVIOUS frame's draws and so always populated.
+  Impossible-by-construction rather than timed around. Also removes the per-resolve
+  invalidation: **3.01 passes a frame become 1**.
+* **THE OPERATOR FOUND A 427-PIXEL MISALIGNMENT IN ONE SENTENCE** on the first arm
+  ("the shadows move with me and with the camera ... in the form of the mountain in
+  the distance"). The factor image was sized from the 3440x**2048** EDRAM depth
+  while the scene is 1440 tall and `Publish` divided by the EDRAM height. Fixed,
+  427.5 px -> 0.00. **Part 65's spatial control could not have caught it**: mode 14
+  is `frac(uv.x*8)`, invariant under a vertical error (gotcha 394). Mode 19 is its
+  twin and they now run as ONE result.
+* **`CZ_VK_RT_FACTOR_READBACK` — READ THE FACTOR IMAGE ITSELF, and it settled four
+  links in one session** where eleven ladder modes had not in three, because every
+  one of them read the factor through 126 shaders and the title's lighting, a
+  channel in which lit-to-shadowed is a tenth of a luma point (gotcha 397). Poison
+  **100.0%** shadowed (its own positive control); the stripe pair a clean transpose,
+  8 bands each, flat on the other axis; the primary ray **85.2%** with a mask
+  matching the captured frame's skyline; the real path **0.9%**.
+* **THE ANSWER — mode 20, hemisphere occlusion from EIGHT FIXED directions with the
+  sun deliberately excluded: 97.3% fully open, mean 0.987.** No direction above a
+  receiver is occluded, so **no sun vector could ever have produced a shadow**.
+  Exonerated by measurement: the sun, the ray, its length (2000 vs 116.5 units both
+  read 0.9%), the bias, the world reconstruction (mode 2's checker is
+  perspective-correct and world-locked), the alignment, and the injection.
+* **~700 static opaque meshes a frame for a whole town**, against `dyn=19.0M` (57%
+  of every draw the collector sees) and `alpha=3.2M` (10%). **Part 67's first move
+  is a CENSUS, not a build**: what those instances ARE (a histogram of vertical
+  extents), and which filter eats the buildings. Both offline.
+* **TWO RETRACTIONS, both mid-session and both mine**: "ray length is the biggest
+  effect yet" was a frame-1228 read of a file still being written and reads 0.9%
+  complete (gotcha 384 — quoted at the operator earlier the same session); and the
+  skyline silhouette was read as proof the TLAS holds the world, when **a bare
+  ground plane produces the identical silhouette** (gotcha 395).
+* **Also fixed, from part 65's own unread validation logs**: `g_colour` was NEVER
+  BOUND (a 3-element write array passed with a count of 2), so **ladder modes 12
+  and 13 are retracted**; and the descriptor set was rewritten while the recording
+  command buffer held it. Plus a harness bug that silently killed two arms because
+  GNU `env` accepts any argument containing `=` as an assignment (gotcha 396).
+* **Gates at close** (RT off = the shipped default; nothing outside the RT pass
+  changed): `--smoke` OK; **A5 exit 0** (4 permutation windows, 0 real);
+  `shader_dim_census.py` clean on all sixteen caches and the play caches' NAME diff
+  against stock empty; the census tool runs over 20 traces and prints its verdict.
+  Carry-overs unchanged from parts 62-65.
