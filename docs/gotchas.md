@@ -4353,3 +4353,48 @@ From phase C part 18 (the frame rate — and none of it was work):
      — comparing palette entry 0 with entry 1 to find the draws that do not really
      blend separated nothing, at 63% and 70% over two traces, and the test cost
      five minutes where designing around it would have cost a session.
+
+403. **AN ORACLE THAT WORKED FOR A LARGE ERROR CAN BE SATURATED FOR A SMALL ONE, AND
+     IT WILL SAY "NO CHANGE" RATHER THAN "I CANNOT TELL".** The test that proved
+     part 67's placement fix — what fraction of a draw's vertices lands in the
+     frustum the draw was issued into — went 11.7% -> 98.6% when the defect was
+     the whole town piled at the world ORIGIN. Re-used two parts later on a defect
+     that misplaces a mesh by METRES, the same test reads **96.55% against 96.38%**
+     over a million vertices, and reading that as agreement would have retired a
+     real fix on its oracle's ceiling. **Ask what MAGNITUDE of error the oracle
+     resolves before reusing it**, and when it saturates, find a statistic whose
+     range matches the error: here the draw's own EXTENT (median 1.51 units
+     collapsed against 8.75 assembled) and the per-vertex displacement (90th
+     percentile 15.5 units). Related to 25 and to "a saturated count measures its
+     emitter" — this is the same failure with a continuous statistic.
+
+404. **A RIGID TRANSFORM CANNOT BE WRONG ABOUT SHAPE, ONLY ABOUT PLACE — SO WHEN A
+     PER-VERTEX TRANSFORM IS COLLAPSED TO A SINGLE MATRIX, MEASURE THE SIZE, NOT
+     THE POSITION.** Collapsing a matrix-palette blend onto entry 0 left the median
+     draw's CENTRE within 0.17 world units of the truth while its EXTENT was a
+     fifth of it, because a skinned mesh's vertices are stored bone-local and only
+     the blend assembles them. Every position-based statistic said "barely moved".
+     The general form: when a fix changes how a thing is CONSTRUCTED rather than
+     where it is put, the discriminating statistic is a property of the
+     construction.
+
+405. **A COUNTER ADDED ONLY TO MAKE A SUSPECTED CASE VISIBLE IS THE ONE THAT FINDS
+     THE DESIGN ERROR.** Baking a per-vertex blend into one buffer per mesh has an
+     obvious hole — the same mesh drawn twice in one frame under different
+     constants — which looked unlikely enough to ship with a counter rather than a
+     fix. The counter read **2,364,245 against 4,718,587 placements**: half of
+     every such draw. It is the batching mechanism itself, one shared vertex buffer
+     with the constant window selecting which props this draw is, and without the
+     counter the symptom would have been "five sixths of the world quietly missing
+     from the ray structure" with nothing pointing at why. **Write the counter for
+     the case you are about to dismiss.** The fix — put the occurrence ordinal
+     within the frame into the identity — took `tlasInst` from 682 to 3,356 at a
+     matched pass count.
+
+406. **A BUDGET CHECK BELONGS BEFORE THE WORK IT RATIONS, AND THE COUNTER PAIR WILL
+     TELL YOU IF IT IS NOT.** A per-frame refit budget was applied AFTER the CPU
+     blend that fed it, so two thirds of the blend work was computed and then
+     discarded — and the "we re-blended it" counter reported it as if it had
+     landed: `rebaked=573807` against `refit=174323`. Two counters for one pipeline
+     stage, one before the gate and one after it, make that visible for free;
+     one counter would have read "573,807 re-bakes" and been believed.

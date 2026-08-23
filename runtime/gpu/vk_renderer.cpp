@@ -10658,6 +10658,24 @@ uint64_t g_xfPlaced = 0, g_xfNone = 0, g_xfPalette = 0, g_xfWindow = 0, g_xfBad 
 uint64_t g_settledIn = 0;
 // Draws declined by CZ_VK_RT_NO_PALETTE. Zero unless the arm is set.
 uint64_t g_xfPaletteDeclined = 0;
+// PER-FRAME OCCURRENCE COUNTS FOR BAKED MESHES, and this exists because a counter said so.
+//
+// The first version of item 3 keyed a baked mesh on its stream alone, exactly like an
+// unbaked one, and the `palConflict` counter — added only to make a suspected case
+// visible — read 2,364,245 against 4,718,587 placements. Half of every palette draw is
+// the SAME vertex buffer drawn again in the same frame with a DIFFERENT palette. That is
+// the batching mechanism itself: one shared mesh, and the constant window selects which
+// props (or which zombie's pose) this draw is. With one baked buffer per stream those
+// occurrences collapse into one another and all but the last are lost.
+//
+// So the occurrence ordinal within the frame joins the identity for baked meshes only.
+// It is distinct WITHIN a frame — which is what stops the collapse — and stable ACROSS
+// frames as long as the title issues its draws in the same order, which is what lets a
+// refit reuse the same allocation instead of allocating a new one. When the order does
+// shift, the consequence is bounded and self-correcting: a BLAS is refitted with a
+// different occurrence's pose of the SAME mesh, which is a valid pose in a plausible
+// place, and the next frame's refit puts it back.
+std::unordered_map<uint64_t, uint32_t> g_bakeSeq;
 // The TLAS's own world box, which is the one line that says whether the structure is a
 // town or a pile. Reset each frame roll.
 float g_instMin[3] = {}, g_instMax[3] = {};
@@ -11205,6 +11223,7 @@ void FrameRoll()
         g_prevInst.swap(g_curInst);
         g_curInst.clear();
         g_curInstIds.clear();
+        g_bakeSeq.clear();
         // Sized from last frame: this is ~4,500 inserts a frame on the PUMP thread at
         // the operator's load, and part 55 measured container work there as a quarter of
         // that thread. It is only paid when RT is armed, which is not the default.
@@ -11545,6 +11564,10 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     key = Mix(key, idxKey);
     key = Mix(key, (uint64_t(draw.indexCount) << 16) | (prim << 8) |
                        (pos.offsetDwords << 4) | pos.strideDwords);
+    // A BAKED mesh's identity includes WHICH OCCURRENCE of it this is (see g_bakeSeq).
+    // Computed before the map lookups below, because it is part of the key they use.
+    if (BakedHere(vs))
+        key = Mix(key, g_bakeSeq[key]++);
     ++g_collected;
     (cascadeCaster ? g_curCascadeKeys : g_curKeys).insert(key);
     // WHERE this mesh is (part 67). A draw whose shader has no table entry keeps its
@@ -12424,7 +12447,7 @@ void BuildFrameStructures(uint8_t* base)
     {
         static const VkDeviceSize refitBudget =
             (Env("CZ_VK_RT_REFIT_MB") ? strtoull(Env("CZ_VK_RT_REFIT_MB"), nullptr, 10)
-                                      : 16ull)
+                                      : 64ull)
             << 20;
         struct Refit
         {
@@ -12485,6 +12508,15 @@ void BuildFrameStructures(uint8_t* base)
             const bool paletteMoved = b.blendCount && b.palHashBuilt != b.pal.hash;
             if (pe->guard == b.vGuard && !paletteMoved && !forced)
                 continue;   // clean, and not yet due a quality rebuild
+            // THE BUDGET IS CHECKED BEFORE THE RE-BAKE, not after it. The first version
+            // had it the other way round and the counters said so: `rebaked=573807`
+            // against `refit=174323`, i.e. two thirds of the blend work was done and then
+            // thrown away by the budget, while `rebaked` reported it as if it had landed.
+            if (refitBytes + b.posBytes > refitBudget && !refits.empty())
+            {
+                ++g_refitBudgeted;
+                continue;
+            }
             if (b.blendCount)
             {
                 if (!b.bakeMapped || !b.vertCount ||
@@ -12498,11 +12530,6 @@ void BuildFrameStructures(uint8_t* base)
                     b.blendBytes, b.blendCount, b.blendWeightOffDw, b.blendIndexOffDw,
                     b.pal, b.bakeMapped).outOfRange;
                 ++g_rebaked;
-            }
-            if (refitBytes + b.posBytes > refitBudget && !refits.empty())
-            {
-                ++g_refitBudgeted;
-                continue;
             }
             refitBytes += b.posBytes;
 

@@ -161,7 +161,8 @@ mask; trust the microcode's own swizzles.
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`rt-remix-plan.md`** — **the LIVE plan for the RT geometry work**, five items in
     the order they enable each other, taken from `rtx-remix-prior-art.md` (which records
-    the licence: DXVK zlib/libpng, NVIDIA's `rtx_render/*` per-file MIT).
+    the licence: DXVK zlib/libpng, NVIDIA's `rtx_render/*` per-file MIT). **Items 0-3
+    were built in part 69; item 4 and one operator session are what is left.**
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
     work.** `d3d-kickoff.md` and `d3d-phase-c{,2..26}-kickoff.md` are the per-part
@@ -179,7 +180,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part69-kickoff.md`.** State the rule as well as the name, because this line said
+    `part70-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -760,10 +761,60 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
+BUILT AND THE PALETTE APPROXIMATION IS RETIRED: IT WAS NOT AN APPROXIMATION, IT WAS A
+DIFFERENT MESH.** One operator session is owed and it is scripted.
+`docs/part70-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md` §6da;
+the backlog entry is `open-items.md` 0v; the lessons are gotchas 403-406):
+
+* **Item 3 started with an offline census rather than a build**, per the plan.
+  `tools/rt_palette_census.py` reads hardware's own per-vertex matrix INDICES for
+  every palette draw in a trace: over 2,786 of them, **ZERO reference a single
+  matrix** — median 19 distinct entries, maximum 28, in steps of three. §6cx's
+  "entry 0 is right for the static world and wrong for a skinned actor" is wrong
+  for both, and it is 60% of the world's occluders.
+* **The blend is now BAKED into the BLAS vertices**, with the TLAS instance
+  carrying only the outer stage. The inputs — which vertex-buffer dwords carry the
+  weights and the indices, and which byte of each per influence — are read out of
+  the translated microcode into `config/rt_world_xform.json`'s new `blend` field.
+  **Two bindings reach it and the first parser read only one**: six of eighteen
+  palette shaders use a dependent fetch, twelve use declared attributes, and it is
+  one interleaved buffer either way. 18 of 18. `CZ_VK_RT_NO_BAKE=1` is the arm.
+* **Items 0-2**: the BLAS reads its vertices in place out of the persist store (one
+  usage flag); identity stops being a function of CONTENT; a dirty mesh is REFITTED
+  in place, sized from `updateScratchSize`, with `CZ_VK_RT_REFIT_MAX` bounding the
+  tree decay by rebuilding **into the same allocation**. Arms
+  `CZ_VK_RT_NO_DIRECT_BUFFERS=1`, `CZ_VK_RT_STABLE_KEY=0`, `CZ_VK_RT_NO_REFIT=1`.
+* **Item 2's gate is met headlessly**: at `CZ_VK_RT_DYN_SETTLE=0` — the
+  configuration that used to climb to the 1 GB cap — the structure holds at
+  `blas=4493 (78.6 MB, built=4509, flushes=0)` over the outdoor route.
+* **A counter added only to make a suspected case visible found the design error.**
+  `palConflict` read **2,364,245 against 4,718,587 placements**: half of every
+  palette draw is the SAME vertex buffer redrawn in one frame under a DIFFERENT
+  palette, which is the batching mechanism itself. Putting the occurrence ordinal
+  into a baked mesh's identity took **`tlasInst` 682 -> 3,356** at a matched 4,097
+  RT passes, with `conflict` falling to 2,227 (gotcha 405).
+* **AND THE ORACLE THAT PROVED PART 67 COULD NOT JUDGE THIS.** The frustum test
+  reads **96.55% for entry 0 against 96.38% for the blend** — saturated, because
+  collapsing a batch onto one of its own members moves a vertex by METRES against a
+  hundreds-of-metres test (gotcha 403). The statistics with range: the median draw
+  EXTENT goes **1.51 -> 8.75 units**, 22.4% of draws move by more than a unit (90th
+  percentile 15.46), and `tools/rt_placement_render.py --blend` moves a third of the
+  splat's covered pixels.
+* **What is owed: `tools/part69_rt_geometry_session.sh`** — six arms, **two of which
+  need no eye** (`dyn0` against `old`, a log-only pair whose second arm is the
+  positive control). A5 is arm 0 and has been owed since part 67.
+* **Item 4 is NOT done**: `CZ_VK_RT_DYN_SETTLE`'s default is unchanged, and part
+  67's exonerations of the sun, the ray length and the origin bias are still owed a
+  re-ask against the new structure (gotcha 172).
+* **Gates at close** (RT off = the shipped default): `--smoke` OK;
+  `rt_world_xform_census.py` 104 of 104 and exit 0, and it now self-checks its own
+  JSON output. **A5 is owed.**
+
 Where the port is, as of 2026-08-22 (part 68 CLOSED — **THE PLACEMENT IS VERIFIED
 AGAINST HARDWARE AND THE REMAINING DEFECT IS THE POPULATION. The plan for it is
-taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` is
-the LIVE hand-off; the record is `phase5-notes.md` §6cz; the backlog entry is
+taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` WAS the hand-off then;
+the live one is named above; the record is `phase5-notes.md` §6cz; the backlog entry is
 `open-items.md` 0v; the lessons are gotchas 401-402):
 
 * **Part 67's placement fix is confirmed in two same-binary pairs**: the
@@ -814,66 +865,8 @@ the LIVE hand-off; the record is `phase5-notes.md` §6cz; the backlog entry is
   diff empty; `rt_world_xform_census.py` 104 of 104 and exit 1 on a planted gap.
   **A5 is owed**, carried from part 67 — no kernel path changed in either.
 
-Where the port is, as of 2026-08-22 (part 67 CLOSED — **THE RT TLAS WAS NOT A GROUND
-PLANE, IT WAS THE WHOLE TOWN PILED AT THE ORIGIN: THE POSITION STREAMS ARE
-OBJECT-SPACE.** Found offline in an afternoon, fixed, and one scripted operator
-session is owed. `docs/part68-kickoff.md` WAS the hand-off then; the live one is
-named above. The record is
-`phase5-notes.md` §6cy; the backlog entry is `open-items.md` 0v; the lessons are
-gotchas 398-400):
-
-* **NO FILTER WAS EATING THE BUILDINGS.** `rtshadow::Collect` admits a draw when
-  `SceneXformForm(c0..c3) == 2` and §6cs read that as "so the position stream is
-  world-space". It does not follow: c0..c3 is the CAMERA's view-projection and is
-  the same matrix whether the shader feeds it a world position or an object
-  position it transformed one line earlier — which is what this title's world
-  shaders do, from a row-major 4x3 at `vc(8..10)`. Every mesh entered the BLAS in
-  its own local frame and every TLAS instance carried an IDENTITY transform
-  (gotcha 398).
-* **Measured against hardware, from files already on disc** —
-  `tools/rt_tlas_census.py` re-runs Collect's whole chain over the twenty `.xtr`
-  world traces, reading the real vertex bytes. Over **46,820 accepted draws**:
-  boxes intersecting the frustum the draw was issued into go **11.69% ->
-  98.64%** when placed; per VERTEX the same test reads **0.0% against 61-98%**;
-  and **100%** of them carry a non-identity world translation, spread over
-  x[-2312 392] z[-785 367]. The filter buckets are ordinary.
-* **`tlasInst=216..722` — the number three parts read as "the collector is
-  dropping the buildings" — was the DISTINCT MESH count.** The placements had
-  collapsed into the mesh identity, because the BLAS key is a function of the
-  stream and nothing else.
-* **Every part-66 measurement was an honest reading of that pile**: 85%
-  primary-ray hits, a perspective-correct world checker, and 97.3% of receivers
-  unoccluded over the hemisphere. None of them was wrong; all of them were about
-  a heap at the origin.
-* **The transform is READ, not assumed.** `tools/rt_world_xform_census.py`
-  translates every `vs_*.ucode` with the same XenosRecomp the cache is built with
-  and walks the position dataflow backwards from `oPos`. Two shapes:
-  **`direct`** (one 4x3, 28 shaders) and **`palette`** (a per-vertex blend, then
-  in half the cases a second 4x3 at `vc(4..6)` — composing it takes the bank's
-  busiest world shader from 81.3% of vertices on screen to 99.5%).
-  `config/rt_world_xform.json` is ONE file for all sixteen caches, and the census
-  is a **coverage gate** (104 of 104, exit 1 on a planted gap).
-* **Shipped**: `Instance { key, xf[12] }`, the transform deliberately NOT part of
-  the BLAS key (one mesh at forty places is one BLAS and forty instances); a
-  window bounds-check because `memoVsBase` is guest-controlled and `vc(10)` from a
-  high base walks into the fetch constants; a shader with no table entry is
-  DECLINED rather than placed at the origin on a guess. Counters print
-  `placed=/declined:/world box` — **the world box is the engagement counter**,
-  Still Creek is roughly x[-940 390] z[-720 370].
-  **`CZ_VK_RT_OBJ_XFORM=0` is the same-binary control arm** and is the part-66
-  renderer.
-* **What is owed: `tools/part67_placement_session.sh`** — five arms in two PAIRS
-  (placed vs `OBJ_XFORM=0`), four of which need no eye because the factor
-  readback reports each as a histogram. The prediction is stated in §6cy §5 so a
-  run can refute it, and A5 is arm 0.
-* **Gates at close** (RT off = the shipped default; nothing outside the RT
-  collector and TLAS build changed): `--smoke` OK; `shader_dim_census.py` clean
-  on all sixteen caches and the play cache's NAME diff against stock empty; the
-  world-transform census covers 104 of 104 and fails on a planted gap; the TLAS
-  census runs over 20 traces and prints its verdict. **A5 is owed.**
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-66's** — part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-67's** — part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

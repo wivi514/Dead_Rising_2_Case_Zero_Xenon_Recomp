@@ -59,7 +59,40 @@ Next, in order:
    the palette blend, then retire the workarounds AND re-ask part 67's
    exonerations against the new structure (gotcha 172: the sun, ray length and
    bias were all cleared against a pile at the origin, which is no test).
-   The hand-off is `docs/part69-kickoff.md`.
+
+   **PART 69 BUILT ITEMS 0-3. ITEM 4 IS WHAT IS LEFT, AND ONE OPERATOR SESSION IS
+   OWED — `tools/part69_rt_geometry_session.sh`, of which two arms need no eye.**
+   The record is `phase5-notes.md` §6da; the hand-off is `docs/part70-kickoff.md`;
+   the lessons are gotchas 403-406.
+
+   **The palette approximation was not an approximation.** The plan's item 3 began
+   with an offline census rather than a build (`tools/rt_palette_census.py`), and
+   over 2,786 palette draws in the gas-station trace **ZERO reference a single
+   matrix** — median 19 distinct entries, maximum 28, in steps of three. §6cx's
+   "right for the static world and wrong for a skinned actor" is wrong for both.
+   Entry 0 applies a RIGID transform, so it preserves shape and only position can
+   be wrong; measured, it collapses the median draw's extent to **1.51 units where
+   the blend assembles it at 8.75**, and moves 22.4% of draws by more than a world
+   unit (90th percentile 15.46). The blend is now baked into the BLAS vertices with
+   the instance carrying only the outer stage. `CZ_VK_RT_NO_BAKE=1` is the arm.
+
+   **And the frustum oracle could not judge it.** The test that carried part 67
+   (what fraction of vertices lands in the frustum the draw was issued into) reads
+   **96.55% for entry 0 and 96.38% for the blend** — a saturated statistic, because
+   collapsing a batch onto one of its own members moves a vertex by metres against
+   a hundreds-of-metres test. The width and displacement statistics above are the
+   ones with range, and `tools/rt_placement_render.py --blend` is the visual oracle.
+
+   **Items 0-2 shipped with the identity fix the counters demanded.** A counter
+   added only to make a suspected case visible (`palConflict`) read **2,364,245
+   against 4,718,587 placements**: half of every palette draw is the SAME vertex
+   buffer redrawn in the same frame under a DIFFERENT palette, which is the
+   batching mechanism itself. A baked mesh's identity therefore includes its
+   occurrence ordinal within the frame, and at a matched 4,097 RT passes on the
+   headless outdoor route that took **`tlasInst` 682 -> 3,356** with `conflict`
+   falling to 2,227. The structure is stable at `CZ_VK_RT_DYN_SETTLE=0` — the
+   configuration that used to climb to the cap — with `blas=4493 (78.6 MB,
+   built=4509, flushes=0)`, which is item 2's own gate met headlessly.
 
    **PART 66'S FINDING, which supersedes the part-66 kickoff's §0 entirely:
    THIS TITLE HAS NO SCENE Z PREPASS.** The factor pass reconstructed the

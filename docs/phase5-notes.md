@@ -14464,3 +14464,175 @@ RT is OFF by default; nothing outside the RT collector and the TLAS build change
 * And two repeats: a partial read measures a different place (I quoted a 21-minute job as
   "3 to 5 minutes"), and `pgrep -f` matches the harness's own command line — it killed my
   shell, from a gotcha already in my notes.
+
+## §6da — Part 69: the Remix plan's items 0-3, built — and entry 0 was never the geometry (2026-08-22)
+
+Part 68 wrote `docs/rt-remix-plan.md` and part 69 executed it, in its order. Items 0, 1, 2
+and 3 are in the binary, each with its own same-binary control arm; item 4 (retire the
+workarounds, re-ask part 67's exonerations) is what the operator session decides.
+
+**Nothing here is a picture claim.** Everything below is either offline against hardware's
+own captures or a log-only gate. `tools/part69_rt_geometry_session.sh` is the session, and
+two of its six arms need no eye at all.
+
+### 1. The item that had a measured motivation, and the number that changed its shape
+
+The plan's item 3 began with a one-draw offline experiment rather than a build, per the
+kickoff: read the dependent fetch's actual per-vertex palette INDICES for a real draw and
+count how many distinct palette entries it references. `tools/rt_palette_census.py` asks it
+of every palette draw in a trace, reading hardware's own vertex bytes.
+
+**Over the gas-station trace, 2,786 palette draws, no unread bytes: ZERO reference a single
+matrix.** The median is 19 distinct entries and the maximum 28, in steps of three — one
+row-major 4x3 per entry.
+
+That is not the reading §6cx had. §6cx said entry-0-with-unit-weight is *"right for the
+static world (99.5% of vertices on screen for the bank's busiest world shader) and wrong
+for a skinned actor"*. It is wrong for both. And it retires the ambiguity part 68 left
+open — comparing palette entry 0 with entry 1 separated nothing (63.4%/69.8%) because that
+question was about the CONSTANTS; an index is only ever produced by the vertex data, so
+reading indices answers it directly.
+
+### 2. The blend descriptor is read out of the microcode, and TWO BINDINGS reach it
+
+`tools/rt_world_xform_census.py` now emits, per palette shader, the vertex-buffer layout
+the weights and matrix indices arrive in — `slot:strideDwords:weightOffsetDw:indexOffsetDw:bytes`,
+one byte digit per influence — verified against a canonical form rather than assumed: one
+slot, `k_8_8_8_8`, the shader's own normalised/integer flags identifying which input is
+which, weight byte *k* paired with index byte *k*, three consecutive `vc()` rows.
+
+**The first version of the parser read six of eighteen palette shaders and reported that as
+coverage.** Six take the blend inputs through a dependent fetch (`XeVfetchDep(95, ...)`);
+**twelve take the same bytes as DECLARED attributes** (`iTexCoord0`/`iTexCoord1` through
+`tfetchTexcoord`). It is one interleaved vertex buffer either way — offsets 6 and 7 of an
+8-dword stride for the busiest shader — and the descriptor records the LAYOUT, not the
+binding. 18 of 18 now, and the shapes vary (`95:8:6:7:321`, `95:9:5:6:3210`, `95:5:3:4:3210`),
+so three and four influences both occur.
+
+### 3. The arithmetic, with the swizzles cancelled
+
+From `vs_b677dc3457f5b41a`'s translated microcode, the compiler writes each accumulated row
+as `r5 = w * vc(8 + a0).xzyw` and reads it back as `dot(r5.yxzw, r7.zxyw)` with
+`r7 = (px, py, pz, 1)`; one influence rotates the accumulator (`r3.wxyz` against
+`vc(9 + a0).wxzy`). Working all of it through leaves the plain row-major form:
+
+```
+row_k = SUM_i  weight_i * vc(base + index_i + k)          k = 0,1,2
+world = (dot(row_0, p4), dot(row_1, p4), dot(row_2, p4))
+```
+
+which is why the runtime has one blend routine and not one per swizzle shape. Weight *i* is
+byte *i* of the normalised dword (`/255`); index *i* is byte *i* of the integer dword. Both
+facts are the shader's own `num_format` declaration.
+
+### 4. WHY THE FRUSTUM ORACLE COULD NOT JUDGE IT — a saturated statistic
+
+`tools/rt_bake_check.py` first asked the question part 67 asked: what fraction of vertices
+lands in the frustum the draw was issued into?
+
+| arm | in frustum |
+|---|---|
+| camera only, no object transform | 0.00% |
+| palette ENTRY 0 (parts 67-68) | **96.55%** |
+| per-vertex BLEND (item 3) | **96.38%** |
+
+**That is not agreement, it is a statistic with no dynamic range left.** Part 67's version
+of this test worked because the defect put the whole town at the world ORIGIN, hundreds of
+units from the camera; collapsing a batch of props onto one of its own members moves a
+vertex by METRES, and the frustum is a hundreds-of-metres test. Reading 96.55 against 96.38
+as "the blend changes nothing" would have retired the item on its emitter's ceiling.
+
+### 5. The statistics that do have range, and what they say
+
+| | |
+|---|---|
+| median distance the blend moves a vertex | **0.17 units** |
+| 90th percentile | **15.46 units** |
+| draws moving more than one unit | 506 of 2,258 (**22.4%**) |
+| median draw EXTENT, blended | **8.75 units** |
+| median draw EXTENT, entry 0 | **1.51 units** |
+| draws more than 1.5x wider blended | 1,344 of 2,258 (**59.5%**) |
+
+**The width is the discriminator and the displacement is not.** Entry 0 applies a RIGID
+transform, so it preserves the mesh's shape and only its position can be wrong — and for a
+mesh whose vertices are stored in bone-local space (which is what a skinned mesh is) the
+collapsed cloud sits roughly in the right place at a fifth of its true size. The blend
+ASSEMBLES it. A median displacement of 0.17 next to an extent going 1.51 -> 8.75 is not
+"the blend barely moves this", it is "entry 0 was never producing this geometry at all".
+
+`tools/rt_placement_render.py --blend` agrees end to end, against the frame the trace is
+locked to: of ~90,000 covered pixels, **28,782 are covered only by the blend and 23,118
+only by entry 0**, and the blend covers MORE — which is props spread out rather than
+stacked.
+
+### 6. Items 0, 1 and 2, and why they land together
+
+Each is the enabler for the next and item 2 cannot be measured without the two under it.
+
+* **Item 0** — the BLAS build reads its position stream IN PLACE out of the cross-frame
+  persist store. The store already held every world vertex stream dword-swapped exactly as
+  the BLAS staging copy swapped them and was already device-addressed for the raster path;
+  it lacked one usage flag. Indices cannot come from it — the build expands strips into
+  lists and drops degenerates, which is derived data — but topology does not change when a
+  mesh animates, so the expanded list is built once and KEPT in its own bump pool. Static
+  index storage, live vertex pointer. Arm `CZ_VK_RT_NO_DIRECT_BUFFERS=1`.
+* **Item 1** — the BLAS key stops being a function of the mesh's CONTENT. The two persist
+  guards were mixed into it, so a mesh whose bytes change was a new mesh every frame: new
+  key, new structure, no eviction. That is the architectural reason `CZ_VK_RT_DYN_SETTLE=0`
+  had to ship as a diagnostic. The guards stay in the record as STATE, which is exactly the
+  dirty test refit needs. The collision question gets EASIER with it: a recycled address
+  holding different bytes at the same layout is stale content, and stale content is a
+  refit. Arm `CZ_VK_RT_STABLE_KEY=0`.
+* **Item 2** — refit. `ALLOW_UPDATE` on the build flags (conditioned on the arm, so the arm
+  prices the flag's own trace cost too), a per-frame walk of the live set for records whose
+  stored guard differs from the store's current one, and `MODE_UPDATE` against the same
+  allocation sized from **`updateScratchSize`** — a different figure from `buildScratchSize`,
+  in its own scratch buffer so the two cannot be confused. A refitted structure keeps the
+  tree the original build chose, so `CZ_VK_RT_REFIT_MAX` (default 60) forces a full rebuild
+  **into the same allocation**, which bounds the quality decay without reintroducing the
+  pool growth item 2 exists to remove. A changed index guard is a topology change, where a
+  refit is invalid, so that record is retired and re-pended.
+  Arms `CZ_VK_RT_NO_REFIT=1`, `CZ_VK_RT_FAST_BUILD=1`, `CZ_VK_RT_REFIT_MB=N`.
+
+Item 3 and item 0 are **alternatives per mesh, not a stack**: a baked mesh cannot read its
+vertices from the store, because the store holds what the guest wrote and what the guest
+wrote is object-space under a per-vertex matrix. A baked mesh also has a SECOND staleness
+signal — the palette hash — because a prop batch can be re-placed, or an actor animated,
+with its vertex bytes untouched.
+
+### 7. What the session must decide, and what it can decide without an eye
+
+**Log-only, arms `dyn0` and `old`.** With `CZ_VK_RT_DYN_SETTLE=0` — the configuration that
+today climbs to the 1 GB cap and flushes — the gate is `flushes=0` with `blas=` steady and
+`refit=` non-zero. Arm `old` is the same load with items 1 and 2 backed out and is the
+POSITIVE CONTROL: it is expected to flush, and if it does not then the growth those items
+exist to stop was never happening and they are unpriced (gotcha 30).
+
+**Needs the operator's eye, arms `bake`/`nobake`/`look`.** The pre-registered prediction is
+that the factor image's crowd-region edge density falls from part 68's 100.5 per 1000
+toward the open-road 10.6 with no change on open road, and that a shadow boundary now BENDS
+over a van's roof and down its side instead of running as one straight line across wall,
+van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
+
+### 8. Still open at the close
+
+* **Item 4 is not done**: `CZ_VK_RT_DYN_SETTLE`'s default is unchanged (still "any
+  ever-dynamic stream excluded"), because moving it is a measurement the session makes.
+  `CZ_VK_RT_NO_PALETTE` stays as a tier knob. **Part 67's exonerations — the sun, the ray
+  length and the origin bias — are still owed a re-ask against the new structure**
+  (gotcha 172).
+* **Cost is unmeasured.** The blend is CPU-side inside the existing staging walk, per the
+  plan (correct-or-not, no compute plumbing; parts 47 and 55 both found the
+  expensive-looking thing was not the cost). The palette hash runs once per palette draw per
+  frame on the PUMP thread and is 64-bit-word FNV over a per-mesh window that shrinks after
+  the first build. If the profile disagrees it moves to a compute pass and nothing above it
+  changes.
+* `outOfRange` must read zero in the session. The offline check found 936 vertices of 1.06M
+  reaching past row 128, so the highest index in use is above 117 — a distinct-COUNT of 28
+  is not a maximum. The runtime captures 192 rows initially and shrinks per mesh.
+* `palConflict` is a number nobody has yet seen: one mesh drawn twice in one frame under
+  DIFFERENT palettes is the case a single baked buffer per key cannot represent.
+* The known-open list from the part-69 kickoff is untouched: RT HIGH's four rays buy no
+  penumbra, self-shadowing has never been tested against correctly-placed geometry, `alpha`
+  stays raster-only, and the instance count's cost on the pump thread is unpriced.
+* **A5 is owed** and is arm 0 of the session. No kernel path changed in parts 67, 68 or 69.

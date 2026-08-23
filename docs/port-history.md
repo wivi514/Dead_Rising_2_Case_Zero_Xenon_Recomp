@@ -4826,3 +4826,61 @@ The record is `phase5-notes.md`
   `shader_dim_census.py` clean on all sixteen caches and the play caches' NAME diff
   against stock empty; the census tool runs over 20 traces and prints its verdict.
   Carry-overs unchanged from parts 62-65.
+
+Where the port is, as of 2026-08-22 (part 67 CLOSED — **THE RT TLAS WAS NOT A GROUND
+PLANE, IT WAS THE WHOLE TOWN PILED AT THE ORIGIN: THE POSITION STREAMS ARE
+OBJECT-SPACE.** Found offline in an afternoon, fixed, and one scripted operator
+session is owed. `docs/part68-kickoff.md` WAS the hand-off then; the live one is
+named above. The record is
+`phase5-notes.md` §6cy; the backlog entry is `open-items.md` 0v; the lessons are
+gotchas 398-400):
+
+* **NO FILTER WAS EATING THE BUILDINGS.** `rtshadow::Collect` admits a draw when
+  `SceneXformForm(c0..c3) == 2` and §6cs read that as "so the position stream is
+  world-space". It does not follow: c0..c3 is the CAMERA's view-projection and is
+  the same matrix whether the shader feeds it a world position or an object
+  position it transformed one line earlier — which is what this title's world
+  shaders do, from a row-major 4x3 at `vc(8..10)`. Every mesh entered the BLAS in
+  its own local frame and every TLAS instance carried an IDENTITY transform
+  (gotcha 398).
+* **Measured against hardware, from files already on disc** —
+  `tools/rt_tlas_census.py` re-runs Collect's whole chain over the twenty `.xtr`
+  world traces, reading the real vertex bytes. Over **46,820 accepted draws**:
+  boxes intersecting the frustum the draw was issued into go **11.69% ->
+  98.64%** when placed; per VERTEX the same test reads **0.0% against 61-98%**;
+  and **100%** of them carry a non-identity world translation, spread over
+  x[-2312 392] z[-785 367]. The filter buckets are ordinary.
+* **`tlasInst=216..722` — the number three parts read as "the collector is
+  dropping the buildings" — was the DISTINCT MESH count.** The placements had
+  collapsed into the mesh identity, because the BLAS key is a function of the
+  stream and nothing else.
+* **Every part-66 measurement was an honest reading of that pile**: 85%
+  primary-ray hits, a perspective-correct world checker, and 97.3% of receivers
+  unoccluded over the hemisphere. None of them was wrong; all of them were about
+  a heap at the origin.
+* **The transform is READ, not assumed.** `tools/rt_world_xform_census.py`
+  translates every `vs_*.ucode` with the same XenosRecomp the cache is built with
+  and walks the position dataflow backwards from `oPos`. Two shapes:
+  **`direct`** (one 4x3, 28 shaders) and **`palette`** (a per-vertex blend, then
+  in half the cases a second 4x3 at `vc(4..6)` — composing it takes the bank's
+  busiest world shader from 81.3% of vertices on screen to 99.5%).
+  `config/rt_world_xform.json` is ONE file for all sixteen caches, and the census
+  is a **coverage gate** (104 of 104, exit 1 on a planted gap).
+* **Shipped**: `Instance { key, xf[12] }`, the transform deliberately NOT part of
+  the BLAS key (one mesh at forty places is one BLAS and forty instances); a
+  window bounds-check because `memoVsBase` is guest-controlled and `vc(10)` from a
+  high base walks into the fetch constants; a shader with no table entry is
+  DECLINED rather than placed at the origin on a guess. Counters print
+  `placed=/declined:/world box` — **the world box is the engagement counter**,
+  Still Creek is roughly x[-940 390] z[-720 370].
+  **`CZ_VK_RT_OBJ_XFORM=0` is the same-binary control arm** and is the part-66
+  renderer.
+* **What is owed: `tools/part67_placement_session.sh`** — five arms in two PAIRS
+  (placed vs `OBJ_XFORM=0`), four of which need no eye because the factor
+  readback reports each as a histogram. The prediction is stated in §6cy §5 so a
+  run can refute it, and A5 is arm 0.
+* **Gates at close** (RT off = the shipped default; nothing outside the RT
+  collector and TLAS build changed): `--smoke` OK; `shader_dim_census.py` clean
+  on all sixteen caches and the play cache's NAME diff against stock empty; the
+  world-transform census covers 104 of 104 and fails on a planted gap; the TLAS
+  census runs over 20 traces and prints its verdict. **A5 is owed.**

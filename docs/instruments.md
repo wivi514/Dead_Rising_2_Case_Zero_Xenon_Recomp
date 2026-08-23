@@ -1875,7 +1875,7 @@ CZ_VK_RT_REFIT_MAX=N  how many consecutive refits a BLAS may take before a full
                    decay with a named knob instead of letting it be discovered in
                    a picture. Rebuilding in place is what keeps that from
                    reintroducing pool growth
-CZ_VK_RT_REFIT_MB=N  the per-frame refit budget in source bytes (default 16). The
+CZ_VK_RT_REFIT_MB=N  the per-frame refit budget in source bytes (default 64). The
                    overflow is counted as `budgeted-out=`, never silent
 CZ_VK_RT_FAST_BUILD=1  build BLASes with `PREFER_FAST_BUILD` instead of
                    `PREFER_FAST_TRACE`. Remix pairs `ALLOW_UPDATE` with the former;
