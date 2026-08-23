@@ -10837,6 +10837,85 @@ bool g_instBoxValid = false;
 float g_instMinPrev[3] = {}, g_instMaxPrev[3] = {};
 bool g_instBoxPrevValid = false;
 
+// THE BIGGEST MESHES IN THE STRUCTURE, BY NAME — `part69-night-plan.md` §2.2.
+//
+// The bounds gate rejects a stream whose OBJECT-space extent exceeds
+// `CZ_VK_RT_BOUNDS_CAP` (50,000 units) against a town that fits in ~1,100, so a mesh a
+// hundred times the town's height passes it and nothing in this runtime could name it.
+// That matters for one specific defect shape: a large occluder ABOVE or BEHIND the
+// camera blocks every shadow ray while being invisible to the primary ray, so
+// `CZ_VK_RT_FACTOR_DEBUG=18` — the instrument that retired the occluder-set suspects in
+// part 69 — is structurally blind to it. Mode 18 images only what the camera can see.
+//
+// The extent recorded is the WORLD one, not the object one, because a small mesh with a
+// large scale in its instance transform is the same hazard and the gate cannot see it.
+// A threshold that makes the symptom go away is a workaround; the named streams are the
+// finding, and they are what a Case West port would need.
+struct BigMesh
+{
+    uint64_t streamKey;
+    float extent;
+    float objExtent;
+    float centre[3];
+    uint64_t seen;
+};
+BigMesh g_bigMesh[8] = {};
+uint32_t g_bigMeshCount = 0;
+
+// Offer one placed mesh to the top-8. `mn`/`mx` are the object-space box the bounds
+// gate has already computed, `xf` the 3x4 row-major instance transform.
+void NoteMeshExtent(uint64_t streamKey, const float* mn, const float* mx, const float* xf)
+{
+    // The world AABB of a transformed box without walking eight corners: the centre goes
+    // through the matrix, and the half-extent through its absolute value.
+    float c[3], h[3], wc[3], wh[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        c[i] = 0.5f * (mn[i] + mx[i]);
+        h[i] = 0.5f * (mx[i] - mn[i]);
+    }
+    for (int r = 0; r < 3; ++r)
+    {
+        wc[r] = xf[r * 4 + 0] * c[0] + xf[r * 4 + 1] * c[1] + xf[r * 4 + 2] * c[2] +
+                xf[r * 4 + 3];
+        wh[r] = std::fabs(xf[r * 4 + 0]) * h[0] + std::fabs(xf[r * 4 + 1]) * h[1] +
+                std::fabs(xf[r * 4 + 2]) * h[2];
+    }
+    const float ext = 2.0f * std::max(wh[0], std::max(wh[1], wh[2]));
+    const float objExt = std::max(mx[0] - mn[0], std::max(mx[1] - mn[1], mx[2] - mn[2]));
+    for (uint32_t i = 0; i < g_bigMeshCount; ++i)
+        if (g_bigMesh[i].streamKey == streamKey)
+        {
+            ++g_bigMesh[i].seen;
+            if (ext > g_bigMesh[i].extent)      // a bigger pose of the same mesh
+            {
+                g_bigMesh[i].extent = ext;
+                memcpy(g_bigMesh[i].centre, wc, sizeof wc);
+            }
+            return;
+        }
+    uint32_t slot = g_bigMeshCount;
+    if (g_bigMeshCount < 8)
+        ++g_bigMeshCount;
+    else
+    {
+        // Evict the smallest, and only if this one beats it. A fixed table means the
+        // census costs nothing and cannot grow; it is a "name the outliers" instrument,
+        // not a histogram.
+        slot = 0;
+        for (uint32_t i = 1; i < 8; ++i)
+            if (g_bigMesh[i].extent < g_bigMesh[slot].extent)
+                slot = i;
+        if (ext <= g_bigMesh[slot].extent)
+            return;
+    }
+    g_bigMesh[slot].streamKey = streamKey;
+    g_bigMesh[slot].extent = ext;
+    g_bigMesh[slot].objExtent = objExt;
+    memcpy(g_bigMesh[slot].centre, wc, sizeof wc);
+    g_bigMesh[slot].seen = 1;
+}
+
 // WHAT THE COLLECTOR ACCEPTED AND WHAT IT THREW AWAY. This census existed from part
 // 64 and printed only from `TraceSlice`, which is route (a)'s path — so on the LIVE
 // route it was invisible. Part 66 made it load-bearing: with the receiver coming from
@@ -11359,6 +11438,33 @@ void PrintCollectorCensus(const char* who)
             g_curInst.size(), g_prevInst.size(),
             box[0], box[1], box[2], box[3], box[4], box[5],
             PlaceInstances() ? "" : "  (CZ_VK_RT_OBJ_XFORM=0: IDENTITY, the part-66 arm)");
+    // THE LARGEST ADMITTED MESHES, BY NAME. `part69-night-plan.md` §2.2 asked for this
+    // and shelved it on the strength of `CZ_VK_RT_FACTOR_DEBUG=18` looking correct —
+    // but mode 18 is the PRIMARY ray, so it images only what the camera can see, and a
+    // large occluder above or behind the camera is invisible to it while still blocking
+    // every shadow ray. Sorted here rather than kept sorted, because it prints once.
+    if (g_bigMeshCount)
+    {
+        uint32_t order[8];
+        for (uint32_t i = 0; i < g_bigMeshCount; ++i)
+            order[i] = i;
+        for (uint32_t i = 1; i < g_bigMeshCount; ++i)
+            for (uint32_t j = i; j && g_bigMesh[order[j]].extent >
+                                          g_bigMesh[order[j - 1]].extent; --j)
+                std::swap(order[j], order[j - 1]);
+        fprintf(stderr,
+                "[rt] %s: largest admitted meshes by WORLD extent (the town is ~1,100 "
+                "units and CZ_VK_RT_BOUNDS_CAP screens OBJECT extent only):\n", who);
+        for (uint32_t i = 0; i < g_bigMeshCount; ++i)
+        {
+            const BigMesh& b = g_bigMesh[order[i]];
+            fprintf(stderr,
+                    "[rt]   %8.1f units (object %8.1f) at (%.0f %.0f %.0f)  "
+                    "stream va=%08X x%llu\n",
+                    b.extent, b.objExtent, b.centre[0], b.centre[1], b.centre[2],
+                    uint32_t(b.streamKey >> 32), (unsigned long long)b.seen);
+        }
+    }
 }
 
 void FrameRoll()
@@ -11856,6 +11962,11 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             g_curCascadeKeys.erase(key);
             return;
         }
+        // ACCEPTED — offer it to the top-8 by WORLD extent (see NoteMeshExtent). The
+        // box is already computed here and nowhere else, which is why the census lives
+        // at the gate rather than at build time.
+        if (placed && !cascadeCaster)
+            NoteMeshExtent(streamKey, mn, mx, xf);
     }
     if (placed)
         RecordInstance(key, xf, cascadeCaster);

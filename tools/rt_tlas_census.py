@@ -591,6 +591,27 @@ def report(name, draws, top):
               % (mn[0], mx[0], mn[1], mx[1], mn[2], mx[2]))
         print('    ACCEPTED vertical extents: %s'
               % '  '.join('%s:%d' % (n, c) for n, c in zip(names, h) if c))
+        # THE LARGEST ACCEPTED MESHES, BY NAME — the offline half of
+        # `part69-night-plan.md` §2.2. A single mesh far larger than the town blocks
+        # every shadow ray while contributing nothing to the PRIMARY-ray debug image
+        # (mode 18 sees only what the camera sees), so "the depth image looks right"
+        # cannot rule one out. WORLD extent where the draw was placed, object extent
+        # otherwise, and both are printed so a large SCALE in the transform is visible
+        # as the difference between them.
+        def _ext(d, key_mn, key_mx):
+            return max(d[key_mx][c] - d[key_mn][c] for c in range(3))
+        ranked = sorted(
+            ok, key=lambda d: _ext(d, 'wmn', 'wmx') if 'wmn' in d else _ext(d, 'mn', 'mx'),
+            reverse=True)[:8]
+        if ranked:
+            print('    LARGEST accepted meshes (town is ~1,100 units; the bounds gate '
+                  'screens OBJECT extent against %g):' % BOUNDS_CAP)
+            for d in ranked:
+                w = _ext(d, 'wmn', 'wmx') if 'wmn' in d else None
+                print('      %9s world  %8.1f object  va=%08X  %s'
+                      % ('%.1f' % w if w is not None else 'unplaced',
+                         _ext(d, 'mn', 'mx'), (d.get('stream') or (0,))[0],
+                         d.get('vs', '') or ''))
         placed = [d for d in ok if 'wmn' in d]
         if placed:
             wmn = [min(d['wmn'][k] for d in placed) for k in range(3)]
