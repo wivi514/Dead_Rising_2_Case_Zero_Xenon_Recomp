@@ -304,7 +304,29 @@ load that no longer exists is not worth a session.
 
 ---
 
-## 4. ITEM 4 — THE CONSTANT GATHER (item C), sized and unbuilt
+## 4. ITEM 4 — THE CONSTANT GATHER (item C), ~~sized and unbuilt~~ **BUILT (part 72, `23937a6`)**
+
+> **BUILT AND GATED; it needs an operator A/B to be PRICED and nothing else.** The
+> per-shader register list is in every sidecar (all 16 caches), the runtime gathers instead
+> of copying, and three arms ship with it. Over the 449 modules the median shader reads
+> **26** registers and **the maximum is 56** — 896 bytes worst case against 4,096, which is
+> a bound rather than an average. 22 vertex shaders index `a0`-relatively and keep the full
+> copy; no pixel shader does.
+>
+> **Arms:** `CZ_VK_NO_CONST_GATHER=1` (the pre-part-72 behaviour, same binary),
+> `CZ_VK_VERIFY_CONST_GATHER=1` (both copies, compare every register the list names),
+> `CZ_VK_GATHER_POISON=1` (drop a register; the verifier must fire).
+> **Offline gate:** `tools/alu_const_gate.py`, clean on all 16 caches and confirmed capable
+> of failing.
+>
+> **Two correctness hazards were found while building it, both invisible**, and they are
+> the part worth reading — see `phase5-notes.md` §6dg and gotcha 430.
+>
+> **This also un-refutes item E.** Geometry in VRAM measured ~14% SLOWER because we
+> re-upload constants every draw (gotcha 363); the plan's own text says re-ask E after C
+> lands. It has landed.
+
+### The original sizing, kept because it is what justified building it
 
 Night Run 1's `tools/alu_const_census.py` killed the range-copy design (median PS span
 255/256 — the c255 tonemap cluster) and left the GATHER alive at ~10x: **median 9 VS / 27
@@ -322,7 +344,40 @@ not before; if C works, E is a second win for one item's risk.
 
 ---
 
-## 5. ITEM 5 — PARALLEL COMMAND RECORDING (item A), and the gate that has been owed for eighteen parts
+## 5. ITEM 5 — PARALLEL COMMAND RECORDING (item A). **THE GATE IS BUILT; THE ITEM IS BLOCKED ON A POLICY DECISION**
+
+> **PART 72 BUILT THE PRECONDITION AND THEN FOUND THE ITEM BLOCKED FOR A DIFFERENT REASON,
+> which is worth knowing before a session starts on it.**
+>
+> **BLOCKER 1 — THERE ARE NO THREADS TO GIVE IT.** `ThreadBudget_Take` is
+> first-come-first-served. On the operator's 8-physical-core box the whole budget is **3**
+> and the guard pool asks for 4, so it takes all 3 and `left` is **0**. A `record` pool
+> would be granted **zero** and the item would measure exactly nothing on the machine it is
+> meant to help. `perf-state-parked.md` item A already flagged this ("the guard pool
+> already holds them, so this item either shares them or the budget policy needs revisiting
+> with a measurement") — it is not new, but it is now confirmed against the code rather
+> than remembered, and it means **the first work on item A is a budget decision, not a
+> recorder.** The options are: share the guard pool's threads, cut the guard pool's grant
+> (which needs an A/B, since part 53 measured that pool's value), or revisit
+> `reserved`/`committed`. All three need the operator.
+>
+> **BLOCKER 2 — the design's snapshot cost is the thing item C just removed, and that
+> ordering is not an accident.** The pump discovers draws by walking the PM4 stream
+> serially, so handing contiguous ranges to workers means capturing each draw's state
+> first. The largest part of that state was the 4 KB constant window per stage. With item C
+> shipped it is ~430 bytes. **Item C was already ahead of A in the plan's order; this is a
+> second, independent reason for it** — and a reason to re-read A's design after C is
+> priced rather than before.
+>
+> **BLOCKER 3, not yet investigated:** with dynamic rendering, a scope that executes
+> secondary command buffers may not also contain inline drawing commands. This renderer
+> opens its rendering scope lazily inside `DoDraw` and closes it for resolves and copies,
+> so the frame is a sequence of scopes with inline work between them. Whether the draws
+> partition cleanly into per-scope contiguous ranges is a question someone should answer
+> BEFORE writing a recorder, and it is answerable offline by counting scopes and their
+> draw runs.
+
+### The design and the gate
 
 Still the largest single item (~40% of the pump: `DoDraw` plus the driver) and still the
 riskiest. `perf-state-parked.md` §2 has the design. **Nothing about it changes except that

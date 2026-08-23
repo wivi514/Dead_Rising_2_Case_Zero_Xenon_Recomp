@@ -15776,3 +15776,110 @@ Owed, and it is two short runs rather than another four-arm sitting:
 `--smoke` OK; predicate gate 18/18; harness selftest 12/12; `shader_dim_census.py` clean on
 all sixteen caches; `rt_world_xform_census.py` 104 of 104. Zero `no translated shader`
 across all seven operator arms. **A5 is owed**, carried since part 67.
+
+## §6dg — Part 72, third session: item C built, and item A blocked for a reason nobody had checked (2026-08-23)
+
+**All offline.** The operator's instruction was to do what did not need them, and two of the
+plan's remaining items turned out to be desk work in different ways: one was buildable end
+to end, the other turned out to be blocked on a decision that is not a recorder.
+
+### 1. ITEM A IS NOT WAITING ON ITS GATE. IT IS WAITING ON THREE THREADS
+
+Part 72 built and proved the order gate (§5 of the plan, `28990f9`), which had been called
+item A's precondition since part 55. With it done the item looked unblocked. It is not, and
+the blocker is arithmetic:
+
+`ThreadBudget_Take` is **first-come-first-served**. On the operator's box the budget is
+`clamp(physical - reserved - committed, 0, 6)` = `clamp(8 - 2 - 3, 0, 6)` = **3**, the guard
+pool asks for 4, takes `min(4, 3) = 3`, and `left` becomes **0**. A `record` pool would be
+granted **zero workers**. The item would measure exactly nothing on the machine it exists
+to help.
+
+`perf-state-parked.md` item A already said this in one clause — *"the guard pool already
+holds them, so this item either shares them or the budget policy needs revisiting with a
+measurement"* — so it is not a new fact, but it had never been checked against the code and
+it is easy to read past. **The first work on item A is a thread-budget decision, and all
+three options need the operator:** share the guard pool's threads, cut the guard pool's
+grant (an A/B, since part 53 measured that pool's value), or change `reserved`/`committed`.
+
+Two more things worth knowing before that session starts, both recorded in the plan:
+
+* **the design's per-draw snapshot cost is what item C just removed.** The pump discovers
+  draws by walking the PM4 stream serially, so handing contiguous ranges to workers means
+  capturing each draw's state, and the bulk of that was the 4 KB constant window per stage.
+  Item C takes it to ~430 bytes. C was already ahead of A in the plan's order; this is a
+  second and independent reason for it.
+* **an unexamined Vulkan constraint:** a dynamic-rendering scope that executes secondary
+  command buffers may not also contain inline drawing commands. This renderer opens its
+  scope lazily inside `DoDraw` and closes it for resolves and copies, so a frame is a
+  sequence of scopes with inline work between them. Whether the draws partition into
+  per-scope contiguous ranges is answerable OFFLINE by counting scopes and their draw runs,
+  and it should be answered before a recorder is written.
+
+### 2. ITEM C IS BUILT, AND ITS BOUND IS BETTER THAN ITS MEDIAN
+
+The census that gated it was done in Night Run 1. What was missing was the per-shader list
+in the sidecar, the runtime gather, and the arms.
+
+`tools/alu_const_sidecar.py` writes each shader's `vc(N)`/`pc(N)` reads into its
+`.meta.json` at cache-build time, out of the XenosRecomp HLSL — the SPIR-V cannot answer it,
+because DXC folds constant indices into raw address math. It **imports the census's own
+parser** rather than reimplementing it, so a sidecar that disagreed with the census is not a
+thing that can happen. All 16 caches backfilled, 0 without HLSL, and
+`tools/build_shader_spv.sh` now runs it per shader and drops a shader whose list cannot be
+built (the same policy a failed `CZ_HLSL_PATCH` gets).
+
+| | value |
+|---|---|
+| modules | 449 |
+| dynamic (`a0`) -> full copy | **22**, all vertex; no pixel shader |
+| registers read, median | **26** of 256 |
+| registers read, p90 | 41 |
+| **registers read, MAXIMUM** | **56** — 896 bytes against 4,096 |
+
+**The maximum is the number that matters.** A median is a hope about the average draw; 56 is
+a bound over the whole bank, so the worst case is 21.9% of the window and not a tail risk.
+
+### 3. TWO CORRECTNESS HAZARDS, BOTH INVISIBLE, BOTH FOUND WHILE BUILDING IT
+
+Neither would have crashed, neither would have been caught by a picture gate, and both are
+the kind that cost a session when they surface later.
+
+**(a) THE MEMO KEYS ON `(version, base)`, NOT ON THE SHADER.** Harmless for eighteen parts,
+because a full window copy serves any shader equally. With the gather it is not: a slot
+holding shader A's nine registers, served to shader B on a version match, hands B whatever
+the bump arena left in the registers only B reads. One shader subtly wrong, everything else
+correct. Fixed by having the slot remember its occupant and re-gather on a change — correct
+because the version matched, so rewriting the same source registers is idempotent, and still
+~26 registers rather than 256. Gotcha 431.
+
+**(b) THE MEMO'S OWN VERIFIER COMPARED THE WHOLE WINDOW**, so with the gather on it would
+have reported the feature working as a memo defect on every draw — in the exact instrument
+someone would open first to investigate. It now compares the shader's list when gathering
+and the whole window when not. **Its poison arm had the same defect one level down**: it
+corrupted register 0 unconditionally, which under the gather is not necessarily a register
+anyone reads, so the positive control would have gone blind while reporting the verifier
+healthy. It now poisons a register the compare actually looks at. Gotcha 430.
+
+### 4. THE LIST IS AN ORACLE, SO IT HAS ITS OWN GATE
+
+A register missing from a list is never copied, so the shader reads arena garbage. **No
+run-time check can catch that** — the run-time verifier can only confirm the gather copied
+what the list NAMES, and the missing register is by definition the one nobody reads. So
+`tools/alu_const_gate.py` checks every list against the shader's own HLSL, re-parsing rather
+than trusting the writer that produced it, and is **confirmed capable of failing**: dropping
+one register from one list takes it from exit 0 to exit 1 naming the shader. Clean on all 16
+caches. Gotcha 432.
+
+### 5. WHAT IS OWED, AND IT IS STILL SMALL
+
+Item C is built and gated but **not priced** — that needs one A/B (`CZ_VK_NO_CONST_GATHER=1`
+against the default) plus one verify run. It also **un-refutes item E**: geometry in VRAM
+measured ~14% slower because we re-upload constants every draw (gotcha 363), and the plan's
+own text says re-ask E after C lands.
+
+### 6. GATES
+
+`--smoke` OK; `alu_const_gate.py` clean on all 16 caches; `order_gate_test` 10/10;
+`vcull_predicate_test` 18/18; `shader_dim_census.py` clean; `rt_world_xform_census.py` 104
+of 104; the play cache's NAME diff empty.

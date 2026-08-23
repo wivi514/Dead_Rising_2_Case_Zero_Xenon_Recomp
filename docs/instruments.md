@@ -1739,6 +1739,33 @@ CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §
                    distinct world stream's bytes, so never quote a frame time
                    from a run carrying it. Free when off (one static bool per
                    draw)
+CZ_VK_NO_CONST_GATHER=1  **the control arm for perf item C** (part 72;
+                   perf-plan-part72 §4, the record is phase5-notes §6dg). Restores
+                   the pre-part-72 behaviour: the whole 256-float4 ALU constant
+                   window copied per stage per draw, 4,096 bytes each. With the
+                   gather ON (the default) only the registers the shader's sidecar
+                   says it READS are copied — median 26 of 256 over the 449
+                   modules, **maximum 56**, so 896 bytes worst case. 22 vertex
+                   shaders index `a0`-relatively and keep the full copy whatever
+                   this is set to. The stats line prints the share gathered, the
+                   bytes not copied and the memo top-ups
+CZ_VK_VERIFY_CONST_GATHER=1  **the arm that makes it believable.** Copies the whole
+                   window into a scratch, runs the gather, and compares EVERY
+                   register the list names — not the whole window, because the
+                   registers deliberately left uncopied hold arena garbage and
+                   comparing them would report the feature working as a defect.
+                   Same shape as the constant memo's verifier, which is the
+                   template (0 of 117,521 disagreements, its poison arm 100.0000%)
+CZ_VK_GATHER_POISON=1  **the proof the verifier can fire.** Drops the first
+                   register from every gather, so a shader that reads it gets a
+                   stale slot. `CZ_VK_VERIFY_CONST_GATHER` MUST then report
+                   disagreements; a zero means the verifier is blind (gotcha 30).
+                   **The list itself cannot be checked at run time** — the missing
+                   register is exactly the one nobody reads — so the offline gate
+                   `tools/alu_const_gate.py` checks every list against the
+                   shader's own HLSL, and is confirmed capable of failing
+                   (dropping one register from one list: exit 0 -> exit 1, naming
+                   the shader)
 CZ_VK_ORDER_GATE=1 **the draw-order gate** (part 72; perf-plan-part72 §5, the
                    precondition owed since part 55). Records one identity per draw
                    (ordinal, pipeline, prim/count, index range, both shader

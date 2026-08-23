@@ -4694,3 +4694,39 @@ From phase C part 18 (the frame rate — and none of it was work):
      the "retract in place" rule this project already has is precisely the defence: the
      correction has to land where the claim is, not only where the correcting work
      happened. When a retraction spans documents, edit the ORIGINAL first.
+
+430. **A NEW FAST PATH CAN SILENTLY INVALIDATE THE VERIFIER OF THE OLD ONE, AND THE
+     VERIFIER IS THE FIRST THING SOMEONE REACHES FOR WHEN THE FAST PATH LOOKS WRONG.**
+     Part 72's constant GATHER copies only the ALU registers a shader reads. The constant
+     MEMO's verifier, written when every copy wrote the whole 256-register window, compared
+     all 1,024 dwords against a recomputed full copy — so with the gather on it would have
+     reported **the feature working** as a memo defect, on every draw. Two instruments, one
+     of them quietly turned into a false-alarm generator by the other, and the false alarm
+     lands in the exact tool an investigator would open first. The fix is small (compare
+     only the shader's own list when gathering, the whole window when not); the lesson is
+     that **shipping a fast path means auditing every existing check that assumed the slow
+     one**. Its POISON arm had the same defect one level down — it corrupted register 0
+     unconditionally, which under the gather is not necessarily a register anyone reads, so
+     the positive control would have gone blind while reporting the verifier healthy.
+
+431. **WHEN A CACHE KEY OMITS SOMETHING THE OLD PATH DID NOT CARE ABOUT, A NEW PATH CAN
+     MAKE IT LOAD-BEARING.** This renderer's constant memo keys on (constant version,
+     window base) and NOT on the shader — correct and cheap for eighteen parts, because a
+     full window copy serves any shader equally. The gather broke that silently: a slot
+     holding shader A's nine registers, served to shader B on a version match, hands B
+     whatever the bump arena left in the registers only B reads. Nothing crashes and one
+     shader is subtly wrong. **Before adding a path that makes a cached artifact
+     SHADER-SPECIFIC, re-read what the cache's key does and does not contain.** The fix
+     here was to have the slot remember its occupant and re-gather on a change — cheap
+     because the version match guarantees the source registers are unchanged, so rewriting
+     them is idempotent.
+
+432. **A LIST THAT DECIDES WHAT NOT TO COPY CANNOT BE CHECKED AT RUN TIME.** The gather's
+     per-shader register list is load-bearing for correctness: a register it omits is never
+     copied, so the shader reads arena garbage. The run-time verifier can only confirm that
+     the gather copied what the list NAMES — it cannot confirm the list names everything
+     the shader reads, because the missing register is by definition the one nobody looks
+     at. **That check has to be offline and against the shader itself**
+     (`tools/alu_const_gate.py`, re-parsing the HLSL rather than trusting the writer that
+     produced the list). Generalises to every "skip the work we know is unnecessary"
+     optimisation: the knowledge is an oracle, and an oracle needs its own gate.
