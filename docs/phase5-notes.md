@@ -14645,6 +14645,11 @@ van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
   frame on the PUMP thread and is 64-bit-word FNV over a per-mesh window that shrinks after
   the first build. If the profile disagrees it moves to a compute pass and nothing above it
   changes.
+* **The closing gate run** (RT on, `CZ_VK_RT_DYN_SETTLE=0`, validation, headless outdoor
+  route to `passes=4097`): `tlasInst=3558`, `blas=4687 (80.7 MB, built=4703, flushes=0)`,
+  `verts direct=961 staged=0`, `refit=357209 (forced=5425 budgeted-out=17646 noSource=0
+  topology=16)`, `baked=3742 rebaked=356793 bakePool=187.2 MB`, `conflict=2150`,
+  `noDesc=0`, `outOfRange=0`, and no VUID but the point-list one.
 * `outOfRange` must read zero in the session. The offline check found 936 vertices of 1.06M
   reaching past row 128, so the highest index in use is above 117 — a distinct-COUNT of 28
   is not a maximum. The runtime captures 192 rows initially and shrinks per mesh.
@@ -14655,7 +14660,7 @@ van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
   stays raster-only, and the instance count's cost on the pump thread is unpriced.
 * **A5 is owed** and is arm 0 of the session. No kernel path changed in parts 67, 68 or 69.
 
-### 9. FOUR SYNCHRONISATION VUIDs, AND THEY ARE OURS — the A/B that says so
+### 9. FOUR SYNCHRONISATION VUIDs, FOUND AND FIXED — and the arms were the bisect
 
 A validation run with RT armed and `CZ_VK_RT_DYN_SETTLE=0` reports, in one burst during
 the loading era and capped at the layer's ten-duplicate limit:
@@ -14690,7 +14695,18 @@ a device fault would explain all four messages at once (`vkWaitForFences` return
 slot is marked retired, and the next submit resets a fence that never signalled).
 `Blas::builtFrame` now bars it.
 
-**Whether that was the ONLY cause is not yet established** — the per-arm isolation sweep
-was still running at the close. The next session should re-run
-`CZ_VK_VALIDATION=1 CZ_VK_RT_SHADOWS=1 CZ_VK_RT_DYN_SETTLE=0` and confirm zero, and treat
-a non-zero reading as a blocker before the operator session rather than after it.
+**AND IT WAS THE WHOLE OF IT.** With `Blas::builtFrame` in, the same configuration read at
+the same `[rtb] passes=4097` snapshot — the exact point where the failing run had twenty of
+each — reports **zero** of the four, leaving only the known point-list `PointSize` VUID
+this port has carried since part 68. The route reached the same place (`world box
+x[-420.6 323.8] y[-18.8 39.2] z[-681.5 0.0]`), so it is not a run that went somewhere
+quieter.
+
+The per-arm sweep that was running alongside is redundant now and was abandoned, with one
+reading kept because it is what narrowed the search: items 0 and 1 armed with refit and
+bake OFF read zero, which put the cause in item 2 or item 3 before the code was read.
+
+**The lesson is the method, not the bug** (gotcha 407): every feature here ships with a
+same-binary control arm, so **the arms ARE a bisect and each step is one run rather than
+one rebuild**. Three runs — the previous binary, the same binary with everything disarmed,
+and one arm added back — located this without touching git.

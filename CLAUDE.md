@@ -765,7 +765,7 @@ Where the port is, as of 2026-08-22 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS
 BUILT AND THE PALETTE APPROXIMATION IS RETIRED: IT WAS NOT AN APPROXIMATION, IT WAS A
 DIFFERENT MESH.** One operator session is owed and it is scripted.
 `docs/part70-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md` §6da;
-the backlog entry is `open-items.md` 0v; the lessons are gotchas 403-406):
+the backlog entry is `open-items.md` 0v; the lessons are gotchas 403-407):
 
 * **Item 3 started with an offline census rather than a build**, per the plan.
   `tools/rt_palette_census.py` reads hardware's own per-vertex matrix INDICES for

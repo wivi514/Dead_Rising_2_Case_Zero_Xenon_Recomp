@@ -4398,3 +4398,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      landed: `rebaked=573807` against `refit=174323`. Two counters for one pipeline
      stage, one before the gate and one after it, make that visible for free;
      one counter would have read "573,807 re-bakes" and been believed.
+
+407. **WHEN EVERY FEATURE SHIPS WITH A CONTROL ARM, THE ARMS ARE A BISECT — AND EACH
+     STEP IS ONE RUN RATHER THAN ONE REBUILD.** Four synchronisation VUIDs appeared
+     after a part that added four features. Three runs located the cause: the
+     PREVIOUS binary (clean, over more frames), the SAME binary with all four arms
+     off (clean — so not the unconditional half of the work), and one arm added
+     back. A `git bisect` over the same ground is a rebuild per step and cannot
+     separate features that landed in one commit. **This is a reason to give every
+     feature an arm that has nothing to do with measurement**, and it compounds:
+     the arms already existed for the A/Bs.
+     The bug itself is worth naming too, because it generalises to any
+     build-then-update API: the build batch and the update walk drew from the same
+     live set, so a structure whose full build was RECORDED but not executed could
+     be issued an in-place update in the same command buffer, reading a source that
+     did not exist yet. A GPU fault explains a whole cluster of "object is in use"
+     messages at once, because `vkWaitForFences` then returns DEVICE_LOST
+     immediately instead of blocking and an ignored return value marks the slot
+     retired.

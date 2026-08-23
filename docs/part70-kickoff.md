@@ -2,7 +2,7 @@
 
 > **THIS IS THE LIVE HAND-OFF**, superseding `part69-kickoff.md`. The record is
 > `phase5-notes.md` **§6da**; the backlog entry is `open-items.md` 0v; the lessons
-> are gotchas **403-406**. The plan being executed is still
+> are gotchas **403-407**. The plan being executed is still
 > `docs/rt-remix-plan.md`, and its items 0, 1, 2 and 3 are done.
 >
 > **ALL RUNTIME VERIFICATION GOES THROUGH THE OPERATOR** (standing instruction),
@@ -72,21 +72,14 @@ as one straight line across wall, van and ground.
 
 ## 4. Known-open, named so the session is read against a list
 
-1. **Four synchronisation VUIDs**: `vkResetFences-pFences-01123`,
-   `vkResetCommandBuffer-00045`, `vkBeginCommandBuffer-00049` and
-   `vkQueueSubmit-pCommandBuffers-00071`, 20 of each in one burst during the
-   loading era, under `CZ_VK_VALIDATION=1` with RT armed. **See §6da's close for
-   which arm they belong to** — they were A/B'd against the part-68 binary in the
-   same configuration. Whichever arm they are in, they are a frame-slot fence
-   invariant being broken and they are worth a part of their own.
-2. **Cost is entirely unpriced.** The blend is CPU-side on the pump thread —
+1. **Cost is entirely unpriced.** The blend is CPU-side on the pump thread —
    the thread part 55 showed IS the frame rate — and instances went from a few
    hundred to ~3,400 a frame. Only paid with RT armed. Price it with
    `CZ_VK_PROFILE` and a soak, never from a run carrying `CZ_VK_FRAME_STATS`.
-3. **RT HIGH's four rays buy no penumbra** (0.3% of pixels partially shadowed).
-4. **Self-shadowing** has never been tested against correctly-placed geometry.
-5. `alpha` is 2.0-3.0M draws and stays raster-only by a stated trade.
-6. `palConflict` is down from 2.36M to 2,227 but is not zero — the residual is
+2. **RT HIGH's four rays buy no penumbra** (0.3% of pixels partially shadowed).
+3. **Self-shadowing** has never been tested against correctly-placed geometry.
+4. `alpha` is 2.0-3.0M draws and stays raster-only by a stated trade.
+5. `palConflict` is down from 2.36M to 2,227 but is not zero — the residual is
    draw-order shifts between frames, and it is bounded and self-correcting by
    design. Watch it rather than chase it.
 
@@ -105,6 +98,12 @@ as one straight line across wall, van and ground.
 
 ## 6. Gates at part 69's close
 
+* **`CZ_VK_VALIDATION=1 CZ_VK_RT_SHADOWS=1 CZ_VK_RT_DYN_SETTLE=0` on the headless
+  outdoor route to `passes=4097`: no VUID but the known point-list `PointSize`
+  one.** Four synchronisation VUIDs were found during this part and fixed
+  (`phase5-notes.md` §6da §9); this run is the confirmation, taken at the exact
+  pass count where the failing run had twenty of each. **Re-run it after any
+  change to the RT structure code — it is the cheapest gate this feature has.**
 * `--smoke` OK.
 * `rt_world_xform_census.py`: 104 of 104 covered, exit 0, and the tool now
   self-checks its own JSON output.

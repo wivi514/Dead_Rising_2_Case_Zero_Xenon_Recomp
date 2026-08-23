@@ -63,7 +63,7 @@ Next, in order:
    **PART 69 BUILT ITEMS 0-3. ITEM 4 IS WHAT IS LEFT, AND ONE OPERATOR SESSION IS
    OWED — `tools/part69_rt_geometry_session.sh`, of which two arms need no eye.**
    The record is `phase5-notes.md` §6da; the hand-off is `docs/part70-kickoff.md`;
-   the lessons are gotchas 403-406.
+   the lessons are gotchas 403-407.
 
    **The palette approximation was not an approximation.** The plan's item 3 began
    with an offline census rather than a build (`tools/rt_palette_census.py`), and
