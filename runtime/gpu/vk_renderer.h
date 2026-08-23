@@ -60,6 +60,13 @@ void VkRenderer_OnSwap(uint8_t* base, uint32_t frontBuffer, uint32_t width,
 // gap between "97 M packets parsed" and "the picture is missing something" is a number
 // instead of a hunt.
 void VkRenderer_DumpStats();
+// PART 71: write the VkPipelineCache back to disk. Called from the two places that end
+// this process — `Host_Shutdown` and main.cpp's signal handler — and NOT from
+// `VkRenderer_DumpStats`, which `CZ_VK_STATS` also calls every N frames: saving there
+// would either write an early, nearly empty blob once (with a once-guard) or write a few
+// hundred KB mid-play (without one), and the second is the hitch this whole item exists
+// to remove. Safe to call more than once; only the first call writes.
+void VkRenderer_SavePipelineCache();
 
 // Ask the swapchain to rebuild at the next present even though the drawable size is
 // unchanged — the seam a live VSync change needs (part 60): the present mode is a

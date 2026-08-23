@@ -879,6 +879,10 @@ void Shutdown(const char* why)
     // increment them), and the one session that most needs the numbers — a long
     // operator play session — is exactly the one that ends by closing the window.
     ::VkRenderer_DumpStats();
+    // PART 71: and write the pipeline cache back, HERE rather than inside DumpStats —
+    // see the header comment on why. This is the normal quit path, so it is the one that
+    // actually has to fire for the next launch to be warm.
+    ::VkRenderer_SavePipelineCache();
     fflush(nullptr);
     // _Exit, not exit: guest threads are still running recompiled code against guest
     // memory, and running static destructors underneath them would turn an ordinary

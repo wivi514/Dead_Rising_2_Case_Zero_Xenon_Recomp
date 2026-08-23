@@ -188,6 +188,7 @@ int main(int argc, char** argv)
             fprintf(stderr, "\n[host] signal %d — dumping renderer counters and exiting.\n",
                     s);
             ::VkRenderer_DumpStats();
+            ::VkRenderer_SavePipelineCache();
             fflush(nullptr);
             std::_Exit(128 + s);
         });

@@ -3617,6 +3617,24 @@ struct Renderer
     uint64_t hookFoldFrame = ~0ull;
     bool hooksDraw = true;       // call the five per-draw census/collect hooks
     bool hooksRtFetch = true;    // decode fetch constants for rtshadow::NoteAtlasFetch
+    // ---- PART 71: THE PIPELINE CACHE ------------------------------------------------
+    //
+    // This renderer created every pipeline with `VK_NULL_HANDLE` as the cache from phase
+    // 5 until now, so all 503-545 of a session's pipelines were compiled from scratch, on
+    // the PUMP THREAD, at the moment a new draw state was first seen. That is the shape
+    // of the operator's report — "huge stutter after loading the game" — and part 71's
+    // soak measured a 3,891 ms frame to go with it.
+    //
+    // The file is keyed on the SHADER CACHE DIRECTORY's name, so the arm caches
+    // (`shader_spv_a2m`, the RT variants, the probe caches) each get their own and one
+    // cannot poison another. It lives outside the repo, under `$XDG_CACHE_HOME` — it is
+    // derived data, it is device- and driver-specific, and Vulkan validates its own
+    // header (vendor/device/driver UUID) and silently ignores data it cannot use, so a
+    // stale or foreign file degrades to an empty cache rather than to a wrong pipeline.
+    // `CZ_VK_NO_PIPELINE_CACHE=1` is the same-binary control arm and restores
+    // `VK_NULL_HANDLE` exactly; `CZ_VK_PIPELINE_CACHE_FILE=path` overrides the location.
+    VkPipelineCache pipeCache = VK_NULL_HANDLE;
+    std::string pipeCachePath;
     uint32_t rtScratchAlign = 256;   // minAccelerationStructureScratchOffsetAlignment
     PFN_vkCreateAccelerationStructureKHR pfnCreateAS = nullptr;
     PFN_vkDestroyAccelerationStructureKHR pfnDestroyAS = nullptr;
@@ -5002,6 +5020,107 @@ uint64_t HashFromName(const std::string& name)
     return us == std::string::npos ? 0 : strtoull(name.c_str() + us + 1, nullptr, 16);
 }
 
+// ---- PART 71: THE PIPELINE CACHE, created and seeded ---------------------------------
+//
+// Called once, from `LoadShaders`, because that is where the shader cache DIRECTORY is
+// known and the file is keyed on it — see the `pipeCache` comment in the Renderer struct
+// for why (the arm caches must not share one blob) and for why a stale file is safe.
+//
+// AN ARM WITH NO COUNTER CANNOT BE SHOWN TO HAVE ENGAGED (gotcha 151), and this one has a
+// silent failure mode that looks exactly like success: a cache that loads, is never
+// written back, and therefore never helps. So both halves print — the bytes read at
+// startup and the bytes written at exit — and a run whose second number is zero is a run
+// where this did nothing.
+void CreatePipelineCache(const std::filesystem::path& dir)
+{
+    if (EnvOn("CZ_VK_NO_PIPELINE_CACHE"))
+    {
+        fprintf(stderr, "[vk] CZ_VK_NO_PIPELINE_CACHE=1 — every pipeline is compiled from "
+                        "scratch (the pre-part-71 behaviour)\n");
+        return;
+    }
+    std::error_code ec;
+    if (const char* e = Env("CZ_VK_PIPELINE_CACHE_FILE"))
+        R->pipeCachePath = e;
+    else
+    {
+        std::filesystem::path base;
+        if (const char* x = Env("XDG_CACHE_HOME"); x && *x)
+            base = x;
+        else if (const char* h = Env("HOME"); h && *h)
+            base = std::filesystem::path(h) / ".cache";
+        else
+            base = std::filesystem::temp_directory_path(ec);
+        base /= "cz-recomp";
+        std::filesystem::create_directories(base, ec);
+        R->pipeCachePath = (base / ("pipeline_" + dir.filename().string() + ".bin")).string();
+    }
+
+    std::vector<char> seed;
+    if (std::ifstream f{ R->pipeCachePath, std::ios::binary })
+        seed.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+
+    VkPipelineCacheCreateInfo ci{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+    ci.initialDataSize = seed.size();
+    ci.pInitialData = seed.empty() ? nullptr : seed.data();
+    if (vkCreatePipelineCache(R->device, &ci, nullptr, &R->pipeCache) != VK_SUCCESS)
+    {
+        // Retry empty: a corrupt or foreign blob is the one thing that can fail here, and
+        // failing the whole run over derived data would be absurd.
+        R->pipeCache = VK_NULL_HANDLE;
+        ci.initialDataSize = 0;
+        ci.pInitialData = nullptr;
+        if (vkCreatePipelineCache(R->device, &ci, nullptr, &R->pipeCache) != VK_SUCCESS)
+        {
+            fprintf(stderr, "[vk] pipeline cache: creation FAILED — pipelines will compile "
+                            "from scratch\n");
+            R->pipeCache = VK_NULL_HANDLE;
+            return;
+        }
+        seed.clear();
+    }
+    // BYTES, not KB. A real cache is hundreds of KB, but a nearly-empty one rounds to
+    // "0 KB" and would then be indistinguishable from a cold start in the harness gate —
+    // the gate would read a working warm arm as a failure, or worse, the reverse.
+    fprintf(stderr, "[vk] pipeline cache: %zu bytes seeded from %s%s\n", seed.size(),
+            R->pipeCachePath.c_str(), seed.empty() ? "  (COLD — this run pays the compiles)"
+                                                   : "");
+}
+
+// Written from `VkRenderer_DumpStats`, which is not where a cache write belongs and is
+// the only hook that reliably runs: `Host_Shutdown` calls it and then `_Exit(0)`, because
+// guest threads are still executing recompiled code and unwinding underneath them turns
+// an ordinary quit into a crash. So there are no static destructors to hang this on.
+void SavePipelineCache()
+{
+    static bool done = false;
+    if (done || !R || R->pipeCache == VK_NULL_HANDLE || R->pipeCachePath.empty())
+        return;
+    done = true;
+    size_t n = 0;
+    if (vkGetPipelineCacheData(R->device, R->pipeCache, &n, nullptr) != VK_SUCCESS || !n)
+        return;
+    std::vector<char> blob(n);
+    if (vkGetPipelineCacheData(R->device, R->pipeCache, &n, blob.data()) != VK_SUCCESS)
+        return;
+    // Write-then-rename, so a quit during the write cannot leave a truncated file that
+    // the next run would then have to reject.
+    const std::string tmp = R->pipeCachePath + ".tmp";
+    {
+        std::ofstream f{ tmp, std::ios::binary | std::ios::trunc };
+        if (!f)
+        {
+            fprintf(stderr, "[vk] pipeline cache: could not write %s\n", tmp.c_str());
+            return;
+        }
+        f.write(blob.data(), std::streamsize(n));
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, R->pipeCachePath, ec);
+    fprintf(stderr, "[vk] pipeline cache: %zu bytes written to %s%s\n", n,
+            R->pipeCachePath.c_str(), ec ? "  — RENAME FAILED" : "");
+}
+
 bool LoadShaders()
 {
     // The cache directory is CWD-relative and the launch CWD varies (the documented
@@ -5048,6 +5167,7 @@ bool LoadShaders()
     }
 
     fprintf(stderr, "[vk] shader cache: %s\n", dir.string().c_str());
+    CreatePipelineCache(dir);
     LoadWorldXformTable(dir);
     uint32_t dropped = 0;
     for (const auto& e : std::filesystem::directory_iterator(dir))
@@ -7834,14 +7954,14 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
     // Cost when the profile is off: one bool test on a path that already builds a whole
     // VkGraphicsPipelineCreateInfo, i.e. nothing. This is not a hot path — that is the
     // entire hypothesis.
-    // PART 71: TIMED UNCONDITIONALLY. See the
+    // PART 71: TIMED UNCONDITIONALLY, and through the pipeline cache. See the
     // `NotePipelineCreate` comment for why the `g_profileOn` timer below was not enough —
     // in short, it is off in every session whose stutter anyone has ever reported.
     const uint64_t tw0 = NowNs();
     const uint64_t t0 = ProfNow();
     VkPipeline pipeline = VK_NULL_HANDLE;
     const VkResult r =
-        vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline);
+        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &pci, nullptr, &pipeline);
     NotePipelineCreate(NowNs() - tw0, R->frame);
     if (g_profileOn)
     {
@@ -13344,7 +13464,7 @@ bool EnsurePipeline()
     gp.pDynamicState = &dsi;
     gp.layout = g_pipeLayout;
     const VkResult r =
-        vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &gp, nullptr, &g_pipe);
+        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &gp, nullptr, &g_pipe);
     vkDestroyShaderModule(R->device, vs, nullptr);
     vkDestroyShaderModule(R->device, fs, nullptr);
     if (r != VK_SUCCESS)
@@ -14354,7 +14474,7 @@ bool EnsureResources()
     gp.pDynamicState = &dsi;
     gp.layout = g_pipeLayout;
     const VkResult r =
-        vkCreateGraphicsPipelines(R->device, VK_NULL_HANDLE, 1, &gp, nullptr, &g_pipe);
+        vkCreateGraphicsPipelines(R->device, R->pipeCache, 1, &gp, nullptr, &g_pipe);
     vkDestroyShaderModule(R->device, vs, nullptr);
     vkDestroyShaderModule(R->device, fs, nullptr);
     if (r != VK_SUCCESS)
@@ -21479,6 +21599,13 @@ float VkRenderer_WideFovFactor()
     return WideMode() ? WideFovFactor() : 1.0f;
 }
 
+void VkRenderer_SavePipelineCache()
+{
+    if (!g_active)
+        return;
+    SavePipelineCache();
+}
+
 void VkRenderer_DumpStats()
 {
     if (!g_active)
@@ -21523,7 +21650,7 @@ void VkRenderer_DumpStats()
                 "%.1f ms @frame %llu%s\n",
                 (unsigned long long)g_pipeCount, double(g_pipeNs) / 1e6,
                 double(g_pipeWorstNs) / 1e6, (unsigned long long)g_pipeWorstFrame,
-                "  [no pipeline cache]");
+                R->pipeCache == VK_NULL_HANDLE ? "  [no pipeline cache]" : "");
         // Sorted by cost, worst first — a stall the player felt is a FRAME, so this is
         // the table that lines up with a `[fps]` window's `worst`.
         PipeFrameRec top[12];
