@@ -106,7 +106,69 @@ guard thread on it?".
 **Pre-registered kill: below 1.5 ms at this route's load, do not ship it** — the risk is
 the highest of any item in the plan and a small win does not justify it.
 
-## 4. THE PASS HISTOGRAM — a few lines, no new probe
+## 4. THE PASS HISTOGRAM — **RUN, AND IT REDESIGNS ITEM A. Plus one new item, free.**
+
+**Run 1, `auto_0823_192058_passhist`, windowed at 3440x1440, Case 0-2 + 8x8 s of turning:
+28,632 frames, 1,473,475 passes, 140,000,318 draws.**
+
+```
+pass sizes: mean 95, max 3310                                    cumulative from the top
+  2048-4095 draws:   38,631 passes ( 2.6%)   89,064,209 draws (63.6%)   2.6% -> 63.6%
+   512-1023 draws:   29,134 passes ( 2.0%)   23,004,926 draws (16.4%)   4.8% -> 82.8%
+    256-511 draws:   35,339 passes ( 2.4%)   11,781,106 draws ( 8.4%)   7.2% -> 91.2%
+          1 draw:   898,044 passes (60.9%)      898,044 draws ( 0.6%)  81.0% -> 100.0%
+          empty:   280,263 passes (19.0%)              0 draws ( 0.0%) 100.0% -> 100.0%
+```
+
+**The distribution is exactly the bimodal case §4 was written to detect, and the mean of
+95 was hiding it completely.** Per frame:
+
+| | |
+|---|---|
+| draws per frame | 4,890 |
+| passes per frame | **51.5** |
+| passes carrying 2048-4095 draws | **1.35 per frame**, holding 63.6% of all draws |
+| mean size of one of those | **2,306 draws = 47% of a whole frame** |
+| passes that are EMPTY or ONE draw | **41 per frame**, holding 0.6% of draws |
+
+### 4a. WHOLE-PASS SCHEDULING IS DEAD, AND THE CEILING IS 2.12x
+
+`perf-state-parked.md` item A says *"N workers each recording a contiguous RANGE"*, and a
+pass is the obvious range because it is already delimited. **It does not work.** There are
+**1.35 meaningful passes a frame** and the biggest is **47% of the frame on average**, so
+one worker owns half the work and the other two split the rest: **a hard ceiling of ~2.12x
+on the recorded portion regardless of worker count.** With `DoDraw` + driver at ~40% of the
+pump that is at best ~21% of the pump, before any scheduling loss or re-establishment cost.
+
+**So item A must split WITHIN a pass**, which is legal — a sub-range of a pass is still
+contiguous, and a dynamic-rendering scope executing secondaries only requires that ALL its
+draws come from secondaries, not that there be one per scope. But it raises the price the
+design already names: *"each range must begin by re-establishing full state rather than
+inheriting it — that is the item's price."* Sub-pass splitting pays that **three times
+inside the big pass** instead of once at its start.
+
+**Re-priced, and this is now the honest expectation:** item A is a sub-pass recorder with a
+~2.5-3x ceiling on ~40% of the pump, and a re-establishment cost that scales with the
+number of splits. **Its pre-registered kill of 1.5 ms stands and it is no longer obviously
+clearable.** It stays last in this plan and should stay last in any plan.
+
+### 4b. THE NEW ITEM THE HISTOGRAM FOUND: **41 near-empty render passes per frame**
+
+**280,263 empty passes and 898,044 single-draw passes — 80% of all passes, 41 per frame,
+carrying 0.6% of the draws.** Every one is an `EndRendering` + resolve + `BeginRendering`
+cycle, and this title's left/right tiling plus its post-effect chain is the obvious source
+(each post stage is one fullscreen draw and a resolve; each tile resolves separately).
+
+**This is a lead, not a result.** What is NOT known is what one of those cycles costs —
+the resolve path is not separately timed, and `CZ_VK_PROFILE` costs 2-4 ms a frame, the
+same order as the thing being measured (gotcha 7). **The next step is one cheap
+unconditional clock around the resolve/begin cycle, in the shape the pipeline census
+already proved works** — then 41/frame is either ~0.1 ms and irrelevant or ~1 ms and the
+best-priced item on the board. **Do not build a fix before that number exists**: this part
+has already priced two items on a statistic that was not the one the decision turned on
+(gotchas 428, 434).
+
+### The original text, kept because it is what the run was designed to test
 
 `R->drawsThisPass` is already computed at every resolve. A per-frame top-N table plus a
 bucket histogram, printed on the stats dump, sizes item A and costs nothing when unarmed.
