@@ -1784,6 +1784,27 @@ CZ_VK_RT_BOUNDS_CAP=<f>  the extent above which a stream is refused entry to
                    structural test the collector applies. Hygiene: the
                    rejections are real and counted (`bounds=`), and the picture
                    does not move
+CZ_VK_RT_DYN_SETTLE=N  **how long a stream must have been STILL to be an RT
+                   occluder**, in frames since it was last caught changing (part
+                   68). The collector excluded any stream the persist store had
+                   EVER caught being rewritten; that latch exists to choose the
+                   exact content guard, where never unlatching is right, and
+                   reused as "this is CPU-deformed smallware" it is far too
+                   broad — a static van whose vertex buffer the streaming system
+                   recycled ONCE is kept out of every shadow for the rest of the
+                   run. It is 41% of everything the collector sees
+                   (`dyn=10.5M` against `collected=14.9M`), and part 67's
+                   session measured the consequence: the placement was correct
+                   (`tools/rt_placement_render.py` puts our geometry on Chuck,
+                   the zombies and the lamp posts in hardware's own frame) and
+                   the ray structure was still a flat plain with distant
+                   buildings. Unset = the part-67 behaviour, so the DEFAULT IS
+                   THE CONTROL. `settledIn=` in the collector census is the
+                   engagement counter and reads 0 unless the arm admitted
+                   something. **N=0 is a diagnostic only**: a stream that
+                   changes every frame gets a new guard, a new BLAS key and a new
+                   BLAS, and with no per-BLAS eviction it climbs to
+                   `CZ_VK_RT_BLAS_MB` and flushes everything
 CZ_VK_RT_OBJ_XFORM=0  **the same-binary control arm for part 67's placement**:
                    every TLAS instance goes back to an IDENTITY transform, which
                    is the part-66 renderer — and the part-66 renderer piled the

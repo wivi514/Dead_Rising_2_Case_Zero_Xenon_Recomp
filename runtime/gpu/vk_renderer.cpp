@@ -3238,6 +3238,25 @@ struct Renderer
         // whole thing anyway.
         uint32_t probes = 0;
         bool dynamic = false;
+        // WHEN it was last caught changing, which is a different question from WHETHER
+        // it ever was (part 67).
+        //
+        // `dynamic` is a latch that never unlatches, and for its original purpose — pick
+        // the exact guard for this stream from now on — that is exactly right: a stream
+        // that has changed once can change again and the cost of being wrong is a stale
+        // mesh. The RT collector then reused the same flag to mean "this is CPU-deformed
+        // smallware, keep it out of the ray structure", and there the latch is far too
+        // broad: a static building whose vertex buffer the streaming system recycled ONCE
+        // is excluded from every shadow for the rest of the run. That is 41% of
+        // everything the collector sees (dyn=10.5M against collected=14.9M), and it is
+        // why the part-67 operator session found the ray structure missing the whole
+        // foreground while the placement itself was measured correct.
+        //
+        // A frame stamp lets the RT side ask the question it actually means: has this
+        // stream been STILL for a while? A zombie rewritten every frame never settles; a
+        // building rewritten at load settles in a second and stays settled — and because
+        // its guard is then stable, its BLAS key is stable and it costs one build.
+        uint64_t dynFrame = 0;
         // ...AND WHETHER IT ACTUALLY NEEDS THE EXACT GUARD, which is a different
         // question from whether it changes.
         //
@@ -9103,6 +9122,7 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
                 // Caught changing => dynamic => exact from the next frame on. Set before
                 // any of the ping-pong bookkeeping so an early exit below cannot lose it.
                 e.dynamic = true;
+                e.dynFrame = R->frame;   // WHEN, for the RT collector's settle window
                 // Would the CHEAP guard have seen this change too? If yes often enough,
                 // this stream does not need the expensive one; if it is ever caught
                 // missing one, it needs it permanently. Only answerable while the exact
@@ -10459,10 +10479,21 @@ uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
 // invisible; `xfWindow` is a constant window too high in the ALU bank for the rows to
 // be read without walking into the fetch constants.
 uint64_t g_xfPlaced = 0, g_xfNone = 0, g_xfPalette = 0, g_xfWindow = 0, g_xfBad = 0;
+// Draws admitted ONLY because CZ_VK_RT_DYN_SETTLE let a settled stream back in. Zero
+// on the default, and the number that says whether the arm did anything at all
+// (gotcha 151: an arm with no counter cannot be shown to have engaged).
+uint64_t g_settledIn = 0;
 // The TLAS's own world box, which is the one line that says whether the structure is a
 // town or a pile. Reset each frame roll.
 float g_instMin[3] = {}, g_instMax[3] = {};
 bool g_instBoxValid = false;
+// ...and the PREVIOUS frame's, because the census does not print on a frame boundary of
+// its choosing. Part 67's session read `world box x[0 0] y[0 0] z[0 0]` in two arms of
+// five and I told the operator the counter was broken; it was not, it had simply been
+// asked on a frame that had not collected yet. A counter that reads empty for a reason
+// unrelated to its subject is worse than no counter (gotcha 151's other half).
+float g_instMinPrev[3] = {}, g_instMaxPrev[3] = {};
+bool g_instBoxPrevValid = false;
 
 // WHAT THE COLLECTOR ACCEPTED AND WHAT IT THREW AWAY. This census existed from part
 // 64 and printed only from `TraceSlice`, which is route (a)'s path — so on the LIVE
@@ -10481,6 +10512,45 @@ bool PlaceInstances()
         return e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N');
     }();
     return !off;
+}
+
+// CZ_VK_RT_DYN_SETTLE=N — HOW LONG A STREAM MUST HAVE BEEN STILL to be an occluder.
+//
+// The collector excluded any stream the persist store had EVER caught being rewritten.
+// That flag exists to pick the exact content guard, where a never-unlatching latch is
+// correct; reused as "this is CPU-deformed smallware", it is far too broad. Part 67's
+// operator session measured the consequence: the placement was right and the ray
+// structure was still missing the entire foreground, against `dyn=10.5M` of a
+// `collected=14.9M` — 41% of everything the collector sees.
+//
+// N is in FRAMES since the stream was last caught changing. A zombie rewritten every
+// frame never settles and stays out; a building rewritten once by the streaming system
+// settles in a second and comes in — and because its guard is stable by then, its BLAS
+// key is stable and it costs exactly one build.
+//
+// Unset keeps the part-67 behaviour (any ever-dynamic stream excluded), so the default
+// is the control arm and the change has to be asked for. **N=0 admits everything
+// immediately and is a DIAGNOSTIC ONLY**: a stream that changes every frame gets a new
+// content guard, therefore a new BLAS key, therefore a new BLAS every frame, and there
+// is no per-BLAS eviction — it will climb to CZ_VK_RT_BLAS_MB and flush the lot.
+uint64_t DynSettleFrames()
+{
+    static const uint64_t n = [] {
+        const char* e = Env("CZ_VK_RT_DYN_SETTLE");
+        return e ? strtoull(e, nullptr, 10) : ~0ull;
+    }();
+    return n;
+}
+
+// Is this stream too recently rewritten to be an occluder?
+bool TooDynamic(const Renderer::PersistEntry* pe)
+{
+    if (!pe->dynamic)
+        return false;
+    const uint64_t settle = DynSettleFrames();
+    if (settle == ~0ull)
+        return true;                       // the default: ever-dynamic is excluded
+    return R->frame - pe->dynFrame < settle;
 }
 
 // out = outer o inner, both row-major 4x3 affines (the layout VkTransformMatrixKHR uses).
@@ -10691,18 +10761,26 @@ void PrintCollectorCensus(const char* who)
             (unsigned long long)g_skipNoValidPos,
             (unsigned long long)g_keyCollisions, (unsigned long long)g_degenerate);
     // PLACEMENT (part 67), and the world box is the line that says TOWN or PILE in one
-    // glance. A structure whose instance translations span a couple of units is the
-    // part-66 defect; this title's Still Creek runs roughly x[-940 390] z[-720 370].
+    // glance. Falls back to the previous frame's when this one has not collected yet —
+    // see g_instMinPrev.
+    const float* mn = g_instBoxValid ? g_instMin
+                                     : (g_instBoxPrevValid ? g_instMinPrev : nullptr);
+    const float* mx = g_instBoxValid ? g_instMax
+                                     : (g_instBoxPrevValid ? g_instMaxPrev : nullptr);
+    const float box[6] = { mn ? mn[0] : 0.0f, mx ? mx[0] : 0.0f,
+                           mn ? mn[1] : 0.0f, mx ? mx[1] : 0.0f,
+                           mn ? mn[2] : 0.0f, mx ? mx[2] : 0.0f };
+    // A structure whose instance translations span a couple of units is the part-66
+    // defect; this title's Still Creek runs roughly x[-940 390] z[-720 370].
     fprintf(stderr,
-            "[rt] %s: placed=%llu (palette=%llu) declined: noTable=%llu window=%llu "
-            "nonFinite=%llu | instances cur=%zu prev=%zu | world box "
+            "[rt] %s: placed=%llu (palette=%llu) settledIn=%llu declined: noTable=%llu "
+            "window=%llu nonFinite=%llu | instances cur=%zu prev=%zu | world box "
             "x[%.1f %.1f] y[%.1f %.1f] z[%.1f %.1f]%s\n",
             who, (unsigned long long)g_xfPlaced, (unsigned long long)g_xfPalette,
+            (unsigned long long)g_settledIn,
             (unsigned long long)g_xfNone, (unsigned long long)g_xfWindow,
             (unsigned long long)g_xfBad, g_curInst.size(), g_prevInst.size(),
-            g_instBoxValid ? g_instMin[0] : 0.0f, g_instBoxValid ? g_instMax[0] : 0.0f,
-            g_instBoxValid ? g_instMin[1] : 0.0f, g_instBoxValid ? g_instMax[1] : 0.0f,
-            g_instBoxValid ? g_instMin[2] : 0.0f, g_instBoxValid ? g_instMax[2] : 0.0f,
+            box[0], box[1], box[2], box[3], box[4], box[5],
             PlaceInstances() ? "" : "  (CZ_VK_RT_OBJ_XFORM=0: IDENTITY, the part-66 arm)");
 }
 
@@ -10725,6 +10803,12 @@ void FrameRoll()
         g_prevCascadeInst.swap(g_curCascadeInst);
         g_curCascadeInst.clear();
         g_curCascadeInstIds.clear();
+        if (g_instBoxValid)
+        {
+            memcpy(g_instMinPrev, g_instMin, sizeof g_instMinPrev);
+            memcpy(g_instMaxPrev, g_instMax, sizeof g_instMaxPrev);
+            g_instBoxPrevValid = true;
+        }
         g_instBoxValid = false;
         g_collectFrame = R->frame;
     }
@@ -10989,11 +11073,13 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
         ++g_skipNew;
         return;
     }
-    if (pe->dynamic)
+    if (TooDynamic(pe))
     {
         ++g_skipDynamic;   // the rewritten smallware class stays raster-only
         return;
     }
+    if (pe->dynamic)
+        ++g_settledIn;     // admitted BECAUSE of the settle window — the arm's counter
     const uint64_t vGuard = pe->guard;
     uint64_t idxKey = 0, iGuard = 0;
     if (draw.indexed)
@@ -11012,11 +11098,13 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             ++g_skipNew;
             return;
         }
-        if (ie->dynamic)
+        if (TooDynamic(ie))
         {
             ++g_skipDynamic;
             return;
         }
+        if (ie->dynamic)
+            ++g_settledIn;
         iGuard = ie->guard;
     }
     uint64_t key = Mix(0x52545348, streamKey);

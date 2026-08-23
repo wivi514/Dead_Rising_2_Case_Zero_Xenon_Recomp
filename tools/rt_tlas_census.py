@@ -354,8 +354,13 @@ def load_sidecars(spv):
     return d
 
 
-def walk_and_classify(path, sidecars):
-    """Every draw in the trace, in stream order, run through Collect()'s chain."""
+def walk_and_classify(path, sidecars, with_mem=False):
+    """Every draw in the trace, in stream order, run through Collect()'s chain.
+
+    `with_mem` returns the guest memory the walk already built. A caller that needs the
+    vertex bytes would otherwise walk the whole 80 MB trace a second time to rebuild
+    something this function is about to throw away.
+    """
     data, _hdr = xtr.open_trace(str(path))
     mem = Memory()
     regs = {}
@@ -454,7 +459,7 @@ def walk_and_classify(path, sidecars):
             }
             classify(d, regs, mem, sidecars, cache)
             out.append(d)
-    return out
+    return (out, mem) if with_mem else out
 
 
 def classify(d, regs, mem, sidecars, cache):
