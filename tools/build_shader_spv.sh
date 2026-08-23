@@ -58,6 +58,17 @@ for x in "$SYNTH"/*.xshd; do
       failed="$failed $n"; rm -f "$OUT/$n.spv" "$OUT/$n.meta.json"; continue
     fi
   fi
+  # PERF ITEM C's input: which ALU constant registers this shader actually reads, out of
+  # the HLSL XenosRecomp just emitted (the SPIR-V cannot answer it — DXC folds constant
+  # indices into raw address math). It goes into the sidecar because the runtime cannot
+  # re-derive it cheaply, and it is LOAD-BEARING: a register the list omits is one the
+  # runtime will not copy. Failing here drops the shader rather than shipping it with a
+  # missing or partial list, for the same reason a failed CZ_HLSL_PATCH does.
+  if ! python3 "$(dirname "$0")/alu_const_sidecar.py" "$SYNTH/$n.hlsl" \
+        "$SYNTH/$n.meta.json" >> "$SYNTH/aluconst.log" 2>&1; then
+    echo "FAILED (alu_const_sidecar): $n"; sed -n '$p' "$SYNTH/aluconst.log" | sed 's/^/    /'
+    failed="$failed $n"; rm -f "$OUT/$n.spv" "$OUT/$n.meta.json"; continue
+  fi
   case "$n" in vs_*) target="vs_6_0" ;; *) target="ps_6_0" ;; esac
   # No -fvk-invert-y. The Xenos vertex shader emits clip coordinates in D3D
   # convention and the renderer folds the window->NDC mapping itself (see

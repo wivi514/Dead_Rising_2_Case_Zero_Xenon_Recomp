@@ -2140,6 +2140,26 @@ struct ShaderMeta
     // Layout, not binding: twelve of the bank's eighteen palette shaders take these
     // bytes as declared attributes and six through a dependent fetch, and it is one
     // interleaved buffer either way.
+    // PERF ITEM C — the ALU constant registers this shader actually READS
+    // (tools/alu_const_sidecar.py, from the XenosRecomp HLSL at cache-build time).
+    //
+    // The renderer copies the guest's whole 256-float4 window per stage per draw: 4,096
+    // bytes, and the constant memo reaches only ~61% of pixel windows and 2.9% of vertex
+    // ones because the guest rewrites a world matrix per object. Over all 449 modules the
+    // median shader reads **25** registers and the MAXIMUM is **56** — so the gather is
+    // bounded at 896 bytes against 4,096, and that bound is a fact about the bank rather
+    // than an average to hope for.
+    //
+    // `aluDynamic` marks the 22 vertex shaders that index `a0`-relatively (the bone
+    // palette, `vc(8/9/10 + a0)`). An `a0` read can land anywhere, so no list can bound it
+    // and those keep the full copy.
+    //
+    // THIS LIST IS LOAD-BEARING FOR CORRECTNESS: a register it omits is one that is never
+    // copied, so the shader would read whatever the bump arena left in that slot — garbage,
+    // not a stale value. `CZ_VK_VERIFY_CONST_GATHER=1` is the arm that makes that
+    // believable and `CZ_VK_GATHER_POISON=1` is what proves the arm can fire.
+    std::vector<uint32_t> aluConsts;
+    bool aluDynamic = true;      // absent sidecar entry => full copy, never a guess
     uint8_t blendSlot = 0, blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
     uint8_t blendBytes[4] = {};   // which component of each dword, per influence
     uint8_t blendCount = 0;       // 0 = no descriptor; the entry-0 fallback stands
@@ -2340,6 +2360,17 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
 
     meta.isVertex = text.find("\"vs\"") != std::string::npos;
     meta.interpolators = JsonIntArray(text, "interpolators");
+    // Perf item C. A sidecar predating part 72 has neither key; `aluDynamic` stays true
+    // and the shader keeps the full copy, which is the safe direction and is COUNTED at
+    // the copy site rather than silently taken.
+    meta.aluConsts = JsonIntArray(text, "aluConsts");
+    if (text.find("\"aluDynamic\"") != std::string::npos)
+        meta.aluDynamic = text.find("\"aluDynamic\": false") != std::string::npos
+                              ? false
+                              : true;
+    if (meta.aluConsts.empty())
+        meta.aluDynamic = true;   // no list is not "reads nothing"
+
     meta.tfetchConsts = JsonIntArray(text, "tfetchConsts");
     meta.tfetchDims = JsonIntArray(text, "tfetchDims");
     // A sidecar written before part 25 has no dimensions at all, and one whose arrays
@@ -3787,6 +3818,22 @@ struct Renderer
     // The constant memo's state — see the comment at its lookup in DoDraw. All of it is
     // written and read on the pump thread only.
     bool constMemoVsValid = false;
+    // WHICH SHADER each memo slot was GATHERED for (perf item C).
+    //
+    // The memo hit is keyed on (constant version, window base) and NOT on the shader —
+    // harmless while every miss wrote the whole 256-register window, because any shader
+    // could then read any part of it. With the gather it is not: a slot holding shader A's
+    // nine registers, served to shader B on a version match, gives B whatever the bump
+    // arena left in the registers only B reads. That is a wrong constant read by the wrong
+    // shader — the hardest defect class in this renderer to see, and one no picture gate
+    // would reliably catch.
+    //
+    // So the slot remembers its occupant and a hit by a DIFFERENT shader re-runs the
+    // gather into the same slot. Correct because the version matched (the source registers
+    // are unchanged, so writing them again is idempotent), and still ~25 registers rather
+    // than 256. `shadersMap` is a std::map, so the pointer is stable for the process.
+    const ShaderMeta* constMemoVsFor = nullptr;
+    const ShaderMeta* constMemoPsFor = nullptr;
     bool constMemoPsValid = false;
     uint64_t constMemoVsVersion = 0;
     uint64_t constMemoPsVersion = 0;
@@ -10740,6 +10787,126 @@ void Dump()
 } // namespace vcull
 
 // ===================================================================================
+// PERF ITEM C — COPY ONLY THE CONSTANTS THE SHADER READS (part 72)
+// ===================================================================================
+//
+// The renderer copies the guest's whole 256-float4 ALU window per stage per draw: 4,096
+// bytes each, ~28 MB/frame at the old soak load. The constant memo (part 52) removes the
+// copies whose contents did not change, but it reaches only ~61% of PIXEL windows and
+// **2.9% of VERTEX** ones, because the guest rewrites a world matrix per object.
+//
+// `perf-state-parked.md` item C gated itself on a census before any runtime code was
+// written, and Night Run 1 ran it over all 439 modules: a RANGE copy is dead (318 of 335
+// pixel shaders read a register >= 250 next to their low ones — the c255 tonemap cluster —
+// so the span is the whole window), but a GATHER is alive. Over the 449 modules now in the
+// cache the median shader reads **25** registers and **the maximum is 56**: a bound, not
+// an average. 22 vertex shaders index `a0`-relatively and keep the full copy.
+//
+// WHAT MAKES THIS SAFE, and it is worth stating because it looks reckless: the registers
+// this does NOT write hold whatever the bump arena left there — garbage, not last frame's
+// values. That is fine exactly and only because the shader provably never reads them, so
+// the sidecar's list is load-bearing for CORRECTNESS and not merely for speed. Hence the
+// arm below, which is the same shape as the constant memo's verifier (`0 of 117,521`
+// disagreements, and its poison arm read 100.0000% — that pair is the template).
+//
+// The gather writes whole float4 registers, not bytes: the guest's own granularity, and
+// four dwords is a size the compiler turns into two 8-byte moves.
+uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
+         g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
+         g_gatherTopUp = 0;
+
+bool ConstGatherOff()
+{
+    static const bool off = [] {
+        const bool o = EnvOn("CZ_VK_NO_CONST_GATHER");
+        if (o)
+            fprintf(stderr, "[vk] CZ_VK_NO_CONST_GATHER=1 — the full 256-register window "
+                            "is copied per stage per draw (the pre-part-72 behaviour)\n");
+        return o;
+    }();
+    return off;
+}
+
+// THE ARM. Copy the whole window into a scratch, run the gather, and compare EVERY
+// register the list claims the shader reads. A disagreement means the gather is wrong
+// where it matters; the registers outside the list are deliberately NOT compared, because
+// they are the ones being left uncopied on purpose and comparing them would report the
+// feature working as a defect.
+bool ConstGatherVerify()
+{
+    static const bool on = EnvOn("CZ_VK_VERIFY_CONST_GATHER");
+    return on;
+}
+// ...AND THE PROOF THAT THE ARM CAN FIRE. Drops the first register from the list at copy
+// time, so a shader that reads it gets a stale slot and the verifier must catch it. A
+// verifier that has never been shown to fail has not been shown to work (gotcha 30).
+bool ConstGatherPoison()
+{
+    static const bool on = [] {
+        const bool o = EnvOn("CZ_VK_GATHER_POISON");
+        if (o)
+            fprintf(stderr, "[vk] CZ_VK_GATHER_POISON=1 — one register is dropped from "
+                            "every gather. CZ_VK_VERIFY_CONST_GATHER MUST then report "
+                            "disagreements; a zero means the verifier is blind\n");
+        return o;
+    }();
+    return on;
+}
+
+void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta, bool isVs)
+{
+    (void)isVs;
+    const bool full = ConstGatherOff() || meta.aluDynamic || meta.aluConsts.empty();
+    if (full)
+    {
+        ++g_gatherFull;
+        g_gatherDwordsFull += 256 * 4;
+        memcpy(dst, src, 256 * 4 * sizeof(uint32_t));
+        return;
+    }
+    const bool verify = ConstGatherVerify();
+    static thread_local std::vector<uint32_t> scratch;
+    if (verify)
+    {
+        scratch.assign(src, src + 256 * 4);
+        // The window the shader would have seen under the old path, kept so the compare
+        // below is against the FULL copy and not against the source registers — those are
+        // the same thing today and would stop being the same thing the moment anything
+        // else patches the copy (the fov and wide patches already do, downstream).
+    }
+    ++g_gatherGathered;
+    const size_t n = meta.aluConsts.size();
+    const size_t skip = (ConstGatherPoison() && n) ? 1 : 0;
+    for (size_t i = skip; i < n; ++i)
+    {
+        const uint32_t r = meta.aluConsts[i];
+        if (r >= 256)
+            continue;                      // a list that names a register outside the
+                                           // window is a build defect, not a copy target
+        memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
+    }
+    g_gatherDwordsCopied += uint64_t(n - skip) * 4;
+    if (verify)
+    {
+        ++g_gatherChecked;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const uint32_t r = meta.aluConsts[i];
+            if (r >= 256)
+                continue;
+            if (memcmp(dst + r * 4, scratch.data() + r * 4, 4 * sizeof(uint32_t)) != 0)
+            {
+                if (++g_gatherBad <= 8)
+                    fprintf(stderr,
+                            "[vk] ** const gather: register %u differs from the full copy "
+                            "(%zu registers in this shader's list)\n", r, n);
+                break;
+            }
+        }
+    }
+}
+
+// ===================================================================================
 // THE ORDER GATE (part 72) — `perf-plan-part72.md` §5's precondition, owed since part 55
 // ===================================================================================
 //
@@ -15952,6 +16119,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     const bool psHit = memoOn && R->constMemoPsValid &&
                        R->constMemoPsVersion == psVersion &&
                        R->constMemoPsBase == memoPsBase;
+    // THE GATHER'S ONE CORRECTNESS OBLIGATION (perf item C — see `constMemoVsFor`).
+    // A memo hit is a version match, not a shader match, so a slot gathered for one
+    // shader can be served to another that reads registers the slot never received. Top
+    // it up before the hit is used. Costs nothing on the common case (the same shader
+    // draws many times in a row) and nothing at all when the gather is off, because then
+    // every slot holds the whole window.
+    if (vsHit && R->constMemoVsFor != &vs)
+    {
+        CopyConstWindow(reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt),
+                        regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
+        R->constMemoVsFor = &vs;
+        ++g_gatherTopUp;
+    }
+    if (psHit && R->constMemoPsFor != &ps)
+    {
+        CopyConstWindow(reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoPsAt),
+                        regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
+        R->constMemoPsFor = &ps;
+        ++g_gatherTopUp;
+    }
     // ---- THE PER-DRAW HOOK FOLD (part 71) ------------------------------------------
     //
     // ONE DECISION PER FRAME instead of five per draw. The word is recomputed lazily on
@@ -16050,8 +16237,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (!vsHit)
         {
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
-            for (uint32_t i = 0; i < 256 * 4; i++)
-                dst[i] = regs[xenos::kAluConstantBase + vsBase * 4 + i];
+            CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
             // 21:9 (part 60) and the FOV slider (part 61): patch a recognized scene
             // projection in the copy the shaders will read. Patching HERE means memo
             // hits reuse already-patched bytes, so every draw of a frame sees one
@@ -16069,6 +16255,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     case 1: COUNT("draw: raw projection widened to 21:9"); break;
                     case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
                 }
+            R->constMemoVsFor = &vs;
             R->constMemoVsValid = true;
             R->constMemoVsVersion = vsVersion;
             R->constMemoVsBase = vsBase;
@@ -16077,8 +16264,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         if (!psHit)
         {
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
-            for (uint32_t i = 0; i < 256 * 4; i++)
-                dst[i] = regs[xenos::kAluConstantBase + psBase * 4 + i];
+            CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
+            R->constMemoPsFor = &ps;
             R->constMemoPsValid = true;
             R->constMemoPsVersion = psVersion;
             R->constMemoPsBase = psBase;
@@ -16104,15 +16291,53 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             if (WideMode())
                 PatchWideProjection(scratch.data());
             if (g_constMemoVerifyPoison)
-                scratch[0] ^= 0x40000000u;
+            {
+                // POISON A REGISTER THE COMPARE ACTUALLY LOOKS AT. Under the gather the
+                // verifier compares only the shader's own list, so corrupting register 0
+                // unconditionally would leave the positive control BLIND for any shader
+                // that does not read it — a poison arm that cannot fire is worse than
+                // none, because it reports the verifier as healthy (gotcha 30).
+                const uint32_t at =
+                    (!ConstGatherOff() && !vs.aluDynamic && !vs.aluConsts.empty())
+                        ? vs.aluConsts[0] * 4
+                        : 0;
+                scratch[at] ^= 0x40000000u;
+            }
             const uint32_t* haveVs =
                 reinterpret_cast<const uint32_t*>(R->arena.mapped + vsConstAt);
             const uint32_t* havePs =
                 reinterpret_cast<const uint32_t*>(R->arena.mapped + psConstAt);
             ++g_constMemoChecked;
             bool bad = false;
-            for (uint32_t i = 0; i < 256 * 4 && !bad; i++)
-                bad = haveVs[i] != scratch[i] || havePs[i] != scratch[256 * 4 + i];
+            // COMPARE ONLY WHAT THE SHADER READS WHEN THE GATHER IS ON (perf item C).
+            //
+            // The memo verifier was written when every miss copied the whole 256-register
+            // window, so comparing all 1,024 dwords was the right test. With the gather it
+            // is not: the registers deliberately left uncopied hold arena garbage, and a
+            // whole-window compare would report the FEATURE WORKING as a memo defect —
+            // constantly, and in the exact instrument someone would reach for to
+            // investigate it. Two instruments, one of them silently invalidated by the
+            // other, is the interaction that costs a session.
+            //
+            // A shader on the full-copy path (dynamic `a0` indexing, or the gather off)
+            // still gets the whole-window compare, which is what it deserves.
+            auto cmpStage = [&](const uint32_t* have, const uint32_t* want,
+                                const ShaderMeta& meta) {
+                if (ConstGatherOff() || meta.aluDynamic || meta.aluConsts.empty())
+                {
+                    for (uint32_t i = 0; i < 256 * 4; i++)
+                        if (have[i] != want[i])
+                            return true;
+                    return false;
+                }
+                for (uint32_t r : meta.aluConsts)
+                    if (r < 256 && memcmp(have + r * 4, want + r * 4,
+                                          4 * sizeof(uint32_t)) != 0)
+                        return true;
+                return false;
+            };
+            bad = cmpStage(haveVs, scratch.data(), vs) ||
+                  cmpStage(havePs, scratch.data() + 256 * 4, ps);
             if (bad)
             {
                 if (g_constMemoStale < 8)
@@ -22247,6 +22472,36 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // PERF ITEM C's bill, on every stats dump — the bytes NOT copied, which is the whole
+    // point of the item, plus the two numbers that say whether it is safe: how many stages
+    // fell back to the full copy, and what the verifier found if it was armed.
+    {
+        const uint64_t tot = g_gatherFull + g_gatherGathered;
+        if (tot)
+        {
+            const uint64_t wouldBe = tot * 256 * 4;
+            const uint64_t actual = g_gatherDwordsFull + g_gatherDwordsCopied;
+            fprintf(stderr,
+                    "[vk]   const gather: %.1f%% of window copies gathered (%llu full — "
+                    "dynamic a0 or no list), %.2f GB not copied over the run (%.1f%% of "
+                    "%.2f GB), %llu memo top-ups\n",
+                    100.0 * double(g_gatherGathered) / double(tot),
+                    (unsigned long long)g_gatherFull,
+                    double(wouldBe - actual) * 4.0 / 1e9,
+                    100.0 * double(wouldBe - actual) / double(wouldBe),
+                    double(wouldBe) * 4.0 / 1e9,
+                    (unsigned long long)g_gatherTopUp);
+            if (g_gatherChecked)
+                fprintf(stderr,
+                        "[vk]     verified: %llu gathers checked against the full copy, "
+                        "**%llu disagreed**%s\n",
+                        (unsigned long long)g_gatherChecked,
+                        (unsigned long long)g_gatherBad,
+                        ConstGatherPoison()
+                            ? "  (POISONED — a zero here means the verifier is BLIND)"
+                            : "");
+        }
+    }
     // THE ORDER GATE's verdict, on every stats dump. A gate whose result is not printed is
     // the defect this project keeps rediscovering (part 56's stencil skip counter was
     // collected for fifteen parts and printed by nothing), and this one guards the largest
