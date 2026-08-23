@@ -18,8 +18,9 @@
 * **The sun is CLOSED and it was never wrong.** Part 69's "the Z flips between headless
   and windowed" was a confound: zero of the 36 archived RT logs contain a DebugJump
   request or synthetic input, so every one is an operator run from THEIR save while every
-  run on the other side spawns at a fixed story point — different places, different story
-  times, and this game has a day cycle. Hardware then answered directly.
+  run on the other side spawns at a fixed story point. **DebugJump destination 3 latches
+  the operator's own `(-0.347 +0.520 -0.780)` HEADLESSLY**, which settles it — the sun
+  depends on where you are in the story, not on whether there is a window.
 * **Hardware states the sun twice in the same draw's constant file**, and both agree with
   our own decomposition to **0.00 degrees in twenty of twenty captures**
   (`tools/xtr_sun_oracle.py`). The runtime now reads the title's own constant

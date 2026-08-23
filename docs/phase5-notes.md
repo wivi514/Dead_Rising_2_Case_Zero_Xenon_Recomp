@@ -14989,37 +14989,62 @@ different point in the story — and censuses the sun in each. Two of them are e
 | 0 (`0 x DOWN`) | (-0.381 +0.812 -0.443), frames 2246..4292 | **(+0.662 +0.458 -0.594)** volume 26.6 | 4293..20629 |
 | 1 (`1 x DOWN`, the documented route) | (-0.381 +0.812 -0.443), frames 2250..4493 | **(-0.371 +0.557 +0.743)** volume 64.1 | 4494..9336 |
 | 2 (`2 x DOWN`) | (-0.381 +0.812 -0.443), frames 2252..4848 | (-0.371 +0.557 +0.743) volume **75.7** | 4849..13073 |
+| **3 (`3 x DOWN`)** | (-0.381 +0.812 -0.443), frames 2255..5126 | **(-0.347 +0.520 -0.780)** volume 67.2 | 5127..11135 |
 
-Destination 2 is the control the sweep did not have to plan for: it shares destination 1's
+**Destination 3 is the whole answer.** `(-0.347 +0.520 -0.780)` is a NEGATIVE-Z sun,
+reached HEADLESSLY, and it is the same vector `part66-ray/down.log` and
+`part67-placement/place.log` recorded — i.e. the very value part 69 attributed to being
+windowed. The "headless runs latch +Z" half of the census was a fact about the DebugJump
+destination those runs happened to use, and a different destination on the same headless
+harness reproduces the operator's value exactly.
+
+Destination 2 is a control the sweep did not have to plan for: it shares destination 1's
 sun to the printed digit while its cascade VOLUME differs (75.7 against 64.1, a different
-camera). So the volume and the direction move independently, which is what says the two
-are being read out of the matrix correctly rather than co-varying with something else.
+camera). So direction and volume move independently, which is what says both are being
+read out of the matrix correctly rather than co-varying with something else.
 
-Two destinations, **two entirely different suns** — not a mirrored Z but a different
-azimuth, elevation and volume — and in both the title's own `c23` agrees with the cascade
-decomposition to 0.0 degrees with **zero rejections** over 172k-183k probe draws. The
-menu-era light is identical in both, which is the control: the part of the world that did
-not change reads the same.
+Four destinations, **three distinct suns**, and in every one the title's own `c23` agrees
+with the cascade decomposition to 0.0 degrees with **zero rejections** over 172k-183k
+probe draws each. The menu-era light is identical in all four, which is the other control:
+the part of the world that did not change reads the same.
 
-**And the frame ranges are DISJOINT in both runs.** That is the reading the count-only
+**And the frame ranges are DISJOINT in every run.** That is the reading the count-only
 census could not give: a light that changed WITH THE SCENE owns a contiguous stretch of
 frames, where a selection flipping between candidates interleaves. Part 69's table had
-counts and no order, and the whole lead rests on which of those two it was.
+counts and no order, and the whole lead rested on which of those two it was.
 
-So a different place in this game has a different sun, our decomposition reports it
-correctly, and the operator's `(-0.364 0.546 -0.755)` is very probably their save's own
-sun. §6 is the line that would make that a measurement rather than an inference.
+### 6. What is still worth reading in the next operator session
 
-### 6. What this does NOT settle, and the one line that will
+The destination sweep reproduces the operator's own vector headlessly, so the inference
+this section originally hedged is now a measurement. What remains is one free confirmation
+rather than an open question: **the next operator session on this binary prints
+`0 blocks REJECTED` and the two vectors side by side.** Read the line; nothing depends on
+it, and if it ever reads non-zero that is a new finding with an oracle already attached.
 
-No run in the archive carries the title's own `c23` beside a `(-0.364 0.546 -0.755)`
-latch, because the instrument did not exist when those runs were taken. Our reading is
-self-consistent and matches hardware everywhere it can be checked, so the likeliest
-explanation of the operator's value is that their save sits at a different story time —
-but that is an inference, and the measurement is free: **the next operator session, on
-this binary, prints `0 blocks REJECTED` and the two vectors side by side.** If their c23
-also reads -0.755 the sun moved and there was never a defect; if it reads +0.743 while
-the cascade latch says -0.755, the lead comes back with an oracle attached.
+### 6b. AND THE "INTRUDER" IS THE TITLE'S OWN FAR SHADOW MAP, which names a length
+
+§6cw called the third latched direction — `(-0.010 1.000 0.020)` at volume 3587 — *"the
+shape of a top-down MAP render, not a sun"*, and voted it out. It is not a map render.
+The captures' world shaders carry a FOURTH projection at `pc(40..42)`, which §6bp already
+annotated as *"the far/static shadow term"*:
+
+```
+pc(40)  -0.020821  -0.000195  -0.000683  -1.684784
+pc(41)  -0.004072  -0.002539   0.124908   9.221191
+pc(42)   0.000003  -0.000279  -0.000006   1.000202     <- the depth row
+```
+
+Normalise and negate that depth row and it is `(-0.0107 +0.9997 +0.0215)` — the intruder,
+to three decimals. Its reciprocal is **3583.2**, and the title stores **3583.531** beside
+it at `pc(47).w`. So the thing sharing the pitch-1040 pass is the title's **top-down
+static shadow map over the whole town**. Voting it out of the SUN is still right; what
+changes is that it is not an unrelated intruder, and its extent is the one number in the
+frame that states how far this title expects a shadow to reach.
+
+**Our own shadow ray's `TMax` defaults to a CASCADE extent of 64-90 units.** The title's
+own cascade splits are `pc(45)/(46)` = 3, 6, 8, 12, 32, and beyond them it uses a 3,583-unit
+static term. Corrected in place in `vk_renderer.cpp`'s `g_sunM` comment and in
+`part68-kickoff.md`.
 
 ### 7. Where that leaves the shadow defect
 

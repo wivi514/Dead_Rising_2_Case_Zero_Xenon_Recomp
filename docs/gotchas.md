@@ -4463,7 +4463,9 @@ From phase C part 18 (the frame rate — and none of it was work):
      operator run that loaded THEIR save, while every run on the other side of the
      partition reaches the world through the DebugJump screen and spawns at a fixed story
      point. The two groups differed in the PLACE and the STORY TIME as well as in the
-     window, and the game has a day cycle, so both values could be right. This is the
+     window, and the game has a day cycle, so both values could be right — **and a
+     destination sweep on the headless harness then latched the "windowed-only" vector
+     exactly, which turned "could be" into "is"**. This is the
      project's A/B admissibility rule (two configurations are comparable only if they are
      two states of ONE thing) applied to a census rather than to a picture, and the check
      that would have caught it is two `grep -c` over logs already on disk. The corollary

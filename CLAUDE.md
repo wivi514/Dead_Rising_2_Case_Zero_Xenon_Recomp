@@ -787,10 +787,12 @@ it stands**):
   the fallback. In-runtime the two agree to 0.0 degrees over 33,332 latches and 8,422 bound
   frames, **zero rejections**. **This is an architectural simplification, not a picture
   fix**; what it buys is that §6cw's intruder can never win a frame again.
-* **The DebugJump destination sweep is the day-cycle proof**: destination 0 latches
-  `(+0.662 +0.458 -0.594)` where destination 1 latches `(-0.371 +0.557 +0.743)`, the
-  title's own constant agreeing with both, and the per-cluster FRAME RANGES are disjoint —
-  a light that changed with the scene, not a selection that flipped (gotcha 413).
+* **The DebugJump destination sweep proves it end to end.** Four destinations, THREE
+  distinct suns — and **destination 3 latches `(-0.347 +0.520 -0.780)` HEADLESSLY**, the
+  same negative-Z vector part 69 attributed to being windowed. The title's own constant
+  agrees in all four with **zero rejections**, the menu-era light is identical in all four
+  (the control), and the per-cluster FRAME RANGES are disjoint — a light that changed with
+  the scene, not a selection that flipped (gotcha 413).
 * **So structure, receiver and sun are all now demonstrably correct and the straight-line
   signature has survived all three.** What is left is the RAY (bias, length) and the
   CONSUMPTION (how the factor image reaches the 126 patched shaders); `part71-kickoff.md`

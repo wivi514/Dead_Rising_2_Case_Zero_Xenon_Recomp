@@ -10429,10 +10429,21 @@ bool g_lightMValid = false;
 // and never consumes, which turns the capture into last-write-wins over the WHOLE
 // frame — and this title draws something else ortho-shaped after the cascades. In
 // gameplay the captured direction read **(-0.010, 1.000, 0.020) with a 3587.7-unit
-// volume**: straight down, over a town §6cu measured at ~1,100 units across. That is
-// the shape of a top-down MAP render, not a sun. Near the menus, where that thing does
-// not draw, the same capture reads (-0.381, 0.812, -0.443) with a 61.0-unit volume —
-// a plausible sun.
+// volume**: straight down, over a town §6cu measured at ~1,100 units across. Near the
+// menus, where that thing does not draw, the same capture reads (-0.381, 0.812, -0.443)
+// with a 61.0-unit volume — a plausible sun.
+//
+// ~~That is the shape of a top-down MAP render.~~ **IDENTIFIED IN PART 70, and it is
+// part of the title's own shadowing.** The captures' world shaders carry a FOURTH
+// projection at `pc(40..42)`, annotated in §6bp as "the far/static shadow term". Its
+// depth row is `(0.000003, -0.000279, -0.000006)`: normalise and negate it and the
+// direction is `(-0.0107, 0.9997, 0.0215)` — this matrix — while its reciprocal is
+// 3583.2, and the title stores 3583.531 right beside it at `pc(47).w`. So the thing
+// sharing the pitch-1040 pass is the title's TOP-DOWN STATIC SHADOW MAP over the whole
+// town. Excluding it from the sun vote is still correct; what changes is that it is not
+// an unrelated intruder, and its extent is the one number in the frame that states how
+// far this title expects a shadow to reach (our own shadow ray's TMax defaults to a
+// CASCADE extent of ~64-90).
 //
 // The consequence was not wrong shadows, it was NO shadows, and the two causes compound:
 // a vertical sun casts every shadow directly under its caster, and the ray-origin bias

@@ -94,10 +94,10 @@ Next, in order:
    agrees with the runtime's own decomposition to **0.00 degrees in twenty of twenty
    traces**. The runtime now reads `c23` directly (`CZ_VK_RT_SUN_SRC=cascade` is the
    control arm) and the two readings agree to 0.0 degrees over 33,332 latches with
-   zero rejections. **This is an architectural simplification, not a picture fix.**
-   The one thing still owed is free: the next operator session on this binary prints
-   the title's own `c23` beside the latch, which says whether their save's
-   `(-0.364 0.546 -0.755)` is the game's sun or ours.
+   zero rejections. **A DebugJump destination sweep then reproduced the operator's own
+   negative-Z sun HEADLESSLY** (destination 3, `(-0.347 +0.520 -0.780)`), so the sun
+   depends on where you are in the story and not on whether there is a window.
+   **This is an architectural simplification, not a picture fix.**
 
    **Items 1 and 2 are PROVEN on the operator's machine**: `tlasInst=5001
    blas=8029 (148.6 MB) built=8058 flushes=0` at settle 0, the configuration that

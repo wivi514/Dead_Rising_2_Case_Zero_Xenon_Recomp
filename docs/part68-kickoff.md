@@ -83,7 +83,9 @@ Named now so the session is read against a list rather than a hope:
    mode 20 — but mode 20 was measured against the pile, so "no direction is
    occluded" said nothing about the sun. §6cw already records that in gameplay
    the naive capture reads **(-0.010, 1.000, 0.020) at a 3587-unit volume** (a
-   top-down MAP render, not a sun) and that the binding is now by DATAFLOW
+   top-down MAP render, not a sun — **part 70 identifies it: it is the title's own
+   far/static top-down SHADOW map, `pc(40..42)`, extent 3583.5 and stated again at
+   `pc(47).w`**) and that the binding is now by DATAFLOW
    through the atlas the census's shaders actually fetch. **Check
    `[rtb] ... sun=` in every arm's log before blaming the geometry.**
 2. **Ray length and bias.** Both were exonerated at 0.9% against a pile, which is
