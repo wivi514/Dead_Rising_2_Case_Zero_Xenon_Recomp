@@ -1739,6 +1739,28 @@ CZ_VK_RT_CENSUS=1  **RT stage 1's geometry census** (part 63; rt-and-fov-plan §
                    distinct world stream's bytes, so never quote a frame time
                    from a run carrying it. Free when off (one static bool per
                    draw)
+(no env var) **the PASS-SIZE HISTOGRAM and the SLOW-FRAME TABLE** — both always
+                   on, both printed by `VkRenderer_DumpStats` (part 72).
+                   **Pass sizes** bucket `R->drawsThisPass` at every resolve. A
+                   "pass" is a maximal contiguous run of draws bounded by a
+                   resolve, which is exactly the range perf item A would hand a
+                   worker — so this is item A's sizing, and the column that
+                   decides it is the DRAW-WEIGHTED cumulative, not the pass count
+                   ("46 of 48 passes are tiny" is irrelevant if the other two
+                   carry 95% of the draws). The run mean is ~122 draws/pass over
+                   48 passes a frame, and a mean cannot tell that from "two passes
+                   of 2,800 and 46 of 5" — which is the difference between ample
+                   parallelism and none.
+                   **Worst frames** keeps the twelve slowest frames by wall time
+                   with what was inside each (draws, texture uploads, pipelines
+                   created) — open item 0w. It deliberately instruments no single
+                   candidate: whichever is responsible names itself, and **a slow
+                   frame with none of them elevated is itself the answer** (the
+                   cost is outside the renderer). Free: the wall time is already
+                   measured for CZ_FPS_LOG and the texture count is one increment.
+                   The profiler's `textures` phase cannot serve — `ProfScope`
+                   records nothing without CZ_VK_PROFILE, which costs 2-4 ms a
+                   frame, the same order as the hitch being hunted (gotcha 7)
 CZ_VK_NO_CONST_GATHER=1  **the control arm for perf item C** (part 72;
                    perf-plan-part72 §4, the record is phase5-notes §6dg). Restores
                    the pre-part-72 behaviour: the whole 256-float4 ALU constant
