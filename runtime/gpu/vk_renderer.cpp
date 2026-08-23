@@ -2076,6 +2076,31 @@ struct ShaderMeta
     // to be published into. Empty when the sidecar predates part 25, which the binder
     // counts rather than papering over — see the note at bindTextures.
     std::vector<uint32_t> tfetchDims;
+    // THE OBJECT->WORLD TRANSFORM'S CONSTANT ROWS (part 67), from
+    // config/rt_world_xform.json, which tools/rt_world_xform_census.py reads out of this
+    // shader's own microcode.
+    //
+    // Why this has to exist at all: `rtshadow::Collect` gates a draw on
+    // `SceneXformForm(c0..c3) == 2`, and §6cs read that as "so the position stream is
+    // world-space". It is not. c0..c3 is the CAMERA's view-projection, and that is the
+    // same matrix whether the shader feeds it a world position or an object position it
+    // transformed one line earlier — which is what this title's world shaders do, from a
+    // row-major 4x3 at vc(8..10). Measured over the twenty `.xtr` world traces, 46,820
+    // accepted draws: 100% of them carry a NON-IDENTITY world translation, and the
+    // fraction whose bounding box intersects the frustum it was drawn into goes from
+    // 0.1% untransformed to 97.8% placed. Our BLASes held local geometry and every TLAS
+    // instance carried an identity transform, so the whole town was piled at the origin
+    // — which is exactly the "97.3% of receivers fully open" part 66 measured.
+    //
+    // Two shapes exist and both are read from the microcode rather than assumed: a
+    // `direct` 4x3 at vc(base..base+2), and a `palette` blend of vc(base + i) entries by
+    // three per-vertex weights (whose entry 0 is what the static world draws use — see
+    // xfPalette, which is counted so the approximation is never invisible). A shader
+    // with no entry is NOT placed at the origin on a guess; it is declined and counted.
+    uint8_t xfCount = 0;        // 0 = no table entry (or a genuinely world-space stream)
+    uint8_t xfBase[2] = {};     // innermost stage first
+    uint8_t xfPalette = 0;      // bit i set = stage i is a palette blend
+    bool xfKnown = false;       // the table HAD an entry (an empty one means "camera")
 };
 
 // A deliberately small JSON reader for a file this project writes itself.
@@ -2142,6 +2167,89 @@ std::vector<uint32_t> JsonIntArray(const std::string& s, const char* key)
         out.push_back(uint32_t(strtol(c, const_cast<char**>(&c), 10)));
     }
     return out;
+}
+
+// THE WORLD-TRANSFORM TABLE (part 67): shader hash -> the VS constant rows carrying its
+// object->world matrix. One file for ALL caches, because the table is a property of the
+// microcode and not of a variant — and because six sibling caches each carrying their own
+// copy is exactly the drift gotcha 390 cost three parts of operator sessions.
+//
+// Read with the same deliberately small reader the sidecars use: find the shader's own
+// key, then the next "stages" string, which is `kind@base` pairs innermost first.
+std::string g_worldXformText;
+bool g_worldXformLoaded = false;
+uint32_t g_worldXformEntries = 0;
+
+void LoadWorldXformTable(const std::filesystem::path& shaderDir)
+{
+    if (g_worldXformLoaded)
+        return;
+    g_worldXformLoaded = true;
+    std::vector<std::filesystem::path> candidates = {
+        shaderDir.parent_path().parent_path() / "config" / "rt_world_xform.json",
+        "config/rt_world_xform.json",
+        "../config/rt_world_xform.json",
+        "../../config/rt_world_xform.json",
+    };
+    for (const auto& c : candidates)
+    {
+        std::ifstream f(c);
+        if (!f)
+            continue;
+        g_worldXformText.assign((std::istreambuf_iterator<char>(f)), {});
+        for (size_t at = g_worldXformText.find("\"stages\""); at != std::string::npos;
+             at = g_worldXformText.find("\"stages\"", at + 1))
+            ++g_worldXformEntries;
+        fprintf(stderr, "[vk] world-transform table: %s (%u shaders)\n",
+                c.string().c_str(), g_worldXformEntries);
+        return;
+    }
+    // Loud, once, because a missing table is not a missing feature: it is RT shadows
+    // silently reverting to the part-66 behaviour of piling the town at the origin.
+    fprintf(stderr,
+            "[vk] no config/rt_world_xform.json — RT shadow occluders cannot be PLACED. "
+            "Regenerate with tools/rt_world_xform_census.py\n");
+}
+
+// Fill in this shader's stages from the table. Absent = declined, never defaulted.
+void ApplyWorldXform(const std::string& name, ShaderMeta& meta)
+{
+    if (g_worldXformText.empty())
+        return;
+    const std::string pat = "\"" + name + "\"";
+    const size_t at = g_worldXformText.find(pat);
+    if (at == std::string::npos)
+        return;
+    const size_t st = g_worldXformText.find("\"stages\"", at);
+    if (st == std::string::npos)
+        return;
+    const size_t open = g_worldXformText.find('"', st + 8);
+    const size_t close = open == std::string::npos
+                             ? std::string::npos
+                             : g_worldXformText.find('"', open + 1);
+    if (close == std::string::npos)
+        return;
+    meta.xfKnown = true;
+    const std::string stages = g_worldXformText.substr(open + 1, close - open - 1);
+    size_t p = 0;
+    while (p < stages.size() && meta.xfCount < 2)
+    {
+        const size_t comma = stages.find(',', p);
+        const std::string tok = stages.substr(p, comma == std::string::npos
+                                                     ? std::string::npos
+                                                     : comma - p);
+        const size_t at2 = tok.find('@');
+        if (at2 != std::string::npos)
+        {
+            if (tok.compare(0, at2, "palette") == 0)
+                meta.xfPalette |= uint8_t(1u << meta.xfCount);
+            meta.xfBase[meta.xfCount++] =
+                uint8_t(strtoul(tok.c_str() + at2 + 1, nullptr, 10));
+        }
+        if (comma == std::string::npos)
+            break;
+        p = comma + 1;
+    }
 }
 
 bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
@@ -4749,6 +4857,7 @@ bool LoadShaders()
     }
 
     fprintf(stderr, "[vk] shader cache: %s\n", dir.string().c_str());
+    LoadWorldXformTable(dir);
     uint32_t dropped = 0;
     for (const auto& e : std::filesystem::directory_iterator(dir))
     {
@@ -4788,6 +4897,7 @@ bool LoadShaders()
             ++dropped;
             continue;
         }
+        ApplyWorldXform(name, meta);
         // Both structures, always. The cost is once per shader at start-up, and it is
         // what lets the control arm be the SAME BINARY rather than a rebuild.
         R->shaders.Insert(HashFromName(name), meta);
@@ -10064,6 +10174,24 @@ VkDeviceSize g_blasBytes = 0;
 uint64_t g_blasBuilt = 0, g_blasFlushes = 0;
 std::unordered_map<uint64_t, Pending> g_pending;
 std::unordered_set<uint64_t> g_curKeys, g_prevKeys;
+
+// A PLACED OCCURRENCE OF A MESH (part 67). The key sets above answer "which BLASes must
+// exist"; they cannot answer "where", and until part 67 nothing did — every TLAS
+// instance carried an identity transform, so a town of ~500 distinct meshes was traced
+// as ~500 meshes stacked at the world origin. That is the whole of part 66's "the TLAS
+// is effectively a ground plane" (§6cy).
+//
+// The transform is NOT part of the BLAS key on purpose: one mesh drawn at forty places
+// is one BLAS and forty instances, which is what a TLAS is for.
+struct Instance
+{
+    uint64_t key = 0;
+    float xf[12] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
+};
+std::vector<Instance> g_curInst, g_prevInst;
+std::vector<Instance> g_curCascadeInst, g_prevCascadeInst;
+// Dedup: the same mesh at the same place, drawn twice in a frame, is one instance.
+std::unordered_set<uint64_t> g_curInstIds, g_curCascadeInstIds;
 // THE CASCADE'S OWN CASTERS (CZ_VK_RT_CASTERS=cascade), collected from the
 // pitch-1040 pass instead of from the camera's world draws.
 //
@@ -10325,6 +10453,16 @@ uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
          g_skipDynamic = 0, g_skipNew = 0, g_skipEndian = 0, g_collected = 0,
          g_keyCollisions = 0, g_degenerate = 0, g_skipBounds = 0,
          g_skipNoValidPos = 0;
+// Part 67's placement counters. `xfNone` is a draw whose shader has no table entry —
+// declined rather than placed at the origin on a guess; `xfPalette` is a draw placed
+// from a palette shader's entry 0, which is an APPROXIMATION and must never be
+// invisible; `xfWindow` is a constant window too high in the ALU bank for the rows to
+// be read without walking into the fetch constants.
+uint64_t g_xfPlaced = 0, g_xfNone = 0, g_xfPalette = 0, g_xfWindow = 0, g_xfBad = 0;
+// The TLAS's own world box, which is the one line that says whether the structure is a
+// town or a pile. Reset each frame roll.
+float g_instMin[3] = {}, g_instMax[3] = {};
+bool g_instBoxValid = false;
 
 // WHAT THE COLLECTOR ACCEPTED AND WHAT IT THREW AWAY. This census existed from part
 // 64 and printed only from `TraceSlice`, which is route (a)'s path — so on the LIVE
@@ -10332,6 +10470,126 @@ uint64_t g_skipAlpha = 0, g_skipPrim = 0, g_skipPosForm = 0, g_skipRange = 0,
 // a primary ray, a world missing from the TLAS is not a missing shadow, it is a pixel
 // that reads SKY and therefore LIT. "How much of the world is in there" is now the
 // first number to look at when the picture is unchanged.
+// CZ_VK_RT_OBJ_XFORM=0 — the same-binary control arm for part 67: every instance goes
+// back to an identity transform, i.e. the part-66 renderer that piled the town at the
+// origin. It is the arm to hand an operator for a side-by-side, and it is what makes the
+// placement fix demonstrable rather than asserted.
+bool PlaceInstances()
+{
+    static const bool off = [] {
+        const char* e = Env("CZ_VK_RT_OBJ_XFORM");
+        return e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N');
+    }();
+    return !off;
+}
+
+// out = outer o inner, both row-major 4x3 affines (the layout VkTransformMatrixKHR uses).
+void ComposeAffine(const float* outer, const float* inner, float* out)
+{
+    for (int r = 0; r < 3; ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+            out[r * 4 + c] = outer[r * 4 + 0] * inner[0 * 4 + c] +
+                             outer[r * 4 + 1] * inner[1 * 4 + c] +
+                             outer[r * 4 + 2] * inner[2 * 4 + c];
+        out[r * 4 + 3] = outer[r * 4 + 0] * inner[3] + outer[r * 4 + 1] * inner[7] +
+                         outer[r * 4 + 2] * inner[11] + outer[r * 4 + 3];
+    }
+}
+
+// THIS DRAW'S OBJECT->WORLD MATRIX, out of the VS constant window (part 67).
+//
+// `vsWindow` points at float4 `memoVsBase` of the ALU constant file, so this shader's
+// vc(N) is `vsWindow[N * 4]` — the same indexing XenosRecomp's `vc(N)` macro emits, which
+// is what makes the table's constant numbers mean the same thing at both ends.
+//
+// The window bound is not decoration: `memoVsBase` is a guest-controlled 9-bit field, so
+// a high base plus vc(10) walks straight into the FETCH constants at 0x4800 and would
+// place a mesh by a texture address. That case is counted, not clamped.
+bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMeta& vs,
+                 float* out)
+{
+    out[0] = out[5] = out[10] = 1.0f;
+    out[1] = out[2] = out[3] = out[4] = out[6] = out[7] = 0.0f;
+    out[8] = out[9] = out[11] = 0.0f;
+    if (!PlaceInstances())
+        return true;
+    if (!vs.xfKnown)
+    {
+        ++g_xfNone;
+        return false;
+    }
+    if (!vs.xfCount)
+        return true;   // the table says this shader's stream really is world-space
+    const size_t at = size_t(vsWindow - regs);
+    for (uint8_t i = 0; i < vs.xfCount; ++i)
+    {
+        const size_t need = at + (size_t(vs.xfBase[i]) + 3) * 4;
+        if (need > xenos::kFetchConstantBase)
+        {
+            ++g_xfWindow;
+            return false;
+        }
+        float m[12];
+        memcpy(m, vsWindow + size_t(vs.xfBase[i]) * 4, sizeof m);
+        for (int k = 0; k < 12; ++k)
+            if (!std::isfinite(m[k]))
+            {
+                ++g_xfBad;
+                return false;
+            }
+        if (i == 0)
+            memcpy(out, m, sizeof m);
+        else
+        {
+            float tmp[12];
+            ComposeAffine(m, out, tmp);
+            memcpy(out, tmp, sizeof tmp);
+        }
+        if (vs.xfPalette & (1u << i))
+            ++g_xfPalette;
+    }
+    ++g_xfPlaced;
+    return true;
+}
+
+uint64_t Mix(uint64_t h, uint64_t v);   // defined with the BLAS key builder below
+
+// Record a placed occurrence. Deduped on (mesh, transform) so a mesh drawn twice in one
+// frame at one place is one instance, and so the TLAS cannot grow without bound on a
+// title that re-draws the world in several passes.
+void RecordInstance(uint64_t key, const float* xf, bool cascade)
+{
+    std::vector<Instance>& list = cascade ? g_curCascadeInst : g_curInst;
+    std::unordered_set<uint64_t>& ids = cascade ? g_curCascadeInstIds : g_curInstIds;
+    uint64_t h = Mix(0x52544958, key);
+    for (int i = 0; i < 12; ++i)
+    {
+        uint32_t bits;
+        memcpy(&bits, &xf[i], 4);
+        h = Mix(h, bits);
+    }
+    if (!ids.insert(h).second)
+        return;
+    Instance in;
+    in.key = key;
+    memcpy(in.xf, xf, sizeof in.xf);
+    list.push_back(in);
+    if (!cascade)
+    {
+        // The instance's own translation is enough for the box: a mesh's local extent is
+        // small next to the town, and this line exists to answer "town or pile" at a
+        // glance rather than to be a bounding volume.
+        const float t[3] = { xf[3], xf[7], xf[11] };
+        for (int k = 0; k < 3; ++k)
+        {
+            g_instMin[k] = g_instBoxValid ? std::min(g_instMin[k], t[k]) : t[k];
+            g_instMax[k] = g_instBoxValid ? std::max(g_instMax[k], t[k]) : t[k];
+        }
+        g_instBoxValid = true;
+    }
+}
+
 void PrintCollectorCensus(const char* who);
 
 // ONCE PER FRAME, NOT ONCE PER DRAW — the shadow tier's pattern, and here it is
@@ -10432,6 +10690,20 @@ void PrintCollectorCensus(const char* who)
             (unsigned long long)g_skipEndian, (unsigned long long)g_skipBounds,
             (unsigned long long)g_skipNoValidPos,
             (unsigned long long)g_keyCollisions, (unsigned long long)g_degenerate);
+    // PLACEMENT (part 67), and the world box is the line that says TOWN or PILE in one
+    // glance. A structure whose instance translations span a couple of units is the
+    // part-66 defect; this title's Still Creek runs roughly x[-940 390] z[-720 370].
+    fprintf(stderr,
+            "[rt] %s: placed=%llu (palette=%llu) declined: noTable=%llu window=%llu "
+            "nonFinite=%llu | instances cur=%zu prev=%zu | world box "
+            "x[%.1f %.1f] y[%.1f %.1f] z[%.1f %.1f]%s\n",
+            who, (unsigned long long)g_xfPlaced, (unsigned long long)g_xfPalette,
+            (unsigned long long)g_xfNone, (unsigned long long)g_xfWindow,
+            (unsigned long long)g_xfBad, g_curInst.size(), g_prevInst.size(),
+            g_instBoxValid ? g_instMin[0] : 0.0f, g_instBoxValid ? g_instMax[0] : 0.0f,
+            g_instBoxValid ? g_instMin[1] : 0.0f, g_instBoxValid ? g_instMax[1] : 0.0f,
+            g_instBoxValid ? g_instMin[2] : 0.0f, g_instBoxValid ? g_instMax[2] : 0.0f,
+            PlaceInstances() ? "" : "  (CZ_VK_RT_OBJ_XFORM=0: IDENTITY, the part-66 arm)");
 }
 
 void FrameRoll()
@@ -10442,6 +10714,18 @@ void FrameRoll()
         g_curKeys.clear();
         g_prevCascadeKeys.swap(g_curCascadeKeys);
         g_curCascadeKeys.clear();
+        g_prevInst.swap(g_curInst);
+        g_curInst.clear();
+        g_curInstIds.clear();
+        // Sized from last frame: this is ~4,500 inserts a frame on the PUMP thread at
+        // the operator's load, and part 55 measured container work there as a quarter of
+        // that thread. It is only paid when RT is armed, which is not the default.
+        g_curInst.reserve(g_prevInst.size() + 64);
+        g_curInstIds.reserve(g_prevInst.size() * 2 + 64);
+        g_prevCascadeInst.swap(g_curCascadeInst);
+        g_curCascadeInst.clear();
+        g_curCascadeInstIds.clear();
+        g_instBoxValid = false;
         g_collectFrame = R->frame;
     }
 }
@@ -10469,7 +10753,7 @@ void RetireBufferAs(VkAccelerationStructureKHR as, Buffer& buf)
     buf = Buffer{};
 }
 
-inline uint64_t Mix(uint64_t h, uint64_t v)
+uint64_t Mix(uint64_t h, uint64_t v)
 {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
     return h;
@@ -10743,6 +11027,11 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
                        (pos.offsetDwords << 4) | pos.strideDwords);
     ++g_collected;
     (cascadeCaster ? g_curCascadeKeys : g_curKeys).insert(key);
+    // WHERE this mesh is (part 67). A draw whose shader has no table entry keeps its
+    // BLAS but gets NO instance: an occluder we cannot place is worse than a missing
+    // one, because a mesh at the origin shadows whatever happens to be there.
+    float xf[12];
+    const bool placed = ObjectXform(vsWindow, regs, vs, xf);
     auto bit = g_blas.find(key);
     if (bit != g_blas.end())
     {
@@ -10754,12 +11043,16 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             return;
         }
         bit->second.lastFrame = R->frame;
+        if (placed)
+            RecordInstance(key, xf, cascadeCaster);
         return;
     }
     auto pit = g_pending.find(key);
     if (pit != g_pending.end())
     {
         pit->second.seenFrame = R->frame;
+        if (placed)
+            RecordInstance(key, xf, cascadeCaster);
         return;
     }
     // THE BOUNDS GATE, and it exists because §6cu already named its target.
@@ -10835,6 +11128,8 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             return;
         }
     }
+    if (placed)
+        RecordInstance(key, xf, cascadeCaster);
     Pending p;
     p.streamKey = streamKey;
     p.idxKey = idxKey;
@@ -11229,17 +11524,29 @@ void BuildFrameStructures(uint8_t* base)
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1,
                          &mb, 0, nullptr, 0, nullptr);
 
-    // ---- the TLAS: identity-transform instances over last frame's world set
+    // ---- the TLAS: last frame's PLACED occurrences of last frame's world set.
+    //
+    // Until part 67 this loop walked the KEY set and wrote an identity transform, and
+    // that is the whole of part 66's "the TLAS is effectively a ground plane": a town of
+    // ~500 distinct meshes traced as ~500 meshes stacked at the world origin. The count
+    // 216..722 that three parts read as "the collector is dropping the buildings" was in
+    // fact the number of DISTINCT MESHES — the placements had collapsed into it.
+    const std::vector<Instance>& placed =
+        CascadeCasters() ? g_prevCascadeInst : g_prevInst;
     std::vector<VkAccelerationStructureInstanceKHR> inst;
-    inst.reserve(live.size());
-    for (uint64_t key : live)
+    inst.reserve(placed.size());
+    for (const Instance& p : placed)
     {
-        auto it = g_blas.find(key);
+        auto it = g_blas.find(p.key);
         if (it == g_blas.end())
             continue;
         it->second.lastFrame = R->frame;
         VkAccelerationStructureInstanceKHR in{};
-        in.transform = { { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 } } };
+        // VkTransformMatrixKHR is a row-major 3x4, which is exactly the layout the
+        // title's own vc(base..base+2) rows are in — no transpose, and none is silently
+        // implied here either (a wrong one would place the town rotated and would look
+        // like a ray bug, which is the failure mode this feature has already had).
+        memcpy(&in.transform, p.xf, sizeof p.xf);
         in.mask = 0xFF;
         in.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         in.accelerationStructureReference = it->second.address;
