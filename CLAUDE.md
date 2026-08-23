@@ -197,8 +197,13 @@ mask; trust the microcode's own swizzles.
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
-  - **PERFORMANCE IS THE LIVE SUBJECT AGAIN AS OF PART 71, AND `docs/perf-plan-part71.md`
-    IS THE PLAN** — the operator's instruction closing part 70: *"We'll stop for now with
+  - **PERFORMANCE IS THE LIVE SUBJECT AGAIN AS OF PART 71.** ~~`docs/perf-plan-part71.md`
+    IS THE PLAN~~ — **superseded twice: the plan is `docs/perf-plan-part72.md` and the live
+    FIX LIST is `docs/part72-fix-plan.md`.** Part 71's is kept because it was executed and
+    records its own two retractions in place. (This line named part 71's plan for a part
+    after that stopped being true, which is the stale-pointer defect described at the
+    bottom of this file — gotcha 13 — and it is why the rule is stated as well as the
+    name.) The operator's instruction closing part 70: *"We'll stop for now with
     trying to get ray tracing running. Disable that we can select it in game. We'll now
     switch to fixing performance issue."* Its §0 is the rule the whole plan turns on: the
     frame at their soak has not been measured since part 58 and thirteen parts have
@@ -793,12 +798,13 @@ IS `docs/perf-plan-part71.md`.**~~ **THE LIVE PLAN IS `docs/perf-plan-part72.md`
 "part71" for one part after it stopped being true, which is the two-live-pointers defect
 the block-rotation note at the bottom of this file describes; gotcha 13.)
 
-Where the port is, as of 2026-08-23 (**PART 72 IS IN PROGRESS — PERFORMANCE, and its first
-session was ALL DESK WORK.** `docs/part72-kickoff.md` is the LIVE hand-off, the plan is
-**`docs/perf-plan-part72.md`** and it now carries two part-72 corrections in place, the
-record is `phase5-notes.md` **§6de**, the lessons are gotchas **423-425**. **No runtime
-session has been run** — all runtime verification goes through the operator, and §6de §5
-is the sitting that is owed):
+Where the port is, as of 2026-08-23 (**PART 72 IS IN PROGRESS — PERFORMANCE. Desk work plus
+TWO OPERATOR SITTINGS, both run, and each produced a RETRACTION.**
+`docs/part72-kickoff.md` is the LIVE hand-off, the plan is **`docs/perf-plan-part72.md`**
+(now carrying three part-72 corrections in place) and **`docs/part72-fix-plan.md` is the
+LIVE FIX LIST** — read it first, it says what was caught, what was fixed offline, and the
+ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk work) and
+**§6df** (the sessions); the lessons are gotchas **423-429**):
 
 * **THE PLAN'S CHEAPEST ROUTE FOR ITS BIGGEST ITEM IS DEAD, AND IT COST AN AFTERNOON
   RATHER THAN A SESSION.** §1 route (a) was *"find the game's aspect scalar and widen that
