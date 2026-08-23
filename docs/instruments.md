@@ -1784,6 +1784,23 @@ CZ_VK_RT_BOUNDS_CAP=<f>  the extent above which a stream is refused entry to
                    structural test the collector applies. Hygiene: the
                    rejections are real and counted (`bounds=`), and the picture
                    does not move
+CZ_VK_RT_NO_PALETTE=1  **keep the palette-blended draws out of the ray
+                   structure** (part 68). A `palette` shader builds its world
+                   matrix by blending vc(base + 3k) entries with three PER-VERTEX
+                   weights; the collector uses entry 0, which is what the static
+                   world does (99.5% of vertices on screen for the bank's busiest
+                   world shader) and is NOT what a skinned actor does — the mesh
+                   entering the BLAS is the raw object-space geometry under one
+                   bone, so the primary ray hits a wrong surface at roughly the
+                   right place and the shadow test answers about somewhere else.
+                   Part 68's capture is that defect measured: **100.5 edge pixels
+                   per 1000 in the crowd region against 10.6 on open road**, with
+                   the isolated-pixel rate only 0.35% — localised to the actors,
+                   not acne. Declining them makes the tier self-consistent
+                   (actors cast no RT shadow and receive the factor of the
+                   surface behind them, the cost §6cx already prices) at the
+                   price of every STATIC mesh that uses a palette shader, which
+                   is why it is an arm. `paletteArm=` in the census counts it
 CZ_VK_RT_DYN_SETTLE=N  **how long a stream must have been STILL to be an RT
                    occluder**, in frames since it was last caught changing (part
                    68). The collector excluded any stream the persist store had

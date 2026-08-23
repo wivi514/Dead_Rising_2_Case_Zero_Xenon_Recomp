@@ -10483,6 +10483,8 @@ uint64_t g_xfPlaced = 0, g_xfNone = 0, g_xfPalette = 0, g_xfWindow = 0, g_xfBad 
 // on the default, and the number that says whether the arm did anything at all
 // (gotcha 151: an arm with no counter cannot be shown to have engaged).
 uint64_t g_settledIn = 0;
+// Draws declined by CZ_VK_RT_NO_PALETTE. Zero unless the arm is set.
+uint64_t g_xfPaletteDeclined = 0;
 // The TLAS's own world box, which is the one line that says whether the structure is a
 // town or a pile. Reset each frame roll.
 float g_instMin[3] = {}, g_instMax[3] = {};
@@ -10553,6 +10555,35 @@ bool TooDynamic(const Renderer::PersistEntry* pe)
     return R->frame - pe->dynFrame < settle;
 }
 
+// CZ_VK_RT_NO_PALETTE=1 — KEEP THE PALETTE-BLENDED DRAWS OUT OF THE STRUCTURE.
+//
+// A `palette` shader builds its world matrix by blending vc(base + 3k) entries with three
+// PER-VERTEX weights, and the collector uses entry 0 with unit weight because that is
+// what the static world draws do — measured at 99.5% of vertices landing on screen for
+// the bank's busiest world shader. For a SKINNED actor it is not: the mesh that enters
+// the BLAS is the raw object-space geometry under one bone, which is not the pose the
+// title drew, so the primary ray hits a wrong surface at roughly the right place. The
+// receiver's world position is then wrong and the shadow test at it answers a question
+// about somewhere else.
+//
+// Part 68's operator capture is that defect seen directly: the factor image's shadow is
+// chopped into actor-shaped holes and streaks exactly where the crowd is (100.5 edge
+// pixels per 1000 in the crowd region against 10.6 on open road, with the isolated-pixel
+// rate at 0.35% — so it is not acne, it is localised to the actors), which the operator
+// described as "when they are in front of a shadow the shadow doesn't work behind their
+// silhouette, like SSR".
+//
+// Declining them makes the tier self-consistent instead: actors cast no RT shadow and
+// receive the factor of the opaque surface behind them, which is the cost §6cx already
+// states and prices. What it also costs is every STATIC mesh that happens to use a
+// palette shader, and that is why this is an ARM and not the default — the picture has
+// to say whether the world keeps its shadows without them.
+bool NoPalette()
+{
+    static const bool on = EnvOn("CZ_VK_RT_NO_PALETTE");
+    return on;
+}
+
 // out = outer o inner, both row-major 4x3 affines (the layout VkTransformMatrixKHR uses).
 void ComposeAffine(const float* outer, const float* inner, float* out)
 {
@@ -10591,6 +10622,11 @@ bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMet
     }
     if (!vs.xfCount)
         return true;   // the table says this shader's stream really is world-space
+    if (vs.xfPalette && NoPalette())
+    {
+        ++g_xfPaletteDeclined;
+        return false;
+    }
     const size_t at = size_t(vsWindow - regs);
     for (uint8_t i = 0; i < vs.xfCount; ++i)
     {
@@ -10774,12 +10810,14 @@ void PrintCollectorCensus(const char* who)
     // defect; this title's Still Creek runs roughly x[-940 390] z[-720 370].
     fprintf(stderr,
             "[rt] %s: placed=%llu (palette=%llu) settledIn=%llu declined: noTable=%llu "
-            "window=%llu nonFinite=%llu | instances cur=%zu prev=%zu | world box "
+            "window=%llu nonFinite=%llu paletteArm=%llu | instances cur=%zu prev=%zu "
+            "| world box "
             "x[%.1f %.1f] y[%.1f %.1f] z[%.1f %.1f]%s\n",
             who, (unsigned long long)g_xfPlaced, (unsigned long long)g_xfPalette,
             (unsigned long long)g_settledIn,
             (unsigned long long)g_xfNone, (unsigned long long)g_xfWindow,
-            (unsigned long long)g_xfBad, g_curInst.size(), g_prevInst.size(),
+            (unsigned long long)g_xfBad, (unsigned long long)g_xfPaletteDeclined,
+            g_curInst.size(), g_prevInst.size(),
             box[0], box[1], box[2], box[3], box[4], box[5],
             PlaceInstances() ? "" : "  (CZ_VK_RT_OBJ_XFORM=0: IDENTITY, the part-66 arm)");
 }
