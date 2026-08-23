@@ -34,15 +34,38 @@
 * Part 67's exonerations of the bias and the ray length were taken against a pile at the
   world origin and are **still void** (gotcha 172).
 
-## 1. Start here — a bisection that costs one dump
+## 1. Start here — THE SHADOW RAY IS 88 UNITS LONG IN A 1,100-UNIT TOWN
 
 The signature to explain (operator, part 69): *a flat slab with a hard straight boundary
 crossing a shipping container, tyres, cars, a chain-link fence and the ground without
 bending at any of them, plus a horizontal cut through Chuck's chest.*
 
-**A straight line in SCREEN space that ignores every surface it crosses is a property of
-an IMAGE, not of a trace** — occluders cast shapes, and a correct receiver plus a correct
-sun cannot produce a half-plane. So find out which image:
+`rt_factor.hlsl` sets the shadow ray's `TMax` to `pc.sun.w`, which **defaults to the
+cascade's depth extent** — `len=88.5` in the operator's last run, and hardware's own
+cascade volumes are 63.4/67.1/89.7. The town is ~1,100 units across and one frame's world
+box measured `x[-610 324] z[-681 107]`. A ray that stops at 88 units cannot find an
+occluder 200 units away, and a cascade's near-slice depth extent was never a shadow ray's
+reach — it is the length scale the frame happened to hand us, which is what the code's own
+comment says it is.
+
+**The SHAPE that produces is the observed one.** The set of receiver points whose
+fixed-length ray just clears a given occluder is a PLANE in world space, and a world plane
+projects to a straight line in screen space that bends at nothing it crosses — because the
+cut-off belongs to the RAY, not to the surface receiving it. A constant-height cut through
+a standing character is the same statement.
+
+`part69-night-plan.md` §3 ranked this THIRD, reasoning that a short ray would leave
+"everything past it lit — the opposite signature". **That geometry is wrong**: a short ray
+does not fail far from the CAMERA, it fails far from the OCCLUDER, and it fails along a
+plane. Part 67 also exonerated the length — against a pile at the world origin, which is
+no test (gotcha 172).
+
+`tools/part70_ray_length.sh` sweeps `CZ_VK_RT_RAY_LEN` over default/300/1000/3000 with a
+**pre-registered prediction**: the shadowed share rises monotonically and the straight
+edges in the dumped factor move outward or vanish. A flat share across a 34x range kills
+the hypothesis. Its result at part 70's close is in `phase5-notes.md` §6dc §8.
+
+If the length is not it, the fallback bisection is one dump:
 
 ```
 CZ_VK_RT_FACTOR_READBACK=64 CZ_VK_RT_FACTOR_PGM=~/DR2CZ-troubleshooting/part71-factor

@@ -14988,6 +14988,12 @@ different point in the story — and censuses the sun in each. Two of them are e
 |---|---|---|---|
 | 0 (`0 x DOWN`) | (-0.381 +0.812 -0.443), frames 2246..4292 | **(+0.662 +0.458 -0.594)** volume 26.6 | 4293..20629 |
 | 1 (`1 x DOWN`, the documented route) | (-0.381 +0.812 -0.443), frames 2250..4493 | **(-0.371 +0.557 +0.743)** volume 64.1 | 4494..9336 |
+| 2 (`2 x DOWN`) | (-0.381 +0.812 -0.443), frames 2252..4848 | (-0.371 +0.557 +0.743) volume **75.7** | 4849..13073 |
+
+Destination 2 is the control the sweep did not have to plan for: it shares destination 1's
+sun to the printed digit while its cascade VOLUME differs (75.7 against 64.1, a different
+camera). So the volume and the direction move independently, which is what says the two
+are being read out of the matrix correctly rather than co-varying with something else.
 
 Two destinations, **two entirely different suns** — not a mirrored Z but a different
 azimuth, elevation and volume — and in both the title's own `c23` agrees with the cascade
