@@ -4937,3 +4937,40 @@ taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` 
   `shader_dim_census.py` clean on all sixteen caches and the play cache's NAME
   diff empty; `rt_world_xform_census.py` 104 of 104 and exit 1 on a planted gap.
   **A5 is owed**, carried from part 67 — no kernel path changed in either.
+
+---
+
+Where the port is, as of 2026-08-23 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
+BUILT AND PROVEN, AND THE SESSION MOVED THE SUBJECT: THE OCCLUDER SET IS NO LONGER THE
+DEFECT.** The primary ray now resolves the real world and the shadows are still wrong.
+`docs/part69-night-plan.md` §3 WAS the live plan and `docs/part70-kickoff.md` WAS the
+hand-off then; the live one is named above, and §3's item 1 (the sun) is now ANSWERED —
+its items 2 and 3 remain. The records are `phase5-notes.md` §6da (built) and §6db (measured); the
+backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
+
+* **Entry 0 was not an approximation, it was a different mesh.** Zero of 2,786 palette
+  draws reference a single matrix; entry 0 collapses the median draw's extent to 1.51
+  units where the blend assembles it at 8.75. The blend is baked into the BLAS vertices
+  and a baked mesh's identity carries its occurrence ordinal, which took `tlasInst`
+  682 -> 3,356 headlessly. `CZ_VK_RT_NO_BAKE=1` is the arm.
+* **Items 1 and 2 are PROVEN ON THE OPERATOR'S MACHINE.** At `CZ_VK_RT_DYN_SETTLE=0` — the
+  configuration that before them climbed to the 1 GB cap and flushed — a real play session
+  held `tlasInst=5001 blas=8029 (148.6 MB) built=8058 flushes=0`, `outOfRange=0`.
+* **THE PRIMARY RAY RESOLVES THE REAL WORLD.** `CZ_VK_RT_FACTOR_DEBUG=18` renders a
+  recognisable depth image — Chuck, both lamp posts, the power lines, the gantry, the
+  fence, the hills. Part 68 read the same instrument as *"a flat plain... no fence, no
+  Chuck"*. **The occluder work fixed it, and the shadows are still wrong**, so four rounds
+  of that were aimed at a subsystem that is now demonstrably correct (gotcha 409).
+* ~~**THE LIVE LEAD IS THE SUN.**~~ **CLOSED IN PART 70 AND IT WAS A CONFOUND** — see
+  the block above. The two vectors were latched in two different places at two different
+  story times, and hardware confirms our decomposition to 0.00 degrees in all twenty
+  captures. Nothing was ever mirrored (gotchas 411-413; 410's example is retracted).
+* **Four synchronisation VUIDs were found and fixed inside the part** — a structure whose
+  build was RECORDED but not executed being issued an in-place update in the same command
+  buffer. The arms were the bisect: three runs, no rebuilds (gotcha 407).
+* **Two errors recorded in place**: the pre-registered edge-density gate is RETRACTED (its
+  SIGN was wrong), and a shipped control arm never engaged because its variable went into
+  the description instead of `env` (gotcha 408).
+* **Gates at close** (RT off = the shipped default): the validation gate is clean to
+  `passes=6145` and is now the cheapest standing gate this feature has; `--smoke` OK;
+  `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**

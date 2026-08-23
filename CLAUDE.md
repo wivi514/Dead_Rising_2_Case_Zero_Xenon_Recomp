@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 402 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 416 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 402-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 416-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -784,6 +784,45 @@ still engages it directly. Both arms print the line that proves which one is run
 feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. **THE LIVE PLAN
 IS `docs/perf-plan-part71.md`.**
 
+Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.** The plan is
+`docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
+414-416. **The operator session that prices everything is `tools/part71_perf_session.sh`
+and it has NOT been run yet** — nothing below is a measurement):
+
+* **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
+  operator's soak has not been measured since part 58 and **thirteen parts have shipped
+  since**. Every item in `perf-state-parked.md` §2 is priced against a ~10.5 ms baseline
+  that no longer exists. Arm 1 is a denominator, not an experiment.
+* **THE FIRST ITEM IS WORK THIS PROJECT ADDED ITSELF.** Parts 59-70 each hung a probe on
+  `DoDraw` — five per-draw calls, ~35,000 a frame at their soak, that exist only to decide
+  not to run — and one on the per-FETCH path: `rtshadow::NoteAtlasFetch` was guarded on
+  `ps.moduleRt` and **not on whether RT is running**, so a 100-second run of the shipped,
+  PARKED build did **9,482,873 full `DecodeTextureFetch` decodes**. Both are now folded
+  behind one word recomputed per FRAME; `CZ_VK_NO_HOOK_FOLD=1` is the control arm and is
+  the pre-part-71 renderer exactly. **Behaviour-preserving by construction** (the word is
+  the OR of every hook's own arm), and the identity gate is that with RT ON it must fold
+  ZERO. **Not yet priced; the kill threshold is pre-registered at 0.3 ms.**
+* **TWO OF THE PLAN'S OWN ARMS WERE WRONG AND ARE RETRACTED IN PLACE.** `CZ_VK_RT=0` does
+  not bound those hooks at all — the largest piece of the cost is gated on the RT variant
+  SHADER CACHE, which loads with no reference to `rtEnabled` (gotcha 414). And
+  `CZ_VK_WIDE=0` is not the wide-culling arm on this machine: their `cz_settings.txt` is
+  3440x1440, so it also drops 26% of the pixels and the delta would have been mostly GPU
+  reported as a CPU saving (gotcha 415). `CZ_NO_GAME_FOV=1` replaces it.
+* **`CZ_FPS_LOG` GREW A TAIL** — `p99`, the window's `worst` frame and the share of frames
+  above 2x the window median — because the turn stutter is the one performance problem on
+  this port that has only ever been FELT and a median cannot see one. Free (the window is
+  already sorted). `tools/part54_fps_bins.py` prints a matching TAIL table and treats the
+  three fields as OPTIONAL, so parts 54-70's archived logs still bin.
+* **The session:** four arms on one snapshotted binary, ~3 min stand-still soak plus ~30 s
+  of continuous turning each — `base`, `nofold`, `noclip`, `nogamefov`. **Every arm proves
+  it engaged from a line the FEATURE prints, or the harness refuses to report it and exits
+  non-zero**; two gates are two-sided, and all four were tested against four deliberate
+  breakages. Preflight NAME-diffs the two shader caches it switches between (gotcha 390)
+  and echoes `cz_settings.txt`.
+* **Gates:** `--smoke` OK; `shader_dim_census.py` clean on all sixteen caches and the play
+  cache's NAME diff empty; `rt_world_xform_census.py` 104 of 104. **A5 is owed**, carried
+  since part 67 — no kernel path has changed in 67-71.
+
 Where the port is, as of 2026-08-23 (part 70 CLOSED — **THE SUN IS CLOSED AND IT WAS
 NEVER WRONG: part 69's "the Z flips between headless and windowed" was a CONFOUND, and
 hardware states the sun twice in the same draw's constant file.** `docs/part71-kickoff.md`
@@ -830,43 +869,8 @@ it stands**):
   clean on all sixteen caches and the play cache's NAME diff empty; `rt_world_xform_census.py`
   104 of 104. **A5 is owed**, carried since part 67.
 
-Where the port is, as of 2026-08-23 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
-BUILT AND PROVEN, AND THE SESSION MOVED THE SUBJECT: THE OCCLUDER SET IS NO LONGER THE
-DEFECT.** The primary ray now resolves the real world and the shadows are still wrong.
-`docs/part69-night-plan.md` §3 WAS the live plan and `docs/part70-kickoff.md` WAS the
-hand-off then; the live one is named above, and §3's item 1 (the sun) is now ANSWERED —
-its items 2 and 3 remain. The records are `phase5-notes.md` §6da (built) and §6db (measured); the
-backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
-
-* **Entry 0 was not an approximation, it was a different mesh.** Zero of 2,786 palette
-  draws reference a single matrix; entry 0 collapses the median draw's extent to 1.51
-  units where the blend assembles it at 8.75. The blend is baked into the BLAS vertices
-  and a baked mesh's identity carries its occurrence ordinal, which took `tlasInst`
-  682 -> 3,356 headlessly. `CZ_VK_RT_NO_BAKE=1` is the arm.
-* **Items 1 and 2 are PROVEN ON THE OPERATOR'S MACHINE.** At `CZ_VK_RT_DYN_SETTLE=0` — the
-  configuration that before them climbed to the 1 GB cap and flushed — a real play session
-  held `tlasInst=5001 blas=8029 (148.6 MB) built=8058 flushes=0`, `outOfRange=0`.
-* **THE PRIMARY RAY RESOLVES THE REAL WORLD.** `CZ_VK_RT_FACTOR_DEBUG=18` renders a
-  recognisable depth image — Chuck, both lamp posts, the power lines, the gantry, the
-  fence, the hills. Part 68 read the same instrument as *"a flat plain... no fence, no
-  Chuck"*. **The occluder work fixed it, and the shadows are still wrong**, so four rounds
-  of that were aimed at a subsystem that is now demonstrably correct (gotcha 409).
-* ~~**THE LIVE LEAD IS THE SUN.**~~ **CLOSED IN PART 70 AND IT WAS A CONFOUND** — see
-  the block above. The two vectors were latched in two different places at two different
-  story times, and hardware confirms our decomposition to 0.00 degrees in all twenty
-  captures. Nothing was ever mirrored (gotchas 411-413; 410's example is retracted).
-* **Four synchronisation VUIDs were found and fixed inside the part** — a structure whose
-  build was RECORDED but not executed being issued an in-place update in the same command
-  buffer. The arms were the bisect: three runs, no rebuilds (gotcha 407).
-* **Two errors recorded in place**: the pre-registered edge-density gate is RETRACTED (its
-  SIGN was wrong), and a shipped control arm never engaged because its variable went into
-  the description instead of `env` (gotcha 408).
-* **Gates at close** (RT off = the shipped default): the validation gate is clean to
-  `passes=6145` and is now the cheapest standing gate this feature has; `--smoke` OK;
-  `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-68's** — part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-69's** — part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
