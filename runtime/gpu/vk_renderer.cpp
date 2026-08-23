@@ -10445,6 +10445,243 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
 }
 
 // ===================================================================================
+// THE VERTICAL-WASTE CENSUS (part 72) — what the wide-culling over-widen actually costs
+// ===================================================================================
+//
+// WHY THIS EXISTS. Part 62 fixed a real defect: at 21:9 the flanks showed regions the
+// game's own 16:9 frustum had culled away, so the substitution hands the GAME
+// v' = 2*atan(k*tan(v/2)). The game's camera carries ONE scalar and a fixed 16:9
+// aspect, so that widens the frustum in BOTH axes — k horizontally (wanted) and k
+// vertically (pure waste). Everything above and below the screen is submitted and then
+// clipped away.
+//
+// Part 71 priced this at "+1,930 draws of 9,817" by differencing the `CZ_NO_GAME_FOV=1` arm, and
+// `perf-plan-part72.md` §1 carries that forward as "~4.8 ms of 28". **THAT IS AN UPPER
+// BOUND, NOT THE ITEM'S VALUE**, and the reason is structural: `CZ_NO_GAME_FOV=1`
+// removes the WHOLE substitution, which includes the horizontal widening that IS the
+// part-62 fix and has to be kept. The configuration a horizontal-only fix would reach
+// (horizontal widened by k, vertical not) has a frustum that is a strict SUBSET of
+// today's and a strict SUPERSET of the arm's, so the draws it recovers are strictly
+// fewer than 1,930 — no model needed for that, it is containment.
+//
+// This census measures the recoverable part directly instead of modelling it. For every
+// world draw (SceneXformForm form 2 — the population the game's frustum culls) it
+// projects the position stream's own object-space bounding box by the FINAL projection
+// the renderer uploads, and counts the draws whose box lands entirely outside the clip
+// volume in Y. Those draws produce no pixel. They are the ceiling on what ANY
+// vertical-cull fix can recover, and unlike the arm difference they do not confound the
+// horizontal widening we are keeping.
+//
+// TWO CONTROLS, because an instrument that has never been shown capable of moving is not
+// an instrument (gotcha 30):
+//   * MECHANICAL — `CZ_VK_VCULL_SCALE=f` scales the clip bound the test uses. Small f
+//     must drive the count UP (nearly every off-centre box is "outside" a tiny volume),
+//     large f must drive it to zero. A count that does not move under a sweep is blind.
+//   * SEMANTIC — `CZ_NO_GAME_FOV=1` removes the over-widen entirely, so the vertical
+//     waste must FALL sharply. If it does not, this is measuring something else.
+//
+// IT IS A DIAGNOSTIC ARM AND IT HAS A BILL: a hash lookup and ~100 flops per world draw,
+// on the pump thread, ~9,800 times a frame. Never quote a frame time from a run carrying
+// it (gotcha 7). It is off by default and folded away with every other per-draw hook
+// when unarmed (part 71's hook fold), so it costs one static bool test when off.
+namespace vcull
+{
+std::mutex g_mu;
+std::map<uint64_t, rtcensus::StreamRec> g_streams;
+uint64_t g_lastFrame = ~0ull;
+// Per-frame, reset at each frame boundary.
+uint64_t g_fScene = 0, g_fNoBounds = 0, g_fWasteV = 0, g_fWasteH = 0, g_fNear = 0;
+// Aggregates over frames that had at least one world draw.
+uint64_t g_frames = 0, g_sumScene = 0, g_sumNoBounds = 0, g_sumWasteV = 0,
+         g_sumWasteH = 0, g_sumNear = 0, g_maxWasteV = 0, g_maxScene = 0;
+
+float ClipScale()
+{
+    static const float f = [] {
+        const char* e = Env("CZ_VK_VCULL_SCALE");
+        const float v = e ? float(atof(e)) : 1.0f;
+        if (e)
+            fprintf(stderr,
+                    "[vcull] CZ_VK_VCULL_SCALE=%g — the clip bound is scaled; this is "
+                    "the MECHANICAL control, not a measurement\n", v);
+        return v > 0.0f ? v : 1.0f;
+    }();
+    return f;
+}
+
+void Dump()
+{
+    if (!g_frames)
+    {
+        fprintf(stderr, "[vcull] no world frames seen\n");
+        return;
+    }
+    const double scene = double(g_sumScene) / double(g_frames);
+    const double wv = double(g_sumWasteV) / double(g_frames);
+    const double wh = double(g_sumWasteH) / double(g_frames);
+    const double nb = double(g_sumNoBounds) / double(g_frames);
+    const double nr = double(g_sumNear) / double(g_frames);
+    const double tested = scene - nb;
+    fprintf(stderr,
+            "[vcull] %llu world frames  scene draws/frame %.0f  TESTED %.0f (%.1f%%)  "
+            "untestable %.0f  near-plane %.0f\n",
+            (unsigned long long)g_frames, scene, tested,
+            scene > 0 ? 100.0 * tested / scene : 0.0, nb, nr);
+    fprintf(stderr,
+            "[vcull]   ENTIRELY OFF-SCREEN VERTICALLY: %.0f draws/frame (%.1f%% of "
+            "tested, %.1f%% of scene) — peak %llu; the ceiling on a horizontal-only "
+            "culling fix\n",
+            wv, tested > 0 ? 100.0 * wv / tested : 0.0,
+            scene > 0 ? 100.0 * wv / scene : 0.0, (unsigned long long)g_maxWasteV);
+    fprintf(stderr,
+            "[vcull]   entirely off-screen horizontally: %.0f draws/frame (%.1f%% of "
+            "tested) — the CONTROL: the horizontal widening is the part-62 fix and is "
+            "kept, so this should be small\n",
+            wh, tested > 0 ? 100.0 * wh / tested : 0.0);
+    fprintf(stderr, "[vcull]   clip-bound scale %g%s, peak scene draws %llu\n",
+            ClipScale(), ClipScale() == 1.0f ? " (unscaled)" : " (CONTROL ARM — not a "
+            "measurement)", (unsigned long long)g_maxScene);
+}
+} // namespace vcull
+
+// The arm, hoisted for the same reason as `FovCensusArmed` — see part 71's hook fold.
+bool VerticalWasteCensusArmed()
+{
+    static const bool on = Env("CZ_VK_VCULL_CENSUS") != nullptr;
+    return on;
+}
+
+void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
+                         const Pm4Draw& draw, const uint32_t* regs, uint8_t* base)
+{
+    if (!VerticalWasteCensusArmed())
+        return;
+    using namespace vcull;
+    std::lock_guard<std::mutex> lock(g_mu);
+    const uint64_t frame = R->frame;
+    if (frame != g_lastFrame)
+    {
+        // Only frames carrying world geometry count — menu and frontend frames have no
+        // frustum to over-widen and would drag every average toward zero.
+        if (g_lastFrame != ~0ull && g_fScene)
+        {
+            ++g_frames;
+            g_sumScene += g_fScene;
+            g_sumNoBounds += g_fNoBounds;
+            g_sumWasteV += g_fWasteV;
+            g_sumWasteH += g_fWasteH;
+            g_sumNear += g_fNear;
+            g_maxWasteV = std::max(g_maxWasteV, g_fWasteV);
+            g_maxScene = std::max(g_maxScene, g_fScene);
+            if (g_frames == 30 || g_frames % 600 == 0)
+                Dump();
+        }
+        g_fScene = g_fNoBounds = g_fWasteV = g_fWasteH = g_fNear = 0;
+        g_lastFrame = frame;
+    }
+    float bEff;
+    if (SceneXformForm(vsWindow, bEff) != 2)
+        return;
+    ++g_fScene;
+
+    // The position attribute, on exactly the terms the RT census uses: the first
+    // vfetch, float3, declared rather than dependent. A dependent fetch is a skinned
+    // actor whose bind-pose bounds say nothing about where it is drawn.
+    if (vs.attributes.empty() || vs.attributes[0].fetchSlot >= 96)
+    {
+        ++g_fNoBounds;
+        return;
+    }
+    const VertexAttribute& pos = vs.attributes[0];
+    if ((pos.format != 57 && pos.format != 38) || pos.indirect)
+    {
+        ++g_fNoBounds;
+        return;
+    }
+    const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(pos.fetchSlot));
+    const uint32_t sva = PhysToVa(vf.address);
+    const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
+    if (!vf.address || !bytes || !GuestRangeOk(sva, bytes))
+    {
+        ++g_fNoBounds;
+        return;
+    }
+    const uint64_t key = (uint64_t(sva) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
+                         (vf.endian & 3);
+    rtcensus::StreamRec& rec = g_streams[key];
+    if (!rec.haveBounds)
+    {
+        rec.strideDw = pos.strideDwords;
+        rec.offsetDw = pos.offsetDwords;
+        rtcensus::ScanBounds(rec, base + sva, bytes);
+        if (!rec.haveBounds)
+        {
+            ++g_fNoBounds;
+            return;
+        }
+    }
+
+    // THE FINAL PROJECTION, rebuilt exactly as the upload path builds it — same two
+    // patches in the same order (fov first, wide second). Reusing the functions rather
+    // than reimplementing the arithmetic is what stops this drifting from what the
+    // shaders actually see the day either patch changes.
+    uint32_t scratch[16];
+    memcpy(scratch, vsWindow, sizeof scratch);
+    PatchFovProjection(scratch, FovHalfRadThisFrame());
+    if (WideMode())
+        PatchWideProjection(scratch);
+    float m[16];
+    memcpy(m, scratch, sizeof m);
+
+    // Row-major, clip = M * (x,y,z,1): row 3 is the view row (w_clip = z_view), which
+    // is what SceneXformForm just verified. Project all eight corners of the stream's
+    // object-space box — §6cs established composite-draw streams are already
+    // world-space, so this window is the whole world->clip transform.
+    const float s = ClipScale();
+    bool allAbove = true, allBelow = true, allLeft = true, allRight = true;
+    bool nearStraddle = false;
+    for (int c = 0; c < 8; ++c)
+    {
+        const float x = (c & 1) ? rec.mx[0] : rec.mn[0];
+        const float y = (c & 2) ? rec.mx[1] : rec.mn[1];
+        const float z = (c & 4) ? rec.mx[2] : rec.mn[2];
+        const float cw = m[12] * x + m[13] * y + m[14] * z + m[15];
+        if (!(cw > 0.0f))
+        {
+            // A corner at or behind the eye makes the projected box meaningless. Count
+            // the draw as ON-screen: this instrument's job is a CEILING, so every
+            // uncertainty resolves toward "not wasted".
+            nearStraddle = true;
+            break;
+        }
+        const float cx = m[0] * x + m[1] * y + m[2] * z + m[3];
+        const float cy = m[4] * x + m[5] * y + m[6] * z + m[7];
+        const float by = s * cw, bx = s * cw;
+        if (cy <= by) allAbove = false;
+        if (cy >= -by) allBelow = false;
+        if (cx >= -bx) allLeft = false;
+        if (cx <= bx) allRight = false;
+    }
+    if (nearStraddle)
+    {
+        ++g_fNear;
+        return;
+    }
+    if (allAbove || allBelow)
+        ++g_fWasteV;
+    if (allLeft || allRight)
+        ++g_fWasteH;
+}
+
+void VkRenderer_DumpVerticalWaste()
+{
+    if (!VerticalWasteCensusArmed())
+        return;
+    std::lock_guard<std::mutex> lock(vcull::g_mu);
+    vcull::Dump();
+}
+
+// ===================================================================================
 // RT STAGE 2 (part 64): ray-traced shadows through the cascade atlas — route (a)
 // ===================================================================================
 //
@@ -15357,7 +15594,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         static const bool noFold = EnvOn("CZ_VK_NO_HOOK_FOLD");
         R->hookFoldFrame = R->frame;
         R->hooksDraw = noFold || FovCensusArmed() || RtGeometryCensusArmed() ||
-                       rtshadow::Active() || rtfactor::Active();
+                       VerticalWasteCensusArmed() || rtshadow::Active() ||
+                       rtfactor::Active();
         R->hooksRtFetch = noFold || rtshadow::Active();
     }
     if (R->hooksDraw)
@@ -15373,6 +15611,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // FovCensus, and inert to one static bool test when unarmed.
         RtGeometryCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
                          regs[xenos::kRbDepthControl], vs, draw, regs, base);
+        // Part 72 item 1: how many world draws land entirely off-screen VERTICALLY —
+        // the ceiling on what a horizontal-only culling fix can recover, measured
+        // instead of inferred from the `CZ_NO_GAME_FOV=1` arm difference (which also
+        // removes the horizontal widening that IS the part-62 fix).
+        VerticalWasteCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4], vs, draw,
+                            regs, base);
         // RT stage 2 (part 64): collect world draws into the BLAS/TLAS working set and
         // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
         rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
@@ -21612,6 +21856,11 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // Part 72 item 1. Printed HERE as well as on the census's own cadence, so a soak
+    // that ends off a 600-frame boundary still lands the number — the same defect the
+    // stencil skip counter had for fifteen parts (collected since part 56, printed by
+    // nothing). Inert and silent unless the census is armed.
+    VkRenderer_DumpVerticalWaste();
     // The constant memo, printed on EVERY run and not only under the profiler — the
     // operator's A/B harness deliberately runs without `CZ_VK_PROFILE` (it costs 2-4 ms a
     // frame and would change the thing being judged), so without this line a soak could
