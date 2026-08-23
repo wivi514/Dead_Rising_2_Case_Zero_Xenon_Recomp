@@ -14600,6 +14600,24 @@ wrote is object-space under a per-vertex matrix. A baked mesh also has a SECOND 
 signal — the palette hash — because a prop batch can be re-placed, or an actor animated,
 with its vertex bytes untouched.
 
+**And a baked mesh's blended bytes get TWO SLOTS**, for the reason `PersistEntry::alt`
+has two: a refit rewrites them on the CPU while the previous frame's build may still be
+reading them, and with frames in flight "the fence has been waited on" is not true of the
+frame before last. The failure would be a structure built from half of one pose and half
+of another — silent, no validation error, and only under motion, which is exactly when the
+geometry is being refitted. Two is provably enough by the same argument the store uses.
+
+### 6b. The occurrence-ordinal measurement, and how matched it actually is
+
+The `tlasInst` 682 -> 3,356 pair is two runs of the SAME fixed input sequence on the
+headless outdoor route, read at the SAME `[rtb] passes=4097` snapshot, whose `world box`
+lines agree to the printed digit (`x[-420.6 323.8] y[-18.8 39.2] z[-681.5 0.0]`) — i.e.
+the camera is in the same place in both. They differ in one further respect that should be
+stated: the before-run carried `CZ_VK_VALIDATION=1` and the after-run did not. Validation
+changes frame time, not which meshes the collector accepts, and the world box agreement is
+the evidence that route depth did not drift — but it is one uncontrolled variable and the
+operator session re-measures this anyway.
+
 ### 7. What the session must decide, and what it can decide without an eye
 
 **Log-only, arms `dyn0` and `old`.** With `CZ_VK_RT_DYN_SETTLE=0` — the configuration that
