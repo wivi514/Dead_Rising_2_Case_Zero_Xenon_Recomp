@@ -60,10 +60,45 @@ Next, in order:
    exonerations against the new structure (gotcha 172: the sun, ray length and
    bias were all cleared against a pile at the origin, which is no test).
 
-   **PART 69 BUILT ITEMS 0-3. ITEM 4 IS WHAT IS LEFT, AND ONE OPERATOR SESSION IS
-   OWED — `tools/part69_rt_geometry_session.sh`, of which two arms need no eye.**
-   The record is `phase5-notes.md` §6da; the hand-off is `docs/part70-kickoff.md`;
-   the lessons are gotchas 403-407.
+   **PART 69 BUILT ITEMS 0-3, RAN THE SESSION, AND THE ANSWER CHANGES THE SUBJECT:
+   THE OCCLUDER SET IS NO LONGER THE DEFECT.** The records are `phase5-notes.md`
+   §6da (what was built) and **§6db (the session and the two findings)**; the
+   document to execute is **`docs/part69-night-plan.md`, §3**; the hand-off is
+   `docs/part70-kickoff.md`; the lessons are gotchas 403-410.
+
+   **THE PRIMARY RAY RESOLVES THE REAL WORLD.** `CZ_VK_RT_FACTOR_DEBUG=18` renders
+   the primary ray's hit distance, and at `CZ_VK_RT_DYN_SETTLE=0` (`tlasInst=3366`,
+   `flushes=0`) it is a recognisable depth image — Chuck's silhouette, both lamp
+   posts with their arms, the power lines, the gantry, the fence, the hills behind,
+   octiles spread across the range. Part 68 read the same instrument class as *"a
+   flat plain with distant buildings — no vans, no wrecked cars, no fence, no
+   Chuck"*. The population work fixed exactly that.
+
+   **AND THE SHADOWS ARE STILL WRONG.** The operator, on the shipped pair: *"the
+   shadows was under them not placed in the right way and passing through thing it
+   shouldn't"*. The settle-0 arm — the first time the ACTORS were in the structure —
+   doubled the shadowed share (18.5% -> 39.7%) and produced a flat slab with a hard
+   straight boundary across a container, tyres, cars, a fence and the ground,
+   bending at none of them. **Four rounds of occluder work have not moved that
+   signature** (gotcha 409).
+
+   **THE LIVE LEAD IS THE SUN**, censused rather than argued: windowed runs latch
+   `(-0.364 0.546 -0.755)` and headless runs `(-0.371 0.557 +0.743)` — two
+   components agreeing to 2% while the third flips sign, which no day/night cycle
+   produces. **Every headless RT measurement this feature has ever made was taken
+   with the mirrored one**, including part 66's 0.987 and part 67's 0.650. Settle
+   which is right using the title's OWN raster shadows as the oracle before touching
+   anything (gotcha 410).
+
+   **Items 1 and 2 are PROVEN on the operator's machine**: `tlasInst=5001
+   blas=8029 (148.6 MB) built=8058 flushes=0` at settle 0, the configuration that
+   before them climbed to the 1 GB cap. Item 4 (the settle default, and re-asking
+   part 67's exonerations) is still open.
+
+   **Two errors are recorded in place**: the pre-registered edge-density gate is
+   RETRACTED — its SIGN was wrong, since several separate actor shadows produce more
+   boundary than one smear — and `tools/part69_menu_flicker.sh` shipped a control
+   arm that never engaged (gotcha 408).
 
    **The palette approximation was not an approximation.** The plan's item 3 began
    with an offline census rather than a build (`tools/rt_palette_census.py`), and

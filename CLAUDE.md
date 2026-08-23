@@ -159,10 +159,13 @@ mask; trust the microcode's own swizzles.
   - **`gotchas.md`** — the 402-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
-  - **`rt-remix-plan.md`** — **the LIVE plan for the RT geometry work**, five items in
-    the order they enable each other, taken from `rtx-remix-prior-art.md` (which records
-    the licence: DXVK zlib/libpng, NVIDIA's `rtx_render/*` per-file MIT). **Items 0-3
-    were built in part 69; item 4 and one operator session are what is left.**
+  - **`part69-night-plan.md` — THE LIVE PLAN, and its §3 is the live path.** Part 69's
+    session established that the occluder set is no longer the defect: the primary ray
+    resolves the real world and the shadows are still wrong. §1 has been run and
+    answered; §2 is explicitly NOT the work.
+  - `rt-remix-plan.md` — the plan part 69 executed, five items taken from
+    `rtx-remix-prior-art.md` (which records the licence: DXVK zlib/libpng, NVIDIA's
+    `rtx_render/*` per-file MIT). **Items 0-3 shipped; item 4 is still open.**
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
     licensing, plus the per-phase build-out records. **The first read before any renderer
     work.** `d3d-kickoff.md` and `d3d-phase-c{,2..26}-kickoff.md` are the per-part
@@ -761,60 +764,43 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
-Where the port is, as of 2026-08-22 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
-BUILT AND THE PALETTE APPROXIMATION IS RETIRED: IT WAS NOT AN APPROXIMATION, IT WAS A
-DIFFERENT MESH.** One operator session is owed and it is scripted.
-`docs/part70-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md` §6da;
-the backlog entry is `open-items.md` 0v; the lessons are gotchas 403-407):
+Where the port is, as of 2026-08-23 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
+BUILT AND PROVEN, AND THE SESSION MOVED THE SUBJECT: THE OCCLUDER SET IS NO LONGER THE
+DEFECT.** The primary ray now resolves the real world and the shadows are still wrong.
+**`docs/part69-night-plan.md` §3 is the live plan** and `docs/part70-kickoff.md` is the
+LIVE hand-off; the records are `phase5-notes.md` §6da (built) and §6db (measured); the
+backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
 
-* **Item 3 started with an offline census rather than a build**, per the plan.
-  `tools/rt_palette_census.py` reads hardware's own per-vertex matrix INDICES for
-  every palette draw in a trace: over 2,786 of them, **ZERO reference a single
-  matrix** — median 19 distinct entries, maximum 28, in steps of three. §6cx's
-  "entry 0 is right for the static world and wrong for a skinned actor" is wrong
-  for both, and it is 60% of the world's occluders.
-* **The blend is now BAKED into the BLAS vertices**, with the TLAS instance
-  carrying only the outer stage. The inputs — which vertex-buffer dwords carry the
-  weights and the indices, and which byte of each per influence — are read out of
-  the translated microcode into `config/rt_world_xform.json`'s new `blend` field.
-  **Two bindings reach it and the first parser read only one**: six of eighteen
-  palette shaders use a dependent fetch, twelve use declared attributes, and it is
-  one interleaved buffer either way. 18 of 18. `CZ_VK_RT_NO_BAKE=1` is the arm.
-* **Items 0-2**: the BLAS reads its vertices in place out of the persist store (one
-  usage flag); identity stops being a function of CONTENT; a dirty mesh is REFITTED
-  in place, sized from `updateScratchSize`, with `CZ_VK_RT_REFIT_MAX` bounding the
-  tree decay by rebuilding **into the same allocation**. Arms
-  `CZ_VK_RT_NO_DIRECT_BUFFERS=1`, `CZ_VK_RT_STABLE_KEY=0`, `CZ_VK_RT_NO_REFIT=1`.
-* **Item 2's gate is met headlessly**: at `CZ_VK_RT_DYN_SETTLE=0` — the
-  configuration that used to climb to the 1 GB cap — the structure holds at
-  `blas=4493 (78.6 MB, built=4509, flushes=0)` over the outdoor route.
-* **A counter added only to make a suspected case visible found the design error.**
-  `palConflict` read **2,364,245 against 4,718,587 placements**: half of every
-  palette draw is the SAME vertex buffer redrawn in one frame under a DIFFERENT
-  palette, which is the batching mechanism itself. Putting the occurrence ordinal
-  into a baked mesh's identity took **`tlasInst` 682 -> 3,356** at a matched 4,097
-  RT passes, with `conflict` falling to 2,227 (gotcha 405).
-* **AND THE ORACLE THAT PROVED PART 67 COULD NOT JUDGE THIS.** The frustum test
-  reads **96.55% for entry 0 against 96.38% for the blend** — saturated, because
-  collapsing a batch onto one of its own members moves a vertex by METRES against a
-  hundreds-of-metres test (gotcha 403). The statistics with range: the median draw
-  EXTENT goes **1.51 -> 8.75 units**, 22.4% of draws move by more than a unit (90th
-  percentile 15.46), and `tools/rt_placement_render.py --blend` moves a third of the
-  splat's covered pixels.
-* **What is owed: `tools/part69_rt_geometry_session.sh`** — six arms, **two of which
-  need no eye** (`dyn0` against `old`, a log-only pair whose second arm is the
-  positive control). A5 is arm 0 and has been owed since part 67.
-* **Item 4 is NOT done**: `CZ_VK_RT_DYN_SETTLE`'s default is unchanged, and part
-  67's exonerations of the sun, the ray length and the origin bias are still owed a
-  re-ask against the new structure (gotcha 172).
-* **Gates at close** (RT off = the shipped default): `--smoke` OK;
-  `rt_world_xform_census.py` 104 of 104 and exit 0, and it now self-checks its own
-  JSON output. **A5 is owed.**
+* **Entry 0 was not an approximation, it was a different mesh.** Zero of 2,786 palette
+  draws reference a single matrix; entry 0 collapses the median draw's extent to 1.51
+  units where the blend assembles it at 8.75. The blend is baked into the BLAS vertices
+  and a baked mesh's identity carries its occurrence ordinal, which took `tlasInst`
+  682 -> 3,356 headlessly. `CZ_VK_RT_NO_BAKE=1` is the arm.
+* **Items 1 and 2 are PROVEN ON THE OPERATOR'S MACHINE.** At `CZ_VK_RT_DYN_SETTLE=0` — the
+  configuration that before them climbed to the 1 GB cap and flushed — a real play session
+  held `tlasInst=5001 blas=8029 (148.6 MB) built=8058 flushes=0`, `outOfRange=0`.
+* **THE PRIMARY RAY RESOLVES THE REAL WORLD.** `CZ_VK_RT_FACTOR_DEBUG=18` renders a
+  recognisable depth image — Chuck, both lamp posts, the power lines, the gantry, the
+  fence, the hills. Part 68 read the same instrument as *"a flat plain... no fence, no
+  Chuck"*. **The occluder work fixed it, and the shadows are still wrong**, so four rounds
+  of that were aimed at a subsystem that is now demonstrably correct (gotcha 409).
+* **THE LIVE LEAD IS THE SUN.** Censused over every run: windowed latches
+  `(-0.364 0.546 -0.755)`, headless `(-0.371 0.557 +0.743)` — two components agreeing to
+  2% while the third flips sign, which no day cycle produces. **Every headless RT
+  measurement this feature has made was taken with the mirrored one** (gotcha 410).
+* **Four synchronisation VUIDs were found and fixed inside the part** — a structure whose
+  build was RECORDED but not executed being issued an in-place update in the same command
+  buffer. The arms were the bisect: three runs, no rebuilds (gotcha 407).
+* **Two errors recorded in place**: the pre-registered edge-density gate is RETRACTED (its
+  SIGN was wrong), and a shipped control arm never engaged because its variable went into
+  the description instead of `env` (gotcha 408).
+* **Gates at close** (RT off = the shipped default): the validation gate is clean to
+  `passes=6145` and is now the cheapest standing gate this feature has; `--smoke` OK;
+  `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**
 
 Where the port is, as of 2026-08-22 (part 68 CLOSED — **THE PLACEMENT IS VERIFIED
 AGAINST HARDWARE AND THE REMAINING DEFECT IS THE POPULATION. The plan for it is
-taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` WAS the hand-off then;
-the live one is named above; the record is `phase5-notes.md` §6cz; the backlog entry is
+taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` WAS the hand-off then; the live one is named above; the record is `phase5-notes.md` §6cz; the backlog entry is
 `open-items.md` 0v; the lessons are gotchas 401-402):
 
 * **Part 67's placement fix is confirmed in two same-binary pairs**: the
