@@ -46,6 +46,13 @@ Twenty single-frame traces are read rather than one, because a single frame cann
 distinguish "the sun" from "a value that happened to look like one" (gotcha 3 and the
 standing census rule).
 
+THE 0.00-DEGREE HEADLINE HAS A BUILT-IN NEGATIVE CONTROL, which matters because a tool
+that always printed 0.00 would look exactly the same (gotcha 30). The pitch-1040 pass in
+every trace also carries two matrices that are NOT the sun, and the tool reports them at
+**54.86 and 137.97 degrees** from the constant in the same run that reports the sun at
+0.00. So the comparison demonstrably resolves disagreement; it is not a saturated
+statistic.
+
 USAGE
     tools/xtr_sun_oracle.py "Xenia logs"/R*/*/*.xtr
     tools/xtr_sun_oracle.py <trace.xtr> --verbose      # per-draw, not just the summary
