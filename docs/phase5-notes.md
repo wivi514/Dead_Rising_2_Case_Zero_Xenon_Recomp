@@ -15883,3 +15883,87 @@ own text says re-ask E after C lands.
 `--smoke` OK; `alu_const_gate.py` clean on all 16 caches; `order_gate_test` 10/10;
 `vcull_predicate_test` 18/18; `shader_dim_census.py` clean; `rt_world_xform_census.py` 104
 of 104; the play cache's NAME diff empty.
+
+## §6dh — Part 72's operator session: item C is correct, and two of my own claims were not (2026-08-23)
+
+Eight arms across three chained sessions. The fix list is `docs/part72-fix-plan.md`.
+
+### 1. ITEM C IS CORRECT, AND THE POSITIVE CONTROLS ARE WHAT SAY SO
+
+Read the poison arm first, because a clean verifier means nothing until it has been shown
+able to scream:
+
+| arm | gather verifier | order gate |
+|---|---|---|
+| `poison` | **22,494,412 of 22,740,821 disagreed** | **13,673 of 13,673 frames FAILED** |
+| `verify` | **0 disagreed of 17,948,265** | **0 FAILED of 8,407 frames / 19.6M draws** |
+
+Both controls fire, both clean arms read zero, and no `CONST MEMO STALE` appeared — which
+is also a check on the change the gather forced in the memo's own verifier. **The order
+gate's first live outing confirms the serial path preserves draw order over 19.6M draws.**
+
+The A/B, at a matched band and with the draw gap priced out at 2.35 us/draw:
+
+```
+band 9500-9999   nogather  27.37 ms @ 9,844 draws (n=17)
+                 gather    26.31 ms @ 9,723 draws (n=20)
+                 -> ~-0.8 ms, about -3%, and 297 GB not copied over the run
+```
+
+### 2. THE OPERATOR SAW SOMETHING NO COUNTER HERE COULD
+
+*"Sky flicker from half the screen switching from right to left depending of moment."*
+Reported during the two TRAVELLING arms, not the stand-still soaks — which does not
+exonerate anything, because the soaks do not move.
+
+**`CZ_VK_VERIFY_CONST_GATHER` read 0 disagreements over 17.9 million checks in the same
+build, and it was right to.** It verifies that the gather copied what the shader's list
+names. The candidate defect is in what happens to the memo slot afterwards. **A verifier's
+scope is not the feature's blast radius**, and that is the sentence to carry forward.
+
+Three defects of mine were found in that family, all by inspection rather than by any
+instrument:
+
+* **the memo top-up's double-patch hole** (`a55df20`) — a slot being topped up still held
+  PATCHED c0..c3, so a shader reading only SOME of those left a window part raw and part
+  patched, and `SceneXformForm` reads all sixteen floats to decide whether it is a scene
+  projection at all. Tile 0 misses the memo while tile 1 hits it, which is a mechanism for
+  one half of the screen differing from the other and for which half to change.
+* **my control arm was doing work the baseline never did** (`be1d9d7`) — the top-up ran
+  even with the gather off, 319,138 full copies the pre-part-72 path never performed. Only
+  0.3% of that arm's copies, but a control that does extra work overstates the treatment.
+* **the gather was full-copying the 11 shaders that read NO constants** (`efb229a`) — the
+  loader conflated "the sidecar has no list" with "the list is present and empty". The
+  second means the correct copy is ZERO bytes.
+
+`tools/part72_flicker_session.sh` is the three-arm discriminator, with
+`CZ_VK_GATHER_NO_C0_REFRESH=1` reverting the fix in the same binary — because an
+intermittent visual defect that stops after a fix cannot be told from one that was not
+triggered. **The operator ran all three arms; their visual verdict is still owed.**
+
+### 3. AND MY OWN PIPELINE-CACHE RETRACTION WAS A ONE-ORDERING MISTAKE
+
+Session D ran `nocache` first, as the fix plan pre-registered:
+
+| session | pos 1 | pos 2 | pos 3 |
+|---|---|---|---|
+| A (`cold,warm,nocache`) | cold 1.676 | warm 0.786 | **nocache 0.105** |
+| D (`nocache,warm`) | **nocache 0.702** | warm 0.121 | — |
+
+**In both sessions the LATER arm won and the arms swapped roles.** Position dominates and
+neither arm is established. This morning's "our cache is a 7.5x pessimization" was the same
+error part 71 made, in the opposite direction, written one section after diagnosing it.
+
+Part 71's attribution of the 17.8 s to our file is still wrong; the replacement claim is
+also wrong. **The question is open and effectively unmeasurable here** — the absolute cost
+fell 17,827 -> 59 ms as the driver's cache warmed across one day. The only expensive run is
+the first one anybody ever does, which is what prewarming addresses. **Spend no more
+operator time on this A/B.** Gotcha 433.
+
+### 4. WHAT THE DATA ALSO SETTLED FOR FREE
+
+Every dynamic constant expression in the bank is the bone palette — `vc(8+a0)`, `vc(9+a0)`,
+`vc(10+a0)`, plus one `vc(209+a0)`. `a0` is unbounded within the window, so **no range copy
+can help them**: the 22 dynamic shaders are item C's real ceiling, they are the crowd, and
+they are 34% of window copies at the soak. That is a fact about the title, not a gap in our
+build, and the stats line now splits the two so nobody confuses them again.
