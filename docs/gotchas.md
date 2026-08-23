@@ -4571,3 +4571,34 @@ From phase C part 18 (the frame rate — and none of it was work):
      count and the settings file with every number (this session's harness now echoes
      `cz_settings.txt` in its preflight), because those are what let a future reader tell
      which half moved.
+
+420. **BEFORE OPTIMISING A RENDERER, CHECK WHETHER IT PASSES `VK_NULL_HANDLE` AS THE
+     PIPELINE CACHE.** This one did, at all three creation sites, from the day the renderer
+     was written until part 71 — and it cost **17,827 ms of pipeline compilation in a
+     five-minute session**, on the pump thread, including a single **3,753.9 ms frame that
+     built 97 pipelines**. That is not a tuning opportunity, it is a missing line of
+     bring-up code, and it outweighed every per-draw item the project had spent six parts
+     on. It hid for one reason: it is not a per-frame cost, so a profiler that reports
+     *rates* cannot see it and a *median* frame time cannot see it — it is a handful of
+     enormous frames in the first minute. **The class is "one-time costs on the critical
+     thread", and the instrument for it is a per-EVENT roll-up, not a per-second one.**
+     Anyone porting a title with this pipeline should check it on day one; it is free.
+
+421. **THE OPERATOR'S EYE SATURATES, AND THE SATURATION POINT IS DATA.** They separated a
+     17.8-second compilation bill from a 1.2-second one instantly and unprompted, and could
+     not rank 1.16 s / 0.45 s / 0.48 s ("maybe 3 slightly less, not sure"). Both facts are
+     useful and they point opposite ways: above the perception floor a human verdict
+     outranks any statistic (that is why `the-operator-eye-answers-shape-questions` exists),
+     and below it the instrument outranks the verdict and asking for a felt A/B wastes a
+     session. **Write down where the floor was**, or the next part asks a human to
+     adjudicate something they cannot see and reads "no difference" as "no effect".
+
+422. **A THREE-STEP IMPROVEMENT NEEDS A RE-ORDERED ARM TO ATTRIBUTE ITS MIDDLE STEP.**
+     Pipeline compilation went 17,827 -> 1,160 -> 451 ms across arms run in that order, and
+     the big step happened while the feature's own file was still EMPTY (`0 bytes seeded`) —
+     so it is not the file. Two mechanisms fit (the cache OBJECT enabling intra-run reuse,
+     or a driver-side implicit cache that the first arm warmed) and a session run in one
+     order cannot separate them, because arm order and cache state are confounded by
+     construction. **The fix costs one run: put the control arm LAST.** Generally — when
+     arms warm something shared, the arm order IS a variable, and the cheapest way to prove
+     it is not the variable is to run them backwards.

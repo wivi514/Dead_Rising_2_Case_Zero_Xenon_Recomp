@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 419 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 422 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 419-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 422-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -786,8 +786,8 @@ IS `docs/perf-plan-part71.md`.**
 
 Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.** The plan is
 `docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
-414-419. **Session 1 (`tools/part71_perf_session.sh`) has been RUN and read; session 2
-(`tools/part71_pipeline_session.sh`) has not.**):
+414-422. **Both operator sessions have been RUN and read** —
+`tools/part71_perf_session.sh` and `tools/part71_pipeline_session.sh`):
 
 * **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
   operator's soak has not been measured since part 58 and **thirteen parts have shipped
@@ -809,8 +809,27 @@ Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.**
   now.** Part 71 shipped an unconditional per-FRAME pipeline-creation census (the old timer
   was gated behind `CZ_VK_PROFILE`, so it was off in every session whose stutter was ever
   reported — gotcha 418) and a persisted `VkPipelineCache`
-  (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm). **`tools/part71_pipeline_session.sh` is the
-  next operator session** and it can refute its own premise.
+  (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm).
+* **SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.** `pipeline creation: 489 pipelines,
+  **17,827.3 ms** total` with no cache, including `frame 1257: **3,753.9 ms** building 97
+  pipeline(s)` — which IS session 1's unexplained 3,891 ms frame. Three times inferred,
+  never measured, now settled by one unconditional clock read. With the cache seeded:
+  **450.8 ms** (−97.5%), worst compile frame 3,754 -> 109 ms, worst `[fps]` frame
+  4,050 -> 291 ms. **The one thing not yet attributed** is the middle step (17,827 ->
+  1,160 happened with our file still EMPTY, so it is the cache OBJECT or a driver-side
+  cache the first arm warmed); the discriminator is one run with the control arm LAST
+  (gotcha 422).
+* **IT IS CPU-BOUND, AND THAT DECIDES THE PLAN.** `CZ_VK_RES=1720x720` — a QUARTER of the
+  pixels at the same aspect, so a bit-identical draw set — costs **only −6.8%** at
+  9,500-9,999 draws (28.09 -> 26.19 ms, n=19/25). **Four times the pixels is 1.9 ms of a
+  28 ms frame**, so ~93% of the heavy frame is CPU and every item in
+  `perf-state-parked.md` §2 is still worth what it says. At the LIGHT end it reverses
+  (−24% at 2,000-2,499 draws).
+* **THE BEST-PRICED ITEM IN THE PLAN NOW IS THE WIDE-CULLING OVER-WIDEN**, measured as a
+  side effect: it adds **~1,930 draws of 9,817 (+24%)**, ≈**4.8 ms of a 28 ms frame** at
+  the soak's ~2.5 us/draw. Bigger than everything in §2 except item A, and
+  `perf-state-parked.md`'s part-62 addendum already names the fix (horizontal-only
+  widening, or a smaller k).
 * **THE FIRST ITEM IS WORK THIS PROJECT ADDED ITSELF.** Parts 59-70 each hung a probe on
   `DoDraw` — five per-draw calls, ~35,000 a frame at their soak, that exist only to decide
   not to run — and one on the per-FETCH path: `rtshadow::NoteAtlasFetch` was guarded on

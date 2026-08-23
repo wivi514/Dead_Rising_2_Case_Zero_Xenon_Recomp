@@ -15342,3 +15342,73 @@ fourth time.
 bit-identical draw set. Every remaining item in `perf-state-parked.md` §2 is a CPU item
 priced at 1280x720; if the GPU is the limiter at the resolution the operator actually
 plays, all of them are worth zero.
+
+### 9. SESSION 2 — THE STUTTER IS PIPELINE COMPILATION, MEASURED, AND IT WAS **17.8 SECONDS**
+
+`~/DR2CZ-troubleshooting/part71-pipeline/p71pipe_0823_1556_*.log`. All four arms engaged.
+
+| arm | pipeline creation, whole run | worst FRAME of compilation | worst `[fps]` frame |
+|---|---|---|---|
+| 1 `nocache` (`VK_NULL_HANDLE`) | **17,827.3 ms** / 489 pipelines | **3,753.9 ms building 97** @frame 1257 | 4,049.9 ms |
+| 2 `cold` (empty cache OBJECT) | 1,160.7 ms / 484 | 174.9 ms building 2 | 386.1 ms |
+| 3 `warm` (seeded, 12.4 MB) | **450.8 ms** / 490 | 108.6 ms building 5 | 291.4 ms |
+| 4 `lowres` (seeded, 12.9 MB) | 476.5 ms / 491 | 93.5 ms building 10 | 293.2 ms |
+
+**The prediction was two-sided and it resolved on the first side.** Session 1's unexplained
+3,891 ms frame is arm 1's `frame 1257: 3,753.9 ms building 97 pipeline(s)` — the same
+event, in the same place in the boot, now with its cause attached. A hypothesis this
+project had inferred **three times without measuring** and once seen fail a pre-registered
+prediction is settled, and it took one unconditional clock read to settle it.
+
+**17.8 seconds of a five-minute session was the pump thread compiling shaders**, and it
+had been that way since phase 5.
+
+**A THREE-STEP IMPROVEMENT WHOSE MIDDLE STEP IS NOT YET ATTRIBUTED, said out loud.** The
+17,827 -> 1,160 step happened with our cache still EMPTY (`0 bytes seeded`), so it is not
+our file doing it. Two mechanisms are consistent and this session cannot separate them:
+(a) merely HAVING a `VkPipelineCache` object lets the driver reuse compiled stages between
+the ~490 pipelines of one run, or (b) the driver's own implicit on-disk cache was warmed
+by arm 1 and arms 2-4 read it. **The discriminator is one 90-second run — put `nocache`
+LAST**: `ORDER=cold,warm,nocache tools/part71_pipeline_session.sh`. If it still reads
+~17 s the object is doing it; if it collapses, a driver-side cache is. Only the
+1,160 -> 451 step is unambiguously ours, and that alone is −61%. Gotcha 422.
+
+**THE OPERATOR COULD NOT TELL ARMS 2, 3 AND 4 APART** ("maybe 3 slightly less, not sure"),
+and they are right not to be sure — 1.16 s, 0.45 s and 0.48 s spread over a whole run, with
+worst frames of 175, 109 and 94 ms. Their eye separated 17.8 s from 1.2 s instantly and
+saturated below that. This is the mirror of `the-operator-eye-answers-shape-questions`:
+above the perception floor their verdict outranks any statistic, and below it the
+instrument outranks their verdict. **Both halves have to be written down or the next
+session asks the wrong one.** Gotcha 421.
+
+### 10. AND THE ANSWER THAT DECIDES THE REST OF THE PLAN: IT IS CPU-BOUND
+
+`CZ_VK_RES=1720x720` — a QUARTER of the pixels at the same aspect ratio, so the guest's
+geometry, culling and draw set are bit-identical. Against session 1's `base` arm at
+3440x1440, matched on draw count:
+
+| draw band | 3440x1440 | 1720x720 | delta | n |
+|---|---|---|---|---|
+| 9,500-9,999 | 28.09 ms | **26.19 ms** | **−6.8%** | 19 / 25 |
+| 2,000-2,499 | 11.17 ms | 8.51 ms | −24.0% | 1 / 2 |
+
+**Four times the pixels costs 1.9 ms of a 28 ms frame at the operator's soak.** ~93% of
+the heavy frame is CPU, so every remaining item in `perf-state-parked.md` §2 is still worth
+what it says — the plan does not need rewriting, and the resolution the operator plays at
+is nearly free where it matters. (At the LIGHT end the picture reverses, −24%, which is
+part 51's "resolution scaling is free in crowds" seen from the other side.)
+
+Caveat, stated because the two arms are from different sittings: the 3440x1440 arm is
+session 1's `base` and the 1720x720 arm is session 2's `lowres`. The binaries differ only
+by the pipeline cache, which is inert once the soak is running (arm 4 spent 476 ms on
+pipelines across the whole run and none of it in the soak windows). A within-session pair
+was not available because arm 3 was a route run, not a soak.
+
+### 11. WHAT SESSION 2 ALSO PRICED FOR FREE
+
+The wide-culling over-widen is **~1,930 draws of 9,817 (+24%)** (session 1, §7). At the
+soak's ~2.5 us/draw that is roughly **4.8 ms of a 28 ms frame** — larger than every item
+in `perf-state-parked.md` §2 except item A, and it buys correctness the game itself does
+not need at the flanks. `perf-state-parked.md`'s part-62 addendum already names the fix:
+horizontal-only widening if the engine exposes a second scalar, or a smaller k. This is
+now the best-priced item in the plan and it was measured as a side effect of a turn test.
