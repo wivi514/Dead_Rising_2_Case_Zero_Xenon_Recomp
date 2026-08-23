@@ -10282,8 +10282,16 @@ struct Blas
     // and the vertices cannot be read from the persist store in place: the blended
     // positions are written into a buffer of our own, tightly packed float3, and the
     // instance carries only the OUTER stage. `bakeMapped` is where a refit re-blends.
-    VkDeviceAddress bakeAddr = 0;
-    uint8_t* bakeMapped = nullptr;
+    // TWO SLOTS, ALTERNATING, and for exactly the reason `PersistEntry::alt` has two:
+    // a refit REWRITES these bytes on the CPU while the previous frame's acceleration
+    // structure build may still be reading them on the GPU. With frames in flight, "the
+    // fence has been waited on" is not true of the frame before last, and the failure is
+    // a mesh built from half of one pose and half of another — silent, and only under
+    // motion. When frame N+1 is being recorded, frame N-1 has provably retired, so the
+    // only slot that can still be read is the one frame N used: two is enough.
+    VkDeviceAddress bakeAddr[2] = {};
+    uint8_t* bakeMapped[2] = {};
+    uint32_t bakeSlot = 0;
     uint32_t vertCount = 0;
     uint8_t blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
     uint8_t blendBytes[4] = {};
@@ -11883,7 +11891,10 @@ bool PlaceIndices(const uint16_t* src, uint32_t count, VkDeviceAddress* addr)
 // pointer as well: a refit re-blends into the same bytes.
 bool PlaceBake(VkDeviceSize bytes, VkDeviceAddress* addr, uint8_t** mapped)
 {
-    const VkDeviceSize need = (bytes + 15) & ~VkDeviceSize(15);
+    // Two slots per mesh, allocated together so the pair is contiguous and one bump
+    // covers both. See `Blas::bakeAddr` for why there are two.
+    const VkDeviceSize one = (bytes + 15) & ~VkDeviceSize(15);
+    const VkDeviceSize need = one * 2;
     constexpr VkDeviceSize kChunk = 16ull << 20;
     AsChunk* c = nullptr;
     if (!g_bakeChunks.empty() &&
@@ -11907,8 +11918,10 @@ bool PlaceBake(VkDeviceSize bytes, VkDeviceAddress* addr, uint8_t** mapped)
         g_bakeChunks.push_back(nc);
         c = &g_bakeChunks.back();
     }
-    *addr = c->buf.address + c->cursor;
-    *mapped = c->buf.mapped + c->cursor;
+    addr[0] = c->buf.address + c->cursor;
+    addr[1] = addr[0] + one;
+    mapped[0] = c->buf.mapped + c->cursor;
+    mapped[1] = mapped[0] + one;
     c->cursor += need;
     g_bakeBytes += need;
     return true;
@@ -12140,8 +12153,8 @@ void BuildFrameStructures(uint8_t* base)
         VkDeviceAddress idxAddr = 0;
         bool direct = false;
         bool bake = false;
-        VkDeviceAddress bakeAddr = 0;
-        uint8_t* bakeMapped = nullptr;
+        VkDeviceAddress bakeAddr[2] = {};
+        uint8_t* bakeMapped[2] = {};
         uint32_t vertCount = 0, bakeRows = 0;
     };
     std::vector<Built> builds;
@@ -12184,19 +12197,21 @@ void BuildFrameStructures(uint8_t* base)
             VkDeviceAddress vtxAddr = bi.vtxAddr;
             uint32_t bakeStride = stride;
             uint32_t bakeRows = 0;
-            uint8_t* bakeMapped = nullptr;
+            VkDeviceAddress bakeAddr[2] = {};
+            uint8_t* bakeMapped[2] = {};
             if (bi.bake)
             {
                 // Tightly packed float3: the blend produces our own vertices, so there
                 // is no reason to carry the guest's interleaved stride into the BLAS,
                 // and the index values are unaffected because every vertex is written.
                 if (!GuestRangeOk(p.posVa, uint64_t(vertCount) * stride) ||
-                    !PlaceBake(VkDeviceSize(vertCount) * 12, &vtxAddr, &bakeMapped))
+                    !PlaceBake(VkDeviceSize(vertCount) * 12, bakeAddr, bakeMapped))
                     continue;
+                vtxAddr = bakeAddr[0];
                 const BakeResult br = BakeVertices(
                     base, p.posVa, vertCount, p.strideDw, p.offsetDw, p.vEndian,
                     p.blendBytes, p.blendCount, p.blendWeightOffDw, p.blendIndexOffDw,
-                    p.pal, bakeMapped);
+                    p.pal, bakeMapped[0]);
                 g_bakeOutOfRange += br.outOfRange;
                 bakeRows = br.rowsUsed;
                 bakeStride = 12;
@@ -12298,8 +12313,10 @@ void BuildFrameStructures(uint8_t* base)
             bd.idxAddr = idxAddr;
             bd.direct = bi.direct;
             bd.bake = bi.bake;
-            bd.bakeAddr = bi.bake ? vtxAddr : 0;
-            bd.bakeMapped = bakeMapped;
+            bd.bakeAddr[0] = bakeAddr[0];
+            bd.bakeAddr[1] = bakeAddr[1];
+            bd.bakeMapped[0] = bakeMapped[0];
+            bd.bakeMapped[1] = bakeMapped[1];
             bd.vertCount = vertCount;
             bd.bakeRows = bakeRows;
             bd.geom = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
@@ -12398,8 +12415,11 @@ void BuildFrameStructures(uint8_t* base)
                 nb.updateScratch = bd.updateScratchSize;
                 nb.framesSinceBuild = 0;
                 nb.direct = bd.direct;
-                nb.bakeAddr = bd.bakeAddr;
-                nb.bakeMapped = bd.bakeMapped;
+                nb.bakeAddr[0] = bd.bakeAddr[0];
+                nb.bakeAddr[1] = bd.bakeAddr[1];
+                nb.bakeMapped[0] = bd.bakeMapped[0];
+                nb.bakeMapped[1] = bd.bakeMapped[1];
+                nb.bakeSlot = 0;
                 nb.vertCount = bd.vertCount;
                 nb.posVa = p.posVa;
                 nb.vEndian = p.vEndian;
@@ -12519,16 +12539,17 @@ void BuildFrameStructures(uint8_t* base)
             }
             if (b.blendCount)
             {
-                if (!b.bakeMapped || !b.vertCount ||
+                if (!b.bakeMapped[0] || !b.vertCount ||
                     !GuestRangeOk(b.posVa, uint64_t(b.vertCount) * b.strideDw * 4))
                 {
                     ++g_refitNoSource;
                     continue;
                 }
+                b.bakeSlot ^= 1;   // never rewrite the bytes the last frame handed the GPU
                 g_bakeOutOfRange += BakeVertices(
                     base, b.posVa, b.vertCount, b.strideDw, b.offsetDw, b.vEndian,
                     b.blendBytes, b.blendCount, b.blendWeightOffDw, b.blendIndexOffDw,
-                    b.pal, b.bakeMapped).outOfRange;
+                    b.pal, b.bakeMapped[b.bakeSlot]).outOfRange;
                 ++g_rebaked;
             }
             refitBytes += b.posBytes;
@@ -12547,7 +12568,7 @@ void BuildFrameStructures(uint8_t* base)
             // not), and it is the reason the geometry info is rebuilt here each frame
             // instead of being stored alongside the BLAS.
             t.vertexData.deviceAddress =
-                b.blendCount ? b.bakeAddr
+                b.blendCount ? b.bakeAddr[b.bakeSlot]
                              : R->persist.address + pe->at + VkDeviceSize(b.offsetDw) * 4;
             t.vertexStride = b.blendCount ? VkDeviceSize(12)
                                           : VkDeviceSize(b.strideDw) * 4;
