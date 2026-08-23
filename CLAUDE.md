@@ -857,8 +857,14 @@ ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk 
   (346x)**. Only the arm with NO cache object moved, so the mechanism is **outside the
   process** — a driver-side cache that persists across process exits. With it warm,
   `VK_NULL_HANDLE` is the CHEAPEST of the seven. **The 17.8 s and the stutter diagnosis
-  survive; the attribution does not.** Our cache looks like a 7.5x pessimization, pending
-  one two-arm run before any default flips (gotcha 426).
+  survive; the attribution does not.** ~~Our cache looks like a 7.5x pessimization, pending
+  one two-arm run before any default flips (gotcha 426).~~ **THAT RUN HAPPENED AND REFUTED
+  THE REPLACEMENT CLAIM TOO** — with `nocache` FIRST it reads 0.702 ms/pipeline against
+  `warm`'s 0.121. **In both sessions the LATER arm won and the arms swapped roles**, so
+  position dominates and neither arm is established. The question is OPEN and effectively
+  unmeasurable here: the absolute cost fell 17,827 -> 59 ms as the driver's cache warmed
+  across one day. **The only expensive run is the first one anybody ever does**, which is
+  what prewarming addresses (gotcha 433).
 * **SESSION B's CENSUS REFUTED ITSELF, AND THE CONTROL IS WHY.** The horizontal channel —
   added purely as a sanity control with its expectation in the format string — read
   **98.1%**, leaving ~142 on-screen draws to paint a scene submitting 9,750. The predicate
@@ -908,6 +914,22 @@ ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk 
   tool an investigator opens, with its poison arm blind one level down (430); and my own
   top-up dropped the fov/wide projection patches, which would have made the slider silently
   stop working on alternating draws (`ab799ad`).
+* **THE OPERATOR SESSION RAN (8 arms) AND ITEM C IS CORRECT.** Poison arm: the gather
+  verifier reports **22,494,412 of 22,740,821** disagreeing and the order gate **13,673 of
+  13,673** frames failed — both alive. Clean arm: **0 disagreed over 17,948,265 gathers**
+  and the order gate **0 FAILED over 8,407 frames / 19.6M draws**, its first live outing.
+  The A/B reads **−0.8 ms (~3%)** at a matched draw band once the 121-draw gap is priced
+  out, and **297 GB not copied** over the run.
+* **THE OPERATOR SAW A SKY FLICKER — half the screen, switching left/right with the
+  moment — and no counter here could have.** `CZ_VK_VERIFY_CONST_GATHER` read 0 over 17.9M
+  checks and was RIGHT to: it checks the gather copied what the list names, and the
+  candidate defect is what happens to the memo slot AFTERWARDS. **A verifier's scope is
+  not the feature's blast radius.** Three defects of mine were found in that family:
+  a double-patch hole in the memo top-up (`a55df20`), a control arm doing work the
+  baseline never did (`be1d9d7`), and the gather full-copying the **11 shaders that read
+  NO constants** (`efb229a`). `tools/part72_flicker_session.sh` has the three-arm
+  discriminator, with `CZ_VK_GATHER_NO_C0_REFRESH=1` as a revert arm — **the operator's
+  visual verdict on those arms is still owed**.
 * **Gates:** `--smoke` OK; `alu_const_gate.py` clean on all sixteen caches;
   `order_gate_test` 10/10; `vcull_predicate_test` **18/18** and confirmed capable of failing
   on a flipped comparison, a dropped placement and a transposed matrix read; harness

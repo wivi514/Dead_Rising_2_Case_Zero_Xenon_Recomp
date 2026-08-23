@@ -18,7 +18,7 @@ sessions themselves is `phase5-notes.md` §6df; the live performance plan is
 | # | finding | confidence | who can act |
 |---|---|---|---|
 | A | Part 71's "a persisted `VkPipelineCache` is −97.5%" is **wrong**; the driver's own cross-process cache is the mechanism | **high** — same-arm across two orderings | desk (docs), then §4 |
-| B | Our `VkPipelineCache` costs **7.5x** more per pipeline than passing `VK_NULL_HANDLE` on a warm driver | medium — one ordering | **§4 run 1** |
+| B | ~~Our `VkPipelineCache` costs 7.5x more per pipeline than `VK_NULL_HANDLE`~~ **REFUTED — it was position, not the arm. The question is OPEN and effectively unmeasurable here** | — | done; see §1 |
 | C | The vertical-waste census **is not measuring placement correctly**: ~98% of world draws read "entirely off-screen horizontally" | **high** — its own control, and implausible on its face | desk (§2) |
 | D | The census's headline was a **cumulative mean dominated by a transient** — 62/frame cumulative vs 1.0/frame in steady state | **high** — the dump history is monotone `C/n` | desk (§2.1) |
 | E | Pipeline compilation is **not the whole stutter**: 165-315 ms gameplay frames remain with compilation at 51 ms/run | medium | desk (§3), then a run |
@@ -85,7 +85,28 @@ lives — only that it is not ours and not in-process.)
   **§2b (create pipelines off the pump thread during the load screen) the real answer**,
   and it is now the only answer, because our own cache demonstrably does not prevent it.
 
-### The decision that needs one run (finding B)
+### The decision that needs one run (finding B) — **RUN, AND IT REFUTED THE FINDING**
+
+> **RETRACTED BY THE VERY RUN IT PRE-REGISTERED (part 72, session D).** Run with `nocache`
+> FIRST, the result inverts: `nocache` 509 pipelines / **357.4 ms** (0.702 ms each),
+> `warm` 488 / **59.1 ms** (0.121 ms each) — warm **5.8x cheaper**. Set against session A
+> (`cold, warm, nocache` -> 1.676, 0.786, 0.105), the pattern is unambiguous and it is not
+> the one either session's arms suggest: **in BOTH sessions the arm that ran LATER won, and
+> the two arms swapped roles between them.** Position dominates; neither arm has been shown
+> better than the other. **The "7.5x pessimization" was itself a position artifact — the
+> same error part 71 made, committed again in the opposite direction, by me, one section
+> after diagnosing it.** See gotcha 433.
+
+**What survives:** part 71's attribution of the 17.8 s to our cache is still wrong (session
+A's same-arm-across-orderings showed `nocache` moving 346x while `cold`/`warm` moved
+1.2-1.4x, and that comparison spanned two sittings rather than two positions). What does
+NOT survive is the replacement claim. **The pipeline-cache question is OPEN**, and on this
+machine it is close to unmeasurable: the absolute cost has fallen from 17,827 ms to 59-357 ms
+as the driver's cache warmed across the day, so any A/B is now fighting for tenths of a
+percent of a session. **Do not spend more operator time on it.** The number that mattered
+was always the FIRST-EVER run, which is what §2b (prewarming at load) addresses.
+
+### The original text of finding B, kept because its reasoning is what went wrong
 
 `warm` (pos 2, 0.786) against `nocache` (pos 3, 0.105) is still position-confounded within
 part 72's sitting. The stability of `cold`/`warm` across positions argues it is not, but

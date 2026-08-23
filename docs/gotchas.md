@@ -4651,7 +4651,10 @@ From phase C part 18 (the frame rate — and none of it was work):
      screams (0 -> 6 failures) when one comparison's sign is flipped (gotcha 30).
 
 426. **THE DRIVER MAY ALREADY BE CACHING FOR YOU, AND CREDITING YOUR OWN CACHE FOR ITS WORK
-     IS A ONE-ORDERING MISTAKE.** Part 71 measured pipeline compilation at
+     IS A ONE-ORDERING MISTAKE.**
+     **[THE SECOND HALF OF THIS ENTRY WAS ITSELF A ONE-ORDERING MISTAKE — see gotcha 433.
+     "With it warm, passing `VK_NULL_HANDLE` was the *fastest* of the seven" did not
+     survive the run that put `nocache` first. The first half stands.]** Part 71 measured pipeline compilation at
      17,827 -> 1,161 -> 451 ms across `nocache, cold, warm` and read it as "our persisted
      `VkPipelineCache` is worth −97.5%". Part 72 ran the same three arms as
      `cold, warm, nocache`. The **pipeline COUNT held at 484-513 across all seven runs**,
@@ -4730,3 +4733,18 @@ From phase C part 18 (the frame rate — and none of it was work):
      (`tools/alu_const_gate.py`, re-parsing the HLSL rather than trusting the writer that
      produced the list). Generalises to every "skip the work we know is unnecessary"
      optimisation: the knowledge is an oracle, and an oracle needs its own gate.
+
+433. **TWO ORDERINGS ARE NOT ENOUGH WHEN "LATER IS CHEAPER" IS ITSELF THE EFFECT.** Part 71
+     ran `nocache, cold, warm` and concluded its pipeline cache was worth −97.5%. Part 72
+     ran `cold, warm, nocache`, saw `nocache` come out cheapest, and concluded the opposite
+     — that the cache was a 7.5x *pessimization*. Then it ran `nocache, warm` and got the
+     opposite again: warm 5.8x cheaper. **In every session the arm that ran LATER won, and
+     the arms swapped roles between sessions.** The variable was never the arm; it was
+     cumulative warming of a driver-side cache that persists across processes AND across
+     sessions, so each run is cheaper than the last whatever it is configured as.
+     **Reversing the order (gotcha 422) proves the first conclusion wrong; it does not
+     prove the second one right.** When the confound is monotone in time, the fix is not
+     another ordering — it is to interleave the arms repeatedly within one session, or to
+     accept the question is unanswerable on a warmed machine and say so. The absolute cost
+     here fell 17,827 -> 59 ms across one day, which is the real finding: the only run that
+     was ever expensive is the first one anybody ever does.

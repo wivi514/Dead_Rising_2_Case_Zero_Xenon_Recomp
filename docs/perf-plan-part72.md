@@ -189,6 +189,13 @@ sentence, not a percentage.
 > (0.105 ms/pipeline against `warm`'s 0.786). `phase5-notes.md` **§6df §1**, gotcha 426,
 > and the decision this now needs is `docs/part72-fix-plan.md` §1.
 >
+> **AND PART 72's SESSION D THEN REFUTED THE REPLACEMENT CLAIM TOO.** With `nocache` run
+> FIRST it reads 0.702 ms/pipeline against `warm`'s 0.121 — warm 5.8x *cheaper*, the
+> opposite of session A. In both sessions the LATER arm won and the arms swapped roles, so
+> **position dominates and neither arm is established.** The pipeline-cache question is
+> OPEN and effectively unmeasurable on this machine now (17,827 -> 59-357 ms as the
+> driver's cache warmed across one day). Gotcha 433; `part72-fix-plan.md` §1.
+>
 > **What that changes for §2b below: it makes it the ONLY answer.** A cold driver cache can
 > return on any driver update, new machine or cache eviction, and every user pays it on
 > first run — and our own cache demonstrably does not prevent it. §2b's kill threshold
