@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 416 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 419 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 416-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 419-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -786,13 +786,31 @@ IS `docs/perf-plan-part71.md`.**
 
 Where the port is, as of 2026-08-23 (**PART 71 IS IN PROGRESS — PERFORMANCE.** The plan is
 `docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
-414-416. **The operator session that prices everything is `tools/part71_perf_session.sh`
-and it has NOT been run yet** — nothing below is a measurement):
+414-419. **Session 1 (`tools/part71_perf_session.sh`) has been RUN and read; session 2
+(`tools/part71_pipeline_session.sh`) has not.**):
 
 * **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
   operator's soak has not been measured since part 58 and **thirteen parts have shipped
   since**. Every item in `perf-state-parked.md` §2 is priced against a ~10.5 ms baseline
   that no longer exists. Arm 1 is a denominator, not an experiment.
+* **SESSION 1 IS RUN AND READ (four arms, all engaged).** THE RE-BASELINE IS **~28.1 ms /
+  35.6 fps at ~9,800 draws, 3440x1440** — and the surprise is not thirteen parts of
+  regression, it is that **the OPERATING POINT moved**: 5.4x the pixels and 1.4x the draws
+  the ~10.5 ms figure was taken at (gotcha 419). At the overlapping draw band the **hook
+  fold is worth +0.74 ms (+2.6%) and CLEARS its 0.3 ms kill threshold**, and the
+  **clip-plane cache costs +0.09 ms — it is NOT the part-58 regression**, so §1.1 is closed
+  and §1.2 (part 56's dynamic-state calls) is the only named suspect left. Reading the same
+  data at 500-draw bands flipped both conclusions; gotcha 417.
+* **THE STUTTER IS NOT IN THE SOAK — `>2x med` is 0.0% in every arm's steady state.** It is
+  all in the first ~50 s: worst frames **3,891 ms** (base), 807 (noclip), 344 (nofold), 291
+  (nogamefov) — **the operator's felt ranking exactly**, and the two worst are the two arms
+  that loaded a shader set the driver had not compiled before. **This renderer passed
+  `VK_NULL_HANDLE` as the pipeline cache at all three creation sites from phase 5 until
+  now.** Part 71 shipped an unconditional per-FRAME pipeline-creation census (the old timer
+  was gated behind `CZ_VK_PROFILE`, so it was off in every session whose stutter was ever
+  reported — gotcha 418) and a persisted `VkPipelineCache`
+  (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm). **`tools/part71_pipeline_session.sh` is the
+  next operator session** and it can refute its own premise.
 * **THE FIRST ITEM IS WORK THIS PROJECT ADDED ITSELF.** Parts 59-70 each hung a probe on
   `DoDraw` — five per-draw calls, ~35,000 a frame at their soak, that exist only to decide
   not to run — and one on the per-FETCH path: `rtshadow::NoteAtlasFetch` was guarded on

@@ -1527,7 +1527,13 @@ CZ_VK_VERIFY_FLAT_CACHE_POISON=1  make the flat side look the WRONG key up, so t
                    while poisoned, so a miss costs a re-copy where a wrong hit would draw
                    a wrong mesh. A verifier that has never failed has not been shown
                    capable of failing (gotcha 30)
-CZ_VK_RES=WxH      **the internal resolution.** An INTEGER multiple of the title's own
+CZ_VK_RES=WxH      **the internal resolution**, and since part 71 it PRINTS `[vk] internal
+                   resolution WxH from CZ_VK_RES` when it takes effect — it used to print
+                   only when it was rejected, so a session quoting it could not show it
+                   engaged. Also the **CPU-vs-GPU probe**: pick the same aspect ratio at a
+                   quarter of the pixels (3440x1440 -> 1720x720) and the guest's geometry,
+                   culling and draw set are bit-identical while only the rasterisation
+                   target changes. Frame time flat -> CPU-bound. An INTEGER multiple of the title's own
                    1280x720 and nothing else -- 2560x1440, 3840x2160, 5120x2880 --
                    because a fractional scale would put a fraction into the tile
                    scissors, and this title renders in two 640-wide halves where half a
@@ -1565,6 +1571,19 @@ CZ_FPS_LOG=N       the frame rate, every N seconds, mean AND median, and nothing
                    three fields as OPTIONAL, so parts 54-70's logs still bin (a regex that
                    required them would have read zero windows out of every archived arm
                    while looking like a clean result — gotcha 25)
+CZ_VK_NO_PIPELINE_CACHE=1  **the control arm for the `VkPipelineCache`, which this
+                   renderer did not have until part 71.** All three
+                   `vkCreateGraphicsPipelines` sites passed `VK_NULL_HANDLE` from phase 5
+                   until now, so each session compiled its 503-545 pipelines from scratch
+                   on the PUMP THREAD, at the moment a new draw state was first seen. The
+                   default seeds from and writes back to
+                   `$XDG_CACHE_HOME/cz-recomp/pipeline_<shader cache name>.bin`; this arm
+                   restores `VK_NULL_HANDLE` exactly. **Both halves print** — bytes seeded
+                   at startup and bytes written at exit — because a cache that loads and
+                   is never written back is a silent failure that looks like success
+CZ_VK_PIPELINE_CACHE_FILE=path  pin the cache file. What a cold/warm A/B needs: without
+                   it, "cold" means whatever an earlier run happened to leave at the
+                   default path. `tools/part71_pipeline_session.sh` uses it
 CZ_VK_NO_HOOK_FOLD=1  **the control arm for part 71's per-draw hook fold**, and the
                    pre-part-71 renderer exactly. Parts 59-70 each hung a probe on
                    `DoDraw` — `FovCensus`, `RtGeometryCensus`, `rtshadow::Collect`,

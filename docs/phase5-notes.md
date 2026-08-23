@@ -15260,3 +15260,85 @@ every run belongs to the operator, so profiling first and shipping-with-an-arm f
 the same one session — and only the second PRICES the item. **The kill threshold is
 unchanged and pre-registered: under 0.3 ms at the soak and the fold comes back out**
 (gotcha 416).
+
+### 7. THE FIRST SESSION'S RESULTS (operator, 2026-08-23, four arms, all four engaged)
+
+`~/DR2CZ-troubleshooting/part71-perf/p71_0823_1516_*.log`. Engagement: arm 1 folded
+93,608,166 draws and 117,875,824 atlas-fetch decodes; arm 2 folded 0 of 96,217,642 and 0
+of 126,246,065 and printed its own line; arms 1-3 print `[fovgame] ... ACTIVE` and arm 4
+prints `CZ_NO_GAME_FOV=1` and does not. Zero `no translated shader` in any arm.
+
+**THE RE-BASELINE, and it is a bigger surprise than §0 anticipated: ~28.1 ms / 35.6 fps at
+~9,800 draws, 3440x1440 internal.** Every item in `perf-state-parked.md` §2 is priced
+against "~10.5 ms at ~7,000 draws". The operator is now playing at **5.4x the pixels and
+1.4x the draws** that number was taken at. The plan said the baseline had gone stale; it
+had gone stale in a second, larger way — the OPERATING POINT moved, not just the code.
+
+**At the overlapping draw band (9,700-10,000, the only band all three of the comparable
+arms populate):**
+
+| arm | ms | n | vs base |
+|---|---|---|---|
+| `base` | 28.09 | 19 | — |
+| `nofold` | 28.83 | 6 | **the fold is worth +0.74 ms (+2.6%)** |
+| `noclip` | 28.18 | 5 | the clip cache costs **+0.09 ms** |
+
+Both replicate at 9,400-9,700 (base n=1 27.52, nofold 28.12, noclip 27.59). So:
+
+* **the hook fold CLEARS its pre-registered 0.3 ms kill threshold and stays;**
+* **the clip-plane cache is NOT the part-58 regression.** Night Run 1's headless
+  +0.20 ms / +3.0% does not survive contact with the operator's load. §1.1 is closed, and
+  §1.2 (part 56's per-draw dynamic-state calls) is now the only named suspect left.
+
+`nogamefov` has no overlapping band by construction: the over-widen is adding **~1,930
+draws of 9,800 (+24%)** and without it the run sits at 23.94 ms / 7,890 draws. Real, but a
+different draw set, so no clean millisecond claim — exactly the admissibility caveat the
+harness header pre-registered.
+
+**A METHOD ERROR WORTH KEEPING: 500-draw bands were too WIDE for this slope.**
+`part54_fps_bins.py` at `--band 500` put base's 9,774-9,862 windows in the same bin as
+nofold's 9,480-9,585 ones and reported the fold at +0.25 ms and the clip cache at
++0.49 ms — the first below its own kill threshold and the second an order of magnitude
+too big. At ~2.5 us/draw a 300-draw mismatch inside a bin is 0.75 ms, which is the entire
+effect. **A draw band has to be narrow relative to (effect size / slope), not merely
+"narrow"**, and the check is to print each arm's within-band draw median beside its frame
+time. Gotcha 417.
+
+### 8. THE STUTTER IS NOT IN THE SOAK, AND THE TAIL FOUND IT IN ONE SESSION
+
+**`>2x med` reads 0.0% in the steady state of all four arms.** Every hitch is in the first
+~50 seconds. Worst single frames:
+
+| arm | worst | note |
+|---|---|---|
+| 1 `base` | **3,891.85 ms** (+ 1,026, 341) | first launch of this binary |
+| 3 `noclip` | 807.46 ms (+ 400, 282) | switched to a different SPIR-V cache |
+| 2 `nofold` | 343.82 ms | same shader set as arm 1 |
+| 4 `nogamefov` | 290.61 ms | same shader set as arms 1-2 |
+
+**That is the operator's felt ranking exactly** — they reported 1 and 3 worst, 2 and 4
+much less, before seeing any of these numbers. The tail statistic added at the top of this
+part reproduced a felt verdict on its first outing, which is the strongest thing that can
+be said for an instrument.
+
+And 1 and 3 are precisely the two arms that loaded a shader set the driver had not
+compiled before. **This renderer passed `VK_NULL_HANDLE` as the pipeline cache at all
+three `vkCreateGraphicsPipelines` sites from phase 5 until part 71** — 503-545 pipelines a
+session, compiled on the pump thread the moment a new draw state is first seen.
+
+Two things then shipped, and the ORDER of them is the point: the census before the fix.
+The creation site's own comment records that this hypothesis had been inferred **three
+times** and never measured, and had once FAILED a pre-registered prediction — its timer
+was gated on `CZ_VK_PROFILE`, which costs 2-4 ms a frame and is therefore off in every
+session whose stutter anyone has ever reported (gotcha 418). The timer is now
+unconditional and rolls up **per FRAME**, because four seconds of compiling spread over
+20,000 frames is invisible and the same four seconds in one frame is what got reported.
+`tools/part71_pipeline_session.sh` is the session, and it can refute its own premise: if
+the 3,891 ms frame has no matching entry in the pipeline table, the theory dies for the
+fourth time.
+
+**The same session asks the question that decides the rest of the plan:**
+`CZ_VK_RES=1720x720`, a quarter of the pixels at the same aspect ratio and therefore a
+bit-identical draw set. Every remaining item in `perf-state-parked.md` §2 is a CPU item
+priced at 1280x720; if the GPU is the limiter at the resolution the operator actually
+plays, all of them are worth zero.

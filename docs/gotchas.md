@@ -4534,3 +4534,40 @@ From phase C part 18 (the frame rate — and none of it was work):
      hook could do work), which is what the "measure first" rule was really protecting.
      **Pre-registering the kill threshold is what keeps this honest** — under 0.3 ms and
      it comes back out — and it is the half people drop.
+
+417. **A DRAW BAND MUST BE NARROW RELATIVE TO (EFFECT SIZE / SLOPE), NOT MERELY
+     "NARROW".** Part 71's four-arm soak was read first with `part54_fps_bins.py --band
+     500`, which put one arm's 9,774-9,862-draw windows in the same bin as the other's
+     9,480-9,585 ones. At this title's ~2.5 us/draw a 300-draw mismatch inside a bin is
+     0.75 ms — the entire size of the effect being measured — and the result came out
+     +0.25 ms for an item whose pre-registered kill threshold was 0.3 (it would have been
+     dropped) and +0.49 ms for one that actually costs +0.09 (it would have been chased).
+     Re-read at the band where both arms genuinely overlap, both flipped. **The check that
+     costs nothing: print each arm's within-band DRAW MEDIAN beside its frame time.** If
+     they differ by more than effect/slave slope, the bin is not a comparison. This is the
+     "two soaks are never at the same draw count" rule (`perf-state-parked.md` §3) failing
+     at a level nobody was watching — inside a bin that was already supposed to have fixed
+     it.
+
+418. **AN INSTRUMENT GATED BEHIND AN EXPENSIVE ONE IS OFF EXACTLY WHEN IT IS NEEDED.**
+     Pipeline creation had a timer for several parts. It was gated on `CZ_VK_PROFILE`,
+     which costs 2-4 ms a frame — so it was off in every operator session, which is to say
+     off in every session whose stutter anyone ever reported, and the hypothesis it
+     existed to test was inferred three times and measured zero times. The fix is to ask
+     what the instrument actually COSTS rather than which bucket it belongs in: two clock
+     reads per pipeline and ~500 pipelines a run is ~20 microseconds in five minutes, so
+     it never needed a gate at all. **Rate, not category, decides whether an instrument
+     can be unconditional** — the same arithmetic that says a `ProfScope` cannot go on a
+     33,000-call-a-frame path (gotcha 360) says a timer CAN go on a 500-call-a-run one.
+
+419. **THE OPERATING POINT MOVES, NOT JUST THE CODE.** Part 71 re-baselined because
+     thirteen parts had shipped since the last measurement. The re-baseline found the
+     frame at 28.1 ms rather than the expected ~12 — and the cause was not thirteen parts
+     of regression, it was that the operator had moved to 3440x1440 and a heavier spot:
+     **5.4x the pixels and 1.4x the draws the old number was taken at.** Every stored item
+     estimate was priced against a workload that no longer existed. **A baseline has two
+     halves that go stale independently — the binary and the load — and a plan that only
+     re-runs the binary has re-baselined half of it.** Print the resolution, the draw
+     count and the settings file with every number (this session's harness now echoes
+     `cz_settings.txt` in its preflight), because those are what let a future reader tell
+     which half moved.
