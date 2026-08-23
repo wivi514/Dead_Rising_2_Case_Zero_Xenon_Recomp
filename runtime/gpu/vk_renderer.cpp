@@ -10273,6 +10273,12 @@ struct Blas
     // topology, so its trace quality decays under large motion; `CZ_VK_RT_REFIT_MAX`
     // bounds that decay by forcing a rebuild, which is what Remix does periodically.
     uint32_t framesSinceBuild = 0;
+    // The frame this structure's FULL BUILD was recorded in. A refit of a BLAS whose
+    // build is recorded but has not executed yet is a write-after-write on the same
+    // object inside one command buffer, with `srcAccelerationStructure` reading a
+    // structure that does not exist — undefined behaviour, and exactly the kind that
+    // faults a GPU rather than producing a wrong picture.
+    uint64_t builtFrame = 0;
     // Were this build's vertices read straight out of the persist store? A BLAS built
     // from per-frame staging cannot be refitted from the store later without the
     // geometry description changing, so the flag travels with the record.
@@ -12414,6 +12420,7 @@ void BuildFrameStructures(uint8_t* base)
                 nb.buildScratch = bd.scratchSize;
                 nb.updateScratch = bd.updateScratchSize;
                 nb.framesSinceBuild = 0;
+                nb.builtFrame = R->frame;
                 nb.direct = bd.direct;
                 nb.bakeAddr[0] = bd.bakeAddr[0];
                 nb.bakeAddr[1] = bd.bakeAddr[1];
@@ -12490,6 +12497,15 @@ void BuildFrameStructures(uint8_t* base)
             if (it == g_blas.end())
                 continue;
             Blas& b = it->second;
+            // NEVER REFIT A STRUCTURE THIS FRAME BUILT. The batch above draws from the
+            // same live key set, so a key that was pending is inserted into `g_blas`
+            // moments before this loop walks it — and if the guest rewrote the stream
+            // between Collect and the build, the guard test below would fire and issue an
+            // UPDATE against an acceleration structure whose build is recorded in this
+            // very command buffer and has not run. One frame's wait costs nothing; the
+            // alternative is undefined.
+            if (b.builtFrame == R->frame)
+                continue;
             // A BLAS built out of per-frame staging has no live vertex source to refit
             // FROM: that buffer was recycled at the swap. Counted rather than silently
             // skipped, because a non-zero reading here means item 0 is not serving the
@@ -12632,6 +12648,8 @@ void BuildFrameStructures(uint8_t* base)
                     bit2->second.lastFrame = R->frame;
                     bit2->second.framesSinceBuild =
                         r.forced ? 0 : bit2->second.framesSinceBuild + 1;
+                    if (r.forced)
+                        bit2->second.builtFrame = R->frame;
                 }
                 ++g_refits;
                 g_refitForced += r.forced ? 1 : 0;

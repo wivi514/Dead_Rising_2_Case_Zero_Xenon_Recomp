@@ -14636,3 +14636,43 @@ van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
   penumbra, self-shadowing has never been tested against correctly-placed geometry, `alpha`
   stays raster-only, and the instance count's cost on the pump thread is unpriced.
 * **A5 is owed** and is arm 0 of the session. No kernel path changed in parts 67, 68 or 69.
+
+### 9. FOUR SYNCHRONISATION VUIDs, AND THEY ARE OURS — the A/B that says so
+
+A validation run with RT armed and `CZ_VK_RT_DYN_SETTLE=0` reports, in one burst during
+the loading era and capped at the layer's ten-duplicate limit:
+
+```
+VUID-vkResetFences-pFences-01123        pFences[0] is in use
+VUID-vkQueueSubmit-pCommandBuffers-00071  already in use, not marked for simultaneous use
+VUID-vkResetCommandBuffer-commandBuffer-00045   is in use
+VUID-vkBeginCommandBuffer-commandBuffer-00049   before it has completed
+```
+
+All four are one fact: `SubmitFrame` reached a frame slot whose previous submission had
+not completed, which the ring's invariant (`RetireOldestFrame` waits the slot before
+`frameSlot` advances to it) is supposed to make impossible.
+
+**They are part 69's, and the arms prove it rather than a bisect.** The part-68 binary in
+the same configuration reads zero of them over MORE RT passes (6,145 against 4,097), and
+**the part-69 binary with all four of its arms off also reads zero** — so it is not the
+unconditional half of the work (the kept index pool, the leading barrier, the persist
+store's extra usage flag) but one of the four features.
+
+**One cause was found by reading, and it is a real one:** the build batch and the refit
+walk draw from the SAME live key set, so a key that was pending is inserted into `g_blas`
+moments before the refit loop walks it — and if the guest rewrote that stream between
+Collect and the build, the guard test fires and issues a `MODE_UPDATE` against an
+acceleration structure whose full build is recorded in the very same command buffer and
+has not executed. That is a write-after-write on one object with
+`srcAccelerationStructure` reading a structure that does not exist yet: undefined
+behaviour of exactly the kind that faults a GPU rather than producing a wrong picture, and
+a device fault would explain all four messages at once (`vkWaitForFences` returns
+`VK_ERROR_DEVICE_LOST` immediately instead of blocking, the code ignores the return, the
+slot is marked retired, and the next submit resets a fence that never signalled).
+`Blas::builtFrame` now bars it.
+
+**Whether that was the ONLY cause is not yet established** — the per-arm isolation sweep
+was still running at the close. The next session should re-run
+`CZ_VK_VALIDATION=1 CZ_VK_RT_SHADOWS=1 CZ_VK_RT_DYN_SETTLE=0` and confirm zero, and treat
+a non-zero reading as a blocker before the operator session rather than after it.
