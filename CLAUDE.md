@@ -879,7 +879,37 @@ ONE short sitting still owed. The records are `phase5-notes.md` **§6de** (desk 
 * **A NEW OPEN ITEM:** with compilation at 51 ms for a whole run, a **173 ms frame at 7,400
   draws** remains. Pipeline compilation was the 3.9-second frame; a 165-315 ms gameplay
   hitch survives the fix and is unexplained.
-* **Gates:** `--smoke` OK; `vcull_predicate_test` **18/18** and confirmed capable of failing
+* **THIRD SESSION, ALSO OFFLINE: PERF ITEM C IS BUILT AND ITEM A TURNED OUT TO BE BLOCKED
+  ON THREADS, NOT ON ITS GATE.** `phase5-notes.md` **§6dg**; gotchas **430-432**.
+* **The ORDER GATE is built and proven** (`CZ_VK_ORDER_GATE=1`, the precondition owed since
+  part 55). `tools/order_gate_test.cpp` shows the hash catches **all 3,999 adjacent
+  transpositions** in a 4,000-draw frame of near-duplicates, plus drops, duplicates,
+  rotations and reversals — with a control confirming a COMMUTATIVE mix would be blind,
+  which is the failure mode that would have made the gate a placebo.
+* **But building it did not unblock item A.** `ThreadBudget_Take` is
+  first-come-first-served: the operator's box budgets **3**, the guard pool asks 4 and takes
+  all of them, so a `record` pool gets **ZERO** and the item would measure nothing on the
+  machine it exists to help. **The first work on item A is a thread-budget decision** and
+  all three options need the operator. Two more preconditions are recorded so a session does
+  not start on a recorder first: item C removes A's per-draw snapshot cost, and a
+  dynamic-rendering scope executing secondaries may not also hold inline draws (answerable
+  offline).
+* **PERF ITEM C SHIPPED** (`23937a6`): the renderer now copies only the ALU registers each
+  shader READS. Median **26** of 256 over the 449 modules and **the maximum is 56** — 896
+  bytes against 4,096, a bound rather than an average. 22 vertex shaders index `a0`
+  -relatively and keep the full copy. `CZ_VK_NO_CONST_GATHER=1` is the control arm,
+  `CZ_VK_VERIFY_CONST_GATHER=1` + `CZ_VK_GATHER_POISON=1` the verify pair, and
+  `tools/alu_const_gate.py` the OFFLINE gate — the list decides what NOT to copy, so no
+  run-time check can catch an omission (gotcha 432). **It also un-refutes item E.**
+* **THREE INVISIBLE HAZARDS FOUND WHILE BUILDING IT**, none of which would crash or fail a
+  picture gate: the memo keys on `(version, base)` and NOT the shader, so a gathered slot
+  served to another shader hands it arena garbage (431); the memo's own verifier compared
+  the WHOLE window and would have reported the feature working as a defect, in the first
+  tool an investigator opens, with its poison arm blind one level down (430); and my own
+  top-up dropped the fov/wide projection patches, which would have made the slider silently
+  stop working on alternating draws (`ab799ad`).
+* **Gates:** `--smoke` OK; `alu_const_gate.py` clean on all sixteen caches;
+  `order_gate_test` 10/10; `vcull_predicate_test` **18/18** and confirmed capable of failing
   on a flipped comparison, a dropped placement and a transposed matrix read; harness
   selftest 12/12; `shader_dim_census.py` clean; `rt_world_xform_census.py` 104 of 104; zero
   `no translated shader` across all seven operator arms. **A5 is owed**, carried since
