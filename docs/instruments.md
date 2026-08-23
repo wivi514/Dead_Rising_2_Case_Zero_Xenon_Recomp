@@ -1840,6 +1840,70 @@ CZ_VK_RT_OBJ_XFORM=0  **the same-binary control arm for part 67's placement**:
                    it means anything. `palette=` is not an error: it counts draws
                    placed from a palette shader's entry 0, which is an
                    approximation and is separated so it can never be invisible
+CZ_VK_RT_NO_DIRECT_BUFFERS=1  **the control arm for the Remix plan's ITEM 0** (part
+                   69). With it unset — the default — a BLAS build points
+                   `vertexData` straight at the cross-frame persist store instead
+                   of copying the position stream into per-frame staging first.
+                   The store already held those bytes dword-swapped exactly as the
+                   staging copy swapped them and was already device-addressed for
+                   the raster path; the only thing missing was one usage flag.
+                   This is a DATA-SOURCE change, not a semantic one, so the two
+                   arms must produce the same picture and the same `blas=` memory
+                   — the arm exists to price it, and to be the fallback if reading
+                   acceleration-structure build input out of HOST_VISIBLE memory
+                   turns out slower over PCIe than staging into device memory.
+                   Counter: `verts direct=N staged=N`
+CZ_VK_RT_STABLE_KEY=0  **the control arm for ITEM 1**: put the two persist content
+                   guards back into the BLAS key, i.e. the part-68 identity, under
+                   which a mesh whose bytes change is a NEW mesh every frame — a
+                   new key, a new structure, and no eviction. That is the
+                   architectural reason `CZ_VK_RT_DYN_SETTLE=0` had to ship as a
+                   diagnostic. With the arm unset, identity is address, size,
+                   endian, topology and layout, and the guards live in the record
+                   as STATE — which is the dirty test refit needs
+CZ_VK_RT_NO_REFIT=1  **the control arm for ITEM 2**: no in-place updates, and the
+                   BLASes are built without `ALLOW_UPDATE`, so the arm prices the
+                   whole of item 2 including that flag's own trace cost. With it
+                   unset, a mesh whose stored guard differs from the store's
+                   current one is reissued as `MODE_UPDATE` against the same
+                   allocation, sized from `updateScratchSize`. Counter:
+                   `refit=N (forced=N budgeted-out=N noSource=N topology=N)`
+CZ_VK_RT_REFIT_MAX=N  how many consecutive refits a BLAS may take before a full
+                   rebuild INTO THE SAME ALLOCATION. Default 60. A refitted
+                   structure keeps the tree the original build chose, so its
+                   traversal quality decays under large motion; this bounds the
+                   decay with a named knob instead of letting it be discovered in
+                   a picture. Rebuilding in place is what keeps that from
+                   reintroducing pool growth
+CZ_VK_RT_REFIT_MB=N  the per-frame refit budget in source bytes (default 16). The
+                   overflow is counted as `budgeted-out=`, never silent
+CZ_VK_RT_FAST_BUILD=1  build BLASes with `PREFER_FAST_BUILD` instead of
+                   `PREFER_FAST_TRACE`. Remix pairs `ALLOW_UPDATE` with the former;
+                   this is the knob for measuring that rather than guessing it
+CZ_VK_RT_NO_BAKE=1  **the control arm for ITEM 3, and the one to hand an operator
+                   for a side-by-side.** Restores the part-68 renderer for
+                   palette-blended draws: the mesh enters the BLAS in its own
+                   object space and the instance is placed from palette entry 0
+                   with unit weight. With the arm unset, the per-vertex blend is
+                   applied on the CPU and the blended WORLD positions are baked
+                   into the BLAS, with the instance carrying only the outer stage.
+                   Part 69's census of hardware's own index streams is what
+                   motivates it: **zero of 2,786 palette draws reference a single
+                   matrix**, median 19 distinct entries — so entry 0 places every
+                   batched prop on top of whichever prop happens to be bone 0.
+                   Counter: `baked=N rebaked=N bakePool=N MB | palette
+                   recapture=N conflict=N noDesc=N outOfRange=N`. **`outOfRange`
+                   must be ZERO** — it counts vertices whose matrix index reached
+                   past the captured constant window, i.e. a mesh partly collapsed
+                   to the origin; raise `CZ_VK_RT_PALETTE_ROWS`. `conflict=`
+                   counts one mesh drawn twice in a frame under DIFFERENT
+                   palettes, which one baked buffer per key cannot represent
+CZ_VK_RT_PALETTE_ROWS=N  how many float4 rows of the constant window to capture for
+                   a palette draw before the first build has measured how many it
+                   actually indexes (default 128, then shrunk per mesh to what its
+                   own vertex data references). Under-capturing is a mesh partly
+                   at the origin, which is why the initial figure is generous and
+                   why the shortfall has its own counter rather than a clamp
 CZ_VK_RT_ROUTE=a|b **WHICH ROUTE** (part 65). `b` is the default and the live
                    direction: compute the shadow factor per RECEIVING PIXEL in
                    screen space and have the 126 atlas-sampling pixel shaders

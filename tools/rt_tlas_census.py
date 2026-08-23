@@ -118,6 +118,7 @@ BOUNDS_CAP = 50000.0           # CZ_VK_RT_BOUNDS_CAP's default
 BUCKETS = ['xform', 'nozw', 'alpha', 'posform', 'prim', 'range', 'endian', 'bounds',
            'nopos', 'ok']
 WORLD_XFORM = ROOT / 'config' / 'rt_world_xform.json'
+WINDOW_ROWS = 128              # how much of the VS constant window each draw carries
 
 
 def f32(u):
@@ -468,8 +469,13 @@ def classify(d, regs, mem, sidecars, cache):
     base4 = (regs.get(SQ_VS_CONST, 0)) & 0x1FF
     # The whole low window, because the object->world rows live at vc(4..10) and the
     # camera composite the chain gates on is only its first four rows.
+    # 128 rows, not 16. Everything below reads only the first four (the camera
+    # composite) and the world rows at vc(4..10), but a PALETTE draw indexes as far as
+    # vc(base + 28 + 2) in this title's own vertex data, and a tool that stopped at 16
+    # could not check the blend at all — it would report the entry-0 approximation as if
+    # it were the geometry.
     full = [regs.get(ALU_CONST_BASE + (base4 + r) * 4 + k)
-            for r in range(16) for k in range(4)]
+            for r in range(WINDOW_ROWS) for k in range(4)]
     d['win'] = [None if v is None else f32(v) for v in full]
     win = full[:16]
     if any(v is None for v in win):

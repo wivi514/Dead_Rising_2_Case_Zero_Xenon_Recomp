@@ -2101,6 +2101,22 @@ struct ShaderMeta
     uint8_t xfBase[2] = {};     // innermost stage first
     uint8_t xfPalette = 0;      // bit i set = stage i is a palette blend
     bool xfKnown = false;       // the table HAD an entry (an empty one means "camera")
+    // THE PALETTE BLEND'S OWN INPUTS (`"blend"` in the same table).
+    //
+    // "entry 0 with unit weight" is not an approximation that is right for the static
+    // world and wrong for actors, which is what §6cx assumed. Part 69's census of
+    // hardware's own index streams reads ZERO of 2,786 palette draws referencing a
+    // single matrix, with a median of 19 distinct entries — so every batched prop in
+    // such a draw is being placed on top of whichever prop happens to be bone 0. The
+    // placement is PER VERTEX, and these four fields are what makes doing it possible:
+    // where in the vertex buffer the weights and the matrix indices live.
+    //
+    // Layout, not binding: twelve of the bank's eighteen palette shaders take these
+    // bytes as declared attributes and six through a dependent fetch, and it is one
+    // interleaved buffer either way.
+    uint8_t blendSlot = 0, blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
+    uint8_t blendBytes[4] = {};   // which component of each dword, per influence
+    uint8_t blendCount = 0;       // 0 = no descriptor; the entry-0 fallback stands
 };
 
 // A deliberately small JSON reader for a file this project writes itself.
@@ -2250,6 +2266,43 @@ void ApplyWorldXform(const std::string& name, ShaderMeta& meta)
             break;
         p = comma + 1;
     }
+    // "blend": "slot:strideDw:weightOffDw:indexOffDw:bytes" — five fields, the last a
+    // digit per influence. Parsed positionally rather than by name because it is one
+    // short generated string with both ends in this repo, the same contract as "stages".
+    // Bounded by THIS entry's closing brace, not by a character count. The first
+    // version used `close + 64` and that is not safe: a shader with no blend sits about
+    // forty characters from the NEXT shader's, so it would have inherited its
+    // neighbour's vertex layout — a silently misplaced mesh with nothing to say so.
+    const size_t brace = g_worldXformText.find('}', close);
+    const size_t bl = g_worldXformText.find("\"blend\"", close);
+    if (bl == std::string::npos || brace == std::string::npos || bl > brace)
+        return;
+    const size_t bo = g_worldXformText.find('"', bl + 7);
+    const size_t bc = bo == std::string::npos ? std::string::npos
+                                             : g_worldXformText.find('"', bo + 1);
+    if (bc == std::string::npos)
+        return;
+    const std::string blend = g_worldXformText.substr(bo + 1, bc - bo - 1);
+    unsigned f[4] = {};
+    size_t q = 0;
+    int got = 0;
+    for (; got < 4 && q < blend.size(); ++got)
+    {
+        f[got] = unsigned(strtoul(blend.c_str() + q, nullptr, 10));
+        const size_t colon = blend.find(':', q);
+        if (colon == std::string::npos)
+            break;
+        q = colon + 1;
+    }
+    if (got != 4 || q >= blend.size())
+        return;
+    meta.blendSlot = uint8_t(f[0]);
+    meta.blendStrideDw = uint8_t(f[1]);
+    meta.blendWeightOffDw = uint8_t(f[2]);
+    meta.blendIndexOffDw = uint8_t(f[3]);
+    for (size_t k = q; k < blend.size() && meta.blendCount < 4; ++k)
+        if (blend[k] >= '0' && blend[k] <= '3')
+            meta.blendBytes[meta.blendCount++] = uint8_t(blend[k] - '0');
 }
 
 bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
@@ -10174,6 +10227,20 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
 // DoResolve run on the pump, so none of this locks.
 namespace rtshadow
 {
+// THE PALETTE A DRAW WAS ISSUED WITH — the matrices, not a reference to them.
+//
+// It has to be a copy taken at COLLECT time, because the ALU constant window is
+// per-draw state and by the time the structure is built the window belongs to whatever
+// drew last. `rows` is float4 rows from vc(base) upward, so entry k of the palette is
+// rows base+3k..base+3k+2 — the indices hardware's own vertex data carries are in steps
+// of three, which is what says an entry is one 4x3.
+struct Palette
+{
+    std::vector<float> rows;   // 4 floats per row
+    uint32_t rowCount = 0;
+    uint64_t hash = 0;
+};
+
 struct Blas
 {
     VkAccelerationStructureKHR as = VK_NULL_HANDLE;
@@ -10210,6 +10277,21 @@ struct Blas
     // from per-frame staging cannot be refitted from the store later without the
     // geometry description changing, so the flag travels with the record.
     bool direct = false;
+    // ---- item 3: the BAKED geometry, for palette-blended meshes -------------------
+    // A palette mesh's placement is per VERTEX, so no instance transform can express it
+    // and the vertices cannot be read from the persist store in place: the blended
+    // positions are written into a buffer of our own, tightly packed float3, and the
+    // instance carries only the OUTER stage. `bakeMapped` is where a refit re-blends.
+    VkDeviceAddress bakeAddr = 0;
+    uint8_t* bakeMapped = nullptr;
+    uint32_t vertCount = 0;
+    uint8_t blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
+    uint8_t blendBytes[4] = {};
+    uint8_t blendCount = 0;
+    uint32_t vEndian = 0, posVa = 0;
+    Palette pal;
+    uint64_t palFrame = 0;   // when the palette was last looked at, for the conflict count
+    uint64_t palHashBuilt = 0;   // the palette the CURRENT baked bytes were blended with
 };
 
 struct Pending
@@ -10220,6 +10302,12 @@ struct Pending
     uint32_t prim = 0;
     bool indexed = false;
     uint64_t seenFrame = 0;
+    // Item 3: the blend this draw's shader declares, and the matrices it was issued
+    // with. `blendCount == 0` means this mesh is not baked and takes the old path.
+    uint8_t blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
+    uint8_t blendBytes[4] = {};
+    uint8_t blendCount = 0;
+    Palette pal;
 };
 
 // The AS POOL: acceleration structures are placed at offsets inside big chunks
@@ -10250,6 +10338,19 @@ uint64_t g_blasBuilt = 0, g_blasFlushes = 0;
 // are reclaimed together and never separately.
 std::vector<AsChunk> g_idxChunks;
 VkDeviceSize g_idxBytes = 0;
+// THE BAKED-VERTEX POOL (item 3), same shape and same lifetime as the index pool. A
+// palette mesh's blended positions live here rather than in the persist store, because
+// they are OUR data: the store holds what the guest wrote, and what the guest wrote is
+// object-space under a per-vertex matrix.
+std::vector<AsChunk> g_bakeChunks;
+VkDeviceSize g_bakeBytes = 0;
+// Item 3's engagement counters. `baked` is builds whose vertices were blended;
+// `palNoDesc` is a palette draw whose shader has no blend descriptor (it falls back to
+// the entry-0 placement, and that fallback must never be invisible); `palConflict`
+// counts two draws of ONE mesh in ONE frame carrying DIFFERENT palettes, which is the
+// case a single baked buffer per key cannot represent and which nothing else would say.
+uint64_t g_baked = 0, g_palNoDesc = 0, g_palConflict = 0, g_palRecapture = 0,
+         g_bakeOutOfRange = 0, g_rebaked = 0;
 // Engagement counters for item 0 (gotcha 151). `direct` counts BLAS builds whose
 // vertices were read in place out of the persist store; `staged` counts the ones that
 // still needed a copy, and WHY they did is the interesting half — a store miss means the
@@ -10670,6 +10771,39 @@ bool DirectBuffers()
     return !off;
 }
 
+// CZ_VK_RT_NO_BAKE=1 — THE SAME-BINARY CONTROL ARM FOR ITEM 3.
+//
+// Restores the part-68 renderer for palette-blended draws: the mesh enters the BLAS in
+// its own object space and the instance is placed from palette entry 0 with unit weight.
+// Part 69's census of hardware's own index streams says what that costs — zero of 2,786
+// palette draws reference a single matrix — so this arm is the "before" picture, and it
+// is the one to hand an operator for a side-by-side.
+bool BakePalette()
+{
+    static const bool off = EnvOn("CZ_VK_RT_NO_BAKE");
+    return !off;
+}
+
+// CZ_VK_RT_PALETTE_ROWS=N — how many float4 rows of the constant window to capture for a
+// palette draw before the first build has measured how many it actually indexes, after
+// which it shrinks per mesh to what that mesh's own vertex data references.
+//
+// The default is generous because under-capturing is a mesh partly AT THE ORIGIN. The
+// index census read a maximum of 28 distinct entries per draw over the gas-station trace
+// but the offline placement check, whose own window stopped at row 128, still found 936
+// vertices of 1.06M reaching past it — so the highest index in use is above 117, not 28,
+// and a distinct-count is not a maximum. 192 covers it with room; the shortfall has its
+// own counter (`outOfRange`) rather than a clamp, because a clamp would put those
+// vertices at the origin silently.
+uint32_t PaletteRowsInitial()
+{
+    static const uint32_t n = [] {
+        const char* e = Env("CZ_VK_RT_PALETTE_ROWS");
+        return e ? uint32_t(strtoul(e, nullptr, 10)) : 192u;
+    }();
+    return n;
+}
+
 // CZ_VK_RT_NO_REFIT=1 — the same-binary control arm for item 2. With refit off, a mesh
 // whose bytes changed is simply left as it was until something rebuilds it, which is the
 // pre-item-2 behaviour once identity has stopped depending on content (item 1).
@@ -10748,6 +10882,24 @@ void ComposeAffine(const float* outer, const float* inner, float* out)
 // The window bound is not decoration: `memoVsBase` is a guest-controlled 9-bit field, so
 // a high base plus vc(10) walks straight into the FETCH constants at 0x4800 and would
 // place a mesh by a texture address. That case is counted, not clamped.
+// Is this draw's palette stage going to be BAKED into the vertices? If so the instance
+// must NOT also carry it — the two would compose and place the mesh twice.
+bool BakedHere(const ShaderMeta& vs)
+{
+    return BakePalette() && vs.xfPalette && vs.blendCount && vs.blendStrideDw;
+}
+
+// The constant row the palette starts at — the stage the table marked `palette`. The
+// bank has exactly one such stage per shader, and a second would be a shape the census
+// has never emitted, so it is taken as the first rather than guessed at.
+uint8_t PaletteBase(const ShaderMeta& vs)
+{
+    for (uint8_t i = 0; i < vs.xfCount; ++i)
+        if (vs.xfPalette & (1u << i))
+            return vs.xfBase[i];
+    return 0;
+}
+
 bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMeta& vs,
                  float* out)
 {
@@ -10769,6 +10921,8 @@ bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMet
         return false;
     }
     const size_t at = size_t(vsWindow - regs);
+    const bool baked = BakedHere(vs);
+    bool any = false;
     for (uint8_t i = 0; i < vs.xfCount; ++i)
     {
         const size_t need = at + (size_t(vs.xfBase[i]) + 3) * 4;
@@ -10777,6 +10931,11 @@ bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMet
             ++g_xfWindow;
             return false;
         }
+        // A stage that is baked into the vertices is skipped HERE, and only here: the
+        // instance transform then carries the outer stages alone, which for this bank is
+        // either `direct@4` or nothing at all. Composing both would place the mesh twice.
+        if (baked && (vs.xfPalette & (1u << i)))
+            continue;
         float m[12];
         memcpy(m, vsWindow + size_t(vs.xfBase[i]) * 4, sizeof m);
         for (int k = 0; k < 12; ++k)
@@ -10785,18 +10944,61 @@ bool ObjectXform(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMet
                 ++g_xfBad;
                 return false;
             }
-        if (i == 0)
+        if (!any)
+        {
             memcpy(out, m, sizeof m);
+            any = true;
+        }
         else
         {
             float tmp[12];
             ComposeAffine(m, out, tmp);
             memcpy(out, tmp, sizeof tmp);
         }
-        if (vs.xfPalette & (1u << i))
+        if (!baked && (vs.xfPalette & (1u << i)))
             ++g_xfPalette;
     }
     ++g_xfPlaced;
+    return true;
+}
+
+// FNV-1a over the captured palette rows. It is the change detector for a baked mesh, and
+// deliberately not the persist guard: the guard says the VERTICES moved, and a palette
+// mesh can be re-placed with its bytes untouched (a prop batch drawn at a new position)
+// or animated with its palette untouched. Two questions, two answers.
+uint64_t PaletteHash(const float* rows, uint32_t count)
+{
+    // Eight bytes at a time. This runs once per palette draw per frame on the PUMP
+    // thread — the thread part 55 showed IS the frame rate — so a byte-at-a-time FNV
+    // over a few thousand draws would be a millisecond of pure bookkeeping. The rows are
+    // float4, so the length is always a multiple of eight.
+    uint64_t h = 0xcbf29ce484222325ull;
+    const uint64_t* p = reinterpret_cast<const uint64_t*>(rows);
+    for (size_t i = 0; i < size_t(count) * 2; ++i)
+    {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+// Copy this draw's palette out of the constant window. `want` rows, clamped so the read
+// cannot walk out of the ALU bank and into the fetch constants — `memoVsBase` is a
+// guest-controlled 9-bit field, so that bound is a real one and not decoration.
+bool CapturePalette(const uint32_t* vsWindow, const uint32_t* regs, uint8_t base,
+                    uint32_t want, Palette& out)
+{
+    const size_t at = size_t(vsWindow - regs) + size_t(base) * 4;
+    if (at >= xenos::kFetchConstantBase)
+        return false;
+    const uint32_t avail = uint32_t((xenos::kFetchConstantBase - at) / 4);
+    const uint32_t rows = std::min(want, avail);
+    if (rows < 3)
+        return false;
+    out.rows.resize(size_t(rows) * 4);
+    memcpy(out.rows.data(), vsWindow + size_t(base) * 4, size_t(rows) * 16);
+    out.rowCount = rows;
+    out.hash = PaletteHash(out.rows.data(), rows);
     return true;
 }
 
@@ -10951,6 +11153,21 @@ void PrintCollectorCensus(const char* who)
             (unsigned long long)g_refitNoSource, (unsigned long long)g_refitTopology,
             DirectBuffers() ? "" : "  (CZ_VK_RT_NO_DIRECT_BUFFERS=1)",
             RefitOn() ? "" : "  (CZ_VK_RT_NO_REFIT=1)");
+    // THE PALETTE BLEND (item 3). `baked` is builds whose vertices were blended;
+    // `rebaked` is refits that re-blended them. `outOfRange` must be ZERO — it counts
+    // vertices whose matrix index reached past the captured constant window, i.e. a
+    // mesh partly collapsed to the origin, and it is the one number here that means
+    // something is wrong rather than something is happening (raise
+    // CZ_VK_RT_PALETTE_ROWS). `palConflict` counts one mesh drawn twice in a frame under
+    // DIFFERENT palettes, which one baked buffer per key cannot represent.
+    fprintf(stderr,
+            "[rt] %s: baked=%llu rebaked=%llu bakePool=%.1f MB | palette recapture=%llu "
+            "conflict=%llu noDesc=%llu outOfRange=%llu%s\n",
+            who, (unsigned long long)g_baked, (unsigned long long)g_rebaked,
+            double(g_bakeBytes) / (1 << 20), (unsigned long long)g_palRecapture,
+            (unsigned long long)g_palConflict, (unsigned long long)g_palNoDesc,
+            (unsigned long long)g_bakeOutOfRange,
+            BakePalette() ? "" : "  (CZ_VK_RT_NO_BAKE=1: entry 0, the part-68 arm)");
     // PLACEMENT (part 67), and the world box is the line that says TOWN or PILE in one
     // glance. Falls back to the previous frame's when this one has not collected yet —
     // see g_instMinPrev.
@@ -11335,6 +11552,12 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     // one, because a mesh at the origin shadows whatever happens to be there.
     float xf[12];
     const bool placed = ObjectXform(vsWindow, regs, vs, xf);
+    // THE PALETTE THIS DRAW WAS ISSUED WITH (item 3). Captured here because the ALU
+    // constant window is per-draw state; by the time the structure is built it belongs
+    // to whatever drew last.
+    const bool bake = BakedHere(vs);
+    if (vs.xfPalette && vs.xfKnown && vs.xfCount && !vs.blendCount)
+        ++g_palNoDesc;   // falls back to the entry-0 placement; never invisible
     auto bit = g_blas.find(key);
     if (bit != g_blas.end())
     {
@@ -11352,6 +11575,28 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             return;
         }
         bit->second.lastFrame = R->frame;
+        // A baked mesh whose PALETTE moved is dirty even when its vertices did not: a
+        // prop batch re-placed, or an actor animated. Re-capture, and count the case a
+        // single baked buffer per key cannot represent — two draws of one mesh in one
+        // frame under different palettes. Nothing else would say that was happening.
+        if (bake && bit->second.blendCount)
+        {
+            Palette np;
+            if (CapturePalette(vsWindow, regs, PaletteBase(vs),
+                               bit->second.pal.rowCount
+                                   ? bit->second.pal.rowCount
+                                   : PaletteRowsInitial(),
+                               np) &&
+                np.hash != bit->second.pal.hash)
+            {
+                if (bit->second.palFrame == R->frame)
+                    ++g_palConflict;
+                else
+                    ++g_palRecapture;
+                bit->second.pal = std::move(np);
+            }
+            bit->second.palFrame = R->frame;
+        }
         if (placed)
             RecordInstance(key, xf, cascadeCaster);
         return;
@@ -11360,6 +11605,9 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     if (pit != g_pending.end())
     {
         pit->second.seenFrame = R->frame;
+        if (placed && bake && pit->second.blendCount)
+            CapturePalette(vsWindow, regs, PaletteBase(vs), PaletteRowsInitial(),
+                           pit->second.pal);
         if (placed)
             RecordInstance(key, xf, cascadeCaster);
         return;
@@ -11455,6 +11703,26 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     p.prim = prim;
     p.indexed = draw.indexed;
     p.seenFrame = R->frame;
+    if (bake)
+    {
+        // The blend descriptor is only usable when it describes THIS stream: the same
+        // slot and the same stride as the position attribute, because the weights and
+        // indices are interleaved into the very buffer the positions come from. A
+        // disagreement is refused rather than reinterpreted (gotcha 5).
+        if (vs.blendSlot == pos.fetchSlot && vs.blendStrideDw == pos.strideDwords)
+        {
+            p.blendStrideDw = vs.blendStrideDw;
+            p.blendWeightOffDw = vs.blendWeightOffDw;
+            p.blendIndexOffDw = vs.blendIndexOffDw;
+            memcpy(p.blendBytes, vs.blendBytes, sizeof p.blendBytes);
+            p.blendCount = vs.blendCount;
+            if (!CapturePalette(vsWindow, regs, PaletteBase(vs), PaletteRowsInitial(),
+                                p.pal))
+                p.blendCount = 0;
+        }
+        else
+            ++g_palNoDesc;
+    }
     g_pending.emplace(key, p);
 }
 
@@ -11588,6 +11856,130 @@ bool PlaceIndices(const uint16_t* src, uint32_t count, VkDeviceAddress* addr)
     return true;
 }
 
+// Reserve room in the baked-vertex pool. Unlike the index pool this hands back the HOST
+// pointer as well: a refit re-blends into the same bytes.
+bool PlaceBake(VkDeviceSize bytes, VkDeviceAddress* addr, uint8_t** mapped)
+{
+    const VkDeviceSize need = (bytes + 15) & ~VkDeviceSize(15);
+    constexpr VkDeviceSize kChunk = 16ull << 20;
+    AsChunk* c = nullptr;
+    if (!g_bakeChunks.empty() &&
+        g_bakeChunks.back().cursor + need <= g_bakeChunks.back().buf.size)
+        c = &g_bakeChunks.back();
+    else
+    {
+        AsChunk nc;
+        const VkDeviceSize sz = std::max(kChunk, need);
+        if (!CreateBuffer(nc.buf, sz,
+                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          true))
+        {
+            fprintf(stderr, "[rt] baked-vertex pool chunk allocation failed (%llu MB)\n",
+                    (unsigned long long)(sz >> 20));
+            return false;
+        }
+        g_bakeChunks.push_back(nc);
+        c = &g_bakeChunks.back();
+    }
+    *addr = c->buf.address + c->cursor;
+    *mapped = c->buf.mapped + c->cursor;
+    c->cursor += need;
+    g_bakeBytes += need;
+    return true;
+}
+
+// THE PALETTE BLEND, done on the CPU into the baked buffer (item 3).
+//
+// The arithmetic is the translated microcode's, with its swizzles cancelled — the Xenos
+// compiler writes `r5 = w * vc(base + a0).xzyw` and then reads it back through
+// `dot(r5.yxzw, pos.zxyw)`, and working both through leaves the plain row-major form:
+//
+//     row_k = SUM_i  weight_i * vc(base + index_i + k)          for k = 0,1,2
+//     world = (dot(row_0, p4), dot(row_1, p4), dot(row_2, p4))
+//
+// One of the bank's shaders rotates its accumulator on the last influence
+// (`+ r3.wxyz` against `vc(9 + a0).wxzy`); that composes to the same sum, which is why
+// this is one routine and not one per swizzle shape.
+//
+// The weights are k_8_8_8_8 with num_format NORMALISED, so a byte is w/255; the indices
+// are the same dword declared INTEGER, so a byte is the row offset itself. Both facts
+// are the shader's own declaration, read by tools/rt_world_xform_census.py.
+//
+// Deliberately CPU-side and inside the existing staging walk, per the plan: it is
+// correct-or-not with no compute plumbing, and this project has repeatedly found that
+// the expensive-looking thing was not the cost (parts 47, 55). If the profile says
+// otherwise it moves to a compute pass and nothing above it changes.
+struct BakeResult
+{
+    uint32_t outOfRange = 0;
+    // The highest palette row any vertex referenced. A mesh's bone assignment is part of
+    // its VERTEX data, so this is a property of the mesh and not of the frame — which is
+    // what lets the capture shrink to it after the first build, taking the per-frame
+    // palette hash from 2 KB a draw to a few hundred bytes. A later vertex reaching past
+    // it is not silently clamped: it lands in `outOfRange`, which the census prints and
+    // which must read zero.
+    uint32_t rowsUsed = 0;
+};
+
+BakeResult BakeVertices(const uint8_t* base, uint32_t posVa, uint32_t vertCount,
+                        uint32_t strideDw, uint32_t offsetDw, uint32_t endian,
+                        const uint8_t* blendBytes, uint32_t blendCount,
+                        uint32_t weightOffDw, uint32_t indexOffDw, const Palette& pal,
+                        uint8_t* out)
+{
+    auto dw = [&](uint32_t at) -> uint32_t {
+        uint32_t w;
+        memcpy(&w, base + at, 4);
+        // The guest bytes are big-endian. Endian 2 is 8-in-32, which the raster upload
+        // undoes with the same bswap; endian 0 leaves them big-endian in memory and the
+        // same bswap is what turns a big-endian dword into a host one. Both cases end
+        // up here, and Collect refuses every other encoding.
+        return __builtin_bswap32(w);
+    };
+    BakeResult res;
+    for (uint32_t v = 0; v < vertCount; ++v)
+    {
+        const uint32_t vAt = posVa + v * strideDw * 4;
+        float p[4];
+        for (int c = 0; c < 3; ++c)
+        {
+            const uint32_t w = dw(vAt + (offsetDw + c) * 4);
+            memcpy(&p[c], &w, 4);
+        }
+        p[3] = 1.0f;
+        const uint32_t wDw = dw(vAt + weightOffDw * 4);
+        const uint32_t iDw = dw(vAt + indexOffDw * 4);
+        float row[3][4] = {};
+        for (uint32_t k = 0; k < blendCount; ++k)
+        {
+            const uint32_t byte = blendBytes[k] & 3;
+            // Byte 0 of the little-endian dword is component x, matching how the direct
+            // path binds k_8_8_8_8 and how XeVfetchDep decodes it over the same copy.
+            const float wt = float((wDw >> (byte * 8)) & 0xFF) * (1.0f / 255.0f);
+            if (wt == 0.0f)
+                continue;
+            const uint32_t a0 = (iDw >> (byte * 8)) & 0xFF;
+            if (a0 + 3 > pal.rowCount)
+            {
+                ++res.outOfRange;   // the capture was too small — counted, not clamped
+                continue;
+            }
+            res.rowsUsed = std::max(res.rowsUsed, a0 + 3);
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 4; ++c)
+                    row[r][c] += wt * pal.rows[size_t(a0 + r) * 4 + c];
+        }
+        float world[3];
+        for (int r = 0; r < 3; ++r)
+            world[r] = row[r][0] * p[0] + row[r][1] * p[1] + row[r][2] * p[2] + row[r][3];
+        memcpy(out + size_t(v) * 12, world, 12);
+    }
+    return res;
+}
+
 // Everything over: retire every chunk and AS, clear the map. Live keys re-pend
 // through Collect on their next draw and rebuild under the per-frame budget.
 void FlushAll()
@@ -11607,6 +11999,10 @@ void FlushAll()
         RetireBufferAs(VK_NULL_HANDLE, c.buf);
     g_idxChunks.clear();
     g_idxBytes = 0;
+    for (auto& c : g_bakeChunks)
+        RetireBufferAs(VK_NULL_HANDLE, c.buf);
+    g_bakeChunks.clear();
+    g_bakeBytes = 0;
     ++g_blasFlushes;
     fprintf(stderr, "[rt] BLAS pool over its cap — flushed (flush #%llu)\n",
             (unsigned long long)g_blasFlushes);
@@ -11662,6 +12058,7 @@ void BuildFrameStructures(uint8_t* base)
         uint64_t key = 0;
         VkDeviceAddress vtxAddr = 0;   // set only when `direct`
         bool direct = false;
+        bool bake = false;
     };
     const std::unordered_set<uint64_t>& live =
         CascadeCasters() ? g_prevCascadeKeys : g_prevKeys;
@@ -11681,8 +12078,12 @@ void BuildFrameStructures(uint8_t* base)
             continue;
         BatchItem bi;
         bi.key = key;
+        // A palette mesh is BAKED, so it is neither direct nor staged: its vertices are
+        // blended into a pool of our own. Item 0 and item 3 are alternatives per mesh,
+        // not a stack.
+        bi.bake = p.blendCount != 0 && p.pal.rowCount >= 3;
         Renderer::PersistEntry* pe =
-            (DirectBuffers() && R->persistOn && R->persist.address)
+            (!bi.bake && DirectBuffers() && R->persistOn && R->persist.address)
                 ? PersistFind(p.streamKey)
                 : nullptr;
         // The size check is not decoration: the store's slot is allocated to the stream's
@@ -11693,7 +12094,7 @@ void BuildFrameStructures(uint8_t* base)
             bi.direct = true;
             bi.vtxAddr = R->persist.address + pe->at;
         }
-        else
+        else if (!bi.bake)
             stagingNeed = ((stagingNeed + 15) & ~VkDeviceSize(15)) + p.posBytes;
         batch.push_back(bi);
         batchBytes += need;
@@ -11715,6 +12116,10 @@ void BuildFrameStructures(uint8_t* base)
         uint32_t tris = 0, maxVertex = 0;
         VkDeviceAddress idxAddr = 0;
         bool direct = false;
+        bool bake = false;
+        VkDeviceAddress bakeAddr = 0;
+        uint8_t* bakeMapped = nullptr;
+        uint32_t vertCount = 0, bakeRows = 0;
     };
     std::vector<Built> builds;
     builds.reserve(batch.size());
@@ -11754,7 +12159,27 @@ void BuildFrameStructures(uint8_t* base)
             if (!vertCount)
                 continue;
             VkDeviceAddress vtxAddr = bi.vtxAddr;
-            if (bi.direct)
+            uint32_t bakeStride = stride;
+            uint32_t bakeRows = 0;
+            uint8_t* bakeMapped = nullptr;
+            if (bi.bake)
+            {
+                // Tightly packed float3: the blend produces our own vertices, so there
+                // is no reason to carry the guest's interleaved stride into the BLAS,
+                // and the index values are unaffected because every vertex is written.
+                if (!GuestRangeOk(p.posVa, uint64_t(vertCount) * stride) ||
+                    !PlaceBake(VkDeviceSize(vertCount) * 12, &vtxAddr, &bakeMapped))
+                    continue;
+                const BakeResult br = BakeVertices(
+                    base, p.posVa, vertCount, p.strideDw, p.offsetDw, p.vEndian,
+                    p.blendBytes, p.blendCount, p.blendWeightOffDw, p.blendIndexOffDw,
+                    p.pal, bakeMapped);
+                g_bakeOutOfRange += br.outOfRange;
+                bakeRows = br.rowsUsed;
+                bakeStride = 12;
+                ++g_baked;
+            }
+            else if (bi.direct)
                 ++g_buildDirect;
             else
             {
@@ -11849,14 +12274,21 @@ void BuildFrameStructures(uint8_t* base)
             bd.maxVertex = maxVertex;
             bd.idxAddr = idxAddr;
             bd.direct = bi.direct;
+            bd.bake = bi.bake;
+            bd.bakeAddr = bi.bake ? vtxAddr : 0;
+            bd.bakeMapped = bakeMapped;
+            bd.vertCount = vertCount;
+            bd.bakeRows = bakeRows;
             bd.geom = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
             bd.geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
             bd.geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
             auto& t = bd.geom.geometry.triangles;
             t = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR };
             t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-            t.vertexData.deviceAddress = vtxAddr + p.offsetDw * 4;
-            t.vertexStride = stride;
+            // A baked buffer is already positioned at its first vertex; a raw stream
+            // needs the position attribute's own dword offset.
+            t.vertexData.deviceAddress = vtxAddr + (bi.bake ? 0u : p.offsetDw * 4);
+            t.vertexStride = bakeStride;
             t.maxVertex = maxVertex;
             t.indexType = VK_INDEX_TYPE_UINT16;
             t.indexData.deviceAddress = idxAddr;
@@ -11943,6 +12375,25 @@ void BuildFrameStructures(uint8_t* base)
                 nb.updateScratch = bd.updateScratchSize;
                 nb.framesSinceBuild = 0;
                 nb.direct = bd.direct;
+                nb.bakeAddr = bd.bakeAddr;
+                nb.bakeMapped = bd.bakeMapped;
+                nb.vertCount = bd.vertCount;
+                nb.posVa = p.posVa;
+                nb.vEndian = p.vEndian;
+                nb.blendStrideDw = p.blendStrideDw;
+                nb.blendWeightOffDw = p.blendWeightOffDw;
+                nb.blendIndexOffDw = p.blendIndexOffDw;
+                memcpy(nb.blendBytes, p.blendBytes, sizeof nb.blendBytes);
+                nb.blendCount = bd.bake ? p.blendCount : 0;
+                nb.pal = p.pal;
+                if (bd.bake && bd.bakeRows >= 3 && bd.bakeRows < nb.pal.rowCount)
+                {
+                    nb.pal.rows.resize(size_t(bd.bakeRows) * 4);
+                    nb.pal.rowCount = bd.bakeRows;
+                    nb.pal.hash = PaletteHash(nb.pal.rows.data(), bd.bakeRows);
+                }
+                nb.palFrame = R->frame;
+                nb.palHashBuilt = bd.bake ? nb.pal.hash : 0;
                 g_blas.emplace(bd.key, nb);
                 g_pending.erase(bd.key);
                 ++g_blasBuilt;
@@ -11985,7 +12436,7 @@ void BuildFrameStructures(uint8_t* base)
             // clean and then failing to allocate scratch would leave stale geometry with
             // nothing to say so — a silently wrong shadow, which is the failure mode this
             // whole feature has already had once.
-            uint64_t key = 0, newGuard = 0;
+            uint64_t key = 0, newGuard = 0, newPalHash = 0;
             bool forced = false;
         };
         std::vector<Refit> refits;
@@ -12000,7 +12451,7 @@ void BuildFrameStructures(uint8_t* base)
             // FROM: that buffer was recycled at the swap. Counted rather than silently
             // skipped, because a non-zero reading here means item 0 is not serving the
             // population item 2 exists for.
-            if (!b.direct || !b.idxAddr)
+            if ((!b.direct && !b.blendCount) || !b.idxAddr)
             {
                 ++g_refitNoSource;
                 continue;
@@ -12026,8 +12477,28 @@ void BuildFrameStructures(uint8_t* base)
                 }
             }
             const bool forced = b.framesSinceBuild >= RefitMax();
-            if (pe->guard == b.vGuard && !forced)
+            // A BAKED mesh has two ways to go stale and they are independent: the guest
+            // rewrote the vertices (the persist guard), or the draw was issued with a
+            // different palette (the palette hash — a prop batch re-placed, or an actor
+            // animated, with the vertex bytes untouched). Watching only the guard would
+            // leave every re-placed batch frozen where it first appeared.
+            const bool paletteMoved = b.blendCount && b.palHashBuilt != b.pal.hash;
+            if (pe->guard == b.vGuard && !paletteMoved && !forced)
                 continue;   // clean, and not yet due a quality rebuild
+            if (b.blendCount)
+            {
+                if (!b.bakeMapped || !b.vertCount ||
+                    !GuestRangeOk(b.posVa, uint64_t(b.vertCount) * b.strideDw * 4))
+                {
+                    ++g_refitNoSource;
+                    continue;
+                }
+                g_bakeOutOfRange += BakeVertices(
+                    base, b.posVa, b.vertCount, b.strideDw, b.offsetDw, b.vEndian,
+                    b.blendBytes, b.blendCount, b.blendWeightOffDw, b.blendIndexOffDw,
+                    b.pal, b.bakeMapped).outOfRange;
+                ++g_rebaked;
+            }
             if (refitBytes + b.posBytes > refitBudget && !refits.empty())
             {
                 ++g_refitBudgeted;
@@ -12049,8 +12520,10 @@ void BuildFrameStructures(uint8_t* base)
             // not), and it is the reason the geometry info is rebuilt here each frame
             // instead of being stored alongside the BLAS.
             t.vertexData.deviceAddress =
-                R->persist.address + pe->at + VkDeviceSize(b.offsetDw) * 4;
-            t.vertexStride = VkDeviceSize(b.strideDw) * 4;
+                b.blendCount ? b.bakeAddr
+                             : R->persist.address + pe->at + VkDeviceSize(b.offsetDw) * 4;
+            t.vertexStride = b.blendCount ? VkDeviceSize(12)
+                                          : VkDeviceSize(b.strideDw) * 4;
             t.maxVertex = b.maxVertex;
             t.indexType = VK_INDEX_TYPE_UINT16;
             t.indexData.deviceAddress = b.idxAddr;
@@ -12074,6 +12547,7 @@ void BuildFrameStructures(uint8_t* base)
             r.scratch = forced ? b.buildScratch : b.updateScratch;
             r.key = key;
             r.newGuard = pe->guard;
+            r.newPalHash = b.pal.hash;
             r.forced = forced;
             refitScratchNeed = ((refitScratchNeed + R->rtScratchAlign - 1) &
                                 ~VkDeviceSize(R->rtScratchAlign - 1)) +
@@ -12106,6 +12580,7 @@ void BuildFrameStructures(uint8_t* base)
                 if (bit2 != g_blas.end())
                 {
                     bit2->second.vGuard = r.newGuard;
+                    bit2->second.palHashBuilt = r.newPalHash;
                     bit2->second.lastFrame = R->frame;
                     bit2->second.framesSinceBuild =
                         r.forced ? 0 : bit2->second.framesSinceBuild + 1;
