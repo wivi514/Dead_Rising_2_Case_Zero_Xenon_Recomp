@@ -56,7 +56,7 @@ def main():
         return 2
 
     bad = []
-    missing_meta = missing_key = dynamic = 0
+    missing_meta = missing_key = dynamic = zero = 0
     used = []
     for sp in spvs:
         name = sp.name[:-4]
@@ -78,6 +78,8 @@ def main():
             dynamic += 1
         else:
             used.append(len(lst))
+            if not lst:
+                zero += 1
         if args.hlsl_dir:
             hp = Path(args.hlsl_dir) / (name + '.hlsl')
             if not hp.exists():
@@ -94,6 +96,12 @@ def main():
 
     print('%s: %d modules, %d dynamic (full-copy fallback), %d without the keys'
           % (d.name, len(spvs), dynamic, missing_key))
+    # A shader reading ZERO constants is its own category and the item's biggest single
+    # win — the correct copy is nothing at all. It is called out because the first version
+    # of the runtime treated "empty list" as "unknown list" and full-copied them, which is
+    # the feature not applying to exactly the shaders it helps most, silently.
+    if zero:
+        print('  %d shader(s) read NO ALU constants — those copy ZERO bytes' % zero)
     if used:
         used.sort()
         print('  registers per gathering shader: median %d, p90 %d, MAX %d of 256'

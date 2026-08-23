@@ -2160,6 +2160,10 @@ struct ShaderMeta
     // believable and `CZ_VK_GATHER_POISON=1` is what proves the arm can fire.
     std::vector<uint32_t> aluConsts;
     bool aluDynamic = true;      // absent sidecar entry => full copy, never a guess
+    // Whether the sidecar CARRIED a list at all. An empty list from a sidecar that has
+    // the key means "reads no constants" (11 modules); an empty list from one that does
+    // not means "we do not know". The copy path must not merge them.
+    bool aluListKnown = false;
     uint8_t blendSlot = 0, blendStrideDw = 0, blendWeightOffDw = 0, blendIndexOffDw = 0;
     uint8_t blendBytes[4] = {};   // which component of each dword, per influence
     uint8_t blendCount = 0;       // 0 = no descriptor; the entry-0 fallback stands
@@ -2360,16 +2364,24 @@ bool LoadShaderMeta(const std::filesystem::path& path, ShaderMeta& meta)
 
     meta.isVertex = text.find("\"vs\"") != std::string::npos;
     meta.interpolators = JsonIntArray(text, "interpolators");
-    // Perf item C. A sidecar predating part 72 has neither key; `aluDynamic` stays true
-    // and the shader keeps the full copy, which is the safe direction and is COUNTED at
-    // the copy site rather than silently taken.
+    // Perf item C. TWO DIFFERENT STATES THAT LOOK THE SAME THROUGH `JsonIntArray`, and
+    // conflating them was a real defect in the first version of this:
+    //
+    //   * the KEY IS ABSENT — a sidecar predating part 72. We know nothing, so the shader
+    //     keeps the full copy. Safe, and counted at the copy site rather than silently
+    //     taken.
+    //   * the KEY IS PRESENT AND THE LIST IS EMPTY — the shader reads NO ALU constants at
+    //     all, which 11 of the 449 modules do. The correct copy for those is ZERO bytes,
+    //     and treating "empty" as "unknown" gave them the full 4,096 instead — the feature
+    //     quietly not applying to exactly the shaders it should help most.
+    //
+    // `JsonIntArray` returns an empty vector for both, so the presence of the key has to
+    // be tested separately.
+    const bool haveAluList = text.find("\"aluConsts\"") != std::string::npos;
     meta.aluConsts = JsonIntArray(text, "aluConsts");
-    if (text.find("\"aluDynamic\"") != std::string::npos)
-        meta.aluDynamic = text.find("\"aluDynamic\": false") != std::string::npos
-                              ? false
-                              : true;
-    if (meta.aluConsts.empty())
-        meta.aluDynamic = true;   // no list is not "reads nothing"
+    meta.aluDynamic =
+        !(haveAluList && text.find("\"aluDynamic\": false") != std::string::npos);
+    meta.aluListKnown = haveAluList;
 
     meta.tfetchConsts = JsonIntArray(text, "tfetchConsts");
     meta.tfetchDims = JsonIntArray(text, "tfetchDims");
@@ -10813,7 +10825,7 @@ void Dump()
 // four dwords is a size the compiler turns into two 8-byte moves.
 uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
-         g_gatherTopUp = 0;
+         g_gatherTopUp = 0, g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
 
 bool ConstGatherOff()
 {
@@ -10856,9 +10868,16 @@ bool ConstGatherPoison()
 void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta, bool isVs)
 {
     (void)isVs;
-    const bool full = ConstGatherOff() || meta.aluDynamic || meta.aluConsts.empty();
+    // NOTE the absence of `aluConsts.empty()` here: an empty list from a sidecar that has
+    // the key is "this shader reads nothing", and the gather loop below then copies
+    // nothing, which is the correct answer and the largest possible saving.
+    const bool full = ConstGatherOff() || meta.aluDynamic;
     if (full)
     {
+        if (!meta.aluListKnown)
+            ++g_gatherNoList;
+        else
+            ++g_gatherDynamic;
         ++g_gatherFull;
         g_gatherDwordsFull += 256 * 4;
         memcpy(dst, src, 256 * 4 * sizeof(uint32_t));
@@ -10876,6 +10895,8 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
     }
     ++g_gatherGathered;
     const size_t n = meta.aluConsts.size();
+    if (!n)
+        ++g_gatherEmpty;      // copied NOTHING; the biggest win the item has
     const size_t skip = (ConstGatherPoison() && n) ? 1 : 0;
     for (size_t i = skip; i < n; ++i)
     {
