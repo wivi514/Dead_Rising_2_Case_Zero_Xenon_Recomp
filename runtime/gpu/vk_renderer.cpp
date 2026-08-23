@@ -1160,6 +1160,13 @@ void InternalRes(uint32_t& w, uint32_t& h)
             g_resScaleLocked = true;
             bw = pw;
             bh = ph;
+            // SAY SO. This arm changes every rasterisation target in the renderer and
+            // printed NOTHING when it worked — only when it was rejected — so a session
+            // quoting it had no way to show it engaged, and part 71's harness gate for it
+            // could not have matched anything (gotcha 408, found by writing the gate
+            // first). The settings path a few lines below has always announced itself.
+            fprintf(stderr, "[vk] internal resolution %ux%u from CZ_VK_RES (env wins over "
+                            "cz_settings.txt)\n", bw, bh);
         }
         else
             fprintf(stderr, "[vk] CZ_VK_RES=%s is not a resolution this renderer can "
