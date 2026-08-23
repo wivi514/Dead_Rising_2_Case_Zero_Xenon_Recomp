@@ -77,7 +77,18 @@ PPC_FUNC(sub_8246BF48)
     // substitution can have disturbed it) and enforces base+N absolutely, no
     // restore; slider back to 0 enforces base exactly. CZ_NO_GAME_FOV=1 is the
     // control arm (the renderer-side patch stays available via CZ_VK_FOV).
-    static const bool off = getenv("CZ_NO_GAME_FOV") != nullptr;
+    // AN ARM THAT CANNOT BE SHOWN TO HAVE ENGAGED IS NOT AN ARM (gotcha 408 — part 69
+    // shipped a control whose variable went into the harness description instead of its
+    // env block and reported the result as a null). This is the control for the whole
+    // guest-side fov substitution, including part 62's wide-mode over-widen, so a
+    // performance session that quotes it has to be able to prove it was on.
+    static const bool off = [] {
+        const bool o = getenv("CZ_NO_GAME_FOV") != nullptr;
+        if (o)
+            fprintf(stderr, "[fov] CZ_NO_GAME_FOV=1 — the guest-side fov substitution is "
+                            "OFF; the game culls to its own 16:9 frustum\n");
+        return o;
+    }();
     if (!off && uint32_t(ctx.lr) == 0x8246E31C)
     {
         static std::mutex mu;
