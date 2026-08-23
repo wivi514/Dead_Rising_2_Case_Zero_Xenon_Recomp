@@ -159,10 +159,12 @@ mask; trust the microcode's own swizzles.
   - **`gotchas.md`** — the 402-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
-  - **`part69-night-plan.md` — THE LIVE PLAN, and its §3 is the live path.** Part 69's
-    session established that the occluder set is no longer the defect: the primary ray
-    resolves the real world and the shadows are still wrong. §1 has been run and
-    answered; §2 is explicitly NOT the work.
+  - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
+    ITEM 1 IS ANSWERED.** Part 69 established that the occluder set is no longer the
+    defect (the primary ray resolves the real world and the shadows are still wrong);
+    part 70 closed §3's item 1, the sun, which was a confound and not a defect
+    (`phase5-notes.md` §6dc). §1 has been run and answered; §2 is explicitly NOT the
+    work; §3's items 2 and 3 — the origin bias and the ray length — remain.
   - `rt-remix-plan.md` — the plan part 69 executed, five items taken from
     `rtx-remix-prior-art.md` (which records the licence: DXVK zlib/libpng, NVIDIA's
     `rtx_render/*` per-file MIT). **Items 0-3 shipped; item 4 is still open.**
@@ -183,7 +185,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part70-kickoff.md`.** State the rule as well as the name, because this line said
+    `part71-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -764,11 +766,49 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-23 (part 70 CLOSED — **THE SUN IS CLOSED AND IT WAS
+NEVER WRONG: part 69's "the Z flips between headless and windowed" was a CONFOUND, and
+hardware states the sun twice in the same draw's constant file.** `docs/part71-kickoff.md`
+is the LIVE hand-off; the record is `phase5-notes.md` §6dc; the backlog entry is
+`open-items.md` 0v; the lessons are gotchas 411-413 and **410's example is retracted where
+it stands**):
+
+* **Zero of the 36 archived RT logs contain a DebugJump request or synthetic input.**
+  Every one is an operator run from THEIR save, while every run on the other side of the
+  partition spawns at a fixed story point — two different places and story times in a game
+  with a day cycle. The arm LABEL named one difference and there were three (gotcha 411).
+* **`tools/xtr_sun_oracle.py` asks hardware, over all twenty `.xtr` traces.** The title's
+  own `pc(23)`, its own cascade sampling matrix's depth row, and **the runtime's own
+  decomposition of the cascade RENDER matrix** agree to **0.00 degrees, twenty of twenty**,
+  on 567-1101 draws each. The method was sound and the matrix was the right one.
+* **The runtime now reads the title's own constant** (`rtshadow::NoteGuestSun`), bound
+  two-sidedly — a block qualifies only when its own cascade matrix agrees with `c23` — with
+  `CZ_VK_RT_SUN_SRC=cascade` the same-binary control arm and the decomposition retained as
+  the fallback. In-runtime the two agree to 0.0 degrees over 33,332 latches and 8,422 bound
+  frames, **zero rejections**. **This is an architectural simplification, not a picture
+  fix**; what it buys is that §6cw's intruder can never win a frame again.
+* **The DebugJump destination sweep is the day-cycle proof**: destination 0 latches
+  `(+0.662 +0.458 -0.594)` where destination 1 latches `(-0.371 +0.557 +0.743)`, the
+  title's own constant agreeing with both, and the per-cluster FRAME RANGES are disjoint —
+  a light that changed with the scene, not a selection that flipped (gotcha 413).
+* **So structure, receiver and sun are all now demonstrably correct and the straight-line
+  signature has survived all three.** What is left is the RAY (bias, length) and the
+  CONSUMPTION (how the factor image reaches the 126 patched shaders); `part71-kickoff.md`
+  §1 is a one-dump bisection between them. Part 67's exonerations of the bias and the ray
+  length are still void (gotcha 172).
+* **Two retractions in place**: the edge-density gate in `phase5-notes.md` §6da §7 (its
+  SIGN was wrong) and `part69_rt_geometry_session.sh`'s "tlasInst should be CLOSE" note
+  (the occurrence-ordinal identity makes a large gap the design's own prediction).
+* **Gates at close** (RT off = the shipped default): `--smoke` OK; `shader_dim_census.py`
+  clean on all sixteen caches and the play cache's NAME diff empty; `rt_world_xform_census.py`
+  104 of 104. **A5 is owed**, carried since part 67.
+
 Where the port is, as of 2026-08-23 (part 69 CLOSED — **THE REMIX PLAN'S ITEMS 0-3 ARE
 BUILT AND PROVEN, AND THE SESSION MOVED THE SUBJECT: THE OCCLUDER SET IS NO LONGER THE
 DEFECT.** The primary ray now resolves the real world and the shadows are still wrong.
-**`docs/part69-night-plan.md` §3 is the live plan** and `docs/part70-kickoff.md` is the
-LIVE hand-off; the records are `phase5-notes.md` §6da (built) and §6db (measured); the
+`docs/part69-night-plan.md` §3 WAS the live plan and `docs/part70-kickoff.md` WAS the
+hand-off then; the live one is named above, and §3's item 1 (the sun) is now ANSWERED —
+its items 2 and 3 remain. The records are `phase5-notes.md` §6da (built) and §6db (measured); the
 backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
 
 * **Entry 0 was not an approximation, it was a different mesh.** Zero of 2,786 palette
@@ -784,10 +824,10 @@ backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
   fence, the hills. Part 68 read the same instrument as *"a flat plain... no fence, no
   Chuck"*. **The occluder work fixed it, and the shadows are still wrong**, so four rounds
   of that were aimed at a subsystem that is now demonstrably correct (gotcha 409).
-* **THE LIVE LEAD IS THE SUN.** Censused over every run: windowed latches
-  `(-0.364 0.546 -0.755)`, headless `(-0.371 0.557 +0.743)` — two components agreeing to
-  2% while the third flips sign, which no day cycle produces. **Every headless RT
-  measurement this feature has made was taken with the mirrored one** (gotcha 410).
+* ~~**THE LIVE LEAD IS THE SUN.**~~ **CLOSED IN PART 70 AND IT WAS A CONFOUND** — see
+  the block above. The two vectors were latched in two different places at two different
+  story times, and hardware confirms our decomposition to 0.00 degrees in all twenty
+  captures. Nothing was ever mirrored (gotchas 411-413; 410's example is retracted).
 * **Four synchronisation VUIDs were found and fixed inside the part** — a structure whose
   build was RECORDED but not executed being issued an in-place update in the same command
   buffer. The arms were the bisect: three runs, no rebuilds (gotcha 407).
@@ -799,7 +839,7 @@ backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
   `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-67's** — part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-68's** — part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

@@ -14979,6 +14979,31 @@ separate a light that MOVED (clusters owning disjoint stretches of frames) from 
 selection that FLIPPED (clusters interleaving), and part 69's closing hours went to the
 second reading of a table that could only ever have shown the first.
 
+### 5b. THE DAY-CYCLE EXPLANATION IS PROVEN, by the game's own destinations
+
+`tools/part70_sun_destinations.sh` walks the DebugJump screen's destinations — each a
+different point in the story — and censuses the sun in each. Two of them are enough:
+
+| destination | the menu-era light | the world's sun | frames |
+|---|---|---|---|
+| 0 (`0 x DOWN`) | (-0.381 +0.812 -0.443), frames 2246..4292 | **(+0.662 +0.458 -0.594)** volume 26.6 | 4293..20629 |
+| 1 (`1 x DOWN`, the documented route) | (-0.381 +0.812 -0.443), frames 2250..4493 | **(-0.371 +0.557 +0.743)** volume 64.1 | 4494..9336 |
+
+Two destinations, **two entirely different suns** — not a mirrored Z but a different
+azimuth, elevation and volume — and in both the title's own `c23` agrees with the cascade
+decomposition to 0.0 degrees with **zero rejections** over 172k-183k probe draws. The
+menu-era light is identical in both, which is the control: the part of the world that did
+not change reads the same.
+
+**And the frame ranges are DISJOINT in both runs.** That is the reading the count-only
+census could not give: a light that changed WITH THE SCENE owns a contiguous stretch of
+frames, where a selection flipping between candidates interleaves. Part 69's table had
+counts and no order, and the whole lead rests on which of those two it was.
+
+So a different place in this game has a different sun, our decomposition reports it
+correctly, and the operator's `(-0.364 0.546 -0.755)` is very probably their save's own
+sun. §6 is the line that would make that a measurement rather than an inference.
+
 ### 6. What this does NOT settle, and the one line that will
 
 No run in the archive carries the title's own `c23` beside a `(-0.364 0.546 -0.755)`
