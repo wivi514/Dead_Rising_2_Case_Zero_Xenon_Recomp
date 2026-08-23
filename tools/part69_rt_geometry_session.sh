@@ -136,8 +136,15 @@ for t in dyn0 old; do
 done
 echo
 fi
-echo "  THE PAIR — bake against nobake. tlasInst should be CLOSE in the two (the bake"
-echo "  changes where geometry sits, not how much of it there is):"
+# RETRACTED IN PLACE (part 69's session). This block used to say tlasInst "should be
+# CLOSE in the two, because the bake changes where geometry sits, not how much of it
+# there is". It measured 4828 against 2866, and the note was wrong rather than the
+# measurement: the bake gives a mesh an identity carrying its OCCURRENCE ORDINAL, so one
+# stream drawn N times becomes N instances where the unbaked arm shared one. A large
+# gap is what the design predicts. The note was written before the run and never
+# revisited — a plan's expectation has the same shelf life as a number (gotcha 13).
+echo "  THE PAIR — bake against nobake. tlasInst is EXPECTED TO BE LARGER under bake"
+echo "  (the occurrence-ordinal identity creates one instance per occurrence):"
 for t in bake nobake; do
     [ -e "$OUT/$t.log" ] || continue
     printf '  %-7s ' "$t"

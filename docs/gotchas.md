@@ -4442,12 +4442,57 @@ From phase C part 18 (the frame rate — and none of it was work):
      happen to be holding.
 
 410. **WHEN TWO ENVIRONMENTS DISAGREE ABOUT A VALUE, CENSUS IT ACROSS EVERY RUN YOU
-     ALREADY HAVE BEFORE EXPLAINING IT.** A latched sun direction read
+     ALREADY HAVE BEFORE EXPLAINING IT.** ~~A latched sun direction read
      `(-0.364 0.546 -0.755)` in every windowed run and `(-0.371 0.557 +0.743)` in every
-     headless one — two components agreeing to 2% while the third flips sign, which no
+     headless one~~ **(RETRACTED IN PART 70 — see 411; the partition was not
+     windowed-vs-headless and the values were not in conflict).** The advice stands and
+     the example does not: census before explaining. A latched sun direction read
+     `(-0.364 0.546 -0.755)` in one group of runs and `(-0.371 0.557 +0.743)` in another — two components agreeing to 2% while the third flips sign, which no
      day/night cycle produces. It cost one `grep` over logs already on disk, and it
      matters out of proportion to its size: every offline measurement the feature had ever
      made was taken in the mirrored configuration. Related to 50/51/86 (a rate measured
      once is a fact about that afternoon) — the general form is that HEADLESS AND WINDOWED
      ARE TWO DIFFERENT ORACLES and any value latched from the scene should be diffed
      between them before either is trusted.
+
+411. **AN ARM LABEL NAMES ONE DIFFERENCE; CHECK THAT IT IS THE ONLY ONE — AND CHECK IT IN
+     THE LOGS, NOT IN YOUR MEMORY OF HOW THE RUNS WERE MADE.** Gotcha 410 partitioned a
+     disputed sun vector as "windowed" against "headless" and made it a feature's live
+     lead. The label was the confound: re-reading all 36 archived logs, **zero contain a
+     `requested DebugJump` line and zero contain synthetic input** — every one is an
+     operator run that loaded THEIR save, while every run on the other side of the
+     partition reaches the world through the DebugJump screen and spawns at a fixed story
+     point. The two groups differed in the PLACE and the STORY TIME as well as in the
+     window, and the game has a day cycle, so both values could be right. This is the
+     project's A/B admissibility rule (two configurations are comparable only if they are
+     two states of ONE thing) applied to a census rather than to a picture, and the check
+     that would have caught it is two `grep -c` over logs already on disk. The corollary
+     bites harder than the rule: **a group label attached after the fact is a hypothesis
+     about what the runs had in common, and it is testable.**
+
+412. **THE TITLE OFTEN STATES, AS A CONSTANT, THE QUANTITY YOU ARE DERIVING FROM ITS
+     MATRICES — LOOK FOR THE LABEL BEFORE BUILDING THE DECOMPOSITION.** Five parts of an
+     RT shadow feature recovered the sun's direction by capturing a cascade matrix,
+     choosing among candidates with a per-frame majority VOTE, inverting it, unprojecting
+     two clip points and negating the difference; three separate attempts were needed just
+     to pick the right matrix. The title uploads a unit sun direction at pixel constant
+     `c23` and lights from it, and that constant had ALREADY BEEN PRINTED in this project's
+     own notes two years of parts earlier — in a table built to answer a question about
+     exposure, annotated only as "a unit direction". A derived quantity carries every
+     ambiguity of the derivation (which matrix, which sign convention, which handedness);
+     a constant the guest uploads carries none. **When a capture tool can dump the whole
+     constant file, dump it and read what is in there before writing arithmetic**, and
+     when you do use the constant, bind it two-sidedly — here the same block's cascade
+     matrix agrees with it to 0.00 degrees on hardware, which makes "these two disagree"
+     a reportable defect rather than a silent wrong answer.
+
+413. **A CENSUS OF A VALUE OVER A RUN NEEDS A TIME AXIS, OR IT CANNOT TELL "IT MOVED"
+     FROM "THE SELECTION FLIPPED".** A run's sun census printed three directions with
+     counts and no ordering. Two readings of that table are possible and they point at
+     opposite subsystems: a light that genuinely moved owns a contiguous stretch of
+     frames, while a selection that flips interleaves with the others. A part was spent on
+     the second reading. First and last frame per cluster is two `uint64_t` and one line
+     of `printf`. This is gotcha 405 ("a count over a run is not an ORDER") in the
+     instrument rather than in the evidence — and the reason it recurs is that a counter
+     is the cheapest thing to add and the ordering is only wanted later.
+

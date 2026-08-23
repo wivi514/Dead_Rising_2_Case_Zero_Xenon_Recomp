@@ -14626,11 +14626,20 @@ today climbs to the 1 GB cap and flushes — the gate is `flushes=0` with `blas=
 POSITIVE CONTROL: it is expected to flush, and if it does not then the growth those items
 exist to stop was never happening and they are unpriced (gotcha 30).
 
-**Needs the operator's eye, arms `bake`/`nobake`/`look`.** The pre-registered prediction is
+**Needs the operator's eye, arms `bake`/`nobake`/`look`.** ~~The pre-registered prediction is
 that the factor image's crowd-region edge density falls from part 68's 100.5 per 1000
-toward the open-road 10.6 with no change on open road, and that a shadow boundary now BENDS
+toward the open-road 10.6 with no change on open road~~, and that a shadow boundary now BENDS
 over a van's roof and down its side instead of running as one straight line across wall,
 van and ground. `CZ_VK_RT_NO_BAKE=1` must reproduce part 68 exactly.
+
+> **THE EDGE-DENSITY HALF OF THAT PREDICTION IS RETRACTED IN PLACE (part 69's session,
+> §6db §1).** Measured on the pair it ROSE — crowd 87.0 -> 121.2 per 1000 px, open road
+> 4.4 -> 10.2 — and the prediction's SIGN was wrong rather than merely its value: several
+> separate actor shadows legitimately produce more boundary than one smeared blob, so the
+> statistic could never have separated "fixed" from "worse". It is gotcha 403's shape
+> (an oracle that does not resolve the question asked) committed one part after writing
+> 403 down. **Do not use edge density as a gate on this class of defect.** The second
+> half — does the boundary BEND — stands, and is what the operator answered.
 
 ### 8. Still open at the close
 
@@ -14854,3 +14863,137 @@ report** an arm whose log does not carry it. Gotcha 408. The sibling of this tra
 in `part69_rt_geometry_session.sh`'s own header (gotcha 396, a description reaching `env`
 as a positional argument), which is what makes falling into it worth a hard failure rather
 than a printed line.
+
+## §6dc — Part 70: the sun, asked of hardware — and the anomaly was a confound (2026-08-23)
+
+Part 69's hand-off named one live lead and one first move: *"THE LIVE LEAD IS THE SUN"*,
+and *"establish WHICH is right before touching anything"*. Both were done. The answer is
+that neither of the two candidate vectors was wrong, the pair was never comparable, and
+the RT feature now reads the sun from the title's own constant instead of deriving it.
+
+### 1. The oracle, and it was already on disc
+
+The disputed quantity was a unit direction. Our own runtime could not adjudicate it — it
+is the thing in dispute — and part 69 proposed the operator's F9 screenshots as the
+oracle, reading the direction of the title's own raster shadows by eye. That was not
+needed. **The `.xtr` captures state the sun twice in the same draw's constant file:**
+
+* **`pc(23)`** is a unit direction the title uploads to its world shaders. Part 27's
+  constant table (§6bp) already had it — `-0.371391 0.557086 0.742781` — sitting in a
+  table built to answer a question about exposure, and matched by our own runtime's
+  upload of it to four decimal places. Nobody had read it as the sun.
+* **`pc(28..31)`**, the first shadow-cascade sampling matrix in the same block. Its DEPTH
+  row is the gradient of light-space depth in world space — the direction light travels —
+  so its negation is a second statement of the same thing, derived rather than labelled.
+
+`tools/xtr_sun_oracle.py` replays the register file of all twenty R-series traces and
+reads both, plus a third: it applies **the runtime's own decomposition, transcribed line
+for line**, to the pitch-1040 cascade RENDER matrix (the `c0-3` the runtime actually
+captures), so the METHOD can be tested apart from the MATRIX.
+
+| trace | `pc(23)` | cascade sampling matrix, depth row | cascade RENDER matrix, the runtime's method |
+|---|---|---|---|
+| w1_spawn | (-0.3714 +0.5571 +0.7428) | 0.00 deg | 0.00 deg, x797 draws |
+| w6_register_door | (-0.3866 +0.5799 +0.7171) | 0.00 deg | 0.00 deg, x1001 |
+| gas_station_sign | (-0.3860 +0.5790 +0.7181) | 0.00 deg | 0.00 deg, x1071 |
+| ...all twenty | 2 distinct, both +Z | **0.000 deg worst case** | 0.00 deg, 567-1101 each |
+
+**The method is sound, the render matrix is the right matrix, and hardware's sun points
+at positive Z.** The tool also names the two intruders the runtime's vote has been
+fighting since §6cw, with their volumes: the near-vertical `(-0.0100 +0.9998 +0.0200)` at
+volume 3583.5 (ours reads 3587.0 — the same object) and a `(0 0 -1)` at volume 1.0, six
+draws a frame. Neither is a sun and both draw into the same pitch-1040 pass.
+
+### 2. THE PART-69 CENSUS WAS A CONFOUND, and the label is what hid it
+
+The census that made the sun the lead partitioned the runs as *windowed* against
+*headless*. Re-reading every archived RT log settles what actually separated them:
+
+```
+36 logs carrying a sun census (parts 65-69)
+   with synthetic input (CZ_FAKE_PRESS_SEQ):   0
+   with a DebugJump request:                    0
+```
+
+**Every archived run is an operator run that loaded THEIR save.** Every "headless" run
+reaches the world through the DebugJump screen and spawns at `Case 0-2`. So the two arms
+differed in the place and the story time as well as in the window, and this game has a
+day cycle. The three headless logs the part-69 table quoted are gone — they were written
+under `/tmp`, which is a tmpfs — so the row that named them can no longer be re-read.
+
+The vector attributed to "headless" is also, to every printed digit, the title's own
+`pc(23)` from the captures: `(-0.371 0.557 +0.743)`. Two arms that differ in more than
+the one thing the label names are not an A/B, and the standing admissibility rule exists
+for exactly this. **Retract the headless-vs-windowed framing** in `part69-night-plan.md`
+§3 item 1, `part70-kickoff.md` §1, `open-items.md` 0v and gotcha 410.
+
+### 3. What the runtime now does, and the second oracle it carries
+
+The derivation is gone from the shipping path. `rtshadow::NoteGuestSun` reads the title's
+own `pc(23)` off the per-draw pixel constant window, and `CZ_VK_RT_SUN_SRC=cascade`
+restores the decomposition as the same-binary control arm (with the decomposition also
+serving as the fallback for any frame before the constant block has been seen, so a run
+never loses its shadows over this).
+
+**Identifying the block is itself two-sided**, because "c23 holds a unit vector" is not a
+binding. A draw qualifies only when `c23` and `c27` are both unit vectors, `c28..c31` is
+an orthographic composite, and **that matrix's own depth row agrees with `c23` to two
+degrees** — the exact relationship hardware holds to 0.00 degrees in every capture.
+Blocks that fail the last test are COUNTED, not dropped: a nonzero `mismatch` says the
+block was found and the title's two statements disagree in our runtime, which is a
+different finding from never finding it.
+
+It costs one integer compare per draw once the frame's block is bound (the frame stamp is
+set on a MATCH, so the scan walks successive draws until it finds one and then stops),
+and nothing at all when RT is off.
+
+### 4. The measurement, on the DebugJump route at settle 0
+
+```
+[rtb] sun directions latched (33332 latches, 3 distinct, 1 vote switches):
+[rtb]   (-0.381 +0.812 -0.443) volume 20.6    x8884      the menu-era light
+[rtb]   (-0.371 +0.557 +0.743) volume 64.1    x18336     the sun
+[rtb]   (-0.010 +1.000 +0.020) volume 3587.5  x6112      the intruder of §6cw
+[rtb] the TITLE'S OWN sun: 8422 frames bound, 2 distinct, 173290 probe draws,
+      0 blocks REJECTED for c23-vs-cascade disagreement
+[rtb]   (-0.381 +0.812 -0.443)  x2310
+[rtb]   (-0.371 +0.557 +0.743)  x6112
+[rtb]   the two readings differ by 0.0 degrees, and the pass used the TITLE'S one
+```
+
+The cascade decomposition and the title's constant **agree to 0.0 degrees**, over 33,332
+latches and 8,422 bound frames, with zero rejections — and the value is hardware's
+`pc(23)` exactly. Hardware's cascade volumes for this light are 63.4/67.1/89.7 and ours
+reads 64.1, so it is the same object and not merely the same direction.
+
+**So this change is an architectural simplification, not a picture fix**, and it must not
+be reported as one. What it buys is the removal of a failure mode rather than a measured
+delta: the `1 vote switches` in the run above is the intruder winning a frame, which is
+the defect §6cw needed three attempts to contain, and a constant the title uploads cannot
+ever be it.
+
+### 5. The census had no time axis, and that is why part 69 read it the way it did
+
+Both tables now carry each direction's first and last frame. A count over a run cannot
+separate a light that MOVED (clusters owning disjoint stretches of frames) from a
+selection that FLIPPED (clusters interleaving), and part 69's closing hours went to the
+second reading of a table that could only ever have shown the first.
+
+### 6. What this does NOT settle, and the one line that will
+
+No run in the archive carries the title's own `c23` beside a `(-0.364 0.546 -0.755)`
+latch, because the instrument did not exist when those runs were taken. Our reading is
+self-consistent and matches hardware everywhere it can be checked, so the likeliest
+explanation of the operator's value is that their save sits at a different story time —
+but that is an inference, and the measurement is free: **the next operator session, on
+this binary, prints `0 blocks REJECTED` and the two vectors side by side.** If their c23
+also reads -0.755 the sun moved and there was never a defect; if it reads +0.743 while
+the cascade latch says -0.755, the lead comes back with an oracle attached.
+
+### 7. Where that leaves the shadow defect
+
+The straight-line signature is still unexplained, and the sun is no longer a candidate
+for it. §6cy's exonerations of the ray-origin bias and the ray length were taken against
+a pile at the world origin (gotcha 172) and are still void; those are what `part69-night-plan.md`
+§3 items 2 and 3 ask for, and they need the operator's eye rather than a counter. What
+part 70 removes from the list is the one item that could be settled without one.

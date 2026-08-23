@@ -798,59 +798,6 @@ backlog entry is `open-items.md` 0v; the lessons are gotchas 403-410):
   `passes=6145` and is now the cheapest standing gate this feature has; `--smoke` OK;
   `rt_world_xform_census.py` 104 of 104 and self-checking its JSON. **A5 is owed.**
 
-Where the port is, as of 2026-08-22 (part 68 CLOSED — **THE PLACEMENT IS VERIFIED
-AGAINST HARDWARE AND THE REMAINING DEFECT IS THE POPULATION. The plan for it is
-taken from RTX REMIX and is `docs/rt-remix-plan.md`.** `docs/part69-kickoff.md` WAS the hand-off then; the live one is named above; the record is `phase5-notes.md` §6cz; the backlog entry is
-`open-items.md` 0v; the lessons are gotchas 401-402):
-
-* **Part 67's placement fix is confirmed in two same-binary pairs**: the
-  hemisphere probe **0.987 -> 0.650**, the shipped path **0.8% -> 14.6%
-  shadowed**, with `CZ_VK_RT_OBJ_XFORM=0` reproducing part 66 exactly. Every
-  prediction §6cy pre-registered was met.
-* **And the placement itself is EXONERATED OFFLINE AGAINST HARDWARE.**
-  `tools/rt_placement_render.py` projects the placed geometry through the camera
-  hardware itself used and splats it over the PNG the capture is frame-locked to:
-  2.9M vertices land on Chuck's torso, on every zombie, on the lamp posts, the
-  GAS sign, the kerb and the manhole cover.
-* **The remaining defect is the POPULATION.** Rendered from the player's camera,
-  the ray structure is a flat plain with distant buildings — the primary ray
-  sails past the foreground and the factor computed behind it is painted onto
-  near pixels. The signature is a shadow boundary running as ONE STRAIGHT LINE
-  across a wall, a van's roof, its side and the ground, bending at none of them.
-* **Two halves.** `dyn` (17-41%, location-dependent) never reaches the structure
-  — `CZ_VK_RT_DYN_SETTLE=N` admits the settled ones, `tlasInst` 2586 -> 3006 with
-  zero flushes. And the actors reach it in the wrong SHAPE, measured on the
-  factor image at **100.5 edge pixels per 1000 in the crowd against 10.6 on open
-  road** (isolated-pixel rate 0.35%, intermediate 0.00% — localised, not acne).
-* **`CZ_VK_RT_NO_PALETTE=1` removes that artifact and 60% of the world's
-  occluders with it** (`tlasInst` 2994 -> 1197), because the palette path is not
-  the actor path — it is the engine's MAIN WORLD SHADER, 2,658 of one frame's
-  4,512 accepted draws. Exclusion is a diagnostic; the blend is required. The
-  cheap shortcut is dead too: comparing palette entry 0 with entry 1 separates
-  nothing (63.4% / 69.8% over two traces).
-* **RTX REMIX, the operator's suggestion, read properly and licence first**
-  (`docs/rtx-remix-prior-art.md`): DXVK base zlib/libpng, NVIDIA's `rtx_render/*`
-  per-file MIT — both permissive. **`rtx.capture.correctBakedTransforms` exists
-  for, verbatim, "instanced meshes appear to all have identity xform matrices"** —
-  part 67's defect, named in NVIDIA's own options list. They read object
-  transforms from shader constants too (UE3 CTAB), which makes
-  `rt_world_xform_census.py` the standard move rather than a workaround.
-* **THE PLAN IS `docs/rt-remix-plan.md`**, five items in the order they enable
-  each other: bind the BLAS to the persist store (**one usage flag** — it already
-  has `deviceAddress = true` and already holds the vertices dword-swapped), an
-  identity that survives a content change, **BLAS refit** (`ALLOW_UPDATE` +
-  `validateUpdateMode`, `updateScratchSize` not `buildScratchSize`), the palette
-  blend, then retire the workarounds **and re-ask part 67's exonerations** — the
-  sun, ray length and bias were cleared against a pile at the origin, which is no
-  test (gotcha 172).
-* **Also open**: RT HIGH's four rays buy **no penumbra** (0.3% of pixels partially
-  shadowed); self-shadowing has never been tested against correctly-placed
-  geometry; instances went 500 -> ~3,000 a frame, on the PUMP thread.
-* **Gates at close** (RT off = the shipped default): `--smoke` OK;
-  `shader_dim_census.py` clean on all sixteen caches and the play cache's NAME
-  diff empty; `rt_world_xform_census.py` 104 of 104 and exit 1 on a planted gap.
-  **A5 is owed**, carried from part 67 — no kernel path changed in either.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-67's** — part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the

@@ -82,13 +82,22 @@ Next, in order:
    bending at none of them. **Four rounds of occluder work have not moved that
    signature** (gotcha 409).
 
-   **THE LIVE LEAD IS THE SUN**, censused rather than argued: windowed runs latch
-   `(-0.364 0.546 -0.755)` and headless runs `(-0.371 0.557 +0.743)` — two
-   components agreeing to 2% while the third flips sign, which no day/night cycle
-   produces. **Every headless RT measurement this feature has ever made was taken
-   with the mirrored one**, including part 66's 0.987 and part 67's 0.650. Settle
-   which is right using the title's OWN raster shadows as the oracle before touching
-   anything (gotcha 410).
+   ~~**THE LIVE LEAD IS THE SUN**, censused rather than argued: windowed runs latch
+   `(-0.364 0.546 -0.755)` and headless runs `(-0.371 0.557 +0.743)`...~~
+   **CLOSED IN PART 70 AND IT WAS A CONFOUND** (`phase5-notes.md` §6dc, gotchas
+   411-413). The partition was not windowed-vs-headless: **zero of the 36 archived
+   RT logs contain a DebugJump request or synthetic input**, so every one is an
+   operator run from THEIR save while every run on the other side spawns at a fixed
+   story point — two different places and times in a game with a day cycle.
+   `tools/xtr_sun_oracle.py` then asked hardware, which states the sun twice in the
+   same draw's constant file (`pc(23)` and its own cascade matrix's depth row) and
+   agrees with the runtime's own decomposition to **0.00 degrees in twenty of twenty
+   traces**. The runtime now reads `c23` directly (`CZ_VK_RT_SUN_SRC=cascade` is the
+   control arm) and the two readings agree to 0.0 degrees over 33,332 latches with
+   zero rejections. **This is an architectural simplification, not a picture fix.**
+   The one thing still owed is free: the next operator session on this binary prints
+   the title's own `c23` beside the latch, which says whether their save's
+   `(-0.364 0.546 -0.755)` is the game's sun or ours.
 
    **Items 1 and 2 are PROVEN on the operator's machine**: `tlasInst=5001
    blas=8029 (148.6 MB) built=8058 flushes=0` at settle 0, the configuration that
