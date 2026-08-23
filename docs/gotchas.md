@@ -4278,3 +4278,46 @@ From phase C part 18 (the frame rate — and none of it was work):
      before believing anything it says. Corollary for the dump: record the copy
      into the same command buffer as the pass that produced it — an immediate
      submit photographs the state before the pass has executed.
+
+398. **A TEST OF THE MATRIX IS NOT A TEST OF THE SPACE ITS INPUT IS IN.** Our RT
+     collector admits a draw when the constants at c0..c3 have the structure of
+     the camera's view-projection, and three parts of documentation read that as
+     "so the position stream is world-space". It does not follow, and here it was
+     false: c0..c3 is the same view-projection whether the shader feeds it a
+     world position or an object position it transformed one line earlier — which
+     is what this title's world shaders do, from a row-major 4x3 at vc(8..10).
+     Every mesh entered the BLAS in its own local frame with an identity instance
+     transform, so a whole town was traced as ~500 meshes stacked at the world
+     origin, and every downstream measurement (85% primary-ray hits, a
+     perspective-correct world checker, 97.3% of receivers unoccluded) was an
+     honest reading of that pile. **A structural test on a transform tells you
+     what the transform IS; the space of its input is a property of the SHADER
+     and has to be read out of the shader.** The falsifying measurement was one
+     line long and could have been run in part 63: transform the stream by the
+     matrix the collector approved and ask what fraction lands in the frustum the
+     draw was issued into. It read 11.7%.
+
+399. **AN AGGREGATE BOX IS A WEAK ORACLE; PROJECT THE POINTS INSTEAD.** The first
+     version of the census reported the accepted geometry's combined world box
+     and it looked entirely plausible — 776 x 50 x 854 units, about the size of
+     Still Creek. It was a pile of object-space meshes whose local boxes happened
+     to sum to that, and the exact ±388.2 / ±427.2 symmetry that gave it away was
+     noticed only by accident. A "does this land inside the town" test then
+     saturated at 100.0% for every candidate transform and could report nothing
+     (gotcha 233's shape again). What discriminated was projecting the actual
+     vertices through the actual camera matrix and counting the ones inside the
+     clip volume: 0.0% against 61-98%. **When a census must choose between
+     hypotheses about WHERE something is, use the projection the hardware itself
+     used, not a bounding box and not a plausibility window.**
+
+400. **A "CENSUS FIRST, BUILD NOTHING" INSTRUCTION PAYS FOR ITSELF IN ONE
+     AFTERNOON — and the census should re-run the code it is auditing, not
+     approximate it.** Part 67's hand-off forbade building before an offline
+     census returned a list, after part 66 spent two operator sessions on
+     theories. The census that answered it re-implements the runtime collector's
+     filter chain *in its own order*, against the vertex bytes in the `.xtr`
+     traces, so its buckets are comparable with the runtime's counters line for
+     line — and that is what made "our 216..722 instances equal this census's
+     count of DISTINCT STREAMS, not of draws" visible. A census that merely
+     summarised the traces would have missed it. **Re-run the subject, do not
+     summarise it.**

@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 390 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 400 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 368-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 400-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`d3d-translation-plan.md`** — the renderer-architecture pivot, its recon tables and
@@ -176,7 +176,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part67-kickoff.md`.** State the rule as well as the name, because this line said
+    `part68-kickoff.md`.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
     defect that misroutes a session before it has read anything else (gotcha 13).
@@ -391,6 +391,13 @@ wrong. Run it after any cache rebuild; exit 1 is a real defect:
 ```
 python3 tools/shader_dim_census.py             # 339 modules 2D, 100 cube, 0 disagreements
 python3 tools/shader_dim_census.py assets/shader_spv_clip_a2m   # and every ARM cache
+```
+**And the RT occluder table is gated the same way, for the same reason.** A vertex
+shader in the cache with no entry in `config/rt_world_xform.json` is a mesh the RT
+collector silently DECLINES to place — the gotcha-390 shape one level up. Free, and it
+is one line; exit 1 is a real defect:
+```
+python3 tools/rt_world_xform_census.py            # 104 of 104 covered, exit 0
 ```
 It also names the sidecars carrying no `tfetchDims` at all — cache entries built before
 part 25 whose microcode is gone. **That list is now EMPTY**: the last member,
@@ -750,10 +757,68 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+Where the port is, as of 2026-08-22 (part 67 CLOSED — **THE RT TLAS WAS NOT A GROUND
+PLANE, IT WAS THE WHOLE TOWN PILED AT THE ORIGIN: THE POSITION STREAMS ARE
+OBJECT-SPACE.** Found offline in an afternoon, fixed, and one scripted operator
+session is owed. `docs/part68-kickoff.md` is the LIVE hand-off; the record is
+`phase5-notes.md` §6cy; the backlog entry is `open-items.md` 0v; the lessons are
+gotchas 398-400):
+
+* **NO FILTER WAS EATING THE BUILDINGS.** `rtshadow::Collect` admits a draw when
+  `SceneXformForm(c0..c3) == 2` and §6cs read that as "so the position stream is
+  world-space". It does not follow: c0..c3 is the CAMERA's view-projection and is
+  the same matrix whether the shader feeds it a world position or an object
+  position it transformed one line earlier — which is what this title's world
+  shaders do, from a row-major 4x3 at `vc(8..10)`. Every mesh entered the BLAS in
+  its own local frame and every TLAS instance carried an IDENTITY transform
+  (gotcha 398).
+* **Measured against hardware, from files already on disc** —
+  `tools/rt_tlas_census.py` re-runs Collect's whole chain over the twenty `.xtr`
+  world traces, reading the real vertex bytes. Over **46,820 accepted draws**:
+  boxes intersecting the frustum the draw was issued into go **11.69% ->
+  98.64%** when placed; per VERTEX the same test reads **0.0% against 61-98%**;
+  and **100%** of them carry a non-identity world translation, spread over
+  x[-2312 392] z[-785 367]. The filter buckets are ordinary.
+* **`tlasInst=216..722` — the number three parts read as "the collector is
+  dropping the buildings" — was the DISTINCT MESH count.** The placements had
+  collapsed into the mesh identity, because the BLAS key is a function of the
+  stream and nothing else.
+* **Every part-66 measurement was an honest reading of that pile**: 85%
+  primary-ray hits, a perspective-correct world checker, and 97.3% of receivers
+  unoccluded over the hemisphere. None of them was wrong; all of them were about
+  a heap at the origin.
+* **The transform is READ, not assumed.** `tools/rt_world_xform_census.py`
+  translates every `vs_*.ucode` with the same XenosRecomp the cache is built with
+  and walks the position dataflow backwards from `oPos`. Two shapes:
+  **`direct`** (one 4x3, 28 shaders) and **`palette`** (a per-vertex blend, then
+  in half the cases a second 4x3 at `vc(4..6)` — composing it takes the bank's
+  busiest world shader from 81.3% of vertices on screen to 99.5%).
+  `config/rt_world_xform.json` is ONE file for all sixteen caches, and the census
+  is a **coverage gate** (104 of 104, exit 1 on a planted gap).
+* **Shipped**: `Instance { key, xf[12] }`, the transform deliberately NOT part of
+  the BLAS key (one mesh at forty places is one BLAS and forty instances); a
+  window bounds-check because `memoVsBase` is guest-controlled and `vc(10)` from a
+  high base walks into the fetch constants; a shader with no table entry is
+  DECLINED rather than placed at the origin on a guess. Counters print
+  `placed=/declined:/world box` — **the world box is the engagement counter**,
+  Still Creek is roughly x[-940 390] z[-720 370].
+  **`CZ_VK_RT_OBJ_XFORM=0` is the same-binary control arm** and is the part-66
+  renderer.
+* **What is owed: `tools/part67_placement_session.sh`** — five arms in two PAIRS
+  (placed vs `OBJ_XFORM=0`), four of which need no eye because the factor
+  readback reports each as a histogram. The prediction is stated in §6cy §5 so a
+  run can refute it, and A5 is arm 0.
+* **Gates at close** (RT off = the shipped default; nothing outside the RT
+  collector and TLAS build changed): `--smoke` OK; `shader_dim_census.py` clean
+  on all sixteen caches and the play cache's NAME diff against stock empty; the
+  world-transform census covers 104 of 104 and fails on a planted gap; the TLAS
+  census runs over 20 traces and prints its verdict. **A5 is owed.**
+
 Where the port is, as of 2026-08-22 (part 66 CLOSED — **THE RT SHADOW DEFECT IS
 LOCATED AND EVERYTHING DOWNSTREAM OF IT IS EXONERATED BY MEASUREMENT: the
 ray-tracing structure is effectively A GROUND PLANE.** Five operator sessions.
-`docs/part67-kickoff.md` is the LIVE hand-off; the record is `phase5-notes.md`
+`docs/part67-kickoff.md` WAS the hand-off then; the live one is named above.
+The record is `phase5-notes.md`
 §6cx (§7 the session log, §8 the answer); the backlog entry is `open-items.md`
 0v; the lessons are gotchas 391-397):
 
@@ -812,67 +877,8 @@ ray-tracing structure is effectively A GROUND PLANE.** Five operator sessions.
   against stock empty; the census tool runs over 20 traces and prints its verdict.
   Carry-overs unchanged from parts 62-65.
 
-Where the port is, as of 2026-08-22 (part 65 CLOSED — **RT SHADOWS, ROUTE (B) IS
-BUILT END TO END AND HAS NEVER BEEN LOOKED AT. The one thing owed is an operator
-session, and it is scripted.** That session RAN, in part 66 — five of them — and
-`part66-kickoff.md` WAS the hand-off then; the live one is named above.
-The record is `phase5-notes.md` §6cw; the backlog entry is `open-items.md` 0v; the
-arms are in `instruments.md`; the lessons are gotchas 387-390):
-
-* **The census answered step 1 offline, against HARDWARE, in minutes** — the
-  binding "fetch slot N holds the shadow atlas" lives in a register, not in the
-  microcode, so it looked like it needed an instrumented run; a `.xtr` carries
-  hardware's register file per draw, so twenty capture files already on disc
-  settled it (gotcha 387). **126 pixel shaders, 140 (shader, slot) pairs**,
-  42,620 draws — against the plan's guess of "a dozen". Slots 0-7 and 9 all
-  appear. `tools/shadow_shader_census.py`, `config/rt_shadow_slots.json`.
-* **Only TWO use shapes exist and both are monotonic and saturating**: `pcf4`
-  (116 uses — four ±0.5 taps compared `> receiverDepth`, bilinearly weighted) and
-  `tap1` (24 uses — one centre tap feeding `saturate((receiver−sampled)*k−bias)`).
-  So **one substitution serves all 140**: 1.0 at every atlas tap reads as LIT
-  everywhere, 0.0 as OCCLUDED, whatever the weighting.
-* **The weights are patched too, and that is what buys SOFTNESS.** The emitted
-  2x2 products come in THIRTEEN swizzle pairings, so no pattern match covers
-  them — but every one is a product of two of {a,b,1−a,1−b}, so forcing
-  `getWeights2D` to 0.5 makes every product 0.25 whatever the swizzle and the
-  shader computes a plain mean (gotcha 389). Five levels, stated as the ceiling.
-* **Shipped**: `tools/patch_rt_shadow_hlsl.py` + a `CZ_HLSL_PATCH` hook in
-  `build_shader_spv.sh` (the shared recompiler untouched);
-  `runtime/gpu/rt_factor.hlsl`; the renderer wiring (a variant module per shader,
-  `PipelineKey::passFlags`, the pass triggered by the title's OWN first
-  atlas-sampling draw and invalidated at every resolve). The tier ladder is real
-  now — RT LOW half-res 1 ray, MEDIUM full-res 1 ray, **HIGH four rays over the
-  sun's disc**, which route (a) could never express.
-* **Three of part 64's hardest problems do not exist on route (b)**: the
-  slice↔matrix pairing (only the sun's DIRECTION is used), the depth convention
-  (nothing is written to a depth buffer) and the occluder set (preferring the
-  title's own casters was a property of writing the map).
-* **The null is byte-identical**: with `CZ_VK_RT=0`, or no variant cache, or the
-  SHADOW row on a raster tier, nothing runs and the stock modules are bound. The
-  EDRAM depth gains `SAMPLED_BIT` only on a ray-query device.
-* **Found and fixed on the way, unrelated to RT**: the operator's play cache
-  (`shader_spv_clip_a2m`) was TEN SHADERS SHORT since 2026-08-19 — absent, not
-  stale, so their draws were SKIPPED in every session for three parts (gotcha
-  390); and the last sidecar-less cache entry was rebuilt from microcode part 64
-  recovered.
-* **The first validation boot with RT armed CRASHED, and the layer named all
-  three causes** — an AS build inside a render pass, its barrier, and a
-  `vkUpdateDescriptorSets` with a null `dstSet` (route (a)'s descriptor set,
-  which route (b) never creates). Fixed; the RT arm and a plain `CZ_VKDRAW=1`
-  boot now produce **identical validation output**. This is the fifth defect
-  `CZ_VK_VALIDATION=1` has caught that nothing else could.
-* **Engagement, headless, boot to title — NOT a picture claim**: 7,131 factor
-  passes, **1,921,744 draws served through the 126 variant modules**, 243-573
-  TLAS instances, sun (-0.381, 0.812, -0.443), zero `noTlas`/`singular`. The
-  scene-composite binding check reads **2,343 frames with ONE composite, 0 with
-  SEVERAL** — the check part 64's light matrix failed outright.
-* **Gates at close** (RT off = the shipped default): `--smoke` OK; **A5 exit 0**
-  (4 permutation windows, 0 real); `shader_dim_census.py` clean on every cache;
-  each RT cache differs from a plain rebuild in **exactly the census's 126
-  modules** — no extra, none missing. Carry-overs unchanged from parts 62-64.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-64's** — part 66 moved part 64's out in the same commit that added its own block, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-65's** — part 67 moved part 65's out in the same commit that added its own block, part 66 moved part 64's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

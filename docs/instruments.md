@@ -1784,6 +1784,24 @@ CZ_VK_RT_BOUNDS_CAP=<f>  the extent above which a stream is refused entry to
                    structural test the collector applies. Hygiene: the
                    rejections are real and counted (`bounds=`), and the picture
                    does not move
+CZ_VK_RT_OBJ_XFORM=0  **the same-binary control arm for part 67's placement**:
+                   every TLAS instance goes back to an IDENTITY transform, which
+                   is the part-66 renderer — and the part-66 renderer piled the
+                   whole town on top of itself at the world origin, because this
+                   title's position streams are OBJECT-space and the collector's
+                   `SceneXformForm(c0..c3) == 2` gate proves what the CAMERA
+                   matrix is, not what space its input is in (§6cy, gotcha 398).
+                   With it unset (the default) each instance carries the draw's
+                   own object->world matrix, read from the constant rows
+                   `config/rt_world_xform.json` names for that shader. The
+                   collector census prints the engagement counter either way:
+                   `placed=N (palette=N) declined: noTable/window/nonFinite ...
+                   world box x[..] y[..] z[..]` — Still Creek is roughly
+                   x[-940 390] z[-720 370], and a box a couple of units across
+                   means the placement is NOT engaged and nothing measured under
+                   it means anything. `palette=` is not an error: it counts draws
+                   placed from a palette shader's entry 0, which is an
+                   approximation and is separated so it can never be invisible
 CZ_VK_RT_ROUTE=a|b **WHICH ROUTE** (part 65). `b` is the default and the live
                    direction: compute the shadow factor per RECEIVING PIXEL in
                    screen space and have the 126 atlas-sampling pixel shaders

@@ -14144,3 +14144,176 @@ our own collector counters say what we did with each class.
 * And the two the operator supplied by looking: the 427 px misalignment, and the
   "nothing is world-locked" observation that produced session 5. Three headless
   statistics had not named either.
+
+## §6cy — Part 67: THE POSITION STREAMS ARE OBJECT-SPACE, and that was the pile (2026-08-22)
+
+Part 66 closed with the RT shadow defect located and everything downstream of it
+exonerated by measurement — the injection, the alignment on both axes, the world
+reconstruction, the primary ray, the ray length, the origin bias and the sun. What was
+left was the population, and the hand-off named it exactly:
+
+> **No direction above a receiver is occluded, so no sun vector could ever have produced
+> a shadow. The ray-tracing structure is effectively a ground plane.**
+
+and it forbade building anything before an offline census returned a list. That
+instruction is the reason this part took an afternoon: the census answered both of its
+questions in a way neither was phrased for.
+
+### 1. The finding
+
+**No filter is eating the buildings. Every one of them is collected, and every one of
+them is in the same place.**
+
+`rtshadow::Collect` gates a draw on `SceneXformForm(c0..c3) == 2` — the structural test
+for the world's view-projection composite — and §6cs read that as *"a stream the scene
+pass draws under a world-space composite is world-space"*. It does not follow. c0..c3 is
+the CAMERA's view-projection, and it is the same matrix whether the vertex shader feeds
+it a world position or an object position it transformed one line earlier. This title's
+world shaders do the latter:
+
+```
+    r4.xyz = iPosition0.xyz;  r4.w = 1.0;
+    r1.x = dot(vc(8),  r4);        <-- the object->world matrix, a row-major 4x3
+    r1.y = dot(vc(9),  r4);
+    r1.z = dot(vc(10), r4);
+    oPos.x = dot(vc(0), r1);       <-- the camera composite Collect gates on
+    ...
+```
+
+So our BLASes held local geometry, every `VkAccelerationStructureInstanceKHR` carried an
+identity transform, and a town of ~500 distinct meshes was traced as ~500 meshes stacked
+on top of each other at the world origin. Every part-66 measurement was an honest reading
+of that pile: the primary ray hit 85% of the screen (it was hitting the pile and the few
+map-wide flat meshes), mode 2's checker was perspective-correct and world-locked (the hit
+positions were real positions of real geometry), and the hemisphere read 97.3% open
+(from a receiver out in the town, a pile at the origin subtends almost nothing).
+
+**The `tlasInst=216..722` that three parts read as "the collector is dropping the
+buildings" was the DISTINCT MESH count.** The placements had collapsed into the mesh
+identity, because the key is a function of the stream and nothing else.
+
+### 2. The measurement, against hardware, from files already on disc
+
+`tools/rt_tlas_census.py` re-runs Collect's whole filter chain — in its order, with its
+constants — over the twenty `.xtr` world traces, reading the real vertex bytes out of the
+capture. Over **46,820 structurally-accepted draws**:
+
+| test | untransformed | placed by the shader's own world matrix |
+|---|---|---|
+| bounding boxes intersecting the frustum the draw was issued into | **11.69%** | **98.64%** |
+| VERTICES inside the clip volume (per-shader, gas station) | **0.0%** | **61-98%** |
+| draws carrying a non-identity world translation | — | **100.0%** |
+
+and the placed instances spread over x[-2312, 392] y[-23, 69] z[-785, 367] — the town —
+where the untransformed ones sum to a box centred on the origin.
+
+The filter buckets are ordinary and nothing is anomalous in them: `xform` 27,094,
+`alpha` 6,842, `nozw` 5,512, `prim` 40, `bounds` 64 against 46,820 accepted. `dyn` and
+`new` cannot be modelled from a single frame (a stream is `dynamic` once the guest has
+been caught REWRITING it, which needs two) and they no longer need to be.
+
+**Two false leads died here and are worth recording.** The census's first output was the
+accepted geometry's combined world box, 776 x 50 x 854 units — entirely plausible for
+Still Creek, and wrong. What gave it away was that its X and Z extents were *exactly*
+symmetric. A follow-up "do the transformed points land inside the town" test then read
+**100.0% for every candidate including the identity** and could report nothing. Only
+projecting the actual vertices through the actual camera matrix discriminated
+(gotcha 399).
+
+### 3. The transform is READ, not assumed — `config/rt_world_xform.json`
+
+Two shapes exist in the bank and guessing one would silently misplace the other, which
+is not a visible error but a shadow in the wrong place:
+
+* **`direct`** — one row-major 4x3 at `vc(base..base+2)`, then the camera composite.
+  28 shaders, `base` 8 in every one.
+* **`palette`** — a matrix BLENDED from `vc(base + a0)` entries by three per-vertex
+  weights, then in 9 of the 18 cases a SECOND 4x3 at `vc(4..6)`, then the camera. The
+  bank's busiest world shader, `vs_b677dc3457f5b41a`, is this shape and carries 2,658 of
+  the gas-station frame's 4,512 accepted draws; composing its second stage takes it from
+  81.3% of vertices on screen to **99.5%**.
+
+`tools/rt_world_xform_census.py` translates every `vs_*.ucode` with the same XenosRecomp
+the shader cache is built with and walks the position dataflow backwards from `oPos` to
+the register assigned from `iPosition*.xyz`. 48 of 104 vertex shaders classify (28
+direct, 9 palette+direct, 9 palette, 2 genuinely camera-only); the 56 it cannot are all
+shaders the collector never accepts — every one of the sixteen shaders carrying the
+accepted draw population is classified, and the four unplaceable draws in the
+gas-station frame come from two shaders contributing two draws each.
+
+The table is **one file for all sixteen caches**, because it is a property of the
+microcode and not of a variant — six sibling copies is exactly the drift gotcha 390 cost
+three parts of operator sessions. The census is also a **gate**: exit 1 when the cache
+holds a vertex shader the table misses, and it was shown capable of failing on a planted
+entry.
+
+### 4. What shipped
+
+* `ShaderMeta` gains `xfCount` / `xfBase[2]` / `xfPalette` / `xfKnown`, filled once per
+  shader at cache load. The RT variant pass only sets `moduleRt`, so the fields survive
+  it.
+* `rtshadow::Instance { key, xf[12] }` with per-frame lists beside the key sets. **The
+  transform is deliberately not part of the BLAS key**: one mesh at forty places is one
+  BLAS and forty instances, which is what a TLAS is for.
+* `ObjectXform` reads the rows with the same `vc(N) = vsWindow[N*4]` indexing
+  XenosRecomp's own macro emits, composes the stages innermost-first, and bounds-checks
+  the window — `memoVsBase` is a guest-controlled 9-bit field, so a high base plus
+  `vc(10)` walks into the fetch constants at 0x4800 and would place a mesh by a texture
+  address. Counted, not clamped.
+* A shader with **no table entry is DECLINED**, never placed at the origin on a guess:
+  an occluder in the wrong place is worse than a missing one.
+* `VkTransformMatrixKHR` is a row-major 3x4 — the same layout as the title's own rows, so
+  no transpose, and none silently implied either.
+* Counters, printed with the collector census: `placed=N (palette=N) declined:
+  noTable/window/nonFinite, instances cur/prev, world box x[..] y[..] z[..]`. **The world
+  box is the engagement counter** — Still Creek runs roughly x[-940 390] z[-720 370],
+  and the part-66 structure reads a couple of units.
+* `CZ_VK_RT_OBJ_XFORM=0` restores identity instances: the part-66 renderer, same binary.
+
+### 5. What is owed — an operator session, and it is scripted
+
+`tools/part67_placement_session.sh`, five arms, and **four of them need no eye**: the
+factor readback (gotcha 397) reports each arm as a histogram and the script reads them
+back at the end. The arms come in PAIRS and the pair is the result:
+
+| arm | what it asks | PASS |
+|---|---|---|
+| 1 `place` | hemisphere occlusion (mode 20), placement ON | the mean falls clearly below part 66's **0.987** |
+| 2 `pile` | the same with `CZ_VK_RT_OBJ_XFORM=0` | reproduces **0.987 / 97.3% open** |
+| 3 `real` | the shipped path, placement ON | clearly more than part 66's **0.9% shadowed** |
+| 4 `realpile` | the shipped path, placement OFF | back to **0.9%** |
+| 5 `look` | RT HIGH, no debug | THE OPERATOR'S EYE: are the shadows under the things that cast them, and do they stay put? |
+
+Arms 1/2 and 3/4 are same-binary controls, so "the placement is what moved it" is
+measured rather than argued. The script also prints each arm's `world box` line, which is
+readable without judgement and says ENGAGED or NOT before any factor number is believed.
+
+**Stated prediction, so a run can refute it:** with the occluders placed, the hemisphere
+arm's mean occlusion falls and the shipped path's shadowed share rises; with
+`CZ_VK_RT_OBJ_XFORM=0` both return to part 66's numbers to within the noise. If arm 1
+moves and arm 2 also moves, something other than the placement changed and this record is
+wrong.
+
+### 6. Gates at close
+
+RT is OFF by default and nothing outside the RT collector and the TLAS build changed.
+
+* `--smoke` OK.
+* `shader_dim_census.py` clean on all sixteen caches; the play cache's NAME diff against
+  stock is empty; all six RT-relevant caches are 449.
+* `rt_world_xform_census.py` covers **104 of 104** cache vertex shaders, and exits 1 on a
+  planted gap.
+* `rt_tlas_census.py` runs over all twenty traces and prints its own verdict.
+* **A5 is owed and is arm 0 of the operator session** — this part changed no kernel path,
+  but the rule is the rule.
+
+### 7. The transferable half
+
+* **A test of the matrix is not a test of the space its input is in** (gotcha 398). The
+  falsifying measurement was one line and could have been run in part 63.
+* **An aggregate box is a weak oracle; project the points** (gotcha 399). A plausible
+  box and a saturated plausibility window both reported nothing for a whole hour.
+* **A census should RE-RUN the code it audits, not summarise it** (gotcha 400). Running
+  Collect's chain in Collect's order is what made "our instance count equals the census's
+  DISTINCT STREAM count" visible; a summary of the traces would not have.
+* And the part-66 instruction that produced all of it: **census first, build nothing.**

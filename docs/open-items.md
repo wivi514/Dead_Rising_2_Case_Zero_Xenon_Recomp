@@ -7,13 +7,37 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT, ITS
-   "NO SHADOWS" DEFECT IS DIAGNOSED AND FIXED, AND THE PICTURE HAS STILL NEVER
-   BEEN LOOKED AT.** The records are `phase5-notes.md` §6cv (route (a), §7j is
-   the verdict), §6cw (route (b) built, part 65) and **§6cx (part 66 — why it
-   produced nothing, and the fix)**; the hand-off is `docs/part67-kickoff.md`;
-   the arms are in `instruments.md`; the lessons are gotchas 381-386, 387-390
-   and **391-393**.
+0v. **RT SHADOWS — ROUTE (a) IS CLOSED AS UNWORKABLE; ROUTE (b) IS BUILT, AND
+   PART 67 FOUND AND FIXED THE REASON IT PRODUCED NOTHING. ONE OPERATOR SESSION
+   IS OWED AND IT IS SCRIPTED.** The records are `phase5-notes.md` §6cv (route
+   (a), §7j is the verdict), §6cw (route (b) built, part 65), §6cx (part 66 —
+   the ordering finding and the primary-ray receiver) and **§6cy (part 67 — the
+   position streams are OBJECT-SPACE, which is the whole of "the TLAS is a
+   ground plane")**; the hand-off is `docs/part68-kickoff.md`; the arms are in
+   `instruments.md`; the lessons are gotchas 381-386, 387-390, 391-397 and
+   **398-400**.
+
+   **PART 67'S FINDING, which supersedes the part-67 kickoff's §1 entirely: no
+   filter is eating the buildings — every one of them is collected and every one
+   of them is at the WORLD ORIGIN.** `Collect` gates on
+   `SceneXformForm(c0..c3) == 2` and §6cs read that as "so the position stream
+   is world-space"; c0..c3 is the CAMERA's view-projection and is the same
+   matrix whether the shader feeds it a world position or an object position it
+   transformed one line earlier, which is what this title's world shaders do
+   (a row-major 4x3 at `vc(8..10)`). Over the twenty `.xtr` traces and 46,820
+   accepted draws, the fraction whose box intersects the frustum it was drawn
+   into is **11.7% untransformed and 98.6% placed**, and 100% of them carry a
+   non-identity world translation. The `tlasInst=216..722` three parts read as
+   "the collector is dropping the buildings" was the DISTINCT MESH count.
+
+   **Shipped**: every TLAS instance now carries the draw's own object->world
+   matrix, from the constant rows `config/rt_world_xform.json` names for that
+   shader (read out of the microcode by `tools/rt_world_xform_census.py`, which
+   is also a coverage gate). `CZ_VK_RT_OBJ_XFORM=0` is the same-binary control.
+
+   **What is owed: `tools/part67_placement_session.sh`** — five arms in two
+   pairs, four of which need no eye. The prediction is stated in §6cy §5 so a
+   run can refute it.
 
    **PART 66'S FINDING, which supersedes the part-66 kickoff's §0 entirely:
    THIS TITLE HAS NO SCENE Z PREPASS.** The factor pass reconstructed the

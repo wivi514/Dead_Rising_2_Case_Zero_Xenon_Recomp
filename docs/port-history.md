@@ -4704,3 +4704,62 @@ that matters**; the backlog entry is `open-items.md` 0v; the arms are in
 * **Gates at close** (final binary, RT off = the shipped default): `--smoke` OK;
   **A5 exit 0**; unlowered switches 0 defects; shader dim census 0 disagreements;
   `no translated shader` = 0. Carry-overs unchanged from parts 62-63.
+
+Where the port is, as of 2026-08-22 (part 65 CLOSED — **RT SHADOWS, ROUTE (B) IS
+BUILT END TO END AND HAS NEVER BEEN LOOKED AT. The one thing owed is an operator
+session, and it is scripted.** That session RAN, in part 66 — five of them — and
+`part66-kickoff.md` WAS the hand-off then; the live one is named above.
+The record is `phase5-notes.md` §6cw; the backlog entry is `open-items.md` 0v; the
+arms are in `instruments.md`; the lessons are gotchas 387-390):
+
+* **The census answered step 1 offline, against HARDWARE, in minutes** — the
+  binding "fetch slot N holds the shadow atlas" lives in a register, not in the
+  microcode, so it looked like it needed an instrumented run; a `.xtr` carries
+  hardware's register file per draw, so twenty capture files already on disc
+  settled it (gotcha 387). **126 pixel shaders, 140 (shader, slot) pairs**,
+  42,620 draws — against the plan's guess of "a dozen". Slots 0-7 and 9 all
+  appear. `tools/shadow_shader_census.py`, `config/rt_shadow_slots.json`.
+* **Only TWO use shapes exist and both are monotonic and saturating**: `pcf4`
+  (116 uses — four ±0.5 taps compared `> receiverDepth`, bilinearly weighted) and
+  `tap1` (24 uses — one centre tap feeding `saturate((receiver−sampled)*k−bias)`).
+  So **one substitution serves all 140**: 1.0 at every atlas tap reads as LIT
+  everywhere, 0.0 as OCCLUDED, whatever the weighting.
+* **The weights are patched too, and that is what buys SOFTNESS.** The emitted
+  2x2 products come in THIRTEEN swizzle pairings, so no pattern match covers
+  them — but every one is a product of two of {a,b,1−a,1−b}, so forcing
+  `getWeights2D` to 0.5 makes every product 0.25 whatever the swizzle and the
+  shader computes a plain mean (gotcha 389). Five levels, stated as the ceiling.
+* **Shipped**: `tools/patch_rt_shadow_hlsl.py` + a `CZ_HLSL_PATCH` hook in
+  `build_shader_spv.sh` (the shared recompiler untouched);
+  `runtime/gpu/rt_factor.hlsl`; the renderer wiring (a variant module per shader,
+  `PipelineKey::passFlags`, the pass triggered by the title's OWN first
+  atlas-sampling draw and invalidated at every resolve). The tier ladder is real
+  now — RT LOW half-res 1 ray, MEDIUM full-res 1 ray, **HIGH four rays over the
+  sun's disc**, which route (a) could never express.
+* **Three of part 64's hardest problems do not exist on route (b)**: the
+  slice↔matrix pairing (only the sun's DIRECTION is used), the depth convention
+  (nothing is written to a depth buffer) and the occluder set (preferring the
+  title's own casters was a property of writing the map).
+* **The null is byte-identical**: with `CZ_VK_RT=0`, or no variant cache, or the
+  SHADOW row on a raster tier, nothing runs and the stock modules are bound. The
+  EDRAM depth gains `SAMPLED_BIT` only on a ray-query device.
+* **Found and fixed on the way, unrelated to RT**: the operator's play cache
+  (`shader_spv_clip_a2m`) was TEN SHADERS SHORT since 2026-08-19 — absent, not
+  stale, so their draws were SKIPPED in every session for three parts (gotcha
+  390); and the last sidecar-less cache entry was rebuilt from microcode part 64
+  recovered.
+* **The first validation boot with RT armed CRASHED, and the layer named all
+  three causes** — an AS build inside a render pass, its barrier, and a
+  `vkUpdateDescriptorSets` with a null `dstSet` (route (a)'s descriptor set,
+  which route (b) never creates). Fixed; the RT arm and a plain `CZ_VKDRAW=1`
+  boot now produce **identical validation output**. This is the fifth defect
+  `CZ_VK_VALIDATION=1` has caught that nothing else could.
+* **Engagement, headless, boot to title — NOT a picture claim**: 7,131 factor
+  passes, **1,921,744 draws served through the 126 variant modules**, 243-573
+  TLAS instances, sun (-0.381, 0.812, -0.443), zero `noTlas`/`singular`. The
+  scene-composite binding check reads **2,343 frames with ONE composite, 0 with
+  SEVERAL** — the check part 64's light matrix failed outright.
+* **Gates at close** (RT off = the shipped default): `--smoke` OK; **A5 exit 0**
+  (4 permutation windows, 0 real); `shader_dim_census.py` clean on every cache;
+  each RT cache differs from a plain rebuild in **exactly the census's 126
+  modules** — no extra, none missing. Carry-overs unchanged from parts 62-64.
