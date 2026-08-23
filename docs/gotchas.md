@@ -4416,3 +4416,38 @@ From phase C part 18 (the frame rate — and none of it was work):
      messages at once, because `vkWaitForFences` then returns DEVICE_LOST
      immediately instead of blocking and an ignored return value marks the slot
      retired.
+
+408. **AN ARM WHOSE ENGAGEMENT IS NOT ASSERTED IS NOT AN ARM, AND A SHELL SCRIPT WILL
+     SWALLOW IT SILENTLY.** A control arm meant to run `CZ_VK_RT=0` had that string in its
+     DESCRIPTION and never in its `env` line, so the "control" ran with the feature fully
+     enabled. Had the operator reported "both arms show the defect" it would have been
+     read as "not ours" on the strength of a control that was not one — and the run cost
+     was already paid. The fix is not care, it is structure: **every arm carries the log
+     line that PROVES it engaged, and the harness REFUSES to report an arm whose log does
+     not contain it.** This is gotcha 151 ("an arm with no counter cannot be shown to have
+     engaged") one level up — 151 is about the runtime counter, 408 is about the harness
+     that sets the variable — and it is the second time a shell positional argument has
+     eaten an arm's configuration in this project (gotcha 396 is the first, and its warning
+     was in the sibling script's own header at the time).
+
+409. **AN INTERMEDIATE THAT LOOKS RIGHT IS WORTH MORE THAN A FINAL IMAGE THAT LOOKS
+     WRONG — RENDER THE INTERMEDIATE BEFORE THE FIFTH ROUND OF FIXING THE INPUT.** Four
+     parts were spent enriching the geometry a shadow trace could see, because the final
+     picture kept showing the same defect and the geometry was the obvious suspect. One
+     run of a debug mode that renders WHAT THE RAYS ACTUALLY HIT — already in the shader,
+     written two parts earlier — showed a correct depth image of the world, which retired
+     the whole suspect class in five minutes. **When a pipeline stage has an instrument
+     that images its own output, read it before fixing that stage again**; "the final
+     result is still wrong" is evidence about the pipeline, not about the stage you
+     happen to be holding.
+
+410. **WHEN TWO ENVIRONMENTS DISAGREE ABOUT A VALUE, CENSUS IT ACROSS EVERY RUN YOU
+     ALREADY HAVE BEFORE EXPLAINING IT.** A latched sun direction read
+     `(-0.364 0.546 -0.755)` in every windowed run and `(-0.371 0.557 +0.743)` in every
+     headless one — two components agreeing to 2% while the third flips sign, which no
+     day/night cycle produces. It cost one `grep` over logs already on disk, and it
+     matters out of proportion to its size: every offline measurement the feature had ever
+     made was taken in the mirrored configuration. Related to 50/51/86 (a rate measured
+     once is a fact about that afternoon) — the general form is that HEADLESS AND WINDOWED
+     ARE TWO DIFFERENT ORACLES and any value latched from the scene should be diffed
+     between them before either is trusted.
