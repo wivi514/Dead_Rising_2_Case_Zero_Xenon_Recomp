@@ -7794,6 +7794,30 @@ void GrowArenaIfNeeded()
 // exactly one frame at the pre-store cost and then runs warm again. If `flushes` turns
 // out to be more than a handful per area transition, that is the evidence for building
 // the harder thing; until then it is not.
+// THE CROSS-FRAME STREAM STORE'S USAGE FLAGS, in one place because there are two
+// creation sites (the initial allocation and the grow path) and they must not drift.
+//
+// The RT flag is the whole of `docs/rt-remix-plan.md` item 0. The store already holds
+// every world vertex stream dword-swapped exactly as the BLAS staging copy swapped them,
+// and it was already created with a device address for the raster path — so with this
+// one usage bit a BLAS build can read its vertices *in place* instead of copying them
+// into per-frame staging first. That is what makes refit (item 2) nearly free: a mesh
+// that changes every frame otherwise costs a fresh staging copy of its whole position
+// stream every frame.
+//
+// It is added only when the device actually took the RT path, because the flag is
+// meaningless without VK_KHR_acceleration_structure and a driver is entitled to reject
+// it. `CreateDevice()` runs before either creation site, so `rtEnabled` is already final
+// here.
+VkBufferUsageFlags PersistUsage()
+{
+    return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+           (R->rtEnabled
+                ? VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                : 0u);
+}
+
 void PersistMaintenance()
 {
     if (!R->persistOn || !R->persistWant)
@@ -7811,10 +7835,7 @@ void PersistMaintenance()
         vkDeviceWaitIdle(R->device);
         const Buffer old = R->persist;
         Buffer grown{};
-        if (CreateBuffer(grown, want,
-                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        if (CreateBuffer(grown, want, PersistUsage(),
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                          /*deviceAddress=*/true, "cross-frame stream store (grown)"))
@@ -10162,7 +10183,33 @@ struct Blas
     // Identity echo: the map key is an FNV mix, so the true tuple is kept and
     // checked on every hit — a collision is counted and treated as a miss, never
     // silently traced with another mesh's BLAS.
-    uint64_t streamKey = 0, idxKey = 0, vGuard = 0, iGuard = 0;
+    uint64_t streamKey = 0, idxKey = 0;
+    // CONTENT STAMPS, AND AS OF THE REMIX PLAN'S ITEM 1 THEY ARE STATE, NOT IDENTITY.
+    //
+    // They used to be mixed into the map key, which meant a mesh whose bytes change is a
+    // different mesh every frame: a new key, a new BLAS, no eviction, and eventually the
+    // pool cap flushing the lot. That is the architectural reason `CZ_VK_RT_DYN_SETTLE=0`
+    // had to ship as a diagnostic. Here they answer a different and useful question —
+    // "do this frame's bytes differ from the ones this BLAS was built from" — which is
+    // exactly the dirty test refit needs.
+    uint64_t vGuard = 0, iGuard = 0;
+    // ---- what a REFIT needs to re-describe this geometry without re-deriving it ----
+    // The expanded index list is DERIVED data (strips expanded to lists, degenerates
+    // dropped), so it cannot come from the persist store — but topology does not change
+    // when a mesh animates, so it is built once and KEPT. Static index storage, live
+    // vertex pointer: that split is the whole of item 0.
+    VkDeviceAddress idxAddr = 0;
+    uint32_t maxVertex = 0;
+    uint32_t strideDw = 0, offsetDw = 0, posBytes = 0;
+    VkDeviceSize buildScratch = 0, updateScratch = 0;
+    // Frames since a FULL build. A refitted BLAS keeps the original build's tree
+    // topology, so its trace quality decays under large motion; `CZ_VK_RT_REFIT_MAX`
+    // bounds that decay by forcing a rebuild, which is what Remix does periodically.
+    uint32_t framesSinceBuild = 0;
+    // Were this build's vertices read straight out of the persist store? A BLAS built
+    // from per-frame staging cannot be refitted from the store later without the
+    // geometry description changing, so the flag travels with the record.
+    bool direct = false;
 };
 
 struct Pending
@@ -10192,6 +10239,22 @@ std::unordered_map<uint64_t, Blas> g_blas;
 std::vector<AsChunk> g_chunks;
 VkDeviceSize g_blasBytes = 0;
 uint64_t g_blasBuilt = 0, g_blasFlushes = 0;
+// THE KEPT INDEX POOL (item 0). Same bump-chunk shape as the AS pool and for the same
+// reason — a crowd holds thousands of BLASes and one VkDeviceMemory each would exhaust
+// maxMemoryAllocationCount with textures still to serve.
+//
+// Host-visible rather than device-local on purpose: these bytes are produced on the CPU
+// by the strip expansion below, they are written exactly once per mesh, and a device-local
+// pool would need a staging buffer and a copy for a write that never repeats. Its
+// lifetime is the AS pool's: a BLAS flush makes every index list in here dead, so the two
+// are reclaimed together and never separately.
+std::vector<AsChunk> g_idxChunks;
+VkDeviceSize g_idxBytes = 0;
+// Engagement counters for item 0 (gotcha 151). `direct` counts BLAS builds whose
+// vertices were read in place out of the persist store; `staged` counts the ones that
+// still needed a copy, and WHY they did is the interesting half — a store miss means the
+// raster path and the RT path disagree about which bytes are current.
+uint64_t g_buildDirect = 0, g_buildStaged = 0;
 std::unordered_map<uint64_t, Pending> g_pending;
 std::unordered_set<uint64_t> g_curKeys, g_prevKeys;
 
@@ -10438,6 +10501,15 @@ VkDeviceSize g_tlasSize[kMaxFramesInFlight] = {};
 Buffer g_instBuf[kMaxFramesInFlight];
 Buffer g_staging[kMaxFramesInFlight];
 Buffer g_scratch[kMaxFramesInFlight];
+// Refit scratch is its own buffer rather than a region of the build scratch, because the
+// two are sized from DIFFERENT figures (`updateScratchSize` against `buildScratchSize`,
+// which is the gotcha `docs/rt-remix-plan.md` item 2 names) and sharing one would make it
+// far too easy to size an update from a build number and never notice.
+Buffer g_refitScratch[kMaxFramesInFlight];
+// Item 2's engagement counters. `refits` and `forced` must both be non-zero on a roam
+// with the dynamic population admitted, or refit is not doing what it claims.
+uint64_t g_refits = 0, g_refitForced = 0, g_refitBudgeted = 0, g_refitNoSource = 0,
+         g_refitTopology = 0;
 
 struct RetiredAs
 {
@@ -10582,6 +10654,75 @@ bool NoPalette()
 {
     static const bool on = EnvOn("CZ_VK_RT_NO_PALETTE");
     return on;
+}
+
+// CZ_VK_RT_NO_DIRECT_BUFFERS=1 — THE SAME-BINARY CONTROL ARM FOR ITEM 0.
+//
+// Restores the pre-item-0 renderer: every BLAS build copies its position stream into
+// per-frame staging first. This is a DATA-SOURCE change, not a semantic one — the two
+// arms must produce the same picture and the same `blas=` memory — so the arm's job is
+// to price it, and to be the fallback if reading acceleration-structure build input out
+// of HOST_VISIBLE memory turns out to be slower over PCIe than staging into device
+// memory (the risk `docs/rt-remix-plan.md` §4 states with its own kill threshold).
+bool DirectBuffers()
+{
+    static const bool off = EnvOn("CZ_VK_RT_NO_DIRECT_BUFFERS");
+    return !off;
+}
+
+// CZ_VK_RT_NO_REFIT=1 — the same-binary control arm for item 2. With refit off, a mesh
+// whose bytes changed is simply left as it was until something rebuilds it, which is the
+// pre-item-2 behaviour once identity has stopped depending on content (item 1).
+bool RefitOn()
+{
+    static const bool off = EnvOn("CZ_VK_RT_NO_REFIT");
+    return !off;
+}
+
+// CZ_VK_RT_REFIT_MAX=N — how many consecutive refits a BLAS may take before it is torn
+// down and built again from scratch. A refitted acceleration structure keeps the tree
+// the ORIGINAL build chose, so after large motion its traversal quality decays; Remix
+// rebuilds periodically for exactly this reason. Bounding it with a named knob makes the
+// decay a stated cost rather than something discovered in a picture.
+uint32_t RefitMax()
+{
+    static const uint32_t n = [] {
+        const char* e = Env("CZ_VK_RT_REFIT_MAX");
+        return e ? uint32_t(strtoul(e, nullptr, 10)) : 60u;
+    }();
+    return n;
+}
+
+// CZ_VK_RT_STABLE_KEY=0 — the same-binary control arm for item 1: put the content
+// guards back into the BLAS key, i.e. the part-68 identity, under which a mesh that
+// changes every frame is a new mesh every frame.
+// THE BLAS BUILD FLAGS, in one place because a refit's flags must equal the original
+// build's and the two are written in different functions.
+//
+// `ALLOW_UPDATE` is what makes a refit legal at all, and it is not free: it costs trace
+// performance, which is why Remix pairs it with PREFER_FAST_BUILD rather than
+// PREFER_FAST_TRACE. We keep FAST_TRACE by default and expose the other as a knob rather
+// than guessing — `docs/rt-remix-plan.md` §4 states the kill threshold (if the RT pass
+// costs more than 15% over the FAST_TRACE build at the operator's load, split into two
+// BLAS classes). Because the flag is conditioned on `RefitOn()`, `CZ_VK_RT_NO_REFIT=1` is
+// a control arm for the WHOLE of item 2 including its build-flag cost, not just for the
+// update calls.
+VkBuildAccelerationStructureFlagsKHR BlasFlags()
+{
+    static const bool fastBuild = EnvOn("CZ_VK_RT_FAST_BUILD");
+    return (fastBuild ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+                      : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) |
+           (RefitOn() ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR
+                      : VkBuildAccelerationStructureFlagsKHR(0));
+}
+
+bool StableKey()
+{
+    static const bool off = [] {
+        const char* e = Env("CZ_VK_RT_STABLE_KEY");
+        return e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N');
+    }();
+    return !off;
 }
 
 // out = outer o inner, both row-major 4x3 affines (the layout VkTransformMatrixKHR uses).
@@ -10796,6 +10937,20 @@ void PrintCollectorCensus(const char* who)
             (unsigned long long)g_skipEndian, (unsigned long long)g_skipBounds,
             (unsigned long long)g_skipNoValidPos,
             (unsigned long long)g_keyCollisions, (unsigned long long)g_degenerate);
+    // GEOMETRY SOURCE AND REFIT (the Remix plan's items 0-2). `direct` is item 0's
+    // engagement counter — builds that read their vertices in place out of the persist
+    // store rather than copying them — and `staged` is what item 0 did NOT reach.
+    // `refit` is item 2's: it must be non-zero on any roam with a dynamic population, and
+    // `blas=`/`flushes=` above must STOP growing, which is the whole gate for item 2.
+    fprintf(stderr,
+            "[rt] %s: verts direct=%llu staged=%llu | idxPool=%.1f MB | refit=%llu "
+            "(forced=%llu budgeted-out=%llu noSource=%llu topology=%llu)%s%s\n",
+            who, (unsigned long long)g_buildDirect, (unsigned long long)g_buildStaged,
+            double(g_idxBytes) / (1 << 20), (unsigned long long)g_refits,
+            (unsigned long long)g_refitForced, (unsigned long long)g_refitBudgeted,
+            (unsigned long long)g_refitNoSource, (unsigned long long)g_refitTopology,
+            DirectBuffers() ? "" : "  (CZ_VK_RT_NO_DIRECT_BUFFERS=1)",
+            RefitOn() ? "" : "  (CZ_VK_RT_NO_REFIT=1)");
     // PLACEMENT (part 67), and the world box is the line that says TOWN or PILE in one
     // glance. Falls back to the previous frame's when this one has not collected yet —
     // see g_instMinPrev.
@@ -11145,10 +11300,32 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
             ++g_settledIn;
         iGuard = ie->guard;
     }
+    // THE MESH'S IDENTITY (item 1 of the Remix plan): address, size, endian, topology
+    // and layout — and deliberately NOT its CONTENT.
+    //
+    // Until part 68 the two content guards were mixed in here, and that is why a skinned
+    // or CPU-deformed mesh could never be traced: its bytes change every frame, so it got
+    // a new key, a new BLAS and (there being no per-BLAS eviction) unbounded growth until
+    // the pool cap flushed everything. Remix names the same insight — a content hash
+    // cannot be the identity of a thing whose content changes — and tracks those
+    // instances geometrically instead (`rtx.enableAlwaysCalculateAABB`).
+    //
+    // The collision question changes shape and gets EASIER rather than harder. Under the
+    // old key a recycled guest address was a correctness hazard, because the map could
+    // hand back a BLAS built from another mesh's bytes. Under this key a recycled address
+    // holding different bytes at the same size, stride and index count is simply a mesh
+    // whose content is stale, which is exactly what the refit path exists to correct. A
+    // genuinely incompatible mesh differs in index count, stride, offset or primitive
+    // type, and all four are in the key.
+    //
+    // CZ_VK_RT_STABLE_KEY=0 restores the part-68 key as the same-binary control arm.
     uint64_t key = Mix(0x52545348, streamKey);
-    key = Mix(key, vGuard);
+    if (!StableKey())
+    {
+        key = Mix(key, vGuard);
+        key = Mix(key, iGuard);
+    }
     key = Mix(key, idxKey);
-    key = Mix(key, iGuard);
     key = Mix(key, (uint64_t(draw.indexCount) << 16) | (prim << 8) |
                        (pos.offsetDwords << 4) | pos.strideDwords);
     ++g_collected;
@@ -11161,8 +11338,14 @@ void Collect(const uint32_t* vsWindow, uint32_t depthControl, const ShaderMeta& 
     auto bit = g_blas.find(key);
     if (bit != g_blas.end())
     {
+        // The identity echo, checked on every hit: the map key is a mix, so a true hash
+        // collision would otherwise trace one mesh's rays against another's geometry.
+        // The CONTENT stamps are deliberately not part of this test any more (item 1) —
+        // stale content is a refit, not a collision, and conflating the two is what made
+        // the dynamic population untraceable.
         if (bit->second.streamKey != streamKey || bit->second.idxKey != idxKey ||
-            bit->second.vGuard != vGuard || bit->second.iGuard != iGuard)
+            (!StableKey() &&
+             (bit->second.vGuard != vGuard || bit->second.iGuard != iGuard)))
         {
             ++g_keyCollisions;   // treat as absent; never trace another mesh's BLAS
             (cascadeCaster ? g_curCascadeKeys : g_curKeys).erase(key);
@@ -11368,6 +11551,43 @@ bool PlaceAs(VkDeviceSize size, VkAccelerationStructureTypeKHR type,
     return true;
 }
 
+// Put an expanded index list into the kept pool and hand back its device address.
+// Written once per mesh and never again — a refit re-reads the vertices and must NOT
+// re-describe the topology (the Vulkan update path requires the index data to be
+// identical, which is precisely why this pool exists).
+bool PlaceIndices(const uint16_t* src, uint32_t count, VkDeviceAddress* addr)
+{
+    const VkDeviceSize bytes = (VkDeviceSize(count) * 2 + 15) & ~VkDeviceSize(15);
+    constexpr VkDeviceSize kChunk = 8ull << 20;
+    AsChunk* c = nullptr;
+    if (!g_idxChunks.empty() &&
+        g_idxChunks.back().cursor + bytes <= g_idxChunks.back().buf.size)
+        c = &g_idxChunks.back();
+    else
+    {
+        AsChunk nc;
+        const VkDeviceSize sz = std::max(kChunk, bytes);
+        if (!CreateBuffer(nc.buf, sz,
+                          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          true))
+        {
+            fprintf(stderr, "[rt] RT index pool chunk allocation failed (%llu MB)\n",
+                    (unsigned long long)(sz >> 20));
+            return false;
+        }
+        g_idxChunks.push_back(nc);
+        c = &g_idxChunks.back();
+    }
+    memcpy(c->buf.mapped + c->cursor, src, size_t(count) * 2);
+    *addr = c->buf.address + c->cursor;
+    c->cursor += bytes;
+    g_idxBytes += bytes;
+    return true;
+}
+
 // Everything over: retire every chunk and AS, clear the map. Live keys re-pend
 // through Collect on their next draw and rebuild under the per-frame budget.
 void FlushAll()
@@ -11380,6 +11600,13 @@ void FlushAll()
         RetireBufferAs(VK_NULL_HANDLE, c.buf);
     g_chunks.clear();
     g_blasBytes = 0;
+    // The kept index lists belong to the BLASes that just died, so they go with them.
+    // Reclaiming them separately would be a leak with no owner; keeping them would be a
+    // pool that only ever grows.
+    for (auto& c : g_idxChunks)
+        RetireBufferAs(VK_NULL_HANDLE, c.buf);
+    g_idxChunks.clear();
+    g_idxBytes = 0;
     ++g_blasFlushes;
     fprintf(stderr, "[rt] BLAS pool over its cap — flushed (flush #%llu)\n",
             (unsigned long long)g_blasFlushes);
@@ -11403,21 +11630,72 @@ void BuildFrameStructures(uint8_t* base)
     if (g_blasBytes > blasCap)
         FlushAll();
 
+    // ---- ordering against the PREVIOUS frame's structure work.
+    //
+    // With frames in flight, frame N's command buffer can begin executing while frame
+    // N-1's is still running: submission order does not by itself order the memory. Every
+    // frame both READS acceleration structures built earlier (the TLAS reads its BLASes)
+    // and, as of the refit path below, WRITES them IN PLACE. One barrier at the top makes
+    // that hazard explicit instead of relying on it not happening.
+    {
+        VkMemoryBarrier pre{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+        pre.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        pre.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                            VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        vkCmdPipelineBarrier(R->cmd,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0,
+                             1, &pre, 0, nullptr, 0, nullptr);
+    }
+
     // ---- choose the batch: pending keys drawn last frame, budget in source bytes
+    //
+    // ITEM 0 of `docs/rt-remix-plan.md` is decided HERE, per mesh: can this build read its
+    // position stream straight out of the cross-frame persist store? The store already
+    // holds the guest bytes dword-swapped exactly as the copy below swaps them, it is
+    // already device-addressed for the raster path, and `PersistUsage()` now gives it the
+    // acceleration-structure build-input usage bit — so for a mesh the store has, the copy
+    // is pure duplication. Deciding it here rather than in the copy loop is what lets the
+    // staging buffer be sized to what actually needs staging.
+    struct BatchItem
+    {
+        uint64_t key = 0;
+        VkDeviceAddress vtxAddr = 0;   // set only when `direct`
+        bool direct = false;
+    };
     const std::unordered_set<uint64_t>& live =
         CascadeCasters() ? g_prevCascadeKeys : g_prevKeys;
-    std::vector<uint64_t> batch;
-    VkDeviceSize batchBytes = 0;
+    std::vector<BatchItem> batch;
+    VkDeviceSize batchBytes = 0, stagingNeed = 0;
     for (uint64_t key : live)
     {
         auto it = g_pending.find(key);
         if (it == g_pending.end())
             continue;
         const Pending& p = it->second;
+        // The budget stays in SOURCE bytes even for a direct mesh: it is a proxy for how
+        // much geometry the driver is asked to build in one frame, which is the cost being
+        // rationed, and that does not fall just because the bytes were not copied.
         const VkDeviceSize need = p.posBytes + VkDeviceSize(p.idxCount) * 6 + 64;
         if (batchBytes + need > buildBudget && !batch.empty())
             continue;
-        batch.push_back(key);
+        BatchItem bi;
+        bi.key = key;
+        Renderer::PersistEntry* pe =
+            (DirectBuffers() && R->persistOn && R->persist.address)
+                ? PersistFind(p.streamKey)
+                : nullptr;
+        // The size check is not decoration: the store's slot is allocated to the stream's
+        // own size, so a mismatch means this is not the buffer the collector measured and
+        // reading it would trace a mesh against another mesh's bytes.
+        if (pe && pe->bytes == p.posBytes)
+        {
+            bi.direct = true;
+            bi.vtxAddr = R->persist.address + pe->at;
+        }
+        else
+            stagingNeed = ((stagingNeed + 15) & ~VkDeviceSize(15)) + p.posBytes;
+        batch.push_back(bi);
         batchBytes += need;
     }
     // Prune pending entries nothing has drawn for ten seconds; they would
@@ -11433,27 +11711,38 @@ void BuildFrameStructures(uint8_t* base)
         VkAccelerationStructureGeometryKHR geom;
         VkAccelerationStructureBuildRangeInfoKHR range;
         VkAccelerationStructureBuildGeometryInfoKHR info;
-        VkDeviceSize scratchSize = 0, asSize = 0;
+        VkDeviceSize scratchSize = 0, updateScratchSize = 0, asSize = 0;
         uint32_t tris = 0, maxVertex = 0;
-        VkDeviceSize vtxAt = 0, idxAt = 0;
+        VkDeviceAddress idxAddr = 0;
+        bool direct = false;
     };
     std::vector<Built> builds;
     builds.reserve(batch.size());
 
-    // ---- staging: copy + expand under one cursor, then one buffer fill
-    if (!batch.empty() &&
-        EnsureBuffer(g_staging[slot], std::max<VkDeviceSize>(batchBytes, 1u << 20),
+    // ---- staging (only for what the store could not serve) + index expansion
+    Buffer* stg = nullptr;
+    if (stagingNeed &&
+        EnsureBuffer(g_staging[slot], std::max<VkDeviceSize>(stagingNeed, 1u << 20),
                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      "RT staging"))
+        stg = &g_staging[slot];
+    if (!batch.empty())
     {
-        Buffer& stg = g_staging[slot];
+        // The expanded index list is built on the host and then handed to the KEPT pool.
+        // It used to be written into per-frame staging, which was fine while a BLAS was
+        // built exactly once — a refit has to re-describe the same indices, and per-frame
+        // staging is gone by then.
+        std::vector<uint16_t> expand;
         VkDeviceSize at = 0;
-        for (uint64_t key : batch)
+        for (const BatchItem& bi : batch)
         {
-            const Pending& p = g_pending[key];
+            auto pit2 = g_pending.find(bi.key);
+            if (pit2 == g_pending.end())
+                continue;
+            const Pending& p = pit2->second;
             if (!GuestRangeOk(p.posVa, p.posBytes) ||
                 (p.indexed && !GuestRangeOk(p.idxVa, uint64_t(p.idxCount) * 2)))
             {
@@ -11461,32 +11750,46 @@ void BuildFrameStructures(uint8_t* base)
                 continue;
             }
             const uint32_t stride = p.strideDw * 4;
-            const uint32_t vertCount = p.posBytes / stride;
+            const uint32_t vertCount = stride ? p.posBytes / stride : 0;
             if (!vertCount)
                 continue;
-            // Vertex bytes, dword-swapped exactly as the raster upload swaps them.
-            const VkDeviceSize vtxAt = (at + 15) & ~VkDeviceSize(15);
-            if (vtxAt + p.posBytes > stg.size)
-                break;   // budget said this fits; a resize raced it — next frame
-            const uint32_t* srcDw = reinterpret_cast<const uint32_t*>(base + p.posVa);
-            uint32_t* dstDw = reinterpret_cast<uint32_t*>(stg.mapped + vtxAt);
-            const uint32_t ndw = p.posBytes / 4;
-            if (p.vEndian == 2)
-                for (uint32_t i = 0; i < ndw; ++i)
-                    dstDw[i] = __builtin_bswap32(srcDw[i]);
+            VkDeviceAddress vtxAddr = bi.vtxAddr;
+            if (bi.direct)
+                ++g_buildDirect;
             else
-                memcpy(dstDw, srcDw, p.posBytes);
-            at = vtxAt + p.posBytes;
+            {
+                if (!stg)
+                    continue;
+                // Vertex bytes, dword-swapped exactly as the raster upload swaps them.
+                const VkDeviceSize vtxAt = (at + 15) & ~VkDeviceSize(15);
+                if (vtxAt + p.posBytes > stg->size)
+                    break;   // budget said this fits; a resize raced it — next frame
+                const uint32_t* srcDw =
+                    reinterpret_cast<const uint32_t*>(base + p.posVa);
+                uint32_t* dstDw = reinterpret_cast<uint32_t*>(stg->mapped + vtxAt);
+                const uint32_t ndw = p.posBytes / 4;
+                if (p.vEndian == 2)
+                    for (uint32_t i = 0; i < ndw; ++i)
+                        dstDw[i] = __builtin_bswap32(srcDw[i]);
+                else
+                    memcpy(dstDw, srcDw, p.posBytes);
+                at = vtxAt + p.posBytes;
+                vtxAddr = stg->address + vtxAt;
+                ++g_buildStaged;
+            }
             // Index expansion: strip -> list (restart-aware), list -> verbatim,
             // auto-indexed -> implicit strip. Degenerates are dropped and counted.
-            const VkDeviceSize idxAt = (at + 15) & ~VkDeviceSize(15);
-            uint16_t* out = reinterpret_cast<uint16_t*>(stg.mapped + idxAt);
-            const VkDeviceSize outCap = (stg.size - idxAt) / 2;
-            uint32_t tris = 0;
+            expand.clear();
             uint32_t maxVertex = 0;
             const uint8_t* ip = p.indexed ? base + p.idxVa : nullptr;
             auto idx = [&](uint32_t i) -> uint32_t {
                 return p.indexed ? IdxAt(ip, i, p.iEndian) : i;
+            };
+            auto emit = [&](uint32_t a, uint32_t b, uint32_t c) {
+                expand.push_back(uint16_t(a));
+                expand.push_back(uint16_t(b));
+                expand.push_back(uint16_t(c));
+                maxVertex = std::max({ maxVertex, a, b, c });
             };
             if (p.prim == xenos::kTriangleList)
             {
@@ -11501,13 +11804,7 @@ void BuildFrameStructures(uint8_t* base)
                         ++g_degenerate;
                         continue;
                     }
-                    if (VkDeviceSize(tris + 1) * 3 > outCap)
-                        break;
-                    out[tris * 3] = uint16_t(a);
-                    out[tris * 3 + 1] = uint16_t(b);
-                    out[tris * 3 + 2] = uint16_t(c);
-                    maxVertex = std::max({ maxVertex, a, b, c });
-                    ++tris;
+                    emit(a, b, c);
                 }
             }
             else   // triangle strip
@@ -11527,15 +11824,7 @@ void BuildFrameStructures(uint8_t* base)
                         const uint32_t a = v0, b = v1, c = v;
                         if (a != b && b != c && a != c && a < vertCount &&
                             b < vertCount && c < vertCount)
-                        {
-                            if (VkDeviceSize(tris + 1) * 3 > outCap)
-                                break;
-                            out[tris * 3] = uint16_t(a);
-                            out[tris * 3 + 1] = uint16_t(b);
-                            out[tris * 3 + 2] = uint16_t(c);
-                            maxVertex = std::max({ maxVertex, a, b, c });
-                            ++tris;
-                        }
+                            emit(a, b, c);
                         else
                             ++g_degenerate;
                     }
@@ -11544,36 +11833,38 @@ void BuildFrameStructures(uint8_t* base)
                     ++run;
                 }
             }
+            const uint32_t tris = uint32_t(expand.size() / 3);
             if (!tris)
             {
-                g_pending.erase(key);   // nothing traceable in it; do not retry
+                g_pending.erase(bi.key);   // nothing traceable in it; do not retry
                 continue;
             }
-            at = idxAt + VkDeviceSize(tris) * 6;
+            VkDeviceAddress idxAddr = 0;
+            if (!PlaceIndices(expand.data(), uint32_t(expand.size()), &idxAddr))
+                continue;
 
             Built bd{};
-            bd.key = key;
+            bd.key = bi.key;
             bd.tris = tris;
             bd.maxVertex = maxVertex;
-            bd.vtxAt = vtxAt;
-            bd.idxAt = idxAt;
+            bd.idxAddr = idxAddr;
+            bd.direct = bi.direct;
             bd.geom = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
             bd.geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
             bd.geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
             auto& t = bd.geom.geometry.triangles;
             t = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR };
             t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-            t.vertexData.deviceAddress = stg.address + vtxAt + p.offsetDw * 4;
+            t.vertexData.deviceAddress = vtxAddr + p.offsetDw * 4;
             t.vertexStride = stride;
             t.maxVertex = maxVertex;
             t.indexType = VK_INDEX_TYPE_UINT16;
-            t.indexData.deviceAddress = stg.address + idxAt;
+            t.indexData.deviceAddress = idxAddr;
             bd.info = {
                 VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR
             };
             bd.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-            bd.info.flags =
-                VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            bd.info.flags = BlasFlags();
             bd.info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
             bd.info.geometryCount = 1;
             bd.info.pGeometries = &bd.geom;
@@ -11585,6 +11876,12 @@ void BuildFrameStructures(uint8_t* base)
                                   &bd.info, &tris, &sz);
             bd.asSize = sz.accelerationStructureSize;
             bd.scratchSize = sz.buildScratchSize;
+            // THE FIGURE ITEM 2 IS EASY TO GET WRONG. `updateScratchSize` is a different
+            // number from `buildScratchSize` — sizing an update from the build figure
+            // merely wastes memory, but sizing it from nothing is undefined behaviour, so
+            // it is captured HERE, from the same query that sized the structure, rather
+            // than re-derived at refit time from a description that might have drifted.
+            bd.updateScratchSize = sz.updateScratchSize;
             bd.range = { tris, 0, 0, 0 };
             builds.push_back(bd);
         }
@@ -11606,6 +11903,14 @@ void BuildFrameStructures(uint8_t* base)
             VkDeviceSize scratchAt = 0;
             for (Built& bd : builds)
             {
+                // The pending record is read BEFORE anything is committed. Taking an AS
+                // out of the pool and recording a build into it, and only then finding
+                // no record to file it under, would leak the structure — nothing would
+                // ever retire a handle no map holds.
+                auto pit3 = g_pending.find(bd.key);
+                if (pit3 == g_pending.end())
+                    continue;
+                const Pending& p = pit3->second;
                 VkAccelerationStructureKHR as;
                 VkDeviceAddress addr;
                 if (!PlaceAs(bd.asSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
@@ -11620,7 +11925,6 @@ void BuildFrameStructures(uint8_t* base)
                 bd.info.pGeometries = &bd.geom;   // re-point: vector may have moved
                 infos.push_back(bd.info);
                 ranges.push_back(&bd.range);
-                const Pending& p = g_pending[bd.key];
                 Blas nb;
                 nb.as = as;
                 nb.address = addr;
@@ -11630,6 +11934,15 @@ void BuildFrameStructures(uint8_t* base)
                 nb.idxKey = p.idxKey;
                 nb.vGuard = p.vGuard;
                 nb.iGuard = p.iGuard;
+                nb.idxAddr = bd.idxAddr;
+                nb.maxVertex = bd.maxVertex;
+                nb.strideDw = p.strideDw;
+                nb.offsetDw = p.offsetDw;
+                nb.posBytes = p.posBytes;
+                nb.buildScratch = bd.scratchSize;
+                nb.updateScratch = bd.updateScratchSize;
+                nb.framesSinceBuild = 0;
+                nb.direct = bd.direct;
                 g_blas.emplace(bd.key, nb);
                 g_pending.erase(bd.key);
                 ++g_blasBuilt;
@@ -11637,6 +11950,171 @@ void BuildFrameStructures(uint8_t* base)
             if (!infos.empty())
                 R->pfnCmdBuildAS(R->cmd, uint32_t(infos.size()), infos.data(),
                                  ranges.data());
+        }
+    }
+
+    // ---- ITEM 2: REFIT the BLASes whose bytes moved, in place.
+    //
+    // This is the half of the Remix plan that makes the dynamic population traceable at
+    // all. Before it, a mesh whose vertices change was a NEW mesh every frame (its content
+    // guard was part of its identity), so it cost a fresh acceleration structure every
+    // frame against a pool with no eviction — which is exactly why `CZ_VK_RT_DYN_SETTLE=0`
+    // had to ship as a diagnostic. With a stable identity (item 1) and a live vertex
+    // pointer (item 0), the same mesh costs one in-place update against the allocation it
+    // already has.
+    //
+    // Three outcomes per dirty mesh, and they are not interchangeable:
+    //   * only the VERTICES moved  -> MODE_UPDATE, `updateScratchSize`;
+    //   * the vertices moved and the refit budget is spent -> left for a later frame,
+    //     counted, because a stale shadow is better than an unbounded frame;
+    //   * the TOPOLOGY moved (the index buffer's own guard changed) -> a refit is invalid,
+    //     so the record is dropped and Collect re-pends it as a fresh build.
+    if (RefitOn() && R->persistOn && R->persist.address)
+    {
+        static const VkDeviceSize refitBudget =
+            (Env("CZ_VK_RT_REFIT_MB") ? strtoull(Env("CZ_VK_RT_REFIT_MB"), nullptr, 10)
+                                      : 16ull)
+            << 20;
+        struct Refit
+        {
+            VkAccelerationStructureGeometryKHR geom;
+            VkAccelerationStructureBuildRangeInfoKHR range;
+            VkAccelerationStructureBuildGeometryInfoKHR info;
+            VkDeviceSize scratch = 0;
+            // The bookkeeping is applied only once the build is RECORDED. Marking a BLAS
+            // clean and then failing to allocate scratch would leave stale geometry with
+            // nothing to say so — a silently wrong shadow, which is the failure mode this
+            // whole feature has already had once.
+            uint64_t key = 0, newGuard = 0;
+            bool forced = false;
+        };
+        std::vector<Refit> refits;
+        VkDeviceSize refitBytes = 0, refitScratchNeed = 0;
+        for (uint64_t key : live)
+        {
+            auto it = g_blas.find(key);
+            if (it == g_blas.end())
+                continue;
+            Blas& b = it->second;
+            // A BLAS built out of per-frame staging has no live vertex source to refit
+            // FROM: that buffer was recycled at the swap. Counted rather than silently
+            // skipped, because a non-zero reading here means item 0 is not serving the
+            // population item 2 exists for.
+            if (!b.direct || !b.idxAddr)
+            {
+                ++g_refitNoSource;
+                continue;
+            }
+            Renderer::PersistEntry* pe = PersistFind(b.streamKey);
+            if (!pe || pe->bytes != b.posBytes)
+            {
+                ++g_refitNoSource;
+                continue;
+            }
+            if (b.idxKey)
+            {
+                Renderer::PersistEntry* ie = PersistFind(b.idxKey);
+                if (!ie || ie->guard != b.iGuard)
+                {
+                    // Topology changed under a stable key. A refit may not change the
+                    // index data, so this record is retired and rebuilt from scratch.
+                    ++g_refitTopology;
+                    if (b.as)
+                        g_retiredAs.push_back({ R->frame, b.as, Buffer{} });
+                    g_blas.erase(it);
+                    continue;
+                }
+            }
+            const bool forced = b.framesSinceBuild >= RefitMax();
+            if (pe->guard == b.vGuard && !forced)
+                continue;   // clean, and not yet due a quality rebuild
+            if (refitBytes + b.posBytes > refitBudget && !refits.empty())
+            {
+                ++g_refitBudgeted;
+                continue;
+            }
+            refitBytes += b.posBytes;
+
+            Refit r{};
+            r.geom = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+            r.geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            r.geom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            auto& t = r.geom.geometry.triangles;
+            t = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR };
+            t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            // The live pointer. It is re-read every frame rather than cached because the
+            // persist store PING-PONGS a stream it catches changing — the very streams
+            // this loop serves — so the address genuinely differs between frames. That is
+            // legal for an update (the geometry DESCRIPTION must match, the addresses need
+            // not), and it is the reason the geometry info is rebuilt here each frame
+            // instead of being stored alongside the BLAS.
+            t.vertexData.deviceAddress =
+                R->persist.address + pe->at + VkDeviceSize(b.offsetDw) * 4;
+            t.vertexStride = VkDeviceSize(b.strideDw) * 4;
+            t.maxVertex = b.maxVertex;
+            t.indexType = VK_INDEX_TYPE_UINT16;
+            t.indexData.deviceAddress = b.idxAddr;
+            r.info = {
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR
+            };
+            r.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            r.info.flags = BlasFlags();
+            r.info.mode = forced ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR
+                                 : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+            // A forced rebuild goes into the SAME allocation: the description is identical
+            // (same triangle count, same maxVertex, same layout), so the structure size is
+            // identical too and there is nothing to reallocate. That matters because the
+            // AS pool is a bump allocator with no per-entry eviction — a rebuild that took
+            // fresh bytes every RefitMax() frames would reintroduce the growth item 2
+            // exists to remove, one sixtieth as fast.
+            r.info.srcAccelerationStructure = forced ? VK_NULL_HANDLE : b.as;
+            r.info.dstAccelerationStructure = b.as;
+            r.info.geometryCount = 1;
+            r.range = { b.tris, 0, 0, 0 };
+            r.scratch = forced ? b.buildScratch : b.updateScratch;
+            r.key = key;
+            r.newGuard = pe->guard;
+            r.forced = forced;
+            refitScratchNeed = ((refitScratchNeed + R->rtScratchAlign - 1) &
+                                ~VkDeviceSize(R->rtScratchAlign - 1)) +
+                               r.scratch;
+            refits.push_back(r);
+        }
+        if (!refits.empty() &&
+            EnsureBuffer(g_refitScratch[slot],
+                         std::max<VkDeviceSize>(refitScratchNeed, 1u << 20),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "RT refit scratch"))
+        {
+            std::vector<VkAccelerationStructureBuildGeometryInfoKHR> infos;
+            std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges;
+            infos.reserve(refits.size());
+            ranges.reserve(refits.size());
+            VkDeviceSize scratchAt = 0;
+            for (Refit& r : refits)
+            {
+                scratchAt = (scratchAt + R->rtScratchAlign - 1) &
+                            ~VkDeviceSize(R->rtScratchAlign - 1);
+                r.info.scratchData.deviceAddress =
+                    g_refitScratch[slot].address + scratchAt;
+                scratchAt += r.scratch;
+                r.info.pGeometries = &r.geom;   // stable: `refits` is not grown past here
+                infos.push_back(r.info);
+                ranges.push_back(&r.range);
+                auto bit2 = g_blas.find(r.key);
+                if (bit2 != g_blas.end())
+                {
+                    bit2->second.vGuard = r.newGuard;
+                    bit2->second.lastFrame = R->frame;
+                    bit2->second.framesSinceBuild =
+                        r.forced ? 0 : bit2->second.framesSinceBuild + 1;
+                }
+                ++g_refits;
+                g_refitForced += r.forced ? 1 : 0;
+            }
+            R->pfnCmdBuildAS(R->cmd, uint32_t(infos.size()), infos.data(),
+                             ranges.data());
         }
     }
 
@@ -17281,10 +17759,7 @@ bool InitCommon()
     // machine could not spare another 128 MB would trade a 30% frame-time saving for the
     // whole picture, which is not a trade anything here should make silently.
     if (R->persistOn &&
-        !CreateBuffer(R->persist, persistMb << 20,
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        !CreateBuffer(R->persist, persistMb << 20, PersistUsage(),
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true, "cross-frame stream store"))
