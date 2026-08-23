@@ -10545,9 +10545,19 @@ void Dump()
 } // namespace vcull
 
 // The arm, hoisted for the same reason as `FovCensusArmed` — see part 71's hook fold.
+// It ANNOUNCES ITSELF, because "armed and the run never reached world geometry" and "not
+// armed" are different states that would otherwise print the same nothing, and a harness
+// gate has to be able to tell them apart (gotcha 151).
 bool VerticalWasteCensusArmed()
 {
-    static const bool on = Env("CZ_VK_VCULL_CENSUS") != nullptr;
+    static const bool on = [] {
+        const bool o = Env("CZ_VK_VCULL_CENSUS") != nullptr;
+        if (o)
+            fprintf(stderr, "[vcull] CZ_VK_VCULL_CENSUS=1 — the vertical-waste census is "
+                            "ARMED; this is a DIAGNOSTIC arm, so no frame time from this "
+                            "run is quotable\n");
+        return o;
+    }();
     return on;
 }
 
