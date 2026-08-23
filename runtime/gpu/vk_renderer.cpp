@@ -2693,6 +2693,44 @@ uint32_t g_pipeCurCount = 0;
 struct PipeFrameRec { uint64_t frame = 0; uint64_t ns = 0; uint32_t count = 0; };
 PipeFrameRec g_pipeTop[12];
 
+// ===================================================================================
+// THE SLOW-FRAME TABLE (part 72, open item 0w) — the same shape, asking a wider question
+// ===================================================================================
+//
+// The pipeline table above found the 3,891 ms frame because it recorded a per-frame
+// roll-up of ONE candidate. Item 0w needs the next candidate and does not know which it
+// is: binning the operator's eight arms says heavy gameplay is smooth (`>2x med` 0.0%
+// across 51 windows) and every recurring hitch is below ~2,000 draws — menu and load,
+// where the median window still holds a ~290 ms frame against a 5.7 ms median.
+//
+// So rather than instrument one guess, this records the WORST FRAMES BY WALL TIME and
+// what happened inside each: draws, textures uploaded, pipelines created. Whichever
+// candidate is responsible names itself, and a frame that is slow with none of them
+// elevated is itself the finding — it would say the cost is outside the renderer
+// (streaming, file I/O, the guest) and stop anyone instrumenting the draw path further.
+//
+// Free: the frame's wall time is already measured for `CZ_FPS_LOG`, and the two counters
+// it differences are single increments.
+uint64_t g_texUploads = 0;
+struct SlowFrameRec
+{
+    uint64_t frame = 0;
+    uint32_t us = 0, draws = 0, tex = 0, pipes = 0;
+};
+SlowFrameRec g_slowTop[12];
+
+void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
+                   uint32_t pipes)
+{
+    uint32_t worst = 0;
+    for (uint32_t i = 1; i < 12; ++i)
+        if (g_slowTop[i].us < g_slowTop[worst].us)
+            worst = i;
+    if (us <= g_slowTop[worst].us)
+        return;
+    g_slowTop[worst] = SlowFrameRec{ frame, us, draws, tex, pipes };
+}
+
 // Close the frame currently being accumulated and keep it if it is among the worst.
 void PipeFrameFlush()
 {
@@ -6078,6 +6116,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                        uint32_t shaderDim)
 {
     ProfScope _p(&g_prof.textures);
+    // One increment, unconditionally. The PROFILER's `textures` phase already times this
+    // function, but `ProfScope` records nothing unless `CZ_VK_PROFILE` is set — and that
+    // costs 2-4 ms a frame, which is the same order as the hitch open item 0w is hunting
+    // (gotcha 7). A plain count is free and is what the slow-frame table below differences.
+    ++g_texUploads;
     // THE DENOMINATOR, and it goes FIRST. Every other cube counter here is a share of
     // this, and a count with no denominator is the shape of claim this project keeps
     // having to retract: part 25 published "114 of 337,716, 0.03%" off one recipe and a
@@ -10823,6 +10866,11 @@ void Dump()
 //
 // The gather writes whole float4 registers, not bytes: the guest's own granularity, and
 // four dwords is a size the compiler turns into two 8-byte moves.
+// The pass-size histogram (perf item A's sizing) — see its use in DoResolve.
+constexpr uint32_t kPassBuckets = 15;      // 0, 1, 2-3, 4-7, ... 4096+
+uint64_t g_passHist[kPassBuckets] = {}, g_passHistDraws[kPassBuckets] = {};
+uint64_t g_passCount = 0, g_passDraws = 0, g_passMax = 0;
+
 uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
          g_gatherTopUp = 0, g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
@@ -19008,6 +19056,37 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             fprintf(stderr, "\n[vkresolve]       %s", d.c_str());
         fprintf(stderr, "\n");
     }
+    // THE PASS-SIZE HISTOGRAM (part 72, perf item A's sizing). Always on: it is two
+    // increments per resolve, ~48 a frame, against a renderer that does 5,844 draws in the
+    // same frame — free by any measure, and this project's recurring defect is the counter
+    // it pays for and never prints, not the counter it never collected.
+    //
+    // WHY IT DECIDES ITEM A. Parallel command recording hands each worker a CONTIGUOUS
+    // RANGE of draws, and a pass — a maximal run bounded by resolves — is exactly that
+    // range, already delimited. The run average is 122 draws per pass, and **a mean cannot
+    // tell "48 passes of 122" from "two passes of 2,800 and 46 of 5"**: the first has ample
+    // parallelism, the second has almost none and would make the item worthless. Buckets
+    // answer that; the mean cannot, and this part has already been caught twice by a mean
+    // standing in for the distribution it hides (gotchas 428, 434).
+    {
+        const uint64_t n = R->drawsThisPass;
+        ++g_passCount;
+        g_passDraws += n;
+        g_passMax = std::max(g_passMax, n);
+        // Log2-ish buckets: 0, 1, 2-3, 4-7, ... 4096+. The question is orders of
+        // magnitude — whether the big passes hold most of the draws — not resolution.
+        uint32_t b = 0;
+        for (uint64_t v = n; v > 1 && b < kPassBuckets - 1; v >>= 1)
+            ++b;
+        if (n == 0)
+            b = 0;
+        else
+            ++b;   // shift so bucket 0 means "empty pass" and 1 means "exactly one draw"
+        if (b >= kPassBuckets)
+            b = kPassBuckets - 1;
+        ++g_passHist[b];
+        g_passHistDraws[b] += n;
+    }
     R->drawsThisPass = 0;
     R->verticesThisPass = 0;
     R->snapshotsSampledThisPass.clear();
@@ -20238,6 +20317,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 std::chrono::duration_cast<std::chrono::microseconds>(now - lastFrame)
                     .count()));
             lastFrame = now;
+            // OPEN ITEM 0w's table. Differenced against the previous frame, so each row
+            // says what happened INSIDE that frame rather than up to it.
+            {
+                static uint64_t prevTex = 0, prevPipes = 0;
+                SlowFrameNote(R->frame, frameUs.back(), uint32_t(R->drawsThisFrame),
+                              uint32_t(g_texUploads - prevTex),
+                              uint32_t(g_pipeCount - prevPipes));
+                prevTex = g_texUploads;
+                prevPipes = g_pipeCount;
+            }
             const double elapsed =
                 std::chrono::duration<double>(now - windowStart).count();
             if (elapsed >= double(fpsLogSec) && frames > 1)
@@ -22543,6 +22632,72 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // OPEN ITEM 0w — the worst frames of the run and what was inside them.
+    {
+        SlowFrameRec t[12];
+        memcpy(t, g_slowTop, sizeof t);
+        std::sort(t, t + 12, [](const SlowFrameRec& a, const SlowFrameRec& b) {
+            return a.us > b.us;
+        });
+        if (t[0].us)
+        {
+            fprintf(stderr, "[vk]   worst frames (open item 0w — what was IN them):\n");
+            for (const SlowFrameRec& r : t)
+            {
+                if (!r.us)
+                    break;
+                fprintf(stderr,
+                        "[vk]     frame %8llu: %8.1f ms   %6u draws   %5u texture uploads"
+                        "   %4u pipelines\n",
+                        (unsigned long long)r.frame, double(r.us) / 1000.0, r.draws,
+                        r.tex, r.pipes);
+            }
+            fprintf(stderr,
+                    "[vk]     (a slow frame with NONE of these elevated is itself the "
+                    "answer: the cost is outside the renderer)\n");
+        }
+    }
+    // THE PASS-SIZE HISTOGRAM, and the column that decides item A is the DRAW-WEIGHTED
+    // one, not the pass count. "46 of 48 passes are tiny" sounds fatal and is irrelevant
+    // if the other two carry 95% of the draws — a worker pool feeds on DRAWS. So both are
+    // printed side by side and the cumulative draw share is spelled out, because the
+    // decision is "how many passes do I need before I have most of the frame".
+    if (g_passCount)
+    {
+        fprintf(stderr,
+                "[vk]   pass sizes: %llu passes, %llu draws, mean %.0f, max %llu\n",
+                (unsigned long long)g_passCount, (unsigned long long)g_passDraws,
+                double(g_passDraws) / double(g_passCount),
+                (unsigned long long)g_passMax);
+        // Walk from the LARGEST bucket down: the answer wanted is "the biggest N passes
+        // hold X% of all draws", which reads directly off a descending cumulative.
+        uint64_t cumP = 0, cumD = 0;
+        for (int b = kPassBuckets - 1; b >= 0; --b)
+        {
+            if (!g_passHist[b])
+                continue;
+            cumP += g_passHist[b];
+            cumD += g_passHistDraws[b];
+            char range[32];
+            if (b == 0)
+                snprintf(range, sizeof range, "empty");
+            else if (b == 1)
+                snprintf(range, sizeof range, "1");
+            else if (b >= int(kPassBuckets) - 1)
+                snprintf(range, sizeof range, ">=%u", 1u << (kPassBuckets - 2));
+            else
+                snprintf(range, sizeof range, "%u-%u", 1u << (b - 1), (1u << b) - 1);
+            fprintf(stderr,
+                    "[vk]     %8s draws: %8llu passes (%5.1f%%), %10llu draws (%5.1f%%)"
+                    "   cumulative from the top: %5.1f%% of passes hold %5.1f%% of draws\n",
+                    range, (unsigned long long)g_passHist[b],
+                    100.0 * double(g_passHist[b]) / double(g_passCount),
+                    (unsigned long long)g_passHistDraws[b],
+                    g_passDraws ? 100.0 * double(g_passHistDraws[b]) / double(g_passDraws) : 0.0,
+                    100.0 * double(cumP) / double(g_passCount),
+                    g_passDraws ? 100.0 * double(cumD) / double(g_passDraws) : 0.0);
+        }
+    }
     // PERF ITEM C's bill, on every stats dump — the bytes NOT copied, which is the whole
     // point of the item, plus the two numbers that say whether it is safe: how many stages
     // fell back to the full copy, and what the verifier found if it was armed.
