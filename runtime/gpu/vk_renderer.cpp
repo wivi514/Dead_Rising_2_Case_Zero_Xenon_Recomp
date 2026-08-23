@@ -3815,6 +3815,26 @@ struct Renderer
     // CONTENT, which is exactly what tools/xtr_determinism.py does to the capture pair.
     uint64_t drawFingerprint = 0;
     uint64_t cameraFingerprint = 0;
+    // THE ORDER GATE (part 72) — the precondition `perf-plan-part72.md` §5 has called owed
+    // since part 55, and the only gate that can catch the one defect parallel command
+    // recording actually risks.
+    //
+    // Draw ORDER on this title is SEMANTIC: the PM4 stream's sequence decides blending,
+    // depth and the tiled resolve order, so a parallel recorder that emits the same draws
+    // in a different order produces a wrong picture that no counter, no frame time and no
+    // era median would flag. `drawFingerprint` above cannot serve: it is load-bearing for
+    // cross-run frame matching (tools/frame_determinism.py) so its contents cannot change,
+    // and it carries neither the pipeline nor the vertex range.
+    //
+    // `orderLog` is the INTENDED order — one identity per draw, appended as `DoDraw` is
+    // called, which is PM4 stream order by construction. A parallel path rebuilds the same
+    // sequence from its secondaries in EXECUTION order and the two hashes must agree. On
+    // the serial path the two orders are identical by definition and the check passes
+    // trivially, which is exactly why `CZ_VK_ORDER_POISON` exists: a gate that cannot be
+    // shown to fail has not been shown to work (gotcha 30), and this one has to be
+    // provably alive BEFORE the item it guards is written, not after.
+    std::vector<uint64_t> orderLog;
+    uint64_t orderFramesChecked = 0, orderFramesFailed = 0, orderDrawsLogged = 0;
     // The constants the fingerprint above HASHES, kept rather than only summarised.
     // A hash can say two frames differ; only the values can say where the camera was,
     // and reproducing a shot is the whole point of the pose capture (see the .pose
@@ -8167,6 +8187,12 @@ void PersistMaintenance()
     ++R->persistStats.flushes;
 }
 
+// Defined with the gate itself further down; declared here because the frame
+// boundary is above it and moving eighty lines to satisfy an ordering rule would make
+// the gate harder to find, not easier.
+void OrderGateCheck();
+bool OrderGateArmed();
+
 void BeginFrame()
 {
     if (R->recording)
@@ -8227,6 +8253,11 @@ void BeginFrame()
     // the frame budget can absorb rather than a function of how much geometry streamed
     // in this second (which is what made the unbounded version cost 66.8 MB/frame).
     R->probeBudgetLeft = Renderer::kGuardProbeBudget;
+    // THE ORDER GATE, checked at the frame boundary and BEFORE the log is cleared. It runs
+    // on the finished frame's draws, which is the only point where "submission order" is a
+    // complete statement.
+    OrderGateCheck();
+    R->orderLog.clear();
     R->lastFrameDraws = R->drawsThisFrame;
     R->drawsThisFrame = 0;
     // The scene-camera pick is PER FRAME. Left latched, it would hold the largest draw
@@ -10707,6 +10738,81 @@ void Dump()
             double(now.wasteH) / double(now.frames), (unsigned long long)now.frames);
 }
 } // namespace vcull
+
+// ===================================================================================
+// THE ORDER GATE (part 72) — `perf-plan-part72.md` §5's precondition, owed since part 55
+// ===================================================================================
+//
+// See the `orderLog` comment in the Renderer struct for WHY. This is the mechanism.
+//
+// `OrderGateCheck` is called once per frame with the draws in SUBMISSION order. Today
+// that is the record order, because recording is serial — so the comparison is trivially
+// true and the gate would be pure ceremony without its poison arm. `CZ_VK_ORDER_POISON=N`
+// transposes the Nth pair before comparing, which is the exact defect a parallel recorder
+// would introduce, and it must make the gate fail. Ship the gate PROVEN, then write the
+// item it guards.
+bool OrderGateArmed()
+{
+    static const bool on = [] {
+        const bool o = Env("CZ_VK_ORDER_GATE") != nullptr;
+        if (o)
+            fprintf(stderr, "[order] CZ_VK_ORDER_GATE=1 — the draw-order gate is ARMED "
+                            "(one uint64 per draw; the serial path must always pass)\n");
+        return o;
+    }();
+    return on;
+}
+
+void OrderGateCheck()
+{
+    if (!OrderGateArmed() || R->orderLog.empty())
+        return;
+    auto mixq = [](uint64_t h, uint64_t v) {
+        h ^= v;
+        return h * 0x100000001B3ull;
+    };
+    // THE INTENDED ORDER, hashed sequentially so a transposition changes the result.
+    uint64_t want = 0xCBF29CE484222325ull;
+    for (uint64_t v : R->orderLog)
+        want = mixq(want, v);
+
+    // THE SUBMITTED ORDER. Identical to the log today; a parallel path will build this
+    // from its secondaries instead, and nothing else here has to change.
+    static std::vector<uint64_t> submitted;
+    submitted = R->orderLog;
+    static const long poison = [] {
+        const char* e = Env("CZ_VK_ORDER_POISON");
+        const long n = e ? atol(e) : -1;
+        if (e)
+            fprintf(stderr, "[order] CZ_VK_ORDER_POISON=%ld — transposing one adjacent "
+                            "pair per frame. THE GATE MUST FAIL; if it does not, the gate "
+                            "is not measuring order at all\n", n);
+        return n;
+    }();
+    if (poison >= 0 && submitted.size() > size_t(poison) + 1)
+        std::swap(submitted[size_t(poison)], submitted[size_t(poison) + 1]);
+
+    uint64_t got = 0xCBF29CE484222325ull;
+    for (uint64_t v : submitted)
+        got = mixq(got, v);
+
+    ++R->orderFramesChecked;
+    if (got != want)
+    {
+        ++R->orderFramesFailed;
+        // Name the FIRST divergent ordinal, not just the fact of divergence: with 9,800
+        // draws a frame, "the order is wrong" is not a debuggable statement.
+        size_t at = 0;
+        while (at < submitted.size() && at < R->orderLog.size() &&
+               submitted[at] == R->orderLog[at])
+            ++at;
+        if (R->orderFramesFailed <= 8)
+            fprintf(stderr,
+                    "[order] ** FRAME %llu: SUBMITTED ORDER DIFFERS FROM RECORD ORDER, "
+                    "first divergence at draw %zu of %zu\n",
+                    (unsigned long long)R->frame, at, R->orderLog.size());
+    }
+}
 
 // The arm, hoisted for the same reason as `FovCensusArmed` — see part 71's hook fold.
 // It ANNOUNCES ITSELF, because "armed and the run never reached world geometry" and "not
@@ -18449,6 +18555,27 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                  R->lastTexAddr && !R->lastTexSlot ? "(DUMMY)" : "");
         R->firstDrawsThisPass.push_back(buf);
     }
+    // THE ORDER GATE's record. One append per draw when armed, one static bool test when
+    // not. The identity deliberately carries the PIPELINE and the VERTEX RANGE as well as
+    // the shaders: two adjacent draws sharing a pipeline and differing only in their index
+    // range are exactly the pair a parallel recorder is most likely to transpose, and a
+    // hash that could not tell them apart would pass while the picture was wrong.
+    if (OrderGateArmed())
+    {
+        uint64_t id = 0xCBF29CE484222325ull;
+        auto mixq = [](uint64_t h, uint64_t v) {
+            h ^= v;
+            return h * 0x100000001B3ull;
+        };
+        id = mixq(id, uint64_t(R->drawsThisFrame));          // the ordinal itself
+        id = mixq(id, uint64_t(uintptr_t(pipeline)));
+        id = mixq(id, (uint64_t(draw.primType) << 32) | draw.indexCount);
+        id = mixq(id, (uint64_t(uint32_t(indxOffset)) << 32) | uint32_t(draw.indexVa));
+        id = mixq(id, vsBind.hash);
+        id = mixq(id, psBind.hash);
+        R->orderLog.push_back(id);
+        ++R->orderDrawsLogged;
+    }
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
     R->verticesThisPass += draw.indexCount;
@@ -22120,6 +22247,20 @@ void VkRenderer_DumpStats()
         return;
     fprintf(stderr, "[vk] --- renderer stats (frame %llu) ---\n",
             (unsigned long long)R->frame);
+    // THE ORDER GATE's verdict, on every stats dump. A gate whose result is not printed is
+    // the defect this project keeps rediscovering (part 56's stencil skip counter was
+    // collected for fifteen parts and printed by nothing), and this one guards the largest
+    // and riskiest item in the plan.
+    if (OrderGateArmed())
+        fprintf(stderr,
+                "[order]   draw-order gate: %llu frames checked, **%llu FAILED**, "
+                "%llu draws logged%s\n",
+                (unsigned long long)R->orderFramesChecked,
+                (unsigned long long)R->orderFramesFailed,
+                (unsigned long long)R->orderDrawsLogged,
+                Env("CZ_VK_ORDER_POISON")
+                    ? "  (POISONED — a zero here means the gate is BLIND)"
+                    : "  (serial recording: zero is the only correct result)");
     // Part 72 item 1. Printed HERE as well as on the census's own cadence, so a soak
     // that ends off a 600-frame boundary still lands the number — the same defect the
     // stencil skip counter had for fifteen parts (collected since part 56, printed by
