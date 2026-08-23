@@ -89,6 +89,148 @@ DOT_VC = re.compile(r'^dot\(vc\((\d+)\)[.\w]*,\s*(r\d+)[.\w]*\)$')
 DOT_RR = re.compile(r'^dot\((r\d+)[.\w]*,\s*(r\d+)[.\w]*\)$')
 VC_INDEXED = re.compile(r'vc\((\d+)\s*\+\s*a0\)')
 
+# --- THE PALETTE BLEND'S OWN INPUTS (the Remix plan's item 3) -------------------------
+# `palette@N` says WHERE the matrices are; these three say which per-vertex bytes select
+# and weight them. All three are read out of the translated microcode for the same reason
+# the stage bases are: a guessed component is a silently misplaced occluder.
+DEPFETCH = re.compile(
+    r'^\s*(r\d+)\.([xyzw]+)\s*=\s*XeVfetchDep\('
+    r'(\d+)u,\s*[^,]+,\s*(\d+)u,\s*(\d+)u,\s*(-?\d+),\s*(\d+)u,\s*(\d+)u,\s*(\d+)u'
+    r'\)\.([xyzw]+)\s*;\s*$')
+A0_FROM = re.compile(r'a0\s*=\s*\(int\)clamp\(floor\((r\d+)\.([xyzw])\s*\+\s*0\.5\)')
+WEIGHTED_ROW = re.compile(
+    r'^\s*r\d+\.\w+\s*=\s*(r\d+)\.([xyzw])\2*\s*\*\s*vc\((\d+)\s*\+\s*a0\)')
+
+
+LOCDECL = re.compile(r'\[\[vk::location\((\d+)\)\]\]\s+in\s+float4\s+(i\w+)\s*:')
+TFETCH_TC = re.compile(
+    r'^\s*(r\d+)\.([xyzw]+)\s*=\s*tfetchTexcoord\([^,]+,\s*(i\w+),\s*\d+\)'
+    r'\.([xyzw]+)\s*;\s*$')
+PLAIN_IN = re.compile(r'^\s*(r\d+)\.([xyzw]+)\s*=\s*(i\w+)\.([xyzw]+)\s*;\s*$')
+
+
+def blend_inputs(text, base, meta):
+    """The per-vertex weight/index bytes a `palette@base` stage blends with.
+
+    Returns (descriptor, note). The descriptor is the compact string the runtime reads:
+
+        slot : strideDwords : weightOffsetDw : indexOffsetDw : bytes
+
+    where `bytes` are the components of the two 8_8_8_8 dwords, one digit per influence,
+    IN THE ORDER THE SHADER APPLIES THEM. That order is not decoration: the weights are
+    normalised bytes that need not sum to one, so applying them to the wrong indices is a
+    mesh placed between two props rather than on either.
+
+    The canonical form this title uses — verified rather than assumed, and anything that
+    does not match is NAMED so the runtime declines it instead of guessing (gotcha 5):
+
+        * both inputs are dependent fetches on ONE slot, `k_8_8_8_8`, same stride;
+        * the weight fetch is num_format NORMALISED and the index fetch INTEGER, which is
+          the shader's own declaration of which is which;
+        * each influence pairs weight byte k with index byte k;
+        * the three `vc(base + a0)` rows read per influence are base, base+1, base+2.
+    """
+    lines = text.split('\n')
+    # (reg, component) -> the vertex-buffer component it was assigned from.
+    #
+    # TWO SHAPES REACH HERE and they are the same data bound two different ways, which is
+    # why the descriptor below records the buffer layout rather than the binding. Twelve
+    # of this bank's eighteen palette shaders take the blend inputs as DECLARED vertex
+    # attributes (`iTexCoord0`/`iTexCoord1`, i.e. ordinary bound streams) and six take
+    # them through a DEPENDENT fetch (`XeVfetchDep`, the slot read with the vertex index).
+    # Both end up reading offsets 6 and 7 of the same 8-dword stride, because it is one
+    # interleaved vertex buffer either way. Reading only the dependent form — which the
+    # first version of this did — would have declined two thirds of the population while
+    # reporting that it had covered it.
+    loc = {name: int(n) for n, name in LOCDECL.findall(text)}
+    by_loc = {}
+    for a in (meta.get('attributes') or []):
+        if a.get('location', -1) >= 0 and not a.get('indirect'):
+            by_loc[a['location']] = a
+    dep = {}
+    for ln in lines:
+        m = DEPFETCH.match(ln)
+        if m:
+            reg, dst, slot, stride, off, fmt, sgn, numint, src = (
+                m.group(1), m.group(2), m.group(3), m.group(5), m.group(6),
+                m.group(7), m.group(8), m.group(9), m.group(10))
+            if len(dst) != len(src):
+                continue
+            for d, sc in zip(dst, src):
+                dep[(reg, d)] = {'slot': int(slot), 'stride': int(stride),
+                                 'off': int(off), 'fmt': int(fmt), 'sgn': int(sgn),
+                                 'int': int(numint), 'comp': 'xyzw'.index(sc)}
+            continue
+        m = TFETCH_TC.match(ln) or PLAIN_IN.match(ln)
+        if not m:
+            continue
+        reg, dst, name, src = m.groups()
+        a = by_loc.get(loc.get(name, -1))
+        if a is None or len(dst) != len(src):
+            continue
+        for d, sc in zip(dst, src):
+            dep[(reg, d)] = {'slot': a['fetchSlot'], 'stride': a['strideDwords'],
+                             'off': a['offsetDwords'], 'fmt': a['format'],
+                             'sgn': a['signed'], 'int': a['integer'],
+                             'comp': 'xyzw'.index(sc)}
+
+    influences = []          # (weight source, index source, vc row) in shader order
+    cur = None
+    for ln in lines:
+        m = A0_FROM.match(ln.strip())
+        if m:
+            cur = (m.group(1), m.group(2))
+            continue
+        m = WEIGHTED_ROW.match(ln)
+        if m and cur is not None:
+            wreg, wcomp, row = m.group(1), m.group(2), int(m.group(3))
+            influences.append((( wreg, wcomp), cur, row))
+    if not influences:
+        return None, 'no weighted vc(N + a0) row follows an a0 assignment'
+
+    # Group by influence (one a0 assignment feeds three consecutive rows).
+    by_inf = {}
+    order = []
+    for w, i, row in influences:
+        k = (w, i)
+        if k not in by_inf:
+            by_inf[k] = set()
+            order.append(k)
+        by_inf[k].add(row)
+    rows = set()
+    for k in order:
+        rows |= by_inf[k]
+    if rows != {base, base + 1, base + 2}:
+        return None, ('the palette rows are %s, not three consecutive from %d'
+                      % (sorted(rows), base))
+
+    fetches = {}
+    bytes_ = []
+    for w, i in order:
+        dw, di = dep.get(w), dep.get(i)
+        if dw is None or di is None:
+            return None, 'a weight or index component is not a dependent-fetch result'
+        if dw['fmt'] != 6 or di['fmt'] != 6:
+            return None, ('the blend inputs are formats %d/%d, not k_8_8_8_8'
+                          % (dw['fmt'], di['fmt']))
+        if dw['int'] or not di['int']:
+            return None, 'the normalised/integer pair does not identify weights vs indices'
+        if dw['comp'] != di['comp']:
+            return None, ('influence pairs weight byte %d with index byte %d'
+                          % (dw['comp'], di['comp']))
+        if dw['slot'] != di['slot'] or dw['stride'] != di['stride']:
+            return None, 'the two blend fetches disagree on slot or stride'
+        fetches.setdefault('slot', dw['slot'])
+        fetches.setdefault('stride', dw['stride'])
+        fetches.setdefault('w', dw['off'])
+        fetches.setdefault('i', di['off'])
+        if (dw['slot'], dw['stride'], dw['off'], di['off']) != (
+                fetches['slot'], fetches['stride'], fetches['w'], fetches['i']):
+            return None, 'influences read different fetch descriptors'
+        bytes_.append(dw['comp'])
+    return ('%d:%d:%d:%d:%s' % (fetches['slot'], fetches['stride'], fetches['w'],
+                                fetches['i'], ''.join(str(b) for b in bytes_))), None
+
 
 def translate(ucode_dir, out_dir):
     """synth + XenosRecomp, the same pair build_shader_spv.sh uses."""
@@ -103,6 +245,7 @@ def translate(ucode_dir, out_dir):
         n += 1
     if not n:
         return None, 'no vs_*.ucode under %s' % ucode_dir
+
     r = subprocess.run([sys.executable, str(ROOT / 'tools' / 'synth_shader_container.py'),
                         str(vs), str(synth)], capture_output=True, text=True)
     if r.returncode:
@@ -116,7 +259,7 @@ def translate(ucode_dir, out_dir):
                            capture_output=True, text=True)
         if r.returncode:
             failed.append(b)
-    return (hl, failed), None
+    return (hl, synth, failed), None
 
 
 def last_assign(lines, reg, comp, before):
@@ -213,14 +356,14 @@ def main():
 
     tmp = None
     if args.hlsl:
-        hl, failed = Path(args.hlsl), []
+        hl, synth, failed = Path(args.hlsl), Path(args.hlsl), []
     else:
         tmp = tempfile.mkdtemp(prefix='rtxf')
         got, err = translate(args.ucode, Path(tmp))
         if err:
             print(err, file=sys.stderr)
             return 2
-        hl, failed = got
+        hl, synth, failed = got
     if failed:
         print('XenosRecomp could not translate %d shader(s): %s'
               % (len(failed), ' '.join(failed)))
@@ -228,6 +371,7 @@ def main():
     table = {}
     shapes = {}
     bad = []
+    nb = []      # palette shaders whose blend inputs could not be read
     for p in sorted(hl.glob('vs_*.hlsl')):
         stages, note = classify(open(p).read())
         if stages is None:
@@ -236,12 +380,38 @@ def main():
         # ONE representation, a compact string, because two would drift: the runtime's
         # reader and this tool's census line both parse `kind@base` pairs.
         key = ','.join('%s@%d' % (k, b) for b, k in stages) or 'camera'
-        table[p.stem] = {'stages': key}
+        entry = {'stages': key}
+        # The blend descriptor, for exactly the stages that need one. Its absence is what
+        # makes the runtime fall back to entry 0 with unit weight, and part 68's census of
+        # hardware's own index streams says that approximation is wrong for essentially
+        # every palette draw: over 2,786 of them in the gas-station trace, NOT ONE
+        # references a single matrix and the median is 19 distinct entries. So a palette
+        # shader whose blend cannot be read here is a mesh placed on the wrong prop, and
+        # it is named rather than defaulted.
+        for b, k in stages:
+            if k != 'palette':
+                continue
+            meta = {}
+            mp = synth / (p.stem + '.meta.json')
+            if mp.is_file():
+                meta = json.load(open(mp))
+            desc, note = blend_inputs(open(p).read(), b, meta)
+            if desc:
+                entry['blend'] = desc
+            else:
+                nb.append((p.stem, 'palette@%d: %s' % (b, note)))
+            break
+        table[p.stem] = entry
         shapes[key] = shapes.get(key, 0) + 1
         if args.verbose:
-            print('%-24s %s' % (p.stem, key))
+            print('%-24s %-24s %s' % (p.stem, key, entry.get('blend', '')))
 
     print('\n%d vertex shaders classified, %d not:' % (len(table), len(bad)))
+    nblend = sum(1 for v in table.values() if 'blend' in v)
+    npal = sum(1 for v in table.values() if 'palette' in v['stages'])
+    print('    %d of %d palette shaders carry a readable blend descriptor' % (nblend, npal))
+    for n, note in nb:
+        print('    NO BLEND: %-22s %s' % (n, note))
     for key in sorted(shapes, key=lambda k: -shapes[k]):
         print('    %-34s %4d shaders' % (key, shapes[key]))
     if bad:
@@ -279,13 +449,17 @@ def main():
                 'names the VS constant rows carrying that shader\'s object->world '
                 'transform, INNERMOST STAGE FIRST, as kind@base pairs. `direct` is a '
                 'row-major 4x3 at vc(base..base+2); `palette` is a per-vertex blend '
-                'whose entry 0 the runtime uses, counted separately. Regenerate after '
-                'any change to the shader bank.",\n')
+                'blended per vertex. A palette stage also carries "blend": '
+                '"slot:strideDwords:weightOffsetDw:indexOffsetDw:bytes", the dependent '
+                'fetch the per-vertex weights and matrix indices come through, with one '
+                'byte digit per influence IN THE ORDER THE SHADER APPLIES THEM. '
+                'Regenerate after any change to the shader bank.",\n')
         f.write(' "shaders": {\n')
         items = sorted(table.items())
         for i, (k, v) in enumerate(items):
-            f.write('  "%s": {"stages": "%s"}%s\n'
-                    % (k, v['stages'], ',' if i + 1 < len(items) else ''))
+            blend = (', "blend": "%s"' % v['blend']) if 'blend' in v else ''
+            f.write('  "%s": {"stages": "%s"%s}%s\n'
+                    % (k, v['stages'], blend, ',' if i + 1 < len(items) else ''))
         f.write(' },\n')
         f.write(' "unclassified": [%s]\n'
                 % ', '.join('"%s"' % n for n, _ in sorted(bad)))
