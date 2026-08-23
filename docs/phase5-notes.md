@@ -14710,3 +14710,147 @@ bake OFF read zero, which put the cause in item 2 or item 3 before the code was 
 same-binary control arm, so **the arms ARE a bisect and each step is one run rather than
 one rebuild**. Three runs — the previous binary, the same binary with everything disarmed,
 and one arm added back — located this without touching git.
+
+## §6db — Part 69's operator session: the structure is RIGHT and the shadows are still wrong (2026-08-23)
+
+The session ran, cut from six arms to two on the operator's ask, then extended by one when
+their verdict named something the pair could not have shown. What follows is in the order
+it was learned, including the two things I got wrong.
+
+### 1. The pair, and the gate I pre-registered FAILING
+
+| | bake (shipped) | nobake (`CZ_VK_RT_NO_BAKE=1`, part 68) |
+|---|---|---|
+| `tlasInst` | 4828 | 2866 |
+| `blas` | 7583 (127.8 MB) | 2644 (82.2 MB) |
+| `flushes` | 0 | 0 |
+| `baked` / `rebaked` | 5425 / 956928 | 0 / 0 |
+| `outOfRange` | **0** | 0 |
+| `conflict` | 4965 | 0 |
+| factor `shadowed(<0.03)` | 18.5% | 18.7% |
+
+Everything engaged and `outOfRange` is zero, which was the one counter that had to be.
+
+**The pre-registered gate failed, and the failure is mine.** §6da §7 predicted the
+crowd-region edge density would FALL from ~100 toward the open-road ~10. Measured:
+
+| band | bake | nobake |
+|---|---|---|
+| crowd (upper 30%) | **121.2** /1000 px | 87.0 |
+| open road (lower 50%) | **10.2** | 4.4 |
+| isolated-pixel rate | 0.52% | 0.36% |
+
+It rose. And the prediction's SIGN was wrong, not just its value: several separate actor
+shadows legitimately produce more boundary than one smeared blob, so that statistic could
+never have separated "fixed" from "worse". **The edge-density gate is RETRACTED** — it is
+gotcha 403's shape, committed one part after writing 403 down.
+
+What the overlays did show (`~/DR2CZ-troubleshooting/part69-rt-geometry/overlay_*.png`,
+the factor painted red over the operator's own F9 frames): under `nobake`, Chuck's HEAD is
+shadowed and his body is not — a horizontal cut straight through a character, part 68's
+signature. Under `bake` that cut is gone. So the blend fixed something real, and did not
+fix what the session was aimed at.
+
+### 2. THE ARMS BOTH EXCLUDED THE ACTORS, and I trimmed away the arm that would have said so
+
+Both ran at `CZ_VK_RT_DYN_SETTLE=120`, which excludes any stream rewritten in the last 120
+frames. **A zombie's vertex buffer is rewritten every frame, so it never settles**: the
+actors were not in the ray structure at all in either arm. The primary ray from a pixel on
+a zombie therefore passes through it and lands on the ground behind, and the factor
+computed back there is painted onto the zombie — which is exactly the operator's report,
+*"the shadows was under them not placed in the right way and passing through thing it
+shouldn't"*.
+
+The `dyn0` arm was in the six-arm session and I cut it as "already answered headlessly".
+It was answered as a LOG LINE and not as a picture, and the two are different questions.
+
+### 3. The settle-0 arm: the structure held, the picture did not
+
+```
+tlasInst=5001   blas=8029 (148.6 MB)   built=8058   flushes=0   outOfRange=0
+shadowed 18.5% -> 39.7%      18.0 fps median at 8,578 draws
+```
+
+**`built` barely above `blas` with `flushes=0` at settle 0 is items 1 and 2 proven on the
+operator's machine** — the first time that configuration has been survivable at all.
+
+And the picture got a bigger wrong shadow: a flat slab with a hard straight boundary
+crossing a shipping container, tyres, cars, a chain-link fence and the ground without
+bending at any of them, plus a horizontal cut through Chuck's chest.
+
+### 4. THE FINDING: the primary ray is CORRECT, so the defect is downstream of the structure
+
+`CZ_VK_RT_FACTOR_DEBUG=18` renders the primary ray's hit distance — a depth image made
+entirely of rays, and its own comment says it exists to separate *"the rays hit something"*
+from *"the rays hit the right thing"*. Run headless at `CZ_VK_RT_DYN_SETTLE=0`
+(`tlasInst=3366`, `blas=4503`, `flushes=0`), it renders **a recognisable depth image of the
+world**: Chuck's silhouette in the foreground, both lamp posts with their arms, the power
+lines strung between them, the gantry, the fence on the right and the hills behind.
+Saved as `mode18_primary_ray_settle0.png`.
+
+Compare part 68's reading of the same instrument class: *"a flat plain with distant
+buildings — no vans, no wrecked cars, no fence, no Chuck"*. **The population work fixed
+that.** The structure is right and the receiver is right.
+
+**So the straight-line signature is not an occluder problem, and has not been one for some
+time.** It has now survived, in order: part 67's placement fix, part 69's palette bake, and
+part 69's admission of the actors — while the thing all three were aimed at is now
+demonstrably correct. What is left between a correct receiver and a wrong shadow is the
+SHADOW RAY: the sun direction, the origin bias, the ray length, or the screen mapping of
+the factor into the 126 shaders.
+
+**All three of the first were exonerated in part 67 AGAINST A PILE AT THE WORLD ORIGIN**,
+which is no test (gotcha 172). They are open questions again, and
+`docs/part69-night-plan.md` §3 is the live path.
+
+### 4b. AND THE SUN'S Z FLIPS SIGN BETWEEN HEADLESS AND WINDOWED
+
+Censused over every run of this session rather than argued:
+
+```
+windowed (operator: bake, nobake, dyn0)   sun=(-0.364  0.546  -0.755)
+headless (v_final, seq, m18_settle0)      sun=(-0.371  0.557  +0.743)
+```
+
+X and Y agree to ~2% and **Z is negated**. The runs are in different places and at
+different in-game times, so a moving sun is the competing explanation — but a sun that
+moved would drift all three components, and two agreeing to 2% while the third flips sign
+is not that. Both sets also carry `(-0.381 0.812 -0.443)`, the menu-era latch §6cw already
+names, and that one is identical in both.
+
+**Every headless RT measurement this feature has made was taken with the mirrored sun** —
+part 66's 0.987 hemisphere reading, part 67's 0.650, and all of §6da. If the windowed value
+is the right one, the offline work has been aimed at a light in the wrong half of the sky,
+and a straight shadow boundary is exactly what a sun on the wrong side produces.
+
+The likeliest mechanism is the per-frame slice VOTE (§6cw), not a decomposition sign error:
+the census is ONE distinct vector per run rather than a drift, which is what a vote flipping
+looks like. `CZ_VK_RT_SUN_FLIP=1` is the arm; the oracle is the title's OWN raster shadows
+in an operator F9, whose direction no instrument of ours chose.
+
+### 5. Also open, and unattributed
+
+* **A main-menu zombie flicker**, reported by the operator: *"zombie flicker from showing
+  to not showing but only in main menu"*. The only part-69 change touching the raster path
+  is the persist store's extra usage flag, and it is weakened — the store reports
+  `memory type 3, heap 1` in both the part-68 and part-69 binaries, so the flag did not
+  move it. `tools/part69_menu_flicker.sh` is the forty-second test and it has not been run
+  with a working control (see §6).
+* **The frame rate has no denominator.** `18.0 fps median at 8,578 draws` at settle 0 with
+  RT on; the two arms before it logged no frame rate at all. One stall of 194 ms appeared.
+* `budgeted-out=464290` at settle 120 and rising at settle 0 — a large share of refits are
+  deferred each frame, which would show as geometry lagging behind a running actor.
+
+### 6. AND I SHIPPED AN ARM THAT NEVER ENGAGED
+
+`tools/part69_menu_flicker.sh`'s control arm was meant to run `CZ_VK_RT=0`. The string
+`CZ_VK_RT=0` went into the arm's **description** and was never passed to `env`, so the
+control ran with the RT device fully enabled — and both arms printed `RT: device created
+WITH ray query`, which is what caught it. Had the operator reported "both flickered" it
+would have been read as "not ours" on the strength of a control that was not one.
+
+The script now takes, per arm, the log line that PROVES it engaged, and **refuses to
+report** an arm whose log does not carry it. Gotcha 408. The sibling of this trap is named
+in `part69_rt_geometry_session.sh`'s own header (gotcha 396, a description reaching `env`
+as a positional argument), which is what makes falling into it worth a hard failure rather
+than a printed line.

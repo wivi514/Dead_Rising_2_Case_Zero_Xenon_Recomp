@@ -76,15 +76,41 @@ edge-density gate; it is not a test of this fix.**
 * If it is a **plane or a near-uniform field** — the primary ray is resolving to one
   surface, and the receiver is the defect. Four parts of occluder work were aimed at the
   wrong subsystem, and §2 is the follow-up.
-* If it is a **recognisable depth image of the junkyard** — fence in front, container to
-  the left, buildings behind — the receiver is fine and the defect is downstream of it:
-  the sun matrix, the ray bias, or the screen mapping of the factor into the 126 shaders.
-  §3 is the follow-up.
+* If it is a **recognisable depth image of the world** — the receiver is fine and the
+  defect is downstream of it: the sun matrix, the ray bias, or the screen mapping of the
+  factor into the 126 shaders. §3 is the follow-up.
 
 Mode 18 at `DYN_SETTLE=120` is run beside it as the control, because the two differ by
 exactly the population that was just added.
 
-## 2. IF THE RECEIVER IS A PLANE — find the mesh that is standing in front of the camera
+---
+
+### THIS WAS RUN, AND THE ANSWER IS THE SECOND BRANCH. §3 IS LIVE; §2 IS NOT.
+
+Headless outdoor route, `CZ_VK_RT_FACTOR_DEBUG=18 CZ_VK_RT_DYN_SETTLE=0`, with
+`tlasInst=3366 blas=4503 (78.6 MB, built=4519, flushes=0)`. The image
+(`~/DR2CZ-troubleshooting/part69-rt-geometry/mode18_primary_ray_settle0.png`) is **a
+recognisable depth image of the world**: Chuck's silhouette in the foreground, both lamp
+posts with their arms, the power lines strung between them, the gantry, the fence on the
+right, the hills behind. Near is dark, far is light, and the octiles spread across the
+range (59.0 / 2.9 / 0.2 / 1.2 / 0.4 / 2.4 / 2.5 / 31.4) instead of collapsing to two bins.
+
+Part 68 read the same instrument class as *"a flat plain with distant buildings — no vans,
+no wrecked cars, no fence, no Chuck"*. **The population work fixed exactly that.** The
+structure is right and the receiver is right — which means the straight-line shadow
+signature is not, and has not been for some time, an occluder problem.
+
+**So do not spend the night on §2.** What is left between a correct receiver and a wrong
+shadow is the SHADOW RAY, and §3 is where the work is.
+
+## 2. NOT THE LIVE PATH — kept because it is what §1 would have needed, and because the bounds cap is still a real risk
+
+**§1 came out the other way, so this section is not the work.** It stays written down for
+two reasons: if a later reading of mode 18 in a DIFFERENT place shows a plane, this is the
+follow-up ready to go; and §2.2's per-BLAS extent census is worth having regardless, since
+nothing in this runtime can currently name the largest mesh in the structure.
+
+### IF THE RECEIVER IS A PLANE — find the mesh that is standing in front of the camera
 
 The likeliest mechanism is ONE ENORMOUS ADMITTED MESH. The bounds gate rejects a stream
 whose extent exceeds `CZ_VK_RT_BOUNDS_CAP` (default 50,000 units) against a town that fits
@@ -103,7 +129,7 @@ class §6cu named as the risk: *"junk-coordinate effect buffers, not world geome
    traces, but only for streams the traces carry — it cannot see the dynamic ones, which
    is precisely the population under suspicion. Prefer the runtime census.
 
-## 3. IF THE RECEIVER IS THE REAL SCENE — the defect is downstream, and §6cy's exonerations are void
+## 3. THE LIVE PATH — the receiver IS the real scene, so the defect is downstream and §6cy's exonerations are void
 
 Gotcha 172: a retirement is only as good as the oracle it was measured on. The sun
 direction, the ray length and the origin bias were all cleared **against a pile at the
@@ -118,6 +144,45 @@ world origin**, which is no test. They are open questions again and the arms exi
 * **`CZ_VK_RT_FACTOR_BIAS` / `CZ_VK_RT_FACTOR_CAMBIAS` / `CZ_VK_RT_RAY_LEN`** — the origin
   offsets and the ray length, all derived from a cascade volume that was measured on the
   old structure.
+
+**Order them by what a straight boundary can and cannot be.** A boundary that stays
+straight across surfaces at different depths cannot come from an occluder — occluders cast
+shapes. It CAN come from:
+
+1. **THE SUN'S Z FLIPS SIGN BETWEEN HEADLESS AND WINDOWED, and this is the first thing to
+   run.** Censused over every run of this session, not argued:
+
+   ```
+   windowed (operator: bake, nobake, dyn0)   sun=(-0.364  0.546  -0.755)
+   headless (v_final, seq, m18_settle0)      sun=(-0.371  0.557  +0.743)
+   ```
+
+   X and Y agree to about 2% and **Z is negated**. The runs are in different places and at
+   different in-game times, so a moving sun is the alternative explanation — but a sun that
+   moved would drift ALL THREE components, and two agreeing to 2% while the third flips
+   sign is not that. (Both also carry `(-0.381 0.812 -0.443)`, which §6cw already names as
+   the menu-era latch; that one is identical in both and is not the anomaly.)
+
+   Why it matters more than its size suggests: **every headless RT measurement this feature
+   has ever made was taken with the mirrored sun**, including part 66's 0.987 hemisphere
+   reading, part 67's 0.650, and the whole of §6da. If the windowed value is the correct
+   one, the offline work has been optimising against a light in the wrong half of the sky.
+
+   `CZ_VK_RT_SUN_FLIP=1` is the arm. First establish WHICH is right, and the cheap way is
+   not an arm at all: the cascade atlas is rendered by the title itself, so the shadow
+   directions in the title's OWN raster shadows are the oracle. Compare the direction of a
+   raster shadow in an operator F9 against the latched vector.
+
+   The likeliest mechanism to check first is the per-frame slice VOTE (§6cw): if the window
+   changes which cascade draws pass `IsShadowSurface`, a different slice can win, and the
+   census above is one distinct vector per run rather than a drift — which is what a vote
+   flipping looks like, not what a decomposition sign error looks like.
+2. **An origin bias large enough to lift the ray clear of everything nearby**, which §6cw
+   already recorded happening once: a bias derived from a 3587.7-unit volume put the origin
+   5.4 world units off the surface. Re-read `bias=` in the `[rtb]` line at settle 0 — the
+   operator session shows `len=88.5 bias=0.133/0.044`, which is small, so this is second.
+3. **A ray length that stops short**, leaving everything past it lit — the opposite
+   signature, so third.
 
 ## 4. What is owed regardless of how §1 comes out
 
