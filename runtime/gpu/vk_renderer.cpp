@@ -1450,10 +1450,18 @@ inline void FovMissDump(const uint32_t* c, uint32_t depthControl)
             m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
 }
 
-inline void FovCensus(const uint32_t* c, uint32_t depthControl)
+// The ARM, hoisted out of `FovCensus` so part 71's per-frame hook fold can ask whether
+// this census is live without paying for a call into it on every one of the ~33,000
+// draws a frame at the operator's soak. Same static, same one-time `Env` read.
+inline bool FovCensusArmed()
 {
     static const bool on = Env("CZ_VK_FOV_CENSUS") != nullptr;
-    if (!on)
+    return on;
+}
+
+inline void FovCensus(const uint32_t* c, uint32_t depthControl)
+{
+    if (!FovCensusArmed())
         return;
     float bEff = 0.0f;
     const int form = SceneXformForm(c, bEff);
@@ -2597,6 +2605,15 @@ uint64_t g_constMemoMisses = 0;
 uint64_t g_constMemoChecked = 0;
 uint64_t g_constMemoStale = 0;
 
+// PART 71's hook fold — see the `hooksDraw` comment in the Renderer struct. These are
+// ENGAGEMENT counters: `folded` counts the per-draw hook blocks skipped and `foldedFetch`
+// the fetch-constant decodes skipped, and both must read ZERO in a run with RT on, which
+// is the fold's identity gate.
+uint64_t g_hookFoldFolded = 0;
+uint64_t g_hookFoldLive = 0;
+uint64_t g_hookFoldFetchFolded = 0;
+uint64_t g_hookFoldFetchLive = 0;
+
 uint64_t g_flatGrows = 0;
 uint64_t g_flatGrowNs = 0;
 uint64_t g_flatGrowWorstNs = 0;
@@ -3498,6 +3515,30 @@ struct Renderer
     // How many pixel shaders got a route (b) variant module. Zero means RT shadows
     // cannot engage whatever the settings row says, and the tier read says so once.
     uint32_t rtVariants = 0;
+    // ---- PART 71: THE PER-DRAW HOOK FOLD -------------------------------------------
+    //
+    // Parts 59-70 each hung a probe on `DoDraw`, and with RT parked every one of them
+    // exists only to decide not to run. At the operator's soak that is five calls x
+    // ~7,000 draws x ~90 frames a second, plus a per-FETCH one: `NoteAtlasFetch` was
+    // guarded on `ps.moduleRt` and NOT on whether RT is running, so a 100-second run of
+    // the PARKED build did a full `DecodeTextureFetch` register decode 9,482,873 times
+    // to feed a diagnostic nothing was going to read.
+    //
+    // The replacement is one decision per FRAME instead of five (plus one per fetch) per
+    // draw. It is behaviour-preserving by construction rather than by hope: the word is
+    // the OR of every hook's own arm, so whenever any hook could do work the word is true
+    // and every call happens exactly as before. Both inputs are per-frame constants —
+    // `rtshadow::Active()` is `rtEnabled` (fixed at device creation) AND `TierThisFrame()`
+    // (already cached per frame on R->frame), and the two census arms are one-time `Env`
+    // reads — so the fold cannot drift inside a frame either.
+    //
+    // `CZ_VK_NO_HOOK_FOLD=1` forces both words true, which restores the pre-part-71 call
+    // pattern exactly and is the same-binary control arm. The counters below are what
+    // prove the fold engaged (gotcha 151); with RT ON they must read ZERO, and that is
+    // the identity gate.
+    uint64_t hookFoldFrame = ~0ull;
+    bool hooksDraw = true;       // call the five per-draw census/collect hooks
+    bool hooksRtFetch = true;    // decode fetch constants for rtshadow::NoteAtlasFetch
     uint32_t rtScratchAlign = 256;   // minAccelerationStructureScratchOffsetAlignment
     PFN_vkCreateAccelerationStructureKHR pfnCreateAS = nullptr;
     PFN_vkDestroyAccelerationStructureKHR pfnDestroyAS = nullptr;
@@ -10031,12 +10072,18 @@ void ScanBounds(StreamRec& rec, const uint8_t* p, uint64_t bytes)
 }
 } // namespace rtcensus
 
+// The arm, hoisted for the same reason as `FovCensusArmed` — see part 71's hook fold.
+bool RtGeometryCensusArmed()
+{
+    static const bool on = Env("CZ_VK_RT_CENSUS") != nullptr;
+    return on;
+}
+
 void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
                       const ShaderMeta& vs, const Pm4Draw& draw, const uint32_t* regs,
                       uint8_t* base)
 {
-    static const bool on = Env("CZ_VK_RT_CENSUS") != nullptr;
-    if (!on)
+    if (!RtGeometryCensusArmed())
         return;
     using namespace rtcensus;
     std::lock_guard<std::mutex> lock(g_mu);
@@ -15095,33 +15142,54 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     const bool psHit = memoOn && R->constMemoPsValid &&
                        R->constMemoPsVersion == psVersion &&
                        R->constMemoPsBase == memoPsBase;
-    // Per DRAW (not per memo miss — a copy-site census would only count constant
-    // CHANGES and miss every memo-hit draw's depth state), on the RAW register
-    // window: which recognized projections exist and what depth state their draws
-    // carry. Env-gated; one static bool test per draw when off.
-    FovCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
-              regs[xenos::kRbDepthControl]);
-    // RT stage 1's geometry census — same per-draw, raw-window discipline as
-    // FovCensus, and inert to one static bool test when unarmed.
-    RtGeometryCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
-                     regs[xenos::kRbDepthControl], vs, draw, regs, base);
-    // RT stage 2 (part 64): collect world draws into the BLAS/TLAS working set and
-    // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
-    rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
-                      regs[xenos::kRbDepthControl], vs, draw, regs, base);
-    // THE TITLE'S OWN SUN, out of its PIXEL constant block — the oracle that replaces
-    // the cascade-matrix decomposition (see NoteGuestSun). One integer compare per draw
-    // once the frame's block has been found, and inert entirely when RT is off.
-    rtshadow::NoteGuestSun(&regs[xenos::kAluConstantBase + memoPsBase * 4]);
-    // ROUTE (B) needs the SCENE composite to turn a depth sample back into a world
-    // position. Same raw window, same per-draw discipline; the form test rejects the
-    // skinning affines and the shadow orthos, so this cannot capture one of those.
-    if (rtfactor::Active())
+    // ---- THE PER-DRAW HOOK FOLD (part 71) ------------------------------------------
+    //
+    // ONE DECISION PER FRAME instead of five per draw. The word is recomputed lazily on
+    // the frame counter — the same pattern `rtshadow::TierThisFrame` uses, and for the
+    // same reason its own comment gives ("reading the settings store directly would take
+    // its mutex ~7,000 times a frame"). See the `hooksDraw` comment in the Renderer
+    // struct for why this is behaviour-preserving by construction and for the arm.
+    if (R->hookFoldFrame != R->frame)
     {
-        float bEff;
-        if (SceneXformForm(&regs[xenos::kAluConstantBase + memoVsBase * 4], bEff) == 2)
-            rtfactor::NoteSceneMatrix(&regs[xenos::kAluConstantBase + memoVsBase * 4]);
+        static const bool noFold = EnvOn("CZ_VK_NO_HOOK_FOLD");
+        R->hookFoldFrame = R->frame;
+        R->hooksDraw = noFold || FovCensusArmed() || RtGeometryCensusArmed() ||
+                       rtshadow::Active() || rtfactor::Active();
+        R->hooksRtFetch = noFold || rtshadow::Active();
     }
+    if (R->hooksDraw)
+    {
+        ++g_hookFoldLive;
+        // Per DRAW (not per memo miss — a copy-site census would only count constant
+        // CHANGES and miss every memo-hit draw's depth state), on the RAW register
+        // window: which recognized projections exist and what depth state their draws
+        // carry. Env-gated; one static bool test per draw when off.
+        FovCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+                  regs[xenos::kRbDepthControl]);
+        // RT stage 1's geometry census — same per-draw, raw-window discipline as
+        // FovCensus, and inert to one static bool test when unarmed.
+        RtGeometryCensus(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+                         regs[xenos::kRbDepthControl], vs, draw, regs, base);
+        // RT stage 2 (part 64): collect world draws into the BLAS/TLAS working set and
+        // capture the cascade's sun matrix. Inert to one test per draw at tier OG.
+        rtshadow::Collect(&regs[xenos::kAluConstantBase + memoVsBase * 4],
+                          regs[xenos::kRbDepthControl], vs, draw, regs, base);
+        // THE TITLE'S OWN SUN, out of its PIXEL constant block — the oracle that replaces
+        // the cascade-matrix decomposition (see NoteGuestSun). One integer compare per
+        // draw once the frame's block has been found, and inert entirely when RT is off.
+        rtshadow::NoteGuestSun(&regs[xenos::kAluConstantBase + memoPsBase * 4]);
+        // ROUTE (B) needs the SCENE composite to turn a depth sample back into a world
+        // position. Same raw window, same per-draw discipline; the form test rejects the
+        // skinning affines and the shadow orthos, so this cannot capture one of those.
+        if (rtfactor::Active())
+        {
+            float bEff;
+            if (SceneXformForm(&regs[xenos::kAluConstantBase + memoVsBase * 4], bEff) == 2)
+                rtfactor::NoteSceneMatrix(&regs[xenos::kAluConstantBase + memoVsBase * 4]);
+        }
+    }
+    else
+        ++g_hookFoldFolded;
     g_constMemoHits += uint32_t(vsHit) + uint32_t(psHit);
     g_constMemoMisses += uint32_t(!vsHit) + uint32_t(!psHit);
     // PER HALF, because the split was a HYPOTHESIS — that what changes per draw is the
@@ -15614,7 +15682,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // shaders the census found sampling the cascade atlas, so their own declared
         // depth-format fetches are what the atlas IS — no address, no threshold, and no
         // dependence on this run allocating it where the last one did.
-        const bool rtSampler = &consts == &ps.tfetchConsts && ps.moduleRt;
+        // PART 71: ...AND ON WHETHER RT IS ACTUALLY RUNNING. It was not, and that is
+        // what made this the most expensive of the parked feature's leftovers — a full
+        // `DecodeTextureFetch` per declared fetch of all 126 variant shaders, 9,482,873
+        // of them in a 100-second run of the shipped build, feeding an atlas census whose
+        // only consumer (`LatchSun`) needs `Active()` anyway. `R->hooksRtFetch` is exactly
+        // `rtshadow::Active()` evaluated once a frame; `CZ_VK_NO_HOOK_FOLD=1` restores it.
+        const bool rtSampler =
+            &consts == &ps.tfetchConsts && ps.moduleRt && R->hooksRtFetch;
+        // The counter is on the FETCH, not the draw, because the fetch is the unit of
+        // the cost being removed (9.48 M in 100 s, not 9.48 M draws).
+        const bool rtSamplerWanted = &consts == &ps.tfetchConsts && ps.moduleRt;
         for (size_t i = 0; i < consts.size(); i++)
         {
             const uint32_t constIdx = consts[i];
@@ -15622,11 +15700,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 continue;
             if (rtSampler)
             {
+                ++g_hookFoldFetchLive;
                 const xenos::TextureFetch tf = xenos::DecodeTextureFetch(regs, constIdx);
                 if (tf.type == 2 && (tf.format == xenos::kFmt_24_8 ||
                                      tf.format == xenos::kFmt_24_8_FLOAT))
                     rtshadow::NoteAtlasFetch(tf.address, tf.width, tf.height);
             }
+            else if (rtSamplerWanted)
+                ++g_hookFoldFetchFolded;
             uint32_t dim = 1; // 2D
             if (dims.size() == consts.size())
                 dim = dims[i];
@@ -21329,6 +21410,26 @@ void VkRenderer_DumpStats()
             (unsigned long long)g_polyOffsetDraws,
             EnvOn("CZ_VK_NO_POLY_OFFSET") ? "  [CZ_VK_NO_POLY_OFFSET: none were applied]"
                                           : "");
+
+    // PART 71's hook fold, printed on EVERY run for the same reason as the two above: the
+    // operator's A/B harness runs without the profiler, so this line is the only thing
+    // that can say whether the arm engaged. THE IDENTITY GATE IS HERE TOO — with RT ON
+    // both `folded` numbers must read 0, because the word is the OR of every hook's own
+    // arm and cannot be false while any of them could do work.
+    {
+        const uint64_t d = g_hookFoldFolded + g_hookFoldLive;
+        const uint64_t f = g_hookFoldFetchFolded + g_hookFoldFetchLive;
+        fprintf(stderr,
+                "[vk]   hook fold: %llu of %llu draws folded (%.1f%%), %llu of %llu "
+                "atlas-fetch decodes folded (%.1f%%)%s\n",
+                (unsigned long long)g_hookFoldFolded, (unsigned long long)d,
+                d ? 100.0 * double(g_hookFoldFolded) / double(d) : 0.0,
+                (unsigned long long)g_hookFoldFetchFolded, (unsigned long long)f,
+                f ? 100.0 * double(g_hookFoldFetchFolded) / double(f) : 0.0,
+                EnvOn("CZ_VK_NO_HOOK_FOLD")
+                    ? "  [CZ_VK_NO_HOOK_FOLD: the pre-part-71 per-draw calls]"
+                    : "");
+    }
 
     // The flat tables' grow bill, printed on EVERY run rather than only under the
     // profiler — a play session the operator drives has no profiler, and it is exactly
