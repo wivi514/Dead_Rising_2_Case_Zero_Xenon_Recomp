@@ -45,23 +45,53 @@
 **`docs/perf-plan-part72.md` §1-5 is this table with a design, arms and a pre-registered
 kill threshold for each. The summary:**
 
+> **SESSION 1 IS RUN — ALL DESK WORK — AND IT MOVED ROW 1 TWICE.** Its price was an upper
+> bound, not a value (the arm removes the horizontal widening too, so the recoverable
+> draws are strictly fewer than 1,930 — ≈2.5-2.8 ms), and **route (a) is dead**: the engine
+> has no aspect scalar, settled by a census over the whole image. Both are retracted in
+> place in `perf-plan-part72.md` §1a/§1b; the record is `phase5-notes.md` **§6de**; the
+> lessons are gotchas **423-425**. Row 1 now has a real arm and the sitting that uses it is
+> `tools/part72_vcull_session.sh`.
+
 | # | item | measured price | risk | arm |
 |---|---|---|---|---|
-| 1 | **the wide-culling over-widen** — +1,930 draws of 9,817 (+24%) | **≈4.8 ms of 28** | low-med | `CZ_NO_GAME_FOV=1` |
+| 1 | **the wide-culling over-widen** — ~~+1,930 draws (+24%)~~ **strictly fewer** | ~~≈4.8 ms~~ **≈2.5-2.8 ms, and now MEASURED not modelled** | low-med | `CZ_VK_VCULL_CENSUS=1` (+ 2 controls) |
 | 2 | item A, parallel command recording (`DoDraw` + driver, ~40% of the pump) | −3 to −5 ms *(re-price)* | **high** | none — **the ORDER GATE is owed first** |
 | 3 | item C, the constant GATHER (median 9 VS / 27 PS registers of 256) | ~28 MB/frame of copy | med | none yet |
 | 4 | item B, parallel texture untile | unpriced | med | none |
 | 5 | §1.2, part 56's per-draw dynamic-state calls | unpriced | low | **one is owed** |
 | 6 | item D, the PM4 walk | −2.2 ms ceiling | high | none |
 
-**Item 1 is the change of order and it was measured as a side effect of a turn test.** It
+~~**Item 1 is the change of order and it was measured as a side effect of a turn test.** It
 is bigger than everything except item A, its fix is already written down
 (`perf-state-parked.md`'s part-62 addendum: horizontal-only widening if the engine exposes
 a second scalar, or a smaller k at high slider values), and it is the operator's own
-felt complaint. **The catch to state before building it:** the over-widen exists because
+felt complaint.~~ **CORRECTED BY SESSION 1.** It is still the operator's own felt
+complaint and it still clears its 700-draw kill threshold, but it is roughly half the size
+it was priced at, and **"if the engine exposes a second scalar" is answered: it does
+not.** So the two remaining routes are (b) hooking the engine's cull — which has no debug
+strings anywhere in the image — and (c) a smaller k, which is a picture decision and the
+operator's call. **Decide with the census, not with either model.** **The catch to state
+before building it:** the over-widen exists because
 the 21:9 view shows flanks the game's own 16:9 frustum culls away, so narrowing it brings
 back pop-in — this is a picture/performance trade, and the operator decides it, not a
 number. Build the horizontal-only form first; that is the one that might be free.
+
+### 1a. What session 1 left for the next sitting
+
+Two things, one sitting, and they do not interact:
+
+```
+ORDER=cold,warm,nocache tools/part71_pipeline_session.sh     # 90 s, closes §2 below
+tools/part72_vcull_session.sh                                # prices item 1
+```
+
+The second is four arms on one snapshotted binary — the census, its semantic control
+(`CZ_NO_GAME_FOV=1`), and both directions of its mechanical control. Its preflight runs the
+predicate's offline gate and **exits if the internal resolution is 16:9**, because then
+there is no over-widen to measure at all. `SELFTEST=1` runs the harness's own twelve gate
+cases (four clean, eight deliberate breakages). **Read the controls before the headline**;
+if either fails the headline means nothing.
 
 ## 2. The one measurement owed, and it costs 90 seconds
 
@@ -90,7 +120,15 @@ should asymptote as the pipeline set closes; if it does not, it needs a cap.
 * **`CZ_VK_RT=0` as a bound on parts 59-70's per-draw hooks** — it bounds nothing, the
   cost is gated on the RT variant SHADER CACHE (gotcha 414);
 * **`CZ_VK_WIDE=0` as the wide-culling arm** on a 21:9 setting — it also drops 26% of the
-  pixels (gotcha 415). `CZ_NO_GAME_FOV=1` is the arm;
+  pixels (gotcha 415). `CZ_NO_GAME_FOV=1` is the arm — **but only as the SEMANTIC CONTROL,
+  never as the item's price**: it removes the horizontal widening too, which is the
+  part-62 fix and is being kept, so its draw difference is an upper bound (gotcha 423).
+  `CZ_VK_VCULL_CENSUS=1` is what prices it;
+* **searching for the game's aspect scalar** — there isn't one. 2,056 property
+  registrations, 1,966 names, exactly one `Aspect` and it belongs to `cZombieSpawnRegion`;
+  the image's single 16/9 constant is the UI's. `tools/find_named_properties.py` re-asks it
+  in seconds if you doubt it, and a live property trace cannot answer it at all
+  (gotcha 424);
 * **a felt A/B below the perception floor** — the operator separated 17.8 s from 1.2 s
   instantly and could not rank 1.16 / 0.45 / 0.48 s (gotcha 421);
 * **500-draw bands on this workload** — at ~2.5 us/draw a 300-draw mismatch inside a bin
