@@ -16150,7 +16150,23 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         //
         // Sixty-four bytes makes the patch below idempotent by construction. Doing it for
         // shaders that never read c0..c3 is harmless: they never read them.
-        memcpy(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, 16 * sizeof(uint32_t));
+        // CZ_VK_GATHER_NO_C0_REFRESH=1 REVERTS this line, in the same binary. It exists
+        // because the defect it was written for is INTERMITTENT and visual: without a way
+        // to bring it back on demand, "the flicker stopped" cannot be told apart from "we
+        // did not trigger it this time", and an intermittent defect declared fixed on one
+        // clean run is the easiest wrong result in this project to produce (gotcha 30 in
+        // its visual form). Never a configuration to ship — a positive control.
+        static const bool noRefresh = [] {
+            const bool o = EnvOn("CZ_VK_GATHER_NO_C0_REFRESH");
+            if (o)
+                fprintf(stderr, "[vk] CZ_VK_GATHER_NO_C0_REFRESH=1 — the memo top-up's "
+                                "c0..c3 refresh is REVERTED. This is the POSITIVE CONTROL "
+                                "for the sky-flicker fix and must reproduce it\n");
+            return o;
+        }();
+        if (!noRefresh)
+            memcpy(dst, regs + xenos::kAluConstantBase + memoVsBase * 4,
+                   16 * sizeof(uint32_t));
         // AND RE-APPLY THE PROJECTION PATCHES, in the miss path's order. The slot being
         // topped up already held PATCHED constants (the fov slider and the 21:9 wide
         // patch rewrite c0..c3 on the miss path), and the gather above has just written
