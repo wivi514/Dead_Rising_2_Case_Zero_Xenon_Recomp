@@ -16129,6 +16129,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     {
         uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt);
         CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
+        // REFRESH c0..c3 RAW BEFORE PATCHING, unconditionally, and this is not belt and
+        // braces — it closes a DOUBLE-PATCH hole the gather opens.
+        //
+        // The slot being topped up already holds PATCHED c0..c3 from its previous
+        // occupant. The gather only writes the registers THIS shader reads, so a shader
+        // that reads none of c0..c3 — or, worse, only SOME of them — leaves patched values
+        // in place and the patch below then applies a second time. A partially re-patched
+        // window is the bad case: `SceneXformForm` reads all sixteen floats to decide
+        // whether this even IS a scene projection, so a half-raw half-double-patched
+        // window can be mis-recognised and then scaled on the wrong rows.
+        //
+        // Sixty-four bytes makes the patch below idempotent by construction. Doing it for
+        // shaders that never read c0..c3 is harmless: they never read them.
+        memcpy(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, 16 * sizeof(uint32_t));
         // AND RE-APPLY THE PROJECTION PATCHES, in the miss path's order. The slot being
         // topped up already held PATCHED constants (the fov slider and the 21:9 wide
         // patch rewrite c0..c3 on the miss path), and the gather above has just written
