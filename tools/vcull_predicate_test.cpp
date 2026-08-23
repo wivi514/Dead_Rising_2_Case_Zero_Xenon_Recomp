@@ -60,6 +60,31 @@ void Check(const char* what, int got, int want)
     printf("  %-46s got %2d want %2d  %s\n", what, got, want, got==want?"ok":"FAIL");
     if (got != want) ++fails;
 }
+// object -> world (row-major 4x3), copied verbatim from the census's corner loop. This
+// step is NEW in the fixed census and it is the step whose ABSENCE made session 1's
+// numbers meaningless (part 67: 0.1% of boxes intersect their own frustum untransformed,
+// 97.8% placed), so it gets cases of its own.
+R3 Place(const float* xf, const R3& b)
+{
+    R3 o; bool first = true;
+    for (int c = 0; c < 8; ++c)
+    {
+        const float ox = (c & 1) ? b.mx[0] : b.mn[0];
+        const float oy = (c & 2) ? b.mx[1] : b.mn[1];
+        const float oz = (c & 4) ? b.mx[2] : b.mn[2];
+        const float w[3] = { xf[0]*ox + xf[1]*oy + xf[2]*oz + xf[3],
+                             xf[4]*ox + xf[5]*oy + xf[6]*oz + xf[7],
+                             xf[8]*ox + xf[9]*oy + xf[10]*oz + xf[11] };
+        for (int k = 0; k < 3; ++k)
+        {
+            if (first) { o.mn[k] = o.mx[k] = w[k]; }
+            else { o.mn[k] = fminf(o.mn[k], w[k]); o.mx[k] = fmaxf(o.mx[k], w[k]); }
+        }
+        first = false;
+    }
+    return o;
+}
+
 int main()
 {
     // A 16:9 perspective in the renderer's convention: row-major, clip = M*(x,y,z,1),
@@ -90,6 +115,42 @@ int main()
     // band is exactly what a horizontal-only cull fix would remove.
     const float k = 1.34375f;
     Check("in the over-widen band (t..k*t)", Classify(m, box(0, hy*1.17f, 100, 2), 1.0f), 1);
+    // THE PLACEMENT CASES. A mesh authored at its local origin and placed out in the town
+    // is the population part 67 measured; untransformed it sits at the world origin, and
+    // whether that reads on- or off-screen is an accident of where the camera is. These
+    // check that the transform is applied in the right order and with the right layout.
+    float idx[12] = { 1,0,0,0,  0,1,0,0,  0,0,1,0 };
+    R3 local = box(0, 0, 0, 3);                       // authored at its own origin
+    Check("placed: identity leaves it at the origin",
+          Classify(m, Place(idx, local), 1.0f), -1);  // origin is behind/at the eye
+    float tr[12] = { 1,0,0, 0,   0,1,0, 0,   0,0,1, 100 };   // translate +100 in z
+    Check("placed: translated to z=100 is on screen",
+          Classify(m, Place(tr, local), 1.0f), 0);
+    float up[12] = { 1,0,0, 0,   0,1,0, hy*3,  0,0,1, 100 }; // and lifted above the view
+    Check("placed: lifted above the screen",
+          Classify(m, Place(up, local), 1.0f), 1);
+    float side[12] = { 1,0,0, hx*3, 0,1,0, 0,   0,0,1, 100 };
+    Check("placed: pushed off to the side",
+          Classify(m, Place(side, local), 1.0f), 2);
+    // ROW-MAJOR 4x3, not column-major: a transposed read puts the translation in the
+    // scale slots and the box lands somewhere else entirely. This case fails loudly if
+    // the layout is ever flipped.
+    float rot90[12] = { 0,0,1, 0,   0,1,0, 0,   -1,0,0, 100 };  // yaw 90 about Y
+    R3 wide_ = { {-50,-1,-1}, {50,1,1} };                        // long in X ...
+    R3 rp = Place(rot90, wide_);
+    Check("placed: yaw 90 turns an X-long box into a Z-long one",
+          (rp.mx[2] - rp.mn[2] > 90.0f && rp.mx[0] - rp.mn[0] < 10.0f) ? 1 : 0, 1);
+
+    // A SHEAR, because every case above is too symmetric to catch a TRANSPOSED read:
+    // a yaw of 90 degrees maps to its own inverse under transposition, so it passes either
+    // way. This one does not — correct: w.x = ox + 0.5*oy, so a box 40 tall gains 20 of
+    // X extent. Transposed: w.x = ox and the extent is unchanged.
+    float shear[12] = { 1,0.5f,0, 0,   0,1,0, 0,   0,0,1, 100 };
+    R3 tall = { {-1,-20,-1}, {1,20,1} };
+    R3 sp = Place(shear, tall);
+    Check("placed: a shear widens X by half the Y extent (catches a transpose)",
+          (sp.mx[0] - sp.mn[0] > 19.0f) ? 1 : 0, 1);
+
     printf("%s (%d failure(s))\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }

@@ -10484,16 +10484,120 @@ void RtGeometryCensus(const uint32_t* vsWindow, uint32_t depthControl,
 // on the pump thread, ~9,800 times a frame. Never quote a frame time from a run carrying
 // it (gotcha 7). It is off by default and folded away with every other per-draw hook
 // when unarmed (part 71's hook fold), so it costs one static bool test when off.
+// Compose two row-major 4x3 affines, outer * inner. Hoisted to file scope in part 72:
+// the vertical-waste census needs the same compose as `rtshadow`'s object->world walk,
+// and two copies of a matrix multiply is how the two drift.
+void ComposeAffine(const float* outer, const float* inner, float* out)
+{
+    for (int r = 0; r < 3; ++r)
+    {
+        for (int c = 0; c < 3; ++c)
+            out[r * 4 + c] = outer[r * 4 + 0] * inner[0 * 4 + c] +
+                             outer[r * 4 + 1] * inner[1 * 4 + c] +
+                             outer[r * 4 + 2] * inner[2 * 4 + c];
+        out[r * 4 + 3] = outer[r * 4 + 0] * inner[3] + outer[r * 4 + 1] * inner[7] +
+                         outer[r * 4 + 2] * inner[11] + outer[r * 4 + 3];
+    }
+}
+
 namespace vcull
 {
 std::mutex g_mu;
-std::map<uint64_t, rtcensus::StreamRec> g_streams;
+// Bounds plus the stamp that says whether they are still true. `boundsHash` is the
+// content hash of the bytes the bounds were scanned FROM — see the re-scan in Note().
+struct Rec
+{
+    rtcensus::StreamRec r;
+    uint64_t boundsHash = 0;
+    uint64_t rescans = 0;
+    bool depVS = false;
+};
+std::map<uint64_t, Rec> g_streams;
 uint64_t g_lastFrame = ~0ull;
 // Per-frame, reset at each frame boundary.
-uint64_t g_fScene = 0, g_fNoBounds = 0, g_fWasteV = 0, g_fWasteH = 0, g_fNear = 0;
+uint64_t g_fScene = 0, g_fNoBounds = 0, g_fWasteV = 0, g_fWasteH = 0, g_fNear = 0,
+         g_fOn = 0, g_fDep = 0, g_fStale = 0, g_fNoXform = 0, g_fClassified = 0;
 // Aggregates over frames that had at least one world draw.
 uint64_t g_frames = 0, g_sumScene = 0, g_sumNoBounds = 0, g_sumWasteV = 0,
-         g_sumWasteH = 0, g_sumNear = 0, g_maxWasteV = 0, g_maxScene = 0;
+         g_sumWasteH = 0, g_sumNear = 0, g_maxWasteV = 0, g_maxScene = 0,
+         g_sumOn = 0, g_sumDep = 0, g_sumStale = 0, g_rescans = 0,
+         g_sumNoXform = 0, g_sumClassified = 0;
+// THE PREVIOUS DUMP'S TOTALS, so the report can print a RATE and not only a mean.
+// Part 72's session read `62 draws/frame` off a cumulative mean whose entire content was
+// a 1,200-frame burst during the approach to the soak; the steady state was 1.0. A
+// cumulative mean printed every N frames looks like a time series and is not one — it is
+// C/n, and it decays whatever the frame in front of you is doing (gotcha 237's shape).
+struct Snap
+{
+    uint64_t frames = 0, scene = 0, tested = 0, wasteV = 0, wasteH = 0, on = 0,
+             near_ = 0, dep = 0, noBounds = 0, noXform = 0;
+};
+Snap g_prev;
+// A capped sample of draws the invariant below rejects, because a REFUSAL that does not
+// say what it saw costs another operator sitting to diagnose.
+uint64_t g_offenders = 0;
+
+// THIS DRAW'S OBJECT->WORLD MATRIX — the thing whose absence made session 1's census
+// meaningless, and the correction is already in this file twice over.
+//
+// The census was built on §6cs's reading that a form-2 draw's position stream is
+// world-space. **PART 67 RETRACTED THAT**, and its retraction is quoted in ShaderMeta's
+// own comment: c0..c3 is the CAMERA's view-projection, and that is the same matrix
+// whether the shader feeds it a world position or an object position it transformed one
+// line earlier — which is what this title's world shaders do, from a row-major 4x3 at
+// vc(8..10). Part 67 measured the consequence over twenty `.xtr` traces and 46,820 draws:
+// the fraction whose box intersects the frustum it was drawn into is **0.1%
+// untransformed and 97.8% placed.** Session 1's census read 98.1% of draws as entirely
+// off-screen — that 0.1% figure, reproduced exactly, from the same mistake.
+//
+// This is deliberately NOT `rtshadow::ObjectXform`, though the rows and the compose are
+// identical: that function short-circuits to identity when `PlaceInstances()` is off, so
+// borrowing it would make this census silently depend on an RT arm being armed — the
+// gotcha-414 shape, where a cost or a behaviour turns out to be gated on something the
+// arm's name never mentions.
+//
+// A draw this cannot place is DECLINED AND COUNTED, never placed at the origin on a
+// guess. Palette draws are declined too: part 69 read ZERO of 2,786 palette draws
+// referencing a single matrix (median 19 distinct entries), so entry 0 would pile a
+// batched prop set onto whichever prop is bone 0 — and a bounding box over a batch placed
+// at one member's position cannot answer a visibility question anyway.
+bool PlaceBox(const uint32_t* vsWindow, const uint32_t* regs, const ShaderMeta& vs,
+              float* out)
+{
+    out[0] = out[5] = out[10] = 1.0f;
+    out[1] = out[2] = out[3] = out[4] = out[6] = out[7] = 0.0f;
+    out[8] = out[9] = out[11] = 0.0f;
+    if (!vs.xfKnown)
+        return false;               // no table entry — do not guess
+    if (!vs.xfCount)
+        return true;                // the table says this stream really is world-space
+    if (vs.xfPalette)
+        return false;               // see above: a batch has no single placement
+    const size_t at = size_t(vsWindow - regs);
+    bool any = false;
+    for (uint8_t i = 0; i < vs.xfCount; ++i)
+    {
+        if (at + (size_t(vs.xfBase[i]) + 3) * 4 > xenos::kFetchConstantBase)
+            return false;           // the rows would read past the constant file
+        float m[12];
+        memcpy(m, vsWindow + size_t(vs.xfBase[i]) * 4, sizeof m);
+        for (int k = 0; k < 12; ++k)
+            if (!std::isfinite(m[k]))
+                return false;
+        if (!any)
+        {
+            memcpy(out, m, sizeof m);
+            any = true;
+        }
+        else
+        {
+            float tmp[12];
+            ComposeAffine(m, out, tmp);
+            memcpy(out, tmp, sizeof tmp);
+        }
+    }
+    return true;
+}
 
 float ClipScale()
 {
@@ -10509,6 +10613,17 @@ float ClipScale()
     return f;
 }
 
+// THE REPORT. Two changes from the version part 72's first session ran, and both came
+// out of that session refuting itself:
+//
+//  * IT PRINTS A RATE, not only a cumulative mean (see Snap above).
+//  * IT REFUSES TO PRINT A HEADLINE WHEN ITS OWN SANITY INVARIANT FAILS. A correctly
+//    placed world draw set must be MOSTLY ON SCREEN — that is what the game's culling is
+//    for. Session 1 read 98.1% of world draws as "entirely off-screen horizontally",
+//    leaving ~142 on-screen draws to paint a scene submitting 9,750, and only a control
+//    added on a hunch caught it. An instrument that cannot show it is working does not
+//    get to report a number (gotchas 30, 151, 408), so the invariant is enforced here
+//    rather than left to a reader.
 void Dump()
 {
     if (!g_frames)
@@ -10516,31 +10631,77 @@ void Dump()
         fprintf(stderr, "[vcull] no world frames seen\n");
         return;
     }
-    const double scene = double(g_sumScene) / double(g_frames);
-    const double wv = double(g_sumWasteV) / double(g_frames);
-    const double wh = double(g_sumWasteH) / double(g_frames);
-    const double nb = double(g_sumNoBounds) / double(g_frames);
-    const double nr = double(g_sumNear) / double(g_frames);
-    const double tested = scene - nb;
+    const Snap now{ g_frames,   g_sumScene, g_sumClassified, g_sumWasteV,
+                    g_sumWasteH, g_sumOn,    g_sumNear,       g_sumDep,
+                    g_sumNoBounds, g_sumNoXform };
+    const uint64_t df = now.frames - g_prev.frames;
+    auto rate = [&](uint64_t cur, uint64_t prev) {
+        return df ? double(cur - prev) / double(df) : 0.0;
+    };
+    const double wScene = rate(now.scene, g_prev.scene);
+    const double wTested = rate(now.tested, g_prev.tested);
+    const double wV = rate(now.wasteV, g_prev.wasteV);
+    const double wH = rate(now.wasteH, g_prev.wasteH);
+    const double wOn = rate(now.on, g_prev.on);
+    const double onShare = wTested > 0 ? wOn / wTested : 0.0;
+
     fprintf(stderr,
-            "[vcull] %llu world frames  scene draws/frame %.0f  TESTED %.0f (%.1f%%)  "
-            "untestable %.0f  near-plane %.0f\n",
-            (unsigned long long)g_frames, scene, tested,
-            scene > 0 ? 100.0 * tested / scene : 0.0, nb, nr);
+            "[vcull] %llu world frames (+%llu since the last line) — ALL FIGURES BELOW "
+            "ARE PER-FRAME RATES OVER THAT WINDOW, not run means\n",
+            (unsigned long long)now.frames, (unsigned long long)df);
     fprintf(stderr,
-            "[vcull]   ENTIRELY OFF-SCREEN VERTICALLY: %.0f draws/frame (%.1f%% of "
-            "tested, %.1f%% of scene) — peak %llu; the ceiling on a horizontal-only "
-            "culling fix\n",
-            wv, tested > 0 ? 100.0 * wv / tested : 0.0,
-            scene > 0 ? 100.0 * wv / scene : 0.0, (unsigned long long)g_maxWasteV);
+            "[vcull]   scene draws %.0f  CLASSIFIED %.0f (%.1f%%)   declined: no-bounds "
+            "%.0f  dependent-fetch %.0f  unplaceable %.0f  near-plane %.0f   "
+            "(stale-bounds rescans %llu)\n",
+            wScene, wTested, wScene > 0 ? 100.0 * wTested / wScene : 0.0,
+            rate(now.noBounds, g_prev.noBounds), rate(now.dep, g_prev.dep),
+            rate(now.noXform, g_prev.noXform), rate(now.near_, g_prev.near_),
+            (unsigned long long)g_rescans);
+
+    // THE SNAPSHOT ADVANCES HERE, before any early return. If it advanced only on the
+    // success path, a refused dump would leave the next window measuring from the last
+    // SUCCESSFUL one — silently turning the rate back into the cumulative mean this
+    // change exists to remove.
+    const Snap prev = g_prev;
+    g_prev = now;
+    (void)prev;
+
+    // THE INVARIANT, checked before the headline and not after.
+    if (onShare < 0.50 && ClipScale() == 1.0f)
+    {
+        fprintf(stderr,
+                "[vcull]   ** REFUSING TO REPORT: only %.1f%% of tested draws are ON "
+                "SCREEN (%.0f of %.0f a frame). A world draw set the game culled should "
+                "be mostly visible, so this census is MIS-PLACING its geometry and its "
+                "vertical figure would be meaningless — the mis-placement is lateral, "
+                "which is the direction that HIDES vertical waste.\n",
+                100.0 * onShare, wOn, wTested);
+        fprintf(stderr,
+                "[vcull]   ** diagnosis: off-screen horizontally %.0f/frame (%.1f%%), "
+                "vertically %.0f/frame. Dependent-fetch and unplaceable draws %.0f/frame "
+                "were excluded; "
+                "%llu streams have been re-scanned for changed content. See "
+                "docs/part72-fix-plan.md §2.2 for what (a)/(b)/(c) look like.\n",
+                wH, wTested > 0 ? 100.0 * wH / wTested : 0.0, wV,
+                rate(now.dep, prev.dep) + rate(now.noXform, prev.noXform),
+                (unsigned long long)g_rescans);
+        return;
+    }
+
     fprintf(stderr,
-            "[vcull]   entirely off-screen horizontally: %.0f draws/frame (%.1f%% of "
-            "tested) — the CONTROL: the horizontal widening is the part-62 fix and is "
-            "kept, so this should be small\n",
-            wh, tested > 0 ? 100.0 * wh / tested : 0.0);
-    fprintf(stderr, "[vcull]   clip-bound scale %g%s, peak scene draws %llu\n",
-            ClipScale(), ClipScale() == 1.0f ? " (unscaled)" : " (CONTROL ARM — not a "
-            "measurement)", (unsigned long long)g_maxScene);
+            "[vcull]   ENTIRELY OFF-SCREEN VERTICALLY: %.1f draws/frame (%.2f%% of "
+            "tested) — THE CEILING on a horizontal-only culling fix%s\n",
+            wV, wTested > 0 ? 100.0 * wV / wTested : 0.0,
+            ClipScale() == 1.0f ? "" : "  [CONTROL ARM — not a measurement]");
+    fprintf(stderr,
+            "[vcull]   off-screen horizontally %.1f/frame (%.2f%%) — the CONTROL; "
+            "on screen %.0f/frame (%.1f%%)\n",
+            wH, wTested > 0 ? 100.0 * wH / wTested : 0.0, wOn, 100.0 * onShare);
+    fprintf(stderr,
+            "[vcull]   (run means, for reference only: vert %.1f, horz %.1f over %llu "
+            "frames — a cumulative mean is C/n, not a rate)\n",
+            double(now.wasteV) / double(now.frames),
+            double(now.wasteH) / double(now.frames), (unsigned long long)now.frames);
 }
 } // namespace vcull
 
@@ -10581,12 +10742,18 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
             g_sumWasteV += g_fWasteV;
             g_sumWasteH += g_fWasteH;
             g_sumNear += g_fNear;
+            g_sumOn += g_fOn;
+            g_sumDep += g_fDep;
+            g_sumStale += g_fStale;
+            g_sumNoXform += g_fNoXform;
+            g_sumClassified += g_fClassified;
             g_maxWasteV = std::max(g_maxWasteV, g_fWasteV);
             g_maxScene = std::max(g_maxScene, g_fScene);
             if (g_frames == 30 || g_frames % 600 == 0)
                 Dump();
         }
         g_fScene = g_fNoBounds = g_fWasteV = g_fWasteH = g_fNear = 0;
+        g_fOn = g_fDep = g_fStale = g_fNoXform = g_fClassified = 0;
         g_lastFrame = frame;
     }
     float bEff;
@@ -10608,6 +10775,21 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
         ++g_fNoBounds;
         return;
     }
+    // DEPENDENT-FETCH DRAWS ARE EXCLUDED, and this is the population part 63 verified.
+    // Its bounds census confirmed the composite draws are world-space (z +-550,
+    // y -47..360, only 27% centered near the origin) — but it gated on `depVS`, ANY
+    // attribute carrying an in-shader fetch, and part 72's first census gated only on
+    // attribute 0. A skinned actor or an instanced mesh keeps its vertices in a local
+    // frame and carries the placement in the constants, so its bind-pose box projects to
+    // the world origin: far off-axis LATERALLY, plausible height. That is exactly the
+    // signature session 1 measured (98.1% off-screen horizontally, ~0 vertically), and it
+    // is the direction that hides vertical waste. `docs/part72-fix-plan.md` §2.2b.
+    for (const VertexAttribute& a : vs.attributes)
+        if (a.indirect)
+        {
+            ++g_fDep;
+            return;
+        }
     const xenos::VertexFetch vf = xenos::DecodeVertexFetch(regs, FetchSlot(pos.fetchSlot));
     const uint32_t sva = PhysToVa(vf.address);
     const uint64_t bytes = uint64_t(vf.sizeDwords) * 4;
@@ -10618,17 +10800,46 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
     }
     const uint64_t key = (uint64_t(sva) << 32) | (uint64_t(bytes & 0x3FFFFFFFu) << 2) |
                          (vf.endian & 3);
-    rtcensus::StreamRec& rec = g_streams[key];
-    if (!rec.haveBounds)
+    Rec& rc = g_streams[key];
+    rtcensus::StreamRec& rec = rc.r;
+    // BOUNDS GO STALE, and a stale box is the whole defect class above in its other
+    // costume. The first census scanned once at first sight and never again, so a buffer
+    // the guest rewrites each frame at the same guest address — a crowd, and this engine
+    // ships a "CrowdEngine" — kept frame N's box forever. A zombie that has walked away
+    // is at the wrong X/Z and the RIGHT Y, because they all walk on the ground: the same
+    // lateral-only error, from a different cause. Hash what the bounds were scanned from
+    // and re-scan when it changes. `docs/part72-fix-plan.md` §2.2a.
+    const uint64_t h = StreamHash(base + sva, size_t(bytes), 0);
+    if (!rec.haveBounds || h != rc.boundsHash)
     {
+        if (rec.haveBounds)
+        {
+            ++rc.rescans;
+            ++g_rescans;
+            ++g_fStale;
+        }
         rec.strideDw = pos.strideDwords;
         rec.offsetDw = pos.offsetDwords;
+        rec.haveBounds = false;
         rtcensus::ScanBounds(rec, base + sva, bytes);
+        rc.boundsHash = h;
         if (!rec.haveBounds)
         {
             ++g_fNoBounds;
             return;
         }
+    }
+
+    // PLACE THE BOX. Without this the census projects object-space geometry by the
+    // camera matrix and reads ~98% of the world as off-screen — part 67's 0.1% figure
+    // (see PlaceBox). A draw that cannot be placed is declined and counted; it is never
+    // placed at the origin on a guess, because the origin is a PLAUSIBLE place and a
+    // wrong answer there is invisible.
+    float xf[12];
+    if (!PlaceBox(vsWindow, regs, vs, xf))
+    {
+        ++g_fNoXform;
+        return;
     }
 
     // THE FINAL PROJECTION, rebuilt exactly as the upload path builds it — same two
@@ -10652,9 +10863,17 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
     bool nearStraddle = false;
     for (int c = 0; c < 8; ++c)
     {
-        const float x = (c & 1) ? rec.mx[0] : rec.mn[0];
-        const float y = (c & 2) ? rec.mx[1] : rec.mn[1];
-        const float z = (c & 4) ? rec.mx[2] : rec.mn[2];
+        const float ox = (c & 1) ? rec.mx[0] : rec.mn[0];
+        const float oy = (c & 2) ? rec.mx[1] : rec.mn[1];
+        const float oz = (c & 4) ? rec.mx[2] : rec.mn[2];
+        // object -> world (row-major 4x3), then world -> clip. Transforming the CORNERS
+        // rather than the min/max pair is what keeps a rotated box honest: re-deriving an
+        // axis-aligned box from a transformed one inflates it, and an inflated box
+        // straddles the frustum and reads "on screen" — which would hide the very waste
+        // this counts (`project-the-points-not-the-box`).
+        const float x = xf[0] * ox + xf[1] * oy + xf[2] * oz + xf[3];
+        const float y = xf[4] * ox + xf[5] * oy + xf[6] * oz + xf[7];
+        const float z = xf[8] * ox + xf[9] * oy + xf[10] * oz + xf[11];
         const float cw = m[12] * x + m[13] * y + m[14] * z + m[15];
         if (!(cw > 0.0f))
         {
@@ -10677,10 +10896,44 @@ void VerticalWasteCensus(const uint32_t* vsWindow, const ShaderMeta& vs,
         ++g_fNear;
         return;
     }
-    if (allAbove || allBelow)
+    ++g_fClassified;
+    const bool offV = allAbove || allBelow;
+    const bool offH = allLeft || allRight;
+    if (offV)
         ++g_fWasteV;
-    if (allLeft || allRight)
+    if (offH)
         ++g_fWasteH;
+    // THE INVARIANT'S NUMERATOR. A draw the game's culling kept and the projection places
+    // correctly should mostly land ON the screen; the share of these is what licenses the
+    // headline (see Dump). Counting it here rather than deriving it from the two waste
+    // counts matters: a box can be off-screen in BOTH axes, so `tested - V - H` would
+    // double-subtract and read low exactly when the census is healthy.
+    if (!offV && !offH)
+        ++g_fOn;
+    // A REFUSAL THAT DOES NOT SAY WHAT IT SAW costs another operator sitting to diagnose,
+    // so name a capped sample of the draws that fail it. The box centre and extent
+    // separate the two mechanisms on sight: a mesh sitting at the world origin with a
+    // small extent is local/instanced geometry (§2.2b), while one at a plausible town
+    // coordinate is a stale box (§2.2a) — and part 63 published the world's real extent
+    // (z +-550, y -47..360) to compare against.
+    if (offH && g_offenders < 12)
+    {
+        ++g_offenders;
+        const float cx0 = 0.5f * (rec.mn[0] + rec.mx[0]);
+        const float cy0 = 0.5f * (rec.mn[1] + rec.mx[1]);
+        const float cz0 = 0.5f * (rec.mn[2] + rec.mx[2]);
+        fprintf(stderr,
+                "[vcull]   offender %llu: object box centre (%.0f %.0f %.0f) extent "
+                "(%.0f %.0f %.0f) -> placed at (%.0f %.0f %.0f)  va=%08X stride=%u "
+                "xfCount=%u rescans=%llu\n",
+                (unsigned long long)g_offenders, cx0, cy0, cz0,
+                rec.mx[0] - rec.mn[0], rec.mx[1] - rec.mn[1], rec.mx[2] - rec.mn[2],
+                xf[0] * cx0 + xf[1] * cy0 + xf[2] * cz0 + xf[3],
+                xf[4] * cx0 + xf[5] * cy0 + xf[6] * cz0 + xf[7],
+                xf[8] * cx0 + xf[9] * cy0 + xf[10] * cz0 + xf[11],
+                sva, pos.strideDwords, unsigned(vs.xfCount),
+                (unsigned long long)rc.rescans);
+    }
 }
 
 void VkRenderer_DumpVerticalWaste()
@@ -11603,18 +11856,7 @@ bool StableKey()
 }
 
 // out = outer o inner, both row-major 4x3 affines (the layout VkTransformMatrixKHR uses).
-void ComposeAffine(const float* outer, const float* inner, float* out)
-{
-    for (int r = 0; r < 3; ++r)
-    {
-        for (int c = 0; c < 3; ++c)
-            out[r * 4 + c] = outer[r * 4 + 0] * inner[0 * 4 + c] +
-                             outer[r * 4 + 1] * inner[1 * 4 + c] +
-                             outer[r * 4 + 2] * inner[2 * 4 + c];
-        out[r * 4 + 3] = outer[r * 4 + 0] * inner[3] + outer[r * 4 + 1] * inner[7] +
-                         outer[r * 4 + 2] * inner[11] + outer[r * 4 + 3];
-    }
-}
+// (hoisted above `namespace vcull` — one definition, two callers.)
 
 // THIS DRAW'S OBJECT->WORLD MATRIX, out of the VS constant window (part 67).
 //
