@@ -4968,3 +4968,40 @@ From phase C part 18 (the frame rate — and none of it was work):
      every item; reading code has found none) and of "find the cost before optimising the
      name" — the addition is that the re-split is owed *by the fix itself*, in the same
      part, and costs one build.
+
+448. **A DETERMINISTIC SCREEN EVERY RUN PASSES THROUGH IS A FREE MACHINE-STATE
+     FINGERPRINT — USE IT TO REJECT COMPARISONS, NEVER TO NORMALISE THEM.** Part 75's
+     six-run A/B was nearly reported at −37% off a line fit that was wrong three separate
+     ways, and what exposed it was the raw per-window series rather than any summary.
+     Every `autoroute.sh` run parks on the DebugJump menu for a few windows at the same
+     draw count (~2,470-2,570, agreeing to 3% across every run this project has made of
+     it). **Runs early in the session read ~9.0 ms there and later ones ~5.3 ms** — a 1.7x
+     difference at an identical, deterministic screen, i.e. the machine, not the change.
+     That makes the menu window a state tag stamped on every run for free, and the rule is
+     **runs are only comparable to runs in the same state.**
+     **But you may not divide by it.** The obvious next move — scale the slow-state runs by
+     the menu ratio — is wrong here and provably so: scaling one arm's crowd window by
+     5.3/9.0 disagrees with a directly measured same-arm run at the same draw count by 30%.
+     The slowdown is not a uniform multiplier, so the fingerprint can only ever say
+     "these two are not comparable", which is exactly the claim that saves you.
+     Two corollaries this cost:
+     * **Gate on a FINISHED log.** `autoroute.sh` exits 3 and prints "DID NOT REACH THE
+       OUTDOOR WORLD — this log is NOT reportable", and a run still being written looks
+       identical to one that failed. One run was called a gate failure on a partial read
+       and it was not. Check the process is gone first (the memory note
+       `a-partial-stats-read-measures-a-different-PLACE`, one level over).
+     * **Never send an A/B loop's output to /dev/null.** The route gate fires there and
+       nowhere else. One control run spent all 28 of its windows on the menu and went into
+       the aggregate as if it were a crowd run, because the warning had been discarded.
+
+449. **A SLOWER CONTROL ARM CAN FAIL A TIMED ROUTE MORE OFTEN THAN THE FAST ARM, WHICH
+     BIASES WHICH CONTROL RUNS SURVIVE.** `autoroute.sh` walks the DebugJump menu with
+     fixed-length press intervals and each press taps for 150 ms; part 54 had to fix that
+     edge once already because a missed poll window costs the whole outdoor route. A
+     configuration that renders more slowly polls fewer times inside the same window, so it
+     is *more likely* to miss — and the runs that survive the gate are then the arm's
+     luckiest ones. Part 75 saw the control arm miss the route where the fix arm did not.
+     **The fix is to make the route's timing generous enough that neither arm can miss it
+     (`PRESSMS`), and to report the per-arm GATE FAILURE RATE beside the result** — a
+     silent difference in how often an arm completes the route is a selection effect
+     wearing the shape of a measurement.

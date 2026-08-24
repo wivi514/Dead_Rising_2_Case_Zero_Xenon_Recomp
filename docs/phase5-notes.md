@@ -16789,13 +16789,49 @@ Frame time on this workload is close to LINEAR in draw count (§6do's own table 
 3.65-5.05 us/draw across the whole range), so `tools/part75_bandfit.py` fits a line per arm
 and evaluates both at the same draw count, inside the range both arms cover.
 
-**And that carries a control the binned form cannot.** This change removes a strictly
-PER-DRAW cost, so it must leave the INTERCEPT alone and reduce the SLOPE. Afternoon drift,
-a different route depth or a thermal difference would move both. The intercept is therefore
-a null channel the item could not have moved, read for free beside the result — and it
-agrees to 3%:
+~~**And that carries a control the binned form cannot.** This change removes a strictly
+PER-DRAW cost, so it must leave the INTERCEPT alone and reduce the SLOPE. The intercept is
+therefore a null channel the item could not have moved — and it agrees to 3%: `arena =
+3.65 + 2.091 per 1000 draws`, `fix = 3.76 + 1.063`.~~
 
-```
-arena (control):  ms = 3.65 + 2.091 per 1000 draws
-fix:              ms = 3.76 + 1.063 per 1000 draws      <-- the slope HALVES
-```
+**RETRACTED WITHIN THE HOUR, AND THE RETRACTION IS THE MORE USEFUL HALF.** That fit was
+computed off four of the six runs and it was wrong three separate ways. What exposed it was
+printing the raw per-window series; no summary statistic showed it.
+
+* **One control run never left a 90-draw range.** `arena2` spent all 28 of its windows on
+  the DebugJump menu at ~2,470 draws — it never reached the crowd. Its "slope" was a line
+  through noise and its intercept came out NEGATIVE, which is physically impossible for a
+  frame time. **A line fit needs the x to vary and nothing checks that for you.**
+* **`autoroute.sh` HAS a gate for exactly that** — it exits 3 and prints "DID NOT REACH THE
+  OUTDOOR WORLD — this log is NOT reportable" — and the A/B loop sent its output to
+  `/dev/null`. The harness was right and the warning was discarded.
+* **And a run still being written looks identical to one that failed**, so `arena3` was
+  called a gate failure off a partial read when it was simply mid-run. Gate on a log whose
+  process is gone.
+
+### 7. THE MACHINE WAS NOT THE SAME ALL SESSION, AND THE ROUTE SAYS SO FOR FREE
+
+Every run parks on the DebugJump menu for a few windows before the jump, at the same draw
+count — 2,466 to 2,572 across every run, agreeing to 3%. It is the same deterministic
+screen every time. **Runs early in the session read ~9.0 ms there and later ones ~5.3 ms.**
+
+That is a 1.7x difference with no configuration change, and it is a **state fingerprint
+stamped on every run for free**. The rule it gives is that runs are only comparable to runs
+in the same state.
+
+**It must NOT be used to normalise.** Scaling a slow-state run's crowd window by 5.3/9.0
+disagrees with a directly measured same-arm run at the same draw count by 30%, so the
+slowdown is not a uniform multiplier. The fingerprint can only ever say "these two are not
+comparable" — which is the claim that saves you. Gotcha 448.
+
+**And the control arm missed the route where the fix arm did not.** The menu walk uses
+fixed press intervals with a 150 ms tap (part 54 had to fix that edge once already), so a
+slower configuration polls fewer times inside the same window and is more likely to miss.
+The runs that survive the gate are then that arm's luckiest ones — a selection effect
+wearing the shape of a measurement. Gotcha 449. `tools/part75_ab_report.py` prints the
+menu fingerprint and the gate verdict beside every run and refuses to compare across
+states; its docstring is the list of ways this went wrong.
+
+### 8. WHAT THE A/B ACTUALLY SAYS
+
+Within one machine state, at matched draw counts, crowd windows only:
