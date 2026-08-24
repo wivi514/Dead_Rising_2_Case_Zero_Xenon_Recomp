@@ -11216,7 +11216,11 @@ uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
 bool ConstGatherOff()
 {
     static const bool off = [] {
-        const bool on = EnvOn("CZ_VK_CONST_GATHER");
+        // Accepts a VALUE, not just presence: CZ_VK_CONST_GATHER=0 must be able to turn
+        // it off again once the default flips, or the operator has no way to disable it
+        // from a launcher that always sets the variable.
+        const char* e = Env("CZ_VK_CONST_GATHER");
+        const bool on = e && *e && strcmp(e, "0") != 0;
         if (on)
             fprintf(stderr, "[vk] CZ_VK_CONST_GATHER=1 — the per-shader constant GATHER is "
                             "ON (part 72's item C). It is OFF by default since part 74: it "
