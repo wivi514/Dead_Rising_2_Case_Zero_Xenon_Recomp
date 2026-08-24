@@ -2772,6 +2772,41 @@ uint64_t g_raceAffected = 0, g_raceAffectedProj = 0, g_raceAffectedFrames = 0;
 // gathered, and how often it then RECOGNIZED something there.
 uint64_t g_patchResidue = 0, g_patchResidueRecognized = 0, g_patchGathered = 0;
 // CZ_VK_SKY_ASYM's accumulators — see the measurement in the present path.
+// ===================================================================================
+// THE PER-FRAME CPU/GPU PROFILER (part 74) — attributing a stutter to a side
+// ===================================================================================
+//
+// WHAT WAS MISSING. Part 74's decomposition splits a frame into `walk + sleep + RESIDUAL`
+// and put every hitch inside `walk` — which is `Pm4_Execute`: the command processor, the
+// renderer's recording, AND the GPU fence wait, all in one number. So "the hitch is in the
+// renderer" was as far as it could go, and the two halves want opposite fixes: CPU
+// recording time is ours to shorten, GPU time is not.
+//
+// **This project has never measured GPU time directly.** The nearest thing is
+// `tools/gpu_clock_sample.py`, which samples clocks and utilisation from outside the
+// process and cannot be aligned to a frame, let alone to the ONE frame that stuttered.
+//
+// So: two timestamps written into each frame's own command buffer, and the fence wait
+// clocked unconditionally on the CPU side. That gives, per frame:
+//
+//     wall = walk + sleep + residual        (part 74's decomposition)
+//     walk = record + fenceWait             (this: CPU recording vs waiting for the GPU)
+//     gpu  = the GPU's own execution time for that frame's command buffer
+//
+// READ BACK DEFERRED, NEVER WAITED ON. The results for a slot are collected right after
+// that slot's fence has been waited — by then they are guaranteed available, so this adds
+// no stall. That is the same discipline the RT coverage query already uses; a
+// `VK_QUERY_RESULT_WAIT_BIT` here would make the instrument create the stall it reports
+// (gotcha 7).
+uint64_t g_gpuFrameNs = 0, g_gpuFrames = 0, g_fenceWaitNs = 0;
+double g_timestampPeriodNs = 0.0;      // 0 = the device cannot timestamp; say so, never guess
+VkQueryPool g_tsPool = VK_NULL_HANDLE;
+// Per slot: the frame number whose timestamps that slot holds, and the last GPU time read
+// back. `~0ull` means the slot has never been written.
+uint64_t g_tsFrameOf[8] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull };
+uint64_t g_gpuNsOfFrame = 0;           // the most recently READ-BACK frame's GPU time
+uint64_t g_gpuNsFrameNo = ~0ull;
+
 uint64_t g_skyFrames = 0, g_skyFlips = 0;
 // WHICH SHADERS leave c0..c3 ungathered — i.e. whose windows the residue lives in. Only a
 // handful of the 449 can be in this set, and naming them is far cheaper than bisecting.
@@ -2902,12 +2937,15 @@ struct SlowFrameRec
     // of finding. Every millisecond now lands somewhere by construction.
     uint32_t walkUs = 0, sleepUs = 0;
     int32_t residualUs = 0;
+    // `walk` split one level: CPU recording versus waiting for the GPU. Plus the GPU's own
+    // execution time for the frame, from its command buffer's own timestamps.
+    uint32_t fenceUs = 0, gpuUs = 0;
 };
 SlowFrameRec g_slowTop[12];
 
 void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
                    uint32_t pipes, uint32_t texKB, uint32_t texUs, uint32_t walkUs,
-                   uint32_t sleepUs, int32_t residualUs)
+                   uint32_t sleepUs, int32_t residualUs, uint32_t fenceUs, uint32_t gpuUs)
 {
     uint32_t worst = 0;
     for (uint32_t i = 1; i < 12; ++i)
@@ -2915,8 +2953,9 @@ void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
             worst = i;
     if (us <= g_slowTop[worst].us)
         return;
-    g_slowTop[worst] = SlowFrameRec{ frame,  us,     draws,   tex,      pipes,
-                                     texKB,  texUs,  walkUs,  sleepUs,  residualUs };
+    g_slowTop[worst] = SlowFrameRec{ frame,  us,      draws,   tex,     pipes,
+                                     texKB,  texUs,   walkUs,  sleepUs, residualUs,
+                                     fenceUs, gpuUs };
 }
 
 // Close the frame currently being accumulated and keep it if it is among the worst.
@@ -4896,6 +4935,14 @@ bool CreateDevice()
             VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion),
             VK_VERSION_PATCH(props.apiVersion));
     vkGetPhysicalDeviceMemoryProperties(R->physical, &R->memProps);
+    // THE TIMESTAMP PERIOD, and the two ways a device can decline to answer. A queue whose
+    // `timestampValidBits` is 0 cannot write them at all, and a period of 0 would silently
+    // turn every GPU time into 0.0 ms — which is the shape of a false absence this part has
+    // already been caught by three times. Both are reported by name rather than assumed.
+    g_timestampPeriodNs = double(props.limits.timestampPeriod);
+    if (g_timestampPeriodNs <= 0.0)
+        fprintf(stderr, "[vk] this device reports timestampPeriod 0 — GPU frame time is "
+                        "UNAVAILABLE and will print as such, not as zero\n");
 
     // RT STAGE 0 — THE CAPABILITY PROBE (part 61, docs/rt-and-fov-plan.md §1).
     // Ray-query hybrid RT (the retrofit form the plan commits to: no RT pipeline,
@@ -4973,6 +5020,14 @@ bool CreateDevice()
     {
         fprintf(stderr, "[vk] no graphics queue family\n");
         return false;
+    }
+    // A queue family that cannot write timestamps makes the GPU-time column impossible;
+    // that is a fact to PRINT, not to discover later as a column of zeros.
+    if (families[R->queueFamily].timestampValidBits == 0)
+    {
+        g_timestampPeriodNs = 0.0;
+        fprintf(stderr, "[vk] the graphics queue reports timestampValidBits 0 — GPU frame "
+                        "time is UNAVAILABLE on this device\n");
     }
 
     // The surface, and the check that this queue family can present to it. Both happen
@@ -8536,6 +8591,31 @@ void BeginFrame()
     vkBeginCommandBuffer(R->cmd, &bi);
     R->recording = true;
     R->rendering = false;
+    // THE FRAME'S GPU TIMESTAMPS — two per slot, reset and written on the frame's own
+    // command buffer, so they bracket exactly the work this submit performs.
+    if (g_timestampPeriodNs > 0.0)
+    {
+        if (!g_tsPool)
+        {
+            VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = kMaxFramesInFlight * 2;
+            if (vkCreateQueryPool(R->device, &qi, nullptr, &g_tsPool) != VK_SUCCESS)
+            {
+                g_tsPool = VK_NULL_HANDLE;
+                g_timestampPeriodNs = 0.0;
+                fprintf(stderr, "[vk] timestamp query pool creation FAILED — GPU frame "
+                                "time is unavailable\n");
+            }
+        }
+        if (g_tsPool)
+        {
+            const uint32_t q = R->frameSlot * 2;
+            vkCmdResetQueryPool(R->cmd, g_tsPool, q, 2);
+            vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsPool, q);
+            g_tsFrameOf[R->frameSlot] = R->frame;
+        }
+    }
     // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
     // remains here is the reset, which is the cheap half and has to be per frame. With
     // frames in flight the reset is to this SLOT's region rather than to zero.
@@ -8660,6 +8740,11 @@ void SubmitFrame()
     if (!R->recording)
         return;
     EndRendering();
+    // The closing timestamp, at BOTTOM_OF_PIPE so it retires after every stage of the
+    // work this command buffer issued rather than when the last command was merely read.
+    if (g_tsPool && g_timestampPeriodNs > 0.0)
+        vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsPool,
+                            R->frameSlot * 2 + 1);
 
     // THE CONSTANT-SLOT RACE DETECTOR's check half. Before this command buffer is closed
     // and handed to the GPU, re-read every constant window a draw was recorded against and
@@ -9615,7 +9700,30 @@ int RetireOldestFrame()
     {
         ProfScope _p(&g_prof.submit);
         ProfScope _w(&g_prof.fenceWait);
+        // UNCONDITIONAL, unlike the two ProfScopes above, which record nothing without
+        // CZ_VK_PROFILE — and CZ_VK_PROFILE costs 2-4 ms a frame, the same order as the
+        // hitch being attributed. This is the clock that splits `walk` into CPU recording
+        // and waiting for the GPU, which is the whole question.
+        const uint64_t tFence = CycNow();
         vkWaitForFences(R->device, 1, &fs.fence, VK_TRUE, UINT64_MAX);
+        g_fenceWaitNs += CycNow() - tFence;
+    }
+    // THE TIMESTAMPS FOR THIS SLOT ARE NOW GUARANTEED AVAILABLE — its fence has just been
+    // waited on. Read them WITHOUT VK_QUERY_RESULT_WAIT_BIT: if they are somehow not ready
+    // the read is skipped rather than stalling, because an instrument that blocks to
+    // measure a stall manufactures the thing it reports (gotcha 7).
+    if (g_tsPool && g_timestampPeriodNs > 0.0 && g_tsFrameOf[oldest] != ~0ull)
+    {
+        uint64_t ts[2] = {};
+        if (vkGetQueryPoolResults(R->device, g_tsPool, oldest * 2, 2, sizeof ts, ts,
+                                  sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+            ts[1] > ts[0])
+        {
+            g_gpuNsOfFrame = uint64_t(double(ts[1] - ts[0]) * g_timestampPeriodNs);
+            g_gpuNsFrameNo = g_tsFrameOf[oldest];
+            g_gpuFrameNs += g_gpuNsOfFrame;
+            ++g_gpuFrames;
+        }
     }
     fs.inFlight = false;
     DrainRetiredImages();
@@ -20803,7 +20911,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // says what happened INSIDE that frame rather than up to it.
             {
                 static uint64_t prevTex = 0, prevPipes = 0, prevTexBytes = 0,
-                                prevTexNs = 0, prevWalk = 0, prevSleep = 0;
+                                prevTexNs = 0, prevWalk = 0, prevSleep = 0,
+                                prevFence = 0, prevTexForTrace = 0,
+                                prevTexBytesForTrace = 0, prevPipesForTrace = 0;
                 // THE FRAME'S DECOMPOSITION. `walkNs` only accumulates when a walk
                 // RETURNS and this present is happening INSIDE one, so the in-progress
                 // portion is added explicitly — without it a 300 ms hitch is charged to
@@ -20825,13 +20935,47 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                               uint32_t((g_texUploadNs - prevTexNs) / 1000),
                               walkUs, sleepUs,
                               int32_t(frameUs.back()) - int32_t(walkUs) -
-                                  int32_t(sleepUs));
+                                  int32_t(sleepUs),
+                              uint32_t((g_fenceWaitNs - prevFence) / 1000),
+                              uint32_t(g_gpuNsOfFrame / 1000));
                 prevTex = g_texRealUploads;
                 prevPipes = g_pipeCount;
                 prevTexBytes = g_texUploadBytes;
                 prevTexNs = g_texUploadNs;
                 prevWalk = walkNow;
                 prevSleep = ps.sleepNs;
+                const uint64_t fenceDelta = g_fenceWaitNs - prevFence;
+                prevFence = g_fenceWaitNs;
+                // CZ_VK_FRAME_TRACE=<file> — one line per presented frame, so a stutter can
+                // be found and read OFFLINE instead of hoping it lands in a twelve-row
+                // table. One fprintf a frame; the columns are the decomposition above.
+                static FILE* trace = [] () -> FILE* {
+                    const char* f = Env("CZ_VK_FRAME_TRACE");
+                    if (!f || !*f)
+                        return nullptr;
+                    FILE* h = fopen(f, "w");
+                    if (h)
+                        fprintf(h, "frame draws wallUs walkUs recordUs fenceUs sleepUs "
+                                   "residualUs gpuUs texUploads texKB pipes\n");
+                    else
+                        fprintf(stderr, "[vk] CZ_VK_FRAME_TRACE: CANNOT WRITE %s\n", f);
+                    return h;
+                }();
+                if (trace)
+                    fprintf(trace, "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu\n",
+                            (unsigned long long)R->frame, uint32_t(R->drawsThisFrame),
+                            frameUs.back(), walkUs,
+                            int32_t(walkUs) - int32_t(fenceDelta / 1000),
+                            (unsigned long long)(fenceDelta / 1000), sleepUs,
+                            int32_t(frameUs.back()) - int32_t(walkUs) - int32_t(sleepUs),
+                            (unsigned long long)(g_gpuNsOfFrame / 1000),
+                            (unsigned long long)(g_texRealUploads - prevTexForTrace),
+                            (unsigned long long)((g_texUploadBytes - prevTexBytesForTrace)
+                                                 / 1024),
+                            (unsigned long long)(g_pipeCount - prevPipesForTrace));
+                prevTexForTrace = g_texRealUploads;
+                prevTexBytesForTrace = g_texUploadBytes;
+                prevPipesForTrace = g_pipeCount;
             }
             const double elapsed =
                 std::chrono::duration<double>(now - windowStart).count();
@@ -23226,18 +23370,21 @@ void VkRenderer_DumpStats()
                 if (!r.us)
                     break;
                 fprintf(stderr,
-                        "[vk]     frame %8llu: %8.1f ms = walk %8.1f + sleep %7.1f + "
-                        "RESIDUAL %8.1f  |  %6u draws  %4u tex (%6u KB, %6.1f ms)  "
-                        "%4u pipe\n",
+                        "[vk]     frame %8llu: %8.1f ms = CPUrec %8.1f + fence %7.1f + "
+                        "sleep %6.1f + resid %6.1f   GPU %7.1f  |  %6u draws  %4u tex "
+                        "(%6u KB, %6.1f ms)  %4u pipe\n",
                         (unsigned long long)r.frame, double(r.us) / 1000.0,
-                        double(r.walkUs) / 1000.0, double(r.sleepUs) / 1000.0,
-                        double(r.residualUs) / 1000.0, r.draws, r.tex, r.texKB,
-                        double(r.texUs) / 1000.0, r.pipes);
+                        double(int32_t(r.walkUs) - int32_t(r.fenceUs)) / 1000.0,
+                        double(r.fenceUs) / 1000.0, double(r.sleepUs) / 1000.0,
+                        double(r.residualUs) / 1000.0, double(r.gpuUs) / 1000.0,
+                        r.draws, r.tex, r.texKB, double(r.texUs) / 1000.0, r.pipes);
             }
             fprintf(stderr,
-                    "[vk]     (walk = inside Pm4_Execute: the command processor, the "
-                    "whole renderer and the GPU fence wait. sleep = the pump idle at the "
-                    "top of its loop. RESIDUAL = neither, i.e. NOT the renderer at all)\n");
+                    "[vk]     (CPUrec = our recording; fence = waiting for the GPU; "
+                    "sleep = pump idle; resid = not the renderer at all. The first four "
+                    "SUM TO THE WALL TIME. GPU is that frame's own execution time from its "
+                    "command buffer's timestamps, and OVERLAPS the CPU columns by design "
+                    "— it is not part of the sum)\n");
             fprintf(stderr,
                     "[vk]     texture uploads over the run: %llu uploads, %.1f MB, "
                     "%.1f ms total (%.0f us each)\n",
@@ -23300,6 +23447,25 @@ void VkRenderer_DumpStats()
                     100.0 * double(cumP) / double(g_passCount),
                     g_passDraws ? 100.0 * double(cumD) / double(g_passDraws) : 0.0);
         }
+    }
+    // THE CPU/GPU SPLIT over the whole run — the headline for "was the frame CPU or GPU".
+    if (g_gpuFrames || g_fenceWaitNs)
+    {
+        const double frames = double(R->frame ? R->frame : 1);
+        if (g_timestampPeriodNs <= 0.0)
+            fprintf(stderr, "[vk]   GPU frame time: UNAVAILABLE on this device (no "
+                            "timestamp support) — the fence wait below is the only "
+                            "GPU-side number\n");
+        else
+            fprintf(stderr,
+                    "[vk]   GPU frame time: %.2f ms mean over %llu frames measured "
+                    "(from each frame's own command-buffer timestamps)\n",
+                    double(g_gpuFrameNs) / 1e6 / double(g_gpuFrames ? g_gpuFrames : 1),
+                    (unsigned long long)g_gpuFrames);
+        fprintf(stderr,
+                "[vk]   fence wait: %.2f ms/frame mean — this is the CPU BLOCKED ON THE "
+                "GPU, and it is the half of `walk` that is not our recording\n",
+                double(g_fenceWaitNs) / 1e6 / frames);
     }
     // §4b — WHAT THE 41 NEAR-EMPTY PASSES A FRAME ACTUALLY COST. Split by the size of
     // the pass that ended, because the decision is "what is recovered by not issuing the
