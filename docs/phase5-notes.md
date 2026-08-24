@@ -15967,3 +15967,150 @@ Every dynamic constant expression in the bank is the bone palette — `vc(8+a0)`
 can help them**: the 22 dynamic shaders are item C's real ceiling, they are the crowd, and
 they are 34% of window copies at the soak. That is a fact about the title, not a gap in our
 build, and the stats line now splits the two so nobody confuses them again.
+
+## §6di — Part 73: two items killed on price, and the biggest one refuted at its mechanism (2026-08-23)
+
+Six runs of `tools/autoroute.sh`, all on the operator's authorised route, all windowed at
+their own 3440x1440. **Nothing shipped.** Three instruments were added, one fix was
+predicted and refuted, and two of the plan's items are dead — including the one that has
+led the table since part 71.
+
+### 1. PLAN §4b — THE 41 NEAR-EMPTY PASSES A FRAME ARE WORTH 0.27 ms, AND THE ITEM DIES
+
+Part 72's histogram found 41 empty-or-one-draw render passes per frame — 80% of all
+passes, holding 0.6% of the draws — and filed them as a LEAD because nobody knew what one
+COST. The plan pre-framed the decision: *"either ~0.1 ms and irrelevant or ~1 ms and the
+best-priced item on the board."* One unconditional clock, two `steady_clock` reads per
+resolve, split by the size of the pass that ENDED:
+
+```
+near-empty (<=1 draw)   41.0/frame   6,603 ns each   = 0.271 ms/frame   scope broken 76.2%
+small (2-255)            6.5-7.7     13,124          = 0.094
+big (>=256)              2.7-3.8     21,954          = 0.071
+                                        total  0.435 ms/frame
+```
+
+**0.27 ms/frame, and that is a CEILING, not a saving** — the resolves are requested by the
+guest and most of them do real work. Two independent runs read 0.270 and 0.272, and the
+41.0/frame matches the histogram's 41 exactly, which is the cross-check that the class
+assignment is right. It is the irrelevant end of the plan's own pre-framing. **Item
+closed.**
+
+The clock also tested §4b's own premise — the plan asserted every near-empty pass is an
+`EndRendering` + resolve + `BeginRendering` cycle — and it is **76.2% true**: `DoResolve`
+only breaks the render scope when it snapshots or clears, and `BeginRendering` returns
+immediately while the scope is open, so about a quarter of them are bookkeeping and
+nothing else.
+
+### 2. PLAN §5 — THE SLOW-FRAME TABLE'S TEXTURE COLUMN WAS THE DRAW COUNT IN ANOTHER UNIT
+
+The table shipped in part 72 and ran for the first time here. Its first output looked
+decisive and was worthless: every one of the twelve rows read **2.24-2.43 "texture uploads"
+per draw**, because the column differenced `g_texUploads`, which increments on every CALL
+to `UploadTexture` — one per texture fetch per draw. The real run total is ~2,350 uploads;
+the column reached 15,233 in a single frame.
+
+**A counter named for the function it sits in measures the CALL, not the work that
+function usually declines to do.** Renamed `g_texFetchResolves` (it is still the
+denominator every cube/texture share in the file divides by) and replaced with three
+counters at the site that actually uploads — uploads, BYTES and NANOSECONDS. Gotcha 435.
+
+### 3. WITH THE COLUMN FIXED, THE TABLE ANSWERS OPEN ITEM 0w — AND NAMES TWO POPULATIONS
+
+```
+frame  2776:  315.4 ms   2,476 draws   776 uploads ( 54,862 KB,  75.2 ms)   97 pipelines
+frame  8724:  243.7 ms   6,635 draws   692 uploads ( 14,410 KB,  77.1 ms)    5 pipelines
+frame  7146:  245.9 ms   5,565 draws   460 uploads ( 39,482 KB,  47.9 ms)   60 pipelines
+frame  8725:  101.2 ms   5,739 draws     0 uploads (      0 KB,   0.0 ms)    0 pipelines
+frame     7:  234.9 ms      48 draws     0 uploads (      0 KB,   0.0 ms)    0 pipelines
+```
+
+**(a) Texture streaming bursts are real and are 24-32% of the worst frames.** Up to
+77 ms of one frame, 570-650 ms over a run. Amortised it is 0.020 ms/frame — this is a
+HITCH item, not a throughput item, which is exactly what item 0w is.
+
+**(b) The other 68-76% is not draws, not pipelines and not texture uploads.** Frame 8725
+is 101.2 ms with a perfectly normal 5,739 draws and literally zero of all three
+candidates; it is also the frame immediately after the 692-upload burst. Frame 7 is
+234.9 ms at 48 draws with nothing. **That is the table's own printed answer — the cost is
+outside the renderer** — and it is what should stop the next session instrumenting the
+draw path further.
+
+### 4. AND THE UPLOAD FIX WAS PREDICTED, RUN, REFUTED AND REVERTED IN ONE SITTING
+
+`RunImmediate` ends in `vkQueueWaitIdle`, which waits for the whole queue — during frame
+recording that is the PREVIOUS frame's GPU work, i.e. exactly the overlap part 23 bought
+with `CZ_VK_FRAMES_IN_FLIGHT=2`. Splitting the clock confirmed the cost is there and not
+in the copy: **2,429 submits, 649.1 ms, of which 627.7 ms (96.7%) is
+`vkQueueSubmit`+`vkQueueWaitIdle`** at 258 us each for an average 54 KB texture.
+
+Prediction, registered before the run: a fence on this submit takes the wait well under
+100 us and halves the worst upload-bearing frame.
+
+| arm | us/submit | run total | worst frame |
+|---|---|---|---|
+| `vkQueueWaitIdle` (shipped) | 258 | 649.1 ms | 344.8 ms |
+| fence created per call | **792** | **1,953.8 ms** | **793.9 ms** |
+| fence, persistent per thread | 242 | 610.2 ms | 315.4 ms |
+
+**Refuted, and in the opposite direction — 3.2x worse.** The arm engaged (2,355 fenced,
+81 not), so that is a measurement. One more run found the per-call `vkCreateFence` was the
+whole 3.2x; with a persistent fence the two primitives agree to **6%**, under a spread this
+route cannot resolve without a null arm. **The wait primitive was never the cost.** ~250 us
+is what one submit round-trip costs here, and the only change that removes it is not
+waiting 2,350 separate times — batching the copies, which needs a per-frame staging arena
+because `R->staging` is one buffer written at offset zero by every upload. Filed, not done.
+
+**Reverted.** Keeping a change whose motivating hypothesis is dead, on a delta that cannot
+be measured, is how a hot path accumulates unjustified complexity. Gotcha 436.
+
+### 5. PLAN §1 — ITEM 1 IS NOT UNDER THRESHOLD, IT IS REFUTED AT ITS MECHANISM
+
+The wide-culling over-widen has led the table since part 71, priced first at "≈4.8 ms of
+28", then halved to "≈2.5-2.8 ms" by containment, then declared UNPRICED when the census
+meant to price it refuted itself. The fixed census ran here for the first time in-engine.
+
+**It passes its own invariant now — 99.3% of classified draws on screen** — and the
+headline is:
+
+```
+default          vertical waste 0.0-35.9 draws/frame (0.00-4.16% of classified)
+                 horizontal      6.0/frame (0.75%)      on screen 99.3%
+                 classified 804 of 4,313 scene draws (18.6%)
+```
+
+**Against a pre-registered kill of 700 recovered draws, the measurement is 0-36.** Even
+extrapolating the classified 18.6% to the whole scene gives ~200 at the peak window and
+~30 typically. The item dies on its own threshold.
+
+**But the control arm is what makes this a refutation rather than a null.** The plan wrote
+that `CZ_NO_GAME_FOV=1` is the semantic control and that under it *"the vertical waste must
+fall sharply."* **It rose, by an order of magnitude:**
+
+```
+CZ_NO_GAME_FOV=1  vertical waste 270-329 draws/frame (41.8-48.7% of classified)
+                  on screen falls 99.4% -> 50.5%
+                  scene draws 3,626 against the default's 4,313 (-16%)
+```
+
+The predicted direction was backwards, and the inversion is the finding. That arm makes
+the PROJECTION narrower while the game still submits for its own frustum, so half the
+submitted draws stop landing on screen. Read the two arms together and the mechanism is
+plain: **our widening is not drawing invisible geometry, it is what makes the geometry the
+game already submits visible.** Part 71's +1,930 draws are the ultrawide flanks being
+filled — the part-62 fix doing its job — not waste. There is essentially no
+vertically-invisible geometry in the shipped configuration.
+
+The census's vertical channel is demonstrably alive from the same data: it reads 35.9/frame
+in one window of the default arm, 0.0 in another, and 328.9 under the control. Gotcha 437.
+
+**Note on the route's tail:** the press sequence ends ~180 s into a 450 s run, so the last
+~60% of every run is a PARKED camera — the census's last four windows are one pose
+repeated, identical to the decimal. Only the moving windows are informative. Any future
+reader of an `autoroute.sh` log should discard the frozen tail before quoting a rate.
+
+### 6. GATES
+
+`--smoke` OK on every build. The renderer is behaviour-identical to part 72's close: the
+three additions are counters and clocks, and the one behavioural change was reverted in
+the same session it was made.

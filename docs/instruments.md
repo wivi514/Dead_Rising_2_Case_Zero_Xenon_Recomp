@@ -2765,3 +2765,36 @@ CZ_FOV_PARAM_TRACE=1  print each distinct (lr, value) pair through the camera
 CZ_FOV_PROP_TRACE=1   print every FOV-named property registration through the
                    universal binder sub_82375518 with its live field address —
                    the instrument that enumerated all 132 named camera configs
+
+## Part 73's three unconditional counters — no env var, free, always printed
+
+None of these has an arm, because each is a handful of clock reads or increments against a
+frame doing thousands of draws, and this project's recurring defect is the counter that was
+gated behind an expensive instrument and therefore never on when the thing it measures
+happened (gotcha 418 — the pipeline timer was behind `CZ_VK_PROFILE` for every session
+whose stutter was ever reported). All three appear on the `[vk] --- renderer stats ---`
+dump at exit.
+
+```
+resolve/begin cycle cost   plan §4b. Time in DoResolve + the BeginRendering that opened the
+                   pass, SPLIT BY THE SIZE OF THE PASS THAT ENDED — near-empty (<=1 draw),
+                   small (2-255), big (>=256). The split is the point: a total is dominated
+                   by the 1.35 big resolves a frame, which snapshot a full-screen surface
+                   and are not removable, while the decision was about the 41 near-empty
+                   ones. Also prints the share of resolves that actually BROKE the render
+                   scope, which tests §4b's premise rather than assuming it (76.2%).
+                   Reads 0.27 ms/frame for the near-empty class; the item is closed
+worst frames       open item 0w. The twelve slowest frames of the run by wall time and what
+                   was inside each: draws, texture uploads (count, KB and ms), pipelines
+                   created. It deliberately instruments no single candidate — a slow frame
+                   with NONE of them elevated is itself the finding, and that is what it
+                   returned for the larger of the two populations it found
+texture uploads    the run's real uploads, bytes and nanoseconds, at the site that uploads.
+                   **NOT `g_texFetchResolves`**, which counts calls to UploadTexture — one
+                   per texture fetch per draw, ~2.3x the draw count, and which was this
+                   table's column for exactly one run (gotcha 435)
+immediate submits  RunImmediate's total, and the part of it inside vkQueueSubmit +
+                   vkQueueWaitIdle. 96.7% — the split that showed the upload cost is a
+                   submit round-trip and not a copy, and then that no cheaper wait
+                   primitive exists (gotcha 436)
+```

@@ -7,7 +7,24 @@ NOT the cause is what stops the next session re-buying it.
 
 Next, in order:
 
-0w. **THE STUTTER REMAINDER — and it is NOT in gameplay. It is in the MENU/LOAD era
+0w. **THE STUTTER REMAINDER — PART 73 SPLIT IT INTO TWO POPULATIONS AND ONE OF THEM IS
+    NOT IN THE RENDERER.** The slow-frame table ran for the first time (after its texture
+    column had to be retracted — it counted CALLS to `UploadTexture`, gotcha 435). Rebuilt
+    to count, weigh and time real uploads, the worst frames of the autonomous route say:
+    **(a) texture streaming bursts are real** — up to 77 ms of one frame, 570-650 ms over a
+    run, and **96.7% of that is `vkQueueSubmit`+`vkQueueWaitIdle`** at 258 us per submit for
+    an average 54 KB texture — **but they are only 24-32% of the worst frames**; and
+    **(b) the remaining 68-76% has NONE of the three candidates elevated.** Frame 8725 is
+    101.2 ms at a normal 5,739 draws with zero uploads and zero pipelines, immediately after
+    a 692-upload burst; frame 7 is 234.9 ms at 48 draws with nothing. Per the table's own
+    printed caveat, that cost is **outside the renderer** — do not instrument the draw path
+    for it. The one fix attempted (a fence instead of the queue wait) was predicted, run,
+    **refuted at 3.2x worse**, discriminated and reverted in the same sitting (gotcha 436);
+    the only change that would remove the submit cost is batching the copies, which needs a
+    per-frame staging arena because `R->staging` is one buffer written at offset zero by
+    every upload. `phase5-notes.md` §6di §2-4.
+
+0w-OLD. **THE STUTTER REMAINDER — and it is NOT in gameplay. It is in the MENU/LOAD era
    (part 72, re-scoped from the operator session's own logs).**
 
    **RE-SCOPED 2026-08-23, and the first framing was wrong.** This item opened as

@@ -36,7 +36,21 @@ without another session, and it is the reason §1 is first.
 
 ---
 
-## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ~~≈4.8 ms of 28~~ ~~≈2.5-2.8 ms~~ **UNPRICED**
+## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN. ~~≈4.8 ms of 28~~ ~~≈2.5-2.8 ms~~ ~~UNPRICED~~ **DEAD — REFUTED IN PART 73**
+
+> **RETRACTED IN PLACE, 2026-08-23 (part 73).** The fixed census ran in-engine on the
+> autonomous route and reads **0.0-35.9 draws/frame off-screen vertically (0.00-4.16% of
+> classified draws, 99.3% on screen)** against this item's pre-registered kill of 700. It is
+> not merely under threshold: the semantic control refutes the premise. `CZ_NO_GAME_FOV=1`
+> takes vertical waste to **270-329 draws/frame** and the on-screen share from 99.4% to
+> **50.5%** — the opposite direction to the one the plan predicted for it. That arm narrows
+> the PROJECTION while the game keeps submitting for its own frustum, so **our widening is
+> not drawing invisible geometry; it is what makes the geometry the game already submits
+> visible.** Part 71's +1,930 draws are the ultrawide flanks being filled — the part-62 fix
+> working — not waste. This item has now carried three prices (4.8 ms, 2.5-2.8 ms,
+> unpriced) and none of them was a measurement. `phase5-notes.md` §6di §5, gotcha 437.
+
+## 1-OLD. The text as it stood before part 73 ran it
 
 > **STATUS AFTER PART 72'S OPERATOR SESSION: UNPRICED, AND THAT IS THE HONEST WORD FOR IT.**
 > §1a below is right that 4.8 ms is an upper bound. Its two models (≈1,017 and ≈1,105 draws

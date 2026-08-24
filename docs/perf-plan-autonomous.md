@@ -56,6 +56,19 @@ result.
 
 ---
 
+## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN — **RUN IN PART 73, AND REFUTED**
+
+> **RETRACTED IN PLACE, 2026-08-23 (part 73).** This item is dead, and not because it came
+> in under threshold — its premise is wrong. The census read **0.0-35.9 draws/frame
+> off-screen vertically (0.00-4.16% of classified)** against a pre-registered kill of 700,
+> and the semantic control below moved **the opposite way to what this section predicted**:
+> `CZ_NO_GAME_FOV=1` took vertical waste to **270-329 draws/frame** and the on-screen share
+> from 99.4% to 50.5%. That arm narrows the PROJECTION while the game keeps submitting for
+> its own frustum. Read together the two arms say **our widening is not drawing invisible
+> geometry — it is what makes the geometry the game already submits visible.** Part 71's
+> +1,930 draws are the ultrawide flanks being filled, i.e. the part-62 fix working, not
+> waste. `phase5-notes.md` §6di §5, gotcha 437. The text below is what was executed.
+
 ## 1. ITEM 1 — THE WIDE-CULLING OVER-WIDEN, finally priceable
 
 **Why now:** the census that was to price it refuted itself in the operator session
@@ -152,6 +165,17 @@ inside the big pass** instead of once at its start.
 number of splits. **Its pre-registered kill of 1.5 ms stands and it is no longer obviously
 clearable.** It stays last in this plan and should stay last in any plan.
 
+### 4b. THE NEW ITEM THE HISTOGRAM FOUND: 41 near-empty render passes per frame — **PRICED IN PART 73 AND CLOSED**
+
+> **CLOSED, 2026-08-23 (part 73).** One unconditional clock, split by the size of the pass
+> that ended: the near-empty class is **41.0/frame at 6,603 ns each = 0.271 ms/frame**,
+> reproducing to 0.7% over two runs, and that is a CEILING rather than a saving. This
+> section's own pre-framing was *"either ~0.1 ms and irrelevant or ~1 ms and the best-priced
+> item on the board"* — it is the irrelevant end. The clock also tested this section's
+> premise that every near-empty pass is an `EndRendering` + resolve + `BeginRendering`
+> cycle: it is **76.2% true**, because `DoResolve` only breaks the scope when it snapshots
+> or clears. `phase5-notes.md` §6di §1.
+
 ### 4b. THE NEW ITEM THE HISTOGRAM FOUND: **41 near-empty render passes per frame**
 
 **280,263 empty passes and 898,044 single-draw passes — 80% of all passes, 41 per frame,
@@ -174,6 +198,19 @@ has already priced two items on a statistic that was not the one the decision tu
 bucket histogram, printed on the stats dump, sizes item A and costs nothing when unarmed.
 **Do this first** — it is the cheapest thing in this document and it can kill §3 outright.
 
+## 5. ITEM 0w — the menu/load stutter — **RUN IN PART 73; TWO POPULATIONS, ONE OUTSIDE THE RENDERER**
+
+> **ANSWERED, 2026-08-23 (part 73).** The table's texture column had to be retracted first:
+> it counted CALLS to `UploadTexture` and read 2.24-2.43 per draw in every row (gotcha 435).
+> Rebuilt to count, weigh and time real uploads, it says the worst frames hold **two
+> populations**. (a) Texture streaming bursts are real — up to **77 ms of one frame**, 570-650
+> ms over a run, **96.7% of it `vkQueueSubmit`+`vkQueueWaitIdle`** at 258 us a submit — but
+> they are only **24-32%** of the worst frames. (b) The rest has **none** of the three
+> candidates elevated: frame 8725 is 101.2 ms at a normal 5,739 draws with zero uploads and
+> zero pipelines. Per the table's own printed caveat, **that cost is outside the renderer**,
+> and the next session should not instrument the draw path for it. The upload fix was
+> predicted, run, refuted and reverted in the same sitting (gotcha 436).
+
 ## 5. ITEM 0w — the menu/load stutter, which is where the stutter actually is
 
 Today's binning of the operator session says heavy gameplay is smooth (`>2x med` **0.0%**
@@ -191,12 +228,18 @@ peaks exactly when new ground is streamed in.
 ## 6. ORDER OF WORK
 
 ```
-1. §4  pass histogram              (offline build + 1 run)   — can kill §3
-2. §5  per-frame texture table     (offline build + 1 run)   — the operator's own ask
-3. §1  item 1 priced at last       (2 arms + null)
-4. §2  item E re-asked             (3 arms, no new code)
-5. §3  item A, only if §4 says the distribution supports it
+1. §4  pass histogram              (offline build + 1 run)   — DONE (part 72). Killed §3's design
+2. §5  per-frame texture table     (offline build + 1 run)   — DONE (part 73). Two populations
+   §4b resolve/begin cycle clock                             — DONE (part 73). CLOSED at 0.27 ms
+3. §1  item 1 priced at last       (2 arms + null)           — DONE (part 73). REFUTED
+4. §2  item E re-asked             (3 arms, no new code)     — STILL OPEN, and now the top item
+5. §3  item A, only if §4 says the distribution supports it  — §4 says it does not
 ```
+
+**As of part 73 this plan is nearly exhausted, and that is the result.** Items 1, 2, 3, §4b
+and item A's design are all closed or refuted; item C shipped in part 72. **§2 (item E) is
+the only unrun item left in it**, and item 0w's remaining cost has been shown to sit
+outside the renderer, which is new ground rather than a plan item.
 
 §1 and §2 are pure measurement and cannot break anything. §4 and §5 add counters that are
 inert when unarmed. §3 is the only item that changes how frames are recorded, and it is

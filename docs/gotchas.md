@@ -4760,3 +4760,65 @@ From phase C part 18 (the frame rate — and none of it was work):
      threshold is only as good as its statistic**, and the tell is that the rate has no
      units the frame budget recognises. Sibling of gotcha 237 (a mean frame time measures
      the pacing floor, not your change) and of `measure-the-shape-not-just-the-share`.
+
+435. **A COUNTER NAMED FOR THE FUNCTION IT SITS IN MEASURES THE CALL, NOT THE WORK THAT
+     FUNCTION USUALLY DECLINES TO DO.** Part 72 shipped a slow-frame table with a "texture
+     uploads" column; it differenced a counter incremented at the top of `UploadTexture`,
+     which is entered once per texture fetch per DRAW and uploads on well under one call in
+     a thousand. Its first run read **2.24-2.43 "uploads" per draw in every one of twelve
+     rows** — the column was the draw count in another unit, carrying no independent
+     information, and it would have been read as "texture uploads track the slow frames"
+     because it correlates perfectly with everything else that scales with draws. The tell
+     is available for free: **divide the column by the one next to it.** A per-frame count
+     that is a fixed multiple of another column is not a second measurement. Fixed by
+     counting, weighing AND timing at the site that actually uploads — the run total is
+     ~2,350 where the old column reached 15,233 in a single frame. Sibling of gotcha 171
+     (an early return shadows a counter) one level up: here the counter was placed BEFORE
+     every early return on purpose, which is correct for a denominator and wrong for the
+     thing being denominated.
+
+436. **A CHANGE WHOSE MOTIVATING HYPOTHESIS IS REFUTED DOES NOT GET TO STAY ON A DELTA YOU
+     CANNOT MEASURE.** Part 73 measured 96.7% of the texture-upload cost inside
+     `vkQueueSubmit`+`vkQueueWaitIdle` and inferred the obvious mechanism: `vkQueueWaitIdle`
+     waits for the WHOLE queue, so during frame recording every upload serializes the pump
+     against the in-flight frame. A fence on the single submit should therefore be much
+     cheaper. It measured **3.2x WORSE** (792 us against 258). One more run isolated the
+     cause — the per-call `vkCreateFence`/`vkDestroyFence` sat inside the timed window — and
+     with a persistent fence the two primitives agreed to **6%**, i.e. under what the route
+     can resolve without a null arm. So the wait primitive was never the cost; ~250 us is
+     simply what one submit round-trip costs, and only *not doing 2,350 of them* removes it.
+     **The revert is the point.** A 6% improvement is a fine reason to keep a change when
+     the reasoning behind it holds; when the reasoning is dead, the same 6% is
+     indistinguishable from noise and the change is complexity on a hot path with nothing
+     behind it. Two lessons ride along: **put the setup you are not interested in OUTSIDE
+     the timed window** (the first run's headline was 68% object lifecycle), and **a
+     surprising A/B result deserves one discriminating run before it becomes a conclusion**
+     — the first number said "fences are terrible here", which is false.
+
+437. **A CONTROL ARM THAT MOVES THE WRONG WAY IS A RESULT, NOT A BROKEN ARM — AND IT CAN
+     REFUTE THE ITEM THE MEASUREMENT WAS BUILT TO PRICE.** Part 73's census put the
+     wide-culling item's vertical waste at 0-36 draws/frame against a pre-registered kill of
+     700, which alone is only a null. The plan's own semantic control was
+     `CZ_NO_GAME_FOV=1`, with the written expectation that *"the vertical waste must fall
+     sharply."* **It rose from 0-36 to 270-329 draws/frame** and the on-screen share fell
+     99.4% -> 50.5%. Nothing was broken: that arm narrows the PROJECTION while the game
+     still submits for its own frustum, so half the submitted draws stop landing on screen.
+     Read together, the two arms say the widening is **not drawing invisible geometry — it
+     is what makes the geometry the game already submits visible**, so the item's premise
+     was wrong rather than small. The item had been priced at 4.8 ms, then 2.5-2.8 ms by
+     containment, then declared unpriced; none of those were measurements. **When you write
+     a control's expected direction into a plan, you have made a prediction about the
+     mechanism — check the direction as carefully as the magnitude, because the direction is
+     where the mechanism lives.** Sibling of `an-arm-label-is-a-hypothesis`.
+
+438. **A FIXED-INTERVAL INPUT SCRIPT LEAVES THE CAMERA PARKED FOR THE REST OF THE RUN, AND
+     EVERY RATE AVERAGED OVER THAT TAIL IS A FACT ABOUT ONE POSE.** `tools/autoroute.sh`
+     builds its press sequence from 8-second intervals and then runs to a much longer
+     timeout, so a 90-second turn block inside a 450-second run leaves ~60% of the frames
+     showing one frozen view. It is visible in any windowed statistic as *identical to the
+     decimal* across consecutive windows — the part-73 census read `scene draws 4,313 /
+     classified 804 / on screen 798 / horizontal 6.0` four windows running. **Discard the
+     frozen tail before quoting a rate**, and prefer statistics printed per window over run
+     means, which the tail dominates by weight of frames. This is the stationary cousin of
+     gotcha 428 (a cumulative mean over a transient) and it bites in the opposite
+     direction: there the early burst dominated, here the late stasis does.
