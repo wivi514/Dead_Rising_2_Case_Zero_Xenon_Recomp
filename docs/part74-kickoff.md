@@ -61,6 +61,105 @@ guest side**, and this port already has the tools: `CZ_FILE_TRACE=1`, `CZ_GUEST_
 decisions readable), and `perf` against the DWARF line table, which has disagreed with
 thirty parts of phase splitting before.
 
+## 1b. THE PLAN FOR PART 74, in order, with what kills each step
+
+**The shape of the part:** one short operator sitting that is owed anyway and re-aims
+everything, then one instrument I can build and run myself, then the one concrete renderer
+item that is left. Steps 2-4 are autonomous on `tools/autoroute.sh`.
+
+### Step 0 — ONE OPERATOR SITTING, and it comes first because it can re-aim the whole part
+
+Two things are already owed and a third costs one sentence. Bundle them:
+
+1. **The sky-flicker verdict** on `tools/part72_flicker_session.sh`'s three arms
+   (`nogather` / `fixed` / `prefix`). **`prefix` MUST flicker** or the fix is unconfirmed
+   rather than confirmed. This is the only open question that could mean item C — the one
+   thing this whole campaign shipped — carries a picture defect.
+2. **"Is there still a felt stutter, and WHERE — menu, load, or gameplay?"** Part 72's
+   binning of their session said gameplay was smooth (`>2x med` 0.0% over 51 windows) and
+   every hitch sat below ~2,000 draws. **Part 73's route disagrees**: its worst frames are
+   at 2,476 and 6,635 draws, which are gameplay counts. One of those two readings is about
+   a route rather than about the game, and only their eye can say which. **If they report
+   gameplay as smooth, steps 2-4 are chasing a route artifact and the part should stop and
+   ask them what to fix instead.**
+3. Anything they want fixed. Performance has had five parts; it is worth asking.
+
+### Step 1 — THE A5 KERNEL GATE, owed since part 67, and I can run it myself
+
+It needs no operator: a plain boot and the diff tool. No kernel path has changed in parts
+67-73, so this is expected clean and it is cheap insurance that seven parts of renderer work
+did not disturb one.
+
+```
+(cd runtime/build && timeout 300 ./cz_runtime > /tmp/a5.log 2>&1)
+python3 tools/kernel_call_diff.py --xenia "Xenia logs/A5_highfreq_boot/cz_run5.log" \
+    --ours /tmp/a5.log --include-high-frequency
+```
+
+### Step 2 — THE RESIDUAL INSTRUMENT: make the slow-frame table's columns SUM TO THE FRAME
+
+**This is the heart of the part.** Part 73's table found slow frames with **none** of its
+three candidates elevated and concluded "the cost is outside the renderer" — which is an
+*absence*, and an absence is the weakest kind of finding this project accepts. Frame 8725
+was 101.2 ms at a normal 5,739 draws with zero uploads and zero pipelines.
+
+So: add coarse unconditional clocks to the same per-frame record until **the columns account
+for the whole frame**, and print the leftover as its own column. Candidate columns, all of
+which already have a natural scope in `vk_renderer.cpp` and none of which needs
+`CZ_VK_PROFILE` (2-4 ms a frame — the same order as the thing being measured, gotcha 7):
+the PM4 walk, draw recording, texture uploads (exists), pipeline creation (exists), the
+resolve/begin cycles (exists, §4b), present + readback, and **the residual**.
+
+**The residual column is the deliverable.** It converts "not in the renderer" into a number,
+and it is the only design that cannot return a false absence — every millisecond lands
+somewhere by construction.
+
+* **Positive control, and it is not optional** (gotcha 30): add a debug arm that sleeps a
+  known number of milliseconds on a chosen frame and confirm the residual reports it. A
+  residual that cannot be shown to move is not a measurement.
+* **Pre-registered kill:** if the residual is **below 30%** of the worst frames' time, the
+  renderer owns the hitch after all, step 2 is finished, and step 3 is the work. If it is
+  above 30%, step 4 is the work and the draw path should be left alone.
+* Cost: a handful of clock reads per frame against thousands of draws — the same bill the
+  three part-73 instruments already pay, and all of them are unconditional for the reason
+  gotcha 418 gives.
+
+### Step 3 — BATCH THE TEXTURE UPLOADS (only if step 2 says the renderer owns it)
+
+The one concrete, priced, unbought renderer item left. Today every upload is its own
+`vkQueueSubmit` + `vkQueueWaitIdle` — **2,350 round-trips a run at 258 us each, 96.7% of the
+upload cost**, up to 77 ms inside a single frame. Part 73 proved **no cheaper wait primitive
+exists** (three arms, gotcha 436), so the only fix is not doing 2,350 of them.
+
+* **What it needs:** a per-frame staging arena. `R->staging` is one buffer written at offset
+  zero by every upload, which is why the current code must drain before reusing it — that is
+  the whole reason the wait is there.
+* **What it must not break:** the refresh path (`Count("texture: uploaded")`'s neighbour at
+  the re-upload site) overwrites an image the in-flight frame may still be sampling, and it
+  is the one caller that genuinely needs prior work retired. It keeps its wait.
+* **Pre-registered kill: below 40 ms off the worst frame of the route, do not ship it** — it
+  is a hitch item, worth 0.020 ms/frame amortised, so a small win does not justify touching
+  the upload path.
+* Picture gate + the operator's look before shipping: it changes when pixels arrive.
+
+### Step 4 — THE GUEST SIDE (only if step 2 says the residual dominates)
+
+Frame 8725 is the frame **immediately after** a 692-upload burst, which points at the
+guest's own streaming — file I/O, decompression, or the PM4 walk being starved — rather than
+at anything the renderer does. The tools already exist and none is new code:
+
+* `CZ_FILE_TRACE=1` — every open and read, including the not-founds;
+* `CZ_GUEST_DIAG=1` (+ `CZ_GUEST_LOG=1`) — takes the outdoor route from **0 `[guest]` lines
+  of 11,168 to 1,239** and is what makes the streaming and zone-LOD decisions readable. **A
+  diagnostic arm only**: 2,013 formatting sites on the frame path, so never quote a frame
+  time from a run carrying it;
+* `perf record` against the DWARF line table, which reads guest AND host symbols and has
+  disagreed with thirty parts of phase splitting before (`perf-symbol-profile-before-phase-profile`).
+
+**Warning that belongs here rather than in a note:** a hitch is a rare event and `perf` over
+a whole run gives an aggregate. Correlate against the slow-frame table's frame numbers, or
+the profile will describe the 99% of frames that are fine.
+
 ## 2. WHAT IS OWED BY THE OPERATOR — unchanged from part 73, and none of it is long
 
 1. **The sky-flicker verdict** on `tools/part72_flicker_session.sh`'s three arms. `prefix`
