@@ -858,6 +858,23 @@ HAND-OFF.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm**; lessons: got
   the raw per-frame series and three runs an arm the medians separate 2.7x, but individual
   runs **OVERLAP**: it is a three-run aggregate and I quoted an ordering of four single runs
   before ever running the same arm twice (gotcha 444).
+* **A PER-FRAME CPU/GPU PROFILER, ON THE OPERATOR'S REQUEST — AND THE STUTTER IS 100% CPU.**
+  Two timestamps in each frame's own command buffer plus an unconditional fence-wait clock,
+  so every frame reads `wall = CPUrec + fence + sleep + residual` (which SUM) alongside
+  `GPU` (which overlaps). **This project had never measured GPU time directly.** On the
+  hitch frames **the GPU does 3.8-9.9 ms while the CPU burns 181-269**; run-wide the GPU
+  averages **7.93 ms** against a **0.37 ms** fence wait, so the GPU is never the limiter
+  here. Validated by two arms each moving its own column (`CZ_VK_FRAMES_IN_FLIGHT=1` takes
+  the fence 2,370 -> 10,233 us with CPUrec unchanged; pixel count takes GPU 7,986 / 10,167 /
+  19,856 us at 3.69 / 4.95 / 14.75 Mpx). `CZ_VK_FRAME_TRACE=<file>` is one line per frame.
+* **AND THE TEXTURE DECODE WAS INVISIBLE — IT IS TWO THIRDS OF THE UPLOAD PATH.** The upload
+  clock started at the staging `memcpy`, so the untiling of every mip level, the endian swap
+  and the image creation were outside every measurement this project has made of it:
+  **469.0 ms a run against 244.0 ms staging+submit, 209 us per texture against 109.** With
+  both columns, **texture upload + decode is 82-90% of every hitch frame** and the
+  attribution closes. **It re-shapes part 75's item**: batching addresses the 244 ms half
+  and does not touch the 469 ms decode half, which is parallelisable or cacheable and goes
+  first. Gotcha 445.
 * **Gates:** `--smoke` OK; **A5 exit 0, 4 permutation windows, 0 real — the gate owed since
   part 67 is CLEAN and no longer owed**; `alu_const_gate --hlsl-dir` clean over 449;
   `shader_dim_census` clean; `rt_world_xform` 104 of 104; the play session logged 0 `no
