@@ -16250,3 +16250,95 @@ window to 5 s, which is free because the frame time is stationary once outdoors.
 at the new default. Part 60 and part 62 are buildable today from a worktree at
 `~/GithubRepo/dr2cz-part60` with `ppc/` and `assets/` symlinked from the main tree — the
 recompiler config has not changed since part 60, so the generated `ppc/` is valid for both.
+
+## §6dk — Part 74: the flicker hunt, stopped with three explanations dead and one alive (2026-08-23)
+
+**The operator's instruction closing it:** *"Stop now, leave the gather off."* Recorded so
+nobody re-opens this thinking it was abandoned mid-thought — it was stopped deliberately,
+with the state below, on an item worth 0.8 ms of a ~16 ms frame.
+
+### 1. WHAT WAS BUILT: THE CONSTANT-SLOT RACE DETECTOR (`CZ_VK_CONST_RACE=1`)
+
+Part 72's gather verifier read **0 disagreements over 17,948,265 gathers** and the flicker
+survived, because it checks that the gather copied what the shader's list NAMES — not the
+feature's blast radius (gotcha 440). The detector checks a different invariant, chosen so it
+needs no hypothesis about tiles or projections:
+
+> **the bytes a draw's constant window holds at RECORD time must equal what they hold at
+> SUBMIT time.**
+
+That is forced by the binding, not a style preference: the window reaches the shader as a
+**buffer device address** in a push constant, so the shader dereferences it when the GPU
+executes. The memo hands many draws the same arena offset, so any in-place write to a slot
+is applied **retroactively** to every earlier draw of the frame that shares it.
+
+**It has two scopes and the second is the one that decides.** "Changed" counts any byte;
+**"AFFECTED"** counts only draws whose own shader reads a register that moved. A slot
+changing in registers a draw never reads is the gather working as designed — it leaves
+those holding arena garbage on purpose. Reporting only the first number would have condemned
+the feature for doing its job.
+
+### 2. WHAT IT FOUND, AND THE FIX THAT WAS NOT THE FLICKER
+
+**48 draws a boot AFFECTED, all in the projection, in 2 frames of 513** — the right rate for
+an intermittent artifact. The source was the memo top-up: on a hit whose slot had been
+gathered for a *different* shader it rewrote that slot in place. Part 72 had tried to fix
+this from inside the top-up with an unconditional c0..c3 refresh (`a55df20`); the refresh is
+itself a mutation, which is why it did not work.
+
+**Fixed** by making the shader part of the memo key when the gather is on, so that case is
+an ordinary miss with a fresh slot, and deleting the top-up outright. **48 -> 0**, with the
+poison arm still reporting, and **0 of 21,261,137 draws over 7,130 frames on the outdoor
+route.**
+
+**AND THE FLICKER SURVIVED IT.** The operator watched a run with the fix in place and
+reported the sky flicker again. The defect was real and is gone; it was not the cause. This
+is recorded plainly because a fix that does not fix the reported symptom is the easiest
+thing in this project to keep believing.
+
+### 3. THREE EXPLANATIONS ARE NOW DEAD
+
+| explanation | how it died |
+|---|---|
+| the lists miss a register the shader reads | `alu_const_gate.py --hlsl-dir` **passes** over all 449 modules of the play cache |
+| the gather copies wrong values | part 72's verifier, 0 of 17,948,265 |
+| a slot is mutated after a draw referenced it | 0 of 21.3M outdoors, **both stages**, poison arm firing |
+
+**The lists had never actually been cross-checked.** The gate printed *"(no --hlsl-dir: the
+lists were NOT cross-checked against the shaders)"* on every run this project ever made of
+it, because `build_shader_spv.sh` generates the HLSL into a `mktemp -d` and deletes it on
+exit. `CZ_KEEP_SYNTH=<dir>` now keeps it. **A gate with a weak mode will be run in its weak
+mode forever unless the strong mode is the easy one** — and here the weak mode was the one
+that mattered least, since a missing register is exactly what no run-time check can catch
+(gotcha 432). Gotcha 441.
+
+**The detector was also blind to the pixel window** for its first two arms: it set
+`psChanged = false` on the reasoning that "the pixel window carries no projection" — true,
+and irrelevant, because the pixel window is gathered too and a flickering sky is a *shading*
+defect. Fixed; still 0. That is gotcha 440's mistake made a third time, by me, in the
+instrument built to correct it.
+
+### 4. THE ONE SURVIVING CANDIDATE, AND THE ARM THAT TESTS IT IS BUILT AND UNRUN
+
+A register the shader reads that the **list** does not name — which by construction no
+run-time check can see. Such a read returns arena residue, and **residue varies frame to
+frame**, which is what makes a defect intermittent rather than steadily wrong.
+
+**`CZ_VK_GATHER_FILL=1`** fills the unlisted registers with a constant (10000.0f) instead of
+residue, which makes it two-sided: **flicker stops -> the defect IS an unlisted read** (and
+the picture should be steadily wrong instead); **flicker continues -> that explanation is
+dead too.** One run of it exists (`auto_0823_*_gather_fill.log`) and **nobody watched it**,
+so it is unresolved rather than negative. It is a diagnostic arm only — it writes the ~230
+registers the gather exists to skip, so it costs the whole item.
+
+### 5. THE STATE THIS IS PARKED IN
+
+* **The gather is OFF by default** and the shipped configuration is behaviour-identical to
+  the pre-part-72 renderer. Everything below is inert unless armed.
+* `CZ_VK_CONST_GATHER=1` re-enables it, **now carrying the memo-key fix**, so it is
+  strictly better than what part 72 shipped — but it still flickers.
+* The detector, its poison arm, and the fill arm all stay. `CZ_VK_GATHER_NO_C0_REFRESH` is
+  retired with the code it reverted.
+* **The next step, if anyone resumes, is one watched run of `CZ_VK_GATHER_FILL=1`.** It is
+  three minutes and it decides between the last live explanation and "not the gather's data
+  path at all".

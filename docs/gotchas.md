@@ -4854,3 +4854,18 @@ From phase C part 18 (the frame rate — and none of it was work):
      from a line the feature prints. Second, **turning a feature off by default is a
      legitimate result**: the code, the arm and the offline gate all stay, and 0.8 ms of a
      16 ms frame against a visible defect in the shipped configuration is not a close call.
+
+441. **A GATE WITH A WEAK MODE WILL BE RUN IN ITS WEAK MODE FOREVER.**
+     `tools/alu_const_gate.py` checks the constant-gather's register lists against the
+     shaders' own HLSL, and that cross-check is the ONLY thing that can catch a missing
+     register — no run-time check can, because the missing register is by definition the one
+     nobody reads (gotcha 432). It takes `--hlsl-dir`. **Every run this project ever made of
+     it omitted that flag**, printing *"the lists were NOT cross-checked against the
+     shaders"* into a log nobody read as a failure, and it was quoted as "clean on all 16
+     caches" in three parts' gate sweeps. The reason was mechanical: `build_shader_spv.sh`
+     generates the HLSL into a `mktemp -d` and deletes it on exit, so the strong mode needed
+     a rebuild nobody would do casually. **When a check has an optional deep mode, make the
+     inputs it needs survive by default, and make the weak mode SAY it is weak in the same
+     line as its verdict** — this one did say so, and it still went unread for three parts,
+     because a caveat printed beside an exit code of 0 reads as an exit code of 0. Sibling
+     of gotcha 25 (a grep that cannot match is not a clean result) at gate scale.
