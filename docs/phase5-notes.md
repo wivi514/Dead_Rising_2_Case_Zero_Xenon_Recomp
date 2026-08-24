@@ -16644,3 +16644,111 @@ list, so the largest part of the draw path was invisible and `record` read **1.0
 9,000 draws where part 47 measured 15.2. With all sixteen phases the unattributed remainder
 is **2.7-4.5 ms**, which is the profiler's own overhead. **A breakdown that does not add up
 is the same false-absence trap the residual column was built to close, one level down.**
+
+## §6dp — Part 75: the biggest cost in the frame was a READ from write-combined memory (2026-08-24)
+
+The operator chose **problem B** — the crowd — out of the two `part75-kickoff.md` §0 put
+in front of them. Not the post-load texture hitch, which is a real hitch and was fully
+specified, but the one they notice most: frame time tracking draw count, felt as stutter
+as the camera turns, and not a hitch at all.
+
+### 1. THE RE-BASELINE, AND WHY IT DID NOT MATCH THE SKETCH
+
+`part75-kickoff.md` §2 quoted a marked 40-46 ms crowd frame as
+`constants ~12 + textures ~10 + readback ~3.6 + recordState ~2.6` — four co-equal columns,
+each a candidate. Re-run on the autonomous route with all sixteen phase columns
+(`tools/autoroute.sh` + `CZ_VK_PROFILE` + `CZ_VK_FRAME_TRACE`), banded by draw count and
+with texture-upload frames excluded, that is not the shape at all:
+
+| draws | n | wall | const | texPh | readback | recState | oFetch | drawOther |
+|---|---|---|---|---|---|---|---|---|
+| 1,500-3,000 | 2,677 | 9.66 | **3.33** | 0.59 | 0.00 | 0.84 | 0.59 | 0.53 |
+| 3,000-5,000 | 1,308 | 13.59 | **5.36** | 0.58 | 0.00 | 1.18 | 0.88 | 0.84 |
+| 5,000-7,000 | 5,743 | 18.64 | **7.96** | 0.78 | 0.00 | 1.47 | 1.24 | 1.23 |
+| 7,000-9,000 | 597 | 25.68 | **10.88** | 1.24 | 0.00 | 2.08 | 1.70 | 1.68 |
+
+`constants` is not one of four columns, it is **43-44% of the frame and about half of
+everything the sixteen phases account for**. `textures` at ~10 ms and `readback` at ~3.6
+in the kickoff were a TEXTURE-BURST frame and the pre-swapchain present path — neither is
+what an ordinary crowd frame does. **A number carried forward from one marked frame is a
+fact about that frame** (gotcha 13, the shape it always takes).
+
+### 2. SPLIT IT, TWICE — AND THE ANSWER IS NOT THE COPY
+
+`constants` was named "the per-draw ALU constant copy into mapped memory" and four parts
+of work had priced it as that. Split five ways:
+
+```
+constants (residual) | constVs | constPs | constShared
+```
+
+and `constVs` was all of it, so split again:
+
+```
+constVs (residual) | constVsCopy | constVsPatch
+```
+
+Medians at 5,000-7,000 draws, wall 19.99 ms:
+
+| column | ms | what it is |
+|---|---|---|
+| **`constVsPatch`** | **7.27** | **the fov / 21:9 projection patch — 36% of the whole frame** |
+| `constVs` | 0.39 | the residual |
+| `constVsCopy` | 0.36 | the GATHER — part 74's item C, and what anyone would look at first |
+| `constShared` | 0.36 | the 2,192-byte memset of the shared block, every draw |
+| `constPs` | 0.13 | the entire PIXEL window |
+
+At 7,000-9,000 draws the patch is 9.62 ms of 26.75 — the same 36%. The columns sum with
+the other twelve to within 2.5 ms of the wall, which is the profiler's own bill, so the
+breakdown adds up (§6do §4's rule).
+
+### 3. WHY A PATCH THAT SCALES TWO ROWS COSTS 1.35 MICROSECONDS
+
+`PatchFovProjection` and `PatchWideProjection` each call `SceneXformForm`, which reads all
+sixteen floats of c0..c3 to decide whether the window is a scene projection. That is two
+reads of 64 bytes per draw, on ~97% of draws — the vertex half of the constant memo almost
+never hits, because this guest rewrites a world matrix per object.
+
+**It read them out of `R->arena`, and the arena is created
+`VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.** On this
+machine that resolves to memory type 3. Type 4 is the one that also carries
+`HOST_CACHED`. **Without `HOST_CACHED` the mapping is uncached — write-combining.** Writes
+are cheap and that is what the flag pair is for; a read keeps no cache line, gets no
+prefetch, and costs a full round trip to DRAM. Every one of them.
+
+Everything else that reads the arena on this path is behind a diagnostic gate
+(`CZ_VK_CONST_RACE`, the memo verifier, `CZ_VK_PS_CONST_SCALE`). This was the only
+ungated one, and it ran on nearly every draw.
+
+### 4. THE FIX, AND THE CORRECTNESS FIX THAT MADE IT LEGAL
+
+Do not read it. c0..c3 in the arena are a **verbatim copy** of c0..c3 in `regs`, which is
+ordinary cached memory — and they are verbatim *because part 74 made them so*, when it
+found the gather was not copying the sixteen floats the RENDERER itself reads (§6dl,
+gotcha 442). So recognize and patch a stack copy taken from `regs`, and store the result
+into the arena as **one contiguous 64-byte write**, which is what write-combining is
+good at.
+
+A correctness fix from the previous part is the precondition for the largest performance
+fix of this one, and neither was visible from the other.
+
+Arms, all same-binary:
+
+| arm | what it does |
+|---|---|
+| `CZ_VK_PATCH_IN_ARENA=1` | **the control** — the old read-back path, one variable |
+| `CZ_VK_VERIFY_PATCH_SRC=1` | patch the arena copy the old way too and compare all sixteen floats |
+| `CZ_VK_VERIFY_PATCH_SRC_POISON=1` | perturb one float; the verifier must scream |
+
+**`CZ_VK_GATHER_NO_C0_ALWAYS=1` also forces the old path and is deliberately NOT the
+arm** — it additionally stops the c0..c3 force-copy, so its difference would price two
+changes at once (gotcha 415). It keeps working as the sky-flicker positive control, and
+under it the patch correctly goes back to reading real arena residue, which is its whole
+purpose.
+
+Verification, on the outdoor route:
+
+```
+CZ_VK_VERIFY_PATCH_SRC=1                0 of 47,352,900 draws disagreed
+CZ_VK_VERIFY_PATCH_SRC=1 + _POISON=1    43,810,856 of 43,810,856 (100.0000%)
+```

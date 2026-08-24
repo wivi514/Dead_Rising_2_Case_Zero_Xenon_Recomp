@@ -4920,3 +4920,51 @@ From phase C part 18 (the frame rate — and none of it was work):
      up. **When a measured phase does not account for the frame it sits in, extend the clock
      backwards to the first thing the work touches, not forwards from the API call.** Sibling
      of gotcha 435 (a counter named for the function it sits in measures the call).
+
+446. **A `HOST_VISIBLE | HOST_COHERENT` MAPPING WITHOUT `HOST_CACHED` IS WRITE-COMBINED,
+     AND READING IT BACK IS AN UNCACHED ROUND TRIP TO DRAM.** Part 75's re-baseline made
+     the `constants` phase the single biggest term in a crowd frame — 44% of it — and
+     splitting it twice put essentially all of that in one place: the fov/21:9 projection
+     patch, **7.27 ms of a 19.99 ms frame at 5,000-7,000 draws**, against 0.36 ms for the
+     constant GATHER sitting immediately next to it and 0.13 ms for the entire pixel
+     window. What the patch does is read sixteen floats, decide whether they are a scene
+     projection, and multiply two rows. It does that twice per draw (`PatchFovProjection`
+     and `PatchWideProjection` each call `SceneXformForm`) on ~97% of draws — and it read
+     them **out of the per-frame arena**, which this renderer allocates as
+     `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
+     On this machine that resolves to memory type 3; type 4 is the one that also carries
+     `HOST_CACHED`. **Without `HOST_CACHED` the mapping is uncached — write-combining.**
+     Writes are fine and that is what the flag combination is *for*; reads keep no cache
+     line, get no prefetch, and cost a full memory round trip each.
+     The fix is to never read the mapping: the sixteen floats are a verbatim copy of
+     sixteen floats in the ordinary cached register file, so recognize and patch THERE and
+     store the result back as one contiguous 64-byte write. Same bytes, verified 0 of
+     47,352,900 draws.
+     **The general form, and it is a day-one check on any port that maps GPU memory:
+     `grep` every mapped pointer for a READ.** A write into WC memory looks the same in
+     the source as a read out of it, and only one of them is cheap. Related: gotcha 363 /
+     the geometry-in-VRAM refutation, which is this same fact one buffer over — "geometry
+     in VRAM is wrong for a renderer that reads its own geometry" — and part 73's 4.2x.
+     The two findings share a mechanism and neither was found by reading code.
+     **AND THIS PROJECT HAD ALREADY FOUND IT ONCE, AT A DIFFERENT POINTER.** Part 17
+     discovered the PRESENT READBACK buffer was write-combined — 3.7 MB read back at
+     ~230 MB/s, `readback` 15.7% -> 0.4%, the frame 103 -> 87 ms — and fixed it by adding
+     `HOST_CACHED` there (`ReadbackMemoryProps`, `CZ_VK_READBACK_UNCACHED=1` the arm). The
+     fix was applied at that one mapped pointer and never generalised, and the arena's own
+     read-back then went unnoticed for **58 parts**. So the transferable instruction is
+     not "watch out for uncached readbacks" — this project knew that. It is: **when you
+     find a property of ONE mapping, enumerate every other mapping in the process the same
+     day.** There were four here and the audit is one grep.
+
+447. **AFTER YOU OPTIMISE A PHASE, SPLIT IT AGAIN — THE REMAINING COST MAY BE SOMETHING
+     ELSE WEARING THE SAME NAME.** `constants` was named for "the per-draw ALU constant
+     copy into mapped memory", and for four parts that is what everyone priced it as.
+     Part 74 shipped the gather against it (item C, ~0.8 ms and 88.74 GB not copied) and
+     the column stayed enormous, which read as "the copy is still expensive". It was not:
+     the copy is 0.36 ms and 4.5% of its own phase. **A phase name survives the work done
+     under it, and a phase that was 80% one thing before a fix is not 80% that thing
+     after.** The tell was free and nobody looked: the phase had not shrunk in proportion
+     to the bytes the gather removed. Sibling of gotcha 327 (splitting a phase has found
+     every item; reading code has found none) and of "find the cost before optimising the
+     name" — the addition is that the re-split is owed *by the fix itself*, in the same
+     part, and costs one build.

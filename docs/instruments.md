@@ -2812,6 +2812,20 @@ CZ_VK_CONST_GATHER=0  turns the per-shader constant GATHER OFF (part 72's item C
 CZ_VK_GATHER_NO_C0_ALWAYS=1  revert the c0..c3 fix in the same binary — the positive control
                    for half of the flicker fix. It flickered 1 of 3, because the defect is
                    INTERMITTENT; the FULL control is the pre-fix binary via BIN_SRC
+CZ_VK_PATCH_IN_ARENA=1  **the same-binary control arm for part 75's largest item.** The
+                   fov/21:9 projection patch reads its sixteen floats back out of the
+                   WRITE-COMBINED arena, as it did before part 75, instead of out of the
+                   cached register file. Changes exactly one thing — where the read comes
+                   from — and produces identical bytes. **`CZ_VK_GATHER_NO_C0_ALWAYS=1`
+                   also forces the old path but is NOT this arm**: it additionally stops
+                   c0..c3 being force-copied, so quoting its difference would price two
+                   changes at once
+CZ_VK_VERIFY_PATCH_SRC=1  patch the ARENA copy the old way as well and compare all sixteen
+                   floats against what the cached path produced. Must read 0 — it read
+                   **0 of 47,352,900** on the outdoor route. Deliberately expensive: it
+                   performs the very uncached reads the change removes
+CZ_VK_VERIFY_PATCH_SRC_POISON=1  perturbs one float so the verifier MUST fire. A zero from
+                   the verifier means nothing until this has been seen to scream (gotcha 30)
 CZ_VK_CONST_RACE=1 the constant-slot RACE DETECTOR. Checks that the bytes a draw's constant
                    window holds at RECORD time equal what they hold at SUBMIT time — the
                    invariant the buffer-device-address binding forces, and the one part 72's
@@ -2869,7 +2883,14 @@ tools/play_session.sh KEY=VALUE ...   trailing env passes through, same conventi
 CZ_VK_FRAME_TRACE=<file>   one line per presented frame — frame, draws, wall, walk, record,
                    fence, sleep, residual, gpu, texUploads, texKB, texUpUs, texDecUs,
                    pipes. Use this to FIND a stutter offline rather than hoping it lands in
-                   the twelve-row table
+                   the twelve-row table. **With CZ_VK_PROFILE also set it carries all
+                   TWENTY-ONE phase columns** — the sixteen of part 74 plus part 75's split
+                   of `constants` into `cVsUs cPsUs cShrUs cVsCpUs cVsPaUs`. Without
+                   CZ_VK_PROFILE every phase column reads 0.
+                   `tools/part75_ab.py` reads the `[fps]` windows of two arms into a
+                   matched DRAW BAND, which is the only comparison this route supports —
+                   the DebugJump landing is bimodal and a run mean over it is a fact about
+                   where the camera pointed
 CZ_PUMP_POISON_MS=N   the RESIDUAL column's positive control — burns N ms in the pump loop
                    outside both the walk and the sleep. At N=40 every poisoned frame reports
                    RESIDUAL 40.0 with walk and sleep unaffected
