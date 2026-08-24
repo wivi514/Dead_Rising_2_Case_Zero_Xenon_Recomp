@@ -4907,3 +4907,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      defect is intermittent, the human verdict stays the ground truth until the instrument
      has been shown to separate the arms — not before. Sibling of gotchas 50/51/86 and of
      `every-campaign-needs-a-null-control-arm`.
+
+445. **A CLOCK THAT STARTS AT THE OBVIOUS OPERATION MISSES THE EXPENSIVE ONE.** Part 74
+     clocked the texture upload from the staging `memcpy` — the operation the function is
+     named for — and reported 244 ms a run. Everything BEFORE that point was outside it: the
+     allocation, the **untiling of every mip level**, the endian swap and the image creation.
+     Those are **469 ms, 66% of the path and 209 us per texture against the measured 109**.
+     For two parts the upload path was quoted at a third of its true cost, and the burst
+     frames had ~230 ms unattributed *inside code the instrument was pointed at*. The tell
+     was available and ignored: the frame's CPU time exceeded the sum of everything measured
+     in it, which is the same arithmetic the residual column was built to enforce one level
+     up. **When a measured phase does not account for the frame it sits in, extend the clock
+     backwards to the first thing the work touches, not forwards from the API call.** Sibling
+     of gotcha 435 (a counter named for the function it sits in measures the call).

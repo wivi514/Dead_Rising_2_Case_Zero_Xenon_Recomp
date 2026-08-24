@@ -16507,3 +16507,82 @@ which is why the current code must drain before reusing it. The per-frame arena
 **Pre-registered kill stands: below 40 ms off the worst frame of the route, do not ship it.**
 It is a HITCH item — 0.020 ms/frame amortised — so a small win does not justify touching the
 upload path.
+
+## §6dn — Part 74: the per-frame CPU/GPU profiler, and the stutter is fully attributed (2026-08-24)
+
+The operator: *"attach GPU/CPU profiler to properly see stutter by frame when there are."*
+Built, validated against two arms, and it answered the question in one run.
+
+### 1. WHAT WAS MISSING, AND IT WAS THE WHOLE GPU SIDE
+
+§6dm's decomposition put every hitch inside `walk` — which is `Pm4_Execute`: the command
+processor, our recording AND the GPU fence wait, in one number. The two halves want opposite
+fixes. **And this project had never measured GPU time directly**: the nearest thing,
+`tools/gpu_clock_sample.py`, samples clocks from outside the process and cannot be aligned to
+a frame, let alone to the one frame that stuttered.
+
+Two timestamps in each frame's own command buffer (`TOP_OF_PIPE`/`BOTTOM_OF_PIPE`) plus an
+unconditional clock on the fence wait. Per frame:
+
+```
+wall = CPUrec + fence + sleep + residual      <- these four SUM to the wall time
+gpu  = that frame's own execution time        <- OVERLAPS the CPU columns by design
+```
+
+Read back **deferred and never waited on** — a slot's results are collected right after that
+slot's fence has been waited, so they are guaranteed available and add no stall. A device
+that cannot timestamp is reported **by name** (both `timestampPeriod == 0` and
+`timestampValidBits == 0` are checked) rather than producing a column of zeros, which is the
+false-absence shape this part had already been caught by three times.
+
+`CZ_VK_FRAME_TRACE=<file>` writes one line per presented frame, so a stutter is found
+offline instead of hoping it lands in a twelve-row table.
+
+### 2. VALIDATED, EACH ARM MOVING ITS OWN COLUMN
+
+```
+CZ_VK_FRAMES_IN_FLIGHT=1   fence 2,370 -> 10,233 us, CPUrec unchanged (7,412 vs 7,341)
+pixel count                GPU 7,986 / 10,167 / 19,856 us at 3.69 / 4.95 / 14.75 Mpx
+```
+
+And at 14.75 Mpx the fence wait follows the GPU to 14,357 us — the GPU becoming the limiter,
+which is the two columns agreeing when they should. **One correction:** my first "higher
+resolution" arm was `CZ_VK_RES=2560x1440` against a **3440x1440** default from
+`cz_settings.txt` — 26% FEWER pixels, and GPU fell 21%. The column was right and the arm was
+backwards, which is gotcha 415 exactly, made again.
+
+### 3. THE ANSWER: THE STUTTER IS 100% CPU, AND IT IS THE TEXTURE PATH
+
+```
+frame 2771:  285.5 ms = CPUrec 268.9 + fence 2.6 + sleep 14.0   GPU  3.8   775 tex
+frame 6787:  209.1 ms = CPUrec 208.7 + fence 0.0 + sleep  0.5   GPU  9.9   692 tex
+frame 6083:  222.7 ms = CPUrec 181.0 + fence 3.2 + sleep 38.4   GPU  4.8   451 tex
+```
+
+**The GPU does 3.8-9.9 ms while the CPU burns 181-269.** Run-wide the GPU averages **7.93 ms
+a frame** and the fence wait **0.37 ms** — the GPU is never the limiter on this route.
+
+### 4. AND THE DECODE WAS INVISIBLE — IT IS THE BIGGER HALF
+
+The upload clock started at the staging memcpy, so the allocation, the **untiling of every
+mip level**, the endian swap and the image creation were outside every measurement this
+project has made of the upload path.
+
+```
+decode (untile + swap + image creation)   469.0 ms/run, 209 us each   66% of the path
+staging + submit (incl. vkQueueWaitIdle)  244.0 ms/run, 109 us each   34%
+```
+
+With both columns the attribution closes: **texture upload + decode is 82-90% of every hitch
+frame.** Gotcha 445.
+
+### 5. WHAT THIS CHANGES, AND WHAT IS LEFT
+
+**Part 75's brief was "batch the texture uploads".** That addresses the 244 ms submit half
+and **does not touch the 469 ms decode half**. The decode is untiling on the pump thread —
+parallelisable (this port already has a worker pool, part 53) or cacheable. **It is now the
+bigger item and it is a different fix.**
+
+**One frame is still unexplained:** 6788 is **96.5 ms of CPU recording with ZERO uploads,
+zero decode, zero pipelines** and a 10.9 ms GPU, immediately after a 692-upload burst. The
+instrument to chase it now exists.
