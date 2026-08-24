@@ -5105,3 +5105,166 @@ Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it
 * **Gates:** `--smoke` OK; `shader_dim_census.py` clean on all sixteen caches and the play
   cache's NAME diff empty; `rt_world_xform_census.py` 104 of 104. **A5 is owed**, carried
   since part 67 — no kernel path has changed in 67-71.
+
+---
+
+## Part 72 — performance: the vcull census, item C, and four retractions (2026-08-23)
+
+Where the port is, as of 2026-08-23 (**PART 72 CLOSED — PERFORMANCE. Desk work, TWO
+OPERATOR SITTINGS and one autonomous run; FOUR retractions, two of them of part 72's own
+claims made the same day.** `docs/part73-kickoff.md` WAS the hand-off at this point and
+`docs/perf-plan-autonomous.md` WAS the live plan; **both are superseded — the live hand-off
+is `docs/part74-kickoff.md` and there is no live plan.** Records:
+`phase5-notes.md` **§6de/§6df/§6dg/§6dh**; lessons: gotchas **423-434**):
+
+* **THE PLAN'S CHEAPEST ROUTE FOR ITS BIGGEST ITEM IS DEAD, AND IT COST AN AFTERNOON
+  RATHER THAN A SESSION.** §1 route (a) was *"find the game's aspect scalar and widen that
+  instead"* — the fix that would make the 21:9 culling over-widen free rather than a
+  picture trade. **The engine has no aspect scalar.** `tools/find_named_properties.py`
+  (new, and it transfers to Case West unchanged) scans `.text` for all six universal
+  property binders and recovers each site's name: **2,056 sites, 1,966 names (95.6%)**, and
+  the whole image holds **exactly one `Aspect`** — `+0x24` on **`cZombieSpawnRegion`**,
+  beside `X/Y/Width/Height`, a 2D spawn box. Sixty-odd camera configs register `FOV` and
+  nothing aspect-shaped. Two more independent lines agree: the image's single `1.777778`
+  belongs to the **UI** layout system, and the renderer's own `Is169Perspective` already
+  said every scene camera is 16:9 whatever its fov. **A live property trace could never
+  have proved this** — its null would have been a fact about the route (gotcha 424).
+* **AND THE ITEM'S PRICE WAS AN UPPER BOUND PRESENTED AS A VALUE.** Part 71 measured it
+  with `CZ_NO_GAME_FOV=1` (+1,930 draws of 9,817, "≈4.8 ms of 28"), but **that arm removes
+  the HORIZONTAL widening too** — which is the part-62 fix and is being kept. The
+  configuration a horizontal-only fix reaches has the arm's vertical and today's
+  horizontal, so its frustum is a strict subset of today's and a strict superset of the
+  arm's: **strictly fewer than 1,930 draws recoverable**, by containment. Two models put it
+  near half — **≈2.5-2.8 ms, not 4.8**, and probably less. It still clears its own
+  700-draw kill threshold, so the item lives; what changes is that it no longer dominates
+  the plan on an unmeasured number (gotcha 423).
+* **SO IT IS NOW MEASURED RATHER THAN MODELLED: `CZ_VK_VCULL_CENSUS=1`.** For every world
+  draw it projects the position stream's own object-space box by the FINAL projection —
+  rebuilt by calling `PatchFovProjection` then `PatchWideProjection`, the same two
+  functions the upload path calls, so it cannot drift from what the shaders see — and
+  counts the draws landing entirely outside the clip volume in Y. Those produce no pixel:
+  **the ceiling on what any vertical-cull fix recovers, with no horizontal confound.**
+  Untestable draws are counted and printed beside the result (gotcha 25) and every
+  uncertainty resolves toward "not wasted", so the output stays a ceiling.
+* **Two controls and an offline gate.** `CZ_VK_VCULL_SCALE=f` is MECHANICAL (small f must
+  drive the count up, large f to zero — monotone both ways or the census is blind);
+  `CZ_NO_GAME_FOV=1` is SEMANTIC (the vertical waste must fall sharply). The predicate has
+  `tools/vcull_predicate_test.cpp` — thirteen boxes classified from the projection's own
+  geometry, **confirmed capable of failing** (one flipped sign: 0 -> 6 failures), because a
+  sign error there would report a plausible number no operator session could audit
+  (gotcha 425). A DIAGNOSTIC ARM with a bill; never quote a frame time from a run carrying
+  it, and it is folded away with every other per-draw hook when unarmed.
+* **Recovered for a future route (b)**, so it is not re-derived: the active scene camera is
+  a **stride-0x98** record at `[[[r3+0xd60] + view*0x38C] + 0x348] + [r3+0x10c8]*0x98`, and
+  **`cam+0x68` is the fov in degrees**. There are **no `frustum`/`cull` strings in the
+  image**, so route (b)'s cull hooking has no debug surface to grep for.
+* **BOTH OPERATOR SITTINGS ARE NOW RUN, AND EACH PRODUCED A RETRACTION.**
+  **`docs/part72-fix-plan.md`** records what those sittings established (it was the live fix
+  list during part 72; **`docs/perf-plan-autonomous.md` is the live plan now**); the record
+  is `phase5-notes.md`
+  **§6df**; the lessons are gotchas **426-429**.
+* **SESSION A RETRACTS PART 71's PIPELINE-CACHE HEADLINE.** Run with the control arm LAST
+  (the run gotcha 422 asked for), and the **pipeline COUNT held at 484-513 across all seven
+  runs ever taken**, which is what makes ms/pipeline comparable. Same arm, two positions:
+  `cold` 2.398 -> 1.676 (1.4x), `warm` 0.920 -> 0.786 (1.2x), **`nocache` 36.457 -> 0.105
+  (346x)**. Only the arm with NO cache object moved, so the mechanism is **outside the
+  process** — a driver-side cache that persists across process exits. With it warm,
+  `VK_NULL_HANDLE` is the CHEAPEST of the seven. **The 17.8 s and the stutter diagnosis
+  survive; the attribution does not.** ~~Our cache looks like a 7.5x pessimization, pending
+  one two-arm run before any default flips (gotcha 426).~~ **THAT RUN HAPPENED AND REFUTED
+  THE REPLACEMENT CLAIM TOO** — with `nocache` FIRST it reads 0.702 ms/pipeline against
+  `warm`'s 0.121. **In both sessions the LATER arm won and the arms swapped roles**, so
+  position dominates and neither arm is established. The question is OPEN and effectively
+  unmeasurable here: the absolute cost fell 17,827 -> 59 ms as the driver's cache warmed
+  across one day. **The only expensive run is the first one anybody ever does**, which is
+  what prewarming addresses (gotcha 433).
+* **SESSION B's CENSUS REFUTED ITSELF, AND THE CONTROL IS WHY.** The horizontal channel —
+  added purely as a sanity control with its expectation in the format string — read
+  **98.1%**, leaving ~142 on-screen draws to paint a scene submitting 9,750. The predicate
+  was fine (monotone both ways under `CZ_VK_VCULL_SCALE`); **the boxes were never PLACED.**
+  The cause was already in this repo: `ShaderMeta`'s comment carries part 67's retraction
+  of §6cs's world-space conclusion, with the number — boxes intersecting their own frustum
+  go **0.1% untransformed -> 97.8% placed**. The census read 1.9%. **§6cs now carries the
+  retraction banner it should have had since part 67** (gotcha 429). Fixed in `4b701e3`:
+  per-corner placement, declined-and-counted when unknown, palette draws declined, windowed
+  rates, and an on-screen invariant that REFUSES to print a headline below 50%.
+* **ITEM 1 IS UNPRICED** — not 4.8 ms, probably not 2.5-2.8, and this session did not
+  measure it. The mis-placement was lateral, which is the direction that HIDES vertical
+  waste, so its small numbers are not evidence of a small effect.
+* **Its headline was also a cumulative mean over a transient** — 62 draws/frame decaying as
+  `C/n` from a burst that ended at frame 3,000, where the steady state was **1.0**
+  (gotcha 428). Confirmed for free: the pump's slope re-reads at **2.35 us/draw** and the
+  substitution adds **+24%** scene draws, both matching part 71 independently.
+* **A NEW OPEN ITEM:** with compilation at 51 ms for a whole run, a **173 ms frame at 7,400
+  draws** remains. Pipeline compilation was the 3.9-second frame; a 165-315 ms gameplay
+  hitch survives the fix and is unexplained.
+* **THIRD SESSION, ALSO OFFLINE: PERF ITEM C IS BUILT AND ITEM A TURNED OUT TO BE BLOCKED
+  ON THREADS, NOT ON ITS GATE.** `phase5-notes.md` **§6dg**; gotchas **430-432**.
+* **The ORDER GATE is built and proven** (`CZ_VK_ORDER_GATE=1`, the precondition owed since
+  part 55). `tools/order_gate_test.cpp` shows the hash catches **all 3,999 adjacent
+  transpositions** in a 4,000-draw frame of near-duplicates, plus drops, duplicates,
+  rotations and reversals — with a control confirming a COMMUTATIVE mix would be blind,
+  which is the failure mode that would have made the gate a placebo.
+* **But building it did not unblock item A.** `ThreadBudget_Take` is
+  first-come-first-served: the operator's box budgets **3**, the guard pool asks 4 and takes
+  all of them, so a `record` pool gets **ZERO** and the item would measure nothing on the
+  machine it exists to help. **The first work on item A is a thread-budget decision** and
+  all three options need the operator. Two more preconditions are recorded so a session does
+  not start on a recorder first: item C removes A's per-draw snapshot cost, and a
+  dynamic-rendering scope executing secondaries may not also hold inline draws (answerable
+  offline).
+* **PERF ITEM C SHIPPED** (`23937a6`): the renderer now copies only the ALU registers each
+  shader READS. Median **26** of 256 over the 449 modules and **the maximum is 56** — 896
+  bytes against 4,096, a bound rather than an average. 22 vertex shaders index `a0`
+  -relatively and keep the full copy. `CZ_VK_NO_CONST_GATHER=1` is the control arm,
+  `CZ_VK_VERIFY_CONST_GATHER=1` + `CZ_VK_GATHER_POISON=1` the verify pair, and
+  `tools/alu_const_gate.py` the OFFLINE gate — the list decides what NOT to copy, so no
+  run-time check can catch an omission (gotcha 432). **It also un-refutes item E.**
+* **THREE INVISIBLE HAZARDS FOUND WHILE BUILDING IT**, none of which would crash or fail a
+  picture gate: the memo keys on `(version, base)` and NOT the shader, so a gathered slot
+  served to another shader hands it arena garbage (431); the memo's own verifier compared
+  the WHOLE window and would have reported the feature working as a defect, in the first
+  tool an investigator opens, with its poison arm blind one level down (430); and my own
+  top-up dropped the fov/wide projection patches, which would have made the slider silently
+  stop working on alternating draws (`ab799ad`).
+* **THE OPERATOR SESSION RAN (8 arms) AND ITEM C IS CORRECT.** Poison arm: the gather
+  verifier reports **22,494,412 of 22,740,821** disagreeing and the order gate **13,673 of
+  13,673** frames failed — both alive. Clean arm: **0 disagreed over 17,948,265 gathers**
+  and the order gate **0 FAILED over 8,407 frames / 19.6M draws**, its first live outing.
+  The A/B reads **−0.8 ms (~3%)** at a matched draw band once the 121-draw gap is priced
+  out, and **297 GB not copied** over the run.
+* **THE OPERATOR SAW A SKY FLICKER — half the screen, switching left/right with the
+  moment — and no counter here could have.** `CZ_VK_VERIFY_CONST_GATHER` read 0 over 17.9M
+  checks and was RIGHT to: it checks the gather copied what the list names, and the
+  candidate defect is what happens to the memo slot AFTERWARDS. **A verifier's scope is
+  not the feature's blast radius.** Three defects of mine were found in that family:
+  a double-patch hole in the memo top-up (`a55df20`), a control arm doing work the
+  baseline never did (`be1d9d7`), and the gather full-copying the **11 shaders that read
+  NO constants** (`efb229a`). `tools/part72_flicker_session.sh` has the three-arm
+  discriminator, with `CZ_VK_GATHER_NO_C0_REFRESH=1` as a revert arm — **the operator's
+  visual verdict on those arms is still owed**.
+* **THE OPERATOR AUTHORISED AUTONOMOUS RUNS ON ONE ROUTE** — DebugJump to Case 0-2 then
+  30 s of camera turning. `tools/autoroute.sh` is that route and the only place it is
+  written down; it runs **WINDOWED** (headless reads `readback` at 0.0% and windowed at
+  8-23%) and gates itself on reaching 5,000 draws. **It is a LIGHTER load than theirs —
+  4,890 draws/frame against 9,750 — so no number from it is a claim about their frame.**
+* **THE PASS HISTOGRAM KILLED ITEM A's DESIGN BEFORE ANYONE WROTE A RECORDER.** 28,632
+  frames, 1.47M passes, 140M draws: **1.35 passes/frame carry 63.6% of ALL draws** and the
+  mean big pass is **47% of a whole frame**, while **41 passes/frame are empty or
+  single-draw** and hold 0.6%. Whole-pass scheduling therefore caps at **~2.12x regardless
+  of worker count**; item A must split WITHIN a pass, paying full state re-establishment
+  three times instead of once, and its 1.5 ms kill threshold is no longer obviously
+  clearable. **The mean of 95 draws/pass hid all of this** — the histogram cost two
+  increments per resolve.
+* **A NEW ITEM FELL OUT OF IT: 41 near-empty render passes a frame**, each an
+  `EndRendering` + resolve + `BeginRendering` cycle (the left/right tiling and the post
+  chain are the obvious source). **Filed as a LEAD, not a result** — nobody knows what one
+  cycle costs, the resolve path is not separately timed, and `CZ_VK_PROFILE` costs the same
+  order as the thing being measured. One unconditional clock decides whether it is ~0.1 ms
+  and irrelevant or ~1 ms and the best-priced item on the board.
+* **Gates:** `--smoke` OK; `alu_const_gate.py` clean on all sixteen caches;
+  `order_gate_test` 10/10; `vcull_predicate_test` **18/18** and confirmed capable of failing
+  on a flipped comparison, a dropped placement and a transposed matrix read; harness
+  selftest 12/12; `shader_dim_census.py` clean; `rt_world_xform_census.py` 104 of 104; zero
+  `no translated shader` across all seven operator arms. **A5 is owed**, carried since
+  part 67 — no kernel path has changed in 67-72.
