@@ -234,6 +234,13 @@ std::atomic<uint64_t> g_fpsCapWrites{ 0 };
 std::atomic<uint64_t> g_pumpTicks{ 0 };
 std::atomic<uint64_t> g_pumpSleepNs{ 0 };
 std::atomic<uint64_t> g_pumpWalkNs{ 0 };
+// WHEN THE WALK CURRENTLY IN PROGRESS STARTED, 0 when none is. `g_pumpWalkNs` only
+// accumulates when a walk RETURNS, and the frame's present happens INSIDE a walk — so at
+// present time the counter is missing exactly the portion of the walk that led up to it.
+// In steady state that lags by a fraction of a millisecond and nobody would notice; on a
+// 300 ms hitch frame it misattributes the entire hitch to the NEXT frame, which is the one
+// case the whole measurement exists for.
+std::atomic<uint64_t> g_pumpWalkStartNs{ 0 };
 std::atomic<uint64_t> g_pumpIsrNs{ 0 };
 // Part 51: was that sleep on the critical path? gpu/pump_stats.h has the argument.
 std::atomic<uint64_t> g_pumpProgressTicks{ 0 };
@@ -551,7 +558,9 @@ void GraphicsInterruptPump()
             Pm4_SetFenceWord(PPC_LOAD_U32(userData + kDeviceWritebackPtr));
             const uint32_t kickedWptr = PPC_LOAD_U32(userData + kDeviceKickedWptr);
             const uint64_t tWalk = NowNs();
+            g_pumpWalkStartNs.store(tWalk, std::memory_order_relaxed);
             const uint32_t cursor = Pm4_Execute(base, kickedWptr);
+            g_pumpWalkStartNs.store(0, std::memory_order_relaxed);
             g_pumpWalkNs.fetch_add(NowNs() - tWalk, std::memory_order_relaxed);
             if (const uint32_t slot = g_rptrWriteback.load())
                 PPC_STORE_U32(slot, cursor);
@@ -567,6 +576,46 @@ void GraphicsInterruptPump()
                 lastCursor = cursor;
                 g_pumpProgressTicks.fetch_add(1, std::memory_order_relaxed);
                 g_pumpSleepBeforeProgressNs.fetch_add(sleptNs, std::memory_order_relaxed);
+            }
+        }
+
+        // CZ_PUMP_POISON_MS=N — THE POSITIVE CONTROL FOR THE SLOW-FRAME TABLE'S RESIDUAL
+        // COLUMN. Burn N ms here, which is inside the pump loop but OUTSIDE both the walk
+        // and the sleep, so a correct decomposition must charge it to the RESIDUAL and to
+        // neither of the other two.
+        //
+        // It exists because part 73's table concluded "the cost is outside the renderer"
+        // from three candidate columns all reading zero — an ABSENCE, which is the weakest
+        // finding this project accepts. The replacement decomposes the whole frame, and a
+        // residual that cannot be shown to MOVE is exactly as weak as the absence it
+        // replaced (gotcha 30). This is what makes it a measurement.
+        //
+        // Deliberately every 64th tick rather than every tick: a constant tax would raise
+        // the residual uniformly and could be mistaken for a baseline, where a periodic
+        // spike has to appear in the WORST-frame table by name.
+        {
+            static const int poisonMs = [] {
+                const char* e = getenv("CZ_PUMP_POISON_MS");
+                const int v = e ? atoi(e) : 0;
+                if (v > 0)
+                    fprintf(stderr,
+                            "[vd] CZ_PUMP_POISON_MS=%d — burning %d ms every 64th pump "
+                            "tick OUTSIDE the walk and the sleep. The slow-frame table's "
+                            "RESIDUAL column must report it; walk and sleep must not.\n",
+                            v, v);
+                return v;
+            }();
+            if (poisonMs > 0)
+            {
+                static uint64_t n = 0;
+                if ((++n % 64) == 0)
+                {
+                    const uint64_t until = NowNs() + uint64_t(poisonMs) * 1000000ull;
+                    while (NowNs() < until)
+                        ;   // BUSY-WAIT, not sleep_for: a sleep here could be charged to
+                            // the OS rather than to this thread's wall clock on some
+                            // schedulers, and the point is to make wall time disappear.
+                }
             }
         }
 
@@ -976,7 +1025,8 @@ PumpStats PumpStats_Read()
                       g_pumpWalkNs.load(std::memory_order_relaxed),
                       g_pumpIsrNs.load(std::memory_order_relaxed),
                       g_pumpProgressTicks.load(std::memory_order_relaxed),
-                      g_pumpSleepBeforeProgressNs.load(std::memory_order_relaxed) };
+                      g_pumpSleepBeforeProgressNs.load(std::memory_order_relaxed),
+                      g_pumpWalkStartNs.load(std::memory_order_relaxed) };
 }
 
 // ---------------------------------------------------------------------------

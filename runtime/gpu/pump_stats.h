@@ -59,6 +59,11 @@ struct PumpStats
     uint64_t isrNs;   // time inside the guest's vblank ISR
     uint64_t progressTicks;        // ticks whose walk advanced the ring cursor
     uint64_t sleepBeforeProgressNs; // ...and the sleep that immediately preceded them
+    // The walk IN PROGRESS, as a start timestamp, or 0 if the pump is not inside one.
+    // walkNs only accumulates when a walk returns, and the present happens inside a walk,
+    // so a reader at present time must add (now - walkStartNs) or it will attribute a
+    // hitch to the frame after the one that suffered it.
+    uint64_t walkStartNs;
 };
 
 // A snapshot. Like ChainStats_Read these are independent relaxed counters, so the fields

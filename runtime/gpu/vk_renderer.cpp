@@ -2893,11 +2893,21 @@ struct SlowFrameRec
     uint64_t frame = 0;
     uint32_t us = 0, draws = 0, tex = 0, pipes = 0;
     uint32_t texKB = 0, texUs = 0;
+    // THE DECOMPOSITION, added in part 74 so the table stops reporting an ABSENCE.
+    // `walkUs` is time inside Pm4_Execute — the command processor, the whole renderer and
+    // the GPU fence wait. `sleepUs` is the pump asleep at the top of its loop. The
+    // RESIDUAL is what is left of the frame's wall time after both, and it is the column
+    // the whole instrument exists for: part 73 concluded "the cost is outside the
+    // renderer" from three candidate columns all reading zero, which is the weakest kind
+    // of finding. Every millisecond now lands somewhere by construction.
+    uint32_t walkUs = 0, sleepUs = 0;
+    int32_t residualUs = 0;
 };
 SlowFrameRec g_slowTop[12];
 
 void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
-                   uint32_t pipes, uint32_t texKB, uint32_t texUs)
+                   uint32_t pipes, uint32_t texKB, uint32_t texUs, uint32_t walkUs,
+                   uint32_t sleepUs, int32_t residualUs)
 {
     uint32_t worst = 0;
     for (uint32_t i = 1; i < 12; ++i)
@@ -2905,7 +2915,8 @@ void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
             worst = i;
     if (us <= g_slowTop[worst].us)
         return;
-    g_slowTop[worst] = SlowFrameRec{ frame, us, draws, tex, pipes, texKB, texUs };
+    g_slowTop[worst] = SlowFrameRec{ frame,  us,     draws,   tex,      pipes,
+                                     texKB,  texUs,  walkUs,  sleepUs,  residualUs };
 }
 
 // Close the frame currently being accumulated and keep it if it is among the worst.
@@ -20792,16 +20803,35 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // says what happened INSIDE that frame rather than up to it.
             {
                 static uint64_t prevTex = 0, prevPipes = 0, prevTexBytes = 0,
-                                prevTexNs = 0;
+                                prevTexNs = 0, prevWalk = 0, prevSleep = 0;
+                // THE FRAME'S DECOMPOSITION. `walkNs` only accumulates when a walk
+                // RETURNS and this present is happening INSIDE one, so the in-progress
+                // portion is added explicitly — without it a 300 ms hitch is charged to
+                // the frame AFTER the one that suffered it, which is the single case this
+                // measurement exists for.
+                const PumpStats ps = PumpStats_Read();
+                const uint64_t nowNs = uint64_t(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        now.time_since_epoch()).count());
+                const uint64_t inFlight =
+                    ps.walkStartNs && nowNs > ps.walkStartNs ? nowNs - ps.walkStartNs : 0;
+                const uint64_t walkNow = ps.walkNs + inFlight;
+                const uint32_t walkUs = uint32_t((walkNow - prevWalk) / 1000);
+                const uint32_t sleepUs = uint32_t((ps.sleepNs - prevSleep) / 1000);
                 SlowFrameNote(R->frame, frameUs.back(), uint32_t(R->drawsThisFrame),
                               uint32_t(g_texRealUploads - prevTex),
                               uint32_t(g_pipeCount - prevPipes),
                               uint32_t((g_texUploadBytes - prevTexBytes) / 1024),
-                              uint32_t((g_texUploadNs - prevTexNs) / 1000));
+                              uint32_t((g_texUploadNs - prevTexNs) / 1000),
+                              walkUs, sleepUs,
+                              int32_t(frameUs.back()) - int32_t(walkUs) -
+                                  int32_t(sleepUs));
                 prevTex = g_texRealUploads;
                 prevPipes = g_pipeCount;
                 prevTexBytes = g_texUploadBytes;
                 prevTexNs = g_texUploadNs;
+                prevWalk = walkNow;
+                prevSleep = ps.sleepNs;
             }
             const double elapsed =
                 std::chrono::duration<double>(now - windowStart).count();
@@ -23196,14 +23226,18 @@ void VkRenderer_DumpStats()
                 if (!r.us)
                     break;
                 fprintf(stderr,
-                        "[vk]     frame %8llu: %8.1f ms   %6u draws   %4u tex uploads "
-                        "(%7u KB, %7.1f ms)   %4u pipelines\n",
-                        (unsigned long long)r.frame, double(r.us) / 1000.0, r.draws,
-                        r.tex, r.texKB, double(r.texUs) / 1000.0, r.pipes);
+                        "[vk]     frame %8llu: %8.1f ms = walk %8.1f + sleep %7.1f + "
+                        "RESIDUAL %8.1f  |  %6u draws  %4u tex (%6u KB, %6.1f ms)  "
+                        "%4u pipe\n",
+                        (unsigned long long)r.frame, double(r.us) / 1000.0,
+                        double(r.walkUs) / 1000.0, double(r.sleepUs) / 1000.0,
+                        double(r.residualUs) / 1000.0, r.draws, r.tex, r.texKB,
+                        double(r.texUs) / 1000.0, r.pipes);
             }
             fprintf(stderr,
-                    "[vk]     (a slow frame with NONE of these elevated is itself the "
-                    "answer: the cost is outside the renderer)\n");
+                    "[vk]     (walk = inside Pm4_Execute: the command processor, the "
+                    "whole renderer and the GPU fence wait. sleep = the pump idle at the "
+                    "top of its loop. RESIDUAL = neither, i.e. NOT the renderer at all)\n");
             fprintf(stderr,
                     "[vk]     texture uploads over the run: %llu uploads, %.1f MB, "
                     "%.1f ms total (%.0f us each)\n",
