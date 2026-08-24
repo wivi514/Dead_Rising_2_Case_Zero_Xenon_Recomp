@@ -16029,7 +16029,11 @@ frame     7:  234.9 ms      48 draws     0 uploads (      0 KB,   0.0 ms)    0 p
 77 ms of one frame, 570-650 ms over a run. Amortised it is 0.020 ms/frame — this is a
 HITCH item, not a throughput item, which is exactly what item 0w is.
 
-**(b) The other 68-76% is not draws, not pipelines and not texture uploads.** Frame 8725
+**(b) The other 68-76% is not draws, not pipelines and not texture uploads.** ~~That cost is
+outside the renderer.~~ **RETRACTED — §6dm measured it and it is INSIDE the renderer.** The
+conclusion below was drawn from three candidate columns all reading zero, i.e. from an
+ABSENCE. A decomposition that sums to the frame puts the residual at **0.0 ms on every hitch
+frame** and the whole of it inside `Pm4_Execute`. The original text: Frame 8725
 is 101.2 ms with a perfectly normal 5,739 draws and literally zero of all three
 candidates; it is also the frame immediately after the 692-upload burst. Frame 7 is
 234.9 ms at 48 draws with nothing. **That is the table's own printed answer — the cost is
@@ -16432,3 +16436,74 @@ twice. The operator's eye remained the ground truth throughout. Gotcha 444.
 runnable at last via `CZ_KEEP_SYNTH`); `shader_dim_census` clean; `rt_world_xform` 104 of
 104; the play session logged **0** `no translated shader`, **0** slot mix-ups and **0**
 `CONST MEMO STALE`.
+
+## §6dm — Part 74: the frame decomposition, and "outside the renderer" is refuted (2026-08-24)
+
+Plan step 2, and it retracts §6di §3(b).
+
+### 1. THE COLUMNS SUM TO THE FRAME NOW
+
+Part 73's slow-frame table instrumented three candidates — draws, texture uploads, pipeline
+creation — and concluded from all three reading zero that *"the cost is outside the
+renderer"*. **That is an absence, which is the weakest kind of finding this project
+accepts.** Each worst-frame row is now `wall = walk + sleep + RESIDUAL`:
+
+* **walk** — inside `Pm4_Execute`: the command processor, the whole renderer, the GPU fence
+  wait;
+* **sleep** — the pump idle at the top of its loop;
+* **RESIDUAL** — neither, i.e. not the renderer at all.
+
+Both inputs already existed as unconditional counters. The one addition is
+`g_pumpWalkStartNs`: `walkNs` only accumulates when a walk RETURNS and **the present happens
+inside a walk**, so at present time the counter is missing exactly the portion of the walk
+that led to it. In steady state that is a fraction of a millisecond; on a 300 ms hitch it
+charges the whole hitch to the NEXT frame, which is the one case the measurement exists for.
+
+**`CZ_PUMP_POISON_MS=N` is the positive control** — it burns N ms in the pump loop but
+outside both the walk and the sleep, so a correct decomposition must charge it to the
+residual and to neither other column. At N=40 every poisoned frame reports **RESIDUAL 40.0**
+with walk and sleep unaffected.
+
+### 2. THE ANSWER, AND IT IS THE OPPOSITE OF PART 73'S
+
+```
+frame 2775:  290.2 ms = walk 271.4 + sleep  18.8 + RESIDUAL 0.0   775 tex, 97 pipe
+frame 6814:  211.5 ms = walk 211.0 + sleep   0.5 + RESIDUAL 0.0   692 tex
+frame 6815:   98.3 ms = walk  97.8 + sleep   0.5 + RESIDUAL 0.0   ZERO tex, ZERO pipe
+frame    8:  240.2 ms = walk   5.6 + sleep 234.2 + RESIDUAL 0.4   boot, legitimately idle
+```
+
+**The residual is 0.0 on every hitch frame. The hitches are inside `Pm4_Execute`.** The
+plan's pre-registered threshold — residual below 30% means the renderer owns it and step 3
+is the work — is met at ~0%. **Step 4 (the guest side) is NOT the work and should not be
+started.**
+
+### 3. WHAT IS IN THAT WALK, AND THE 6814/6815 PAIR
+
+Texture uploads are **255.7 ms over the run** and the immediate submits they drive are
+**288.8 ms, of which 271.6 ms (94.0%) is `vkQueueSubmit`+`vkQueueWaitIdle`**. But frame 6814
+is a 211 ms walk with only 61.7 ms of upload time, and **frame 6815 is a 98 ms walk with
+ZERO uploads and ZERO pipelines**.
+
+That pair is the shape of **GPU backpressure**: 692 `vkQueueWaitIdle` calls inside one frame
+serialise the CPU against the whole queue, and the frame after pays the fence wait. It is a
+hypothesis with an obvious next measurement — an unconditional clock on the frame's fence
+wait, splitting `walk` one level further — and it is not established here.
+
+### 4. STEP 3 IS THE WORK, AND ITS DESIGN CONSTRAINT IS ALREADY KNOWN
+
+Batching the texture uploads. **The constraint that shapes it, recorded so it is not
+rediscovered:** `RunImmediate` exists precisely to be OUTSIDE the frame's command buffer,
+because a pipeline barrier is illegal inside a dynamic-rendering scope. Batching into the
+frame's command buffer therefore means **breaking the render pass** at each upload — and
+part 74 already priced that: a near-empty `EndRendering`+`BeginRendering` cycle is
+**~6.6 us** (§6di §1). At 2,243 uploads a run that is **~15 ms against 271.6 ms of submit
+waiting, roughly 18x cheaper.**
+
+The second constraint: `R->staging` is ONE buffer written at offset zero by every upload,
+which is why the current code must drain before reusing it. The per-frame arena
+(`ArenaAlloc`, 256 MB, host-visible) is the obvious replacement staging source.
+
+**Pre-registered kill stands: below 40 ms off the worst frame of the route, do not ship it.**
+It is a HITCH item — 0.020 ms/frame amortised — so a small win does not justify touching the
+upload path.
