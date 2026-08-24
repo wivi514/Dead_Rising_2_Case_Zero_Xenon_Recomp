@@ -25,20 +25,52 @@
 # Usage:
 #   tools/autoroute.sh <tag> [KEY=VALUE ...]        # one arm
 #   SECS=90 tools/autoroute.sh base                 # longer after arrival
+#   TIMEOUT=300 SECS=150 tools/autoroute.sh soak    # both, for a deliberately long run
 #   tools/autoroute.sh null                         # then again — that pair IS the floor
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$HOME/DR2CZ-troubleshooting/part72-auto}"
 TAG="${1:?usage: autoroute.sh <tag> [ENV=VAL ...]}"; shift || true
-SECS="${SECS:-90}"          # gameplay time AFTER arrival, including the turn block
+# THE RUN'S TIME BUDGET — cut in part 74 on the operator's instruction, because the old
+# shape wasted most of every run. The sequence finishes turning at ~150 s and the process
+# then sat until a FIXED 450 s timeout, so **~60% of every run was a parked camera**
+# (gotcha 438) — dead wall time that also contaminates any run mean with one frozen pose.
+#
+# The timeout is now derived from the work instead of being a constant: arrival is ~8 s of
+# boot delay + the WAITJUMP wait (~27 s typical) + 7 menu entries at the 8 s interval
+# = ~90 s, then the turn block, then a shutdown margin. The 8 s interval is deliberately
+# NOT shortened: CZ_FAKE_START_MS is both the boot delay and the per-entry interval, and
+# each entry taps for only 150 ms inside it — the DebugJump edge was a 150 ms race that
+# part 54 had to fix, so squeezing the cadence trades wall time for route reliability.
+#
+# Windows are 5 s rather than 10 s, which recovers the sample count a shorter run would
+# otherwise lose: the frame time on this route is stationary once outdoors, so more, shorter
+# windows are strictly better than fewer long ones for a banded median.
+SECS="${SECS:-60}"          # gameplay time AFTER arrival, including the turn block
+TIMEOUT="${TIMEOUT:-$((130 + SECS))}"   # ~190 s at the default: 3.2 min, not 7.5
+FPSLOG="${FPSLOG:-5}"
 FPS="${FPS:-500}"
 mkdir -p "$OUT"
 for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_auto 2>/dev/null); do
     echo "!! a cz_runtime is already running (pid $p); refusing"; exit 2
 done
+# BIN_SRC lets an OLD BINARY run this exact route — the arm part 74 needs to ask "how does
+# the game fare against before the RT era". It is deliberately the only thing that changes:
+# the binary is copied into this tree's runtime/build, so it resolves the SAME
+# assets/shader_spv cache and the SAME assets/save/cz_settings.txt by the same relative
+# paths. An arm that also swapped the shader cache or the resolution would be measuring
+# three things (gotcha 415: CZ_VK_WIDE=0 was not the wide-culling arm because it also
+# dropped 26% of the pixels).
 BIN=cz_runtime_auto
-cp -f "$ROOT/runtime/build/cz_runtime" "$ROOT/runtime/build/$BIN"
-HEAD="$(cd "$ROOT" && git rev-parse --short HEAD)"
+BIN_SRC="${BIN_SRC:-$ROOT/runtime/build/cz_runtime}"
+[ -x "$BIN_SRC" ] || { echo "!! no such binary: $BIN_SRC"; exit 2; }
+cp -f "$BIN_SRC" "$ROOT/runtime/build/$BIN"
+if [ "$BIN_SRC" = "$ROOT/runtime/build/cz_runtime" ]; then
+    HEAD="$(cd "$ROOT" && git rev-parse --short HEAD)"
+else
+    # Name the binary's OWN provenance, not this tree's HEAD, or the log lies about what ran.
+    HEAD="$(cd "$(dirname "$BIN_SRC")" && git rev-parse --short HEAD 2>/dev/null || echo external) [$BIN_SRC]"
+fi
 STAMP="$(date +%m%d_%H%M%S)"
 LOG="$OUT/auto_${STAMP}_${TAG}.log"
 
@@ -56,12 +88,12 @@ SEQ="$SEQ,NONE"
 
 echo "=== $TAG  ($HEAD)  ${turns}x8s of camera turning  -> $LOG"
 ( cd "$ROOT/runtime/build" && env \
-    CZ_VKDRAW=1 "CZ_FPS_CAP=$FPS" CZ_FPS_LOG=10 \
+    CZ_VKDRAW=1 "CZ_FPS_CAP=$FPS" "CZ_FPS_LOG=$FPSLOG" \
     CZ_DEBUG_MENU=1 "CZ_FAKE_START_MS=8000" "CZ_FAKE_PRESS_SEQ=$SEQ" \
     "CZ_DEBUG_FLAGS=CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS" \
     CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1 \
     "CZ_SHADER_SPV=$ROOT/assets/shader_spv_clip_a2m" \
-    "$@" timeout $((360 + SECS)) "./$BIN" > "$LOG" 2>&1 )
+    "$@" timeout "$TIMEOUT" "./$BIN" > "$LOG" 2>&1 )
 
 # THE ROUTE'S OWN GATE. A run that never reached Case 0-2 produces a perfectly formed log
 # full of title-screen frames, and its medians would be a fact about the menu. The draw
