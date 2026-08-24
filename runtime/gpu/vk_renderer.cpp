@@ -250,6 +250,25 @@ bool g_passInputsWanted = false;
 struct ProfilePhases
 {
     uint64_t constants = 0;   // the per-draw ALU constant copy into mapped memory
+    // ...and `constants` SPLIT FIVE WAYS (part 75), for the same reason `record` and
+    // `drawOther` were split before it. Part 75's re-baseline made it the single biggest
+    // term in a crowd frame by a wide margin — **7.96 ms of an 18.64 ms frame at
+    // 5,000-7,000 draws, 10.88 of 25.68 at 7,000-9,000** — i.e. roughly half of everything
+    // the sixteen phases account for. A number that large with no breakdown is not an
+    // item, it is a place to start guessing, and the scope holds four unrelated things:
+    // the vertex gather, the pixel gather, the projection patches, and a 2,192-byte
+    // memset of the shared block that runs on EVERY draw whether the memo hit or not.
+    //
+    // The vertex half then turned out to be all of it, so it is split AGAIN — and the
+    // answer is the PATCH, not the copy everyone would have looked at first.
+    //
+    // EXCLUSIVE of each other, like every scope here, so `constants` keeps its meaning as
+    // the residual: the memo bookkeeping, the exposure min/max and the counters.
+    uint64_t constVs = 0;      // the VERTEX window: the RESIDUAL after the two below
+    uint64_t constVsCopy = 0;  // ...its CopyConstWindow gather
+    uint64_t constVsPatch = 0; // ...its fov/wide projection patch, which READS BACK
+    uint64_t constPs = 0;      // the PIXEL window's gather
+    uint64_t constShared = 0;  // memset(shared, 0, kSharedSize) — every draw, memo or not
     uint64_t streams = 0;     // vertex/index stream copy + dword swap
     uint64_t textures = 0;    // texture untile + upload
     uint64_t record = 0;      // the vkCmd calls of a draw
@@ -16872,8 +16891,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         R->constMemoFrame = R->frame;
         if (!vsHit)
         {
+            ProfScope _pcv(&g_prof.constVs);
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + vsConstAt);
-            CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
+            {
+                ProfScope _pcc(&g_prof.constVsCopy);
+                CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs,
+                                true);
+            }
+            ProfScope _pcpatch(&g_prof.constVsPatch);
             // 21:9 (part 60) and the FOV slider (part 61): patch a recognized scene
             // projection in the copy the shaders will read. Patching HERE means memo
             // hits reuse already-patched bytes, so every draw of a frame sees one
@@ -16913,6 +16938,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                     case 1: COUNT("draw: raw projection widened to 21:9"); break;
                     case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
                 }
+            _pcpatch.Close();
             R->constMemoVsFor = &vs;
             R->constMemoVsValid = true;
             R->constMemoVsVersion = vsVersion;
@@ -16921,6 +16947,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         }
         if (!psHit)
         {
+            ProfScope _pcp(&g_prof.constPs);
             uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + psConstAt);
             CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
             R->constMemoPsFor = &ps;
@@ -17093,7 +17120,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 f[s.index * 4 + s.comp] *= s.factor;
             Count("draw: a PIXEL constant was scaled by CZ_VK_PS_CONST_SCALE");
         }
-        memset(shared, 0, kSharedSize);
+        {
+            ProfScope _pcs(&g_prof.constShared);
+            memset(shared, 0, kSharedSize);
+        }
     }
     // ROUTE (B): where the factor image is and how to address it. Returns false — and
     // leaves the descriptor index at the memset's zero, which is the white dummy and
@@ -20978,7 +21008,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                    "texDecUs pipes recPhUs strUs strGuardUs constUs "
                                    "texPhUs readbackUs recStateUs recVertUs recIdxUs "
                                    "drawOtherUs oKeyUs oPipeUs oFetchUs oShaderUs "
-                                   "oBeginUs oTailUs\n");
+                                   "oBeginUs oTailUs cVsUs cPsUs cShrUs cVsCpUs "
+                                   "cVsPaUs\n");
                     // THE PHASE COLUMNS ARE ONLY MEANINGFUL WITH CZ_VK_PROFILE SET —
                     // ProfScope records nothing without it and they will all read 0.
                     // Normally that would disqualify them (a probe costing the same order
@@ -21044,7 +21075,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     // arithmetic be checkable.
                     fprintf(trace,
                             " %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu "
-                            "%llu %llu %llu %llu\n",
+                            "%llu %llu %llu %llu %llu %llu %llu %llu %llu\n",
                             d(g_prof.record, prevPhase.record),
                             d(g_prof.streams, prevPhase.streams),
                             d(g_prof.streamGuard, prevPhase.streamGuard),
@@ -21060,7 +21091,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             d(g_prof.otherFetch, prevPhase.otherFetch),
                             d(g_prof.otherShader, prevPhase.otherShader),
                             d(g_prof.otherBegin, prevPhase.otherBegin),
-                            d(g_prof.otherTail, prevPhase.otherTail));
+                            d(g_prof.otherTail, prevPhase.otherTail),
+                            d(g_prof.constVs, prevPhase.constVs),
+                            d(g_prof.constPs, prevPhase.constPs),
+                            d(g_prof.constShared, prevPhase.constShared),
+                            d(g_prof.constVsCopy, prevPhase.constVsCopy),
+                            d(g_prof.constVsPatch, prevPhase.constVsPatch));
                 }
                 prevTexForTrace = g_texRealUploads;
                 prevTexBytesForTrace = g_texUploadBytes;
@@ -22385,7 +22421,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                         g_prof.otherPipeline + g_prof.otherFetch +
                                         g_prof.otherShader + g_prof.otherBegin +
                                         g_prof.otherTail;
-            const uint64_t drawTotal = g_prof.constants + g_prof.streams +
+            // `constants` is a residual now too (part 75's split).
+            const uint64_t constTotal = g_prof.constants + g_prof.constVs +
+                                        g_prof.constVsCopy + g_prof.constVsPatch +
+                                        g_prof.constPs + g_prof.constShared;
+            const uint64_t drawTotal = constTotal + g_prof.streams +
                                        g_prof.textures + recordTotal + otherTotal;
             const uint64_t submitTotal =
                 g_prof.submit + g_prof.submitCall + g_prof.fenceWait;
@@ -22393,12 +22433,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                                    g_prof.frameStats + g_prof.rt;
             fprintf(stderr,
                     "[vkprof] %.1f fps (%.1f ms/frame, %llu draws/frame) | draw %.1f%% "
-                    "[constants %.1f streams %.1f textures %.1f record %.1f other "
+                    "[constants %.1f (vs %.1f [copy %.1f patch %.1f] ps %.1f "
+                    "shared %.1f) streams %.1f textures %.1f record %.1f other "
                     "%.1f] submit %.1f%% [call %.1f gpu %.1f] readback %.1f%% "
                     "rt %.1f%% outside %.1f%%\n",
                     frames / dt, perFrame,
                     (unsigned long long)(frames ? g_prof.draws / frames : 0),
-                    pct(drawTotal), pct(g_prof.constants), pct(g_prof.streams),
+                    pct(drawTotal), pct(constTotal), pct(g_prof.constVs),
+                    pct(g_prof.constVsCopy), pct(g_prof.constVsPatch),
+                    pct(g_prof.constPs), pct(g_prof.constShared), pct(g_prof.streams),
                     pct(g_prof.textures), pct(recordTotal), pct(otherTotal),
                     pct(submitTotal), pct(g_prof.submitCall), pct(g_prof.fenceWait),
                     pct(g_prof.readback), pct(g_prof.rt), 100.0 - pct(known));
