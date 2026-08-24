@@ -2711,16 +2711,75 @@ PipeFrameRec g_pipeTop[12];
 //
 // Free: the frame's wall time is already measured for `CZ_FPS_LOG`, and the two counters
 // it differences are single increments.
-uint64_t g_texUploads = 0;
+// ===================================================================================
+// THE RESOLVE/BEGIN CYCLE CLOCK (part 73) — plan §4b's one number, before any fix
+// ===================================================================================
+//
+// Part 72's pass histogram found **41 near-empty render passes per frame** — 80% of all
+// passes, carrying 0.6% of the draws — and filed them as a LEAD rather than an item,
+// because nobody knows what one of them COSTS. `CZ_VK_PROFILE` cannot answer it: it is
+// 2-4 ms a frame, the same order as the thing being measured (gotcha 7). So this is the
+// shape that worked for the pipeline census — one unconditional clock, always on, whose
+// bill is two `steady_clock` reads per resolve.
+//
+// WHAT THE DECISION TURNS ON, said out loud first because part 72 got this wrong four
+// times (gotchas 428/433/434): the question is **not** "what do resolves cost" — it is
+// "what would be recovered by not issuing the 41 near-empty ones". So the time is split
+// by the size of the pass that just ENDED, and the near-empty class is reported on its
+// own. A total would be dominated by the 1.35 big resolves a frame, which snapshot a
+// full-screen surface and are not removable.
+//
+// AND IT CHECKS THE LEAD'S OWN PREMISE. §4b asserts every near-empty pass is an
+// `EndRendering` + resolve + `BeginRendering` cycle. Reading the code says that may be
+// false: `DoResolve` only ends the render scope when it actually takes a snapshot or
+// performs a clear, and `BeginRendering` returns immediately when the scope is still
+// open. A near-empty pass that does neither costs bookkeeping and nothing else. So the
+// count of resolves that genuinely BROKE the scope is printed beside the time, and if it
+// is small for the near-empty class then §4b's premise is wrong and the item is dead
+// before anyone writes a fix.
+//
+// LIMIT, stated because the number will be quoted: these are `vkCmd*` RECORDING costs on
+// the pump thread. They do not measure what an extra render-pass instance costs the GPU.
+// That is the right scope for this port — ~93% of the heavy frame is CPU (part 71) — but
+// it is not the whole cost and this instrument cannot see the rest.
+enum { kCycNearEmpty = 0, kCycSmall = 1, kCycBig = 2, kCycClasses = 3 };
+uint64_t g_cycN[kCycClasses] = {}, g_cycResolveNs[kCycClasses] = {},
+         g_cycBeginNs[kCycClasses] = {}, g_cycBroke[kCycClasses] = {};
+// BeginRendering's real work is charged to the pass it OPENS, whose size is not known
+// until that pass ends — so it is parked here and flushed by the next resolve.
+uint64_t g_cycPendBeginNs = 0;
+
+inline uint64_t CycNow()
+{
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
+
+// `g_texFetchResolves` counts CALLS to UploadTexture — one per texture fetch per draw,
+// i.e. ~2.3 per draw. **It was the slow-frame table's "texture uploads" column for one
+// run and it was useless there**: every row read 2.24-2.43x its own draw count, so the
+// column was the draw count in another unit and carried no independent information. It is
+// kept because it is the denominator every cube/texture share in this file divides by; it
+// is NOT the upload count. The run total for real uploads is ~2,300; this counter reaches
+// 15,000 in a single frame. Gotcha: a counter named for the function it sits in measures
+// the CALL, not the WORK the function usually declines to do.
+uint64_t g_texFetchResolves = 0;
+// The real ones: an upload is a decode + a staging memcpy + a RunImmediate, which is a
+// submit and a fence wait. That is the per-frame variable cost open item 0w is hunting,
+// so it is counted, weighed AND timed — a count alone cannot tell 6,000 small uploads
+// from 6 huge ones, and neither can tell either from a stall inside RunImmediate.
+uint64_t g_texRealUploads = 0, g_texUploadBytes = 0, g_texUploadNs = 0;
 struct SlowFrameRec
 {
     uint64_t frame = 0;
     uint32_t us = 0, draws = 0, tex = 0, pipes = 0;
+    uint32_t texKB = 0, texUs = 0;
 };
 SlowFrameRec g_slowTop[12];
 
 void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
-                   uint32_t pipes)
+                   uint32_t pipes, uint32_t texKB, uint32_t texUs)
 {
     uint32_t worst = 0;
     for (uint32_t i = 1; i < 12; ++i)
@@ -2728,7 +2787,7 @@ void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
             worst = i;
     if (us <= g_slowTop[worst].us)
         return;
-    g_slowTop[worst] = SlowFrameRec{ frame, us, draws, tex, pipes };
+    g_slowTop[worst] = SlowFrameRec{ frame, us, draws, tex, pipes, texKB, texUs };
 }
 
 // Close the frame currently being accumulated and keep it if it is among the worst.
@@ -6120,7 +6179,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // function, but `ProfScope` records nothing unless `CZ_VK_PROFILE` is set — and that
     // costs 2-4 ms a frame, which is the same order as the hitch open item 0w is hunting
     // (gotcha 7). A plain count is free and is what the slow-frame table below differences.
-    ++g_texUploads;
+    ++g_texFetchResolves;
     // THE DENOMINATOR, and it goes FIRST. Every other cube counter here is a share of
     // this, and a count with no denominator is the shape of claim this project keeps
     // having to retract: part 25 published "114 of 337,716, 0.03%" off one recipe and a
@@ -7491,6 +7550,12 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         return 0;
     }
     ++R->guestTexturesThisPass;
+    // OPEN ITEM 0w's real measurement. The staging memcpy and the RunImmediate below are
+    // the cost; the clock spans both because RunImmediate submits and waits on a fence and
+    // a count of uploads cannot see a stall there at all.
+    ++g_texRealUploads;
+    g_texUploadBytes += pixels.size();
+    const uint64_t texT0 = CycNow();
     memcpy(R->staging.mapped, pixels.data(), pixels.size());
 
     RunImmediate([&](VkCommandBuffer cb) {
@@ -7505,6 +7570,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         Barrier(cb, entry.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
     });
+
+    g_texUploadNs += CycNow() - texT0;
 
     VkDescriptorImageInfo ii{};
     ii.imageView = entry.image.view;
@@ -8377,6 +8444,11 @@ void BeginRendering()
 {
     if (R->rendering)
         return;
+    // §4b's clock, half one. Only the path that actually issues the barriers and the
+    // vkCmdBeginRendering is timed — the early return above is the common case and must
+    // stay free. The elapsed time is parked and charged by the resolve that ENDS the
+    // pass this call is opening (see CycleClock).
+    const uint64_t cycT0 = CycNow();
     Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_IMAGE_ASPECT_COLOR_BIT);
     Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -8407,6 +8479,7 @@ void BeginRendering()
     ri.pStencilAttachment = &depthAtt;
     vkCmdBeginRendering(R->cmd, &ri);
     R->rendering = true;
+    g_cycPendBeginNs += CycNow() - cycT0;
 }
 
 void EndRendering()
@@ -18943,6 +19016,34 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 void DoResolve(uint8_t* base, const uint32_t* regs)
 {
     (void)base;
+    // §4b's clock, half two — and it is a scope guard rather than a pair of clock reads
+    // because DoResolve has several early returns and a resolve that returns early is
+    // exactly the cheap near-empty case the item is about. Missing those would bias the
+    // near-empty class UPWARDS, i.e. toward reporting the item as worth more than it is.
+    //
+    // The class is captured at ENTRY, because the histogram block below zeroes
+    // drawsThisPass, and `wasRendering` is captured for the same reason: whether this
+    // resolve actually broke the render scope is the test of §4b's own premise.
+    struct CycleClock
+    {
+        uint64_t t0;
+        int cls;
+        bool wasRendering;
+        ~CycleClock()
+        {
+            const uint64_t dt = CycNow() - t0;
+            ++g_cycN[cls];
+            g_cycResolveNs[cls] += dt;
+            // The BeginRendering work that opened the pass this resolve just closed.
+            g_cycBeginNs[cls] += g_cycPendBeginNs;
+            g_cycPendBeginNs = 0;
+            if (wasRendering && !R->rendering)
+                ++g_cycBroke[cls];
+        }
+    } cycleClock{ CycNow(),
+                  R->drawsThisPass <= 1 ? kCycNearEmpty
+                                        : (R->drawsThisPass < 256 ? kCycSmall : kCycBig),
+                  R->rendering };
     const uint32_t control = regs[xenos::kRbCopyControl];
     const uint32_t dest = regs[xenos::kRbCopyDestBase] & 0xFFFFFFFCu;
     R->lastResolveDest = dest;
@@ -20320,12 +20421,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             // OPEN ITEM 0w's table. Differenced against the previous frame, so each row
             // says what happened INSIDE that frame rather than up to it.
             {
-                static uint64_t prevTex = 0, prevPipes = 0;
+                static uint64_t prevTex = 0, prevPipes = 0, prevTexBytes = 0,
+                                prevTexNs = 0;
                 SlowFrameNote(R->frame, frameUs.back(), uint32_t(R->drawsThisFrame),
-                              uint32_t(g_texUploads - prevTex),
-                              uint32_t(g_pipeCount - prevPipes));
-                prevTex = g_texUploads;
+                              uint32_t(g_texRealUploads - prevTex),
+                              uint32_t(g_pipeCount - prevPipes),
+                              uint32_t((g_texUploadBytes - prevTexBytes) / 1024),
+                              uint32_t((g_texUploadNs - prevTexNs) / 1000));
+                prevTex = g_texRealUploads;
                 prevPipes = g_pipeCount;
+                prevTexBytes = g_texUploadBytes;
+                prevTexNs = g_texUploadNs;
             }
             const double elapsed =
                 std::chrono::duration<double>(now - windowStart).count();
@@ -22647,14 +22753,23 @@ void VkRenderer_DumpStats()
                 if (!r.us)
                     break;
                 fprintf(stderr,
-                        "[vk]     frame %8llu: %8.1f ms   %6u draws   %5u texture uploads"
-                        "   %4u pipelines\n",
+                        "[vk]     frame %8llu: %8.1f ms   %6u draws   %4u tex uploads "
+                        "(%7u KB, %7.1f ms)   %4u pipelines\n",
                         (unsigned long long)r.frame, double(r.us) / 1000.0, r.draws,
-                        r.tex, r.pipes);
+                        r.tex, r.texKB, double(r.texUs) / 1000.0, r.pipes);
             }
             fprintf(stderr,
                     "[vk]     (a slow frame with NONE of these elevated is itself the "
                     "answer: the cost is outside the renderer)\n");
+            fprintf(stderr,
+                    "[vk]     texture uploads over the run: %llu uploads, %.1f MB, "
+                    "%.1f ms total (%.0f us each)\n",
+                    (unsigned long long)g_texRealUploads,
+                    double(g_texUploadBytes) / 1048576.0,
+                    double(g_texUploadNs) / 1e6,
+                    g_texRealUploads ? double(g_texUploadNs) / 1000.0
+                                           / double(g_texRealUploads)
+                                     : 0.0);
         }
     }
     // THE PASS-SIZE HISTOGRAM, and the column that decides item A is the DRAW-WEIGHTED
@@ -22697,6 +22812,42 @@ void VkRenderer_DumpStats()
                     100.0 * double(cumP) / double(g_passCount),
                     g_passDraws ? 100.0 * double(cumD) / double(g_passDraws) : 0.0);
         }
+    }
+    // §4b — WHAT THE 41 NEAR-EMPTY PASSES A FRAME ACTUALLY COST. Split by the size of
+    // the pass that ended, because the decision is "what is recovered by not issuing the
+    // near-empty ones", not "what do resolves cost" — a total is dominated by the 1.35
+    // big resolves a frame, which snapshot a full-screen surface and are not removable.
+    if (g_cycN[0] + g_cycN[1] + g_cycN[2])
+    {
+        const double frames = double(R->frame ? R->frame : 1);
+        static const char* kNames[kCycClasses] = { "near-empty (<=1 draw)",
+                                                   "small (2-255)", "big (>=256)" };
+        fprintf(stderr,
+                "[vk]   resolve/begin cycle cost (plan §4b) — CPU RECORDING time on the "
+                "pump, not the GPU's cost for the extra pass instance:\n");
+        double totalMs = 0.0;
+        for (int c = 0; c < kCycClasses; ++c)
+        {
+            if (!g_cycN[c])
+                continue;
+            const double ms = double(g_cycResolveNs[c] + g_cycBeginNs[c]) / 1e6 / frames;
+            totalMs += ms;
+            fprintf(stderr,
+                    "[vk]     %-22s %8.2f/frame  %7.0f ns each (resolve %6.0f + begin "
+                    "%6.0f)  = %6.3f ms/frame   scope actually broken in %5.1f%%\n",
+                    kNames[c], double(g_cycN[c]) / frames,
+                    double(g_cycResolveNs[c] + g_cycBeginNs[c]) / double(g_cycN[c]),
+                    double(g_cycResolveNs[c]) / double(g_cycN[c]),
+                    double(g_cycBeginNs[c]) / double(g_cycN[c]),
+                    ms, 100.0 * double(g_cycBroke[c]) / double(g_cycN[c]));
+        }
+        fprintf(stderr,
+                "[vk]     total %.3f ms/frame; the NEAR-EMPTY class is the item's ceiling "
+                "and it is %.3f ms/frame\n",
+                totalMs, double(g_cycResolveNs[0] + g_cycBeginNs[0]) / 1e6 / frames);
+        fprintf(stderr,
+                "[vk]     (if 'scope actually broken' is small for the near-empty class, "
+                "§4b's premise is wrong: those passes are not End+Begin cycles at all)\n");
     }
     // PERF ITEM C's bill, on every stats dump — the bytes NOT copied, which is the whole
     // point of the item, plus the two numbers that say whether it is safe: how many stages
