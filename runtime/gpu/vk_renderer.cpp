@@ -2730,12 +2730,17 @@ struct ConstRef
     uint32_t draw = 0;
     uint32_t windowOffset = 0;          // kPaScWindowOffset — the TILE identity
     VkDeviceSize vsAt = 0, psAt = 0;
-    uint64_t vsHash = 0, psHash = 0;
     const ShaderMeta* vs = nullptr;
     uint32_t c0[16] = {};               // the projection block, kept for the diff
-    // The WHOLE recorded vertex window. 4 KB a draw is the price of answering the only
-    // question that matters — see the `affected` logic at the check.
-    std::vector<uint32_t> vsWindow;
+    // ONLY THE REGISTERS THIS DRAW'S SHADER READS, not the whole 4 KB window. The first
+    // cut stored and hashed both full windows per draw and was ~45x slower than the game —
+    // so slow that the autonomous route never reached the outdoor world and the harness
+    // correctly refused to report. An instrument too expensive to run where the defect
+    // lives is not an instrument (gotcha 7). The median shader reads 26 registers and the
+    // maximum is 56, so this is <=896 bytes against 4,096, and it is exactly the scope the
+    // `affected` verdict needs. The 22 a0-relative shaders keep the whole window, because
+    // they can index anywhere in it.
+    std::vector<uint32_t> vsRegs;
 };
 std::vector<ConstRef> g_constRefs;
 uint64_t g_raceDraws = 0, g_raceVsChanged = 0, g_racePsChanged = 0, g_raceProjChanged = 0,
@@ -2773,20 +2778,6 @@ bool ConstRacePoison()
 {
     static const bool on = EnvOn("CZ_VK_CONST_RACE_POISON");
     return on;
-}
-
-inline uint64_t ConstHash(const uint8_t* p, size_t n)
-{
-    // FNV-1a over dwords — the same function this project already trusts for shader
-    // microcode identity, and a dword stride because the payload is float4 registers.
-    uint64_t h = 1469598103934665603ull;
-    const uint32_t* d = reinterpret_cast<const uint32_t*>(p);
-    for (size_t i = 0; i < n / 4; i++)
-    {
-        h ^= d[i];
-        h *= 1099511628211ull;
-    }
-    return h;
 }
 
 // ===================================================================================
@@ -8660,10 +8651,27 @@ void SubmitFrame()
             tilesPerSlot[uint64_t(r.vsAt)] |= (r.windowOffset ? 2u : 1u);
         for (const ConstRef& r : g_constRefs)
         {
-            const bool vsChanged =
-                ConstHash(R->arena.mapped + r.vsAt, kVsConstBytes) != r.vsHash;
-            const bool psChanged =
-                ConstHash(R->arena.mapped + r.psAt, kPsConstBytes) != r.psHash;
+            const uint32_t* now =
+                reinterpret_cast<const uint32_t*>(R->arena.mapped + r.vsAt);
+            // AFFECTED, computed directly: did any register THIS draw's shader reads move
+            // after the draw was recorded? A change in registers it never reads is the
+            // gather working as designed — it leaves those holding arena garbage on
+            // purpose — so only this can condemn the feature.
+            bool affected = false;
+            if (r.vs && (r.vs->aluDynamic || r.vs->aluConsts.empty()))
+                affected = memcmp(now, r.vsRegs.data(), kVsConstBytes) != 0;
+            else if (r.vs)
+                for (size_t i = 0; i < r.vs->aluConsts.size(); i++)
+                    if (r.vs->aluConsts[i] < 256 &&
+                        memcmp(now + r.vs->aluConsts[i] * 4, r.vsRegs.data() + i * 4,
+                               4 * sizeof(uint32_t)) != 0)
+                    {
+                        affected = true;
+                        break;
+                    }
+            const bool vsChanged = affected;
+            const bool psChanged = false;   // the pixel window carries no projection and
+                                            // is never patched; kept for the report's shape
             if (!vsChanged && !psChanged)
                 continue;
             vsBad += vsChanged;
@@ -8675,31 +8683,6 @@ void SubmitFrame()
             const bool proj =
                 vsChanged && memcmp(R->arena.mapped + r.vsAt, r.c0, sizeof r.c0) != 0;
             projBad += proj;
-            // AFFECTED = did anything THIS draw's shader actually READS move? A change in
-            // registers it never reads is the gather working as designed: it leaves them
-            // holding arena garbage on purpose, so a later top-up filling them in is not a
-            // defect. Only this number can condemn the feature.
-            bool affected = false;
-            if (vsChanged && r.vs)
-            {
-                const uint32_t* now =
-                    reinterpret_cast<const uint32_t*>(R->arena.mapped + r.vsAt);
-                if (r.vs->aluDynamic || r.vs->aluConsts.empty())
-                {
-                    // a0-relative indexing can reach anywhere in the window, and an empty
-                    // list means the full copy — either way the whole window is in scope.
-                    affected = memcmp(now, r.vsWindow.data(), kVsConstBytes) != 0;
-                }
-                else
-                    for (uint32_t reg : r.vs->aluConsts)
-                        if (reg < 256 &&
-                            memcmp(now + reg * 4, r.vsWindow.data() + reg * 4,
-                                   4 * sizeof(uint32_t)) != 0)
-                        {
-                            affected = true;
-                            break;
-                        }
-            }
             if (affected)
             {
                 anyAffected = true;
@@ -18360,11 +18343,21 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         r.vsAt = vsConstAt;
         r.psAt = psConstAt;
         r.vs = &vs;
-        r.vsHash = ConstHash(R->arena.mapped + vsConstAt, kVsConstBytes);
-        r.psHash = ConstHash(R->arena.mapped + psConstAt, kPsConstBytes);
-        memcpy(r.c0, R->arena.mapped + vsConstAt, sizeof r.c0);
-        r.vsWindow.resize(kVsConstBytes / 4);
-        memcpy(r.vsWindow.data(), R->arena.mapped + vsConstAt, kVsConstBytes);
+        const uint32_t* win = reinterpret_cast<const uint32_t*>(R->arena.mapped + vsConstAt);
+        memcpy(r.c0, win, sizeof r.c0);
+        if (vs.aluDynamic || vs.aluConsts.empty())
+        {
+            r.vsRegs.resize(kVsConstBytes / 4);
+            memcpy(r.vsRegs.data(), win, kVsConstBytes);
+        }
+        else
+        {
+            r.vsRegs.resize(vs.aluConsts.size() * 4);
+            for (size_t i = 0; i < vs.aluConsts.size(); i++)
+                if (vs.aluConsts[i] < 256)
+                    memcpy(r.vsRegs.data() + i * 4, win + vs.aluConsts[i] * 4,
+                           4 * sizeof(uint32_t));
+        }
         g_constRefs.push_back(std::move(r));
     }
     }   // end recordState
