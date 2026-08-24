@@ -16155,3 +16155,98 @@ carrying to Case West.
 `--smoke` OK on every build. The renderer is behaviour-identical to part 72's close: the
 three additions are counters and clocks, and the one behavioural change was reverted in
 the same session it was made.
+
+## §6dj — Part 74: the RT era costs 0.5-0.7 ms, and the gather is the flicker (2026-08-23)
+
+The operator: *"before going that route I want to test the game before we added all the RT
+stuff to see how it fares compared to now."* Answered by building the old binaries and
+running them on the same route — the control is the old binary run NOW, not its remembered
+numbers (gotchas 50/51/86). `tools/autoroute.sh` grew `BIN_SRC` for it, so the route stays
+written down in one place and the binary is the only thing that changes.
+
+### 1. THE RT ERA IS NOT THE REGRESSION — IT IS 0.5-0.7 ms
+
+Three builds, same route, same shader cache, same `cz_settings.txt`, at the shared band:
+
+| build | 5500-5999 draws | all >=4000 | adds |
+|---|---|---|---|
+| **part 60** (`25c38f6`, pre-RT, pre-FOV) | **10.70 ms** | 10.68 / 10.42 | — |
+| **part 62** (`e10389b`, + 21:9 wide culling; no RT code) | **15.55 ms** | 15.66 | **+4.85 ms** |
+| **today** (`03d1d3e`, + all RT, parts 63-73) | 16.05 / 16.29 | 16.30 / 16.66 | **+0.5-0.74 ms** |
+
+**Everything from part 63 to part 73 — the whole of ray tracing, plus the pipeline cache,
+the hook fold and item C — costs 0.5-0.7 ms.** Parking or branching RT would recover
+essentially nothing. Part 71's hook fold had already removed the RT per-draw tax (+0.74 ms),
+which is why there is so little left to find.
+
+### 2. AND THE 4.85 ms IS NOT A REGRESSION EITHER — THE ARM TURNED OFF THE FIX TOO
+
+The part-60 build looked 45% faster, and the reason is visible in one line of its own log:
+
+```
+p60:   res=3440x1440 vsync=0 shadow_tier=2 fps_cap=0            <- no fov field at all
+p62:   ... fps_cap=0 fov=10  -> game-side fov ACTIVE, base+10, wide factor 1.3438 -> 67.64 deg
+today: ... fps_cap=0 fov=10  -> game-side fov ACTIVE, ... 67.64 deg
+```
+
+**Part 60 silently ignores the operator's `fov=10` setting** — the slider did not exist until
+part 61 — so it renders the game's authored ~43 degrees where the others render **67.64**,
+and it culls at 16:9 on a 21:9 screen. It is not faster; **it is showing far less of the
+world**, and the thing it is not showing is exactly what the operator asked to be fixed in
+part 62: *"everything on the side get culled since the game is fixed pov normally can you fix
+that?"*
+
+This is `an-arm-that-removes-the-fix-too` (gotcha 423's shape) at whole-binary scale, and it
+is the second time in two parts that the wide-culling work has been read as a cost when it
+is a picture. **An old binary is never a single-variable arm** — it lacks every fix since,
+including the ones that make the comparison unfair in the direction you are least likely to
+check. Gotcha 439.
+
+### 3. THE SKY FLICKER IS THE CONSTANT GATHER, AND THE VERDICT IS FOUR RUNS
+
+Owed since part 72 and settled in one sitting, with the operator watching:
+
+| arm | verdict |
+|---|---|
+| default, gather ON (their run) | **flickered** |
+| default, gather ON (deliberate positive control) | **flickered** |
+| `CZ_VK_NO_CONST_GATHER` equivalent, gather OFF | clean |
+| the NEW default, gather OFF | clean |
+
+**Two for two both ways, with the arm proving it engaged from a line the feature prints.**
+The operator raised the right objection after the first clean run — *"not sure if I just
+didn't see it in the last run"* — which is why the positive control was run rather than the
+clean result being banked.
+
+**The gather is OFF by default as of `3edcb08`.** It is a default, not a deletion:
+`CZ_VK_CONST_GATHER=1` turns it on and is the arm any fix must be developed against. The
+trade is item C's ~0.8 ms against a visible defect in the shipped configuration.
+
+**`CZ_VK_VERIFY_CONST_GATHER` still reads 0 disagreements over 17.9M gathers and is still
+right.** It verifies the gather copied what the shader's list names; the defect is what
+happens to the memo slot afterwards. This title tiles LEFT/RIGHT (gotcha 265), so a memo slot
+holding a partly-patched projection serves tile 0 and tile 1 different constants — a
+mechanism for exactly "half the screen, switching sides".
+
+**What is owed before it can be re-enabled: a DETECTOR**, so this stops costing an eye and a
+three-minute run. Flag any draw whose constant window is served with a different c0..c3 patch
+state than the other tile saw for the same shader in the same frame.
+
+### 4. THE ROUTE IS 3.2 MINUTES NOW, NOT 7.5
+
+On the operator's instruction — *"make these run max 3 and a half minutes because it's really
+long for performance that pretty much stay the same the whole time"* — and this repo had
+already recorded why as gotcha 438: the sequence finished turning at ~150 s and the process
+sat until a **fixed 450 s** timeout, so ~60% of every run was a parked camera. The timeout is
+now derived from the work (`130 + SECS`, default `SECS=60`). The 8 s press interval is
+deliberately unchanged: `CZ_FAKE_START_MS` is both the boot delay and the per-entry interval
+and each entry taps for only 150 ms inside it, so squeezing it trades wall time for route
+reliability (part 54's DebugJump race). The sample count is recovered by halving the `[fps]`
+window to 5 s, which is free because the frame time is stationary once outdoors.
+
+### 5. GATES
+
+`--smoke` OK; `alu_const_gate.py` clean; both part-72 session scripts parse and are repointed
+at the new default. Part 60 and part 62 are buildable today from a worktree at
+`~/GithubRepo/dr2cz-part60` with `ppc/` and `assets/` symlinked from the main tree — the
+recompiler config has not changed since part 60, so the generated `ppc/` is valid for both.
