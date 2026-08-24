@@ -41,6 +41,29 @@
 **So step 0 of the plan below is now just two things: the A5 gate (mine) and "is there still
 a felt stutter, and where" (theirs).**
 
+### 0-PRE-b. THE FLICKER HUNT IS PARKED DELIBERATELY, NOT ABANDONED
+
+The operator, closing it: *"Stop now, leave the gather off."* Full record in
+`phase5-notes.md` **§6dk**; gotcha **441**.
+
+* **A real defect was found and fixed**: the memo top-up rewrote a slot in place, and
+  because the window is bound as a buffer device address that mutation reached every earlier
+  draw sharing the offset. **48 affected draws a boot -> 0**, verified on the outdoor route
+  over 21.3M draws with the poison arm firing. **It was NOT the flicker** — the operator
+  watched a run with the fix in and the sky still flickered.
+* **Three explanations are dead**: the lists name everything the HLSL reads (the offline
+  cross-check finally ran and passes), the gather copies what they name (0 of 17.9M), and
+  nothing mutates a slot after a draw referenced it (0 of 21.3M, both stages).
+* **One is alive and its arm is BUILT AND UNRUN.** `CZ_VK_GATHER_FILL=1` fills the registers
+  a shader's list does NOT name with a constant instead of arena residue. Residue varies
+  frame to frame, which is what makes a defect intermittent — so the arm is two-sided:
+  flicker stops -> the defect is an unlisted read; flicker continues -> that dies too. **One
+  watched three-minute run decides it.** A run exists and nobody watched it.
+* **Nothing here is in the shipped path.** The gather is off by default and the shipped
+  renderer is behaviour-identical to pre-part-72. `CZ_VK_CONST_GATHER=1` re-enables it and
+  now carries the memo-key fix, so it is strictly better than what part 72 shipped — and it
+  still flickers, which is why it stays off.
+
 ## 0. WHAT PART 73 SETTLED — four items, none of them by shipping code
 
 | item | verdict |

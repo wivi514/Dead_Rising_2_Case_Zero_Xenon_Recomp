@@ -2798,3 +2798,32 @@ immediate submits  RunImmediate's total, and the part of it inside vkQueueSubmit
                    submit round-trip and not a copy, and then that no cheaper wait
                    primitive exists (gotcha 436)
 ```
+
+## Part 74 — the constant-gather arms (all off by default; the gather itself is too)
+
+```
+CZ_VK_CONST_GATHER=1  the per-shader constant GATHER (part 72's item C). **OFF by default
+                   since part 74 — it is the sky flicker.** Worth ~0.8 ms and 297 GB not
+                   copied at the operator's load. It now carries part 74's memo-key fix, so
+                   it is strictly better than what part 72 shipped, and it still flickers
+CZ_VK_CONST_RACE=1 the constant-slot RACE DETECTOR. Checks that the bytes a draw's constant
+                   window holds at RECORD time equal what they hold at SUBMIT time — the
+                   invariant the buffer-device-address binding forces, and the one part 72's
+                   gather verifier does not cover. Reports two numbers and the SECOND is the
+                   one that decides: "changed" counts any byte, **"AFFECTED"** counts only
+                   draws whose own shader reads a register that moved. ~8x slower than the
+                   game; armed only, never a default
+CZ_VK_CONST_RACE_POISON=1  mutates one dword of one memo slot between record and check. The
+                   positive control — a clean detector run means nothing until this has been
+                   seen to scream (gotcha 30). Reports ~1.8-7.8% of draws
+CZ_VK_GATHER_FILL=1  fill the registers a shader's list does NOT name with 10000.0f instead
+                   of arena residue. **The discriminator for the last live flicker
+                   explanation, BUILT AND UNRUN**: residue varies frame to frame, so if the
+                   flicker stops the defect is an unlisted read, and if it continues that
+                   explanation is dead. A diagnostic arm — it writes the ~230 registers the
+                   gather exists to skip, so it costs the whole item
+CZ_KEEP_SYNTH=<dir>  (tools/build_shader_spv.sh) keep the translated HLSL, which is what
+                   `alu_const_gate.py --hlsl-dir` needs to cross-check the gather's register
+                   lists against the shaders. Without it the gate runs in its weak mode —
+                   which is what happened for three parts (gotcha 441)
+```
