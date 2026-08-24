@@ -10980,14 +10980,44 @@ uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
          g_gatherTopUp = 0, g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
 
+// **THE GATHER IS OFF BY DEFAULT AS OF PART 74, ON THE OPERATOR'S OBSERVATION.** It shipped
+// enabled in part 72 worth ~0.8 ms and 297 GB not copied, with its verifier reading 0
+// disagreements over 17,948,265 gathers — and it is still correct by that measure. But the
+// operator reported a HALF-SCREEN SKY FLICKER, switching left/right with the moment, and
+// part 74 discriminated it on the autonomous route with them watching:
+//
+//   gather ON  -> flickered (twice, including a deliberate positive control)
+//   gather OFF -> clean
+//
+// **The verifier was right and was not measuring the defect.** It checks that the gather
+// copied what the shader's list NAMES; the candidate defect is what happens to the memo
+// slot afterwards, and this title tiles LEFT/RIGHT (gotcha 265) — so a memo slot holding a
+// partly-patched projection serves tile 0 and tile 1 different constants, which is a
+// mechanism for exactly "half the screen, switching sides". A verifier's scope is not the
+// feature's blast radius.
+//
+// **Off is a default, not a deletion.** The code, the verifier, the poison arm and
+// `tools/alu_const_gate.py` all stay; `CZ_VK_CONST_GATHER=1` turns it back on and is the
+// arm any fix must be developed against. The trade is 0.8 ms of a ~16 ms frame against a
+// visible picture defect in the shipped configuration, which is not a close call.
+//
+// **What is still owed before this can be re-enabled**: a DETECTOR, so this stops depending
+// on an eye and a 3-minute run. The shape is known — flag any draw whose constant window is
+// served with a different c0..c3 patch state than the other tile saw for the same shader in
+// the same frame. One clean run of that is worth more than any number of quiet eyeball runs,
+// because an intermittent defect cannot be cleared by a run that simply did not trigger it.
 bool ConstGatherOff()
 {
     static const bool off = [] {
-        const bool o = EnvOn("CZ_VK_NO_CONST_GATHER");
-        if (o)
-            fprintf(stderr, "[vk] CZ_VK_NO_CONST_GATHER=1 — the full 256-register window "
-                            "is copied per stage per draw (the pre-part-72 behaviour)\n");
-        return o;
+        const bool on = EnvOn("CZ_VK_CONST_GATHER");
+        if (on)
+            fprintf(stderr, "[vk] CZ_VK_CONST_GATHER=1 — the per-shader constant GATHER is "
+                            "ON (part 72's item C). It is OFF by default since part 74: it "
+                            "is the suspect for the half-screen sky flicker.\n");
+        else
+            fprintf(stderr, "[vk] constant gather OFF (the default since part 74 — the sky "
+                            "flicker). CZ_VK_CONST_GATHER=1 re-enables it.\n");
+        return !on;
     }();
     return off;
 }
@@ -16301,8 +16331,9 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // every slot holds the whole window.
     // ...AND NONE OF THIS RUNS WITH THE GATHER OFF. With the full copy the slot always
     // holds the whole window, so a different shader needs nothing added — and more
-    // importantly, `CZ_VK_NO_CONST_GATHER=1` has to be the PRE-PART-72 RENDERER EXACTLY
-    // or it is not a control arm. Without this test it was doing full copies and re-patches
+    // importantly, the gather-off path has to be the PRE-PART-72 RENDERER EXACTLY or it is
+    // not a control arm — and since part 74 it is also the DEFAULT, so it is not merely a
+    // control any more, it is what ships. Without this test it was doing full copies and re-patches
     // on shader changes that the old path never did: 319,138 of them in the A/B's control
     // arm, which is only 0.3% of its copies but is work the baseline never performed, and
     // a control that does extra work overstates the treatment (gotcha 415's shape).

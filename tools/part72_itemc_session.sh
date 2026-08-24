@@ -23,7 +23,7 @@
 #             a register. That is the point. The order poison does NOT touch rendering; it
 #             transposes a local copy used only for the hash.
 #   gather    the shipped default. THE A/B's treatment arm. ~3 min soak, heavy spot.
-#   nogather  CZ_VK_NO_CONST_GATHER=1 — the whole window copied, the pre-part-72 renderer.
+#   nogather  (no variable) — the whole window copied; the pre-part-72 renderer AND the part-74 default.
 #             THE A/B's control arm. ~3 min soak, SAME spot.
 #
 # WHAT TO READ. The two soak arms carry `CZ_FPS_LOG` and nothing else, so their medians are
@@ -39,6 +39,13 @@
 # Usage:  tools/part72_itemc_session.sh
 #         ORDER=verify,poison tools/part72_itemc_session.sh    # correctness only
 #         SECS=120 tools/part72_itemc_session.sh
+#
+# **PART 74 FLIPPED THE DEFAULT.** The gather shipped ON in part 72; the operator's sky
+# flicker was discriminated against it in part 74 (gather ON flickered twice including a
+# deliberate positive control, gather OFF was clean), so the gather is now OFF by default
+# and `CZ_VK_CONST_GATHER=1` turns it ON. Every arm below is rewritten accordingly: the
+# "gather off" arm now sets NOTHING, and the "gather on" arms set CZ_VK_CONST_GATHER=1.
+#
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/part72-itemc"
@@ -90,7 +97,7 @@ arm_desc() {
       verify)   echo "CZ_VK_VERIFY_CONST_GATHER=1 + CZ_VK_ORDER_GATE=1 — both must read ZERO" ;;
       poison)   echo "+ both POISONS — both verifiers must now read NON-ZERO" ;;
       gather)   echo "the shipped default — the A/B's TREATMENT arm" ;;
-      nogather) echo "CZ_VK_NO_CONST_GATHER=1 — the pre-part-72 full copy, the CONTROL arm" ;;
+      nogather) echo "gather OFF — the pre-part-72 full copy, the CONTROL arm and the part-74 default" ;;
       *)        echo "UNKNOWN ARM" ;;
     esac
 }
@@ -110,11 +117,14 @@ run_arm() {
     local tag="p72c_${STAMP}_${n}_${arm}"
     local extra=()
     case "$arm" in
-      verify)   extra+=(CZ_VK_VERIFY_CONST_GATHER=1 CZ_VK_ORDER_GATE=1) ;;
-      poison)   extra+=(CZ_VK_VERIFY_CONST_GATHER=1 CZ_VK_GATHER_POISON=1
-                        CZ_VK_ORDER_GATE=1 CZ_VK_ORDER_POISON=0) ;;
-      gather)   ;;
-      nogather) extra+=(CZ_VK_NO_CONST_GATHER=1) ;;
+      # Every arm that EXERCISES the gather must turn it on explicitly since part 74 —
+      # it is off by default. `nogather` is now the default and sets nothing.
+      verify)   extra+=(CZ_VK_CONST_GATHER=1 CZ_VK_VERIFY_CONST_GATHER=1
+                        CZ_VK_ORDER_GATE=1) ;;
+      poison)   extra+=(CZ_VK_CONST_GATHER=1 CZ_VK_VERIFY_CONST_GATHER=1
+                        CZ_VK_GATHER_POISON=1 CZ_VK_ORDER_GATE=1 CZ_VK_ORDER_POISON=0) ;;
+      gather)   extra+=(CZ_VK_CONST_GATHER=1) ;;
+      nogather) ;;
       *) echo "!! unknown arm '$arm'"; return 1 ;;
     esac
     cat <<BANNER
@@ -148,7 +158,7 @@ engaged() {
         # The gather must be RUNNING (not the full-copy fallback for everything), the
         # verifier must have CHECKED something, and both counts must be zero.
         grep -aq "const gather: [1-9]" "$f" &&
-        ! grep -aq "CZ_VK_NO_CONST_GATHER" "$f" &&
+        ! grep -aq "constant gather OFF" "$f" &&
         grep -aq "verified: [1-9][0-9]* gathers checked" "$f" &&
         grep -aq "\*\*0 disagreed\*\*" "$f" &&
         grep -aq "draw-order gate: [1-9][0-9]* frames checked, \*\*0 FAILED\*\*" "$f" ;;
@@ -162,10 +172,10 @@ engaged() {
         grep -aq "CZ_VK_ORDER_POISON=0" "$f" &&
         ! grep -aq "draw-order gate: [0-9]* frames checked, \*\*0 FAILED\*\*" "$f" ;;
       gather)
-        grep -aq "const gather: [1-9]" "$f" && ! grep -aq "CZ_VK_NO_CONST_GATHER" "$f" ;;
+        grep -aq "const gather: [1-9]" "$f" && ! grep -aq "constant gather OFF" "$f" ;;
       nogather)
         # Two-sided: the arm announced itself AND nothing was gathered.
-        grep -aq "CZ_VK_NO_CONST_GATHER=1 — the full 256-register window" "$f" &&
+        grep -aq "constant gather OFF (the default since part 74" "$f" &&
         grep -aq "const gather: 0.0% of window copies gathered" "$f" ;;
       *) return 1 ;;
     esac
@@ -176,7 +186,7 @@ if [ -n "${SELFTEST:-}" ]; then
     d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
     G='[vk]   const gather: 97.8% of window copies gathered (1200 full — dynamic a0 or no list), 3.10 GB not copied over the run (78.1% of 3.97 GB), 44 memo top-ups'
     G0='[vk]   const gather: 0.0% of window copies gathered (54000 full — dynamic a0 or no list), 0.00 GB not copied over the run (0.0% of 0.88 GB), 0 memo top-ups'
-    NOG='[vk] CZ_VK_NO_CONST_GATHER=1 — the full 256-register window is copied per stage per draw (the pre-part-72 behaviour)'
+    NOG='[vk] constant gather OFF (the default since part 74 is copied per stage per draw (the pre-part-72 behaviour)'
     VOK='[vk]     verified: 51234 gathers checked against the full copy, **0 disagreed**'
     VBAD='[vk]     verified: 51234 gathers checked against the full copy, **4211 disagreed**  (POISONED — a zero here means the verifier is BLIND)'
     GP='[vk] CZ_VK_GATHER_POISON=1 — one register is dropped from every gather.'

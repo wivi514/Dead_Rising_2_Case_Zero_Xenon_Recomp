@@ -25,7 +25,7 @@
 #
 # THE ARMS, in the order that answers the most with the fewest runs:
 #
-#   nogather  CZ_VK_NO_CONST_GATHER=1 — the gather off entirely, and as of `be1d9d7` this
+#   nogather  (no variable) — the gather off entirely, the DEFAULT since part 74, and as of `be1d9d7` this
 #             really is the pre-part-72 renderer. **IF IT STILL FLICKERS HERE, THE GATHER
 #             IS NOT THE CAUSE** and everything after it is about something else. This is
 #             first precisely because it is the arm that can exonerate the suspect.
@@ -45,6 +45,13 @@
 #
 # Usage:  tools/part72_flicker_session.sh
 #         ORDER=nogather tools/part72_flicker_session.sh
+#
+# **PART 74 FLIPPED THE DEFAULT.** The gather shipped ON in part 72; the operator's sky
+# flicker was discriminated against it in part 74 (gather ON flickered twice including a
+# deliberate positive control, gather OFF was clean), so the gather is now OFF by default
+# and `CZ_VK_CONST_GATHER=1` turns it ON. Every arm below is rewritten accordingly: the
+# "gather off" arm now sets NOTHING, and the "gather on" arms set CZ_VK_CONST_GATHER=1.
+#
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/part72-flicker"
@@ -66,7 +73,7 @@ STAMP="$(date +%m%d_%H%M)"
 
 arm_desc() {
     case "$1" in
-      nogather) echo "CZ_VK_NO_CONST_GATHER=1 — gather OFF. Flicker here = NOT the gather" ;;
+      nogather) echo "gather OFF (the part-74 default). Flicker here = NOT the gather" ;;
       fixed)    echo "the shipped default — gather ON with the c0..c3 refresh fix" ;;
       prefix)   echo "CZ_VK_GATHER_NO_C0_REFRESH=1 — the fix REVERTED. Must bring it BACK" ;;
       *)        echo "UNKNOWN ARM" ;;
@@ -77,9 +84,11 @@ run_arm() {
     local tag="p72f_${STAMP}_${n}_${arm}"
     local extra=()
     case "$arm" in
-      nogather) extra+=(CZ_VK_NO_CONST_GATHER=1) ;;
-      fixed)    ;;
-      prefix)   extra+=(CZ_VK_GATHER_NO_C0_REFRESH=1) ;;
+      # Gather OFF is the DEFAULT since part 74, so this arm sets nothing; the two arms
+      # that need the gather must now turn it ON explicitly.
+      nogather) ;;
+      fixed)    extra+=(CZ_VK_CONST_GATHER=1) ;;
+      prefix)   extra+=(CZ_VK_CONST_GATHER=1 CZ_VK_GATHER_NO_C0_REFRESH=1) ;;
       *) echo "!! unknown arm '$arm'"; return 1 ;;
     esac
     cat <<BANNER
@@ -109,10 +118,10 @@ BANNER
 engaged() {
     local arm="$1" f="$2"
     case "$arm" in
-      nogather) grep -aq "CZ_VK_NO_CONST_GATHER=1 — the full 256-register window" "$f" &&
+      nogather) grep -aq "constant gather OFF (the default since part 74" "$f" &&
                 grep -aq "const gather: 0.0% of window copies gathered" "$f" ;;
       fixed)    grep -aq "const gather: [1-9]" "$f" &&
-                ! grep -aq "CZ_VK_NO_CONST_GATHER" "$f" &&
+                ! grep -aq "constant gather OFF" "$f" &&
                 ! grep -aq "CZ_VK_GATHER_NO_C0_REFRESH" "$f" ;;
       prefix)   grep -aq "CZ_VK_GATHER_NO_C0_REFRESH=1" "$f" &&
                 grep -aq "const gather: [1-9]" "$f" ;;
@@ -138,7 +147,7 @@ for a in "${arms[@]}"; do
         echo "  ENGAGED."
     fi
     grep -a "const gather:" "$f" | tail -1 | sed 's/^/    /'
-    grep -a "CZ_VK_GATHER_NO_C0_REFRESH\|CZ_VK_NO_CONST_GATHER" "$f" | tail -1 | sed 's/^/    /'
+    grep -a "CZ_VK_GATHER_NO_C0_REFRESH\|constant gather OFF\|CZ_VK_CONST_GATHER=1" "$f" | tail -1 | sed 's/^/    /'
 done
 cat <<'READ'
 

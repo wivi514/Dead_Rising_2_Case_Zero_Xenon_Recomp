@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS
 ---------------
-`CZ_VK_NO_CONST_GATHER` off (the default from part 72) means the renderer copies only the
+`CZ_VK_CONST_GATHER=1` (ON; it is OFF by default since part 74) means the renderer copies only the
 constant registers each shader's sidecar says it reads. **A register missing from a list is
 never copied**, so the shader reads whatever the bump arena left in that slot — garbage,
 not a stale value, and the symptom is a wrong constant in one shader with everything else
