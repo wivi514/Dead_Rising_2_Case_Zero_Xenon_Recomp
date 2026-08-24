@@ -31,6 +31,9 @@
 #         PLAIN=1 tools/play_session.sh    # the a2m foliage cache off, i.e. stock shaders
 #         RES=2560x1440 tools/play_session.sh   # internal resolution scale
 #         NOSWAP=1 tools/play_session.sh          # the pre-part-54 readback present
+#         tools/play_session.sh CZ_VK_CONST_GATHER=1   # trailing KEY=VALUE pairs pass
+#                                                      # straight through, same convention
+#                                                      # as tools/autoroute.sh
 #
 # RES is an INTEGER multiple of the title's own 1280x720 and nothing else -- 2560x1440,
 # 3840x2160, 5120x2880. The guest's geometry, viewports and scissors are its own numbers
@@ -124,7 +127,7 @@ echo "==================================================================="
     "CZ_CAPTURE_KEY=$OUT/$TAG" \
     "CZ_BURST_DUMP=$OUT/$TAG" \
     "CZ_SHADER_DUMP=$HOME/DR2CZ-troubleshooting/ucode-dumps" \
-    "${extra[@]}" \
+    "${extra[@]}" "$@" \
     ./cz_runtime > "$OUT/$TAG.log" 2>&1 )
 
 echo
