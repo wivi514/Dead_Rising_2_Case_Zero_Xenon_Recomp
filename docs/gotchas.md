@@ -4869,3 +4869,41 @@ From phase C part 18 (the frame rate — and none of it was work):
      line as its verdict** — this one did say so, and it still went unread for three parts,
      because a caveat printed beside an exit code of 0 reads as an exit code of 0. Sibling
      of gotcha 25 (a grep that cannot match is not a clean result) at gate scale.
+
+442. **A LIST OF "WHAT THE SHADER READS" IS NOT A LIST OF WHAT THE RENDERER READS.** The
+     constant gather copies only the registers each shader's sidecar names, and every gate,
+     verifier and census built around it asked the same question: does the shader get what it
+     reads? All of them passed, and the picture was still wrong — because **the renderer
+     reads the constant window too**. `PatchFovProjection`/`PatchWideProjection` call
+     `SceneXformForm`, which inspects c0..c3 to decide whether the window is a scene
+     projection and then rewrites it for the fov slider and the 21:9 widening. Three shaders
+     of 449 do not list all of c0..c3, so for their draws the patch was inspecting **arena
+     residue**, never recognised a projection (0 of 379,968), and left those draws with an
+     unpatched projection while the rest of the frame was widened. **When you make a copy
+     conditional on a consumer's declared needs, enumerate EVERY consumer — including your
+     own code downstream of the copy.** The fix was sixteen dwords; finding it took a day.
+     Gotcha 440 one level down.
+
+443. **A ROUTE TUNED FOR ONE DEFECT CAN BE ACTIVELY HOSTILE TO ANOTHER.**
+     `tools/autoroute.sh` swings the camera left and right, because the operator's
+     authorisation was *"move the camera to right or left for 30 second to try to reproduce
+     stutter"*. Reused unchanged for a HALF-SCREEN SKY FLICKER hunt it made the defect harder
+     to see, in their words *"it just makes the flicker harder to catch"* — a swinging camera
+     changes which half of the sky is bright, which is the very signal the eye is watching
+     for. It also polluted the automatic metric, whose first statistic counted exactly those
+     camera-driven sign changes. `STILL=1` holds the view and the known-bad binary flickers
+     on it reliably. **Before reusing a harness, ask what it was tuned to provoke and whether
+     that provocation masks what you are now looking for.**
+
+444. **RUN THE SAME ARM TWICE BEFORE QUOTING AN ORDERING OF FOUR ARMS.** Part 74 built a
+     per-frame sky-asymmetry metric, ran four configurations once each, and reported the
+     ordering as a result: 0.0708 flickering against 0.0130 clean. Re-running the SAME
+     configuration later gave **0.0448**. With three runs an arm the medians do separate
+     (0.024 vs 0.066, 2.7x) but the individual ranges **overlap**, so the metric is a
+     three-run aggregate and was never capable of settling a single run. Two further
+     lessons ride along: the first summary statistic chosen (sign flips) did not discriminate
+     at all because the route's own camera motion produced them, so **collect the raw
+     per-frame series and choose the statistic after looking at the data**; and when a
+     defect is intermittent, the human verdict stays the ground truth until the instrument
+     has been shown to separate the arms — not before. Sibling of gotchas 50/51/86 and of
+     `every-campaign-needs-a-null-control-arm`.

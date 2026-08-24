@@ -16253,6 +16253,14 @@ recompiler config has not changed since part 60, so the generated `ppc/` is vali
 
 ## §6dk — Part 74: the flicker hunt, stopped with three explanations dead and one alive (2026-08-23)
 
+> **SUPERSEDED THE NEXT DAY — THE FLICKER WAS FOUND AND FIXED. See §6dl.** This section is
+> kept because its three dead explanations are still dead and are worth not re-buying, and
+> because its closing state is what the resumption started from. What it got wrong: it
+> treated the surviving candidate as "a register the SHADER reads that the list does not
+> name" and never considered that **the RENDERER reads c0..c3 itself**. `CZ_VK_GATHER_FILL`
+> was built to test the shader hypothesis and its clean result was right for the wrong
+> reason — filling the unlisted registers also made c0..c3 deterministic.
+
 **The operator's instruction closing it:** *"Stop now, leave the gather off."* Recorded so
 nobody re-opens this thinking it was abandoned mid-thought — it was stopped deliberately,
 with the state below, on an item worth 0.8 ms of a ~16 ms frame.
@@ -16342,3 +16350,85 @@ registers the gather exists to skip, so it costs the whole item.
 * **The next step, if anyone resumes, is one watched run of `CZ_VK_GATHER_FILL=1`.** It is
   three minutes and it decides between the last live explanation and "not the gather's data
   path at all".
+
+## §6dl — Part 74 resumed: the flicker is TWO defects, and the gather is back on (2026-08-24)
+
+The operator asked for the fill arm to be re-run with them watching. It was clean, and that
+one run turned into the whole diagnosis.
+
+### 1. THE TWO DEFECTS
+
+**(a) The memo top-up mutated a slot IN PLACE.** Constants reach the shader as a **buffer
+device address** in a push constant, so a write to an arena offset reaches every earlier
+draw of the frame recorded against it, retroactively. `CZ_VK_CONST_RACE=1` measured **48
+affected draws a boot, all in the projection, in 2 frames of 513**. Fixed by making the
+shader part of the memo key, which turns that case into an ordinary miss with a fresh slot.
+
+**(b) The gather did not copy c0..c3 for three shaders — and THIS RENDERER READS c0..c3.**
+`PatchFovProjection` and `PatchWideProjection` call `SceneXformForm`, which inspects all
+sixteen floats to decide whether the window is a scene projection. The census named the
+three:
+
+```
+e86e70248d763bbe   reads 95,96,97,98, 201..204     no c0..c3 at all   303,240 draws/run
+efe5c633ec44cfd6   reads 0, 1, 3, 8, 9, 10         c0,c1,c3 but NOT c2
+8fbfbd385a6ae211   reads 0, 1, 3, 8, 9, 10, 195, 208   same
+```
+
+For those the patch inspected **arena residue**, never recognised a projection (0 of
+379,968), and therefore **left their projection unpatched while every other draw in the
+frame was widened** — two projections in one scene, with the residue varying frame to frame.
+Fixed in sixteen dwords: c0..c3 are copied unconditionally.
+
+**The list describes what the SHADER reads. It was never a description of what the RENDERER
+reads.** That is gotcha 440 one level down, and it is the transferable half. Gotcha 442.
+
+### 2. THE VERDICTS, AND WHY THIS TOOK A DAY
+
+| configuration | flickered |
+|---|---|
+| pre-fix binary (`3edcb08`) | **6 of 6** |
+| c0 fix reverted, memo fix kept (`CZ_VK_GATHER_NO_C0_ALWAYS=1`) | **1 of 3** |
+| both fixes | **0 of 2**, plus a full PLAY SESSION at 8,593-10,256 draws |
+
+**The defect is INTERMITTENT run to run** — the operator established that directly, and it
+is the single fact that explains every confusing result of the day. A clean run never
+distinguished "fixed" from "not triggered", which is why:
+
+* the **pre-fix binary is kept buildable** as the positive control (`BIN_SRC=` in
+  `tools/autoroute.sh`, worktree at `~/GithubRepo/dr2cz-part60`), and
+* `CZ_VK_GATHER_NO_C0_ALWAYS=1` reverts the second fix in the same binary.
+
+**My own first "revert arm" was not one.** `CZ_VK_GATHER_NO_C0_ALWAYS` reverts the c0 fix
+but NOT the memo-key fix, so it never restored the defective state; when it came back clean I
+briefly read that as the fix being unconfirmed. The true control is the pre-fix binary, and
+building it took two minutes with tooling built the same morning for an unrelated question.
+
+### 3. THE ROUTE WAS PART OF THE PROBLEM
+
+The operator: *"remove the move with camera to left and right because it just makes the
+flicker harder to catch; the left and right is for catching stutter."* Exactly right — a
+swinging camera changes which half of the sky is bright, which is the very thing the eye is
+watching for. `STILL=1` holds the view, and the pre-fix binary flickers on it reliably where
+the turning route was equivocal. **A route tuned for one defect can be actively hostile to
+another.** Gotcha 443.
+
+They also asked for the DebugJump walk to stop dawdling; `CZ_FAKE_PRESS_MS` separates the
+press interval from the boot delay (they were one knob) and the menu walk went 56 s -> 21 s.
+
+### 4. THE INSTRUMENT I BUILT WAS NOT GOOD ENOUGH, AND SAYING SO IS THE POINT
+
+`CZ_VK_SKY_ASYM` scores left/right sky luma per frame. Its first summary — sign flips —
+did not discriminate (1.10% flickering vs 0.86% clean), because a turning camera flips the
+sign by itself. Writing the raw per-frame series instead let the statistic be chosen after
+looking at the data, and the median frame-to-frame step separates on **medians of three runs
+(0.024 vs 0.066, 2.7x)** — but **individual runs OVERLAP** (fixed reaches 0.0448, flickering
+dips to 0.0335). I quoted two single runs as if they settled it before running the same arm
+twice. The operator's eye remained the ground truth throughout. Gotcha 444.
+
+### 5. GATES
+
+`--smoke` OK; **`alu_const_gate.py --hlsl-dir` clean over all 449 modules** (its real mode,
+runnable at last via `CZ_KEEP_SYNTH`); `shader_dim_census` clean; `rt_world_xform` 104 of
+104; the play session logged **0** `no translated shader`, **0** slot mix-ups and **0**
+`CONST MEMO STALE`.
