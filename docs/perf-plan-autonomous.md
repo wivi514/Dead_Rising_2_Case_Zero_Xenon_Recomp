@@ -84,7 +84,19 @@ unplaced over 12,560 draws in 20 `.xtr` traces. It has never been run in-engine 
 * **Pre-registered kill: below 700 recovered draws (~1.75 ms) the item dies** and the
   21:9 flank fix stays exactly as it is.
 
-## 2. ITEM E — geometry in VRAM, re-asked because item C landed
+## 2. ITEM E — geometry in VRAM — **RUN IN PART 73. DEAD, AND THE REASON FOR THE RE-ASK WAS WRONG TOO**
+
+> **RETRACTED IN PLACE, 2026-08-23 (part 73).** Four arms, null-bracketed. The null pair
+> agrees to **1.5%**; `CZ_VK_VRAM_STREAMS=1` is **4.3x slower at the shared draw band**
+> (16.45 -> 70.66 ms), not the ~14% on record. And the third arm refutes this section's own
+> reasoning: `CZ_VK_NO_CONST_GATHER=1` restores the full 256-register copy — *more* constant
+> traffic — and reads **69.72 ms, no different from the gather's 70.66**. Constant traffic
+> was never the mechanism, so item C neither rescued E nor could have. Named hypothesis for
+> the real mechanism, filed not claimed: memory type 5 is a write-combined resizable-BAR
+> heap, and the cross-frame stream store's content guard READS stream bytes on the hot path.
+> `phase5-notes.md` §6di §6.
+
+## 2-OLD. The text as it stood before part 73 ran it
 
 `CZ_VK_VRAM_STREAMS=1` measured **~14% SLOWER** and the reason was structural: we
 re-uploaded the constant window every draw, so device-local memory was being written
@@ -232,14 +244,16 @@ peaks exactly when new ground is streamed in.
 2. §5  per-frame texture table     (offline build + 1 run)   — DONE (part 73). Two populations
    §4b resolve/begin cycle clock                             — DONE (part 73). CLOSED at 0.27 ms
 3. §1  item 1 priced at last       (2 arms + null)           — DONE (part 73). REFUTED
-4. §2  item E re-asked             (3 arms, no new code)     — STILL OPEN, and now the top item
+4. §2  item E re-asked             (3 arms, no new code)     — DONE (part 73). DEAD, 4.2x slower
 5. §3  item A, only if §4 says the distribution supports it  — §4 says it does not
 ```
 
-**As of part 73 this plan is nearly exhausted, and that is the result.** Items 1, 2, 3, §4b
-and item A's design are all closed or refuted; item C shipped in part 72. **§2 (item E) is
-the only unrun item left in it**, and item 0w's remaining cost has been shown to sit
-outside the renderer, which is new ground rather than a plan item.
+**AS OF PART 73 THIS PLAN IS EXHAUSTED, AND THAT IS THE RESULT.** Every item in it is now
+closed, refuted or shipped: items 1, 2, 3, E, §4b and item A's design are dead; item C
+shipped in part 72 and is the only thing this whole campaign delivered. **A successor plan
+must be built from new ground, not from this table** — and part 73 found where that ground
+is: the larger population of open item 0w's hitches has **none** of the renderer's three
+per-frame variable costs elevated, so it is outside the renderer entirely.
 
 §1 and §2 are pure measurement and cannot break anything. §4 and §5 add counters that are
 inert when unarmed. §3 is the only item that changes how frames are recorded, and it is

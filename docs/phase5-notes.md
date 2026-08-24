@@ -16109,7 +16109,48 @@ in one window of the default arm, 0.0 in another, and 328.9 under the control. G
 repeated, identical to the decimal. Only the moving windows are informative. Any future
 reader of an `autoroute.sh` log should discard the frozen tail before quoting a rate.
 
-### 6. GATES
+### 6. PLAN §2 — ITEM E IS NOT 14% SLOWER, IT IS 4.2x SLOWER, AND ITEM C HAS NOTHING TO DO WITH IT
+
+Four arms, run in the order `null, vram, vram+nogather, null`, so the null BRACKETS the
+treatment and any monotone drift across the afternoon shows as a null-to-null gap
+(gotcha 433). Windowed medians, binned by draw count:
+
+```
+                       5500-5999          6000-6499          6500-6999      all >=4500
+null (opening)      16.64 ms n=32      16.45 ms n=6                 -      16.63 ms
+CZ_VK_VRAM_STREAMS=1           -       70.66 ms n=8       78.01 ms n=29    77.71 ms
+  + CZ_VK_NO_CONST_GATHER=1  69.42 n=10 69.72 ms n=28              -      69.69 ms
+null (closing)      16.68 ms n=20      17.10 ms n=18                -      16.88 ms
+```
+
+**The null pair agrees to 1.5%**, which is the day's floor, and the effect is **4.3x at the
+one band all three arms share.** Both VRAM arms print `per-frame arena: 256 MB in VIDEO
+MEMORY (memory type 5)` where the nulls print `system RAM (memory type 3)`, so the arm
+engaged and the nulls did not.
+
+**Two things die here.** The item, obviously. But also **the reason it was re-opened**: the
+plan's argument was that E lost because we re-upload the constant window every draw
+(gotcha 363), and item C cut that by 61.9%, so E deserved a re-ask. The third arm tests
+that directly — `CZ_VK_NO_CONST_GATHER=1` restores the full 256-register copy, making
+constant traffic *much larger* — and it reads **69.72 ms against the gather's 70.66 at the
+same band, i.e. no difference and if anything the wrong way.** Constant traffic was never
+the mechanism, so item C neither rescued E nor could have.
+
+**The magnitude is also a retraction.** Night Run 1 recorded "~14% slower"; at this route's
+load and the operator's 3440x1440 it is 4.2x. A cost that grows by thirty times between two
+operating points is not the same cost measured twice (gotcha 419's shape).
+
+**The named, testable mechanism, filed rather than claimed:** memory type 5 is device-local
+AND host-visible — a resizable-BAR heap, which is write-combined. Sequential CPU writes to
+WC are fine; **CPU READS of it are catastrophic**, and this renderer reads its geometry
+buffers back on the hot path, because the cross-frame stream store's content guard hashes
+stream bytes to decide whether to re-upload. The one-line experiment for whoever picks this
+up is `CZ_VK_VRAM_STREAMS=1` with the stream guard's exact bound driven to zero: if the
+4.2x collapses, the guard's readback is the whole mechanism and "geometry in VRAM" is only
+wrong *for a renderer that reads its own geometry*. That distinction is the part worth
+carrying to Case West.
+
+### 7. GATES
 
 `--smoke` OK on every build. The renderer is behaviour-identical to part 72's close: the
 three additions are counters and clocks, and the one behavioural change was reverted in
