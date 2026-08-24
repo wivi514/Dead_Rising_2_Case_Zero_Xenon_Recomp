@@ -11335,8 +11335,22 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
     //
     // Sixteen dwords. It is the difference between the gather being a copy optimisation and
     // the gather being a semantic change, which it was never allowed to be.
-    for (uint32_t r = 0; r < 4; ++r)
-        memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
+    // CZ_VK_GATHER_NO_C0_ALWAYS=1 REVERTS this, in the same binary. It exists because the
+    // defect it fixes is INTERMITTENT and visual: without a way to bring it back on demand,
+    // "the flicker stopped" cannot be told apart from "we did not trigger it this time",
+    // which is the operator's own objection and the reason part 72's fix could never be
+    // confirmed. Never a configuration to ship — a positive control.
+    static const bool noC0Always = [] {
+        const bool o = EnvOn("CZ_VK_GATHER_NO_C0_ALWAYS");
+        if (o)
+            fprintf(stderr, "[vk] CZ_VK_GATHER_NO_C0_ALWAYS=1 — c0..c3 are NOT force-copied. "
+                            "This is the POSITIVE CONTROL for the sky-flicker fix and must "
+                            "reproduce it.\n");
+        return o;
+    }();
+    if (!noC0Always)
+        for (uint32_t r = 0; r < 4; ++r)
+            memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
     ++g_gatherGathered;
     const size_t n = meta.aluConsts.size();
     if (!n)
