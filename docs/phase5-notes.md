@@ -16752,3 +16752,50 @@ Verification, on the outdoor route:
 CZ_VK_VERIFY_PATCH_SRC=1                0 of 47,352,900 draws disagreed
 CZ_VK_VERIFY_PATCH_SRC=1 + _POISON=1    43,810,856 of 43,810,856 (100.0000%)
 ```
+
+### 5. THE AUDIT THIS FINDING OWED, DONE THE SAME DAY
+
+Gotcha 446's whole point is that this project had **already found this fact once**, at a
+different pointer: part 17 caught the present readback buffer being write-combined
+(3.7 MB read back at ~230 MB/s, `readback` 15.7% -> 0.4%, the frame 103 -> 87 ms) and
+fixed it there in `ReadbackMemoryProps`, with `CZ_VK_READBACK_UNCACHED=1` as the arm. It
+was never generalised, and the arena's own read-back then sat unnoticed for 58 parts.
+
+So every mapping and every access was enumerated in the same sitting rather than left as
+an inference:
+
+| mapping | props | reads on the hot path |
+|---|---|---|
+| `R->arena` | HOST_VISIBLE\|HOST_COHERENT — **write-combined** | **the projection patch — FIXED**; everything else is behind a diagnostic gate (`CZ_VK_CONST_RACE`, the memo verifier, `CZ_VK_PS_CONST_SCALE`) |
+| the cross-frame stream store | same props | none — `CopySwapped` writes only |
+| `R->staging` | same props | none — texture staging writes only |
+| `R->readback` / the per-slot present buffers | + **HOST_CACHED** since part 17 | reads, and correctly cached |
+
+The `shared` block is in the arena too, and every one of its eighteen access sites is a
+WRITE. `runtime/gpu/` outside `vk_renderer.cpp` touches no mapping at all.
+
+**That table is the deliverable, not the fix.** A fix at one pointer is what part 17 shipped
+and it is why this cost 58 parts.
+
+### 6. THE A/B: A FIT, NOT A BIN — AND THE INTERCEPT IS THE CONTROL
+
+Six runs, arms alternated, same binary, `CZ_FPS_LOG` only (no profiler):
+`CZ_VK_PATCH_IN_ARENA=1` is the control and changes exactly one thing.
+
+Binning by draw count is the project's default and it is coarse here — 5,000-7,000 draws
+is a 40% range, the DebugJump landing is bimodal, and two arms then populate different
+parts of one bin so the bin median mixes a real difference with a placement difference.
+Frame time on this workload is close to LINEAR in draw count (§6do's own table gives
+3.65-5.05 us/draw across the whole range), so `tools/part75_bandfit.py` fits a line per arm
+and evaluates both at the same draw count, inside the range both arms cover.
+
+**And that carries a control the binned form cannot.** This change removes a strictly
+PER-DRAW cost, so it must leave the INTERCEPT alone and reduce the SLOPE. Afternoon drift,
+a different route depth or a thermal difference would move both. The intercept is therefore
+a null channel the item could not have moved, read for free beside the result — and it
+agrees to 3%:
+
+```
+arena (control):  ms = 3.65 + 2.091 per 1000 draws
+fix:              ms = 3.76 + 1.063 per 1000 draws      <-- the slope HALVES
+```
