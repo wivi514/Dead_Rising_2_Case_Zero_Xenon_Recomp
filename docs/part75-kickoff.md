@@ -25,7 +25,36 @@
 | **where the remaining hitch is** | **INSIDE the renderer.** Residual 0.0 ms on every hitch frame; part 73's "outside the renderer" is retracted (§6dm) |
 | **the A5 kernel gate**, owed since part 67 | **CLEAN** — exit 0, 4 permutation windows, 0 real |
 
-## 1. THE ONE ITEM: BATCH THE TEXTURE UPLOADS (plan step 3)
+## 1. THE ITEM: THE TEXTURE PATH — AND THE DECODE IS THE BIGGER HALF
+
+> **REVISED at part 74's close (§6dn).** A per-frame CPU/GPU profiler was built on the
+> operator's request and it both attributed the stutter and re-shaped this item.
+
+**The stutter is 100% CPU-side.** On every hitch frame the GPU is doing 3.8-9.9 ms while the
+CPU burns 181-269; run-wide the GPU averages **7.93 ms/frame** against a **0.37 ms** fence
+wait. The GPU is never the limiter on this route.
+
+**And it is the texture path — 82-90% of every hitch frame.** In two halves:
+
+| half | cost/run | per texture | fix |
+|---|---|---|---|
+| **decode** — untile every mip, endian swap, image creation | **469.0 ms (66%)** | 209 us | **parallelise or cache.** Pure CPU on the pump; this port already has a worker pool (part 53) |
+| **staging + submit** — `memcpy` + `RunImmediate` (94% of it `vkQueueWaitIdle`) | 244.0 ms (34%) | 109 us | **batch** — see the constraints below |
+
+**The decode was invisible until part 74's close** (the clock started at the staging memcpy,
+gotcha 445), which is why this file previously named only the batching. **Take the decode
+first: it is nearly twice the size and its fix is independent.**
+
+```
+frame 2771:  285.5 ms = CPUrec 268.9 + fence 2.6 + sleep 14.0   GPU 3.8   775 tex (up 65.6 + dec 177.3)
+frame 6787:  209.1 ms = CPUrec 208.7 + fence 0.0 + sleep  0.5   GPU 9.9   692 tex (up 61.8 + dec 119.2)
+```
+
+**One frame is still unexplained and is worth a look:** 6788 is **96.5 ms of CPU recording
+with ZERO uploads, zero decode, zero pipelines** and a 10.9 ms GPU, immediately after a
+692-upload burst. The instrument to chase it now exists (`CZ_VK_FRAME_TRACE`).
+
+### 1b. THE BATCHING HALF (the original step 3 text)
 
 **Why it is the item:** the frame decomposition puts the whole hitch inside `Pm4_Execute`,
 and inside that, texture uploads drive **288.8 ms of immediate submits a run, 94.0% of it
@@ -42,16 +71,15 @@ so 2,243 uploads is **~15 ms against 271.6 ms, roughly 18x cheaper**.
 upload, which is why the current code must drain before reusing it. The per-frame arena
 (`ArenaAlloc`, 256 MB, host-visible) is the obvious replacement staging source.
 
-**Pre-registered kill: below 40 ms off the worst frame of the route, do not ship it.** It is
+**Pre-registered kill for EACH half separately: below 40 ms off the worst frame of the
+route, do not ship that half.** It is
 a HITCH item — 0.020 ms/frame amortised — so a small win does not justify touching the
 upload path. Picture gate plus the operator's look before shipping: it changes when pixels
 arrive.
 
-**One cheap measurement first**, and it is worth taking: frame 6814 is a 211 ms walk with
-only 61.7 ms of upload time, and frame 6815 is a **98 ms walk with ZERO uploads**. That pair
-looks like GPU backpressure — 692 queue waits in one frame serialising CPU and GPU — but it
-is a hypothesis. **One unconditional clock on the frame's fence wait**, splitting `walk` a
-level further, settles it and says how much of the 211 ms batching can actually recover.
+~~One cheap measurement first: ... GPU backpressure ...~~ **DONE at part 74's close and the
+hypothesis was WRONG.** The fence wait on those frames is **0.0-3.6 ms** — there is no GPU
+backpressure. The unattributed time was the texture DECODE, which no clock was covering.
 
 ## 2. WHAT IS RULED OUT — do not start these
 

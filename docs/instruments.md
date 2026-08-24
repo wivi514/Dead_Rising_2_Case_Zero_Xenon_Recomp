@@ -2856,3 +2856,30 @@ BIN_SRC=<path>     run an ARBITRARY BINARY on this exact route. The binary is co
 TIMEOUT=<s>        derived from the work by default rather than a fixed 450 s
 tools/play_session.sh KEY=VALUE ...   trailing env passes through, same convention
 ```
+
+## Part 74's per-frame CPU/GPU profiler — unconditional, and the GPU side is new
+
+```
+(always on)        Each worst-frame row and the CZ_VK_FRAME_TRACE series carry
+                   wall = CPUrec + fence + sleep + residual, which SUM, plus `GPU`, which
+                   overlaps them by design. CPUrec is our recording; fence is the CPU
+                   BLOCKED ON THE GPU; sleep is the pump idle; residual is not the renderer
+                   at all. GPU comes from two timestamps in the frame's OWN command buffer,
+                   read back deferred (after that slot's fence) so it never stalls
+CZ_VK_FRAME_TRACE=<file>   one line per presented frame — frame, draws, wall, walk, record,
+                   fence, sleep, residual, gpu, texUploads, texKB, texUpUs, texDecUs,
+                   pipes. Use this to FIND a stutter offline rather than hoping it lands in
+                   the twelve-row table
+CZ_PUMP_POISON_MS=N   the RESIDUAL column's positive control — burns N ms in the pump loop
+                   outside both the walk and the sleep. At N=40 every poisoned frame reports
+                   RESIDUAL 40.0 with walk and sleep unaffected
+```
+
+**The two columns were validated against existing arms, each moving its own:**
+`CZ_VK_FRAMES_IN_FLIGHT=1` takes the fence wait 2,370 -> 10,233 us with CPUrec unchanged;
+pixel count takes GPU 7,986 / 10,167 / 19,856 us at 3.69 / 4.95 / 14.75 Mpx. **Beware the
+resolution arm's direction** — `cz_settings.txt` is 3440x1440, so `CZ_VK_RES=2560x1440` is
+FEWER pixels (gotcha 415, and part 74 walked into it again).
+
+**A device that cannot timestamp says so by name** — both `timestampPeriod == 0` and
+`timestampValidBits == 0` are checked and printed, rather than producing a column of zeros.
