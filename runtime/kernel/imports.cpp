@@ -3732,6 +3732,17 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     if (userIndex >= kLocalPadCount)
         return ERROR_DEVICE_NOT_CONNECTED;
 
+    // CZ_FAKE_PRESS_MS — the interval BETWEEN entries, separated from the boot delay in
+    // part 74 on the operator's request ("go faster when you are in debug jump instead of
+    // waiting for a while"). These were one knob, so shortening the menu navigation also
+    // shortened the wait for the title screen to exist, and the first press would land
+    // before there was anything to press. They are different quantities: the boot delay is
+    // a property of the GAME's load time and the interval is a property of how long a menu
+    // transition takes. Defaults to the boot delay, so every existing recipe is unchanged.
+    //
+    // The 150 ms tap window is NOT scaled with it: a tap is a tap, and part 54 had to fix a
+    // race where the DebugJump edge was missed inside exactly this window. Shortening the
+    // interval leaves the tap the same length and only reduces the idle time after it.
     static const int fakeStartMs = []() {
         const char* e = getenv("CZ_FAKE_START_MS");
         const int ms = e ? atoi(e) : 0;
@@ -3740,6 +3751,15 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                  "not evidence about any import; do not gate on it.\n",
                  ms);
         return ms;
+    }();
+    // Resolved AFTER the boot delay, because its default IS the boot delay.
+    static const int fakePressMs = []() {
+        const char* e = getenv("CZ_FAKE_PRESS_MS");
+        const int v = e ? atoi(e) : 0;
+        if (v > 0)
+            KLOG("CZ_FAKE_PRESS_MS=%d — entries advance every %d ms; the boot delay stays "
+                 "CZ_FAKE_START_MS. The 150 ms tap window is unchanged.\n", v, v);
+        return v > 0 ? v : (fakeStartMs > 0 ? fakeStartMs : 1);
     }();
 
     // The real device, and it takes precedence over nothing: the synthetic arm below
@@ -3975,7 +3995,8 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         // subtraction below would wrap and select the LAST entry, which is harmless
         // while nothing is emitted and is a spurious transition once it is.
         if (started)
-            idx = std::min(size_t(effectiveMs / fakeStartMs) - 1, sequence.size() - 1);
+            idx = std::min(size_t((effectiveMs - fakeStartMs) / fakePressMs),
+                           sequence.size() - 1);
         entry = sequence[idx];
     }
 
@@ -4034,7 +4055,7 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     const long long phaseMs = parked ? elapsedMs : effectiveMs;
     const bool active =
         (started || parked) && !entry.barrier &&
-        (entry.hold || (phaseMs % fakeStartMs) < 150);
+        (entry.hold || ((phaseMs - (parked ? 0 : fakeStartMs)) % fakePressMs) < 150);
 
     // A HOST DEBUG EDGE FIRES ONCE PER INTERVAL, keyed on the interval INDEX.
     //

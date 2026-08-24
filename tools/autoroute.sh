@@ -25,6 +25,7 @@
 # Usage:
 #   tools/autoroute.sh <tag> [KEY=VALUE ...]        # one arm
 #   SECS=90 tools/autoroute.sh base                 # longer after arrival
+#   STILL=1 tools/autoroute.sh flicker             # hold the view (SKY FLICKER hunts)
 #   TIMEOUT=300 SECS=150 tools/autoroute.sh soak    # both, for a deliberately long run
 #   tools/autoroute.sh null                         # then again — that pair IS the floor
 set -u
@@ -46,8 +47,21 @@ TAG="${1:?usage: autoroute.sh <tag> [ENV=VAL ...]}"; shift || true
 # Windows are 5 s rather than 10 s, which recovers the sample count a shorter run would
 # otherwise lose: the frame time on this route is stationary once outdoors, so more, shorter
 # windows are strictly better than fewer long ones for a banded median.
+# STILL=1 — STAND STILL after arrival instead of turning the camera.
+#
+# The turn block exists for the STUTTER hunt: the operator's authorisation was "move the
+# camera to right or left for 30 second to try to reproduce stutter". For the SKY FLICKER it
+# is actively harmful — their words: *"remove the move with camera to left and right because
+# it just makes the flicker harder to catch; the left and right is for catching stutter"*. A
+# swinging camera changes which half of the sky is bright, which is the very thing the eye
+# has to watch for. So a flicker run holds the view.
+STILL="${STILL:-0}"
+# PRESSMS — how fast the menu is walked, separate from the boot delay since part 74. The
+# DebugJump navigation is seven fixed entries and at the old 8 s cadence that was 56 seconds
+# of waiting per run, most of it after the screen had already changed.
+PRESSMS="${PRESSMS:-3000}"
 SECS="${SECS:-60}"          # gameplay time AFTER arrival, including the turn block
-TIMEOUT="${TIMEOUT:-$((130 + SECS))}"   # ~190 s at the default: 3.2 min, not 7.5
+TIMEOUT="${TIMEOUT:-$(( 60 + (10 * PRESSMS / 1000) + SECS ))}"   # boot + menu + play
 FPSLOG="${FPSLOG:-5}"
 FPS="${FPS:-500}"
 mkdir -p "$OUT"
@@ -80,16 +94,19 @@ LOG="$OUT/auto_${STAMP}_${TAG}.log"
 # direction would spin the camera through the same arc repeatedly instead of sweeping the
 # scene both ways.
 SEQ="F2,START,WAITJUMP,NONE,DOWN,A,NONE,NONE,A,NONE"
-turns=$(( (SECS + 7) / 8 ))
+turns=$(( (SECS * 1000 + PRESSMS - 1) / PRESSMS ))
 for i in $(seq 1 "$turns"); do
-    if [ $(( i % 2 )) -eq 1 ]; then SEQ="$SEQ,RSRIGHT"; else SEQ="$SEQ,RSLEFT"; fi
+    if [ "$STILL" = "1" ]; then SEQ="$SEQ,NONE"
+    elif [ $(( i % 2 )) -eq 1 ]; then SEQ="$SEQ,RSRIGHT"; else SEQ="$SEQ,RSLEFT"; fi
 done
 SEQ="$SEQ,NONE"
 
-echo "=== $TAG  ($HEAD)  ${turns}x8s of camera turning  -> $LOG"
+desc=$([ "$STILL" = "1" ] && echo "STANDING STILL" || echo "camera turning")
+echo "=== $TAG  ($HEAD)  ${turns}x${PRESSMS}ms $desc  -> $LOG"
 ( cd "$ROOT/runtime/build" && env \
     CZ_VKDRAW=1 "CZ_FPS_CAP=$FPS" "CZ_FPS_LOG=$FPSLOG" \
-    CZ_DEBUG_MENU=1 "CZ_FAKE_START_MS=8000" "CZ_FAKE_PRESS_SEQ=$SEQ" \
+    CZ_DEBUG_MENU=1 "CZ_FAKE_START_MS=8000" "CZ_FAKE_PRESS_MS=$PRESSMS" \
+    "CZ_FAKE_PRESS_SEQ=$SEQ" \
     "CZ_DEBUG_FLAGS=CHUCK GOD MODE,DISABLE DEATH SEQUENCE,ZOMBIES IGNORE ALL HUMANS" \
     CZ_VK_A2M_ANY_SURFACE=1 CZ_VK_A2M_MODE=1 \
     "CZ_SHADER_SPV=$ROOT/assets/shader_spv_clip_a2m" \
