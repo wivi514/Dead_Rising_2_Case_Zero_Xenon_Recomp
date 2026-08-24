@@ -2802,10 +2802,16 @@ immediate submits  RunImmediate's total, and the part of it inside vkQueueSubmit
 ## Part 74 — the constant-gather arms (all off by default; the gather itself is too)
 
 ```
-CZ_VK_CONST_GATHER=1  the per-shader constant GATHER (part 72's item C). **OFF by default
-                   since part 74 — it is the sky flicker.** Worth ~0.8 ms and 297 GB not
-                   copied at the operator's load. It now carries part 74's memo-key fix, so
-                   it is strictly better than what part 72 shipped, and it still flickers
+CZ_VK_CONST_GATHER=0  turns the per-shader constant GATHER OFF (part 72's item C). **ON by
+                   default again since part 74's second half** — the sky flicker it was
+                   blamed for was two defects, both found and fixed (phase5-notes §6dl):
+                   the memo top-up mutating a slot in place, and the gather not copying
+                   c0..c3 which the RENDERER itself reads. Worth ~0.8 ms; a play session
+                   recorded 88.74 GB not copied (63.8%). Takes a VALUE, so a launcher that
+                   always sets it can still disable it
+CZ_VK_GATHER_NO_C0_ALWAYS=1  revert the c0..c3 fix in the same binary — the positive control
+                   for half of the flicker fix. It flickered 1 of 3, because the defect is
+                   INTERMITTENT; the FULL control is the pre-fix binary via BIN_SRC
 CZ_VK_CONST_RACE=1 the constant-slot RACE DETECTOR. Checks that the bytes a draw's constant
                    window holds at RECORD time equal what they hold at SUBMIT time — the
                    invariant the buffer-device-address binding forces, and the one part 72's
@@ -2817,13 +2823,36 @@ CZ_VK_CONST_RACE_POISON=1  mutates one dword of one memo slot between record and
                    positive control — a clean detector run means nothing until this has been
                    seen to scream (gotcha 30). Reports ~1.8-7.8% of draws
 CZ_VK_GATHER_FILL=1  fill the registers a shader's list does NOT name with 10000.0f instead
-                   of arena residue. **The discriminator for the last live flicker
-                   explanation, BUILT AND UNRUN**: residue varies frame to frame, so if the
-                   flicker stops the defect is an unlisted read, and if it continues that
-                   explanation is dead. A diagnostic arm — it writes the ~230 registers the
-                   gather exists to skip, so it costs the whole item
+                   of arena residue. It was built to test "a SHADER reads an unlisted
+                   register" and came back clean — **right, but for the wrong reason**: it
+                   also makes c0..c3 deterministic, which is what actually mattered. Kept as
+                   a diagnostic; it writes the ~230 registers the gather exists to skip
+CZ_VK_SKY_ASYM=<file>  per-frame left/right sky luma asymmetry, written as a raw series.
+                   The median frame-to-frame step separates the arms on **medians of three
+                   runs** (0.024 fixed vs 0.066 flickering) but individual runs OVERLAP —
+                   it is a three-run aggregate and cannot settle a single run (gotcha 444).
+                   Needs host pixels, so it forces a readback on the swapchain arm
 CZ_KEEP_SYNTH=<dir>  (tools/build_shader_spv.sh) keep the translated HLSL, which is what
                    `alu_const_gate.py --hlsl-dir` needs to cross-check the gather's register
                    lists against the shaders. Without it the gate runs in its weak mode —
                    which is what happened for three parts (gotcha 441)
+```
+
+## Part 74's route knobs (tools/autoroute.sh, tools/play_session.sh)
+
+```
+STILL=1            hold the view after arrival instead of turning the camera. The turn block
+                   is for the STUTTER hunt; for a SKY FLICKER it masks the defect, because a
+                   swinging camera changes which half of the sky is bright (gotcha 443)
+PRESSMS=<ms>       how fast the DebugJump menu is walked (default 3000). Backed by
+                   CZ_FAKE_PRESS_MS, which part 74 split out of CZ_FAKE_START_MS — those
+                   were one knob, so speeding up the menu also shortened the wait for the
+                   title screen to exist. The 150 ms tap window does NOT scale with it
+BIN_SRC=<path>     run an ARBITRARY BINARY on this exact route. The binary is copied into
+                   this tree's runtime/build so it resolves the same shader cache and
+                   settings — the binary is the only thing that changes. **This is how a
+                   positive control for an intermittent defect is built**: the pre-fix
+                   binary flickers 6 of 6 where a same-binary arm was equivocal
+TIMEOUT=<s>        derived from the work by default rather than a fixed 450 s
+tools/play_session.sh KEY=VALUE ...   trailing env passes through, same convention
 ```
