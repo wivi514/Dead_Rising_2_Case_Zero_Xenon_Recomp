@@ -169,6 +169,12 @@ bool Host_ConsumeSnapDumpPressed();
 // FLICKERS, which no single screenshot can show. See its definition in window.cpp.
 void Host_RequestBurstDump();
 bool Host_ConsumeBurstDumpPressed();
+// F7 — the operator's STUTTER MARKER. Pressed when a stutter is FELT; the renderer stamps
+// the current frame into the trace so the report can be joined to the data. It names a
+// neighbourhood rather than a frame — human reaction is ~200-500 ms — so read backwards
+// from a marker for the worst frame in the preceding second.
+void Host_RequestMark();
+bool Host_ConsumeMarkPressed();
 
 // ===================================================================================
 // THE VULKAN SWAPCHAIN SEAM — CZ_VK_SWAPCHAIN=1 (part 54, plan §7)

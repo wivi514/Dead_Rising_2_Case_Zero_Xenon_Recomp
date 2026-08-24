@@ -60,6 +60,26 @@ void Host_RequestDebugMenu() { g_debugMenuPressed.store(true, std::memory_order_
 void Host_RequestSnapDump() { g_snapDumpPressed.store(true, std::memory_order_release); }
 void Host_RequestBurstDump() { g_burstDumpPressed.store(true, std::memory_order_release); }
 
+// F7 — MARK THE FRAME TRACE. The operator plays, feels a stutter, and presses this; the
+// renderer stamps the current frame number into the trace and the log.
+//
+// WHY IT EXISTS. Correlating "it stuttered just now" with a frame number is otherwise
+// guesswork: a play session is tens of thousands of frames and the worst-frame table keeps
+// twelve. Without a marker their report can only be matched to the trace by wall-clock
+// eyeballing, which is exactly the kind of loose join that has produced wrong conclusions
+// in this project before. A keypress is an EVENT, and the frame it lands on is a fact.
+//
+// Reaction time is a known and stated limitation: a human presses ~200-500 ms after the
+// thing they felt, so the marker names a NEIGHBOURHOOD, not the frame. The reader looks
+// backwards from the marker for the worst frame in the preceding second — which is why the
+// trace carries every frame rather than only the extremes.
+std::atomic<bool> g_markPressed{ false };
+void Host_RequestMark() { g_markPressed.store(true, std::memory_order_release); }
+bool Host_ConsumeMarkPressed()
+{
+    return g_markPressed.exchange(false, std::memory_order_acq_rel);
+}
+
 bool Host_ConsumeSnapDumpPressed()
 {
     return g_snapDumpPressed.exchange(false, std::memory_order_acq_rel);
@@ -764,6 +784,7 @@ HostPadState ReadKeyboard()
     static bool f2WasDown = false;
     static bool f3WasDown = false;
     static bool f4WasDown = false;
+    static bool f7WasDown = false;
     static bool f8WasDown = false;
     static bool f9WasDown = false;
     if (g_keyboardFocus)
@@ -772,6 +793,10 @@ HostPadState ReadKeyboard()
         const bool f2Down = keys[SDL_SCANCODE_F2] != 0;
         const bool f3Down = keys[SDL_SCANCODE_F3] != 0;
         const bool f4Down = keys[SDL_SCANCODE_F4] != 0;
+        const bool f7Down = keys[SDL_SCANCODE_F7] != 0;
+        if (f7Down && !f7WasDown)
+            g_markPressed.store(true, std::memory_order_release);
+        f7WasDown = f7Down;
         const bool f8Down = keys[SDL_SCANCODE_F8] != 0;
         if (f8Down && !f8WasDown)
             g_burstDumpPressed.store(true, std::memory_order_release);

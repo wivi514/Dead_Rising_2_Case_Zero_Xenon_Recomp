@@ -2807,6 +2807,7 @@ uint64_t g_tsFrameOf[8] = { ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0u
 uint64_t g_gpuNsOfFrame = 0;           // the most recently READ-BACK frame's GPU time
 uint64_t g_gpuNsFrameNo = ~0ull;
 
+uint64_t g_markCount = 0;      // F7 presses — the operator's felt-stutter markers
 uint64_t g_skyFrames = 0, g_skyFlips = 0;
 // WHICH SHADERS leave c0..c3 ungathered — i.e. whose windows the residue lives in. Only a
 // handful of the 449 can be in this set, and naming them is far cheaper than bisecting.
@@ -20979,6 +20980,27 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         fprintf(stderr, "[vk] CZ_VK_FRAME_TRACE: CANNOT WRITE %s\n", f);
                     return h;
                 }();
+                // THE OPERATOR'S STUTTER MARKER (F7). Stamped into the trace AND the log,
+                // because the log is what gets read first and a marker only in the data
+                // file would be found only by someone already looking for it.
+                if (Host_ConsumeMarkPressed())
+                {
+                    g_markCount++;
+                    fprintf(stderr,
+                            "[vk] ** MARK %llu — operator flagged a stutter at frame %llu "
+                            "(%.1f ms: CPUrec %.1f, fence %.1f, sleep %.1f, GPU %.1f; "
+                            "%u draws, %llu tex)\n",
+                            (unsigned long long)g_markCount,
+                            (unsigned long long)R->frame, double(frameUs.back()) / 1000.0,
+                            double(int32_t(walkUs) - int32_t(fenceDelta / 1000)) / 1000.0,
+                            double(fenceDelta) / 1e6, double(sleepUs) / 1000.0,
+                            double(g_gpuNsOfFrame) / 1e6, uint32_t(R->drawsThisFrame),
+                            (unsigned long long)(g_texRealUploads - prevTexForTrace));
+                    if (trace)
+                        fprintf(trace, "# MARK %llu frame %llu\n",
+                                (unsigned long long)g_markCount,
+                                (unsigned long long)R->frame);
+                }
                 if (trace)
                     fprintf(trace,
                             "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu %llu %llu\n",
