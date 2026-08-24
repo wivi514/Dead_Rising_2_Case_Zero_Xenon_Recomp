@@ -2790,6 +2790,26 @@ uint64_t g_raceAffected = 0, g_raceAffectedProj = 0, g_raceAffectedFrames = 0;
 // Counted rather than argued: how often the patch runs on a window whose c0..c3 were not
 // gathered, and how often it then RECOGNIZED something there.
 uint64_t g_patchResidue = 0, g_patchResidueRecognized = 0, g_patchGathered = 0;
+// Part 75's cached-patch shortcut and its verifier. See the long comment at the patch
+// site: the arena is write-combined, so reading c0..c3 back out of it to recognize a
+// projection was ~36% of the whole frame.
+uint64_t g_patchSrcChecked = 0, g_patchSrcBad = 0;
+const bool g_patchSrcVerify = [] {
+    const bool o = getenv("CZ_VK_VERIFY_PATCH_SRC") != nullptr;
+    if (o)
+        fprintf(stderr, "[vk] CZ_VK_VERIFY_PATCH_SRC=1 — every patched projection is "
+                        "recomputed from the ARENA copy and compared. Expensive on "
+                        "purpose: it performs the uncached reads the change removes.\n");
+    return o;
+}();
+const bool g_patchSrcVerifyPoison = [] {
+    const bool o = getenv("CZ_VK_VERIFY_PATCH_SRC_POISON") != nullptr;
+    if (o)
+        fprintf(stderr, "[vk] CZ_VK_VERIFY_PATCH_SRC_POISON=1 — one float is perturbed; "
+                        "CZ_VK_VERIFY_PATCH_SRC MUST then report mismatches. A zero here "
+                        "means the verifier is blind, not that the patch is right.\n");
+    return o;
+}();
 // CZ_VK_SKY_ASYM's accumulators — see the measurement in the present path.
 // ===================================================================================
 // THE PER-FRAME CPU/GPU PROFILER (part 74) — attributing a stutter to a side
@@ -11403,6 +11423,51 @@ bool ConstGatherVerify()
 // ...AND THE PROOF THAT THE ARM CAN FIRE. Drops the first register from the list at copy
 // time, so a shader that reads it gets a stale slot and the verifier must catch it. A
 // verifier that has never been shown to fail has not been shown to work (gotcha 30).
+// CZ_VK_GATHER_NO_C0_ALWAYS=1 — c0..c3 are NOT force-copied into the gathered window.
+//
+// Promoted out of `CopyConstWindow` in part 75 because a SECOND site now depends on it:
+// the projection patch reads its sixteen floats from the cached register file rather
+// than back out of the arena, and that shortcut is only equivalent while c0..c3 in the
+// arena ARE the register file's. Under this arm they are deliberately arena residue —
+// that is the whole point of the positive control — so the patch has to go back to
+// reading what the shader will actually see. Two sites reading the same environment
+// variable independently is how an arm silently half-engages (gotcha 151).
+// CZ_VK_PATCH_IN_ARENA=1 — **THE SAME-BINARY CONTROL ARM FOR PART 75's LARGEST ITEM.**
+//
+// Restores the pre-part-75 behaviour exactly: the fov and 21:9 projection patches read
+// and write c0..c3 in the write-combined arena rather than in a cached copy of the
+// register file. The two paths produce identical bytes (`CZ_VK_VERIFY_PATCH_SRC=1`
+// checks every draw), so this changes ONE thing — where the sixteen floats are read from
+// — and is therefore a valid arm.
+//
+// `CZ_VK_GATHER_NO_C0_ALWAYS=1` also forces the old path, but it is NOT this arm: it
+// additionally stops c0..c3 being force-copied, which is a semantic change and the
+// sky-flicker positive control. Quoting its difference as this item's price would be
+// pricing two changes at once — the defect gotcha 415 names.
+bool PatchInArena()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_PATCH_IN_ARENA");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_PATCH_IN_ARENA=1 — the projection patch reads "
+                            "c0..c3 back out of the WRITE-COMBINED arena, as it did "
+                            "before part 75. This is the control arm.\n");
+        return v;
+    }();
+    return o;
+}
+bool GatherNoC0Always()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_GATHER_NO_C0_ALWAYS");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_GATHER_NO_C0_ALWAYS=1 — c0..c3 are NOT "
+                            "force-copied. This is the POSITIVE CONTROL for the "
+                            "sky-flicker fix and must reproduce it.\n");
+        return v;
+    }();
+    return o;
+}
 bool ConstGatherPoison()
 {
     static const bool on = [] {
@@ -11501,15 +11566,7 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
     // "the flicker stopped" cannot be told apart from "we did not trigger it this time",
     // which is the operator's own objection and the reason part 72's fix could never be
     // confirmed. Never a configuration to ship — a positive control.
-    static const bool noC0Always = [] {
-        const bool o = EnvOn("CZ_VK_GATHER_NO_C0_ALWAYS");
-        if (o)
-            fprintf(stderr, "[vk] CZ_VK_GATHER_NO_C0_ALWAYS=1 — c0..c3 are NOT force-copied. "
-                            "This is the POSITIVE CONTROL for the sky-flicker fix and must "
-                            "reproduce it.\n");
-        return o;
-    }();
-    if (!noC0Always)
+    if (!GatherNoC0Always())
         for (uint32_t r = 0; r < 4; ++r)
             memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
     ++g_gatherGathered;
@@ -16905,10 +16962,57 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // consistent projection. ORDER MATTERS and is fov FIRST: the fov patch
             // scales A and B by one ratio (aspect preserved, so the projection still
             // recognizes as 16:9), then the wide patch divides A alone.
+            //
+            // **PATCHED ON A CACHED COPY OF THE REGISTER FILE, NOT IN THE ARENA (part
+            // 75).** This was the single largest cost in the entire frame and nothing in
+            // its name said so.
+            //
+            // The arena is `HOST_VISIBLE | HOST_COHERENT` and NOT `HOST_CACHED` — memory
+            // type 3 on this machine, i.e. WRITE-COMBINED. Writing it is fine; **reading
+            // it is an uncached round trip to DRAM, with no line kept afterwards and no
+            // prefetcher to help** — and `SceneXformForm` reads all sixteen floats, TWICE
+            // per draw (once under `PatchFovProjection`, once under
+            // `PatchWideProjection`), on ~97% of draws, because the guest rewrites a
+            // world matrix per object so the vertex half of the constant memo almost
+            // never hits.
+            //
+            // Measured before the change, medians on the outdoor route with texture
+            // frames excluded: at 5,000-7,000 draws this patch was **7.27 ms of a
+            // 19.99 ms frame**, against 0.36 ms for the gather sitting right next to it
+            // and 0.13 ms for the whole pixel window. Splitting the phase is what found
+            // it; reading the code never would have, because the expensive operation is
+            // spelled `memcpy(m, c, sizeof m)` and looks like sixty-four bytes.
+            //
+            // Both patches read and write ONLY c0..c3 — the sixteen floats at offset 0 —
+            // and under the default configuration those bytes in the arena are a verbatim
+            // copy of the same sixteen floats in `regs`, which is ordinary cached memory
+            // (the force-copy in CopyConstWindow guarantees it). So do the recognition and
+            // the arithmetic there, and store the result back as ONE contiguous 64-byte
+            // write, which is exactly what write-combining is good at. Same bytes, same
+            // order, no read of the arena at all.
+            //
+            // THE ONE CONFIGURATION WHERE THAT IS NOT EQUIVALENT is
+            // `CZ_VK_GATHER_NO_C0_ALWAYS=1`, whose entire purpose is to leave c0..c3 as
+            // arena RESIDUE so the sky-flicker defect can be reproduced on demand. Under
+            // that arm the patch must go on reading what the shader will actually see, so
+            // it keeps the old in-place path — otherwise the positive control would
+            // quietly stop being able to fire, which is worse than not having it
+            // (gotcha 30).
+            const bool patchInPlace = GatherNoC0Always() || PatchInArena();
+            uint32_t c03[16];
+            const uint32_t* vsSrc = regs + xenos::kAluConstantBase + memoVsBase * 4;
+            if (!patchInPlace)
+                memcpy(c03, vsSrc, sizeof c03);
+            uint32_t* patchAt = patchInPlace ? dst : c03;
             // Were c0..c3 actually gathered for this shader, or is the patch about to
             // read arena residue? Registers 0..3 are the sixteen floats SceneXformForm
-            // inspects. A full copy always has them.
-            bool c0Known = ConstGatherOff() || vs.aluDynamic || vs.aluConsts.empty();
+            // inspects. A full copy always has them — and so, now, does the cached path,
+            // which is why this can only be false under the in-place arm.
+            // Keyed on the C0 arm and not on `patchInPlace`: under
+            // CZ_VK_PATCH_IN_ARENA the force-copy is still on, so c0..c3 in the arena
+            // ARE the register file's and this counter must not report residue.
+            bool c0Known = !GatherNoC0Always() || ConstGatherOff() || vs.aluDynamic ||
+                           vs.aluConsts.empty();
             if (!c0Known)
             {
                 int have = 0;
@@ -16917,7 +17021,7 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         ++have;
                 c0Known = have == 4;
             }
-            const int fovForm = PatchFovProjection(dst, FovHalfRadThisFrame());
+            const int fovForm = PatchFovProjection(patchAt, FovHalfRadThisFrame());
             if (c0Known)
                 ++g_patchGathered;
             else
@@ -16933,11 +17037,52 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 case 2: COUNT("draw: COMPOSITE viewproj fov-adjusted (slider)"); break;
             }
             if (WideMode())
-                switch (PatchWideProjection(dst))
+                switch (PatchWideProjection(patchAt))
                 {
                     case 1: COUNT("draw: raw projection widened to 21:9"); break;
                     case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
                 }
+            if (!patchInPlace)
+            {
+                // CZ_VK_VERIFY_PATCH_SRC=1 — the arm that makes the shortcut believable.
+                //
+                // Its failure mode is a WRONG PROJECTION on every world draw, which is
+                // not subtle — but "not subtle" is exactly what a picture gate is worst
+                // at when the run that would show it is an operator session tomorrow. So
+                // the old path stays compiled in: patch the arena bytes the gather
+                // actually wrote, the old way, and compare all sixteen floats against
+                // what the cached path produced. It must read 0, and it must be shown
+                // able to report a positive before a 0 from it means anything
+                // (gotcha 30) — `CZ_VK_VERIFY_PATCH_SRC_POISON=1` perturbs one float and
+                // makes it fire.
+                //
+                // Deliberately expensive: it performs the very uncached reads this change
+                // exists to remove, plus a second pair of patches. A diagnostic arm has
+                // no performance budget.
+                if (g_patchSrcVerify)
+                {
+                    uint32_t want[16];
+                    memcpy(want, dst, sizeof want);   // the arena's own c0..c3
+                    PatchFovProjection(want, FovHalfRadThisFrame());
+                    if (WideMode())
+                        PatchWideProjection(want);
+                    if (g_patchSrcVerifyPoison)
+                        want[0] ^= 0x40000000u;
+                    ++g_patchSrcChecked;
+                    if (memcmp(want, c03, sizeof want) != 0)
+                    {
+                        if (g_patchSrcBad < 8)
+                            fprintf(stderr,
+                                    "[vk] ** PATCH SRC MISMATCH #%llu — patching the "
+                                    "cached register copy did not produce what patching "
+                                    "the arena copy does; the projection this draw uses "
+                                    "is WRONG\n",
+                                    (unsigned long long)g_patchSrcBad + 1);
+                        ++g_patchSrcBad;
+                    }
+                }
+                memcpy(dst, c03, sizeof c03);
+            }
             _pcpatch.Close();
             R->constMemoVsFor = &vs;
             R->constMemoVsValid = true;
@@ -23718,6 +23863,15 @@ void VkRenderer_DumpStats()
                 g_patchResidue
                     ? 100.0 * double(g_patchResidueRecognized) / double(g_patchResidue)
                     : 0.0);
+    if (g_patchSrcChecked)
+        fprintf(stderr,
+                "[vk]   projection patch (cached source, part 75): %llu checked, "
+                "**%llu DISAGREED with patching the arena copy** (%.4f%%)%s\n",
+                (unsigned long long)g_patchSrcChecked,
+                (unsigned long long)g_patchSrcBad,
+                100.0 * double(g_patchSrcBad) / double(g_patchSrcChecked),
+                g_patchSrcVerifyPoison ? " [POISON ARMED — a zero here is a BLIND "
+                                         "verifier]" : "");
     if (g_skyFrames)
         fprintf(stderr,
                 "[vk]   sky asymmetry (CZ_VK_SKY_ASYM): %llu frames, mean |L-R| %.3f, "
