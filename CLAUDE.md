@@ -185,14 +185,15 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part73-kickoff.md`, and the live SUBJECT is PERFORMANCE — its plan is
-    **`docs/perf-plan-autonomous.md` — THE LIVE PLAN**, built on the operator's standing
-    authorisation to run ONE route unattended (`tools/autoroute.sh`). Beside it:
-    `perf-plan-part72.md` is the ITEM TABLE (carrying four part-72 retractions in place),
-    `part72-fix-plan.md` is what the operator sittings established, and
-    `perf-state-parked.md` is the reference the item designs come from and is NOT
-    superseded. **`docs/part73-kickoff.md` says how all four relate and is the first thing
-    to read after this file.** `part71-kickoff.md`
+    `part74-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
+    ANY MORE.** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
+    **every item in that plan is now closed, refuted or shipped**; it is kept because it
+    carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
+    table). `part72-fix-plan.md` is what the operator sittings established, and
+    `perf-state-parked.md` is the reference the item designs came from and is NOT
+    superseded. **`docs/part74-kickoff.md` says how all of them relate, and points at the
+    one place with work left — open item 0w's second population, which is OUTSIDE the
+    renderer. It is the first thing to read after this file.** `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
     "`part32-kickoff.md` is the LIVE one" for nineteen parts after it stopped being true
     — a stale pointer in the file every session loads whole is the one documentation
@@ -794,17 +795,87 @@ longer engages the feature; `CZ_VK_RT_MENU=1` restores the rows and `CZ_VK_RT_SH
 still engages it directly. Both arms print the line that proves which one is running. The
 feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. ~~**THE LIVE PLAN
 IS `docs/perf-plan-part71.md`.**~~ ~~**THE LIVE PLAN IS `docs/perf-plan-part72.md`**~~
-**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**; `perf-plan-part72.md` is the ITEM
-TABLE beside it and `part73-kickoff.md` says how they relate. (This line has now named the
-wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of
-this file describes, and the reason that note asks for the rule and not just the name;
-gotcha 13.)
+~~**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**~~ — **THERE IS NO LIVE PLAN AS OF
+PART 73: that one is EXHAUSTED**, every item in it closed, refuted or shipped, and a
+successor must be built from new ground rather than from its table. `part74-kickoff.md`
+is the hand-off and says where that ground is. (This line has now named the wrong plan
+TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
+describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
+
+Where the port is, as of 2026-08-23 (**PART 73 CLOSED — PERFORMANCE. Six autonomous runs,
+NOTHING SHIPPED, and that is the result: four items closed, two of them REFUTED at their
+mechanism rather than merely under threshold. THE PLAN IS NOW EXHAUSTED.**
+**`docs/part74-kickoff.md` IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6di**;
+lessons: gotchas **435-438**):
+
+* **THE BIGGEST ITEM IN THE PLAN IS NOT SMALL, IT IS WRONG.** The wide-culling over-widen
+  has led the table since part 71 and carried three prices — ≈4.8 ms, then ≈2.5-2.8 ms by
+  containment, then "UNPRICED" — **none of which was a measurement**. The fixed census ran
+  in-engine for the first time: **0.0-35.9 draws/frame off-screen vertically, 99.3% on
+  screen**, against a pre-registered kill of 700. That alone is only a null. **What makes it
+  a refutation is the control moving the WRONG WAY.** The plan wrote that `CZ_NO_GAME_FOV=1`
+  would make the vertical waste *fall sharply*; it **rose to 270-329 draws/frame** and the
+  on-screen share fell 99.4% -> 50.5%. That arm narrows the PROJECTION while the game keeps
+  submitting for its own frustum, so read together the two arms say **our widening is not
+  drawing invisible geometry — it is what makes the geometry the game already submits
+  visible.** Part 71's +1,930 draws are the ultrawide flanks being filled, i.e. the part-62
+  fix working. Gotcha 437.
+* **ITEM E IS 4.2x SLOWER, NOT 14%, AND THE REASON IT WAS RE-OPENED WAS ALSO WRONG.** Four
+  arms run null-BRACKETED so monotone afternoon drift would show as a null-to-null gap: the
+  null pair agrees to **1.5%** and `CZ_VK_VRAM_STREAMS=1` reads **4.3x slower at the one
+  band all three arms share** (16.45 -> 70.66 ms). The third arm kills the rationale too —
+  `CZ_VK_NO_CONST_GATHER=1` restores the full 256-register copy, i.e. *more* constant
+  traffic, and reads **69.72 ms, no different**. Constant traffic was never the mechanism,
+  so item C neither rescued E nor could have. Filed as a named hypothesis, not claimed:
+  memory type 5 is a write-combined resizable-BAR heap and this renderer **READS its
+  geometry back** on the hot path via the stream store's content guard. *"Geometry in VRAM
+  is wrong for a renderer that reads its own geometry"* is the sentence for Case West.
+* **THE 41 NEAR-EMPTY PASSES A FRAME ARE 0.271 ms, AND THAT IS A CEILING.** One
+  unconditional clock, split by the size of the pass that ENDED — because a total would be
+  dominated by the 1.35 big resolves a frame, which snapshot a full-screen surface and are
+  not removable. Reproduces to 0.7% over two runs and the 41.0/frame matches part 72's
+  histogram exactly. The plan's own pre-framing was *"either ~0.1 ms and irrelevant or
+  ~1 ms and the best-priced item on the board"*; it is the irrelevant end. It also tested
+  §4b's PREMISE — that every such pass is an `EndRendering`+resolve+`BeginRendering` cycle
+  — and found it **76.2% true**.
+* **THE SLOW-FRAME TABLE'S TEXTURE COLUMN WAS THE DRAW COUNT IN ANOTHER UNIT.** It shipped
+  in part 72 and ran here for the first time; every one of its twelve rows read **2.24-2.43
+  "texture uploads" per draw**, because it differenced a counter incremented on every CALL
+  to `UploadTexture`. Real run total ~2,350; the column reached 15,233 in one frame. **A
+  counter named for the function it sits in measures the CALL, not the work that function
+  usually declines to do** — and the tell is free: divide the column by the one beside it.
+  Gotcha 435.
+* **REBUILT, IT SPLITS OPEN ITEM 0w INTO TWO POPULATIONS AND ONLY ONE IS OURS.** (a)
+  Texture streaming bursts are real — up to **77 ms of one frame**, and **96.7% of that is
+  `vkQueueSubmit`+`vkQueueWaitIdle`** at 258 us a submit for an average 54 KB texture — but
+  they are only **24-32%** of the worst frames. (b) The rest has **NONE** of the three
+  candidates elevated: frame 8725 is 101.2 ms at a normal 5,739 draws with zero uploads and
+  zero pipelines, immediately after a 692-upload burst. **That cost is outside the renderer
+  and the next instrument belongs on the guest side** (`CZ_FILE_TRACE`, `CZ_GUEST_DIAG`,
+  `perf`).
+* **AND THE UPLOAD FIX WAS PREDICTED, RUN, REFUTED, DISCRIMINATED AND REVERTED IN ONE
+  SITTING.** A fence instead of the queue wait measured **3.2x WORSE** (792 us vs 258); one
+  more run showed the per-call `vkCreateFence` was the whole of it, and with a persistent
+  fence the two primitives agree to **6%** — under what this route resolves without a null
+  arm. **The wait primitive was never the cost**; ~250 us is what one submit round-trip
+  costs, and only *not doing 2,350 of them* — batching, which needs a per-frame staging
+  arena — removes it. Reverted, because a change whose motivating hypothesis is dead does
+  not get to stay on a delta you cannot measure. Gotcha 436.
+* **THE ROUTE HAS A FROZEN TAIL.** `tools/autoroute.sh` builds presses from 8 s intervals
+  and runs to a much longer timeout, so **~60% of every run is a PARKED camera** — visible
+  as windowed statistics identical to the decimal across consecutive windows. Discard it
+  before quoting a rate; prefer per-window rates over run means. Gotcha 438.
+* **Gates:** `--smoke` OK on every build. The renderer is behaviour-identical to part 72's
+  close — the three additions are counters and clocks and the one behavioural change was
+  reverted the same day. No shader cache, config or kernel path was touched, so part 72's
+  full gate sweep stands. **A5 is owed**, carried since part 67 — no kernel path has changed
+  in 67-73.
 
 Where the port is, as of 2026-08-23 (**PART 72 CLOSED — PERFORMANCE. Desk work, TWO
 OPERATOR SITTINGS and one autonomous run; FOUR retractions, two of them of part 72's own
-claims made the same day.** **`docs/part73-kickoff.md` IS THE LIVE HAND-OFF** and says how
-the four performance documents relate; the LIVE PLAN is **`docs/perf-plan-autonomous.md`**,
-built on the operator's standing authorisation to run one route unattended. Records:
+claims made the same day.** `docs/part73-kickoff.md` WAS the hand-off at this point and
+`docs/perf-plan-autonomous.md` WAS the live plan; **both are superseded — the live hand-off
+is `docs/part74-kickoff.md` and there is no live plan.** Records:
 `phase5-notes.md` **§6de/§6df/§6dg/§6dh**; lessons: gotchas **423-434**):
 
 * **THE PLAN'S CHEAPEST ROUTE FOR ITS BIGGEST ITEM IS DEAD, AND IT COST AN AFTERNOON
@@ -959,88 +1030,8 @@ built on the operator's standing authorisation to run one route unattended. Reco
   `no translated shader` across all seven operator arms. **A5 is owed**, carried since
   part 67 — no kernel path has changed in 67-72.
 
-Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it executed was
-`docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
-414-422. **Both operator sessions were RUN and read** —
-`tools/part71_perf_session.sh` and `tools/part71_pipeline_session.sh`):
-
-* **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
-  operator's soak has not been measured since part 58 and **thirteen parts have shipped
-  since**. Every item in `perf-state-parked.md` §2 is priced against a ~10.5 ms baseline
-  that no longer exists. Arm 1 is a denominator, not an experiment.
-* **SESSION 1 IS RUN AND READ (four arms, all engaged).** THE RE-BASELINE IS **~28.1 ms /
-  35.6 fps at ~9,800 draws, 3440x1440** — and the surprise is not thirteen parts of
-  regression, it is that **the OPERATING POINT moved**: 5.4x the pixels and 1.4x the draws
-  the ~10.5 ms figure was taken at (gotcha 419). At the overlapping draw band the **hook
-  fold is worth +0.74 ms (+2.6%) and CLEARS its 0.3 ms kill threshold**, and the
-  **clip-plane cache costs +0.09 ms — it is NOT the part-58 regression**, so §1.1 is closed
-  and §1.2 (part 56's dynamic-state calls) is the only named suspect left. Reading the same
-  data at 500-draw bands flipped both conclusions; gotcha 417.
-* **THE STUTTER IS NOT IN THE SOAK — `>2x med` is 0.0% in every arm's steady state.** It is
-  all in the first ~50 s: worst frames **3,891 ms** (base), 807 (noclip), 344 (nofold), 291
-  (nogamefov) — **the operator's felt ranking exactly**, and the two worst are the two arms
-  that loaded a shader set the driver had not compiled before. **This renderer passed
-  `VK_NULL_HANDLE` as the pipeline cache at all three creation sites from phase 5 until
-  now.** Part 71 shipped an unconditional per-FRAME pipeline-creation census (the old timer
-  was gated behind `CZ_VK_PROFILE`, so it was off in every session whose stutter was ever
-  reported — gotcha 418) and a persisted `VkPipelineCache`
-  (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm).
-* **~~SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.~~ PART 72 RETRACTED THE FIX HALF OF THIS
-  (not the cost): the 17.8 s is real and it is what a genuinely cold shader set costs, but
-  a DRIVER-SIDE cache is what removes it and ours is a 7.5x pessimization once that is
-  warm. Gotcha 426, `phase5-notes.md` §6df §1.** The original text:
-  **SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.** `pipeline creation: 489 pipelines,
-  **17,827.3 ms** total` with no cache, including `frame 1257: **3,753.9 ms** building 97
-  pipeline(s)` — which IS session 1's unexplained 3,891 ms frame. Three times inferred,
-  never measured, now settled by one unconditional clock read. With the cache seeded:
-  **450.8 ms** (−97.5%), worst compile frame 3,754 -> 109 ms, worst `[fps]` frame
-  4,050 -> 291 ms. **The one thing not yet attributed** is the middle step (17,827 ->
-  1,160 happened with our file still EMPTY, so it is the cache OBJECT or a driver-side
-  cache the first arm warmed); the discriminator is one run with the control arm LAST
-  (gotcha 422).
-* **IT IS CPU-BOUND, AND THAT DECIDES THE PLAN.** `CZ_VK_RES=1720x720` — a QUARTER of the
-  pixels at the same aspect, so a bit-identical draw set — costs **only −6.8%** at
-  9,500-9,999 draws (28.09 -> 26.19 ms, n=19/25). **Four times the pixels is 1.9 ms of a
-  28 ms frame**, so ~93% of the heavy frame is CPU and every item in
-  `perf-state-parked.md` §2 is still worth what it says. At the LIGHT end it reverses
-  (−24% at 2,000-2,499 draws).
-* **THE BEST-PRICED ITEM IN THE PLAN NOW IS THE WIDE-CULLING OVER-WIDEN**, measured as a
-  side effect: it adds **~1,930 draws of 9,817 (+24%)**, ≈**4.8 ms of a 28 ms frame** at
-  the soak's ~2.5 us/draw. Bigger than everything in §2 except item A, and
-  `perf-state-parked.md`'s part-62 addendum already names the fix (horizontal-only
-  widening, or a smaller k).
-* **THE FIRST ITEM IS WORK THIS PROJECT ADDED ITSELF.** Parts 59-70 each hung a probe on
-  `DoDraw` — five per-draw calls, ~35,000 a frame at their soak, that exist only to decide
-  not to run — and one on the per-FETCH path: `rtshadow::NoteAtlasFetch` was guarded on
-  `ps.moduleRt` and **not on whether RT is running**, so a 100-second run of the shipped,
-  PARKED build did **9,482,873 full `DecodeTextureFetch` decodes**. Both are now folded
-  behind one word recomputed per FRAME; `CZ_VK_NO_HOOK_FOLD=1` is the control arm and is
-  the pre-part-71 renderer exactly. **Behaviour-preserving by construction** (the word is
-  the OR of every hook's own arm), and the identity gate is that with RT ON it must fold
-  ZERO. **Not yet priced; the kill threshold is pre-registered at 0.3 ms.**
-* **TWO OF THE PLAN'S OWN ARMS WERE WRONG AND ARE RETRACTED IN PLACE.** `CZ_VK_RT=0` does
-  not bound those hooks at all — the largest piece of the cost is gated on the RT variant
-  SHADER CACHE, which loads with no reference to `rtEnabled` (gotcha 414). And
-  `CZ_VK_WIDE=0` is not the wide-culling arm on this machine: their `cz_settings.txt` is
-  3440x1440, so it also drops 26% of the pixels and the delta would have been mostly GPU
-  reported as a CPU saving (gotcha 415). `CZ_NO_GAME_FOV=1` replaces it.
-* **`CZ_FPS_LOG` GREW A TAIL** — `p99`, the window's `worst` frame and the share of frames
-  above 2x the window median — because the turn stutter is the one performance problem on
-  this port that has only ever been FELT and a median cannot see one. Free (the window is
-  already sorted). `tools/part54_fps_bins.py` prints a matching TAIL table and treats the
-  three fields as OPTIONAL, so parts 54-70's archived logs still bin.
-* **The session:** four arms on one snapshotted binary, ~3 min stand-still soak plus ~30 s
-  of continuous turning each — `base`, `nofold`, `noclip`, `nogamefov`. **Every arm proves
-  it engaged from a line the FEATURE prints, or the harness refuses to report it and exits
-  non-zero**; two gates are two-sided, and all four were tested against four deliberate
-  breakages. Preflight NAME-diffs the two shader caches it switches between (gotcha 390)
-  and echoes `cz_settings.txt`.
-* **Gates:** `--smoke` OK; `shader_dim_census.py` clean on all sixteen caches and the play
-  cache's NAME diff empty; `rt_world_xform_census.py` 104 of 104. **A5 is owed**, carried
-  since part 67 — no kernel path has changed in 67-71.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-70's** — part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-71's** — part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

@@ -5021,3 +5021,87 @@ it stands**):
 * **Gates at close** (RT off = the shipped default): `--smoke` OK; `shader_dim_census.py`
   clean on all sixteen caches and the play cache's NAME diff empty; `rt_world_xform_census.py`
   104 of 104. **A5 is owed**, carried since part 67.
+
+---
+
+## Part 71 — performance, the re-baseline and the pipeline cache (2026-08-23)
+
+Where the port is, as of 2026-08-23 (part 71 CLOSED — PERFORMANCE. The plan it executed was
+`docs/perf-plan-part71.md`, the record is `phase5-notes.md` §6dd, the lessons are gotchas
+414-422. **Both operator sessions were RUN and read** —
+`tools/part71_perf_session.sh` and `tools/part71_pipeline_session.sh`):
+
+* **§0's rule, and it is the whole reason the part opens where it does:** the frame at the
+  operator's soak has not been measured since part 58 and **thirteen parts have shipped
+  since**. Every item in `perf-state-parked.md` §2 is priced against a ~10.5 ms baseline
+  that no longer exists. Arm 1 is a denominator, not an experiment.
+* **SESSION 1 IS RUN AND READ (four arms, all engaged).** THE RE-BASELINE IS **~28.1 ms /
+  35.6 fps at ~9,800 draws, 3440x1440** — and the surprise is not thirteen parts of
+  regression, it is that **the OPERATING POINT moved**: 5.4x the pixels and 1.4x the draws
+  the ~10.5 ms figure was taken at (gotcha 419). At the overlapping draw band the **hook
+  fold is worth +0.74 ms (+2.6%) and CLEARS its 0.3 ms kill threshold**, and the
+  **clip-plane cache costs +0.09 ms — it is NOT the part-58 regression**, so §1.1 is closed
+  and §1.2 (part 56's dynamic-state calls) is the only named suspect left. Reading the same
+  data at 500-draw bands flipped both conclusions; gotcha 417.
+* **THE STUTTER IS NOT IN THE SOAK — `>2x med` is 0.0% in every arm's steady state.** It is
+  all in the first ~50 s: worst frames **3,891 ms** (base), 807 (noclip), 344 (nofold), 291
+  (nogamefov) — **the operator's felt ranking exactly**, and the two worst are the two arms
+  that loaded a shader set the driver had not compiled before. **This renderer passed
+  `VK_NULL_HANDLE` as the pipeline cache at all three creation sites from phase 5 until
+  now.** Part 71 shipped an unconditional per-FRAME pipeline-creation census (the old timer
+  was gated behind `CZ_VK_PROFILE`, so it was off in every session whose stutter was ever
+  reported — gotcha 418) and a persisted `VkPipelineCache`
+  (`CZ_VK_NO_PIPELINE_CACHE=1` is the arm).
+* **~~SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.~~ PART 72 RETRACTED THE FIX HALF OF THIS
+  (not the cost): the 17.8 s is real and it is what a genuinely cold shader set costs, but
+  a DRIVER-SIDE cache is what removes it and ours is a 7.5x pessimization once that is
+  warm. Gotcha 426, `phase5-notes.md` §6df §1.** The original text:
+  **SESSION 2 IS RUN AND IT WAS 17.8 SECONDS.** `pipeline creation: 489 pipelines,
+  **17,827.3 ms** total` with no cache, including `frame 1257: **3,753.9 ms** building 97
+  pipeline(s)` — which IS session 1's unexplained 3,891 ms frame. Three times inferred,
+  never measured, now settled by one unconditional clock read. With the cache seeded:
+  **450.8 ms** (−97.5%), worst compile frame 3,754 -> 109 ms, worst `[fps]` frame
+  4,050 -> 291 ms. **The one thing not yet attributed** is the middle step (17,827 ->
+  1,160 happened with our file still EMPTY, so it is the cache OBJECT or a driver-side
+  cache the first arm warmed); the discriminator is one run with the control arm LAST
+  (gotcha 422).
+* **IT IS CPU-BOUND, AND THAT DECIDES THE PLAN.** `CZ_VK_RES=1720x720` — a QUARTER of the
+  pixels at the same aspect, so a bit-identical draw set — costs **only −6.8%** at
+  9,500-9,999 draws (28.09 -> 26.19 ms, n=19/25). **Four times the pixels is 1.9 ms of a
+  28 ms frame**, so ~93% of the heavy frame is CPU and every item in
+  `perf-state-parked.md` §2 is still worth what it says. At the LIGHT end it reverses
+  (−24% at 2,000-2,499 draws).
+* **THE BEST-PRICED ITEM IN THE PLAN NOW IS THE WIDE-CULLING OVER-WIDEN**, measured as a
+  side effect: it adds **~1,930 draws of 9,817 (+24%)**, ≈**4.8 ms of a 28 ms frame** at
+  the soak's ~2.5 us/draw. Bigger than everything in §2 except item A, and
+  `perf-state-parked.md`'s part-62 addendum already names the fix (horizontal-only
+  widening, or a smaller k).
+* **THE FIRST ITEM IS WORK THIS PROJECT ADDED ITSELF.** Parts 59-70 each hung a probe on
+  `DoDraw` — five per-draw calls, ~35,000 a frame at their soak, that exist only to decide
+  not to run — and one on the per-FETCH path: `rtshadow::NoteAtlasFetch` was guarded on
+  `ps.moduleRt` and **not on whether RT is running**, so a 100-second run of the shipped,
+  PARKED build did **9,482,873 full `DecodeTextureFetch` decodes**. Both are now folded
+  behind one word recomputed per FRAME; `CZ_VK_NO_HOOK_FOLD=1` is the control arm and is
+  the pre-part-71 renderer exactly. **Behaviour-preserving by construction** (the word is
+  the OR of every hook's own arm), and the identity gate is that with RT ON it must fold
+  ZERO. **Not yet priced; the kill threshold is pre-registered at 0.3 ms.**
+* **TWO OF THE PLAN'S OWN ARMS WERE WRONG AND ARE RETRACTED IN PLACE.** `CZ_VK_RT=0` does
+  not bound those hooks at all — the largest piece of the cost is gated on the RT variant
+  SHADER CACHE, which loads with no reference to `rtEnabled` (gotcha 414). And
+  `CZ_VK_WIDE=0` is not the wide-culling arm on this machine: their `cz_settings.txt` is
+  3440x1440, so it also drops 26% of the pixels and the delta would have been mostly GPU
+  reported as a CPU saving (gotcha 415). `CZ_NO_GAME_FOV=1` replaces it.
+* **`CZ_FPS_LOG` GREW A TAIL** — `p99`, the window's `worst` frame and the share of frames
+  above 2x the window median — because the turn stutter is the one performance problem on
+  this port that has only ever been FELT and a median cannot see one. Free (the window is
+  already sorted). `tools/part54_fps_bins.py` prints a matching TAIL table and treats the
+  three fields as OPTIONAL, so parts 54-70's archived logs still bin.
+* **The session:** four arms on one snapshotted binary, ~3 min stand-still soak plus ~30 s
+  of continuous turning each — `base`, `nofold`, `noclip`, `nogamefov`. **Every arm proves
+  it engaged from a line the FEATURE prints, or the harness refuses to report it and exits
+  non-zero**; two gates are two-sided, and all four were tested against four deliberate
+  breakages. Preflight NAME-diffs the two shader caches it switches between (gotcha 390)
+  and echoes `cz_settings.txt`.
+* **Gates:** `--smoke` OK; `shader_dim_census.py` clean on all sixteen caches and the play
+  cache's NAME diff empty; `rt_world_xform_census.py` 104 of 104. **A5 is owed**, carried
+  since part 67 — no kernel path has changed in 67-71.
