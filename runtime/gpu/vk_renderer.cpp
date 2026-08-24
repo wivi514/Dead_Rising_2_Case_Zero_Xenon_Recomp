@@ -2694,6 +2694,102 @@ struct PipeFrameRec { uint64_t frame = 0; uint64_t ns = 0; uint32_t count = 0; }
 PipeFrameRec g_pipeTop[12];
 
 // ===================================================================================
+// THE CONSTANT-SLOT RACE DETECTOR (part 74) — what has to be clean before the gather
+// can be re-enabled
+// ===================================================================================
+//
+// WHY THIS EXISTS. Part 72 shipped the constant gather, its verifier read **0
+// disagreements over 17,948,265 gathers**, and the operator still saw a half-screen sky
+// flicker. Part 74 discriminated it — gather ON flickered twice including a deliberate
+// positive control, gather OFF was clean twice — so the gather is off by default and the
+// verifier was *right and not covering the defect*. It checks that the gather copied what
+// the shader's list NAMES. That is not the feature's blast radius (gotcha 440).
+//
+// THE INVARIANT THIS CHECKS INSTEAD, and it is deliberately hypothesis-free: **the bytes a
+// draw's constant window holds at RECORD time must equal what they hold at SUBMIT time.**
+//
+// That is not a style rule, it is forced by how constants are bound. The window is handed
+// to the shader as a **buffer device address in a push constant** (`R->arena.address +
+// vsConstAt`), so the shader dereferences it when the GPU executes, not when we record. The
+// constant memo hands MANY draws the same arena offset, and the gather's top-up then writes
+// that slot **in place** for each new shader. Any such write is applied RETROACTIVELY to
+// every earlier draw of the frame that shares the offset — which is a mechanism for one
+// group of draws rendering with another group's constants, and on a title that tiles
+// LEFT/RIGHT (gotcha 265) for one half of the screen differing from the other.
+//
+// It makes no assumption that the defect IS the tiling or IS the projection: it records the
+// tile and the c0..c3 block only so the report can say which, if it fires at all.
+//
+// COST, stated because it is not small: it hashes both 4 KB windows per draw and keeps
+// ~100 bytes per draw. That is the traffic the gather exists to avoid, so this is an ARMED
+// instrument and never a default — `CZ_VK_CONST_RACE=1`. It is a correctness gate to be run
+// deliberately, not a probe to leave on (gotcha 7: a probe expensive enough to stall the
+// game manufactures the stability it reports).
+struct ConstRef
+{
+    uint32_t draw = 0;
+    uint32_t windowOffset = 0;          // kPaScWindowOffset — the TILE identity
+    VkDeviceSize vsAt = 0, psAt = 0;
+    uint64_t vsHash = 0, psHash = 0;
+    const ShaderMeta* vs = nullptr;
+    uint32_t c0[16] = {};               // the projection block, kept for the diff
+    // The WHOLE recorded vertex window. 4 KB a draw is the price of answering the only
+    // question that matters — see the `affected` logic at the check.
+    std::vector<uint32_t> vsWindow;
+};
+std::vector<ConstRef> g_constRefs;
+uint64_t g_raceDraws = 0, g_raceVsChanged = 0, g_racePsChanged = 0, g_raceProjChanged = 0,
+         g_raceCrossTile = 0, g_raceFrames = 0, g_raceDirtyFrames = 0;
+// **THE NUMBER THE DECISION TURNS ON.** A slot changing in registers the recorded draw
+// never READS is harmless — the gather deliberately leaves those holding arena garbage, so
+// a later top-up filling them in is the system working, not a defect. `affected` counts
+// only draws whose OWN register list moved. Splitting the two is the same discipline that
+// gotcha 440 says the gather's verifier failed to apply to itself: match the instrument's
+// scope to the blast radius, in both directions.
+uint64_t g_raceAffected = 0, g_raceAffectedProj = 0, g_raceAffectedFrames = 0;
+bool g_raceReported = false;
+
+bool ConstRaceOn()
+{
+    static const bool on = [] {
+        const bool o = EnvOn("CZ_VK_CONST_RACE");
+        if (o)
+            fprintf(stderr,
+                    "[vk] CZ_VK_CONST_RACE=1 — the constant-slot race detector is ARMED. "
+                    "It hashes both 4 KB constant windows PER DRAW and re-checks them at "
+                    "submit, so never quote a frame time from this run.\n");
+        return o;
+    }();
+    return on;
+}
+
+// ...AND THE PROOF THAT IT CAN FIRE. A detector for an intermittent defect that has never
+// been seen to scream is indistinguishable from a defect that did not trigger — which is
+// the operator's own objection and the whole reason part 72's fix could not be confirmed
+// (gotcha 30). This mutates ONE dword of ONE memo slot after the draws referencing it were
+// recorded, which is exactly the shape being hunted, so a clean run of the real thing means
+// something only if the poisoned run reports it.
+bool ConstRacePoison()
+{
+    static const bool on = EnvOn("CZ_VK_CONST_RACE_POISON");
+    return on;
+}
+
+inline uint64_t ConstHash(const uint8_t* p, size_t n)
+{
+    // FNV-1a over dwords — the same function this project already trusts for shader
+    // microcode identity, and a dword stride because the payload is float4 registers.
+    uint64_t h = 1469598103934665603ull;
+    const uint32_t* d = reinterpret_cast<const uint32_t*>(p);
+    for (size_t i = 0; i < n / 4; i++)
+    {
+        h ^= d[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// ===================================================================================
 // THE SLOW-FRAME TABLE (part 72, open item 0w) — the same shape, asking a wider question
 // ===================================================================================
 //
@@ -8537,6 +8633,104 @@ void SubmitFrame()
     if (!R->recording)
         return;
     EndRendering();
+
+    // THE CONSTANT-SLOT RACE DETECTOR's check half. Before this command buffer is closed
+    // and handed to the GPU, re-read every constant window a draw was recorded against and
+    // compare it with what that draw actually saw. A difference means the shader will
+    // dereference bytes nobody recorded it with — the retroactive-mutation hazard the
+    // buffer-device-address binding makes possible.
+    if (ConstRaceOn() && !g_constRefs.empty())
+    {
+        ++g_raceFrames;
+        // THE POISON, applied HERE so it lands strictly between record and check: mutate
+        // one dword of the LAST draw's vertex window. Every earlier draw sharing that
+        // offset must then report changed, which is exactly the shape being hunted.
+        if (ConstRacePoison())
+        {
+            uint32_t* p = reinterpret_cast<uint32_t*>(R->arena.mapped +
+                                                      g_constRefs.back().vsAt);
+            p[0] ^= 0x40000000u;
+        }
+        uint64_t vsBad = 0, psBad = 0, projBad = 0;
+        bool anyAffected = false;
+        // Which tiles a given VS slot was referenced from, so the report can say whether
+        // the draws that disagree span the left/right halves or sit inside one.
+        std::unordered_map<uint64_t, uint32_t> tilesPerSlot;
+        for (const ConstRef& r : g_constRefs)
+            tilesPerSlot[uint64_t(r.vsAt)] |= (r.windowOffset ? 2u : 1u);
+        for (const ConstRef& r : g_constRefs)
+        {
+            const bool vsChanged =
+                ConstHash(R->arena.mapped + r.vsAt, kVsConstBytes) != r.vsHash;
+            const bool psChanged =
+                ConstHash(R->arena.mapped + r.psAt, kPsConstBytes) != r.psHash;
+            if (!vsChanged && !psChanged)
+                continue;
+            vsBad += vsChanged;
+            psBad += psChanged;
+            // Did the PROJECTION move, or only registers elsewhere in the window? The two
+            // have completely different symptoms — c0..c3 is the scene transform, so a
+            // change there moves geometry on screen, which is what a half-screen flicker
+            // looks like. Anything else is a shading difference.
+            const bool proj =
+                vsChanged && memcmp(R->arena.mapped + r.vsAt, r.c0, sizeof r.c0) != 0;
+            projBad += proj;
+            // AFFECTED = did anything THIS draw's shader actually READS move? A change in
+            // registers it never reads is the gather working as designed: it leaves them
+            // holding arena garbage on purpose, so a later top-up filling them in is not a
+            // defect. Only this number can condemn the feature.
+            bool affected = false;
+            if (vsChanged && r.vs)
+            {
+                const uint32_t* now =
+                    reinterpret_cast<const uint32_t*>(R->arena.mapped + r.vsAt);
+                if (r.vs->aluDynamic || r.vs->aluConsts.empty())
+                {
+                    // a0-relative indexing can reach anywhere in the window, and an empty
+                    // list means the full copy — either way the whole window is in scope.
+                    affected = memcmp(now, r.vsWindow.data(), kVsConstBytes) != 0;
+                }
+                else
+                    for (uint32_t reg : r.vs->aluConsts)
+                        if (reg < 256 &&
+                            memcmp(now + reg * 4, r.vsWindow.data() + reg * 4,
+                                   4 * sizeof(uint32_t)) != 0)
+                        {
+                            affected = true;
+                            break;
+                        }
+            }
+            if (affected)
+            {
+                anyAffected = true;
+                ++g_raceAffected;
+                g_raceAffectedProj += proj;
+                if (tilesPerSlot[uint64_t(r.vsAt)] == 3u)
+                    ++g_raceCrossTile;
+            }
+            if (affected && !g_raceReported)
+            {
+                g_raceReported = true;
+                fprintf(stderr,
+                        "[vk] ** CONST RACE: frame %llu draw %u — its constant window "
+                        "CHANGED between record and submit (vs=%d ps=%d projection=%d, "
+                        "windowOffset=%08X, slot shared across %s)\n",
+                        (unsigned long long)R->frame, r.draw, int(vsChanged),
+                        int(psChanged), int(proj), r.windowOffset,
+                        tilesPerSlot[uint64_t(r.vsAt)] == 3u ? "BOTH TILES" : "one tile");
+            }
+        }
+        if (anyAffected)
+            ++g_raceAffectedFrames;
+        g_raceDraws += g_constRefs.size();
+        g_raceVsChanged += vsBad;
+        g_racePsChanged += psBad;
+        g_raceProjChanged += projBad;
+        if (vsBad || psBad)
+            ++g_raceDirtyFrames;
+        g_constRefs.clear();
+    }
+
     vkEndCommandBuffer(R->cmd);
     R->recording = false;
 
@@ -10978,7 +11172,7 @@ uint64_t g_passCount = 0, g_passDraws = 0, g_passMax = 0;
 
 uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
-         g_gatherTopUp = 0, g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
+         g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
 
 // **THE GATHER IS OFF BY DEFAULT AS OF PART 74, ON THE OPERATOR'S OBSERVATION.** It shipped
 // enabled in part 72 worth ~0.8 ms and 297 GB not copied, with its verifier reading 0
@@ -16317,83 +16511,47 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     const uint64_t psVersion = Pm4_AluConstVersion(1);
     const bool memoOn = !g_constMemoOff && !g_psConstScaleActive &&
                         R->constMemoFrame == R->frame;
+    // **THE SHADER IS PART OF THE KEY WHEN THE GATHER IS ON (part 74).** A gathered slot
+    // holds only the registers ITS shader reads; the rest is arena garbage. Serving it to a
+    // different shader therefore needs the slot topped up — and topping it up IN PLACE is
+    // the defect, because the window is handed to the shader as a BUFFER DEVICE ADDRESS, so
+    // every draw already recorded against that offset reads the mutation RETROACTIVELY when
+    // the GPU executes. The race detector measured it: **48 draws a boot read a projection
+    // register their own shader uses that moved after they were recorded, in 2 frames of
+    // 513** — the right rate for an intermittent half-screen flicker.
+    //
+    // Making the shader part of the key turns that case into an ordinary MISS, which
+    // allocates a fresh slot and cannot disturb anybody. It costs ~4,360 extra misses a
+    // boot (2.6% of draws), each one a gather of ~26 registers rather than a 4 KB copy.
+    //
+    // With the gather OFF the slot holds the WHOLE window, so any shader may use it and the
+    // key stays exactly as it was — that path has to remain the pre-part-72 renderer
+    // byte for byte, because it is both the control arm and, since part 74, the default.
+    const bool shaderKeyed = !ConstGatherOff();
     const bool vsHit = memoOn && R->constMemoVsValid &&
                        R->constMemoVsVersion == vsVersion &&
-                       R->constMemoVsBase == memoVsBase;
+                       R->constMemoVsBase == memoVsBase &&
+                       (!shaderKeyed || R->constMemoVsFor == &vs);
     const bool psHit = memoOn && R->constMemoPsValid &&
                        R->constMemoPsVersion == psVersion &&
-                       R->constMemoPsBase == memoPsBase;
-    // THE GATHER'S ONE CORRECTNESS OBLIGATION (perf item C — see `constMemoVsFor`).
-    // A memo hit is a version match, not a shader match, so a slot gathered for one
-    // shader can be served to another that reads registers the slot never received. Top
-    // it up before the hit is used. Costs nothing on the common case (the same shader
-    // draws many times in a row) and nothing at all when the gather is off, because then
-    // every slot holds the whole window.
-    // ...AND NONE OF THIS RUNS WITH THE GATHER OFF. With the full copy the slot always
-    // holds the whole window, so a different shader needs nothing added — and more
-    // importantly, the gather-off path has to be the PRE-PART-72 RENDERER EXACTLY or it is
-    // not a control arm — and since part 74 it is also the DEFAULT, so it is not merely a
-    // control any more, it is what ships. Without this test it was doing full copies and re-patches
-    // on shader changes that the old path never did: 319,138 of them in the A/B's control
-    // arm, which is only 0.3% of its copies but is work the baseline never performed, and
-    // a control that does extra work overstates the treatment (gotcha 415's shape).
-    const bool topUp = !ConstGatherOff();
-    if (topUp && vsHit && R->constMemoVsFor != &vs)
-    {
-        uint32_t* dst = reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoVsAt);
-        CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs, true);
-        // REFRESH c0..c3 RAW BEFORE PATCHING, unconditionally, and this is not belt and
-        // braces — it closes a DOUBLE-PATCH hole the gather opens.
-        //
-        // The slot being topped up already holds PATCHED c0..c3 from its previous
-        // occupant. The gather only writes the registers THIS shader reads, so a shader
-        // that reads none of c0..c3 — or, worse, only SOME of them — leaves patched values
-        // in place and the patch below then applies a second time. A partially re-patched
-        // window is the bad case: `SceneXformForm` reads all sixteen floats to decide
-        // whether this even IS a scene projection, so a half-raw half-double-patched
-        // window can be mis-recognised and then scaled on the wrong rows.
-        //
-        // Sixty-four bytes makes the patch below idempotent by construction. Doing it for
-        // shaders that never read c0..c3 is harmless: they never read them.
-        // CZ_VK_GATHER_NO_C0_REFRESH=1 REVERTS this line, in the same binary. It exists
-        // because the defect it was written for is INTERMITTENT and visual: without a way
-        // to bring it back on demand, "the flicker stopped" cannot be told apart from "we
-        // did not trigger it this time", and an intermittent defect declared fixed on one
-        // clean run is the easiest wrong result in this project to produce (gotcha 30 in
-        // its visual form). Never a configuration to ship — a positive control.
-        static const bool noRefresh = [] {
-            const bool o = EnvOn("CZ_VK_GATHER_NO_C0_REFRESH");
-            if (o)
-                fprintf(stderr, "[vk] CZ_VK_GATHER_NO_C0_REFRESH=1 — the memo top-up's "
-                                "c0..c3 refresh is REVERTED. This is the POSITIVE CONTROL "
-                                "for the sky-flicker fix and must reproduce it\n");
-            return o;
-        }();
-        if (!noRefresh)
-            memcpy(dst, regs + xenos::kAluConstantBase + memoVsBase * 4,
-                   16 * sizeof(uint32_t));
-        // AND RE-APPLY THE PROJECTION PATCHES, in the miss path's order. The slot being
-        // topped up already held PATCHED constants (the fov slider and the 21:9 wide
-        // patch rewrite c0..c3 on the miss path), and the gather above has just written
-        // RAW registers over them. Without this the slider and wide mode would silently
-        // stop working for any draw served by a slot another shader had filled — a
-        // picture defect with no error, produced by a performance change.
-        PatchFovProjection(dst, FovHalfRadThisFrame());
-        if (WideMode())
-            PatchWideProjection(dst);
-        R->constMemoVsFor = &vs;
-        ++g_gatherTopUp;
-    }
-    if (topUp && psHit && R->constMemoPsFor != &ps)
-    {
-        // The PIXEL window carries no projection, so it needs no patch — stated rather
-        // than left to inference, because the asymmetry with the block above is exactly
-        // the kind of thing a later reader "tidies up".
-        CopyConstWindow(reinterpret_cast<uint32_t*>(R->arena.mapped + R->constMemoPsAt),
-                        regs + xenos::kAluConstantBase + memoPsBase * 4, ps, false);
-        R->constMemoPsFor = &ps;
-        ++g_gatherTopUp;
-    }
+                       R->constMemoPsBase == memoPsBase &&
+                       (!shaderKeyed || R->constMemoPsFor == &ps);
+    // THE IN-PLACE TOP-UP IS GONE (part 74), AND ITS REMOVAL IS THE FIX.
+    //
+    // It used to run here: on a memo hit whose slot had been gathered for a DIFFERENT
+    // shader, it wrote the new shader's registers into that slot, refreshed c0..c3 raw and
+    // re-applied the projection patches. Every one of those writes landed on an arena
+    // offset that earlier draws of the same frame had already been recorded against, and
+    // because the window is bound as a buffer device address those draws read the result
+    // when the GPU executed — a retroactive mutation, and a mechanism for one group of
+    // draws rendering with another group's projection. On a title that tiles LEFT/RIGHT
+    // (gotcha 265) that is a mechanism for half the screen differing from the other half,
+    // which is exactly the flicker the operator reported.
+    //
+    // Part 72 tried to fix it from inside the top-up (the unconditional c0..c3 refresh,
+    // `a55df20`) and the flicker survived, because the refresh is itself a mutation. The
+    // shader is now part of the memo key instead, so this case is an ordinary miss.
+    // `CZ_VK_GATHER_NO_C0_REFRESH` is retired with the code it reverted.
     // ---- THE PER-DRAW HOOK FOLD (part 71) ------------------------------------------
     //
     // ONE DECISION PER FRAME instead of five per draw. The word is recomputed lazily on
@@ -18189,6 +18347,26 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     vkCmdPushConstants(R->cmd, R->pipeLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
                        &pushConstants);
+
+    // THE CONSTANT-SLOT RACE DETECTOR's record half. This is the right place and the only
+    // right place: the address has just been pushed, so these are exactly the bytes this
+    // draw is being recorded to read, after the memo top-up and after any miss-path
+    // patching. The check half runs at submit (see SubmitFrame).
+    if (ConstRaceOn())
+    {
+        ConstRef r;
+        r.draw = uint32_t(R->drawsThisFrame);
+        r.windowOffset = regs[xenos::kPaScWindowOffset];
+        r.vsAt = vsConstAt;
+        r.psAt = psConstAt;
+        r.vs = &vs;
+        r.vsHash = ConstHash(R->arena.mapped + vsConstAt, kVsConstBytes);
+        r.psHash = ConstHash(R->arena.mapped + psConstAt, kPsConstBytes);
+        memcpy(r.c0, R->arena.mapped + vsConstAt, sizeof r.c0);
+        r.vsWindow.resize(kVsConstBytes / 4);
+        memcpy(r.vsWindow.data(), R->arena.mapped + vsConstAt, kVsConstBytes);
+        g_constRefs.push_back(std::move(r));
+    }
     }   // end recordState
 
     // CZ_VK_STATE_PROBE=1 — the distinct values of the state registers this renderer
@@ -22923,6 +23101,40 @@ void VkRenderer_DumpStats()
                 "[vk]     (if 'scope actually broken' is small for the near-empty class, "
                 "§4b's premise is wrong: those passes are not End+Begin cycles at all)\n");
     }
+    // THE CONSTANT-SLOT RACE DETECTOR (part 74) — the gate the gather has to pass before
+    // CZ_VK_CONST_GATHER=1 can become the default again.
+    if (ConstRaceOn())
+    {
+        fprintf(stderr,
+                "[vk]   const race: %llu draws checked over %llu frames — "
+                "**%llu had their VERTEX window change between record and submit** "
+                "(%.4f%%), %llu their pixel window, %llu of them in the PROJECTION "
+                "(c0..c3), %llu on a slot shared across BOTH TILES; %llu of %llu frames "
+                "dirty\n",
+                (unsigned long long)g_raceDraws, (unsigned long long)g_raceFrames,
+                (unsigned long long)g_raceVsChanged,
+                g_raceDraws ? 100.0 * double(g_raceVsChanged) / double(g_raceDraws) : 0.0,
+                (unsigned long long)g_racePsChanged,
+                (unsigned long long)g_raceProjChanged,
+                (unsigned long long)g_raceCrossTile,
+                (unsigned long long)g_raceDirtyFrames,
+                (unsigned long long)g_raceFrames);
+        fprintf(stderr,
+                "[vk]     ** AFFECTED (the number that decides): %llu draws read a "
+                "register THEIR OWN shader uses that moved after they were recorded "
+                "(%.4f%%), %llu of those in the projection, %llu of %llu frames. A change "
+                "in registers a draw never reads is the gather working as designed.\n",
+                (unsigned long long)g_raceAffected,
+                g_raceDraws ? 100.0 * double(g_raceAffected) / double(g_raceDraws) : 0.0,
+                (unsigned long long)g_raceAffectedProj,
+                (unsigned long long)g_raceAffectedFrames,
+                (unsigned long long)g_raceFrames);
+        if (!g_raceAffected)
+            fprintf(stderr,
+                    "[vk]     CLEAN — but a clean run means nothing until the poison arm "
+                    "has been seen to scream: re-run with CZ_VK_CONST_RACE_POISON=1 and "
+                    "confirm it reports (gotcha 30)\n");
+    }
     // PERF ITEM C's bill, on every stats dump — the bytes NOT copied, which is the whole
     // point of the item, plus the two numbers that say whether it is safe: how many stages
     // fell back to the full copy, and what the verifier found if it was armed.
@@ -22935,13 +23147,12 @@ void VkRenderer_DumpStats()
             fprintf(stderr,
                     "[vk]   const gather: %.1f%% of window copies gathered (%llu full — "
                     "dynamic a0 or no list), %.2f GB not copied over the run (%.1f%% of "
-                    "%.2f GB), %llu memo top-ups\n",
+                    "%.2f GB)\n",
                     100.0 * double(g_gatherGathered) / double(tot),
                     (unsigned long long)g_gatherFull,
                     double(wouldBe - actual) * 4.0 / 1e9,
                     100.0 * double(wouldBe - actual) / double(wouldBe),
-                    double(wouldBe) * 4.0 / 1e9,
-                    (unsigned long long)g_gatherTopUp);
+                    double(wouldBe) * 4.0 / 1e9);
             if (g_gatherChecked)
                 fprintf(stderr,
                         "[vk]     verified: %llu gathers checked against the full copy, "
