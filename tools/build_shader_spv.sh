@@ -25,8 +25,14 @@ XENOS=~/GithubRepo/XenosRecomp
 DXC="$XENOS/thirdparty/dxc-bin/bin/x64/dxc-linux"
 DXCLIB="$XENOS/thirdparty/dxc-bin/lib/x64"
 
-SYNTH=$(mktemp -d)
-trap 'rm -rf "$SYNTH"' EXIT
+SYNTH=${CZ_KEEP_SYNTH:-$(mktemp -d)}
+mkdir -p "$SYNTH"
+# CZ_KEEP_SYNTH=<dir> keeps the translated HLSL, which is what
+# tools/alu_const_gate.py --hlsl-dir needs to cross-check the gather's register lists
+# against the shaders themselves. Without it the gate can only check that the lists exist
+# and are in range — and a MISSING register is exactly what nothing at run time can catch
+# (gotcha 432), so the weak mode is the one that matters least.
+[ -n "${CZ_KEEP_SYNTH:-}" ] || trap 'rm -rf "$SYNTH"' EXIT
 
 python3 "$ROOT/tools/synth_shader_container.py" "$UCODE" "$SYNTH" > "$SYNTH/synth.log" || {
     echo "synth failed; see $SYNTH/synth.log"; exit 1; }

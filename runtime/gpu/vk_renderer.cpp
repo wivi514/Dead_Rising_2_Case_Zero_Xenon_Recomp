@@ -2731,6 +2731,7 @@ struct ConstRef
     uint32_t windowOffset = 0;          // kPaScWindowOffset — the TILE identity
     VkDeviceSize vsAt = 0, psAt = 0;
     const ShaderMeta* vs = nullptr;
+    const ShaderMeta* ps = nullptr;
     uint32_t c0[16] = {};               // the projection block, kept for the diff
     // ONLY THE REGISTERS THIS DRAW'S SHADER READS, not the whole 4 KB window. The first
     // cut stored and hashed both full windows per draw and was ~45x slower than the game —
@@ -2741,6 +2742,12 @@ struct ConstRef
     // `affected` verdict needs. The 22 a0-relative shaders keep the whole window, because
     // they can index anywhere in it.
     std::vector<uint32_t> vsRegs;
+    // AND THE PIXEL WINDOW'S. The first cut skipped this on the reasoning that "the pixel
+    // window carries no projection" — true, and irrelevant: the pixel window is GATHERED
+    // too, and a pixel shader served a register that moved is a SHADING defect, which is
+    // what a flickering sky actually is. Skipping it made the detector blind to the more
+    // likely half of its own subject, which is gotcha 440 for the third time in two parts.
+    std::vector<uint32_t> psRegs;
 };
 std::vector<ConstRef> g_constRefs;
 uint64_t g_raceDraws = 0, g_raceVsChanged = 0, g_racePsChanged = 0, g_raceProjChanged = 0,
@@ -8651,27 +8658,32 @@ void SubmitFrame()
             tilesPerSlot[uint64_t(r.vsAt)] |= (r.windowOffset ? 2u : 1u);
         for (const ConstRef& r : g_constRefs)
         {
-            const uint32_t* now =
+            const uint32_t* vnow =
                 reinterpret_cast<const uint32_t*>(R->arena.mapped + r.vsAt);
-            // AFFECTED, computed directly: did any register THIS draw's shader reads move
-            // after the draw was recorded? A change in registers it never reads is the
+            const uint32_t* pnow =
+                reinterpret_cast<const uint32_t*>(R->arena.mapped + r.psAt);
+            // AFFECTED, computed directly: did any register THIS draw's shaders read move
+            // after the draw was recorded? A change in registers they never read is the
             // gather working as designed — it leaves those holding arena garbage on
-            // purpose — so only this can condemn the feature.
-            bool affected = false;
-            if (r.vs && (r.vs->aluDynamic || r.vs->aluConsts.empty()))
-                affected = memcmp(now, r.vsRegs.data(), kVsConstBytes) != 0;
-            else if (r.vs)
-                for (size_t i = 0; i < r.vs->aluConsts.size(); i++)
-                    if (r.vs->aluConsts[i] < 256 &&
-                        memcmp(now + r.vs->aluConsts[i] * 4, r.vsRegs.data() + i * 4,
+            // purpose — so only this can condemn the feature. BOTH STAGES, because a
+            // pixel shader served a moved register is a shading defect and a flickering
+            // sky is a shading defect.
+            auto moved = [](const uint32_t* now, const std::vector<uint32_t>& was,
+                            const ShaderMeta* m, uint32_t bytes) {
+                if (!m)
+                    return false;
+                if (m->aluDynamic || m->aluConsts.empty())
+                    return memcmp(now, was.data(), bytes) != 0;
+                for (size_t i = 0; i < m->aluConsts.size(); i++)
+                    if (m->aluConsts[i] < 256 &&
+                        memcmp(now + m->aluConsts[i] * 4, was.data() + i * 4,
                                4 * sizeof(uint32_t)) != 0)
-                    {
-                        affected = true;
-                        break;
-                    }
-            const bool vsChanged = affected;
-            const bool psChanged = false;   // the pixel window carries no projection and
-                                            // is never patched; kept for the report's shape
+                        return true;
+                return false;
+            };
+            const bool vsChanged = moved(vnow, r.vsRegs, r.vs, kVsConstBytes);
+            const bool psChanged = moved(pnow, r.psRegs, r.ps, kPsConstBytes);
+            const bool affected = vsChanged || psChanged;
             if (!vsChanged && !psChanged)
                 continue;
             vsBad += vsChanged;
@@ -11252,6 +11264,41 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
         // below is against the FULL copy and not against the source registers — those are
         // the same thing today and would stop being the same thing the moment anything
         // else patches the copy (the fov and wide patches already do, downstream).
+    }
+    // CZ_VK_GATHER_FILL=1 — FILL THE UNLISTED REGISTERS WITH A CONSTANT instead of leaving
+    // whatever the bump arena happened to contain.
+    //
+    // THE DISCRIMINATOR IT EXISTS FOR. Part 74 closed three explanations of the sky flicker
+    // — the lists name everything the HLSL reads (the offline cross-check passes), the
+    // gather copies what they name (0 of 17.9M), and nothing mutates a slot after a draw
+    // was recorded against it (0 of 21.3M on the outdoor route, both stages). The one
+    // remaining candidate is a register the SHADER reads that the LIST does not name, which
+    // by construction no run-time check can see (gotcha 432).
+    //
+    // Such a read returns arena residue, and residue VARIES frame to frame — which is
+    // exactly what makes a defect intermittent rather than constantly wrong. So filling
+    // those slots with a fixed value is a two-sided test: **if the flicker stops, the
+    // defect IS an unlisted read** (the varying residue was the flicker) and the picture
+    // may be steadily wrong instead; if it continues, that explanation is dead too.
+    //
+    // It is a DIAGNOSTIC ARM and never a shipping configuration: it writes the 230 or so
+    // registers the gather exists to skip, so it costs the whole item.
+    static const bool fill = [] {
+        const bool o = EnvOn("CZ_VK_GATHER_FILL");
+        if (o)
+            fprintf(stderr, "[vk] CZ_VK_GATHER_FILL=1 — registers NOT in a shader's list "
+                            "are filled with a constant instead of arena residue. A "
+                            "DIAGNOSTIC ARM: it writes what the gather exists to skip.\n");
+        return o;
+    }();
+    if (fill)
+    {
+        // A large, finite, obviously-wrong value. NaN would make every arithmetic result
+        // NaN and could discard whole surfaces, which changes the picture for a reason
+        // other than the one under test; a big float keeps the shader running.
+        static const uint32_t kFill = 0x461C4000u;   // 10000.0f
+        for (uint32_t i = 0; i < 256 * 4; ++i)
+            dst[i] = kFill;
     }
     ++g_gatherGathered;
     const size_t n = meta.aluConsts.size();
@@ -18343,21 +18390,28 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         r.vsAt = vsConstAt;
         r.psAt = psConstAt;
         r.vs = &vs;
-        const uint32_t* win = reinterpret_cast<const uint32_t*>(R->arena.mapped + vsConstAt);
-        memcpy(r.c0, win, sizeof r.c0);
-        if (vs.aluDynamic || vs.aluConsts.empty())
-        {
-            r.vsRegs.resize(kVsConstBytes / 4);
-            memcpy(r.vsRegs.data(), win, kVsConstBytes);
-        }
-        else
-        {
-            r.vsRegs.resize(vs.aluConsts.size() * 4);
-            for (size_t i = 0; i < vs.aluConsts.size(); i++)
-                if (vs.aluConsts[i] < 256)
-                    memcpy(r.vsRegs.data() + i * 4, win + vs.aluConsts[i] * 4,
-                           4 * sizeof(uint32_t));
-        }
+        r.ps = &ps;
+        auto snap = [](std::vector<uint32_t>& out, const uint32_t* win,
+                       const ShaderMeta& m, uint32_t bytes) {
+            if (m.aluDynamic || m.aluConsts.empty())
+            {
+                out.resize(bytes / 4);
+                memcpy(out.data(), win, bytes);
+            }
+            else
+            {
+                out.resize(m.aluConsts.size() * 4);
+                for (size_t i = 0; i < m.aluConsts.size(); i++)
+                    if (m.aluConsts[i] < 256)
+                        memcpy(out.data() + i * 4, win + m.aluConsts[i] * 4,
+                               4 * sizeof(uint32_t));
+            }
+        };
+        const uint32_t* vwin = reinterpret_cast<const uint32_t*>(R->arena.mapped + vsConstAt);
+        const uint32_t* pwin = reinterpret_cast<const uint32_t*>(R->arena.mapped + psConstAt);
+        memcpy(r.c0, vwin, sizeof r.c0);
+        snap(r.vsRegs, vwin, vs, kVsConstBytes);
+        snap(r.psRegs, pwin, ps, kPsConstBytes);
         g_constRefs.push_back(std::move(r));
     }
     }   // end recordState
