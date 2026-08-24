@@ -4822,3 +4822,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      means, which the tail dominates by weight of frames. This is the stationary cousin of
      gotcha 428 (a cumulative mean over a transient) and it bites in the opposite
      direction: there the early burst dominated, here the late stasis does.
+
+439. **AN OLD BINARY IS NEVER A SINGLE-VARIABLE ARM.** Part 74 built the pre-RT binary to
+     answer *"how does the game fare against before we added all the RT stuff"* — the right
+     instinct, and the right method (the control is the old binary run NOW, not its
+     remembered numbers). It measured **45% faster**, which read as thirteen parts of
+     regression. It was not. The old build's own settings line had **no `fov` field at all**,
+     because the slider did not exist yet, so it ignored the operator's setting and rendered
+     the authored ~43 degrees where the current build renders 67.64 — and it culled at 16:9
+     on a 21:9 screen. **It was not faster; it was showing far less of the world**, and the
+     part it was not showing was the exact defect the operator had asked to be fixed. With
+     that separated, the thing actually under test — the whole RT era — cost **0.5-0.7 ms**.
+     An old binary lacks *every* fix since, including the ones that silently change what the
+     workload IS, and a settings field that is simply absent produces no warning anywhere.
+     **Before quoting an old-binary delta, diff what the two builds PARSE and what they
+     RENDER, not just what you changed.** The cheapest check is the settings/config line each
+     one prints at startup. Whole-binary form of gotcha 423 and of
+     `an-arm-that-removes-the-fix-too`.
+
+440. **A VERIFIER READING ZERO OVER MILLIONS OF CHECKS CAN BE RIGHT AND STILL NOT COVER THE
+     DEFECT — AND THE OPERATOR'S "I MIGHT JUST NOT HAVE SEEN IT" IS THE CORRECT OBJECTION.**
+     Item C's gather verifier read **0 disagreements over 17,948,265 gathers** and was
+     correct: it checks that the gather copied what the shader's list NAMES. The reported
+     defect — a half-screen sky flicker — lives in what happens to the memo slot afterwards,
+     and on a title that tiles LEFT/RIGHT a slot holding a partly-patched projection serves
+     the two tiles different constants. **A verifier's scope is not the feature's blast
+     radius.** Two process lessons ride along. First, when the only instrument is an eye,
+     **run the positive control rather than banking the clean result** — the operator said
+     *"not sure if I just didn't see it in the last run"*, which is exactly right for an
+     intermittent defect, and the fix was two runs each way with the arm proving engagement
+     from a line the feature prints. Second, **turning a feature off by default is a
+     legitimate result**: the code, the arm and the offline gate all stay, and 0.8 ms of a
+     16 ms frame against a visible defect in the shipped configuration is not a close call.
