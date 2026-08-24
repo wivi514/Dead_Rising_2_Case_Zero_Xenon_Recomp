@@ -11187,32 +11187,36 @@ uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
          g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
 
-// **THE GATHER IS OFF BY DEFAULT AS OF PART 74, ON THE OPERATOR'S OBSERVATION.** It shipped
-// enabled in part 72 worth ~0.8 ms and 297 GB not copied, with its verifier reading 0
-// disagreements over 17,948,265 gathers — and it is still correct by that measure. But the
-// operator reported a HALF-SCREEN SKY FLICKER, switching left/right with the moment, and
-// part 74 discriminated it on the autonomous route with them watching:
+// **THE GATHER IS ON BY DEFAULT AGAIN AS OF PART 74's SECOND HALF.** It shipped enabled in
+// part 72, was turned OFF the same day on the operator's report of a half-screen sky
+// flicker, and is back on because the flicker was found, fixed and confirmed.
 //
-//   gather ON  -> flickered (twice, including a deliberate positive control)
-//   gather OFF -> clean
+// TWO DEFECTS, both real, both fixed, and the evidence that it is the pair of them:
 //
-// **The verifier was right and was not measuring the defect.** It checks that the gather
-// copied what the shader's list NAMES; the candidate defect is what happens to the memo
-// slot afterwards, and this title tiles LEFT/RIGHT (gotcha 265) — so a memo slot holding a
-// partly-patched projection serves tile 0 and tile 1 different constants, which is a
-// mechanism for exactly "half the screen, switching sides". A verifier's scope is not the
-// feature's blast radius.
+//   * **the memo top-up mutated a slot in place.** The window is bound as a BUFFER DEVICE
+//     ADDRESS, so a write to a slot reaches every earlier draw of the frame recorded
+//     against that offset, retroactively. `CZ_VK_CONST_RACE=1` measured 48 affected draws a
+//     boot, all in the projection, in 2 frames of 513. Fixed by making the shader part of
+//     the memo key, so that case is an ordinary miss with a fresh slot.
+//   * **the gather did not copy c0..c3 for three shaders**, and THIS RENDERER READS c0..c3
+//     ITSELF — `PatchFovProjection`/`PatchWideProjection` call `SceneXformForm`, which
+//     inspects all sixteen floats. Those draws had their projection left unpatched while
+//     every other draw in the frame was widened. Fixed by copying c0..c3 unconditionally.
 //
-// **Off is a default, not a deletion.** The code, the verifier, the poison arm and
-// `tools/alu_const_gate.py` all stay; `CZ_VK_CONST_GATHER=1` turns it back on and is the
-// arm any fix must be developed against. The trade is 0.8 ms of a ~16 ms frame against a
-// visible picture defect in the shipped configuration, which is not a close call.
+// **The verdicts, all the operator's eye, on a route that holds the view (`STILL=1`):**
 //
-// **What is still owed before this can be re-enabled**: a DETECTOR, so this stops depending
-// on an eye and a 3-minute run. The shape is known — flag any draw whose constant window is
-// served with a different c0..c3 patch state than the other tile saw for the same shader in
-// the same frame. One clean run of that is worth more than any number of quiet eyeball runs,
-// because an intermittent defect cannot be cleared by a run that simply did not trigger it.
+//   pre-fix binary (3edcb08)          flickered 6 of 6
+//   c0 fix reverted, memo fix kept    flickered 1 of 3   (the defect is INTERMITTENT)
+//   both fixes                        clean 2 of 2, plus a full PLAY SESSION at
+//                                     8,593-10,256 draws with no flicker
+//
+// The intermittency is why this took a day: a single clean run never distinguished "fixed"
+// from "not triggered", which is why the pre-fix binary is kept buildable as the positive
+// control (`BIN_SRC=` in tools/autoroute.sh) and why `CZ_VK_GATHER_NO_C0_ALWAYS=1` reverts
+// the second fix in the same binary.
+//
+// `CZ_VK_CONST_GATHER=0` turns it off — it takes a VALUE, so a launcher that always sets
+// the variable can still disable it.
 bool ConstGatherOff()
 {
     static const bool off = [] {
@@ -11220,15 +11224,16 @@ bool ConstGatherOff()
         // it off again once the default flips, or the operator has no way to disable it
         // from a launcher that always sets the variable.
         const char* e = Env("CZ_VK_CONST_GATHER");
-        const bool on = e && *e && strcmp(e, "0") != 0;
-        if (on)
-            fprintf(stderr, "[vk] CZ_VK_CONST_GATHER=1 — the per-shader constant GATHER is "
-                            "ON (part 72's item C). It is OFF by default since part 74: it "
-                            "is the suspect for the half-screen sky flicker.\n");
+        const bool off = e && !strcmp(e, "0");
+        if (off)
+            fprintf(stderr, "[vk] CZ_VK_CONST_GATHER=0 — the per-shader constant GATHER is "
+                            "OFF; the full 256-register window is copied per stage per draw "
+                            "(the pre-part-72 behaviour). This is the control arm.\n");
         else
-            fprintf(stderr, "[vk] constant gather OFF (the default since part 74 — the sky "
-                            "flicker). CZ_VK_CONST_GATHER=1 re-enables it.\n");
-        return !on;
+            fprintf(stderr, "[vk] constant gather ON (the default; part 72's item C, with "
+                            "part 74's two flicker fixes). CZ_VK_CONST_GATHER=0 disables "
+                            "it.\n");
+        return off;
     }();
     return off;
 }
