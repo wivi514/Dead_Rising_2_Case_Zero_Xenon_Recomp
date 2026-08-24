@@ -16586,3 +16586,61 @@ bigger item and it is a different fix.**
 **One frame is still unexplained:** 6788 is **96.5 ms of CPU recording with ZERO uploads,
 zero decode, zero pipelines** and a 10.9 ms GPU, immediately after a 692-upload burst. The
 instrument to chase it now exists.
+
+## §6do — Part 74: the operator marks the stutters, and there are TWO problems (2026-08-24)
+
+The operator played with the profiler armed and **F7 marking every felt stutter** — 10 marks
+in one session, all landing on frames. Their description: *"stutter right after loading the
+game and then a lot of stutter when moving the camera when big crowd of zombie on main
+street."* Those are two different mechanisms and the data separates them cleanly.
+
+### 1. THE MARKER, AND WHY IT WAS WORTH BUILDING
+
+`F7` stamps the current frame into the log and the trace with its full decomposition. Human
+reaction is ~200-500 ms, so a marker names a NEIGHBOURHOOD — the reader takes the worst frame
+in the ~1 s before it, which is why the trace carries every frame and not only the extremes.
+**Every one of the 10 marks had `fence 0.0` and a healthy 11.6-14.2 ms GPU**, which alone
+retires the GPU as a suspect for anything the operator can feel.
+
+### 2. PROBLEM ONE — THE POST-LOAD STUTTER IS TEXTURE BURSTS, AND IT IS A REAL HITCH
+
+```
+frame 5287:  305.5 ms   texPh 229.3     frame 4083:  298.7 ms   807 uploads, up 65.7 + dec 157.5
+frame 4443:  150.2 ms   texPh 41.5 + oFetch 26.7 + 57.5 unattributed
+```
+
+This is §6dn's finding confirmed from the operator's own session, and it is what part 75's
+item addresses.
+
+### 3. PROBLEM TWO — THE CROWD "STUTTER" IS NOT A HITCH AT ALL
+
+Excluding every frame with a texture upload, **3,443 outdoor frames**:
+
+| draws | n | median | p95 | us/draw |
+|---|---|---|---|---|
+| 1,500-2,999 | 2,835 | **12.5 ms** | 13.4 | 5.05 |
+| 5,000-6,999 | 234 | 23.8 ms | 26.7 | 3.80 |
+| 7,000-8,999 | 199 | 29.1 ms | 33.2 | 3.69 |
+| 9,000-12,000 | 34 | **33.8 ms** | 39.3 | 3.65 |
+
+**p95 sits within 10-14% of the median in every band** — there are no spikes hiding in there.
+The frame time simply tracks the draw count: as the camera turns and the crowd comes into
+view the draws go 2,500 -> 9,000+ and the frame goes **12.5 ms -> 33.8 ms, i.e. 80 fps ->
+30 fps**. A 2.7x frame-rate change arriving as you turn the camera is *felt* as stutter and
+is not one.
+
+**This matters because the two need opposite work.** The post-load hitch is a burst to be
+smoothed. The crowd case is **throughput at high draw counts — the original CPU-bound crowd
+problem this whole campaign started from** — and no hitch fix touches it. A 40-46 ms marked
+frame breaks down as `constants ~12 + textures ~10 + readback ~3.6 + recordState ~2.6`, with
+no single phase spiking: it is a uniformly heavy frame, not a stalled one.
+
+### 4. THE BREAKDOWN ONLY ADDED UP AFTER A CORRECTION
+
+The trace's first phase set printed six columns and they summed to **~60%** of a stutter
+frame's CPU time — 34 ms of a 186.9 ms frame. `record` is the RESIDUAL after `recordState`,
+`recordVertex` and `recordIndex` are subtracted from it, and those three were not in the
+list, so the largest part of the draw path was invisible and `record` read **1.0 ms** at
+9,000 draws where part 47 measured 15.2. With all sixteen phases the unattributed remainder
+is **2.7-4.5 ms**, which is the profiler's own overhead. **A breakdown that does not add up
+is the same false-absence trap the residual column was built to close, one level down.**
