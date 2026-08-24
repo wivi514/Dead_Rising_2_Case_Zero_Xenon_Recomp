@@ -2770,6 +2770,12 @@ uint64_t g_texFetchResolves = 0;
 // so it is counted, weighed AND timed — a count alone cannot tell 6,000 small uploads
 // from 6 huge ones, and neither can tell either from a stall inside RunImmediate.
 uint64_t g_texRealUploads = 0, g_texUploadBytes = 0, g_texUploadNs = 0;
+// AND THE SPLIT THAT DECIDES WHAT A FIX WOULD BE. An upload measured at 249 us for a
+// 55 KB copy is not a copy — but "not a copy" is an inference, and the two candidates
+// want opposite fixes: if the time is the memcpy/decode, no synchronisation change helps;
+// if it is `vkQueueWaitIdle`, batching or a transfer queue removes nearly all of it. So
+// RunImmediate times its submit-and-wait separately from its allocate/record/free.
+uint64_t g_immN = 0, g_immTotalNs = 0, g_immWaitNs = 0;
 struct SlowFrameRec
 {
     uint64_t frame = 0;
@@ -5491,6 +5497,7 @@ bool RunImmediate(Body&& body)
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
     VkCommandBuffer cb = VK_NULL_HANDLE;
+    const uint64_t immT0 = CycNow();
     VK_CHECK(vkAllocateCommandBuffers(R->device, &ai, &cb), "vkAllocateCommandBuffers");
 
     VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -5502,9 +5509,34 @@ bool RunImmediate(Body&& body)
     VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
+    // `vkQueueWaitIdle` waits for the WHOLE QUEUE, not for this submit — so with two
+    // frames in flight an upload here blocks until the previous frame's entire GPU work
+    // has retired. That is the hypothesis; this clock is what tests it.
+    const uint64_t immW0 = CycNow();
+    // A FENCE ON THIS SUBMIT WAS TRIED IN PART 73 AND REVERTED, and the reasoning is
+    // kept here so it is not re-bought. The hypothesis was that `vkQueueWaitIdle` waits
+    // for the WHOLE queue — which during frame recording means the previous frame's GPU
+    // work — and so every texture upload was serializing the pump against the overlap
+    // part 23 bought. Measured on the autonomous route, three arms:
+    //
+    //   queue wait (this code)        258 us/submit    649.1 ms over the run
+    //   fence created per call        792 us/submit   1953.8 ms   (3.2x WORSE)
+    //   fence, persistent per thread  242 us/submit    610.2 ms   (6%, unmeasurable)
+    //
+    // So the per-call `vkCreateFence` was the 3.2x, and once that was removed the two
+    // primitives agree to 6% — under a run-to-run spread this route cannot resolve
+    // without a null arm. **The wait primitive was never the cost.** ~250 us is what one
+    // submit round-trip costs here, and the only change that removes it is not waiting
+    // 2,350 separate times: batching the copies into the frame's own command buffer,
+    // which needs a per-frame staging arena because R->staging is one buffer written at
+    // offset zero by every upload. That is filed as an item, not done here.
     vkQueueSubmit(R->queue, 1, &si, VK_NULL_HANDLE);
     vkQueueWaitIdle(R->queue);
+    const uint64_t immW1 = CycNow();
     vkFreeCommandBuffers(R->device, R->cmdPool, 1, &cb);
+    ++g_immN;
+    g_immWaitNs += immW1 - immW0;
+    g_immTotalNs += CycNow() - immT0;
     return true;
 }
 
@@ -22770,6 +22802,17 @@ void VkRenderer_DumpStats()
                     g_texRealUploads ? double(g_texUploadNs) / 1000.0
                                            / double(g_texRealUploads)
                                      : 0.0);
+            if (g_immN)
+                fprintf(stderr,
+                        "[vk]     immediate submits: %llu, %.1f ms total, of which "
+                        "%.1f ms (%.1f%%) is vkQueueSubmit+vkQueueWaitIdle "
+                        "(%.0f us each) — the wait is for the WHOLE QUEUE, so it "
+                        "includes the in-flight frame\n",
+                        (unsigned long long)g_immN, double(g_immTotalNs) / 1e6,
+                        double(g_immWaitNs) / 1e6,
+                        100.0 * double(g_immWaitNs) / double(g_immTotalNs),
+                        double(g_immWaitNs) / 1000.0 / double(g_immN));
+
         }
     }
     // THE PASS-SIZE HISTOGRAM, and the column that decides item A is the DRAW-WEIGHTED
