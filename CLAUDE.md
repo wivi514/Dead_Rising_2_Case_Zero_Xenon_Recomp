@@ -807,7 +807,7 @@ describes, and the reason that note asks for the rule and not just the name; got
 Where the port is, as of 2026-08-24 (**PART 74 CLOSED — the RT-cost question answered, the
 SKY FLICKER SOLVED, and part 73's "outside the renderer" RETRACTED by measurement. Driven by
 the operator's questions rather than by the plan.** **`docs/part75-kickoff.md` IS THE LIVE
-HAND-OFF.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm**; lessons: gotchas **439-444**):
+HAND-OFF.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm/§6dn/§6do**; lessons: gotchas **439-445**):
 
 * **"TEST THE GAME BEFORE WE ADDED ALL THE RT STUFF" — THE RT ERA COSTS 0.5-0.7 ms.** Built
   parts 60 and 62 and ran them on the same route (`tools/autoroute.sh BIN_SRC=`). Part 60
@@ -875,6 +875,26 @@ HAND-OFF.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm**; lessons: got
   attribution closes. **It re-shapes part 75's item**: batching addresses the 244 ms half
   and does not touch the 469 ms decode half, which is parallelisable or cacheable and goes
   first. Gotcha 445.
+* **THE OPERATOR MARKED 10 STUTTERS WITH F7, AND THERE ARE TWO PROBLEMS.** Their report:
+  *"stutter right after loading the game and then a lot of stutter when moving the camera
+  when big crowd of zombie on main street."* **Every one of the 10 marks had `fence 0.0` and
+  a healthy 11.6-14.2 ms GPU**, which retires the GPU for anything they can feel. **(A) The
+  post-load stutter is texture bursts** — real 150-305 ms hitches, `texPh 229.3` of one
+  305.5 ms frame. **(B) The crowd case is NOT A HITCH.** With texture frames excluded, across
+  3,443 outdoor frames **p95 sits within 10-14% of the median in every draw band** — no
+  spikes — and the frame time simply tracks the draw count: **12.5 ms at 2,500 draws ->
+  33.8 ms at 9,000+, i.e. 80 fps -> 30 fps** as the crowd comes into view. A 2.7x frame-rate
+  change arriving as you turn the camera is FELT as stutter and is not one; it is the
+  ORIGINAL CPU-bound crowd throughput problem, and **no fix for (A) touches it**. **They
+  notice (B) most**, so part 75 opens on that choice — `part75-kickoff.md` presents both and
+  deliberately does not pick. §6do.
+* **AND THE PHASE BREAKDOWN ONLY ADDED UP AFTER A CORRECTION.** The trace's first phase set
+  summed to **~60%** of a stutter frame — 34 ms of 186.9 — because `record` is the RESIDUAL
+  after `recordState`/`recordVertex`/`recordIndex` are subtracted and those three were not
+  printed, so the largest part of the draw path was invisible (`record` read 1.0 ms at 9,000
+  draws where part 47 measured 15.2). With all sixteen phases the remainder is **2.7-4.5 ms**,
+  the profiler's own overhead. **A breakdown that does not add up is the same false-absence
+  trap the residual column was built to close, one level down.**
 * **Gates:** `--smoke` OK; **A5 exit 0, 4 permutation windows, 0 real — the gate owed since
   part 67 is CLEAN and no longer owed**; `alu_const_gate --hlsl-dir` clean over 449;
   `shader_dim_census` clean; `rt_world_xform` 104 of 104; the play session logged 0 `no
