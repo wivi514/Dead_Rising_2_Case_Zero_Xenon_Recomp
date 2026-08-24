@@ -2759,6 +2759,24 @@ uint64_t g_raceDraws = 0, g_raceVsChanged = 0, g_racePsChanged = 0, g_raceProjCh
 // gotcha 440 says the gather's verifier failed to apply to itself: match the instrument's
 // scope to the blast radius, in both directions.
 uint64_t g_raceAffected = 0, g_raceAffectedProj = 0, g_raceAffectedFrames = 0;
+// **THE PATCH READS THE WINDOW TOO, AND IT IS NOT A SHADER.** `PatchFovProjection` calls
+// `SceneXformForm`, which reads c0..c3 of the copy — sixteen floats — to decide whether the
+// window even IS a scene projection. Under the gather, a shader whose list does not name
+// registers 0..3 leaves those holding whatever the bump arena last put there. So this
+// decision is being made on ARENA RESIDUE, which varies frame to frame: the same shader can
+// be recognized as a projection in one frame and not the next, and when it is recognized we
+// WRITE to c0..c3. That is a frame-to-frame nondeterminism inside the renderer with no
+// shader involved, and it is the shape an intermittent artifact has.
+//
+// Counted rather than argued: how often the patch runs on a window whose c0..c3 were not
+// gathered, and how often it then RECOGNIZED something there.
+uint64_t g_patchResidue = 0, g_patchResidueRecognized = 0, g_patchGathered = 0;
+// CZ_VK_SKY_ASYM's accumulators — see the measurement in the present path.
+uint64_t g_skyFrames = 0, g_skyFlips = 0;
+// WHICH SHADERS leave c0..c3 ungathered — i.e. whose windows the residue lives in. Only a
+// handful of the 449 can be in this set, and naming them is far cheaper than bisecting.
+std::unordered_map<const void*, uint64_t> g_residueByShader;
+double g_skyAbsSum = 0.0, g_skyStepSum = 0.0, g_skyStepMax = 0.0;
 bool g_raceReported = false;
 
 bool ConstRaceOn()
@@ -11300,6 +11318,25 @@ void CopyConstWindow(uint32_t* dst, const uint32_t* src, const ShaderMeta& meta,
         for (uint32_t i = 0; i < 256 * 4; ++i)
             dst[i] = kFill;
     }
+    // **c0..c3 ARE ALWAYS COPIED, WHATEVER THE LIST SAYS (part 74).**
+    //
+    // The list describes what the SHADER reads. It was never a description of what the
+    // RENDERER reads — and this renderer reads c0..c3 itself: `PatchFovProjection` and
+    // `PatchWideProjection` call `SceneXformForm`, which inspects all sixteen floats to
+    // decide whether the window is a scene projection at all, and then rewrite them for
+    // the fov slider and the 21:9 widening.
+    //
+    // Three shaders in the 449-module bank leave part of that block ungathered —
+    // `e86e70248d763bbe` reads no c0..c3 at all (303,240 draws a run), and
+    // `efe5c633ec44cfd6` / `8fbfbd385a6ae211` read c0, c1 and c3 but not c2. For those the
+    // patch was inspecting ARENA RESIDUE, never recognised a projection (0 of 379,968), and
+    // so **left their projection unpatched while every other draw in the frame was
+    // widened** — two different projections in one scene.
+    //
+    // Sixteen dwords. It is the difference between the gather being a copy optimisation and
+    // the gather being a semantic change, which it was never allowed to be.
+    for (uint32_t r = 0; r < 4; ++r)
+        memcpy(dst + r * 4, src + r * 4, 4 * sizeof(uint32_t));
     ++g_gatherGathered;
     const size_t n = meta.aluConsts.size();
     if (!n)
@@ -16687,7 +16724,29 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             // consistent projection. ORDER MATTERS and is fov FIRST: the fov patch
             // scales A and B by one ratio (aspect preserved, so the projection still
             // recognizes as 16:9), then the wide patch divides A alone.
-            switch (PatchFovProjection(dst, FovHalfRadThisFrame()))
+            // Were c0..c3 actually gathered for this shader, or is the patch about to
+            // read arena residue? Registers 0..3 are the sixteen floats SceneXformForm
+            // inspects. A full copy always has them.
+            bool c0Known = ConstGatherOff() || vs.aluDynamic || vs.aluConsts.empty();
+            if (!c0Known)
+            {
+                int have = 0;
+                for (uint32_t r : vs.aluConsts)
+                    if (r < 4)
+                        ++have;
+                c0Known = have == 4;
+            }
+            const int fovForm = PatchFovProjection(dst, FovHalfRadThisFrame());
+            if (c0Known)
+                ++g_patchGathered;
+            else
+            {
+                ++g_patchResidue;
+                if (fovForm)
+                    ++g_patchResidueRecognized;
+                ++g_residueByShader[&vs];
+            }
+            switch (fovForm)
             {
                 case 1: COUNT("draw: raw projection fov-adjusted (slider)"); break;
                 case 2: COUNT("draw: COMPOSITE viewproj fov-adjusted (slider)"); break;
@@ -20826,7 +20885,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     static const bool wantCachedPixels =
         Env("CZ_VK_FRAME_STATS") || Env("CZ_VK_FRAME_DUMP") || Env("CZ_VK_SNAP_DUMP") ||
         Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") || Env("CZ_CAPTURE_KEY") ||
-        Env("CZ_VK_SNAP_FRAME") || Env("CZ_BURST_DUMP");
+        Env("CZ_VK_SNAP_FRAME") || Env("CZ_BURST_DUMP") || Env("CZ_VK_SKY_ASYM");
     const bool doReadback = !R->wantSwapchain || wantCachedPixels;
     static bool saidWhy = false;
     if (R->wantSwapchain && wantCachedPixels && !saidWhy)
@@ -21391,6 +21450,79 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         }
         else
             fprintf(stderr, "[vk] capture: CANNOT WRITE %s — the pose is LOST\n", path);
+    }
+    // CZ_VK_SKY_ASYM=1 — SCORE THE HALF-SCREEN SKY FLICKER WITHOUT A HUMAN WATCHING.
+    //
+    // The operator's report has always been the same shape: *"sky flicker from half the
+    // screen switching from right to left depending of moment"*. That is a LEFT/RIGHT
+    // asymmetry in the sky that CHANGES BETWEEN FRAMES — this title renders in left/right
+    // 640-wide tiles (gotcha 265), so it is exactly what a per-tile difference looks like.
+    //
+    // Every verdict on this defect so far has come from an eye and a three-minute run, and
+    // that is why it cannot be settled: one clean run cannot be told from a run that did
+    // not trigger it, which is the operator's own objection and is why part 72 built a
+    // revert arm. So this measures it: mean luma of the top strip, split left and right,
+    // and the statistic reported is not the asymmetry itself but **how often it FLIPS SIGN
+    // between consecutive frames**, because a steady asymmetry is just a scene with a
+    // bright side and a flicker is the alternation.
+    //
+    // It needs host pixels, so it joins the readback list above; on the swapchain arm that
+    // forces a readback the swapchain path would otherwise skip. Cost is one pass over the
+    // top quarter of the image per presented frame — a diagnostic arm, never a default.
+    static const bool skyAsym = EnvOn("CZ_VK_SKY_ASYM");
+    if (skyAsym && px)
+    {
+        const uint32_t strip = std::max(1u, height1 / 4);      // the sky occupies the top
+        double sumL = 0.0, sumR = 0.0;
+        uint64_t nL = 0, nR = 0;
+        const uint32_t half = width1 / 2;
+        for (uint32_t y = 0; y < strip; ++y)
+            for (uint32_t x = 0; x < width1; ++x)
+            {
+                const uint8_t* q = px + (size_t(y) * width1 + x) * 4;
+                const double l = 0.2126 * q[0] + 0.7152 * q[1] + 0.0722 * q[2];
+                if (x < half) { sumL += l; ++nL; }
+                else          { sumR += l; ++nR; }
+            }
+        const double d = (nL ? sumL / double(nL) : 0.0) - (nR ? sumR / double(nR) : 0.0);
+        static double prev = 0.0;
+        static bool havePrev = false;
+        ++g_skyFrames;
+        g_skyAbsSum += std::fabs(d);
+        if (havePrev)
+        {
+            // A FLIP is a sign change with both sides meaningfully non-zero — a asymmetry
+            // dithering around 0.0 is noise, not a flicker, and counting it would make
+            // every arm look identical.
+            if (((prev > 0.25 && d < -0.25) || (prev < -0.25 && d > 0.25)))
+                ++g_skyFlips;
+            g_skyStepSum += std::fabs(d - prev);
+            if (std::fabs(d - prev) > g_skyStepMax)
+                g_skyStepMax = std::fabs(d - prev);
+        }
+        // AND THE RAW SERIES, because the first cut of this instrument shipped a single
+        // summary (sign flips) and it did NOT discriminate: 1.10% on a run the operator
+        // called flickering against 0.86% on one they called clean. The statistic was
+        // wrong, not the measurement — a turning camera changes which side is brighter, so
+        // sign flips count the route as much as the defect. Writing the per-frame series
+        // means the statistic can be chosen AFTER looking at the data instead of guessed
+        // before, which is the whole reason a summary is the wrong thing to collect first.
+        static FILE* series = [] () -> FILE* {
+            const char* f = Env("CZ_VK_SKY_ASYM");
+            if (!f || !*f || !strcmp(f, "1"))
+                return nullptr;
+            FILE* h = fopen(f, "w");
+            if (h)
+                fprintf(h, "frame draws asym\n");
+            else
+                fprintf(stderr, "[vk] CZ_VK_SKY_ASYM: CANNOT WRITE %s — no series\n", f);
+            return h;
+        }();
+        if (series)
+            fprintf(series, "%llu %u %.4f\n", (unsigned long long)pres.frame,
+                    uint32_t(R->drawsThisFrame), d);
+        prev = d;
+        havePrev = true;
     }
     static const char* dumpDir = Env("CZ_VK_FRAME_DUMP");
     static const uint64_t dumpEvery =
@@ -23182,6 +23314,53 @@ void VkRenderer_DumpStats()
                     "has been seen to scream: re-run with CZ_VK_CONST_RACE_POISON=1 and "
                     "confirm it reports (gotcha 30)\n");
     }
+    if (!g_residueByShader.empty())
+    {
+        std::vector<std::pair<uint64_t, const void*>> v;
+        for (const auto& kv : g_residueByShader)
+            v.push_back({ kv.second, kv.first });
+        std::sort(v.rbegin(), v.rend());
+        fprintf(stderr,
+                "[vk]   shaders whose LIST omits some of c0..c3 — %zu of them. Since "
+                "part 74 the gather copies c0..c3 unconditionally, so these are no longer "
+                "reading residue; the census stays because it is what found the defect:\n",
+                v.size());
+        for (size_t i = 0; i < v.size() && i < 16; i++)
+        {
+            // Resolve the pointer back to the shader's HASH, which is the only identity
+            // this renderer keeps and the one the .spv/.meta.json files are named by.
+            uint64_t hash = 0;
+            for (size_t k = 0; k < R->shaders.vals.size(); k++)
+                if (&R->shaders.vals[k] == v[i].second)
+                {
+                    hash = R->shaders.keys[k];
+                    break;
+                }
+            fprintf(stderr, "[vk]     %016llx  %10llu draws\n",
+                    (unsigned long long)hash, (unsigned long long)v[i].first);
+        }
+    }
+    if (g_patchResidue || g_patchGathered)
+        fprintf(stderr,
+                "[vk]   projection patch inputs: %llu windows had c0..c3 in the shader's "
+                "OWN list, %llu did not (the gather copies c0..c3 regardless since part "
+                "74, so both are real values now) — projection recognized in %llu of the "
+                "latter (%.2f%%)\n",
+                (unsigned long long)g_patchGathered,
+                (unsigned long long)g_patchResidue,
+                (unsigned long long)g_patchResidueRecognized,
+                g_patchResidue
+                    ? 100.0 * double(g_patchResidueRecognized) / double(g_patchResidue)
+                    : 0.0);
+    if (g_skyFrames)
+        fprintf(stderr,
+                "[vk]   sky asymmetry (CZ_VK_SKY_ASYM): %llu frames, mean |L-R| %.3f, "
+                "mean frame-to-frame step %.3f, max step %.3f, **%llu SIGN FLIPS "
+                "(%.3f%% of frames)**\n",
+                (unsigned long long)g_skyFrames, g_skyAbsSum / double(g_skyFrames),
+                g_skyFrames > 1 ? g_skyStepSum / double(g_skyFrames - 1) : 0.0,
+                g_skyStepMax, (unsigned long long)g_skyFlips,
+                100.0 * double(g_skyFlips) / double(g_skyFrames));
     // PERF ITEM C's bill, on every stats dump — the bytes NOT copied, which is the whole
     // point of the item, plus the two numbers that say whether it is safe: how many stages
     // fell back to the full copy, and what the verifier found if it was armed.
