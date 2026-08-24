@@ -2917,6 +2917,8 @@ uint64_t g_texFetchResolves = 0;
 // so it is counted, weighed AND timed — a count alone cannot tell 6,000 small uploads
 // from 6 huge ones, and neither can tell either from a stall inside RunImmediate.
 uint64_t g_texRealUploads = 0, g_texUploadBytes = 0, g_texUploadNs = 0;
+// Untiling, endian swap and image creation — everything BEFORE the staging copy.
+uint64_t g_texDecodeNs = 0;
 // AND THE SPLIT THAT DECIDES WHAT A FIX WOULD BE. An upload measured at 249 us for a
 // 55 KB copy is not a copy — but "not a copy" is an inference, and the two candidates
 // want opposite fixes: if the time is the memcpy/decode, no synchronisation change helps;
@@ -2940,12 +2942,14 @@ struct SlowFrameRec
     // `walk` split one level: CPU recording versus waiting for the GPU. Plus the GPU's own
     // execution time for the frame, from its command buffer's own timestamps.
     uint32_t fenceUs = 0, gpuUs = 0;
+    uint32_t texDecUs = 0;   // untile + endian swap + image creation
 };
 SlowFrameRec g_slowTop[12];
 
 void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
                    uint32_t pipes, uint32_t texKB, uint32_t texUs, uint32_t walkUs,
-                   uint32_t sleepUs, int32_t residualUs, uint32_t fenceUs, uint32_t gpuUs)
+                   uint32_t sleepUs, int32_t residualUs, uint32_t fenceUs, uint32_t gpuUs,
+                   uint32_t texDecUs)
 {
     uint32_t worst = 0;
     for (uint32_t i = 1; i < 12; ++i)
@@ -2955,7 +2959,7 @@ void SlowFrameNote(uint64_t frame, uint32_t us, uint32_t draws, uint32_t tex,
         return;
     g_slowTop[worst] = SlowFrameRec{ frame,  us,      draws,   tex,     pipes,
                                      texKB,  texUs,   walkUs,  sleepUs, residualUs,
-                                     fenceUs, gpuUs };
+                                     fenceUs, gpuUs, texDecUs };
 }
 
 // Close the frame currently being accumulated and keep it if it is among the worst.
@@ -7013,6 +7017,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         return 0;
     }
 
+    // THE DECODE'S OWN CLOCK, and the gap it closes is not small. The upload clock below
+    // starts at the staging memcpy, so everything from here to there — the allocation, the
+    // UNTILING of every mip level, the endian swap, the image creation — was outside it.
+    // On the route's texture-burst frames the measured upload was 55 ms of a 285 ms CPU
+    // recording time, leaving ~230 ms unattributed INSIDE our own upload path, and untiling
+    // is what happens in that gap.
+    const uint64_t texDecodeT0 = CycNow();
+
     // Untile (or copy) into a tightly packed staging image, swapping endianness as the
     // fetch constant asks. The destination is `unitW` wide because that is what the
     // Vulkan image is; the source is read at its own pitch.
@@ -7766,6 +7778,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     ++g_texRealUploads;
     g_texUploadBytes += pixels.size();
     const uint64_t texT0 = CycNow();
+    g_texDecodeNs += texT0 - texDecodeT0;
     memcpy(R->staging.mapped, pixels.data(), pixels.size());
 
     RunImmediate([&](VkCommandBuffer cb) {
@@ -20912,8 +20925,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             {
                 static uint64_t prevTex = 0, prevPipes = 0, prevTexBytes = 0,
                                 prevTexNs = 0, prevWalk = 0, prevSleep = 0,
-                                prevFence = 0, prevTexForTrace = 0,
-                                prevTexBytesForTrace = 0, prevPipesForTrace = 0;
+                                prevFence = 0, prevTexDec = 0, prevTexForTrace = 0,
+                                prevTexBytesForTrace = 0, prevPipesForTrace = 0,
+                                prevTexNsForTrace = 0;
                 // THE FRAME'S DECOMPOSITION. `walkNs` only accumulates when a walk
                 // RETURNS and this present is happening INSIDE one, so the in-progress
                 // portion is added explicitly — without it a 300 ms hitch is charged to
@@ -20937,7 +20951,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                               int32_t(frameUs.back()) - int32_t(walkUs) -
                                   int32_t(sleepUs),
                               uint32_t((g_fenceWaitNs - prevFence) / 1000),
-                              uint32_t(g_gpuNsOfFrame / 1000));
+                              uint32_t(g_gpuNsOfFrame / 1000),
+                              uint32_t((g_texDecodeNs - prevTexDec) / 1000));
                 prevTex = g_texRealUploads;
                 prevPipes = g_pipeCount;
                 prevTexBytes = g_texUploadBytes;
@@ -20946,6 +20961,8 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 prevSleep = ps.sleepNs;
                 const uint64_t fenceDelta = g_fenceWaitNs - prevFence;
                 prevFence = g_fenceWaitNs;
+                const uint64_t texDecDelta = g_texDecodeNs - prevTexDec;
+                prevTexDec = g_texDecodeNs;
                 // CZ_VK_FRAME_TRACE=<file> — one line per presented frame, so a stutter can
                 // be found and read OFFLINE instead of hoping it lands in a twelve-row
                 // table. One fprintf a frame; the columns are the decomposition above.
@@ -20956,13 +20973,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     FILE* h = fopen(f, "w");
                     if (h)
                         fprintf(h, "frame draws wallUs walkUs recordUs fenceUs sleepUs "
-                                   "residualUs gpuUs texUploads texKB pipes\n");
+                                   "residualUs gpuUs texUploads texKB texUpUs "
+                                   "texDecUs pipes\n");
                     else
                         fprintf(stderr, "[vk] CZ_VK_FRAME_TRACE: CANNOT WRITE %s\n", f);
                     return h;
                 }();
                 if (trace)
-                    fprintf(trace, "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu\n",
+                    fprintf(trace,
+                            "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu %llu %llu\n",
                             (unsigned long long)R->frame, uint32_t(R->drawsThisFrame),
                             frameUs.back(), walkUs,
                             int32_t(walkUs) - int32_t(fenceDelta / 1000),
@@ -20972,7 +20991,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             (unsigned long long)(g_texRealUploads - prevTexForTrace),
                             (unsigned long long)((g_texUploadBytes - prevTexBytesForTrace)
                                                  / 1024),
+                            (unsigned long long)((g_texUploadNs - prevTexNsForTrace) / 1000),
+                            (unsigned long long)(texDecDelta / 1000),
                             (unsigned long long)(g_pipeCount - prevPipesForTrace));
+                prevTexNsForTrace = g_texUploadNs;
                 prevTexForTrace = g_texRealUploads;
                 prevTexBytesForTrace = g_texUploadBytes;
                 prevPipesForTrace = g_pipeCount;
@@ -23372,12 +23394,13 @@ void VkRenderer_DumpStats()
                 fprintf(stderr,
                         "[vk]     frame %8llu: %8.1f ms = CPUrec %8.1f + fence %7.1f + "
                         "sleep %6.1f + resid %6.1f   GPU %7.1f  |  %6u draws  %4u tex "
-                        "(%6u KB, %6.1f ms)  %4u pipe\n",
+                        "(%6u KB, up %5.1f + dec %6.1f ms)  %4u pipe\n",
                         (unsigned long long)r.frame, double(r.us) / 1000.0,
                         double(int32_t(r.walkUs) - int32_t(r.fenceUs)) / 1000.0,
                         double(r.fenceUs) / 1000.0, double(r.sleepUs) / 1000.0,
                         double(r.residualUs) / 1000.0, double(r.gpuUs) / 1000.0,
-                        r.draws, r.tex, r.texKB, double(r.texUs) / 1000.0, r.pipes);
+                        r.draws, r.tex, r.texKB, double(r.texUs) / 1000.0,
+                        double(r.texDecUs) / 1000.0, r.pipes);
             }
             fprintf(stderr,
                     "[vk]     (CPUrec = our recording; fence = waiting for the GPU; "
@@ -23387,13 +23410,23 @@ void VkRenderer_DumpStats()
                     "— it is not part of the sum)\n");
             fprintf(stderr,
                     "[vk]     texture uploads over the run: %llu uploads, %.1f MB, "
-                    "%.1f ms total (%.0f us each)\n",
+                    "%.1f ms staging+submit (%.0f us each)\n",
                     (unsigned long long)g_texRealUploads,
                     double(g_texUploadBytes) / 1048576.0,
                     double(g_texUploadNs) / 1e6,
                     g_texRealUploads ? double(g_texUploadNs) / 1000.0
                                            / double(g_texRealUploads)
                                      : 0.0);
+            fprintf(stderr,
+                    "[vk]     ...and %.1f ms DECODING them (untile + endian swap + image "
+                    "creation), %.0f us each — this is CPU work on the pump and it is "
+                    "%.0f%% of the upload path\n",
+                    double(g_texDecodeNs) / 1e6,
+                    g_texRealUploads ? double(g_texDecodeNs) / 1000.0
+                                           / double(g_texRealUploads) : 0.0,
+                    (g_texDecodeNs + g_texUploadNs)
+                        ? 100.0 * double(g_texDecodeNs)
+                              / double(g_texDecodeNs + g_texUploadNs) : 0.0);
             if (g_immN)
                 fprintf(stderr,
                         "[vk]     immediate submits: %llu, %.1f ms total, of which "
