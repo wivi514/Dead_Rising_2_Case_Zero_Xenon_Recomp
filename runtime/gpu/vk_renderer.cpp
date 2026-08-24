@@ -20975,7 +20975,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     if (h)
                         fprintf(h, "frame draws wallUs walkUs recordUs fenceUs sleepUs "
                                    "residualUs gpuUs texUploads texKB texUpUs "
-                                   "texDecUs pipes\n");
+                                   "texDecUs pipes recPhUs strUs strGuardUs constUs "
+                                   "texPhUs readbackUs\n");
+                    // THE PHASE COLUMNS ARE ONLY MEANINGFUL WITH CZ_VK_PROFILE SET —
+                    // ProfScope records nothing without it and they will all read 0.
+                    // Normally that would disqualify them (a probe costing the same order
+                    // as the thing measured, gotcha 7), but the frames under investigation
+                    // are 75-180 ms and the profiler is 2-4 ms: ~3% on a stutter frame,
+                    // where on a 28 ms frame it would be a tenth. The bill is stated so
+                    // nobody quotes a NORMAL frame's time from a run carrying this.
                     else
                         fprintf(stderr, "[vk] CZ_VK_FRAME_TRACE: CANNOT WRITE %s\n", f);
                     return h;
@@ -21003,7 +21011,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 }
                 if (trace)
                     fprintf(trace,
-                            "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu %llu %llu\n",
+                            "%llu %u %u %u %d %llu %u %d %llu %llu %llu %llu %llu %llu",
                             (unsigned long long)R->frame, uint32_t(R->drawsThisFrame),
                             frameUs.back(), walkUs,
                             int32_t(walkUs) - int32_t(fenceDelta / 1000),
@@ -21017,6 +21025,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                             (unsigned long long)(texDecDelta / 1000),
                             (unsigned long long)(g_pipeCount - prevPipesForTrace));
                 prevTexNsForTrace = g_texUploadNs;
+                if (trace)
+                {
+                    static ProfilePhases prevPhase{};
+                    auto d = [](uint64_t now, uint64_t& prev) {
+                        const uint64_t v = now - prev;
+                        prev = now;
+                        return (unsigned long long)(v / 1000);
+                    };
+                    fprintf(trace, " %llu %llu %llu %llu %llu %llu\n",
+                            d(g_prof.record, prevPhase.record),
+                            d(g_prof.streams, prevPhase.streams),
+                            d(g_prof.streamGuard, prevPhase.streamGuard),
+                            d(g_prof.constants, prevPhase.constants),
+                            d(g_prof.textures, prevPhase.textures),
+                            d(g_prof.readback, prevPhase.readback));
+                }
                 prevTexForTrace = g_texRealUploads;
                 prevTexBytesForTrace = g_texUploadBytes;
                 prevPipesForTrace = g_pipeCount;
