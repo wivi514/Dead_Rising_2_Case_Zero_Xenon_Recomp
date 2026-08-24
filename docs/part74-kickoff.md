@@ -41,7 +41,24 @@
 **So step 0 of the plan below is now just two things: the A5 gate (mine) and "is there still
 a felt stutter, and where" (theirs).**
 
-### 0-PRE-b. THE FLICKER HUNT IS PARKED DELIBERATELY, NOT ABANDONED
+### 0-PRE-c. THE FLICKER IS SOLVED (2026-08-24) — read this instead of 0-PRE-b
+
+**Two defects, both fixed, and the gather is ON by default again.** Record:
+`phase5-notes.md` **§6dl**; gotchas **442-444**.
+
+* **the memo top-up mutated a slot IN PLACE** — constants are bound as a buffer device
+  address, so the write reached every earlier draw recorded against that offset. 48 affected
+  draws a boot, measured. Fixed by making the shader part of the memo key.
+* **the gather did not copy c0..c3 for three shaders, and the RENDERER reads c0..c3** —
+  `SceneXformForm` inspects all sixteen floats, so those draws kept an **unpatched
+  projection** while the rest of the frame was widened. Fixed in sixteen dwords.
+* **Verdicts:** pre-fix binary flickered **6 of 6**; c0 fix reverted **1 of 3** (the defect
+  is intermittent); both fixes **0 of 2 plus a full play session at 8,593-10,256 draws**.
+* **The positive control that worked is the PRE-FIX BINARY** via `BIN_SRC=` — a same-binary
+  arm reverted only one of the two fixes and was equivocal. Worktree: `~/GithubRepo/dr2cz-part60`.
+* **`STILL=1`** holds the camera; the turn block was masking the defect (gotcha 443).
+
+### 0-PRE-b. ~~THE FLICKER HUNT IS PARKED DELIBERATELY~~ — SUPERSEDED by 0-PRE-c above
 
 The operator, closing it: *"Stop now, leave the gather off."* Full record in
 `phase5-notes.md` **§6dk**; gotcha **441**.
