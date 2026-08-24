@@ -20976,7 +20976,9 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         fprintf(h, "frame draws wallUs walkUs recordUs fenceUs sleepUs "
                                    "residualUs gpuUs texUploads texKB texUpUs "
                                    "texDecUs pipes recPhUs strUs strGuardUs constUs "
-                                   "texPhUs readbackUs\n");
+                                   "texPhUs readbackUs recStateUs recVertUs recIdxUs "
+                                   "drawOtherUs oKeyUs oPipeUs oFetchUs oShaderUs "
+                                   "oBeginUs oTailUs\n");
                     // THE PHASE COLUMNS ARE ONLY MEANINGFUL WITH CZ_VK_PROFILE SET —
                     // ProfScope records nothing without it and they will all read 0.
                     // Normally that would disqualify them (a probe costing the same order
@@ -21033,13 +21035,32 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                         prev = now;
                         return (unsigned long long)(v / 1000);
                     };
-                    fprintf(trace, " %llu %llu %llu %llu %llu %llu\n",
+                    // EVERY phase, not a chosen few. The first cut printed six and they
+                    // summed to ~60% of the frame — because `record` is the RESIDUAL after
+                    // recordState/recordVertex/recordIndex are subtracted from it, and
+                    // those three were not in the list. A breakdown that does not add up
+                    // is the same false-absence trap as the one the residual column was
+                    // built to close, one level down: print all of them and let the
+                    // arithmetic be checkable.
+                    fprintf(trace,
+                            " %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu "
+                            "%llu %llu %llu %llu\n",
                             d(g_prof.record, prevPhase.record),
                             d(g_prof.streams, prevPhase.streams),
                             d(g_prof.streamGuard, prevPhase.streamGuard),
                             d(g_prof.constants, prevPhase.constants),
                             d(g_prof.textures, prevPhase.textures),
-                            d(g_prof.readback, prevPhase.readback));
+                            d(g_prof.readback, prevPhase.readback),
+                            d(g_prof.recordState, prevPhase.recordState),
+                            d(g_prof.recordVertex, prevPhase.recordVertex),
+                            d(g_prof.recordIndex, prevPhase.recordIndex),
+                            d(g_prof.drawOther, prevPhase.drawOther),
+                            d(g_prof.otherKey, prevPhase.otherKey),
+                            d(g_prof.otherPipeline, prevPhase.otherPipeline),
+                            d(g_prof.otherFetch, prevPhase.otherFetch),
+                            d(g_prof.otherShader, prevPhase.otherShader),
+                            d(g_prof.otherBegin, prevPhase.otherBegin),
+                            d(g_prof.otherTail, prevPhase.otherTail));
                 }
                 prevTexForTrace = g_texRealUploads;
                 prevTexBytesForTrace = g_texUploadBytes;
