@@ -19,6 +19,28 @@
 
 ---
 
+## 0-PRE. WHAT THE OPERATOR'S EVENING SITTING ALREADY SETTLED (2026-08-23, `phase5-notes.md` §6dj)
+
+**This happened after the kickoff below was written, and it closes two of its items.**
+
+1. **The sky-flicker verdict is IN, and the gather is the cause.** Four runs, operator
+   watching: gather ON flickered twice (their run + a deliberate positive control), gather
+   OFF clean twice. **Item C is OFF by default (`3edcb08`)** — a default, not a deletion;
+   `CZ_VK_CONST_GATHER=1` is the arm. §3's item 1 below is CLOSED. Costs ~0.8 ms.
+   **Owed before re-enabling: a detector** that flags a draw served a different c0..c3 patch
+   state than the other tile saw for the same shader in the same frame (this title tiles
+   left/right, gotcha 265).
+2. **The RT era costs 0.5-0.7 ms**, measured by building parts 60 and 62 and running them on
+   the same route. **RT stays on master, parked**, on the operator's decision; everything is
+   also preserved on branch `rt-era-parts-61-73`. The 4.85 ms that looked like a regression
+   is the 21:9/FOV fix — the part-60 build ignores their `fov=10` and culls at 16:9
+   (gotcha 439).
+3. **Runs are 3.2 minutes now, not 7.5** — `autoroute.sh` derives its timeout from the work,
+   and `BIN_SRC=<path>` runs any old build on the identical route.
+
+**So step 0 of the plan below is now just two things: the A5 gate (mine) and "is there still
+a felt stutter, and where" (theirs).**
+
 ## 0. WHAT PART 73 SETTLED — four items, none of them by shipping code
 
 | item | verdict |
