@@ -828,11 +828,18 @@ IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dp**; lessons: gotchas **
   0.36 (part 74's gather, which is what anyone would have looked at first) and 0.13 for the
   entire PIXEL window.
 * **THE MECHANISM: the arena is `HOST_VISIBLE | HOST_COHERENT` with NO `HOST_CACHED`, i.e.
-  WRITE-COMBINED.** `PatchFovProjection` and `PatchWideProjection` each call
-  `SceneXformForm`, which reads all sixteen floats of c0..c3 — twice per draw, on ~97% of
-  draws, because the guest rewrites a world matrix per object so the vertex memo almost
-  never hits. Writing WC memory is cheap; **reading it keeps no cache line, gets no
-  prefetch, and costs a full round trip to DRAM.**
+  WRITE-COMBINED.** `PatchWideProjection` calls `SceneXformForm`, which reads all sixteen
+  floats of c0..c3 — once per draw, on ~97% of draws, because the guest rewrites a world
+  matrix per object so the vertex memo almost never hits. Writing WC memory is cheap;
+  **reading it keeps no cache line, gets no prefetch, and costs a full round trip to
+  DRAM.** A pinned 16:9 control, where the patch path is entirely inert, profiles the same
+  scope at **0.030 us/draw against 1.21** — so the whole 7.6 ms was **ONE 64-BYTE READ,
+  ONCE PER DRAW.** Not a loop, not a copy, not a megabyte.
+* **DELIVERED, pinned same-binary matched-band A/B at 3440x1440:** −35.3% at 5,500-6,000
+  draws (19.19 -> 12.41 ms) and −36.3% at 8,000-8,500 (26.76 -> 17.05), the `patch` column
+  falling to 4% of its former value at every band and the saving rising monotonically with
+  the draw count. **52 -> 81 fps at ~5,800 draws, 37 -> 59 at ~8,200**, with the profiler's
+  2-4 ms in both arms so the percentages are conservative.
 * **THE FIX IS TO NOT READ IT**, and part 74's own correctness fix is what made that legal:
   c0..c3 in the arena are a verbatim copy of c0..c3 in `regs` *because* part 74 force-copied
   them (§6dl). Patch a stack copy taken from the cached register file, store back ONE

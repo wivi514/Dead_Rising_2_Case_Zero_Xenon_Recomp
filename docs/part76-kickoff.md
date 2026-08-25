@@ -24,8 +24,11 @@ to be 43-44% of a crowd frame; splitting it twice put essentially all of that in
 21:9 **projection patch**, which read sixteen floats back out of the per-frame arena twice
 per draw. The arena is `HOST_VISIBLE | HOST_COHERENT` with **no `HOST_CACHED`** — i.e.
 write-combined — so each of those reads was an uncached round trip to DRAM. Patching a copy
-taken from the cached register file instead **halved the frame's slope against draw count**.
-Verified byte-identical over 47,352,900 draws, with a poison arm that fires on 100%.
+taken from the cached register file instead is **−35% to −36% of the frame at 5,500-8,500
+draws** (52 -> 81 fps at ~5,800, 37 -> 59 at ~8,200), verified byte-identical over
+47,352,900 draws with a poison arm that fires on 100%. A pinned 16:9 control puts the whole
+of it at **ONE 64-byte read per draw**: 0.030 us/draw where nothing reads the mapping
+against 1.21 where one `SceneXformForm` does.
 
 ## 1. WHAT THE CROWD FRAME LOOKS LIKE NOW
 
