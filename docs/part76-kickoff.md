@@ -34,12 +34,19 @@ why: it inherited a four-column sketch from one marked frame and none of the fou
 contact with a banded re-baseline. `SECS=90 tools/autoroute.sh <tag> CZ_VK_PROFILE=10
 CZ_VK_FRAME_TRACE=<file>` then band it; the trace now carries all twenty-one phase columns.
 
-**There is no dominant term left.** Pre-fix the frame had one column at 36%; the remaining columns
-at 5,000-7,000 draws were `recState` 1.48, `oFetch` 1.29, `drawOther` 1.25, `recIdx` 0.86,
-`recVert` 0.82, `texPh` 0.79, `record` 0.71 — seven things of 0.7-1.5 ms each. **That shape
-is the finding**: further per-draw shaving has no obvious single target, which puts
-`perf-state-parked.md` **item A — parallel command recording** back at the top of the board
-by default, and its ORDER GATE is built and proven (part 72) where it was the blocker.
+**There is no dominant term left.** Pre-fix the frame had one column at 36%; the remaining
+columns at 5,000-7,000 draws were `recState` 1.48, `oFetch` 1.29, `drawOther` 1.25,
+`recIdx` 0.86, `recVert` 0.82, `texPh` 0.79, `record` 0.71 — seven things of 0.7-1.5 ms
+each. **That shape is the finding**: further per-draw shaving has no obvious single target,
+which puts `perf-state-parked.md` **item A — parallel command recording** back at the top of
+the board by default, and its ORDER GATE is built and proven (part 72) where it was the
+blocker.
+
+**Quote no phase number without its RESOLUTION.** Everything above is 3440x1440, which is
+what the operator plays at and where the 21:9 patch path exists at all. At 2560x1440 the
+same route profiles `constants` at 14.9% with `patch` at 1.6%, because `PatchWideProjection`
+never runs. Two numbers from this renderer are not comparable unless both name their
+internal resolution.
 
 ## 2. THE OTHER PROBLEM IS STILL UNTOUCHED
 
@@ -69,14 +76,33 @@ part 17. Do not re-open this; do re-run it if a new mapping is added.
 * **the constant GATHER and the constant MEMO.** Both measured in part 75 at 0.36 ms and
   0.13 ms respectively. They are not the item and were never the item.
 
-## 5. THE MEASUREMENT METHOD PART 75 ADDED
+## 5. THE MEASUREMENT METHOD — READ THIS BEFORE RUNNING ANY A/B ON THIS ROUTE
 
-`tools/part75_ab.py` bins `[fps]` windows by draw count; `tools/part75_bandfit.py` fits
-ms-against-draws per arm and evaluates both at the same draw count. **Prefer the fit on this
-route**, and read its INTERCEPT: a change that removes a per-draw cost must leave the
-intercept alone and move the slope, so the intercept is a null channel the item could not
-have moved, sitting beside the result for free. Part 75's arms agreed on it to 3% while the
-slope halved.
+**`tools/part75_ab_report.py` is the one to use.** Its docstring is the list of ways part 75
+got this wrong, in order, and each entry is a trap the next version had to close:
+
+* a 2,000-draw bin is too coarse (5,000-7,000 is a 40% range);
+* **a line fit is WORSE, not better** — one control run never left a 90-draw range, so its
+  slope was noise and its intercept came out negative. `part75_bandfit.py` is kept only
+  because that failure is instructive; do not trust it without checking the x actually
+  varied;
+* **read the route gate, on a FINISHED log.** `autoroute.sh` exits 3 and says "DID NOT REACH
+  THE OUTDOOR WORLD"; a run mid-write looks identical to one that failed. Never send an A/B
+  loop's output to `/dev/null` — the gate fires there and nowhere else;
+* **PIN `CZ_VK_RES` IN BOTH ARMS.** The desktop changed mode mid-campaign (3440x1440 ->
+  2560x1440) and the two halves of one A/B then disagreed 33% vs 0%. Both were internally
+  matched; they measured 21:9 and 16:9. `WideMode()` is `9W > 16H` on the internal
+  resolution, so a whole renderer path exists at one and not the other. `[host] display 0
+  is WxH` is in every log and says which;
+* **report the per-arm GATE FAILURE RATE.** The slower arm polls fewer times inside the
+  150 ms press window, so it misses the route more often and the surviving control runs are
+  that arm's luckiest — part 75 saw 2 of 5 against 0 of 4. `PRESSMS=5000` fixes it;
+* **never `pgrep -f "autoroute.sh"`** to wait on a run — it matches the waiting shell's own
+  command line and three waiters deadlocked at once. `pgrep -x cz_runtime_auto`.
+
+**The within-run profiled attribution is immune to all of it** — a phase column is measured
+inside single frames and needs no cross-run matching. Prefer it, and use the A/B to confirm
+rather than to discover.
 
 ## 6. THE ONE THING TO CARRY FORWARD
 
