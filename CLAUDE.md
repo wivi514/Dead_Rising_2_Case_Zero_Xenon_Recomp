@@ -191,12 +191,13 @@ mask; trust the microcode's own swizzles.
     carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
     table). `part72-fix-plan.md` is what the operator sittings established, and
     `perf-state-parked.md` is the reference the item designs came from and is NOT
-    superseded. **`docs/part76-kickoff.md` is the first thing to read after this file.**
-    It hands off a board rather than a plan: the crowd frame now has NO dominant term
-    (part 75 removed the one that was 36% of it), which puts `perf-state-parked.md`'s
-    item A — parallel command recording — back at the top by default now that its order
-    gate exists and is proven; and **problem A, the post-load texture hitch, is completely
-    untouched and still fully specified in `part75-kickoff.md` §1.** (`part74-kickoff.md`
+    superseded. **`docs/part76-kickoff.md` is the first thing to read after this file, and
+    its §1 is a PRIORITY ORDER set by the operator's own play session rather than by a
+    plan**: (1) the F8/F9 readback, 3.49 ms of a 23.31 ms crowd frame and not the game at
+    all; (2) the texture path, which is the only thing that still produces a felt stutter
+    and is fully specified in `part75-kickoff.md` §1; (3) parallel command recording,
+    **demoted by measurement** now that the GPU is 54% of the frame; (4) the GPU itself,
+    which this project has never touched. (`part74-kickoff.md`
     said "outside the renderer"; part 74's own decomposition RETRACTED that — the residual
     is 0.0 ms on every hitch frame and the cost is inside `Pm4_Execute`.) `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
@@ -864,10 +865,33 @@ IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dp**; lessons: gotchas **
   line and both halves were internally matched and correct. The operator confirmed 21:9 is
   how they play. **Every run now PINS `CZ_VK_RES`; a resolution that arrives from the
   environment is a variable nobody declared. Quote no phase number without its resolution.**
+* **THE OPERATOR PLAYED A CROWD WITH THE PROFILER ARMED AND IT CONFIRMED THE FIX AND
+  RESET THE PRIORITIES** (`tools/part75_operator_session.sh`, 3440x1440 pinned, 5,802
+  frames, **6 F7 marks**, §6dp §10). At their own load, >= 7,000 draws: **the WHOLE
+  constant path is 2.22 ms of a 23.31 ms frame**, where the patch alone was ~10 ms at that
+  draw count before. **The frame is FLAT** — nothing above 3.5 ms — and **the GPU is now
+  12.57 ms of it (54%, against ~37% before)** with `fence` still 0.00.
+* **ALL SIX MARKS WERE THE TEXTURE PATH, AND IT IS NOW THE ONLY THING THEY FEEL.** Of the
+  32 crowd frames above 1.4x the median, **29 (91%) carry a real texture upload**; the 413
+  crowd frames with NO upload have **no tail at all** (p99 31.9 ms against a 22.3 median,
+  session-worst 34.3), while the upload population reaches p99 174 and max 290.
+* **AND THE SESSION FOUND A NEW ITEM THAT IS NOW FIRST: `readback` 3.49 ms, 15% of the
+  crowd frame, AND IT IS NOT THE GAME.** Part 54's swapchain was built to delete the
+  present readback; it survives whenever a PICTURE INSTRUMENT is armed, the predicate is a
+  `static` read once at startup, and **`tools/play_session.sh` sets `CZ_CAPTURE_KEY` and
+  `CZ_BURST_DUMP` unconditionally so F8/F9 work** — so every play session since part 54 has
+  paid a 19.8 MB `memcpy` a frame into a buffer the swapchain never displays. Make the two
+  edge-triggered instruments arm the NEXT frame. Gotcha 450.
+* **THAT DEMOTES PARALLEL COMMAND RECORDING, BY MEASUREMENT.** `perf-state-parked.md` item
+  A led the board for four parts. With the GPU at 12.57 ms of 23.31, **all remaining
+  renderer CPU work is worth at most 10.7 ms** before a floor, where the same arithmetic
+  gave ~22 before part 75. Not dead — no longer obviously best-priced, and whoever takes it
+  must state the GPU floor beside the expected saving.
 * **Gates:** `--smoke` OK on every build; `shader_dim_census` clean on the stock and play
-  caches; `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name diff.
-  Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5
-  and `alu_const_gate --hlsl-dir` sweeps stand.
+  caches; `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name diff;
+  the operator session logged **0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO
+  STALE`**. Renderer-only change — no config, kernel, PM4 or shader path touched — so part
+  74's A5 and `alu_const_gate --hlsl-dir` sweeps stand.
 
 Where the port is, as of 2026-08-24 (**PART 74 CLOSED — the RT-cost question answered, the
 SKY FLICKER SOLVED, and part 73's "outside the renderer" RETRACTED by measurement. Driven by
