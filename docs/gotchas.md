@@ -5012,3 +5012,26 @@ From phase C part 18 (the frame rate — and none of it was work):
      (`PRESSMS`), and to report the per-arm GATE FAILURE RATE beside the result** — a
      silent difference in how often an arm completes the route is a selection effect
      wearing the shape of a measurement.
+
+450. **AN OPTIMISATION CAN BE SILENTLY CANCELLED BY THE LAUNCHER EVERYONE ACTUALLY USES.**
+     Part 54 moved this port to a Vulkan swapchain and the whole point was that "the
+     present readback and its two copies do not run". Part 75's operator session measured
+     `readback` at **3.49 ms of a 23.31 ms crowd frame** — under the swapchain. Both are
+     true: the readback survives the swapchain exactly when a PICTURE INSTRUMENT is armed,
+     because every one of them walks the presented frame on the CPU, and the predicate is a
+     `static` read once at startup. **`tools/play_session.sh` — the operator's standard
+     launcher — sets `CZ_CAPTURE_KEY` and `CZ_BURST_DUMP` unconditionally, so F8 and F9
+     work.** So every play session since part 54 has paid a 19.8 MB `memcpy` per frame into
+     a buffer the swapchain never displays, to make a key work that gets pressed five times
+     in an hour.
+     The runtime even SAYS so, in its own log, on the line above the one anybody reads:
+     *"swapchain present with a picture instrument armed: the present READBACK IS STILL
+     RUNNING... its `readback` column is NOT this arm's cost."* It was written as a caveat
+     for measurement and it is really a description of the shipping configuration.
+     **Three transferable parts.** (a) When you make something conditional, go and read
+     every launcher and script in the repo for whether it sets the condition — the flag's
+     DEFAULT is not the configuration users run. (b) An edge-triggered feature (a
+     screenshot key) must not force a per-frame cost; arm it on the press and take the
+     frame after, because one frame of lag on a still is nothing. (c) A caveat aimed at
+     "do not quote this number" can be hiding "do not SHIP this configuration" — the same
+     shape as gotcha 441, where a caveat printed beside exit 0 read as a passing gate.
