@@ -16832,6 +16832,39 @@ wearing the shape of a measurement. Gotcha 449. `tools/part75_ab_report.py` prin
 menu fingerprint and the gate verdict beside every run and refuses to compare across
 states; its docstring is the list of ways this went wrong.
 
-### 8. WHAT THE A/B ACTUALLY SAYS
+### 8. AND THE "MACHINE STATE" WAS NOT THE MACHINE — IT WAS THE DISPLAY RESOLUTION
 
-Within one machine state, at matched draw counts, crowd windows only:
+The 1.7x menu split had a cause, it was printed in every log the whole time, and §7 above
+is the record of not reading it: **`[host] display 0 is 3440x1440` in the first two runs and
+`2560x1440` in every later one.** The desktop changed mode mid-session. That is not a
+machine state, it is a different workload — 4.95 Mpx against 3.69 — and, far more
+importantly for THIS item, **21:9 against 16:9**.
+
+`WideMode()` is `9W > 16H` on the INTERNAL resolution. At 21:9 it is true and
+`PatchWideProjection` runs, which is a SECOND `SceneXformForm` and a second set of uncached
+reads per draw. At 16:9 it never runs at all. So the item is worth materially more at the
+resolution the operator actually plays at — and the A/B split exactly along that line:
+
+| runs | display | matched band | result |
+|---|---|---|---|
+| `fix1` vs `arena1` | 3440x1440 (21:9) | 6,000-6,250 draws | **-33.4%** |
+| `fix2`,`fix3` vs `arena3` | 2560x1440 (16:9) | 5,250-5,750 draws | +0.1% / -4.0% |
+
+Both are internally matched and both are correct; they measure different configurations.
+Every profiled measurement in §2 and §3 was taken at 3440x1440.
+
+**The operator confirmed 21:9 is how they play**, so that is the configuration the item is
+priced at — and from here every run PINS `CZ_VK_RES` instead of inheriting whatever the
+desktop is set to. A resolution that arrives from the environment is a variable nobody
+declared. (Its own caveat, gotcha 415's shape: with the desktop at 2560 the window is
+smaller than the pinned internal render, so the present blit scales. Both arms carry that
+identically and it is CPU-side work being measured, but it is not bit-for-bit the
+operator's frame.)
+
+The gate-failure counts belong here too, because they are the §449 selection effect showing
+up in the data rather than in a worry: **the control arm missed the route in 2 of 5 runs;
+the fix arm in 0 of 4.** From here the menu cadence is `PRESSMS=5000`.
+
+### 9. WHAT THE A/B ACTUALLY SAYS
+
+Within one configuration, at matched draw counts, crowd windows only:
