@@ -3549,6 +3549,22 @@ struct FrameSlot
     uint64_t cameraFingerprint = 0;
     uint32_t width = 0, height = 0;
     size_t bytes = 0;
+    // WAS THE PRESENT READBACK ACTUALLY RECORDED FOR THIS FRAME? Per SLOT, not per
+    // frame, and that is the whole reason it exists (part 76).
+    //
+    // `doReadback` is a decision about the frame being RECORDED; `px` below is read out
+    // of the frame being RETIRED, which is one to two frames older. While the predicate
+    // was static those were always the same answer and the distinction did not exist.
+    // With the readback armed by a KEY PRESS they are not: the first frame after an F8
+    // press records a readback while the frame being retired never had one, so testing
+    // the current frame's decision would hand the burst a buffer holding a much older
+    // frame's pixels — a WRONG picture, silently, in the one instrument that exists to
+    // be believed about what was on screen when.
+    bool hasPixels = false;
+    // WHICH FRAME'S PIXELS ARE ACTUALLY IN `present.buffer`. Stamped when the readback is
+    // recorded, and checked against `frame` at the retire — see the check for why an
+    // md5-shaped canary could not do this job.
+    uint64_t pixelFrame = ~0ull;
 };
 // Two is the whole design: the CPU records one frame while the GPU executes one. Deeper
 // pipelining buys nothing here and costs a whole arena each — the GPU is 16.5 ms against
@@ -4082,10 +4098,26 @@ struct Renderer
     // goes to. Zero means disarmed, which is every frame until F9 is pressed.
     uint64_t drawCensusFrame = 0;
     uint64_t capturePictureFrame = 0;   // CZ_CAPTURE_KEY: write this frame's picture
+    // THE EDGE-TRIGGERED PRESENT READBACK (part 76, item 1). Frames up to and including
+    // this number take the present readback even in the swapchain arm; zero means never,
+    // which is every frame of a run until F9 or F8 is pressed. Written by the key
+    // handlers at the bottom of SwapBuffers and read by the readback predicate at the
+    // top of the next one — which is the whole reason it is a frame NUMBER and not a
+    // boolean: the press happens after this frame's readback decision has been made, so
+    // what it can arm is the frames that follow. See the predicate for why 3.49 ms of
+    // the operator's crowd frame was going into a buffer nothing displayed.
+    uint64_t readbackUntilFrame = 0;
+    // Counted so the arm can be shown to have engaged at all — the change is invisible
+    // in the picture by construction, so a silent failure here looks exactly like a
+    // success (gotcha 151).
+    uint64_t readbackArmedPresses = 0;
     // F8's burst — see the write site for what it is and why a flicker needs one.
     bool burstActive = false;
     uint32_t burstSeq = 0;          // which press this is, so two bursts never collide
     uint32_t burstFrames = 0;       // frames written in THIS burst
+    // Frames of this burst that found no readback pixels. Expected to be 1-2 in the
+    // swapchain arm (see the write site); anything larger is the F8 readback arm failing.
+    uint64_t burstNoPixelFrames = 0;
     uint64_t burstEndNs = 0;        // steady-clock deadline
     FILE* burstManifest = nullptr;
     // The burst's PER-DRAW CENSUS (part 57). Part 56's burst carried pixels and
@@ -21340,30 +21372,84 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // armed, and the run SAYS SO, because a swapchain run carrying a picture instrument
     // is paying for both paths and its `readback` column is not the arm's cost.
     //
+    // AND UNTIL PART 76 "ARMED" MEANT "NAMED IN THE ENVIRONMENT", WHICH COST 15% OF THE
+    // OPERATOR'S CROWD FRAME. The list below used to include `CZ_CAPTURE_KEY` and
+    // `CZ_BURST_DUMP`, and `tools/play_session.sh` sets both unconditionally so that F9
+    // and F8 work — so every play session since part 54 paid a whole-frame
+    // `vkCmdCopyImageToBuffer` plus a 19.8 MB `memcpy` under a mutex, every frame, into a
+    // buffer the swapchain never displays, to make two keys work that are pressed a
+    // handful of times an hour. Measured in the part 75 operator session at **3.49 ms of
+    // a 23.31 ms crowd frame** — the largest single column in it, and none of it the
+    // game (gotcha 450). The swapchain of part 54 was built to delete this path and this
+    // is what was cancelling it.
+    //
+    // So the instruments are split by TRIGGER, not by name:
+    //
+    //   * CONTINUOUS — they read EVERY presented frame and cannot be predicted, so the
+    //     readback runs for the whole run when one of them is set. That is the list
+    //     below, and it is exactly the set of `px` consumers that test no other flag.
+    //   * EDGE-TRIGGERED — `CZ_CAPTURE_KEY` (F9) and `CZ_BURST_DUMP` (F8). Nothing is
+    //     wanted until a key is pressed, so the press ARMS THE READBACK FOR THE FRAMES
+    //     THAT FOLLOW (`R->readbackUntilFrame`, and `burstActive` for the burst's whole
+    //     window). One frame of lag on a still screenshot is nothing and a burst is a
+    //     second long, so neither loses anything an operator can see.
+    //
     // Read once from the environment, like every other decision of this shape here: a
     // per-frame getenv is a syscall on the frame path, and a predicate that can change
-    // mid-run makes two windows of one profile incomparable.
-    // These are exactly the environment variables the five consumers of `px` below test
-    // — the black/dark triggers, the periodic PPM dump, the F9 capture, the frame stats
-    // — and the list is kept in this one place so it can be checked against them. Every
-    // consumer ALSO tests `px` itself, and a consumer that finds itself armed with no
-    // pixels says so by name in the census rather than doing nothing quietly: a
-    // predicate that misses a case must produce a report, not a silence (gotcha 151).
+    // mid-run makes two windows of one profile incomparable. The DYNAMIC half is not a
+    // getenv — it is two fields on the renderer, written by the key handler below.
+    //
+    // Every consumer ALSO tests `px` itself, and a consumer that finds itself armed with
+    // no pixels says so by name rather than doing nothing quietly: a predicate that
+    // misses a case must produce a report, not a silence (gotcha 151).
+    //
+    // THE TRAP THIS OPENS, NAMED SO IT IS NOT WALKED INTO. Gating on "is an instrument
+    // armed" ships a default path no gate in this project exercises, because every
+    // picture gate here sets one of these variables — the same trap the staging-copy
+    // note below describes. Two things close it: `CZ_VK_PRESENT_ALWAYS=1` is the
+    // same-binary control arm that restores the pre-part-76 predicate exactly, and
+    // `tools/part76_readback_gate.sh` runs a gate with NO picture instrument at all and
+    // checks the counters instead of the pixels.
     static const bool wantCachedPixels =
         Env("CZ_VK_FRAME_STATS") || Env("CZ_VK_FRAME_DUMP") || Env("CZ_VK_SNAP_DUMP") ||
-        Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") || Env("CZ_CAPTURE_KEY") ||
-        Env("CZ_VK_SNAP_FRAME") || Env("CZ_BURST_DUMP") || Env("CZ_VK_SKY_ASYM");
-    const bool doReadback = !R->wantSwapchain || wantCachedPixels;
+        Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") ||
+        Env("CZ_VK_SNAP_FRAME") || Env("CZ_VK_SKY_ASYM");
+    // The control arm: force the readback on EVERY frame whatever is armed. That is a
+    // superset of the pre-part-76 predicate (which forced it whenever `CZ_CAPTURE_KEY`
+    // or `CZ_BURST_DUMP` was merely named), so a session run with it on and off is an
+    // A/B on exactly this item — and it is also the only way to exercise the old path
+    // from a run carrying no picture instrument at all, which is what the gate does.
+    static const bool presentAlways = EnvOn("CZ_VK_PRESENT_ALWAYS");
+    // The EDGE arm, re-read every frame. `burstActive` covers the burst's whole window;
+    // `readbackUntilFrame` covers the two or three frames one F9 press needs, and it is a
+    // frame NUMBER rather than a countdown so that two presses in quick succession cannot
+    // shorten each other.
+    const bool edgeArmed = R->burstActive || R->frame <= R->readbackUntilFrame;
+    const bool doReadback =
+        !R->wantSwapchain || wantCachedPixels || presentAlways || edgeArmed;
+    // Counted, both halves, because an arm with no counter cannot be shown to have
+    // engaged (gotcha 151) — and this one is invisible in the picture by construction:
+    // the whole point is that nothing on screen changes.
+    if (R->wantSwapchain)
+    {
+        if (!doReadback)
+            COUNT("readback: skipped (swapchain, no picture instrument armed)");
+        else if (edgeArmed && !wantCachedPixels && !presentAlways)
+            COUNT("readback: ran because F8/F9 armed it");
+        else
+            COUNT("readback: ran for a continuous picture instrument");
+    }
     static bool saidWhy = false;
-    if (R->wantSwapchain && wantCachedPixels && !saidWhy)
+    if (R->wantSwapchain && (wantCachedPixels || presentAlways) && !saidWhy)
     {
         saidWhy = true;
         fprintf(stderr,
-                "[vk] swapchain present with a picture instrument armed: the present "
-                "READBACK IS STILL RUNNING, because every picture instrument here walks "
-                "the frame on the CPU. This run pays for both present paths and its "
-                "`readback` column is NOT this arm's cost — take a frame-time A/B "
-                "without one.\n");
+                "[vk] swapchain present with a CONTINUOUS picture instrument armed (or "
+                "CZ_VK_PRESENT_ALWAYS=1): the present READBACK IS RUNNING ON EVERY "
+                "FRAME, because those instruments walk the frame on the CPU. This run "
+                "pays for both present paths and its `readback` column is NOT this arm's "
+                "cost — take a frame-time A/B without one. F8/F9 alone no longer do this "
+                "(part 76): they arm the readback for the frames they need.\n");
     }
 
     // Into THIS SLOT's readback buffer, not a shared one: with a frame in flight the
@@ -21409,6 +21495,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     rec.height = height0;
     rec.bytes = size_t(width0) * height0 * 4;
     rec.presentable = true;
+    // Recorded with the pixels, and read at the retire below rather than re-deriving it.
+    rec.hasPixels = doReadback;
+    if (doReadback)
+        rec.pixelFrame = R->frame;
 
     SubmitFrame();
     // Immediately after the submit, and before the fence wait below: the present waits on
@@ -21474,7 +21564,10 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // write-combined read. `CZ_VK_PRESENT_STAGING=1` is the same-binary control arm.
     static const bool stagingCopy = !g_readbackCached || EnvOn("CZ_VK_PRESENT_STAGING");
     const uint8_t* px = nullptr;
-    if (!doReadback)
+    // `pres.hasPixels`, NOT `doReadback` — see the field. The two agree on every frame of
+    // a run whose predicate never changes and disagree on exactly the frames an F8/F9
+    // press straddles, which are the frames this whole item is about.
+    if (!pres.hasPixels)
     {
         // The swapchain arm with no picture instrument: there are no host pixels and
         // nothing downstream of here has anything to look at. Everything below this point
@@ -21496,6 +21589,33 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         else
         {
             px = pres.present.mapped;
+        }
+        // THE INVARIANT, CHECKED RATHER THAN ASSUMED: the bytes in this slot must be the
+        // frame this slot describes.
+        //
+        // It exists because the obvious gate for the part-76 off-by-one — "no burst frame
+        // may be byte-identical to the F9 capture" — was BUILT, RUN AGAINST A DELIBERATELY
+        // BROKEN BUILD, AND PASSED. The stale slot does hold an F9-era frame, but the F9
+        // press arms `framesInFlight + 2` of them and the capture PPM is only one; the
+        // stale read landed on a sibling. A content canary aimed at one artifact cannot
+        // cover a window (gotcha 30 — and the control is what said so, not reasoning).
+        //
+        // This is the derived-from-an-invariant form instead: the slot stamps the frame
+        // whose pixels it holds, and a disagreement is a defect by construction, with no
+        // route, no camera and no second artifact required. It costs one comparison per
+        // presented frame. Shown capable of firing: reverting the guard above to
+        // `doReadback` makes it fire on the frame after every F8 press.
+        if (pres.pixelFrame != pres.frame)
+        {
+            Count("PRESENT PIXELS ARE FROM A DIFFERENT FRAME — a stale readback slot");
+            static int left = 8;
+            if (left-- > 0)
+                fprintf(stderr,
+                        "[vk] !! present slot describes frame %llu but holds frame %llu's "
+                        "pixels — every picture instrument reading this frame is looking "
+                        "at the wrong one\n",
+                        (unsigned long long)pres.frame,
+                        (unsigned long long)pres.pixelFrame);
         }
         Host_PresentPixels(px, width1, height1);
     }
@@ -21702,6 +21822,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             R->burstSeq = ++seq;
             R->burstActive = true;
             R->burstFrames = 0;
+            // Same arm as F9's, for the same reason (part 76 item 1) — `burstActive`
+            // alone already keeps the readback on for the burst's whole window, so this
+            // only covers the couple of frames at the very start whose readback decision
+            // was made before this press was consumed. Those frames are reported below
+            // rather than silently missing.
+            R->readbackUntilFrame =
+                std::max(R->readbackUntilFrame, R->frame + R->framesInFlight + 2);
+            ++R->readbackArmedPresses;
+            R->burstNoPixelFrames = 0;
             uint64_t ms = 1000;
             if (const char* m = Env("CZ_BURST_DUMP_MS"))
                 ms = strtoull(m, nullptr, 10);
@@ -21759,8 +21888,16 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         {
             // Armed with no pixels. Say so by name rather than recording nothing, which
             // would read as "the defect did not happen" (gotcha 151).
-            fprintf(stderr, "[vk] burst #%u: no readback pixels this frame — nothing "
-                            "written\n", R->burstSeq);
+            //
+            // Since part 76 this is EXPECTED for the first frame or two of every burst
+            // in the swapchain arm, and only those: F8 is consumed here, at the bottom
+            // of a swap whose readback decision was made at the top, so the earliest
+            // frame this press can arm is the next one and the earliest frame whose
+            // pixels arrive is the one after that. Counted rather than printed per
+            // frame, and printed once at the end of the burst — a per-frame line here
+            // would be two lines of noise on every burst, and a burst that lost
+            // THIRTY frames would look exactly the same as one that lost two.
+            ++R->burstNoPixelFrames;
         }
         else
         {
@@ -21803,8 +21940,15 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             }
             fprintf(stderr,
                     "[vk] burst #%u DONE: %u frames into %s — read it with "
-                    "tools/burst_read.py\n",
-                    R->burstSeq, R->burstFrames, Env("CZ_BURST_DUMP"));
+                    "tools/burst_read.py%s",
+                    R->burstSeq, R->burstFrames, Env("CZ_BURST_DUMP"),
+                    R->burstNoPixelFrames ? "" : "\n");
+            if (R->burstNoPixelFrames)
+                fprintf(stderr,
+                        " (+%llu frame(s) at the start with no readback pixels yet — "
+                        "expected, see the readback predicate; more than 2 or 3 means "
+                        "the F8 arm is not reaching the predicate)\n",
+                        (unsigned long long)R->burstNoPixelFrames);
         }
     }
     // Decide ONCE, at the frame boundary, whether the NEXT frame's draws go into the
@@ -22318,6 +22462,17 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
         // recorded by the time a present is reached, so a picture taken now and a census
         // taken next frame would be two different moments described as one.
         R->capturePictureFrame = R->frame + 1;
+        // ARM THE PRESENT READBACK for the frames this capture needs (part 76 item 1).
+        // In the swapchain arm the readback is off by default now, so without this the
+        // capture would find `px` null and write a census with no picture beside it.
+        // `framesInFlight + 2` rather than exactly one frame: the picture is consumed
+        // when the armed frame RETIRES, which is one to two swaps later depending on the
+        // ring depth, and a few extra whole-frame copies once per key press is not a
+        // quantity worth being exact about. It is a max() so two presses in quick
+        // succession cannot shorten each other.
+        R->readbackUntilFrame =
+            std::max(R->readbackUntilFrame, R->frame + R->framesInFlight + 2);
+        ++R->readbackArmedPresses;
         // CZ_VK_DRAW_ID=1 — THE CENSUS FRAME ITSELF paints draw indices instead of
         // colours, and it must be the same frame: a draw index is only meaningful
         // against the draw list it was numbered in. The first version armed the NEXT

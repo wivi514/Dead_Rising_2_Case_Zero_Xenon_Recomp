@@ -26,6 +26,17 @@
 # F9 still writes a screenshot -- it does not need the debug menu, only CZ_CAPTURE_KEY --
 # so a picture defect can still be captured where it is seen.
 #
+# AND UNTIL PART 76 THAT CONVENIENCE COST 15% OF THE FRAME. This script sets
+# `CZ_CAPTURE_KEY` and `CZ_BURST_DUMP` unconditionally so that F9 and F8 work, and until
+# part 76 merely NAMING either of them forced the present readback to run on every frame
+# -- a whole-frame `vkCmdCopyImageToBuffer` plus a 19.8 MB `memcpy` under a mutex at
+# 3440x1440, into a buffer the swapchain never displays. It measured **3.49 ms of the
+# operator's 23.31 ms crowd frame**, the largest single column in that session, and it had
+# been in every play session since part 54 -- the part whose swapchain was built to DELETE
+# this path. A launcher cancelled the optimisation; nothing in the renderer was wrong
+# (gotcha 450). The readback is now armed BY THE PRESS, so these two variables are free
+# again and this script no longer has to choose between the keys and the frame rate.
+#
 # Usage:  tools/play_session.sh            # the top setting
 #         FPS=250 tools/play_session.sh    # fall back a rung
 #         PLAIN=1 tools/play_session.sh    # the a2m foliage cache off, i.e. stock shaders
@@ -42,8 +53,11 @@
 # is filtered down into it, which is supersampling -- drag the window bigger, or maximise
 # it, to see the resolution on screen instead of only in the sampling.
 #
-# It costs the present readback SQUARED in bytes: 3.5 MB/frame at 1x, 14.7 at 2x. Read
-# `readback` in CZ_VK_PROFILE before blaming anything else for a frame time here.
+# Since part 76 it no longer costs a present readback at all in the default (swapchain)
+# arm -- that path only runs while an F9 or F8 press has armed it. It DOES still cost the
+# readback with `NOSWAP=1`, where the window is fed from host memory and the readback is
+# what feeds it: 3.5 MB/frame at 1x, 14.7 at 2x, and squared in bytes with the scale. Read
+# `readback` in CZ_VK_PROFILE before blaming anything else for a frame time on that arm.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$HOME/DR2CZ-troubleshooting/play"

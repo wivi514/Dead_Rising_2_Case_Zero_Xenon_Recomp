@@ -1637,11 +1637,17 @@ CZ_VK_NO_SWAPCHAIN=1  **the control arm for the present path, which since part 5
                    the readback path and every gate is unaffected); **the host-rendered F4
                    debug overlay is not drawn in this arm** (the title's own F2 DebugJump
                    screen is drawn by the GAME and is unaffected); and a run carrying a
-                   PICTURE instrument -- `CZ_VK_FRAME_STATS`, `CZ_VK_FRAME_DUMP`,
-                   `CZ_VK_SNAP_*`, `CZ_CAPTURE_KEY` -- keeps the readback running as well,
-                   because every one of them walks the frame on the CPU, and SAYS SO: such
-                   a run pays for both paths and its `readback` column is not this arm's
-                   cost. `[vkprof] swapchain` counts presents, DROPPED frames, rebuilds and
+                   CONTINUOUS PICTURE instrument -- `CZ_VK_FRAME_STATS`,
+                   `CZ_VK_FRAME_DUMP`, `CZ_VK_SNAP_*`, `CZ_VK_SKY_ASYM` -- keeps the
+                   readback running as well, because every one of them walks the frame on
+                   the CPU, and SAYS SO: such a run pays for both paths and its `readback`
+                   column is not this arm's cost. **`CZ_CAPTURE_KEY` and `CZ_BURST_DUMP`
+                   were in that list until part 76 and are not any more**: they are
+                   EDGE-triggered, so the F9/F8 press arms the readback for the frames it
+                   needs instead of the variable arming it for the whole run. That one line
+                   was 3.49 ms of the operator's 23.31 ms crowd frame, because
+                   `tools/play_session.sh` sets both unconditionally so the keys work
+                   (gotcha 450) `[vkprof] swapchain` counts presents, DROPPED frames, rebuilds and
                    suboptimal results, because an arm with no counter cannot be shown to
                    have engaged (gotcha 151)
 CZ_VK_SWAPCHAIN_DUMP=dir  **the picture gate for the arm above**, every 64th SWAPCHAIN
@@ -2309,6 +2315,20 @@ CZ_VK_SHADOW_TIER=0|1|2  **the measurement arm for the Shadow Quality row** (par
                    route at CZ_VK_RES=2560x1440: tier 0 builds the 4096x1024 atlas at
                    1x host where tier 2 builds 2x, 18.8M draws / 118,800 resolves
                    engaged, whole-frame dumps intact in both arms
+CZ_VK_PRESENT_ALWAYS=1  **the control arm for part 76 item 1** — force the present
+                   readback on EVERY frame whatever is armed, i.e. what a run carrying
+                   `CZ_CAPTURE_KEY` or `CZ_BURST_DUMP` did before part 76. Off by default;
+                   with it on, F9 and F8 produce exactly the artifacts they produce
+                   without it, which is the whole correctness claim, because **this saving
+                   is invisible in the picture by construction** — a fix that quietly broke
+                   the two keys would look identical to one that worked. Three counters
+                   say which path each frame took (`readback: skipped`, `... ran because
+                   F8/F9 armed it`, `... ran for a continuous picture instrument`), because
+                   an arm with no counter cannot be shown to have engaged (gotcha 151).
+                   `tools/part76_readback_gate.sh` is the gate — it drives F9 and F8 from
+                   the route's own press sequence (via `POSTSEQ`) and checks the artifacts
+                   and the counters in both arms; `tools/part76_readback_ab.sh` is the
+                   frame-time A/B, three runs a side, `CZ_VK_RES` pinned
 CZ_VK_PRESENT_STAGING=1  **the control arm for part 53 item 1.3.** Copy the presented
                    frame into a staging buffer before the window and the picture
                    instruments read it, the way the present path did for fifty-two parts.
@@ -2395,6 +2415,13 @@ different asset entirely: part 39's six foliage-texture addresses, replayed head
 returned a picture of BARBED WIRE. For anything that has to survive the trip from "the
 operator saw this" to "reproduce it headlessly", key on the SHADER hash — it is a hash
 of the microcode and cannot drift (`CZ_VK_TEX_DUMP_PS`, `CZ_VK_ONLY_VS`). Gotcha 306.
+
+**AND SINCE PART 76 IT COSTS NOTHING TO LEAVE ARMED.** `CZ_CAPTURE_KEY` used to force
+the present readback on every frame of the run just by being set — 3.49 ms of the
+operator's 23.31 ms crowd frame at 3440x1440, into a buffer the swapchain never displays
+(gotcha 450). The F9 press now arms the readback for the frames the capture needs.
+`CZ_VK_PRESENT_ALWAYS=1` is the control arm and `tools/part76_readback_gate.sh` is what
+proves the capture is still complete without it.
 
 **AND F9 CAN BE PRESSED HEADLESSLY.** `CZ_FAKE_PRESS_SEQ` takes an `F9` entry (host key
 9), so `CZ_CAPTURE_KEY` plus `...,F9,NONE,NONE` yields the whole capture — picture,
@@ -2497,6 +2524,13 @@ CZ_BURST_DUMP=dir  arms F8: every presented frame for CZ_BURST_DUMP_MS (default 
                    defect no single frame can show (gotcha 133). ~260 MB/second at 720p:
                    point it at a real disk, never /tmp. A second F8 ends a burst early.
                    F8 is a CZ_FAKE_PRESS_SEQ token too, so the burst is self-testable.
+                   **Since part 76 it also costs nothing to leave armed** — the readback
+                   the burst reads is armed by the PRESS, not by the variable (gotcha 450),
+                   which is why the burst reports "+N frame(s) at the start with no
+                   readback pixels yet": F8 is consumed at the bottom of a swap whose
+                   readback decision was made at the top, so the first frame or two of
+                   every burst in the swapchain arm are lost. 1 is normal, more than 3
+                   means the arm is not engaging and the gate fails on it.
 CZ_BURST_CENSUS=0  decline the burst's PER-DRAW CENSUS (part 57; default ON with the
                    burst). Every draw of every burst frame is written to
                    burst<NN>_census.txt as a full census line prefixed with its frame

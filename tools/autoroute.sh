@@ -103,6 +103,14 @@ for i in $(seq 1 "$turns"); do
     if [ "$STILL" = "1" ]; then SEQ="$SEQ,NONE"
     elif [ $(( i % 2 )) -eq 1 ]; then SEQ="$SEQ,RSRIGHT"; else SEQ="$SEQ,RSLEFT"; fi
 done
+# POSTSEQ — extra press entries appended AFTER the turn block, comma separated.
+#
+# Added in part 76 so a GATE can drive `F9` and `F8` on this route without rewriting the
+# route: `CZ_FAKE_PRESS_SEQ` is built here and here only, and a caller that overrode the
+# whole variable would be testing a different journey while claiming to test this one. The
+# entries land after the camera work, i.e. standing in the crowd, which is where a capture
+# or a burst is worth taking anyway.
+[ -n "${POSTSEQ:-}" ] && SEQ="$SEQ,$POSTSEQ"
 SEQ="$SEQ,NONE"
 
 desc=$([ "$STILL" = "1" ] && echo "STANDING STILL" || echo "camera turning")
