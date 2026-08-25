@@ -185,15 +185,18 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part75-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
+    `part76-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
     ANY MORE.** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
     **every item in that plan is now closed, refuted or shipped**; it is kept because it
     carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
     table). `part72-fix-plan.md` is what the operator sittings established, and
     `perf-state-parked.md` is the reference the item designs came from and is NOT
-    superseded. **`docs/part75-kickoff.md` says how all of them relate, and points at the
-    ONE item left — batching the texture uploads, with both of its design constraints
-    already found. It is the first thing to read after this file.** (`part74-kickoff.md`
+    superseded. **`docs/part76-kickoff.md` is the first thing to read after this file.**
+    It hands off a board rather than a plan: the crowd frame now has NO dominant term
+    (part 75 removed the one that was 36% of it), which puts `perf-state-parked.md`'s
+    item A — parallel command recording — back at the top by default now that its order
+    gate exists and is proven; and **problem A, the post-load texture hitch, is completely
+    untouched and still fully specified in `part75-kickoff.md` §1.** (`part74-kickoff.md`
     said "outside the renderer"; part 74's own decomposition RETRACTED that — the residual
     is 0.0 ms on every hitch frame and the cost is inside `Pm4_Execute`.) `part71-kickoff.md`
     remains the RT-SHADOW hand-off for a feature that is PARKED, not deleted.** State the rule as well as the name, because this line said
@@ -799,15 +802,70 @@ feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. ~~**TH
 IS `docs/perf-plan-part71.md`.**~~ ~~**THE LIVE PLAN IS `docs/perf-plan-part72.md`**~~
 ~~**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**~~ — **THERE IS NO LIVE PLAN AS OF
 PART 73: that one is EXHAUSTED**, every item in it closed, refuted or shipped, and a
-successor must be built from new ground rather than from its table. `part75-kickoff.md`
-is the hand-off and says where that ground is. (This line has now named the wrong plan
-TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
+successor must be built from new ground rather than from its table. ~~`part75-kickoff.md`
+is the hand-off~~ — **`part76-kickoff.md` is**, and it says where that ground is. (This
+line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
+
+Where the port is, as of 2026-08-25 (**PART 75 CLOSED — PERFORMANCE, the operator's CROWD
+problem. One fix, and it is the largest single item this port has ever shipped: THE BIGGEST
+COST IN A CROWD FRAME WAS A *READ* FROM WRITE-COMBINED MEMORY.** **`docs/part76-kickoff.md`
+IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dp**; lessons: gotchas **446-449**):
+
+* **THE OPERATOR CHOSE PROBLEM B — THE CROWD** out of the two part 74 split apart. Not the
+  post-load texture hitch (which is a real hitch and fully specified, and is **still
+  untouched** — part 76's other item), but the one they notice most: frame time TRACKING
+  DRAW COUNT, felt as stutter as the camera turns and not a hitch at all.
+* **THE KICKOFF'S OWN SKETCH OF A CROWD FRAME DID NOT SURVIVE A RE-BASELINE.** It quoted
+  `constants ~12 + textures ~10 + readback ~3.6 + recordState ~2.6` as four co-equal
+  candidates, taken from one marked frame. Banded over 13,621 frames with texture frames
+  excluded: `constants` is **43-44% of the frame** and about half of everything the sixteen
+  phases account for; `textures` is 0.78 and `readback` is 0.00. **A number carried forward
+  from one frame is a fact about that frame** (gotcha 13's usual shape).
+* **SPLIT IT TWICE AND THE ANSWER IS NOT THE COPY.** `constants` -> `constVs`/`constPs`/
+  `constShared`, then `constVs` -> `constVsCopy`/`constVsPatch`. At 5,000-7,000 draws, wall
+  19.99 ms: **`constVsPatch` 7.27 ms — 36% OF THE WHOLE FRAME** — against `constVsCopy`
+  0.36 (part 74's gather, which is what anyone would have looked at first) and 0.13 for the
+  entire PIXEL window.
+* **THE MECHANISM: the arena is `HOST_VISIBLE | HOST_COHERENT` with NO `HOST_CACHED`, i.e.
+  WRITE-COMBINED.** `PatchFovProjection` and `PatchWideProjection` each call
+  `SceneXformForm`, which reads all sixteen floats of c0..c3 — twice per draw, on ~97% of
+  draws, because the guest rewrites a world matrix per object so the vertex memo almost
+  never hits. Writing WC memory is cheap; **reading it keeps no cache line, gets no
+  prefetch, and costs a full round trip to DRAM.**
+* **THE FIX IS TO NOT READ IT**, and part 74's own correctness fix is what made that legal:
+  c0..c3 in the arena are a verbatim copy of c0..c3 in `regs` *because* part 74 force-copied
+  them (§6dl). Patch a stack copy taken from the cached register file, store back ONE
+  contiguous 64-byte write. **Verified byte-identical: 0 of 47,352,900 draws disagreed, with
+  the poison arm firing on 100% of 43,810,856.** `CZ_VK_PATCH_IN_ARENA=1` is the
+  same-binary control and changes exactly one thing.
+* **AND THIS PROJECT HAD ALREADY FOUND THE SAME FACT AT A DIFFERENT POINTER.** Part 17
+  caught the present readback buffer being write-combined, fixed it *there* in
+  `ReadbackMemoryProps`, and never generalised — so the arena's read-back sat unnoticed for
+  **58 parts**. §6dp §5 now enumerates all four mappings and every access; the projection
+  patch was the only ungated read. **The audit is the deliverable, not the fix** (gotcha 446).
+* **THE A/B TOOK FOUR ATTEMPTS AND THREE OF THEM PRODUCED A CONFIDENT WRONG NUMBER.** A
+  2,000-draw bin is too coarse; a line fit was WORSE (one control run's draws never varied,
+  so its slope was noise and its intercept came out negative); the route gate fires only on
+  stdout and the A/B loop sent it to `/dev/null`, so a control run that never left the menu
+  went into the aggregate. **All of it is retracted in place in §6dp** and the checklist is
+  `measurement.md`. Gotchas 448-449.
+* **AND THE "MACHINE STATE" WAS THE DISPLAY RESOLUTION, PRINTED IN EVERY LOG ALL ALONG.**
+  The desktop changed 3440x1440 -> 2560x1440 mid-campaign. That is not just a pixel count:
+  **`WideMode()` is `9W > 16H` on the internal resolution, so `PatchWideProjection` — half
+  this item — EXISTS at 21:9 and does not exist at 16:9.** The A/B split exactly along that
+  line and both halves were internally matched and correct. The operator confirmed 21:9 is
+  how they play. **Every run now PINS `CZ_VK_RES`; a resolution that arrives from the
+  environment is a variable nobody declared. Quote no phase number without its resolution.**
+* **Gates:** `--smoke` OK on every build; `shader_dim_census` clean on the stock and play
+  caches; `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name diff.
+  Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5
+  and `alu_const_gate --hlsl-dir` sweeps stand.
 
 Where the port is, as of 2026-08-24 (**PART 74 CLOSED — the RT-cost question answered, the
 SKY FLICKER SOLVED, and part 73's "outside the renderer" RETRACTED by measurement. Driven by
-the operator's questions rather than by the plan.** **`docs/part75-kickoff.md` IS THE LIVE
-HAND-OFF.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm/§6dn/§6do**; lessons: gotchas **439-445**):
+the operator's questions rather than by the plan.** ~~**`docs/part75-kickoff.md` IS THE LIVE
+HAND-OFF.**~~ **It is `docs/part76-kickoff.md`.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm/§6dn/§6do**; lessons: gotchas **439-445**):
 
 * **"TEST THE GAME BEFORE WE ADDED ALL THE RT STUFF" — THE RT ERA COSTS 0.5-0.7 ms.** Built
   parts 60 and 62 and ran them on the same route (`tools/autoroute.sh BIN_SRC=`). Part 60
