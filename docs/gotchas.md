@@ -4939,7 +4939,14 @@ From phase C part 18 (the frame rate — and none of it was work):
      The fix is to never read the mapping: the sixteen floats are a verbatim copy of
      sixteen floats in the ordinary cached register file, so recognize and patch THERE and
      store the result back as one contiguous 64-byte write. Same bytes, verified 0 of
-     47,352,900 draws.
+     47,352,900 draws; **-35% to -36% of the frame at 5,500-8,500 draws** in a pinned
+     same-binary matched-band A/B.
+     **AND THE SIZE OF IT IS THE POINT.** A control run at 16:9 — where this renderer's
+     patch path is entirely inert, so nothing reads the mapping at all — profiles the same
+     scope at **0.030 us per draw against 1.21**. The whole 7.6 ms was **ONE 64-byte read,
+     once per draw**. Not a loop, not a copy, not a megabyte: sixty-four bytes. Write it
+     down that way, because "we read a little mapped memory in a hot function" does not
+     sound like a third of a frame, and is.
      **The general form, and it is a day-one check on any port that maps GPU memory:
      `grep` every mapped pointer for a READ.** A write into WC memory looks the same in
      the source as a read out of it, and only one of them is cheap. Related: gotcha 363 /
