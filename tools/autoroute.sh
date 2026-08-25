@@ -65,6 +65,10 @@ TIMEOUT="${TIMEOUT:-$(( 60 + (10 * PRESSMS / 1000) + SECS ))}"   # boot + menu +
 FPSLOG="${FPSLOG:-5}"
 FPS="${FPS:-500}"
 mkdir -p "$OUT"
+# NEVER `pgrep -f` HERE OR IN ANY WAITER AROUND THIS SCRIPT. `pgrep -f "autoroute.sh"`
+# matches the WAITING SHELL's own command line, so an `until ! pgrep -f ...; do sleep; done`
+# loop can never exit and three of them deadlocked in part 75. Match the process NAME
+# (`pgrep -x cz_runtime_auto`) — that is the only thing that is actually the game.
 for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_auto 2>/dev/null); do
     echo "!! a cz_runtime is already running (pid $p); refusing"; exit 2
 done

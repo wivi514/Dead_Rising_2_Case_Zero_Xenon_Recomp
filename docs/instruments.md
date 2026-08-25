@@ -2904,3 +2904,25 @@ FEWER pixels (gotcha 415, and part 74 walked into it again).
 
 **A device that cannot timestamp says so by name** — both `timestampPeriod == 0` and
 `timestampValidBits == 0` are checked and printed, rather than producing a column of zeros.
+
+## PINNING THE RESOLUTION IN A PERFORMANCE RUN (part 75)
+
+`tools/autoroute.sh` inherits the internal render size from the DESKTOP unless
+`CZ_VK_RES` is set, and part 75 lost half a campaign to that: the display changed mode
+from 3440x1440 to 2560x1440 partway through a six-run A/B, and the two halves then
+disagreed about whether the change under test was worth 33% or 0%. Both halves were
+internally matched and both were right — they were measuring 21:9 and 16:9.
+
+**It is not only a pixel count.** `WideMode()` is `9W > 16H` on the internal resolution,
+so the entire 21:9 projection-patch path exists at 3440x1440 and does not exist at
+2560x1440. A renderer feature can be present or absent depending on a desktop setting
+nobody typed.
+
+```
+CZ_VK_RES=3440x1440   PIN IT. Put it in BOTH arms of every performance A/B.
+                      The run announces the arm, so the log proves it engaged
+```
+Read `[host] display 0 is WxH` out of any log before comparing it with another — it has
+been printed all along and part 75 did not read it for an hour. And **never wait on a run
+with `pgrep -f "autoroute.sh"`**: that matches the waiting shell's own command line and the
+loop can never exit (three deadlocked at once). `pgrep -x cz_runtime_auto` is the process.
