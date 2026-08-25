@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 452 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 453 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 452-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 453-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -816,7 +816,7 @@ describes, and the reason that note asks for the rule and not just the name; got
 Where the port is, as of 2026-08-25 (**PART 76 CLOSED — PERFORMANCE. The largest column in
 the operator's crowd frame was OUR OWN LAUNCHER, and the fix is −16.4% of the frame.**
 **`docs/part77-kickoff.md` IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dq**;
-lessons: gotchas **451-452**):
+lessons: gotchas **451-453**):
 
 * **THE ITEM WAS `part76-kickoff.md` §1's FIRST: the F8/F9 readback, 3.49 ms of a 23.31 ms
   crowd frame and not the game.** Part 54's swapchain was built to delete the present
@@ -864,7 +864,24 @@ lessons: gotchas **451-452**):
   them. ~0.8 ms a frame at 6,000 draws, for a dump that fires once a session and a counter
   for an arm that is off. A **157-site census** of every `Env`/`EnvOn` call found these
   three (two per draw, one per resolve) and no others; the census is the deliverable.
-  GETENV_RESULT_PLACEHOLDER
+  **Its A/B measured −0.08 ms against a
+  −0.06 ms null, i.e. NOTHING**, and the prediction (~0.77 ms) is refuted with both of its
+  ingredients confirmed correct — see the next bullet. Shipped as a correction, not as a
+  saving.
+* **AND THAT REFUTATION IS THE PART'S REAL HEADLINE: THE AUTONOMOUS ROUTE IS NOW GPU-BOUND,
+  AND PART 74's "THE GPU IS NEVER THE LIMITER HERE" IS RETRACTED FOR IT.**
+  `CZ_VK_FRAME_TRACE` at 5,000-7,000 draws, 3440x1440, the two arms of item 1:
+  **fix — wall 10.59, GPU 10.55 (100%), fence 2.99, CPU record 7.10; control — wall 12.29,
+  GPU 12.21, fence 0.53, CPU record 11.25.** The readback was a CPU cost AND a GPU cost
+  (−4.15 ms of CPU, −1.66 ms of GPU, because a whole-frame `vkCmdCopyImageToBuffer` is work
+  the device does); the WALL fell only −1.70 because the fence wait rose +2.46. **The CPU
+  now has three milliseconds of slack**, which is why a further CPU item reads zero.
+  **SCOPE, because it does not automatically transfer**: this route is 6,000-7,000 draws and
+  the operator plays at ~9,750; GPU cost scales with PIXELS and CPU with DRAWS, and in the
+  same run the 7,000-9,000 band already reads CPU 10.02 against GPU 12.12. Their frame is
+  probably near-balanced. **The next CPU item must say which of the two it is measured on.**
+  It does not blunt part 77's first item: the texture path is a HITCH item and a 10 ms GPU
+  floor is not what bounds a 300 ms frame. Gotcha 453.
 * **Gates:** `--smoke` OK on every build; the readback gate OK in both arms and **shown
   capable of failing**; the route gate passed on all 6 A/B runs and all 4 gate runs.
   Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5 and

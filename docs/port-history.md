@@ -5401,6 +5401,9 @@ HAND-OFF.**~~ **It is `docs/part76-kickoff.md`.** Records: `phase5-notes.md` **�
   `GPU` (which overlaps). **This project had never measured GPU time directly.** On the
   hitch frames **the GPU does 3.8-9.9 ms while the CPU burns 181-269**; run-wide the GPU
   averages **7.93 ms** against a **0.37 ms** fence wait, so the GPU is never the limiter
+  (**RETRACTED IN PART BY PART 76 for the STEADY-STATE frame — it now is, on this route:
+  GPU 10.55 ms of a 10.59 ms wall, fence 2.99. The claim stands for the HITCH frames.
+  `phase5-notes.md` §6dq §7**)
   here. Validated by two arms each moving its own column (`CZ_VK_FRAMES_IN_FLIGHT=1` takes
   the fence 2,370 -> 10,233 us with CPUrec unchanged; pixel count takes GPU 7,986 / 10,167 /
   19,856 us at 3.69 / 4.95 / 14.75 Mpx). `CZ_VK_FRAME_TRACE=<file>` is one line per frame.

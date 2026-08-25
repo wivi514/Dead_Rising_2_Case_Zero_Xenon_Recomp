@@ -5088,3 +5088,23 @@ From phase C part 18 (the frame rate — and none of it was work):
      result thrown away by a session in a hurry. A tool that declines should say what
      assumption it declined on (see gotcha 441: a caveat beside exit 0 reads as exit 0;
      this is the same defect with the sign flipped).
+
+453. **A CPU SAVING BELOW THE GPU FLOOR MEASURES ZERO, AND EVERY INGREDIENT OF YOUR
+     PREDICTION CAN BE RIGHT WHILE THE PREDICTION IS WRONG.** Part 76 found two `getenv`
+     calls on the per-draw path, priced the OPERATION by microbenchmark (60.6 ns for a miss,
+     67.5 for a hit, in a 100-121 entry environment), confirmed the CALL COUNT with two
+     temporary counters (62,842,293 hits against 60,176,862 draws — 1.04 per draw, exactly
+     as assumed), multiplied, and predicted **~0.77 ms a frame**. A six-run A/B measured
+     **0.08 ms against a 0.06 ms null** — inside the floor. Both ingredients were right. The
+     missing third was whether the frame was still WAITING on that thread: an hour earlier,
+     the same part had taken 4.15 ms of CPU off the same frame, and `CZ_VK_FRAME_TRACE` now
+     read **GPU 10.55 ms of a 10.59 ms wall — 100% — with a 2.99 ms fence wait**. The CPU
+     was finishing early and idling.
+     **Three transferable parts.** (a) A per-frame CPU prediction is `ns x calls x
+     (is the CPU the limiter?)`, and the third factor is the one nobody writes down; get it
+     from a fence/GPU column, not from an assumption. (b) **Your own last fix is the most
+     likely thing to have moved that factor** — this project spent 76 parts CPU-bound, part
+     74 concluded "the GPU is never the limiter here", and part 76's own item 1 crossed the
+     floor in the same session; re-read the floor AFTER shipping, not before. (c) A change
+     that is semantics-identical and cannot be slower still SHIPS — but as a correction, not
+     as a saving, and the honest report says the arm measured zero and why.

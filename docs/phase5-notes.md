@@ -16562,6 +16562,16 @@ frame 6083:  222.7 ms = CPUrec 181.0 + fence 3.2 + sleep 38.4   GPU  4.8   451 t
 **The GPU does 3.8-9.9 ms while the CPU burns 181-269.** Run-wide the GPU averages **7.93 ms
 a frame** and the fence wait **0.37 ms** — the GPU is never the limiter on this route.
 
+> **RETRACTED IN PART FOR THE STEADY-STATE FRAME, 2026-08-25 (§6dq §7).** The sentence about
+> the HITCH frames stands and is the point of this section: on a 209 ms frame the GPU does
+> 9.9 ms, so nothing the operator FEELS is the device. The generalisation to the route's
+> ordinary frame does not: part 76 took 4.15 ms of CPU and 1.66 ms of GPU out of every frame
+> (the present readback was both), and the same trace now reads **GPU 10.55 ms of a 10.59 ms
+> wall — 100% — with a 2.99 ms fence wait** at 5,000-7,000 draws. **On this route the GPU is
+> now the limiter and the CPU idles ~3 ms a frame.** The number above was true of the
+> renderer that produced it; a performance floor is an oracle and it moves when you fix
+> something (gotchas 172, 453).
+
 ### 4. AND THE DECODE WAS INVISIBLE — IT IS THE BIGGER HALF
 
 The upload clock started at the staging memcpy, so the allocation, the **untiling of every
@@ -17160,9 +17170,70 @@ and no others on a per-draw or per-resolve path; everything else is inside a `st
 initialiser or an already-armed block. **The census is the deliverable, not the three
 lines** (gotcha 446's rule, applied to the second mapping-audit-shaped thing in two parts).
 
-MEASURED_GETENV_PLACEHOLDER
+**MEASURED, AND THE PREDICTION IS REFUTED.** Three runs an arm, alternated, two binaries
+one commit apart whose entire difference is these three hoists (`tools/part76_getenv_ab.sh`;
+"an old binary is never a single-variable arm" does not bite when the diff is three hunks):
 
-### 7. WHAT IS NOW OWED, AND WHAT IS NOT
+| | whole crowd | menu window |
+|---|---|---|
+| hoisted | 10.84 ms (92.3 fps) | 8.90 ms |
+| `getenv` | 10.92 ms (91.6 fps) | 8.91 ms |
+| **delta** | **−0.08 ms, −0.7%** | −0.1% |
+| **null (two runs of one arm)** | **−0.06 ms, −0.5%** | +0.2% |
+
+**The effect is inside the noise floor.** Predicted from the microbenchmark: 2 calls x
+~64 ns x ~6,000 draws = **~0.77 ms a frame**. Measured: **0.08 ± 0.06**. Ten times short.
+
+**The call count was not the error.** Two temporary counters put both sites at
+**62,842,293 hits against 60,176,862 draws — 1.04 per draw**, exactly the assumption. The
+error is in §7.
+
+**The change ships anyway** — it is semantics-identical and cannot be slower — **but it must
+not be quoted as a saving.** Ship it as a correction, not as a fix (gotcha: a correction is
+not a speedup).
+
+### 7. AND THE REASON IS THE HEADLINE OF THIS PART: **THE ROUTE IS NOW GPU-BOUND**
+
+`CZ_VK_FRAME_TRACE` on the same route, same resolution, both arms of item 1, medians over
+5,000-7,000 draws:
+
+| arm | wall | GPU | fence | CPU record | GPU/wall |
+|---|---|---|---|---|---|
+| **fix** (shipping) | 10.59 ms | **10.55** | **2.99** | 7.10 | **100%** |
+| ctl (`CZ_VK_PRESENT_ALWAYS=1`) | 12.29 | 12.21 | 0.53 | 11.25 | 99% |
+
+Read the columns, because three separate things are in them and only one is the frame time.
+
+* **The readback was a CPU cost AND a GPU cost.** CPU record fell **11.25 -> 7.10 (−4.15
+  ms)** and the GPU fell **12.21 -> 10.55 (−1.66 ms)**, because the whole-frame
+  `vkCmdCopyImageToBuffer` is work the device does. §3's A/B measured the WALL, which is
+  the smaller of the two numbers and the honest one to quote.
+* **The wall fell only −1.70 ms because the fence wait rose +2.46.** The CPU now finishes
+  4 ms of work earlier and then WAITS. That is not a disappointment, it is the definition
+  of crossing a floor.
+* **`fence` was 0.37 ms mean run-wide in part 74 and it is 2.99 ms here.** Part 74's
+  conclusion — *"the GPU is never the limiter here"* — was true of the renderer part 74
+  measured and **is retracted for this route as of part 76**: at 5,000-7,000 draws and
+  3440x1440 the GPU is 100% of the wall and the CPU has three milliseconds of slack.
+
+**WHICH IS WHY THE `getenv` HOIST READ ZERO, AND WHY IT IS NOT A DEFECT IN THE HOIST.** It
+removed real CPU work from a thread that was already finishing early. The microbenchmark
+priced the OPERATION correctly and the counters priced the CALL COUNT correctly; what
+neither of them could know is whether the frame is waiting on that thread. Gotcha 453.
+
+**STATE THE SCOPE, because this does not automatically transfer to the operator.** The
+autonomous route sits at 6,000-7,000 draws; the operator plays at ~9,750. GPU cost here
+scales with PIXELS and CPU cost with DRAWS, and the trend is already visible in the same
+run — at 7,000-9,000 draws CPU record is **10.02 ms against a 12.12 ms GPU** where at
+5,000-6,000 it is 7.00 against 10.24. Extrapolated to their load the two are close to
+crossing. **So: this route is GPU-bound, their frame is probably near-balanced, and the
+next CPU item has to say which of those it is being measured on.**
+
+And it does NOT blunt part 77's first item. The texture path is a HITCH item — 150-305 ms
+frames where the CPU stalls — and a 10 ms GPU floor is not what bounds those.
+
+
+### 8. WHAT IS NOW OWED, AND WHAT IS NOT
 
 **Not owed:** an operator verdict on the picture. This change cannot alter a pixel — the
 readback it removes fed a buffer the swapchain never displays, and the gate proves F9 and
