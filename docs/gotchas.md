@@ -5035,3 +5035,56 @@ From phase C part 18 (the frame rate — and none of it was work):
      frame after, because one frame of lag on a still is nothing. (c) A caveat aimed at
      "do not quote this number" can be hiding "do not SHIP this configuration" — the same
      shape as gotcha 441, where a caveat printed beside exit 0 read as a passing gate.
+
+451. **MAKING A STATIC PREDICATE DYNAMIC BREAKS AN IDENTITY NOBODY WROTE DOWN — CHECK
+     EVERY PLACE THE OLD ANSWER WAS REUSED ACROSS A PIPELINE BOUNDARY.** Part 76 turned
+     "does the present readback run this frame" from a `static const bool` read once at
+     startup into a per-frame decision armed by a key press. The predicate itself was
+     three lines and correct. What was NOT correct was the code downstream, which had been
+     written against the old invariant without knowing it: the readback is *recorded* for
+     the frame being submitted, and the pixels are *read* out of the frame being retired,
+     one to two frames older. While the answer never changed, `doReadback` was a true
+     statement about both frames and the same variable served both roles. The moment it
+     could change, testing the recording frame's decision while dereferencing the retiring
+     frame's buffer meant the first frame after a press handed the burst recorder a slot
+     whose last real contents were nine seconds and a camera sweep old — **with the
+     correct frame number written beside it in the manifest**, so the artifact looked
+     entirely well-formed. The fix is one bool on the frame slot (`hasPixels`), recorded
+     with the pixels and read at the retire.
+     **The transferable part is the search, not the fix.** When you make a constant into a
+     variable, the defect is never at the site you changed — it is at every site that
+     silently depended on the constancy, and those sites do not mention the flag. Grep for
+     the *consumers of what the flag guards*, not for the flag. Here that was one `px` and
+     five instruments reading it. And note what caught it: not a test, but asking "which
+     FRAME is this decision about?" while writing the comment for the change — which is an
+     argument for writing the comment before the commit rather than after.
+     **The gate that would have caught it needed a canary, not an assertion.** A stale
+     buffer produces a plausible picture with a correct label, so nothing structural can
+     see it; what separates them is CONTENT, and the cheapest content oracle to hand was
+     the OTHER artifact of the same run — no burst frame may be byte-identical to the F9
+     capture taken nine seconds earlier, which is exactly what a stale slot would serve.
+     It is a canary and not a proof (two genuinely identical frames would also match), and
+     it works here only because the route keeps the camera turning. Say which of the two
+     you have built.
+
+452. **A NEAR-NULL CONTROL CHANNEL IS ONLY A CONTROL FOR CHANGES THAT CANNOT REACH IT —
+     AND WHEN ONE DOES, YOUR TOOL WILL REFUSE THE COMPARISON RATHER THAN REPORT IT.**
+     `tools/part75_ab_report.py` groups A/B runs by a MENU-window fingerprint: the
+     DebugJump screen is identical every run, so a difference there is the machine drifting
+     and not the change, and runs are compared only within one state. That is sound, it
+     caught a real 1.7x machine drift in part 75, and in part 76 it printed
+     `NOT COMPARABLE, no matched control` for **both arms of the cleanest A/B this project
+     has run** — six runs, monotone across every band, an effect ten times the null floor.
+     The reason is that part 76's item touches EVERY PRESENTED FRAME, menus included, so
+     the menu window moved −15.2%: exactly the same as the crowd. The fingerprint was
+     measuring the change and was read as measuring the machine.
+     **The rule is to classify the CHANGE before choosing the channel.** A control channel
+     assumes the change cannot reach it, and that assumption is a claim about the fix, not
+     about the channel. For a crowd-only item the menu is a state check; for a per-frame
+     item it is a SECOND MEASUREMENT and a rather good one. `tools/part76_band.py` prints
+     it as a number and says which of the two it is, instead of partitioning on it.
+     **And notice the failure mode**: it did not produce a wrong number, it produced a
+     REFUSAL — which is the safe direction, and is also the direction that gets a real
+     result thrown away by a session in a hurry. A tool that declines should say what
+     assumption it declined on (see gotcha 441: a caveat beside exit 0 reads as exit 0;
+     this is the same defect with the sign flipped).

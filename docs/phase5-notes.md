@@ -16978,3 +16978,196 @@ decode against 244 ms of staging+submit, decode first.
 against ~13 of ~35 (37%) before.** The fence is still 0.00, so the CPU is still the limiter
 — but the margin has closed a long way, and the next CPU item to be worth its risk has to
 be priced against a GPU floor of ~13 ms at this load rather than against zero.
+
+## §6dq — Part 76: the largest column in the operator's crowd frame was our own launcher (2026-08-25)
+
+`part76-kickoff.md` §1 set the board from the operator's own play session rather than from
+a plan, and its first item was **the F8/F9 readback**: `readback` measured **3.49 ms of a
+23.31 ms crowd frame — 15% — and it is not the game.** This is that item end to end, plus a
+second finding of exactly the same class that fell out of reading for it.
+
+### 1. WHAT THE DEFECT WAS
+
+Part 54 put a real Vulkan swapchain on the window, and the whole point was that the old
+present path — resolve image -> host buffer -> `Host_PresentPixels` -> SDL texture — would
+stop running. It does stop, **except when a picture instrument is armed**, because every
+picture instrument in this runtime walks the presented frame on the CPU and therefore needs
+the pixels in host memory. That exception is correct and remains. What was wrong was the
+definition of "armed":
+
+```cpp
+static const bool wantCachedPixels =
+    Env("CZ_VK_FRAME_STATS") || Env("CZ_VK_FRAME_DUMP") || Env("CZ_VK_SNAP_DUMP") ||
+    Env("CZ_VK_SNAP_ON_BLACK") || Env("CZ_VK_SNAP_ON_DARK") || Env("CZ_CAPTURE_KEY") ||
+    Env("CZ_VK_SNAP_FRAME") || Env("CZ_BURST_DUMP") || Env("CZ_VK_SKY_ASYM");
+```
+
+Seven of those nine read every presented frame and cannot be predicted. **Two do not.**
+`CZ_CAPTURE_KEY` is F9 — one screenshot, when a human presses a key. `CZ_BURST_DUMP` is F8
+— one second of frames, when a human presses a key. Neither wants anything until the key is
+pressed, and **`tools/play_session.sh` sets both unconditionally so that the keys work**.
+So every play session since part 54 paid, on every frame:
+
+* a whole-frame `vkCmdCopyImageToBuffer` into the frame slot's readback buffer, and
+* a **19.8 MB `memcpy`** at 3440x1440 in `Host_PresentPixels`, under `g_frameMutex`,
+
+into a buffer the swapchain never displays. Gotcha 450 records the shape; this is the fix.
+
+### 2. THE FIX: SPLIT BY TRIGGER, NOT BY NAME
+
+The continuous seven keep the run-long readback. The two edge-triggered ones get a
+per-frame dynamic arm — `R->readbackUntilFrame` (a frame NUMBER, so two presses in quick
+succession cannot shorten each other) and `R->burstActive` for the burst's whole window:
+
+```cpp
+const bool edgeArmed = R->burstActive || R->frame <= R->readbackUntilFrame;
+const bool doReadback =
+    !R->wantSwapchain || wantCachedPixels || presentAlways || edgeArmed;
+```
+
+The press arms **the frames that follow**, not this one, because F9 and F8 are consumed at
+the bottom of a swap whose readback decision was made at the top. One frame of lag on a
+still screenshot is nothing, and a burst is a second long. `CZ_VK_PRESENT_ALWAYS=1` is the
+same-binary control arm; it forces the readback on every frame whatever is armed, which is
+a superset of the old predicate.
+
+### 3. THE MEASUREMENT — −2.13 ms, −16.4%, MONOTONE ACROSS EVERY BAND
+
+Three runs an arm, alternated, one binary, `CZ_VK_RES=3440x1440` pinned in both, the
+autonomous route (`tools/part76_readback_ab.sh`, read with `tools/part76_band.py`). Both
+arms carry `CZ_CAPTURE_KEY` and `CZ_BURST_DUMP`, because that is `play_session.sh`'s
+configuration and the entire item is what naming them used to cost; **no key is pressed in
+either arm**, since a capture writes a 15 MB PPM and would land in one arm's frame times.
+
+| draw band | fix | ctl (`CZ_VK_PRESENT_ALWAYS=1`) | delta |
+|---|---|---|---|
+| 5,500-5,750 | 10.34 ms | 12.42 | **−16.8%** (−2.08) |
+| 5,750-6,000 | 10.68 | 12.94 | **−17.4%** (−2.26) |
+| 6,000-6,250 | 10.85 | 13.03 | **−16.7%** (−2.18) |
+| 6,250-6,500 | 10.85 | 13.25 | **−18.1%** (−2.40) |
+| **>= 5,000 (all)** | **10.85 ms — 92.2 fps** | **12.98 — 77.0 fps** | **−2.13 ms, −16.4%** |
+
+**The fix arm draws MORE than the control** — 6,111 against 5,951 median — so the number is
+conservative rather than flattered. The null, two `fix` runs 45 minutes apart, is **10.82
+against 10.83 ms** whole-crowd and −0.5% to +1.7% per band; the effect is ten times the
+floor. Pre-registered kill was 2 ms; it clears it. **Shipped.**
+
+### 3b. AND THE STANDARD A/B READER REFUSED THE COMPARISON — CORRECTLY, BY ITS OWN RULES
+
+`tools/part75_ab_report.py` groups runs by a **menu-window fingerprint**: the DebugJump
+screen is the same every run, so a difference there is the machine and not the change, and
+runs are only compared to runs in the same state. It printed
+`NOT COMPARABLE, no matched control` for both arms of the cleanest A/B this project has run.
+
+It was not wrong; its assumption was. **The menu window moved −15.2%, the same as the
+crowd**, because this item touches every presented frame including the ones showing a menu.
+The near-null control is only a control for a change that cannot reach it.
+
+`tools/part76_band.py` is the replacement for that case: it prints the menu window as a
+number and says which of the two things it is, rather than partitioning on it. The
+generalisation is in gotcha 452.
+
+### 4. MAKING A STATIC PREDICATE DYNAMIC BROKE AN IDENTITY NOBODY HAD WRITTEN DOWN
+
+Found while writing the comment for the change, not by a test, and it is the transferable
+half of this section (gotcha 451).
+
+`doReadback` decides the frame being **recorded**. `px` is read out of the frame being
+**retired**, one to two frames older. While the predicate was `static const` those were
+always the same answer and one variable served both roles. The moment it could change they
+diverge on exactly the frames a press straddles: the first frame after an F8 press records
+a readback while the frame being retired never had one, so testing `doReadback` and then
+dereferencing `pres.present.mapped` handed the burst recorder a slot holding pixels from
+nine seconds and a camera sweep earlier — **with the correct frame number written beside it
+in the manifest**, so the artifact looks entirely well formed.
+
+Fixed with one bool on the frame slot, recorded with the pixels and read at the retire:
+
+```cpp
+rec.hasPixels = doReadback;         // at the record
+if (!pres.hasPixels) { ... }        // at the retire — NOT doReadback
+```
+
+The gate's own numbers confirm the correction: the burst reports **2** frames with no
+readback pixels at its start where the broken build reports **1**, and the missing one is
+precisely the stale frame that used to be written.
+
+### 5. THE GATE, AND THE FIRST VERSION OF IT COULD NOT FAIL
+
+**This saving is invisible by construction.** Nothing on screen changes either way, so a
+fix that quietly broke F9 and F8 would look exactly like a fix that worked. And it walks
+into the trap the staging-copy comment two hundred lines below already names: gating a fast
+path on "is an instrument armed" ships a default path no gate in this project exercises,
+because every picture gate here sets one of those variables.
+
+`tools/part76_readback_gate.sh` closes both. It drives **F9 and F8 from the route's own
+press sequence** — both are `CZ_FAKE_PRESS_SEQ` tokens, and `autoroute.sh` gained a
+`POSTSEQ` hook so a caller can append presses without rewriting the journey — and then
+checks the ARTIFACTS and the COUNTERS rather than the picture, in two arms.
+
+**THE STALE-PIXEL CHECK TOOK TWO ATTEMPTS AND THE FIRST ONE PASSED THE POSITIVE CONTROL.**
+Version 1 compared every burst PPM against the F9 capture, on the reasoning that a stale
+slot would be serving F9-era pixels. Built, then **run against a build with §4's off-by-one
+deliberately restored — and it passed.** The stale read is real (that build writes 9 burst
+frames where the fixed one writes 8), but one F9 press arms `framesInFlight + 2` frames and
+the capture PPM is only one of them, so the stale slot held a SIBLING nobody had a copy of.
+**A content canary aimed at one artifact cannot cover a window**, and only the control said
+so.
+
+Version 2 is derived from an invariant instead: each frame slot stamps `pixelFrame` when
+its readback is recorded, and the retire compares it against the frame the slot describes.
+A disagreement is a defect by construction — no route, no camera, no second artifact, one
+comparison per presented frame. The same broken build makes it fire:
+
+```
+   ** default: 2 present(s) served pixels from the wrong frame     GATE FAILED   (broken)
+      stale present slots: 0                                       GATE OK       (shipping)
+```
+
+Final gate, both arms, 3440x1440 pinned:
+
+```
+default  skipped=19421  edge=13  cont=0     F9 picture 99.5% lit, census 6,050 lines,
+                                            burst 8 frames, 2 lost at the start
+always   skipped=0      edge=0   cont=15998 F9 picture 99.6% lit, census 6,312 lines,
+                                            burst 9 frames, 0 lost
+GATE OK
+```
+
+13 armed frames for one F9 press and one 700 ms burst, against 19,421 skipped.
+
+### 6. THE SECOND FINDING: A `getenv` ON THE PER-DRAW PATH, IN EVERY RUN EVER MADE
+
+Reading the draw path for §1's audit turned up the same shape one level down. `Env()` is a
+bare `getenv`, and glibc's `getenv` is a linear scan over `environ` with a length-prefixed
+compare — **60.6 ns for a miss and 67.5 ns for a hit in a 100-121 entry environment**,
+measured on this machine rather than assumed. Two of them ran on EVERY DRAW, both as the
+**first operand of an `&&`**, so the cheap register test that follows could not
+short-circuit them:
+
+```cpp
+if (Env("CZ_CAPTURE_KEY") && (regs[kPaClClipCntl] & 0x3F))   // the clip-draw dump
+if (!EnvOn("CZ_VK_NO_POLY_OFFSET") && ...)                   // the poly-offset counter
+```
+
+At 6,000 draws that is **~0.8 ms a frame**, in every run this project has ever made, for a
+dump that fires at most once in a session and a counter for an arm that is off. A third
+pair ran per RESOLVE (~40-100 a frame). All three are now function-local statics; nothing
+in this process calls `setenv`, so the hoist is semantics-identical.
+
+A census of every `Env`/`EnvOn` call in `vk_renderer.cpp` — 157 sites — found these three
+and no others on a per-draw or per-resolve path; everything else is inside a `static`
+initialiser or an already-armed block. **The census is the deliverable, not the three
+lines** (gotcha 446's rule, applied to the second mapping-audit-shaped thing in two parts).
+
+MEASURED_GETENV_PLACEHOLDER
+
+### 7. WHAT IS NOW OWED, AND WHAT IS NOT
+
+**Not owed:** an operator verdict on the picture. This change cannot alter a pixel — the
+readback it removes fed a buffer the swapchain never displays, and the gate proves F9 and
+F8 still produce complete artifacts. What IS worth their time is the frame rate, which they
+will see for free in the next session `tools/play_session.sh` launches.
+
+**Owed:** nothing for this item. The next item is `part76-kickoff.md`'s item 2, the texture
+path, which is untouched and is the only thing the operator still FEELS as a stutter.

@@ -17544,14 +17544,24 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     //
     // Once per capture, gated on `CZ_CAPTURE_KEY` being armed and on the draw enabling
     // the plane, so it costs nothing on any other run or any other draw.
-    if (Env("CZ_CAPTURE_KEY") && (regs[xenos::kPaClClipCntl] & 0x3F))
+    //
+    // ...EXCEPT THAT IT USED TO COST A `getenv` PER DRAW (part 76). `Env` is a bare
+    // `getenv`, which in glibc is a linear scan over `environ` with a length-prefixed
+    // compare — **60-68 ns** in a 100-121 entry environment on this machine, measured —
+    // and it was the FIRST operand of the `&&`, so it ran on every draw of every run
+    // whether the variable was set or not. At 6,000 draws that is ~0.4 ms a frame for a
+    // dump that fires at most once in a session. Same shape as the readback above: a
+    // diagnostic that is free "when it does not fire" but not free to ASK.
+    // Nothing in this process calls `setenv`, so hoisting is semantics-identical.
+    static const char* const clipDumpDir = Env("CZ_CAPTURE_KEY");
+    if (clipDumpDir && (regs[xenos::kPaClClipCntl] & 0x3F))
     {
         static bool dumped = false;
         if (!dumped)
         {
             dumped = true;
             char path[512];
-            snprintf(path, sizeof path, "%s/clipdraw_f%06llu.regs", Env("CZ_CAPTURE_KEY"),
+            snprintf(path, sizeof path, "%s/clipdraw_f%06llu.regs", clipDumpDir,
                      (unsigned long long)R->frame);
             if (FILE* f = fopen(path, "w"))
             {
@@ -18734,7 +18744,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     // The polygon offset lives in the PIPELINE now, not here — see PipelineKey. The
     // counter stays, because an arm with no counter cannot be shown to have engaged.
-    if (!EnvOn("CZ_VK_NO_POLY_OFFSET") &&
+    // Hoisted in part 76 for the reason the clip dump above was: this was a `getenv` per
+    // draw, as the first operand of an `&&`, in every run.
+    static const bool noPolyOffsetArm = EnvOn("CZ_VK_NO_POLY_OFFSET");
+    if (!noPolyOffsetArm &&
         (regs[xenos::kPaSuPolyOffsetFrontScale] || regs[xenos::kPaSuPolyOffsetFrontOffset]))
         ++g_polyOffsetDraws;
 
@@ -19822,9 +19835,13 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
     // hour deciding whether a 1024x1024 cascade was being clipped, and every input the
     // trace printed said it was not. What is missing from a register dump is the
     // DECISION the renderer made from them.
+    // `resolveTraceFrom` is read once (part 76): this was two `getenv`s per RESOLVE —
+    // ~40-100 a frame, so a tenth of the per-draw sites' bill and the same defect.
+    static const char* const resolveTraceEnv = Env("CZ_VK_RESOLVE_TRACE");
+    static const uint64_t resolveTraceFrom =
+        resolveTraceEnv ? strtoull(resolveTraceEnv, nullptr, 10) : 0;
     const bool traceThisPass =
-        EnvOn("CZ_VK_RESOLVE_TRACE") && passesLeft > 0 &&
-        R->frame >= uint64_t(strtoul(Env("CZ_VK_RESOLVE_TRACE"), nullptr, 10));
+        resolveTraceEnv && passesLeft > 0 && R->frame >= resolveTraceFrom;
     if (traceThisPass)
     {
         --passesLeft;

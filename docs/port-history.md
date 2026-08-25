@@ -5338,3 +5338,101 @@ lessons: gotchas **435-438**):
   reverted the same day. No shader cache, config or kernel path was touched, so part 72's
   full gate sweep stands. ~~A5 is owed~~ — **part 74 RAN it: exit 0, 4 permutation windows,
   0 real.** It had been carried since part 67.
+
+## Part 74 — the RT cost, the sky flicker, and the stutter split in two (2026-08-24)
+
+Where the port is, as of 2026-08-24 (**PART 74 CLOSED — the RT-cost question answered, the
+SKY FLICKER SOLVED, and part 73's "outside the renderer" RETRACTED by measurement. Driven by
+the operator's questions rather than by the plan.** ~~**`docs/part75-kickoff.md` IS THE LIVE
+HAND-OFF.**~~ **It is `docs/part76-kickoff.md`.** Records: `phase5-notes.md` **§6dj/§6dk/§6dl/§6dm/§6dn/§6do**; lessons: gotchas **439-445**):
+
+* **"TEST THE GAME BEFORE WE ADDED ALL THE RT STUFF" — THE RT ERA COSTS 0.5-0.7 ms.** Built
+  parts 60 and 62 and ran them on the same route (`tools/autoroute.sh BIN_SRC=`). Part 60
+  read **45% faster** and it is not a regression: **its own settings line has NO `fov`
+  field**, so it ignores the operator's `fov=10`, renders the authored ~43 degrees against
+  67.64, and culls at 16:9 on a 21:9 screen. **It was not faster, it was showing far less of
+  the world** — and the part it was not showing is exactly what they asked to have fixed in
+  part 62. The 4.85 ms is the 21:9/FOV fix; everything from part 63 to 73, all of ray
+  tracing included, is **0.5-0.7 ms**. RT stays on master, parked, on their decision;
+  preserved anyway on branch `rt-era-parts-61-73`. Gotcha 439.
+* **THE SKY FLICKER IS SOLVED, AND IT WAS TWO DEFECTS.** (a) **The memo top-up mutated a
+  slot IN PLACE** — constants are bound as a BUFFER DEVICE ADDRESS, so the write reached
+  every earlier draw of the frame recorded against that offset, retroactively;
+  `CZ_VK_CONST_RACE=1` measured **48 affected draws a boot, in 2 frames of 513**. Fixed by
+  making the shader part of the memo key. (b) **The gather did not copy c0..c3 for three
+  shaders, and THIS RENDERER READS c0..c3** — `SceneXformForm` inspects all sixteen floats,
+  so those draws kept an **unpatched projection while every other draw was widened**. Fixed
+  in sixteen dwords. **The list said what the SHADER reads; it was never a list of what the
+  RENDERER reads** (gotcha 442).
+* **Verdicts, all the operator's eye:** pre-fix binary flickered **6 of 6**; the c0 fix
+  reverted **1 of 3**; both fixes **0 of 2 plus a full PLAY SESSION at 8,593-10,256 draws**.
+  **The gather is ON by default again**, worth ~0.8 ms and 88.74 GB not copied in that
+  session; `CZ_VK_CONST_GATHER=0` is the arm.
+* **THE DEFECT IS INTERMITTENT RUN TO RUN, which the operator established and which explains
+  every confusing result of the day.** A clean run never distinguished "fixed" from "not
+  triggered". The control that worked is **the PRE-FIX BINARY** via `BIN_SRC=` — a
+  same-binary arm reverted only one of the two fixes and was equivocal.
+* **THE ROUTE WAS PART OF THE PROBLEM.** Their instruction: *"remove the move with camera to
+  left and right because it just makes the flicker harder to catch, the left and right is
+  for catching stutter."* Exactly right — a swinging camera changes which half of the sky is
+  bright. **`STILL=1`** holds the view; **`CZ_FAKE_PRESS_MS`** splits the press interval from
+  the boot delay (they were one knob) and the menu walk went **56 s -> 21 s**; runs are
+  **2.5 min, not 7.5**. Gotcha 443.
+* **PART 73's "THE COST IS OUTSIDE THE RENDERER" IS RETRACTED BY MEASUREMENT.** It was drawn
+  from three candidate columns all reading zero — an ABSENCE. The slow-frame table's columns
+  now **SUM TO THE FRAME** (`wall = walk + sleep + RESIDUAL`), with `CZ_PUMP_POISON_MS=N` as
+  a positive control that moves the residual by a known 40 ms. **The residual is 0.0 on every
+  hitch frame** and the whole cost is inside `Pm4_Execute`. **Step 4 (the guest side) is
+  ruled out; step 3 (batching the texture uploads) is the one item left**, and both of its
+  design constraints are recorded in `part75-kickoff.md`.
+* **A GATE HAD BEEN RUNNING IN ITS WEAK MODE FOR THREE PARTS.** `alu_const_gate.py` printed
+  *"the lists were NOT cross-checked against the shaders"* beside exit 0 on every run this
+  project ever made of it, because the HLSL was generated into a `mktemp -d` and deleted.
+  `CZ_KEEP_SYNTH=<dir>` keeps it; the real mode passes over all 449 modules. **A caveat
+  printed beside a passing exit code reads as a passing exit code** (gotcha 441).
+* **MY OWN INSTRUMENT WAS NOT GOOD ENOUGH AND THAT IS RECORDED.** `CZ_VK_SKY_ASYM`'s first
+  statistic (sign flips) did not discriminate at all — the route's camera produced them. With
+  the raw per-frame series and three runs an arm the medians separate 2.7x, but individual
+  runs **OVERLAP**: it is a three-run aggregate and I quoted an ordering of four single runs
+  before ever running the same arm twice (gotcha 444).
+* **A PER-FRAME CPU/GPU PROFILER, ON THE OPERATOR'S REQUEST — AND THE STUTTER IS 100% CPU.**
+  Two timestamps in each frame's own command buffer plus an unconditional fence-wait clock,
+  so every frame reads `wall = CPUrec + fence + sleep + residual` (which SUM) alongside
+  `GPU` (which overlaps). **This project had never measured GPU time directly.** On the
+  hitch frames **the GPU does 3.8-9.9 ms while the CPU burns 181-269**; run-wide the GPU
+  averages **7.93 ms** against a **0.37 ms** fence wait, so the GPU is never the limiter
+  here. Validated by two arms each moving its own column (`CZ_VK_FRAMES_IN_FLIGHT=1` takes
+  the fence 2,370 -> 10,233 us with CPUrec unchanged; pixel count takes GPU 7,986 / 10,167 /
+  19,856 us at 3.69 / 4.95 / 14.75 Mpx). `CZ_VK_FRAME_TRACE=<file>` is one line per frame.
+* **AND THE TEXTURE DECODE WAS INVISIBLE — IT IS TWO THIRDS OF THE UPLOAD PATH.** The upload
+  clock started at the staging `memcpy`, so the untiling of every mip level, the endian swap
+  and the image creation were outside every measurement this project has made of it:
+  **469.0 ms a run against 244.0 ms staging+submit, 209 us per texture against 109.** With
+  both columns, **texture upload + decode is 82-90% of every hitch frame** and the
+  attribution closes. **It re-shapes part 75's item**: batching addresses the 244 ms half
+  and does not touch the 469 ms decode half, which is parallelisable or cacheable and goes
+  first. Gotcha 445.
+* **THE OPERATOR MARKED 10 STUTTERS WITH F7, AND THERE ARE TWO PROBLEMS.** Their report:
+  *"stutter right after loading the game and then a lot of stutter when moving the camera
+  when big crowd of zombie on main street."* **Every one of the 10 marks had `fence 0.0` and
+  a healthy 11.6-14.2 ms GPU**, which retires the GPU for anything they can feel. **(A) The
+  post-load stutter is texture bursts** — real 150-305 ms hitches, `texPh 229.3` of one
+  305.5 ms frame. **(B) The crowd case is NOT A HITCH.** With texture frames excluded, across
+  3,443 outdoor frames **p95 sits within 10-14% of the median in every draw band** — no
+  spikes — and the frame time simply tracks the draw count: **12.5 ms at 2,500 draws ->
+  33.8 ms at 9,000+, i.e. 80 fps -> 30 fps** as the crowd comes into view. A 2.7x frame-rate
+  change arriving as you turn the camera is FELT as stutter and is not one; it is the
+  ORIGINAL CPU-bound crowd throughput problem, and **no fix for (A) touches it**. **They
+  notice (B) most**, so part 75 opens on that choice — `part75-kickoff.md` presents both and
+  deliberately does not pick. §6do.
+* **AND THE PHASE BREAKDOWN ONLY ADDED UP AFTER A CORRECTION.** The trace's first phase set
+  summed to **~60%** of a stutter frame — 34 ms of 186.9 — because `record` is the RESIDUAL
+  after `recordState`/`recordVertex`/`recordIndex` are subtracted and those three were not
+  printed, so the largest part of the draw path was invisible (`record` read 1.0 ms at 9,000
+  draws where part 47 measured 15.2). With all sixteen phases the remainder is **2.7-4.5 ms**,
+  the profiler's own overhead. **A breakdown that does not add up is the same false-absence
+  trap the residual column was built to close, one level down.**
+* **Gates:** `--smoke` OK; **A5 exit 0, 4 permutation windows, 0 real — the gate owed since
+  part 67 is CLEAN and no longer owed**; `alu_const_gate --hlsl-dir` clean over 449;
+  `shader_dim_census` clean; `rt_world_xform` 104 of 104; the play session logged 0 `no
+  translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`.

@@ -307,3 +307,29 @@ that produced a confident wrong number.
 6. **NEVER `pgrep -f "autoroute.sh"`** to wait on a run: it matches the waiting shell's own
    command line, so `until ! pgrep -f ...` can never exit. Three waiters deadlocked on each
    other at once. `pgrep -x cz_runtime_auto` is the process.
+7. **CLASSIFY THE CHANGE BEFORE PICKING THE READER — added in part 76, and it is the one
+   entry here that is about the surviving tool rather than about a failure.**
+   `part75_ab_report.py` partitions runs by the DebugJump MENU window as a machine-state
+   fingerprint: the same screen every run, so a difference there is the machine drifting
+   and runs are compared only within one state. That caught a real 1.7x drift in part 75.
+   **It also printed `NOT COMPARABLE, no matched control` for both arms of the cleanest A/B
+   this project has run** — six runs, monotone across every band, an effect ten times the
+   null — because part 76's item touches EVERY PRESENTED FRAME and moved the menu window
+   −15.2%, exactly as it moved the crowd. The fingerprint was measuring the change and was
+   being read as measuring the machine.
+   * a **crowd-only** item: the menu window is a state check. Use `part75_ab_report.py`.
+   * a **per-frame** item: the menu window is a SECOND MEASUREMENT, and a good one. Use
+     **`tools/part76_band.py`**, which prints it as a number and bands the crowd rather
+     than partitioning on it.
+   A control channel encodes a claim about the FIX — "this cannot reach the menu" — not
+   about the channel. Gotcha 452.
+8. **A CHANGE THAT CANNOT ALTER A PIXEL NEEDS A GATE THAT DOES NOT LOOK AT PIXELS**, and
+   the gate has to be shown capable of failing before it means anything. Part 76's saving
+   is invisible by construction, so its gate checks ARTIFACTS (does F9 still write a
+   picture, a census and a snapshot chain; does F8 still write a burst) and COUNTERS (which
+   path did each frame take), in two arms — `tools/part76_readback_gate.sh`, with
+   `CZ_VK_PRESENT_ALWAYS=1` as the same-binary control. **Its first stale-pixel check was a
+   CONTENT CANARY and it passed a deliberately broken build**, because it compared against
+   one artifact where the defect could land on any of several. The version that works is
+   derived from an INVARIANT the runtime can state about itself. Prefer an invariant to a
+   canary, and if you can only have a canary, say so where you report the result.
