@@ -16873,26 +16873,36 @@ so the RELATIVE numbers are if anything conservative) and `CZ_VK_FRAME_TRACE`, w
 this a **per-frame, matched-draw-band** comparison rather than a cross-run one. Texture-upload
 frames excluded — those are problem A. Medians, ms:
 
+Read on the FINISHED traces — 14,445 control frames and 19,204 fix frames. (An earlier read
+of the same two files taken while the fix run was still writing gave −37.7% where the
+complete data gives −35.3% at one band. Same conclusion, and the discrepancy is why the
+partial-read rule applies to traces as well as to logs.)
+
 | draws | n | CONTROL | its `patch` | n | FIX | its `patch` | delta |
 |---|---|---|---|---|---|---|---|
 | 2,000-2,500 | 1,370 | 9.43 | 2.92 | 1,374 | 8.93 | 0.12 | −5.4% |
 | 2,500-3,000 | 1,862 | 9.60 | 3.00 | 2,115 | 8.85 | 0.12 | −7.8% |
-| 3,500-4,000 | 377 | 13.46 | 4.48 | 104 | 9.86 | 0.18 | −26.7% |
-| 4,500-5,000 | 358 | 15.94 | 5.61 | 213 | 10.59 | 0.23 | −33.6% |
-| 5,500-6,000 | 1,076 | 19.19 | 7.08 | 2,147 | **11.95** | 0.28 | **−37.7%** |
-| 6,500-7,000 | 475 | 22.54 | 8.07 | 120 | 15.13 | 0.34 | −32.9% |
-| 7,500-8,000 | 206 | 25.82 | 9.47 | 65 | 16.58 | 0.39 | −35.8% |
-| 8,000-8,500 | 270 | 26.76 | 9.96 | 99 | **17.11** | 0.40 | −36.1% |
+| 3,500-4,000 | 377 | 13.46 | 4.48 | 402 | 9.90 | 0.18 | −26.4% |
+| 4,000-4,500 | 437 | 14.53 | 4.97 | 357 | 10.12 | 0.21 | −30.3% |
+| 4,500-5,000 | 358 | 15.94 | 5.61 | 779 | 10.61 | 0.24 | −33.5% |
+| 5,000-5,500 | 480 | 17.89 | 6.35 | 605 | 11.59 | 0.26 | −35.2% |
+| 5,500-6,000 | 1,076 | 19.19 | 7.08 | 6,531 | **12.41** | 0.29 | **−35.3%** |
+| 6,000-6,500 | 4,033 | 20.46 | 7.62 | 1,897 | 13.42 | 0.31 | −34.4% |
+| 6,500-7,000 | 475 | 22.54 | 8.07 | 422 | 15.11 | 0.34 | −33.0% |
+| 7,000-7,500 | 134 | 24.53 | 8.77 | 281 | 16.12 | 0.37 | −34.3% |
+| 7,500-8,000 | 206 | 25.82 | 9.47 | 284 | 16.65 | 0.39 | −35.5% |
+| 8,000-8,500 | 270 | 26.76 | 9.96 | 391 | **17.05** | 0.40 | **−36.3%** |
 
 **Both pre-registered claims are met.** `constVsPatch` below 0.5 ms at 5,000-7,000 draws:
-0.26-0.34. The median frame there down by at least 5 ms: −6.28 to −7.41. The kill threshold
+0.26-0.34. The median frame there down by at least 5 ms: −6.30 to −7.43. The kill threshold
 was 2 ms.
 
 **And the saving SCALES with the draw count** — −0.51 ms at 2,250 draws rising monotonically
-to −9.65 at 8,250 — which is the signature of a per-draw cost being removed and is the
+to −9.71 at 8,250 — which is the signature of a per-draw cost being removed and is the
 internal consistency check the discarded line fit was supposed to provide. The `patch`
-column itself falls to **4% of its former value** at every band, which is the direct
-measurement; the frame time is the consequence.
+column itself falls to **4% of its former value** at every band; that is the direct
+measurement and the frame time is the consequence.
 
-In frame-rate terms at the operator's resolution and load: **52 -> 84 fps at ~5,800 draws,
-37 -> 58 fps at ~8,200.**
+In frame-rate terms at the operator's resolution and load: **52 -> 81 fps at ~5,800 draws,
+37 -> 59 fps at ~8,200.** The profiler is on in both arms and costs 2-4 ms a frame, so the
+absolute times are inflated and the percentages are, if anything, conservative.
