@@ -16865,6 +16865,34 @@ The gate-failure counts belong here too, because they are the §449 selection ef
 up in the data rather than in a worry: **the control arm missed the route in 2 of 5 runs;
 the fix arm in 0 of 4.** From here the menu cadence is `PRESSMS=5000`.
 
-### 9. WHAT THE A/B ACTUALLY SAYS
+### 9. WHAT THE A/B ACTUALLY SAYS — the pinned, profiled, matched-band pair
 
-Within one configuration, at matched draw counts, crowd windows only:
+Two runs, same binary, **`CZ_VK_RES=3440x1440` pinned in both**, `PRESSMS=5000`, the only
+variable `CZ_VK_PATCH_IN_ARENA=1`. Both arms carry `CZ_VK_PROFILE` (2-4 ms a frame, in both,
+so the RELATIVE numbers are if anything conservative) and `CZ_VK_FRAME_TRACE`, which makes
+this a **per-frame, matched-draw-band** comparison rather than a cross-run one. Texture-upload
+frames excluded — those are problem A. Medians, ms:
+
+| draws | n | CONTROL | its `patch` | n | FIX | its `patch` | delta |
+|---|---|---|---|---|---|---|---|
+| 2,000-2,500 | 1,370 | 9.43 | 2.92 | 1,374 | 8.93 | 0.12 | −5.4% |
+| 2,500-3,000 | 1,862 | 9.60 | 3.00 | 2,115 | 8.85 | 0.12 | −7.8% |
+| 3,500-4,000 | 377 | 13.46 | 4.48 | 104 | 9.86 | 0.18 | −26.7% |
+| 4,500-5,000 | 358 | 15.94 | 5.61 | 213 | 10.59 | 0.23 | −33.6% |
+| 5,500-6,000 | 1,076 | 19.19 | 7.08 | 2,147 | **11.95** | 0.28 | **−37.7%** |
+| 6,500-7,000 | 475 | 22.54 | 8.07 | 120 | 15.13 | 0.34 | −32.9% |
+| 7,500-8,000 | 206 | 25.82 | 9.47 | 65 | 16.58 | 0.39 | −35.8% |
+| 8,000-8,500 | 270 | 26.76 | 9.96 | 99 | **17.11** | 0.40 | −36.1% |
+
+**Both pre-registered claims are met.** `constVsPatch` below 0.5 ms at 5,000-7,000 draws:
+0.26-0.34. The median frame there down by at least 5 ms: −6.28 to −7.41. The kill threshold
+was 2 ms.
+
+**And the saving SCALES with the draw count** — −0.51 ms at 2,250 draws rising monotonically
+to −9.65 at 8,250 — which is the signature of a per-draw cost being removed and is the
+internal consistency check the discarded line fit was supposed to provide. The `patch`
+column itself falls to **4% of its former value** at every band, which is the direct
+measurement; the frame time is the consequence.
+
+In frame-rate terms at the operator's resolution and load: **52 -> 84 fps at ~5,800 draws,
+37 -> 58 fps at ~8,200.**
