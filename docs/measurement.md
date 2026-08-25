@@ -272,3 +272,38 @@ by an address, because hardware's is `1812F000` and ours is `1439B000`. And a dr
 counts as sampling it only if the atlas sits in a slot the bound shader's own sidecar
 DECLARES — a register file carries all 32 fetch constants whether the shader reads them
 or not, so raw address matching over-reports about 6x.
+
+## Reading a performance A/B on the autonomous route (part 75's corrections)
+
+Part 75 measured one change four different ways and got four different answers, three of
+them wrong. The tool that survived is **`tools/part75_ab_report.py`**; the failures are
+worth more than the tool, so they are listed here as a checklist. Each line is something
+that produced a confident wrong number.
+
+1. **PIN `CZ_VK_RES` IN BOTH ARMS.** `autoroute.sh` inherits the internal render size from
+   the desktop. The desktop changed mode mid-campaign and the two halves of one six-run A/B
+   then disagreed **33% against 0%** — both internally matched, both correct, measuring
+   21:9 and 16:9. It is not only a pixel count: `WideMode()` is `9W > 16H` on the internal
+   resolution, so an entire renderer path (`PatchWideProjection`) exists at 3440x1440 and
+   does not exist at 2560x1440. `[host] display 0 is WxH` has been printed in every log for
+   the life of this project; read it before comparing two runs. **Quote no phase number
+   without its resolution.**
+2. **READ THE ROUTE GATE, ON A FINISHED LOG.** `autoroute.sh` exits 3 and prints "DID NOT
+   REACH THE OUTDOOR WORLD — this log is NOT reportable". Never send an A/B loop's output
+   to `/dev/null`: that is the only place the gate fires, and one control run spent all 28
+   of its windows on the menu and went into the aggregate anyway. And a log still being
+   written is indistinguishable from a failed one, so check the process is gone first.
+3. **REPORT THE PER-ARM GATE FAILURE RATE.** The menu walk uses fixed press intervals with
+   a 150 ms tap, so a slower configuration polls fewer times inside the window and misses
+   the route more often — the surviving control runs are then that arm's luckiest. Part 75
+   saw **2 of 5 for the control against 0 of 4 for the fix**. `PRESSMS=5000`.
+4. **A LINE FIT IS NOT SAFER THAN A BIN.** Fitting ms against draw count looks like the
+   principled move and it hid the worst error: one run's draws never varied (a 90-draw
+   range), so its slope was noise and its intercept came out negative — a physically
+   impossible frame time, printed without complaint. If you fit, print the x range.
+5. **PREFER THE WITHIN-RUN PROFILED ATTRIBUTION.** A `CZ_VK_PROFILE` phase column is
+   measured inside single frames and needs no cross-run matching at all, so none of the
+   above can touch it. Use the A/B to CONFIRM a phase measurement, not to discover one.
+6. **NEVER `pgrep -f "autoroute.sh"`** to wait on a run: it matches the waiting shell's own
+   command line, so `until ! pgrep -f ...` can never exit. Three waiters deadlocked on each
+   other at once. `pgrep -x cz_runtime_auto` is the process.
