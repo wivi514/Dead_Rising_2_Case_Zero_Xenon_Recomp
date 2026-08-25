@@ -16840,10 +16840,30 @@ is the record of not reading it: **`[host] display 0 is 3440x1440` in the first 
 machine state, it is a different workload — 4.95 Mpx against 3.69 — and, far more
 importantly for THIS item, **21:9 against 16:9**.
 
-`WideMode()` is `9W > 16H` on the INTERNAL resolution. At 21:9 it is true and
+~~`WideMode()` is `9W > 16H` on the INTERNAL resolution. At 21:9 it is true and
 `PatchWideProjection` runs, which is a SECOND `SceneXformForm` and a second set of uncached
-reads per draw. At 16:9 it never runs at all. So the item is worth materially more at the
-resolution the operator actually plays at — and the A/B split exactly along that line:
+reads per draw. At 16:9 it never runs at all, so the item is worth roughly twice as much at
+21:9.~~ **That was a guess and a pinned 16:9 control refuted it — the real answer is
+stronger.** At 2560x1440 the control arm profiles `patch` at **1.4% of an 11.9 ms frame,
+0.167 ms over 5,602 draws**, against 36.8% of a 20.7 ms frame — **0.030 us per draw against
+1.21, a factor of FORTY, not two.**
+
+The reason is that on this route the patch path is not halved at 16:9, it is **entirely
+inert**. `FovHalfRadThisFrame()` returns 0 unless `CZ_VK_FOV` is set in the environment — it
+does not read the settings file's fov, because the shipped slider is applied GAME-side in
+`cpu/camera_fov.cpp`, not here (part 61/62). So `PatchFovProjection` returns at its first
+line without reading anything, and at 16:9 `PatchWideProjection` is never called either.
+Zero reads; the residual 0.167 ms is the surrounding block (the `c0Known` scan, the
+counters, the store).
+
+**Which means the entire 7.6 ms was ONE `SceneXformForm` — a single 64-byte read of
+write-combined memory, once per draw.** That is the finding in its sharpest form, and it is
+worth more than the fix: **one uncached 64-byte read per draw was 36% of this frame.**
+
+It also confirms the measurement is faithful to the operator's configuration rather than an
+artifact of the harness: they play 21:9 with `fov=10`, and `fov=10` goes through the guest
+camera, so their frame runs exactly the path measured here — `PatchWideProjection` live,
+`PatchFovProjection` returning early. The A/B split along that line:
 
 | runs | display | matched band | result |
 |---|---|---|---|
