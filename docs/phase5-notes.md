@@ -16926,3 +16926,55 @@ measurement and the frame time is the consequence.
 In frame-rate terms at the operator's resolution and load: **52 -> 81 fps at ~5,800 draws,
 37 -> 59 fps at ~8,200.** The profiler is on in both arms and costs 2-4 ms a frame, so the
 absolute times are inflated and the percentages are, if anything, conservative.
+
+### 10. THE OPERATOR'S OWN CROWD, WITH THE PROFILER ARMED — the fix confirmed, and what is left
+
+`tools/part75_operator_session.sh`, 3440x1440 pinned, the operator driving into the Main
+Street crowd and pressing **F7** at every felt stutter. 5,802 frames traced, **6 marks**,
+0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`.
+
+**THE FIX IS CONFIRMED AT THEIR LOAD, ON THEIR MACHINE.** Median over 607 frames at
+>= 7,000 draws, the whole constant path:
+
+| column | ms |
+|---|---|
+| `cVsPatch` | 0.43 |
+| `cVsCopy` | 0.46 |
+| `cShared` | 0.53 |
+| `constants` (residual) | 0.63 |
+| `cPs` | 0.17 |
+| **total** | **2.22 ms of a 23.31 ms frame — 9.5%** |
+
+Before part 75 the PATCH ALONE was ~10 ms at this draw count and the phase was ~45% of the
+frame. It is now the fifth-largest thing in it.
+
+**AND THE FRAME IS FLAT.** No dominant term survives: `readback` 3.49, `recState` 2.31,
+`oFetch` 1.72, `drawOther` 1.66, `texPh` 1.50, `recVert` 1.35, `recIdx` 1.28, `record` 0.93,
+then a tail of 0.2-0.6. **`readback` is THIS SESSION'S OWN INSTRUMENT** and the runtime says
+so in its own log — *"swapchain present with a picture instrument armed: the present
+READBACK IS STILL RUNNING... its `readback` column is NOT this arm's cost"* — because
+`CZ_CAPTURE_KEY`/`CZ_BURST_DUMP` (F8/F9) walk the frame on the CPU. Take it and the
+profiler's 2-4 ms off and the crowd frame is roughly 16-18 ms.
+
+**ALL SIX MARKS ARE THE TEXTURE PATH, AND IT IS NOW THE ONLY THING THEY FEEL.** Split the
+607 crowd frames on whether they performed a REAL texture upload (gotcha 435's counter, not
+the call count):
+
+| population | n | median | p95 | p99 | max | median `texPh` |
+|---|---|---|---|---|---|---|
+| no real upload | 413 | 22.3 | 29.4 | 31.9 | **34.3** | 1.39 |
+| >= 1 real upload | 194 | 29.0 | 36.3 | **174.1** | **290.1** | 7.86 |
+
+Of the 32 frames above 1.4x the crowd median, **29 (91%) carry a real texture upload**,
+their median `texPh` is 12.36 ms against the crowd's 1.50, and their fence is 0.00 with a
+healthy 13.18 ms GPU. The no-upload population has **no tail at all** — its p99 is 31.9 and
+its worst frame in the entire session is 34.3.
+
+**So the crowd throughput problem is no longer what produces a felt stutter; problem A is.**
+That is `part75-kickoff.md` §1, still fully specified and still untouched: 469 ms/run of
+decode against 244 ms of staging+submit, decode first.
+
+**One number to carry into part 76: the GPU is now 12.57 ms of a 23.31 ms frame (54%),
+against ~13 of ~35 (37%) before.** The fence is still 0.00, so the CPU is still the limiter
+— but the margin has closed a long way, and the next CPU item to be worth its risk has to
+be priced against a GPU floor of ~13 ms at this load rather than against zero.
