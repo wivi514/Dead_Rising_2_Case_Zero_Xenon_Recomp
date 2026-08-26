@@ -2957,6 +2957,12 @@ uint64_t g_texFetchResolves = 0;
 // so it is counted, weighed AND timed — a count alone cannot tell 6,000 small uploads
 // from 6 huge ones, and neither can tell either from a stall inside RunImmediate.
 uint64_t g_texRealUploads = 0, g_texUploadBytes = 0, g_texUploadNs = 0;
+// ...and the LARGEST single upload, which a mean cannot give and which sizes the staging
+// arena. Part 79 needed it to partition that arena into per-slot segments without
+// narrowing the "larger than the staging buffer" decline the callers already have: a
+// segment smaller than the biggest real texture would silently start dropping textures
+// that used to upload. Free, and there was no way to ask before.
+uint64_t g_texUploadMaxBytes = 0;
 // Untiling, endian swap and image creation — everything BEFORE the staging copy.
 uint64_t g_texDecodeNs = 0;
 // ...AND ITS DECOMPOSITION (part 77). `g_texDecodeNs` is 469 ms of a texture-burst run and
@@ -6305,6 +6311,73 @@ uint64_t g_texBatchFlushes = 0, g_texBatchJobs = 0, g_texBatchMaxJobs = 0,
          g_texBatchFullFlushes = 0;
 void FlushTextureUploads();
 
+// ===================================================================================
+// PART 79 ITEM 1 — THE FLUSH NO LONGER WAITS
+// ===================================================================================
+//
+// WHAT WAS LEFT. Part 77's batch turned one submit-and-wait PER TEXTURE into one per
+// burst, and its own comment said the remaining wait was deliberate for a first version:
+// "dropping it as well would require recycling both the staging arena and the command
+// buffer against a fence, i.e. a second mechanism to get wrong in the same change".
+// The operator's part-77 session then priced what was left, and it is the largest single
+// number this campaign has left on the table at THEIR load rather than at the autonomous
+// route's: **1,092.5 ms of a 150-second session, 568 us across each of 1,841 flushes**
+// (§6dt §3). It is 1,841 flushes and not 63 because the batch flushes once per FRAME, so
+// its size is however many uploads that frame happened to carry — 4.8 in real play against
+// 37.2 on a burst route. **Removing the wait is worth the same whatever that number is**,
+// which is exactly what batching was not.
+//
+// WHY THE WAIT EXISTED, and therefore what has to be built to remove it. Two resources are
+// reused the instant the flush returns: the staging arena (one buffer, written from offset
+// zero by the very next upload) and the command buffer (`RunImmediate` frees it). Both are
+// still being read by the GPU until the copy retires. `vkQueueWaitIdle` is the crudest
+// possible way to know that it has.
+//
+// THE RING. `kTexUploadSlots` slots, each owning its own command buffer, its own fence and
+// its own SEGMENT of the staging buffer. A flush records into the current slot, submits it
+// with that slot's fence and does NOT wait; it then advances to the next slot and waits on
+// **that** slot's fence only if it is still in flight. With three slots, a flush is
+// competing with a copy submitted two flushes ago — at the operator's cadence of ~12
+// flushes a second, that copy retired ~150 ms earlier and the wait is a signalled-fence
+// query. `g_texSlotStalls` counts the times it was not, so the design can be shown wrong.
+//
+// THE SEGMENT SIZE IS A MEASURED CHOICE, NOT A ROUND NUMBER. Partitioning the arena
+// NARROWS the "larger than the staging buffer" decline the callers already have, and a
+// segment smaller than some real texture would silently stop uploading it — a picture
+// regression in whatever part of the map holds that texture, invisible to any route that
+// never goes there. So the arena was instrumented first (`g_texUploadMaxBytes`) and the
+// autonomous route answered: **2,360 uploads, 127.6 MB, biggest single upload 1.33 MB.**
+// The buffer is grown to `kTexUploadSlots * 32 MB` so each segment is 32 MB — 24x the
+// measured maximum, and still large enough for a 2048x2048 A8R8G8B8 with its full mip
+// chain (21 MB), which is the largest texture this title could plausibly hold. The decline
+// is COUNTED, so a run that ever hits it says so.
+//
+// WHAT A SMALLER SEGMENT COSTS IS NOW NOTHING, which is the other half of the reason it is
+// safe to partition at all. A burst that overruns its segment used to force a flush, and a
+// flush used to be a 568 us stall — `g_texBatchFullFlushes` was the number that mattered.
+// A forced flush now just moves to the next slot.
+//
+// `CZ_VK_TEX_FLUSH_WAIT=1` IS THE SAME-BINARY CONTROL ARM and it takes the literal
+// pre-part-79 path: `RunImmediate`, i.e. a freshly allocated command buffer, a submit, a
+// `vkQueueWaitIdle` and a free. It is not an approximation of the old code, it IS the old
+// code, so the `immediate submits` line keeps meaning what it meant in part 77.
+constexpr uint32_t kTexUploadSlots = 3;
+constexpr VkDeviceSize kTexSlotBytes = 32ull << 20;
+struct TexUploadSlot
+{
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    bool inFlight = false;
+    VkDeviceSize base = 0;      // this slot's segment of R->staging
+};
+TexUploadSlot g_texSlots[kTexUploadSlots];
+uint32_t g_texSlot = 0;
+bool g_texFlushWait = false;    // set once at init from CZ_VK_TEX_FLUSH_WAIT
+// Was the ring ever actually short of a free slot? A ring that never stalls is doing its
+// job; a ring that stalls often is a ring that is too small, and only this can tell them
+// apart (gotcha 151 — an arm with no counter cannot be shown to have engaged).
+uint64_t g_texSlotStalls = 0, g_texSlotStallNs = 0, g_texFlushNs = 0, g_texFlushes = 0;
+
 template <typename Body>
 bool RunImmediate(Body&& body)
 {
@@ -6356,15 +6429,20 @@ bool RunImmediate(Body&& body)
     return true;
 }
 
+// The size of the arena a single upload may use — one slot's segment once the ring is up,
+// and the whole buffer before it is (the 1x1 dummies at init, which submit and wait).
+VkDeviceSize StagingUsableBytes()
+{
+    return g_texSlots[0].cb ? kTexSlotBytes : R->staging.size;
+}
+
 // Submit every pending texture copy as ONE command buffer. Called when the staging arena
 // is exhausted and immediately before the frame's own submit — see the TexUploadJob comment
 // for why those two points are sufficient.
 //
-// It still submits-and-WAITS, which is deliberate for a first version: the wait is now paid
-// a handful of times a burst instead of once per texture, and dropping it as well would
-// require recycling both the staging arena and the command buffer against a fence, i.e. a
-// second mechanism to get wrong in the same change. The counters below say how many waits
-// were actually saved.
+// AS OF PART 79 IT DOES NOT WAIT. See the ring's comment above for the design and for
+// `CZ_VK_TEX_FLUSH_WAIT=1`, which is the same-binary control arm and takes the old
+// `RunImmediate` path verbatim.
 void FlushTextureUploads()
 {
     if (g_texBatch.empty())
@@ -6373,7 +6451,10 @@ void FlushTextureUploads()
     g_texBatchJobs += g_texBatch.size();
     if (g_texBatch.size() > g_texBatchMaxJobs)
         g_texBatchMaxJobs = g_texBatch.size();
-    RunImmediate([&](VkCommandBuffer cb) {
+
+    // The recording is identical on both arms — only who owns the command buffer, and
+    // whether anyone waits for it, differs.
+    auto record = [&](VkCommandBuffer cb) {
         for (TexUploadJob& j : g_texBatch)
         {
             Image tmp{};
@@ -6390,26 +6471,88 @@ void FlushTextureUploads()
             Barrier(cb, tmp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_ASPECT_COLOR_BIT);
         }
-    });
+    };
+
+    // THE CONTROL ARM, and the fallback for any flush that somehow happens before the ring
+    // exists: the pre-part-79 renderer, submit and `vkQueueWaitIdle`.
+    if (g_texFlushWait || !g_texSlots[0].cb)
+    {
+        const uint64_t t0 = CycNow();
+        RunImmediate(record);
+        g_texFlushNs += CycNow() - t0;
+        ++g_texFlushes;
+        g_texBatch.clear();
+        // The wait above has retired every copy, so the arena is free again.
+        g_stagingCursor = g_texSlots[g_texSlot].base;
+        return;
+    }
+
+    const uint64_t t0 = CycNow();
+    TexUploadSlot& cur = g_texSlots[g_texSlot];
+    // This slot's fence was waited for when the ring advanced INTO it, so its command
+    // buffer is retired and may be reset.
+    vkResetCommandBuffer(cur.cb, 0);
+    VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cur.cb, &bi);
+    record(cur.cb);
+    vkEndCommandBuffer(cur.cb);
+
+    VkSubmitInfo si{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cur.cb;
+    vkResetFences(R->device, 1, &cur.fence);
+    // Submitted on R->queue, which is the queue the frame's own command buffer goes on and
+    // the queue every other upload goes on. Submission order on one queue is what the
+    // ordering argument in the TexUploadJob comment rests on, and nothing here changes it:
+    // this submit still happens strictly before the frame's.
+    vkQueueSubmit(R->queue, 1, &si, cur.fence);
+    cur.inFlight = true;
     g_texBatch.clear();
-    // The wait above has retired every copy, so the arena is free again.
-    g_stagingCursor = 0;
+
+    // Advance, and pay for the NEXT slot rather than for this one. This is the whole
+    // saving: at the operator's cadence the fence being waited on here was signalled
+    // ~150 ms ago, so the wait is a query. `g_texSlotStalls` is what would say otherwise.
+    g_texSlot = (g_texSlot + 1) % kTexUploadSlots;
+    TexUploadSlot& nxt = g_texSlots[g_texSlot];
+    if (nxt.inFlight)
+    {
+        const uint64_t w0 = CycNow();
+        vkWaitForFences(R->device, 1, &nxt.fence, VK_TRUE, UINT64_MAX);
+        const uint64_t w1 = CycNow();
+        // A stall is only interesting if it actually blocked. An already-signalled fence
+        // returns in well under a microsecond, and counting those as stalls would drown
+        // the number this is here to report.
+        if (w1 - w0 > 20000)
+        {
+            ++g_texSlotStalls;
+            g_texSlotStallNs += w1 - w0;
+        }
+        nxt.inFlight = false;
+    }
+    g_stagingCursor = nxt.base;
+    g_texFlushNs += CycNow() - t0;
+    ++g_texFlushes;
 }
 
-// Reserve `bytes` of the staging arena for a pending upload, flushing first if the arena
-// cannot hold them. Returns UINT64_MAX when the upload is larger than the whole arena,
-// which is the caller's existing "larger than the staging buffer" decline.
+// Reserve `bytes` of the staging arena for a pending upload, flushing first if the current
+// slot's segment cannot hold them. Returns UINT64_MAX when the upload is larger than a
+// whole segment, which is the caller's existing "larger than the staging buffer" decline —
+// see the ring's comment for why 32 MB is the number and how it was chosen.
 uint64_t StagingReserve(VkDeviceSize bytes)
 {
-    if (bytes > R->staging.size)
+    const VkDeviceSize usable = StagingUsableBytes();
+    if (bytes > usable)
         return UINT64_MAX;
-    const VkDeviceSize at = (g_stagingCursor + 15) & ~VkDeviceSize(15);
-    if (at + bytes > R->staging.size)
+    const VkDeviceSize segBase = g_texSlots[g_texSlot].base;
+    VkDeviceSize at = (g_stagingCursor + 15) & ~VkDeviceSize(15);
+    if (at + bytes > segBase + usable)
     {
         ++g_texBatchFullFlushes;
+        // This ADVANCES the slot, so the cursor's new home is the new slot's base and not
+        // the old one's. Reading it back is the only correct way to say that.
         FlushTextureUploads();
-        g_stagingCursor = bytes;
-        return 0;
+        at = g_texSlots[g_texSlot].base;
     }
     g_stagingCursor = at + bytes;
     return at;
@@ -8426,7 +8569,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // guardFrame at an older frame and cost the next fetch a redundant hash.
         cached->guardFrame = R->frame + 1;
         ++g_texGuardStats.reuploaded;
-        if (pixels.size() <= R->staging.size)
+        if (pixels.size() <= StagingUsableBytes())
         {
             Image& img = cached->image;
             // A REFRESH WRITES EVERY LEVEL THE IMAGE HAS, not just the base. The cached
@@ -8453,7 +8596,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                     Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                             VK_IMAGE_ASPECT_COLOR_BIT);
                 });
-                g_stagingCursor = 0;
+                g_stagingCursor = g_texSlots[g_texSlot].base;
             }
             else
             {
@@ -8587,7 +8730,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
 
     // Stage through the upload buffer. Sized once at init; a texture larger than it
     // is counted and dropped rather than silently truncated.
-    if (pixels.size() > R->staging.size)
+    if (pixels.size() > StagingUsableBytes())
     {
         Count(isCube ? "texture: CUBE larger than the staging buffer"
                      : "texture: larger than the staging buffer");
@@ -8600,6 +8743,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // a count of uploads cannot see a stall there at all.
     ++g_texRealUploads;
     g_texUploadBytes += pixels.size();
+    if (pixels.size() > g_texUploadMaxBytes)
+        g_texUploadMaxBytes = pixels.size();
     const uint64_t texT0 = CycNow();
     g_texDecodeNs += texT0 - texDecodeT0;
     // The reserve may FLUSH, and that flush is staging-and-submit work, so it belongs
@@ -8624,7 +8769,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             Barrier(cb, entry.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_IMAGE_ASPECT_COLOR_BIT);
         });
-        g_stagingCursor = 0;
+        g_stagingCursor = g_texSlots[g_texSlot].base;
     }
     else
     {
@@ -21652,7 +21797,12 @@ bool InitCommon()
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true, "per-frame arena") ||
         (g_texNoBatch = EnvOn("CZ_VK_NO_TEX_BATCH"), false) ||
-        !CreateBuffer(R->staging, 64ull << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        // THE STAGING ARENA IS `kTexUploadSlots` SEGMENTS AS OF PART 79, and it grew from
+        // a flat 64 MB to 3 x 32 MB so that partitioning it did not narrow the per-upload
+        // ceiling below anything real. The measured largest single upload on the
+        // autonomous route is 1.33 MB; see the upload-ring comment for the whole argument.
+        !CreateBuffer(R->staging, kTexUploadSlots * kTexSlotBytes,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       false) ||
@@ -21668,6 +21818,42 @@ bool InitCommon()
     {
         fprintf(stderr, "[vk] buffer allocation FAILED\n");
         return false;
+    }
+
+    // THE TEXTURE UPLOAD RING (part 79 item 1). One command buffer, one fence and one
+    // segment of the staging arena per slot; see the ring's comment for the design. It is
+    // created HERE, after `R->staging`, because the segment bases are offsets into it.
+    //
+    // `CZ_VK_TEX_FLUSH_WAIT=1` still allocates the ring — the arm has to be one binary and
+    // the slots cost three command buffers and three fences — but never advances it, so
+    // its uploads all live in segment 0 and every flush submits and waits exactly as
+    // part 77 did.
+    g_texFlushWait = EnvOn("CZ_VK_TEX_FLUSH_WAIT");
+    {
+        VkCommandBufferAllocateInfo tcbi{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        tcbi.commandPool = R->cmdPool;
+        tcbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        tcbi.commandBufferCount = 1;
+        VkFenceCreateInfo tfi{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+        for (uint32_t i = 0; i < kTexUploadSlots; ++i)
+        {
+            VK_CHECK(vkAllocateCommandBuffers(R->device, &tcbi, &g_texSlots[i].cb),
+                     "vkAllocateCommandBuffers (texture upload slot)");
+            VK_CHECK(vkCreateFence(R->device, &tfi, nullptr, &g_texSlots[i].fence),
+                     "vkCreateFence (texture upload slot)");
+            g_texSlots[i].base = VkDeviceSize(i) * kTexSlotBytes;
+            NameObject(uint64_t(g_texSlots[i].cb), VK_OBJECT_TYPE_COMMAND_BUFFER,
+                       "texture upload slot %u", i);
+        }
+        g_texSlot = 0;
+        g_stagingCursor = 0;
+        fprintf(stderr,
+                "[vk] texture upload ring: %u slots x %llu MB staging, flush %s "
+                "(CZ_VK_TEX_FLUSH_WAIT=1 is the control arm)\n",
+                kTexUploadSlots, (unsigned long long)(kTexSlotBytes >> 20),
+                g_texFlushWait ? "SUBMITS AND WAITS (part 77 behaviour)"
+                               : "submits and does NOT wait");
     }
 
     // One present readback buffer per slot. It is deliberately NOT a region of
@@ -24802,13 +24988,15 @@ void VkRenderer_DumpStats()
                     "— it is not part of the sum)\n");
             fprintf(stderr,
                     "[vk]     texture uploads over the run: %llu uploads, %.1f MB, "
-                    "%.1f ms staging+submit (%.0f us each)\n",
+                    "%.1f ms staging+submit (%.0f us each), biggest single upload "
+                    "%.2f MB\n",
                     (unsigned long long)g_texRealUploads,
                     double(g_texUploadBytes) / 1048576.0,
                     double(g_texUploadNs) / 1e6,
                     g_texRealUploads ? double(g_texUploadNs) / 1000.0
                                            / double(g_texRealUploads)
-                                     : 0.0);
+                                     : 0.0,
+                    double(g_texUploadMaxBytes) / 1048576.0);
             fprintf(stderr,
                     "[vk]     ...and %.1f ms DECODING them (untile + endian swap + image "
                     "creation), %.0f us each — this is CPU work on the pump and it is "
@@ -24886,13 +25074,33 @@ void VkRenderer_DumpStats()
             fprintf(stderr,
                     "[vk]     texture upload batch: %llu jobs in %llu flushes (%.1f per "
                     "flush, biggest %llu), %llu of them forced by a full staging arena — "
-                    "each flush is ONE submit-and-wait where each JOB used to be one\n",
+                    "each flush is ONE submit where each JOB used to be one\n",
                     (unsigned long long)g_texBatchJobs,
                     (unsigned long long)g_texBatchFlushes,
                     g_texBatchFlushes ? double(g_texBatchJobs) / double(g_texBatchFlushes)
                                       : 0.0,
                     (unsigned long long)g_texBatchMaxJobs,
                     (unsigned long long)g_texBatchFullFlushes);
+            // THE PART-79 ITEM, and the two numbers that decide whether it worked. The
+            // flush cost is what the operator's session measured at 568 us; the stall
+            // count is whether three slots were enough. A ring that stalls on most
+            // flushes has not removed the wait, it has renamed it.
+            if (g_texFlushes)
+                fprintf(stderr,
+                        "[vk]     texture flush: %llu flushes, %.1f ms total (%.0f us "
+                        "each) — ring %s; %llu of them STALLED waiting for a slot "
+                        "(%.1f ms, %.0f us each)\n",
+                        (unsigned long long)g_texFlushes,
+                        double(g_texFlushNs) / 1e6,
+                        double(g_texFlushNs) / 1000.0 / double(g_texFlushes),
+                        g_texFlushWait ? "DISABLED (CZ_VK_TEX_FLUSH_WAIT=1 — submit and "
+                                         "vkQueueWaitIdle, the part-77 renderer)"
+                                       : "engaged, no wait on the submitting slot",
+                        (unsigned long long)g_texSlotStalls,
+                        double(g_texSlotStallNs) / 1e6,
+                        g_texSlotStalls ? double(g_texSlotStallNs) / 1000.0
+                                              / double(g_texSlotStalls)
+                                        : 0.0);
             if (g_immN)
                 fprintf(stderr,
                         "[vk]     immediate submits: %llu, %.1f ms total, of which "
