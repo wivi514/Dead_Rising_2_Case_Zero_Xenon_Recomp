@@ -838,10 +838,12 @@ is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ 
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-26 (**PART 78 CLOSED, ONE THING OWED — PERFORMANCE. THE
+Where the port is, as of 2026-08-26 (**PART 78 CLOSED, ONE THING OWED (THE OPERATOR'S EYE) — PERFORMANCE. THE
 BOARD'S ITEM 1 WAS THE GPU, WHICH THIS PROJECT HAD NEVER LOOKED AT; IT HAS A BREAKDOWN NOW,
-AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME.**
-**`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6du**;
+AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME. THE OPERATOR
+HAS CONFIRMED IT AND THE REGIME TABLE MOVED.**
+**`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6du** (the
+work) and **§6dv** (the operator session and the new regime table);
 lessons: gotchas **459-463**):
 
 * **THE ITEM WAS A MEASUREMENT, NOT A FIX, AND SAYING SO IS WHY IT WORKED.** Part 76 had the
@@ -904,11 +906,23 @@ lessons: gotchas **459-463**):
   its log into the comparison anyway** — 26 extra menu windows in one arm and none in the
   other. `part76-kickoff.md` §5 says a failed run is dropped BY NAME; a message on the
   terminal is not a drop. `tools/part78_barrier_ab.sh` renames a failed log to `.rejected`.
-* **OWED: the operator's verdict, and it is a real question.** `tools/part78_operator_session.sh`
-  is armed with `CZ_VK_GPU_PASSES` and NOT `CZ_VK_PROFILE` (gotcha 454). **Part 78's saving
-  is entirely on the GPU and their crowd was CPU-bound above ~8,000 draws in part 76**, so
-  the honest prediction is the full −12% below that and much less above it — and if they see
-  the full saving at 9,000+, the regime table is wrong and that is the bigger finding.
+* **THE OPERATOR PLAYED IT AND THE PRE-REGISTERED PREDICTION HELD ON BOTH HALVES (§6dv).**
+  Stated before they played: the whole saving is on the GPU and their crowd is CPU-bound, so
+  expect the full −12% below ~8,000 draws and much less above it. Measured against part 76's
+  profiler-free session: **GPU −11.5% at 9,000-12,000 draws and −14.3% at 7,000-9,000 — the
+  same size the autonomous route saw — while the WALL moved only −2.9% and −2.3% there**, and
+  −11% below 7,000 where they are not CPU-bound. 0 F7 marks in 10,748 frames, every counter
+  gate clean, 0.0% wide over 3.3 M barriers.
+* **AND THE SESSION MOVED THE REGIME TABLE, WHICH MATTERS MORE THAN THE SAVING.**
+  `part77-kickoff.md` §0b put the crossover at 6,000-7,000 draws; **every band from 3,000 up
+  now reads CPU-BOUND**, and the GPU headroom at their crowd roughly doubled — **0.58 -> 1.93
+  ms at 7,000-9,000 draws, 1.38 -> 2.38 at 9,000-12,000.** A CPU saving at their load now
+  converts nearly 1:1 up to ~2 ms where it had almost no room before, which is why part 79's
+  board leads with `FlushTextureUploads`' wait rather than another GPU item. **§6dv §2
+  supersedes `part77-kickoff.md` §0b.**
+* **STILL OWED: their EYE.** Every automatic check says the picture is unchanged and this
+  change cannot alter a pixel by construction — but no counter in this renderer can answer
+  "does it look right", and that channel has only ever been the operator.
 * **Gates:** `--smoke` OK on every build; sync validation **0 hazards** in both arms and
   **shown capable of failing**; `shader_dim_census` clean (339 2D / 100 cube, 0
   disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name

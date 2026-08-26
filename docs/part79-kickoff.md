@@ -8,11 +8,12 @@
 >
 > | document | what it is |
 > |---|---|
+> | **`phase5-notes.md` §6dv** | **part 78's operator session — the prediction held on BOTH halves, and THE CROSSOVER MOVED TO ~3,000 DRAWS** |
 > | **`phase5-notes.md` §6du** | **part 78 — the first GPU-side breakdown, and the 137 barriers a frame it found** |
 > | `phase5-notes.md` §6dt | part 77's operator session — the batch's benefit is LOAD-SHAPED |
 > | `phase5-notes.md` §6ds | part 77 — the texture path |
 > | `phase5-notes.md` §6dr | part 76's operator session — **the TWO REGIMES, and where to measure a CPU item** |
-> | `part77-kickoff.md` §0b | the regime table — still current |
+> | ~~`part77-kickoff.md` §0b~~ | the regime table — **SUPERSEDED by §6dv §2**: the crossover was 6,000-7,000 draws and is now ~3,000 |
 >
 > Lessons: gotchas **459-463**. There is still no live PLAN; §1 is the board, in order.
 
@@ -50,10 +51,12 @@ peaked at 2,538 draws and the route gate correctly refused them; use
 `CZ_VK_RES=1280x720 PRESSMS=9000 SECS=45 TIMEOUT=420`, which reaches 5,268 draws.
 `CZ_VK_BARRIER_POISON=1` is its positive control and it must produce 30 hazards.
 
-**Three. The regime table in `part77-kickoff.md` §0b is unchanged and still governs.** The
-autonomous route is GPU-bound below ~6,000-7,000 draws and the operator's crowd is CPU-bound
-above it. Part 78's saving is entirely on the GPU, so **it may reach the operator's crowd
-much less than it reaches this route** — that is the open question and it is §4 below.
+**Three. THE REGIME TABLE HAS MOVED AND `part77-kickoff.md` §0b IS SUPERSEDED.** It said the
+crossover is 6,000-7,000 draws. Part 78 took 11.5-14.3% off the GPU at the operator's load,
+so **every band from 3,000 draws up now reads CPU-BOUND** and the GPU headroom at their crowd
+has roughly doubled — 0.58 -> 1.93 ms at 7,000-9,000 draws, 1.38 -> 2.38 at 9,000-12,000
+(§6dv §2). **A CPU saving at their load now converts to frame time nearly 1:1 up to about
+2 ms**, where it had almost no room before. That is why item 2 below moves to the top.
 
 ## 1. THE BOARD, IN ORDER
 
@@ -73,13 +76,36 @@ internal, 16,907 frames, residual 3.5%, **after** the barrier fix takes 0.930 ->
 | barriers (after part 78) | 0.099 | 137.6 | ~700-800 |
 | RESIDUAL | 0.294 | — | — |
 
-### ITEM 1 — THE POST CHAIN: 36 passes a frame, 1.43 ms, never decomposed
+### ITEM 1 — DROP THE WAIT IN `FlushTextureUploads`. **Carried over UNTOUCHED, and part 78's operator session promoted it.**
+
+`FlushTextureUploads` submits **and waits**. At the operator's load that is **1,092.5 ms of a
+150-second session**, 568 us per flush across 1,841 flushes, and unlike batching it does not
+care how the uploads are distributed (§6dt §3). The wait exists only so the staging arena and
+the command buffer can be reused immediately; fence them against the frame instead.
+
+**Why it is first now.** It is a CPU item, and until part 78 a CPU saving at the operator's
+crowd had 0.58 ms of headroom at 7,000-9,000 draws before it hit the GPU floor. **It now has
+1.93 ms** (§6dv §2). The same change is worth roughly three times what it was worth when
+`part78-kickoff.md` filed it, and it is the oldest open item on the board.
+
+Part 77 deliberately did not do it — recycling two resources against a fence is a second
+mechanism to get wrong — and part 78 did not either.
+
+**Gate it on the picture, not on validation** (gotcha 458); `CZ_VK_TEX_BATCH_BREAK=1` is the
+positive control that proves whatever you choose can fail.
+
+### ITEM 2 — THE POST CHAIN: 36 passes a frame, 1.43 ms, never decomposed
 
 `pass: 1 draw` is **29.87 passes a frame at 28 us each**, and that is *after* the
 pass-opening barriers are counted separately. `pass: 2-255` adds 6.50 more at 91 us.
 Together **1.43 ms/frame, 17% of the device's frame, in passes that are not the crowd** —
 which is very likely what part 76 was seeing as a floor that does not scale with draw count
 (9.26 ms at 2,484 draws against 12.20 at 9,208).
+
+**And it is a LARGER share at the operator's load than at mine — 14.4% of their GPU frame
+against 9.9% of the autonomous route's** (§6dv §4), which is the opposite of what a
+crowd-driven cost would do and is the strongest single argument that this is the fixed
+full-screen floor.
 
 **Nobody knows what they ARE.** They are one full-screen-ish draw each, they are almost
 certainly the title's post chain (the bloom pyramid part 25's validation run named — 96x45,
@@ -88,22 +114,6 @@ listed them. **Price them by EXTENT before designing anything**: the instrument 
 carries a per-region hook, so adding the scissor's pixel count to the pass classes is a
 one-line extension and it will say immediately whether 28 us is a full-screen shader or pass
 overhead on a tiny target. If it is the latter, the item is the same shape as the barriers.
-
-### ITEM 2 — DROP THE WAIT IN `FlushTextureUploads`. **Carried over from `part78-kickoff.md` §1 item 2, UNTOUCHED, and it is a CPU item.**
-
-`FlushTextureUploads` submits **and waits**. At the operator's load that is **1,092.5 ms of a
-150-second session**, 568 us per flush across 1,841 flushes, and unlike batching it does not
-care how the uploads are distributed (§6dt §3). The wait exists only so the staging arena and
-the command buffer can be reused immediately; fence them against the frame instead.
-
-**It is the only remaining item that is definitely worth something at the OPERATOR's load**,
-because their crowd is CPU-bound above ~8,000 draws and part 78's whole saving is on the GPU.
-
-Part 77 deliberately did not do it — recycling two resources against a fence is a second
-mechanism to get wrong — and part 78 did not either. It is now the oldest open item.
-
-**Gate it on the picture, not on validation** (gotcha 458); `CZ_VK_TEX_BATCH_BREAK=1` is the
-positive control that proves whatever you choose can fail.
 
 ### ITEM 3 — THE RESOLVE CLEARS: 575 Mpixel written a frame for 33 rendered
 
@@ -128,12 +138,13 @@ has asked is whether every resolve needs its snapshot copied on the frame it is 
 or whether a destination no draw samples this frame could defer. That needs a census of
 "resolve destinations produced vs sampled, per frame", which the renderer can answer.
 
-### ITEM 5 — PARALLEL COMMAND RECORDING, at 9,000+ draws only.
+### ITEM 5 — PARALLEL COMMAND RECORDING, and part 78 made it worth more too.
 
-`perf-state-parked.md` item A, unchanged. **Re-price it first**: part 78 took ~1.2 ms off the
-frame and part 76's CPU/GPU balance at the operator's load was CPU 14.50 against GPU 11.87,
-so the headroom has moved. State the fence wait and the GPU floor at the draw count you
-intend to measure, in the same sentence as the expected saving.
+`perf-state-parked.md` item A. The operator's crowd is CPU 12.71 against a GPU floor of
+10.80 at 9,000-12,000 draws, i.e. **2.38 ms of headroom where part 76 measured 1.38**
+(§6dv §2). State the fence wait and the GPU floor at the draw count you intend to measure,
+in the same sentence as the expected saving — and note the fence is **0.00 at every band
+from 3,000 draws up** in their session, which is what "CPU-bound" means here.
 
 ### ITEM 6 — THE UNTILE LOOP, still SMALL. `part78-kickoff.md` §1 item 4 and §6ds §10 unchanged.
 
@@ -176,15 +187,15 @@ is not a drop.
 Everything in `part76-kickoff.md` §5 still holds, plus part 77's two: a trace with no `.rc`
 beside it is a run that has not finished, and do not quote the run's overall maximum frame.
 
-## 4. WHAT IS OWED
+## 4. WHAT IS OWED — the measured half is ANSWERED; the operator's EYE is not
 
-**The operator's verdict on part 78, and it is a real question rather than a formality.**
-`tools/part78_operator_session.sh` is armed with `CZ_VK_GPU_PASSES` (free) and
-`CZ_VK_FRAME_TRACE` (one line a frame) and deliberately NOT with `CZ_VK_PROFILE`, which
-inverts the regime (gotcha 454).
+**The measurement is in and the pre-registered prediction held on both halves** (§6dv §1):
+GPU −11.5% to −14.3% at their crowd, wall only −2.3% to −2.9% there because they are
+CPU-bound, and −11% on the wall below 7,000 draws where they are not. 0 F7 marks in 10,748
+frames; every counter gate clean.
 
-The question: **part 78's saving is entirely on the GPU, and their crowd was CPU-bound above
-~8,000 draws in part 76.** So the honest prediction is that they see the full −12% below
-about 8,000 draws and much less above it — and if they see the full saving at 9,000+, the
-regime table is wrong and that is a bigger finding than the fix. Their session's own
-per-region split is what settles it, and it costs nothing to collect.
+**What is still owed is their EYE.** Every automatic check says the picture is unchanged and
+this change cannot alter a pixel by construction, but no counter in this renderer can answer
+"does it look right" — that channel has only ever been the operator. Ask specifically whether
+anything differs from their last session, and whether the frame rate FELT different at their
+crowd (the honest answer from the data is: barely, and that is expected).

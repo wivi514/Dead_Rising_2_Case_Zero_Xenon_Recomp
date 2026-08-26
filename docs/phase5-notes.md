@@ -18095,3 +18095,92 @@ Two notes on the method, both mistakes made and corrected inside this A/B:
   mixing the two populations made the wide control arm read **98.4% wide when nothing had
   failed**. No Vulkan call differs. It is stated rather than hidden, and the null pair
   (fix1 vs fix2) is same-binary.
+
+## §6dv — Part 78's operator session: the prediction held on BOTH halves, and the whole route is CPU-bound now (2026-08-26)
+
+The operator played with `CZ_VK_GPU_PASSES` and `CZ_VK_FRAME_TRACE` armed and **no
+profiler**, deliberately: `CZ_VK_PROFILE` eats the CPU slack and inverts the regime this
+session existed to ask about (gotcha 454). 10,748 frames traced, crowds at 8,300-8,800 draws.
+
+### 1. THE PRE-REGISTERED PREDICTION, AND WHAT HAPPENED
+
+Stated before they played, in `part79-kickoff.md` §4 and again on screen: *"part 78's saving
+is entirely on the GPU and their crowd was CPU-bound above ~8,000 draws, so the honest
+prediction is the full −12% below that and much less above it — and if they see the full
+saving at 9,000+, the regime table is wrong and that is the bigger finding."*
+
+Against part 76's **profiler-free** session (`regimecheck_0826_0128.trace`, 13,355 frames),
+which is the only comparable oracle — both runs carry nothing but the frame trace:
+
+| draws | GPU before | GPU after | ΔGPU | wall before | wall after | Δwall |
+|---|---|---|---|---|---|---|
+| 3,000-5,000 | 8.69 | 6.80 | **−21.7%** | 8.68 | 7.69 | −11.4% |
+| 5,000-7,000 | 9.61 | 7.89 | **−17.9%** | 9.84 | 8.79 | −10.7% |
+| 7,000-9,000 | 11.35 | 9.73 | **−14.3%** | 11.93 | 11.66 | **−2.3%** |
+| 9,000-12,000 | 12.20 | 10.80 | **−11.5%** | 13.58 | 13.18 | **−2.9%** |
+
+**Both halves of the prediction are confirmed.** The GPU fell by 11.5-14.3% at their crowd —
+the same size as the −11.9% the autonomous route saw — **and almost none of it reached their
+frame**, because above 7,000 draws they are CPU-bound. Below that the wall follows the GPU
+at −11%.
+
+The barrier classes in their own split read **0.049 + 0.130 = 0.179 ms/frame** where the
+pre-part-78 renderer would have spent ~0.93, and the run's engagement line reads **0.0% wide**
+over 3,295,771 barriers. The fix engaged at their load exactly as it did at mine.
+
+**The 0-3,000 band is NOT quoted as a delta** even though it reads −67%. That band is 6,338
+frames of boot and title screen here (first window: 3,214 frames, draws median 64) against
+9,570 frames of something else there. Different CONTENT, so the comparison is inadmissible
+(`measurement.md` §4) — the honest menu number is the A/B's own −16.4%, taken on one route.
+
+### 2. THE FINDING THAT MATTERS MORE THAN THE SAVING: THE CROSSOVER MOVED TO ~3,000 DRAWS
+
+`part77-kickoff.md` §0b's regime table said the crossover is 6,000-7,000 draws — below it
+GPU-bound, above it CPU-bound. **After part 78 every band from 3,000 up reads CPU-BOUND**,
+and the GPU headroom at their crowd has roughly doubled:
+
+| draws | headroom (wall − GPU) before | after |
+|---|---|---|
+| 5,000-7,000 | 0.23 ms | 0.90 |
+| 7,000-9,000 | 0.58 ms | **1.93** |
+| 9,000-12,000 | 1.38 ms | **2.38** |
+
+Part 76's table had 0-5,000 GPU-bound and 5,000-7,000 balanced; none of that survives.
+**A CPU saving at the operator's load now converts to frame time nearly 1:1 up to about
+2 ms**, where before it had 0.58 ms of room at 7,000-9,000 draws. That makes part 79's
+item 2 (drop the wait in `FlushTextureUploads` — 1,092.5 ms of a 150-second session at their
+load) and item 5 (parallel command recording) worth materially more than when they were
+written, and it is the reason to take them next rather than another GPU item.
+
+**The regime table in `part77-kickoff.md` §0b is superseded by this section.**
+
+### 3. THE HITCH, AND THE GATES
+
+```
+stutter marks (F7)        0          in 10,748 frames
+texture-upload frames     median 20.33 -> 12.25 ms, p99 62.17 -> 48.72, worst 298.4 -> 230.6
+no translated shader      0          slot mix-ups          0
+CONST MEMO STALE          0          stale present slots   0
+image barriers            3,295,771, 0.0% wide  +  59,876 clear write-after-write
+GPU split residual        0.9%
+```
+
+The upload population is part 77's, measured again a day later and holding. Zero F7 marks
+is the second consecutive session with none.
+
+### 4. WHAT THEIR SPLIT SAYS ABOUT PART 79's BOARD
+
+Their own per-region split, 10,722 frames, residual 0.9%, is the first one taken at an
+operator's load rather than on the autonomous route, and it **ranks the board the same way**:
+
+```
+pass: >=256 draws   3.116 ms  50.2%     resolve copy    0.674  10.9%   (44.36 Mpixel/frame)
+pass: 1 draw        0.894     14.4%     resolve clear   0.549   8.9%   (532 Mpixel for 30 rendered)
+pass: 2-255 draws   0.577      9.3%     present blit    0.128   2.1%
+barriers (both)     0.179      2.9%     snapshot/cube   0.034   0.5%
+```
+
+`pass: 1 draw` is **14.4% of their GPU frame against 9.9% of mine** — the post chain is a
+larger share at their load, not a smaller one, which strengthens part 79 item 1. And
+`present blit` is 127.6 us against my 63.2, because their window is the same 3440x1440 the
+frame renders at and mine was letterboxed.
