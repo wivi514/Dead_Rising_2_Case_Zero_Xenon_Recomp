@@ -65,7 +65,7 @@ if [ -z "${NOSAFE:-}" ]; then
 fi
 
 echo "==================================================================="
-echo "  PART 78 SESSION — per-frame CPU/GPU profiler ARMED"
+echo "  PART 78 SESSION — the per-region GPU split ARMED (no profiler)"
 echo
 xrandr 2>/dev/null | grep -w connected | sed 's/^/  display:  /'
 echo "  primary:  ${prim:-unknown}"
