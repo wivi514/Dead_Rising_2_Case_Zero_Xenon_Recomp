@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 453 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 454 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 453-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 454-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -816,7 +816,7 @@ describes, and the reason that note asks for the rule and not just the name; got
 Where the port is, as of 2026-08-25 (**PART 76 CLOSED — PERFORMANCE. The largest column in
 the operator's crowd frame was OUR OWN LAUNCHER, and the fix is −16.4% of the frame.**
 **`docs/part77-kickoff.md` IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dq**;
-lessons: gotchas **451-453**):
+lessons: gotchas **451-454**):
 
 * **THE ITEM WAS `part76-kickoff.md` §1's FIRST: the F8/F9 readback, 3.49 ms of a 23.31 ms
   crowd frame and not the game.** Part 54's swapchain was built to delete the present
@@ -882,8 +882,28 @@ lessons: gotchas **451-453**):
   probably near-balanced. **The next CPU item must say which of the two it is measured on.**
   It does not blunt part 77's first item: the texture path is a HITCH item and a 10 ms GPU
   floor is not what bounds a 300 ms frame. Gotcha 453.
+* **CONFIRMED AT THE OPERATOR'S OWN LOAD, and it answered the regime question (§6dr).** They
+  played a crowd with the profiler armed: **12,772 frames, 20 F7 marks, >= 7,000 draws
+  23.31 -> 16.65 ms, −28.6%, 42.9 -> 60.1 fps** against part 75's session at the same
+  instrument load. **THE PORT NOW HAS ONE RESOLUTION AND TWO REGIMES, about 8,000 draws
+  apart**: the autonomous route is GPU-bound (light draws, heavy pixels) and their crowd is
+  CPU-bound (9,000-12,000 draws: GPU 11.87 against a profiler-corrected CPU 14.50, fence
+  0.00). **The GPU is FLAT at 8.5-11.9 ms across a 4x range of draw counts**, which is what
+  a pixel-bound cost looks like. Measure CPU items at 9,000+ draws or not at all.
+* **AND THE PROFILER INVERTS THAT VERDICT, which nobody had measured in twenty parts.**
+  `CZ_VK_PROFILE` costs **+4.00 ms of CPU and only +1.01 ms of wall** — it eats the CPU slack
+  — so the same route reads **fence 2.99 without it and 0.00 with it**. A regime question is
+  about SPARE CAPACITY and a CPU instrument destroys the quantity being asked. Use
+  `CZ_VK_FRAME_TRACE` alone. Gotcha 454.
+* **THEIR 20 MARKS PUT THE TEXTURE PATH FIRST ON EVIDENCE.** All 20 had `fence 0.00` and a
+  healthy 11.1-12.7 ms GPU — 36 marks across three sessions now, none of them the device —
+  and **18 of 20 carried a real texture upload with `texPh` 9.3-16.8 ms of a 30-37 ms
+  frame**. At their draw count that path is no longer only the HITCH item; it is about half
+  the excess on a bad frame.
 * **Gates:** `--smoke` OK on every build; the readback gate OK in both arms and **shown
-  capable of failing**; the route gate passed on all 6 A/B runs and all 4 gate runs.
+  capable of failing**; the route gate passed on all 6 A/B runs and all 4 gate runs; the
+  operator session logged 0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`,
+  0 stale present slots.
   Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5 and
   `alu_const_gate --hlsl-dir` sweeps and part 75's cache gates stand.
 

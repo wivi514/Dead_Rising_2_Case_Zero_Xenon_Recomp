@@ -5108,3 +5108,27 @@ From phase C part 18 (the frame rate — and none of it was work):
      floor in the same session; re-read the floor AFTER shipping, not before. (c) A change
      that is semantics-identical and cannot be slower still SHIPS — but as a correction, not
      as a saving, and the honest report says the arm measured zero and why.
+
+454. **AN INSTRUMENT WHOSE BILL LANDS ON THE RESOURCE YOU ARE MEASURING CAN INVERT THE
+     VERDICT, NOT JUST INFLATE THE NUMBER.** `CZ_VK_PROFILE` has been documented at "2-4 ms
+     a frame" for twenty parts, which reads as a tax to subtract. Measured properly for the
+     first time in part 76 — same route, same band, same binary, the frame trace armed in
+     both arms — it costs **+4.00 ms of CPU record and only +1.01 ms of wall**, because the
+     frame had three milliseconds of CPU slack and the instrument ate them. And the fence
+     wait went **2.99 ms -> 0.00**: *the same route reported as GPU-bound without the
+     profiler and CPU-bound with it.*
+     **The general shape:** a "which resource is the limiter" question is answered by
+     SPARE CAPACITY, and an instrument that consumes spare capacity on one side destroys
+     the very quantity being asked about. A frame-time instrument taxes a frame-time answer
+     linearly and you can subtract it; a CPU instrument taxes a CPU-versus-GPU answer
+     NON-linearly and you cannot, because the wall time absorbs the tax until the slack runs
+     out and then stops absorbing it.
+     **So:** for a regime question, run the CHEAPEST instrument that can answer it —
+     here `CZ_VK_FRAME_TRACE` alone, one line of I/O per frame, which does not move the
+     numbers — and reach for the phase profiler only once you know which side of the frame
+     you are attributing. Quote a regime verdict with the instrument load beside it the way
+     this project quotes a frame time with its resolution (gotcha 447), and if you must
+     subtract, say that the bill probably scales with the load and in which direction that
+     biases the conclusion. Related: gotcha 7 (a probe expensive enough to stall the game
+     manufactures the stability it reports) and gotcha 223 (an instrument on a hot path can
+     cancel the effect it is measuring exactly).

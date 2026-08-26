@@ -14,10 +14,11 @@
 > | `part75-kickoff.md` §1 | **the texture item, fully specified and priced — still current** |
 > | `docs/perf-state-parked.md` | the reference the older item designs came from — not superseded |
 >
-> Lessons: gotchas **451-453**. There is still no live PLAN; **§1 is the board, in order.**
+> Lessons: gotchas **451-454**. There is still no live PLAN; **§1 is the board, in order.**
 >
-> **AND READ §0b BEFORE PRICING ANY CPU ITEM.** Part 76 crossed a floor: on the autonomous
-> route at 3440x1440 the GPU is now **100% of the wall** and the CPU idles ~3 ms a frame.
+> **AND READ §0b BEFORE PRICING ANY CPU ITEM.** The port now has ONE resolution and **TWO
+> REGIMES**, separated by about 8,000 draws: the autonomous route is GPU-bound, the
+> operator's crowd is CPU-bound. Quote which one a number came from.
 
 ---
 
@@ -33,6 +34,15 @@ it needs. **−2.13 ms, −16.4% of the crowd frame at 3440x1440 — 77.0 -> 92.
 draws** — monotone across every draw band, against a null floor of 0.01 ms. A second
 finding of the same class, a `getenv` on the per-draw path in every run this project has
 ever made, is in §6dq §6.
+
+## 0c. WHAT PART 76's OPERATOR SESSION DELIVERED, AT THEIR OWN LOAD
+
+Same harness, same resolution, same instrument load as part 75's verification session, so
+the two are directly comparable — **>= 7,000 draws, profiler on: 23.31 ms -> 16.65 ms,
+−28.6%, 42.9 -> 60.1 fps** (n=1,377). With the profiler's measured 4.00 ms taken off, the
+game they actually play sits near **12.6 ms at that load, about 79 fps.** 12,772 frames
+traced, every gate clean (0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`,
+0 stale present slots).
 
 ## 0b. THE FLOOR MOVED, AND IT WILL MAKE YOUR NEXT CPU ITEM READ ZERO
 
@@ -55,18 +65,45 @@ predicted per-draw CPU work measured **−0.08 ms against a −0.06 ms null**. T
 priced right and the call count was confirmed right; the frame simply was not waiting on
 that thread any more (gotcha 453).
 
-**SCOPE — this does not automatically transfer to the operator.** This route is 6,000-7,000
-draws and they play at ~9,750. GPU cost scales with PIXELS, CPU with DRAWS, and the same
-run's 7,000-9,000 band already reads **CPU 10.02 against GPU 12.12** where 5,000-6,000 reads
-7.00 against 10.24. Their frame is probably near-balanced rather than GPU-bound.
+**AND THE OPERATOR'S OWN PLAY ANSWERED THE SCOPE QUESTION — §6dr.** 12,772 traced frames of
+their session, texture frames excluded, the profiler's measured 4.00 ms bill subtracted:
+
+| draws | GPU | CPU rec − 4.0 | regime |
+|---|---|---|---|
+| 0-3,000 | 9.11 | 1.71 | GPU is the limiter |
+| 5,000-7,000 | 9.43 | 7.86 | GPU is the limiter |
+| 7,000-9,000 | 10.89 | 11.68 | **balanced — the crossover** |
+| **9,000-12,000** | **11.87** | **14.50** | **CPU is the limiter** |
+
+**The GPU is flat — 8.5 to 11.9 ms across a 4x range of draw counts** — which is what a
+pixel-bound cost looks like at a fixed resolution. The CPU runs 5.7 to 18.5 over the same
+range. **Both readings were right and neither generalised: my route is GPU-bound because it
+is a light-draw run at a heavy resolution; their play is CPU-bound because they stand in
+crowds.**
 
 **So, operationally:** run `CZ_VK_FRAME_TRACE` and read `fence` and `gpuUs` BEFORE pricing a
-CPU item, and say which regime the number was taken in. An item worth 3 ms of CPU on this
-route is worth 0 ms of frame time on it and possibly 3 ms of frame time on theirs.
+CPU item, and say which regime AND WHICH DRAW COUNT the number was taken at. An item worth
+3 ms of CPU is worth 0 ms of frame time on the autonomous route and close to 3 ms in a
+crowd. **Measure CPU items at 9,000+ draws or not at all.**
+
+**AND USE THE CHEAPEST INSTRUMENT THAT ANSWERS THE QUESTION.** `CZ_VK_PROFILE` costs **+4.00
+ms of CPU and only +1.01 ms of wall** (measured, same route, same band) — it eats the CPU
+slack, so it takes the fence from 2.99 to 0.00 and reports the same route as CPU-bound that
+it reports as GPU-bound without it. A regime question is a question about SPARE CAPACITY and
+a CPU instrument destroys the quantity being asked about. `CZ_VK_FRAME_TRACE` alone is a line
+of I/O per frame and does not move the numbers. Gotcha 454.
 
 ## 1. THE BOARD, IN ORDER
 
-### ITEM 1 — THE TEXTURE PATH. The only thing the operator still FEELS.
+### ITEM 1 — THE TEXTURE PATH. **Confirmed first by the operator's own 20 marks.**
+
+Their part-76 session marked twenty stutters with F7. **All twenty had `fence 0.00` and a
+healthy 11.1-12.7 ms GPU; 18 of 20 carried a real texture upload, with `texPh` at 9.3-16.8 ms
+of a 30-37 ms frame** (§6dr §4). And the marks were not hitches this time — the whole marked
+stretch is the crowd frame at ~9,500 draws with a texture-driven excursion on one frame in
+five, so **at their draw count this path is no longer only the HITCH item; it is roughly half
+the excess on a bad frame.** The era splits 16.67 ms median with no upload against 22.61 with
+one, p99 29.09 against 35.15.
 
 **Unchanged and still fully specified in `part75-kickoff.md` §1** — do not re-derive it,
 and do not re-price it from a remembered number; the two halves were measured in part 74
@@ -97,34 +134,46 @@ not justify touching the upload path.
 arrive: `tools/part76_readback_gate.sh` is the wrong shape here. Use `CZ_VK_FRAME_DUMP` plus
 the E3 correlation, and a texture census that a poisoned arm can be shown to move.
 
-### ITEM 2 — THE GPU. **PROMOTED, by §0b, and this project has still never touched it.**
+### ITEM 2 — THE GPU. **Promoted then partly demoted again — by the operator's own session.**
 
-`part76-kickoff.md` had this last, on the reasoning that `fence` was 0.00 so the GPU was not
-the limiter. **On the autonomous route it now is** — 100% of the wall, 2.99 ms of fence wait
-— and it is the first time in this port's history that the device has been the thing to
-work on. It is not certain to be the operator's limiter (§0b's scope note), so the first
-piece of work is not an optimisation:
+`part76-kickoff.md` had this last because `fence` was 0.00. Part 76's autonomous route made
+it 2.99 and this file promoted it. **Their session then put it back in perspective: at their
+draw count the fence is 0.00 and the CPU is 2.6 ms clear of the GPU.** The device is not what
+bounds the frame they play.
 
-**2a. Find out where the GPU's 10.5 ms goes.** This project has never had a GPU-side
-breakdown: the frame trace gives one number for the whole command buffer. The lever already
-built is `CZ_VK_RES` (part 51: resolution scaling is nearly free in crowds and expensive in
-light zones) and the fact that GPU cost tracks PIXELS is already measured (7,986 / 10,167 /
-19,856 us at 3.69 / 4.95 / 14.75 Mpx, §6dn) — which points at fill rate and the post chain
-rather than at geometry. Timestamp queries per PASS would say it outright and this renderer
-already writes two per frame.
+It is still worth doing, and for a reason the numbers make plain rather than for its own
+sake: **the GPU is FLAT at 8.5-11.9 ms across a 4x range of draw counts**, so it is a fixed
+floor under everything, and it is 60-70% of the frame in every band below the crossover —
+menus, interiors, the safehouse, and the whole 0-3,000 band where the CPU idles 2.87 ms. It
+is also the ceiling every CPU item is measured against.
 
-**2b. Then ask what the operator's regime is**, with the same trace at their draw count.
+**2a. Find out where the GPU's ~11 ms goes.** This project has never had a GPU-side
+breakdown: the frame trace gives one number for the whole command buffer. That the cost is
+flat in draws and scales with pixels (7,986 / 10,167 / 19,856 us at 3.69 / 4.95 / 14.75 Mpx,
+§6dn) already points at fill and the post chain rather than at geometry. Timestamp queries
+per PASS would say it outright, and this renderer already writes two per frame.
 
-### ITEM 3 — PARALLEL COMMAND RECORDING. **Demoted again, and now by two measurements.**
+### ITEM 3 — PARALLEL COMMAND RECORDING. **Un-demoted for the crowd, and only for the crowd.**
 
-`perf-state-parked.md` item A led the board for four parts. `part76-kickoff.md` demoted it
-because the GPU was 54% of the frame; part 76 makes that worse, not better — on the
-autonomous route there is **no CPU headroom left at all** (fence 2.99 ms), and part 76 spent
-a six-run A/B demonstrating exactly what a CPU item measures in that regime. It is not dead:
-at the operator's ~9,750 draws the CPU is close to the GPU again, so it may still be worth
-milliseconds THERE. **Whoever picks it up must state the fence wait and the GPU floor at the
-draw count they intend to measure, in the same sentence as the expected saving** — and must
-measure it at that draw count, not on this route.
+`perf-state-parked.md` item A. `part76-kickoff.md` demoted it because the GPU was 54% of the
+frame, and part 76's autonomous route seemed to bury it (fence 2.99 — no CPU headroom at
+all). **The operator's session revives it in exactly one place**: at 9,000-12,000 draws the
+CPU is 14.5 ms against an 11.9 ms GPU, so there are roughly **2.6 ms of frame time** available
+to a CPU item before it hits the floor, and more at higher draw counts since the GPU is flat.
+
+That is a real but bounded prize, and item 1 sits in front of it: the texture path is worth
+9-17 ms on one marked frame in five at that same load. **Whoever picks this up must state the
+fence wait and the GPU floor at the draw count they intend to measure, in the same sentence
+as the expected saving — and must measure at 9,000+ draws**, because part 76 spent a six-run
+A/B proving that a correct CPU fix measures exactly zero below the crossover.
+
+## 1b. THE ONE THING OWED FROM PART 76
+
+**A short profiler-free trace at their draw count.** `tools/play_session.sh` plus
+`CZ_VK_FRAME_TRACE` and nothing else, two minutes in the same crowd. It settles §0b's
+7,000-9,000 row — currently "balanced" only after subtracting an estimated 4.00 ms whose own
+bill probably scales with the draw count — with no subtraction at all. Cheap, and it is the
+difference between a measured crossover and an inferred one.
 
 ## 2. RE-BASELINE BEFORE PRICING ANYTHING
 
@@ -154,19 +203,22 @@ confirm rather than to discover.
 ## 4. WHAT IS RULED OUT — do not start these
 
 * **the readback.** Done, measured, gated (§6dq).
-* **the GPU as a source of felt STUTTER** — but NOT as the throughput limiter, which it now
-  is on this route (§0b). All 10 of the operator's part-74 marks and all 6 of part 75's had
-  `fence 0.00` and a healthy GPU, so nothing they FEEL is the device. That is a statement
-  about the hitches, not about the frame rate, and part 76 separated the two.
+* **the GPU as a source of felt STUTTER, and as the limiter of the frame they PLAY** — it
+  is the limiter of the autonomous route, which is a different thing (§0b). Part 74's 10
+  marks, part 75's 6 and part 76's **20** all had `fence 0.00`, now across three sessions
+  and 36 marks. Nothing they feel is the device.
 * **the guest side / outside the renderer.** Residual is 0.0 ms on every hitch frame (§6dm).
 * **the constant GATHER and the constant MEMO**, and the whole constant path: 2.22 ms of a
   23.31 ms frame after part 75.
 * **reverting the RT era for performance** — 0.5-0.7 ms (§6dj).
 * **the crowd's steady-state frame as a source of STUTTER.** It has no tail, and after part
   76 it is a fifth faster than it was on this route.
-* **further per-draw CPU micro-optimisation ON THIS ROUTE.** Part 76 already ran that
-  experiment and it measured zero against the null (§0b). Measure at the operator's draw
-  count or not at all.
+* **further per-draw CPU micro-optimisation ON THIS ROUTE, or any CPU A/B below ~8,000
+  draws.** Part 76 already ran that experiment and it measured zero against the null (§0b).
+  Measure at 9,000+ draws or not at all.
+* **quoting a regime verdict from a run with `CZ_VK_PROFILE` armed.** It costs +4.00 ms of
+  CPU and +1.01 ms of wall, so it eats the slack and inverts the answer (gotcha 454). Use
+  `CZ_VK_FRAME_TRACE` alone for that question.
 * everything on part 73's list (`docs/perf-plan-autonomous.md`, exhausted).
 
 ## 5. THE TWO THINGS TO CARRY FORWARD

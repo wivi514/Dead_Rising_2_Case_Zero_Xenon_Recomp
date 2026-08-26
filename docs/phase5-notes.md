@@ -17242,3 +17242,109 @@ will see for free in the next session `tools/play_session.sh` launches.
 
 **Owed:** nothing for this item. The next item is `part76-kickoff.md`'s item 2, the texture
 path, which is untouched and is the only thing the operator still FEELS as a stutter.
+
+## §6dr — Part 76's operator session: their frame is CPU-bound, mine is not, and the instrument was hiding it (2026-08-26)
+
+The operator asked to play with the CPU/GPU profiler armed. `tools/part76_operator_session.sh`
+(the part-75 harness with three corrections — see its header), 3440x1440 pinned, **12,772
+frames traced, 20 F7 marks, every gate clean**: 0 `no translated shader`, 0 slot mix-ups, 0
+`CONST MEMO STALE`, 0 stale present slots.
+
+### 1. THE QUESTION IT WAS RUN TO ANSWER
+
+§6dq §7 left the port with two regimes and no way to choose between them. The autonomous
+route came out **GPU-bound** after part 76 (GPU 10.55 of a 10.59 ms wall, fence 2.99) — but
+that route reaches 6,000-7,000 draws and the operator plays at ~9,750. GPU cost tracks
+PIXELS and CPU cost tracks DRAWS, so the two need not agree, and which regime their frame is
+in decides part 77's whole board.
+
+### 2. FIRST, THE INSTRUMENT — BECAUSE IT CHANGES THE ANSWER, NOT JUST THE NUMBER
+
+`CZ_VK_PROFILE` has been documented at "2-4 ms a frame" for twenty parts. Measured properly
+for the first time, same route, same band (5,000-7,000 draws, texture frames excluded, one
+binary, the trace armed in both):
+
+| | wall | GPU | fence | CPU record |
+|---|---|---|---|---|
+| profiler OFF | 10.59 ms | 10.55 | **2.99** | 7.10 |
+| profiler ON | 11.60 | 10.98 | **0.00** | 11.10 |
+
+**+4.00 ms of CPU, and the wall moves only +1.01** — because the frame had three
+milliseconds of CPU slack and the instrument ate them. **The fence goes 2.99 -> 0.00: the
+same route, the same binary, reported as GPU-bound without the profiler and CPU-bound with
+it.** This is gotcha 7 with the sting in a new place — the instrument did not merely inflate
+a number, it INVERTED the verdict, because its bill lands on exactly the resource whose
+spare capacity is the thing being measured. Gotcha 454.
+
+Every number in §3 is therefore quoted twice: as measured, and with the 4.00 ms subtracted.
+The subtraction is itself approximate — `CZ_VK_PROFILE` opens scopes per draw, so its bill
+almost certainly grows with the draw count and 4.00 ms is its value at 5,000-7,000. **That
+makes the CPU-bound verdicts below CONSERVATIVE at low draw counts and WEAKER at high ones**,
+and it is why §5 asks for one profiler-free run.
+
+### 3. THE ANSWER: THEIR LOAD IS CPU-BOUND, AND THE CROSSOVER IS AROUND 8,000 DRAWS
+
+12,249 texture-free frames of their own play:
+
+| draws | n | wall | GPU | fence | CPU rec | CPU − 4.0 | regime without the instrument |
+|---|---|---|---|---|---|---|---|
+| 0-3,000 | 10,267 | 9.07 | 9.11 | **2.87** | 5.71 | 1.71 | GPU is the limiter |
+| 3,000-5,000 | 269 | 8.89 | 8.46 | 0.00 | 8.25 | 4.25 | GPU is the limiter |
+| 5,000-7,000 | 336 | 12.34 | 9.43 | 0.00 | 11.86 | 7.86 | GPU is the limiter |
+| 7,000-9,000 | 1,064 | 16.15 | 10.89 | 0.00 | 15.68 | 11.68 | **balanced** |
+| **9,000-12,000** | 313 | 18.99 | **11.87** | 0.00 | **18.50** | **14.50** | **CPU is the limiter** |
+
+**The GPU is remarkably flat — 8.5 to 11.9 ms across a 4x range of draw counts** — which is
+what a pixel-bound cost looks like at a fixed resolution, and it is the strongest evidence
+this project has that the device's cost here is fill and post rather than geometry. The CPU
+runs from 5.7 to 18.5 over the same range and crosses it at about 8,000 draws.
+
+**So both readings of §6dq §7 were right and neither generalised.** My route is GPU-bound
+because it is a light-draw run at a heavy resolution; their play is CPU-bound because they
+stand in crowds. The port has ONE resolution and TWO regimes, separated by roughly 8,000
+draws.
+
+### 4. THE TWENTY MARKS: fence 0.00 ON EVERY ONE, and 18 of 20 carry a texture upload
+
+All twenty fall in one contiguous stretch (frames 11,355-12,648) — the operator holding F7
+through a sustained bad passage rather than tagging isolated events, which is itself the
+report: *this whole stretch is bad*, not *that frame was*.
+
+Worst frame in the ~60 before each mark: **wall 27.7-37.0 ms, GPU 11.09-12.71, fence 0.00 on
+all twenty, CPU record 27.2-36.5, draws 8,802-9,927.** These are not hitches — the marked era
+has no 150-300 ms frame in it — they are the crowd frame at ~9,500 draws with excursions.
+
+**18 of 20 carry a real texture upload, with `texPh` at 9.3-16.8 ms of a 30-37 ms frame.**
+The era splits:
+
+| population | n | median | p99 | worst |
+|---|---|---|---|---|
+| no upload | 1,271 | 16.67 ms | 29.09 | 31.4 |
+| >= 1 upload | 347 | 22.61 | 35.15 | 125.0 |
+
+So what they felt is **both problems at once**: the throughput frame (16.7 ms at ~9,500
+draws, i.e. 60 fps) with a texture-driven excursion to 30-37 ms on one frame in five. The
+texture path is not only the HITCH item any more — at their draw count it is roughly half the
+excess on a marked frame. **That keeps it first on part 77's board and strengthens the case.**
+
+### 5. AND PART 76 IS CONFIRMED AT THEIR OWN LOAD — −28.6%
+
+Same harness, same resolution, same instrument load as part 75's verification session, so the
+two are directly comparable:
+
+| | >= 7,000 draws, profiler on |
+|---|---|
+| part 75 session (2026-08-25) | **23.31 ms** — 42.9 fps |
+| part 76 session (2026-08-26) | **16.65 ms** — 60.1 fps, n=1,377 |
+| | **−28.6%** |
+
+With the profiler's measured 4.00 ms taken off, the game they actually play sits near
+**12.6 ms at this load — about 79 fps.**
+
+### 6. WHAT IS OWED
+
+**One short profiler-free run**: `tools/play_session.sh` with `CZ_VK_FRAME_TRACE` and nothing
+else, two minutes in the same crowd. The trace alone costs a line of I/O per frame and does
+not move the numbers (the A/B runs without it read 10.85 ms where the traced run read 10.59),
+so it settles §3 with no subtraction at all. Until then, the 7,000-9,000 row is "balanced"
+with an error bar wide enough to be either.
