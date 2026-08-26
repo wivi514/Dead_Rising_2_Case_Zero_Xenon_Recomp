@@ -5132,6 +5132,13 @@ bool FormatHasStencil(VkFormat f)
            f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT;
 }
 
+// How many write-after-write dependencies the two clear sites had to issue themselves,
+// i.e. how often this title clears the same EDRAM surface twice with nothing between.
+uint64_t g_wawN = 0;
+
+// Returns true when it actually issued a transition. Callers that WRITE the image need to
+// know: two writes with no transition between them get no dependency at all from this
+// function, which is a real race — see `TransferWriteBarrier`.
 bool Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
              VkImageAspectFlags aspect)
 {
@@ -5164,7 +5171,37 @@ bool Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
                          &b);
     img.layout = newLayout;
+    return true;
 }
+
+// A WRITE-AFTER-WRITE dependency for an image that is ALREADY in the layout the next write
+// needs. `Barrier` early-returns in that case and issues nothing, so two consecutive
+// `vkCmdClear*Image` calls on the same EDRAM surface — which this title produces, because a
+// frame carries ~41 colour and ~41 depth clears and consecutive resolves can both clear —
+// have no ordering between them at all, and which value survives is undefined.
+//
+// PART 78 FOUND THIS, and it is PRE-EXISTING rather than caused by the narrowed masks: the
+// wide-barrier control arm reports the identical ten `SYNC-HAZARD-WRITE-AFTER-WRITE`
+// messages, because an early return emits nothing whatever the masks would have been. It
+// took turning synchronization validation on for the first time in this project's history
+// to see it (gotcha 25: a check that cannot fire is not a clean result).
+void TransferWriteBarrier(VkCommandBuffer cmd, Image& img, VkImageAspectFlags aspect)
+{
+    if ((aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) &&
+        FormatHasStencil(img.format))
+        aspect |= VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    b.oldLayout = b.newLayout = img.layout;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.image;
+    b.subresourceRange = { aspect, 0, img.levels, 0, img.layers };
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    ++g_wawN;
+}
+
 // --- the per-frame arena -------------------------------------------------------------
 // A bump allocator reset at each swap. Everything a draw needs that is not a texture
 // lives here: constants, the dword-swapped copies of the guest's vertex streams, and
@@ -21137,8 +21174,9 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             g_gpClearScopedPixels +=
                 (copyW && copyH) ? uint64_t(RZx(copyW)) * uint64_t(RZ(copyH))
                                  : uint64_t(R->color.width) * uint64_t(R->color.height);
-            Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_ASPECT_COLOR_BIT);
+            if (!Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_IMAGE_ASPECT_COLOR_BIT))
+                TransferWriteBarrier(R->cmd, R->color, VK_IMAGE_ASPECT_COLOR_BIT);
             VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
             vkCmdClearColorImage(R->cmd, R->color.image,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
@@ -21175,8 +21213,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                         dc, value.depth, value.stencil);
             }
         }
-        Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+        if (!Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
+            TransferWriteBarrier(R->cmd, R->depth,
+                                 VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
         VkImageSubresourceRange range{
             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1
         };
@@ -24777,6 +24817,13 @@ void VkRenderer_DumpStats()
                 "GPU, and it is the half of `walk` that is not our recording\n",
                 double(g_fenceWaitNs) / 1e6 / frames);
     }
+    if (g_wawN)
+        fprintf(stderr,
+                "[vk]   clear write-after-write barriers: %llu (%.1f/frame) — resolves that "
+                "cleared an EDRAM surface already in transfer-dst, i.e. with nothing "
+                "ordering them against the previous clear until this was added\n",
+                (unsigned long long)g_wawN,
+                double(g_wawN) / double(R->frame ? R->frame : 1));
     // THE PER-REGION GPU SPLIT (part 78 item 1) — the first breakdown of the device's own
     // time this project has had. THE RESIDUAL IS PRINTED FIRST AND ON PURPOSE: it is the
     // frame's measured GPU time minus everything the regions account for, and it is the
