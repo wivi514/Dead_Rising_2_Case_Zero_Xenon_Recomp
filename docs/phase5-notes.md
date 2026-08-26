@@ -17548,3 +17548,52 @@ CZ_VK_VALIDATION=1: zero memory or bind VUIDs
 (The other four `CreateImage` columns rise in that run — `vkCreateImage` 3.3 -> 20.7, view
 4.3 -> 17.5 — which is the validation layer's own per-call bill, not the pool's. It is why
 the A/B runs without it.)
+
+### 6. THE A/B — three runs an arm, alternated, 3440x1440 pinned, all six route gates passed
+
+**Pre-registered before the runs** (`git show 92aa1d1`): `vkAllocateMemory` under 5 ms/run;
+the decode total down ~70%; single-figure block allocations against 2,300+ pooled binds; the
+worst frame down by more than the 40 ms kill; and **the no-upload frame median unchanged,
+because this change cannot reach a frame that uploads nothing.**
+
+The reader is `tools/part77_tex_report.py`, and its population is FRAMES WITH AN UPLOAD,
+not a draw band — gotcha 452, classify the change then pick the reader. Uploads happen on
+~0.4% of this route's frames, so a draw-banded median would dilute a 120 ms effect to
+nothing. Its headline is **the BURST FRAME**: the single frame of each run that uploaded the
+most textures, which on this route is the DebugJump load at 774-780 uploads and is therefore
+**the same event in every run** — a matched comparison rather than a distribution statistic.
+
+| statistic | control (`CZ_VK_NO_TEX_MEMPOOL=1`) | shipping | delta |
+|---|---|---|---|
+| **BURST FRAME wall** | **285.57 ms** | **164.52 ms** | **−121.05, −42.4%** |
+| its uploads (the match check) | 778 | 779 | +0.1% |
+| its decode | 178.66 | 65.18 | −63.5% |
+| its stage + submit | 65.75 | 57.11 | −13.1% |
+| frames over 150 ms, whole run | 4 | 2 | −50% |
+| decode per upload | 216.79 us | 69.30 us | −68.0% |
+| decode total per run | 509.02 ms | 163.00 ms | −68.0% |
+| upload-frame p99 | 285.57 | 229.88 | −19.5% |
+| **NO-upload median (the control channel)** | **10.25** | **10.20** | **−0.06, −0.6%** |
+| uploads over the run (the match check) | 2,348 | 2,351 | +0.1% |
+
+Every prediction held. `vkAllocateMemory` 383.1 -> 20.6 ms; `image memory: 2351 pooled into
+5 blocks, 79 dedicated`, 225 KB lost to alignment; device memory placed is **392.3 MB against
+the control's 392.1**, so the pool costs no VRAM. Both arms print their engagement, and the
+control's line reads `0 pooled into 0 blocks, 2425 dedicated`.
+
+**Against a pre-registered kill of 40 ms off the worst frame, this is 121 ms — and the
+control channel moved 0.06 ms.** The remaining 229.88 ms frame in the fix arm is not a
+texture burst at all: it is boot frame 6, two uploads and **four pipeline compilations**,
+which this change cannot reach.
+
+**Read the run's overall maximum with care and do not quote it.** This route also produces
+multi-second frames with ZERO uploads and zero pipelines — one control run held an 8,275 ms
+and a 3,311 ms frame, both at a healthy 10 ms GPU — which are an OS or compositor stall.
+Crediting this change with removing them would have made the headline `−97%`. The reader
+splits `frames over 150 ms` into "with uploads" for exactly that reason.
+
+**And one trap the first pass fell into:** the reader read a trace while its run was still
+being written, and a partial trace looks like a complete run of a shorter route. It compared
+a control arm at 6,178 frames against a finished arm's 16,685 and reported the run totals
+43% apart. A trace with no `.rc` beside it is now skipped by name, and the per-upload column
+exists so route depth cannot drive a total.
