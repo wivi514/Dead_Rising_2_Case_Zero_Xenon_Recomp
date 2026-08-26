@@ -844,7 +844,7 @@ AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME.
 HAS CONFIRMED IT AND THE REGIME TABLE MOVED.**
 **`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6du** (the
 work) and **§6dv** (the operator session and the new regime table);
-lessons: gotchas **459-463**):
+lessons: gotchas **459-464**):
 
 * **THE ITEM WAS A MEASUREMENT, NOT A FIX, AND SAYING SO IS WHY IT WORKED.** Part 76 had the
   GPU as a flat 6.97 -> 12.20 ms across a 4x range of draw counts and concluded most of a

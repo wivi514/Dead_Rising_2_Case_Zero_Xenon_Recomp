@@ -2,9 +2,11 @@
 
 > **THIS IS THE LIVE HAND-OFF**, superseding `part78-kickoff.md`.
 >
-> **Read `phase5-notes.md` §6du first.** It is part 78 end to end: the per-region GPU
+> **Read `phase5-notes.md` §6du first, then §6dv.** §6du is part 78 end to end: the per-region GPU
 > instrument, the eleven-row breakdown it produced, the barrier fix that came out of it, the
-> synchronization-validation gate that is new here, and item 3 priced dead in two greps.
+> synchronization-validation gate that is new here, and item 3 priced dead in two greps. §6dv
+> is the operator session that confirmed it and MOVED THE REGIME TABLE — read it before
+> ranking anything, because it is why item 1 below is a CPU item.
 >
 > | document | what it is |
 > |---|---|
@@ -15,7 +17,7 @@
 > | `phase5-notes.md` §6dr | part 76's operator session — **the TWO REGIMES, and where to measure a CPU item** |
 > | ~~`part77-kickoff.md` §0b~~ | the regime table — **SUPERSEDED by §6dv §2**: the crossover was 6,000-7,000 draws and is now ~3,000 |
 >
-> Lessons: gotchas **459-463**. There is still no live PLAN; §1 is the board, in order.
+> Lessons: gotchas **459-464**. There is still no live PLAN; §1 is the board, in order.
 
 ---
 
