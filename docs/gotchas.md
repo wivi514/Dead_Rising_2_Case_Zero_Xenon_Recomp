@@ -5132,3 +5132,53 @@ From phase C part 18 (the frame rate — and none of it was work):
      biases the conclusion. Related: gotcha 7 (a probe expensive enough to stall the game
      manufactures the stability it reports) and gotcha 223 (an instrument on a hot path can
      cancel the effect it is measuring exactly).
+
+455. **A SCOPE'S NAME IS A LIST OF WHAT SOMEBODY EXPECTED TO FIND IN IT, AND THE THING THAT
+     COSTS THE MOST IS OFTEN INSIDE ONE OF THE WORDS.** This project's texture `decode`
+     clock is named *"untile + endian swap + image creation"*. Split in part 77, it holds
+     **seven** distinct operations, and the largest is `vkAllocateMemory` — **70.7% of the
+     scope, 145 us x 2,424 calls** — hiding inside the third word. The untile loop, which
+     three consecutive hand-offs named as the fix and which had been priced, cross-checked
+     and scheduled, is **17.2%**.
+     Part 75 hit the same shape (`constants` was 43% of the frame and the copy everyone
+     would have looked at first was 0.36 ms of 7.63) and part 74 hit it twice. **The
+     recurring repair is the same and it is cheap: before optimising the operation a phase
+     is named for, SPLIT THE PHASE, and print the residual so a wrong split shows up as an
+     unattributed column instead of as a confident wrong ranking.** In part 77 the split was
+     forty minutes of work — eight clock reads per upload, ~2,300 a run, nowhere near a hot
+     path — and it moved the item from an 85 ms target to a 351 ms one before a line of the
+     fix was written.
+
+456. **AN ITEM CAN BE SPECIFIED, PRICED AND CONFIRMED BY THREE SESSIONS OF OPERATOR EVIDENCE
+     AND STILL BE WRONG, BECAUSE ALL OF THAT CONFIRMED ITS PARENT.** Part 77's item 1 was
+     the most thoroughly evidenced thing this port has ever carried: 36 F7 marks across
+     parts 74, 75 and 76 all landing on texture frames, a two-half cost breakdown, a named
+     fix per half, a pre-registered kill threshold, and three kickoffs repeating it verbatim.
+     Every one of those confirmations was of the claim **"the texture path is the hitch"**,
+     which is true. None of them touched the claim **"the untile loop is where the decode's
+     time is"**, which was never measured and is false.
+     **Confirmation of a parent does not transfer to a child.** When an item has a chain —
+     *the frame is slow -> the texture path -> the decode half -> the untile loop* — the
+     evidence usually attaches at the top and the FIX attaches at the bottom, and the links
+     in between get carried forward on repetition rather than on measurement. Ask, of the
+     specific line you are about to change: what measurement says the time is *here*, and
+     when was it taken? See also gotcha 13 (everything written down has a shelf life) —
+     but this is worse than staleness, because the child claim was never true, only
+     never checked.
+
+457. **A POOL BUILT FOR A NEW SUBSYSTEM THAT CITES THE OLD ONE AS PRESSURE TO BUDGET AROUND
+     IS TELLING YOU THE OLD ONE HAS THE SAME DEFECT.** `vk_renderer.cpp` grew an
+     acceleration-structure pool whose comment reads: *"a crowd's ~2,600 BLASes against the
+     driver's ~4096 `maxMemoryAllocationCount` would exhaust the allocator **with textures
+     still to serve**."* The hazard was named exactly right, the pool was built correctly —
+     and the texture path, the thing being budgeted around, kept one dedicated
+     `VkDeviceMemory` per image for another twelve parts, at 145 us each and 2,424 a run.
+     The author reasoned about the neighbour as a fixed constraint instead of as the thing
+     to fix.
+     This is gotcha 446 in a new place (part 17 fixed a write-combined read at the present
+     buffer and part 75 found the same defect at the constant arena 58 parts later), and the
+     repair is the same: **when you fix a resource-usage defect, grep for every other place
+     that uses the resource the same way, in the same commit, and record the audit as the
+     deliverable.** The tell to look for in a codebase is a comment that names another
+     subsystem's consumption as a reason for your design — it is a measurement somebody
+     already made of a cost they then declined to touch.

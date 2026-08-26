@@ -17415,3 +17415,136 @@ draws: 12.44, 12.58 and 12.77 ms median — 78 to 80 fps.** Predicted from §5's
 profiler-corrected arithmetic before the run: "around 12.6 ms at this load, about 79 fps".
 **Within 2%.** Texture frames are still there and still the outlier population: 678 of 13,355
 frames, median 20.33 ms, p99 62.17, worst 298.4.
+
+## §6ds — Part 77: the texture decode decomposed, and the item three kickoffs specified was 17% of it (2026-08-26)
+
+`part77-kickoff.md` §1 opened with ITEM 1, the texture path, and it was the most thoroughly
+specified item this project has ever carried forward: priced in part 74 (§6dn §4), confirmed
+by the operator's marks in part 75 (§6dp §10) and again by twenty more in part 76 (§6dr §4),
+carried verbatim through three hand-offs, and split into two halves with a fix named for
+each.
+
+| half | cost/run | the named fix |
+|---|---|---|
+| **decode** — untile every mip, endian swap, image creation | **469.0 ms (66%)** | **parallelise or cache the untile. Take this first.** |
+| staging + submit | 244.0 ms (34%) | batch |
+
+**The decode half is real and it is the bigger one. The fix named for it addresses 17% of
+it.** This section is what a decomposition found instead.
+
+### 1. THE SCOPE HAD SEVEN THINGS IN IT AND THE NAME LISTED THREE
+
+`g_texDecodeNs` spans everything between the source bounds check and the staging memcpy. The
+name says *untile + endian swap + image creation*. What is actually in there:
+
+1. a zero-filled `std::vector<uint8_t>` allocation of the whole destination;
+2. the base level's untile, all faces;
+3. the mip chain's untile;
+4. **two whole-buffer VALIDATION passes over every mip level** — the mostly-empty test and
+   the endpoint-luma divergence test (part 39/41's guards);
+5. two content scans over the finished buffer (all-black, single-repeated-block);
+6. a `TextureGuard` hash over the SOURCE, for the cache entry;
+7. `vkCreateImage` + an allocation + a bind + a view.
+
+Only 2, 3 and 7 are in the name, and the plan only ever costed 2 and 3.
+
+### 2. THE SPLIT, AND ITS RESIDUAL IS PRINTED
+
+Eight `CycNow()` reads per REAL upload — ~2,300 a run, never per unit and never per draw, so
+this is not the instrument-cancels-its-subject trap (gotcha 223). The residual column exists
+because a split that does not add up is a wrong ranking presented as a fact, which is the
+false-absence shape part 74 was caught by four times (gotcha 439).
+
+Autonomous route, **3440x1440 pinned**, ~60 s of camera turning, **two runs agreeing to
+1.1 ms on every column**:
+
+| column | ms/run | % of decode |
+|---|---|---|
+| `pixels` allocation (zero fill) | 4.9 | 1.0% |
+| **base-level untile** | **51.3** | **10.4%** |
+| **mip-chain untile** | **33.8** | **6.8%** |
+| mip-chain VALIDATION guards | 55.1 | 11.1% |
+| content scans (all-black, uniform) | 1.9 | 0.4% |
+| source hash for the cache guard | 1.8 | 0.4% |
+| **`CreateImage`** | **342.6** | **69.3%** |
+| **RESIDUAL** | **2.7** | **0.6%** |
+| total (`g_texDecodeNs`) | 494.3 | |
+
+**The untile loop — base plus mips, the thing "parallelise or cache, take this first" names —
+is 85.1 ms, 17.2% of the decode and 8.2% of the whole 1,042 ms texture path.** A perfect 3x
+on it, at the runtime's actual thread budget, is worth ~57 ms of 1,042. The pre-registered
+kill for that half was *"below 40 ms off the worst frame of the route, do not ship"*, and on
+an 800-upload burst frame a 3x untile is ~19 ms. **It would have been built, measured, and
+correctly killed.**
+
+And the base untile is **4.6 ns/unit over 11.5 million units**. That is a loop doing a
+20-operation address swizzle and a 2-to-4-iteration byteswap per unit at better than two
+units per nanosecond-of-a-4 GHz-core — it is not the slow thing, there are simply a lot of
+units.
+
+**The mip-chain validation guards cost MORE than the base untile does**, and they appear in
+no plan at all. They are two extra passes over data the untile has just written.
+
+### 3. `CreateImage` IS ONE DRIVER CALL, NOT FOUR
+
+Same discipline one level down, because "image creation" is four operations with four
+different fixes and guessing which would repeat the mistake that put the untile at the top
+of three kickoffs:
+
+```
+CreateImage x2424 (392.1 MB device):
+    vkCreateImage 3.3 ms | memReq 0.3 | vkAllocateMemory 350.6 | bind 2.2 | view 4.3
+                                        ^^^^^^^^^^^^^^^^^^^^^^ 145 us each, x2424
+```
+
+**`vkAllocateMemory` is 350.6 ms — 70.7% of the decode and 33.6% of the entire texture
+path.** `CreateImage` has given every image its own `VkDeviceMemory` since phase 5. It is a
+kernel-side buffer-object allocation, not user-space bookkeeping.
+
+### 4. AND THIS FILE ALREADY KNEW — THE PATTERN WAS BUILT FOR THE OTHER SUBSYSTEM
+
+`vk_renderer.cpp` has held this comment since the RT work:
+
+> The AS POOL: acceleration structures are placed at offsets inside big chunks rather than
+> one `VkDeviceMemory` each, because a crowd's ~2,600 BLASes against the driver's ~4096
+> `maxMemoryAllocationCount` would exhaust the allocator **with textures still to serve**.
+
+The hazard was identified correctly, the pool was built correctly, and **the subsystem it
+was competing with kept the anti-pattern** — the author reasoned about the texture path as
+a fixed cost to budget around rather than as the thing to fix. That is gotcha 446 exactly,
+a second time: part 17 caught write-combined memory being read back at the present buffer,
+fixed it *there*, and part 75 found the same defect at the constant arena 58 parts later.
+**A defect fixed at one pointer is a defect class, and the audit is the deliverable.**
+
+**It is also a latent abort, not only a cost.** This 60-second route consumed **2,424 of the
+driver's ~4,096 allocations**. A long session in a texture-heavy era runs out and the
+`VK_CHECK` on `vkAllocateMemory` aborts the process.
+
+### 5. THE FIX: BUMP-SUBALLOCATE TEXTURE IMAGES OUT OF 32 MB BLOCKS
+
+Safe because the lifetime question has a checkable answer rather than a hopeful one: **a
+guest texture's image is never destroyed while the process runs.** `R->textures` is a
+`FlatCache` that grows and never evicts; the re-upload path (`refresh`) reuses the existing
+image; `RetireImage` is called for snapshots and the RT factor image and nothing else; and
+there is no device teardown at all. So there is no free list to build.
+
+Snapshots keep their dedicated allocations *because* they are retired mid-run. A pooled
+image carries `memory == VK_NULL_HANDLE`, and every destroy site in this file is already
+guarded on it — so a pooled image reaching one frees nothing rather than freeing a block
+five live neighbours are bound into.
+
+`CZ_VK_NO_TEX_MEMPOOL=1` is the same-binary control arm. `g_imgPooled`/`g_imgDedicated` are
+the engagement counters (gotcha 151).
+
+First measurement, a 15 s validation run at 2560x1440 — **not** the A/B, and quoted as what
+it is:
+
+```
+vkAllocateMemory  350.6 -> 20.3 ms       decode  496.1 -> 202.6 ms   (212 -> 86 us each)
+image memory: 2348 pooled into 5 blocks, 79 dedicated, 225.5 KB lost to alignment
+CZ_VK_VALIDATION=1: zero memory or bind VUIDs
+```
+
+(The other four `CreateImage` columns rise in that run — `vkCreateImage` 3.3 -> 20.7, view
+4.3 -> 17.5 — which is the validation layer's own per-call bill, not the pool's. It is why
+the A/B runs without it.)
