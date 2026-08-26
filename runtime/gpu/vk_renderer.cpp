@@ -2959,6 +2959,39 @@ uint64_t g_texFetchResolves = 0;
 uint64_t g_texRealUploads = 0, g_texUploadBytes = 0, g_texUploadNs = 0;
 // Untiling, endian swap and image creation — everything BEFORE the staging copy.
 uint64_t g_texDecodeNs = 0;
+// ...AND ITS DECOMPOSITION (part 77). `g_texDecodeNs` is 469 ms of a texture-burst run and
+// 66% of the whole upload path (§6dn §4), and part 75/76/77's board all say "parallelise or
+// cache the untile loop" — which is a plan built on the assumption that the untile loop is
+// where the time is. NOBODY HAS MEASURED THAT. The decode scope contains at least seven
+// distinct things: a zero-filled allocation of the whole destination, the base-level untile,
+// the mip chain's untile, TWO whole-buffer validation scans over each mip level (the
+// mostly-empty test and the endpoint-luma divergence test), two content scans over the
+// finished buffer, a source hash for the cache guard, and `vkCreateImage` + a view.
+//
+// So this is the same shape part 74 had to build three times over: a decomposition where
+// every microsecond lands somewhere, rather than one number with a name that describes only
+// the operation somebody expected to find (gotcha 439, and part 75's whole finding — a cost
+// hid under a phase NAME that described the other thing in the same scope). The residual is
+// PRINTED, so a wrong split shows up as a large unattributed column instead of as a
+// confident wrong ranking.
+//
+// Free when nothing is uploading: eight `CycNow()` reads per REAL upload (~2,300 a run),
+// never per unit and never per draw — the gotcha-223 trap this file has fallen into before.
+uint64_t g_texDecAllocNs = 0;    // the zero-filled `pixels` vector
+uint64_t g_texDecBaseNs = 0;     // level 0, all faces: Tiled2DOffset + CopySwapped
+uint64_t g_texDecMipNs = 0;      // the mip chain's own untile loops
+uint64_t g_texDecMipChkNs = 0;   // the mostly-empty and endpoint-luma guards
+uint64_t g_texDecScanNs = 0;     // the all-black and uniform-block content scans
+uint64_t g_texDecGuardNs = 0;    // TextureGuard over the SOURCE, for the cache entry
+uint64_t g_texDecImageNs = 0;    // CreateImage (VkImage + view + allocation) + NameImage
+// How many units the base level untiled, so the base column can be quoted per unit —
+// a millisecond total cannot distinguish "the loop is slow" from "there are a lot of units".
+uint64_t g_texDecBaseUnits = 0;
+// CreateImage's own four driver calls — see the comment at the call sites. Counted for
+// EVERY image this renderer makes, not only textures, because a snapshot or a dummy
+// allocating the same way is the same finding one level over.
+uint64_t g_ciN = 0, g_ciCreateNs = 0, g_ciReqNs = 0, g_ciAllocNs = 0, g_ciBindNs = 0,
+         g_ciViewNs = 0, g_ciAllocBytes = 0;
 // AND THE SPLIT THAT DECIDES WHAT A FIX WOULD BE. An upload measured at 249 us for a
 // 55 KB copy is not a copy — but "not a copy" is an inference, and the two candidates
 // want opposite fixes: if the time is the memcpy/decode, no synchronisation change helps;
@@ -4763,7 +4796,15 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (viewType == VK_IMAGE_VIEW_TYPE_CUBE)
         ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    // THE FOUR CALLS, TIMED SEPARATELY (part 77). `CreateImage` is 69% of the texture
+    // decode — 146 us per texture over 2,344 of them — and "image creation" is four
+    // different driver operations with four different fixes. `vkAllocateMemory` is a
+    // kernel-side buffer-object allocation and is the usual answer; guessing which one it
+    // is would be the same mistake that put the untile loop at the top of three kickoffs.
+    // Unconditional and cheap: `CreateImage` is called ~2,400 times a run, never per draw.
+    const uint64_t ciT0 = CycNow();
     VK_CHECK(vkCreateImage(R->device, &ci, nullptr, &img.image), "vkCreateImage");
+    const uint64_t ciT1 = CycNow();
 
     VkMemoryRequirements req{};
     vkGetImageMemoryRequirements(R->device, img.image, &req);
@@ -4773,8 +4814,11 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
         FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX)
         return false;
+    const uint64_t ciT2 = CycNow();
     VK_CHECK(vkAllocateMemory(R->device, &ai, nullptr, &img.memory), "vkAllocateMemory");
+    const uint64_t ciT3 = CycNow();
     VK_CHECK(vkBindImageMemory(R->device, img.image, img.memory, 0), "vkBindImageMemory");
+    const uint64_t ciT4 = CycNow();
 
     VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     vi.image = img.image;
@@ -4783,6 +4827,13 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     vi.components = components;
     vi.subresourceRange = { aspect, 0, levels, 0, layers };
     VK_CHECK(vkCreateImageView(R->device, &vi, nullptr, &img.view), "vkCreateImageView");
+    g_ciN++;
+    g_ciCreateNs += ciT1 - ciT0;
+    g_ciReqNs += ciT2 - ciT1;
+    g_ciAllocNs += ciT3 - ciT2;
+    g_ciBindNs += ciT4 - ciT3;
+    g_ciViewNs += CycNow() - ciT4;
+    g_ciAllocBytes += req.size;
     return true;
 }
 
@@ -7102,7 +7153,14 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // Vulkan image is; the source is read at its own pitch.
     const uint64_t faceDstBytes = uint64_t(unitW) * unitH * bytesPerUnit;
     const uint64_t dstBytes = faceDstBytes * layers;
+    // TIMED SEPARATELY (part 77). `std::vector<uint8_t> pixels(n)` value-initialises, i.e.
+    // it allocates AND writes zero over the whole destination, which is then completely
+    // overwritten by the untile below on every unit that is not skipped. On a 512x512 DXT1
+    // that is 128 KB of stores nobody reads. Whether that matters is a measurement, not an
+    // argument — hence the clock rather than a rewrite.
+    const uint64_t decAllocT0 = CycNow();
     std::vector<uint8_t> pixels(dstBytes);
+    g_texDecAllocNs += CycNow() - decAllocT0;
 
     // A SMALL PACKED TEXTURE'S BASE IS NOT AT THE TILE ORIGIN (part 59, the R6
     // gas-sign trace). When packed_mips is set and the shorter dimension is <= 16,
@@ -7122,6 +7180,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // over, with both cursors advanced by their own stride — so the loop was lifted out
     // rather than the body being duplicated, and a 2D texture takes exactly the path it
     // always did with `face` fixed at 0.
+    const uint64_t decBaseT0 = CycNow();
+    g_texDecBaseUnits += uint64_t(unitW) * unitH * layers;
     for (uint32_t face = 0; face < layers; face++)
     {
     const uint8_t* src = base + va + face * faceSrcStride;
@@ -7195,6 +7255,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         Count("texture: linear");
     }
     } // for each cube face
+    g_texDecBaseNs += CycNow() - decBaseT0;
 
     // THE MIP CHAIN, levels 1..n — the input this renderer declared and then discarded
     // for the whole of phase 5 (part 39).
@@ -7303,6 +7364,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // level went into; the copy regions below name where each one starts.
             const uint64_t lDstBytes = uint64_t(luW) * luH * bytesPerUnit;
             const size_t at = pixels.size();
+            const uint64_t decMipT0 = CycNow();
             pixels.resize(at + size_t(lDstBytes));
             const uint8_t* lsrc = base + mipVa + chainOff;
             uint8_t* ldst = pixels.data() + at;
@@ -7332,6 +7394,8 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                                 lsrc + uint64_t(y) * lPitch * bytesPerUnit,
                                 uint64_t(luW) * bytesPerUnit, t.endian);
             }
+            g_texDecMipNs += CycNow() - decMipT0;
+            const uint64_t decMipChkT0 = CycNow();
             // IS THERE ACTUALLY A LEVEL HERE? Count the blocks that came back non-empty.
             //
             // This replaces the extent rule the first implementation stopped on — "break
@@ -7368,6 +7432,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                 {
                     Count("mip: PACKED TAIL REACHED — level mostly empty, chain ends here");
                     pixels.resize(at);
+                    g_texDecMipChkNs += CycNow() - decMipChkT0;
                     break;
                 }
             }
@@ -7436,9 +7501,11 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                                 t.address, t.width, t.height, t.format, level, cur, prev,
                                 t.mipAddress, (unsigned long long)chainOff);
                     pixels.resize(at);
+                    g_texDecMipChkNs += CycNow() - decMipChkT0;
                     break;
                 }
             }
+            g_texDecMipChkNs += CycNow() - decMipChkT0;
             VkBufferImageCopy c{};
             c.bufferOffset = at;
             c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
@@ -7498,6 +7565,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             const uint32_t luH = (lh + blockDim - 1) / blockDim;
             const uint64_t lDstBytes = uint64_t(luW) * luH * bytesPerUnit;
             const size_t at = pixels.size();
+            const uint64_t decMipT0 = CycNow();
             pixels.resize(at + size_t(lDstBytes));
             uint8_t* ldst = pixels.data() + at;
             const uint8_t* lsrc = base + va;        // the SAME tile level 0 came from
@@ -7512,6 +7580,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                     CopySwapped(&ldst[(uint64_t(y) * luW + x) * bytesPerUnit],
                                 lsrc + off, bytesPerUnit, t.endian);
                 }
+            g_texDecMipNs += CycNow() - decMipT0;
             VkBufferImageCopy c{};
             c.bufferOffset = at;
             c.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 };
@@ -7701,7 +7770,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         // instrument never being satisfied.
         cached->va = va;
         cached->srcBytes = srcBytes;
+        const uint64_t decGuardT0 = CycNow();
         cached->guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
+        g_texDecGuardNs += CycNow() - decGuardT0;
         // Re-stamped: this IS a validation, freshly computed. Without it a refresh under
         // CZ_VK_TEX_REFRESH_ALL — which bypasses the guard block entirely — would leave
         // guardFrame at an older frame and cost the next fetch a redundant hash.
@@ -7753,7 +7824,9 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // keyed on. See TextureEntry for why the cache needs both.
     entry.va = va;
     entry.srcBytes = srcBytes;
+    const uint64_t decGuardT0 = CycNow();
     entry.guard = TextureGuard(base + va, size_t(srcBytes), nullptr);
+    g_texDecGuardNs += CycNow() - decGuardT0;
     // ...and that guard IS this frame's validation. A texture uploaded during a frame is
     // fetched again by later draws of the same frame, and without this stamp the very
     // first of those re-hashes bytes that were read a few microseconds ago. Same `frame +
@@ -7768,6 +7841,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // See docs/phase5-notes.md 6aa; the counter stays because it is what named the
     // texture.
     {
+        const uint64_t decScanT0 = CycNow();
         bool allZero = true;
         for (uint8_t b : pixels)
             if (b)
@@ -7788,6 +7862,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         for (size_t i = 8; uniform && i < pixels.size(); i++)
             if (pixels[i] != pixels[i % 8])
                 uniform = false;
+        g_texDecScanNs += CycNow() - decScanT0;
         if (uniform && !allZero)
         {
             Count("texture: uploaded a SINGLE REPEATED BLOCK — one flat colour");
@@ -7820,6 +7895,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // is what set 2's `TextureCube[]` binding requires — a 2D-array view in that heap is
     // a validation error, not a wrong picture. Vulkan's layer order is +X,-X,+Y,-Y,+Z,-Z
     // and so is D3D's, so the guest's face order carries across untouched.
+    const uint64_t decImageT0 = CycNow();
     if (!CreateImage(entry.image, t.width, t.height, format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT,
@@ -7833,6 +7909,7 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     }
     NameImage(entry.image, "texture %08X %ux%u fmt=%u %s slot %u", t.address, t.width,
               t.height, t.format, isCube ? "CUBE" : "2D", entry.slot);
+    g_texDecImageNs += CycNow() - decImageT0;
 
     // Stage through the upload buffer. Sized once at init; a texture larger than it
     // is counted and dropped rather than silently truncated.
@@ -23854,6 +23931,54 @@ void VkRenderer_DumpStats()
                     (g_texDecodeNs + g_texUploadNs)
                         ? 100.0 * double(g_texDecodeNs)
                               / double(g_texDecodeNs + g_texUploadNs) : 0.0);
+            // THE DECODE'S DECOMPOSITION (part 77), and the RESIDUAL is printed with it.
+            // Every column here is a scope inside the one clock above, so they must sum to
+            // less than it; what is left over is everything the split does not name, and a
+            // large residual means the split is wrong rather than that the work vanished.
+            // That is the "cannot return a false absence" shape part 74 had to build three
+            // times (§6dn §5, gotcha 439).
+            if (g_texDecodeNs)
+            {
+                const uint64_t named = g_texDecAllocNs + g_texDecBaseNs + g_texDecMipNs +
+                                       g_texDecMipChkNs + g_texDecScanNs +
+                                       g_texDecGuardNs + g_texDecImageNs;
+                const double tot = double(g_texDecodeNs);
+                auto pc = [&](uint64_t v) { return 100.0 * double(v) / tot; };
+                fprintf(stderr,
+                        "[vk]     decode split (ms / %% of decode): alloc %.1f (%.1f%%)  "
+                        "base-untile %.1f (%.1f%%)  mip-untile %.1f (%.1f%%)  "
+                        "mip-guards %.1f (%.1f%%)  content-scan %.1f (%.1f%%)  "
+                        "src-hash %.1f (%.1f%%)  vkCreateImage %.1f (%.1f%%)  "
+                        "RESIDUAL %.1f (%.1f%%)\n",
+                        double(g_texDecAllocNs) / 1e6, pc(g_texDecAllocNs),
+                        double(g_texDecBaseNs) / 1e6, pc(g_texDecBaseNs),
+                        double(g_texDecMipNs) / 1e6, pc(g_texDecMipNs),
+                        double(g_texDecMipChkNs) / 1e6, pc(g_texDecMipChkNs),
+                        double(g_texDecScanNs) / 1e6, pc(g_texDecScanNs),
+                        double(g_texDecGuardNs) / 1e6, pc(g_texDecGuardNs),
+                        double(g_texDecImageNs) / 1e6, pc(g_texDecImageNs),
+                        double(g_texDecodeNs - std::min(named, g_texDecodeNs)) / 1e6,
+                        pc(g_texDecodeNs - std::min(named, g_texDecodeNs)));
+                fprintf(stderr,
+                        "[vk]     base untile: %llu units over %llu uploads, %.1f ns/unit "
+                        "(a total cannot tell a slow loop from a lot of units)\n",
+                        (unsigned long long)g_texDecBaseUnits,
+                        (unsigned long long)g_texRealUploads,
+                        g_texDecBaseUnits
+                            ? double(g_texDecBaseNs) / double(g_texDecBaseUnits) : 0.0);
+            }
+            if (g_ciN)
+                fprintf(stderr,
+                        "[vk]     CreateImage x%llu (%.1f MB device): vkCreateImage %.1f ms"
+                        "  memReq %.1f  vkAllocateMemory %.1f  bind %.1f  view %.1f "
+                        " -> %.0f us each\n",
+                        (unsigned long long)g_ciN,
+                        double(g_ciAllocBytes) / 1048576.0,
+                        double(g_ciCreateNs) / 1e6, double(g_ciReqNs) / 1e6,
+                        double(g_ciAllocNs) / 1e6, double(g_ciBindNs) / 1e6,
+                        double(g_ciViewNs) / 1e6,
+                        double(g_ciCreateNs + g_ciReqNs + g_ciAllocNs + g_ciBindNs +
+                               g_ciViewNs) / 1000.0 / double(g_ciN));
             if (g_immN)
                 fprintf(stderr,
                         "[vk]     immediate submits: %llu, %.1f ms total, of which "
