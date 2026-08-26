@@ -813,10 +813,12 @@ where that ground is. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-25 (**PART 76 CLOSED — PERFORMANCE. The largest column in
-the operator's crowd frame was OUR OWN LAUNCHER, and the fix is −16.4% of the frame.**
-**`docs/part77-kickoff.md` IS THE LIVE HAND-OFF.** Record: `phase5-notes.md` **§6dq**;
-lessons: gotchas **451-454**):
+Where the port is, as of 2026-08-26 (**PART 76 CLOSED, NOTHING OWED — PERFORMANCE. The
+largest column in the operator's crowd frame was OUR OWN LAUNCHER; the fix is −16.4% of the
+frame and −28.6% at their own load, and the two operator sessions that verified it also
+established that THIS PORT HAS TWO REGIMES.** **`docs/part77-kickoff.md` IS THE LIVE
+HAND-OFF.** Records: `phase5-notes.md` **§6dq** (the fix) and **§6dr** (the operator
+sessions and the regime); lessons: gotchas **451-454**):
 
 * **THE ITEM WAS `part76-kickoff.md` §1's FIRST: the F8/F9 readback, 3.49 ms of a 23.31 ms
   crowd frame and not the game.** Part 54's swapchain was built to delete the present
