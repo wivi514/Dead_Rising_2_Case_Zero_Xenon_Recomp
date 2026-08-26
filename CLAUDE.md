@@ -838,7 +838,7 @@ is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ 
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-26 (**PART 78 CLOSED, ONE THING OWED (THE OPERATOR'S EYE) — PERFORMANCE. THE
+Where the port is, as of 2026-08-26 (**PART 78 CLOSED, NOTHING OWED — PERFORMANCE. THE
 BOARD'S ITEM 1 WAS THE GPU, WHICH THIS PROJECT HAD NEVER LOOKED AT; IT HAS A BREAKDOWN NOW,
 AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME. THE OPERATOR
 HAS CONFIRMED IT AND THE REGIME TABLE MOVED.**
@@ -920,9 +920,11 @@ lessons: gotchas **459-464**):
   converts nearly 1:1 up to ~2 ms where it had almost no room before, which is why part 79's
   board leads with `FlushTextureUploads`' wait rather than another GPU item. **§6dv §2
   supersedes `part77-kickoff.md` §0b.**
-* **STILL OWED: their EYE.** Every automatic check says the picture is unchanged and this
-  change cannot alter a pixel by construction — but no counter in this renderer can answer
-  "does it look right", and that channel has only ever been the operator.
+* **AND THEIR EYE CLOSED IT: *"Everything looked normal, no visual difference"*** — across
+  boot, title, the outdoor world and crowds at 8,300-8,800 draws (§6dv §3b). Worth collecting
+  explicitly even though the change cannot alter a pixel by construction: this project has
+  twice shipped a defect only the operator's eye could see (§6bo's lightmap transposition,
+  part 60's overlay) and every automatic check was green both times.
 * **Gates:** `--smoke` OK on every build; sync validation **0 hazards** in both arms and
   **shown capable of failing**; `shader_dim_census` clean (339 2D / 100 cube, 0
   disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name

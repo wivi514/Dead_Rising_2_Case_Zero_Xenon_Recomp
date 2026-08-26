@@ -18168,6 +18168,25 @@ GPU split residual        0.9%
 The upload population is part 77's, measured again a day later and holding. Zero F7 marks
 is the second consecutive session with none.
 
+### 3b. THE PICTURE, FROM THE ONLY CHANNEL THAT CAN ANSWER IT
+
+Asked directly, after the numbers were in and after they had been told what the change was:
+
+> *"Everything looked normal, no visual difference"*
+
+**That closes part 78.** It is the half no counter in this renderer can produce, and it is
+worth having explicitly even though the change cannot alter a pixel by construction: this
+project has twice shipped a defect that only the operator's eye could see (§6bo's lightmap
+transposition, part 60's overlay), and in both cases every automatic check was green.
+
+Scope, because a verdict is evidence about what it was taken on: it covers the ~10,700-frame
+session recorded here — boot, title, the outdoor world and crowds at 8,300-8,800 draws — and
+it is a statement about the PICTURE. They did not comment on how the frame rate FELT, and
+nothing is lost by that: the data predicted the change would be imperceptible at their load
+(−2.3% to −2.9% on the wall above 7,000 draws) and a report of "no difference" would have
+been the expected answer rather than an informative one. **The saving they will feel is the
+one part 79 buys with the headroom this freed.**
+
 ### 4. WHAT THEIR SPLIT SAYS ABOUT PART 79's BOARD
 
 Their own per-region split, 10,722 frames, residual 0.9%, is the first one taken at an

@@ -189,24 +189,20 @@ is not a drop.
 Everything in `part76-kickoff.md` §5 still holds, plus part 77's two: a trace with no `.rc`
 beside it is a run that has not finished, and do not quote the run's overall maximum frame.
 
-## 4. WHAT IS OWED — the measured half is ANSWERED; the operator's EYE is not
+## 4. NOTHING IS OWED — both halves are in
 
-**The measurement is in and the pre-registered prediction held on both halves** (§6dv §1):
-GPU −11.5% to −14.3% at their crowd, wall only −2.3% to −2.9% there because they are
-CPU-bound, and −11% on the wall below 7,000 draws where they are not. 0 F7 marks in 10,748
-frames; every counter gate clean.
+**The measurement** (§6dv §1): the pre-registered prediction held on both halves — GPU
+−11.5% to −14.3% at their crowd, wall only −2.3% to −2.9% there because they are CPU-bound,
+and −11% on the wall below 7,000 draws where they are not. 0 F7 marks in 10,748 frames; every
+counter gate clean.
 
-**What is still owed is their EYE, AND IT WAS NOT COLLECTED.** They played the session and
-went straight on to part 79 without giving a subjective verdict, so **there is no operator
-statement about part 78's picture or feel — do not read one into §6dv.** What §6dv reports is
-entirely instrument output from their run.
+**The picture** (§6dv §3b), from the only channel that can answer it: *"Everything looked
+normal, no visual difference"* — across boot, title, the outdoor world and crowds at
+8,300-8,800 draws. `CZ_VK_WIDE_BARRIERS=1` remains the same-binary control arm if a doubt
+ever arises.
 
-That is a small risk and worth naming rather than glossing: every automatic check says the
-picture is unchanged, the change cannot alter a pixel by construction, and the same-binary
-control arm exists (`CZ_VK_WIDE_BARRIERS=1`) if a doubt ever arises. But no counter in this
-renderer can answer "does it look right", and this project has twice had a defect that only
-the operator's eye could see (§6bo's lightmap transposition, part 60's overlay). **Ask at the
-start of the next operator session**, before the new work has anything to hide behind:
-does anything differ from before part 78, and did the crowd FEEL different (the honest answer
-from the data is: barely, and that is expected — the saving is on a resource they were not
-waiting on).
+They did not comment on how the frame rate FELT and nothing is lost by that: the data
+predicted the change would be imperceptible at their load, so "no difference" would have been
+the expected answer rather than an informative one. **The saving they will feel is the one
+item 1 buys with the headroom part 78 freed** — and that is the thing to put in front of them
+next.
