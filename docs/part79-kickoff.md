@@ -194,8 +194,17 @@ GPU −11.5% to −14.3% at their crowd, wall only −2.3% to −2.9% there beca
 CPU-bound, and −11% on the wall below 7,000 draws where they are not. 0 F7 marks in 10,748
 frames; every counter gate clean.
 
-**What is still owed is their EYE.** Every automatic check says the picture is unchanged and
-this change cannot alter a pixel by construction, but no counter in this renderer can answer
-"does it look right" — that channel has only ever been the operator. Ask specifically whether
-anything differs from their last session, and whether the frame rate FELT different at their
-crowd (the honest answer from the data is: barely, and that is expected).
+**What is still owed is their EYE, AND IT WAS NOT COLLECTED.** They played the session and
+went straight on to part 79 without giving a subjective verdict, so **there is no operator
+statement about part 78's picture or feel — do not read one into §6dv.** What §6dv reports is
+entirely instrument output from their run.
+
+That is a small risk and worth naming rather than glossing: every automatic check says the
+picture is unchanged, the change cannot alter a pixel by construction, and the same-binary
+control arm exists (`CZ_VK_WIDE_BARRIERS=1`) if a doubt ever arises. But no counter in this
+renderer can answer "does it look right", and this project has twice had a defect that only
+the operator's eye could see (§6bo's lightmap transposition, part 60's overlay). **Ask at the
+start of the next operator session**, before the new work has anything to hide behind:
+does anything differ from before part 78, and did the crowd FEEL different (the honest answer
+from the data is: barely, and that is expected — the saving is on a resource they were not
+waiting on).

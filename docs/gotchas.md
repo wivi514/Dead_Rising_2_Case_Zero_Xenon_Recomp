@@ -5271,3 +5271,21 @@ From phase C part 18 (the frame rate — and none of it was work):
      fast path will silently not provide it.** Have it report what it did — this one now
      returns whether it transitioned, and the write sites issue their own dependency when it
      did not.
+
+464. **A FIX ON ONE SIDE OF A BOTTLENECK RE-PRICES EVERY ITEM ON THE OTHER SIDE — RE-DERIVE
+     THE REGIME, DO NOT CARRY THE TABLE FORWARD.** Part 78 took 11.5-14.3% off the GPU at the
+     operator's load. Almost none of it reached their frame, because they were CPU-bound
+     there — which is exactly what was predicted and looks like a disappointing result. **It
+     is the opposite.** The GPU headroom at their crowd roughly doubled (0.58 -> 1.93 ms at
+     7,000-9,000 draws, 1.38 -> 2.38 at 9,000-12,000), every band from 3,000 draws up moved
+     from GPU-bound or balanced to CPU-BOUND, and the fence wait went to 0.00 everywhere
+     above 3,000. **The CPU items on the backlog are now worth roughly three times what they
+     were worth the day before, and nothing about them changed.**
+     Two habits follow. **(1) A regime table has a shelf life exactly as a number does**
+     (gotcha 13): `part77-kickoff.md` §0b's "crossover at 6,000-7,000 draws" was correct when
+     written and wrong two parts later, and a session that carried it forward would have
+     ranked its board on a dead fact. **(2) Judge a fix on the resource it targets, not only
+     on the wall clock.** Reading part 78 as "−2.3% at the operator's crowd" is true and
+     nearly useless; reading it as "−14.3% of the GPU, which converted the frame to
+     CPU-bound and freed 1.35 ms of headroom" is what tells the next session what to do.
+     The same shape as gotcha 453 read from the other end.
