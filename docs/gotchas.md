@@ -5205,3 +5205,69 @@ From phase C part 18 (the frame rate — and none of it was work):
      change to WHEN a resource is written or transitioned, gate on the picture or on an
      explicit invariant counter — something whose reading is produced BY the change — not on
      a checker that may not be looking.
+
+459. **A PARTITION THAT IS EXACT BY CONSTRUCTION HAS NO WAY TO SAY IT IS WRONG — SPLIT A
+     TOTAL WITH EXPLICIT INTERVALS, NOT WITH A CHAIN OF BOUNDARIES.** Part 78 needed the
+     frame's GPU time split by region. The obvious design is a chain of timestamps at every
+     boundary: consecutive deltas partition the frame exactly, every nanosecond is
+     accounted for, the numbers always add up. **That last property is the defect.** A
+     chain cannot have a residual, so it cannot report that a region is missing, mislabelled
+     or wrapped around the wrong work — it will confidently charge unwrapped work to
+     whichever class happens to come next. The instrument shipped as explicit (begin, end)
+     PAIRS around named regions, with everything between them unattributed and printed
+     FIRST, and that residual moved 16.7% -> 3.5% when the barriers were brought inside the
+     regions — which is how the barriers became the finding rather than staying invisible.
+     Same shape as part 77's decode residual (gotcha 456) one level down: **read the
+     residual first; a large one means the split is wrong, not that work vanished.**
+
+460. **A CLASSIFIER THAT READS SOMEBODY ELSE'S COUNTER READS IT AFTER THEY RESET IT.**
+     Part 78's per-pass GPU split bucketed each render scope by `R->drawsThisPass` at the
+     point the scope closed, and reported **65% of the frame's GPU time in passes with ZERO
+     draws** — a bucket that cannot exist. `DoResolve` zeroes that counter in its histogram
+     block *before* the `EndRendering` that closes the scope. The §4b cycle clock two hundred
+     lines above says so in a comment and captures its own class at entry for exactly this
+     reason; it was read and the bug was written anyway. The fix is not to capture earlier,
+     it is to **own the counter**: one the instrument increments and resets itself cannot be
+     reset out from under its reader by code that knows nothing about it. The tell was that
+     the impossible bucket was also the LARGEST one — a classifier whose dominant class is
+     one you cannot explain is misreading its key, not discovering something.
+
+461. **THE ALWAYS-CORRECT SYNCHRONISATION PRIMITIVE IS THE ONE NOBODY EVER MEASURES.**
+     Every image barrier in this renderer used `ALL_COMMANDS -> ALL_COMMANDS` with
+     `MEMORY_READ | MEMORY_WRITE`. That is the right thing to write while a renderer is being
+     built — it cannot be too weak, so it can never be the cause of a corruption, and it
+     therefore never appears in any bug hunt. **It was 0.930 ms of an 8.49 ms GPU frame,
+     11.0%**, because this renderer oscillates two full-size EDRAM images between attachment
+     and transfer layouts 49 times a frame and each barrier was a full pipeline drain plus a
+     cache flush. Deriving the masks from the layouts took it to 0.126 ms.
+     **The general form: a construct chosen because it is conservatively safe is invisible to
+     correctness work by definition, so the only thing that will ever price it is a
+     measurement you go and take.** Ask of any such construct how many times a frame it runs
+     before assuming its width is free.
+
+462. **CORRECTING ONE THING CAN EXPOSE A HAZARD A NEIGHBOUR WAS HIDING — AND THAT HAZARD WAS
+     ALWAYS THERE.** With the barrier masks narrowed, synchronization validation reported ten
+     `WRITE-AFTER-READ` on the SWAPCHAIN image per run: its `PRESENT_SRC -> TRANSFER_DST`
+     transition is scheduled at `TOP_OF_PIPE` while the acquire semaphore is waited at
+     `TRANSFER`, so it can write an image the presentation engine has not released. That
+     barrier is hand-written and part 78 did not touch it. It was silent before **because
+     every other barrier in the frame used ALL_COMMANDS and formed a dependency chain the
+     layer accepted** — the defect was riding on its neighbours' over-synchronisation.
+     Do not read "the new arm reports hazards the control does not" as "the new arm is
+     wrong"; ask which of the two is *hiding* something. And when a fix removes accidental
+     protection, the places that were relying on it are a list you must go and find, not a
+     regression.
+
+463. **AN EARLY RETURN IN A BARRIER HELPER IS A MISSING DEPENDENCY, NOT A SAVING.**
+     `Barrier(cmd, img, layout)` returned immediately when the image was already in the
+     layout asked for. That is correct for a *transition* and wrong for the caller's actual
+     question, which is "may I write this now": two consecutive `vkCmdClearDepthStencilImage`
+     calls on the same surface got **no ordering between them at all**, and which clear value
+     survives is undefined. This title issues ~41 colour and ~41 depth clears a frame, so
+     consecutive ones happen. Synchronization validation named it in both the new and the old
+     arm, i.e. it had been there since the renderer was written and no picture instrument had
+     ever been able to see it. **A helper named for the mechanism (`Barrier`) rather than for
+     the guarantee (`safe to write`) will be called at sites needing the guarantee, and its
+     fast path will silently not provide it.** Have it report what it did — this one now
+     returns whether it transitioned, and the write sites issue their own dependency when it
+     did not.

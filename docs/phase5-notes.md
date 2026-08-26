@@ -17844,3 +17844,254 @@ no translated shader   0        slot mix-ups        0        CONST MEMO STALE   
 stale present slots    0        BLOCK alloc failed  0        untile units BLACK    none
 shader dumps           449 distinct, cache 449, name diff EMPTY — no new shaders
 ```
+
+## §6du — Part 78: the first GPU-side breakdown this port has had, and the 137 barriers a frame it found (2026-08-26)
+
+`part78-kickoff.md` §1 item 1 was **the GPU** — "now the largest thing nobody has ever
+looked at". Part 76 had measured it as a flat 6.97 -> 12.20 ms across a 4x range of draw
+counts and concluded that three quarters of a crowd frame's device cost is already there in
+a light scene, i.e. that it is full-screen work. **What nobody could say is WHICH full-screen
+work**, because this renderer writes exactly two timestamps a frame and they bracket the
+entire command buffer.
+
+This section is the instrument that answers it, what it said, and the one fix it named.
+
+### 1. THE INSTRUMENT — `CZ_VK_GPU_PASSES=1`, and why it is intervals and not a chain
+
+Two timestamps around each named region of the frame's own command buffer, read back at
+exactly the point the existing whole-frame pair is read — after that slot's fence has been
+waited on, so nothing blocks to measure a block (gotcha 7).
+
+**It is explicit (begin, end) PAIRS and not a chain of boundaries, and that is the whole
+design decision.** A chain partitions the frame exactly, which sounds better and is worse:
+the partition is exact *by construction*, so it has no residual and therefore no way to
+report that it is wrong. Part 77's lesson was that a split you cannot check is a split you
+will believe (gotcha 456). With pairs, whatever falls between regions is unattributed and
+printed FIRST.
+
+That paid immediately, three times:
+
+* the first version left the barriers out of the wrapped regions and read a **16.7%
+  residual**; wrapping them took it to **3.5%**, which is what said the barriers were the
+  story rather than an afterthought;
+* the second version classified **every pass as "0 draws" — 65% of the frame in a bucket
+  that cannot exist** — because `DoResolve` zeroes `drawsThisPass` in its histogram block
+  BEFORE the `EndRendering` that closes the scope. The §4b cycle clock two hundred lines up
+  says exactly that in a comment and captures its own class at entry; I read it and still
+  wrote the bug. The fix is a counter the instrument owns (`g_gpPassDraws`), which cannot be
+  reset out from under its reader;
+* the third version **overflowed its query pool**, 1,454,670 regions dropped. The symptom was
+  not a missing number — it was `present blit` reading **0.15 regions a frame where exactly
+  one exists**, and every truncated class quietly reading low. The overflow counter is
+  printed for that reason.
+
+**Its own bill is nil**: `GPU frame time` reads 8.65 ms on part 77's control run without it
+and 8.49-8.67 ms across four runs with it. `vkCmdWriteTimestamp` does not stall subsequent
+commands, and the attributed sum staying *below* the frame total is the check that the
+regions are not double-counting overlap.
+
+### 2. THE BREAKDOWN — autonomous route, 3440x1440 internal, 16,907 frames
+
+| region | ms/frame | % of GPU frame | regions/frame | ns each |
+|---|---|---|---|---|
+| **pass: >=256 draws** | **4.224** | **49.8%** | 3.11 | 1,358,271 |
+| pass: 1 draw | 0.838 | 9.9% | 29.87 | 28,051 |
+| resolve copy | 0.712 | 8.4% | 49.04 | 14,527 |
+| resolve clear | 0.691 | 8.1% | 81.65 | 8,468 |
+| pass: 2-255 draws | 0.592 | 7.0% | 6.50 | 91,021 |
+| **resolve barriers** | **0.579** | **6.8%** | 98.08 | 5,906 |
+| **pass-begin barriers** | **0.351** | **4.1%** | 39.48 | 8,878 |
+| snapshot views | 0.114 | 1.3% | 7.60 | 14,987 |
+| present blit | 0.063 | 0.7% | 1.00 | 63,170 |
+| cube face refresh | 0.029 | 0.3% | 2.07 | 13,990 |
+| RESIDUAL | 0.294 | 3.5% | — | — |
+| **total** | **8.488** | | | |
+
+Read it as two halves. **The title's own rendering is 5.65 ms** — the three `pass:` classes —
+and **the EDRAM emulation's overhead is 2.84 ms, a third of the device's frame.** Nothing in
+that second half is the game.
+
+Three things in it are worth writing down on their own:
+
+* **LAYOUT TRANSITIONS ARE 0.930 ms/FRAME, 11.0%.** 137.6 of them, oscillating the same two
+  full-size EDRAM images between attachment and transfer layouts 49 times a frame. This is
+  §3 below and it is the part that got fixed.
+* **The resolve copies move 48.90 Mpixel/frame — 6.9 full EDRAM surfaces' worth** — for
+  0.712 ms. That is not a slow copy; it is a lot of copying, and it is the price of serving
+  the title's own resolve destinations as sampled images.
+* **The resolve clears write 575.29 Mpixel/frame over 81.7 clears, where the passes they
+  follow rendered only 32.85 Mpixel.** Every clear takes the whole EDRAM stand-in because
+  `vkCmdClearColorImage` takes a subresource range and not a rectangle. **Scoping them would
+  remove 94.3% of what they write** — but the class is only 0.691 ms, so the ceiling is
+  0.65 ms and the depth-scoped form already in the tree (`CZ_VK_SCOPED_CLEAR`) spends a
+  render-scope cycle per clear to get it, which §4b prices at ~6.6 us of CPU each and 81
+  a frame. **Filed with its number, not started**, which is the part-77 discipline.
+
+**`pass: 1 draw` is 29.87 passes a frame at 28 us each even after the begin-barriers are
+taken out of it.** That is the post chain: 30 one-draw passes plus 6.5 small ones,
+1.43 ms/frame, and it is very likely what part 76 was seeing as a fixed floor that does not
+scale with the crowd. It is the next GPU item and it has not been decomposed.
+
+### 3. THE FIX — the barrier masks were `ALL_COMMANDS -> ALL_COMMANDS` everywhere
+
+`Barrier()` is this renderer's only image-transition primitive and it has always issued
+
+```
+srcStageMask  = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+dstStageMask  = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+srcAccessMask = dstAccessMask = MEMORY_READ | MEMORY_WRITE
+```
+
+That is the always-correct form and it was the right thing to write while the renderer was
+being built: it cannot be too weak, so it can never be the cause of a corruption. **For
+twenty parts nothing measured it.** On this device (RTX 3070) it makes each barrier a full
+pipeline drain plus a cache flush-and-invalidate, 137.6 times a frame.
+
+The fix is to say the dependency exactly: `LayoutMasks()` derives the stage and access masks
+from the layouts the barrier moves between. The mapping is exact rather than approximate and
+the two places it could be too weak are named in the code — `SHADER_READ_ONLY` lists vertex,
+fragment and compute (this renderer compiles no geometry or tessellation stage, and its ray
+tracing is ray QUERY inside ordinary shaders rather than a ray-tracing pipeline), and
+`GENERAL` plus anything unlisted keeps the wide form rather than guessing.
+
+**`CZ_VK_WIDE_BARRIERS=1` is the same-binary control arm**, and it is instrumented: the
+per-run line reads `309,539 barriers, 0 of them WIDE (0.0%)` on the fix and
+`317,296, 317,296 WIDE (100.0%)` on the control, so the arm is shown to have engaged rather
+than assumed to have (gotcha 151).
+
+**The per-region split, same route, both arms:**
+
+| region | ns each, wide | ns each, narrow |
+|---|---|---|
+| pass-begin barriers | 8,878 | **1,240** |
+| resolve barriers | 5,906 | **1,038** |
+| (as ms/frame, together) | **0.930** | **0.126** |
+
+### 4. THE GATE — synchronization validation, for the first time in this project
+
+A narrowed dependency is a *legal API call that races*, so `CZ_VK_VALIDATION=1` cannot see
+it: the layer checks that a call is well-formed, and part 77 had just finished showing that
+it will report clean on a build with 1,400 textures never uploaded (gotcha 458).
+
+`CZ_VK_SYNC_VALIDATION=1` turns on
+`VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT` and implies the layer. It has
+never been run here before, and it found two things at once:
+
+**(a) A hazard the fix exposed but did not create.** The swapchain image's
+`PRESENT_SRC -> TRANSFER_DST` transition is a hand-written barrier with `srcStage =
+TOP_OF_PIPE`, while the acquire semaphore is waited at `TRANSFER` — so the transition can
+execute before the presentation engine has released the image. Ten
+`SYNC-HAZARD-WRITE-AFTER-READ` a run. **It was invisible while every other barrier in the
+frame used ALL_COMMANDS**: those formed a dependency chain the layer accepted. Narrowing the
+137 EDRAM transitions broke the chain this one was riding. Fixed by making that one barrier
+`ALL_COMMANDS` deliberately — it runs once a frame against 137 that do not, so its width
+costs nothing, and what it must synchronise against is an agent outside the pipeline
+entirely.
+
+**(b) A pre-existing defect, present identically in both arms.** `Barrier()` early-returns
+when the image is already in the layout asked for, and issues nothing — so two consecutive
+`vkCmdClearDepthStencilImage` calls on the EDRAM depth surface have **no ordering between
+them at all** and which clear value survives is undefined. This title produces ~41 colour and
+~41 depth clears a frame, so consecutive ones happen. `Barrier()` now returns whether it
+transitioned and the two clear sites issue a `TRANSFER -> TRANSFER` write-after-write
+dependency when it did not.
+
+**The gate, and the proof it can fail (gotcha 30):**
+
+```
+CZ_VK_SYNC_VALIDATION=1                        0 hazards          <- the shipping build
+CZ_VK_SYNC_VALIDATION=1 CZ_VK_WIDE_BARRIERS=1  0 hazards          <- the control arm
+CZ_VK_SYNC_VALIDATION=1 CZ_VK_BARRIER_POISON=1 30, seven call sites
+```
+
+`CZ_VK_BARRIER_POISON=1` makes every barrier's dependency empty — `TOP_OF_PIPE` to
+`BOTTOM_OF_PIPE` with no access — which is a legal call and a real race. Under it the layer
+reports READ-AFTER-WRITE, WRITE-AFTER-READ and WRITE-AFTER-WRITE across `vkCmdBeginRendering`,
+`vkCmdBlitImage`, `vkCmdCopyImage`, `vkCmdCopyBufferToImage`, `vkCmdPipelineBarrier` and
+`vkQueueSubmit`. **A gate that has never failed has not been shown capable of failing.**
+
+**Coverage, stated because it is not total.** Synchronization validation is slow enough that
+the standard route stalls in the menus — the first three gate runs peaked at 2,538 draws and
+their own route gate correctly refused them. A run at 1280x720 with a 9 s menu cadence
+reaches **5,268 draws (the outdoor crowd) and is clean**; that is the one to quote.
+
+### 5. ITEM 3 IS PRICED AND DEAD — pipeline compilation on the load frame is 8.8 ms, not 40
+
+`part78-kickoff.md` §1 item 3 asked for exactly one thing before any design work: *"the
+trace's `pipes` column is per frame and unconditional, so one banded read of an existing run
+says whether this is 10 ms or 40."* It is two greps of part 77's own traces, and it should
+have been done before the item was written down.
+
+| part 77 fix run | 1 | 2 | 3 |
+|---|---|---|---|
+| burst frame: uploads | 778 | 780 | 779 |
+| burst frame: pipelines built | 97 | 97 | 97 |
+| **time building them** | **8.8 ms** | 8.8 | 8.8 |
+| burst frame WALL | 158.1 ms | 164.5 | 164.6 |
+| burst frame GPU | 3.4 ms | 3.4 | 3.4 |
+| whole run: pipelines / ms | 279 / 29.6 | — | — |
+
+**The 97-pipeline frame IS the burst frame** — same frame, same event, every run — and
+pipeline creation is **5.6% of it**. The standing kill for a hitch item on this route has
+been 40 ms off the worst frame since part 75, and 8.8 ms does not come close.
+`part78-kickoff.md` §0's "~40 ms of it is pipeline creation and ordinary draws" is correct
+as written and is retracted as an implied size for THIS item: the pipelines are 9 of that 40
+and the ordinary draws are the other 31.
+
+Note also that the burst frame's **GPU is 3.4 ms while its wall is 158-165** — after part 77
+the load frame is entirely CPU, which is why item 1's GPU work does not touch it.
+
+### 6. THE A/B — three runs an arm, alternated, one binary, one variable
+
+`tools/part78_barrier_ab.sh`. `CZ_VK_RES=3440x1440` pinned in both arms;
+`CZ_VK_GPU_PASSES=1` carried in BOTH, because an instrument with a bill must be in both or
+in neither and because the GPU split is the quantity the change acts on.
+
+**The reader is `part76_band.py` and not `part75_ab_report.py`, deliberately.** A barrier is
+on every presented frame, menu included, so the menu window is not a control channel for
+this change — it is a second measurement of it (gotcha 452).
+
+**The GPU side, which is what the change touches:**
+
+| | fix1 | fix2 | fix3 | ctl1 | ctl2 | ctl3 |
+|---|---|---|---|---|---|---|
+| pass-begin barriers, ns each | 786 | 790 | 786 | 8,874 | 8,887 | 8,882 |
+| resolve barriers, ns each | 664 | 668 | 662 | 5,848 | 5,825 | 5,848 |
+| **both, ms/frame** | 0.099 | 0.099 | 0.106 | **0.938** | 0.937 | 0.938 |
+| GPU frame, ms | 7.578 | 7.540 | — | 8.575 | 8.583 | 8.617 |
+
+**The wall clock:**
+
+```
+WHOLE CROWD (>= 5000 draws)     fix  9.29 ms (107.6 fps)  n=75  draw median 6011
+                                ctl 10.54 ms ( 94.9 fps)  n=75  draw median 6152
+                                delta -1.25 ms  -11.9%
+
+matched 250-draw bands          5500-5750  -13.3%   -1.34 ms
+                                5750-6000  -11.2%   -1.16
+                                6000-6250  -12.6%   -1.37
+                                6250-6500  -11.0%   -1.15
+
+MENU window (2300-2700 draws)   fix 7.19   ctl 8.60   -16.4%   (a SECOND measurement)
+
+NULL, two runs of the same arm  whole crowd +1.0%; bands -0.3%, +1.5%, +3.8%; menu -0.8%
+```
+
+**−11.9% against a +1.0% floor, and monotone across every band.** The fix arm draws *fewer*
+frames' worth of geometry than the control (6,011 against 6,152 median), which is why the
+banded table is the honest reading — and it agrees, at −11.0% to −13.3%.
+
+Two notes on the method, both mistakes made and corrected inside this A/B:
+
+* **One of the first six runs never reached the outdoor world** (peak 2,562 draws), the
+  route gate said so loudly, and the driver globbed its log into the comparison anyway —
+  where it contributed 26 extra MENU windows to one arm and none to the other. It changed no
+  crowd number, because it had no crowd windows to contribute, but it made the menu counts
+  41-versus-15. `part76-kickoff.md` §5 says a failed run is dropped BY NAME; a message on the
+  terminal is not a drop. The driver now renames a failed log to `.rejected` so the globs
+  cannot see it, and a replacement run was taken.
+* **The replacement run is on a binary one counter different from the other five** — part 78
+  moved the write-after-write barriers out of `g_barrierN` into their own counter, because
+  mixing the two populations made the wide control arm read **98.4% wide when nothing had
+  failed**. No Vulkan call differs. It is stated rather than hidden, and the null pair
+  (fix1 vs fix2) is same-binary.

@@ -1420,6 +1420,45 @@ CZ_VK_VALIDATION=1 the Khronos validation layer. Slow at ~900 draws a frame, and
                    **STANDING GATE: one run per session, quote the tally.** As of part 26
                    the outdoor route reports 20 x `VkGraphicsPipelineCreateInfo-Input-08733`
                    and 6 x `VkGraphicsPipelineCreateInfo-topology-08773`, and nothing else
+CZ_VK_SYNC_VALIDATION=1  **SYNCHRONIZATION validation**, and it implies CZ_VK_VALIDATION.
+                   A separate switch because it is a separate instrument: the ordinary
+                   layer checks that an API CALL is legal, this one checks that a memory
+                   dependency actually COVERS the accesses on either side of it. It is the
+                   only thing that can gate a change to a barrier's stage or access masks,
+                   because a too-narrow dependency is a legal call that races — and part 77
+                   had just shown the ordinary layer reporting clean on a build with 1,400
+                   textures never uploaded (gotcha 458). **STANDING GATE for any barrier
+                   change: 0 hazards.** As of part 78 the shipping build and the
+                   CZ_VK_WIDE_BARRIERS control arm both read 0.
+                   **It is slow enough to change the route**: the first three attempts
+                   peaked at 2,538 draws and their own route gate refused them. Use
+                   `CZ_VK_RES=1280x720 PRESSMS=9000 SECS=45 TIMEOUT=420`, which reaches
+                   5,268 draws
+CZ_VK_BARRIER_POISON=1  **NOT a control arm — the POSITIVE CONTROL for the one above.**
+                   Every image barrier's dependency becomes empty (TOP_OF_PIPE to
+                   BOTTOM_OF_PIPE, no access), which is a legal API call and a real race.
+                   Synchronization validation MUST scream under it — 30 hazards across
+                   seven call sites — and a quiet log means the gate is not watching rather
+                   than that the renderer is correct (gotcha 30)
+CZ_VK_WIDE_BARRIERS=1  the same-binary control arm for part 78's narrowed barrier masks:
+                   every image transition goes back to `ALL_COMMANDS -> ALL_COMMANDS` with
+                   `MEMORY_READ | MEMORY_WRITE`, i.e. this renderer through part 77. The
+                   unconditional `image barriers:` line at exit says what share actually
+                   took the wide form, so the arm is shown to have engaged rather than
+                   assumed to have (gotcha 151): 100.0% under the arm, 0.0% without
+CZ_VK_GPU_PASSES=1 **THE FRAME'S GPU TIME, SPLIT BY REGION** (part 78 item 1) — passes
+                   bucketed by draw count, resolve copies, resolve clears, the two barrier
+                   classes, snapshot views, cube face refreshes, the present blit and the
+                   present readback, **with the RESIDUAL printed first**. Two timestamps per
+                   region on the frame's own command buffer, read back after that slot's
+                   fence has already been waited on so it never blocks to measure a block.
+                   Its bill is nil (8.65 ms without it, 8.49-8.67 with) because
+                   `vkCmdWriteTimestamp` does not stall what follows it.
+                   **Read the residual first** — a large one means a region is missing, not
+                   that GPU time vanished — and read the overflow line if it appears, because
+                   a truncated frame reads LOW in every class. It also prints the resolve
+                   copies' Mpixel/frame and the clears' full-vs-scoped extents, which is what
+                   makes those two classes designable rather than just sized
 CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
                    An instrument, not an arm: it fabricates nothing, and it is the
                    witness that a real press reached XamInputGetState. Silent on a
