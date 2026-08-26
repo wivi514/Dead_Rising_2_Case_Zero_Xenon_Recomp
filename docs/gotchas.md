@@ -5182,3 +5182,26 @@ From phase C part 18 (the frame rate — and none of it was work):
      deliverable.** The tell to look for in a codebase is a comment that names another
      subsystem's consumption as a reason for your design — it is a measurement somebody
      already made of a cost they then declined to touch.
+
+458. **THE VULKAN VALIDATION LAYER IS BLIND TO IMAGE LAYOUTS IN A BINDLESS,
+     UPDATE-AFTER-BIND DESCRIPTOR ARRAY — AND IT REPORTS CLEAN, NOT UNKNOWN.** Part 77 built a
+     deliberately broken build (`CZ_VK_TEX_BATCH_BREAK=1`) that skipped the flush ordering
+     texture copies ahead of the frame that samples them. It left **~1,400 textures never
+     copied to the GPU at all**; thousands of draws sampled images in `UNDEFINED` layout with
+     no contents. `CZ_VK_VALIDATION=1` reported **only the six pre-existing pipeline VUIDs**,
+     the route gate passed, and every draw counter read healthy. The picture was FULLY BLACK.
+     The layer cannot statically associate a descriptor in a large update-after-bind array
+     with a draw, so it does not track those images' layouts — structural, not a layer bug,
+     and it says nothing rather than saying it cannot tell.
+     **The lesson is not "validation is unreliable"** — it named the white-surface UB in one
+     run and is still the first thing to reach for on pipelines, barriers on named images and
+     view/type mismatches. It is that **every gate has a blind region, and the only way to
+     find yours is to build the broken version and check the gate screams** (gotcha 30,
+     and gotcha 444's "a gate with a weak mode will be run in its weak mode forever"). Here
+     the working build and the black-screen build were *indistinguishable* to the gate that
+     had been chosen for them.
+     **What DID have power** was the era-median picture comparison with a null pair
+     (`tools/frame_era_medians.py`): coverage 99.87% -> 0.0000%, **43,421x the null.** For any
+     change to WHEN a resource is written or transitioned, gate on the picture or on an
+     explicit invariant counter — something whose reading is produced BY the change — not on
+     a checker that may not be looking.

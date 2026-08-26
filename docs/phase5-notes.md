@@ -17632,3 +17632,98 @@ CZ_VK_VERIFY_MIP_GUARD=1 ..._POISON=1   17,617 of 17,617 checks disagreed  (100.
 
 So the counter drift really is route variance, and the two computations are identical on
 every level of every chain the route touches.
+
+### 8. THE OTHER HALF OF ITEM 1: batching the upload submits
+
+With the allocation and the guards done, the decode is ~152 ms/run and **the staging+submit
+half is 534 ms — 77% of the whole texture path.** It is 2,432 `RunImmediate` calls, each an
+allocate/record/`vkQueueSubmit`/**`vkQueueWaitIdle`**/free, and part 73 established the
+expensive way that the wait PRIMITIVE is not the cost (gotcha 436): a per-call fence measured
+3.2x worse, a persistent fence agreed to 6%, and ~250 us is simply what one submit round-trip
+costs here. Only not doing 2,350 of them removes it.
+
+**The design is NOT the one the old comment in `RunImmediate` proposed.** That said to batch
+the copies into the FRAME's command buffer, which needs the render pass broken at each upload
+— legal, and priced at ~6.6 us a cycle (§6di §1), so ~15 ms across a run. Batching into ONE
+EXTRA immediate submit per burst costs nothing at all and needs no render-pass surgery: the
+copies go into their own command buffer, submitted on the same queue ahead of the frame's.
+
+**The ordering argument, in full, because it is the whole correctness case.** A pending copy
+is flushed (a) when the staging arena cannot hold the next upload and (b) immediately before
+the frame's own `vkQueueSubmit`. Every copy a frame's draws could sample is therefore on the
+queue ahead of that frame's command buffer, and the flush's own `SHADER_READ_ONLY` barrier
+has every later command on the queue in its second synchronisation scope. The other
+`RunImmediate` callers were audited and none of them touches `R->staging` or a guest texture
+image — they copy EDRAM colour into snapshots and snapshots into `R->readback`.
+
+The layout bookkeeping is the subtle part. `Barrier()` mutates `img.layout` at RECORD time,
+the record is now separated from the submit, and the `Image` lives inside a `FlatCache` whose
+`Insert` rehashes and MOVES it — so the batch captures the image by value with the layout it
+was in, and the cache entry is set to its post-flush layout at record time.
+
+**Engagement, from the counters, on a 30 s route:**
+
+```
+texture upload batch: 2352 jobs in 54 flushes (43.6 per flush, biggest 779),
+                      0 of them forced by a full staging arena
+immediate submits:    131, 92.5 ms total       <- was 2,432 and 557.3 ms
+staging+submit:       24.2 ms over the run, 10 us each   <- was 534.1 ms, 228 us each
+```
+
+**The whole 779-upload burst goes in ONE submit.** No flush was ever forced by the 64 MB
+staging arena, so the arena is not the constraint at this route's burst size.
+
+### 9. AND THE GATE FAILED ITS POSITIVE CONTROL BY BEING BLIND
+
+`CZ_VK_TEX_BATCH_BREAK=1` skips the pre-submit flush on purpose: frames then execute against
+images whose copies and layout transitions have not been submitted, which is exactly the
+defect the ordering argument rules out. Run with `CZ_VK_VALIDATION=1`, that build left
+**~1,400 textures never copied to the GPU at all** — the batch flushed once, when the 64 MB
+arena filled, and the rest were still pending at exit.
+
+**The validation layer reported the same six pre-existing pipeline VUIDs and nothing else.
+The route gate passed. The draw counters were healthy.** Thousands of draws sampled images in
+`UNDEFINED` layout with no contents and not one instrument in this runtime said so.
+
+The reason is structural rather than a layer bug: these images are reached through a
+**bindless, update-after-bind descriptor array**, and the layer does not track image layouts
+for descriptors it cannot statically associate with a draw. So `CZ_VK_VALIDATION=1` — which
+this project has relied on since part 45 and which named the white-surface UB in one run — is
+**blind to the entire texture heap's layouts**, and any future change to when a texture image
+is written or transitioned must be gated on something else. That is a gate with a weak mode,
+and the weak mode is the only mode it has here.
+
+### 10. WHAT IS LEFT IN THE DECODE, AND A PROVEN RESULT PART 78 CAN USE DIRECTLY
+
+After the pool and the guards the decode is ~152 ms/run and the untile loops finally ARE the
+largest part of it — base 51.1 + mips 28.1 = 79 ms, about half. At **4.6-4.7 ns per unit over
+11.5 million units** the loop is not slow; it does a ~20-operation address swizzle and a
+2-to-4-iteration byteswap per unit, and there are simply a lot of units.
+
+**The address swizzle is SEPARABLE, and that was checked rather than argued.**
+`Tiled2DOffset(x, y, W, b)` decomposes exactly as
+
+```
+Tiled2DOffset(x, y, W, b) == micro[b][(y & 31) * 32 + (x & 31)]
+                             + Tiled2DOffset((x >> 5) << 5, (y >> 5) << 5, W, b)
+```
+
+i.e. a 32x32 lookup table that depends only on `log2bpu` (never on the surface width) plus a
+per-macro-tile base the inner loop hoists. **Checked over 967,680 combinations — five unit
+sizes x six widths x 96 rows x every column — with zero mismatches.** The proof script is
+`tools/tile_offset_separable.py`.
+
+That turns twenty ALU operations per unit into one table load and an add. Two further facts
+from the same check, for whoever builds it:
+
+* within a row, consecutive units are **contiguous in memory** in runs of 8 units at 1 byte
+  each and 16 BYTES for every larger unit size — so a DXT1 (8-byte) untile can copy and swap
+  two units at a time and a DXT5 (16-byte) one unit at a time, with the address computed once
+  per run rather than per unit;
+* the run lengths are fixed per `log2bpu` and do not depend on the surface width either.
+
+**Do not build it without a price first.** 79 ms/run is ~25 ms on a 780-upload burst frame,
+and the pre-registered kill for this item's halves has been 40 ms off the worst frame
+throughout. A 3x on the untile is ~17 ms and would be correctly killed by that threshold; the
+honest reading is that this is now a SMALL item, and part 77's whole lesson is that the size
+of an item is a measurement and not an expectation.

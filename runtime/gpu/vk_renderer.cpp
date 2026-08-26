@@ -5925,6 +5925,61 @@ bool LoadShaders()
 // ===================================================================================
 // Immediate submits (uploads outside the frame's own recording)
 // ===================================================================================
+// ===================================================================================
+// THE TEXTURE UPLOAD BATCH — one submit per burst instead of one per texture
+// ===================================================================================
+//
+// WHAT IT REPLACES. Every texture upload ran its own `RunImmediate`: allocate a command
+// buffer, record two barriers and a copy, `vkQueueSubmit`, **`vkQueueWaitIdle`**, free.
+// Measured on the autonomous route: **2,432 immediate submits, 557.3 ms, of which 545.5 ms
+// (97.9%) is the submit-and-wait, 224 us each.** After part 77's memory pool that is 77% of
+// the whole texture path.
+//
+// AND THE WAIT PRIMITIVE IS NOT THE COST — part 73 established that the expensive way
+// (gotcha 436): a per-call fence measured 3.2x WORSE, a persistent fence agreed with
+// `vkQueueWaitIdle` to 6%, and ~250 us is simply what one submit round-trip costs here.
+// **The only change that removes it is not doing 2,350 of them.**
+//
+// WHAT THIS IS, AND WHY IT IS NOT THE DESIGN THE OLD COMMENT PROPOSED. That comment said to
+// batch the copies into the FRAME's own command buffer, which needs the render pass broken
+// at each upload — legal but priced at ~6.6 us a cycle (§6di §1), so ~15 ms across a run.
+// Batching into ONE EXTRA immediate submit per burst costs nothing at all and needs no
+// render-pass surgery: the copies go into their own command buffer, submitted on the same
+// queue BEFORE the frame's, which is exactly the ordering the draws need.
+//
+// THE ORDERING ARGUMENT, stated because it is the whole correctness case. A pending copy is
+// flushed (a) when the staging arena cannot hold the next upload, and (b) immediately before
+// the frame's own `vkQueueSubmit`. So every copy a frame's draws could sample is submitted
+// on the same queue ahead of that frame's command buffer, and the flush's own
+// `SHADER_READ_ONLY` barrier has every later command on the queue in its second
+// synchronisation scope. No draw can execute against an image whose copy has not run.
+//
+// THE LAYOUT BOOKKEEPING is the one subtle part. `Barrier()` mutates `img.layout` at RECORD
+// time, and the record is now separated from the submit — worse, the `Image` lives inside a
+// `FlatCache` whose `Insert` can rehash and move it, so the batch cannot hold a pointer to
+// it. So the batch captures the image BY VALUE together with the layout it was in, and the
+// cache entry is set to its post-flush layout at record time. Nothing else in this renderer
+// issues a barrier against a guest texture image, so the two cannot disagree.
+//
+// `CZ_VK_NO_TEX_BATCH=1` is the same-binary control arm: every upload submits and waits on
+// its own, i.e. the renderer through part 77's first commit.
+struct TexUploadJob
+{
+    VkImage image = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t levels = 1, layers = 1;
+    VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::vector<VkBufferImageCopy> copies;
+};
+std::vector<TexUploadJob> g_texBatch;
+bool g_texNoBatch = false;      // set once at init from CZ_VK_NO_TEX_BATCH
+VkDeviceSize g_stagingCursor = 0;
+// Engagement evidence (gotcha 151): a batch that always held exactly one job would be a
+// rename of the old path, and only these two numbers can say so.
+uint64_t g_texBatchFlushes = 0, g_texBatchJobs = 0, g_texBatchMaxJobs = 0,
+         g_texBatchFullFlushes = 0;
+void FlushTextureUploads();
+
 template <typename Body>
 bool RunImmediate(Body&& body)
 {
@@ -5974,6 +6029,65 @@ bool RunImmediate(Body&& body)
     g_immWaitNs += immW1 - immW0;
     g_immTotalNs += CycNow() - immT0;
     return true;
+}
+
+// Submit every pending texture copy as ONE command buffer. Called when the staging arena
+// is exhausted and immediately before the frame's own submit — see the TexUploadJob comment
+// for why those two points are sufficient.
+//
+// It still submits-and-WAITS, which is deliberate for a first version: the wait is now paid
+// a handful of times a burst instead of once per texture, and dropping it as well would
+// require recycling both the staging arena and the command buffer against a fence, i.e. a
+// second mechanism to get wrong in the same change. The counters below say how many waits
+// were actually saved.
+void FlushTextureUploads()
+{
+    if (g_texBatch.empty())
+        return;
+    ++g_texBatchFlushes;
+    g_texBatchJobs += g_texBatch.size();
+    if (g_texBatch.size() > g_texBatchMaxJobs)
+        g_texBatchMaxJobs = g_texBatch.size();
+    RunImmediate([&](VkCommandBuffer cb) {
+        for (TexUploadJob& j : g_texBatch)
+        {
+            Image tmp{};
+            tmp.image = j.image;
+            tmp.format = j.format;
+            tmp.levels = j.levels;
+            tmp.layers = j.layers;
+            tmp.layout = j.oldLayout;
+            Barrier(cb, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdCopyBufferToImage(cb, R->staging.buffer, j.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   uint32_t(j.copies.size()), j.copies.data());
+            Barrier(cb, tmp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+        }
+    });
+    g_texBatch.clear();
+    // The wait above has retired every copy, so the arena is free again.
+    g_stagingCursor = 0;
+}
+
+// Reserve `bytes` of the staging arena for a pending upload, flushing first if the arena
+// cannot hold them. Returns UINT64_MAX when the upload is larger than the whole arena,
+// which is the caller's existing "larger than the staging buffer" decline.
+uint64_t StagingReserve(VkDeviceSize bytes)
+{
+    if (bytes > R->staging.size)
+        return UINT64_MAX;
+    const VkDeviceSize at = (g_stagingCursor + 15) & ~VkDeviceSize(15);
+    if (at + bytes > R->staging.size)
+    {
+        ++g_texBatchFullFlushes;
+        FlushTextureUploads();
+        g_stagingCursor = bytes;
+        return 0;
+    }
+    g_stagingCursor = at + bytes;
+    return at;
 }
 
 // ===================================================================================
@@ -7989,7 +8103,6 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
         ++g_texGuardStats.reuploaded;
         if (pixels.size() <= R->staging.size)
         {
-            memcpy(R->staging.mapped, pixels.data(), pixels.size());
             Image& img = cached->image;
             // A REFRESH WRITES EVERY LEVEL THE IMAGE HAS, not just the base. The cached
             // image was built with whatever level count its first upload could locate,
@@ -8000,15 +8113,39 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             std::vector<VkBufferImageCopy> use(
                 copies.begin(),
                 copies.begin() + std::min<size_t>(copies.size(), img.levels));
-            RunImmediate([&](VkCommandBuffer cb) {
-                Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_ASPECT_COLOR_BIT);
-                vkCmdCopyBufferToImage(cb, R->staging.buffer, img.image,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                       uint32_t(use.size()), use.data());
-                Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        VK_IMAGE_ASPECT_COLOR_BIT);
-            });
+            const uint64_t at = StagingReserve(pixels.size());
+            memcpy(R->staging.mapped + at, pixels.data(), pixels.size());
+            if (g_texNoBatch)
+            {
+                RunImmediate([&](VkCommandBuffer cb) {
+                    Barrier(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                    for (VkBufferImageCopy& c : use)
+                        c.bufferOffset += at;
+                    vkCmdCopyBufferToImage(cb, R->staging.buffer, img.image,
+                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                           uint32_t(use.size()), use.data());
+                    Barrier(cb, img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+                });
+                g_stagingCursor = 0;
+            }
+            else
+            {
+                TexUploadJob j;
+                j.image = img.image;
+                j.format = img.format;
+                j.levels = img.levels;
+                j.layers = img.layers;
+                j.oldLayout = img.layout;
+                j.copies = use;
+                for (VkBufferImageCopy& c : j.copies)
+                    c.bufferOffset += at;
+                g_texBatch.push_back(std::move(j));
+                // The post-flush truth, written now because the cache entry may MOVE
+                // before the flush runs (FlatCache::Insert rehashes).
+                img.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
             Count("texture: refreshed in place (CZ_VK_TEX_REFRESH)");
         }
         return cached->slot;
@@ -8140,20 +8277,45 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     g_texUploadBytes += pixels.size();
     const uint64_t texT0 = CycNow();
     g_texDecodeNs += texT0 - texDecodeT0;
-    memcpy(R->staging.mapped, pixels.data(), pixels.size());
+    // The reserve may FLUSH, and that flush is staging-and-submit work, so it belongs
+    // inside this clock and not inside the decode's.
+    const uint64_t at = StagingReserve(pixels.size());
+    memcpy(R->staging.mapped + at, pixels.data(), pixels.size());
+    // One region per mip level, and the base level's region names all six faces of a cube:
+    // the staging buffer holds them tightly packed and in order, which is exactly what a
+    // multi-layer copy expects. The offsets are relative to `pixels`, so the arena's own
+    // offset is added to each.
+    for (VkBufferImageCopy& c : copies)
+        c.bufferOffset += at;
 
-    RunImmediate([&](VkCommandBuffer cb) {
-        Barrier(cb, entry.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_ASPECT_COLOR_BIT);
-        // One region per mip level, and the base level's region names all six faces of a
-        // cube: the staging buffer holds them tightly packed and in order, which is
-        // exactly what a multi-layer copy expects.
-        vkCmdCopyBufferToImage(cb, R->staging.buffer, entry.image.image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                               uint32_t(copies.size()), copies.data());
-        Barrier(cb, entry.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_IMAGE_ASPECT_COLOR_BIT);
-    });
+    if (g_texNoBatch)
+    {
+        RunImmediate([&](VkCommandBuffer cb) {
+            Barrier(cb, entry.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdCopyBufferToImage(cb, R->staging.buffer, entry.image.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   uint32_t(copies.size()), copies.data());
+            Barrier(cb, entry.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+        });
+        g_stagingCursor = 0;
+    }
+    else
+    {
+        TexUploadJob j;
+        j.image = entry.image.image;
+        j.format = entry.image.format;
+        j.levels = entry.image.levels;
+        j.layers = entry.image.layers;
+        j.oldLayout = entry.image.layout;
+        j.copies = copies;
+        g_texBatch.push_back(std::move(j));
+        // See the TexUploadJob comment: the entry is about to be COPIED into the cache and
+        // the cache can move it, so the layout it will be in after the flush is written
+        // here rather than by a Barrier at flush time.
+        entry.image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
 
     g_texUploadNs += CycNow() - texT0;
 
@@ -9260,6 +9422,26 @@ void SubmitFrame()
     {
         Count("submit: SKIPPED (CZ_VK_NO_SUBMIT — ceiling measurement, picture invalid)");
         return;
+    }
+
+    // FLUSH POINT (b): every texture copy this frame's draws could sample goes on the
+    // queue AHEAD of this frame's command buffer. See the TexUploadJob comment for why
+    // that plus the staging-exhaustion flush is the whole ordering argument.
+    //
+    // CZ_VK_TEX_BATCH_BREAK=1 SKIPS THIS FLUSH ON PURPOSE, and it is not a control arm —
+    // it is the POSITIVE CONTROL for the gate. With it set, a frame's draws execute
+    // against images whose copies and layout transitions have not been submitted, which is
+    // exactly the defect this design's ordering argument rules out. A gate that cannot
+    // tell the broken build from the working one is not a gate (gotcha 30), and for a
+    // change that cannot alter a pixel when it is RIGHT, the only way to show the gate has
+    // power is to build the version where it is wrong. `CZ_VK_VALIDATION=1` names it:
+    // sampling an image in the wrong layout is a VUID, not a subtle picture difference.
+    static const bool batchBreak = EnvOn("CZ_VK_TEX_BATCH_BREAK");
+    if (!batchBreak)
+    {
+        const uint64_t fT0 = CycNow();
+        FlushTextureUploads();
+        g_texUploadNs += CycNow() - fT0;
     }
 
     FrameSlot& fs = R->frames[R->frameSlot];
@@ -20987,6 +21169,7 @@ bool InitCommon()
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true, "per-frame arena") ||
+        (g_texNoBatch = EnvOn("CZ_VK_NO_TEX_BATCH"), false) ||
         !CreateBuffer(R->staging, 64ull << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -24207,6 +24390,16 @@ void VkRenderer_DumpStats()
                     g_imgBlockAllocs == 1 ? "" : "s",
                     (unsigned long long)g_imgDedicated,
                     double(g_imgPoolWasteBytes) / 1024.0);
+            fprintf(stderr,
+                    "[vk]     texture upload batch: %llu jobs in %llu flushes (%.1f per "
+                    "flush, biggest %llu), %llu of them forced by a full staging arena — "
+                    "each flush is ONE submit-and-wait where each JOB used to be one\n",
+                    (unsigned long long)g_texBatchJobs,
+                    (unsigned long long)g_texBatchFlushes,
+                    g_texBatchFlushes ? double(g_texBatchJobs) / double(g_texBatchFlushes)
+                                      : 0.0,
+                    (unsigned long long)g_texBatchMaxJobs,
+                    (unsigned long long)g_texBatchFullFlushes);
             if (g_immN)
                 fprintf(stderr,
                         "[vk]     immediate submits: %llu, %.1f ms total, of which "
