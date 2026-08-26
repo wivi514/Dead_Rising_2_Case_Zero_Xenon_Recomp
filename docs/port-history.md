@@ -5439,3 +5439,91 @@ HAND-OFF.**~~ **It is `docs/part76-kickoff.md`.** Records: `phase5-notes.md` **�
   part 67 is CLEAN and no longer owed**; `alu_const_gate --hlsl-dir` clean over 449;
   `shader_dim_census` clean; `rt_world_xform` 104 of 104; the play session logged 0 `no
   translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`.
+
+---
+
+Where the port is, as of 2026-08-25 (**PART 75 CLOSED — PERFORMANCE, the operator's CROWD
+problem. One fix, and it is the largest single item this port has ever shipped: THE BIGGEST
+COST IN A CROWD FRAME WAS A *READ* FROM WRITE-COMBINED MEMORY.** ~~**`docs/part76-kickoff.md`
+IS THE LIVE HAND-OFF**~~ — it WAS, for one part; the live one is `docs/part77-kickoff.md`.
+Record: `phase5-notes.md` **§6dp**; lessons: gotchas **446-449**):
+
+* **THE OPERATOR CHOSE PROBLEM B — THE CROWD** out of the two part 74 split apart. Not the
+  post-load texture hitch (which is a real hitch and fully specified, and is **still
+  untouched** — part 76's other item), but the one they notice most: frame time TRACKING
+  DRAW COUNT, felt as stutter as the camera turns and not a hitch at all.
+* **THE KICKOFF'S OWN SKETCH OF A CROWD FRAME DID NOT SURVIVE A RE-BASELINE.** It quoted
+  `constants ~12 + textures ~10 + readback ~3.6 + recordState ~2.6` as four co-equal
+  candidates, taken from one marked frame. Banded over 13,621 frames with texture frames
+  excluded: `constants` is **43-44% of the frame** and about half of everything the sixteen
+  phases account for; `textures` is 0.78 and `readback` is 0.00. **A number carried forward
+  from one frame is a fact about that frame** (gotcha 13's usual shape).
+* **SPLIT IT TWICE AND THE ANSWER IS NOT THE COPY.** `constants` -> `constVs`/`constPs`/
+  `constShared`, then `constVs` -> `constVsCopy`/`constVsPatch`. At 5,000-7,000 draws, wall
+  19.99 ms: **`constVsPatch` 7.27 ms — 36% OF THE WHOLE FRAME** — against `constVsCopy`
+  0.36 (part 74's gather, which is what anyone would have looked at first) and 0.13 for the
+  entire PIXEL window.
+* **THE MECHANISM: the arena is `HOST_VISIBLE | HOST_COHERENT` with NO `HOST_CACHED`, i.e.
+  WRITE-COMBINED.** `PatchWideProjection` calls `SceneXformForm`, which reads all sixteen
+  floats of c0..c3 — once per draw, on ~97% of draws, because the guest rewrites a world
+  matrix per object so the vertex memo almost never hits. Writing WC memory is cheap;
+  **reading it keeps no cache line, gets no prefetch, and costs a full round trip to
+  DRAM.** A pinned 16:9 control, where the patch path is entirely inert, profiles the same
+  scope at **0.030 us/draw against 1.21** — so the whole 7.6 ms was **ONE 64-BYTE READ,
+  ONCE PER DRAW.** Not a loop, not a copy, not a megabyte.
+* **DELIVERED, pinned same-binary matched-band A/B at 3440x1440:** −35.3% at 5,500-6,000
+  draws (19.19 -> 12.41 ms) and −36.3% at 8,000-8,500 (26.76 -> 17.05), the `patch` column
+  falling to 4% of its former value at every band and the saving rising monotonically with
+  the draw count. **52 -> 81 fps at ~5,800 draws, 37 -> 59 at ~8,200**, with the profiler's
+  2-4 ms in both arms so the percentages are conservative.
+* **THE FIX IS TO NOT READ IT**, and part 74's own correctness fix is what made that legal:
+  c0..c3 in the arena are a verbatim copy of c0..c3 in `regs` *because* part 74 force-copied
+  them (§6dl). Patch a stack copy taken from the cached register file, store back ONE
+  contiguous 64-byte write. **Verified byte-identical: 0 of 47,352,900 draws disagreed, with
+  the poison arm firing on 100% of 43,810,856.** `CZ_VK_PATCH_IN_ARENA=1` is the
+  same-binary control and changes exactly one thing.
+* **AND THIS PROJECT HAD ALREADY FOUND THE SAME FACT AT A DIFFERENT POINTER.** Part 17
+  caught the present readback buffer being write-combined, fixed it *there* in
+  `ReadbackMemoryProps`, and never generalised — so the arena's read-back sat unnoticed for
+  **58 parts**. §6dp §5 now enumerates all four mappings and every access; the projection
+  patch was the only ungated read. **The audit is the deliverable, not the fix** (gotcha 446).
+* **THE A/B TOOK FOUR ATTEMPTS AND THREE OF THEM PRODUCED A CONFIDENT WRONG NUMBER.** A
+  2,000-draw bin is too coarse; a line fit was WORSE (one control run's draws never varied,
+  so its slope was noise and its intercept came out negative); the route gate fires only on
+  stdout and the A/B loop sent it to `/dev/null`, so a control run that never left the menu
+  went into the aggregate. **All of it is retracted in place in §6dp** and the checklist is
+  `measurement.md`. Gotchas 448-449.
+* **AND THE "MACHINE STATE" WAS THE DISPLAY RESOLUTION, PRINTED IN EVERY LOG ALL ALONG.**
+  The desktop changed 3440x1440 -> 2560x1440 mid-campaign. That is not just a pixel count:
+  **`WideMode()` is `9W > 16H` on the internal resolution, so `PatchWideProjection` — half
+  this item — EXISTS at 21:9 and does not exist at 16:9.** The A/B split exactly along that
+  line and both halves were internally matched and correct. The operator confirmed 21:9 is
+  how they play. **Every run now PINS `CZ_VK_RES`; a resolution that arrives from the
+  environment is a variable nobody declared. Quote no phase number without its resolution.**
+* **THE OPERATOR PLAYED A CROWD WITH THE PROFILER ARMED AND IT CONFIRMED THE FIX AND
+  RESET THE PRIORITIES** (`tools/part75_operator_session.sh`, 3440x1440 pinned, 5,802
+  frames, **6 F7 marks**, §6dp §10). At their own load, >= 7,000 draws: **the WHOLE
+  constant path is 2.22 ms of a 23.31 ms frame**, where the patch alone was ~10 ms at that
+  draw count before. **The frame is FLAT** — nothing above 3.5 ms — and **the GPU is now
+  12.57 ms of it (54%, against ~37% before)** with `fence` still 0.00.
+* **ALL SIX MARKS WERE THE TEXTURE PATH, AND IT IS NOW THE ONLY THING THEY FEEL.** Of the
+  32 crowd frames above 1.4x the median, **29 (91%) carry a real texture upload**; the 413
+  crowd frames with NO upload have **no tail at all** (p99 31.9 ms against a 22.3 median,
+  session-worst 34.3), while the upload population reaches p99 174 and max 290.
+* **AND THE SESSION FOUND A NEW ITEM THAT IS NOW FIRST: `readback` 3.49 ms, 15% of the
+  crowd frame, AND IT IS NOT THE GAME.** Part 54's swapchain was built to delete the
+  present readback; it survives whenever a PICTURE INSTRUMENT is armed, the predicate is a
+  `static` read once at startup, and **`tools/play_session.sh` sets `CZ_CAPTURE_KEY` and
+  `CZ_BURST_DUMP` unconditionally so F8/F9 work** — so every play session since part 54 has
+  paid a 19.8 MB `memcpy` a frame into a buffer the swapchain never displays. Make the two
+  edge-triggered instruments arm the NEXT frame. Gotcha 450.
+* **THAT DEMOTES PARALLEL COMMAND RECORDING, BY MEASUREMENT.** `perf-state-parked.md` item
+  A led the board for four parts. With the GPU at 12.57 ms of 23.31, **all remaining
+  renderer CPU work is worth at most 10.7 ms** before a floor, where the same arithmetic
+  gave ~22 before part 75. Not dead — no longer obviously best-priced, and whoever takes it
+  must state the GPU floor beside the expected saving.
+* **Gates:** `--smoke` OK on every build; `shader_dim_census` clean on the stock and play
+  caches; `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name diff;
+  the operator session logged **0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO
+  STALE`**. Renderer-only change — no config, kernel, PM4 or shader path touched — so part
+  74's A5 and `alu_const_gate --hlsl-dir` sweeps stand.

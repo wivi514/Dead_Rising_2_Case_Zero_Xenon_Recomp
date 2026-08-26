@@ -111,3 +111,66 @@ measure, in the same sentence as the expected saving.**
   (gotcha 436) and part 77 removed the waits by not doing them, which was the only route.
 * **`CZ_VK_VALIDATION=1` as the gate for anything in the texture upload path** (§6ds §9).
 * **any CPU A/B below ~8,000 draws on the autonomous route** (§6dr, gotcha 453).
+
+## 3. THE MEASUREMENT METHOD — the readers, and which one for what
+
+Three now, and they are not interchangeable. **Classify the change first** (gotcha 452):
+
+* **`tools/part75_ab_report.py`** — partitions runs by the MENU window as a machine-state
+  fingerprint. Right for an item that affects the crowd and not the menu.
+* **`tools/part76_band.py`** — prints the menu as a number and bands the crowd. Right for an
+  item that affects EVERY presented frame.
+* **`tools/part77_tex_report.py`** — population is FRAMES WITH A TEXTURE UPLOAD and its
+  headline is the BURST FRAME, the one frame per run that uploaded the most (the DebugJump
+  load, 774-780 uploads, the same event in every run — a matched comparison, not a
+  distribution). Right for a HITCH item. Its control channel is the no-upload median, which
+  such a change cannot reach.
+
+Everything in `part76-kickoff.md` §5 still holds — pin `CZ_VK_RES`; read the route gate on a
+finished log; never send an A/B loop to `/dev/null`; `pgrep -x cz_runtime_auto`, never
+`pgrep -f`. Two more from part 77:
+
+* **A trace with no `.rc` beside it is a run that has not finished**, and a partial trace
+  reads as a complete run of a SHORTER ROUTE. The first pass of part 77's A/B compared a
+  control arm at 6,178 frames against a finished arm's 16,685 and reported the run totals 43%
+  apart. Quote per-upload (or per-draw) columns alongside run totals for the same reason.
+* **Do not quote the run's overall maximum frame.** This route produces multi-second frames
+  with zero uploads, zero pipelines and a healthy 10 ms GPU — an OS or compositor stall. One
+  control run held an 8,275 ms and a 3,311 ms frame; crediting a change with removing them
+  would have made part 77's headline `−97%` instead of `−42%`.
+
+## 4. THE INSTRUMENTS PART 77 LEFT
+
+```
+(unconditional, free, printed at exit)
+  decode split          the seven scopes inside g_texDecodeNs, WITH ITS RESIDUAL. Read the
+                        residual first — a large one means the split is wrong, not that work
+                        vanished. It runs at 0.5-0.6%
+  base untile ns/unit   a total cannot tell a slow loop from a lot of units (4.6 ns over
+                        11.5 M units says the loop is fine)
+  CreateImage x N       its five driver calls, separately
+  image memory:         P pooled into B blocks, D dedicated — the pool's engagement, and the
+                        line that says how close a session got to maxMemoryAllocationCount
+  texture upload batch: jobs, flushes, jobs/flush, biggest, and how many were forced by a
+                        full staging arena
+CZ_VK_NO_TEX_MEMPOOL=1     control arm: one dedicated vkAllocateMemory per texture
+CZ_VK_NO_TEX_BATCH=1       control arm: one submit-and-wait per upload
+CZ_VK_TEX_BATCH_BREAK=1    **NOT a control arm — the POSITIVE CONTROL.** Skips the ordering
+                           flush; the picture goes fully black. Use it to prove any gate you
+                           choose for the upload path can actually fail
+CZ_VK_VERIFY_MIP_GUARD=1   recompute the pre-part-77 mip guards alongside; 0 disagreements is
+                           the only passing value. ..._POISON=1 must read 100%
+```
+
+## 5. THE ONE THING TO CARRY FORWARD
+
+**An item's size is a measurement, and confirmation of a parent does not transfer to a
+child.** Part 77's item had 36 operator stutter marks behind it and every one of them
+confirmed *"the texture path is the hitch"* — which is true, and which says nothing about
+where inside the texture path the time is. The child claim, repeated verbatim through three
+hand-offs, had never been measured and was wrong by a factor of four.
+
+The repair was forty minutes: split the scope, print the residual, and look at what the split
+says instead of at what the plan says. It is the third part in four where that was the whole
+finding (75, 77, and 74 twice). **Before writing a line of a specified fix, ask what
+measurement says the time is at the line you are about to change, and when it was taken.**
