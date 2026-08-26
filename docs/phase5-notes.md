@@ -17597,3 +17597,38 @@ being written, and a partial trace looks like a complete run of a shorter route.
 a control arm at 6,178 frames against a finished arm's 16,685 and reported the run totals
 43% apart. A trace with no `.rc` beside it is now skipped by name, and the per-upload column
 exists so route depth cannot drive a total.
+
+### 7. THE SECOND ITEM THE SPLIT EXPOSED: the mip chain's VALIDATION guards
+
+With the allocation gone, the decode is 163 ms/run and its largest column is not the untile
+either — it is **`mip-guards` at 54.8 ms, 34%**, the two whole-buffer passes part 39 and
+part 41 added to keep a wrong mip offset from shipping a distant surface in the wrong colour.
+Both are correct and both stay; both were doing avoidable work.
+
+* **The endpoint-luma divergence test walked the PREVIOUS level again for every level.** For
+  a 512x512 DXT1 that is level 0's 128 KB re-walked once per level, and every interior level
+  walked twice. The value it computes for `cur` at level L is the value it computes for
+  `prev` at L+1 — same range, same order, same function — so it is carried instead.
+* **The mostly-empty test read a unit a byte at a time with a branch per byte.** For the
+  8- and 16-byte units, which is DXT1 and DXT5 and therefore nearly every texture in this
+  title, it is one or two unaligned 64-bit loads and an OR. The general byte path stays.
+
+**Measured: `mip-guards` 54.8 -> 46.2 ms, decode 163.0 -> 152.4 ms/run** — about 3 ms off a
+780-upload burst frame. That is a CORRECTION, not a saving, and it ships as one (gotcha 453).
+
+**And it was verified rather than argued.** The counters downstream of these guards —
+`mip: chain uploaded`, `packed tail level TAKEN`, `level REJECTED` — differ by 1-11 between
+the two binaries, which is *within* the same-arm spread measured across three runs of the
+pre-change build (1769/1770/1764, 4486/4484/4486, 74/73/74). Being inside a noise band is
+not the same as being identical, and this project has shipped a wrong conclusion off that
+distinction before, so `CZ_VK_VERIFY_MIP_GUARD=1` computes the pre-part-77 answer alongside
+the new one and counts disagreements, with `_POISON=1` as the positive control that must
+read 100%.
+
+```
+CZ_VK_VERIFY_MIP_GUARD=1                     0 of 17,639 checks disagreed  (0.0000%)
+CZ_VK_VERIFY_MIP_GUARD=1 ..._POISON=1   17,617 of 17,617 checks disagreed  (100.0000%)
+```
+
+So the counter drift really is route variance, and the two computations are identical on
+every level of every chain the route touches.

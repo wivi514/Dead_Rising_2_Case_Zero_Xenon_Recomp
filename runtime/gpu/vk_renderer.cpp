@@ -2987,6 +2987,17 @@ uint64_t g_texDecImageNs = 0;    // CreateImage (VkImage + view + allocation) + 
 // How many units the base level untiled, so the base column can be quoted per unit —
 // a millisecond total cannot distinguish "the loop is slow" from "there are a lot of units".
 uint64_t g_texDecBaseUnits = 0;
+// PART 77's MIP-GUARD VERIFICATION. Both halves of that change are identity-preserving by
+// construction — the carried `prevLuma` is the same function over the same bytes, and the
+// word-at-a-time zero test is the same predicate — but "by construction" is an argument and
+// this project's standard is a measurement (part 75 verified its arena patch at 0 of
+// 47,352,900 draws). `CZ_VK_VERIFY_MIP_GUARD=1` recomputes the old way alongside the new and
+// counts every disagreement; `_POISON=1` perturbs the NEW answer so the verifier must read
+// 100%, because a checker that has never failed has not been shown capable of failing
+// (gotcha 30).
+uint64_t g_mgChecked = 0, g_mgDisagree = 0;
+size_t g_mgEmptyWas = 0;
+bool g_mgVerifyEmptyInit = false;
 // CreateImage's own four driver calls — see the comment at the call sites. Counted for
 // EVERY image this renderer makes, not only textures, because a snapshot or a dummy
 // allocating the same way is the same finding one level over.
@@ -7428,6 +7439,18 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     {
         const uint32_t mipVa = PhysToVa(t.mipAddress);
         uint64_t chainOff = 0;      // byte offset of the level being read, from mipAddress
+        // THE PREVIOUS LEVEL'S ENDPOINT LUMA, CARRIED (part 77). The divergence guard below
+        // used to call `endpointLuma` on BOTH levels every iteration — so level 0, which is
+        // the biggest buffer in the chain (128 KB for a 512x512 DXT1), was walked again for
+        // every level, and every interior level was walked twice. The value it computes for
+        // `cur` at level L is bit-for-bit the value it would compute for `prev` at L+1: the
+        // range is the same (`prevAt = copies.back().bufferOffset` is exactly this level's
+        // `at`, and `at - prevAt` is exactly this level's `lDstBytes`), the summation order
+        // is the same, and it is the same function. So carrying it is not an approximation.
+        //
+        // Measured before the change: the two mip guards together were 55.1 ms of a 494.3 ms
+        // decode — MORE than the base-level untile (51.3 ms) — and they appear in no plan.
+        double prevLuma = -2.0;     // -2 = not computed yet; -1 is endpointLuma's own "empty"
         for (uint32_t level = 1; level <= t.mipMax && level < 16; level++)
         {
             const uint32_t lw = std::max(1u, t.width >> level);
@@ -7539,14 +7562,63 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
             // also reads as "diverges from the level above", and calling that a rule
             // violation would hide an ordinary end-of-chain behind an alarm.
             {
+                static const bool mgVerifyEmpty = EnvOn("CZ_VK_VERIFY_MIP_GUARD");
+                static const bool mgPoisonEmpty = EnvOn("CZ_VK_VERIFY_MIP_GUARD_POISON");
                 size_t nonEmpty = 0;
-                for (size_t o = 0; o + bytesPerUnit <= size_t(lDstBytes); o += bytesPerUnit)
+                // WORD-AT-A-TIME for the 8- and 16-byte units, which is DXT1 and DXT5 and
+                // therefore almost every texture in this title. Same predicate — a unit is
+                // empty iff every byte in it is zero — expressed as one or two unaligned
+                // 64-bit loads instead of a byte loop with a branch per byte. The general
+                // byte path stays for every other unit size, so nothing is assumed about
+                // the format set.
+                if (mgVerifyEmpty)
                 {
-                    bool zero = true;
-                    for (uint32_t k = 0; k < bytesPerUnit; k++)
-                        if (ldst[o + k]) { zero = false; break; }
-                    if (!zero)
-                        ++nonEmpty;
+                    size_t was = 0;
+                    for (size_t o = 0; o + bytesPerUnit <= size_t(lDstBytes);
+                         o += bytesPerUnit)
+                    {
+                        bool zero = true;
+                        for (uint32_t k = 0; k < bytesPerUnit; k++)
+                            if (ldst[o + k]) { zero = false; break; }
+                        if (!zero)
+                            ++was;
+                    }
+                    g_mgEmptyWas = was;
+                }
+                if (bytesPerUnit == 8 || bytesPerUnit == 16)
+                {
+                    const uint32_t words = bytesPerUnit / 8;
+                    for (size_t o = 0; o + bytesPerUnit <= size_t(lDstBytes);
+                         o += bytesPerUnit)
+                    {
+                        uint64_t acc = 0, w;
+                        for (uint32_t k = 0; k < words; k++)
+                        {
+                            memcpy(&w, ldst + o + k * 8, 8);
+                            acc |= w;
+                        }
+                        if (acc)
+                            ++nonEmpty;
+                    }
+                }
+                else
+                {
+                    for (size_t o = 0; o + bytesPerUnit <= size_t(lDstBytes);
+                         o += bytesPerUnit)
+                    {
+                        bool zero = true;
+                        for (uint32_t k = 0; k < bytesPerUnit; k++)
+                            if (ldst[o + k]) { zero = false; break; }
+                        if (!zero)
+                            ++nonEmpty;
+                    }
+                }
+                if (mgVerifyEmpty)
+                {
+                    ++g_mgChecked;
+                    const size_t got = mgPoisonEmpty ? nonEmpty + 1 : nonEmpty;
+                    if (got != g_mgEmptyWas)
+                        ++g_mgDisagree;
                 }
                 if (nonEmpty * 2 < size_t(luW) * luH)
                 {
@@ -7592,9 +7664,26 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
                         }
                     return n ? sum / double(n) : -1.0;
                 };
-                const size_t prevAt = copies.back().bufferOffset;
-                const double prev = endpointLuma(pixels.data() + prevAt, at - prevAt);
+                static const bool mgVerify = EnvOn("CZ_VK_VERIFY_MIP_GUARD");
+                static const bool mgPoison = EnvOn("CZ_VK_VERIFY_MIP_GUARD_POISON");
+                if (prevLuma == -2.0)
+                {
+                    const size_t prevAt = copies.back().bufferOffset;
+                    prevLuma = endpointLuma(pixels.data() + prevAt, at - prevAt);
+                }
+                if (mgVerify)
+                {
+                    // The pre-part-77 computation, in full: walk the previous level again.
+                    const size_t prevAt = copies.back().bufferOffset;
+                    const double was = endpointLuma(pixels.data() + prevAt, at - prevAt);
+                    ++g_mgChecked;
+                    const double got = mgPoison ? prevLuma + 1.0 : prevLuma;
+                    if (got != was)
+                        ++g_mgDisagree;
+                }
+                const double prev = prevLuma;
                 const double cur = endpointLuma(ldst, size_t(lDstBytes));
+                prevLuma = cur;   // this level IS the next level's `prev`
                 if (prev >= 0 && cur >= 0 && std::fabs(prev - cur) > 32.0)
                 {
                     // AND IT REJECTS, because the guard found real failures the moment
@@ -24090,6 +24179,14 @@ void VkRenderer_DumpStats()
                         g_texDecBaseUnits
                             ? double(g_texDecBaseNs) / double(g_texDecBaseUnits) : 0.0);
             }
+            if (g_mgChecked)
+                fprintf(stderr,
+                        "[vk]     mip-guard verify: %llu of %llu checks DISAGREED with the "
+                        "pre-part-77 computation (%.4f%%) — 0 is the only passing value, "
+                        "and CZ_VK_VERIFY_MIP_GUARD_POISON=1 must make it 100%%\n",
+                        (unsigned long long)g_mgDisagree,
+                        (unsigned long long)g_mgChecked,
+                        100.0 * double(g_mgDisagree) / double(g_mgChecked));
             if (g_ciN)
                 fprintf(stderr,
                         "[vk]     CreateImage x%llu (%.1f MB device): vkCreateImage %.1f ms"
