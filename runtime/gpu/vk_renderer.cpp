@@ -4338,6 +4338,161 @@ struct Renderer
 Renderer* R = nullptr;
 
 // ===================================================================================
+// CZ_VK_GPU_PASSES — THE FRAME'S GPU TIME, SPLIT BY WHAT THE DEVICE WAS DOING (part 78)
+// ===================================================================================
+// This project has never had a GPU-side breakdown. `g_tsPool` gives ONE number for the
+// whole command buffer — 8.65 ms mean on the autonomous route — and part 76 measured that
+// number as a flat 6.97 -> 12.20 ms across a 4x range of draw counts, i.e. three quarters
+// of a crowd frame's device cost is already there in a light scene. That shape says the
+// cost is full-screen work rather than the crowd, and NOTHING IN THIS RENDERER COULD SAY
+// WHICH full-screen work. Part 78 item 1 is that gap.
+//
+// WHY INTERVALS AND NOT A CHAIN OF BOUNDARIES. A chain of timestamps partitions the frame
+// exactly, which sounds better and is worse: the partition is exact BY CONSTRUCTION, so it
+// has no residual and therefore no way to report that it is wrong. Part 77's whole lesson
+// was that a split you cannot check is a split you will believe (gotcha 456). These are
+// explicit (begin, end) pairs around named regions; whatever falls BETWEEN them is
+// unattributed and printed first. A large residual means the instrument is missing a
+// region, not that GPU time vanished.
+//
+// WHAT A SEGMENT MEANS, STATED HONESTLY. Timestamps do not fence. Without a barrier the
+// device may still be running work issued before a `BOTTOM_OF_PIPE` timestamp when a later
+// region's commands start, so a segment's time is "the wall time between these two points
+// in the queue", not "the isolated cost of this region". Every boundary here sits next to a
+// layout transition or a render-scope change, which is where this renderer already
+// serialises, so the attribution is meaningful — but a segment is an upper bound on its own
+// region and the SUM is the honest quantity. The instrument is off by default and its own
+// bill is measured the only way it can be: run the route with and without and compare
+// `g_gpuFrameNs`, which this does not touch.
+//
+// The pool is per frame-in-flight slot and read back at exactly the point the existing
+// frame pair is read — after that slot's fence has been waited on — so nothing here ever
+// blocks to measure a block (gotcha 7).
+enum GpCls : uint16_t
+{
+    kGpPassEmpty,     // a render scope that closed with no draws in it
+    kGpPass1,         // exactly one draw
+    kGpPassSmall,     // 2..255
+    kGpPassBig,       // >= 256 — the crowd
+    kGpResolveCopy,   // vkCmdCopyImage: EDRAM -> the resolve snapshot
+    kGpResolveClear,  // the title's own clear bits, honoured as vkCmdClear*Image
+    kGpPresent,       // the swapchain blit, the letterbox clear and the F4 overlay
+    kGpReadback,      // vkCmdCopyImageToBuffer of the whole frame (F8/F9 armed only)
+    kGpCubeFace,      // a face of the cube map the TITLE renders, blitted out of a snapshot
+    kGpSnapView,      // the right-sized views of a resolve snapshot, refreshed in place
+    // THE TWO BARRIER CLASSES, split out of the two above them because the first version
+    // of this instrument charged them to the copy and to the pass. They are the reason
+    // this split was worth building: this renderer transitions the FULL-SIZE EDRAM colour
+    // and depth images between attachment and transfer layouts ~49 times a frame, and a
+    // layout transition of a compressed 3440x2048 attachment is not an instruction — on
+    // every desktop GPU it is a metadata decompress over the whole image.
+    kGpPassBarrier,   // BeginRendering's colour+depth transitions INTO attachment layout
+    kGpResolveBarrier,// the resolve's transitions into transfer layouts and back
+    kGpClasses
+};
+// RT has deliberately NO class. The feature is parked (part 70) and costs nothing in any
+// run this instrument will see; a class that is structurally always zero reads as "we
+// measured it and it is free", which is a different claim from "it was not running".
+const char* const kGpNames[kGpClasses] = {
+    "pass: 0 draws",   "pass: 1 draw",   "pass: 2-255 draws", "pass: >=256 draws",
+    "resolve copy",    "resolve clear",  "present blit",      "present readback",
+    "cube face refresh", "snapshot views", "pass-begin barriers", "resolve barriers",
+};
+
+// 2048 queries a slot. The first version had 512 on the arithmetic "~49 passes and ~49
+// resolves a frame, so ~200 timestamps" — and then the barrier split took the region count
+// past 250, i.e. past 500 timestamps, and 1,454,670 regions were dropped. The symptom was
+// NOT a missing number: it was `present blit` reading 0.15 regions a frame where exactly
+// one exists, and every truncated class quietly reading low. That is why the overflow
+// counter is printed rather than merely kept — a silently truncated frame looks like a
+// saving (gotcha 3 at instrument scale).
+constexpr uint32_t kGpQueriesPerSlot = 2048;
+struct GpSeg { uint32_t q0, q1; uint16_t cls; };
+VkQueryPool g_gpPool = VK_NULL_HANDLE;
+std::vector<GpSeg> g_gpSegs[kMaxFramesInFlight];
+uint32_t g_gpNext[kMaxFramesInFlight] = {};
+uint64_t g_gpFrameOf[kMaxFramesInFlight] = { ~0ull, ~0ull, ~0ull };
+uint64_t g_gpNs[kGpClasses] = {};
+uint64_t g_gpN[kGpClasses] = {};
+uint64_t g_gpFrames = 0, g_gpTotalNs = 0, g_gpAttribNs = 0;
+uint64_t g_gpOverflow = 0, g_gpBadRead = 0;
+// The resolve copies' PIXEL count, so "resolve copy" can be read as bandwidth rather than
+// only as milliseconds — a number of pixels is what makes a fix designable.
+uint64_t g_gpResolvePixels = 0;
+// THE CLEARS' EXTENT, both what they DO clear and what the pass that triggered them
+// actually rendered. The resolve honours the title's clear bits by clearing the WHOLE EDRAM
+// stand-in — one `vkCmdClearColorImage` over the full subresource — while the resolve
+// itself names the region the pass used. The ratio of these two is the ceiling on scoping
+// the clear, and it is a number nobody has ever printed: the depth clear already has a
+// scoped form behind `CZ_VK_SCOPED_CLEAR`, kept as an arm since part 32 because nothing
+// had priced it.
+uint64_t g_gpClearFullPixels = 0, g_gpClearScopedPixels = 0, g_gpClearN = 0;
+// The render scope currently open, if any. One at a time by construction: BeginRendering
+// early-returns when a scope is already open and EndRendering when none is.
+int g_gpPassSeg = -1;
+// DRAWS IN THE OPEN SCOPE, counted here rather than read off `R->drawsThisPass`. The first
+// version of this instrument classified every pass as "0 draws" — 65% of the frame in a
+// bucket that cannot exist — because `DoResolve` zeroes `drawsThisPass` in its histogram
+// block BEFORE the `EndRendering` that closes the scope, so the classifier read a counter
+// that had already been reset. The §4b cycle clock two hundred lines up says exactly that
+// in a comment and captures its own class at entry. A counter owned by the thing that reads
+// it cannot be reset out from under it.
+uint32_t g_gpPassDraws = 0;
+
+bool GpuPassesOn()
+{
+    static const bool on = EnvOn("CZ_VK_GPU_PASSES");
+    return on;
+}
+
+// Open a segment. Returns an index into this slot's segment list, or -1 when the
+// instrument is off, the device cannot timestamp, or this frame has run out of queries.
+int GpuSegBegin()
+{
+    if (!GpuPassesOn() || g_timestampPeriodNs <= 0.0 || !g_gpPool || !R || !R->recording)
+        return -1;
+    const uint32_t slot = R->frameSlot;
+    if (g_gpNext[slot] + 2 > kGpQueriesPerSlot)
+    {
+        ++g_gpOverflow;
+        return -1;
+    }
+    const uint32_t q = slot * kGpQueriesPerSlot + g_gpNext[slot]++;
+    vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpPool, q);
+    g_gpSegs[slot].push_back(GpSeg{ q, ~0u, uint16_t(kGpClasses) });
+    return int(g_gpSegs[slot].size()) - 1;
+}
+
+// Close a segment and give it its class. The class is decided HERE and not at the begin
+// because for a render scope it is the draw count, which is only known once the scope has
+// closed — the same reason the §4b cycle clock captures its class at entry and this one
+// at exit.
+void GpuSegEnd(int idx, GpCls cls)
+{
+    if (idx < 0 || !R || !R->recording)
+        return;
+    const uint32_t slot = R->frameSlot;
+    if (size_t(idx) >= g_gpSegs[slot].size())
+        return;
+    const uint32_t q = slot * kGpQueriesPerSlot + g_gpNext[slot]++;
+    vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpPool, q);
+    g_gpSegs[slot][idx].q1 = q;
+    g_gpSegs[slot][idx].cls = uint16_t(cls);
+}
+
+// A scope guard for the regions that have early returns. `cls` is settable so a render
+// scope can name its bucket at close.
+struct GpuSeg
+{
+    int idx;
+    GpCls cls;
+    explicit GpuSeg(GpCls c) : idx(GpuSegBegin()), cls(c) {}
+    ~GpuSeg() { GpuSegEnd(idx, cls); }
+    GpuSeg(const GpuSeg&) = delete;
+    GpuSeg& operator=(const GpuSeg&) = delete;
+};
+
+// ===================================================================================
 // SHADOW-RESOLUTION TIERS — the Shadow Quality row, wired (part 60 night item 2)
 // ===================================================================================
 // Until part 60 the shadow cascades rode CZ_VK_RES with everything else: the cascade
@@ -4977,11 +5132,11 @@ bool FormatHasStencil(VkFormat f)
            f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT;
 }
 
-void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
+bool Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
              VkImageAspectFlags aspect)
 {
     if (img.layout == newLayout)
-        return;
+        return false;
     // VUID-VkImageMemoryBarrier-image-03320, 20 of the 32 messages the validation layer
     // reported in its first session (open item 00d). Without `separateDepthStencilLayouts`
     // a barrier on a depth/stencil image must name DEPTH **and** STENCIL — the layout
@@ -5010,7 +5165,6 @@ void Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
                          &b);
     img.layout = newLayout;
 }
-
 // --- the per-frame arena -------------------------------------------------------------
 // A bump allocator reset at each swap. Everything a draw needs that is not a texture
 // lives here: constants, the dword-swapped copies of the guest's vertex streams, and
@@ -9151,6 +9305,37 @@ void BeginFrame()
             vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsPool, q);
             g_tsFrameOf[R->frameSlot] = R->frame;
         }
+        // THE PER-REGION POOL (part 78 item 1), reset here for the same reason and at the
+        // same point: `vkCmdResetQueryPool` is illegal inside a dynamic-rendering
+        // instance, and this is the one place in a frame where none is open.
+        if (GpuPassesOn() && !g_gpPool)
+        {
+            VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = kMaxFramesInFlight * kGpQueriesPerSlot;
+            if (vkCreateQueryPool(R->device, &qi, nullptr, &g_gpPool) != VK_SUCCESS)
+            {
+                g_gpPool = VK_NULL_HANDLE;
+                fprintf(stderr, "[vk] CZ_VK_GPU_PASSES: query pool creation FAILED — the "
+                                "per-region GPU split is unavailable\n");
+            }
+            else
+                fprintf(stderr,
+                        "[vk] CZ_VK_GPU_PASSES: per-region GPU timing ARMED (%u queries "
+                        "x %u slots, timestampPeriod %.2f ns). This adds two timestamps "
+                        "per region to the frame's own command buffer — take its bill by "
+                        "comparing 'GPU frame time' with a run that does not set it.\n",
+                        kGpQueriesPerSlot, kMaxFramesInFlight, g_timestampPeriodNs);
+        }
+        if (g_gpPool)
+        {
+            vkCmdResetQueryPool(R->cmd, g_gpPool, R->frameSlot * kGpQueriesPerSlot,
+                                kGpQueriesPerSlot);
+            g_gpNext[R->frameSlot] = 0;
+            g_gpSegs[R->frameSlot].clear();
+            g_gpFrameOf[R->frameSlot] = R->frame;
+            g_gpPassSeg = -1;
+        }
     }
     // The arena is GROWN at the end of a frame, in `GrowArenaIfNeeded` — not here. What
     // remains here is the reset, which is the cheap half and has to be per frame. With
@@ -9220,10 +9405,13 @@ void BeginRendering()
     // stay free. The elapsed time is parked and charged by the resolve that ENDS the
     // pass this call is opening (see CycleClock).
     const uint64_t cycT0 = CycNow();
-    Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-    Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    {
+        GpuSeg _gb(kGpPassBarrier);
+        Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        Barrier(R->cmd, R->depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    }
 
     VkRenderingAttachmentInfo colorAtt{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
     colorAtt.imageView = R->color.view;
@@ -9251,12 +9439,30 @@ void BeginRendering()
     vkCmdBeginRendering(R->cmd, &ri);
     R->rendering = true;
     g_cycPendBeginNs += CycNow() - cycT0;
+    // The GPU-side segment for this pass opens AFTER the barriers, so a layout transition
+    // the device performs is charged to whatever preceded it rather than to the draws.
+    g_gpPassSeg = GpuSegBegin();
+    g_gpPassDraws = 0;
 }
 
 void EndRendering()
 {
     if (!R->rendering)
         return;
+    // Close the pass's GPU segment BEFORE vkCmdEndRendering, and classify it by how many
+    // draws it actually held — the bucket is the whole point, because "the crowd" and "the
+    // 39 near-empty passes a frame" are different answers to where the device's time is.
+    // The count is `g_gpPassDraws`, this scope's own — see its declaration for why reading
+    // `R->drawsThisPass` here is wrong.
+    if (g_gpPassSeg >= 0)
+    {
+        const uint32_t d = g_gpPassDraws;
+        GpuSegEnd(g_gpPassSeg, d == 0   ? kGpPassEmpty
+                               : d == 1 ? kGpPass1
+                               : d < 256 ? kGpPassSmall
+                                         : kGpPassBig);
+        g_gpPassSeg = -1;
+    }
     vkCmdEndRendering(R->cmd);
     R->rendering = false;
 }
@@ -10279,6 +10485,46 @@ int RetireOldestFrame()
             g_gpuNsFrameNo = g_tsFrameOf[oldest];
             g_gpuFrameNs += g_gpuNsOfFrame;
             ++g_gpuFrames;
+            // THE PER-REGION SPLIT for the same frame, read at the same safe point. It is
+            // accumulated only when the whole-frame pair above succeeded, so the residual
+            // below is always frame-total-minus-attributed for the SAME frame — a split
+            // whose total came from a different frame would produce a residual that means
+            // nothing.
+            if (g_gpPool && !g_gpSegs[oldest].empty() && g_gpFrameOf[oldest] == g_tsFrameOf[oldest])
+            {
+                const uint32_t n = g_gpNext[oldest];
+                std::vector<uint64_t> raw(n, 0);
+                if (n && vkGetQueryPoolResults(R->device, g_gpPool,
+                                               oldest * kGpQueriesPerSlot, n,
+                                               n * sizeof(uint64_t), raw.data(),
+                                               sizeof(uint64_t),
+                                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+                {
+                    uint64_t attrib = 0;
+                    for (const GpSeg& sg : g_gpSegs[oldest])
+                    {
+                        if (sg.cls >= kGpClasses || sg.q1 == ~0u)
+                            continue;   // never closed — a region that returned early
+                        const uint32_t a = sg.q0 - oldest * kGpQueriesPerSlot;
+                        const uint32_t b = sg.q1 - oldest * kGpQueriesPerSlot;
+                        if (a >= n || b >= n || raw[b] < raw[a])
+                        {
+                            ++g_gpBadRead;
+                            continue;
+                        }
+                        const uint64_t ns =
+                            uint64_t(double(raw[b] - raw[a]) * g_timestampPeriodNs);
+                        g_gpNs[sg.cls] += ns;
+                        ++g_gpN[sg.cls];
+                        attrib += ns;
+                    }
+                    g_gpAttribNs += attrib;
+                    g_gpTotalNs += g_gpuNsOfFrame;
+                    ++g_gpFrames;
+                }
+                else if (n)
+                    ++g_gpBadRead;
+            }
         }
     }
     fs.inFlight = false;
@@ -20189,6 +20435,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
+    // Unconditional, and it costs exactly what the line above it costs. Gating it on the
+    // instrument would put a static-init guard load on the per-draw path, which is the
+    // shape part 76 had to take back off it (gotcha 453).
+    ++g_gpPassDraws;
     R->verticesThisPass += draw.indexCount;
 }
 
@@ -20683,6 +20933,12 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                 fromDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
             BeginFrame();
             EndRendering();
+            // The whole resolve's device work is one segment, barriers included. The first
+            // version timed only the `vkCmdCopyImage` and left the two layout transitions
+            // in the residual, where they are indistinguishable from work nobody wrapped —
+            // and a transition of a 3440x1440 attachment is not a free instruction.
+            {
+            GpuSeg _gb(kGpResolveBarrier);
             // The EDRAM depth image is tracked with both aspects everywhere else, so
             // its barriers carry both here too; the snapshot has only depth.
             Barrier(R->cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -20690,6 +20946,9 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                               : VK_IMAGE_ASPECT_COLOR_BIT);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     aspect);
+            }
+            {
+            GpuSeg _gres(kGpResolveCopy);
             // Copy the TILE, at its own position in each image. For a scissor-offset
             // tile the two offsets are the same, because our EDRAM is full-screen-sized
             // and the window offset is deliberately not applied to the geometry (see the
@@ -20703,6 +20962,10 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             copy.dstSubresource = { aspect, 0, 0, 1 };
             copy.dstOffset = { RZxi(int32_t(dstX)), RZyi(int32_t(dstY)), 0 };
             copy.extent = { RZx(copyW), RZ(copyH), 1 };
+            // The PIXEL count beside the milliseconds: a bandwidth cost is only
+            // designable once you know how many pixels it moves — 48.9 resolves a frame at
+            // an unknown extent is not a number anyone can act on.
+            g_gpResolvePixels += uint64_t(RZx(copyW)) * uint64_t(RZ(copyH));
             vkCmdCopyImage(R->cmd, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            it->second.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
@@ -20758,15 +21021,25 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             // Back to SHADER_READ_ONLY immediately: a later pass in this same frame
             // samples this surface, and the layout it expects is the one the
             // descriptor was written with.
+            }
+            {
+            GpuSeg _gb2(kGpResolveBarrier);
             Barrier(R->cmd, it->second.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     aspect);
+            }
             // The right-sized views of this surface, refreshed in this same command
             // buffer so they cost no submit and cannot be staler than their source.
-            for (auto& [size, view] : it->second.views)
+            // Their own class: they ride the resolve but they are a separate blit, and a
+            // class that hides inside another cannot be acted on.
+            if (!it->second.views.empty())
             {
-                (void)size;
-                RefreshSnapshotView(R->cmd, it->second.image, view, aspect);
-                Count("resolve: snapshot view refreshed");
+                GpuSeg _gv(kGpSnapView);
+                for (auto& [size, view] : it->second.views)
+                {
+                    (void)size;
+                    RefreshSnapshotView(R->cmd, it->second.image, view, aspect);
+                    Count("resolve: snapshot view refreshed");
+                }
             }
             it->second.frameSeen = R->frame;
             Count(fromDepth ? "resolve: snapshot taken from the DEPTH buffer"
@@ -20786,6 +21059,7 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
                     auto cube = R->cubeSnapshots.find(owner->second.first);
                     if (cube != R->cubeSnapshots.end())
                     {
+                        GpuSeg _gc(kGpCubeFace);
                         CopyFaceIntoCube(R->cmd, it->second, cube->second,
                                          owner->second.second);
                         cube->second.frameSeen = R->frame;
@@ -20852,11 +21126,23 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             value.float32[2] = 1.0f;
             value.float32[3] = 1.0f;
         }
-        Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_ASPECT_COLOR_BIT);
-        VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        vkCmdClearColorImage(R->cmd, R->color.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &value, 1, &range);
+        {
+            // The transition INTO transfer-dst is inside the segment on purpose: a clear
+            // that forces a layout change is not separable from the change, and charging
+            // the barrier elsewhere would make this class read low for the wrong reason.
+            GpuSeg _g(kGpResolveClear);
+            // What this clear WRITES against what the pass it follows actually rendered.
+            ++g_gpClearN;
+            g_gpClearFullPixels += uint64_t(R->color.width) * uint64_t(R->color.height);
+            g_gpClearScopedPixels +=
+                (copyW && copyH) ? uint64_t(RZx(copyW)) * uint64_t(RZ(copyH))
+                                 : uint64_t(R->color.width) * uint64_t(R->color.height);
+            Barrier(R->cmd, R->color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_ASPECT_COLOR_BIT);
+            VkImageSubresourceRange range{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            vkCmdClearColorImage(R->cmd, R->color.image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+        }
         COUNT("resolve: colour cleared");
     }
     if (clearDepth)
@@ -20936,12 +21222,19 @@ void DoResolve(uint8_t* base, const uint32_t* regs)
             ri.layerCount = 1;
             ri.pDepthAttachment = &depthAtt;
             ri.pStencilAttachment = &depthAtt;
+            GpuSeg _g(kGpResolveClear);
             vkCmdBeginRendering(R->cmd, &ri);
             vkCmdEndRendering(R->cmd);
             Count("resolve: depth cleared (scoped to the pass)");
         }
         else
         {
+            GpuSeg _g(kGpResolveClear);
+            ++g_gpClearN;
+            g_gpClearFullPixels += uint64_t(R->depth.width) * uint64_t(R->depth.height);
+            g_gpClearScopedPixels +=
+                (copyW && copyH) ? uint64_t(RZx(copyW)) * uint64_t(RZ(copyH))
+                                 : uint64_t(R->depth.width) * uint64_t(R->depth.height);
             vkCmdClearDepthStencilImage(R->cmd, R->depth.image,
                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1,
                                         &range);
@@ -21946,6 +22239,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     FrameSlot& rec = R->frames[R->frameSlot];
     if (doReadback)
     {
+        // Part 76 split this off the always-on path; it survives whenever a picture
+        // instrument is armed, and it is a whole-frame copy, so it has its own class. In a
+        // plain play run this class must read ZERO — a non-zero one says an instrument is
+        // armed that the run did not mean to arm, which is exactly the defect part 76
+        // found in `play_session.sh`.
+        GpuSeg _g(kGpReadback);
         Barrier(R->cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_IMAGE_ASPECT_COLOR_BIT);
         VkBufferImageCopy copy{};
@@ -21968,7 +22267,12 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // what that arm already documents: its picture is knowingly invalid.
     static const bool noSubmitArm = EnvOn("CZ_VK_NO_SUBMIT");
     if (R->wantSwapchain && R->recording && !noSubmitArm)
+    {
+        // The letterbox clear, the aspect-fit blit and the F4 overlay — all of it, because
+        // "the present" is one region as far as a fix is concerned.
+        GpuSeg _g(kGpPresent);
         RecordSwapchainBlit(source, width0, height0);
+    }
     else if (R->wantSwapchain)
         Count("swap: no acquire (CZ_VK_NO_SUBMIT or nothing recorded) — nothing presented");
 
@@ -24472,6 +24776,58 @@ void VkRenderer_DumpStats()
                 "[vk]   fence wait: %.2f ms/frame mean — this is the CPU BLOCKED ON THE "
                 "GPU, and it is the half of `walk` that is not our recording\n",
                 double(g_fenceWaitNs) / 1e6 / frames);
+    }
+    // THE PER-REGION GPU SPLIT (part 78 item 1) — the first breakdown of the device's own
+    // time this project has had. THE RESIDUAL IS PRINTED FIRST AND ON PURPOSE: it is the
+    // frame's measured GPU time minus everything the regions account for, and it is the
+    // only thing here that can say the split is wrong. A large residual means a region is
+    // missing, not that work vanished (gotcha 237's shape, one level down).
+    if (g_gpFrames)
+    {
+        const double f = double(g_gpFrames);
+        const double totMs = double(g_gpTotalNs) / 1e6 / f;
+        const double attMs = double(g_gpAttribNs) / 1e6 / f;
+        fprintf(stderr,
+                "[vk]   GPU per-region split (CZ_VK_GPU_PASSES) over %llu frames — "
+                "%.3f ms/frame measured, %.3f ms attributed, RESIDUAL %.3f ms (%.1f%%)\n",
+                (unsigned long long)g_gpFrames, totMs, attMs, totMs - attMs,
+                totMs > 0.0 ? 100.0 * (totMs - attMs) / totMs : 0.0);
+        for (int c = 0; c < kGpClasses; ++c)
+        {
+            const double ms = double(g_gpNs[c]) / 1e6 / f;
+            fprintf(stderr,
+                    "[vk]     %-20s %8.3f ms/frame (%5.1f%% of the frame's GPU time)  "
+                    "%8.2f regions/frame, %7.0f ns each\n",
+                    kGpNames[c], ms, totMs > 0.0 ? 100.0 * ms / totMs : 0.0,
+                    double(g_gpN[c]) / f,
+                    g_gpN[c] ? double(g_gpNs[c]) / double(g_gpN[c]) : 0.0);
+        }
+        fprintf(stderr,
+                "[vk]     resolve copies moved %.2f Mpixel/frame (%.1f full %ux%u "
+                "screens' worth)\n",
+                double(g_gpResolvePixels) / 1e6 / f,
+                double(g_gpResolvePixels) / f /
+                    (double(R->color.width) * double(R->color.height)),
+                R->color.width, R->color.height);
+        if (g_gpClearN)
+            fprintf(stderr,
+                    "[vk]     resolve clears wrote %.2f Mpixel/frame over %.1f clears, "
+                    "where the passes they follow rendered only %.2f Mpixel — SCOPING "
+                    "THEM WOULD REMOVE %.1f%% OF THE CLEAR CLASS\n",
+                    double(g_gpClearFullPixels) / 1e6 / f, double(g_gpClearN) / f,
+                    double(g_gpClearScopedPixels) / 1e6 / f,
+                    g_gpClearFullPixels ? 100.0 * (1.0 - double(g_gpClearScopedPixels) /
+                                                             double(g_gpClearFullPixels))
+                                        : 0.0);
+        if (g_gpOverflow || g_gpBadRead)
+            fprintf(stderr,
+                    "[vk]     ** %llu regions dropped for want of a query slot and %llu "
+                    "unreadable — every one of those UNDER-reports its class\n",
+                    (unsigned long long)g_gpOverflow, (unsigned long long)g_gpBadRead);
+        fprintf(stderr,
+                "[vk]     (a region's time is the wall time between two BOTTOM_OF_PIPE "
+                "timestamps, so it is an upper bound on its own cost where the device "
+                "overlaps regions; the SUM and the RESIDUAL are the honest quantities)\n");
     }
     // §4b — WHAT THE 41 NEAR-EMPTY PASSES A FRAME ACTUALLY COST. Split by the size of
     // the pass that ended, because the decision is "what is recovered by not issuing the
