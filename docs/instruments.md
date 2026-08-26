@@ -2960,3 +2960,65 @@ Read `[host] display 0 is WxH` out of any log before comparing it with another �
 been printed all along and part 75 did not read it for an hour. And **never wait on a run
 with `pgrep -f "autoroute.sh"`**: that matches the waiting shell's own command line and the
 loop can never exit (three deadlocked at once). `pgrep -x cz_runtime_auto` is the process.
+
+## Part 77 — the texture decode's decomposition, and the image memory pool
+
+**Unconditional, printed at exit, free.** Nothing here needs an environment variable: the
+clocks are eight `CycNow()` reads per REAL texture upload (~2,300 a run), which is nowhere
+near a hot path — `UploadTexture` is called ~9,300 times a *frame* but declines almost all
+of them at the cache, and only a genuine upload pays these.
+
+```
+[vk]  decode split (ms / % of decode): alloc .. base-untile .. mip-untile .. mip-guards ..
+                                       content-scan .. src-hash .. vkCreateImage .. RESIDUAL ..
+[vk]  base untile: N units over M uploads, X ns/unit
+[vk]  CreateImage xN (D MB device): vkCreateImage ..  memReq ..  vkAllocateMemory ..
+                                    bind ..  view ..  -> U us each
+[vk]  image memory: P pooled into B blocks, D dedicated allocations (W KB lost to alignment)
+```
+
+**Read the RESIDUAL first.** The seven named columns are scopes inside `g_texDecodeNs`, so
+they must sum to less than it; what is left over is everything the split does not name, and
+a large residual means the split is wrong rather than that work vanished. It runs at 0.5-0.6%
+on the autonomous route. This exists because the previous single number was named for three
+of the seven things inside it and the largest — `vkAllocateMemory`, 70% — was in none of them
+(gotcha 455).
+
+**`base untile: ... ns/unit` is the one that stops an argument.** A total cannot tell a slow
+loop from a lot of units; 4.6 ns/unit over 11.5 M units says the untile is not the problem
+however large its millisecond total looks.
+
+```
+CZ_VK_NO_TEX_MEMPOOL=1   the same-binary CONTROL ARM for the image memory pool: one
+                         dedicated `vkAllocateMemory` per texture, i.e. the renderer
+                         through part 76. `image memory: 0 pooled ... N dedicated` is how
+                         you check the arm engaged — an arm whose engagement is invisible
+                         has been run the wrong way round before (gotcha 415)
+```
+
+**And the pool is a correctness fix as well as a 350 ms one.** The route consumes ~2,400 of
+the driver's ~4,096 `maxMemoryAllocationCount` with one allocation per texture; a long
+session in a texture-heavy era runs out and `VK_CHECK` aborts. `image memory:` is also the
+line that says how close a session got.
+
+### Reading a texture A/B: `tools/part77_tex_ab.sh` + `part77_tex_report.py`
+
+Neither `part75_ab_report.py` nor `part76_band.py` fits, and for the reason gotcha 452
+gives: both band the frame by DRAW COUNT, which is right for an item that changes the cost
+of a draw and wrong for one that changes the cost of an upload. Texture uploads happen on
+~0.4% of frames; a draw-banded median dilutes a 100 ms effect into nothing.
+
+So this reader's population is **frames with `texUploads > 0`**, its headline is **the BURST
+FRAME** — the single frame of the run that uploaded the most textures, which on this route
+is the DebugJump load at ~780 uploads and is therefore the SAME EVENT in every run, i.e. a
+matched comparison rather than a distribution — and its control channel is the **no-upload
+median**, which this change cannot reach.
+
+`texDecUs` and `texUploads` are in `CZ_VK_FRAME_TRACE` **unconditionally** (they are plain
+counters, not `ProfScope`s), so a texture A/B needs no `CZ_VK_PROFILE` and does not pay its
++1.5 to +5.5 ms (gotcha 454).
+
+**A trace with no `.rc` beside it is a run that has not finished**, and the reader skips it
+by name. A partial trace reads as a complete run of a shorter route: the first pass of part
+77's A/B compared a control arm at 6,178 frames against a finished arm's 16,685 and made
+the run-total columns look 43% apart. The per-upload columns are there for the same reason.

@@ -51,7 +51,26 @@ def summarise(rows):
         'decMax': max([r.get('texDecUs', 0) for r in up]) / 1000 if up else 0,
         'uploads': sum(r.get('texUploads', 0) for r in rows),
         'noWallMed': st.median([r['wallUs'] for r in no]) / 1000 if no else 0,
-        'worst': max([r['wallUs'] for r in rows]) / 1000 if rows else 0,
+        # THE BURST FRAME: the single frame of the run that uploaded the most textures. On
+        # this route that is the DebugJump load, ~780 uploads, and it is the same event in
+        # every run — so it is a MATCHED comparison rather than a distribution statistic,
+        # and it is what the pre-registered kill ("40 ms off the worst frame") is measured
+        # against.
+        'burstWall': (max(up, key=lambda r: r['texUploads'])['wallUs'] / 1000) if up else 0,
+        'burstTex': max(r['texUploads'] for r in up) if up else 0,
+        'burstDec': (max(up, key=lambda r: r['texUploads'])['texDecUs'] / 1000) if up else 0,
+        'burstUp': (max(up, key=lambda r: r['texUploads'])['texUpUs'] / 1000) if up else 0,
+        # How many frames of the whole run exceeded 150 ms — the population a player would
+        # call a hitch. Reported with its cause split, because this route also produces
+        # multi-second frames with ZERO uploads and zero pipelines (an OS or compositor
+        # stall), and quoting the run's overall maximum would credit this change with
+        # removing those. It cannot reach them.
+        'slow150': sum(1 for r in rows if r['wallUs'] > 150000),
+        'slow150tex': sum(1 for r in rows if r['wallUs'] > 150000
+                          and r.get('texUploads', 0) > 0),
+        # Per-upload, so a run that got further down the route cannot move it.
+        'decPer1k': (sum(r.get('texDecUs', 0) for r in rows)
+                     / max(1.0, sum(r.get('texUploads', 0) for r in rows))),
     }
 
 def main():
@@ -64,7 +83,18 @@ def main():
         if not arm:
             continue
         rc = p.replace('.trace', '.rc')
-        if os.path.exists(rc) and open(rc).read().strip() != '0':
+        # A TRACE WITH NO `.rc` IS A RUN THAT HAS NOT FINISHED. The driver writes the exit
+        # code after the process ends, so a missing one means the file is still being
+        # appended to — and a partial trace reads as a complete SHORT run, whose run-total
+        # columns (uploads, decode total, no-upload median) are then a fact about how far
+        # it happened to have got. That is exactly what happened on the first pass of this
+        # A/B: a control arm read at 6,178 frames against a finished arm's 16,685 and made
+        # the totals look 43% apart.
+        if not os.path.exists(rc):
+            print(f'  SKIPPED {base}: still running (no .rc yet) — a partial trace is a '
+                  f'complete run of a shorter route, not a shorter sample of this one')
+            continue
+        if open(rc).read().strip() != '0':
             print(f'  SKIPPED {base}: the route gate failed (rc='
                   f'{open(rc).read().strip()}) — an arm that never left the menu is not a '
                   f'measurement')
@@ -78,7 +108,10 @@ def main():
                   f'({s["uploads"]:.0f} uploads) | upload-frame wall med {s["upWallMed"]:7.2f} '
                   f'p99 {s["upWallP99"]:8.2f} max {s["upWallMax"]:8.2f} ms | decode total '
                   f'{s["decTot"]:8.1f} ms, worst frame decode {s["decMax"]:7.1f} | '
-                  f'no-upload med {s["noWallMed"]:6.2f} | worst frame {s["worst"]:8.2f}')
+                  f'no-upload med {s["noWallMed"]:6.2f} | BURST {s["burstTex"]:.0f} tex '
+                  f'-> {s["burstWall"]:7.2f} ms (dec {s["burstDec"]:.1f} + up '
+                  f'{s["burstUp"]:.1f}) | >150ms: {s["slow150"]} ({s["slow150tex"]} with '
+                  f'uploads)')
 
     def agg(arm, k):
         v = [s[k] for _, s in arms.get(arm, [])]
@@ -87,12 +120,18 @@ def main():
     print('\n=== medians across runs ===')
     hdr = ('stat', 'ctl', 'fix', 'delta', '%')
     print('  %-26s %10s %10s %10s %8s' % hdr)
-    for k, name in (('decTot', 'decode total (ms/run)'),
+    for k, name in (('burstWall', 'BURST FRAME wall (ms)'),
+                    ('burstTex', '  its uploads (must match)'),
+                    ('burstDec', '  its decode'),
+                    ('burstUp', '  its stage+submit'),
+                    ('slow150', 'frames over 150 ms'),
+                    ('slow150tex', '  of those, with uploads'),
+                    ('decPer1k', 'decode us per upload'),
+                    ('decTot', 'decode total (ms/run)'),
                     ('decMax', 'worst frame decode (ms)'),
                     ('upWallMed', 'upload-frame wall med'),
                     ('upWallP99', 'upload-frame wall p99'),
                     ('upWallMax', 'upload-frame wall max'),
-                    ('worst', 'worst frame of the run'),
                     ('noWallMed', 'NO-upload med (control)'),
                     ('uploads', 'uploads (must match)')):
         c, f = agg('ctl', k), agg('fix', k)
