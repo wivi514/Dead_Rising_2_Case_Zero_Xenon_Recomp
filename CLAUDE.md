@@ -871,6 +871,15 @@ BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE — AND THE FIX THREE KICKOFFS SPECIFI
   layer does not track its image layouts at all** (gotcha 458). What had power was
   `frame_era_medians.py`: the break arm is **43,211x the null** on coverage, and both batch
   runs are INSIDE the null on every statistic in both framings.
+* **END TO END, one binary, both arms on against both off, 3440x1440, matched load:
+  THE BURST FRAME GOES 276.6 -> 100.1 ms, −63.8%** (775 vs 773 uploads). Its decode
+  170.9 -> 57.3, its stage+submit **64.3 -> 2.4**. Run-wide: decode 494.8 -> 141.2 ms,
+  staging+submit 574.0 -> 173.3, immediate submits 2,427 -> 140. **No frame that uploads a
+  texture exceeds 150 ms on this route any more** — the one survivor above 150 ms carries
+  zero uploads and zero pipelines and is the OS-stall class. **And the remaining 100 ms names
+  part 78's item 2**: both arms compile 97 pipelines on that frame, so ~40 ms of it is
+  pipeline creation and ordinary draws, invisible until now because the texture path was
+  three times larger.
 * **STILL OPEN, AND HONESTLY PRICED AS SMALL.** The untile is finally the biggest decode
   column (79 of 152 ms/run) and the work to fix it is proven: `Tiled2DOffset` decomposes into
   a 32x32 table plus a macro-tile base, **967,680 combinations checked, 0 mismatches**
