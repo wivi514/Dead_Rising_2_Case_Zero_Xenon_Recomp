@@ -17727,3 +17727,29 @@ and the pre-registered kill for this item's halves has been 40 ms off the worst 
 throughout. A 3x on the untile is ~17 ms and would be correctly killed by that threshold; the
 honest reading is that this is now a SMALL item, and part 77's whole lesson is that the size
 of an item is a measurement and not an expectation.
+
+### 11. THE END-TO-END PAIR: 276.6 -> 100.1 ms on the burst frame
+
+One binary, both arms on against both arms off (`CZ_VK_NO_TEX_MEMPOOL=1 CZ_VK_NO_TEX_BATCH=1`),
+3440x1440 pinned, 60 s route, both runs reaching the same load (6,169 vs 6,167 peak windowed
+draw median):
+
+| | control = the renderer through part 76 | shipping | delta |
+|---|---|---|---|
+| **BURST FRAME wall** | **276.6 ms** (775 uploads) | **100.1 ms** (773 uploads) | **−176.5, −63.8%** |
+| its decode | 170.9 ms | 57.3 | −66.5% |
+| its stage + submit | 64.3 ms | **2.4** | **−96.3%** |
+| decode, whole run | 494.8 ms (211 us each) | 141.2 (60 us) | −71.5% |
+| staging + submit, whole run | 574.0 ms (245 us each) | 173.3 (74 us) | −69.8% |
+| immediate submits | 2,427 / 599.8 ms | 140 / 203.1 ms | −94% by count |
+| **frames over 150 ms** | **4, three of them uploads** | **1, and it has NO uploads** | |
+
+**No frame that uploads a texture exceeds 150 ms any more on this route.** The single
+survivor carries zero uploads and zero pipelines — it is the OS/compositor stall class
+described in §6 and this change cannot reach it.
+
+**And the burst frame's remaining 100 ms names part 78's next item.** Both arms compile
+**97 pipelines** on that frame; with decode at 57.3 and the submit half at 2.4, roughly
+40 ms of it is pipeline creation and ordinary draw work. Part 71 shipped the pipeline CACHE
+(17.8 s of first-run compilation); what a warm cache still costs on a load frame has never
+been priced, and it was invisible until now because the texture path was three times larger.
