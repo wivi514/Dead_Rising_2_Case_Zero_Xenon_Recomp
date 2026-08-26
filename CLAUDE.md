@@ -890,11 +890,27 @@ lessons: gotchas **451-454**):
   CPU-bound (9,000-12,000 draws: GPU 11.87 against a profiler-corrected CPU 14.50, fence
   0.00). **The GPU is FLAT at 8.5-11.9 ms across a 4x range of draw counts**, which is what
   a pixel-bound cost looks like. Measure CPU items at 9,000+ draws or not at all.
+* **CONFIRMED WITH NO SUBTRACTION THE SAME NIGHT (§6dr §7-9).** A profiler-free run,
+  13,355 frames, nothing armed but `CZ_VK_FRAME_TRACE`: **fence 4.15 ms at 0-3,000 draws
+  falling to 0.00 from 7,000 up**, GPU 9.07 -> 12.20, CPU 4.16 -> 13.06. **The crossover is
+  6,000-7,000 draws, not 8,000** — the flat subtraction put it a band high. **The GPU column
+  agrees between the two runs within 0.5 ms at every band**, which is what licenses the rest.
+  **And the honest frame rate at their crowd, 8,300-8,500 draws: 12.44/12.58/12.77 ms —
+  78-80 fps**, against a pre-run prediction of 12.6 ms / 79 fps.
 * **AND THE PROFILER INVERTS THAT VERDICT, which nobody had measured in twenty parts.**
-  `CZ_VK_PROFILE` costs **+4.00 ms of CPU and only +1.01 ms of wall** — it eats the CPU slack
-  — so the same route reads **fence 2.99 without it and 0.00 with it**. A regime question is
-  about SPARE CAPACITY and a CPU instrument destroys the quantity being asked. Use
-  `CZ_VK_FRAME_TRACE` alone. Gotcha 454.
+  `CZ_VK_PROFILE` eats the CPU slack, so the same route reads **fence 2.99 without it and
+  0.00 with it** while the wall moves only +1.01. **Its bill SCALES with the draw count —
+  +1.55 ms at 2,500 draws, +5.45 at 9,200** — so "2-4 ms" is a fact about a mid-range load
+  and a flat subtraction moves the answer. A regime question is about SPARE CAPACITY and a
+  CPU instrument destroys the quantity being asked. Use `CZ_VK_FRAME_TRACE` alone. Gotcha 454.
+* **THE ACTIONABLE GPU FINDING, and it is part 77 item 2a's starting point: MOST OF THE
+  DEVICE'S COST IS NOT THE CROWD.** GPU by band: 6.97 ms at 1,157 draws, **9.26 at 2,484**,
+  9.61 at 6,236, **12.20 at 9,208**. Three quarters of the crowd's GPU cost is already there
+  in a light scene, and the 0-3,000 band's 4.15 ms fence is the same fact from the CPU side.
+  A cost that barely moves with draws at a fixed resolution is **full-screen work — post,
+  resolves, the passes that run whatever is on screen**. A linear fit over those bands was
+  run and is NOT quoted: the series is non-monotone because the bands are different CONTENT
+  (`measurement.md` §4).
 * **THEIR 20 MARKS PUT THE TEXTURE PATH FIRST ON EVIDENCE.** All 20 had `fence 0.00` and a
   healthy 11.1-12.7 ms GPU — 36 marks across three sessions now, none of them the device —
   and **18 of 20 carried a real texture upload with `texPh` 9.3-16.8 ms of a 30-37 ms

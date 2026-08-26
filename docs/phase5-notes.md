@@ -17341,10 +17341,77 @@ two are directly comparable:
 With the profiler's measured 4.00 ms taken off, the game they actually play sits near
 **12.6 ms at this load — about 79 fps.**
 
-### 6. WHAT IS OWED
+### 6. ~~WHAT IS OWED~~ — PAID THE SAME NIGHT
 
-**One short profiler-free run**: `tools/play_session.sh` with `CZ_VK_FRAME_TRACE` and nothing
-else, two minutes in the same crowd. The trace alone costs a line of I/O per frame and does
-not move the numbers (the A/B runs without it read 10.85 ms where the traced run read 10.59),
-so it settles §3 with no subtraction at all. Until then, the 7,000-9,000 row is "balanced"
-with an error bar wide enough to be either.
+**One short profiler-free run** — `tools/play_session.sh` with `CZ_VK_FRAME_TRACE` and
+nothing else. The operator ran it immediately: **13,355 traced frames, 3440x1440 pinned, no
+profiler, god mode but NOT "zombies ignore all humans"** (the crowd's behaviour is the load).
+§7 is the result and it needs no subtraction at all.
+
+### 7. THE CLEAN ANSWER — and the crossover is LOWER than the subtraction estimated
+
+12,677 texture-free frames, nothing armed but the trace:
+
+| draws | n | wall | GPU | fence | CPU rec | regime |
+|---|---|---|---|---|---|---|
+| 0-3,000 | 9,570 | 9.02 | 9.07 | **4.15** | 4.16 | GPU is the limiter — the CPU idles 46% of the frame |
+| 3,000-5,000 | 371 | 8.68 | 8.69 | 2.42 | 6.00 | GPU is the limiter |
+| 5,000-7,000 | 713 | 9.84 | 9.61 | 0.64 | 8.55 | **balanced — the crossover** |
+| 7,000-9,000 | 1,670 | 11.93 | 11.35 | **0.00** | 11.30 | **CPU is the limiter** |
+| 9,000-12,000 | 353 | 13.58 | 12.20 | **0.00** | 13.06 | **CPU is the limiter** |
+
+**§3's conclusion holds and its arithmetic was slightly off.** The crossover is at
+**6,000-7,000 draws, not 8,000** — the flat 4.00 ms subtraction put it one band too high.
+
+**THE GPU COLUMN AGREES BETWEEN THE TWO RUNS TO WITHIN 0.5 ms AT EVERY BAND** — 9.07/9.11,
+9.61/9.43, 11.35/10.89, 12.20/11.87. That is the cross-check that licenses everything else
+here: the profiler taxes the CPU and leaves the device alone, which is what the model said
+and is now measured rather than assumed.
+
+**AND THE PROFILER'S BILL SCALES WITH THE DRAW COUNT, exactly as §2 warned it probably did:**
+
+| draws | CPU clean | CPU profiled | bill |
+|---|---|---|---|
+| 0-3,000 | 4.16 | 5.71 | **+1.55** |
+| 5,000-7,000 | 8.55 | 11.86 | **+3.31** |
+| 7,000-9,000 | 11.30 | 15.68 | **+4.38** |
+| 9,000-12,000 | 13.06 | 18.50 | **+5.45** |
+
+So "`CZ_VK_PROFILE` costs 2-4 ms" is a fact about a mid-range draw count and it is 1.55 ms in
+a menu and 5.45 ms in a crowd. **The instrument's bill has the same shape as the thing it is
+measuring**, which is why a flat subtraction moved the crossover a whole band and why §5 of
+`measurement.md` says to prefer the within-run attribution.
+
+### 8. THE ACTIONABLE GPU FINDING: MOST OF THE DEVICE'S COST IS NOT THE CROWD
+
+| draws (band median) | 64 | 1,157 | 2,484 | 4,222 | 6,236 | 8,142 | 9,208 |
+|---|---|---|---|---|---|---|---|
+| **GPU ms** | 1.24 | 6.97 | **9.26** | 8.69 | 9.61 | 11.35 | **12.20** |
+| CPU ms | 0.31 | 2.40 | 4.36 | 6.00 | 8.55 | 11.30 | 13.06 |
+
+**At 2,484 draws the GPU already costs 9.26 ms; at 9,208 — 3.7x the draws — it costs 12.20.**
+About three quarters of the device's cost in a full crowd is present in a light scene, and
+the 0-3,000 band's **4.15 ms fence wait** is the same fact seen from the CPU side: in menus,
+interiors and the safehouse the CPU spends 46% of every frame waiting for a GPU that is doing
+9 ms of work for 2,500 draws.
+
+That is the strongest pointer this project has ever had for `part77-kickoff.md` item 2a, and
+it says where to look: a cost that does not move with the draw count at a fixed resolution is
+**full-screen work — the post chain, the resolves, the passes that run whatever is on screen**
+— not geometry. It agrees with §6dn's pixel scaling (7,986 / 10,167 / 19,856 us at 3.69 /
+4.95 / 14.75 Mpx).
+
+**A LINEAR FIT WAS RUN OVER THOSE SEVEN BANDS AND IS NOT QUOTED.** It returns
+`GPU = 4.46 ms + 0.891 ms per 1,000 draws`, which looks like a decomposition and is not one:
+the series is **not monotone** (9.26 at 2,484 falls to 8.69 at 4,222), because the bands are
+different CONTENT and not merely different draw counts, and a 64-draw loading screen at
+1.24 ms anchors the intercept. Two measured bands and their ratio say the useful thing; the
+fit dresses the same data as a model it has not earned (`measurement.md` §4).
+
+### 9. AND THE HONEST FRAME RATE, WHICH IS WHAT THE OPERATOR ACTUALLY SEES
+
+The last three 10-second windows of that session, standing in the crowd at **8,300-8,500
+draws: 12.44, 12.58 and 12.77 ms median — 78 to 80 fps.** Predicted from §5's
+profiler-corrected arithmetic before the run: "around 12.6 ms at this load, about 79 fps".
+**Within 2%.** Texture frames are still there and still the outlier population: 678 of 13,355
+frames, median 20.33 ms, p99 62.17, worst 298.4.

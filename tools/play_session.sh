@@ -119,7 +119,16 @@ fi
 echo "==================================================================="
 echo "  PLAY SESSION — no profiler, no frame stats, no debug menu"
 echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((1000/FPS)) ms)"
-echo "  res:  ${RES:-1280x720}"
+# The internal resolution is NOT 1280x720 by default and this line used to say it was: with
+# no RES the renderer takes it from `assets/save/cz_settings.txt` (res_w/res_h, currently
+# 3440x1440), and a resolution that arrives from a file nobody read is the same defect as one
+# that arrives from the desktop (gotcha 447). Say where it came from, and say the value only
+# when this script is the thing that chose it.
+if [ -n "${RES:-}" ]; then
+    echo "  res:  $RES (pinned by RES=)"
+else
+    echo "  res:  from assets/save/cz_settings.txt — $(awk -F= '/^res_w/{w=$2} /^res_h/{h=$2} END{print w"x"h}' "$ROOT/assets/save/cz_settings.txt" 2>/dev/null) (not pinned)"
+fi
 if [ -n "${NOSWAP:-}" ]; then
     echo "  swap: CZ_VK_NO_SWAPCHAIN=1 -- the readback present path (the pre-part-54 arm)"
 else

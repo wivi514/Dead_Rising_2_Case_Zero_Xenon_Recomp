@@ -35,7 +35,14 @@ draws** — monotone across every draw band, against a null floor of 0.01 ms. A 
 finding of the same class, a `getenv` on the per-draw path in every run this project has
 ever made, is in §6dq §6.
 
-## 0c. WHAT PART 76's OPERATOR SESSION DELIVERED, AT THEIR OWN LOAD
+## 0c. WHAT PART 76 DELIVERED, AT THE OPERATOR'S OWN LOAD
+
+**The honest frame rate, no instruments but the trace, standing in the Main Street crowd at
+8,300-8,500 draws: 12.44 / 12.58 / 12.77 ms median over three consecutive 10 s windows —
+78 to 80 fps.** Predicted from the profiled session before the run: "around 12.6 ms, about
+79 fps". Within 2%.
+
+### the profiled comparison, which is the like-for-like one
 
 Same harness, same resolution, same instrument load as part 75's verification session, so
 the two are directly comparable — **>= 7,000 draws, profiler on: 23.31 ms -> 16.65 ms,
@@ -65,15 +72,22 @@ predicted per-draw CPU work measured **−0.08 ms against a −0.06 ms null**. T
 priced right and the call count was confirmed right; the frame simply was not waiting on
 that thread any more (gotcha 453).
 
-**AND THE OPERATOR'S OWN PLAY ANSWERED THE SCOPE QUESTION — §6dr.** 12,772 traced frames of
-their session, texture frames excluded, the profiler's measured 4.00 ms bill subtracted:
+**AND THE OPERATOR'S OWN PLAY ANSWERED THE SCOPE QUESTION — §6dr, and the profiler-free run
+settled it with NO SUBTRACTION.** 12,677 texture-free frames, 3440x1440, nothing armed but
+`CZ_VK_FRAME_TRACE`:
 
-| draws | GPU | CPU rec − 4.0 | regime |
-|---|---|---|---|
-| 0-3,000 | 9.11 | 1.71 | GPU is the limiter |
-| 5,000-7,000 | 9.43 | 7.86 | GPU is the limiter |
-| 7,000-9,000 | 10.89 | 11.68 | **balanced — the crossover** |
-| **9,000-12,000** | **11.87** | **14.50** | **CPU is the limiter** |
+| draws | n | wall | GPU | fence | CPU rec | regime |
+|---|---|---|---|---|---|---|
+| 0-3,000 | 9,570 | 9.02 | 9.07 | **4.15** | 4.16 | GPU is the limiter — CPU idles 46% of the frame |
+| 3,000-5,000 | 371 | 8.68 | 8.69 | 2.42 | 6.00 | GPU is the limiter |
+| 5,000-7,000 | 713 | 9.84 | 9.61 | 0.64 | 8.55 | **balanced — THE CROSSOVER** |
+| 7,000-9,000 | 1,670 | 11.93 | 11.35 | **0.00** | 11.30 | **CPU is the limiter** |
+| 9,000-12,000 | 353 | 13.58 | 12.20 | **0.00** | 13.06 | **CPU is the limiter** |
+
+**The crossover is 6,000-7,000 draws, not 8,000** — the profiled session's flat 4.00 ms
+subtraction put it a band too high, because the instrument's bill scales with the draw count
+(+1.55 ms at 2,500 draws, +5.45 at 9,200). The GPU column agrees between the two runs to
+within 0.5 ms at every band, which is the cross-check that licenses the rest.
 
 **The GPU is flat — 8.5 to 11.9 ms across a 4x range of draw counts** — which is what a
 pixel-bound cost looks like at a fixed resolution. The CPU runs 5.7 to 18.5 over the same
@@ -86,12 +100,13 @@ CPU item, and say which regime AND WHICH DRAW COUNT the number was taken at. An 
 3 ms of CPU is worth 0 ms of frame time on the autonomous route and close to 3 ms in a
 crowd. **Measure CPU items at 9,000+ draws or not at all.**
 
-**AND USE THE CHEAPEST INSTRUMENT THAT ANSWERS THE QUESTION.** `CZ_VK_PROFILE` costs **+4.00
-ms of CPU and only +1.01 ms of wall** (measured, same route, same band) — it eats the CPU
-slack, so it takes the fence from 2.99 to 0.00 and reports the same route as CPU-bound that
-it reports as GPU-bound without it. A regime question is a question about SPARE CAPACITY and
-a CPU instrument destroys the quantity being asked about. `CZ_VK_FRAME_TRACE` alone is a line
-of I/O per frame and does not move the numbers. Gotcha 454.
+**AND USE THE CHEAPEST INSTRUMENT THAT ANSWERS THE QUESTION.** `CZ_VK_PROFILE` costs
+**+1.55 ms of CPU in a menu and +5.45 ms in a crowd** and only ~+1 ms of wall — it eats the
+CPU slack, so it takes the fence from 2.99 to 0.00 and reports the same route as CPU-bound
+that it reports as GPU-bound without it. A regime question is a question about SPARE CAPACITY
+and a CPU instrument destroys the quantity being asked about; worse, **its bill has the same
+shape as the thing being measured**, so a flat subtraction moves the answer. `CZ_VK_FRAME_TRACE`
+alone is a line of I/O per frame and does not move the numbers. Gotcha 454.
 
 ## 1. THE BOARD, IN ORDER
 
@@ -147,11 +162,27 @@ floor under everything, and it is 60-70% of the frame in every band below the cr
 menus, interiors, the safehouse, and the whole 0-3,000 band where the CPU idles 2.87 ms. It
 is also the ceiling every CPU item is measured against.
 
-**2a. Find out where the GPU's ~11 ms goes.** This project has never had a GPU-side
-breakdown: the frame trace gives one number for the whole command buffer. That the cost is
-flat in draws and scales with pixels (7,986 / 10,167 / 19,856 us at 3.69 / 4.95 / 14.75 Mpx,
-§6dn) already points at fill and the post chain rather than at geometry. Timestamp queries
-per PASS would say it outright, and this renderer already writes two per frame.
+**2a. Find out where the GPU's ~11 ms goes — and §6dr §8 says where to look first.**
+
+| draws (band median) | 1,157 | **2,484** | 4,222 | 6,236 | 8,142 | **9,208** |
+|---|---|---|---|---|---|---|
+| **GPU ms** | 6.97 | **9.26** | 8.69 | 9.61 | 11.35 | **12.20** |
+
+**At 2,484 draws the GPU already costs 9.26 ms; at 3.7x the draws it costs 12.20.** About
+three quarters of the device's cost in a full crowd is present in a light scene, and the
+0-3,000 band's **4.15 ms fence wait** is the same fact from the CPU side. A cost that barely
+moves with the draw count at a fixed resolution is **full-screen work — the post chain, the
+resolves, the passes that run whatever is on screen** — not geometry, and it agrees with
+§6dn's pixel scaling (7,986 / 10,167 / 19,856 us at 3.69 / 4.95 / 14.75 Mpx).
+
+This project has never had a GPU-side breakdown; the frame trace gives one number for the
+whole command buffer. **Timestamp queries per PASS would settle it, and this renderer already
+writes two per frame** — the mechanism exists and needs extending, not inventing.
+
+Do NOT quote a linear fit over those bands as a fixed/variable split. One was run: it returns
+`4.46 ms + 0.891 per 1,000 draws` and it has not earned that shape — the series is not
+monotone (9.26 at 2,484 falls to 8.69 at 4,222) because the bands are different CONTENT, not
+merely different draw counts (`measurement.md` §4).
 
 ### ITEM 3 — PARALLEL COMMAND RECORDING. **Un-demoted for the crowd, and only for the crowd.**
 
@@ -167,13 +198,10 @@ fence wait and the GPU floor at the draw count they intend to measure, in the sa
 as the expected saving — and must measure at 9,000+ draws**, because part 76 spent a six-run
 A/B proving that a correct CPU fix measures exactly zero below the crossover.
 
-## 1b. THE ONE THING OWED FROM PART 76
+## 1b. NOTHING IS OWED FROM PART 76
 
-**A short profiler-free trace at their draw count.** `tools/play_session.sh` plus
-`CZ_VK_FRAME_TRACE` and nothing else, two minutes in the same crowd. It settles §0b's
-7,000-9,000 row — currently "balanced" only after subtracting an estimated 4.00 ms whose own
-bill probably scales with the draw count — with no subtraction at all. Cheap, and it is the
-difference between a measured crossover and an inferred one.
+The profiler-free trace it asked for was run the same night (§6dr §6-9). **Part 76 is closed
+with no measurement outstanding.**
 
 ## 2. RE-BASELINE BEFORE PRICING ANYTHING
 
