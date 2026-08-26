@@ -5527,3 +5527,116 @@ Record: `phase5-notes.md` **§6dp**; lessons: gotchas **446-449**):
   the operator session logged **0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO
   STALE`**. Renderer-only change — no config, kernel, PM4 or shader path touched — so part
   74's A5 and `alu_const_gate --hlsl-dir` sweeps stand.
+
+
+Where the port is, as of 2026-08-26 (**PART 76 CLOSED, NOTHING OWED — PERFORMANCE. The
+largest column in the operator's crowd frame was OUR OWN LAUNCHER; the fix is −16.4% of the
+frame and −28.6% at their own load, and the two operator sessions that verified it also
+established that THIS PORT HAS TWO REGIMES.** ~~**`docs/part77-kickoff.md` IS THE LIVE
+HAND-OFF.**~~ — it WAS, for one part; the live one is `docs/part78-kickoff.md`. Records: `phase5-notes.md` **§6dq** (the fix) and **§6dr** (the operator
+sessions and the regime); lessons: gotchas **451-454**):
+
+* **THE ITEM WAS `part76-kickoff.md` §1's FIRST: the F8/F9 readback, 3.49 ms of a 23.31 ms
+  crowd frame and not the game.** Part 54's swapchain was built to delete the present
+  readback; it survives whenever a picture instrument is armed, correctly, because every one
+  of them walks the frame on the CPU. **Two of the nine in that list are EDGE-TRIGGERED** —
+  `CZ_CAPTURE_KEY` is F9 and `CZ_BURST_DUMP` is F8 — and `tools/play_session.sh` sets both
+  unconditionally so the keys work. So every play session since part 54 paid a whole-frame
+  `vkCmdCopyImageToBuffer` plus a **19.8 MB `memcpy` under a mutex, every frame**, into a
+  buffer the swapchain never displays, for two keys pressed a handful of times an hour.
+* **THE FIX IS TO SPLIT BY TRIGGER RATHER THAN BY NAME.** The press arms the readback for
+  the frames that FOLLOW (`R->readbackUntilFrame`, `R->burstActive`) — it has to be the
+  frames that follow, because F9/F8 are consumed at the bottom of a swap whose readback
+  decision was made at the top. `CZ_VK_PRESENT_ALWAYS=1` is the same-binary control.
+* **DELIVERED: −2.13 ms, −16.4% of the crowd frame at 3440x1440 — 77.0 -> 92.2 fps at
+  ~6,000 draws.** Three runs an arm, alternated, one binary, resolution pinned; monotone
+  across every draw band (−16.7% to −18.1%) against a **null floor of 0.01 ms** between two
+  runs of the same arm 45 minutes apart. The fix arm draws MORE than the control (6,111 vs
+  5,951 median), so the number is conservative. Pre-registered kill was 2 ms.
+* **MAKING A STATIC PREDICATE DYNAMIC BROKE AN IDENTITY NOBODY HAD WRITTEN DOWN.**
+  `doReadback` decides the frame being RECORDED; `px` is read out of the frame being
+  RETIRED. While the predicate never changed those were the same answer. Armed by a key they
+  diverge on exactly the frames a press straddles, so the first frame after an F8 press
+  served the burst a slot holding pixels from **nine seconds earlier — with the correct
+  frame number beside it in the manifest**. One bool on the frame slot (`hasPixels`),
+  recorded with the pixels and read at the retire. Gotcha 451.
+* **THE GATE'S FIRST STALE-PIXEL CHECK PASSED ITS POSITIVE CONTROL, i.e. it could not
+  fail.** It compared every burst frame against the F9 capture; one press arms
+  `framesInFlight + 2` frames and the capture is only one of them, so the stale read landed
+  on a sibling nobody had a copy of. **Only the deliberately broken build said so.** It is
+  an INVARIANT now — each slot stamps the frame whose pixels are in it — and the same broken
+  build makes it fire. `tools/part76_readback_gate.sh` drives F9 and F8 from the route's own
+  press sequence (`autoroute.sh` gained `POSTSEQ`) and checks artifacts and counters, never
+  the picture, because **this saving cannot change a pixel and a broken fix would look
+  identical to a working one**.
+* **AND THE STANDARD A/B READER REFUSED THE COMPARISON — correctly, by its own rules.**
+  `part75_ab_report.py` partitions runs on the menu window as a machine-state fingerprint;
+  this item moved the menu **−15.2%, the same as the crowd**, because it touches every
+  presented frame. **A near-null control channel is only a control for a change that cannot
+  reach it** — classify the change first. `tools/part76_band.py` is the reader for the other
+  case. Gotcha 452.
+* **SECOND FINDING, SAME CLASS, ONE LEVEL DOWN: a `getenv` ON THE PER-DRAW PATH, in every
+  run this project has ever made.** `Env()` is a bare `getenv` — a linear scan over
+  `environ`, measured at **60.6 ns (miss) / 67.5 ns (hit)** here — and two of them ran on
+  every draw as the FIRST operand of an `&&`, so the register test could not short-circuit
+  them. ~0.8 ms a frame at 6,000 draws, for a dump that fires once a session and a counter
+  for an arm that is off. A **157-site census** of every `Env`/`EnvOn` call found these
+  three (two per draw, one per resolve) and no others; the census is the deliverable.
+  **Its A/B measured −0.08 ms against a
+  −0.06 ms null, i.e. NOTHING**, and the prediction (~0.77 ms) is refuted with both of its
+  ingredients confirmed correct — see the next bullet. Shipped as a correction, not as a
+  saving.
+* **AND THAT REFUTATION IS THE PART'S REAL HEADLINE: THE AUTONOMOUS ROUTE IS NOW GPU-BOUND,
+  AND PART 74's "THE GPU IS NEVER THE LIMITER HERE" IS RETRACTED FOR IT.**
+  `CZ_VK_FRAME_TRACE` at 5,000-7,000 draws, 3440x1440, the two arms of item 1:
+  **fix — wall 10.59, GPU 10.55 (100%), fence 2.99, CPU record 7.10; control — wall 12.29,
+  GPU 12.21, fence 0.53, CPU record 11.25.** The readback was a CPU cost AND a GPU cost
+  (−4.15 ms of CPU, −1.66 ms of GPU, because a whole-frame `vkCmdCopyImageToBuffer` is work
+  the device does); the WALL fell only −1.70 because the fence wait rose +2.46. **The CPU
+  now has three milliseconds of slack**, which is why a further CPU item reads zero.
+  **SCOPE, because it does not automatically transfer**: this route is 6,000-7,000 draws and
+  the operator plays at ~9,750; GPU cost scales with PIXELS and CPU with DRAWS, and in the
+  same run the 7,000-9,000 band already reads CPU 10.02 against GPU 12.12. Their frame is
+  probably near-balanced. **The next CPU item must say which of the two it is measured on.**
+  It does not blunt part 77's first item: the texture path is a HITCH item and a 10 ms GPU
+  floor is not what bounds a 300 ms frame. Gotcha 453.
+* **CONFIRMED AT THE OPERATOR'S OWN LOAD, and it answered the regime question (§6dr).** They
+  played a crowd with the profiler armed: **12,772 frames, 20 F7 marks, >= 7,000 draws
+  23.31 -> 16.65 ms, −28.6%, 42.9 -> 60.1 fps** against part 75's session at the same
+  instrument load. **THE PORT NOW HAS ONE RESOLUTION AND TWO REGIMES, about 8,000 draws
+  apart**: the autonomous route is GPU-bound (light draws, heavy pixels) and their crowd is
+  CPU-bound (9,000-12,000 draws: GPU 11.87 against a profiler-corrected CPU 14.50, fence
+  0.00). **The GPU is FLAT at 8.5-11.9 ms across a 4x range of draw counts**, which is what
+  a pixel-bound cost looks like. Measure CPU items at 9,000+ draws or not at all.
+* **CONFIRMED WITH NO SUBTRACTION THE SAME NIGHT (§6dr §7-9).** A profiler-free run,
+  13,355 frames, nothing armed but `CZ_VK_FRAME_TRACE`: **fence 4.15 ms at 0-3,000 draws
+  falling to 0.00 from 7,000 up**, GPU 9.07 -> 12.20, CPU 4.16 -> 13.06. **The crossover is
+  6,000-7,000 draws, not 8,000** — the flat subtraction put it a band high. **The GPU column
+  agrees between the two runs within 0.5 ms at every band**, which is what licenses the rest.
+  **And the honest frame rate at their crowd, 8,300-8,500 draws: 12.44/12.58/12.77 ms —
+  78-80 fps**, against a pre-run prediction of 12.6 ms / 79 fps.
+* **AND THE PROFILER INVERTS THAT VERDICT, which nobody had measured in twenty parts.**
+  `CZ_VK_PROFILE` eats the CPU slack, so the same route reads **fence 2.99 without it and
+  0.00 with it** while the wall moves only +1.01. **Its bill SCALES with the draw count —
+  +1.55 ms at 2,500 draws, +5.45 at 9,200** — so "2-4 ms" is a fact about a mid-range load
+  and a flat subtraction moves the answer. A regime question is about SPARE CAPACITY and a
+  CPU instrument destroys the quantity being asked. Use `CZ_VK_FRAME_TRACE` alone. Gotcha 454.
+* **THE ACTIONABLE GPU FINDING, and it is part 77 item 2a's starting point: MOST OF THE
+  DEVICE'S COST IS NOT THE CROWD.** GPU by band: 6.97 ms at 1,157 draws, **9.26 at 2,484**,
+  9.61 at 6,236, **12.20 at 9,208**. Three quarters of the crowd's GPU cost is already there
+  in a light scene, and the 0-3,000 band's 4.15 ms fence is the same fact from the CPU side.
+  A cost that barely moves with draws at a fixed resolution is **full-screen work — post,
+  resolves, the passes that run whatever is on screen**. A linear fit over those bands was
+  run and is NOT quoted: the series is non-monotone because the bands are different CONTENT
+  (`measurement.md` §4).
+* **THEIR 20 MARKS PUT THE TEXTURE PATH FIRST ON EVIDENCE.** All 20 had `fence 0.00` and a
+  healthy 11.1-12.7 ms GPU — 36 marks across three sessions now, none of them the device —
+  and **18 of 20 carried a real texture upload with `texPh` 9.3-16.8 ms of a 30-37 ms
+  frame**. At their draw count that path is no longer only the HITCH item; it is about half
+  the excess on a bad frame.
+* **Gates:** `--smoke` OK on every build; the readback gate OK in both arms and **shown
+  capable of failing**; the route gate passed on all 6 A/B runs and all 4 gate runs; the
+  operator session logged 0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`,
+  0 stale present slots.
+  Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5 and
+  `alu_const_gate --hlsl-dir` sweeps and part 75's cache gates stand.
