@@ -817,9 +817,10 @@ line has now named the wrong plan TWICE — the two-live-pointers defect the blo
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
 Where the port is, as of 2026-08-26 (**PART 77 CLOSED, NOTHING OWED — PERFORMANCE. THE
-BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE — AND THE FIX THREE KICKOFFS SPECIFIED FOR IT WAS
-17% OF ITS OWN HEADLINE.** **`docs/part78-kickoff.md` IS THE LIVE HAND-OFF.** Record:
-`phase5-notes.md` **§6ds**; lessons: gotchas **455-458**):
+BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE AND OPERATOR-CONFIRMED — AND THE FIX THREE KICKOFFS
+SPECIFIED FOR IT WAS 17% OF ITS OWN HEADLINE.** **`docs/part78-kickoff.md` IS THE LIVE HAND-OFF.** Records:
+`phase5-notes.md` **§6ds** (the work) and **§6dt** (the operator session); lessons: gotchas
+**455-458**):
 
 * **THE ITEM WAS `part77-kickoff.md` §1's FIRST, and it was the most thoroughly evidenced
   thing this port has carried**: 36 operator F7 stutter marks across parts 74/75/76 all
@@ -885,10 +886,32 @@ BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE — AND THE FIX THREE KICKOFFS SPECIFI
   a 32x32 table plus a macro-tile base, **967,680 combinations checked, 0 mismatches**
   (`tools/tile_offset_separable.py`), with units contiguous in 16-byte runs. But 79 ms/run is
   ~25 ms on a burst frame against a standing 40 ms kill. §6ds §10.
+* **CONFIRMED BY THE OPERATOR, and it moved the board (§6dt).** 150 s of play, no profiler:
+  *"didn't notice stutter except a single one a little bit after loading (not really an issue
+  for now) performance still low for an xbox 360 title on PC but acceptable for play."* Four
+  of fifteen windows have a worst frame over 50 ms and **all four are in the first 50
+  seconds**; across the remaining **100 s of crowd play at 7,000-9,500 draws the worst frame
+  of every window is 16.2-46.4 ms** and `>2x med` is 0.0-0.1%, where part 75's session reached
+  p99 174 and max 290. The steady frame is UNCHANGED (11.3-13.1 ms at 7,000-9,500 draws
+  against part 76's 11.93/13.58), which is the right result for a hitch fix.
+* **AND THE SESSION FOUND WHAT THE AUTONOMOUS ROUTE COULD NOT: THE BATCH'S BENEFIT IS
+  LOAD-SHAPED.** It flushes once per FRAME, so it is worth however many uploads that frame
+  carried. My route concentrates 773 into one load — **37.2 jobs/flush, staging half −70%**.
+  Their play spreads them — **4.8 jobs/flush, staging half −26%**, and the staging half is
+  still **77% of the texture path at their load** against 55% at mine. Gotcha 356 again. The
+  remedy is part 78's item 2 and it is load-independent: `FlushTextureUploads` still submits
+  AND WAITS (1,092.5 ms of their 150 s session); fence the arena and the command buffer
+  against the frame and the wait goes away whatever the jobs-per-flush is.
+* **AND THE ALLOCATION CAP WAS A REAL HAZARD, NOT A THEORETICAL ONE.** Their session made
+  **6,261 `CreateImage` calls in 150 seconds** against the driver's ~4,096
+  `maxMemoryAllocationCount`. Before part 77 it would have exhausted the allocator and
+  aborted on `VK_CHECK`. It used **9 blocks**.
 * **Gates:** `--smoke` OK on every build; `shader_dim_census` clean (339 2D / 100 cube, 0
   disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name
   diff; every one of the 13 route runs passed its own draw gate; the picture gate passed in
-  both framings and was **shown capable of failing**. Renderer-only change — no config,
+  both framings and was **shown capable of failing**; the operator's session logged 0 `no
+  translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present slots, 0 block
+  allocation failures, and no new shaders (449 dumps against a 449 cache, name diff empty). Renderer-only change — no config,
   kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate --hlsl-dir` sweeps
   and part 75's cache gates stand.
 

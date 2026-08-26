@@ -52,9 +52,31 @@ autonomous route is GPU-bound below ~6,000-7,000 draws and the operator's crowd 
 above it. Run `CZ_VK_FRAME_TRACE` alone — never `CZ_VK_PROFILE` — to ask which, and measure
 a CPU item at 9,000+ draws or not at all.
 
+## 0d. THE OPERATOR PLAYED IT — §6dt, and it MOVED THE BOARD
+
+150 s, no profiler. *"Didn't notice stutter except a single one a little bit after loading
+(not really an issue for now) performance still low for an xbox 360 title on PC but
+acceptable for play."*
+
+**The hitch report matches the data exactly.** Four of fifteen windows have a worst frame
+above 50 ms and **all four are in the first 50 seconds**; across the remaining 100 s of crowd
+play at 7,000-9,500 draws the worst frame of every window is 16.2-46.4 ms and `>2x med` is
+0.0-0.1%. Part 75's session had an upload population reaching p99 174 and max 290.
+
+**Their throughput complaint is fair and it is ITEM 1 below.** At 8,100 draws they sit at
+11.5 ms against a GPU floor measured at 11.35 ms in that band. **They are already on the
+device.** A further CPU item at their load has almost nothing to buy.
+
+**AND THE SESSION FOUND SOMETHING THE AUTONOMOUS ROUTE COULD NOT — see the new ITEM 2.** The
+upload batch flushes once per FRAME, so its benefit is however many uploads that frame
+carried. My route concentrates 773 into one load frame: **37.2 jobs per flush, staging half
+−70%.** Their play spreads them: **4.8 jobs per flush, staging half −26%.** Both are right,
+neither generalises (gotcha 356), and **the staging half is still 77% of the texture path at
+their load** against 55% at mine.
+
 ## 1. THE BOARD, IN ORDER
 
-### ITEM 1 — THE GPU. **Now the largest thing nobody has ever looked at.**
+### ITEM 1 — THE GPU. **Now the largest thing nobody has ever looked at, and the operator's own verdict points at it.**
 
 Unchanged from `part77-kickoff.md` §1 item 2a and it moves up because item 1 closed:
 
@@ -72,7 +94,27 @@ frame, so the mechanism exists and needs extending to per-PASS rather than inven
 Do NOT quote a linear fit over those bands as a fixed/variable split — the series is
 non-monotone because the bands are different CONTENT (`measurement.md` §4).
 
-### ITEM 2 — PIPELINE COMPILATION ON THE LOAD FRAME.
+### ITEM 2 — DROP THE WAIT IN `FlushTextureUploads`. **New, from the operator's session, and load-independent.**
+
+`FlushTextureUploads` submits **and waits**. The wait exists only so the staging arena and the
+command buffer can be reused immediately — and at the operator's load it is **1,092.5 ms of a
+150-second session**, 568 us per flush across 1,841 flushes.
+
+**Batching cannot fix this any further, because the problem is not the number of submits — it
+is that each one blocks.** Their 4.8 jobs per flush is a fact about how the game streams, not
+about the batch; it will not improve. Fence the staging arena and the command buffer against
+the frame instead of draining the queue, and the `vkQueueWaitIdle` goes away **whatever the
+jobs-per-flush is.**
+
+Part 77 deliberately did not do this: dropping the wait means recycling two resources against
+a fence, i.e. a second mechanism to get wrong in the same change as the batch. It is now its
+own change with its own gate.
+
+**Gate it on the picture, not on validation** — `CZ_VK_TEX_BATCH_BREAK=1` is the positive
+control that proves whatever you choose can fail (§6ds §9), and the era-median comparison is
+what has power here.
+
+### ITEM 3 — PIPELINE COMPILATION ON THE LOAD FRAME.
 
 Newly visible, because the texture cost that was covering it is gone. The route's burst frame
 compiles **97 pipelines**, and after part 77 that frame's remaining time is roughly the
@@ -82,7 +124,7 @@ this is what is left with a warm cache. It has never been priced per-frame.
 **Price it before designing anything**: the trace's `pipes` column is per frame and
 unconditional, so one banded read of an existing run says whether this is 10 ms or 40.
 
-### ITEM 3 — THE UNTILE LOOP, and it is a SMALL item now — read §6ds §10 before starting.
+### ITEM 4 — THE UNTILE LOOP, and it is a SMALL item now — read §6ds §10 before starting.
 
 It is finally the largest column of the decode (79 of 152 ms/run), and the work that would
 make it fast is **already done and proven**: `Tiled2DOffset` decomposes exactly into a 32x32
@@ -94,7 +136,7 @@ the address can be computed once per run instead of once per unit.
 off the worst frame.** A 3x would be correctly killed by it. Do not start this without
 re-pricing it; part 77's whole lesson is that an item's size is a measurement.
 
-### ITEM 4 — PARALLEL COMMAND RECORDING, at 9,000+ draws only.
+### ITEM 5 — PARALLEL COMMAND RECORDING, at 9,000+ draws only.
 
 `perf-state-parked.md` item A, unchanged from `part77-kickoff.md` §1 item 3. At 9,000-12,000
 draws the CPU is 14.5 ms against an 11.9 ms GPU, so there are ~2.6 ms of frame time available
@@ -103,8 +145,12 @@ measure, in the same sentence as the expected saving.**
 
 ## 2. WHAT IS RULED OUT — do not start these
 
-* **the texture path.** Decode −68%, submit −95%, burst frame −60%. What remains of it is
-  item 3 and it is priced.
+* **the texture path as a HITCH.** The operator played 100 s of crowd with no felt stutter
+  and no window worse than 46 ms (§6dt). What remains of it is items 2 and 4, and neither is
+  a hitch item any more.
+* **further BATCHING of the uploads.** The batch already flushes once per frame, which is the
+  floor for that mechanism; their 4.8 jobs per flush is how the game streams. Item 2 is the
+  route, not a bigger batch.
 * **the readback** (§6dq), **the constant path** (§6dp), **the guest side** (§6dm),
   **reverting the RT era** (§6dj), and everything on part 73's exhausted list.
 * **a fence or any other wait primitive for the uploads** — part 73 measured three arms

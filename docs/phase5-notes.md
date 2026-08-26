@@ -17753,3 +17753,94 @@ described in §6 and this change cannot reach it.
 40 ms of it is pipeline creation and ordinary draw work. Part 71 shipped the pipeline CACHE
 (17.8 s of first-run compilation); what a warm cache still costs on a load frame has never
 been priced, and it was invisible until now because the texture path was three times larger.
+
+## §6dt — Part 77's operator session: the hitch is gone, and the batch's benefit is LOAD-SHAPED (2026-08-26)
+
+The operator played 150 s with the part-77 renderer, no profiler and no frame stats — only
+`CZ_FPS_LOG`, which is one counter and one clock read. Their verdict:
+
+> *"Done with my play didn't notice stutter except a single one a little bit after
+> loading (not really an issue for now) performance still low for an xbox 360 title on PC
+> but acceptable for play"*
+
+### 1. THE HITCH REPORT MATCHES THE DATA EXACTLY, AND IT IS THE FIRST 50 SECONDS
+
+Fifteen 10-second windows. **Four have a worst frame above 50 ms and all four are in the
+first 50 seconds** (220.1 ms in the boot window at 64 draws, then 70.6, 99.9 and 160.0).
+**In the remaining 100 seconds of crowd play at 7,000-9,500 draws the worst frame of every
+window is 16.2-46.4 ms**, and `>2x med` is 0.0-0.1%.
+
+For comparison, part 75's operator session had an upload population reaching **p99 174 ms and
+max 290**, and part 76's twenty F7 marks landed on 30-37 ms frames carrying 9.3-16.8 ms of
+texture work. **This session has no felt stutter after the load at all**, which is the first
+time that has been true since the subject opened.
+
+### 2. THE STEADY FRAME IS UNCHANGED, WHICH IS WHAT SHOULD HAVE HAPPENED
+
+| draws (window median) | 2,479 | 5,537 | 8,107 | 8,123 | 8,820 | 9,474 |
+|---|---|---|---|---|---|---|
+| **median frame** | 9.36 ms | 9.04 | 11.28 | 11.57 | 13.08 | 13.11 |
+| fps | 107 | 111 | 89 | 86 | 76 | 76 |
+
+Part 76's profiler-free run banded 11.93 ms at 7,000-9,000 draws and 13.58 at 9,000-12,000.
+**This session reads 11.3-11.6 and 13.1 at the same bands** — the same frame, which is the
+correct result for a hitch fix. Part 77 did not touch throughput and did not regress it.
+
+**And their throughput complaint is fair and it points at part 78's item 1.** At 8,100 draws
+they are at 11.5 ms against a GPU floor measured at 11.35 ms in that band (§6dr §8). They are
+already sitting on the device. A further CPU item at their load has almost nothing to buy;
+the GPU does.
+
+### 3. THE FINDING THE AUTONOMOUS ROUTE COULD NOT HAVE PRODUCED: 4.8 JOBS PER FLUSH
+
+```
+                        their session          my route (same binary)
+uploads                 6,174                  2,340
+batch jobs / flushes    8,825 / 1,841          2,344 / 63
+jobs per flush          4.8   (biggest 811)    37.2  (biggest 773)
+staging + submit        1,115.3 ms, 181 us     173.3 ms, 74 us
+immediate submits       1,924, 1,150.6 ms      140, 203.1 ms
+   of which the wait    1,092.5 ms, 568 us ea  195.8 ms, 1,399 us ea
+```
+
+**The batch flushes once per FRAME, so its benefit is the number of uploads that frame
+happens to carry.** My route concentrates 773 uploads into one DebugJump load, so one flush
+covers all of them and the staging half falls 245 -> 74 us per upload, −70%. **Their play
+spreads uploads across many frames — 4.8 per flush — so the same code delivers 245 -> 181 us,
+about −26%.** Both numbers are right; neither generalises. This is gotcha 356's shape again
+(an A/B measures the load it sampled) and it is the second time this campaign a burst-shaped
+route has flattered a fix.
+
+**So the staging half is still 77% of the texture path at their load**, where at mine it is
+55%. It is no longer a HITCH — the 100 s of crowd play proves that — but it is the largest
+remaining term in the upload path and it is not fixed, only reduced.
+
+**The remedy is already named in `FlushTextureUploads`'s own comment and is part 78 work:
+the flush still submits AND WAITS.** The wait exists only so the staging arena and the
+command buffer can be reused immediately; fence them against the frame instead and the
+`vkQueueWaitIdle` disappears whatever the jobs-per-flush is. That is **1,092.5 ms of a 150 s
+session** at their load, and unlike batching it does not care how the uploads are distributed.
+
+### 4. THE POOL, AT 2.6x THE UPLOADS
+
+```
+image memory: 6174 pooled into 9 blocks, 87 dedicated, 545.5 KB lost to alignment
+CreateImage x6261 (542.5 MB device): vkAllocateMemory 27.4 ms   <- 8 us each, was 145
+decode 330.8 ms, 54 us each   (the control arm measures 211)
+```
+
+**9 block allocations where there would have been 6,174**, and the decode's largest columns
+are now the untile (127.9 + 73.7 ms) and the mip guards (115.0) exactly as §6ds §10 predicts.
+`vkCreateImage` is 9.4% of the decode where it was 69-70%. **The residual reads 0.0%.**
+
+**And the allocation-count hazard is confirmed as real rather than theoretical**: 6,261
+`CreateImage` calls in a 150-second session against a ~4,096 cap. Before part 77 this session
+would have exhausted `maxMemoryAllocationCount` and aborted on `VK_CHECK`.
+
+### 5. GATES, from the operator's own log
+
+```
+no translated shader   0        slot mix-ups        0        CONST MEMO STALE      0
+stale present slots    0        BLOCK alloc failed  0        untile units BLACK    none
+shader dumps           449 distinct, cache 449, name diff EMPTY — no new shaders
+```
