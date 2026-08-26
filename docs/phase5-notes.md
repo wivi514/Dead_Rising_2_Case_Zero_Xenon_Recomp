@@ -18203,3 +18203,179 @@ barriers (both)     0.179      2.9%     snapshot/cube   0.034   0.5%
 larger share at their load, not a smaller one, which strengthens part 79 item 1. And
 `present blit` is 127.6 us against my 63.2, because their window is the same 3440x1440 the
 frame renders at and mine was letterboxed.
+
+## §6dw — Part 79 item 1: the texture flush stops waiting, and the route it was measured on cannot see it (2026-08-26)
+
+`part79-kickoff.md` §1 item 1 was the oldest thing on the board: **`FlushTextureUploads`
+submits AND WAITS**, at **1,092.5 ms of the operator's 150-second session across 1,841
+flushes, 568 us each** (§6dt §3). Part 77 left the wait deliberately — "dropping it as well
+would require recycling both the staging arena and the command buffer against a fence, i.e.
+a second mechanism to get wrong in the same change" — and part 78 did not take it either.
+
+**It is built, the mechanism is gone, and the autonomous route measured the frame time as
+NULL.** Both halves of that sentence are the finding.
+
+### 1. THE DESIGN, AND WHY THE SEGMENT SIZE WAS MEASURED BEFORE IT WAS CHOSEN
+
+Two resources are reused the instant a flush returns: the staging arena (one buffer, written
+from offset zero by the very next upload) and the command buffer (`RunImmediate` frees it).
+`vkQueueWaitIdle` is the crudest possible way to know the GPU has finished with them — and it
+waits for the WHOLE QUEUE, so it also swallows the in-flight frame.
+
+The ring is **three slots, each owning a command buffer, a fence and a segment of the staging
+arena**. A flush records into the current slot, submits it with that slot's fence and does not
+wait; it then advances and waits only on the slot it is about to REUSE, which was submitted
+two flushes ago. `g_texSlotStalls` counts the times that wait actually blocked (over 20 us),
+so the ring can be shown to be too small rather than assumed adequate — **it read 0 in all
+six runs of the A/B.**
+
+**Partitioning the arena NARROWS a decline the callers already have**, and that is the part
+worth copying. `pixels.size() > R->staging.size` is an existing "larger than the staging
+buffer" refusal; a segment below some real texture would silently stop uploading it, which is
+a picture regression in whatever part of the map holds that texture and is invisible to any
+route that never goes there. So the arena was instrumented first and asked:
+
+```
+texture uploads over the run: 2360 uploads, 127.6 MB, biggest single upload 1.33 MB
+```
+
+The buffer grew from a flat 64 MB to **3 x 32 MB** — each segment 24x the measured maximum,
+and still large enough for a 2048x2048 A8R8G8B8 with its full mip chain (21 MB). The refusal
+is counted, so a different era of the game going over it would say so.
+
+**And a smaller segment now costs nothing**, which is the other half of why partitioning is
+safe: an overrun used to FORCE a flush and a flush used to be a 568 us stall, so
+`g_texBatchFullFlushes` was a number that mattered. It now just moves to the next slot, and
+it duly went 0 -> 2 per run.
+
+`CZ_VK_TEX_FLUSH_WAIT=1` is the same-binary control arm, and it is not an approximation of
+the old code — it takes the literal `RunImmediate` path, so the `immediate submits` line
+keeps meaning exactly what it meant in part 77.
+
+### 2. THE MECHANISM IS GONE — three runs an arm, alternated, 3440x1440 pinned, all six route gates passed
+
+| | control (`CZ_VK_TEX_FLUSH_WAIT=1`) | shipping | |
+|---|---|---|---|
+| **the flush itself** | **999 / 1138 / 1092 us** | **107 / 106 / 114 us** | **−89.8%** |
+| flush total over the run | 68.9 / 74.0 / 71.0 ms | 7.1 / 7.3 / 7.8 ms | −89.5% |
+| staging + submit over the run | 78.7 / 83.8 / 80.9 ms | 17.1 / 17.2 / 18.1 ms | −78.5% |
+| per upload | 33 / 36 / 34 us | 7 / 7 / 8 us | −79% |
+| `immediate submits` | 146 / 142 / 142 | 77 / 77 / 77 | −46% |
+| slots STALLED | — | **0, 0, 0** | |
+| uploads (the match check) | 2356 / 2345 / 2349 | 2359 / 2349 / 2346 | +0.1% |
+
+The fix arm's three runs agree to **0.7 ms on the run total** where the control's spread is
+5.1 ms, which is what a removed serialisation looks like from the inside.
+
+**On the BURST FRAME — the DebugJump load, the same event in every run at 774-780 uploads —
+the effect is real and matched:**
+
+| burst frame | ctl | fix | delta |
+|---|---|---|---|
+| its uploads | 778 | 777 | −1 |
+| **its stage + submit** | **7.32 ms** | **3.46 ms** | **−3.86, −52.7%** |
+| its decode | 61.22 | 59.64 | −1.58 (noise) |
+| wall | 107.78 | 105.64 | −2.14, −2.0% |
+
+### 3. AND THE RUN IS A NULL, BECAUSE THE SAVING MOVED INTO THE FENCE
+
+This is the half that matters more than the table above.
+
+```
+run wall      ctl 148.7 / 148.7 / 148.6 s      fix 148.6 / 148.6 / 148.7 s
+frames        ctl 19337 / 19368 / 19337        fix 19221 / 19426 / 19291
+```
+
+Over the population of frames that carry any upload work at all (`texUpUs > 0`, the burst
+frame dropped), with three runs an arm:
+
+| statistic | ctl | fix | delta |
+|---|---|---|---|
+| **that population's `texUpUs` total** | **68.4 ms** | **9.0 ms** | **−86.9%** |
+| its median wall | 9.168 ms | 9.165 ms | **−0.0%** |
+| its p90 wall | 11.042 | 11.057 | +0.1% |
+| **its median FENCE wait** | **0.699 ms** | **1.136 ms** | **+62.5%** |
+
+**The pump stopped blocking in `vkQueueWaitIdle` and started blocking on the frame fence
+instead.** That is gotcha 238 one level up — a column that falls to zero is not a saving
+until you find where the replacement work was charged — and here the answer is the next wait
+along, because **this route is GPU-bound at 6,200 draws.** `part79-kickoff.md` §2 says so in
+as many words: *"any CPU A/B below ~8,000 draws on the autonomous route"* is ruled out, and
+this is a CPU item measured at 6,140-6,328 draws. The route was not the wrong route to build
+the fix on; it is the wrong route to price it on, and it was known to be before the runs
+started.
+
+### 4. SO THE ITEM IS HONESTLY SMALL, AND ITS VALUE IS AT THE OPERATOR'S LOAD
+
+The numbers that decide it are all from §6dt §3 and §6dv §2, and they are all about a load
+this route cannot produce:
+
+* **their flush count is 27x mine per second** — 1,841 flushes in 150 s against my 67 in
+  148 s — because the batch flushes once per FRAME and their uploads are spread across play
+  where mine are concentrated into one DebugJump load (4.8 jobs per flush against 35);
+* **their fence is 0.00 ms at every band from 3,000 draws up** and their GPU headroom is
+  **1.93-2.38 ms**, so a CPU saving there converts to frame time nearly 1:1 (gotcha 464);
+* 1,092.5 ms over 150 s is **0.59 ms on each of ~17% of their frames**, i.e. about 5% of an
+  11.5 ms frame on the frames it touches and nothing on the rest.
+
+**That is a modest item and it should be reported as one.** It is worth shipping — the
+mechanism is measurably gone, the change cannot alter a pixel, and it is the last of the
+texture path's three serialisation costs — but nobody should expect the operator to feel it,
+and the pre-registered 40 ms kill that governed part 77's halves was never the right
+threshold for it. What would refute the reading above is their session showing the flush
+count unchanged or the fence rising to absorb it the way mine did.
+
+### 5. THE GATE IS THE PICTURE, AND ITS POSITIVE CONTROL IS PART 77'S
+
+`CZ_VK_VALIDATION=1` is structurally blind here (gotcha 458: the texture heap is a bindless,
+update-after-bind array and the layer does not track its image layouts), and it reported
+clean on a build with ~1,400 textures never copied. The failure mode this change could
+actually produce is a texture uploaded from staging bytes the CPU has already overwritten —
+a wrong picture with no API error and no counter.
+
+`tools/part79_picture_gate.sh` runs four arms in one block: two shipping runs (their
+disagreement is the NULL), `CZ_VK_TEX_FLUSH_WAIT=1` (the known-correct picture), and
+`CZ_VK_TEX_BATCH_BREAK=1` (the positive control, measured at 43,211x the null on coverage in
+§6ds).
+
+**The positive control fired: `coveragePct` 99.84 -> 0.49, 36,799x the null; `meanLuma`
+2,072x.** The gate can tell a broken build from a working one.
+
+**And then the gate said the shipping arm differed from the control by 33.7x the null on
+`meanLuma` — and that was the ROUTE, not the renderer.** It is worth writing down in full
+because it took three more runs to settle and the first reading was alarming:
+
+```
+turning camera        fix1     fix2     fix3   |   ctl1     ctl2
+meanLuma             73.33    73.29    73.88   |  74.49    74.66     <- no overlap
+era frames           12463    12118    12741   |  13007    12843
+ERA MEDIAN DRAWS      4577     4851     4573   |   3866     3915     <- 18% apart
+```
+
+The last row is the whole explanation. `frame_era_medians.py` aggregates every frame above
+1,800 draws, and on the turning-camera route the arms did not sample the same scene: one
+spent its era at ~4,600 draws and the other at ~3,900. The run is also a steep luma ramp
+(era thirds 28.5 -> 68.5 -> 78.7), so *where* a run's frames fall in that ramp moves the
+median far more than any renderer change could. **Banded by draw count, the two arms agree
+to ≤0.3% in every band where their populations are comparable** — 8.27 vs 8.27 and 5,298 vs
+5,298 distinct colours at 2,000-2,500 draws, +0.19% to +0.26% at 6,500-8,000 — and the
+double-digit deltas are all in bands where one arm has 10-20x the other's frames.
+
+**The clean answer came from holding the camera** (`STILL=1`), which removes the composition
+variance the turning route injects. Two shipping runs as the null, two control runs as arms:
+
+| statistic | null (fix1 vs fix2) | ctl1 | ctl2 |
+|---|---|---|---|
+| coveragePct | 0.00% | 0.00% (1.0x) | 0.00% (INSIDE) |
+| **meanLuma** | **0.50%** | **0.12% — INSIDE** | **0.03% — INSIDE** |
+| distinctColours | 1.43% | 0.45% — INSIDE | 0.23% — INSIDE |
+
+**Both control runs are inside the null on all three statistics.** The change is
+indistinguishable from the renderer that waits, and the gate that says so is the same one
+that reports 36,799x for a build that is genuinely broken.
+
+**The transferable half is that the null UNDERSTATED ITS OWN FLOOR BY 30x.** The turning
+pair agreed to 0.05% on `meanLuma` and the arm-to-arm difference was 1.6%; a tight null pair
+is not evidence that the floor is tight, it is one sample of it, and `frame_era_medians.py`'s
+own NB says so for distinct colours. On this route the remedy is either matched draw bands or
+`STILL=1`, and `STILL=1` is cheaper and reads more clearly. Gotcha 465.

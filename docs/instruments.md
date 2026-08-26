@@ -3061,3 +3061,44 @@ counters, not `ProfScope`s), so a texture A/B needs no `CZ_VK_PROFILE` and does 
 by name. A partial trace reads as a complete run of a shorter route: the first pass of part
 77's A/B compared a control arm at 6,178 frames against a finished arm's 16,685 and made
 the run-total columns look 43% apart. The per-upload columns are there for the same reason.
+
+### The texture upload ring — `CZ_VK_TEX_FLUSH_WAIT=1` (part 79)
+
+```
+CZ_VK_TEX_FLUSH_WAIT=1   the same-binary CONTROL ARM for the upload ring: every
+                         `FlushTextureUploads` takes the literal pre-part-79 path —
+                         `RunImmediate`, i.e. allocate a command buffer, submit,
+                         `vkQueueWaitIdle`, free. Not an approximation of the old code,
+                         the old code
+```
+
+Engagement, printed at init and at exit by BOTH arms:
+
+```
+[vk] texture upload ring: 3 slots x 32 MB staging, flush submits and does NOT wait
+[vk]  texture flush: N flushes, X ms total (U us each) — ring engaged, no wait on the
+                     submitting slot; S of them STALLED waiting for a slot (Y ms, Z us each)
+```
+
+**The stall count is the number that says whether three slots is enough.** The ring waits on
+the slot it is about to REUSE, which was submitted two flushes ago; at the operator's cadence
+of ~12 flushes a second that fence signalled ~150 ms earlier and the wait is a query. A ring
+that stalls on most of its flushes has not removed the wait, it has renamed it — and a wait
+under 20 us is not counted, so the number reports blocking rather than fence-query overhead.
+
+**`texture upload batch: ... N of them forced by a full staging arena` changes meaning here.**
+Before part 79 a forced flush was a 568 us stall and the number mattered; now it just moves
+to the next slot, and the segmenting of the arena (64 MB flat -> 3 x 32 MB) is expected to
+raise it from 0 to a handful.
+
+**The per-upload ceiling is now a SEGMENT, not the whole arena**, so a texture larger than
+32 MB would be declined where 64 MB used to be the bar. That is why `texture uploads over the
+run: ... biggest single upload X MB` exists — the measured maximum is **1.33 MB** on the
+autonomous route, 24x under the bar, and `texture: larger than the staging buffer` is the
+counter that would say if a different era of the game ever went over it.
+
+**Gate a change to this ring on the PICTURE, never on `CZ_VK_VALIDATION=1`** (gotcha 458 —
+the texture heap is bindless and update-after-bind, so the layer does not track its layouts
+at all). `tools/part79_picture_gate.sh` runs the four arms and quotes them against a null
+measured in the same block, with `CZ_VK_TEX_BATCH_BREAK=1` as the positive control that
+proves the gate can fail.

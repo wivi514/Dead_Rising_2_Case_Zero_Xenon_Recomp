@@ -5289,3 +5289,40 @@ From phase C part 18 (the frame rate — and none of it was work):
      nearly useless; reading it as "−14.3% of the GPU, which converted the frame to
      CPU-bound and freed 1.35 ms of headroom" is what tells the next session what to do.
      The same shape as gotcha 453 read from the other end.
+
+465. **A TIGHT NULL PAIR IS ONE SAMPLE OF THE FLOOR, NOT EVIDENCE THAT THE FLOOR IS TIGHT —
+     AND ON A MOVING-CAMERA ROUTE THE FLOOR IS COMPOSITION, NOT PIXELS.** Part 79's picture
+     gate ran two shipping runs as the null and they agreed to **0.05% on `meanLuma`**. The
+     control arm then differed by 1.6% — **33.7x the null** — on a change that cannot alter
+     a pixel by construction. It was the ROUTE: `frame_era_medians.py` aggregates every frame
+     above 1,800 draws, the two arms' era median DRAW COUNTS were 4,573-4,851 against
+     3,866-3,915, and the run is a steep luma ramp (era thirds 28.5 -> 68.5 -> 78.7), so
+     where a run's frames land in that ramp moves the median far more than a renderer change
+     can. Banded by draw count the same data agrees to ≤0.3% wherever the populations are
+     comparable.
+     **Two habits.** (1) `frame_era_medians.py` already warns that one null pair is one
+     sample, for distinct colours; it applies to `meanLuma` just as hard, and a pair that
+     happens to agree to 0.05% has told you nothing about a floor that is really ~1.5%.
+     (2) **The remedy is to remove the composition variance, not to average more of it**:
+     `STILL=1` holds the camera and the same comparison then reads 0.03% and 0.12% against a
+     0.50% null — INSIDE, on every statistic — while the positive control still reads
+     36,799x. Matched draw bands work too and are more work. See gotchas 254 and 249; this
+     is the third distinct way this route's picture aggregate has misled a session.
+
+466. **REMOVING A WAIT ON A GPU-BOUND ROUTE RELOCATES IT — MEASURE WHERE IT WENT BEFORE
+     QUOTING THE COLUMN THAT FELL.** Part 79 removed the `vkQueueWaitIdle` inside
+     `FlushTextureUploads`. The quantity it targeted collapsed exactly as designed — the
+     flush went 999-1138 us to 106-114 us, −89.8%, with the three fix runs agreeing to 0.7 ms
+     on the run total against the control's 5.1 ms spread. **The run got no faster: 19,337
+     frames against 19,291 in the same 148.6 s, and the median FENCE wait on the affected
+     population went UP, 0.699 -> 1.136 ms.** The pump stopped blocking in the flush and
+     started blocking on the frame fence instead, because that route is GPU-bound at 6,200
+     draws and it was going to wait for the device either way.
+     This is gotcha 238 one level up (a column that falls to zero is not a saving until you
+     find where the replacement work was charged) crossed with 453 (a CPU item measured in a
+     GPU-bound regime reads zero whatever it is worth). **Both were known before the runs** —
+     `part79-kickoff.md` §2 rules out CPU A/Bs on this route below ~8,000 draws in as many
+     words — which is the actual lesson: when the hand-off says your route cannot price the
+     item, believe it, build the fix, measure the MECHANISM, and say plainly that the number
+     the operator needs does not exist yet rather than reporting the route's null as the
+     item's value.

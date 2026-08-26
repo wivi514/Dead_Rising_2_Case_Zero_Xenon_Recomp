@@ -4413,7 +4413,14 @@ const char* const kGpNames[kGpClasses] = {
 // counter is printed rather than merely kept — a silently truncated frame looks like a
 // saving (gotcha 3 at instrument scale).
 constexpr uint32_t kGpQueriesPerSlot = 2048;
-struct GpSeg { uint32_t q0, q1; uint16_t cls; };
+// `ext` is the pass's EXTENT KEY — (width << 32) | height of the largest scissor any draw in
+// it used, or 0 for a region that is not a render scope. Part 79 item 2 needs it: `pass: 1
+// draw` is 29.9 passes a frame at 28 us each and 17% of the device's frame, nobody has ever
+// listed what those passes ARE, and the first question is whether 28 us is a full-screen
+// shader or pass overhead on a 96x45 bloom target. A millisecond total cannot tell those
+// apart; an extent census can, and it is the same shape as `base untile: ns/unit` (§6ds §10)
+// — a total divided by the work it covers is what stops an argument.
+struct GpSeg { uint32_t q0, q1; uint16_t cls; uint64_t ext; };
 VkQueryPool g_gpPool = VK_NULL_HANDLE;
 std::vector<GpSeg> g_gpSegs[kMaxFramesInFlight];
 uint32_t g_gpNext[kMaxFramesInFlight] = {};
@@ -4433,6 +4440,12 @@ uint64_t g_gpResolvePixels = 0;
 // scoped form behind `CZ_VK_SCOPED_CLEAR`, kept as an arm since part 32 because nothing
 // had priced it.
 uint64_t g_gpClearFullPixels = 0, g_gpClearScopedPixels = 0, g_gpClearN = 0;
+// THE PASS EXTENT CENSUS (part 79 item 2), keyed by `GpSeg::ext`. Only render scopes are
+// entered, and only when the instrument is on, so it costs nothing in a normal run and one
+// map lookup per pass in an instrumented one. Held as (count, ns) so the table can be read
+// as "N passes of this size, X us each" rather than as a share.
+struct GpExtentStat { uint64_t n = 0, ns = 0, draws = 0; };
+std::map<uint64_t, GpExtentStat> g_gpExtents[4];   // indexed by kGpPassEmpty..kGpPassBig
 // The render scope currently open, if any. One at a time by construction: BeginRendering
 // early-returns when a scope is already open and EndRendering when none is.
 int g_gpPassSeg = -1;
@@ -4444,6 +4457,13 @@ int g_gpPassSeg = -1;
 // in a comment and captures its own class at entry. A counter owned by the thing that reads
 // it cannot be reset out from under it.
 uint32_t g_gpPassDraws = 0;
+// The largest scissor any draw in the open scope has used, as (w << 32) | h. Updated on the
+// per-draw path but ONLY when a segment is open, which is only when CZ_VK_GPU_PASSES is set
+// — `g_gpPassSeg` is already loaded there, so the normal-run cost is a branch on a value
+// that is already in a register (gotcha 453: do not put a fresh static-init guard load on
+// this path).
+uint64_t g_gpPassExt = 0;
+uint64_t g_gpPassExtPx = 0;
 
 bool GpuPassesOn()
 {
@@ -4465,7 +4485,7 @@ int GpuSegBegin()
     }
     const uint32_t q = slot * kGpQueriesPerSlot + g_gpNext[slot]++;
     vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpPool, q);
-    g_gpSegs[slot].push_back(GpSeg{ q, ~0u, uint16_t(kGpClasses) });
+    g_gpSegs[slot].push_back(GpSeg{ q, ~0u, uint16_t(kGpClasses), 0 });
     return int(g_gpSegs[slot].size()) - 1;
 }
 
@@ -4473,7 +4493,7 @@ int GpuSegBegin()
 // because for a render scope it is the draw count, which is only known once the scope has
 // closed — the same reason the §4b cycle clock captures its class at entry and this one
 // at exit.
-void GpuSegEnd(int idx, GpCls cls)
+void GpuSegEnd(int idx, GpCls cls, uint64_t ext = 0, uint32_t draws = 0)
 {
     if (idx < 0 || !R || !R->recording)
         return;
@@ -4484,6 +4504,12 @@ void GpuSegEnd(int idx, GpCls cls)
     vkCmdWriteTimestamp(R->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_gpPool, q);
     g_gpSegs[slot][idx].q1 = q;
     g_gpSegs[slot][idx].cls = uint16_t(cls);
+    // The extent is packed into the segment rather than accumulated here because the
+    // segment's DURATION is not known until its timestamps are read back, one or two frames
+    // later. `draws` rides along in the top bits of nothing — it is accumulated at read time
+    // out of the same record, so the census can say "N passes of this size, D draws, X us".
+    g_gpSegs[slot][idx].ext = ext;
+    (void)draws;
 }
 
 // A scope guard for the regions that have early returns. `cls` is settable so a render
@@ -9759,6 +9785,8 @@ void BeginRendering()
     // the device performs is charged to whatever preceded it rather than to the draws.
     g_gpPassSeg = GpuSegBegin();
     g_gpPassDraws = 0;
+    g_gpPassExt = 0;
+    g_gpPassExtPx = 0;
 }
 
 void EndRendering()
@@ -9776,7 +9804,8 @@ void EndRendering()
         GpuSegEnd(g_gpPassSeg, d == 0   ? kGpPassEmpty
                                : d == 1 ? kGpPass1
                                : d < 256 ? kGpPassSmall
-                                         : kGpPassBig);
+                                         : kGpPassBig,
+                  g_gpPassExt, d);
         g_gpPassSeg = -1;
     }
     vkCmdEndRendering(R->cmd);
@@ -10848,6 +10877,14 @@ int RetireOldestFrame()
                         g_gpNs[sg.cls] += ns;
                         ++g_gpN[sg.cls];
                         attrib += ns;
+                        // The extent census (part 79 item 2). Render scopes only, and only
+                        // where an extent was recorded — a pass with no draws never set one.
+                        if (sg.cls <= kGpPassBig && sg.ext)
+                        {
+                            GpExtentStat& e = g_gpExtents[sg.cls][sg.ext];
+                            ++e.n;
+                            e.ns += ns;
+                        }
                     }
                     g_gpAttribNs += attrib;
                     g_gpTotalNs += g_gpuNsOfFrame;
@@ -20770,6 +20807,20 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // instrument would put a static-init guard load on the per-draw path, which is the
     // shape part 76 had to take back off it (gotcha 453).
     ++g_gpPassDraws;
+    // The pass's EXTENT, for part 79 item 2's census. Guarded on `g_gpPassSeg`, which is
+    // -1 unless CZ_VK_GPU_PASSES is on AND a segment is open — a plain global compare, not
+    // a static-init guard, so an ordinary run pays one predictable branch here.
+    if (g_gpPassSeg >= 0)
+    {
+        const uint64_t px = uint64_t(R->bound.scissor.extent.width) *
+                            uint64_t(R->bound.scissor.extent.height);
+        if (px > g_gpPassExtPx)
+        {
+            g_gpPassExtPx = px;
+            g_gpPassExt = (uint64_t(R->bound.scissor.extent.width) << 32) |
+                          R->bound.scissor.extent.height;
+        }
+    }
     R->verticesThisPass += draw.indexCount;
 }
 
@@ -25229,6 +25280,52 @@ void VkRenderer_DumpStats()
                     g_gpClearFullPixels ? 100.0 * (1.0 - double(g_gpClearScopedPixels) /
                                                              double(g_gpClearFullPixels))
                                         : 0.0);
+        // THE PASS EXTENT CENSUS (part 79 item 2). `pass: 1 draw` is ~30 passes a frame at
+        // ~28 us and this project has never listed what they ARE. Sorted by total time, so
+        // the first rows are the ones worth designing against, and each row carries its own
+        // per-pass microseconds — which is what tells a full-screen shader apart from pass
+        // overhead on a 96x45 bloom target. Truncated at 16 rows per class with the tail
+        // SUMMED rather than dropped, because a silently truncated census reads as a
+        // complete one (gotcha 3).
+        for (int c = kGpPassEmpty; c <= kGpPassBig; ++c)
+        {
+            if (g_gpExtents[c].empty())
+                continue;
+            std::vector<std::pair<uint64_t, GpExtentStat>> rows(g_gpExtents[c].begin(),
+                                                                g_gpExtents[c].end());
+            std::sort(rows.begin(), rows.end(),
+                      [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+            fprintf(stderr, "[vk]     EXTENT CENSUS for '%s' — %zu distinct scissor sizes\n",
+                    kGpNames[c], rows.size());
+            size_t shown = 0;
+            uint64_t tailN = 0, tailNs = 0;
+            for (const auto& r : rows)
+            {
+                if (shown < 16)
+                {
+                    fprintf(stderr,
+                            "[vk]       %5llux%-5llu  %8.3f ms/frame  %7.2f passes/frame  "
+                            "%7.0f us each  %.2f Mpixel/frame\n",
+                            (unsigned long long)(r.first >> 32),
+                            (unsigned long long)(r.first & 0xFFFFFFFFull),
+                            double(r.second.ns) / 1e6 / f, double(r.second.n) / f,
+                            double(r.second.ns) / 1000.0 / double(r.second.n),
+                            double(r.first >> 32) * double(r.first & 0xFFFFFFFFull) *
+                                double(r.second.n) / 1e6 / f);
+                    ++shown;
+                }
+                else
+                {
+                    tailN += r.second.n;
+                    tailNs += r.second.ns;
+                }
+            }
+            if (tailN)
+                fprintf(stderr,
+                        "[vk]       ...and %zu more sizes: %.3f ms/frame over %.2f "
+                        "passes/frame\n",
+                        rows.size() - shown, double(tailNs) / 1e6 / f, double(tailN) / f);
+        }
         if (g_gpOverflow || g_gpBadRead)
             fprintf(stderr,
                     "[vk]     ** %llu regions dropped for want of a query slot and %llu "
