@@ -18379,3 +18379,96 @@ pair agreed to 0.05% on `meanLuma` and the arm-to-arm difference was 1.6%; a tig
 is not evidence that the floor is tight, it is one sample of it, and `frame_era_medians.py`'s
 own NB says so for distinct colours. On this route the remedy is either matched draw bands or
 `STILL=1`, and `STILL=1` is cheaper and reads more clearly. Gotcha 465.
+
+## §6dx — Part 79 item 2: the post chain is REAL SHADING, not pass overhead — the item as filed is refuted (2026-08-26)
+
+`part79-kickoff.md` §1 item 2 asked one question before any design work: **`pass: 1 draw` is
+29.87 passes a frame at 28 us each and 17% of the device's frame, and nobody knows what those
+passes ARE.** Its own kill condition was stated with it — *"it will say immediately whether
+28 us is a full-screen shader or pass overhead on a tiny target. If it is the latter, the
+item is the same shape as the barriers."*
+
+It is the former. **The answer cost one run and the item is closed.**
+
+### 1. THE INSTRUMENT
+
+`GpSeg` gains an EXTENT KEY: `(width << 32) | height` of the largest scissor any draw in the
+scope used. The render area is no help — `vkCmdBeginRendering` always names the whole EDRAM
+stand-in — so the extent has to come from the per-draw scissor, and it is taken next to the
+`++g_gpPassDraws` that already sits on that path, **guarded on `g_gpPassSeg >= 0`**, which is
+-1 unless the instrument is on and a scope is open. That is a compare against a global on a
+line already being written, not a fresh static-init guard (gotcha 453). The census itself is
+one `std::map` update per PASS, at read-back time, so it is on no hot path at all.
+
+The table is sorted by total time, truncated at 16 rows per class **with the tail summed
+rather than dropped** (gotcha 3), and each row carries its own microseconds-per-pass — which
+is the number that separates a shader from an overhead, exactly as `base untile: ns/unit` did
+in §6ds §10.
+
+### 2. THE CENSUS — 3440x1440, 17,820 frames, residual 0.6%, and it reproduces to 0.001 ms
+
+Two runs on the autonomous route agree on **every row to the third decimal**, which is a much
+better reproduction than any frame-time statistic this project has.
+
+```
+pass: 1 draw   0.987 ms/frame  13.8% of the device frame  30.18 passes/frame  14 distinct extents
+
+   1720x720    0.390 ms/frame   2.53 passes/frame   154 us each
+    860x360    0.207            3.42                 60
+   3440x1440   0.155            0.85                182
+   3440x2048   0.069            9.04                  8
+    430x180    0.062            2.56                 24
+    215x90     0.031            2.56                 12
+   2752x64     0.023            2.30                 10
+    172x128    0.014            1.80                  8
+    107x44 / 53x22 / 26x10 / 13x4 / 5x2 / 2x2   0.006 each, 0.85 passes/frame, 7 us each
+```
+
+**Three extents carry 76% of the class**: a half-resolution pass (1720x720, 2.53 a frame at
+154 us), a quarter-resolution one (860x360, 3.42 at 60 us) and one at the exact window
+resolution (3440x1440, 0.85 at 182 us). Together **0.751 of the 0.987 ms**. Those are the
+title's post chain doing real work on real pixel counts.
+
+**And the overhead end is 3.6% of the class.** The six-step reduction pyramid — 107x44, 53x22,
+26x10, 13x4, 5x2, 2x2, which is an average-luminance chain and is unmistakable once listed —
+runs at **7 us per pass, i.e. it IS pure pass overhead**, and all six together plus the 172x128
+row come to **0.036 ms/frame**. Removing every one of them entirely would buy 0.5% of the
+device's frame.
+
+**The per-pixel numbers say the same thing from the other side.** The 1720x720 pass costs
+**0.124 ns/pixel** against the full-window 3440x1440's **0.037** — 3.4x — so the expensive
+rows are expensive because of what their shader does per pixel, not because a pass was opened.
+A renderer that merged passes or cut pass-begin cost cannot touch them.
+
+### 3. WHAT THE SAME CENSUS SAYS ABOUT THE OTHER TWO PASS CLASSES
+
+```
+pass: 2-255 draws  0.596 ms   3440x2048  5.34 passes  102 us each  (0.547 ms — 92% of the class)
+                              1720x720   0.85         63 us
+pass: >=256 draws  3.988 ms   3440x2048  2.33 passes  982 us each  (2.287 ms)
+                              1720x1440  0.81        2094 us each  (1.701 ms)
+```
+
+**`1720x1440` is the title's own LEFT/RIGHT TILING at this resolution** — the 640-wide halves
+of the 1280 window (`docs/phase5-notes.md` §6v, and the constitution note at the bottom of
+CLAUDE.md), scaled. One tiled pass is **2.1 ms, 24% of the whole device frame in a single
+region**, and it is the crowd. That is the title's rendering and it is where part 78's
+breakdown already said the money is.
+
+### 4. SO ITEM 2 IS CLOSED, AND WHAT IS LEFT ON THE GPU IS ITEMS 3 AND 4
+
+The post chain is 1.58 ms of the device's frame (`1 draw` 0.987 + `2-255` 0.596) and **none of
+it is addressable by anything a translation layer does.** It is the game's own shaders at the
+game's own resolutions. The kickoff's "if it is the latter, the item is the same shape as the
+barriers" was the right question to ask and the answer is no.
+
+What survives on the GPU is what part 78 already listed and priced:
+
+* **the resolve clears** — 82.4 a frame, 0.601 ms, writing **580.5 Mpixel for the 33.3 the
+  passes actually rendered (94.3% waste)**, but the class is only 0.601 ms so that is the
+  ceiling and `CZ_VK_SCOPED_CLEAR` trades ~0.54 ms of pump time for it (kickoff §1 item 3);
+* **the resolve copies** — 49.5 a frame, 0.723 ms, 49.4 Mpixel = 7.0 full EDRAM surfaces.
+
+And the two barrier classes, post-part-78, are **0.098 ms/frame combined over 138.8
+transitions** — 1.4% of the device frame, from 11.0% before. That number is worth re-quoting
+because it is the clearest demonstration this project has that part 78's fix is still in.
