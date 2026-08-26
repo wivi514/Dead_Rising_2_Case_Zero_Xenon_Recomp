@@ -5132,9 +5132,95 @@ bool FormatHasStencil(VkFormat f)
            f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT;
 }
 
-// How many write-after-write dependencies the two clear sites had to issue themselves,
-// i.e. how often this title clears the same EDRAM surface twice with nothing between.
-uint64_t g_wawN = 0;
+// THE STAGE AND ACCESS MASKS A LAYOUT IMPLIES (part 78 item 1).
+//
+// Every barrier in this renderer used `ALL_COMMANDS -> ALL_COMMANDS` with
+// `MEMORY_READ | MEMORY_WRITE` on both sides. That is the always-correct form and it was
+// the right thing to write while the renderer was being built — it cannot be too weak, so
+// it can never be the cause of a corruption, and for twenty parts nothing had measured it.
+//
+// Part 78's per-region GPU split measured it. On the autonomous route this renderer issues
+// **137.6 layout transitions a frame** — 98.1 around the resolves and 39.5 opening the
+// passes, oscillating the same two full-size EDRAM images between attachment and transfer
+// layouts 49 times a frame — and they cost **0.930 ms of an 8.49 ms GPU frame, 11.0%**.
+// `ALL_COMMANDS` on both sides makes each one a full pipeline drain plus a cache
+// flush-and-invalidate; the real dependency is far narrower than that, and saying so
+// exactly is the whole fix.
+//
+// THE MAPPING IS EXACT, NOT APPROXIMATE, and the two places it could be too weak are
+// named. (1) `SHADER_READ_ONLY` lists vertex, fragment and compute: this renderer compiles
+// no geometry or tessellation stage (a grep for either finds nothing) and its ray tracing
+// is ray QUERY inside ordinary shaders rather than a ray-tracing pipeline, so there is no
+// fourth stage that can sample. (2) `GENERAL` and anything unlisted keep the old wide form,
+// because an unrecognised layout must not silently get a narrow dependency (gotcha 5: fail
+// loudly, never guess).
+//
+// `CZ_VK_WIDE_BARRIERS=1` is the same-binary control arm — every barrier goes back to
+// ALL_COMMANDS/MEMORY_*, i.e. this renderer through part 77.
+void LayoutMasks(VkImageLayout l, VkPipelineStageFlags& stage, VkAccessFlags& access)
+{
+    switch (l)
+    {
+    case VK_IMAGE_LAYOUT_UNDEFINED:
+    case VK_IMAGE_LAYOUT_PREINITIALIZED:
+        // Nothing has read or written it through this layout, so there is nothing to wait
+        // for. Only ever a SOURCE layout; as a destination it is not a legal transition.
+        stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        access = 0;
+        return;
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        access = VK_ACCESS_SHADER_READ_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        access = VK_ACCESS_TRANSFER_READ_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        access = VK_ACCESS_TRANSFER_WRITE_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+        // The presentation engine's read is not in any pipeline stage; the semaphore is
+        // what orders it. BOTTOM_OF_PIPE with no access is the canonical spelling.
+        stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        access = 0;
+        return;
+    default:
+        stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        access = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        return;
+    }
+}
+
+// Engagement evidence for the narrow form and its arm (gotcha 151): an arm with no counter
+// cannot be shown to have engaged. `g_barrierWide` counts the transitions that took the old
+// masks — under the arm that must be ALL of them, and without it only the GENERAL/unlisted
+// ones, which on this route is zero.
+// `g_wawN` is separate rather than folded into `g_barrierN`, and the first version got that
+// wrong: counting the write-after-write barriers among the transitions made the wide control
+// arm report 98.4% wide instead of 100%, i.e. an engagement check that reads as a small
+// failure when nothing has failed. A counter that mixes two populations cannot be a gate.
+uint64_t g_barrierN = 0, g_barrierWide = 0, g_wawN = 0;
 
 // Returns true when it actually issued a transition. Callers that WRITE the image need to
 // know: two writes with no transition between them get no dependency at all from this
@@ -5165,11 +5251,36 @@ bool Barrier(VkCommandBuffer cmd, Image& img, VkImageLayout newLayout,
     // ALL the layers AND all the levels, not just the first — see Image::layers and
     // Image::levels.
     b.subresourceRange = { aspect, 0, img.levels, 0, img.layers };
+    static const bool wideArm = EnvOn("CZ_VK_WIDE_BARRIERS");
+    // CZ_VK_BARRIER_POISON=1 — THE POSITIVE CONTROL, and it exists because a gate that has
+    // never failed has not been shown capable of failing (gotcha 30). It makes every
+    // barrier's dependency empty (TOP_OF_PIPE, no access), which is a legal API call and a
+    // real race, so synchronization validation MUST scream under it. A run with this set
+    // and a silent log means the gate is not watching, not that the renderer is correct.
+    static const bool poisonArm = EnvOn("CZ_VK_BARRIER_POISON");
+    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                         &b);
+    ++g_barrierN;
+    if (wideArm)
+        ++g_barrierWide;
+    else
+    {
+        LayoutMasks(b.oldLayout, srcStage, b.srcAccessMask);
+        LayoutMasks(newLayout, dstStage, b.dstAccessMask);
+        if (poisonArm)
+        {
+            srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+            b.srcAccessMask = 0;
+            b.dstAccessMask = 0;
+        }
+        if (srcStage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT ||
+            dstStage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)
+            ++g_barrierWide;
+    }
+    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
     img.layout = newLayout;
     return true;
 }
@@ -5295,7 +5406,15 @@ bool CreateDevice()
     // a sampled image still UNDEFINED when a draw reads it — was not, because this
     // renderer creates images in five different places and the handle names none of them.
     // Naming is free, off with the layer, and turns that message into an address.
-    const bool wantValidation = EnvOn("CZ_VK_VALIDATION");
+    // CZ_VK_SYNC_VALIDATION=1 turns on the layer's SYNCHRONIZATION validation as well, and
+    // it implies CZ_VK_VALIDATION. It is a separate switch because it is a separate
+    // instrument: the ordinary layer checks that an API CALL is legal, and part 77 found
+    // that it is blind to whole classes of hazard (gotcha 458). Synchronization validation
+    // checks that a memory dependency actually COVERS the accesses on either side of it —
+    // which is the only thing that can gate part 78's narrowed barrier masks, since a
+    // too-narrow dependency is a legal API call that races.
+    const bool wantSyncValidation = EnvOn("CZ_VK_SYNC_VALIDATION");
+    const bool wantValidation = EnvOn("CZ_VK_VALIDATION") || wantSyncValidation;
     // The swapchain is the DEFAULT present path since part 54; `CZ_VK_NO_SWAPCHAIN=1` is
     // the control arm. The window has already decided (it had to: SDL_WINDOW_VULKAN is a
     // creation flag) and it hands us the platform extensions its surface needs.
@@ -5311,12 +5430,27 @@ bool CreateDevice()
                         "presenting through the readback path instead.\n");
         R->wantSwapchain = false;
     }
+    VkValidationFeatureEnableEXT syncFeat[] = {
+        VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+    };
+    VkValidationFeaturesEXT vfeat{ VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
     if (wantValidation)
     {
         ici.enabledLayerCount = 1;
         ici.ppEnabledLayerNames = layers;
         instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         fprintf(stderr, "[vk] validation layer requested\n");
+        if (wantSyncValidation)
+        {
+            instExts.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+            vfeat.enabledValidationFeatureCount = 1;
+            vfeat.pEnabledValidationFeatures = syncFeat;
+            vfeat.pNext = ici.pNext;
+            ici.pNext = &vfeat;
+            fprintf(stderr, "[vk] SYNCHRONIZATION validation requested — this is the gate "
+                            "for the narrowed barrier masks; CZ_VK_BARRIER_POISON=1 is "
+                            "the positive control that proves it can fail\n");
+        }
     }
     ici.enabledExtensionCount = uint32_t(instExts.size());
     ici.ppEnabledExtensionNames = instExts.empty() ? nullptr : instExts.data();
@@ -10111,7 +10245,22 @@ void RecordSwapchainBlit(Image& source, uint32_t width, uint32_t height)
     toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.image = R->swap.images[index];
     toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    // srcStage IS `ALL_COMMANDS` AND NOT `TOP_OF_PIPE`, and part 78's synchronization
+    // validation run is why. This is a layout transition of an image the PRESENTATION
+    // ENGINE was reading; the acquire semaphore is waited at `TRANSFER`, so a transition
+    // scheduled at TOP_OF_PIPE may execute before that wait unblocks and write an image
+    // the compositor has not released — `SYNC-HAZARD-WRITE-AFTER-READ`, ten of them a run.
+    //
+    // It was invisible while every OTHER barrier in the frame used ALL_COMMANDS: those
+    // formed a dependency chain the layer accepted. Part 78 narrowed them to the masks
+    // their layouts imply, which is right for the 137 EDRAM transitions a frame — and it
+    // broke the chain this one was riding. **A hazard that only appears once a neighbour
+    // is corrected was always there**; the neighbour was hiding it.
+    //
+    // Wide is the right answer HERE specifically because this barrier runs ONCE a frame
+    // against 137 that do not, so its width costs nothing measurable, and because what it
+    // must synchronise against is an agent outside the pipeline entirely.
+    vkCmdPipelineBarrier(R->cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
                          &toDst);
 
@@ -24817,13 +24966,19 @@ void VkRenderer_DumpStats()
                 "GPU, and it is the half of `walk` that is not our recording\n",
                 double(g_fenceWaitNs) / 1e6 / frames);
     }
-    if (g_wawN)
+    // THE BARRIER FORM, and the evidence that the arm engaged. Unconditional and free.
+    if (g_barrierN)
         fprintf(stderr,
-                "[vk]   clear write-after-write barriers: %llu (%.1f/frame) — resolves that "
-                "cleared an EDRAM surface already in transfer-dst, i.e. with nothing "
-                "ordering them against the previous clear until this was added\n",
-                (unsigned long long)g_wawN,
-                double(g_wawN) / double(R->frame ? R->frame : 1));
+                "[vk]   image barriers: %llu over the run (%.1f/frame), %llu of them with "
+                "the WIDE ALL_COMMANDS/MEMORY_* masks (%.1f%%) — under "
+                "CZ_VK_WIDE_BARRIERS=1 that must be 100%%, and without it only GENERAL and "
+                "unlisted layouts; plus %llu write-after-write barriers on images already "
+                "in the layout they needed\n",
+                (unsigned long long)g_barrierN,
+                double(g_barrierN) / double(R->frame ? R->frame : 1),
+                (unsigned long long)g_barrierWide,
+                100.0 * double(g_barrierWide) / double(g_barrierN),
+                (unsigned long long)g_wawN);
     // THE PER-REGION GPU SPLIT (part 78 item 1) — the first breakdown of the device's own
     // time this project has had. THE RESIDUAL IS PRINTED FIRST AND ON PURPOSE: it is the
     // frame's measured GPU time minus everything the regions account for, and it is the
