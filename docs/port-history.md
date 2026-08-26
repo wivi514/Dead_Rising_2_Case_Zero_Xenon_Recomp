@@ -5640,3 +5640,102 @@ sessions and the regime); lessons: gotchas **451-454**):
   0 stale present slots.
   Renderer-only change — no config, kernel, PM4 or shader path touched — so part 74's A5 and
   `alu_const_gate --hlsl-dir` sweeps and part 75's cache gates stand.
+
+Where the port is, as of 2026-08-26 (**PART 77 CLOSED, NOTHING OWED — PERFORMANCE. THE
+BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE AND OPERATOR-CONFIRMED — AND THE FIX THREE KICKOFFS
+SPECIFIED FOR IT WAS 17% OF ITS OWN HEADLINE.** ~~**`docs/part78-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; the live one is `docs/part79-kickoff.md`. Records:
+`phase5-notes.md` **§6ds** (the work) and **§6dt** (the operator session); lessons: gotchas
+**455-458**):
+
+* **THE ITEM WAS `part77-kickoff.md` §1's FIRST, and it was the most thoroughly evidenced
+  thing this port has carried**: 36 operator F7 stutter marks across parts 74/75/76 all
+  landing on texture frames, a two-half cost breakdown, a named fix per half, a
+  pre-registered kill, and three hand-offs repeating it verbatim — *"decode — untile every
+  mip, endian swap, image creation ... **parallelise or cache. Take this first.**"*
+* **SPLITTING THE CLOCK BEFORE TOUCHING IT MOVED THE ITEM.** `g_texDecodeNs` is named for
+  three operations and holds SEVEN. Banded over two runs agreeing to 1.1 ms on every column,
+  3440x1440: **`vkCreateImage` 342.6 ms (69.3%)**, mip-chain VALIDATION guards 55.1,
+  base-untile 51.3, mip-untile 33.8, everything else under 5, **RESIDUAL 2.7 (0.6%)**. The
+  untile loop — the specified fix — is **17.2%**, and a perfect 3x on it would have been
+  correctly KILLED by the item's own 40 ms threshold. Every one of those 36 marks confirmed
+  the PARENT claim ("the texture path is the hitch"), which is true; none touched the child
+  claim ("the untile is where the decode's time is"), which was never measured (gotcha 456).
+* **AND `CreateImage` IS ONE DRIVER CALL: `vkAllocateMemory` 350.6 ms of it, 145 us x 2,424.**
+  One dedicated `VkDeviceMemory` per image since phase 5 — a kernel-side buffer-object
+  allocation, 70.7% of the decode and 34% of the whole texture path.
+* **THIS FILE ALREADY KNEW.** The RT pool's own comment reads *"a crowd's ~2,600 BLASes
+  against the driver's ~4096 `maxMemoryAllocationCount` would exhaust the allocator **with
+  textures still to serve**."* The hazard was named right, the pool was built right, and the
+  subsystem it was budgeting AROUND kept the anti-pattern for twelve parts — gotcha 446 a
+  second time, and a **latent abort** as well as a cost: this 60 s route used 2,424 of ~4,096.
+* **FIX 1, THE MEMORY POOL: −121.05 ms off the burst frame, −42.4%, against a 0.06 ms
+  control channel.** Three runs an arm, alternated, resolution pinned, all six route gates
+  passed; the reader is `tools/part77_tex_report.py` and its population is FRAMES WITH AN
+  UPLOAD, not a draw band (gotcha 452). Burst frame **285.57 -> 164.52 ms** at a matched
+  778/779 uploads; decode 178.66 -> 65.18 on that frame and **216.79 -> 69.30 us per upload**
+  run-wide; frames over 150 ms 4 -> 2, and both survivors are frames this cannot reach.
+  `CZ_VK_NO_TEX_MEMPOOL=1` is the arm, VRAM is unchanged (392.3 vs 392.1 MB), alignment
+  waste 225 KB.
+* **FIX 2, THE MIP GUARDS: 54.8 -> 46.2 ms.** With the allocation gone the largest decode
+  column is still not the untile — it is the two whole-buffer validation passes parts 39/41
+  added. The endpoint-luma test re-walked the level ABOVE for every level; it is carried now.
+  The mostly-empty test read a DXT block a byte at a time; it is one or two 64-bit loads.
+  **A CORRECTION, not a saving** (gotcha 453), and **verified rather than argued**: the
+  downstream counters differ by 1-11, which is INSIDE the same-arm spread, so
+  `CZ_VK_VERIFY_MIP_GUARD=1` reads **0 of 17,639** and its poison arm **17,617 of 17,617**.
+* **FIX 3, THE UPLOAD BATCH: 2,432 submit-and-waits become one per burst.** The staging half
+  was 534 ms, 77% of the path after fix 1. **`immediate submits: 131, 92.5 ms` where it was
+  2,432 and 557.3; staging+submit 24.2 ms, 10 us each.** The whole 779-upload burst goes in
+  ONE submit, and no flush was ever forced by the 64 MB arena. Not the design the old comment
+  proposed (breaking the render pass, ~15 ms a run) — one extra immediate submit per burst,
+  ordered ahead of the frame's own command buffer.
+* **AND THE GATE CHOSEN FOR IT FAILED ITS POSITIVE CONTROL BY BEING BLIND.**
+  `CZ_VK_TEX_BATCH_BREAK=1` skips the ordering flush; that build left **~1,400 textures never
+  copied to the GPU** and rendered a **fully black screen** — and `CZ_VK_VALIDATION=1`
+  reported only the six pre-existing pipeline VUIDs, the route gate passed, every draw counter
+  read healthy. **The texture heap is a bindless update-after-bind array and the validation
+  layer does not track its image layouts at all** (gotcha 458). What had power was
+  `frame_era_medians.py`: the break arm is **43,211x the null** on coverage, and both batch
+  runs are INSIDE the null on every statistic in both framings.
+* **END TO END, one binary, both arms on against both off, 3440x1440, matched load:
+  THE BURST FRAME GOES 276.6 -> 100.1 ms, −63.8%** (775 vs 773 uploads). Its decode
+  170.9 -> 57.3, its stage+submit **64.3 -> 2.4**. Run-wide: decode 494.8 -> 141.2 ms,
+  staging+submit 574.0 -> 173.3, immediate submits 2,427 -> 140. **No frame that uploads a
+  texture exceeds 150 ms on this route any more** — the one survivor above 150 ms carries
+  zero uploads and zero pipelines and is the OS-stall class. **And the remaining 100 ms names
+  part 78's item 2**: both arms compile 97 pipelines on that frame, so ~40 ms of it is
+  pipeline creation and ordinary draws, invisible until now because the texture path was
+  three times larger.
+* **STILL OPEN, AND HONESTLY PRICED AS SMALL.** The untile is finally the biggest decode
+  column (79 of 152 ms/run) and the work to fix it is proven: `Tiled2DOffset` decomposes into
+  a 32x32 table plus a macro-tile base, **967,680 combinations checked, 0 mismatches**
+  (`tools/tile_offset_separable.py`), with units contiguous in 16-byte runs. But 79 ms/run is
+  ~25 ms on a burst frame against a standing 40 ms kill. §6ds §10.
+* **CONFIRMED BY THE OPERATOR, and it moved the board (§6dt).** 150 s of play, no profiler:
+  *"didn't notice stutter except a single one a little bit after loading (not really an issue
+  for now) performance still low for an xbox 360 title on PC but acceptable for play."* Four
+  of fifteen windows have a worst frame over 50 ms and **all four are in the first 50
+  seconds**; across the remaining **100 s of crowd play at 7,000-9,500 draws the worst frame
+  of every window is 16.2-46.4 ms** and `>2x med` is 0.0-0.1%, where part 75's session reached
+  p99 174 and max 290. The steady frame is UNCHANGED (11.3-13.1 ms at 7,000-9,500 draws
+  against part 76's 11.93/13.58), which is the right result for a hitch fix.
+* **AND THE SESSION FOUND WHAT THE AUTONOMOUS ROUTE COULD NOT: THE BATCH'S BENEFIT IS
+  LOAD-SHAPED.** It flushes once per FRAME, so it is worth however many uploads that frame
+  carried. My route concentrates 773 into one load — **37.2 jobs/flush, staging half −70%**.
+  Their play spreads them — **4.8 jobs/flush, staging half −26%**, and the staging half is
+  still **77% of the texture path at their load** against 55% at mine. Gotcha 356 again. The
+  remedy is part 78's item 2 and it is load-independent: `FlushTextureUploads` still submits
+  AND WAITS (1,092.5 ms of their 150 s session); fence the arena and the command buffer
+  against the frame and the wait goes away whatever the jobs-per-flush is.
+* **AND THE ALLOCATION CAP WAS A REAL HAZARD, NOT A THEORETICAL ONE.** Their session made
+  **6,261 `CreateImage` calls in 150 seconds** against the driver's ~4,096
+  `maxMemoryAllocationCount`. Before part 77 it would have exhausted the allocator and
+  aborted on `VK_CHECK`. It used **9 blocks**.
+* **Gates:** `--smoke` OK on every build; `shader_dim_census` clean (339 2D / 100 cube, 0
+  disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name
+  diff; every one of the 13 route runs passed its own draw gate; the picture gate passed in
+  both framings and was **shown capable of failing**; the operator's session logged 0 `no
+  translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present slots, 0 block
+  allocation failures, and no new shaders (449 dumps against a 449 cache, name diff empty). Renderer-only change — no config,
+  kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate --hlsl-dir` sweeps
+  and part 75's cache gates stand.

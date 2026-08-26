@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 458 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 466 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 458-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 466-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -185,20 +185,30 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part79-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
+    `part80-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
     ANY MORE.** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
     **every item in that plan is now closed, refuted or shipped**; it is kept because it
     carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
     table). `part72-fix-plan.md` is what the operator sittings established, and
     `perf-state-parked.md` is the reference the item designs came from and is NOT
-    superseded. **`docs/part79-kickoff.md` is the first thing to read after this file, and
+    superseded. **`docs/part80-kickoff.md` is the first thing to read after this file, and
     its §1 is the board, in order, WITH EVERY ITEM'S MILLISECONDS ATTACHED** — because there
-    is a per-region GPU split now (`CZ_VK_GPU_PASSES=1`) and an item without a number is a
-    guess: (1) **the post chain**, 36 passes a frame and 1.43 ms, never decomposed; (2)
-    **drop the wait in `FlushTextureUploads`**, carried over untouched and the only remaining
-    item definitely worth something at the OPERATOR's load; (3) the resolve clears, 575
-    Mpixel written for 33 rendered but a 0.691 ms ceiling; (4) the resolve copies, 6.9 full
-    EDRAM surfaces a frame; (5) parallel command recording, re-priced; (6) the untile, small.
+    is a per-region GPU split now (`CZ_VK_GPU_PASSES=1`, and as of part 79 it carries a PASS
+    EXTENT CENSUS too) and an item without a number is a guess: (1) **parallel command
+    recording**, the largest thing left and re-priced upward by part 78's regime change
+    (2.38 ms of headroom at 9,000-12,000 draws, fence 0.00) — **measure it at 8,000+ draws or
+    not at all**; (2) the resolve clears, 580 Mpixel written for 33 rendered but a 0.601 ms
+    ceiling and a scoped arm that is a wash; (3) the resolve copies, 7.0 full EDRAM surfaces
+    a frame, 0.723 ms; (4) the untile, small.
+    ~~(1) **the post chain**, 36 passes a frame and 1.43 ms, never decomposed~~ — **that was
+    part 79's item 2 and it is REFUTED**: the extent census says three extents at 60-182 us
+    carry 76% of the `1 draw` class and they are the title's own shaders at half, quarter and
+    full resolution; the pure-overhead end is 0.036 ms/frame, 3.6% of the class (§6dx).
+    ~~(2) **drop the wait in `FlushTextureUploads`**, carried over untouched and the only
+    remaining item definitely worth something at the OPERATOR's load~~ — **that was part 79's
+    item 1 and it is SHIPPED**: the flush goes 999-1138 us to 106-114 us, −89.8%, **and the
+    autonomous route measured the frame time as a NULL** because it is GPU-bound and the pump
+    moved its blocking to the fence (§6dw). **The operator session is the one thing owed.**
     ~~(1) **the GPU**, which this project has never touched~~ — **that was part 78's item 1
     and it is DONE**: it has a breakdown now, and the largest thing in it that is not the
     game was **137 image barriers a frame at ALL_COMMANDS, 11.0% of the device's frame**.
@@ -709,7 +719,11 @@ CZ_VK_DIM_CENSUS=1 where the DIMENSION lives in a texture fetch constant, answer
 CZ_VK_GPU_PASSES=1 **the frame's GPU time SPLIT BY REGION** (part 78) — passes bucketed by
                    draw count, resolve copies, resolve clears, the two barrier classes,
                    snapshot views, cube faces, the present blit and the present readback,
-                   **with the RESIDUAL printed first**. The first GPU-side breakdown this
+                   **with the RESIDUAL printed first** — plus, as of part 79, a **PASS EXTENT
+                   CENSUS**: each pass class broken down by the largest scissor its draws
+                   used, with microseconds PER PASS, which is what separates a full-screen
+                   shader from pass overhead on a tiny target. It reproduces to 0.001
+                   ms/frame across runs. The first GPU-side breakdown this
                    port has had, and its bill is nil. Read the residual before the classes
                    and the overflow line if it appears: a truncated frame reads LOW in every
                    class and looks like a saving
@@ -833,16 +847,93 @@ IS `docs/perf-plan-part71.md`.**~~ ~~**THE LIVE PLAN IS `docs/perf-plan-part72.m
 ~~**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**~~ — **THERE IS NO LIVE PLAN AS OF
 PART 73: that one is EXHAUSTED**, every item in it closed, refuted or shipped, and a
 successor must be built from new ground rather than from its table. ~~`part75-kickoff.md`
-is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ ~~**`part78-kickoff.md` is**~~ —
-**`part79-kickoff.md` is**, and it says where that ground is. (This
+is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ ~~**`part78-kickoff.md` is**~~ ~~**`part79-kickoff.md` is**~~ —
+**`part80-kickoff.md` is**, and it says where that ground is. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
+
+Where the port is, as of 2026-08-26 (**PART 79 CLOSED — PERFORMANCE. THE BOARD'S ITEM 1, THE
+WAIT INSIDE `FlushTextureUploads`, IS SHIPPED AND THE MECHANISM IS MEASURABLY GONE (−89.8%)
+— AND THE ROUTE IT WAS BUILT ON COULD NOT PRICE IT, WHICH THE HAND-OFF HAD SAID IN ADVANCE.
+ITEM 2, THE POST CHAIN, IS REFUTED BY MEASUREMENT FOR THE COST OF ONE RUN. ONE THING IS
+OWED: THE OPERATOR SESSION.**
+**`docs/part80-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6dw** (item 1)
+and **§6dx** (item 2); lessons: gotchas **465-466**):
+
+* **ITEM 1 WAS THE OLDEST THING ON THE BOARD** — carried untouched through three hand-offs
+  and promoted to the top by part 78's regime change. Part 77's batch turned one
+  submit-and-wait per TEXTURE into one per burst and left the wait deliberately: *"dropping it
+  as well would require recycling both the staging arena and the command buffer against a
+  fence, i.e. a second mechanism to get wrong in the same change."* The operator's part-77
+  session priced what was left at **1,092.5 ms of a 150-second session, 568 us on each of
+  1,841 flushes** (§6dt §3).
+* **THE RING: three slots, each with a command buffer, a fence and a 32 MB segment of the
+  staging arena.** A flush submits into the current slot and waits only on the slot it is
+  about to REUSE, which retired two flushes ago. `g_texSlotStalls` counts the times that wait
+  actually blocked — **0 in all six A/B runs**.
+* **THE SEGMENT SIZE WAS MEASURED BEFORE IT WAS CHOSEN, and that is the part to copy.**
+  Partitioning the arena NARROWS the "larger than the staging buffer" decline the callers
+  already have, and a segment below some real texture would silently stop uploading it —
+  invisible to any route that never goes there. So `g_texUploadMaxBytes` was added and asked
+  first: **biggest single upload 1.33 MB** over 2,360 uploads. The arena grew 64 MB flat to
+  3 x 32 MB, 24x the measured maximum, and the refusal is counted.
+* **THE MECHANISM IS GONE.** Three runs an arm, alternated, 3440x1440 pinned, all six route
+  gates passed, `CZ_VK_TEX_FLUSH_WAIT=1` the same-binary control (and it is not an
+  approximation of the old code — it takes the literal `RunImmediate` path): **the flush goes
+  999/1138/1092 us -> 107/106/114 us, −89.8%**; staging+submit over the run 78.7/83.8/80.9 ->
+  17.1/17.2/18.1 ms; immediate submits 146/142/142 -> 77/77/77. **The three fix runs agree to
+  0.7 ms on the run total where the control's spread is 5.1.** On the burst frame the
+  stage+submit half goes **7.32 -> 3.46 ms** at a matched 778/777 uploads.
+* **AND THE RUN IS A NULL, BECAUSE THE SAVING MOVED INTO THE FENCE.** 19,337 frames against
+  19,291 in the same 148.6 s; over the frames carrying upload work the median wall is unmoved
+  (9.168 -> 9.165 ms) and the **median FENCE wait goes UP, 0.699 -> 1.136 ms.** This route is
+  GPU-bound at 6,200 draws and the pump was going to wait for the device either way — which
+  `part79-kickoff.md` §2 ruled out in as many words before the runs started. Gotcha 466: when
+  the hand-off says your route cannot price the item, believe it in advance, measure the
+  MECHANISM, and hand the frame time to the operator.
+* **SO THE ITEM IS HONESTLY SMALL AND ITS VALUE IS AT THEIR LOAD.** Their flush count is
+  **27x mine per second** (1,841 in 150 s against my 67 in 148), their fence is 0.00 at every
+  band above 3,000 draws and their GPU headroom is 1.93-2.38 ms (§6dv §2). 1,092.5 ms over
+  150 s is **~0.59 ms on each of ~17% of their frames** — real, and below what an eye
+  resolves. `tools/part79_operator_session.sh` says that to them out loud.
+* **THE PICTURE GATE RAISED A FALSE ALARM AND THE ALARM IS THE LESSON.** The positive control
+  `CZ_VK_TEX_BATCH_BREAK=1` fires at **36,799x the null** on coverage. But the shipping arm
+  first read **33.7x the null on `meanLuma`** — and it was COMPOSITION: the arms' era median
+  draw counts were 4,573-4,851 against 3,866-3,915 on a run whose luma ramps 28.5 -> 68.5 ->
+  78.7. Banded by draws they agree to ≤0.3% wherever the populations are comparable, and with
+  the camera HELD (`STILL=1`) both control runs are **INSIDE the null on all three
+  statistics** (meanLuma 0.03% and 0.12% against a 0.50% null). **A null pair agreeing to
+  0.05% is one sample of a floor that is really ~1.5%** — gotcha 465, and the third distinct
+  way this route's picture aggregate has misled a session.
+* **ITEM 2 — THE POST CHAIN — IS CLOSED BY MEASUREMENT, AND IT COST ONE RUN.**
+  `part79-kickoff.md` filed it with its own kill condition: *"whether 28 us is a full-screen
+  shader or pass overhead on a tiny target. If it is the latter, the item is the same shape as
+  the barriers."* `CZ_VK_GPU_PASSES=1` now carries a **PASS EXTENT CENSUS** — the largest
+  scissor any draw in the scope used — and it says: **three extents carry 76% of the `1 draw`
+  class** (1720x720 at 154 us x 2.53, 860x360 at 60 us x 3.42, 3440x1440 at 182 us x 0.85 =
+  0.751 of 0.987 ms), they are the title's own shaders at half, quarter and full resolution,
+  and **per pixel the expensive one costs 3.4x the cheap one** (0.124 vs 0.037 ns). The
+  pure-overhead end — the six-step luminance pyramid 107x44 -> 53x22 -> 26x10 -> 13x4 -> 5x2
+  -> 2x2, 7 us a pass, unmistakable once listed — totals **0.036 ms/frame, 3.6% of the
+  class.** Nothing a translation layer does can reach any of it. **The census reproduces to
+  0.001 ms/frame on every row across two runs**, which is far tighter than any frame-time
+  statistic here.
+* **The same census names `1720x1440` in the `>=256 draws` class**: the title's own left/right
+  tiling, **one pass at 2,094 us, 1.701 ms/frame, 24% of the device's frame in a single
+  region.** And the two barrier classes read **0.098 ms/frame over 138.8 transitions (1.4%,
+  from 11.0%)**, which is the clearest standing evidence that part 78's fix is still in.
+* **Gates:** `--smoke` OK on every build; the picture gate passed in the `STILL=1` framing and
+  was **shown capable of failing** (36,799x); every one of the 15 route runs passed its own
+  draw gate; the GPU split's residual is **0.6%** with 0 regions dropped. Renderer-only change
+  — no config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
+  --hlsl-dir` sweeps and part 75's cache gates stand.
 
 Where the port is, as of 2026-08-26 (**PART 78 CLOSED, NOTHING OWED — PERFORMANCE. THE
 BOARD'S ITEM 1 WAS THE GPU, WHICH THIS PROJECT HAD NEVER LOOKED AT; IT HAS A BREAKDOWN NOW,
 AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME. THE OPERATOR
 HAS CONFIRMED IT AND THE REGIME TABLE MOVED.**
-**`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6du** (the
+~~**`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; the live one is
+`docs/part80-kickoff.md`. Records: `phase5-notes.md` **§6du** (the
 work) and **§6dv** (the operator session and the new regime table);
 lessons: gotchas **459-464**):
 
@@ -931,106 +1022,6 @@ lessons: gotchas **459-464**):
   diff; every reportable route run passed its own draw gate. Renderer-only change — no
   config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
   --hlsl-dir` sweeps and part 75's cache gates stand.
-
-Where the port is, as of 2026-08-26 (**PART 77 CLOSED, NOTHING OWED — PERFORMANCE. THE
-BOARD'S ITEM 1, THE TEXTURE PATH, IS DONE AND OPERATOR-CONFIRMED — AND THE FIX THREE KICKOFFS
-SPECIFIED FOR IT WAS 17% OF ITS OWN HEADLINE.** ~~**`docs/part78-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; the live one is `docs/part79-kickoff.md`. Records:
-`phase5-notes.md` **§6ds** (the work) and **§6dt** (the operator session); lessons: gotchas
-**455-458**):
-
-* **THE ITEM WAS `part77-kickoff.md` §1's FIRST, and it was the most thoroughly evidenced
-  thing this port has carried**: 36 operator F7 stutter marks across parts 74/75/76 all
-  landing on texture frames, a two-half cost breakdown, a named fix per half, a
-  pre-registered kill, and three hand-offs repeating it verbatim — *"decode — untile every
-  mip, endian swap, image creation ... **parallelise or cache. Take this first.**"*
-* **SPLITTING THE CLOCK BEFORE TOUCHING IT MOVED THE ITEM.** `g_texDecodeNs` is named for
-  three operations and holds SEVEN. Banded over two runs agreeing to 1.1 ms on every column,
-  3440x1440: **`vkCreateImage` 342.6 ms (69.3%)**, mip-chain VALIDATION guards 55.1,
-  base-untile 51.3, mip-untile 33.8, everything else under 5, **RESIDUAL 2.7 (0.6%)**. The
-  untile loop — the specified fix — is **17.2%**, and a perfect 3x on it would have been
-  correctly KILLED by the item's own 40 ms threshold. Every one of those 36 marks confirmed
-  the PARENT claim ("the texture path is the hitch"), which is true; none touched the child
-  claim ("the untile is where the decode's time is"), which was never measured (gotcha 456).
-* **AND `CreateImage` IS ONE DRIVER CALL: `vkAllocateMemory` 350.6 ms of it, 145 us x 2,424.**
-  One dedicated `VkDeviceMemory` per image since phase 5 — a kernel-side buffer-object
-  allocation, 70.7% of the decode and 34% of the whole texture path.
-* **THIS FILE ALREADY KNEW.** The RT pool's own comment reads *"a crowd's ~2,600 BLASes
-  against the driver's ~4096 `maxMemoryAllocationCount` would exhaust the allocator **with
-  textures still to serve**."* The hazard was named right, the pool was built right, and the
-  subsystem it was budgeting AROUND kept the anti-pattern for twelve parts — gotcha 446 a
-  second time, and a **latent abort** as well as a cost: this 60 s route used 2,424 of ~4,096.
-* **FIX 1, THE MEMORY POOL: −121.05 ms off the burst frame, −42.4%, against a 0.06 ms
-  control channel.** Three runs an arm, alternated, resolution pinned, all six route gates
-  passed; the reader is `tools/part77_tex_report.py` and its population is FRAMES WITH AN
-  UPLOAD, not a draw band (gotcha 452). Burst frame **285.57 -> 164.52 ms** at a matched
-  778/779 uploads; decode 178.66 -> 65.18 on that frame and **216.79 -> 69.30 us per upload**
-  run-wide; frames over 150 ms 4 -> 2, and both survivors are frames this cannot reach.
-  `CZ_VK_NO_TEX_MEMPOOL=1` is the arm, VRAM is unchanged (392.3 vs 392.1 MB), alignment
-  waste 225 KB.
-* **FIX 2, THE MIP GUARDS: 54.8 -> 46.2 ms.** With the allocation gone the largest decode
-  column is still not the untile — it is the two whole-buffer validation passes parts 39/41
-  added. The endpoint-luma test re-walked the level ABOVE for every level; it is carried now.
-  The mostly-empty test read a DXT block a byte at a time; it is one or two 64-bit loads.
-  **A CORRECTION, not a saving** (gotcha 453), and **verified rather than argued**: the
-  downstream counters differ by 1-11, which is INSIDE the same-arm spread, so
-  `CZ_VK_VERIFY_MIP_GUARD=1` reads **0 of 17,639** and its poison arm **17,617 of 17,617**.
-* **FIX 3, THE UPLOAD BATCH: 2,432 submit-and-waits become one per burst.** The staging half
-  was 534 ms, 77% of the path after fix 1. **`immediate submits: 131, 92.5 ms` where it was
-  2,432 and 557.3; staging+submit 24.2 ms, 10 us each.** The whole 779-upload burst goes in
-  ONE submit, and no flush was ever forced by the 64 MB arena. Not the design the old comment
-  proposed (breaking the render pass, ~15 ms a run) — one extra immediate submit per burst,
-  ordered ahead of the frame's own command buffer.
-* **AND THE GATE CHOSEN FOR IT FAILED ITS POSITIVE CONTROL BY BEING BLIND.**
-  `CZ_VK_TEX_BATCH_BREAK=1` skips the ordering flush; that build left **~1,400 textures never
-  copied to the GPU** and rendered a **fully black screen** — and `CZ_VK_VALIDATION=1`
-  reported only the six pre-existing pipeline VUIDs, the route gate passed, every draw counter
-  read healthy. **The texture heap is a bindless update-after-bind array and the validation
-  layer does not track its image layouts at all** (gotcha 458). What had power was
-  `frame_era_medians.py`: the break arm is **43,211x the null** on coverage, and both batch
-  runs are INSIDE the null on every statistic in both framings.
-* **END TO END, one binary, both arms on against both off, 3440x1440, matched load:
-  THE BURST FRAME GOES 276.6 -> 100.1 ms, −63.8%** (775 vs 773 uploads). Its decode
-  170.9 -> 57.3, its stage+submit **64.3 -> 2.4**. Run-wide: decode 494.8 -> 141.2 ms,
-  staging+submit 574.0 -> 173.3, immediate submits 2,427 -> 140. **No frame that uploads a
-  texture exceeds 150 ms on this route any more** — the one survivor above 150 ms carries
-  zero uploads and zero pipelines and is the OS-stall class. **And the remaining 100 ms names
-  part 78's item 2**: both arms compile 97 pipelines on that frame, so ~40 ms of it is
-  pipeline creation and ordinary draws, invisible until now because the texture path was
-  three times larger.
-* **STILL OPEN, AND HONESTLY PRICED AS SMALL.** The untile is finally the biggest decode
-  column (79 of 152 ms/run) and the work to fix it is proven: `Tiled2DOffset` decomposes into
-  a 32x32 table plus a macro-tile base, **967,680 combinations checked, 0 mismatches**
-  (`tools/tile_offset_separable.py`), with units contiguous in 16-byte runs. But 79 ms/run is
-  ~25 ms on a burst frame against a standing 40 ms kill. §6ds §10.
-* **CONFIRMED BY THE OPERATOR, and it moved the board (§6dt).** 150 s of play, no profiler:
-  *"didn't notice stutter except a single one a little bit after loading (not really an issue
-  for now) performance still low for an xbox 360 title on PC but acceptable for play."* Four
-  of fifteen windows have a worst frame over 50 ms and **all four are in the first 50
-  seconds**; across the remaining **100 s of crowd play at 7,000-9,500 draws the worst frame
-  of every window is 16.2-46.4 ms** and `>2x med` is 0.0-0.1%, where part 75's session reached
-  p99 174 and max 290. The steady frame is UNCHANGED (11.3-13.1 ms at 7,000-9,500 draws
-  against part 76's 11.93/13.58), which is the right result for a hitch fix.
-* **AND THE SESSION FOUND WHAT THE AUTONOMOUS ROUTE COULD NOT: THE BATCH'S BENEFIT IS
-  LOAD-SHAPED.** It flushes once per FRAME, so it is worth however many uploads that frame
-  carried. My route concentrates 773 into one load — **37.2 jobs/flush, staging half −70%**.
-  Their play spreads them — **4.8 jobs/flush, staging half −26%**, and the staging half is
-  still **77% of the texture path at their load** against 55% at mine. Gotcha 356 again. The
-  remedy is part 78's item 2 and it is load-independent: `FlushTextureUploads` still submits
-  AND WAITS (1,092.5 ms of their 150 s session); fence the arena and the command buffer
-  against the frame and the wait goes away whatever the jobs-per-flush is.
-* **AND THE ALLOCATION CAP WAS A REAL HAZARD, NOT A THEORETICAL ONE.** Their session made
-  **6,261 `CreateImage` calls in 150 seconds** against the driver's ~4,096
-  `maxMemoryAllocationCount`. Before part 77 it would have exhausted the allocator and
-  aborted on `VK_CHECK`. It used **9 blocks**.
-* **Gates:** `--smoke` OK on every build; `shader_dim_census` clean (339 2D / 100 cube, 0
-  disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name
-  diff; every one of the 13 route runs passed its own draw gate; the picture gate passed in
-  both framings and was **shown capable of failing**; the operator's session logged 0 `no
-  translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present slots, 0 block
-  allocation failures, and no new shaders (449 dumps against a 449 cache, name diff empty). Renderer-only change — no config,
-  kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate --hlsl-dir` sweeps
-  and part 75's cache gates stand.
-
 
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
 superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-76's** — part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's

@@ -1458,7 +1458,23 @@ CZ_VK_GPU_PASSES=1 **THE FRAME'S GPU TIME, SPLIT BY REGION** (part 78 item 1) �
                    that GPU time vanished — and read the overflow line if it appears, because
                    a truncated frame reads LOW in every class. It also prints the resolve
                    copies' Mpixel/frame and the clears' full-vs-scoped extents, which is what
-                   makes those two classes designable rather than just sized
+                   makes those two classes designable rather than just sized.
+                   **AND AS OF PART 79 IT CARRIES A PASS EXTENT CENSUS.** Each pass class is
+                   broken down by the largest SCISSOR any draw in the scope used, sorted by
+                   total time, 16 rows a class with the tail SUMMED rather than dropped, and
+                   each row printing **microseconds PER PASS**. That per-pass column is the
+                   whole point: it is what separates a full-screen shader from pass overhead
+                   on a tiny target, the same way `base untile: ns/unit` separates a slow
+                   loop from a lot of units (§6ds §10). It closed board item 2 in one run —
+                   three extents at 60-182 us carry 76% of the `1 draw` class and the
+                   pure-overhead end (a six-step luminance pyramid down to 2x2, 7 us a pass)
+                   is 3.6% of it. **The census reproduces to 0.001 ms/frame on every row
+                   across two runs**, which is far tighter than any frame-time statistic on
+                   this route. The extent comes from the per-draw scissor and not from
+                   `renderArea`, which always names the whole EDRAM stand-in and is no help;
+                   it is taken beside the `++g_gpPassDraws` already on that path and guarded
+                   on `g_gpPassSeg >= 0`, i.e. a compare against a global rather than a fresh
+                   static-init guard (gotcha 453)
 CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask.
                    An instrument, not an arm: it fabricates nothing, and it is the
                    witness that a real press reached XamInputGetState. Silent on a
