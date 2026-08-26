@@ -4757,12 +4757,69 @@ void NameImage(const Image& img, const char* fmt, ...)
     NameObject(uint64_t(img.view), VK_OBJECT_TYPE_IMAGE_VIEW, "%s view", name);
 }
 
+// ===================================================================================
+// THE IMAGE MEMORY POOL — one VkDeviceMemory per texture was 70% of the texture decode
+// ===================================================================================
+//
+// WHAT WAS MEASURED (part 77, phase5-notes §6ds). `CreateImage` is 342.9 ms of the 496.1 ms
+// texture decode on the autonomous route, and its own five-call split says where:
+//
+//     vkCreateImage 3.3 ms | memReq 0.3 | vkAllocateMemory 350.6 | bind 2.2 | view 4.3
+//
+// **`vkAllocateMemory` is 145 us per call and there are 2,424 of them** — one per texture,
+// because `CreateImage` has allocated a dedicated `VkDeviceMemory` for every image since
+// phase 5. It is a kernel-side buffer-object allocation, not a user-space bookkeeping
+// operation, and no amount of parallelising the untile loop (10.5% of the same scope) or
+// batching the staging submits touches it.
+//
+// AND THIS FILE ALREADY KNEW. The RT work built exactly this pool for acceleration
+// structures — see `AsChunk` and its comment: *"a crowd's ~2,600 BLASes against the
+// driver's ~4096 maxMemoryAllocationCount would exhaust the allocator **with textures still
+// to serve**"*. The hazard was correctly identified, the pattern was correctly built for
+// the NEW subsystem, and the subsystem it was competing with kept the anti-pattern. That is
+// part 75's gotcha 446 a second time: a defect fixed at one pointer and never generalised.
+//
+// SO THE CAP IS A LATENT FAILURE TOO, not only a cost. This 60-second route consumed
+// **2,424 of the driver's ~4,096 allocations**. A long play session in a texture-heavy era
+// runs out, and `vkAllocateMemory` then fails — a VK_CHECK abort, not a degraded picture.
+//
+// WHY A BUMP POOL IS SAFE HERE, stated so it can be argued with rather than assumed: a
+// texture image in this renderer is **never destroyed while the process runs**. The cache
+// (`R->textures`, a FlatCache) grows and never evicts; the re-upload path (`refresh`) reuses
+// the existing image; `RetireImage` is called for SNAPSHOTS and the RT factor image and for
+// nothing else. So there is no free list to build — the blocks are released once, at
+// shutdown. Snapshots keep their dedicated allocations precisely because they DO get
+// retired mid-run, and pooling something whose lifetime is a frame would leak.
+//
+// A pooled image carries `memory == VK_NULL_HANDLE`, which is what makes this safe against
+// the code that already exists: every destroy site in this file is guarded by
+// `if (im.memory)`, so a pooled image that somehow reached one would free nothing rather
+// than free a block five other live images are bound into.
+//
+// `CZ_VK_NO_TEX_MEMPOOL=1` is the same-binary control arm — one dedicated allocation per
+// texture, i.e. the renderer as it was through part 76.
+struct ImgBlock
+{
+    uint32_t typeIndex = 0;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkDeviceSize size = 0, used = 0;
+};
+std::vector<ImgBlock> g_imgBlocks;
+// 32 MB. The route places 392 MB of texture images, so this is ~13 allocations where there
+// were 2,424, and the worst case wasted is one partly-filled block. Bigger blocks would
+// save a handful more allocations and waste more VRAM on a machine that never fills them.
+constexpr VkDeviceSize kImgBlockBytes = 32ull << 20;
+// ENGAGEMENT EVIDENCE (gotcha 151). `g_imgPooled` is binds served from a block and
+// `g_imgDedicated` is images that still took their own allocation — a pool whose counter
+// reads zero because every image fell down the fallback path would otherwise be invisible.
+uint64_t g_imgPooled = 0, g_imgDedicated = 0, g_imgBlockAllocs = 0, g_imgPoolWasteBytes = 0;
+
 bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
                  VkImageUsageFlags usage, VkImageAspectFlags aspect,
                  VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D, uint32_t layers = 1,
                  uint32_t depthExtent = 1,
                  VkComponentMapping components = VkComponentMapping{},
-                 uint32_t levels = 1)
+                 uint32_t levels = 1, bool poolMemory = false)
 {
     img.width = w;
     img.height = h;
@@ -4815,9 +4872,72 @@ bool CreateImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     if (ai.memoryTypeIndex == UINT32_MAX)
         return false;
     const uint64_t ciT2 = CycNow();
-    VK_CHECK(vkAllocateMemory(R->device, &ai, nullptr, &img.memory), "vkAllocateMemory");
+    // THE POOLED PATH. Only callers that promise the image outlives the run ask for it —
+    // see the ImgBlock comment for why that promise is checkable rather than hopeful.
+    static const bool noPool = EnvOn("CZ_VK_NO_TEX_MEMPOOL");
+    VkDeviceMemory bindMem = VK_NULL_HANDLE;
+    VkDeviceSize bindOff = 0;
+    if (poolMemory && !noPool)
+    {
+        // The alignment is the IMAGE's, not the block's: two images in one allocation are
+        // legal exactly when each is bound at an offset satisfying its own
+        // `VkMemoryRequirements::alignment` and their ranges do not overlap.
+        const VkDeviceSize align = req.alignment ? req.alignment : 1;
+        for (ImgBlock& blk : g_imgBlocks)
+        {
+            if (blk.typeIndex != ai.memoryTypeIndex)
+                continue;
+            const VkDeviceSize at = (blk.used + align - 1) / align * align;
+            if (at + req.size > blk.size)
+                continue;
+            g_imgPoolWasteBytes += at - blk.used;
+            blk.used = at + req.size;
+            bindMem = blk.mem;
+            bindOff = at;
+            break;
+        }
+        if (!bindMem)
+        {
+            ImgBlock blk;
+            blk.typeIndex = ai.memoryTypeIndex;
+            // An image bigger than a block gets a block of its own rather than a failure.
+            blk.size = std::max<VkDeviceSize>(kImgBlockBytes, req.size);
+            VkMemoryAllocateInfo bi{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            bi.allocationSize = blk.size;
+            bi.memoryTypeIndex = blk.typeIndex;
+            // NOT VK_CHECK: a block allocation that fails must fall back to the dedicated
+            // path, not abort. Out of VRAM is out of VRAM either way, but a 32 MB request
+            // can fail where a 128 KB one succeeds, and the fallback keeps the picture.
+            if (vkAllocateMemory(R->device, &bi, nullptr, &blk.mem) == VK_SUCCESS)
+            {
+                ++g_imgBlockAllocs;
+                blk.used = req.size;
+                bindMem = blk.mem;
+                bindOff = 0;
+                g_imgBlocks.push_back(blk);
+            }
+            else
+            {
+                Count("image: memory BLOCK allocation failed — this image took a "
+                      "dedicated allocation");
+            }
+        }
+    }
+    if (bindMem)
+    {
+        // `img.memory` stays NULL: every destroy site in this file is guarded on it, so a
+        // pooled image can never free the block its neighbours are bound into.
+        ++g_imgPooled;
+    }
+    else
+    {
+        VK_CHECK(vkAllocateMemory(R->device, &ai, nullptr, &img.memory), "vkAllocateMemory");
+        bindMem = img.memory;
+        ++g_imgDedicated;
+    }
     const uint64_t ciT3 = CycNow();
-    VK_CHECK(vkBindImageMemory(R->device, img.image, img.memory, 0), "vkBindImageMemory");
+    VK_CHECK(vkBindImageMemory(R->device, img.image, bindMem, bindOff),
+             "vkBindImageMemory");
     const uint64_t ciT4 = CycNow();
 
     VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -7896,12 +8016,15 @@ uint32_t UploadTexture(uint8_t* base, const uint32_t* regs, uint32_t constIdx,
     // a validation error, not a wrong picture. Vulkan's layer order is +X,-X,+Y,-Y,+Z,-Z
     // and so is D3D's, so the guest's face order carries across untouched.
     const uint64_t decImageT0 = CycNow();
+    // POOLED (part 77): the last argument. A guest texture's image is never destroyed
+    // while the process runs — see the ImgBlock comment — and one `vkAllocateMemory` per
+    // texture was 350.6 ms of this route's 496.1 ms decode.
     if (!CreateImage(entry.image, t.width, t.height, format,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                      VK_IMAGE_ASPECT_COLOR_BIT,
                      isCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D, layers, 1,
                      noSwizzle ? VkComponentMapping{} : XenosSwizzle(t.swizzle),
-                     levelCount))
+                     levelCount, /*poolMemory=*/true))
     {
         Count("texture: image creation failed");
         --nextSlot;
@@ -23979,6 +24102,14 @@ void VkRenderer_DumpStats()
                         double(g_ciViewNs) / 1e6,
                         double(g_ciCreateNs + g_ciReqNs + g_ciAllocNs + g_ciBindNs +
                                g_ciViewNs) / 1000.0 / double(g_ciN));
+            fprintf(stderr,
+                    "[vk]     image memory: %llu pooled into %llu block%s, %llu dedicated "
+                    "allocations (%.1f KB lost to alignment inside blocks)\n",
+                    (unsigned long long)g_imgPooled,
+                    (unsigned long long)g_imgBlockAllocs,
+                    g_imgBlockAllocs == 1 ? "" : "s",
+                    (unsigned long long)g_imgDedicated,
+                    double(g_imgPoolWasteBytes) / 1024.0);
             if (g_immN)
                 fprintf(stderr,
                         "[vk]     immediate submits: %llu, %.1f ms total, of which "
