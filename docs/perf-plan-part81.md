@@ -234,3 +234,9 @@ what happened to each item without having to find the section that corrected it 
   the census's predicted 0.468; `CZ_VK_VERIFY_BIND_BATCH=1` read **0 disagreements of 173.8 M
   and 161.7 M triples**, and its poison arm was designed to fire on every check rather than
   only on multi-binding runs, because 22% of runs are one binding long. §6ee §3, §6ee §4.
+* **§2 the guard census — RUN, and the item does not exist.** `CZ_VK_GUARD_CENSUS=1`:
+  **PUMP 1.11 MB/frame over 67 hashes (2.9% of bytes), POOL 36.85 MB/frame (97.1%)**, the
+  pump's half costing **0.077 ms/frame** — five times below this route's floor. It is
+  possibility 1: the prehash pool serves 97.1% of the BYTES, so the 59 MB the subtraction
+  produced was between two counters that were never a pair. `phase5-notes.md` §6ee §6.
+

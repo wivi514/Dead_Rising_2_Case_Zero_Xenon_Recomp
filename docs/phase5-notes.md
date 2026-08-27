@@ -19344,3 +19344,68 @@ rather than only on multi-binding runs: 22.0% of runs are one binding long, so t
 poison — swapping two entries within a run — could not have read 100% and would not have
 shown the checker capable of failing (gotcha 30). An offset shift does, it stays inside the
 buffer in both directions, and it renders garbage on purpose.
+
+### 5. THE REST OF GOTCHA 480's QUESTION, ASKED AND ANSWERED — so nobody re-asks it
+
+Gotcha 480 closes with *"the same question is worth asking of every `…(…, 1, &thing)` in a
+hot path."* It was asked here, over the whole renderer, and the vertex binds are the only
+member with an item in them:
+
+| singleton-array call | per frame | why it is not an item |
+|---|---|---|
+| `vkCmdBindVertexBuffers(…, 1, &buffer, &offset)` | 1.725/draw | **this was the item** — 0.83 ms/frame |
+| `vkCmdSetViewport(…, 0, 1, &vp)` | 1/draw offered | already elided **99.4%** by the part-18 state cache; what is left is ~0.006/draw |
+| `vkCmdSetScissor(…, 0, 1, &sc)` | 1/draw offered | elided **99.3%** |
+| `vkCmdPipelineBarrier(…, 1, &b)` | ~138 transitions | 138 × 52 ns = **7 µs a frame**, and barriers carry ordering meaning that an array would have to preserve. Not worth the risk for 7 µs |
+
+`vkCmdBindIndexBuffer` and `vkCmdPushConstants` have no plural form to move to.
+
+**So the shape defect was one call, not a class.** That is worth writing down in the negative:
+a session that reads gotcha 480 and goes looking for more of them should find this table and
+stop.
+
+### 6. THE PLAN'S §2 — THE GUARD'S 86.2 MB IS NOT ON THE PUMP, AND THE ITEM BEHIND IT DOES NOT EXIST
+
+`perf-plan-part81.md` §2 named this *"the largest number in the frame that has never been
+placed"*. `[vkprof]` reported **guard read 86.21 MB/frame** while the prehash pool reported
+**96.2% served, 27.2 MB/frame moved off the pump**, and subtracting said **59 MB a frame is
+still read on the pump** — which at any plausible rate is milliseconds, while no profiler
+phase showed it. §6ec's whole argument is that the guards ARE the remaining CPU cost, so
+this number decided whether that argument had an item behind it.
+
+`CZ_VK_GUARD_CENSUS=1` splits the bytes by **who read them** and clocks the pump's own half.
+One run, on the crowd route (peak 9,086 windowed draws, 18 windows at or above 8,000):
+
+```
+GUARD CENSUS over 18,948 frames: 37.96 MB/frame read in total
+  PUMP   1.11 MB/frame over    67 hashes  ( 2.9% of bytes)
+  POOL  36.85 MB/frame over 2,394 hashes  (97.1%)
+  the pump's own half cost 0.077 ms/frame  (1,149.6 ns a hash, 15.08 GB/s)
+```
+
+**It is possibility 1, and the 59 MB never existed.** The prehash pool serves **97.1% of the
+BYTES**, not merely 96.2% of the requests — the two counters that "did not obviously
+reconcile" were being read over different windows, so the subtraction was between numbers
+that were never a pair. That is why no profiler phase showed the missing time: there was
+none to show.
+
+**The pump's whole share of the stream guard is 0.077 ms a frame**, which is **five times
+below this route's ±0.38 ms noise floor**. Even the pessimistic version of the question is
+now closed by arithmetic rather than by another census: the hash runs at **15.08 GB/s**, so
+the *entire* 37.96 MB would be ~2.5 ms if it were all on the pump — and 97.1% of it is not.
+
+**So §6ec's "the remaining cost is the change detectors" needs qualifying, and this is the
+qualification.** It is true of the guards' *design pressure* — three items died in part 80
+because the work they wanted to skip was where a guard ran — and it is **false as a
+statement about where pump time goes**. The stream guard is not on the pump's bill. Part 53's
+guard pool is the reason, and this is the first measurement that prices what it bought:
+**36.85 of 37.96 MB a frame moved off the pump.**
+
+**One caveat, stated rather than glossed.** The 86.21 MB and 27.2 MB figures came from an
+operator session; this census is my crowd route, which reproduces their regime band for band
+but is not their session. The pool's hit rate could differ at their load. What does not
+depend on the route is the shape of the answer — the pool serves bytes, not just requests,
+and the two counters are not a matched pair.
+
+**And it retires item 1 from `part81-kickoff.md` §1.** There is no unplaced large number in
+the CPU frame any more.
