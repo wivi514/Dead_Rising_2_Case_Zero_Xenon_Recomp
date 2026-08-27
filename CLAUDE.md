@@ -810,11 +810,27 @@ renderer improvement without a same-binary A/B aggregated over an era.
   arbitrary paths rather than a fixed manifest. Format not yet cracked; Fable 2's `.bnk`
   work is the closest model.
 - **Shaders ship loose on disc**:
-  `data/shaders/deadrisingprologue-{vs,ps,vd,pd,sc,sd,ss}.big`. ~~If those hold raw Xenos
-  microcode they feed XenosRecomp almost directly.~~ **Retracted (finding 6):** they are
+  `data/shaders/deadrisingprologue-{vs,ps,vd,pd,sc,sd,ss}.big`. **THEY DO HOLD RAW XENOS
+  MICROCODE — the day-1 hypothesis was RIGHT and finding 6's retraction of it is itself
+  RETRACTED, 2026-08-27.** `tools/vo_microcode_probe.py` over the 1,571 objects in the
+  three prologue banks, against the 449-blob ucode oracle: **PS 335 of 335 verbatim,
+  VS 81 of 103 verbatim + 16 more matching by tail (a patched head), 432 of 438 = 98.6%
+  recoverable.** The microcode is a SUB-RANGE of each `.vo`/`.po` object, starting at one
+  of 163 distinct offsets of which **86 are not 8-byte aligned** — and finding 6's test
+  compared ALIGNED 8-byte n-grams against whole payloads, so it could not have matched
+  more than half the population whatever was there (gotcha 25's shape; the retraction and
+  the artifact are in `xenia-capture-analysis.md` §6). **The disc holds 1,571 shaders
+  against the 449 we accumulated over 25 parts and eleven operator sessions**, so this is
+  what lets a release build its own cache on first run and retires "the cache is complete"
+  as a claim with a shelf life (`docs/release-plan.md` §4). **What is still unknown is
+  where inside an object the microcode BEGINS as a rule** — the offset is a plain BE u32 in
+  the header for only 34 of 416 — and that task has a free gate: 416 known
+  (object, offset, length) triples and a hash every extracted blob must match.
+  ~~Retracted (finding 6): they are
   `.big` archives of `<hash>.vo` shader *objects* carrying build metadata (including
   `.updb` debug paths), and their payloads share only background-noise n-gram overlap
-  with the microcode the guest actually submits. The renderer input instead comes from
+  with the microcode the guest actually submits.~~ The renderer input **historically** came
+  from
   Xenia's `dump_shaders`: 455 microcode blob files = **335 distinct shaders** (A1's
   120 are a strict subset of A2's 335), all translated in phase 5.
 - **No Bink** (finding 7). Grep `.big`, never `.bik`. **And "movie" is the wrong word:
