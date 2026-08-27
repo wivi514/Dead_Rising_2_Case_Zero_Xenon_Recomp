@@ -5495,3 +5495,40 @@ From phase C part 18 (the frame rate — and none of it was work):
      (batching saves 0.58 ms) and with "changed bindings interleave with unchanged ones"
      (batching saves nothing). Those differ by the whole item, and only a run-length census
      tells them apart — a mean cannot.
+
+481. **TWO COUNTERS PRINTED ON DIFFERENT LINES ARE NOT A MATCHED PAIR — CHECK BEFORE YOU
+     SUBTRACT.** `guard read 86.21 MB/frame` minus `27.2 MB/frame served by the prehash pool`
+     produced "59 MB a frame is still read on the pump", which at any plausible rate is
+     milliseconds. It survived into a plan as *"the largest number in the frame that has never
+     been placed"*, and a whole item was built on it. Measured directly, the pump reads
+     **1.11 MB/frame over 67 hashes, 0.077 ms a frame** — five times below the route's noise
+     floor — and the pool serves **97.1% of the BYTES**. The two counters were reset over
+     different windows with different denominators, so the subtraction was between numbers
+     that were never a pair. **When a subtraction produces a cost that no profiler phase can
+     see, suspect the subtraction before inventing a hiding place for the time.** And note the
+     second trap inside the first: *"96.2% of REQUESTS served"* and *"% of BYTES served"* are
+     different statistics, and here they differ by design — the pool takes the big streams, so
+     it serves 97.1% of bytes while serving 96.2% of requests.
+
+482. **WHEN A CHANGE REARRANGES ARGUMENTS RATHER THAN PIXELS, VERIFY THE ARGUMENTS.** Batching
+     `vkCmdBindVertexBuffers` can fail exactly one way: a wrong `firstBinding` puts a REAL
+     stream in the wrong binding. That is a plausible-looking mesh, no API error, and the
+     existing order gate would pass it — it hashes the pipeline and the vertex RANGE, not
+     which buffer landed in which slot. A picture aggregate on this route has a ~1.5% floor
+     and answers a different question. So the gate recorded the `(binding, buffer, offset)`
+     triples the draw ASKED for and compared them against an expansion of what the batched
+     calls HANDED the driver — **0 disagreements over 335 M triples**, exhaustive, on every
+     draw. **And design the poison so it fires on EVERY check.** The obvious one here —
+     swapping two entries inside a run — could not fire on the 22% of runs that are one
+     binding long, so it could never have read 100% and would not have shown the checker
+     capable of failing (gotcha 30). Shifting every issued offset by a fixed amount does.
+
+483. **A RUN THAT DIES IN THREE SECONDS STILL PRINTS A NUMBER.** Two arms of part 81's picture
+     gate and the campaign's first run exited ~3 s after start — clean shutdown, no error
+     string, **no `[fps]` line at all**, 863 log lines against a healthy run's 31,470 — and
+     each still reported `peak windowed draws med: 0` through the normal gate path. The route
+     gate caught them (that is what it is for, and it renamed them `.rejected`), but the
+     shape is the lesson: **the failure mode of a launcher is a run that produces output**,
+     not one that produces an error. Cause unknown as of part 81 and recorded as unknown.
+     Check log LINE COUNT and the presence of the first `[fps]` line before believing any
+     aggregate, and never let a glob pick up a trace whose log was rejected.

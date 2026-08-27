@@ -5843,3 +5843,121 @@ lessons: gotchas **459-464**):
   diff; every reportable route run passed its own draw gate. Renderer-only change — no
   config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
   --hlsl-dir` sweeps and part 75's cache gates stand.
+
+---
+
+## Part 79 (moved out of CLAUDE.md by part 81, per the keep-live-and-one-back rule)
+
+Where the port is, as of 2026-08-26 (**PART 79 CLOSED — PERFORMANCE. THE BOARD'S ITEM 1, THE
+WAIT INSIDE `FlushTextureUploads`, IS SHIPPED AND THE MECHANISM IS MEASURABLY GONE (−89.8%)
+— AND THE ROUTE IT WAS BUILT ON COULD NOT PRICE IT, WHICH THE HAND-OFF HAD SAID IN ADVANCE.
+ITEM 2, THE POST CHAIN, IS REFUTED BY MEASUREMENT FOR THE COST OF ONE RUN. ONE THING IS
+OWED: ONE SENTENCE FROM THE OPERATOR.** — **THREE SESSIONS RAN AND THE REAL FINDING WAS NOT THE
+ITEM: their felt hitches were THE CROSS-FRAME STREAM STORE DOUBLING ITSELF, and it is fixed
+structurally.** (§6dy, §6dz, §6ea; gotchas 467-472.)
+~~**`docs/part80-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; the live
+one is `docs/part81-kickoff.md`. Records: `phase5-notes.md` **§6dw** (item 1)
+and **§6dx** (item 2); lessons: gotchas **465-466**):
+
+* **ITEM 1 WAS THE OLDEST THING ON THE BOARD** — carried untouched through three hand-offs
+  and promoted to the top by part 78's regime change. Part 77's batch turned one
+  submit-and-wait per TEXTURE into one per burst and left the wait deliberately: *"dropping it
+  as well would require recycling both the staging arena and the command buffer against a
+  fence, i.e. a second mechanism to get wrong in the same change."* The operator's part-77
+  session priced what was left at **1,092.5 ms of a 150-second session, 568 us on each of
+  1,841 flushes** (§6dt §3).
+* **THE RING: three slots, each with a command buffer, a fence and a 32 MB segment of the
+  staging arena.** A flush submits into the current slot and waits only on the slot it is
+  about to REUSE, which retired two flushes ago. `g_texSlotStalls` counts the times that wait
+  actually blocked — **0 in all six A/B runs**.
+* **THE SEGMENT SIZE WAS MEASURED BEFORE IT WAS CHOSEN, and that is the part to copy.**
+  Partitioning the arena NARROWS the "larger than the staging buffer" decline the callers
+  already have, and a segment below some real texture would silently stop uploading it —
+  invisible to any route that never goes there. So `g_texUploadMaxBytes` was added and asked
+  first: **biggest single upload 1.33 MB** over 2,360 uploads. The arena grew 64 MB flat to
+  3 x 32 MB, 24x the measured maximum, and the refusal is counted.
+* **THE MECHANISM IS GONE.** Three runs an arm, alternated, 3440x1440 pinned, all six route
+  gates passed, `CZ_VK_TEX_FLUSH_WAIT=1` the same-binary control (and it is not an
+  approximation of the old code — it takes the literal `RunImmediate` path): **the flush goes
+  999/1138/1092 us -> 107/106/114 us, −89.8%**; staging+submit over the run 78.7/83.8/80.9 ->
+  17.1/17.2/18.1 ms; immediate submits 146/142/142 -> 77/77/77. **The three fix runs agree to
+  0.7 ms on the run total where the control's spread is 5.1.** On the burst frame the
+  stage+submit half goes **7.32 -> 3.46 ms** at a matched 778/777 uploads.
+* **AND THE RUN IS A NULL, BECAUSE THE SAVING MOVED INTO THE FENCE.** 19,337 frames against
+  19,291 in the same 148.6 s; over the frames carrying upload work the median wall is unmoved
+  (9.168 -> 9.165 ms) and the **median FENCE wait goes UP, 0.699 -> 1.136 ms.** This route is
+  GPU-bound at 6,200 draws and the pump was going to wait for the device either way — which
+  `part79-kickoff.md` §2 ruled out in as many words before the runs started. Gotcha 466: when
+  the hand-off says your route cannot price the item, believe it in advance, measure the
+  MECHANISM, and hand the frame time to the operator.
+* **SO THE ITEM IS HONESTLY SMALL AND ITS VALUE IS AT THEIR LOAD.** Their flush count is
+  **27x mine per second** (1,841 in 150 s against my 67 in 148), their fence is 0.00 at every
+  band above 3,000 draws and their GPU headroom is 1.93-2.38 ms (§6dv §2). 1,092.5 ms over
+  150 s is **~0.59 ms on each of ~17% of their frames** — real, and below what an eye
+  resolves. `tools/part79_operator_session.sh` says that to them out loud.
+* **THE PICTURE GATE RAISED A FALSE ALARM AND THE ALARM IS THE LESSON.** The positive control
+  `CZ_VK_TEX_BATCH_BREAK=1` fires at **36,799x the null** on coverage. But the shipping arm
+  first read **33.7x the null on `meanLuma`** — and it was COMPOSITION: the arms' era median
+  draw counts were 4,573-4,851 against 3,866-3,915 on a run whose luma ramps 28.5 -> 68.5 ->
+  78.7. Banded by draws they agree to ≤0.3% wherever the populations are comparable, and with
+  the camera HELD (`STILL=1`) both control runs are **INSIDE the null on all three
+  statistics** (meanLuma 0.03% and 0.12% against a 0.50% null). **A null pair agreeing to
+  0.05% is one sample of a floor that is really ~1.5%** — gotcha 465, and the third distinct
+  way this route's picture aggregate has misled a session.
+* **ITEM 2 — THE POST CHAIN — IS CLOSED BY MEASUREMENT, AND IT COST ONE RUN.**
+  `part79-kickoff.md` filed it with its own kill condition: *"whether 28 us is a full-screen
+  shader or pass overhead on a tiny target. If it is the latter, the item is the same shape as
+  the barriers."* `CZ_VK_GPU_PASSES=1` now carries a **PASS EXTENT CENSUS** — the largest
+  scissor any draw in the scope used — and it says: **three extents carry 76% of the `1 draw`
+  class** (1720x720 at 154 us x 2.53, 860x360 at 60 us x 3.42, 3440x1440 at 182 us x 0.85 =
+  0.751 of 0.987 ms), they are the title's own shaders at half, quarter and full resolution,
+  and **per pixel the expensive one costs 3.4x the cheap one** (0.124 vs 0.037 ns). The
+  pure-overhead end — the six-step luminance pyramid 107x44 -> 53x22 -> 26x10 -> 13x4 -> 5x2
+  -> 2x2, 7 us a pass, unmistakable once listed — totals **0.036 ms/frame, 3.6% of the
+  class.** Nothing a translation layer does can reach any of it. **The census reproduces to
+  0.001 ms/frame on every row across two runs**, which is far tighter than any frame-time
+  statistic here.
+* **The same census names `1720x1440` in the `>=256 draws` class**: the title's own left/right
+  tiling, **one pass at 2,094 us, 1.701 ms/frame, 24% of the device's frame in a single
+  region.** And the two barrier classes read **0.098 ms/frame over 138.8 transitions (1.4%,
+  from 11.0%)**, which is the clearest standing evidence that part 78's fix is still in.
+* **AND THE OPERATOR SESSION FOUND WHAT THE ITEM DID NOT: THE STREAM STORE'S GROWTH.** Their
+  verdict on the ring was *"look identical"* (the picture gate's third and only human channel)
+  and *"only felt hitches at the start right after loading"*. Four frames in that session had
+  no explanation — isolated single spikes with the **same draws, GPU time, uploads and
+  pipelines as their neighbours**, fence 0.00, sleep 0.00 — and **two of them land 1.3 and
+  1.4 s after a load burst**, the same lag both times. The log carried exactly two `stream
+  store grown to` lines and each sat in the ten-second window whose worst frame was one of the
+  two felt spikes. **`PersistMaintenance` is `WaitAllFramesIdle` + `vkDeviceWaitIdle` + a
+  host-visible allocation and MAP + freeing the old buffer, all on the pump inside ONE frame:
+  71.7 ms for a 256 MB step** (waits 13.6 + allocate/map 42.9 + free-old 15.2). Its own comment
+  said *"it runs at most a handful of times a run"*, which is true and is why nobody priced it
+  in 22 parts (gotcha 467).
+* **THE FIRST FIX WAS HALF RIGHT AND THE SECOND SESSION REFUTED IT ON A PRE-REGISTERED BRANCH.**
+  Raising the start 128 -> 512 removed the after-load hitches and left **one 329.2 ms growth**
+  (512 -> 1024) late in the run; they felt it and located it unaided — *"just felt a single
+  stutter near the end of the run but didn't feel one after loading in"*. **The cost scales
+  with the NEW buffer's size and the store DOUBLES**, so a bigger start skips the cheap growths
+  and leaves the expensive one: two hitches at 87 and 158 ms became one at 352. The arithmetic
+  said so before the run (gotcha 470).
+* **THE SHIPPING FIX IS STRUCTURAL: the store starts at `kPersistCeiling`, 1024 MB, so it
+  CANNOT GROW.** Free, because of a 25x asymmetry nobody had measured — the same allocation is
+  **~10 ms at boot and 255 ms mid-run** (gotcha 471). Boot frames: 128 -> 237.7/234.2,
+  512 -> 244.0/247.3/242.7, **1024 -> 226.9/227.9**, i.e. the biggest arm has the LOWEST boot
+  frame of seven runs. The fallback is a ladder (1024 -> 512 -> 128 -> no store) because the
+  failure path of a bigger request is a different path and it is unreachable from a 48 GB box
+  (gotcha 469). **Third session: 0 growths, 0 ceiling overruns, and NO unexplained single-frame
+  spikes at all** — every frame over 40 ms is boot, a load or pump sleep, worst-per-window
+  18.3-20.2 ms after the loads. **Their verdict on that build was NOT collected and §6ea §2
+  says so rather than glossing it.**
+* **THE CLASSIFICATION RULE IS THE TRANSFERABLE PART.** The 158.4 ms frame that started the
+  whole trail carried four texture uploads worth **0.1 ms**; a presence test files it as a
+  texture frame and the trail ends. Classify a slow frame by **where the time went** — pump
+  sleep, load, or unexplained CPU recording — and the third class is never a workload.
+* **Gates:** `--smoke` OK on every build; the picture gate passed in the `STILL=1` framing and
+  was **shown capable of failing** (36,799x); every one of the 15 route runs passed its own
+  draw gate; the GPU split's residual is **0.6-0.9%** with 0 regions dropped; the operator's
+  own logs read 0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present
+  slots and **0.0% wide barriers over 3.7-4.0 M**. Renderer-only change
+  — no config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
+  --hlsl-dir` sweeps and part 75's cache gates stand.

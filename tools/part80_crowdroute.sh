@@ -81,7 +81,15 @@ TAG="${1:?usage: part80_crowdroute.sh <tag> [ENV=VAL ...]}"; shift || true
 mkdir -p "$OUT"
 # NEVER `pgrep -f` here: it matches the waiting shell's own command line and three waiters
 # deadlocked on that in part 75. Match the process NAME.
-for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_crowd 2>/dev/null); do
+# THE NAME IS TRUNCATED TO 15 CHARACTERS AND `pgrep -x` COMPARES AGAINST THE TRUNCATION.
+# `cz_runtime_crowd` is 16, so `pgrep -x cz_runtime_crowd` printed a warning and matched
+# NOTHING, every time, since the day this script was written — the guard never guarded. It
+# is a candidate cause of gotcha 483 (runs that exit ~3 s after start with no error and no
+# `[fps]` line): `cp -f` over a binary a previous run still has mapped, plus two processes
+# sharing one pipeline-cache file, is exactly that shape. `pgrep -x` on the TRUNCATED name
+# is the fix; still never `pgrep -f`, which matches the waiting shell's own command line and
+# deadlocked three waiters in part 75.
+for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_crow 2>/dev/null); do
     echo "!! a cz_runtime is already running (pid $p); refusing"; exit 2
 done
 

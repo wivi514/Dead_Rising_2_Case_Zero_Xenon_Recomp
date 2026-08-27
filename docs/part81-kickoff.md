@@ -1,6 +1,11 @@
 # Part 81 kickoff — the board after part 80 killed its own item 1 and made the route autonomous
 
-> **THIS IS THE LIVE HAND-OFF**, superseding `part80-kickoff.md`.
+> **SUPERSEDED BY `docs/part82-kickoff.md`.** ~~THIS IS THE LIVE HAND-OFF, superseding
+> `part80-kickoff.md`.~~ Part 81 executed this file's item 0 and closed its item 1, then the
+> operator parked performance. **Item 1 below — the guard's 86.2 MB — is CLOSED: the pump
+> reads 1.11 MB/frame, 0.077 ms/frame, and the 59 MB was a subtraction between two counters
+> that were never a pair (`phase5-notes.md` §6ee §6, gotcha 481).** The rest of the board
+> stands and is the starting point if performance resumes.
 >
 > **Read `phase5-notes.md` §6eb and §6ec, in that order.** They are part 80 end to end: the
 > operator's crowd route and what it took to transcribe it, item 1's measured ceiling, and

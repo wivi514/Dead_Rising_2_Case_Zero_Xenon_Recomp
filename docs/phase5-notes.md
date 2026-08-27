@@ -19409,3 +19409,40 @@ and the two counters are not a matched pair.
 
 **And it retires item 1 from `part81-kickoff.md` §1.** There is no unplaced large number in
 the CPU frame any more.
+
+### 7. WHAT PART 81 DID NOT MEASURE, AND WHY THE CHANGES ARE STILL ON
+
+The operator ended the session before §1.3's three-arm campaign ran. **So the item's
+milliseconds are unmeasured.** The arithmetic — 1.274 calls a draw saved at 52 ns a call and
+9,300 draws — says **~0.62 ms a frame from the batch alone**, converting roughly 1:1 at
+fence 0.00 with 2.3-3.1 ms of headroom. That is a calculation. This project's standard is a
+measurement, and it does not have one.
+
+**The picture gate did not complete either**, and how it failed is worth recording. Its first
+two arms ran normally (5,594 and 5,423 peak draws, both passing the route gate). Its last two
+— and the campaign's first run — **exited about three seconds after start**: clean shutdown,
+no error string, **no `[fps]` line at all**, 863 log lines against the healthy run's 31,470.
+Each still reported `peak windowed draws med: 0` through the normal path, and the route gate
+rejected them, which is what it is for. **The cause is unknown and is recorded as unknown**
+rather than guessed at; disk space was fine (225 G free, /tmp 15% used) and nothing in the
+logs names a failure. Anyone resuming performance must understand this before trusting a run
+— gotcha 483.
+
+**Both changes are nonetheless left ON by default**, and the reason is that the evidence for
+CORRECTNESS is strong and independent of the evidence for speed:
+
+* `CZ_VK_VERIFY_BIND_BATCH=1` read **0 disagreements over 173,814,085 and 161,713,445
+  triples** in two full crowd runs — and that check is *stronger* for this defect class than
+  a picture aggregate, because it asks the exact question (did binding 3 get binding 3's
+  buffer) on every draw rather than asking whether anything moved on average.
+* Its poison control read **100.0000%**, so the checker is shown capable of failing.
+* `CZ_VK_VALIDATION=1` showed **6 `topology-08773` and nothing else** — the documented
+  pre-existing point-size trio, unchanged.
+* The device command table cannot alter arguments: same functions, same values, one fewer
+  indirection, and `nm -u` proves no call is still on the loader path.
+* Five full crowd runs completed and rendered with the batch live.
+
+Both control arms exist and are one environment variable each
+(`CZ_VK_NO_BIND_BATCH=1`, `CZ_VK_NO_DEVICE_PFN=1`), so if the operator sees anything wrong
+the bisection is two runs. **The honest headline is: the mechanism is verified and the
+milliseconds are owed.**

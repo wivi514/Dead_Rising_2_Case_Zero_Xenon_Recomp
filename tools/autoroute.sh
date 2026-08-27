@@ -69,7 +69,13 @@ mkdir -p "$OUT"
 # matches the WAITING SHELL's own command line, so an `until ! pgrep -f ...; do sleep; done`
 # loop can never exit and three of them deadlocked in part 75. Match the process NAME
 # (`pgrep -x cz_runtime_auto`) — that is the only thing that is actually the game.
-for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_auto 2>/dev/null); do
+#
+# AND THE NAME MUST BE THE TRUNCATED ONE. Linux caps a process name at 15 characters and
+# `pgrep -x` compares against the truncation, so `cz_runtime_auto` (15) is on the boundary
+# and its crowd-route sibling `cz_runtime_crowd` (16) never matched at all. Spelled here as
+# the truncation so the guard cannot silently stop guarding again — gotcha 483.
+for p in $(pgrep -x cz_runtime 2>/dev/null) $(pgrep -x cz_runtime_aut 2>/dev/null) \
+         $(pgrep -x cz_runtime_auto 2>/dev/null); do
     echo "!! a cz_runtime is already running (pid $p); refusing"; exit 2
 done
 # BIN_SRC lets an OLD BINARY run this exact route — the arm part 74 needs to ask "how does

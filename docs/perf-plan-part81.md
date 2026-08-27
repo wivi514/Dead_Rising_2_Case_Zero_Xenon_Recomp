@@ -239,4 +239,14 @@ what happened to each item without having to find the section that corrected it 
   pump's half costing **0.077 ms/frame** — five times below this route's floor. It is
   possibility 1: the prehash pool serves 97.1% of the BYTES, so the 59 MB the subtraction
   produced was between two counters that were never a pair. `phase5-notes.md` §6ee §6.
+* **§1.3 the three-arm campaign — NOT RUN.** The session ended first. `tools/part81_bind_ab.sh`
+  is written and ready (three arms, three runs each, alternated, plus a profiler run an arm
+  for `record` ns/draw). **The item's milliseconds are owed.**
+* **The picture gate — NOT COMPLETED.** `tools/part81_picture_gate.sh` is written; two of its
+  four arms died at 0 draws in ~3 seconds with no error and no `[fps]` line (gotcha 483). That
+  failure must be understood before any run is trusted.
+* **§3 item 2, the hitch instrument — NOT STARTED.** It was the plan's "only if there is time".
+
+**PERFORMANCE IS PARKED as of 2026-08-27**, on the operator's instruction. This plan is the
+reference that resumes it; `docs/part82-kickoff.md` is the hand-off.
 
