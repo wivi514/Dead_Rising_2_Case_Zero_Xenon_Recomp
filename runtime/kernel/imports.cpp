@@ -3848,6 +3848,25 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         int hostKey = 0;        // 2/3/4 = F2/F3/F4 debug edges, 7 = F7's mark, 8 = F8 burst, 9 = F9
                                 // dump/census, all of them pulses with no pad state
         bool barrier = false;   // WAITJUMP: park here until the screen request lands
+        // PER-ENTRY DURATION, in milliseconds. 0 means "use CZ_FAKE_PRESS_MS", which is
+        // what every recipe written before part 80 means and still gets.
+        //
+        // WHY IT EXISTS. Until now the sequence was a metronome: every entry occupied
+        // exactly one interval, so the only recipes expressible were ones where each step
+        // takes the same time. That is fine for walking a menu and it CANNOT REPRODUCE A
+        // HUMAN. The operator's request opening part 80 was exactly that — they had found
+        // DebugJump entries spawning into an 8,500-8,900-draw crowd, which is the load
+        // `part80-kickoff.md` §1 requires for a CPU item, and asked me to *"look at the
+        // input I do and at what time they happen ... so you can reproduce it"*. Their
+        // route is a 300 ms tap, a two-second wait, a four-second walk; a metronome can
+        // only approximate it by choosing an interval short enough for the shortest step,
+        // which then makes the long steps dozens of near-duplicate entries and the recipe
+        // unreadable.
+        //
+        // The spelling is `NAME@MS` — `A@300`, `LSUP@4000`, `NONE@2000`. It composes with
+        // WAITJUMP unchanged, because the barrier works on the sequence CLOCK and this
+        // changes only how that clock is partitioned.
+        unsigned durMs = 0;
     };
     // Full deflection is 32767 and the Y axis is positive UP (gotcha 102 — the
     // conversion the real pad path also makes). No deadzone is applied anywhere,
@@ -3916,11 +3935,41 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         {
             if (i == all.size() || all[i] == ',')
             {
+                // `NAME@MS` — split the duration off before the name is matched. An
+                // entry with no `@` keeps durMs 0 and therefore CZ_FAKE_PRESS_MS, so
+                // every recipe written before part 80 means exactly what it meant.
+                std::string nm = one;
+                unsigned dur = 0;
+                const size_t at = one.find('@');
+                if (at != std::string::npos)
+                {
+                    nm = one.substr(0, at);
+                    // A malformed duration must not become "0", because 0 means "use the
+                    // default interval" and the recipe would then run at a cadence nobody
+                    // asked for while looking correct. Reject it by name, the same way a
+                    // misspelled button is rejected — the failure mode this whole block
+                    // exists to prevent is a sequence that silently walks the wrong menu.
+                    const std::string ds = one.substr(at + 1);
+                    const bool digits =
+                        !ds.empty() &&
+                        ds.find_first_not_of("0123456789") == std::string::npos;
+                    if (!digits || strtoul(ds.c_str(), nullptr, 10) == 0)
+                    {
+                        unknown++;
+                        KLOG("CZ_FAKE_PRESS_SEQ: BAD DURATION in \"%s\" — expected "
+                             "NAME@MILLISECONDS with a non-zero count. ENTRY IGNORED; "
+                             "the rest of the sequence is now early.\n", one.c_str());
+                        one.clear();
+                        continue;
+                    }
+                    dur = unsigned(strtoul(ds.c_str(), nullptr, 10));
+                }
                 bool found = false;
                 for (const auto& b : kButtons)
-                    if (one == b.name)
+                    if (nm == b.name)
                     {
                         seq.push_back(b);
+                        seq.back().durMs = dur;
                         found = true;
                     }
                 // A misspelled name used to vanish silently, which shifts every later
@@ -3990,18 +4039,82 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
         elapsedMs - parkedTotalMs.load(std::memory_order_relaxed) -
         (parkedNow >= 0 ? elapsedMs - parkedNow : 0);
 
+    // THE ENTRY TIMELINE. Each entry's start offset on the sequence clock, cumulated
+    // from the per-entry durations — so a recipe of plain names is still a metronome at
+    // CZ_FAKE_PRESS_MS, and one carrying `NAME@MS` is whatever a human actually did.
+    //
+    // Built once, next to the sequence it describes, because the alternative (dividing by
+    // a constant, as this did before) is only correct while every entry is the same
+    // length and would go silently wrong the first time one was not.
+    struct Timeline
+    {
+        std::vector<long long> start;   // start[i] = offset of entry i, from fakeStartMs
+        long long total = 0;
+    };
+    static const Timeline timeline = [] {
+        Timeline t;
+        long long acc = 0;
+        for (const auto& b : sequence)
+        {
+            t.start.push_back(acc);
+            acc += b.durMs ? static_cast<long long>(b.durMs) : static_cast<long long>(fakePressMs);
+        }
+        t.total = acc;
+        // Print the schedule when — and only when — the recipe actually uses per-entry
+        // durations. A metronome recipe's schedule is its own definition and printing it
+        // would be noise in every existing run's log; a hand-timed one is a transcription
+        // of something a human did, and the single most likely mistake in it is a typo in
+        // a duration that shifts everything after it. Printing what the runtime BELIEVES
+        // the schedule to be is how that typo is caught by reading rather than by a run
+        // that walks the wrong menu and reports it as the game (gotcha 78's neighbour).
+        bool timed = false;
+        for (const auto& b : sequence)
+            timed = timed || b.durMs != 0;
+        if (timed)
+        {
+            KLOG("CZ_FAKE_PRESS_SEQ: hand-timed schedule, %.1f s total (offsets are from "
+                 "the CZ_FAKE_START_MS delay, and from the WAITJUMP release if there is "
+                 "one):\n", double(acc) / 1000.0);
+            for (size_t i = 0; i < sequence.size(); ++i)
+                KLOG("    %7.3fs  %-10s %5lld ms\n", double(t.start[i]) / 1000.0,
+                     sequence[i].name,
+                     sequence[i].durMs ? static_cast<long long>(sequence[i].durMs)
+                                       : static_cast<long long>(fakePressMs));
+        }
+        return t;
+    }();
+
     const bool started = effectiveMs > fakeStartMs;
     NamedButton entry{ "START", XINPUT_GAMEPAD_START, 0, 0, 0, 0, false };
     size_t idx = 0;
+    // The offset of the selected entry on the sequence clock, so the tap window below is
+    // measured from when THIS entry began rather than from a fixed grid.
+    long long entryStartMs = 0;
+    long long entryDurMs = static_cast<long long>(fakePressMs);
     if (!sequence.empty())
     {
         // Only meaningful once the first interval has elapsed: before that the
         // subtraction below would wrap and select the LAST entry, which is harmless
         // while nothing is emitted and is a spurious transition once it is.
         if (started)
-            idx = std::min(size_t((effectiveMs - fakeStartMs) / fakePressMs),
-                           sequence.size() - 1);
+        {
+            const long long t = effectiveMs - fakeStartMs;
+            // Linear rather than a binary search on purpose: a recipe is tens of entries,
+            // this is called about once a frame per user, and a scan that reads in source
+            // order is the one whose off-by-one is visible.
+            idx = sequence.size() - 1;
+            for (size_t i = 0; i < sequence.size(); ++i)
+                if (t < timeline.start[i] + (sequence[i].durMs
+                                                 ? static_cast<long long>(sequence[i].durMs)
+                                                 : static_cast<long long>(fakePressMs)))
+                {
+                    idx = i;
+                    break;
+                }
+        }
         entry = sequence[idx];
+        entryStartMs = timeline.start[idx];
+        entryDurMs = entry.durMs ? static_cast<long long>(entry.durMs) : static_cast<long long>(fakePressMs);
     }
 
     // The barrier itself. Parking is a property of the ENTRY, so it re-evaluates on every
@@ -4056,10 +4169,23 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
     // BARRIER-CORRECTED clock, or a recipe would resume mid-tap after a long park.
     // While parked the sequence clock is frozen, so the tap phase has to come from the
     // REAL clock or the repeat would be stuck permanently on or permanently off.
-    const long long phaseMs = parked ? elapsedMs : effectiveMs;
-    const bool active =
-        (started || parked) && !entry.barrier &&
-        (entry.hold || ((phaseMs - (parked ? 0 : fakeStartMs)) % fakePressMs) < 150);
+    //
+    // PAST THE END OF THE TIMELINE the last entry still re-taps at CZ_FAKE_PRESS_MS, which
+    // is what it did before and what every recipe ending in NONE relies on. Expressed as
+    // "if the clock has run off the end, fold it back into the last entry's window" rather
+    // than as a special case, so the two paths cannot drift.
+    long long phaseInEntry;
+    if (parked)
+        phaseInEntry = elapsedMs % static_cast<long long>(fakePressMs);
+    else
+    {
+        const long long t = effectiveMs - fakeStartMs;
+        phaseInEntry = t >= timeline.total && entryDurMs > 0
+                           ? (t - entryStartMs) % entryDurMs
+                           : t - entryStartMs;
+    }
+    const bool active = (started || parked) && !entry.barrier &&
+                        (entry.hold || phaseInEntry < 150);
 
     // A HOST DEBUG EDGE FIRES ONCE PER INTERVAL, keyed on the interval INDEX.
     //

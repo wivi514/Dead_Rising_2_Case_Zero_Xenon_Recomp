@@ -337,6 +337,65 @@ SDL_GameController* g_controller = nullptr;
 SDL_JoystickID      g_controllerId = -1;
 bool g_inputTrace = false;
 
+// THE INPUT TRACE'S CLOCK, AND WHY THE TRACE WAS USELESS WITHOUT IT.
+//
+// `CZ_INPUT_TRACE=1` has printed one line per pad state change since phase 3, and every
+// line said WHAT was pressed and nothing about WHEN. That is enough to answer "does the
+// pad work" and it is not enough for the thing the operator asked for in part 80:
+// *"look at the input I do and at what time they happen according to time not frame per
+// second so you can reproduce it"*. They had just found DebugJump entries that spawn into
+// an 8,500-8,900-draw crowd — the load `part80-kickoff.md` §1 says a CPU item must be
+// measured at or not at all — and the only way that route becomes MINE to run is if their
+// keystrokes can be transcribed into a `CZ_FAKE_PRESS_SEQ` recipe.
+//
+// So the line carries milliseconds since process start, on the same epoch as
+// `debug_tunables.cpp`'s `[debug] ... at Ns` lines (both are static initialisers, so they
+// agree to a few milliseconds). That matters more than the absolute value: the DebugJump
+// screen lands anywhere from 24 s to 131 s after boot (gotcha 75), so a recipe anchored on
+// process start is a fit to one afternoon and a recipe anchored on the SCREEN LANDING is a
+// statement about the game. Having both clocks in one file is what makes the second
+// computable from the log after the fact.
+//
+// It also DECODES, into exactly the vocabulary `CZ_FAKE_PRESS_SEQ` accepts (A, START,
+// DOWN, LSUP, RSRIGHT...). A hex button mask is transcribable in principle and nobody does
+// it correctly at 40 lines a minute; printing the name the replay side already parses
+// makes the transcription mechanical instead of a second place to make a mistake.
+static const auto g_inputEpoch = std::chrono::steady_clock::now();
+
+static long long InputElapsedMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - g_inputEpoch)
+        .count();
+}
+
+// The button bits, named as the press-sequence names them. Kept here rather than shared
+// with `imports.cpp`'s `kButtons` on purpose: that table is the REPLAY side's vocabulary
+// and this is the RECORD side's, and if the two ever disagree the trace should say so by
+// printing a name the replay rejects — not by silently agreeing because they are the same
+// array. The masks are XInput's and are fixed by the contract, not by either table.
+struct TracedButton { uint16_t mask; const char* name; };
+static constexpr TracedButton kTracedButtons[] = {
+    { 0x1000, "A" },     { 0x2000, "B" },      { 0x4000, "X" },     { 0x8000, "Y" },
+    { 0x0010, "START" }, { 0x0020, "BACK" },   { 0x0001, "UP" },    { 0x0002, "DOWN" },
+    { 0x0004, "LEFT" },  { 0x0008, "RIGHT" },  { 0x0040, "LTHUMB" },{ 0x0080, "RTHUMB" },
+    { 0x0100, "LB" },    { 0x0200, "RB" },
+};
+
+// A stick axis as a sequence entry name, or nothing when it is inside the deflection
+// this printer treats as centred. HALF deflection is the threshold rather than any
+// deflection at all: an analog stick at rest reads a few hundred counts of noise, and a
+// trace that reported LSUP for noise would put a walk entry into every transcription.
+// The replay side only has full deflection, so half is also the point past which the two
+// stop being comparable — say the axis is deflected when the recipe could reproduce it.
+static void AppendStick(char* out, size_t n, const char* neg, const char* pos, int v)
+{
+    if (v > 16383)
+        snprintf(out + strlen(out), n - strlen(out), ",%s", pos);
+    else if (v < -16383)
+        snprintf(out + strlen(out), n - strlen(out), ",%s", neg);
+}
+
 // The pad snapshot. Written by the event loop, read by whichever guest thread is
 // inside XamInputGetState. A mutex rather than an atomic struct because the state is
 // 16 bytes (never lock-free) and because the read rate is not a hot path: A5 shows
@@ -888,10 +947,32 @@ void PublishPad(uint32_t userIndex, const HostPadState& fresh)
     pad = fresh;
     pad.packet = packet;
     if (g_inputTrace)
+    {
+        // The decoded form, built first so the raw fields can still be printed beside it.
+        // BOTH are on the line deliberately: the names are what a recipe is written from,
+        // and the raw mask is what says the decoder missed a bit rather than the pad being
+        // idle — a decoder with no raw column next to it cannot be shown to be complete.
+        char names[192] = "";
+        for (const TracedButton& b : kTracedButtons)
+            if (fresh.buttons & b.mask)
+                snprintf(names + strlen(names), sizeof names - strlen(names), ",%s", b.name);
+        AppendStick(names, sizeof names, "LSLEFT", "LSRIGHT", fresh.thumbLX);
+        AppendStick(names, sizeof names, "LSDOWN", "LSUP", fresh.thumbLY);
+        AppendStick(names, sizeof names, "RSLEFT", "RSRIGHT", fresh.thumbRX);
+        AppendStick(names, sizeof names, "RSDOWN", "RSUP", fresh.thumbRY);
+        if (fresh.leftTrigger > 127)
+            snprintf(names + strlen(names), sizeof names - strlen(names), ",LT");
+        if (fresh.rightTrigger > 127)
+            snprintf(names + strlen(names), sizeof names - strlen(names), ",RT");
+        const long long ms = InputElapsedMs();
         fprintf(stderr,
-                "[host] pad %u packet %u: buttons=%04X triggers=%u/%u L=(%d,%d) R=(%d,%d)\n",
-                userIndex, packet, fresh.buttons, fresh.leftTrigger, fresh.rightTrigger,
-                fresh.thumbLX, fresh.thumbLY, fresh.thumbRX, fresh.thumbRY);
+                "[input] t=%lld.%03llds pad %u packet %u  %-24s | "
+                "buttons=%04X triggers=%u/%u L=(%d,%d) R=(%d,%d)\n",
+                ms / 1000, ms % 1000, userIndex, packet,
+                names[0] ? names + 1 : "NONE (released)", fresh.buttons,
+                fresh.leftTrigger, fresh.rightTrigger, fresh.thumbLX, fresh.thumbLY,
+                fresh.thumbRX, fresh.thumbRY);
+    }
 }
 
 void Shutdown(const char* why)
