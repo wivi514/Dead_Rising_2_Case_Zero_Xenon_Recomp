@@ -185,10 +185,12 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part81-kickoff.md`, and the live SUBJECT is PERFORMANCE. **THERE IS A LIVE PLAN AGAIN AS
-    OF PART 80: `docs/perf-plan-part81.md`** — the first since part 73 exhausted its
-    predecessor, because part 80 is the first part since then to leave an item that is
-    concrete enough to plan (buildable, threadless, and incapable of changing a pixel).** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
+    `part81-kickoff.md`, and the live SUBJECT is PERFORMANCE.**
+    **THERE IS A LIVE PLAN AGAIN AS OF PART 80: `docs/perf-plan-part81.md`** — the first since
+    part 73 exhausted its predecessor, because part 80 is the first part since then to leave an
+    item concrete enough to plan (buildable, threadless, and incapable of changing a pixel).
+    **Read its §1.0 before writing any code**: it is a census that decides whether half of item
+    0 exists at all. Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
     **every item in that plan is now closed, refuted or shipped**; it is kept because it
     carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
     table). `part72-fix-plan.md` is what the operator sittings established, and
