@@ -1244,6 +1244,29 @@ void ConstWatchRecord(uint32_t index, uint32_t value)
 // lets the pixel half be reused even while the vertex half is rewritten, which is half the
 // 8 KB.
 uint64_t g_aluConstVersion[2] = { 1, 1 };
+// THE FETCH-CONSTANT FILE's own stamp, in exactly the shape above and for the same reason
+// one level over.
+//
+// §6eb §4: with the driver's own recording measured at 251 ns a draw, the REST of the
+// `record` phase is 262 ns a draw of our own work — vertex-fetch decode 124, index
+// arithmetic 99, state comparisons 28 — which at the operator's 9,300 draws is 2.44 ms a
+// frame of serial pump time no driver is responsible for. And `streams` reads 0.1%, so the
+// uploads are already free and that 124 ns is PURE DECODE: `DecodeVertexFetch` re-read and
+// re-derived per attribute per draw.
+//
+// A decode whose inputs have not changed produces the answer it produced last time. The
+// inputs are the vertex shader's attribute list and this register file, so a stamp here
+// makes "has anything a vertex fetch reads been written since the last draw" an O(1)
+// question instead of a hash over up to 192 dwords.
+//
+// ONE stamp over the whole file rather than the ALU file's two, and deliberately: the ALU
+// file was split because a single stamp over it was served on only 3.6-7.1% of draws, and
+// that was a MEASURED reason. Whether the fetch file needs the same treatment is a question
+// for its own census, not something to assume by analogy — `CZ_VK_FETCH_MEMO_CENSUS=1`
+// asks it before any memo is built.
+uint64_t g_fetchConstVersion = 1;
+constexpr uint32_t kFetchLo = xenos::kFetchConstantBase;
+constexpr uint32_t kFetchHi = xenos::kFetchConstantBase + 32 * 6;   // 32 groups of 6 dwords
 constexpr uint32_t kAluLo = xenos::kAluConstantBase;
 constexpr uint32_t kAluMid = xenos::kAluConstantBase + 256 * 4;  // PS window starts here
 constexpr uint32_t kAluHi = xenos::kAluConstantBase + 512 * 4;   // one past the end
@@ -1256,6 +1279,8 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
         ConstWatchRecord(index, value);
     if (index >= kAluLo && index < kAluHi)
         ++g_aluConstVersion[index >= kAluMid];
+    if (index >= kFetchLo && index < kFetchHi)
+        ++g_fetchConstVersion;
     g_regs[index] = value;
 
     // Scratch-register writeback: when SCRATCH_UMSK enables a scratch register, each
@@ -1351,6 +1376,10 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
         if (index < kAluHi && index + count > kAluMid)
             ++g_aluConstVersion[1];
     }
+    // The same overlap test for the fetch file, and on the same principle: ONE per run, not
+    // one per dword. This path exists because the per-dword path was too slow.
+    if (index < kFetchHi && index + count > kFetchLo)
+        ++g_fetchConstVersion;
     fetch.Read(srcPos, count, g_regs + index);
 
     // CZ_PM4_VERIFY_BULK_REGS=1 — CHECK THE NEW PATH AGAINST THE OLD ONE, which is
@@ -2599,6 +2628,7 @@ uint64_t Pm4_OpcodeCount(uint32_t opcode)
                : CensusSum([opcode](Census& c) -> std::atomic<uint64_t>& { return c.opcodes[opcode]; });
 }
 uint64_t Pm4_AluConstVersion(uint32_t half) { return g_aluConstVersion[half & 1]; }
+uint64_t Pm4_FetchConstVersion() { return g_fetchConstVersion; }
 uint64_t Pm4_DrawCount()
 {
     return g_atomicCounters ? g_draws.load()

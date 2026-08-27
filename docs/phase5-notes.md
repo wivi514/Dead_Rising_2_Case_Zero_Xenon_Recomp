@@ -18998,3 +18998,104 @@ re-entrancy. The question to ask first is a census, in the shape §6dx used: how
 vertex-fetch decode re-run with inputs identical to the previous draw's? If the answer is
 "most draws", a memo in the shape of the constant memo takes most of 2.44 ms with none of
 item 1's risk.
+
+## §6ec — Part 80: three censuses, three refutations, and why this renderer's CPU frame resists memoisation (2026-08-27)
+
+§6eb §4 left a lead: 262-273 ns a draw inside `record` is our own work rather than the
+driver's. Three censuses were run against it. **All three refute the item they were built
+for, and the reason is the same each time** — which is the finding, not the individual
+numbers.
+
+### 1. THE CORRECTED PER-DRAW CPU DECOMPOSITION, at the operator's load
+
+The profiler prints its own bill and it is enormous at this load: **18.6 scopes a draw x
+21.7 ns per clock read => ~807 ns/draw**, against a frame that reads 20.0 ms instrumented
+and ~12.9 ms not. Those two agree: 807 ns x 9,466 draws = 7.6 ms, and 20.0 - 12.9 = 7.1 ms.
+So **every phase SHARE this project has quoted at a crowd load is distorted**, and the
+honest reading is the sub-scopes (which exclude their own reads) rather than the percentages
+(which do not).
+
+Read that way, at ~9,500 draws:
+
+| phase | real ns/draw | ms/frame | what it is |
+|---|---|---|---|
+| **record** | **524** | **4.9** | 251 the driver, 273 ours |
+| **other** | **323** | **3.1** | fetch 115, tail 53, pipeline 48, begin 45, shader 31, key 31 |
+| textures | ~167 | 1.6 | |
+| constants | ~161 | 1.5 | vs + ps + shared, memo already serving |
+
+`record`'s residual of 113-115 ns/draw is its four nested scopes' clock reads (8 reads at
+~14-21 ns) and `other`'s 212 ns residual is the same thing at 18.6 scopes. Neither is work.
+
+**There is no single large CPU item left.** The biggest mechanism in the frame is the Vulkan
+driver at 251 ns a draw, and §6eb priced distributing it at 0.00 ms with the thread budget
+as it stands.
+
+### 2. CENSUS ONE — the vertex-fetch memo on a whole-file stamp: 41.2%, worth 0.475 ms
+
+`Pm4_FetchConstVersion()` was added in the shape of the ALU file's stamp: one counter bumped
+by any register write into the fetch-constant file, making "has anything a vertex fetch
+reads changed" an O(1) question. Keyed `(vertex shader, that stamp)`, **41.2% of 105.8 M
+draws would be served**, misses splitting **shader 10.9% (inherent) + version 47.9%**.
+
+The version column dominating is the same shape the ALU file had — a single stamp over a
+file the guest rewrites constantly — so the key was too coarse, exactly as the ALU memo's
+own history predicted (a single ALU stamp served 3.6-7.1% until the file was split in two).
+
+### 3. CENSUS TWO — the EXACT key: 53.8%, worth 0.621 ms, and it is still not enough
+
+The precise key is a hash over only the fetch-constant dwords **this shader's attributes
+read** — two dwords per attribute, four to ten dwords in total, ~10-20 ns to compute against
+the 124 ns of decode it would replace. Unlike the ALU file (4 KB a window, which is why that
+one needs a stamp at all) the fetch file can simply be hashed.
+
+**53.8% served**, worth **0.621 ms a frame** at 9,300 draws as a ceiling. Both keys were
+censused in ONE run deliberately: two runs on a route whose spawn is non-deterministic would
+differ in draw composition as well as in key, and the gap between two hit rates would then
+be partly a difference of route.
+
+**And then the design failed on correctness, not on price.** The loop the memo would skip is
+`DecodeVertexFetch` -> `UploadStream` -> `BindVertexBufferCached` per attribute, and
+`UploadStream` is where the CONTENT GUARD runs. A memo keyed on the fetch constants cannot
+see a guest that edits vertex data in place without touching them — which is what an
+animated mesh does every frame. Skipping the loop serves last frame's geometry. **That is
+part 24's HUD defect exactly** (gotchas 242, 243), reached from the other direction.
+
+A memo that skips only the decode and still calls `UploadStream` is safe and is worth a
+fraction of the 124 ns, because most of that 124 is the lookup and not the arithmetic.
+
+### 4. CENSUS THREE — duplicate stream lookups within one draw: 47.9%, and worth 0.27 ms
+
+The profiler reports 89,524 flat-cache lookups a frame against 9,466 draws. A draw has one
+index buffer and two to five vertex attributes, so the excess can only be repeats — and this
+lookup was **13.1% of the pump thread** before part 55 flattened it.
+
+Censused at the `UploadStream` boundary: **4.96 lookups a draw, 47.9% of them repeating a
+key the same draw already looked up**, over 522 M lookups, with **0 draws overflowing the
+16-key window** so the count is complete rather than a lower bound. (The gap between 4.96
+and the profiler's 9.46 is `PersistFind`, which uses the same cache from a second site.)
+
+**And a repeat costs only the lookup.** `UploadStream`'s own comment says it: *"Below here
+runs at most ONCE per (key, frame) ... It is the only place a guard hash or a copy can
+happen."* A repeat is a hit and returns immediately. So 2.38 repeats a draw at roughly
+10-15 ns is **~0.27 ms a frame** — below this route's measured 2.9% noise floor in the
+decisive band. A per-draw dedup cache would be pure loss.
+
+### 5. THE COMMON REASON, and it is the transferable part
+
+All three items wanted to skip work by remembering an answer. All three failed, and not for
+three reasons:
+
+> **This renderer's per-draw CPU cost is dominated by CHANGE DETECTION, not by computation —
+> and a change detector cannot be memoised on the things it is watching.**
+
+The evidence is consistent across the whole frame: 89,524 stream lookups a frame with a
+guard reading 86.2 MB; a texture fetch walk whose 115 ns a draw exists to drive
+`UploadTexture`'s guard; and a state cache already eliding **descriptor-sets 100.0%,
+blend 100.0%, viewport 99.4%, scissor 99.3%, pipeline 70.0%** of the binds a parallel
+recorder would have distributed. Part 18, part 22, part 24, part 47 and part 55 each removed
+a large block of recomputation by adding a guard, and what is left is the guards.
+
+For Case West: expect the same shape, and expect the remaining CPU frame to be a spread of
+0.3-1.0 ms items rather than one large one. **The next large win on this title is not on the
+CPU side of the draw path.**

@@ -2684,6 +2684,15 @@ uint64_t g_constMemoPsHits = 0;
 uint64_t g_constMemoMisses = 0;
 uint64_t g_constMemoChecked = 0;
 uint64_t g_constMemoStale = 0;
+// The vertex-fetch memo census (§6eb §4). A plain global compare on the hot path, not a
+// static-init guard, which is the shape part 76 had to take back off the per-draw path
+// (gotcha 453).
+bool g_fetchMemoCensus = false;
+uint64_t g_fetchMemoHits = 0, g_fetchMemoMisses = 0;
+uint64_t g_fetchMemoShaderMiss = 0, g_fetchMemoVersionMiss = 0;
+uint64_t g_fetchMemoExactHits = 0, g_fetchMemoExactMisses = 0;
+bool g_streamDedupCensus = false;
+uint64_t g_dedupLookups = 0, g_dedupRepeats = 0, g_dedupOverflow = 0;
 
 // ---- PART 71: THE PIPELINE-CREATION CENSUS -----------------------------------------
 //
@@ -4238,6 +4247,14 @@ struct Renderer
     const ShaderMeta* constMemoVsFor = nullptr;
     const ShaderMeta* constMemoPsFor = nullptr;
     bool constMemoPsValid = false;
+    // The vertex-fetch memo census's own two-field key; see the census block in DoDraw.
+    const ShaderMeta* fetchMemoFor = nullptr;
+    uint64_t fetchMemoVersion = 0;
+    uint64_t fetchMemoHash = 0;
+    // The stream-dedup census's per-draw memory; see UploadStream.
+    uint64_t dedupDraw = ~0ull;
+    uint64_t dedupKeys[16] = {};
+    uint32_t dedupN = 0;
     uint64_t constMemoVsVersion = 0;
     uint64_t constMemoPsVersion = 0;
     uint64_t constMemoFrame = ~0ull;
@@ -10994,6 +11011,46 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
     // that was measured and what it means; what matters here is that the answer must be
     // IDENTICAL to the map's, because a lookup returning the wrong entry hands this draw
     // another mesh's vertex stream and nothing in this runtime would report it.
+    // CZ_VK_STREAM_DEDUP_CENSUS=1 — DOES ONE DRAW LOOK THE SAME STREAM UP TWICE?
+    //
+    // The profiler says **89,524 stream lookups a frame** against 9,466 draws — 9.46 per
+    // draw. A draw has one index buffer and typically two to five vertex attributes, so
+    // 9.46 is more lookups than a draw has streams, and the difference can only be repeats.
+    // They are not free: this lookup was 13.1% of the pump thread before part 55 flattened
+    // it, and even flattened it is a hash plus 1.21 probes, ~9.5 times a draw.
+    //
+    // WHY THE CENSUS RATHER THAN THE FIX. §6eb §3 refuted item 1 by measuring the quantity
+    // underneath it instead of quoting a share, and the two censuses after it killed a memo
+    // idea the same way. A per-draw dedup is cheap to write and would be pure loss if the
+    // repeat rate is low — so ask first. It counts repeats WITHIN one draw only, which is
+    // the only kind a per-draw cache could serve; a repeat across draws is what the flat
+    // cache already exists for.
+    //
+    // Sixteen remembered keys, linear scan: a draw with more distinct streams than that
+    // would under-report repeats, which biases the answer toward NOT doing the work. An
+    // instrument should fail toward the null (gotcha 30's neighbour).
+    if (g_streamDedupCensus)
+    {
+        if (R->dedupDraw != R->drawsThisFrame)
+        {
+            R->dedupDraw = R->drawsThisFrame;
+            R->dedupN = 0;
+        }
+        ++g_dedupLookups;
+        bool dup = false;
+        for (uint32_t i = 0; i < R->dedupN; ++i)
+            if (R->dedupKeys[i] == key)
+            {
+                dup = true;
+                break;
+            }
+        if (dup)
+            ++g_dedupRepeats;
+        else if (R->dedupN < 16)
+            R->dedupKeys[R->dedupN++] = key;
+        else
+            ++g_dedupOverflow;
+    }
     const StreamLoc* hit = nullptr;
     if (!g_flatCacheOff)
         hit = R->streamCache.Find(key);
@@ -20159,6 +20216,79 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     // --- vertex streams -------------------------------------------------------------
     ProfScope _pVertex(&g_prof.recordVertex);
+    // CZ_VK_FETCH_MEMO_CENSUS=1 — WOULD A VERTEX-FETCH MEMO BE SERVED? Ask before building.
+    //
+    // §6eb §3 measured the driver's own recording at 251 ns a draw and refuted item 1's
+    // low-risk design on price. The same decomposition left a bigger, cheaper lead: 262 ns
+    // a draw inside `record` is OUR work, of which the vertex-fetch decode below is 124 —
+    // **1.15 ms a frame at the operator's 9,300 draws**, and `streams` reads 0.1%, so none
+    // of it is upload. It is `DecodeVertexFetch` re-derived per attribute per draw.
+    //
+    // A decode whose inputs are unchanged returns what it returned last time, and the
+    // inputs are exactly two things: this draw's vertex shader and the fetch-constant
+    // register file. So the memo key is `(vs, Pm4_FetchConstVersion())` — the same shape as
+    // the ALU constant memo, which is the proven pattern in this renderer.
+    //
+    // THIS IS THE CENSUS, NOT THE MEMO, and the order is the point. The ALU memo's own
+    // history is the argument: a single stamp over the whole ALU file was served on **3.6
+    // to 7.1% of draws**, because this guest rewrites something in it almost every draw,
+    // and it took SPLITTING the file in two to make the memo worth having. The fetch file
+    // could be the same. Guessing by analogy is how three hand-offs re-quoted item 1 upward
+    // without measuring what was underneath it, and the rule this project keeps paying to
+    // relearn is that a hit rate is measured before the thing that depends on it is written
+    // (gotchas 428, 434, 470).
+    //
+    // It counts the run of consecutive draws that would have been SERVED, not merely the
+    // pairs that match, because that is what a memo actually experiences.
+    if (g_fetchMemoCensus)
+    {
+        const uint64_t v = Pm4_FetchConstVersion();
+        if (R->fetchMemoFor == &vs && R->fetchMemoVersion == v)
+            ++g_fetchMemoHits;
+        else
+        {
+            ++g_fetchMemoMisses;
+            // WHICH HALF OF THE KEY MISSED, split out — because the two want opposite
+            // fixes. A shader miss is inherent (a different mesh needs a different decode)
+            // and caps the memo; a VERSION miss means the guest touched the fetch file
+            // between two draws of the same shader, and if that dominates then the file
+            // wants splitting the way the ALU file did rather than the memo abandoning.
+            if (R->fetchMemoFor != &vs)
+                ++g_fetchMemoShaderMiss;
+            else
+                ++g_fetchMemoVersionMiss;
+        }
+        // THE SECOND KEY, IN THE SAME RUN — and it is the one a memo would actually use.
+        //
+        // The whole-file stamp above is the CHEAP key and it is too coarse; that is what
+        // the version-miss column says. The precise key is a hash over exactly the
+        // fetch-constant dwords THIS shader's attributes read — two dwords per attribute,
+        // typically four to ten dwords in total. Reading ten dwords is ~10-20 ns against
+        // the 124 ns of decode it would replace, so unlike the ALU file (4 KB a window,
+        // which is why that one needed a stamp) the fetch file can afford to be hashed
+        // directly and needs no stamp at all.
+        //
+        // Both keys are censused in ONE run deliberately. Two runs on a route whose spawn
+        // is non-deterministic would differ in draw composition as well as in key, and the
+        // difference between two hit rates would then be partly a difference of route.
+        uint64_t h = 0xCBF29CE484222325ull;
+        for (const VertexAttribute& a : vs.attributes)
+        {
+            if (a.fetchSlot >= 96)
+                continue;
+            const uint32_t sl = FetchSlot(a.fetchSlot);
+            h = (h ^ regs[xenos::kFetchConstantBase + sl * 2]) * 0x100000001B3ull;
+            h = (h ^ regs[xenos::kFetchConstantBase + sl * 2 + 1]) * 0x100000001B3ull;
+        }
+        if (R->fetchMemoFor == &vs && R->fetchMemoHash == h)
+            ++g_fetchMemoExactHits;
+        else
+            ++g_fetchMemoExactMisses;
+        R->fetchMemoHash = h;
+
+        R->fetchMemoFor = &vs;
+        R->fetchMemoVersion = v;
+    }
     //
     // RECTANGLE LISTS GET A SYNTHESISED FOURTH CORNER. A Xenos rect list stores three
     // vertices — this title's are TL, TR, BR, measured straight off the stream:
@@ -22322,6 +22452,8 @@ bool InitCommon()
     // which draws a wrong mesh and reports nothing, so the control arm restores the
     // `std::unordered_map` exactly and the verify arm runs both and compares.
     g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
+    g_fetchMemoCensus = EnvOn("CZ_VK_FETCH_MEMO_CENSUS");
+    g_streamDedupCensus = EnvOn("CZ_VK_STREAM_DEDUP_CENSUS");
     g_constMemoVerify = EnvOn("CZ_VK_VERIFY_CONST_MEMO");
     g_constMemoVerifyPoison = EnvOn("CZ_VK_VERIFY_CONST_MEMO_POISON");
     if (g_constMemoVerifyPoison)
@@ -25807,6 +25939,47 @@ void VkRenderer_DumpStats()
     // per-draw rate rather than the raw total, because the number the item's arithmetic
     // needs is "driver calls per draw" — that is what a secondary command buffer carries,
     // and the state cache means it is nowhere near the ten calls the source suggests.
+    if (g_fetchMemoCensus)
+    {
+        const uint64_t n = g_fetchMemoHits + g_fetchMemoMisses;
+        fprintf(stderr,
+                "[vk]   vertex-fetch memo census: %.1f%% of %llu draws would be SERVED by "
+                "(shader, fetch-const version)\n"
+                "[vk]     misses: shader %llu (%.1f%%, inherent) + version %llu (%.1f%%, "
+                "the guest touched the fetch file between two draws of one shader)\n",
+                n ? 100.0 * double(g_fetchMemoHits) / double(n) : 0.0,
+                (unsigned long long)n, (unsigned long long)g_fetchMemoShaderMiss,
+                n ? 100.0 * double(g_fetchMemoShaderMiss) / double(n) : 0.0,
+                (unsigned long long)g_fetchMemoVersionMiss,
+                n ? 100.0 * double(g_fetchMemoVersionMiss) / double(n) : 0.0);
+        // The number the decision turns on, spelled out rather than left to be multiplied
+        // by hand: the decode is 124 ns a draw (§6eb §3), so this is what a perfect memo
+        // would be worth at the load this run actually reached.
+        const uint64_t ne = g_fetchMemoExactHits + g_fetchMemoExactMisses;
+        const double exact = ne ? double(g_fetchMemoExactHits) / double(ne) : 0.0;
+        fprintf(stderr,
+                "[vk]   EXACT key (shader + a hash of only the dwords this shader's "
+                "attributes read): %.1f%% of %llu draws SERVED\n",
+                100.0 * exact, (unsigned long long)ne);
+        // The number the decision turns on, spelled out rather than left to be multiplied
+        // by hand: the decode is 124 ns a draw (§6eb §3), so this is what each key would be
+        // worth at the operator's load.
+        fprintf(stderr,
+                "[vk]     at 124 ns/draw of decode and 9,300 draws: whole-file key %.3f ms, "
+                "EXACT key %.3f ms per frame — against an item-1 ceiling of 2.33 ms that "
+                "needed 3 threads and delivered 0.00 with the budget as it stands\n",
+                9.3 * 124e-3 * (n ? double(g_fetchMemoHits) / double(n) : 0.0),
+                9.3 * 124e-3 * exact);
+    }
+    if (g_streamDedupCensus && R->skips.draws)
+        fprintf(stderr,
+                "[vk]   stream lookups: %.2f per draw, %.1f%% of them REPEAT a key this "
+                "same draw already looked up (%llu of %llu; %llu draws exceeded the "
+                "16-key window and were counted as distinct, which under-reports repeats)\n",
+                double(g_dedupLookups) / double(R->skips.draws),
+                g_dedupLookups ? 100.0 * double(g_dedupRepeats) / double(g_dedupLookups) : 0.0,
+                (unsigned long long)g_dedupRepeats, (unsigned long long)g_dedupLookups,
+                (unsigned long long)g_dedupOverflow);
     if (g_noDriverRecordSkipped && R->skips.draws)
         fprintf(stderr,
                 "[vk]   CZ_VK_NO_DRIVER_RECORD: %llu vkCmd* calls skipped, %.2f per draw "

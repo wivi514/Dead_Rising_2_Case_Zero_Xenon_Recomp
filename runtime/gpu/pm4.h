@@ -239,6 +239,10 @@ uint64_t Pm4_ShaderMemoMismatches();
 // Bumped by every write that touches the ALU constant file. See WriteRegister for why
 // it is monotonic, why both write paths are covered, and what a missed bump costs.
 uint64_t Pm4_AluConstVersion(uint32_t half);   // 0 = VS window, 1 = PS window
+// The FETCH constant file's stamp — bumped by any register write into it. §6eb §4: the
+// vertex-fetch decode is 124 ns a draw of pure re-derivation, 1.15 ms a frame at the
+// operator's load, and this makes "did anything it reads change" an O(1) question.
+uint64_t Pm4_FetchConstVersion();
 uint64_t Pm4_DrawCount();
 uint64_t Pm4_FrameCount();                  // XE_SWAP packets = frames
 uint64_t Pm4_InterruptCount();
