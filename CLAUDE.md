@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 469-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 472-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -859,7 +859,13 @@ ITEM 2, THE POST CHAIN, IS REFUTED BY MEASUREMENT FOR THE COST OF ONE RUN. ONE T
 OWED: THE OPERATOR SESSION.** — **THE SESSION RAN: the prediction held on every clause, their
 picture verdict was "look identical", and their ONE complaint — "only felt hitches at the start
 right after loading" — localised to the CROSS-FRAME STREAM STORE GROWING, 71.7 ms in a single
-frame, now fixed by starting it at 512 MB (§6dy, §6dz, gotchas 467-469).**
+frame. **A SECOND SESSION THEN REFUTED THE FIRST FIX on a pre-registered branch** ("just felt a
+single stutter near the end but didn't feel one after loading in" — the after-load hitches were
+gone and the store had grown ONCE more, 512 -> 1024, for 329.2 ms). The cost scales with the
+new buffer's size and the store DOUBLES, so a bigger start only skips the cheap growths.
+**The store now starts at `kPersistCeiling`, 1024 MB, so growth is IMPOSSIBLE rather than
+rarer — and it is free, because the same allocation is ~10 ms at boot and 255 ms mid-run**
+(§6dy, §6dz, gotchas 467-472).**
 **`docs/part80-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6dw** (item 1)
 and **§6dx** (item 2); lessons: gotchas **465-466**):
 

@@ -188,9 +188,16 @@ expect before they played. Their picture verdict was *"look identical"*.
 **And their one complaint turned out to be the most valuable thing in the session.** *"Only
 felt hitches at the start right after loading"* localised to two frames 1.3 and 1.4 seconds
 after a load burst, which were the cross-frame stream store growing; that is measured
-(71.7 ms in one frame, split waits 13.6 / allocate 42.9 / free 15.2) and fixed by starting the
-store at 512 MB (§6dz). **Re-ask them whether the after-load hitch is gone** — that is the one
-outstanding question, and it is a yes/no.
+(71.7 ms in one frame, split waits 13.6 / allocate 42.9 / free 15.2) and fixed (§6dz).
+
+**A SECOND SESSION RAN AND REFUTED THE FIRST FIX, on a branch the harness had pre-registered**
+(§6dz §4b). Starting the store at 512 MB removed the after-load hitches — *"didn't feel one
+after loading in"* — and left a single 329.2 ms growth 512 -> 1024 near the end, which they
+also felt and located. **The cost scales with the new buffer's size and the store DOUBLES**, so
+a bigger start skips the cheap growths and leaves the expensive one. It now starts at
+`kPersistCeiling`, 1024 MB, so growth is impossible by construction; boot frames read
+**226.9 / 227.9 ms against 237.7 / 234.2 at the old 128**, because the same allocation is
+~10 ms at boot and 255 ms mid-run (gotcha 471). **Confirm with them that both are now gone.**
 
 ~~**One thing, and it is the operator's session.**~~ `tools/part79_operator_session.sh`. Item 1's
 frame-time value has never been measured in the regime where it exists, and the run also
