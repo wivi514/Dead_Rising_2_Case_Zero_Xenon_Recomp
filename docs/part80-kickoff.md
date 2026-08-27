@@ -1,6 +1,9 @@
 # Part 80 kickoff — the board after part 79 shipped two items and refuted a third
 
-> **THIS IS THE LIVE HAND-OFF**, superseding `part79-kickoff.md`.
+> ~~**THIS IS THE LIVE HAND-OFF**, superseding `part79-kickoff.md`.~~ — **SUPERSEDED BY
+> `part81-kickoff.md` (2026-08-27).** Its §1 item 1 is REFUTED and its items 4 and 5 are dead
+> on regime; read the successor's §0b before anything here. Kept because part 80 executed it
+> and because its §0b's four warnings all held.
 >
 > **Read `phase5-notes.md` §6dw, §6dx, §6dy, §6dz and §6ea, in that order.** They are part 79
 > end to end: the upload ring, the pass extent census that refuted the post-chain item, the

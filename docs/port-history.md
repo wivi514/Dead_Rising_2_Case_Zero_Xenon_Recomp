@@ -5739,3 +5739,107 @@ SPECIFIED FOR IT WAS 17% OF ITS OWN HEADLINE.** ~~**`docs/part78-kickoff.md` IS 
   allocation failures, and no new shaders (449 dumps against a 449 cache, name diff empty). Renderer-only change — no config,
   kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate --hlsl-dir` sweeps
   and part 75's cache gates stand.
+
+
+---
+
+## Part 78's status block, moved out of CLAUDE.md by part 80
+
+Moved in the same commit that added part 80's, per the rotation rule in CLAUDE.md:
+that file keeps only the live part and one part back, because its cost is not its
+size — it is that a reader cannot tell which block is current.
+
+Where the port is, as of 2026-08-26 (**PART 78 CLOSED, NOTHING OWED — PERFORMANCE. THE
+BOARD'S ITEM 1 WAS THE GPU, WHICH THIS PROJECT HAD NEVER LOOKED AT; IT HAS A BREAKDOWN NOW,
+AND THE LARGEST THING IN IT THAT IS NOT THE GAME WAS 137 IMAGE BARRIERS A FRAME. THE OPERATOR
+HAS CONFIRMED IT AND THE REGIME TABLE MOVED.**
+~~**`docs/part79-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; the live one is
+`docs/part80-kickoff.md`. Records: `phase5-notes.md` **§6du** (the
+work) and **§6dv** (the operator session and the new regime table);
+lessons: gotchas **459-464**):
+
+* **THE ITEM WAS A MEASUREMENT, NOT A FIX, AND SAYING SO IS WHY IT WORKED.** Part 76 had the
+  GPU as a flat 6.97 -> 12.20 ms across a 4x range of draw counts and concluded most of a
+  crowd frame's device cost is already there in a light scene. **Nothing in this renderer
+  could say WHICH work** — two timestamps a frame, bracketing the whole command buffer.
+  `CZ_VK_GPU_PASSES=1` splits it by region, and its bill is nil (8.65 ms without, 8.49-8.67
+  with).
+* **IT IS EXPLICIT INTERVALS AND NOT A CHAIN OF BOUNDARIES, AND THAT IS THE WHOLE DESIGN.**
+  A chain partitions the frame exactly, so it has **no residual and therefore no way to
+  report that it is wrong**. Pairs leave a gap and the gap is printed FIRST. **The residual
+  moving 16.7% -> 3.5% when the barriers were brought inside the regions is how the barriers
+  became the finding at all** (gotcha 459). It also caught two mistakes in itself: a
+  classifier reading `R->drawsThisPass` put **65% of the frame in passes with ZERO draws**
+  because `DoResolve` zeroes that counter first (gotcha 460), and 512 queries a slot
+  **overflowed, 1,454,670 regions dropped**, whose symptom was `present blit` reading 0.15
+  regions a frame where exactly one exists.
+* **THE BREAKDOWN — 3440x1440, 16,907 frames, residual 3.5%.** `pass >=256 draws` 4.224 ms
+  (49.8%, 3.11/frame), `pass 1 draw` 0.838 (29.87/frame at 28 us), `resolve copy` 0.712
+  (49.04/frame, **48.90 Mpixel moved**), `resolve clear` 0.691 (81.65/frame, **575 Mpixel
+  written for 33 rendered**), `pass 2-255` 0.592, **resolve barriers 0.579**, **pass-begin
+  barriers 0.351**, snapshot views 0.114, present 0.063, cube faces 0.029. **The title's own
+  rendering is 5.65 ms; the EDRAM emulation's overhead is 2.84 ms — a third of the device's
+  frame.**
+* **THE FIX: every image barrier was `ALL_COMMANDS -> ALL_COMMANDS` with `MEMORY_READ |
+  MEMORY_WRITE`.** The always-correct form, right to write while a renderer is being built —
+  it cannot be too weak, so it never appears in a bug hunt, **and nothing had measured it in
+  twenty parts** (gotcha 461). 137.6 transitions a frame, **0.930 ms of an 8.49 ms GPU
+  frame, 11.0%.** `LayoutMasks()` derives them from the layouts; the mapping is exact and the
+  two places it could be too weak are named in the code.
+* **DELIVERED: −1.25 ms, −11.9% at crowd load — 94.9 -> 107.6 fps at ~6,000 draws.** Three
+  runs an arm, alternated, one binary, resolution pinned; monotone across every band
+  (−11.0% to −13.3%) against a **+1.0% null**; the menu window −16.4% as a SECOND measurement
+  (a barrier is on every presented frame, so the menu is not a control — gotcha 452). The
+  barrier classes went **0.938 -> 0.099 ms/frame with a 0.001 ms spread across three runs an
+  arm**, which is a far tighter measurement than any frame-time band. `CZ_VK_WIDE_BARRIERS=1`
+  is the control arm and reads **100.0% wide under it, 0.0% without**.
+* **THE GATE IS A NEW INSTRUMENT CLASS: `CZ_VK_SYNC_VALIDATION=1`.** A narrowed dependency is
+  a **legal API call that races**, so `CZ_VK_VALIDATION=1` cannot see it — part 77 had just
+  shown it reporting clean on a build with 1,400 textures never uploaded (gotcha 458).
+  Shipping build **0 hazards** at 5,268 draws; wide control arm **0**;
+  **`CZ_VK_BARRIER_POISON=1` 30, across seven call sites**, which is what proves the gate can
+  fail (gotcha 30).
+* **IT FOUND A HAZARD IT DID NOT CREATE, AND A PRE-EXISTING ONE.** (a) The swapchain's
+  `PRESENT_SRC -> TRANSFER_DST` transition is scheduled at `TOP_OF_PIPE` while the acquire
+  semaphore is waited at `TRANSFER`. **It was silent before because every other barrier used
+  ALL_COMMANDS and formed a chain the layer accepted** — the defect was riding on its
+  neighbours' over-synchronisation (gotcha 462). (b) `Barrier()` early-returns when the
+  layout already matches and issues NOTHING, so **two consecutive `vkCmdClearDepthStencilImage`
+  on the EDRAM depth had no ordering between them at all** and which value survived was
+  undefined — 5.7 times a frame, present identically in both arms, since the renderer was
+  written (gotcha 463).
+* **AND THE BOARD'S ITEM 3 IS DEAD FOR THE COST OF TWO GREPS.** `part78-kickoff.md` asked
+  for pipeline compilation on the load frame to be priced before any design work. It is
+  **8.8 ms of a 158-165 ms burst frame, 5.6%** — the 97-pipeline frame IS the burst frame in
+  every run — against a standing 40 ms kill. Run total 29.6 ms. (The burst frame's **GPU is
+  3.4 ms** against its 158 ms wall: after part 77 the load frame is entirely CPU.)
+* **A METHOD DEFECT, FOUND AND FIXED INSIDE PART 78's OWN A/B.** One of the first six runs
+  never reached the outdoor world, the route gate said so loudly, **and the driver globbed
+  its log into the comparison anyway** — 26 extra menu windows in one arm and none in the
+  other. `part76-kickoff.md` §5 says a failed run is dropped BY NAME; a message on the
+  terminal is not a drop. `tools/part78_barrier_ab.sh` renames a failed log to `.rejected`.
+* **THE OPERATOR PLAYED IT AND THE PRE-REGISTERED PREDICTION HELD ON BOTH HALVES (§6dv).**
+  Stated before they played: the whole saving is on the GPU and their crowd is CPU-bound, so
+  expect the full −12% below ~8,000 draws and much less above it. Measured against part 76's
+  profiler-free session: **GPU −11.5% at 9,000-12,000 draws and −14.3% at 7,000-9,000 — the
+  same size the autonomous route saw — while the WALL moved only −2.9% and −2.3% there**, and
+  −11% below 7,000 where they are not CPU-bound. 0 F7 marks in 10,748 frames, every counter
+  gate clean, 0.0% wide over 3.3 M barriers.
+* **AND THE SESSION MOVED THE REGIME TABLE, WHICH MATTERS MORE THAN THE SAVING.**
+  `part77-kickoff.md` §0b put the crossover at 6,000-7,000 draws; **every band from 3,000 up
+  now reads CPU-BOUND**, and the GPU headroom at their crowd roughly doubled — **0.58 -> 1.93
+  ms at 7,000-9,000 draws, 1.38 -> 2.38 at 9,000-12,000.** A CPU saving at their load now
+  converts nearly 1:1 up to ~2 ms where it had almost no room before, which is why part 79's
+  board leads with `FlushTextureUploads`' wait rather than another GPU item. **§6dv §2
+  supersedes `part77-kickoff.md` §0b.**
+* **AND THEIR EYE CLOSED IT: *"Everything looked normal, no visual difference"*** — across
+  boot, title, the outdoor world and crowds at 8,300-8,800 draws (§6dv §3b). Worth collecting
+  explicitly even though the change cannot alter a pixel by construction: this project has
+  twice shipped a defect only the operator's eye could see (§6bo's lightmap transposition,
+  part 60's overlay) and every automatic check was green both times.
+* **Gates:** `--smoke` OK on every build; sync validation **0 hazards** in both arms and
+  **shown capable of failing**; `shader_dim_census` clean (339 2D / 100 cube, 0
+  disagreements); `rt_world_xform` 104 of 104; all six live caches at 449 with an empty name
+  diff; every reportable route run passed its own draw gate. Renderer-only change — no
+  config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
+  --hlsl-dir` sweeps and part 75's cache gates stand.

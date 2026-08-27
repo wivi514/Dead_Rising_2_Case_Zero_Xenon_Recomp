@@ -5393,3 +5393,73 @@ From phase C part 18 (the frame rate — and none of it was work):
      one-sentence report mapped onto a pre-registered branch, and the next fix followed from
      it in minutes. A harness that only describes success turns a refutation into a
      debugging session.
+
+473. **AN ITEM'S PRICE HAS A SHELF LIFE EXACTLY LIKE A MEASUREMENT DOES — AND A SHARE IS NOT
+     A PRICE.** Parallel command recording was the largest item on this project's board for
+     five parts and was re-quoted UPWARD through three hand-offs, always as a share:
+     *"`DoDraw` plus the driver, ~40% of the pump"*. Nobody re-measured the quantity
+     underneath it. When one destructive arm finally asked — skip every `vkCmd*` in the
+     record path and nothing else — the answer was **251 ns a draw**, because part 18's bind
+     cache had meanwhile grown to elide **descriptor-sets 100%, blend 100%, viewport 99.4%,
+     scissor 99.3%, pipeline 70%** of exactly the calls a parallel recorder would have
+     distributed. The item was sized before the cache was that good and the size was carried
+     forward as if it were a constant. **Before building the biggest thing on your board,
+     re-measure the number that made it the biggest** — especially if the parts since then
+     shipped anything in the same path. Two runs.
+
+474. **A CHANGE DETECTOR CANNOT BE MEMOISED ON THE THINGS IT IS WATCHING.** Three separate
+     "remember the answer" items died on this in one session: a vertex-fetch decode memo on a
+     coarse key, the same memo on an exact key, and a per-draw stream-lookup dedup. Two of
+     them had acceptable hit rates (41.2% and 53.8%) and failed anyway, because the work they
+     proposed to skip was the call that runs the content GUARD — so a hit would serve last
+     frame's geometry to a mesh the guest had edited in place, which is a defect this port
+     already shipped once and had to hunt (the HUD serving stale ammo, gotchas 242-243).
+     **Before designing a memo, ask what the work you are skipping was DRIVING**, not just
+     what it was computing. If the answer is "a guard", the memo key would have to include
+     the guard's own answer, and then there is no memo.
+
+475. **A MATURE RENDERER'S REMAINING CPU COST IS ITS GUARDS, AND THAT IS A CEILING, NOT A
+     BACKLOG.** After five parts of guard work (18, 22, 24, 47, 55), the per-draw CPU
+     decomposition here has no term above ~0.6 ms that is both safe and threadless: the
+     single largest mechanism in the frame is the Vulkan driver itself at 251 ns a draw.
+     Every large win in this renderer's history came from REPLACING recomputation with a
+     guard, and once that is done the frame is guards. Say so on the board explicitly —
+     otherwise the next session spends itself proving the same thing item by item. **"There
+     is no large item left here" is a finding and should be published as one.**
+
+476. **WHEN THE FENCE IS ZERO, EVERY GPU ITEM ON YOUR BOARD IS WORTH NOTHING — AND YOU CAN
+     KILL THEM WITHOUT A RUN.** Part 80's board carried two GPU items with measured ceilings
+     (resolve clears 0.568 ms, resolve copies 0.699 ms). The regime table says fence **0.00
+     at every band from 5,000 draws up** with 2.3-3.1 ms of headroom between the wall and the
+     GPU — so the device already finishes early and removing GPU work moves nothing until the
+     CPU has fallen by the whole headroom. Their combined ceiling is less than the headroom,
+     so they cannot become live on their own. **Read the regime BEFORE ranking a board, not
+     before measuring an item**: it does not merely tell you how to measure, it tells you
+     which items are measurable at all. The converse bit too (gotcha 453, and part 79's
+     six-run campaign on a GPU-bound route).
+
+477. **A TRACE RECORDS CHANGES, SO AN ENTRY'S EXTENT IS A PROPERTY OF ITS SUCCESSOR.**
+     Transcribing an operator's recorded input into a replayable recipe produced three
+     separate wrong answers, all the same shape. (a) Ending each state at its own last sample
+     invents a one-poll gap between every pair of inputs — twenty spurious stick releases
+     during one continuous walk. (b) Resolving extents AFTER merging instead of before turns
+     a button release, which is usually a single sample and therefore zero-length, into a
+     glitch that gets absorbed into the press before it: a 145 ms menu press became a
+     **2,248 ms hold**, which is not a slightly-wrong press but a different input. (c) An
+     entry shorter than the consumer's poll interval is an input that never happens — a 1 ms
+     recorded press has a 1 ms delivery window against a ~10 ms poll, so it lands about one
+     time in twenty and the recipe silently stops one screen short. Floor it to the
+     consumer's own tap length and **borrow the time from the following silence** so nothing
+     downstream shifts. Applies to any event log driving a replay, not just input.
+
+478. **A CARDINAL VOCABULARY CANNOT REPRODUCE A HUMAN, AND THE FAILURE IS SILENT.** A synthetic
+     input arm with eight stick directions at full deflection replayed an operator's route and
+     walked into a building; their words were *"the character goes forward the whole time
+     while I was often slightly to the left"*. The trace agreed exactly — over a 14.5-second
+     walk the Y axis was pinned at 32767 while X drifted **-5,467..+3,993**, a 17% deflection
+     that is steering. Rounding that to the nearest of eight does not approximate the route,
+     it produces a different route that starts in the same place — and the run still arrives
+     somewhere and still reports a draw count, so nothing fires. The fix is analog entries
+     (`LS<x>/<y>`) and the ability to hold BOTH sticks at once, because a player turns the
+     camera while walking and the camera decides the draw set. **The person who played it is
+     the only oracle for whether a replay is the same journey.**
