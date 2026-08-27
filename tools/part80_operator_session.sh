@@ -10,11 +10,22 @@
 # 128, so on the autonomous route the growth window's worst frame goes **90.9/90.3 ms ->
 # 36.7/33.6** with zero growths, for +10 ms on a boot frame already at 235.
 #
-# **THE PRE-REGISTERED PREDICTION, stated before they play.** `stream store grows: 0`, and no
-# felt hitch 1-2 seconds after a load. What would REFUTE it:
+# **THE 512 MB VERSION OF THIS FIX WAS REFUTED BY THE PREVIOUS RUN OF THIS SCRIPT**, on the
+# first branch it listed, and the operator located it unaided: *"just felt a single stutter
+# near the end of the run but didn't feel one after loading in"*. The store had grown once
+# more, 512 -> 1024, for **329.2 ms in a single frame**. The cost scales with the NEW buffer's
+# size and the store DOUBLES, so a bigger start skips the cheap growths and leaves the
+# expensive one (gotcha 470). **It now starts at `kPersistCeiling` = 1024 MB, so it cannot
+# grow at all** — and that is free, because the same allocation is ~10 ms at boot and 255 ms
+# mid-run (gotcha 471); the 1024 arm's boot frame is the lowest of seven runs.
 #
-#   * a `stream store grown to ... MB on frame N` line appearing anyway — 512 was not enough
-#     for this session, and the fix is a bigger start or growing in blocks;
+# **THE PRE-REGISTERED PREDICTION, stated before they play.** `stream store GROWTHS: 0`, no
+# felt hitch 1-2 seconds after a load, AND no felt hitch late in the run. What would REFUTE it:
+#
+#   * a `stream store grown to ... MB on frame N` line appearing anyway — impossible unless
+#     `CZ_VK_PERSIST_MB` was overridden, so if it happens the arm did not engage;
+#   * `stream store is at its 1024 MB ceiling and a frame still overran it` appearing — the
+#     ceiling itself is too low, and the cache is now being dropped and refilled instead;
 #   * a hitch right after loading WITH no growth in the log — the part-79 attribution was
 #     wrong, or there is a second cause at the same moment;
 #   * the boot or first-load frame being noticeably worse — the +10 ms landed somewhere it
@@ -89,24 +100,25 @@ echo "        Stamped into the log AND the trace; I read backwards ~1 s from eac
 echo "  F9 :  screenshot -> $OUT/$TAG        (free until pressed, since part 76)"
 echo "  F8 :  burst, every frame for 1 s -> $OUT/$TAG"
 echo
-echo "  WHAT I NEED FROM THIS RUN IS ONE YES/NO:"
-echo "        LOAD A ZONE, THEN KEEP PLAYING FOR ~10 SECONDS AND WATCH."
-echo "        Last session you felt a hitch about 1.3 seconds after loading,"
-echo "        twice. Is it gone?"
+echo "  WHAT I NEED: PLAY LIKE LAST TIME, INCLUDING PAST THE 90-SECOND MARK."
+echo "        Two hitches to check for now, and last run you caught both:"
 echo
-echo "  It was the cross-frame stream store doubling itself: a whole frame of"
-echo "  71.7 ms spent waiting for the GPU, allocating 256 MB, mapping it and"
-echo "  freeing the old one. It now starts big enough not to grow at all."
+echo "        1. AFTER A LOAD (~1.3 s later) — you said this was already gone."
+echo "           Load a couple of zones and confirm it stays gone."
+echo "        2. LATE IN THE RUN, out of nowhere, in a crowd — the 352 ms one"
+echo "           you felt near the end. THIS is the one that should be gone now."
 echo
-echo "  The cost is ~10 ms added to the BOOT frame, which is already ~235 ms."
-echo "  If the boot or the first load feels worse than last time, say so —"
-echo "  that would mean I moved the hitch instead of removing it."
+echo "  Both were the same thing: the stream store doubling itself. Raising the"
+echo "  start to 512 MB killed the early ones and left the late one, because the"
+echo "  cost grows with the new size. It now starts at 1024 MB, which is the hard"
+echo "  ceiling, so it CANNOT grow at all. Boot frames measured LOWER than before."
 echo
-echo "  Load more than one zone if you can. One clean load is a data point;"
-echo "  three is an answer."
+echo "  PLEASE RUN IT LONG ENOUGH. The 352 ms one landed at t=94.8 s; a 60-second"
+echo "  session cannot see whether it is gone."
 echo
-echo "  Everything else is unchanged from last session, so the picture should"
-echo "  still look identical. It did last time and that closed the item."
+echo "  F7 anything you feel, wherever it is. Two spikes last time (50 and 60 ms,"
+echo "  nowhere near a load) were NOT growths and you did not notice them — those"
+echo "  are expected to still be there, and are the next item if you now do."
 echo
 echo "  COST:  CZ_VK_PROFILE is 2-4 ms a frame AND IT INVERTS THE REGIME (gotcha 454)."
 echo "         This session is armed with CZ_VK_GPU_PASSES instead, which is free, and"
@@ -139,10 +151,13 @@ echo "  const memo stale:         $(grep -ac 'CONST MEMO STALE' "$LOG")"
 echo "  stale present slots:      $(grep -ac 'present slot describes frame' "$LOG")"
 echo
 echo "  --- THE PART 80 QUESTION: this must read 0 growths ---"
-grep -a "texture upload ring" "$LOG" | sed 's/^/  /'
+grep -a "cross-frame stream store:" "$LOG" | head -1 | sed 's/^/  /'
+ngrow=$(grep -ac "stream store grown to" "$LOG")
+echo "  stream store GROWTHS: $ngrow    <- 0 is the ONLY passing value"
+grep -a "stream store grown to" "$LOG" | sed 's/^/  ** /'
+grep -a "stream store is at its" "$LOG" | tail -2 | sed 's/^/  (ceiling) /'
+echo
 grep -a "texture flush:" "$LOG" | tail -1 | sed 's/^/  /'
-grep -a "texture upload batch:" "$LOG" | tail -1 | sed 's/^/  /'
-grep -a "immediate submits:" "$LOG" | tail -1 | sed 's/^/  /'
 echo
 echo "  --- THE GPU SPLIT AND THE PASS EXTENT CENSUS (part 79 §6dx) ---"
 sed -n '/GPU per-region split/,/(a region.s time is/p' "$LOG" | sed 's/^/  /' 
