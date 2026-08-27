@@ -80,6 +80,21 @@ across two runs:
 | cube face refresh | 0.008 | 2.14 | 3,538 |
 | RESIDUAL | 0.045 | — | — |
 
+### ITEM 0 — THE OTHER TWO SINGLE-FRAME SPIKES. **Small, unfelt, and the only unexplained thing left.**
+
+Part 79's operator session had four isolated spikes with the same draw count, GPU time,
+uploads and pipeline count as their neighbours and fence/sleep 0.00 (§6dy §3). **Two were the
+stream store growing and are fixed** (§6dz). The other two — **50.0 ms at t=77.4 s and 60.3 ms
+at t=93.2 s**, both far from any load — are a different cause, and **neither was felt**: their
+threshold sits between 60 and 87 ms in a crowd.
+
+**The trace cannot answer it.** The phase columns are `ProfScope`s and read zero without
+`CZ_VK_PROFILE`, which costs 2-4 ms a frame and inverts the regime (gotcha 454). This needs an
+**always-on split of the pump's walk** — cheap enough to leave on, coarse enough to cost
+nothing. Then one operator session names it.
+
+Take this first only because it is cheap and it closes a class; it is worth less than item 1.
+
 ### ITEM 1 — PARALLEL COMMAND RECORDING. **The largest thing left, and part 78 made it worth more.**
 
 `perf-state-parked.md` item A, and `part79-kickoff.md` §1 item 5. It moves to the top because
@@ -163,9 +178,21 @@ shovel-ready and it is not worth the shovel yet.
 `tools/part79_flush_ab.sh` and `tools/part78_barrier_ab.sh` are the drivers to copy. Both
 reject a failed run **BY NAME**. Everything in `part76-kickoff.md` §5 still holds.
 
-## 4. WHAT IS OWED
+## 4. WHAT IS OWED — NOTHING
 
-**One thing, and it is the operator's session.** `tools/part79_operator_session.sh`. Item 1's
+Part 79's operator session ran (§6dy, §6dz). The pre-registered prediction held on every
+clause — the flush went 598 us to 54 us per flush at their load, 0 slots stalled, and the
+fence did not absorb it — and the frame rate was unchanged, which is what they were told to
+expect before they played. Their picture verdict was *"look identical"*.
+
+**And their one complaint turned out to be the most valuable thing in the session.** *"Only
+felt hitches at the start right after loading"* localised to two frames 1.3 and 1.4 seconds
+after a load burst, which were the cross-frame stream store growing; that is measured
+(71.7 ms in one frame, split waits 13.6 / allocate 42.9 / free 15.2) and fixed by starting the
+store at 512 MB (§6dz). **Re-ask them whether the after-load hitch is gone** — that is the one
+outstanding question, and it is a yes/no.
+
+~~**One thing, and it is the operator's session.**~~ `tools/part79_operator_session.sh`. Item 1's
 frame-time value has never been measured in the regime where it exists, and the run also
 carries the extent census at their resolution, where the post chain is a larger share of the
 GPU frame than it is on my route (14.4% against 9.9%, §6dv §4).

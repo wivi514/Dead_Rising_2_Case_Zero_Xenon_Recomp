@@ -1512,6 +1512,19 @@ CZ_VK_STREAM_GUARD_BYTES=N  the cross-frame store's guard is EXACT up to N bytes
                    recurs -- no rebuild needed. Every profile window reports how many
                    streams/frame exceeded the bound and were therefore only sampled, which
                    is the residual exposure
+CZ_VK_PERSIST_MB=N   where the CROSS-FRAME STREAM STORE STARTS, in MB. **The default moved
+                   128 -> 512 in part 79 and that is a stutter fix, not a tuning knob.**
+                   `PersistMaintenance` doubles the store when a frame overruns it, and a
+                   growth is `WaitAllFramesIdle` + `vkDeviceWaitIdle` + a host-visible
+                   allocation and MAP + freeing the old buffer, **all on the pump inside ONE
+                   frame — 71.7 ms for a 256 MB step** (waits 13.6 + allocate/map 42.9 +
+                   free-old 15.2). The operator's part-79 session grew twice and both
+                   growths were the worst frame of their own ten-second window and the only
+                   things they felt in 96.8 s of play. `CZ_VK_PERSIST_MB=128` restores the
+                   old default and is the control arm; the growth window's worst frame reads
+                   **90.9/90.3 ms there against 36.7/33.6 at 512**, for +10 ms on a boot
+                   frame already at 235. A failed 512 MB allocation retries at 128 before
+                   disabling the store (gotcha 469)
 CZ_VK_STREAM_GUARD_EXACT=1  hash every byte whatever the size. The diagnostic that
                    identified 00c. Not for normal use: 75x the hashing and +11.9 points of
                    frame time against the 16 KB default's ~a quarter of that

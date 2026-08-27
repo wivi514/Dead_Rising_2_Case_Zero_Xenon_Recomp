@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 466 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 469 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 466-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 469-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -856,7 +856,10 @@ Where the port is, as of 2026-08-26 (**PART 79 CLOSED — PERFORMANCE. THE BOARD
 WAIT INSIDE `FlushTextureUploads`, IS SHIPPED AND THE MECHANISM IS MEASURABLY GONE (−89.8%)
 — AND THE ROUTE IT WAS BUILT ON COULD NOT PRICE IT, WHICH THE HAND-OFF HAD SAID IN ADVANCE.
 ITEM 2, THE POST CHAIN, IS REFUTED BY MEASUREMENT FOR THE COST OF ONE RUN. ONE THING IS
-OWED: THE OPERATOR SESSION.**
+OWED: THE OPERATOR SESSION.** — **THE SESSION RAN: the prediction held on every clause, their
+picture verdict was "look identical", and their ONE complaint — "only felt hitches at the start
+right after loading" — localised to the CROSS-FRAME STREAM STORE GROWING, 71.7 ms in a single
+frame, now fixed by starting it at 512 MB (§6dy, §6dz, gotchas 467-469).**
 **`docs/part80-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6dw** (item 1)
 and **§6dx** (item 2); lessons: gotchas **465-466**):
 
