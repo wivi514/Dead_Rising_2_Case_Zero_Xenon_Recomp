@@ -1106,6 +1106,130 @@ const char* Env(const char* n) { return getenv(n); }
 bool EnvOn(const char* n) { return getenv(n) != nullptr; }
 
 // ===================================================================================
+// PART 81 §1.1: THE DEVICE COMMAND TABLE — one indirection off every vkCmd* call
+// ===================================================================================
+//
+// WHAT THIS REMOVES, AND WHY IT IS WORTH A NAMED CHANGE.
+//
+// Every `vkCmd*` symbol a program links against is the Vulkan LOADER's exported
+// trampoline, not the driver's function. Calling it costs a PLT hop into libvulkan, a
+// load of the dispatch table out of the dispatchable handle's first word, and an
+// indirect jump through that table into the driver — and only then does the driver's own
+// work begin. `vkGetDeviceProcAddr` hands back the driver's entry point directly, so a
+// call through a stored pointer skips the trampoline entirely.
+//
+// Part 80 measured the whole driver call chain at **251 ns a draw = 2.33 ms a frame** at
+// the operator's crowd load, over **4.83 `vkCmd*` calls a draw** — 52 ns a call
+// (`phase5-notes.md` §6ed). The trampoline is a small constant fraction of each of those,
+// which is why the item's ceiling is stated as 0.12-0.35 ms/frame and why the plan
+// pre-registers what to do if it lands under the noise floor: KEEP IT AND REPORT A NULL.
+// It is strictly less work for identical behaviour.
+//
+// THE ONE FAILURE MODE, AND IT IS LOUD ON PURPOSE. `vkGetDeviceProcAddr` returns
+// `nullptr` for a name the device does not support or that is misspelled, and calling a
+// null function pointer is a segfault with no message attached to it. So every name is
+// resolved in ONE place, the resolved count is printed, and a null ABORTS with the name
+// in the message. A silent fallback to the loader symbol would be worse than a crash: it
+// would leave the arm partially engaged and make the measurement a blend of two
+// configurations, which is gotcha 151 exactly.
+//
+// THE CONTROL ARM IS `CZ_VK_NO_DEVICE_PFN=1`, and it is a genuinely single-variable one.
+// It resolves the SAME names through `vkGetInstanceProcAddr`, which for a device-level
+// command returns the loader's trampoline — i.e. the function the exported symbol IS.
+// Both arms therefore call through a stored pointer with identical argument marshalling,
+// and the only difference between them is whether that pointer points at the trampoline
+// or at the driver. (Today's code calls the exported symbol through the PLT, so the
+// control arm is a hair cheaper than the code it stands in for; that direction is the
+// safe one — it can only UNDER-state the saving.)
+struct DeviceCommands
+{
+    PFN_vkCmdBindPipeline BindPipeline = nullptr;
+    PFN_vkCmdSetViewport SetViewport = nullptr;
+    PFN_vkCmdSetScissor SetScissor = nullptr;
+    PFN_vkCmdSetBlendConstants SetBlendConstants = nullptr;
+    PFN_vkCmdSetStencilReference SetStencilReference = nullptr;
+    PFN_vkCmdSetStencilCompareMask SetStencilCompareMask = nullptr;
+    PFN_vkCmdSetStencilWriteMask SetStencilWriteMask = nullptr;
+    PFN_vkCmdBindDescriptorSets BindDescriptorSets = nullptr;
+    PFN_vkCmdPushConstants PushConstants = nullptr;
+    PFN_vkCmdBindVertexBuffers BindVertexBuffers = nullptr;
+    PFN_vkCmdBindIndexBuffer BindIndexBuffer = nullptr;
+    PFN_vkCmdDrawIndexed DrawIndexed = nullptr;
+    PFN_vkCmdDraw Draw = nullptr;
+};
+DeviceCommands g_dfn;
+
+// Called once, immediately after the device and queue exist. Before this point the
+// macros below would dereference nulls, so nothing may record commands until it has run
+// — which is structurally true anyway (there is no command buffer yet).
+void ResolveDeviceCommands(VkDevice device, VkInstance instance)
+{
+    const bool viaLoader = EnvOn("CZ_VK_NO_DEVICE_PFN");
+    int resolved = 0, missing = 0;
+    auto get = [&](const char* name) -> PFN_vkVoidFunction {
+        PFN_vkVoidFunction f = viaLoader ? vkGetInstanceProcAddr(instance, name)
+                                         : vkGetDeviceProcAddr(device, name);
+        if (f)
+            ++resolved;
+        else
+        {
+            ++missing;
+            fprintf(stderr, "[vk] FATAL: could not resolve device command '%s'\n", name);
+        }
+        return f;
+    };
+#define CZ_RESOLVE(member, name) \
+    g_dfn.member = reinterpret_cast<PFN_vk##name>(get("vk" #name))
+    CZ_RESOLVE(BindPipeline, CmdBindPipeline);
+    CZ_RESOLVE(SetViewport, CmdSetViewport);
+    CZ_RESOLVE(SetScissor, CmdSetScissor);
+    CZ_RESOLVE(SetBlendConstants, CmdSetBlendConstants);
+    CZ_RESOLVE(SetStencilReference, CmdSetStencilReference);
+    CZ_RESOLVE(SetStencilCompareMask, CmdSetStencilCompareMask);
+    CZ_RESOLVE(SetStencilWriteMask, CmdSetStencilWriteMask);
+    CZ_RESOLVE(BindDescriptorSets, CmdBindDescriptorSets);
+    CZ_RESOLVE(PushConstants, CmdPushConstants);
+    CZ_RESOLVE(BindVertexBuffers, CmdBindVertexBuffers);
+    CZ_RESOLVE(BindIndexBuffer, CmdBindIndexBuffer);
+    CZ_RESOLVE(DrawIndexed, CmdDrawIndexed);
+    CZ_RESOLVE(Draw, CmdDraw);
+#undef CZ_RESOLVE
+    if (missing)
+    {
+        fprintf(stderr,
+                "[vk] FATAL: %d of %d device commands did not resolve — refusing to run "
+                "with a partially engaged command table\n",
+                missing, resolved + missing);
+        abort();
+    }
+    // AN ARM WITH NO COUNTER CANNOT BE SHOWN TO HAVE ENGAGED (gotcha 151), so both arms
+    // say which one they are, unconditionally, on one line.
+    fprintf(stderr,
+            "[vk] device command table: %d commands resolved via %s%s\n", resolved,
+            viaLoader ? "vkGetInstanceProcAddr — THE LOADER TRAMPOLINE"
+                      : "vkGetDeviceProcAddr — the driver directly",
+            viaLoader ? " (CZ_VK_NO_DEVICE_PFN=1, the control arm)" : "");
+}
+
+// From here to the end of the file every `vkCmd*` in the record path goes through the
+// table. Done with macros RATHER than by editing 40 call sites for one reason: a macro
+// cannot miss one. An edited call site that was overlooked would leave a call on the
+// loader path, and the arm would be partially engaged with nothing to say so.
+#define vkCmdBindPipeline g_dfn.BindPipeline
+#define vkCmdSetViewport g_dfn.SetViewport
+#define vkCmdSetScissor g_dfn.SetScissor
+#define vkCmdSetBlendConstants g_dfn.SetBlendConstants
+#define vkCmdSetStencilReference g_dfn.SetStencilReference
+#define vkCmdSetStencilCompareMask g_dfn.SetStencilCompareMask
+#define vkCmdSetStencilWriteMask g_dfn.SetStencilWriteMask
+#define vkCmdBindDescriptorSets g_dfn.BindDescriptorSets
+#define vkCmdPushConstants g_dfn.PushConstants
+#define vkCmdBindVertexBuffers g_dfn.BindVertexBuffers
+#define vkCmdBindIndexBuffer g_dfn.BindIndexBuffer
+#define vkCmdDrawIndexed g_dfn.DrawIndexed
+#define vkCmdDraw g_dfn.Draw
+
+// ===================================================================================
 // INTERNAL RESOLUTION SCALE — CZ_VK_RES / CZ_VK_RES_SCALE
 // ===================================================================================
 //
@@ -2693,6 +2817,91 @@ uint64_t g_fetchMemoShaderMiss = 0, g_fetchMemoVersionMiss = 0;
 uint64_t g_fetchMemoExactHits = 0, g_fetchMemoExactMisses = 0;
 bool g_streamDedupCensus = false;
 uint64_t g_dedupLookups = 0, g_dedupRepeats = 0, g_dedupOverflow = 0;
+
+// ---- PART 81 §2: WHERE IS THE GUARD'S 86.2 MB A FRAME CHARGED? ----------------------
+//
+// `[vkprof]` reports **guard read 86.21 MB/frame** while the prehash pool reports **96.2%
+// served, 27.2 MB/frame moved off the pump**. Subtracting says 59 MB a frame is still
+// read ON the pump — which at any plausible rate is milliseconds, and NO PROFILER PHASE
+// SHOWS IT: `streams` reads 0.1-0.2% and `record`'s GUARD column is 10 ns a draw. It is
+// the largest number in this frame that has never been placed, and §6ec's whole argument
+// is that the guards ARE the remaining CPU cost — so it decides whether that argument has
+// an item behind it.
+//
+// Exactly one of three things is true and they want different work:
+//   1. the pump reads far less than the subtraction suggests, because the two counters
+//      count different POPULATIONS (96.2% of requests served can still be 31% of bytes
+//      if the pool serves the small streams and the pump keeps the big ones);
+//   2. the reading is real and charged to a scope nobody has attributed it to;
+//   3. the counter means something other than its name.
+//
+// So: the bytes split by WHO READ THEM, and a clock over the pump's own half. The clock
+// is the part that separates (1) from (2) — bytes alone cannot, because "59 MB on the
+// pump" and "59 MB nowhere near the pump" produce the same subtraction.
+//
+// Census-gated rather than unconditional, on one plain global compare, because the clock
+// pair is ~43 ns on a path that runs thousands of times a frame and an instrument that
+// is not free when off is one this project has had to take back off a hot path once
+// already (gotcha 453). It answers its question in one run and is off in every other.
+bool g_guardCensus = false;
+uint64_t g_gcPumpBytes = 0, g_gcPumpCount = 0, g_gcPumpNs = 0;
+uint64_t g_gcPoolBytes = 0, g_gcPoolCount = 0;
+
+// ---- PART 81 §1.0: THE BIND-RUN CENSUS ---------------------------------------------
+//
+// `BindVertexBufferCached` issues one `vkCmdBindVertexBuffers` per binding, and the API
+// takes a CONTIGUOUS RANGE. The bind loop assigns `binding` with `++binding` as it walks
+// the shader's attributes, so the bindings themselves are contiguous by construction —
+// but the CHANGED ones need not be, and the whole item turns on which:
+//
+//   Hypothesis A, ALL-OR-NOTHING: a draw reuses the previous mesh or replaces it whole,
+//     so the changed bindings form ONE run and batching collapses 1.725 calls/draw to
+//     ~0.52 — 0.58 ms/frame at the operator's load. The item lives.
+//   Hypothesis B, SCATTERED: changed bindings interleave with unchanged ones, a run is
+//     usually one binding long, batched calls/draw stays ~1.725 and the item is worth
+//     nothing.
+//
+// A mean of "runs per draw" alone cannot separate a few long runs from many short ones,
+// and this project has been caught by a mean standing in for a distribution three times
+// (gotchas 428, 434, 470) — so the run-LENGTH HISTOGRAM is printed beside it.
+//
+// A plain global compare on the hot path, not a static-init guard, which is the shape
+// part 76 had to take back off the per-draw path (gotcha 453).
+bool g_bindRunCensus = false;
+uint64_t g_brDraws = 0;         // draws that entered the bind loop
+uint64_t g_brOffered = 0;       // bindings offered (tracked + untracked)
+uint64_t g_brChanged = 0;       // tracked bindings that actually issued a call
+uint64_t g_brRuns = 0;          // contiguous runs of changed TRACKED bindings
+uint64_t g_brUntracked = 0;     // binds above kMaxTrackedBindings: always issued, never
+                                // batched, and an unbudgeted exception is how a ceiling
+                                // becomes wrong
+uint64_t g_brUntrackedDraws = 0;
+uint64_t g_brRunHist[9] = {};   // run length 1..8, [8] = 8 or more
+// Per-draw run state. -1 = no changed binding seen yet in this draw.
+int32_t g_brPrevChanged = -1;
+uint32_t g_brCurRun = 0;
+bool g_brDrawHadUntracked = false;
+
+// Close the run in progress, if any, and file its length.
+inline void BindRunCensusCloseRun()
+{
+    if (!g_brCurRun)
+        return;
+    ++g_brRuns;
+    g_brRunHist[g_brCurRun < 8 ? g_brCurRun : 8]++;
+    g_brCurRun = 0;
+}
+
+// Called at the top of every draw's bind loop, where `binding` is reset to 0.
+inline void BindRunCensusBeginDraw()
+{
+    BindRunCensusCloseRun();
+    if (g_brDrawHadUntracked)
+        ++g_brUntrackedDraws;
+    g_brDrawHadUntracked = false;
+    g_brPrevChanged = -1;
+    ++g_brDraws;
+}
 
 // ---- PART 71: THE PIPELINE-CREATION CENSUS -----------------------------------------
 //
@@ -5847,6 +6056,9 @@ bool CreateDevice()
     dci.ppEnabledExtensionNames = devExts.empty() ? nullptr : devExts.data();
     VK_CHECK(vkCreateDevice(R->physical, &dci, nullptr, &R->device), "vkCreateDevice");
     vkGetDeviceQueue(R->device, R->queueFamily, 0, &R->queue);
+    // PART 81 §1.1 — resolve the device command table before anything can record. Fatal
+    // on any null; prints which arm it is.
+    ResolveDeviceCommands(R->device, R->instance);
     if (R->rtEnabled)
     {
         // The five entry points stage 2 uses, plus the scratch alignment the BLAS
@@ -11202,6 +11414,11 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             if (wantSampledToo)
                 sampled = pre->sampled;
             g_gpStats.bytesServed += wantExact ? bytes : GuardReadBytes(bytes, g_guardBytes);
+            if (g_guardCensus)
+            {
+                ++g_gcPoolCount;
+                g_gcPoolBytes += wantExact ? bytes : GuardReadBytes(bytes, g_guardBytes);
+            }
             if (g_gpVerify)
             {
                 // Two questions at once, and they have to be told apart. If the inline
@@ -11221,9 +11438,23 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
         else
         {
             ProfScope _g(&g_prof.streamGuard);
+            // The census's clock brackets ONLY the hash, not the pool lookup that failed
+            // ahead of it — the question is what the READING costs, and a clock that
+            // starts at the obvious operation and misses the setup around it measures
+            // something else (a memory of this project's).
+            const uint64_t t0 = g_guardCensus ? NowNs() : 0;
             guard = StreamGuardHash(src, size_t(bytes), nullptr, wantExact);
             if (wantSampledToo)
                 sampled = StreamGuardHash(src, size_t(bytes), nullptr, false);
+            if (g_guardCensus)
+            {
+                g_gcPumpNs += NowNs() - t0;
+                ++g_gcPumpCount;
+                g_gcPumpBytes += wantExact ? bytes
+                                           : GuardReadBytes(bytes, g_guardBytes);
+                if (wantSampledToo)
+                    g_gcPumpBytes += GuardReadBytes(bytes, g_guardBytes);
+            }
         }
         // File this stream for NEXT frame whether or not it was served this one: the
         // order these are filed in is the order the next frame asks for them, which is
@@ -11708,6 +11939,147 @@ bool NoBufferBindCache()
     return off;
 }
 
+// ---- PART 81 §1.2: THE VERTEX BIND BATCH -------------------------------------------
+//
+// `vkCmdBindVertexBuffers` takes a CONTIGUOUS RANGE of bindings and this renderer was
+// issuing one call per binding. The bind loop assigns `binding` with `++binding` as it
+// walks the shader's attributes, so the bindings are contiguous by construction — and
+// §1.0's census settled the question that decides the item, which is whether the CHANGED
+// ones are too. Measured on the operator's crowd route over 118.5 M draws:
+//
+//     offered 3.292/draw, changed 1.742/draw (52.9%), RUNS of changed 0.468/draw,
+//     untracked 0.000/draw, mean run 3.72 bindings
+//     run-length histogram  1:22.0%  2:7.5%  3:17.7%  4:19.6%  5:1.2%  6:28.0%  7:2.8%  8+:1.0%
+//
+// That is hypothesis A — a draw reuses the previous mesh or replaces it whole — against a
+// pre-registered kill of "1.30 batched calls a draw or the item is dead". So the batch is
+// worth **1.742 -> 0.468 calls a draw = 0.616 ms/frame** at 9,300 draws and 52 ns a driver
+// call (`part81-kickoff.md` §1, `phase5-notes.md` §6ed).
+//
+// THE PER-BINDING CACHE COMPARISON IS KEPT, and that is the whole design. Binding the
+// full 3.29-wide range unconditionally is simpler code and the wrong trade: it would hand
+// the driver 3.29 bindings' worth of work on every draw that changed one, giving back
+// part 18's elision to buy a call reduction. Only RUNS OF CHANGED bindings are issued.
+//
+// THE CACHE IS UPDATED AT FLUSH, NOT AT OFFER, because a draw can still fail between the
+// two. The bind loop breaks out on a bad stream and returns without drawing; if the cache
+// had already recorded those bindings as bound, the NEXT draw would elide a bind that was
+// never issued and read another mesh's vertices. `BindBatchDiscard` is that path.
+constexpr uint32_t kBindBatchMax = Renderer::BoundState::kMaxTrackedBindings;
+bool g_noBindBatch = false;        // CZ_VK_NO_BIND_BATCH — one call per binding
+bool g_verifyBindBatch = false;    // CZ_VK_VERIFY_BIND_BATCH
+bool g_verifyBindPoison = false;   // ...and its positive control
+uint64_t g_bindBatchCalls = 0;     // vkCmdBindVertexBuffers the batched path issued
+uint64_t g_bindBatchDraws = 0;
+uint64_t g_bindVerifyChecked = 0, g_bindVerifyBad = 0;
+
+VkBuffer g_pendBuf[kBindBatchMax]{};
+VkDeviceSize g_pendOff[kBindBatchMax]{};
+uint32_t g_pendMask = 0;
+// The verifier's record of what the draw ASKED FOR, written at offer time in offer order.
+// Compared against an expansion of what the batched calls actually handed the driver.
+uint32_t g_recBinding[kBindBatchMax]{};
+VkBuffer g_recBuf[kBindBatchMax]{};
+VkDeviceSize g_recOff[kBindBatchMax]{};
+uint32_t g_recN = 0;
+
+// The draw failed after offering some binds. Drop them WITHOUT touching the cache.
+inline void BindBatchDiscard()
+{
+    g_pendMask = 0;
+    g_recN = 0;
+}
+
+// Issue the pending binds as contiguous runs, then — and only then — update the cache.
+void BindBatchFlush()
+{
+    if (!g_pendMask)
+    {
+        g_recN = 0;
+        return;
+    }
+    // What the driver was actually handed, expanded back to one entry per binding. This
+    // is the verifier's other side, and it is written from `first`/`count`/the packed
+    // arrays rather than from the pending array — which is the point: a wrong
+    // `firstBinding` would land a real stream in the wrong slot, and no existing gate
+    // covers that. `CZ_VK_ORDER_GATE` hashes the pipeline and the vertex RANGE, not which
+    // buffer went into which binding, so it would pass.
+    uint32_t isB[kBindBatchMax]{};
+    VkBuffer isBuf[kBindBatchMax]{};
+    VkDeviceSize isOff[kBindBatchMax]{};
+    uint32_t isN = 0;
+    for (uint32_t b = 0; b < kBindBatchMax;)
+    {
+        if (!(g_pendMask & (1u << b)))
+        {
+            ++b;
+            continue;
+        }
+        uint32_t e = b;
+        while (e + 1 < kBindBatchMax && (g_pendMask & (1u << (e + 1))))
+            ++e;
+        const uint32_t count = e - b + 1;
+        VkBuffer bufs[kBindBatchMax];
+        VkDeviceSize offs[kBindBatchMax];
+        for (uint32_t i = 0; i < count; i++)
+        {
+            bufs[i] = g_pendBuf[b + i];
+            // THE POISON, and it had to be one that fires on EVERY check rather than only
+            // on multi-binding runs: 22% of runs are one binding long, so a poison that
+            // needed count > 1 could not read 100% and would not have shown the checker
+            // capable of failing (gotcha 30). Shifting every offset by 16 bytes does. It
+            // stays inside the buffer in both directions and it renders garbage on
+            // purpose — this is a diagnostic arm, never a configuration.
+            offs[i] = g_verifyBindPoison
+                          ? (g_pendOff[b + i] >= 16 ? g_pendOff[b + i] - 16
+                                                    : g_pendOff[b + i] + 16)
+                          : g_pendOff[b + i];
+        }
+        if (!NoDriverRecord())
+            vkCmdBindVertexBuffers(R->cmd, b, count, bufs, offs);
+        else
+            ++g_noDriverRecordSkipped;
+        ++g_bindBatchCalls;
+        if (g_verifyBindBatch)
+            for (uint32_t i = 0; i < count && isN < kBindBatchMax; i++)
+            {
+                isB[isN] = b + i;
+                isBuf[isN] = bufs[i];
+                isOff[isN] = offs[i];
+                ++isN;
+            }
+        // The cache records what was ISSUED, at the moment it was issued.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            R->bound.haveVertex[b + i] = true;
+            R->bound.vertexBuffer[b + i] = g_pendBuf[b + i];
+            R->bound.vertexOffset[b + i] = g_pendOff[b + i];
+        }
+        b = e + 1;
+    }
+    if (g_verifyBindBatch)
+    {
+        // Both lists are ascending by binding — the offers because `binding` only ever
+        // increments, the issues because the runs are walked in order — so a positional
+        // compare is the right one and a length disagreement is itself a defect.
+        const uint32_t n = isN < g_recN ? isN : g_recN;
+        for (uint32_t i = 0; i < n; i++)
+        {
+            ++g_bindVerifyChecked;
+            if (isB[i] != g_recBinding[i] || isBuf[i] != g_recBuf[i] ||
+                isOff[i] != g_recOff[i])
+                ++g_bindVerifyBad;
+        }
+        for (uint32_t i = n; i < (isN > g_recN ? isN : g_recN); i++)
+        {
+            ++g_bindVerifyChecked;
+            ++g_bindVerifyBad;
+        }
+    }
+    g_pendMask = 0;
+    g_recN = 0;
+}
+
 void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offset)
 {
     const bool noStateCache = NoBufferBindCache();
@@ -11716,6 +12088,22 @@ void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offs
     // unchanged. 16 is above the highest binding this title has ever used.
     if (binding >= Renderer::BoundState::kMaxTrackedBindings)
     {
+        // The untracked bind is issued inline, exactly as before. The queue is flushed AHEAD of it
+        // to keep the command order identical to the unbatched path — insurance only, in
+        // that `binding` increments monotonically so an untracked bind always follows
+        // every tracked one, and the census measured 0.000 of them a draw.
+        if (!g_noBindBatch)
+            BindBatchFlush();
+        if (g_bindRunCensus)
+        {
+            ++g_brOffered;
+            ++g_brUntracked;
+            g_brDrawHadUntracked = true;
+            // An untracked bind is always issued and can never be folded into a batch, so
+            // it BREAKS the run rather than extending it.
+            BindRunCensusCloseRun();
+            g_brPrevChanged = -1;
+        }
         if (!NoDriverRecord())
             vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
         else
@@ -11727,15 +12115,52 @@ void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offs
         R->bound.vertexBuffer[binding] == buffer)
     {
         ++R->skips.vertexBindRepeats;
+        if (g_bindRunCensus)
+        {
+            ++g_brOffered;
+            BindRunCensusCloseRun();   // an unchanged binding breaks the run
+        }
         return;
     }
-    if (!NoDriverRecord())
-        vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
-    else
-        ++g_noDriverRecordSkipped;
-    R->bound.haveVertex[binding] = true;
-    R->bound.vertexOffset[binding] = offset;
-    R->bound.vertexBuffer[binding] = buffer;
+    if (!g_noBindBatch)
+    {
+        // Queue it. The call — and the cache update — happen at the flush before the draw.
+        g_pendBuf[binding] = buffer;
+        g_pendOff[binding] = offset;
+        g_pendMask |= (1u << binding);
+        if (g_verifyBindBatch && g_recN < kBindBatchMax)
+        {
+            g_recBinding[g_recN] = binding;
+            g_recBuf[g_recN] = buffer;
+            g_recOff[g_recN] = offset;
+            ++g_recN;
+        }
+    }
+    if (g_bindRunCensus)
+    {
+        ++g_brOffered;
+        ++g_brChanged;
+        // Contiguous with the previous CHANGED binding? Then one vkCmdBindVertexBuffers
+        // covers both. Otherwise this starts a new run.
+        if (g_brPrevChanged >= 0 && int32_t(binding) == g_brPrevChanged + 1)
+            ++g_brCurRun;
+        else
+        {
+            BindRunCensusCloseRun();
+            g_brCurRun = 1;
+        }
+        g_brPrevChanged = int32_t(binding);
+    }
+    if (g_noBindBatch)
+    {
+        if (!NoDriverRecord())
+            vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
+        else
+            ++g_noDriverRecordSkipped;
+        R->bound.haveVertex[binding] = true;
+        R->bound.vertexOffset[binding] = offset;
+        R->bound.vertexBuffer[binding] = buffer;
+    }
 }
 
 void BindIndexBufferCached(VkBuffer buffer, VkDeviceSize offset, VkIndexType type)
@@ -20349,6 +20774,8 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
 
     uint32_t binding = 0;
     bool streamsOk = true;
+    if (g_bindRunCensus)
+        BindRunCensusBeginDraw();
     // CZ_VK_RANGE_CENSUS=1 — per indexed draw, the two questions the part-33 NaN chain
     // left: (1) do this draw's INDEX VALUES reach vertices past the fetch constant's
     // declared size — the guard above bounds indxOffset + indexCount, which is the
@@ -20507,7 +20934,17 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         ++binding;
     }
     if (!streamsOk)
+    {
+        // The draw is abandoned: drop the queued binds and leave the cache exactly as the
+        // previous draw left it, because none of these were issued.
+        BindBatchDiscard();
         return;
+    }
+    if (!g_noBindBatch)
+    {
+        BindBatchFlush();
+        ++g_bindBatchDraws;
+    }
     // The evaluation half of CZ_VK_RANGE_CENSUS, shared by the indexed branch
     // (maxIdx = largest index VALUE) and the auto-index branch (maxIdx = count-1):
     // the reachable-vertex question is the same, only the source of maxIdx differs.
@@ -22453,6 +22890,13 @@ bool InitCommon()
     // `std::unordered_map` exactly and the verify arm runs both and compares.
     g_constMemoOff = EnvOn("CZ_VK_NO_CONST_MEMO");
     g_fetchMemoCensus = EnvOn("CZ_VK_FETCH_MEMO_CENSUS");
+    g_bindRunCensus = EnvOn("CZ_VK_BIND_RUN_CENSUS");
+    g_guardCensus = EnvOn("CZ_VK_GUARD_CENSUS");
+    g_noBindBatch = EnvOn("CZ_VK_NO_BIND_BATCH");
+    g_verifyBindBatch = EnvOn("CZ_VK_VERIFY_BIND_BATCH");
+    g_verifyBindPoison = EnvOn("CZ_VK_VERIFY_BIND_BATCH_POISON");
+    if (g_verifyBindPoison)
+        g_verifyBindBatch = true;
     g_streamDedupCensus = EnvOn("CZ_VK_STREAM_DEDUP_CENSUS");
     g_constMemoVerify = EnvOn("CZ_VK_VERIFY_CONST_MEMO");
     g_constMemoVerifyPoison = EnvOn("CZ_VK_VERIFY_CONST_MEMO_POISON");
@@ -25970,6 +26414,82 @@ void VkRenderer_DumpStats()
                 "needed 3 threads and delivered 0.00 with the budget as it stands\n",
                 9.3 * 124e-3 * (n ? double(g_fetchMemoHits) / double(n) : 0.0),
                 9.3 * 124e-3 * exact);
+    }
+    // THE BATCH'S OWN MECHANISM NUMBER, unconditional — it is the statistic the item is
+    // judged on and it cannot be argued with, where a frame time on this route has a
+    // ±2.9% floor. `CZ_VK_NO_BIND_BATCH=1` should read ~1.74 here and the batch ~0.47.
+    if (g_bindBatchDraws)
+        fprintf(stderr,
+                "[vk]   vertex bind calls: %.3f per draw over %llu batched draws (%llu "
+                "vkCmdBindVertexBuffers)%s\n",
+                double(g_bindBatchCalls) / double(g_bindBatchDraws),
+                (unsigned long long)g_bindBatchDraws,
+                (unsigned long long)g_bindBatchCalls,
+                g_noBindBatch ? " [CZ_VK_NO_BIND_BATCH=1, one call per binding]" : "");
+    if (g_verifyBindBatch)
+        fprintf(stderr,
+                "[vk]   BIND BATCH VERIFY: %llu of %llu (binding, buffer, offset) triples "
+                "DISAGREED with what the draw asked for (%.4f%%)%s\n",
+                (unsigned long long)g_bindVerifyBad,
+                (unsigned long long)g_bindVerifyChecked,
+                g_bindVerifyChecked
+                    ? 100.0 * double(g_bindVerifyBad) / double(g_bindVerifyChecked)
+                    : 0.0,
+                g_verifyBindPoison ? "  [POISON ARM — this MUST read 100%]" : "");
+    if (g_bindRunCensus && g_brDraws)
+    {
+        // The last draw's run is still open — close it before reading, or the histogram
+        // silently loses one entry and the runs/draw mean reads low.
+        BindRunCensusCloseRun();
+        const double d = double(g_brDraws);
+        // WHAT A BATCHER WOULD ISSUE: one call per contiguous run of changed bindings,
+        // plus every untracked bind, which is never batched.
+        const double batched = double(g_brRuns + g_brUntracked) / d;
+        const double now = double(g_brChanged + g_brUntracked) / d;
+        fprintf(stderr,
+                "[vk]   BIND-RUN CENSUS over %llu draws: offered %.3f/draw, changed "
+                "%.3f/draw (%.1f%%), runs of changed %.3f/draw, untracked %.3f/draw "
+                "(%llu draws had one)\n"
+                "[vk]     calls/draw now %.3f -> batched %.3f  (saving %.3f/draw = "
+                "%.0f ns = %.3f ms/frame at 9,300 draws and 52 ns a driver call)\n",
+                (unsigned long long)g_brDraws, double(g_brOffered) / d,
+                double(g_brChanged) / d,
+                g_brOffered ? 100.0 * double(g_brChanged) / double(g_brOffered) : 0.0,
+                double(g_brRuns) / d, double(g_brUntracked) / d,
+                (unsigned long long)g_brUntrackedDraws,
+                now, batched, now - batched, (now - batched) * 52.0,
+                (now - batched) * 52e-6 * 9300.0);
+        // THE DISTRIBUTION, because the mean above is consistent with both hypotheses.
+        char hist[256];
+        int at = 0;
+        uint64_t tot = 0;
+        for (int k = 1; k <= 8; k++)
+            tot += g_brRunHist[k];
+        for (int k = 1; k <= 8 && at < int(sizeof hist) - 24; k++)
+            at += snprintf(hist + at, sizeof hist - at, "%s%d:%llu(%.1f%%)",
+                           k > 1 ? " " : "", k == 8 ? 8 : k,
+                           (unsigned long long)g_brRunHist[k],
+                           tot ? 100.0 * double(g_brRunHist[k]) / double(tot) : 0.0);
+        fprintf(stderr, "[vk]     run-length histogram (8 = 8 or more): %s\n", hist);
+    }
+    if (g_guardCensus && R->frame)
+    {
+        const double f = double(R->frame);
+        const uint64_t tot = g_gcPumpBytes + g_gcPoolBytes;
+        fprintf(stderr,
+                "[vk]   GUARD CENSUS over %llu frames: %.2f MB/frame read in total — "
+                "PUMP %.2f MB/frame over %.0f hashes (%.1f%% of bytes), POOL %.2f MB/frame "
+                "over %.0f (%.1f%%)\n"
+                "[vk]     the pump's own half cost %.3f ms/frame (%llu ns over the run, "
+                "%.1f ns a hash, %.2f GB/s)\n",
+                (unsigned long long)R->frame, double(tot) / f / 1048576.0,
+                double(g_gcPumpBytes) / f / 1048576.0, double(g_gcPumpCount) / f,
+                tot ? 100.0 * double(g_gcPumpBytes) / double(tot) : 0.0,
+                double(g_gcPoolBytes) / f / 1048576.0, double(g_gcPoolCount) / f,
+                tot ? 100.0 * double(g_gcPoolBytes) / double(tot) : 0.0,
+                double(g_gcPumpNs) / f / 1e6, (unsigned long long)g_gcPumpNs,
+                g_gcPumpCount ? double(g_gcPumpNs) / double(g_gcPumpCount) : 0.0,
+                g_gcPumpNs ? double(g_gcPumpBytes) / double(g_gcPumpNs) : 0.0);
     }
     if (g_streamDedupCensus && R->skips.draws)
         fprintf(stderr,

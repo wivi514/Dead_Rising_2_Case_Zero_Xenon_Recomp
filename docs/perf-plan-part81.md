@@ -211,3 +211,26 @@ notice 50 or 60, in a crowd.
 
 **Do not reorder 1 before 0.** Every item part 80 killed was killed by a census that cost one
 run, and the one time this project skipped that step it shipped a fix it had to replace.
+
+---
+
+## §5 EXECUTION RECORD — what part 81 did with this plan
+
+Filed in the plan itself rather than only in the notes, so a reader who opens the plan sees
+what happened to each item without having to find the section that corrected it (gotcha:
+*retract where the claim is*).
+
+* **§1.0 the census — RUN, and it says HYPOTHESIS A.** `CZ_VK_BIND_RUN_CENSUS=1` over
+  118,515,047 draws on `part80_crowdroute.sh` (peak 9,622): offered 3.292/draw, changed
+  1.742/draw, **runs of changed 0.468/draw**, mean run 3.72 bindings, **untracked
+  0.000/draw**. Against a pre-registered kill of 1.30, so **step 2 lives**, and the census's
+  own reconstruction of part 80's independently-derived 3.310/1.725 is within 1%.
+  `phase5-notes.md` §6ee §1.
+* **§1.1 the trampoline bypass — BUILT.** Thirteen record-path commands through
+  `vkGetDeviceProcAddr`; `nm -u` shows all thirteen gone from the undefined-symbol list,
+  which is a stronger engagement check than any counter. `CZ_VK_NO_DEVICE_PFN=1` is the
+  control arm and both arms print which they are. §6ee §2.
+* **§1.2 the batch — BUILT AND VERIFIED.** 0.464 and 0.474 calls a draw in two runs against
+  the census's predicted 0.468; `CZ_VK_VERIFY_BIND_BATCH=1` read **0 disagreements of 173.8 M
+  and 161.7 M triples**, and its poison arm was designed to fire on every check rather than
+  only on multi-binding runs, because 22% of runs are one binding long. §6ee §3, §6ee §4.

@@ -3201,3 +3201,31 @@ the texture heap is bindless and update-after-bind, so the layer does not track 
 at all). `tools/part79_picture_gate.sh` runs the four arms and quotes them against a null
 measured in the same block, with `CZ_VK_TEX_BATCH_BREAK=1` as the positive control that
 proves the gate can fail.
+
+## Part 81 — the driver call path: the census, the two arms, and the verifier
+
+Item 0 of `docs/perf-plan-part81.md`. All four are off by default and free when off; the two
+arms are the *control* arms, i.e. setting them restores the pre-part-81 code.
+
+| variable | what it does |
+|---|---|
+| `CZ_VK_BIND_RUN_CENSUS=1` | per draw: bindings offered, bindings CHANGED, and the number of **contiguous runs of changed bindings** — the number the whole batch item turned on — plus a run-length histogram and the count of draws using an untracked binding. Prints `batched calls/draw` and what it is worth at 9,300 draws. |
+| `CZ_VK_NO_DEVICE_PFN=1` | **control arm for the device command table.** Resolve the thirteen record-path `vkCmd*` through `vkGetInstanceProcAddr` — the loader's trampoline — instead of `vkGetDeviceProcAddr`. Both arms print which they used. |
+| `CZ_VK_NO_BIND_BATCH=1` | **control arm for the vertex bind batch.** One `vkCmdBindVertexBuffers` per binding, the code as it was before part 81. |
+| `CZ_VK_VERIFY_BIND_BATCH=1` | records the `(binding, buffer, offset)` triples the draw ASKED for and compares them against an expansion of what the batched calls HANDED the driver. Standing gate: **0 disagreements.** |
+| `CZ_VK_VERIFY_BIND_BATCH_POISON=1` | its positive control — shifts every issued offset by 16 bytes, which must make the verifier read **100%**. Implies `CZ_VK_VERIFY_BIND_BATCH`. Renders garbage on purpose. |
+| `CZ_VK_GUARD_CENSUS=1` | the stream guard's **86.2 MB a frame split by who read it** — pump versus the prehash pool — with a clock over the pump's own half. Answers `perf-plan-part81.md` §2 in one run. |
+
+**Why the two control arms rather than two "enable" arms.** Both changes are strictly less
+work for identical behaviour, so the shipping configuration is the default and the arm is
+what puts the old code back. That also makes them single-variable: `CZ_VK_NO_DEVICE_PFN`
+changes only which pointer is stored, not the call shape.
+
+**Reading the batch:** `[vk]   vertex bind calls: N per draw`. It should read ~0.47 by
+default and ~1.74 with `CZ_VK_NO_BIND_BATCH=1`. That counter is the mechanism and it is far
+tighter than any frame time on this route (floor ±2.9%).
+
+Campaign and gate scripts: `tools/part81_bind_ab.sh` (three arms, three runs each,
+alternated, plus a profiler run an arm for `record` ns/draw) and
+`tools/part81_picture_gate.sh` (null pair, today's code, and the poison arm as the positive
+control, camera held per gotcha 465).

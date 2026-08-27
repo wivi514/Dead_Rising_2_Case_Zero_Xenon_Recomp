@@ -19196,3 +19196,151 @@ Together, 1 and 2 are **~0.5-0.7 ms a frame** at the operator's load, where the 
 and the headroom is 2.3-3.1 ms, so they convert to frame time roughly 1:1. That is more than
 the parallel recorder could deliver (0.00 ms with the thread budget as it stands), needs no
 threads, and cannot change a pixel.
+
+## §6ee — Part 81: the bind-run census, the batch, and the device command table (2026-08-27)
+
+> Plan: `docs/perf-plan-part81.md`. Board: `docs/part81-kickoff.md` §1 item 0. This section
+> is written in the order the work happened, which is also the order the plan pre-registered:
+> **census, then the mechanical change, then the batch, then one campaign.**
+
+### 1. THE CENSUS — one run, and it decided whether half the item existed
+
+`perf-plan-part81.md` §1.0 put the whole item on one number. `BindVertexBufferCached` issued
+one `vkCmdBindVertexBuffers` per binding where the API takes a contiguous RANGE, and the bind
+loop assigns `binding` with `++binding` as it walks the shader's attributes — so the bindings
+are contiguous by construction. What was unknown is whether the **changed** ones are, and the
+two possibilities differed by the entire item: all-or-nothing gives 0.52 batched calls a draw
+and 0.58 ms/frame; scattered gives 1.725 and nothing at all. The kill was pre-registered at
+**1.30 batched calls a draw**.
+
+`CZ_VK_BIND_RUN_CENSUS=1`, one plain global compare on the bind path, on
+`tools/part80_crowdroute.sh` (peak 9,622 windowed draws, 22 windows at or above 8,000):
+
+```
+BIND-RUN CENSUS over 118,515,047 draws:
+  offered 3.292/draw, changed 1.742/draw (52.9%), runs of changed 0.468/draw,
+  untracked 0.000/draw (0 draws had one)
+  calls/draw now 1.742 -> batched 0.468
+  run-length histogram: 1:22.0%  2:7.5%  3:17.7%  4:19.6%  5:1.2%  6:28.0%  7:2.8%  8+:1.0%
+```
+
+**Hypothesis A, and not marginally.** Three things in that block are worth reading separately:
+
+* **It reproduces part 80's numbers independently.** §6ed derived 3.310 offered and 1.725
+  changed from the stats line's own counters; this census counts them on the bind path itself
+  and gets 3.292 and 1.742 — within 1% on both, by a different route.
+* **The mean run is 3.72 bindings**, and the histogram says so honestly rather than by
+  division: the mode is **6 bindings at 28.0%**, and 22.0% of runs really are one binding
+  long. A mean of 3.72 is consistent with several distributions and this project has been
+  caught by a mean standing in for one three times (gotchas 428, 434, 470), which is why the
+  histogram was built into the census rather than added after the result looked good.
+* **`untracked 0.000/draw`, zero draws.** The `binding >= kMaxTrackedBindings` path is the one
+  exception that can never be batched, and it was budgeted for as a small unknown. It is
+  empty. An unbudgeted exception is how a ceiling becomes wrong; this one was budgeted and
+  turned out not to exist.
+
+Runs/draw **below one** is the other half of the finding: about half of all draws change no
+binding at all, and the ones that do change theirs in a single contiguous sweep.
+
+### 2. THE DEVICE COMMAND TABLE — mechanical, and the proof it engaged is in the linker
+
+Every `vkCmd*` symbol a program links against is the Vulkan **loader's exported trampoline**,
+not the driver's function: a PLT hop into `libvulkan`, a load of the dispatch table out of
+the dispatchable handle's first word, an indirect jump into the driver, and only then the
+driver's own work. §6ed measured that whole chain at **251 ns a draw over 4.83 calls a
+draw** — 52 ns a call — so removing one indirection from every one of them is the
+lowest-risk item on the board.
+
+`ResolveDeviceCommands` resolves the thirteen record-path commands once through
+`vkGetDeviceProcAddr` and the call sites go through the stored pointers.
+
+**Done with macros rather than by editing forty call sites, for one reason: a macro cannot
+miss one.** An overlooked call site would leave a call on the loader path and the arm would
+be **partially engaged with nothing to say so**, which is gotcha 151 in its most expensive
+form. And the engagement has an external check that costs nothing:
+
+```
+$ nm -u runtime/build/cz_runtime | grep vkCmd
+vkCmdBeginQuery  vkCmdBeginRendering  vkCmdBlitImage  vkCmdClearColorImage
+vkCmdClearDepthStencilImage  vkCmdCopyBufferToImage  vkCmdCopyImage
+vkCmdCopyImageToBuffer  vkCmdEndQuery  vkCmdEndRendering  vkCmdPipelineBarrier
+vkCmdResetQueryPool  vkCmdWriteTimestamp
+```
+
+All thirteen record-path commands are **gone from the undefined-symbol list** — the linker no
+longer references them at all, which is a stronger statement than any counter: it is not
+possible for one of them to still be on the loader path. The thirteen that remain are the
+resolve, barrier, copy and query paths, which are a handful a frame.
+
+**The null failure mode is loud on purpose.** `vkGetDeviceProcAddr` returns `nullptr` for a
+name the device does not support or that is misspelled, and calling a null function pointer
+is a segfault with nothing attached to it. All thirteen resolve in one place, the count is
+printed, and any null aborts with the name in the message. A silent fallback to the loader
+symbol would be worse than a crash.
+
+**The control arm is a genuinely single-variable one.** `CZ_VK_NO_DEVICE_PFN=1` resolves the
+same thirteen names through `vkGetInstanceProcAddr`, which for a device-level command returns
+the loader's trampoline — the function the exported symbol *is*. Both arms therefore call
+through a stored pointer with identical argument marshalling, and the only difference between
+them is whether that pointer holds the trampoline or the driver. Today's code reaches the
+trampoline through the PLT, so the control arm is a hair cheaper than the code it stands in
+for; **that direction is the safe one — it can only UNDER-state the saving.** Both arms print
+which they are:
+
+```
+[vk] device command table: 13 commands resolved via vkGetDeviceProcAddr — the driver directly
+```
+
+### 3. THE BATCH, AND THE TWO THINGS ITS DESIGN TURNS ON
+
+`BindBatchFlush` accumulates the draw's changed binds into a 16-entry array and issues one
+`vkCmdBindVertexBuffers` per **contiguous run of changed bindings**, immediately before the
+draw.
+
+**(a) THE PER-BINDING CACHE COMPARISON IS KEPT.** Binding the full 3.29-wide range
+unconditionally is simpler code and the wrong trade: it hands the driver 3.29 bindings' worth
+of work on every draw that changed one, giving back part 18's 47.9% per-binding elision to
+buy a call reduction. The plan said this in advance and the census then said the runs are
+long enough that keeping the elision costs almost nothing — 0.468 batched calls a draw
+against the 0.521 an all-or-nothing model predicted.
+
+**(b) THE CACHE IS UPDATED AT FLUSH, NOT AT OFFER.** This is the only part of the change that
+could have been silently wrong. The bind loop breaks out on a bad stream and returns
+**without drawing**; if the cache had recorded those bindings as bound at offer time, the
+next draw would elide a bind that was never issued and read another mesh's vertices — a
+plausible-looking picture, no API error, no counter. `BindBatchDiscard` is that path, and it
+drops the queue while leaving the cache exactly as the previous draw left it.
+
+The untracked path (`binding >= kMaxTrackedBindings`) is unchanged: always issued, never
+assumed unchanged, never batched, and the queue is flushed ahead of it so the command order
+is identical to the unbatched path. That is insurance only — `binding` increments
+monotonically, so an untracked bind always follows every tracked one, and the census measured
+zero of them.
+
+### 4. THE VERIFIER, AND WHY NO EXISTING GATE COVERED THIS
+
+**`CZ_VK_ORDER_GATE` would have passed a wrong batcher.** It hashes the pipeline and the
+vertex RANGE — not which buffer landed in which binding. A batcher that got `firstBinding`
+wrong would hand a draw a real stream in a wrong-looking-right slot and that gate would say
+nothing.
+
+So `CZ_VK_VERIFY_BIND_BATCH=1` records the `(binding, buffer, offset)` triples the draw
+**asked for**, at offer time, and compares them against an expansion of what the batched
+calls **handed the driver** — written from `firstBinding`, `count` and the packed arrays
+rather than from the pending array, which is the point.
+
+```
+BIND BATCH VERIFY: 0 of 161,713,445 triples DISAGREED  (0.0000%)
+vertex bind calls: 0.474 per draw over 90,364,264 batched draws
+```
+
+Two runs, 173.8 M and 161.7 M triples, **zero disagreements in both** — and the mechanism
+number lands at **0.464 and 0.474 calls a draw against the census's predicted 0.468**, which
+is the batch measured from the other side.
+
+**AND THE CHECKER WAS SHOWN CAPABLE OF FAILING.** `CZ_VK_VERIFY_BIND_BATCH_POISON=1` shifts
+every issued offset by 16 bytes. The poison had to be one that fires on **every** check
+rather than only on multi-binding runs: 22.0% of runs are one binding long, so the obvious
+poison — swapping two entries within a run — could not have read 100% and would not have
+shown the checker capable of failing (gotcha 30). An offset shift does, it stays inside the
+buffer in both directions, and it renders garbage on purpose.
