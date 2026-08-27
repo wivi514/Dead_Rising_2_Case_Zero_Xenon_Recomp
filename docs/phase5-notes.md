@@ -18472,3 +18472,132 @@ What survives on the GPU is what part 78 already listed and priced:
 And the two barrier classes, post-part-78, are **0.098 ms/frame combined over 138.8
 transitions** — 1.4% of the device frame, from 11.0% before. That number is worth re-quoting
 because it is the clearest demonstration this project has that part 78's fix is still in.
+
+## §6dy — Part 79's operator session: the prediction held, the item is worth 0.05 ms a frame, and a NEW hitch class is visible underneath it (2026-08-27)
+
+96.8 s traced, 12,610 frames, crowds at 8,200-9,300 draws, `CZ_VK_GPU_PASSES` + the frame
+trace and **no profiler**. **0 F7 marks.**
+
+### 1. THE PRE-REGISTERED PREDICTION, AND WHAT HAPPENED
+
+Stated before they played, on screen and in `part80-kickoff.md` §4: *the 1,092.5 ms of
+`vkQueueWaitIdle` §6dt measured in their 150 s session should now be ~0*, and the reading
+would be **refuted** by a flush still at ~1,000 us, a non-zero slot-stall count, or the fence
+rising to absorb the saving the way it did on my route.
+
+**The cadence is the same to 2%, so the two sessions are directly comparable**: 1,841 flushes
+in 150 s there (12.3/s), 1,215 in 96.8 s here (12.6/s).
+
+| | part 77's session | part 79's session | |
+|---|---|---|---|
+| **per flush** | **598 us** (of which 568 was the wait) | **54 us** | **−91%** |
+| flush total | ~1,150 ms | **66.0 ms** | |
+| slots STALLED | — | **0** | |
+| `immediate submits` | 1,924 / 1,150.6 ms | **77 / 31.6 ms** | the flushes are off that path entirely |
+| **fence, every band above 3,000 draws** | 0.00 | **0.00** | it did NOT absorb it |
+| staging+submit **per upload** | 181 us | **14 us** | **−92.3%** |
+| staging+submit, session | 1,115.3 ms | **79.6 ms** | |
+
+**Every clause of the prediction held and none of the three refutations fired.**
+
+### 2. AND IT IS 0.05 ms A FRAME, WHICH IS ALSO WHAT WAS PREDICTED
+
+1,215 flushes x 544 us removed = **661 ms of a 96.8 s session, 0.68% of the wall clock** —
+almost exactly the 0.73% part 77's session implied. Spread over 12,610 frames that is
+**0.052 ms per frame**, and it lands on the 9.6% of frames that carry a flush.
+
+**No frame-time statistic in this project can see that, and the session confirms it cannot.**
+Their banded medians against part 78's session:
+
+| draws | wall p78 | wall p79 | GPU p78 | GPU p79 |
+|---|---|---|---|---|
+| 3,000-5,000 | 7.69 | 8.24 | 6.80 | **7.48** |
+| 5,000-7,000 | 8.79 | 9.49 | 7.89 | **8.20** |
+| 7,000-9,000 | 11.66 | 11.83 | 9.73 | **10.03** |
+| 9,000-12,000 | 13.18 | 13.00 | 10.80 | **10.74** |
+
+**Read the GPU column, not the wall column, and the comparison disqualifies itself.** This
+was a CPU-only change; it cannot move the device's time. The GPU rose 3-10% in three of the
+four bands, so those bands are not the same CONTENT at the same draw count — session-to-session
+variance, not a regression (`measurement.md` §4, and §6dv declined to quote its own 0-3,000
+band for the same reason). **The one band where the GPU agrees is 9,000-12,000** (10.80 vs
+10.74, 0.6%), and there the wall moved −1.4% and the CPU −1.6% — the right sign and about 4x
+the size the arithmetic predicts, i.e. inside the noise either way.
+
+**So the honest statement is: the mechanism is gone at their load, measured on the counter
+that targets it, and the frame rate is unchanged because 0.05 ms a frame is unchanged.** That
+was the pre-registered expectation, it was said to them on screen before they played, and
+nothing here is a disappointment.
+
+### 3. THE FINDING THAT MATTERS MORE: WHAT IS LEFT ON THE SLOW FRAMES IS OURS AND UNEXPLAINED
+
+16 frames over 30 ms in 96.8 s. Classified by where the time actually went rather than by
+which counter is non-zero — which is the distinction that matters, because three of these
+carry a handful of texture uploads worth **0.1 ms** and a presence test would file them as
+texture frames:
+
+| class | frames | total | what it is |
+|---|---|---|---|
+| pump SLEEP | 9 | 498 ms | 26-64 draws, `sleep` is 97-99% of the frame. Menu and load transitions; five are exactly 30.0 ms. Not gameplay. |
+| **texture** | **1** | **111.5 ms** | the area load: 779 uploads, 97 pipelines, 61.5 ms of texture work |
+| **unexplained CPU RECORDING** | **4** | **356 ms** | **158.4 / 87.3 / 60.3 / 50.0 ms, at 5,500-9,300 draws, with ~0.1 ms of texture work, 0-3 pipelines, fence 0.00 and sleep 0.00 — the whole frame is inside our recording** |
+
+**That last row is the live item now.** Part 77 removed the texture path as a hitch cause and
+part 79 removed the last of its serialisation; what is left underneath is four frames a
+session where the pump spends 50-158 ms recording and nothing in the trace says on what. The
+phase columns cannot answer it — they are `ProfScope`s and read zero without `CZ_VK_PROFILE`,
+which is 2-4 ms a frame and inverts the regime (gotcha 454). **Catching one needs either an
+always-on split of `walk` or a profiler run that reaches a crowd**, and it is the first thing
+`part80-kickoff.md` should carry.
+
+They pressed F7 zero times, which is worth stating precisely: **it is not evidence that these
+four frames were imperceptible**, only that they were not marked. Ask directly next time.
+
+### 4. THE EXTENT CENSUS AT THEIR RESOLUTION — first time, and it confirms §6dv §4
+
+```
+pass: 1 draw   0.986 ms/frame — 15.1% of THEIR GPU frame, against 13.8% of my route's
+   1720x720    0.436 ms  2.62 passes/frame  167 us each      (mine: 154 us)
+    860x360    0.191     3.14                61
+   3440x1440   0.142     0.78               182               (mine: 182)
+   3440x2048   0.066     9.08                 7
+   ...the six-step luminance pyramid, 107x44 down to 2x2, 7 us a pass, 0.034 ms/frame total
+```
+
+**The same 14 extents in the same order, at a different load on a different route.** The post
+chain is a larger share of their GPU frame than of mine — 15.1% against 13.8%, which is
+§6dv §4's observation reproduced with the mechanism named — and it is still the title's own
+shaders at half, quarter and full resolution. §6dx's refutation stands at their load too.
+
+`pass: >=256 draws` is 3.296 ms: `3440x2048` 1.89 passes at 1,097 us and **`1720x1440`
+0.63 passes at 1,946 us** — the left/right tiling again, 1.227 ms/frame in 0.63 regions.
+
+### 5. THE TEXTURE PATH HAS FLIPPED, AND IT RE-PRICES BOARD ITEM 4
+
+```
+texture uploads: 5550, 246.0 MB, 79.6 ms staging+submit (14 us each)
+       ...and 307.1 ms DECODING them, 55 us each — 79% of the upload path
+decode split: base-untile 113.3 (36.9%)  mip-guards 98.8 (32.2%)  mip-untile 64.0 (20.8%)
+              vkCreateImage 27.4 (8.9%)  alloc 10.1  src-hash 4.8  content-scan 3.3  RESIDUAL 0.0
+```
+
+§6dt said *"the staging half is still 77% of the texture path at their load"*. **It is now
+17%**, and the untile loops are **177.3 ms, 57.7% of the decode and the single largest term in
+the whole texture path at their load.** §6ds §10 priced that item as SMALL against a standing
+40 ms kill, and that judgement still holds — the load frame's whole decode is 58.0 ms, so a
+3x on the untile is worth ~22 ms of a 111.5 ms frame — but it is no longer small *relative to
+what is left*, and it is fully specified and proven (`tools/tile_offset_separable.py`, 967,680
+combinations, 0 mismatches).
+
+### 6. GATES, from their own log
+
+```
+F7 marks 0    no translated shader 0    slot mix-ups 0    CONST MEMO STALE 0
+stale present slots 0     upload slots STALLED 0     GPU split RESIDUAL 0.9%
+image barriers 4,022,598 (319.1/frame), 0.0% WIDE     image memory: 5550 pooled into 9 blocks
+barrier classes 0.053 + 0.126 = 0.179 ms/frame  <- part 78's session read 0.179 EXACTLY
+```
+
+The barrier total matching part 78's session to three decimals on a different route at a
+different load is the strongest standing evidence that that fix is still engaged, and the
+pool's 9 blocks for 5,550 images is part 77's still holding.
