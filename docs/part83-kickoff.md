@@ -75,9 +75,14 @@ stranger runs them.
 ## 3. WHAT IS OWED TO THE OPERATOR
 
 * **Nothing measured.** Part 82 launched no game and asked for no verdict.
-* **One decision with a fee attached, flagged early rather than at packaging time:** C.4, the
-  paid Apple Developer account. Without notarisation macOS refuses the app and the bug report
-  is "it doesn't open".
+* **One decision with a fee attached — and it is OPTIONAL, which part 82 first got wrong.**
+  C.4, the $99/yr Apple Developer Program. It buys NOTARISATION, not App Store access, and
+  the App Store is irrelevant here. Without it a Mac player gets "Apple could not verify…"
+  once and clears it in **System Settings → Privacy & Security → Open Anyway** (the
+  right-click → Open bypass is gone as of Sequoia). Ad-hoc signing is still required — Apple
+  Silicon will not run an unsigned arm64 binary — but that is free and local, and it must run
+  AFTER the strip step or the signature is invalid. **Recommendation: ship ad-hoc, buy
+  notarisation later if the support load justifies it.** Nothing has to be undone to add it.
 * **One free improvement to the shipped artifact:** `sudo dnf install nasm`, then re-run
   `tools/build_ffmpeg_lgpl.sh`. Without it the bundled decoder is built from C with no
   hand-written x86 assembly — correct, and slower on the audio path.

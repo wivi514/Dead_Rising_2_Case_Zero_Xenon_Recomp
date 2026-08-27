@@ -132,7 +132,7 @@ shaders too, but as templates rather than as usable microcode.
 |---|---|---|---|
 | Linux x86_64 | `CaseZeroRecomp-linux-x86_64.AppImage` + `.tar.zst` | this machine | AppImage bundles SDL2 + ffmpeg; Vulkan **loader stays the host's** |
 | Windows x86_64 | `CaseZeroRecomp-windows-x86_64.zip` | this machine, clang-cl cross or a Windows box | vcpkg SDL2 + ffmpeg beside the exe |
-| macOS arm64 | `CaseZeroRecomp-macos-arm64.dmg` | a Mac (unavoidable — notarisation) | signed + notarised `.app`, MoltenVK inside |
+| macOS arm64 | `CaseZeroRecomp-macos-arm64.dmg` | a Mac (unavoidable) | ad-hoc signed `.app`, MoltenVK inside. **Notarisation is optional and needs the $99/yr account — see C.4** |
 
 **No `assets/` content in any artifact.** With the first-run shader build (§3.D) that includes
 no `.spv` either, so the only game-derived thing shipped is the recompiled image inside the
@@ -265,9 +265,46 @@ so this is a build-flag question, not a feature loss).
 **Pre-registered kill: if the texture heap does not fit Metal's argument buffer limits,
 macOS needs a descriptor redesign and is its own milestone — say so rather than absorbing it.**
 
-**C.4 Signing and notarisation.** *(1 day + procurement)* Without notarisation Gatekeeper
-refuses the app and the bug report is "it doesn't open". **Needs a paid Apple Developer
-account — a decision with a fee attached, flagged now rather than at release time.**
+**C.4 Signing and notarisation — AND THE PAID ACCOUNT IS OPTIONAL, WHICH THIS FILE
+PREVIOUSLY GOT WRONG.** *(0.5 day unsigned, or 1 day + procurement notarised)*
+
+~~Without notarisation Gatekeeper refuses the app and the bug report is "it doesn't open".~~
+**Retracted: Gatekeeper does not refuse it, it blocks it by default with an override path.**
+And the App Store is not the deciding factor — the App Store is one distribution channel with
+its own requirement, and this project is not using it. The thing that costs money is
+**notarisation**, which needs a *Developer ID Application* certificate, which is issued only
+to members of the paid Apple Developer Program ($99/year). There is no free route to a
+Developer ID and no way to notarise without one.
+
+Three tiers, and only the third has a fee:
+
+| tier | what it needs | what the player sees on first launch |
+|---|---|---|
+| **ad-hoc signed** (`codesign -s -`) | nothing, free, local | "Apple could not verify … it may contain malware." Blocked, with an override |
+| **Developer ID signed, not notarised** | the paid account | the same warning — signing alone buys nothing without notarisation |
+| **Developer ID signed + notarised + stapled** | the paid account | it just opens |
+
+**Ad-hoc signing is not optional even in tier 1.** Apple Silicon refuses to execute an arm64
+binary with no signature at all, so `codesign --sign -` must run on every shipped Mach-O.
+That is free and local. **It must run AFTER the strip step**, because A.3's `objcopy` pass
+modifies the binary and any edit invalidates a signature — on macOS the packaging order is
+build → strip → sign, not build → sign → strip.
+
+**The override the player uses, stated exactly, because "right-click and Open" is stale
+advice.** macOS Sequoia removed the right-click → Open bypass. The current sequence is: launch
+it, get refused, then **System Settings → Privacy & Security → "Open Anyway"**, then launch
+again and confirm. It is three steps and it must be in the README verbatim (E.4), with a
+screenshot if possible — a wrong instruction here is indistinguishable from a broken build.
+`xattr -dr com.apple.quarantine <app>` in a terminal is the one-line equivalent and is worth
+giving as well, because the quarantine flag is what triggers all of this and a build the
+player compiles themselves never carries it.
+
+**Recommendation: start unsigned-beyond-ad-hoc and treat the $99 as a later decision.** The
+audience for this build has already had to find and copy an Xbox 360 content package; a
+Privacy & Security toggle is not what will stop them. Notarisation is worth buying when macOS
+users are numerous enough that the support load exceeds the fee, and nothing about the
+unsigned route has to be undone to add it later — it is one extra step in the packaging
+script plus the certificate.
 
 **C.5 Gates.** *(0.5 day)* The same three as B.4.
 
@@ -408,7 +445,7 @@ had to answer the second.
 | A release build type changes the frame | low-medium | A.3's regime check | A.3 |
 | ffmpeg bundling drags GPL in | low, but legally sharp | build LGPL explicitly and check `--enable-gpl` is absent | before E.2 |
 | The two unpriced part-81 changes misbehave for a stranger | low | price them, or document the knobs | before release |
-| Apple notarisation blocks at the last moment | low | C.4, done early, not at packaging time | C.4 |
+| Apple notarisation blocks at the last moment | low, **and no longer a blocker** | C.4: the unsigned route ships without it, at the cost of a Privacy & Security toggle the player performs once | C.4 |
 
 ---
 
