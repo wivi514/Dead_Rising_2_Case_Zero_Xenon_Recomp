@@ -5961,3 +5961,100 @@ and **§6dx** (item 2); lessons: gotchas **465-466**):
   slots and **0.0% wide barriers over 3.7-4.0 M**. Renderer-only change
   — no config, kernel, PM4 or shader path touched — so part 74's A5 and `alu_const_gate
   --hlsl-dir` sweeps and part 75's cache gates stand.
+
+---
+
+Where the port is, as of 2026-08-27 (**PART 80 CLOSED, NOTHING OWED — PERFORMANCE. THE BOARD'S
+ITEM 1 IS REFUTED FOR THE COST OF TWO RUNS, THE THREE CENSUSES THAT CHASED THE LEAD IT LEFT
+ALL REFUTED THEMSELVES, AND THE REAL DELIVERABLE IS THAT THE OPERATOR'S OWN 9,300-DRAW ROUTE
+NOW REPLAYS UNATTENDED. THE HONEST HEADLINE IS THAT THERE IS NO LARGE CPU ITEM LEFT.**
+~~`docs/part81-kickoff.md` IS THE LIVE HAND-OFF.~~ — it WAS, for one part. Records: `phase5-notes.md` **§6eb** (the
+route, the regime, item 1's ceiling) and **§6ec** (the decomposition and the three censuses);
+lessons: gotchas **473-480**):
+
+* **PART 79's OWED SENTENCE WAS COLLECTED FIRST, AND IT CLOSES THE CLASS.** Asked in part 80's
+  opening message — *after loading into an area, and late in a crowd, did you feel anything?* —
+  and the answer was **"Nothing — felt smooth."** The stream-store growth class is now closed
+  on BOTH channels: the counter side was already structural (0 growths, 0 ceiling overruns),
+  and this is the perceptual half, which is the half that mattered because both of the
+  campaign's questions were *"did you feel it"*. §6ea §2 carries the retraction in place.
+* **THE ROUTE WAS THE REAL BLOCKER AND THE OPERATOR REMOVED IT.** Four hand-offs in a row said
+  a CPU item needs 8,000+ draws and `autoroute.sh` reaches ~6,200. They surveyed the DebugJump
+  entries themselves, found spawns at 8,490-8,885, then played their preferred route once with
+  `CZ_INPUT_TRACE` — which part 80 had just taught to carry **milliseconds and decoded names**.
+  `tools/part80_transcribe_route.py` turned that into a recipe and
+  **`tools/part80_crowdroute.sh` replays it unattended: peak 9,363 draws first try, 9,255 /
+  9,457 / 9,622 on three nulls.**
+* **AND IT REPRODUCES THEIR REGIME BAND FOR BAND**: 12.93 wall / 10.62 GPU / **0.00 fence** /
+  12.45 CPUrec at 9,000-12,000 draws, against their 13.64 / 10.58 / 0.00 / 13.16 (§6ea §4).
+  **7,958 of 20,313 frames sit in that band.** Noise floor measured before anything was
+  compared: **+1.6% frame-weighted, MIXED SIGN, ±2.9% in the decisive band.**
+* **THE TRANSCRIPTION HAD TO BECOME ANALOG, AND ONLY THE OPERATOR COULD HAVE CAUGHT IT.** The
+  first replay used the eight cardinal stick names and they watched it: *"the character goes
+  forward the whole time while I was often slightly to the left so it runs into the sheriff
+  office building instead of middle of street."* The trace agrees exactly — over the
+  14.5-second walk Y is **pinned at 32767** while X drifts **-5,467..+3,993**. So
+  `CZ_FAKE_PRESS_SEQ` grew `LS<x>/<y>` entries and `+` to hold both sticks at once, because
+  they turn the camera WHILE walking and the camera decides the draw set. **The failure was
+  silent** — the run still arrived somewhere and still reported a draw count (gotcha 478).
+* **ITEM 1 IS REFUTED, AND THE MEASUREMENT IS TWO RUNS.** `CZ_VK_NO_DRIVER_RECORD=1` skips
+  every `vkCmd*` in the record path and nothing else. `record` goes **614/639 -> 377/374
+  ns/draw**, so the driver is **251 ns a draw**, decomposing exactly where it should (state
+  -139, index -64, vertex -45) with `guard` and `residual` **unchanged to the nanosecond** as
+  the probe's own control. A second, independent number agrees: **4.83 `vkCmd*` calls a draw**,
+  i.e. **52 ns per driver entry point**.
+* **THE ARITHMETIC, DONE BEFORE THE WORK.** 2.33 ms a frame at 9,300 draws; N workers take
+  `2.33 x (N-1)/N` — **0.00 ms with the budget as it stands** (the guard pool holds all three
+  threads), 1.17 with two, **1.56 with three**, against a pre-registered **1.5 ms kill** and
+  before capture, re-establishment or scheduling. **Why it used to look bigger: part 18's bind
+  cache already elides descriptor-sets 100%, blend 100%, viewport 99.4%, scissor 99.3%,
+  pipeline 70%** — exactly the calls a parallel recorder would have distributed. The item was
+  sized before the cache was that good and re-quoted upward through three hand-offs as a SHARE
+  (gotcha 473). The MAXIMAL design (move the whole ~513 ns phase, 3.2 ms ceiling) is **not**
+  refuted — it is unpriced, needs a re-entrant `UploadStream`, and still needs those threads.
+* **THREE CENSUSES CHASED THE LEAD AND ALL THREE REFUTED THEMSELVES.** A vertex-fetch memo on
+  a whole-file stamp (41.2%, 0.475 ms); the same on an exact per-attribute hash (**53.8%,
+  0.621 ms**) — which then failed on **correctness**, because the loop it skips is where the
+  stream content guard runs, i.e. part 24's stale-HUD defect from the other side; and a
+  per-draw stream-lookup dedup (**47.9% of 4.96 lookups a draw repeat**, 0 overflow — but a
+  repeat returns before the guard, so ~0.27 ms, below the floor). **One reason, not three: a
+  change detector cannot be memoised on the things it is watching** (gotcha 474).
+* **THE CORRECTED DECOMPOSITION, and the profiler bill that made it necessary.** The profiler
+  costs **~807 ns a draw** here (18.6 scopes x 21.7 ns), which accounts for the whole gap
+  between a 20.0 ms instrumented frame and a 12.9 ms one — **so every phase SHARE quoted at a
+  crowd load is distorted and only the sub-scopes are honest.** Read that way, per draw:
+  **record 524 (driver 251, ours 273), other 323, textures ~167, constants ~161.** There is no
+  single large CPU item left, and after five parts of guard work that is a ceiling rather than
+  a backlog (gotcha 475).
+* **AND TWO GPU ITEMS DIED ON REGIME WITHOUT A RUN.** fence **0.00 at every band from 5,000
+  draws up** with 2.3-3.1 ms of headroom, so a GPU saving converts to nothing until the CPU
+  falls by the whole headroom — and the resolve clears (0.568 ms) plus the resolve copies
+  (0.699) are less than it. Read the regime before RANKING a board, not just before measuring
+  an item (gotcha 476).
+* **AND THE DRIVER'S 251 ns WAS DECOMPOSED, WHICH IS WHERE PART 81's PLAN COMES FROM (§6ed).**
+  §6eb called it "the driver"; it is the whole CALL CHAIN, and two thirds of that had never
+  been looked at. From counters already on the stats line: **`vkCmdBindVertexBuffers` 1.725
+  calls/draw (36.8%, 0.83 ms)**, draw 1.000, push constants 1.000, index bind 0.640, pipeline
+  0.280 — reconstructing to **4.691 calls / 2.27 ms against an independently measured 4.83 /
+  2.33**. The biggest is a **SHAPE defect**: the helper issues one call per binding where
+  `vkCmdBindVertexBuffers` takes a contiguous range, and the loop already assigns bindings with
+  `++binding` (gotcha 480).
+* **AND THE IMPLICIT LAYER IN OUR DEVICE CHAIN IS A NULL.** `VK_LAYER_LS_frame_generation` has
+  been inserted as a DEVICE layer in every run this project has ever made — installed three
+  months before the port began, enabled by default. `record` reads **637/645 ns/draw with it
+  and 639/639 without**, where the two default runs differ by more than the arms do; it
+  **defines no `vkCmd*` entry points at all**. No past measurement is contaminated, and frame
+  generation was never active — nor could it have inflated anything, because this runtime
+  counts its own presents at its own seam (gotcha 479).
+* **THERE IS A LIVE PLAN AGAIN — `docs/perf-plan-part81.md`**, the first since part 73
+  exhausted its predecessor. Its item 0 is the driver's call COUNT: a bind-run census that
+  decides whether half the item exists, the loader-trampoline bypass, then the batch —
+  **~0.5-0.7 ms combined at their load, converting ~1:1 at fence 0.00, with no threads and no
+  way to change a pixel.** Its §1.4 names `vkCmdPushConstants` as probably structural, with the
+  reason, so nobody starts there.
+* **Gates:** `--smoke` OK on every build; every reportable route run passed its own 8,000-draw
+  gate with failures renamed `.rejected`; the new censuses are **shown free when off** (+0.4%
+  frame-weighted, mixed sign, against the three pre-census nulls). **Nothing shipped** — every
+  change is an instrument, a census or a route, all off by default. So part 74's A5 and
+  `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates and part 78's barrier gates all
+  stand untouched.

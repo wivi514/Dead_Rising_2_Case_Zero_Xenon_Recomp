@@ -156,7 +156,11 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 480-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 489-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`release-plan.md`** — **THE LIVE PROGRAMME as of part 82.** Five milestones (A
+    shippable tree, B Windows, C macOS, D first-run shaders, E packaging); **A is complete
+    and D.1 is done**, and its **§9 is the execution record with every gate's measurement
+    and §9.2 what is owed**. Its §1.4 carries a retraction in place.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -184,8 +188,11 @@ mask; trust the microcode's own swizzles.
     was built, but **two of its eight steps are retired and its item 0 is answered** —
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
-    supersedes every earlier kickoff on "where the port is". **It is currently
-    `part82-kickoff.md`, and **PERFORMANCE IS PARKED AS OF PART 81** — the operator's
+    supersedes every earlier kickoff on "where the port is". **IT IS
+    `part83-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
+    programme and its **§9 is the execution record**: milestone A complete and gated,
+    D.1 done, and §9.2 is what is owed. ~~It is currently
+    `part82-kickoff.md`~~, and **PERFORMANCE IS PARKED AS OF PART 81** — the operator's
     instruction closing it was *"we'll switch to something else then performance"*. THE
     SUBJECT IS OPEN; part 82's kickoff §0 is the one thing to read before anything else,
     because **two changes are shipping ON BY DEFAULT whose milliseconds were never
@@ -385,6 +392,12 @@ mask; trust the microcode's own swizzles.
     the interface the translated shaders present (push constants, the five descriptor
     spaces, the shared-constants offsets) out of the generated HLSL — read that, not
     this, if the two ever disagree.
+  - `host/host_paths.{h,cpp}` — **release A.1: where everything is.** One root, decided
+    once and printed once, derived from the EXECUTABLE and never from the CWD. All three
+    platform spellings are already written. Read its header before adding any path.
+  - `host/first_run.{h,cpp}` — **release A.2: the honest refusal.** Package -> unpacked
+    game -> shader cache; the first one missing says what, where, and which command
+    produces it, then exits non-zero. `CZ_NO_FIRST_RUN_CHECK=1` is the off switch.
   - `host/window.{h,cpp}` — phase 3: the SDL window, the event loop, the present
     seam and the pad, deliberately in **one** module because in SDL they are one
     thread. Part 54 added the Vulkan swapchain seam — four functions the renderer thread
@@ -659,6 +672,32 @@ past the operator's 6,592. Same warning as above and more so: it is 57 fixed 8 s
 against a drifting boot, so **check the draw count before trusting anything measured off
 it** rather than assuming the run went where the last one did.
 
+Build a RELEASE artifact (docs/release-plan.md; the gates are not optional — the first
+bundle passed every static check and died on its first instruction, gotcha 485):
+```
+tools/build_ffmpeg_lgpl.sh             # once. LGPL, xma1+xma2 only. 120 deps -> 3
+tools/build_sdl2.sh                    # once. REAL SDL2 — Fedora's is a shim that dlopens SDL3
+cmake -S runtime -B runtime/build-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCZ_FFMPEG_PREFIX=$PWD/thirdparty/ffmpeg-lgpl -DCZ_SDL2_PREFIX=$PWD/thirdparty/sdl2
+cmake --build runtime/build-release -j$(nproc)
+tools/release_text_identity.sh         # .text identical to the dev build = the build type is a null
+tools/release_package_linux.sh         # -> dist/CaseZeroRecomp + .tar.zst + generated THIRD_PARTY.md
+tools/release_gate_clean_container.sh  # podman, no dev packages. Must print GATE PASSED
+```
+
+Read the disc's own shader banks — **1,265 distinct PIXEL shaders, against the 345 we
+accumulated in 25 parts** (release D.1). The gate is exact and free: every extracted blob
+must FNV-1a to a name already in the built cache.
+```
+for b in "vs .vo" "ps .po"; do set -- $b
+    python3 tools/big_list.py assets/game/data/shaders/deadrisingprologue-$1.big \
+        --extract "$2" --out /tmp/discsh
+done
+python3 tools/vo_extract_microcode.py /tmp/discsh --gate --out /tmp/discuc   # 343 of 345
+```
+**VERTEX shaders are NOT recoverable this way and the plan's §1.4 is retracted on that
+point** — the title patches their fetch instructions at load, so 0 of 104 appear verbatim.
+
 Run the guest and gate it against hardware. **Both captures, always** — A1 is the
 authority for the boot sequence, A5 for the synchronisation surface, and A5 is *not* a
 superset of A1 (gotcha 45):
@@ -882,6 +921,12 @@ authoritative per-subject records are `docs/xenia-capture-analysis.md` (the numb
 findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
+**SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part83-kickoff.md` IS THE LIVE
+HAND-OFF.** Milestone A (a shippable tree) is COMPLETE and gated; D.1 (the disc shader
+container) is DONE and RETRACTED the plan's §1.4; the next item is **D.2, in-process shader
+translation, which D.1 promoted from a nicety to a hard prerequisite**.
+
 **SUBJECT CHANGE, 2026-08-27, operator instruction closing part 81:** *"Update your memory
 and all we'll switch to something else then performance."* **PERFORMANCE IS PARKED**, having
 been the live subject since part 71. `docs/perf-plan-part81.md` is the reference that resumes
@@ -906,11 +951,84 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
+Where the port is, as of 2026-08-27 (**PART 82 CLOSED — THE RELEASE. MILESTONE A IS COMPLETE
+AND GATED AND THERE IS A LINUX ARTIFACT THAT RUNS IN A CLEAN CONTAINER. D.1 IS DONE AND IT
+RETRACTED THE PLAN'S OWN §1.4: THE DISC HOLDS THE PIXEL SHADERS COMPLETELY AND THE VERTEX
+SHADERS NOT AT ALL.** **`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**; records:
+`docs/release-plan.md` **§9** (all of it, and **§9.2 is what is OWED**); lessons: gotchas
+**484-489**):
+
+* **THE OPERATOR'S INSTRUCTION OPENING THE PART:** *"Do the release plan."* The subject is no
+  longer performance, which stays parked.
+* **THERE IS A LINUX ARTIFACT AND IT WORKS.** `dist/CaseZeroRecomp`, **16 MB compressed**,
+  proven in a podman `fedora-minimal` container with none of this machine's dev packages:
+  every bundled dependency resolves inside the bundle, `--smoke` passes in the PACKAGED and
+  STRIPPED binary, and the first-run refusal prints correctly from a container with no game.
+  The recipe is `part83-kickoff.md` §0, five commands.
+* **EVERY PATH IS ANCHORED TO THE EXECUTABLE NOW** (`runtime/host/host_paths.h`), printed once
+  as `[paths] root … (assets-walk), exe …` on the first line of every log. One rule covers the
+  dev tree and the shipped tree, and **nothing falls back to the CWD** — that fallback is what
+  keeps a dev tree working while the shipped one silently does not (gotcha 484). Gate: the
+  headless recipes from four different working directories, same root, same 449 modules.
+* **AND THERE IS AN HONEST REFUSAL** (`runtime/host/first_run.h`): package -> unpacked game ->
+  shader cache, and the first one missing says what it is, where it goes and the command that
+  produces it. Its six-tree gate found two defects in its own first version, both by running
+  the branches on purpose — a 2 MB `.wav` was ACCEPTED as the game, and the printed extract
+  command had the wrong `-o`.
+* **THE `Release` BUILD TYPE'S REGIME QUESTION IS ANSWERED FOR ONE SECOND, NOT ONE HOUR.**
+  `-O2 -g -DNDEBUG` then the debug info split off — **-O2 and not -O3 because the whole
+  measurement corpus behind parts 47-81 is -O2**. `-g` does not affect codegen and
+  `--strip-debug` does not touch `.text`, so the claim to test is byte identity:
+  **`.text` 35,651,455 bytes, sha256 IDENTICAL** between RelWithDebInfo and Release
+  (`tools/release_text_identity.sh`, positive control exits 1). The build type CANNOT have
+  changed the frame (gotcha 488). It also found that **`CZ_BUNDLE_RPATH` moves `.text`** — a
+  RUNPATH lengthens `.dynstr`, which sits before `.text`, relocating the image.
+* **THE BUNDLE'S FIRST VERSION PASSED EVERY STATIC CHECK AND DIED ON ITS FIRST INSTRUCTION.**
+  `Failed loading SDL3 library.` Fedora's `libSDL2-2.0.so.0` is `sdl2-compat`, a shim that
+  **`dlopen()`s libSDL3** — invisible to `ldd`, which is the exact tool the release plan
+  specified for this job, and it worked on the build machine because SDL3 was installed there
+  (gotcha 485). `tools/build_sdl2.sh` builds real SDL2. **A packaging gate must RUN the
+  artifact, not inspect it.**
+* **AND THE GPL PROBLEM IS SETTLED.** Fedora's ffmpeg is `--enable-gpl` and drags **120 shared
+  objects** — x264, x265, librsvg, cairo, pango, OpenCL, VA-API — against the **fourteen**
+  ffmpeg functions this runtime calls. `tools/build_ffmpeg_lgpl.sh` builds LGPL, xma1+xma2
+  only: **120 -> 3**, 1.4 MB, and it decodes (143,616 float samples, 48 kHz, rms 0.0218).
+* **D.1: THE `.vo`/`.po` CONTAINER IS DECODED.**
+  `microcodeStart = u32@0x04 + u32@(u32@0x18)`, length = objectLength - start, and the
+  microcode is always the object's TAIL. **423 of 423.** The offset is not in the fixed header
+  and no scan for a value could find it — a scan reported a *spurious* perfect discriminator
+  (the blob length; small blobs happen to have no constant block) where DUMPING the structure
+  found the real field one indirection away (gotcha 486).
+* **AND ITS GATE RETRACTED THE PLAN'S §1.4.** By FULL containment rather than a 48-byte head
+  probe: **pixel 343 of 345 byte-for-byte from the disc, vertex 0 of 104.** The old 98.6% was
+  the probe matching a shared vertex-shader prologue (gotcha 489). Aligned by tail, disc and
+  runtime vertex shaders differ in 3-35 scattered bytes in groups of three dwords with whole
+  fields zeroed on disc — **the title patching vertex FETCH instructions at load**, which are
+  exactly what decides the vertex format XenosRecomp emits. **The disc holds 1,265 distinct
+  pixel shaders** against the 345 accumulated over 25 parts and eleven operator sessions.
+* **SO MILESTONE D IS RE-PLANNED**: pixel and vertex are two different problems, **D.2
+  (in-process translation) is a hard prerequisite rather than a nicety**, and D.4 is the
+  PRIMARY path for every vertex shader rather than a safety net for six.
+* **WHAT IS OWED, stated rather than smoothed over (`release-plan.md` §9.2):** the ffmpeg and
+  SDL2 swaps ARE real `.text` changes and their cost is unmeasured; the shipped ffmpeg has no
+  hand-written x86 assembly because this machine has no `nasm` and no sudo; the artifact
+  inherits this machine's glibc floor (2.43); there is no AppImage yet; and
+  `build_shader_spv.sh` is not shippable, which is what D.2 fixes.
+* **Gates:** `--smoke` OK on every build including the packaged and stripped one (and
+  `addr2line` on the STRIPPED binary resolves `main` through the debuglink); four
+  working-directory path runs; six first-run trees; `.text` identity; the clean-container
+  bundle gate; `vo_extract_microcode.py --gate` at 343 of 345. **Nothing in `gpu/`, `kernel/`,
+  `cpu/` or the PM4 path changed except one include and two path-candidate lists in
+  `vk_renderer.cpp`**, so part 74's A5 and `alu_const_gate` sweeps, part 75's cache gates,
+  part 78's barrier gates, part 80's PM4 boundary oracles and part 81's bind verifier all
+  stand.
+
 Where the port is, as of 2026-08-27 (**PART 81 CLOSED — PERFORMANCE, AND IT IS NOW PARKED ON
 THE OPERATOR'S INSTRUCTION. TWO CHANGES ARE LIVE AND ON BY DEFAULT WHOSE CORRECTNESS IS
 VERIFIED AND WHOSE MILLISECONDS WERE NEVER MEASURED — THE SESSION ENDED BEFORE THE CAMPAIGN
 RAN. THE BOARD'S ITEM 1 IS CLOSED BY A CENSUS: THE GUARD'S 86.2 MB IS NOT ON THE PUMP AND
-NEVER WAS.** **`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md`
+NEVER WAS.** ~~**`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; it is
+`part83-kickoff.md`. Records: `phase5-notes.md`
 **§6ee** (all of it, and its §7 is what was NOT measured); lessons: gotchas **481-483**):
 
 * **THE OPERATOR'S INSTRUCTION CLOSING THE PART**, after telling me to stop launching the
@@ -973,103 +1091,8 @@ NEVER WAS.** **`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5
   `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates, part 78's barrier gates and part
   80's PM4 boundary oracles all stand.
 
-Where the port is, as of 2026-08-27 (**PART 80 CLOSED, NOTHING OWED — PERFORMANCE. THE BOARD'S
-ITEM 1 IS REFUTED FOR THE COST OF TWO RUNS, THE THREE CENSUSES THAT CHASED THE LEAD IT LEFT
-ALL REFUTED THEMSELVES, AND THE REAL DELIVERABLE IS THAT THE OPERATOR'S OWN 9,300-DRAW ROUTE
-NOW REPLAYS UNATTENDED. THE HONEST HEADLINE IS THAT THERE IS NO LARGE CPU ITEM LEFT.**
-~~`docs/part81-kickoff.md` IS THE LIVE HAND-OFF.~~ — it WAS, for one part. Records: `phase5-notes.md` **§6eb** (the
-route, the regime, item 1's ceiling) and **§6ec** (the decomposition and the three censuses);
-lessons: gotchas **473-480**):
-
-* **PART 79's OWED SENTENCE WAS COLLECTED FIRST, AND IT CLOSES THE CLASS.** Asked in part 80's
-  opening message — *after loading into an area, and late in a crowd, did you feel anything?* —
-  and the answer was **"Nothing — felt smooth."** The stream-store growth class is now closed
-  on BOTH channels: the counter side was already structural (0 growths, 0 ceiling overruns),
-  and this is the perceptual half, which is the half that mattered because both of the
-  campaign's questions were *"did you feel it"*. §6ea §2 carries the retraction in place.
-* **THE ROUTE WAS THE REAL BLOCKER AND THE OPERATOR REMOVED IT.** Four hand-offs in a row said
-  a CPU item needs 8,000+ draws and `autoroute.sh` reaches ~6,200. They surveyed the DebugJump
-  entries themselves, found spawns at 8,490-8,885, then played their preferred route once with
-  `CZ_INPUT_TRACE` — which part 80 had just taught to carry **milliseconds and decoded names**.
-  `tools/part80_transcribe_route.py` turned that into a recipe and
-  **`tools/part80_crowdroute.sh` replays it unattended: peak 9,363 draws first try, 9,255 /
-  9,457 / 9,622 on three nulls.**
-* **AND IT REPRODUCES THEIR REGIME BAND FOR BAND**: 12.93 wall / 10.62 GPU / **0.00 fence** /
-  12.45 CPUrec at 9,000-12,000 draws, against their 13.64 / 10.58 / 0.00 / 13.16 (§6ea §4).
-  **7,958 of 20,313 frames sit in that band.** Noise floor measured before anything was
-  compared: **+1.6% frame-weighted, MIXED SIGN, ±2.9% in the decisive band.**
-* **THE TRANSCRIPTION HAD TO BECOME ANALOG, AND ONLY THE OPERATOR COULD HAVE CAUGHT IT.** The
-  first replay used the eight cardinal stick names and they watched it: *"the character goes
-  forward the whole time while I was often slightly to the left so it runs into the sheriff
-  office building instead of middle of street."* The trace agrees exactly — over the
-  14.5-second walk Y is **pinned at 32767** while X drifts **-5,467..+3,993**. So
-  `CZ_FAKE_PRESS_SEQ` grew `LS<x>/<y>` entries and `+` to hold both sticks at once, because
-  they turn the camera WHILE walking and the camera decides the draw set. **The failure was
-  silent** — the run still arrived somewhere and still reported a draw count (gotcha 478).
-* **ITEM 1 IS REFUTED, AND THE MEASUREMENT IS TWO RUNS.** `CZ_VK_NO_DRIVER_RECORD=1` skips
-  every `vkCmd*` in the record path and nothing else. `record` goes **614/639 -> 377/374
-  ns/draw**, so the driver is **251 ns a draw**, decomposing exactly where it should (state
-  -139, index -64, vertex -45) with `guard` and `residual` **unchanged to the nanosecond** as
-  the probe's own control. A second, independent number agrees: **4.83 `vkCmd*` calls a draw**,
-  i.e. **52 ns per driver entry point**.
-* **THE ARITHMETIC, DONE BEFORE THE WORK.** 2.33 ms a frame at 9,300 draws; N workers take
-  `2.33 x (N-1)/N` — **0.00 ms with the budget as it stands** (the guard pool holds all three
-  threads), 1.17 with two, **1.56 with three**, against a pre-registered **1.5 ms kill** and
-  before capture, re-establishment or scheduling. **Why it used to look bigger: part 18's bind
-  cache already elides descriptor-sets 100%, blend 100%, viewport 99.4%, scissor 99.3%,
-  pipeline 70%** — exactly the calls a parallel recorder would have distributed. The item was
-  sized before the cache was that good and re-quoted upward through three hand-offs as a SHARE
-  (gotcha 473). The MAXIMAL design (move the whole ~513 ns phase, 3.2 ms ceiling) is **not**
-  refuted — it is unpriced, needs a re-entrant `UploadStream`, and still needs those threads.
-* **THREE CENSUSES CHASED THE LEAD AND ALL THREE REFUTED THEMSELVES.** A vertex-fetch memo on
-  a whole-file stamp (41.2%, 0.475 ms); the same on an exact per-attribute hash (**53.8%,
-  0.621 ms**) — which then failed on **correctness**, because the loop it skips is where the
-  stream content guard runs, i.e. part 24's stale-HUD defect from the other side; and a
-  per-draw stream-lookup dedup (**47.9% of 4.96 lookups a draw repeat**, 0 overflow — but a
-  repeat returns before the guard, so ~0.27 ms, below the floor). **One reason, not three: a
-  change detector cannot be memoised on the things it is watching** (gotcha 474).
-* **THE CORRECTED DECOMPOSITION, and the profiler bill that made it necessary.** The profiler
-  costs **~807 ns a draw** here (18.6 scopes x 21.7 ns), which accounts for the whole gap
-  between a 20.0 ms instrumented frame and a 12.9 ms one — **so every phase SHARE quoted at a
-  crowd load is distorted and only the sub-scopes are honest.** Read that way, per draw:
-  **record 524 (driver 251, ours 273), other 323, textures ~167, constants ~161.** There is no
-  single large CPU item left, and after five parts of guard work that is a ceiling rather than
-  a backlog (gotcha 475).
-* **AND TWO GPU ITEMS DIED ON REGIME WITHOUT A RUN.** fence **0.00 at every band from 5,000
-  draws up** with 2.3-3.1 ms of headroom, so a GPU saving converts to nothing until the CPU
-  falls by the whole headroom — and the resolve clears (0.568 ms) plus the resolve copies
-  (0.699) are less than it. Read the regime before RANKING a board, not just before measuring
-  an item (gotcha 476).
-* **AND THE DRIVER'S 251 ns WAS DECOMPOSED, WHICH IS WHERE PART 81's PLAN COMES FROM (§6ed).**
-  §6eb called it "the driver"; it is the whole CALL CHAIN, and two thirds of that had never
-  been looked at. From counters already on the stats line: **`vkCmdBindVertexBuffers` 1.725
-  calls/draw (36.8%, 0.83 ms)**, draw 1.000, push constants 1.000, index bind 0.640, pipeline
-  0.280 — reconstructing to **4.691 calls / 2.27 ms against an independently measured 4.83 /
-  2.33**. The biggest is a **SHAPE defect**: the helper issues one call per binding where
-  `vkCmdBindVertexBuffers` takes a contiguous range, and the loop already assigns bindings with
-  `++binding` (gotcha 480).
-* **AND THE IMPLICIT LAYER IN OUR DEVICE CHAIN IS A NULL.** `VK_LAYER_LS_frame_generation` has
-  been inserted as a DEVICE layer in every run this project has ever made — installed three
-  months before the port began, enabled by default. `record` reads **637/645 ns/draw with it
-  and 639/639 without**, where the two default runs differ by more than the arms do; it
-  **defines no `vkCmd*` entry points at all**. No past measurement is contaminated, and frame
-  generation was never active — nor could it have inflated anything, because this runtime
-  counts its own presents at its own seam (gotcha 479).
-* **THERE IS A LIVE PLAN AGAIN — `docs/perf-plan-part81.md`**, the first since part 73
-  exhausted its predecessor. Its item 0 is the driver's call COUNT: a bind-run census that
-  decides whether half the item exists, the loader-trampoline bypass, then the batch —
-  **~0.5-0.7 ms combined at their load, converting ~1:1 at fence 0.00, with no threads and no
-  way to change a pixel.** Its §1.4 names `vkCmdPushConstants` as probably structural, with the
-  reason, so nobody starts there.
-* **Gates:** `--smoke` OK on every build; every reportable route run passed its own 8,000-draw
-  gate with failures renamed `.rejected`; the new censuses are **shown free when off** (+0.4%
-  frame-weighted, mixed sign, against the three pre-census nulls). **Nothing shipped** — every
-  change is an instrument, a census or a route, all off by default. So part 74's A5 and
-  `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates and part 78's barrier gates all
-  stand untouched.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-76's** — part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-80's** — part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
