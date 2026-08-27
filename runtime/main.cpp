@@ -36,6 +36,8 @@
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
 #include "gpu/vk_renderer.h"
+#include "host/first_run.h"
+#include "host/host_paths.h"
 #include "host/settings.h"
 #include "host/window.h"
 #include "kernel/audio.h"
@@ -160,10 +162,31 @@ int main(int argc, char** argv)
     if (argc > 1 && strcmp(argv[1], "--smoke") == 0)
         return RunSmoke();
 
-    // Default is relative to runtime/build/, where the binary is built.
-    const char* xexPath = argc > 1             ? argv[1]
-                          : getenv("CZ_XEX")   ? getenv("CZ_XEX")
-                                               : "../../assets/game/default.xex";
+    // Where everything is, decided once and printed once. It used to be
+    // "../../assets/game/default.xex" — CWD-relative, which is why every recipe in
+    // CLAUDE.md begins with `cd runtime/build`. See host/host_paths.h.
+    HostPaths::Report();
+
+    const std::string xexDefault = HostPaths::GameXex().string();
+    const char* xexPath = argc > 1           ? argv[1]
+                          : getenv("CZ_XEX") ? getenv("CZ_XEX")
+                                             : xexDefault.c_str();
+
+    // THE FIRST-RUN CHECK, before anything else can fail for a reason that no longer
+    // names the cause (release-plan A.2, host/first_run.h). It is placed here — after
+    // the paths are decided, before the crash reporter, the memory map or any guest
+    // code — so that its message is the first and only thing a player with a missing
+    // package sees, rather than the twentieth line of a boot log.
+    //
+    // The renderer flag is CZ_VKDRAW, read the same way vk_renderer.cpp reads it: a
+    // headless gate run does not need a shader cache and must not be refused for
+    // lacking one.
+    {
+        const char* vk = getenv("CZ_VKDRAW");
+        const bool renderer = vk && *vk && strcmp(vk, "0") != 0;
+        if (!FirstRun::Gate(renderer, xexPath))
+            return 1;
+    }
 
     // Before anything can fault. A SIGSEGV in recompiled code otherwise reports only
     // a host backtrace, which names the guest function but not the address, object or

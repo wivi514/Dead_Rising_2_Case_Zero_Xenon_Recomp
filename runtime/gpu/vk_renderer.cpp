@@ -6,6 +6,7 @@
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
 #include "xenos.h"
+#include "../host/host_paths.h"
 #include "../host/settings.h"
 #include "../host/window.h"
 #include "../cpu/thread_budget.h"
@@ -2394,7 +2395,12 @@ void LoadWorldXformTable(const std::filesystem::path& shaderDir)
     if (g_worldXformLoaded)
         return;
     g_worldXformLoaded = true;
+    // HostPaths::Config() first (release-plan A.1: anchored to the executable, not the
+    // CWD). The sibling-of-the-shader-cache candidate stays because CZ_SHADER_SPV can
+    // point the cache somewhere else entirely, and the CWD-relative ones stay because
+    // they cost nothing and several recorded recipes rely on them.
     std::vector<std::filesystem::path> candidates = {
+        HostPaths::Config() / "rt_world_xform.json",
         shaderDir.parent_path().parent_path() / "config" / "rt_world_xform.json",
         "config/rt_world_xform.json",
         "../config/rt_world_xform.json",
@@ -6337,22 +6343,18 @@ bool LoadShaders()
         dir = env;
     else
     {
+        // HostPaths::ShaderCache() FIRST and it is the one that matters — it is
+        // anchored to the executable, so it is right from any working directory and
+        // in a shipped tree (release-plan A.1). The CWD-relative candidates below are
+        // kept only because recorded recipes and one-off scripts pass odd working
+        // directories; they can no longer be the reason a player sees a black screen.
+        // The old fourth candidate was this same readlink walk open-coded, Linux-only.
         std::vector<std::filesystem::path> candidates = {
+            HostPaths::ShaderCache(),
             "../../assets/shader_spv", // CWD = runtime/build/
             "../assets/shader_spv",    // CWD = runtime/
             "assets/shader_spv",       // CWD = repo root
         };
-        char exe[4096];
-        const ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-        if (n > 0)
-        {
-            exe[n] = '\0';
-            candidates.push_back(std::filesystem::path(exe)
-                                     .parent_path()
-                                     .parent_path()
-                                     .parent_path() /
-                                 "assets" / "shader_spv");
-        }
         std::error_code ec;
         for (const auto& c : candidates)
             if (std::filesystem::is_directory(c, ec))
