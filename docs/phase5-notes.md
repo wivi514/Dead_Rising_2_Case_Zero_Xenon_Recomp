@@ -18681,6 +18681,54 @@ break a machine that is not yours.** A 512 MB host-visible allocation that fails
 invisible from a 48 GB box. It now retries at 128 and only disables the store if that fails
 too. A smaller store still works; it just grows.
 
+### 4b. AND 512 WAS ONLY HALF RIGHT — THE OPERATOR'S NEXT SESSION REFUTED IT, IN A WAY THAT WAS PRE-REGISTERED
+
+`tools/part80_operator_session.sh` named three things that would refute the attribution, the
+first being *"a `stream store grown to ... MB on frame N` line appearing anyway — 512 was not
+enough for this session"*. **That is exactly what happened**, and the operator's report
+localised it before the log was read:
+
+> *"Just felt a single stutter near the end of the run but didn't feel one after loading in"*
+
+Both halves are in the trace. **No hitch after loading** — the two growths that produced the
+87.3 ms and 158.4 ms spikes are gone, and this session's load frames (110.3 ms at t=6.4 s,
+100.6 at t=38.8) have nothing following them. **The single late stutter is frame 12153 at
+t=94.8 s: 351.7 ms, of which 351.3 is CPU recording**, at 8,911 draws with GPU 8.89 against
+its neighbours' 8.86-8.95 and 11.6-12.6 ms walls. It is the store growing **512 -> 1024 MB,
+329.2 ms** (waits 8.9 + allocate/map 254.9 + free-old 65.3).
+
+**THE ERROR IS THE USEFUL PART: the cost scales with the NEW buffer's size, and the store
+DOUBLES.** So raising the start does not remove the class — it skips the cheap early growths
+and leaves the expensive late one. Two hitches at 87 and 158 ms became one at 352. Better
+where they complained, worse at the peak, and the arithmetic said so before the run: a 256 MB
+step measured 71.7 ms, so a 1 GB step was never going to be small.
+
+### 4c. THE FIX THAT IS STRUCTURAL RATHER THAN BIGGER: START AT THE CEILING
+
+`kPersistCeiling` is 1024 MB, so **a store that starts at 1024 can never grow at all.** That
+is a guarantee, not a larger guess, and hitting the ceiling is not a growth —
+`PersistMaintenance`'s else-branch drops and refills the cache for the price of a
+`WaitAllFramesIdle`.
+
+It is free because of a **25x asymmetry nobody had measured**: the same allocation costs
+**~10 ms at boot and 255 ms mid-run**, because mid-run it has to find a gigabyte while the old
+buffer is still live and the machine is under load. Boot frames across all three starts on the
+autonomous route:
+
+| store start | boot frame | growths |
+|---|---|---|
+| 128 (pre-part-79) | 237.7 / 234.2 ms | 1 (to 256), 71.7 ms |
+| 512 (the half-right fix) | 244.0 / 247.3 / 242.7 ms | 0 here, **1 in the operator's session (to 1024), 329.2 ms** |
+| **1024 (shipping)** | **226.9 / 227.9 ms** | **0, and cannot** |
+
+**The 1 GB allocation is inside the spread of a boot frame that is 230-250 ms whatever we
+do** — the 1024 arm's boot frame is the *lowest* of the seven runs. Every window after the
+loads is 13-18 ms.
+
+**And the fallback is a LADDER now, not a single retry.** 1024 -> 512 -> 128 -> no store. A
+failed allocation of a gigabyte must not become "this machine loses the store entirely", which
+is a ~30% frame-time regression on a path unreachable from a 48 GB box (gotcha 469).
+
 ### 5. WHAT IS STILL UNEXPLAINED
 
 **Two of the four spikes are not growths** — 50.0 ms at t=77.4 s and 60.3 ms at t=93.2 s, both

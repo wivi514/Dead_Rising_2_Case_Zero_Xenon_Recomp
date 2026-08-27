@@ -5361,3 +5361,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      find the code that runs when the resource is refused and ask what it does on a machine
      smaller than yours** — "degrades gracefully" written for a 128 MB request is not
      necessarily a graceful degradation for a 512 MB one.
+
+470. **WHEN A COST SCALES WITH A DOUBLING BUFFER'S NEW SIZE, RAISING THE START DOES NOT REMOVE
+     THE CLASS — IT SKIPS THE CHEAP EVENTS AND LEAVES THE EXPENSIVE ONE.** Part 79 measured
+     the stream store's growth at 71.7 ms for a 256 MB step and raised the start 128 -> 512 to
+     remove the operator's two felt hitches (87 and 158 ms). It removed them, and their next
+     session grew ONCE more, 512 -> 1024, for **329.2 ms in a single frame** — which they felt
+     and correctly located ("a single stutter near the end... didn't feel one after loading").
+     Two hitches at 87 and 158 became one at 352. **The arithmetic said so before the run**
+     and I did not do it: if a step of size N costs f(N) and the container doubles, the LAST
+     growth is always the most expensive one you will ever pay.
+     The fix that works is structural: start at the ceiling, so growth is impossible by
+     construction rather than unlikely. Ask "what makes this event impossible" before "what
+     makes this event rarer".
+
+471. **THE SAME ALLOCATION COSTS 25x MORE MID-RUN THAN AT STARTUP — MEASURE BOTH BEFORE
+     DECIDING WHERE TO PAY IT.** A 512 MB host-visible allocation added **~10 ms to a boot
+     frame already at 235**; a 1024 MB one mid-run cost **255 ms**, because mid-run it must
+     find the pages while the old buffer is still live and the machine is under load. That
+     asymmetry is what makes "reserve the worst case at startup" a free fix rather than a
+     trade — the 1 GB arm's boot frame (226.9 / 227.9 ms) is the LOWEST of seven runs spanning
+     three different starts, i.e. the allocation is inside the noise of a boot frame that is
+     230-250 ms whatever you do. **A startup cost and a steady-state cost are different
+     measurements and the ratio is not 1:1.**
+
+472. **NAME THE REFUTATIONS IN THE HARNESS, AND ONE OF THEM WILL FIRE.**
+     `tools/part80_operator_session.sh` listed three things that would refute part 79's
+     attribution, the first being "a growth line appearing anyway — 512 was not enough for
+     this session". That is precisely what happened, and because it was written down before
+     the run the result read as a measurement rather than as a surprise: the operator's
+     one-sentence report mapped onto a pre-registered branch, and the next fix followed from
+     it in minutes. A harness that only describes success turns a refutation into a
+     debugging session.

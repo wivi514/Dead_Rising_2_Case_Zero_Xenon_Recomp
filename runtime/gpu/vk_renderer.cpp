@@ -21794,23 +21794,37 @@ bool InitCommon()
     // the swap. `PersistMaintenance` doubles it when a frame overruns it.
     // CZ_VK_PERSIST_MB=N sets the start.
     //
-    // **THE DEFAULT IS 512 AS OF PART 79, AND IT WAS 128 FOR TWENTY-TWO PARTS.** A growth is
-    // not a background cost — it is `WaitAllFramesIdle` + `vkDeviceWaitIdle` + a
-    // host-visible allocation and MAP + freeing the old buffer, all on the pump inside ONE
-    // frame, and it is **71.7 ms for a 256 MB step** (split: waits 13.6, allocate/map 42.9,
-    // free-old 15.2). The operator's part-79 session grew twice, 128 -> 256 -> 512, and
-    // **both growths were the worst frame of their own ten-second window and both were
-    // felt** — they were the only thing felt in 96.8 seconds of play (§6dy §3, §6dz).
+    // **THE DEFAULT IS 1024 — THE CEILING — AS OF PART 79, AND IT WAS 128 FOR TWENTY-TWO
+    // PARTS.** A growth is not a background cost: it is `WaitAllFramesIdle` +
+    // `vkDeviceWaitIdle` + a host-visible allocation and MAP + freeing the old buffer, all
+    // on the pump inside ONE frame. The operator's part-79 session grew twice, 128 -> 256
+    // -> 512, and **both growths were the worst frame of their own ten-second window and
+    // both were the only things they felt in 96.8 seconds of play** (§6dy §3, §6dz).
     //
-    // Starting at 512 removes them. Measured on the autonomous route, three runs: the
-    // growth window's worst frame goes **90.89 / 90.31 ms -> 36.69 ms**, and the cost is
-    // **+10 ms on the BOOT frame, which is already 235 ms** — i.e. the allocation is paid
-    // where a hitch is invisible instead of mid-crowd. That is the whole trade.
+    // **THE FIRST FIX WAS 512 AND IT WAS ONLY HALF RIGHT — RECORDED HERE BECAUSE THE ERROR
+    // IS THE USEFUL PART.** The cost scales with the NEW buffer's size and the store
+    // DOUBLES, so raising the start does not remove the class: it skips the cheap early
+    // growths and leaves the expensive late one. At 512 the operator's next session grew
+    // once, 512 -> 1024, and that single growth was **329.2 ms in one frame** (waits 8.9 +
+    // allocate/map 254.9 + free-old 65.3) — they felt it, and correctly reported that the
+    // after-load hitch was gone and one late stutter had appeared. Two hitches at 87 and
+    // 158 ms became one at 352.
     //
-    // Note the waits are the SMALLEST of the three terms. Fencing the old buffer away
-    // (the obvious fix) would have bought 19% of it; only not growing removes the 81%.
+    // **1024 IS `kPersistCeiling`, so the store can never grow AT ALL.** That is a
+    // structural guarantee rather than a bigger guess, and the cost is nil because of a
+    // measured 25x asymmetry: the same allocation costs **~10 ms at boot and 255 ms
+    // mid-run**, since mid-run it must find a gigabyte while the old buffer is still live
+    // and the machine is under load. Boot frames measured across the three starts —
+    // 128: 237.7 / 234.2, 512: 244.0 / 247.3 / 242.7, **1024: 226.9** — i.e. the 1 GB
+    // allocation is inside the spread of a boot frame that is 230-250 ms whatever we do.
+    //
+    // Hitting the ceiling is NOT a growth: `PersistMaintenance`'s else-branch drops and
+    // refills the cache, which costs a `WaitAllFramesIdle` and nothing else.
+    //
+    // Note the waits are the SMALLEST of the three terms in a growth. Fencing the old
+    // buffer away — the obvious, principled repair — would have bought 19% of it.
     static const uint64_t persistMb =
-        Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 512;
+        Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 1024;
     R->persistOn = !EnvOn("CZ_VK_NO_PERSIST_STREAMS");
 
     // Announce itself, because an arm nobody can see in the log is an arm that cannot be
@@ -21993,22 +22007,34 @@ bool InitCommon()
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true, "cross-frame stream store"))
     {
-        // FALL BACK BEFORE GIVING UP. Raising the default from 128 to 512 MB must not turn
-        // "this machine has less RAM than mine" into "this machine loses the store
-        // entirely", which is a ~30% frame-time regression and would be invisible to me
-        // because my machine has 48 GB. A smaller store still works; it just grows, which
-        // is the cost part 79 was removing and is strictly better than not having one.
-        constexpr uint64_t kPersistFallbackMb = 128;
-        fprintf(stderr,
-                "[vk] the %llu MB cross-frame stream store could not be allocated — "
-                "retrying at %llu MB (it will GROW from there, which costs ~72 ms of pump "
-                "time per step; CZ_VK_PERSIST_MB=N sets the start)\n",
-                (unsigned long long)persistMb, (unsigned long long)kPersistFallbackMb);
-        if (persistMb <= kPersistFallbackMb ||
-            !CreateBuffer(R->persist, kPersistFallbackMb << 20, PersistUsage(),
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          /*deviceAddress=*/true, "cross-frame stream store (fallback)"))
+        // FALL BACK DOWN A LADDER BEFORE GIVING UP. Raising the default from 128 MB to a
+        // gigabyte must not turn "this machine has less RAM than mine" into "this machine
+        // loses the store entirely", which is a ~30% frame-time regression and would be
+        // invisible from a 48 GB box — the failure path of a bigger request is not the
+        // same path, and it is the one nobody tests (gotcha 469). A smaller store still
+        // works; it just grows, and a growth is strictly better than no store at all.
+        static const uint64_t kPersistLadder[] = { 512, 128 };
+        bool made = false;
+        for (uint64_t mb : kPersistLadder)
+        {
+            if (mb >= persistMb)
+                continue;   // never "fall back" upward
+            fprintf(stderr,
+                    "[vk] the %llu MB cross-frame stream store could not be allocated — "
+                    "retrying at %llu MB. It will GROW from there, and a growth is a whole "
+                    "frame of pump time (72 ms for a 256 MB step, 329 ms for a 1 GB one); "
+                    "CZ_VK_PERSIST_MB=N sets the start\n",
+                    (unsigned long long)persistMb, (unsigned long long)mb);
+            if (CreateBuffer(R->persist, mb << 20, PersistUsage(),
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             /*deviceAddress=*/true, "cross-frame stream store (fallback)"))
+            {
+                made = true;
+                break;
+            }
+        }
+        if (!made)
         {
             fprintf(stderr, "[vk] the cross-frame stream store could not be allocated at "
                             "all — running without it, which is slower and correct\n");
