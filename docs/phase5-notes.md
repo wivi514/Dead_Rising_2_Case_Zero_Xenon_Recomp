@@ -18601,3 +18601,94 @@ barrier classes 0.053 + 0.126 = 0.179 ms/frame  <- part 78's session read 0.179 
 The barrier total matching part 78's session to three decimals on a different route at a
 different load is the strongest standing evidence that that fix is still engaged, and the
 pool's 9 blocks for 5,550 images is part 77's still holding.
+
+## §6dz — The hitch the operator actually feels was the stream store GROWING, and it is fixed (2026-08-27)
+
+Their verdict on the part-79 session was two sentences: *"Yeah look identical only felt
+hitches at the start right after loading"*. Both halves turned out to be measurements.
+
+### 1. "LOOK IDENTICAL" CLOSES THE PICTURE GATE
+
+The change cannot alter a pixel by construction, the `STILL=1` era medians put the control
+arm inside the null on all three statistics, and the eye that has twice caught what every
+automatic check missed (§6bo's lightmap transposition, part 60's overlay) saw nothing. That
+is the third independent channel and item 1 is closed on the picture.
+
+### 2. "ONLY RIGHT AFTER LOADING" IS EXACT, AND IT NAMED THE CAUSE
+
+§6dy §3 had four frames it could not explain — 158.4, 87.3, 60.3 and 50.0 ms at 5,500-9,300
+draws, each an isolated spike with the SAME draw count, GPU time, uploads and pipeline count
+as the frames either side of it, fence 0.00 and sleep 0.00. Put on a time axis against the
+session's four texture-upload bursts:
+
+| t | frame | wall | s since the last load burst |
+|---|---|---|---|
+| 35.6 s | 6758 | **87.3 ms** | **1.3** |
+| 45.1 s | 8035 | **158.4 ms** | **1.4** |
+| 77.4 s | 10827 | 50.0 ms | 33.7 |
+| 93.2 s | 12240 | 60.3 ms | 49.5 |
+
+**Two of the four land 1.3 and 1.4 seconds after a load** — the same lag both times — and
+those are the two they felt. The other two are deep in crowd play and were not felt.
+
+The log carried exactly two `stream store grown to` lines, at 256 MB and 512 MB. Placed
+against the ten-second `[fps]` windows either side of them, **each growth sits in the window
+whose worst frame is one of the two felt spikes** (`worst 87.26 ms` and `worst 158.40 ms`).
+Two growths, two felt hitches, one in each window, each the window's maximum.
+
+`PersistMaintenance()` on a growth does `WaitAllFramesIdle()`, then `vkDeviceWaitIdle`, then
+a host-visible allocation **and map** of the new size, then destroys and frees the old buffer
+— all on the pump, inside one frame. That is precisely the signature: no workload change, no
+GPU change, all of it in our recording.
+
+### 3. THE CORRELATION WAS TURNED INTO A MEASUREMENT, AND THE SPLIT CHANGED THE FIX
+
+A clock around the growth, split three ways because the remedy differs completely between
+them. Autonomous route, a 256 MB step, reproduced on two runs (72.0 and 71.7 ms):
+
+```
+stream store grown to 256 MB on frame 8081 — 71.7 ms of PUMP time inside ONE frame
+    = waits 13.6  +  allocate/map 42.9  +  free-old 15.2
+```
+
+**The waits are the SMALLEST of the three terms.** The obvious fix — retire the old buffer
+against a fence the way images already are, and skip both waits — buys **19%**. Only *not
+growing* removes the other 81%. Guessing between the three would have bought a fifth of the
+item and called it done (gotcha 238 again, and it is the second time this part).
+
+### 4. THE FIX: THE STORE STARTS AT 512 MB INSTEAD OF 128
+
+`CZ_VK_PERSIST_MB` has existed since part 22 and defaulted to 128, which is where the
+per-frame arena starts. Nothing had ever priced a growth.
+
+Measured on the autonomous route, the growth window's worst frame:
+
+| | run 1 | run 2 |
+|---|---|---|
+| **default 128 (grows to 256)** | **90.89 ms** | **90.31 ms** |
+| **pre-sized 512 (0 growths)** | **36.69 ms** | **33.63 ms** |
+
+**The cost is +10 ms on the BOOT frame, which is already 235 ms** (244.0 / 247.3 against
+234.2 / 237.7). The allocation still happens; it happens where a hitch is invisible instead
+of 1.3 seconds into a crowd. That is the whole trade, and it is the right one.
+
+512 is not a round number chosen for comfort: it is the size the operator's session actually
+grew to, so it removes both of their growths rather than one.
+
+**And the failure path was widened in the same change, because raising a default is how you
+break a machine that is not yours.** A 512 MB host-visible allocation that fails used to set
+`persistOn = false` and run with no store at all — a ~30% frame-time regression that would be
+invisible from a 48 GB box. It now retries at 128 and only disables the store if that fails
+too. A smaller store still works; it just grows.
+
+### 5. WHAT IS STILL UNEXPLAINED
+
+**Two of the four spikes are not growths** — 50.0 ms at t=77.4 s and 60.3 ms at t=93.2 s, both
+far from any load, both with the same isolated-single-frame signature, and **neither was
+felt.** There were only two growth lines in the log, so this is a different cause and it is
+still open. It is smaller, it is rarer, and the operator's threshold sits somewhere between
+60 and 87 ms in a crowd — which is itself a useful calibration for what is worth chasing.
+
+That is part 80's item, and the trace cannot answer it: the phase columns are `ProfScope`s
+and read zero without `CZ_VK_PROFILE`, which costs 2-4 ms a frame and inverts the regime
+(gotcha 454). It needs an always-on split of the pump's walk.

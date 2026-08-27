@@ -9546,6 +9546,18 @@ VkBufferUsageFlags PersistUsage()
                 : 0u);
 }
 
+// HOW LONG A GROWTH ACTUALLY COSTS, and which frame paid it. Added in part 79 because the
+// operator's session produced two hitches they FELT — 87.3 ms and 158.4 ms — that no counter
+// in the trace explained: identical draw count, identical GPU time, identical uploads and
+// pipelines to the frames either side, and the whole cost inside our recording. The log
+// carried exactly two `stream store grown to` lines, and each landed in the 10-second window
+// whose worst frame was one of the two. That is a strong correlation and it is not a
+// measurement, which is the whole difference this clock closes (§6dy §3).
+//
+// It is free when nothing grows — this function early-returns on `!persistWant` long before
+// the clock starts — and a growth happens a handful of times a run.
+uint64_t g_persistGrowNs = 0, g_persistGrowN = 0;
+
 void PersistMaintenance()
 {
     if (!R->persistOn || !R->persistWant)
@@ -9553,26 +9565,55 @@ void PersistMaintenance()
     constexpr VkDeviceSize kPersistCeiling = 1024ull << 20;
     const VkDeviceSize want = std::min(R->persistWant, kPersistCeiling);
     R->persistWant = 0;
+    const uint64_t growT0 = CycNow();
+    // SPLIT THREE WAYS, because the remedy differs completely between them: the two waits
+    // can be removed by retiring the old buffer against a fence the way images already are,
+    // the allocate+map can only be removed by not growing (a bigger start, or growing in
+    // blocks the way part 77's image pool does), and the free is the cheap one. Choosing
+    // between those without the split would be a guess (gotcha 238).
+    uint64_t growWaitNs = 0, growCreateNs = 0, growFreeNs = 0;
     // Every path below either destroys the buffer or resets the cursor so its bytes are
     // handed out again, and both are read by draws recorded in frames that may still be
     // executing. Before part 23 the caller's fence wait made that impossible; it does
     // not any more, so this idles explicitly. It runs at most a handful of times a run.
     WaitAllFramesIdle();
+    growWaitNs = CycNow() - growT0;
     if (want > R->persist.size)
     {
+        const uint64_t wi0 = CycNow();
         vkDeviceWaitIdle(R->device);
+        growWaitNs += CycNow() - wi0;
         const Buffer old = R->persist;
         Buffer grown{};
-        if (CreateBuffer(grown, want, PersistUsage(),
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         /*deviceAddress=*/true, "cross-frame stream store (grown)"))
+        const uint64_t cr0 = CycNow();
+        const bool made = CreateBuffer(grown, want, PersistUsage(),
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                       /*deviceAddress=*/true,
+                                       "cross-frame stream store (grown)");
+        growCreateNs = CycNow() - cr0;
+        if (made)
         {
             R->persist = grown;
+            const uint64_t fr0 = CycNow();
             vkDestroyBuffer(R->device, old.buffer, nullptr);
             vkFreeMemory(R->device, old.memory, nullptr);
-            fprintf(stderr, "[vk] stream store grown to %llu MB\n",
-                    (unsigned long long)(want >> 20));
+            growFreeNs = CycNow() - fr0;
+            const uint64_t growNs = CycNow() - growT0;
+            g_persistGrowNs += growNs;
+            ++g_persistGrowN;
+            // THE FRAME NUMBER IS PRINTED so the next session does not have to interpolate
+            // this event's position from the 10-second `[fps]` windows either side of it,
+            // which is what part 79 had to do.
+            fprintf(stderr,
+                    "[vk] stream store grown to %llu MB on frame %llu — %.1f ms of PUMP "
+                    "time inside ONE frame = waits %.1f + allocate/map %.1f + free-old %.1f"
+                    " (the waits can be fenced away; the allocate can only be removed by "
+                    "not growing)\n",
+                    (unsigned long long)(want >> 20),
+                    (unsigned long long)R->frame, double(growNs) / 1e6,
+                    double(growWaitNs) / 1e6, double(growCreateNs) / 1e6,
+                    double(growFreeNs) / 1e6);
         }
         else
         {
@@ -21750,11 +21791,26 @@ bool InitCommon()
         Env("CZ_VK_ARENA_MB") ? strtoull(Env("CZ_VK_ARENA_MB"), nullptr, 10) : 128;
     // The CROSS-FRAME stream store, same usage and memory type as the arena because the
     // GPU cannot tell them apart — the only difference is that this one is not reset at
-    // the swap. It grows on the same evidence-not-guesswork principle: 128 MB is where the
-    // arena starts too, and `PersistMaintenance` doubles it when a frame overruns it.
+    // the swap. `PersistMaintenance` doubles it when a frame overruns it.
     // CZ_VK_PERSIST_MB=N sets the start.
+    //
+    // **THE DEFAULT IS 512 AS OF PART 79, AND IT WAS 128 FOR TWENTY-TWO PARTS.** A growth is
+    // not a background cost — it is `WaitAllFramesIdle` + `vkDeviceWaitIdle` + a
+    // host-visible allocation and MAP + freeing the old buffer, all on the pump inside ONE
+    // frame, and it is **71.7 ms for a 256 MB step** (split: waits 13.6, allocate/map 42.9,
+    // free-old 15.2). The operator's part-79 session grew twice, 128 -> 256 -> 512, and
+    // **both growths were the worst frame of their own ten-second window and both were
+    // felt** — they were the only thing felt in 96.8 seconds of play (§6dy §3, §6dz).
+    //
+    // Starting at 512 removes them. Measured on the autonomous route, three runs: the
+    // growth window's worst frame goes **90.89 / 90.31 ms -> 36.69 ms**, and the cost is
+    // **+10 ms on the BOOT frame, which is already 235 ms** — i.e. the allocation is paid
+    // where a hitch is invisible instead of mid-crowd. That is the whole trade.
+    //
+    // Note the waits are the SMALLEST of the three terms. Fencing the old buffer away
+    // (the obvious fix) would have bought 19% of it; only not growing removes the 81%.
     static const uint64_t persistMb =
-        Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 128;
+        Env("CZ_VK_PERSIST_MB") ? strtoull(Env("CZ_VK_PERSIST_MB"), nullptr, 10) : 512;
     R->persistOn = !EnvOn("CZ_VK_NO_PERSIST_STREAMS");
 
     // Announce itself, because an arm nobody can see in the log is an arm that cannot be
@@ -21937,10 +21993,27 @@ bool InitCommon()
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       /*deviceAddress=*/true, "cross-frame stream store"))
     {
-        fprintf(stderr, "[vk] the %llu MB cross-frame stream store could not be "
-                        "allocated — running without it, which is slower and correct\n",
-                (unsigned long long)persistMb);
-        R->persistOn = false;
+        // FALL BACK BEFORE GIVING UP. Raising the default from 128 to 512 MB must not turn
+        // "this machine has less RAM than mine" into "this machine loses the store
+        // entirely", which is a ~30% frame-time regression and would be invisible to me
+        // because my machine has 48 GB. A smaller store still works; it just grows, which
+        // is the cost part 79 was removing and is strictly better than not having one.
+        constexpr uint64_t kPersistFallbackMb = 128;
+        fprintf(stderr,
+                "[vk] the %llu MB cross-frame stream store could not be allocated — "
+                "retrying at %llu MB (it will GROW from there, which costs ~72 ms of pump "
+                "time per step; CZ_VK_PERSIST_MB=N sets the start)\n",
+                (unsigned long long)persistMb, (unsigned long long)kPersistFallbackMb);
+        if (persistMb <= kPersistFallbackMb ||
+            !CreateBuffer(R->persist, kPersistFallbackMb << 20, PersistUsage(),
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          /*deviceAddress=*/true, "cross-frame stream store (fallback)"))
+        {
+            fprintf(stderr, "[vk] the cross-frame stream store could not be allocated at "
+                            "all — running without it, which is slower and correct\n");
+            R->persistOn = false;
+        }
     }
 
     // Two samplers, and one global choice per draw is a stated simplification: the
@@ -25589,6 +25662,16 @@ void VkRenderer_DumpStats()
             (unsigned long long)g_flatGrows, double(g_flatGrowNs) / 1e6,
             double(g_flatGrowWorstNs) / 1e6,
             g_flatCacheOff ? " [CZ_VK_NO_FLAT_CACHE: no flat table was in use]" : "");
+    // THE STREAM STORE'S GROWTHS, beside the flat cache's for the same reason: both are
+    // rare, both happen entirely inside one frame, and a rare single-frame cost is exactly
+    // what a run mean cannot see and a player can. Part 79's operator session had two, and
+    // each was the worst frame of its own 10-second window.
+    if (g_persistGrowN)
+        fprintf(stderr,
+                "[vk]   stream store grows: %llu, %.1f ms total, %.1f ms each — each one is "
+                "a whole frame of PUMP time and it is the hitch class §6dy §3 names\n",
+                (unsigned long long)g_persistGrowN, double(g_persistGrowNs) / 1e6,
+                double(g_persistGrowNs) / 1e6 / double(g_persistGrowN));
     fprintf(stderr, "[vk]   pipelines=%zu shaders=%zu textures=%zu arenaHighWater=%llu KB\n",
             R->pipelines.size(), R->shadersMap.size(), TexSize(),
             (unsigned long long)(R->arenaHighWater >> 10));

@@ -5326,3 +5326,38 @@ From phase C part 18 (the frame rate — and none of it was work):
      item, believe it, build the fix, measure the MECHANISM, and say plainly that the number
      the operator needs does not exist yet rather than reporting the route's null as the
      item's value.
+
+467. **A RARE ONE-FRAME COST IS INVISIBLE TO EVERY AGGREGATE AND IS THE ONLY THING THE PLAYER
+     FEELS — AND ITS OWN COMMENT WILL TELL YOU IT IS FINE.** `PersistMaintenance` grows the
+     cross-frame stream store, and its comment said *"it runs at most a handful of times a
+     run"*, which is true and which is exactly why nobody priced it. A growth is
+     `WaitAllFramesIdle` + `vkDeviceWaitIdle` + a host-visible allocation and MAP + freeing
+     the old buffer, all on the pump inside ONE frame: **71.7 ms for a 256 MB step.** The
+     operator's session grew twice and **both growths were the worst frame of their own
+     ten-second window, and both were the only things they felt in 96.8 seconds of play.**
+     A run mean cannot see two frames in 12,610; a p99 cannot; a banded median cannot.
+     **The tell that identified it was the SHAPE, not the size**: an isolated single frame
+     whose draw count, GPU time, uploads and pipeline count are identical to its neighbours,
+     with fence 0.00 and sleep 0.00. That is never a workload — it is an allocation, a
+     rehash, a growth or a free. Look for those before theorising about the frame's contents.
+     And **put a clock on every "runs rarely" path**, because rarely-but-huge is the exact
+     profile of a felt stutter.
+
+468. **SPLIT THE COST BEFORE CHOOSING THE FIX, EVEN WHEN THE FIX LOOKS OBVIOUS.** The 71.7 ms
+     growth above contains two `vkDeviceWaitIdle`-class waits, and "fence the old buffer away
+     instead of idling" is the obvious, principled, more-interesting repair. Split three ways
+     it is **waits 13.6 + allocate/map 42.9 + free-old 15.2** — the waits are the SMALLEST
+     term, and that fix buys 19%. Only not growing at all removes the other 81%, and that is a
+     one-line default change (128 -> 512 MB start), measured at **90.9/90.3 ms -> 36.7/33.6 ms**
+     on the growth window's worst frame for **+10 ms on a boot frame already at 235**.
+     Gotcha 238's shape a third time: the interesting half of a cost is not usually the big
+     half. Two extra clock reads decided it.
+
+469. **RAISING A DEFAULT IS HOW YOU BREAK A MACHINE THAT IS NOT YOURS — GIVE IT A FALLBACK,
+     NOT AN ABORT.** The stream store's default start went 128 -> 512 MB. Its allocation
+     failure path set `persistOn = false` and ran with NO store, which is a ~30% frame-time
+     regression, and on a 48 GB development box that path is unreachable and therefore
+     untested. It now retries at 128 before disabling. **When you raise a resource default,
+     find the code that runs when the resource is refused and ask what it does on a machine
+     smaller than yours** — "degrades gracefully" written for a 128 MB request is not
+     necessarily a graceful degradation for a 512 MB one.
