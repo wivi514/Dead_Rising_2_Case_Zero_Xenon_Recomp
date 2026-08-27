@@ -18770,13 +18770,13 @@ NOT boot, a load or sleep:
 |---|---|---|
 | 128 (pre-part-79) | **4** — 158.4, 87.3, 60.3, 50.0 ms | 2 |
 | 512 (the half-right fix) | **1** — 351.7 ms | 1 |
-| **1024 (shipping)** | **0** | **not collected** |
+| **1024 (shipping)** | **0** | **NONE — collected at the start of part 80** |
 
 Worst frame in every ten-second window after the loads: **18.3-20.2 ms**. Gates from their own
 log: 0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present slots,
 **0.0% wide barriers over 3,663,722**, and `image memory: 5437 pooled into 9 blocks`.
 
-### 2. THE VERDICT WAS NOT COLLECTED, AND THAT IS RECORDED RATHER THAN GLOSSED
+### 2. THE VERDICT WAS NOT COLLECTED HERE — AND IT WAS COLLECTED AT THE START OF PART 80
 
 The session ended and the operator moved on to other work without answering "how did it
 feel". **So the third session has clean DATA and no EYE.** That matters here more than usual,
@@ -18789,6 +18789,16 @@ What is safe to say: *growth is impossible by construction* — the store starts
 is a structural claim, not a sampling one, and it does not need their eye. What still needs it
 is whether anything ELSE is felt now that this class is gone. Ask at the start of the next
 session; it is one sentence.
+
+**RETRACTED IN PLACE, 2026-08-27 — THE VERDICT IS IN.** Part 80 opened by asking the one
+sentence this section says is owed: *after loading into an area, and late in a crowd — did you
+feel anything?* The answer was **"Nothing — felt smooth."** So the campaign's three sessions
+now read: 128 MB start, two hitches felt and two more unfelt in the data; 512 MB start, one
+hitch felt and located unaided; **1024 MB ceiling, nothing in the data and nothing felt.** The
+after-load class and the late-in-a-crowd class are both closed on BOTH channels, which is the
+standard this project holds picture and hitch claims to (an eye plus a counter). §3's coverage
+gap is unaffected — it is about a different, never-felt class, and it stays open as
+`part80-kickoff.md`'s item 2.
 
 ### 3. ONE HONEST COVERAGE GAP
 

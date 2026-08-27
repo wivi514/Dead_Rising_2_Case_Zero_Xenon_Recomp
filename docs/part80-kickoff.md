@@ -207,14 +207,17 @@ cheap, and it either names an item or kills one.
 reject a failed run **BY NAME**. `tools/part80_operator_session.sh` is the session harness and
 **it names its own refutations** — keep that. Everything in `part76-kickoff.md` §5 still holds.
 
-## 4. WHAT IS OWED — ONE SENTENCE FROM THE OPERATOR
+## 4. ~~WHAT IS OWED — ONE SENTENCE FROM THE OPERATOR~~ — **COLLECTED, 2026-08-27. NOTHING IS OWED.**
 
 Sessions 1 and 2 were confirmed by their own report and both mapped onto the data exactly.
-**Session 3 — the shipping build — has clean data and no verdict** (§6ea §2): 0 growths, 0
+**Session 3 — the shipping build — had clean data and no verdict** (§6ea §2): 0 growths, 0
 ceiling overruns, 0 unexplained spikes, every frame over 40 ms accounted for by boot, a load or
 pump sleep, and worst-per-window 18.3-20.2 ms after the loads.
 
-**Ask at the start of the next session: after loading, and late in a crowd — anything?**
+**Part 80 asked it in its first message — *after loading, and late in a crowd, anything?* — and
+the answer was "Nothing — felt smooth."** The stream-store hitch class is now closed on both
+channels: the counter says growth is impossible by construction, and the eye says nothing is
+felt where two things were felt two builds ago. §6ea §2 carries the retraction in place.
 
-Growth being impossible is structural and does not need their eye. Whether anything ELSE is
-felt now that the class is gone does.
+The never-felt 50/60 ms class of session 1 is a DIFFERENT class and is **item 2 below**, still
+open; §6ea §3's coverage gap stands.
