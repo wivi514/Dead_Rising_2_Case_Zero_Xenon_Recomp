@@ -181,6 +181,25 @@ base, **967,680 combinations checked, 0 mismatches** (`tools/tile_offset_separab
 * **`tools/part79_picture_gate.sh`** with a `STILL=1` pair (gotcha 465), and
   `CZ_VK_SYNC_VALIDATION=1` for anything touching a barrier.
 
+## 3b. THE GATES PART 80 RAN, so part 81 knows what it inherits
+
+Part 80 touched the **command processor** (`pm4.cpp` gained a fetch-constant version stamp),
+so the two PM4 boundary oracles were run rather than assumed:
+
+* `tools/pm4_packet_lengths.py` on B1 — **24,527,474 lengths agreeing, 0 disagreeing**, exit 0
+* `tools/pm4_indirect_walks.py` on B1 — exit 0
+* `CZ_PM4_VERIFY_BULK_REGS=1` over a boot — **0 bulk register mismatches** (the bulk path is
+  where the new stamp's second bump lives)
+* `--smoke` OK; `shader_dim_census.py` clean on the stock AND the play cache; all six live
+  caches at 449; `rt_world_xform_census.py` exit 0 with no change to its config
+* every reportable route run passed its own 8,000-draw gate, failures renamed `.rejected`
+* the new censuses **shown free when off**: +0.4% frame-weighted, mixed sign, against the
+  three pre-census nulls
+
+Part 74's A5 and `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates and part 78's
+barrier gates were **not** re-run and do not need to be: nothing shipped and no shader,
+texture, barrier or constant path changed.
+
 ## 4. WHAT IS OWED
 
 **Nothing.** Part 79's one sentence was collected in part 80's first message and §6ea §2
