@@ -63,6 +63,57 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+# ---------------------------------------------------------------------------
+# THE RELEASE BUILD TYPE (docs/release-plan.md A.3)
+#
+# `Release` is redefined here, deliberately and loudly, because CMake's default for
+# it would be a PERFORMANCE CHANGE dressed as a packaging decision.
+#
+#   CMake's Release        -O3 -DNDEBUG
+#   ours                   -O2 -g -DNDEBUG, then the debug info split off and the
+#                          shipped binary stripped
+#
+# Two choices, each with a reason:
+#
+# -O2, NOT -O3. Every performance number this project has ever recorded — the whole
+# corpus behind parts 47-81, the regime bands, the ns/draw decompositions, the
+# pre-registered kill thresholds — was measured at -O2, because RelWithDebInfo is what
+# everyone builds. Shipping at -O3 would invalidate all of it in exchange for a saving
+# nobody has measured. If -O3 is ever wanted it is a measurement, run like any other
+# item on this project: three runs an arm on tools/part80_crowdroute.sh. It is not a
+# default to be inherited from CMake.
+#
+# -g KEPT, then SPLIT. The plan asks for "no -g, stripped, with a separate .debug
+# artifact kept locally so a player's crash report is still resolvable" — and those
+# two halves are in tension, because a binary compiled without -g has no debug info to
+# keep. Compiling WITH -g and splitting afterwards satisfies both: the shipped file is
+# stripped, the .debug sits beside it in the build tree, and cpu/crash_report.cpp's
+# host pc — the one field that is never stale (gotcha 57) — still addr2lines.
+#
+# AND IT MAKES A.3's GATE FREE AND DECISIVE. -g does not affect code generation, and
+# objcopy --strip-debug does not touch .text. So the release executable's .text is
+# BYTE-IDENTICAL to the dev build's, and that is checkable with sha256 in a second —
+# a far stronger statement than any frame-time A/B, which on this workload has a
+# 10-13% noise floor at one run a side (gotcha 229). tools/release_text_identity.sh
+# is that check. The route run stays in the checklist as confirmation; it is no
+# longer the evidence.
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -g -DNDEBUG"
+    CACHE STRING "Flags used by the CXX compiler during RELEASE builds." FORCE)
+set(CMAKE_C_FLAGS_RELEASE   "-O2 -g -DNDEBUG"
+    CACHE STRING "Flags used by the C compiler during RELEASE builds." FORCE)
+
+# Split the debug info off the shipped executable. Defaults ON for Release and OFF
+# everywhere else, so a developer never has to think about it and a release never has
+# to remember it.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CZ_SPLIT_DEBUG_DEFAULT ON)
+else()
+    set(CZ_SPLIT_DEBUG_DEFAULT OFF)
+endif()
+option(CZ_SPLIT_DEBUG
+       "Emit cz_runtime.debug and strip the executable (release packaging)"
+       ${CZ_SPLIT_DEBUG_DEFAULT})
+
 file(GLOB PPC_SOURCES CONFIGURE_DEPENDS "${PPC_DIR}/*.cpp")
 list(LENGTH PPC_SOURCES PPC_TU_COUNT)
 message(STATUS "Recompiled image: ${PPC_TU_COUNT} translation units")
@@ -120,6 +171,26 @@ endforeach()
 # working, and that is a session wasted. Configure with -DCZ_WINDOW=OFF to say
 # "headless on purpose" out loud.
 option(CZ_WINDOW "Build the SDL window / present / input seam (phase 3)" ON)
+
+# CZ_SDL2_PREFIX — build against the SDL2 from tools/build_sdl2.sh (release builds).
+#
+# This exists because of a defect the A.4 clean-container gate found by RUNNING the
+# packaged artifact, which `ldd` could not have found by inspecting it. Fedora's
+# libSDL2-2.0.so.0 is `sdl2-compat`: a shim that dlopen()s libSDL3.so.0 at run time.
+# Bundling it produced a package whose ldd was perfectly clean and which died on its
+# first instruction in a container with "Failed loading SDL3 library." A dlopen is
+# invisible to the tool the plan specified for exactly this job.
+#
+# tools/build_sdl2.sh builds real SDL2, which has no such dependency. Developing
+# against the system copy stays the default — the shim is API-compatible and this
+# project has run on it for eighty parts.
+set(CZ_SDL2_PREFIX "" CACHE PATH
+    "Prefix of an SDL2 built by tools/build_sdl2.sh (release builds)")
+if(CZ_SDL2_PREFIX)
+    list(PREPEND CMAKE_PREFIX_PATH "${CZ_SDL2_PREFIX}")
+    message(STATUS "SDL2: ${CZ_SDL2_PREFIX} (built from source, not sdl2-compat)")
+endif()
+
 if(CZ_WINDOW)
     find_package(SDL2 QUIET)
     if(NOT SDL2_FOUND)
@@ -193,6 +264,31 @@ target_link_libraries(cz_runtime PRIVATE Vulkan::Vulkan)
 # CONFIGURE time is how "no sound" stays a build message instead of a mystery.
 # Headers live under /usr/include/ffmpeg on Fedora; pkg-config supplies the paths.
 find_package(PkgConfig REQUIRED)
+
+# CZ_FFMPEG_PREFIX — build against the LGPL ffmpeg from tools/build_ffmpeg_lgpl.sh
+# rather than the system one (docs/release-plan.md §4, A.4).
+#
+# This is a RELEASE requirement, not a preference. Fedora's ffmpeg is configured
+# --enable-gpl, which conflicts with this repo's PolyForm Noncommercial licence the
+# moment the two are shipped together; and its dependency closure is 120 shared
+# objects (x264, x265, librsvg, cairo, pango, OpenCL, VA-API…) against the FOURTEEN
+# ffmpeg functions this runtime calls. The purpose-built one is libavcodec + libavutil,
+# 1.4 MB, linking libm and libc and nothing else.
+#
+# Developing against the system copy stays the default: it is the same 8.1.2, so the
+# headers are identical and there is no second variable.
+set(CZ_FFMPEG_PREFIX "" CACHE PATH
+    "Prefix of an ffmpeg built by tools/build_ffmpeg_lgpl.sh (release builds)")
+if(CZ_FFMPEG_PREFIX)
+    if(NOT EXISTS "${CZ_FFMPEG_PREFIX}/lib/pkgconfig/libavcodec.pc")
+        message(FATAL_ERROR
+            "CZ_FFMPEG_PREFIX=${CZ_FFMPEG_PREFIX} has no lib/pkgconfig/libavcodec.pc.\n"
+            "  Build it:  tools/build_ffmpeg_lgpl.sh ${CZ_FFMPEG_PREFIX}")
+    endif()
+    set(ENV{PKG_CONFIG_PATH} "${CZ_FFMPEG_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    message(STATUS "ffmpeg: ${CZ_FFMPEG_PREFIX} (LGPL, xma1+xma2 only)")
+endif()
+
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
 target_link_libraries(cz_runtime PRIVATE PkgConfig::FFMPEG)
 
@@ -230,3 +326,62 @@ endforeach()
 # its own: "most" is not "every".
 target_link_options(cz_runtime PRIVATE
     "-Wl,--whole-archive" "$<TARGET_FILE:ppc_image>" "-Wl,--no-whole-archive")
+
+# ---------------------------------------------------------------------------
+# CZ_SPLIT_DEBUG — the release packaging step (docs/release-plan.md A.3)
+#
+# Three objcopy calls, in this order and no other:
+#   1. --only-keep-debug            cz_runtime.debug gets the symbols
+#   2. --strip-debug                the shipped binary loses them
+#   3. --add-gnu-debuglink          and gains a pointer back, so gdb/addr2line find
+#                                   the .debug file automatically when it is beside it
+#
+# The debuglink is the part that is easy to skip and expensive to have skipped: without
+# it a stripped binary and its symbols are two files that nothing connects, and the
+# crash report a player sends back is a list of addresses.
+#
+# `.text` is untouched by all three. That is the claim tools/release_text_identity.sh
+# checks, and it is what makes A.3's regime question answerable without a route run.
+# CZ_BUNDLE_RPATH — look for the bundled libraries beside the executable first
+# (docs/release-plan.md A.4). $ORIGIN is resolved by the loader against the executable's
+# own path, so this survives the player unpacking the archive anywhere, and it needs no
+# launcher script and no LD_LIBRARY_PATH — which matters because a launcher script is a
+# thing a player can bypass by running the binary directly, and then the bundle silently
+# is not what loads.
+#
+# Defaults to ON for Release only. In a dev tree there is no lib/ beside the binary and
+# the entry is simply never satisfied, so it is harmless — but it is also pointless, and
+# a build-tree binary that carries release packaging decisions is a binary whose
+# measurements have an extra variable in them.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CZ_BUNDLE_RPATH_DEFAULT ON)
+else()
+    set(CZ_BUNDLE_RPATH_DEFAULT OFF)
+endif()
+option(CZ_BUNDLE_RPATH "Add $ORIGIN/lib to the executable's RPATH (release packaging)"
+       ${CZ_BUNDLE_RPATH_DEFAULT})
+if(CZ_BUNDLE_RPATH AND NOT WIN32)
+    # Literal $ORIGIN, escaped so CMake does not try to expand it as a variable.
+    set_target_properties(cz_runtime PROPERTIES
+        BUILD_RPATH "\$ORIGIN/lib"
+        INSTALL_RPATH "\$ORIGIN/lib")
+endif()
+
+if(CZ_SPLIT_DEBUG)
+    find_program(CZ_OBJCOPY NAMES llvm-objcopy objcopy)
+    if(NOT CZ_OBJCOPY)
+        message(FATAL_ERROR
+            "CZ_SPLIT_DEBUG is on but neither llvm-objcopy nor objcopy was found.\n"
+            "  Fedora:  sudo dnf install binutils   (or llvm)\n"
+            "Or say -DCZ_SPLIT_DEBUG=OFF to ship an unstripped binary on purpose.")
+    endif()
+    message(STATUS "Release packaging: cz_runtime.debug via ${CZ_OBJCOPY}")
+    add_custom_command(TARGET cz_runtime POST_BUILD
+        COMMAND ${CZ_OBJCOPY} --only-keep-debug
+                $<TARGET_FILE:cz_runtime> $<TARGET_FILE:cz_runtime>.debug
+        COMMAND ${CZ_OBJCOPY} --strip-debug $<TARGET_FILE:cz_runtime>
+        COMMAND ${CZ_OBJCOPY}
+                --add-gnu-debuglink=$<TARGET_FILE:cz_runtime>.debug
+                $<TARGET_FILE:cz_runtime>
+        COMMENT "Splitting debug info into cz_runtime.debug and stripping the binary")
+endif()
