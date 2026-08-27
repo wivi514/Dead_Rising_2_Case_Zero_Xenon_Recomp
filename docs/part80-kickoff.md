@@ -1,209 +1,220 @@
-# Part 80 kickoff — item 1 shipped and honestly small, item 2 REFUTED by measurement
+# Part 80 kickoff — the board after part 79 shipped two items and refuted a third
 
 > **THIS IS THE LIVE HAND-OFF**, superseding `part79-kickoff.md`.
 >
-> **Read `phase5-notes.md` §6dw and §6dx first.** §6dw is part 79 item 1 end to end — the
-> upload ring, the A/B that removed the mechanism and moved the frame time by nothing, and
-> the picture gate that raised a false alarm before it cleared. §6dx is item 2, answered and
-> closed for the cost of one run: the post chain is real shading, not pass overhead.
+> **Read `phase5-notes.md` §6dw, §6dx, §6dy, §6dz and §6ea, in that order.** They are part 79
+> end to end: the upload ring, the pass extent census that refuted the post-chain item, the
+> operator session that confirmed the ring, the stream-store growth that session found, and
+> the confirmation run.
 >
 > | document | what it is |
 > |---|---|
-> | **`phase5-notes.md` §6dx** | **part 79 item 2 — the PASS EXTENT CENSUS, and why the post chain is not addressable** |
-> | **`phase5-notes.md` §6dw** | **part 79 item 1 — the flush stops waiting; the mechanism is gone and the route could not price it** |
-> | `phase5-notes.md` §6dv | part 78's operator session — **the crossover moved to ~3,000 draws** |
-> | `phase5-notes.md` §6du | part 78 — the first GPU-side breakdown, and the 137 barriers a frame |
-> | `phase5-notes.md` §6dt | part 77's operator session — the batch's benefit is LOAD-SHAPED, and where item 1 came from |
+> | **`phase5-notes.md` §6ea** | **the third session — 0 growths, 0 unexplained spikes, AND NO OPERATOR VERDICT. Its §4 is the regime table to plan against.** |
+> | **`phase5-notes.md` §6dz** | **the stream store's growth: found, measured, mis-fixed once, then fixed structurally** |
+> | **`phase5-notes.md` §6dy** | **part 79's operator session — the ring confirmed, and the hitch class it exposed** |
+> | `phase5-notes.md` §6dx | the PASS EXTENT CENSUS — the post-chain item, refuted |
+> | `phase5-notes.md` §6dw | part 79 item 1 — the flush stops waiting |
+> | `phase5-notes.md` §6dv §2 | part 78's session — where the crossover moved |
 >
-> Lessons: gotchas **465-466**. There is still no live PLAN; §1 is the board, in order.
+> Lessons: gotchas **465-472**. There is still no live PLAN; §1 is the board, in order.
 
 ---
 
 ## 0. WHAT PART 79 DID, IN ONE PARAGRAPH
 
-Item 1 — **`FlushTextureUploads` no longer waits.** Three upload slots, each with a command
-buffer, a fence and a 32 MB segment of the staging arena; a flush submits into the current
-slot and waits only on the slot it is about to reuse. **The flush went 999-1138 us to
-106-114 us, −89.8%, and the staging half of the texture path went 78.7-83.8 ms/run to
-17.1-18.1** — but **the run's frame time did not move**, because the autonomous route is
-GPU-bound at 6,200 draws and the pump moved its blocking to the frame fence (median fence
-0.699 -> 1.136 ms on the affected population). The item's value is at the operator's load,
-where the flush count is 27x higher per second and the fence is 0.00; **nobody has measured
-it there yet.** Item 2 — the post chain — was **closed by measurement**: a per-pass extent
-census says three extents at 60-182 us carry 76% of the `1 draw` class and the pure-overhead
-end (the six-step luminance pyramid down to 2x2, 7 us a pass) is 3.6% of it.
+**Item 1 shipped**: `FlushTextureUploads` submits into a three-slot ring and no longer waits —
+**598 us -> 54 us per flush at the operator's load, −91%**, 0 slots stalled, and the fence did
+not absorb it. It is worth **0.05 ms a frame**, which is what was predicted and said to them
+before they played. **Item 2 was refuted by measurement** for the cost of one run: a per-pass
+extent census showed the post chain is the title's own shaders at half, quarter and full
+resolution, not pass overhead. **And then the operator session found the thing that actually
+mattered** — two hitches they *felt*, 1.3 seconds after a load, which were the **cross-frame
+stream store doubling itself: 71.7 ms of pump time in a single frame**. Raising its start
+128 -> 512 removed those and left one 329.2 ms growth late in the run (which they also felt and
+located); it now starts at `kPersistCeiling` so growth is **impossible**, and the third
+session has 0 growths and **no unexplained single-frame spikes at all**.
 
-## 0b. THE THREE THINGS PART 79 WOULD TELL YOU BEFORE YOU START
+## 0b. THE FOUR THINGS PART 79 WOULD TELL YOU BEFORE YOU START
 
-**One. THE ONE THING OWED IS AN OPERATOR SESSION, AND `tools/part79_operator_session.sh` IS
-READY TO RUN.** Item 1 is shipped, gated and committed, and the only number that can price it
-does not exist. The script states its own pre-registered prediction — the 1,092.5 ms of
-`vkQueueWaitIdle` §6dt measured in their 150 s session should now be ~0 — and it names what
-would refute the reading (a flush still at ~1,000 us, a non-zero slot-stall count, or the
-fence rising to absorb it). **It also says out loud that they should not expect to feel it**:
-~0.59 ms on about one frame in six. Do not oversell it to them.
+**One. THE OPERATOR'S VERDICT ON THE FINAL BUILD WAS NEVER COLLECTED.** Sessions 1 and 2 were
+confirmed by their own report — *"only felt hitches at the start right after loading"*, then
+*"a single stutter near the end but didn't feel one after loading in"* — and both mapped onto
+the data exactly. Session 3 has clean data and no eye (§6ea §2). **Ask in one sentence at the
+start of the next session**: after loading, and late in a crowd — anything? That is the only
+thing owed.
 
-**Two. WHEN THE HAND-OFF SAYS YOUR ROUTE CANNOT PRICE THE ITEM, BELIEVE IT BEFORE THE RUNS,
-NOT AFTER.** `part79-kickoff.md` §2 ruled out CPU A/Bs on the autonomous route below ~8,000
-draws in as many words, and part 79 ran one at 6,200 draws anyway and got the null it was
-promised. Nothing was lost — the mechanism measurement is the real evidence and the frame-time
-null is itself a finding (gotcha 466) — but the honest plan was always "build it, measure the
-MECHANISM, hand the frame time to the operator", and stating that up front would have been
-better than discovering it in the table.
+**Two. CLASSIFY A SLOW FRAME BY WHERE THE TIME WENT, NOT BY WHICH COUNTER IS NON-ZERO.** The
+158.4 ms frame that led to the whole stream-store finding carried four texture uploads worth
+**0.1 ms**; a presence test files it as a texture frame and the trail ends. The taxonomy that
+worked is: **pump sleep** (26-64 draws, sleep is 97-99% of the frame — menus and load
+transitions), **load** (texture + pipelines are most of the frame), and **unexplained CPU
+recording** (draws, GPU, uploads and pipelines all identical to the neighbouring frames, fence
+0.00, sleep 0.00). That third class is never a workload — it is an allocation, a growth, a
+rehash or a free (gotcha 467).
 
-**Three. `STILL=1` IS THE PICTURE GATE ON THIS ROUTE, NOT THE TURNING CAMERA.** Part 79's
-gate first read the shipping arm at **33.7x the null on `meanLuma`** for a change that cannot
-alter a pixel. It was composition: the arms' era median draw counts were 4,573-4,851 against
-3,866-3,915 on a run whose luma ramps 28.5 -> 68.5 -> 78.7. With the camera held the same
-comparison reads 0.03% and 0.12% against a 0.50% null — INSIDE on every statistic — while the
-positive control still reads 36,799x. **A null pair agreeing to 0.05% is one sample of a floor
-that is really ~1.5%** (gotcha 465). Use `tools/part79_picture_gate.sh`, and add a `STILL=1`
-pair to it before believing an alarm.
+**Three. PUT A CLOCK ON EVERY PATH WHOSE COMMENT SAYS IT RUNS RARELY, AND SPLIT IT BEFORE
+FIXING IT.** `PersistMaintenance`'s comment said *"it runs at most a handful of times a run"*,
+which is true and is why it went unmeasured for 22 parts while being the only thing the
+operator could feel. And when it was measured, the split changed the fix twice: the two
+`vkDeviceWaitIdle`-class waits are the **smallest** of its three terms (13.6 of 71.7), so the
+obvious principled repair buys 19%; and the cost scaling with the NEW buffer size meant a
+bigger start only skips the cheap growths (gotchas 468, 470).
+
+**Four. NAME THE REFUTATIONS IN THE HARNESS.** `tools/part80_operator_session.sh` listed three
+things that would refute part 79's attribution. **The first one fired**, and because it was
+written down the operator's one-sentence report landed on a pre-registered branch instead of
+starting a debugging session (gotcha 472). Keep doing this.
 
 ## 1. THE BOARD, IN ORDER
 
-The GPU breakdown, re-measured in part 79 on the shipping renderer. Autonomous route,
-3440x1440 internal, 17,820 frames, **residual 0.6%**, and it reproduces to 0.001 ms/frame
-across two runs:
+The GPU breakdown from the operator's own third session — 11,677 frames, residual 0.8%, and
+the extent census reproduces across machines and loads to 0.001 ms/frame:
 
-| region | ms/frame | regions/frame | ns each |
+| region | ms/frame | share | regions/frame |
 |---|---|---|---|
-| **pass: >=256 draws** | 3.988 | 3.14 | 1,269,179 |
-| **pass: 1 draw** | 0.987 | 30.18 | 32,707 |
-| **resolve copy** | 0.723 | 49.47 | 14,618 |
-| **resolve clear** | 0.601 | 82.38 | 7,300 |
-| **pass: 2-255 draws** | 0.596 | 6.53 | 91,312 |
-| present blit | 0.061 | 1.00 | 61,128 |
-| resolve barriers | 0.066 | 98.93 | 669 |
-| pass-begin barriers | 0.032 | 39.85 | 794 |
-| snapshot views | 0.028 | 7.67 | 3,644 |
-| cube face refresh | 0.008 | 2.14 | 3,538 |
-| RESIDUAL | 0.045 | — | — |
+| **pass: >=256 draws** | 3.385 | 51.4% | 2.44 |
+| **pass: 1 draw** | 0.922 | 14.0% | 28.41 |
+| **resolve copy** | 0.699 | 10.6% | 46.73 |
+| **pass: 2-255 draws** | 0.645 | 9.8% | 6.42 |
+| **resolve clear** | 0.568 | 8.6% | 77.93 |
+| present blit | 0.125 | 1.9% | 1.00 |
+| resolve barriers | 0.110 | 1.7% | 93.45 |
+| pass-begin barriers | 0.045 | 0.7% | 37.27 |
+| snapshot views + cube | 0.033 | 0.5% | 8.81 |
+| RESIDUAL | 0.051 | 0.8% | — |
 
-### ITEM 0 — THE OTHER TWO SINGLE-FRAME SPIKES. **Small, unfelt, and the only unexplained thing left.**
+**And the regime, which is what actually ranks the board** (§6ea §4): the fence is **0.00 at
+every band from 5,000 draws up**, and the headroom between the wall and the GPU is **2.40 ms
+at 7,000-9,000 draws and 3.06 at 9,000-12,000**. A CPU saving at their crowd converts to frame
+time roughly 1:1 up to about 2.4-3.0 ms. **That is why the board leads with a CPU item.**
 
-Part 79's operator session had four isolated spikes with the same draw count, GPU time,
-uploads and pipeline count as their neighbours and fence/sleep 0.00 (§6dy §3). **Two were the
-stream store growing and are fixed** (§6dz). The other two — **50.0 ms at t=77.4 s and 60.3 ms
-at t=93.2 s**, both far from any load — are a different cause, and **neither was felt**: their
-threshold sits between 60 and 87 ms in a crowd.
+### ITEM 1 — PARALLEL COMMAND RECORDING. The largest thing left, and three parts have re-priced it upward.
+
+`perf-state-parked.md` item A. Their crowd is CPU 13.16 ms against a GPU floor of 10.58 at
+9,000-12,000 draws, fence 0.00. Part 76 measured 1.38 ms of headroom there, part 78's session
+1.93-2.38, and part 79's **2.40-3.06**.
+
+**Measure it at 8,000+ draws or not at all.** Part 79 is the second worked example of what
+happens otherwise: a CPU item measured on the autonomous route at 6,200 draws read as a dead
+null because the route is GPU-bound and the pump moved its blocking to the fence (§6dw §3,
+gotchas 453 and 466). **State the fence wait and the GPU floor at the draw count you intend to
+measure, in the same sentence as the expected saving.**
+
+`perf-plan-part55.md` §0 is the ceiling argument and has not been retracted: the PM4 walk is
+serial and draw ORDER is semantic, so the honest budget is 5-6 busy threads, not 16.
+
+### ITEM 2 — THE LAST UNEXPLAINED HITCH CLASS. Cheap, closes a class, and needs one instrument.
+
+Session 1 had two spikes that were **not** growths and were **not** felt — 50.0 ms at t=77.4 s
+and 60.3 ms at t=93.2 s, both far from any load, both with the isolated-single-frame signature.
+Session 3 showed none, but it ran 88.5 s against the 96.8 s in which those appeared, so
+**absence there is weak evidence** (§6ea §3).
 
 **The trace cannot answer it.** The phase columns are `ProfScope`s and read zero without
 `CZ_VK_PROFILE`, which costs 2-4 ms a frame and inverts the regime (gotcha 454). This needs an
-**always-on split of the pump's walk** — cheap enough to leave on, coarse enough to cost
-nothing. Then one operator session names it.
+**always-on, coarse split of the pump's walk** — cheap enough to leave on in every session,
+which is the property that matters, because the events are two per session and nobody can
+predict when. Then one operator run names it.
 
-Take this first only because it is cheap and it closes a class; it is worth less than item 1.
+Their threshold is a useful bound while designing: they felt 87 and 158 and 352 ms and did not
+notice 50 or 60, in a crowd.
 
-### ITEM 1 — PARALLEL COMMAND RECORDING. **The largest thing left, and part 78 made it worth more.**
+### ITEM 3 — THE UNTILE LOOP. **Re-priced UPWARD by the operator's session and no longer the small item.**
 
-`perf-state-parked.md` item A, and `part79-kickoff.md` §1 item 5. It moves to the top because
-everything above it on the last two boards is now shipped or refuted, and because §6dv §2
-re-priced it: the operator's crowd is **CPU 12.71 ms against a GPU floor of 10.80 at
-9,000-12,000 draws, i.e. 2.38 ms of headroom where part 76 measured 1.38**, and their fence
-is **0.00 at every band from 3,000 draws up**.
+§6ds §10 priced this as small against a standing 40 ms kill, and that was measured on the
+autonomous route where the staging half dominated. **At the operator's load the texture path
+has flipped**: staging+submit is now 79.6 ms of a 387 ms path (17%, where §6dt measured 77%),
+and the untile loops are **113.3 + 64.0 = 177.3 ms, 57.7% of the decode and the largest single
+term in the whole path** (§6dy §5). The mip guards are another 98.8 ms (32.2%).
 
-**State the fence wait and the GPU floor at the draw count you intend to measure, in the same
-sentence as the expected saving** — and measure it at 8,000+ draws or not at all (§6dr,
-gotcha 453, and part 79 is the worked example of ignoring that).
+The work is fully specified and proven: `Tiled2DOffset` decomposes into a 32x32 table plus a
+macro-tile base, **967,680 combinations checked, 0 mismatches**
+(`tools/tile_offset_separable.py`), with units contiguous in 8-unit / 16-byte runs.
 
-`perf-plan-part55.md` §0 is the ceiling argument and it has not been retracted: the PM4 walk
-is serial and draw ORDER is semantic, so the honest budget is 5-6 busy threads, not 16.
+**But price it against the LOAD FRAME before building it**, which is the frame it can reach:
+their biggest load frame is 111.2 ms carrying 62.0 ms of texture work, of which the untile is
+~58%, so a 3x buys ~24 ms of a 111 ms frame. The standing kill has been 40 ms off the worst
+frame throughout. It is bigger than it was and it may still not clear the bar — **do the
+arithmetic before the work, which is the thing part 79 failed to do on the 512 MB fix**
+(gotcha 470).
 
-### ITEM 2 — THE RESOLVE CLEARS: 82.4 a frame, 580.5 Mpixel written for 33.3 rendered
+### ITEM 4 — THE RESOLVE CLEARS: 77.9 a frame, 549 Mpixel written for 31 rendered
 
-0.601 ms, **94.3% of the writes removable in principle**, because `vkCmdClearColorImage`
-takes a subresource range and not a rectangle so every clear takes the whole EDRAM stand-in.
+0.568 ms, **94.3% of the writes removable in principle**, because `vkCmdClearColorImage` takes
+a subresource range and not a rectangle so every clear takes the whole EDRAM stand-in.
 
-**The ceiling is 0.601 ms and the obvious mechanism is a wash.** `CZ_VK_SCOPED_CLEAR` has
-been an arm since part 32 and buys it by spending a render-scope cycle per clear at ~6.6 us
-of CPU each — 82 a frame is 0.54 ms of pump time for 0.57 ms of GPU. **That trade is why
-nobody should re-derive it.** The cheaper mechanism is `vkCmdClearAttachments` inside a pass
-that is already open, which needs the clear moved from the resolve into the pass; whether the
-title's ordering permits that is a question nobody has asked, and it is the first thing to
-find out before any code.
+**The ceiling is 0.568 ms and the obvious mechanism is a wash.** `CZ_VK_SCOPED_CLEAR` has been
+an arm since part 32 and buys it by spending a render-scope cycle per clear at ~6.6 us of CPU
+each — 78 a frame is 0.51 ms of pump time for 0.54 ms of GPU, **and at their load pump time is
+worth MORE than GPU time** (fence 0.00, 2.4-3.0 ms of headroom), so that trade is now actively
+bad rather than merely even. **Do not re-derive it.** The cheaper mechanism is
+`vkCmdClearAttachments` inside a pass that is already open, which needs the clear moved from
+the resolve into the pass; whether the title's ordering permits that is the question to answer
+first, and it is a reading task, not a building one.
 
-### ITEM 3 — THE RESOLVE COPIES: 49.5 a frame, 49.4 Mpixel, 7.0 full EDRAM surfaces
+### ITEM 5 — THE RESOLVE COPIES: 46.7 a frame, 46.3 Mpixel, 6.6 full EDRAM surfaces
 
-0.723 ms. Not a slow copy — a lot of copying, and it is the price of serving the title's own
+0.699 ms. Not a slow copy — a lot of copying, and it is the price of serving the title's own
 resolve destinations as sampled images. **The design question nobody has asked is whether
-every resolve needs its snapshot copied on the frame it is produced**, or whether a
-destination no draw samples this frame could defer. That needs a census of "resolve
-destinations produced vs sampled, per frame", which the renderer can answer and which is the
-same shape as part 79's extent census — cheap, and it either names an item or kills one.
-
-### ITEM 4 — THE UNTILE LOOP, still SMALL and still fully specified. §6ds §10 unchanged.
-
-79 ms/run, ~25 ms on a burst frame, against a standing 40 ms kill.
-`tools/tile_offset_separable.py` proves the decomposition over 967,680 combinations. It is
-shovel-ready and it is not worth the shovel yet.
+every resolve needs its snapshot copied on the frame it is produced**, or whether a destination
+no draw samples this frame could defer. That needs a census of "resolve destinations produced
+vs sampled, per frame", which the renderer can answer. Same shape as part 79's extent census:
+cheap, and it either names an item or kills one.
 
 ## 2. WHAT IS RULED OUT — do not start these
 
-* **THE POST CHAIN** (`pass: 1 draw` + `pass: 2-255`, 1.58 ms, 20% of the device frame).
-  Part 79 censused it by extent: three extents at 60-182 us carry 76% of the `1 draw` class,
-  they are the title's own shaders at half, quarter and full resolution, and per pixel the
-  expensive one costs 3.4x the cheap one — **it is shading, not pass overhead.** The
-  pure-overhead end totals 0.036 ms/frame. Nothing a translation layer does can reach it.
-  §6dx.
-* **more batching of the texture uploads** (§6dt §3), **the texture path as a HITCH** (§6dt),
-  **pipeline compilation on the load frame** (8.8 ms of a 158 ms burst frame, §6du §5),
+* **THE POST CHAIN** (`pass: 1 draw` + `pass: 2-255`, 1.57 ms, 24% of the device frame).
+  Refuted by extent census (§6dx), and **reproduced at the operator's resolution** (§6dy §4):
+  three extents at 60-182 us carry 76% of the `1 draw` class, they are the title's own shaders
+  at half, quarter and full resolution, and per pixel the expensive one costs 3.4x the cheap
+  one. The pure-overhead end — the six-step luminance pyramid down to 2x2 at 7 us a pass —
+  totals 0.034 ms/frame. Nothing a translation layer does can reach it.
+* **the texture upload SUBMIT path.** Part 77 batched it, part 79 removed its wait; the flush
+  is 53-54 us and 0 slots stall. What is left in that path is the DECODE, which is item 3.
+* **a fence or any other wait primitive for the per-upload submits** — part 73 measured three
+  arms (gotcha 436), and part 79's ring removed the wait rather than replacing the primitive.
+* **growing the stream store more gracefully.** It cannot grow: it starts at `kPersistCeiling`.
+  If a session ever prints `stream store is at its 1024 MB ceiling and a frame still overran
+  it`, THAT is a new item (the cache is being dropped and refilled) — but it has never fired.
+* **pipeline compilation on the load frame** (8.8 ms of a 158 ms burst frame, §6du §5),
   **the readback** (§6dq), **the constant path** (§6dp), **the guest side** (§6dm),
   **reverting the RT era** (§6dj), and everything on part 73's exhausted list.
-* **a fence or any other wait primitive for the per-upload submits** — part 73 measured three
-  arms (gotcha 436). Part 79's ring is a different change: it removes the wait rather than
-  replacing the primitive, and it is done.
 * **`CZ_VK_VALIDATION=1` as the gate** for anything in the texture upload path (§6ds §9) or
   for anything about a barrier (§6du §4 — use `CZ_VK_SYNC_VALIDATION=1`).
-* **any CPU A/B below ~8,000 draws on the autonomous route.** Part 79 is the second demonstration.
+* **any CPU A/B below ~8,000 draws on the autonomous route.** Part 79 is the second
+  demonstration and it cost a six-run campaign to re-learn.
 
-## 3. THE MEASUREMENT METHOD — five readers now
+## 3. THE MEASUREMENT METHOD — five readers, and one that needs building
 
 **Classify the change first** (gotcha 452):
 
+* **`tools/part76_band.py`** — menu as a number, crowd in matched 250-draw bands. For an item
+  that affects every presented frame.
 * **`tools/part75_ab_report.py`** — menu window as a machine-state fingerprint. For an item
   that affects the crowd and not the menu.
-* **`tools/part76_band.py`** — menu as a NUMBER, crowd in matched 250-draw bands. For an item
-  that affects every presented frame. Part 78 used this.
 * **`tools/part77_tex_report.py`** — population is frames with a texture upload. For a HITCH
-  item. **Part 79 found its blind spot**: the flush's cost is charged to the frame that
-  SUBMITS it, which is often the frame after the uploads, so ~70% of it lands on rows reading
-  `texUploads == 0`. For an upload-path item, population on `texUpUs > 0` instead.
-* **`CZ_VK_GPU_PASSES=1`** — for anything that changes what the DEVICE does, this is the
-  primary evidence and the wall clock is the secondary. **It now carries the pass EXTENT
-  CENSUS** (§6dx), which reproduces to 0.001 ms/frame — far tighter than any frame-time band.
+  item. **Known blind spot**: the flush's cost is charged to the frame that SUBMITS it, often
+  the frame after the uploads, so ~70% of it lands on rows reading `texUploads == 0`. For an
+  upload-path item, population on `texUpUs > 0` instead.
+* **`CZ_VK_GPU_PASSES=1`** — primary evidence for anything that changes what the DEVICE does,
+  with the wall clock secondary. Carries the pass extent census; reproduces to 0.001 ms/frame.
 * **`tools/part79_picture_gate.sh`** — four arms, `CZ_VK_TEX_BATCH_BREAK=1` as the positive
-  control. **Add a `STILL=1` pair** before believing anything it says about `meanLuma`.
+  control. **Add a `STILL=1` pair** before believing anything it says about `meanLuma`: a
+  turning-camera null pair agreeing to 0.05% measures a floor that is really ~1.5% (gotcha 465).
+* **STILL MISSING, and it is item 2's blocker**: an always-on split of the pump's `walk`.
 
-`tools/part79_flush_ab.sh` and `tools/part78_barrier_ab.sh` are the drivers to copy. Both
-reject a failed run **BY NAME**. Everything in `part76-kickoff.md` §5 still holds.
+`tools/part79_flush_ab.sh` and `tools/part78_barrier_ab.sh` are the drivers to copy; both
+reject a failed run **BY NAME**. `tools/part80_operator_session.sh` is the session harness and
+**it names its own refutations** — keep that. Everything in `part76-kickoff.md` §5 still holds.
 
-## 4. WHAT IS OWED — NOTHING
+## 4. WHAT IS OWED — ONE SENTENCE FROM THE OPERATOR
 
-Part 79's operator session ran (§6dy, §6dz). The pre-registered prediction held on every
-clause — the flush went 598 us to 54 us per flush at their load, 0 slots stalled, and the
-fence did not absorb it — and the frame rate was unchanged, which is what they were told to
-expect before they played. Their picture verdict was *"look identical"*.
+Sessions 1 and 2 were confirmed by their own report and both mapped onto the data exactly.
+**Session 3 — the shipping build — has clean data and no verdict** (§6ea §2): 0 growths, 0
+ceiling overruns, 0 unexplained spikes, every frame over 40 ms accounted for by boot, a load or
+pump sleep, and worst-per-window 18.3-20.2 ms after the loads.
 
-**And their one complaint turned out to be the most valuable thing in the session.** *"Only
-felt hitches at the start right after loading"* localised to two frames 1.3 and 1.4 seconds
-after a load burst, which were the cross-frame stream store growing; that is measured
-(71.7 ms in one frame, split waits 13.6 / allocate 42.9 / free 15.2) and fixed (§6dz).
+**Ask at the start of the next session: after loading, and late in a crowd — anything?**
 
-**A SECOND SESSION RAN AND REFUTED THE FIRST FIX, on a branch the harness had pre-registered**
-(§6dz §4b). Starting the store at 512 MB removed the after-load hitches — *"didn't feel one
-after loading in"* — and left a single 329.2 ms growth 512 -> 1024 near the end, which they
-also felt and located. **The cost scales with the new buffer's size and the store DOUBLES**, so
-a bigger start skips the cheap growths and leaves the expensive one. It now starts at
-`kPersistCeiling`, 1024 MB, so growth is impossible by construction; boot frames read
-**226.9 / 227.9 ms against 237.7 / 234.2 at the old 128**, because the same allocation is
-~10 ms at boot and 255 ms mid-run (gotcha 471). **Confirm with them that both are now gone.**
-
-~~**One thing, and it is the operator's session.**~~ `tools/part79_operator_session.sh`. Item 1's
-frame-time value has never been measured in the regime where it exists, and the run also
-carries the extent census at their resolution, where the post chain is a larger share of the
-GPU frame than it is on my route (14.4% against 9.9%, §6dv §4).
-
-Their PICTURE verdict is worth collecting explicitly even though the change cannot alter a
-pixel: this project has twice shipped a defect only their eye could see with every automatic
-check green (§6bo's lightmap transposition, part 60's overlay).
+Growth being impossible is structural and does not need their eye. Whether anything ELSE is
+felt now that the class is gone does.

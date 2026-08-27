@@ -18740,3 +18740,77 @@ still open. It is smaller, it is rarer, and the operator's threshold sits somewh
 That is part 80's item, and the trace cannot answer it: the phase columns are `ProfScope`s
 and read zero without `CZ_VK_PROFILE`, which costs 2-4 ms a frame and inverts the regime
 (gotcha 454). It needs an always-on split of the pump's walk.
+
+## §6ea — The third session: zero growths, zero unexplained spikes, and a verdict that was NOT collected (2026-08-27)
+
+The confirmation run for §6dz §4c, with the store starting at its 1024 MB ceiling. 88.5 s,
+11,677 frames, crowds at 7,000-12,000 draws.
+
+### 1. THE PREDICTION HELD ON THE DATA
+
+```
+stream store GROWTHS: 0        ceiling overruns: 0        F7 marks: 0
+```
+
+**And there are no unexplained single-frame spikes left at all.** Every frame over 40 ms in
+the whole run is accounted for by boot, a load, or pump sleep:
+
+| t | wall | what it is |
+|---|---|---|
+| 0.1 s | 226.0 ms | boot — 225.4 of it pump sleep |
+| 6.4 s | 111.2 ms | the first area load: 62.0 ms texture, 97 pipelines |
+| 29.7 s | 81.4 ms | a load: 23.2 texture, 30 pipelines, 47.2 sleep |
+| 38.7 s | 59.9 ms | a load transition, 48 draws, all sleep |
+| 39.2 s | 103.1 ms | the second big load: 39.3 texture, 20 pipelines |
+
+The trajectory across the three sessions of this campaign, counting only the spikes that are
+NOT boot, a load or sleep:
+
+| store start | unexplained single-frame spikes | felt |
+|---|---|---|
+| 128 (pre-part-79) | **4** — 158.4, 87.3, 60.3, 50.0 ms | 2 |
+| 512 (the half-right fix) | **1** — 351.7 ms | 1 |
+| **1024 (shipping)** | **0** | **not collected** |
+
+Worst frame in every ten-second window after the loads: **18.3-20.2 ms**. Gates from their own
+log: 0 `no translated shader`, 0 slot mix-ups, 0 `CONST MEMO STALE`, 0 stale present slots,
+**0.0% wide barriers over 3,663,722**, and `image memory: 5437 pooled into 9 blocks`.
+
+### 2. THE VERDICT WAS NOT COLLECTED, AND THAT IS RECORDED RATHER THAN GLOSSED
+
+The session ended and the operator moved on to other work without answering "how did it
+feel". **So the third session has clean DATA and no EYE.** That matters here more than usual,
+because the two questions this campaign has been answering are both perceptual: is the
+after-load hitch gone, and is the late one gone. Sessions 1 and 2 were confirmed by their
+report and session 3 is not.
+
+What is safe to say: *growth is impossible by construction* — the store starts at
+`kPersistCeiling`, the counter reads 0, and the ceiling-overrun path did not fire either. That
+is a structural claim, not a sampling one, and it does not need their eye. What still needs it
+is whether anything ELSE is felt now that this class is gone. Ask at the start of the next
+session; it is one sentence.
+
+### 3. ONE HONEST COVERAGE GAP
+
+This run is **88.5 s** and the 512 -> 1024 growth in session 2 landed at **t=94.8 s**. For the
+growth itself that is irrelevant (it cannot happen). For the OTHER rare class — the 50.0 and
+60.3 ms spikes of session 1, which were not growths and were not felt — the run did not quite
+reach the depth at which they appeared, and they did not appear here. **Absence over 88.5 s is
+weak evidence about an event that happened twice in 96.8 s**, so that class is still open and
+is `part80-kickoff.md`'s item 0 rather than something part 79 closed.
+
+### 4. THE REGIME, FROM THEIR OWN TRACE, AND IT STRENGTHENS THE NEXT ITEM
+
+| draws | n | wall | GPU | fence | CPUrec | headroom |
+|---|---|---|---|---|---|---|
+| 3,000-5,000 | 444 | 7.83 | 7.48 | 0.30 | 6.50 | 0.35 |
+| 5,000-7,000 | 952 | 9.61 | 8.09 | **0.00** | 8.90 | 1.52 |
+| 7,000-9,000 | 2,178 | 11.89 | 9.49 | **0.00** | 11.40 | **2.40** |
+| 9,000-12,000 | 1,136 | 13.64 | 10.58 | **0.00** | 13.16 | **3.06** |
+
+§6dv §2 measured 1.93 and 2.38 ms of headroom in the top two bands after part 78. This session
+reads **2.40 and 3.06**. Some of that is content variance — a CPU-only campaign cannot move
+the GPU, and the GPU column did drift 9.73 -> 9.49 and 10.80 -> 10.58 — but the direction is
+unambiguous and the fence is **0.00 at every band from 5,000 draws up**. **A CPU saving at
+their crowd converts to frame time roughly 1:1 up to about 2.4-3.0 ms**, which is the single
+most important number for the next part's board.
