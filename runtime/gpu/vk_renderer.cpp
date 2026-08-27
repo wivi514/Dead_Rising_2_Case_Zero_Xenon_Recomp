@@ -11596,6 +11596,54 @@ VkDeviceSize ExpandIndices(uint8_t* base, const Pm4Draw& draw, Expansion expand,
 // to exist separately from CZ_VK_NO_STATE_CACHE: that one also undoes part 18's five
 // binds, so an A/B on it would measure both parts at once and could attribute neither.
 // Every item gets an arm that turns off exactly itself.
+// CZ_VK_NO_DRIVER_RECORD=1 — THE CEILING PROBE FOR PARALLEL COMMAND RECORDING.
+//
+// `part80-kickoff.md` §1's item 1 is a secondary-command-buffer recorder: the pump keeps
+// walking PM4 and doing every decode, upload and cache lookup, and hands only the VULKAN
+// RECORDING of contiguous draw ranges to workers. Its pre-registered kill is 1.5 ms at the
+// operator's load, it is the riskiest item on the board, and three plans in a row have
+// re-priced it upward from a SHARE of the pump rather than from the quantity that decides
+// it. That quantity is narrow and nobody has measured it: **how many nanoseconds a draw are
+// spent inside the driver's command-recording entry points**, which is all a worker can
+// possibly take away.
+//
+// A share cannot answer it. `record` is 29.0% of the pump and 625 ns a draw, but that scope
+// also contains the vertex-fetch decode, the rectangle-list expansion, the index-range
+// arithmetic and the state-cache comparisons — none of which a secondary buffer removes,
+// because the pump has to do them to know what to record. Estimating the split by reading
+// the code is exactly the move gotcha 470 charges for: part 79 sized the stream-store fix
+// from arithmetic it had not done and shipped a half-fix.
+//
+// So this arm skips every `vkCmd*` in the record path and nothing else. Every decode still
+// runs, every upload still happens, every cache still updates and every counter still
+// counts — the frame is built completely and simply never told to the driver. The
+// difference in the profiler's `record` phase between this arm and the null IS the ceiling,
+// and it is an upper bound rather than an estimate: a real recorder also pays for capture,
+// for re-establishing state at each range boundary, and for the scheduling.
+//
+// IT IS DESTRUCTIVE AND SAYS SO. Nothing is drawn, so the picture is wrong by construction
+// and the FRAME TIME is meaningless (the GPU has no work). Read `record` out of
+// `CZ_VK_PROFILE`, in both arms, and read nothing else. An arm this blunt is only safe
+// because it announces itself; it prints on first use and its counter is on the stats dump.
+bool NoDriverRecord()
+{
+    // Announced at first use rather than silently. A destructive arm that does not say so
+    // is one screenshot away from being reported as a rendering defect, and this one
+    // produces a completely black frame with every counter reading normal.
+    static const bool off = [] {
+        const bool v = EnvOn("CZ_VK_NO_DRIVER_RECORD");
+        if (v)
+            fprintf(stderr,
+                    "[vk] CZ_VK_NO_DRIVER_RECORD=1 — DESTRUCTIVE CEILING PROBE. Every "
+                    "vkCmd* in the record path is skipped; all decode, uploads and caches "
+                    "still run. NOTHING WILL BE DRAWN. Read `record` from CZ_VK_PROFILE "
+                    "and read nothing else — frame time here is meaningless.\n");
+        return v;
+    }();
+    return off;
+}
+uint64_t g_noDriverRecordSkipped = 0;
+
 bool NoBufferBindCache()
 {
     static const bool off =
@@ -11611,7 +11659,10 @@ void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offs
     // unchanged. 16 is above the highest binding this title has ever used.
     if (binding >= Renderer::BoundState::kMaxTrackedBindings)
     {
-        vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
+        if (!NoDriverRecord())
+            vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
+        else
+            ++g_noDriverRecordSkipped;
         return;
     }
     if (!noStateCache && R->bound.haveVertex[binding] &&
@@ -11621,7 +11672,10 @@ void BindVertexBufferCached(uint32_t binding, VkBuffer buffer, VkDeviceSize offs
         ++R->skips.vertexBindRepeats;
         return;
     }
-    vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
+    if (!NoDriverRecord())
+        vkCmdBindVertexBuffers(R->cmd, binding, 1, &buffer, &offset);
+    else
+        ++g_noDriverRecordSkipped;
     R->bound.haveVertex[binding] = true;
     R->bound.vertexOffset[binding] = offset;
     R->bound.vertexBuffer[binding] = buffer;
@@ -11637,7 +11691,10 @@ void BindIndexBufferCached(VkBuffer buffer, VkDeviceSize offset, VkIndexType typ
         ++R->skips.indexBindRepeats;
         return;
     }
-    vkCmdBindIndexBuffer(R->cmd, buffer, offset, type);
+    if (!NoDriverRecord())
+        vkCmdBindIndexBuffer(R->cmd, buffer, offset, type);
+    else
+        ++g_noDriverRecordSkipped;
     R->bound.haveIndex = true;
     R->bound.indexOffset = offset;
     R->bound.indexType = type;
@@ -19826,7 +19883,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     };
     if (noStateCache || pipeline != R->bound.pipeline)
     {
-        vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        if (!NoDriverRecord())
+            vkCmdBindPipeline(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        else
+            ++g_noDriverRecordSkipped;
         // BINDING A PIPELINE THAT SPECIFIES STATE STATICALLY MAKES THE CORRESPONDING
         // DYNAMIC STATE UNDEFINED, so the skip-if-unchanged cache below cannot survive a
         // bind. The stencil states are declared dynamic only on stencil-enabled pipelines
@@ -19843,7 +19903,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (noStateCache || !R->bound.haveViewport ||
         memcmp(&viewport, &R->bound.viewport, sizeof(viewport)) != 0)
     {
-        vkCmdSetViewport(R->cmd, 0, 1, &viewport);
+        if (!NoDriverRecord())
+            vkCmdSetViewport(R->cmd, 0, 1, &viewport);
+        else
+            ++g_noDriverRecordSkipped;
         R->bound.viewport = viewport;
         R->bound.haveViewport = true;
     }
@@ -19852,7 +19915,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (noStateCache || !R->bound.haveScissor ||
         memcmp(&scissor, &R->bound.scissor, sizeof(scissor)) != 0)
     {
-        vkCmdSetScissor(R->cmd, 0, 1, &scissor);
+        if (!NoDriverRecord())
+            vkCmdSetScissor(R->cmd, 0, 1, &scissor);
+        else
+            ++g_noDriverRecordSkipped;
         R->bound.scissor = scissor;
         R->bound.haveScissor = true;
     }
@@ -19861,7 +19927,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     if (noStateCache || !R->bound.haveBlend ||
         memcmp(blendConstants, R->bound.blend, sizeof(blendConstants)) != 0)
     {
-        vkCmdSetBlendConstants(R->cmd, blendConstants);
+        if (!NoDriverRecord())
+            vkCmdSetBlendConstants(R->cmd, blendConstants);
+        else
+            ++g_noDriverRecordSkipped;
         memcpy(R->bound.blend, blendConstants, sizeof(blendConstants));
         R->bound.haveBlend = true;
     }
@@ -19903,9 +19972,14 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
             (noStateCache || !R->bound.haveStencil || R->bound.stencilRef != ref ||
              R->bound.stencilMask != mask || R->bound.stencilWriteMask != wmask))
         {
-            vkCmdSetStencilReference(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
-            vkCmdSetStencilCompareMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, mask);
-            vkCmdSetStencilWriteMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, wmask);
+            if (!NoDriverRecord())
+            {
+                vkCmdSetStencilReference(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
+                vkCmdSetStencilCompareMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, mask);
+                vkCmdSetStencilWriteMask(R->cmd, VK_STENCIL_FACE_FRONT_AND_BACK, wmask);
+            }
+            else
+                g_noDriverRecordSkipped += 3;
             R->bound.stencilRef = ref;
             R->bound.stencilMask = mask;
             R->bound.stencilWriteMask = wmask;
@@ -19919,8 +19993,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     // buffer rather than once per draw — and it is the most expensive of the five.
     if (noStateCache || !R->bound.setsBound)
     {
-        vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout,
-                                0, 5, R->sets, 0, nullptr);
+        if (!NoDriverRecord())
+            vkCmdBindDescriptorSets(R->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, R->pipeLayout,
+                                    0, 5, R->sets, 0, nullptr);
+        else
+            ++g_noDriverRecordSkipped;
         R->bound.setsBound = true;
     }
     else
@@ -19935,9 +20012,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         uint64_t(R->arena.address + psConstAt),
         uint64_t(R->arena.address + sharedAt),
         uint32_t(R->drawsThisFrame), 0 };
-    vkCmdPushConstants(R->cmd, R->pipeLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
-                       &pushConstants);
+    if (!NoDriverRecord())
+        vkCmdPushConstants(R->cmd, R->pipeLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32,
+                           &pushConstants);
+    else
+        ++g_noDriverRecordSkipped;
 
     // THE CONSTANT-SLOT RACE DETECTOR's record half. This is the right place and the only
     // right place: the address has just been pushed, so these are exactly the bytes this
@@ -20691,7 +20771,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // rectSynth already folded the base vertex into its three corners, and its
         // expanded indices name a private four-vertex stream — so offsetting again
         // would apply it twice.
-        vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset, 0);
+        if (!NoDriverRecord())
+            vkCmdDrawIndexed(R->cmd, expandedCount, 1, 0, rectSynth ? 0 : indxOffset, 0);
+        else
+            ++g_noDriverRecordSkipped;
     }
     else if (draw.indexed)
     {
@@ -20748,7 +20831,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         const VkIndexType itype =
             draw.index32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
         BindIndexBufferCached(loc.handle(), loc.at, itype);
-        vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
+        if (!NoDriverRecord())
+            vkCmdDrawIndexed(R->cmd, draw.indexCount, 1, 0, indxOffset, 0);
+        else
+            ++g_noDriverRecordSkipped;
         COUNT("draw: indexed");
     }
     else
@@ -20757,7 +20843,10 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         // question is identical, with maxIdx implicit.
         if (rangeCensus && rangeAttrCount && draw.indexCount)
             RangeCensusEval(draw.indexCount - 1);
-        vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
+        if (!NoDriverRecord())
+            vkCmdDraw(R->cmd, draw.indexCount, 1, uint32_t(indxOffset), 0);
+        else
+            ++g_noDriverRecordSkipped;
         COUNT("draw: auto-index");
     }
     // Fingerprint the draw. Order matters and is included by construction, because the
@@ -25714,6 +25803,16 @@ void VkRenderer_DumpStats()
                 100.0 * double(R->skips.scissor) / double(d),
                 100.0 * double(R->skips.blend) / double(d),
                 100.0 * double(R->skips.sets) / double(d), (unsigned long long)d);
+    // THE CEILING PROBE's own engagement. Printed only when it fired, but printed with the
+    // per-draw rate rather than the raw total, because the number the item's arithmetic
+    // needs is "driver calls per draw" — that is what a secondary command buffer carries,
+    // and the state cache means it is nowhere near the ten calls the source suggests.
+    if (g_noDriverRecordSkipped && R->skips.draws)
+        fprintf(stderr,
+                "[vk]   CZ_VK_NO_DRIVER_RECORD: %llu vkCmd* calls skipped, %.2f per draw "
+                "— NOTHING WAS DRAWN in this run\n",
+                (unsigned long long)g_noDriverRecordSkipped,
+                double(g_noDriverRecordSkipped) / double(R->skips.draws));
     // THE STENCIL SKIP, ADDED IN PART 72's PREP — and it was COLLECTED SINCE PART 56 AND
     // NEVER PRINTED, which is the defect this project keeps rediscovering (a counter you
     // already pay for that no log carries). It is the deciding number for

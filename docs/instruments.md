@@ -512,7 +512,36 @@ CZ_FAKE_PRESS_SEQ=START,A,A  which buttons that arm sends, one per interval, HOL
                    meshes, the sheared pause menu) was an operator report with no
                    reproduction. An unknown name is now REPORTED rather than dropped —
                    a silent drop shifts every later entry one interval early and
-                   desynchronises the recipe from the screens it was aimed at
+                   desynchronises the recipe from the screens it was aimed at.
+                   **PER-ENTRY TIMING, `NAME@MS` (part 80).** `A@300`, `LSUP@4000`,
+                   `NONE@2000`. Without a duration an entry still takes one
+                   `CZ_FAKE_PRESS_MS` interval, so every recipe written before part 80
+                   means exactly what it meant. It exists because the metronome could not
+                   reproduce a HUMAN: the operator's route into a 9,300-draw crowd is a
+                   300 ms tap, a two-second wait and a four-second walk, and approximating
+                   that with a short uniform interval turns every long step into dozens of
+                   near-duplicate entries. A hand-timed recipe prints its whole schedule at
+                   startup, because the likeliest mistake in a transcription is a mistyped
+                   duration that shifts everything after it. A malformed duration is
+                   REJECTED by name rather than treated as 0, since 0 already means "use
+                   the default interval".
+                   **ANALOG STICK ENTRIES, `LS<x>/<y>` and `RS<x>/<y>` (part 80)**, with
+                   `+` to hold both at once: `LS-4000/32000+RS-12000/0`. The eight cardinal
+                   names are full deflection in one of eight directions and a human uses
+                   neither. The operator watched a cardinal transcription of their own
+                   route and said *"the character goes forward the whole time while I was
+                   often slightly to the left so it runs into the sheriff office building
+                   instead of middle of street"* — and the trace agrees: over that
+                   14.5-second walk Y is pinned at 32767 while X drifts -5,467..+3,993,
+                   which is steering that `LSUP` (0, 32767) cannot express. The failure is
+                   SILENT, because the run still arrives somewhere and still reports a draw
+                   count. Both sticks matter together because they turn the camera WHILE
+                   walking and the camera decides the draw set. Out-of-range and
+                   non-numeric axes are rejected BY NAME rather than clamped or parsed to
+                   0 — 0 is a legal axis value, so a silent parse failure would spell
+                   itself as a centred stick.
+                   `tools/part80_transcribe_route.py` writes these from a recorded
+                   `CZ_INPUT_TRACE`; `tools/part80_crowdroute.sh` is the resulting route
 CZ_XMA_PROBE=1     the guest's own audio state, on a 5 s clock: the IsPlaying
                    predicate (sub_82862A90), the per-context "has it run dry" test
                    (sub_8285EFE0, which reads the input-buffer-VALID bits at
@@ -1480,7 +1509,39 @@ CZ_INPUT_TRACE=1   every pad packet published to the guest, with its button mask
                    witness that a real press reached XamInputGetState. Silent on a
                    keyboard-only run until a key is actually pressed; noisy with a
                    physical stick attached, because XInput's packet number moves on
-                   raw jitter too and we do not filter (gotcha 102)
+                   raw jitter too and we do not filter (gotcha 102).
+                   **IT CARRIES A CLOCK AND DECODES, SINCE PART 80.** Milliseconds since
+                   process start — the same epoch `debug_tunables.cpp` stamps its
+                   `[debug] ... at Ns` lines with, which is what makes an offset from a
+                   screen landing computable afterwards. That matters more than the
+                   absolute time: boot depth here is a distribution (24 s to 131 s
+                   measured), so a recipe anchored on process start is a fit to one
+                   afternoon. The names are exactly `CZ_FAKE_PRESS_SEQ`'s vocabulary, with
+                   the raw mask still on the line beside them — the names make
+                   transcription mechanical, the raw column is what would show the decoder
+                   missing a bit rather than the pad being idle.
+                   **IT SEES THE PAD AND NOT THE KEYBOARD.** F2/F4 and the debug edges are
+                   SDL key events that never reach `PublishPad`, so a route driven with
+                   them appears here as a SILENCE. Say so when transcribing one
+CZ_VK_NO_DRIVER_RECORD=1   **DESTRUCTIVE.** Skip every `vkCmd*` in the record path and
+                   nothing else: all decode, uploads, cache updates and counters still
+                   run, the frame is built completely and simply never told to the driver.
+                   **NOTHING IS DRAWN**, so the picture is wrong by construction and the
+                   FRAME TIME IS MEANINGLESS (the GPU has no work) — read `record` out of
+                   `CZ_VK_PROFILE` in both arms and read nothing else.
+                   It is the CEILING PROBE for `part80-kickoff.md` §1's item 1, parallel
+                   command recording, and it exists because three plans in a row priced
+                   that item off a SHARE of the pump rather than off the quantity that
+                   decides it: how many nanoseconds a draw are spent inside the driver's
+                   recording entry points, which is all a worker can take away. `record`
+                   is 29.0% of the pump and 625 ns a draw, but that scope also holds the
+                   vertex-fetch decode, the rectangle-list expansion, the index arithmetic
+                   and the state-cache comparisons, none of which a secondary buffer
+                   removes. The difference between this arm and the null is an UPPER BOUND
+                   — a real recorder also pays for capture, for re-establishing state at
+                   each range boundary, and for scheduling. It announces itself on first
+                   use, because an arm this blunt produces a black frame with every
+                   counter reading normal
 ```
 
 ## The title's own debug scaffolding (`runtime/cpu/debug_tunables.cpp`)
