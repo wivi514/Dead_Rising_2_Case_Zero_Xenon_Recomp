@@ -5463,3 +5463,35 @@ From phase C part 18 (the frame rate — and none of it was work):
      (`LS<x>/<y>`) and the ability to hold BOTH sticks at once, because a player turns the
      camera while walking and the camera decides the draw set. **The person who played it is
      the only oracle for whether a replay is the same journey.**
+
+479. **AN IMPLICIT VULKAN LAYER CAN BE IN YOUR DEVICE DISPATCH CHAIN FOR MONTHS WITHOUT
+     ANYONE ASKING — CHECK, AND THEN MEASURE RATHER THAN ASSUME IT COSTS.**
+     `VK_LOADER_DEBUG=layer` on one 40-second run found **`VK_LAYER_LS_frame_generation`**
+     inserted as an instance *and device* layer in this process. Its manifest has a
+     `disable_environment` and **no `enable_environment`**, so it is on by default, and the
+     package predated the whole port by three months — it had been in the chain of every run
+     ever made here, mine and the operator's. A device layer is in the per-draw call path by
+     construction, so this looked like an unmeasured tax on 45,000 `vkCmd*` calls a frame.
+     **It was a null**: `record` read 637/645 ns/draw with it and 639/639 with it disabled,
+     where the two default runs differed from each other by more than the arms did.
+     `nm -D --defined-only` said why in advance — the library **defines no `vkCmd*` entry
+     points at all**, so the loader's dispatch table holds the driver's own pointers. Two
+     lessons, and the second is the one that generalises: **enumerate what is in your chain
+     before quoting any per-call number as "the driver"**, and then **let `nm` predict and an
+     A/B decide**, because "a layer is present" and "a layer costs" are different claims.
+
+480. **A CALL COUNT IS A SHAPE, NOT A VOLUME — LOOK FOR THE API THAT TAKES AN ARRAY.**
+     The largest single driver cost in this renderer turned out to be
+     `vkCmdBindVertexBuffers` at **1.725 calls a draw, 36.8% of all driver calls, 0.83 ms a
+     frame** — not because it is slow or because there are many streams, but because the
+     helper issues **one call per binding** while the API takes a **contiguous range**. The
+     bind loop was already assigning bindings with `++binding`, so they were contiguous by
+     construction and the batch was free for the taking. **When a per-draw cost is dominated
+     by one entry point, count the CALLS before optimising the WORK** — and check whether the
+     API has a plural form you are not using. The same question is worth asking of every
+     `…(…, 1, &thing)` in a hot path.
+     **And the saving is a distribution question, not an average one:** 1.725 changed
+     bindings of 3.310 offered is consistent with "52% of draws change all their bindings"
+     (batching saves 0.58 ms) and with "changed bindings interleave with unchanged ones"
+     (batching saves nothing). Those differ by the whole item, and only a run-length census
+     tells them apart — a mean cannot.

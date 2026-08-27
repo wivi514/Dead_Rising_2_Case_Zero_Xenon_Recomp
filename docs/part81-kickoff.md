@@ -8,12 +8,20 @@
 >
 > | document | what it is |
 > |---|---|
+> | **`phase5-notes.md` §6ed** | **the 4.83 driver calls decomposed, and the implicit layer measured as a NULL — this is where item 0 comes from** |
 > | **`phase5-notes.md` §6ec** | **the corrected per-draw CPU decomposition, three refutations, and why this renderer resists memoisation** |
 > | **`phase5-notes.md` §6eb** | **the crowd route, its regime, its noise floor, and item 1's 251 ns/draw ceiling** |
 > | `phase5-notes.md` §6ea §2 | part 79's owed verdict, COLLECTED — retracted in place |
 > | `phase5-notes.md` §6dv §2, §6ea §4 | the operator's own regime tables, which §6eb §2 now reproduces |
 >
-> Lessons: gotchas **473-477**.
+> Lessons: gotchas **473-480**.
+>
+> **AND THERE IS A LIVE PLAN AGAIN: `docs/perf-plan-part81.md`.** There has not been one since
+> part 73 exhausted `perf-plan-autonomous.md`, because no item was concrete enough to plan.
+> Item 0 below is: buildable, threadless, and incapable of changing a pixel. **The plan is the
+> execution order, the arms, the verifiers and the pre-registered kills; this file is the
+> board.** Read the plan's §1.0 before writing any code — it is a census that decides whether
+> half the item exists.
 
 ---
 

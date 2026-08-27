@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 478 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 480 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 478-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 480-entry transferable ledger. Every "gotcha N" resolves here.
   - **`port-history.md`** (what each session established) and **`open-items.md`** (the
     backlog, in order) — both split out of this file on 2026-08-08.
   - **`part69-night-plan.md` — still the live plan, and its §3 is the live path, but
@@ -185,8 +185,10 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **It is currently
-    `part81-kickoff.md`, and the live SUBJECT is PERFORMANCE — but **THERE IS NO LIVE PLAN
-    ANY MORE.** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
+    `part81-kickoff.md`, and the live SUBJECT is PERFORMANCE. **THERE IS A LIVE PLAN AGAIN AS
+    OF PART 80: `docs/perf-plan-part81.md`** — the first since part 73 exhausted its
+    predecessor, because part 80 is the first part since then to leave an item that is
+    concrete enough to plan (buildable, threadless, and incapable of changing a pixel).** Part 73 ran the last unrun item in `docs/perf-plan-autonomous.md` and
     **every item in that plan is now closed, refuted or shipped**; it is kept because it
     carries part 73's four retractions in place, as does `perf-plan-part72.md` (the item
     table). `part72-fix-plan.md` is what the operator sittings established, and
@@ -861,9 +863,10 @@ longer engages the feature; `CZ_VK_RT_MENU=1` restores the rows and `CZ_VK_RT_SH
 still engages it directly. Both arms print the line that proves which one is running. The
 feature's whole state is `open-items.md` 0v and `docs/part71-kickoff.md`. ~~**THE LIVE PLAN
 IS `docs/perf-plan-part71.md`.**~~ ~~**THE LIVE PLAN IS `docs/perf-plan-part72.md`**~~
-~~**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**~~ — **THERE IS NO LIVE PLAN AS OF
-PART 73: that one is EXHAUSTED**, every item in it closed, refuted or shipped, and a
-successor must be built from new ground rather than from its table. ~~`part75-kickoff.md`
+~~**THE LIVE PLAN IS `docs/perf-plan-autonomous.md`**~~ ~~**THERE IS NO LIVE PLAN AS OF
+PART 73**~~ — that one is EXHAUSTED, every item in it closed, refuted or shipped, and part 80
+built its successor from new ground rather than from its table: **THE LIVE PLAN IS
+`docs/perf-plan-part81.md`**, and its §1.0 is a census that must run before any code. ~~`part75-kickoff.md`
 is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ ~~**`part78-kickoff.md` is**~~ ~~**`part79-kickoff.md` is**~~ ~~**`part80-kickoff.md` is**~~ —
 **`part81-kickoff.md` is**, and it says where that ground is. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
@@ -875,7 +878,7 @@ ALL REFUTED THEMSELVES, AND THE REAL DELIVERABLE IS THAT THE OPERATOR'S OWN 9,30
 NOW REPLAYS UNATTENDED. THE HONEST HEADLINE IS THAT THERE IS NO LARGE CPU ITEM LEFT.**
 **`docs/part81-kickoff.md` IS THE LIVE HAND-OFF.** Records: `phase5-notes.md` **§6eb** (the
 route, the regime, item 1's ceiling) and **§6ec** (the decomposition and the three censuses);
-lessons: gotchas **473-478**):
+lessons: gotchas **473-480**):
 
 * **PART 79's OWED SENTENCE WAS COLLECTED FIRST, AND IT CLOSES THE CLASS.** Asked in part 80's
   opening message — *after loading into an area, and late in a crowd, did you feel anything?* —
@@ -936,6 +939,27 @@ lessons: gotchas **473-478**):
   falls by the whole headroom — and the resolve clears (0.568 ms) plus the resolve copies
   (0.699) are less than it. Read the regime before RANKING a board, not just before measuring
   an item (gotcha 476).
+* **AND THE DRIVER'S 251 ns WAS DECOMPOSED, WHICH IS WHERE PART 81's PLAN COMES FROM (§6ed).**
+  §6eb called it "the driver"; it is the whole CALL CHAIN, and two thirds of that had never
+  been looked at. From counters already on the stats line: **`vkCmdBindVertexBuffers` 1.725
+  calls/draw (36.8%, 0.83 ms)**, draw 1.000, push constants 1.000, index bind 0.640, pipeline
+  0.280 — reconstructing to **4.691 calls / 2.27 ms against an independently measured 4.83 /
+  2.33**. The biggest is a **SHAPE defect**: the helper issues one call per binding where
+  `vkCmdBindVertexBuffers` takes a contiguous range, and the loop already assigns bindings with
+  `++binding` (gotcha 480).
+* **AND THE IMPLICIT LAYER IN OUR DEVICE CHAIN IS A NULL.** `VK_LAYER_LS_frame_generation` has
+  been inserted as a DEVICE layer in every run this project has ever made — installed three
+  months before the port began, enabled by default. `record` reads **637/645 ns/draw with it
+  and 639/639 without**, where the two default runs differ by more than the arms do; it
+  **defines no `vkCmd*` entry points at all**. No past measurement is contaminated, and frame
+  generation was never active — nor could it have inflated anything, because this runtime
+  counts its own presents at its own seam (gotcha 479).
+* **THERE IS A LIVE PLAN AGAIN — `docs/perf-plan-part81.md`**, the first since part 73
+  exhausted its predecessor. Its item 0 is the driver's call COUNT: a bind-run census that
+  decides whether half the item exists, the loader-trampoline bypass, then the batch —
+  **~0.5-0.7 ms combined at their load, converting ~1:1 at fence 0.00, with no threads and no
+  way to change a pixel.** Its §1.4 names `vkCmdPushConstants` as probably structural, with the
+  reason, so nobody starts there.
 * **Gates:** `--smoke` OK on every build; every reportable route run passed its own 8,000-draw
   gate with failures renamed `.rejected`; the new censuses are **shown free when off** (+0.4%
   frame-weighted, mixed sign, against the three pre-census nulls). **Nothing shipped** — every
