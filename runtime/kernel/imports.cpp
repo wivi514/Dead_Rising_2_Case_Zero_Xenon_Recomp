@@ -3695,6 +3695,40 @@ static uint32_t XamInputGetCapabilities_x(uint32_t userIndex, uint32_t flags,
     return 0;
 }
 
+// ONE STICK CLAUSE — `LS<x>/<y>` or `RS<x>/<y>` — decoded into the four-axis array
+// {lx, ly, rx, ry}. Returns false and touches nothing on any malformed input.
+//
+// The numeric test is written out rather than handed to `strtol`'s error reporting,
+// because `strtol` returns 0 for "" and for "Q" — and 0 is a perfectly legal axis
+// value, so a silent parse failure would spell itself as a CENTRED STICK. A recipe
+// that quietly centres a stick is a recipe that walks somewhere else, which is the
+// exact failure this whole parser is loud about.
+//
+// Out of range is REJECTED rather than clamped, for the same reason: a clamp turns a
+// mistyped 327670 into full deflection and the recipe looks like it worked.
+static bool ParseStickClause(const std::string& c, int16_t (&axes)[4])
+{
+    const size_t slash = c.find('/');
+    if (slash == std::string::npos || slash < 3)
+        return false;
+    const std::string xs = c.substr(2, slash - 2), ys = c.substr(slash + 1);
+    auto numeric = [](const std::string& v) {
+        const size_t first = (!v.empty() && v[0] == '-') ? 1 : 0;
+        return v.size() > first &&
+               v.find_first_not_of("0123456789", first) == std::string::npos;
+    };
+    if (!numeric(xs) || !numeric(ys))
+        return false;
+    const long xv = strtol(xs.c_str(), nullptr, 10);
+    const long yv = strtol(ys.c_str(), nullptr, 10);
+    if (xv < -32768 || xv > 32767 || yv < -32768 || yv > 32767)
+        return false;
+    const int base = c[0] == 'L' ? 0 : 2;
+    axes[base] = int16_t(xv);
+    axes[base + 1] = int16_t(yv);
+    return true;
+}
+
 constexpr uint16_t XINPUT_GAMEPAD_START = 0x0010;
 
 // CZ_FAKE_START_MS=N — a synthetic START press every N milliseconds, held for 150 ms.
@@ -3965,8 +3999,85 @@ static uint32_t XamInputGetState_x(uint32_t userIndex, uint32_t flags,
                     dur = unsigned(strtoul(ds.c_str(), nullptr, 10));
                 }
                 bool found = false;
+                // ANALOG STICK ENTRIES — `LS<x>/<y>` and `RS<x>/<y>`, e.g. `LS-4849/32767`.
+                //
+                // WHY THE EIGHT CARDINAL NAMES ARE NOT ENOUGH, measured rather than argued.
+                // Part 80 transcribed the operator's own route into a 9,300-draw crowd from
+                // an input trace, emitted `LSUP` for the walk, and they watched the replay
+                // and said: *"the character goes forward the whole time while I was often
+                // slightly to the left so it runs into the sheriff office building instead
+                // of middle of street."* The trace says exactly that — over the 14.5-second
+                // walk the Y axis is pinned at 32767 and **X drifts between -5,467 and
+                // +3,993**, a 17% deflection that is steering. `LSUP` is (0, 32767), so the
+                // replay walks dead straight into a wall.
+                //
+                // A cardinal vocabulary can only express eight directions at full
+                // deflection, and a human uses neither: they use small corrections at
+                // partial deflection, continuously. Rounding those to the nearest of eight
+                // does not approximate the route, it produces a DIFFERENT route that
+                // happens to start in the same place — and the failure is silent, because
+                // the run still reaches somewhere and still reports a draw count.
+                //
+                // These entries HOLD for their whole window, like the cardinal stick names
+                // and for the same reason: a stick that tapped for 150 ms would move Chuck
+                // a few centimetres and look exactly like a stick that does not work.
+                //
+                // BOTH STICKS AT ONCE — `LS<x>/<y>+RS<x>/<y>`. The operator turns the
+                // camera WHILE walking, continuously, and an entry that could carry only
+                // one stick would have to drop the other: transcribing their route dropped
+                // a right-stick deflection of -12,000 that was live throughout the walk,
+                // so Chuck took the same path facing the wrong way. For a PERFORMANCE route
+                // the facing is not cosmetic — it decides the draw set, which is the thing
+                // being measured.
+                if (!found && nm.find('/') != std::string::npos &&
+                    (nm.compare(0, 2, "LS") == 0 || nm.compare(0, 2, "RS") == 0))
+                {
+                    // Split on '+' into at most two stick clauses, each `LSx/y` or `RSx/y`.
+                    std::vector<std::string> clauses;
+                    for (size_t b = 0, e; b <= nm.size(); b = e + 1)
+                    {
+                        e = nm.find('+', b);
+                        if (e == std::string::npos)
+                            e = nm.size();
+                        clauses.push_back(nm.substr(b, e - b));
+                        if (e == nm.size())
+                            break;
+                    }
+                    bool ok = !clauses.empty();
+                    int16_t axes[4] = { 0, 0, 0, 0 };   // lx, ly, rx, ry
+                    for (const std::string& c : clauses)
+                    {
+                        if (c.size() < 4 || (c.compare(0, 2, "LS") != 0 &&
+                                             c.compare(0, 2, "RS") != 0) ||
+                            c.find('/') == std::string::npos)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        ok = ok && ParseStickClause(c, axes);
+                    }
+                    if (ok)
+                    {
+                        static std::deque<std::string> analogNames;
+                        analogNames.push_back(nm);
+                        NamedButton ab{ analogNames.back().c_str(), 0,
+                                        axes[0], axes[1], axes[2], axes[3], true };
+                        ab.durMs = dur;
+                        seq.push_back(ab);
+                        found = true;
+                    }
+                    else
+                    {
+                        unknown++;
+                        KLOG("CZ_FAKE_PRESS_SEQ: BAD STICK entry \"%s\" — expected "
+                             "LS<x>/<y>, RS<x>/<y> or the two joined by '+', axes in "
+                             "-32768..32767. ENTRY IGNORED.\n", one.c_str());
+                        one.clear();
+                        continue;
+                    }
+                }
                 for (const auto& b : kButtons)
-                    if (nm == b.name)
+                    if (!found && nm == b.name)
                     {
                         seq.push_back(b);
                         seq.back().durMs = dur;

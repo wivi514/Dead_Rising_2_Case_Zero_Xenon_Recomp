@@ -1,0 +1,54 @@
+# transcribed from /home/wivi514/DR2CZ-troubleshooting/part80-route/rt_0827_111024_route.log
+# 1127 pad samples -> 47 distinct inputs (half-deflection 16383, merge 120 ms)
+#
+# t (s)   duration   input
+#   21.238      80 ms  START
+#   25.575     145 ms  A
+#   27.823     144 ms  B
+#   28.384     103 ms  UP
+#   29.384     151 ms  A
+#   31.336     160 ms  RIGHT
+#   32.144     160 ms  A
+#   34.985     224 ms  LS0/24000
+#   35.209    1991 ms  LS0/32000
+#   37.200     401 ms  LS0/32000+RS-12000/0
+#   37.601     404 ms  LS0/32000+RS-8000/0
+#   38.005     395 ms  LS0/32000+RS-12000/0
+#   38.400     405 ms  LS0/32000
+#   38.805     896 ms  LS4000/32000
+#   39.701    1512 ms  LS0/32000
+#   41.213     812 ms  LS-4000/32000+RS-8000/0
+#   42.025     380 ms  LS-4000/32000
+#   42.405     405 ms  LS-4000/32000+RS-12000/0
+#   42.810    2004 ms  LS-4000/32000
+#   44.814    2032 ms  LS0/32000
+#   46.846    1168 ms  LS4000/32000
+#   48.014     788 ms  LS0/32000
+#   48.802     404 ms  LS-4000/32000
+#   49.206     640 ms  LS4000/24000
+#   50.815     391 ms  RS-8000/4000
+#   51.206     489 ms  RS-24000/0
+#   51.695     315 ms  RS-20000/0
+#   52.010    2396 ms  RS-32000/0
+#   54.406   17355 ms  RS-32000/4000
+#   71.761     268 ms  RS12000/8000
+#   72.029     400 ms  RS32000/8000
+#   72.429   22371 ms  RS32000/4000
+#   95.204     396 ms  RS-16000/0
+#   95.600     416 ms  RS-12000/8000
+#   96.431     373 ms  RS4000/8000
+#          ** START was 80 ms -- floored to 160 ms, borrowed from the following wait (route timing unchanged)
+#          ** A was 145 ms -- floored to 160 ms, borrowed from the following wait (route timing unchanged)
+#          ** B was 144 ms -- floored to 160 ms, borrowed from the following wait (route timing unchanged)
+#          ** UP was 103 ms -- floored to 160 ms, borrowed from the following wait (route timing unchanged)
+#          ** A was 151 ms -- floored to 160 ms, borrowed from the following wait (route timing unchanged)
+#
+# THE ANCHOR PROBLEM, stated because the recipe cannot state it itself. The times
+# above are from PROCESS START; the replay's clock starts at the title's FIRST INPUT
+# POLL, which is a different and better zero (it is the frontend coming up, not the
+# process). They differ by however long this boot took, and boot depth here is a
+# distribution, not a constant -- 24 s to 131 s on measured runs (gotcha 75). So the
+# leading NONE is the one number in this recipe that is a fit to one afternoon, and
+# it is the one to check with the draw gate before trusting anything measured on it.
+#
+CZ_FAKE_PRESS_SEQ=NONE@20715,START@160,NONE@4177,A@160,NONE@2088,B@160,NONE@401,UP@160,NONE@840,A@160,NONE@1792,RIGHT@160,NONE@648,A@160,NONE@2681,LS0/24000@224,LS0/32000@1991,LS0/32000+RS-12000/0@401,LS0/32000+RS-8000/0@404,LS0/32000+RS-12000/0@395,LS0/32000@405,LS4000/32000@896,LS0/32000@1512,LS-4000/32000+RS-8000/0@812,LS-4000/32000@380,LS-4000/32000+RS-12000/0@405,LS-4000/32000@2004,LS0/32000@2032,LS4000/32000@1168,LS0/32000@788,LS-4000/32000@404,LS4000/24000@640,NONE@969,RS-8000/4000@391,RS-24000/0@489,RS-20000/0@315,RS-32000/0@2396,RS-32000/4000@17355,RS12000/8000@268,RS32000/8000@400,RS32000/4000@22371,NONE@404,RS-16000/0@396,RS-12000/8000@416,NONE@415,RS4000/8000@373,NONE@392,NONE
