@@ -10,7 +10,28 @@
 
 ---
 
-## §0 THE DECISION THAT COMES FIRST — "no game assets" is not the whole boundary
+## §0-DECIDED THE SHAPE IS (A): SHIP IT RECOMPILED, THE PLAYER DROPS IN THE GAME
+
+Operator instruction, 2026-08-27: *"We'll make it already recompiled for release to make it
+easiest for the player. Just drop in the game."* **Shape (A) below is chosen.** The
+comparison that follows is kept because it is what the decision was made against, and
+because §0b's shader argument turned out to matter for a different reason than distribution.
+
+**What that settles:** the release ships a compiled `cz_runtime` per platform containing the
+recompiled image; the user supplies their STFS package and nothing else. No user-side
+compiler, no image build, no module ABI. **§5 step 7 (`ppc_image` as a loadable module) is
+therefore DROPPED**, and with it the argument for shape (C).
+
+**What it does not settle, and what you should know you are choosing:** the artifacts are
+derivative works of the game executable, and **the release cannot be built by public CI** —
+no GitHub Actions runner has an XEX, so every artifact is built on your machine and
+uploaded. §5 is re-ordered accordingly: CI still earns its place cross-compiling and
+gate-testing the *host* sources on all three platforms, which is most of what breaks, but
+the final artifact is a local build.
+
+---
+
+## §0 THE ORIGINAL DECISION — "no game assets" is not the whole boundary
 
 The instruction is to ship no game assets and let the user supply them. That is right, and it
 is **not sufficient**, because two things in a working build are derived from the user's game
@@ -66,32 +87,34 @@ has to be designed (§3).
 are comfortable with.** The platform work in §1 and §2 is required by all three shapes, so it
 can start before the fork is decided — and that is how this plan is ordered.
 
-### §0b THE SHADER CACHE IS THE HARD HALF, AND IT BLOCKS (B) AND (C) TODAY
+### §0b THE SHADER CACHE — finding 6 IS RETRACTED AND THE DISC HAS THE SHADERS
 
-`ppc/` is reproducible on any machine from the user's own XEX: XenonRecomp is MIT, the config
-is in the repo, and the pipeline is five documented tools. **The shader cache is not.**
+**This section said the opposite this morning.** It said the cache could not be rebuilt from
+the user's copy, on the strength of finding 6 — that the disc's `.vo` shader banks are "not
+usable microcode". **Finding 6 is now retracted**, and the retraction is in place in
+`docs/xenia-capture-analysis.md` §6 with the artifact explained.
 
-* The shaders on disc are **not usable microcode** — that was retracted as finding 6: they are
-  `.vo` objects carrying build metadata whose payloads share only background-noise overlap
-  with what the guest actually submits.
-* The 449 modules were accumulated over ~25 parts from Xenia `dump_shaders` captures **plus
-  eleven operator play sessions**, including one complete playthrough. A user cannot
-  reproduce that set from their own copy in any reasonable way.
-* The renderer only loads prebuilt `.spv`. Grep confirms no `IDxcCompiler`, no XenosRecomp,
-  nothing that translates at run time.
+`tools/vo_microcode_probe.py`, against the 449-blob ucode oracle over the 1,571 shader
+objects in the three prologue banks:
 
-**So (B) and (C) need one piece of engineering that does not exist: translate microcode to
-SPIR-V on demand, in-process, on first sight of an unknown shader.** That is §4, it is the
-largest item in this plan, and it is worth doing on its own merits — it also permanently
-retires the "the cache is complete" claim-with-a-shelf-life that CLAUDE.md warns about, and
-the six-cache name-diff gate that goes with it.
+```
+VS: 103 blobs -> verbatim 81 (78.6%), tail-only/patched 16, partial 4, absent 2
+PS: 335 blobs -> verbatim 335 (100.0%)
+RECOVERABLE (verbatim or tail-matched): 432 of 438 (98.6%)
+```
 
-An interim: the runtime already dumps microcode as the guest submits it (`CZ_SHADER_DUMP`),
-independently of whether it can translate it. A first-run bootstrap could dump, translate and
-cache — but the first minutes of play would render with holes, which is a bad first
-experience and hard to explain in a README.
+**Every pixel shader this project has ever seen the guest submit is on the disc, byte for
+byte.** The original test compared *aligned* 8-byte n-grams against whole payloads; the
+microcode is a sub-range starting at one of 163 distinct offsets, **86 of which are not
+8-byte aligned**, so the test was blind to over half the population before it ran.
 
----
+**The number that reframes the whole item: the disc holds 1,571 shader objects against the
+449 this project accumulated over 25 parts and eleven operator sessions — about 3.5x more
+than has ever been observed in play.**
+
+So a first-run shader build is not a workaround for a distribution problem — with shape (A)
+there is no distribution problem, since a 13 MB cache next to a 162 MB recompiled image
+changes nothing. **It is a correctness win**, and that is now the reason to do it (§4).
 
 ## §1 WHAT EACH PLATFORM ACTUALLY NEEDS — measured, per file
 
@@ -250,66 +273,119 @@ life diagnosing; a shipped build must not hand that to a stranger.**
 
 ---
 
-## §4 THE SHADER PIPELINE — the largest item, and the one that decides (B)/(C)
+## §4 THE SHADER PIPELINE — a first-run build, and it is the UE4/UE5 model exactly
 
-Translate Xenos microcode → SPIR-V **in-process, on first sight**, replacing the prebuilt
-`assets/shader_spv/` cache with one the runtime fills itself.
+The operator's question: *"I do not know if we could do like multiple UE5/UE4 title to just
+do a shader compilation the first time you start the game if the game doesn't detect you
+already did it."* **Yes — and after §0b it is the better design, not the fallback.**
 
-* Link XenosRecomp (MIT, already patched locally) as a library and embed DXC, or teach the
-  path to emit SPIR-V directly.
-* Key the on-disk cache by the microcode's FNV-1a hash — **which the renderer already
-  computes and already logs** (`[imload] VS va=… hash=… size=…`), so the cache key and its
-  self-check exist today.
-* Translate off the pump thread, with the current "decline the draw and count it" behaviour as
-  the fallback for the frame or two before a new shader is ready.
-* **The gate is free and it already exists:** build a cache the new way from the 449 known
-  microcode blobs in `~/DR2CZ-troubleshooting/ucode-dumps` and **diff the SPIR-V against the
-  449 modules already on disk.** Byte-identical output on 449 of 449 is a stronger check than
-  any picture test, and a disagreement names the shader.
-* **What it retires:** the six variant caches drifting apart (which cost three parts once when
-  the play cache was ten modules short), the name-diff gate, and "the cache is complete" as a
-  claim with a shelf life.
+### 4.1 Why it is worth doing even though we can just ship the cache
 
----
+With shape (A) we *could* ship `assets/shader_spv/` and be done. The reason not to:
 
-## §5 ORDER OF WORK, AND WHY
+* **The shipped cache is 449 modules. The disc has 1,571.** Ours is the set that eleven
+  operator sessions happened to walk through. CLAUDE.md has warned for months that *"the
+  cache is complete" is a claim with a shelf life* — trial mode, other save states, error
+  screens are eras nobody has entered. A player who reaches one gets **one log line and
+  skipped draws**, i.e. invisible objects, which is the single worst failure this renderer
+  has because it looks like a game bug and reports as one.
+* Building from the player's own disc makes that class **structurally impossible** rather
+  than unlikely, and retires the six-variant cache drift and its name-diff gate along with
+  it — a defect that once cost three parts when the play cache was ten modules short.
+* It also drops 13 MB of game-derived shader data out of the download.
 
-Each step ends in something checkable. The first two are worth doing whichever release shape
-you choose, so **the §0 fork does not have to be decided today.**
+### 4.2 The design, which is two separate things people call "shader compilation"
+
+**Stage 1 — TRANSLATE (microcode → SPIR-V). This is the one that needs the disc.**
+On first run, if `assets/shader_spv/` is absent or stale: walk the disc banks, pull the
+microcode out of each `.vo`/`.po`/`.scv`, run it through XenosRecomp (MIT, already a
+sibling checkout, already patched) and DXC, and write the cache. ~1,571 shaders,
+parallel across cores. Progress screen, one time, then never again.
+
+**Stage 2 — PIPELINE CREATION (SPIR-V → your GPU's code). This is what a UE5 first-run
+screen literally is,** and it is the one the player actually feels. Part 71 measured a
+missing pipeline cache at **17.8 seconds of stutter**, found it, and shipped the cache —
+so the mechanism already exists and is already warmed lazily during play. A first-run
+pre-warm pass over the known pipeline states would move that cost into the same progress
+screen where the player expects it.
+
+**Doing both in one "Preparing shaders" step is the whole answer to the question**, and
+stage 2 is the half that makes the game feel smooth on first launch.
+
+**Stage 3 — the runtime fallback, which is small but not optional.** 6 of 438 known blobs
+are not recoverable verbatim: 4 partial and **2 absent from the disc entirely** (96 B and
+108 B — presumably engine-synthesised), plus 16 whose head the title patches at load. So
+first sight of an unknown microcode hash must translate it in-process and add it to the
+cache. That path also covers anything the disc scan mis-parses, which is why it is the
+safety net rather than an optimisation.
+
+### 4.3 The unsolved piece, and the gate that makes it safe
+
+**Where inside a `.vo`/`.po` the microcode begins is not yet known as a rule** — only as a
+search. The start offset appears as a plain big-endian u32 in the object's first 0x80 bytes
+for just **34 of 416** objects, so the container has a real table to decode.
+
+**That work has an unusually strong gate, and it is free:** 416 known
+`(object, offset, length)` triples, and every blob a decoder extracts must FNV-1a hash to a
+name already in `assets/shader_spv/` — the renderer already computes exactly that hash and
+already logs it (`[imload] VS va=… hash=… size=…`). **416 of 416 or the decoder is wrong.**
+Then the end-to-end gate: build the cache the new way and diff the SPIR-V against the 449
+modules already on disk. Byte-identical output is a stronger check than any picture test,
+and a disagreement names the shader.
+
+**Fallback if the container resists decoding:** the search that produced the numbers above
+already works — scan each object for the microcode's own structure and validate by hash.
+Uglier, and gated identically.
+
+## §5 ORDER OF WORK, AND WHY — re-ordered for shape (A)
+
+Each step ends in something checkable.
 
 1. **The macOS ARM64 spike — half a day, and it is first because it can refute the plan.**
-   Compile `ppc_image` alone for arm64 with SIMDe and no SSE flags. Answer two questions:
-   does it build, and does SIMDe lower the VMX packs and `min/max_epu32` to NEON or to
-   scalar? **Pre-registered kill: if the vector unit falls back to scalar, macOS is a
-   different project** — say so before anything is promised. Nothing else is worth starting
-   until this is known.
+   Compile `ppc_image` alone for arm64 with SIMDe and no SSE flags. Two questions: does it
+   build, and does SIMDe lower the VMX packs and `min/max_epu32` to NEON or fall back to
+   scalar? **Pre-registered kill: if the vector unit goes scalar, macOS is a different
+   project** — say so before anything is promised. Nothing else is worth starting first.
 2. **`HostPaths` + the first-run check (§3.2, §3.3).** Platform-independent, needed by every
-   shape, and it makes the current build runnable from outside `runtime/build/`.
-3. **The Windows port** — the five files, clang-cl, vcpkg. Gate: `--smoke` passes, then the
+   step after it, and it makes the current build runnable from outside `runtime/build/`.
+3. **The Windows port** — the five files, clang-cl, vcpkg. Gates: `--smoke`, then the
    headless DebugJump route reaches the crowd, then `tools/part80_trace_band.py` says the
-   frame is in the same regime as Linux. **A platform port is a same-binary A/B against
+   frame sits in the same regime as Linux. **A platform port is a same-binary A/B against
    itself on another OS**, and this project already owns the reader for it.
-4. **The macOS port** — the same files plus 16 KB pages, `shm_open`, and the MoltenVK spike
-   (bindless heap size, dynamic rendering, RT compiled out). Same three gates.
-5. **CI: GitHub Actions matrix** — `ubuntu-latest`, `windows-latest`, `macos-14` (arm64).
-   Note it can only build the **host** runtime, since no runner has an XEX — which is the
-   practical argument for shape (C) restated as a fact about the build system.
-6. **The shader pipeline (§4)** — the big one, gated on the 449-of-449 SPIR-V diff.
-7. **`ppc_image` as a loadable module** — only if (C) is chosen. Design the ABI, then the
-   one-time user-side image build (`cz_build_image` wrapping extract → dump → recompile →
-   compile).
-8. **Packaging + release automation** — AppImage / `.zip` / notarised `.dmg`, a
-   `release-please`-style tag → build → attach flow, and `THIRD_PARTY.md` generated rather
-   than written by hand.
+4. **The macOS port** — the same five files plus 16 KB pages, `shm_open`, and the MoltenVK
+   spike (bindless heap size, dynamic rendering, RT compiled out). Same three gates.
+5. **The `.vo`/`.po` container decoder (§4.3)** — gated at **416 of 416** against the known
+   triples. This is the step that unlocks the first-run build.
+6. **The first-run shader build (§4.2)**, both stages, gated on the SPIR-V diff against the
+   449 modules already on disk, then on a play session that reaches an era the 449 never
+   covered.
+7. ~~`ppc_image` as a loadable module~~ — **DROPPED.** Shape (A) is chosen; there is no
+   user-side image build, so there is no module boundary to design.
+8. **CI, honestly scoped.** GitHub Actions on `ubuntu-latest`, `windows-latest`, `macos-14`
+   cannot produce the release — no runner has an XEX. What it *can* do is compile the ~30
+   host sources on all three platforms on every push and run `--smoke` against a stub
+   image, which catches the overwhelming majority of what a port breaks. **Say that in the
+   workflow's own comment**, or someone will later assume the green tick means the release
+   builds.
+9. **Packaging + release automation** — AppImage / `.zip` / notarised `.dmg`, a tag → build
+   → attach flow driven from a local build script, and `THIRD_PARTY.md` generated rather
+   than hand-written.
+
+**A pre-release checklist item that is not obvious:** part 81 left the **vertex bind batch**
+and the **device command table** on by default with their milliseconds never measured. A
+release is the first time a stranger runs those. Either price them first, or put
+`CZ_VK_NO_BIND_BATCH=1` / `CZ_VK_NO_DEVICE_PFN=1` in the README's troubleshooting section as
+the first bisection for any picture complaint (`docs/part82-kickoff.md` §0).
 
 ## §6 EXPLICITLY OUT OF SCOPE
 
 * **x86 macOS and Intel Macs.** The instruction is M1 and up. Rosetta 2 would run an x86_64
   build but MoltenVK under translation is not a configuration worth supporting.
 * **32-bit anything, and Steam Deck / handheld packaging.** Later, if ever.
-* **Shipping the game.** Not negotiable and not a judgement call — the package, the extracted
-  data, `ppc/` and the shader cache are all game-derived, and §0 exists so that stays true of
-  the artifacts as well as of the repo.
+* **Shipping the game DATA.** The STFS package and everything extracted from it stay the
+  user's to supply — that is the instruction and it does not change. Note that with shape
+  (A) the recompiled image inside the executable is game-derived even so; §0-DECIDED states
+  that plainly rather than leaving it implied.
 * **Performance work.** Parked as of part 81. Note that two changes are live and ON by
   default whose milliseconds were never measured (`docs/part82-kickoff.md` §0) — **a release
   is the first time a stranger runs those**, so the bind batch and the device command table

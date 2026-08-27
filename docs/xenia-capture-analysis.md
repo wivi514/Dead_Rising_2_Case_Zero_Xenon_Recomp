@@ -219,7 +219,68 @@ So the coverage tool cannot be made right on its own. What *is* decisive is a me
 taken afterwards — did adding this address cause a branch to be dropped? That is finding
 13's check, and it is now a required stage of the pipeline rather than an optional audit.
 
-## 6. The shader shortcut: the disc banks are NOT usable microcode — but it doesn't matter
+## 6. The shader shortcut: the disc banks ARE the microcode after all — finding 6 is RETRACTED
+
+> ### RETRACTION, 2026-08-27 (part 82's release work). THE ORIGINAL ANSWER BELOW IS WRONG.
+>
+> **The disc shader banks DO contain the microcode the guest submits.** Measured with
+> `tools/vo_microcode_probe.py` against the 449-blob ucode oracle, over the 1,571 shader
+> objects in the three *prologue* banks alone:
+>
+> ```
+> VS: 103 blobs -> verbatim 81 (78.6%), tail-only/patched 16, partial 4, absent 2
+> PS: 335 blobs -> verbatim 335 (100.0%)
+> RECOVERABLE (verbatim or tail-matched): 432 of 438 (98.6%)
+> ```
+>
+> A 48-byte exact match is four Xenos ALU words and is far past coincidence. **Every pixel
+> shader this project has ever observed the guest submit is on the disc, byte for byte.**
+>
+> **THE ARTIFACT — why the original measurement said the opposite.** It compared **aligned
+> 8-byte n-grams** between a `.vo` *payload* and the captured blobs. Two things make that
+> test structurally unable to find what is there:
+>
+> 1. **The microcode is a SUB-RANGE of the object, not the payload.** These objects run
+>    about twice the size of the microcode inside them; the rest is build metadata — which
+>    is exactly why the `.updb` path was the visible content — plus constant tables.
+>    Comparing whole payloads dilutes a real match into noise.
+> 2. **It starts at an arbitrary offset, and usually an unaligned one.** 163 distinct start
+>    offsets were observed and **86 of them are not 8-byte aligned**. An ALIGNED n-gram
+>    comparison can only match when the embedding happens to share its phase, so it was
+>    blind to more than half the population before it started.
+>
+> The entropy check (5.03, "not compression hiding a match") was right and is not the
+> issue; the bytes were never compressed, they were merely at an offset the test could not
+> reach. This is gotcha 25 in a new dress — a comparison that cannot match is not a clean
+> result — and it is worth noting the original was *careful*: it ran a background control
+> (4 of 73 for two unrelated shaders) and checked entropy. **A control does not rescue a
+> test that cannot see the signal.**
+>
+> **What it changes.** The disc holds **1,571 shader objects against the 449 this project
+> accumulated over 25 parts of captures and eleven operator sessions** — about 3.5x more
+> than has ever been seen in play. So the shader cache is derivable from the user's own
+> copy, which is what makes a first-run "compiling shaders" step possible for a release
+> (`docs/release-plan.md` §4) and retires "the cache is complete" as a claim with a shelf
+> life. Two blobs (96 B and 108 B) are on no disc bank and are presumably synthesised by
+> the engine; 16 more are on disc with a patched head, which is the title rewriting the
+> leading instruction(s) at load.
+>
+> **Still true from the original:** the renderer was unblocked by Xenia's `dump_shaders`,
+> and nothing downstream of that was wrong. What was lost is four parts' worth of
+> "recover the microcode from a live process with `process_vm_readv`" work that a `.vo`
+> decoder would have made unnecessary — and the standing worry that an unvisited era of
+> the game hides shaders nobody has counted.
+>
+> **What is NOT yet established:** where inside a `.vo`/`.po` the microcode begins, as a
+> rule rather than as a search. The container's offset table has not been decoded — the
+> start offset appears as a plain big-endian u32 in the first 0x80 bytes for only 34 of
+> 416 objects, so there is real structure to work out. **That task has an unusually strong
+> gate: 416 known (object, offset, length) triples, and every extracted blob must FNV-1a
+> hash to a name already in the cache. 416 of 416 or it is wrong.**
+
+### The original finding, kept for the record and for its artifact
+
+
 
 The bootstrap doc called this "the single biggest potential shortcut in the project",
 on the reasoning that Case Zero ships loose shader banks
@@ -751,5 +812,5 @@ Measured effect on stability: **6-7 crashes in 10 runs → 1 in 20.**
 - **Gameplay-era `.big` seek order.** A5 covers the boot set; the container format is
   uniform so this is not needed to decode it, and an A2b capture is only warranted if
   streaming *order* turns out to matter.
-- **`.vo` internals** (finding 6). Not on the critical path.
+- **`.vo` internals** (finding 6). ~~Not on the critical path.~~ **ON the critical path as of 2026-08-27**: finding 6 is retracted, the microcode IS in these objects, and decoding the container is what lets a release build its own shader cache (`docs/release-plan.md` §4).
 - **`sc`/`sd`/`ss` shader bank contents** (finding 8).
