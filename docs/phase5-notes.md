@@ -18824,3 +18824,177 @@ the GPU, and the GPU column did drift 9.73 -> 9.49 and 10.80 -> 10.58 — but th
 unambiguous and the fence is **0.00 at every band from 5,000 draws up**. **A CPU saving at
 their crowd converts to frame time roughly 1:1 up to about 2.4-3.0 ms**, which is the single
 most important number for the next part's board.
+
+## §6eb — Part 80: the crowd route becomes autonomous, and item 1's ceiling is 251 ns a draw (2026-08-27)
+
+Part 80 opened by collecting the one sentence part 79 owed (§6ea §2, retracted in place: the
+operator's verdict on the ceiling build is **"Nothing — felt smooth"**, so the stream-store
+hitch class is closed on both channels). Then the board's item 1.
+
+### 1. THE ROUTE WAS THE BLOCKER, AND THE OPERATOR REMOVED IT
+
+`part80-kickoff.md` §1 states item 1's measurement rule as **8,000+ draws or not at all**:
+below that the autonomous route is GPU-bound and a CPU saving reads as a dead null, which
+part 79 spent a six-run campaign re-learning (§6dw §3, gotchas 453 and 466).
+`tools/autoroute.sh` reaches **~6,200 draws**. So every CPU item on the board needed an
+operator sitting through three runs per arm — gotcha 190 in its most expensive form.
+
+They surveyed the DebugJump entries themselves (`tools/part80_debugjump_probe.sh`, 3-second
+windows so two places do not average into one number), found spawns at **8,490-8,885 draws**,
+and then played their preferred route once with `CZ_INPUT_TRACE` — which part 80 had just
+taught to carry **milliseconds and decoded names**, on the same epoch as
+`debug_tunables.cpp`'s `at Ns` lines. `tools/part80_transcribe_route.py` turned the recording
+into `config/part80_crowd_route.seq`, and `tools/part80_crowdroute.sh` replays it unattended.
+
+**First replay: peak 9,363 draws, 21 `[fps]` windows at or above 8,000.** Three null runs
+after it: 9,255 / 9,457 / 9,622, 22 windows each.
+
+The route reaches the DebugJump screen **through the main menu with the pad**, not through
+the host's F2 bridge — which is why it carries no `through frontend manager` line and needs
+no `WAITJUMP`. Their accidental detour into the start-game screen and straight back out is
+KEPT: removing it would make this a route nobody has ever run, on the untested theory that
+the menu state after A-then-B equals the state before A.
+
+### 1b. THE TRANSCRIPTION HAD TO BECOME ANALOG, AND THE OPERATOR IS WHO CAUGHT IT
+
+The first transcription used the eight cardinal stick names. They watched the replay:
+*"the character goes forward the whole time while I was often slightly to the left so it runs
+into the sheriff office building instead of middle of street."*
+
+The trace agrees exactly. Over the 14.5-second walk the Y axis is **pinned at 32767** while X
+drifts between **-5,467 and +3,993** — a 17% deflection, which is steering. `LSUP` is
+(0, 32767). A cardinal vocabulary can express eight directions at full deflection and a human
+uses neither; rounding to the nearest of eight does not approximate the route, it produces a
+DIFFERENT route that starts in the same place. **And the failure is silent**: the run still
+arrives somewhere and still reports a draw count.
+
+So `CZ_FAKE_PRESS_SEQ` grew `LS<x>/<y>` and `RS<x>/<y>` entries, and `+` to hold both sticks
+at once — they turn the camera WHILE walking, and the camera decides the draw set, which is
+the quantity being measured. Zero inputs are dropped from the transcription now.
+
+Three things the transcriber gets right that were each wrong first, and all three are the
+same shape — **a trace records CHANGES, so an entry's extent is a property of its
+SUCCESSOR**:
+
+* **A state persists until the next sample, not until its own last one.** Ending each run at
+  its own last sample invents a one-poll gap between every pair of inputs — twenty spurious
+  stick releases during one continuous walk.
+* **…and that has to be resolved BEFORE merging.** A button release is often a single sample,
+  so its run has duration ZERO; merged first, it looks like a glitch and is absorbed into the
+  press before it, which turned a 145 ms menu `A` into a **2,248 ms hold**. That is not a
+  slightly-wrong press, it is a different input.
+* **A button entry shorter than a poll interval is a press that never happens.** The trace
+  holds an `A` whose recorded state lasted **1 ms**; emitted literally, the guest's ~10 ms
+  poll misses it about nineteen times in twenty and the recipe stops one screen short of the
+  crowd — which then reads as "the route is unreliable" rather than as a transcription
+  defect. Every button is floored to the replay's own 150 ms tap and **the time is borrowed
+  from the following silence**, so the rest of the route keeps its timing to the millisecond.
+
+**What it cannot do, and the operator diagnosed it:** *"Not exactly the same spot but pretty
+close. But we cannot fix this — it is because the random zombie spawn placing zombies on the
+way."* The title's own non-determinism. So: band by draw count, never compare matched frame
+indices, and run the null first.
+
+### 2. THE ROUTE REPRODUCES THEIR REGIME — this is what unblocks the board
+
+Three null runs, 20,313 traced frames each:
+
+| draws | n | wall | GPU | fence | CPUrec | verdict |
+|---|---|---|---|---|---|---|
+| 0-3,000 | 6,657 | 6.44 | 7.24 | 1.79 | 4.18 | GPU-bound |
+| 3,000-5,000 | 1,637 | 7.29 | 7.04 | 0.00 | 6.43 | CPU-bound |
+| 5,000-7,000 | 1,110 | 8.87 | 8.34 | 0.00 | 8.32 | CPU-bound |
+| 7,000-9,000 | 2,720 | 11.98 | 9.81 | 0.00 | 11.49 | CPU-bound |
+| **9,000-12,000** | **7,958** | **12.93** | **10.62** | **0.00** | **12.45** | **CPU-bound** |
+
+Against the operator's own trace (§6ea §4: 13.64 / 10.58 / 0.00 / 13.16 at 9,000-12,000):
+**same band, same fence, 2.31 ms of headroom here against their 3.06**, and the bulk of the
+run — 7,958 of 20,313 frames — sits in the decisive band.
+
+**The noise floor, measured before anything was compared to anything.** Two nulls through
+`tools/part80_trace_band.py`: **+1.6% frame-weighted, MIXED SIGN, per-band -0.4% to +2.9%**.
+In the 9,000-9,500 band, where each arm has ~7,500 frames, two nulls differ by **+2.9%**. A
+1.5 ms item would read as ~11%.
+
+### 3. ITEM 1's CEILING: **251 ns A DRAW**, AND THAT IS THE WHOLE ANSWER
+
+Three plans in a row priced this item off a SHARE of the pump — *"`DoDraw` plus the driver,
+~40%"* — and a share is not the quantity the decision turns on. A secondary command buffer
+can only take away time spent **inside the driver's recording entry points**: the pump still
+walks PM4, decodes the fetch constants, uploads the streams and looks up the pipeline,
+because it must do all of that to know WHAT to record.
+
+`CZ_VK_NO_DRIVER_RECORD=1` skips every `vkCmd*` in the record path and **nothing else** —
+all decode, uploads, cache updates and counters still run, the frame is built completely and
+never told to the driver. It is destructive (nothing is drawn) and announces itself; only
+`record`'s nanoseconds per draw may be read from it. Two runs an arm, alternated:
+
+```
+       arm     record ns/draw =  state + vertex + index + guard + residual
+   null 1        614              162     167      162     10      113
+   null 2        639              173     174      167     10      115
+   skip 1        377               29     126      101     10      113
+   skip 2        374               28     124       99     10      113
+```
+
+**The driver is 251 ns a draw**, and it decomposes exactly where it should: `state` -139
+(the push constants and the surviving binds), `index` -64, `vertex` -45. `guard` and
+`residual` are **unchanged to the nanosecond in both arms**, which is the probe's own
+control — it touched only what it claimed to touch.
+
+And the mechanism checks out against a second, independent number. The stats line counts
+**4.83 `vkCmd*` calls per draw**, so 251 ns is **52 ns per driver entry point** — an
+ordinary figure for one, arrived at from a phase measurement rather than assumed.
+
+**THE ARITHMETIC, done before the work rather than after it (gotcha 470).** At the
+operator's 9,300 draws, driver recording is **2.33 ms a frame**. With N workers on
+contiguous ranges the ceiling is `2.33 x (N-1)/N`:
+
+| workers | ceiling | vs the pre-registered 1.5 ms kill |
+|---|---|---|
+| **1 — what `ThreadBudget_Take("record", …)` grants today** | **0.00 ms** | dead |
+| 2 | 1.17 ms | below |
+| 3 — and this takes **every** thread from the guard pool | 1.56 ms | 4% above, before any overhead |
+| 6 — a 12-core machine, not theirs | 1.94 ms | above |
+
+That is an **upper bound**. A real recorder also pays for capture (~150 bytes a draw, call it
+0.2-0.4 ms at this load), for re-establishing state at every range boundary, and for
+scheduling. **On the operator's 8-physical-core machine the low-risk design cannot clear its
+own kill threshold**, and the thread budget grants it zero threads to begin with.
+
+### 3b. WHY IT USED TO LOOK BIGGER: PART 18's STATE CACHE ALREADY ATE IT
+
+From the same runs: **descriptor-sets 100.0% skipped, blend 100.0%, viewport 99.4%,
+scissor 99.3%, pipeline 70.0-70.6%.** The bind elision has already removed most of the calls
+a parallel recorder would have distributed; what is left is 4.83 a draw, and one of those is
+`vkCmdPushConstants`, which is unconditional. The item was sized when `record` was a larger
+share and before the cache was this good — **an item's price has a shelf life exactly like a
+measurement does** (gotcha 13), and this one was re-quoted upward three times without anyone
+re-measuring the quantity underneath it.
+
+### 3c. THE EXPENSIVE DESIGN IS NOT REFUTED — IT IS UNPRICED, AND ITS BLOCKER IS NAMED
+
+Stated so the refutation is not read wider than it is. The 251 ns is the ceiling for the
+**low-risk** design: the pump does everything and hands workers a list of driver calls to
+replay. A **maximal** design moves the whole `record` phase — real `record` is
+`626 - 113 = ~513 ns/draw` once the four nested `ProfScope`s' own clock reads are set aside —
+and its 3-worker ceiling is `513 x 2/3 x 9.3 = 3.2 ms`, which clears comfortably.
+
+But it requires handing workers the per-draw register file and making `UploadStream`
+re-entrant against a shared stream store — and a per-worker arena would change which buffer a
+stream lands in, which defeats the vertex/index bind cache that part 18 and the cross-frame
+store depend on. **That is a campaign, not an item**, and it still has to come out of the
+same three threads.
+
+### 4. THE LEAD THIS LEAVES BEHIND, and it is cheaper than either design
+
+The same decomposition says **262 ns a draw inside `record` is OUR OWN work, not the
+driver's**: vertex-fetch decode 124, index arithmetic 99, state comparisons 28, guard 10.
+At 9,300 draws that is **2.44 ms a frame of serial pump time that no driver is responsible
+for** — and `streams` reads 0.1%, so the uploads are already free and this is pure decode.
+
+**Removing work beats distributing it**, and it needs no threads, no budget decision and no
+re-entrancy. The question to ask first is a census, in the shape §6dx used: how often is the
+vertex-fetch decode re-run with inputs identical to the previous draw's? If the answer is
+"most draws", a memo in the shape of the constant memo takes most of 2.44 ms with none of
+item 1's risk.
