@@ -47,9 +47,10 @@ falls back to scalar, macOS is a different project."* It does not.
   | `shuffle_epi8` | 4 | NEON | | `cvtps_epi32` | 8 | NEON |
   | `dp_ps` | 5 | NEON | | `movemask_ps` | 9 | NEON |
 
-  **Ten of ten, zero scalar fallbacks.** The reproducer is
-  `/tmp/.../simde_spike.cpp` in the session scratchpad; it is ten one-line functions and
-  should be re-run on the Mac itself as part of §3.C.
+  **Ten of ten, zero scalar fallbacks.** The reproducer is `tools/arm64_spike/run.sh` —
+  it compiles freestanding so it needs no aarch64 sysroot, exits 1 on any scalar fallback,
+  and should be re-run natively on the Mac as item C.0. **It proves the LOWERING, not that
+  the full image builds; those are different claims and §1.3 is the second one.**
 * **The generated code contains no raw x86 intrinsics at all.** Census over all 229 files in
   `ppc/`: `__builtin_ia32` 0, `immintrin` 0, `x86intrin` 0, and every `_mm_*` / `__m128*`
   token is `simde_`-prefixed. The only `__x86_64__` guard in the whole image is in
