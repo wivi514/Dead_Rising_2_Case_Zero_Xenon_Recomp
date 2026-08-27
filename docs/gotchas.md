@@ -5532,3 +5532,74 @@ From phase C part 18 (the frame rate — and none of it was work):
      not one that produces an error. Cause unknown as of part 81 and recorded as unknown.
      Check log LINE COUNT and the presence of the first `[fps]` line before believing any
      aggregate, and never let a glob pick up a trace whose log was rejected.
+
+484. **A CWD-RELATIVE PATH IS A DEFECT THAT ONLY APPEARS ON SOMEBODY ELSE'S MACHINE.** Every
+     asset path in this runtime resolved against the working directory — `"../../assets/game/
+     default.xex"`, three `"../.."`-shaped shader-cache candidates, four for a config file —
+     which is why every documented command begins with `cd runtime/build`. That is survivable
+     for a developer reading the recipe and fatal for a player: a shortcut launch has a CWD of
+     `$HOME`, finds no shader cache, and presents a black screen with one log line. **Anchor
+     to the executable, print the root once at startup, and let nothing fall back to the CWD**
+     — a CWD fallback is worse than none, because it keeps the development tree working while
+     the shipped one silently does not, which is the one failure that survives every test done
+     where the thing was built. `runtime/host/host_paths.h`.
+
+485. **`ldd` CANNOT SEE A `dlopen`, AND A BUNDLE CHECKED WITH IT CAN STILL BE EMPTY.** The
+     first Linux artifact passed its dependency check completely — every library resolved
+     inside the bundle, nothing outside it but libc and the Vulkan loader — and then died on
+     its first instruction in a clean container with `Failed loading SDL3 library.` Fedora's
+     `libSDL2-2.0.so.0` is `sdl2-compat`, a shim implementing the SDL2 API by `dlopen()`ing
+     `libSDL3.so.0` at run time. The dependency is real, it is fatal, and the tool the release
+     plan specified for exactly this job is structurally blind to it — it worked on the build
+     machine only because SDL3 was installed there. **A packaging gate must RUN the artifact,
+     not inspect it**, and the container must lack the development packages or the test proves
+     nothing. (Bundling the missing library does not rescue it either: the shim dlopens by
+     soname and carries no RUNPATH, so the loader would still search the system directories.)
+     Same shape as gotcha 25 — the instrument could not match, so its zero meant nothing.
+
+486. **A "PERFECT DISCRIMINATOR" FOUND BY SCANNING IS USUALLY OVERFITTING.** Looking for the
+     field that says how big a shader object's literal-constant block is, a scan of every
+     header dword against the known answer reported one that separated the classes with no
+     collisions at all — dword `@0x08`. It is the blob LENGTH, and it "worked" only because
+     small blobs happen to have no constant block: 167 distinct values, none colliding, and no
+     causal relationship whatever. The real field was one indirection away (`u32@(u32@0x18)`)
+     and was invisible to any scan for a *value*, because it is reached through a pointer. It
+     became obvious the moment the region between the header and the blob was DUMPED instead
+     of scanned. **When a search over a value space returns a perfect answer, ask how many
+     hypotheses it tried** — and read the structure before believing any of them.
+
+487. **A GATE THAT CANNOT PROVE ITS OWN BODY RAN IS AN EXIT CODE, NOT A GATE.** The
+     clean-container packaging gate printed `GATE PASSED` having executed nothing: `podman run`
+     without `-i` does not attach stdin, so the here-doc went nowhere, `sh -s` read EOF and
+     exited 0, and the wrapper reported success. That is gotcha 483 — a run that dies still
+     reports a number — reproduced in a tool written the same afternoon that entry was read,
+     which is how reliably this shape recurs. **Require EVIDENCE, not status**: the gate now
+     insists on four marker lines that only code inside the container can print, plus the
+     smoke harness's own success sentence.
+
+488. **A CHEAP EXACT CLAIM BEATS AN EXPENSIVE STATISTICAL ONE — LOOK FOR ONE BEFORE MEASURING.**
+     The release plan asked for the new build type to be measured on the crowd route, "because
+     a build-type change is a performance change until measured". True in general, and on this
+     workload it is three runs an arm and an hour against a 10-13% noise floor (gotcha 229).
+     But `-g` does not affect code generation and `objcopy --strip-debug` does not touch
+     `.text`, so the claim to test was BYTE IDENTITY: `sha256` of the extracted `.text`, one
+     second, and it came back identical over 35,651,455 bytes. That does not merely suggest
+     the frame is unchanged, it makes the change incapable of altering it. **The route run
+     stays in the checklist as confirmation; it is no longer the evidence.**
+     `tools/release_text_identity.sh`. Corollary found by the same tool: **a link option can
+     move `.text` without changing an instruction** — a RUNPATH lengthens `.dynstr`, which
+     sits before `.text`, relocating the image so that every address-bearing byte differs. Hold
+     it matched rather than carving out an exception, because an exception is where a real
+     difference hides.
+
+489. **A 48-BYTE MATCH IS A PROLOGUE, NOT A SHADER.** `docs/release-plan.md` §1.4 reported 98.6%
+     of this title's shaders recoverable from the disc banks, on the strength of a 48-byte HEAD
+     probe against 1,571 disc objects. Measured by FULL containment: pixel shaders **343 of
+     345**, vertex shaders **0 of 104**. Two different runtime vertex shaders match the same
+     disc object at the same offset for exactly 48 bytes and then diverge — the probe was
+     matching a shared vertex-shader preamble. The truth underneath is worth as much as the
+     correction: aligned by their TAILS, disc and runtime vertex shaders differ in 3-35
+     scattered bytes, always in groups of three dwords with whole fields zeroed on disc, which
+     is the title patching vertex FETCH instructions at load out of the vertex declaration.
+     **A probe length is a hypothesis about how much of a thing is distinctive**, and the way
+     to test it is to ask how many distinct objects the probe matches, not how many it finds.
