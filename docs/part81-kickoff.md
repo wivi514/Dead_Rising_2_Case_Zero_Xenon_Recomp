@@ -78,6 +78,47 @@ The corrected per-draw CPU decomposition at ~9,500 draws (§6ec §1), which is w
 **There is no single large CPU item left, and that is the headline.** The largest mechanism
 in the frame is the Vulkan driver itself.
 
+### ITEM 0 — THE DRIVER CALLS THEMSELVES. Decomposed in §6ed, and the top one is a SHAPE defect.
+
+§6eb refuted *distributing* the 251 ns a draw across threads. §6ed asks the other question —
+**how many of those calls need to exist** — and the answer is concrete, because the counters
+were already on the stats line:
+
+| call | per draw | ms/frame @9,300 |
+|---|---|---|
+| **`vkCmdBindVertexBuffers`** | **1.725** | **0.83** |
+| `vkCmdDrawIndexed` / `Draw` | 1.000 | 0.48 |
+| `vkCmdPushConstants` | 1.000 | 0.48 |
+| `vkCmdBindIndexBuffer` | 0.640 | 0.31 |
+| `vkCmdBindPipeline` | 0.280 | 0.14 |
+
+Reconstruction 4.691 calls / 2.27 ms against the independently measured 4.83 / 2.33 — **within
+3%**, which is what makes it a decomposition rather than a total shared out.
+
+**(a) Batch the vertex binds — ~0.35 ms/frame.** `BindVertexBufferCached` issues **one call per
+binding** where `vkCmdBindVertexBuffers` takes a contiguous range, and the bind loop assigns
+`binding` with `++binding` as it walks the attributes, so **they are already contiguous**.
+Census the run structure of CHANGED bindings first: binding the whole run unconditionally is
+simplest but gives back some of the 47.9% per-binding elision; batching runs of changed
+bindings keeps it.
+
+**(b) Bypass the loader trampoline — 0.12-0.35 ms/frame, and it is the lowest-risk change on
+this board.** This runtime calls the loader's *exported* `vkCmdDrawIndexed` and friends, which
+fetch the dispatch table from the handle and jump through it. Resolving device-level commands
+once via `vkGetDeviceProcAddr` and calling through stored pointers removes one indirection from
+**every** call. Mechanical; cannot change behaviour; `CZ_VK_NO_DRIVER_RECORD` is already its
+denominator.
+
+**(c) `vkCmdPushConstants` is 0.48 ms and is probably STRUCTURAL — do not start here.** The
+pushed value is the three constant-window addresses plus a draw index, and the constant memo
+serves the VS window on only **2.9%** of draws, so that address genuinely differs nearly every
+draw. Measure how often the three addresses repeat before believing otherwise; that counter
+does not exist and 2.9% is a strong prior that this is dead.
+
+Together (a) and (b) are **~0.5-0.7 ms** at their load, converting roughly 1:1 (fence 0.00,
+2.3-3.1 ms headroom) — more than the parallel recorder could ever have delivered, with no
+threads and no way to change a pixel.
+
 ### ITEM 1 — WHERE IS THE GUARD'S 86.2 MB A FRAME CHARGED? A census, and it is the one unexamined large number.
 
 `[vkprof]` reports **`guard read 86.21 MB/frame`** while the prehash pool reports **96.2%
@@ -158,6 +199,14 @@ base, **967,680 combinations checked, 0 mismatches** (`tools/tile_offset_separab
   **growing the stream store more gracefully** (it cannot grow), **pipeline compilation on
   the load frame** (§6du §5), **the readback** (§6dq), **the constant path** (§6dp), **the
   guest side** (§6dm), and everything on part 73's exhausted list.
+* **the implicit Vulkan layers.** `VK_LAYER_LS_frame_generation` has been inserted as a DEVICE
+  layer in every run this project has ever made (installed 2026-05-09, three months before the
+  port began, and enabled by default) — and it is a **NULL**: `record` reads 637/645 ns/draw
+  with it and 639/639 with `DISABLE_LSFG=1`, where the two default runs differ from each other
+  by more than the arms do. It defines **no `vkCmd*` entry points at all**, so the loader's
+  dispatch table holds the driver's own pointers. No past measurement is contaminated and
+  frame generation was never active — and could not have inflated anything anyway, because
+  this runtime counts its own presents at its own seam. §6ed §2.
 * **any CPU A/B on `autoroute.sh`.** Use `tools/part80_crowdroute.sh`.
 
 ## 3. THE MEASUREMENT METHOD

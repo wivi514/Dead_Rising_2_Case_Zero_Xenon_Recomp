@@ -19099,3 +19099,100 @@ a large block of recomputation by adding a guard, and what is left is the guards
 For Case West: expect the same shape, and expect the remaining CPU frame to be a spread of
 0.3-1.0 ms items rather than one large one. **The next large win on this title is not on the
 CPU side of the draw path.**
+
+## §6ed — Part 80: what the 251 ns/draw is actually made of, and the layer that turned out to cost nothing (2026-08-27)
+
+§6eb §3 called the 251 ns a draw **"the driver"**. That was imprecise and this section corrects
+it: what was measured is the **whole call chain** — the Vulkan loader's trampoline, any
+implicit layers in the device dispatch, and the driver. Two of those three had never been
+looked at.
+
+### 1. THE 4.83 CALLS A DRAW, DECOMPOSED FROM COUNTERS ALREADY ON THE STATS LINE
+
+No new instrument: the skip rates and the bind totals were already printed. Reconstructing
+what survives the state cache, per draw, at 79.7 M draws:
+
+| call | per draw | share | ms/frame @9,300 |
+|---|---|---|---|
+| **`vkCmdBindVertexBuffers`** | **1.725** | **36.8%** | **0.83** |
+| `vkCmdDrawIndexed` / `vkCmdDraw` | 1.000 | 21.3% | 0.48 |
+| `vkCmdPushConstants` | 1.000 | 21.3% | 0.48 |
+| `vkCmdBindIndexBuffer` | 0.640 | 13.6% | 0.31 |
+| `vkCmdBindPipeline` | 0.280 | 6.0% | 0.14 |
+| `vkCmdSetStencil*` (x3) | 0.033 | 0.7% | 0.02 |
+| viewport + scissor + blend + descriptor sets | 0.013 | 0.1% | 0.00 |
+| **TOTAL** | **4.691** | | **2.27** |
+
+**The reconstruction lands within 3% of the independently measured 4.83 calls and 2.33 ms**,
+which is what makes it a decomposition rather than an allocation of a total.
+
+**`vkCmdBindVertexBuffers` is the single largest driver cost in this renderer**, and the reason
+is a shape rather than a volume: `BindVertexBufferCached` issues **one call per binding**,
+while `vkCmdBindVertexBuffers` takes a CONTIGUOUS RANGE. The bind loop assigns `binding` with
+`++binding` as it walks the shader's attributes, so **the bindings are contiguous by
+construction** and the batch is available without reordering anything. 1.725 calls a draw
+would become the number of contiguous runs of CHANGED bindings, which is at most 1 whenever
+any binding changed.
+
+### 2. THE IMPLICIT LAYER NOBODY HAD LOOKED AT — AND IT IS A NULL
+
+`VK_LOADER_DEBUG=layer` says two implicit layers are inserted into this process:
+**`VK_LAYER_LS_frame_generation`** (`liblsfg-vk.so`) as an instance **and DEVICE** layer, and
+`VK_LAYER_MESA_device_select` as an instance layer only. The frame-generation layer's manifest
+carries a `disable_environment` and **no `enable_environment`**, so it is on unless
+`DISABLE_LSFG=1` — and the package was installed **2026-05-09**, three months before this port
+began. **It has therefore been in the device dispatch chain of every run this project has ever
+made, mine and the operator's.**
+
+A device layer sits in the per-draw call path by construction, so this looked like an
+unmeasured tax on all 45,000 `vkCmd*` calls a frame. **It is not.** `nm -D --defined-only`
+shows the library **defines no `vkCmd*` entry points at all** — the `vkCmd` strings in it are a
+generated dispatch-table name list used to forward. So the loader's device dispatch table gets
+the driver's own pointer for every command this renderer issues, and the layer is not in the
+per-draw path in practice.
+
+**Measured, two runs an arm, alternated, `record` ns/draw:**
+
+```
+   layer in the chain (default):  637, 645
+   DISABLE_LSFG=1 NODEVICE_SELECT=1:  639, 639
+```
+
+A **null** — the two default runs differ from each other by 8 ns, more than the arms differ.
+So no past measurement in this project is contaminated by it, and it is not an item.
+
+**Frame generation was never ACTIVE either, and that is a separate claim with its own
+evidence:** `lsfg-vk` needs explicit configuration to interpolate, and more decisively **this
+runtime counts its own presents at its own present seam** — a layer inserting frames
+downstream cannot inflate a counter it never reaches. Every fps and frame-time number in this
+project is our own submissions.
+
+### 3. WHAT IS LEFT, AND IT IS THE LOADER
+
+The remaining chain-level candidate is the one that survives with zero layers: this runtime
+calls the loader's **exported** `vkCmdDrawIndexed` and friends, which are trampolines that
+fetch the dispatch table from the dispatchable handle and jump through it. Resolving the
+device-level commands once via `vkGetDeviceProcAddr` and calling through stored pointers
+removes one indirection from **every one of the 4.83 calls a draw**. It is mechanical, cannot
+change behaviour, and its denominator is already measured — so `CZ_VK_NO_DRIVER_RECORD` prices
+it directly.
+
+### 4. THE THREE ITEMS THIS LEAVES, with their ceilings
+
+1. **Batch the vertex binds** — 1.725 calls/draw down to ~1.0. **~0.35 ms/frame.** The
+   bindings are already contiguous; the only design question is whether to bind the whole run
+   unconditionally (simplest, loses some of the 47.9% per-binding elision) or to batch runs of
+   changed bindings (keeps it). Census the run structure first.
+2. **Bypass the loader trampoline** — uniform on all 4.83 calls. Typically 5-15% of call
+   overhead, so **0.12-0.35 ms/frame**, and it is the lowest-risk change on the board.
+3. **`vkCmdPushConstants`, 1.00/draw, 0.48 ms — and it is probably STRUCTURAL.** The pushed
+   value is the three constant-window addresses plus a draw index. The constant memo serves
+   the VS window on only **2.9%** of draws, i.e. the vertex window is re-allocated on ~97% of
+   draws and its address genuinely differs, so there is nothing to elide. **Do not start here**
+   without first measuring how often the three addresses actually repeat — that counter does
+   not exist and the 2.9% is a strong prior that this is dead.
+
+Together, 1 and 2 are **~0.5-0.7 ms a frame** at the operator's load, where the fence is 0.00
+and the headroom is 2.3-3.1 ms, so they convert to frame time roughly 1:1. That is more than
+the parallel recorder could deliver (0.00 ms with the thread budget as it stands), needs no
+threads, and cannot change a pixel.
