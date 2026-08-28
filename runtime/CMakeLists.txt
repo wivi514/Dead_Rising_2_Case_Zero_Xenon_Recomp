@@ -390,7 +390,30 @@ target_link_libraries(cz_runtime PRIVATE ppc_image)
 # laptop before any of this was written, because "the API exists" and "the API links"
 # are different claims and only the second one builds.
 if(WIN32)
-    target_link_libraries(cz_runtime PRIVATE onecore)
+    # onecore  — VirtualAlloc2 / MapViewOfFile3 / UnmapViewOfFileEx (kernel/memory.cpp).
+    #            In kernelbase.dll and NOT exported by kernel32.lib.
+    # dbghelp  — SymInitialize / SymFromAddr, dladdr's replacement in the crash reporter.
+    target_link_libraries(cz_runtime PRIVATE onecore dbghelp)
+
+    # The compiler-rt builtins. The recompiled image does 128-bit arithmetic (the guest's
+    # multiply-high and divide lower to __int128), and clang-cl does NOT link its own
+    # builtins library by default on Windows the way clang does on Linux — so __udivti3
+    # comes out undefined at link time with nothing to say where it came from.
+    #
+    # Located from the compiler in use rather than hardcoded, because the path carries
+    # the LLVM major version and would rot on the next upgrade.
+    get_filename_component(CZ_LLVM_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    file(GLOB CZ_CLANG_RT "${CZ_LLVM_BIN}/../lib/clang/*/lib/windows/clang_rt.builtins-x86_64.lib")
+    if(CZ_CLANG_RT)
+        list(GET CZ_CLANG_RT 0 CZ_CLANG_RT_LIB)
+        message(STATUS "compiler-rt builtins: ${CZ_CLANG_RT_LIB}")
+        target_link_libraries(cz_runtime PRIVATE "${CZ_CLANG_RT_LIB}")
+    else()
+        message(WARNING
+            "clang_rt.builtins-x86_64.lib not found under ${CZ_LLVM_BIN}/../lib/clang/. "
+            "Expect an undefined __udivti3 at link time: the recompiled image needs "
+            "128-bit division and clang-cl does not link its builtins by default.")
+    endif()
 endif()
 
 # The XEX loader. Prebuilt XenonUtils plus the two thirdparty libs it links against.

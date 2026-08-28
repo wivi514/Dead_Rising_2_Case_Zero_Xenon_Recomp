@@ -61,8 +61,14 @@ constexpr uint32_t kCodeHi = uint32_t(PPC_CODE_BASE + PPC_CODE_SIZE);
 
 void Emit(const char* buf, size_t n)
 {
+    // The raw descriptor, not stdio: a fault inside a handler must not depend on a
+    // FILE* lock the faulting thread may already hold.
+#if defined(_WIN32)
+    (void)_write(STDERR_FILENO, buf, unsigned(n));
+#else
     ssize_t unused = write(STDERR_FILENO, buf, n);
     (void)unused;
+#endif
 }
 
 // The back-chain walk, shared by the fault handler and the on-demand dump. Writes

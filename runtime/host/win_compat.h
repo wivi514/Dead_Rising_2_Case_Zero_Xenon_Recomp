@@ -89,12 +89,12 @@
 #ifndef STDERR_FILENO
 #define STDERR_FILENO 2
 #endif
-#define write _write
 
-#if !defined(_SSIZE_T_DEFINED)
-#define _SSIZE_T_DEFINED
-using ssize_t = ptrdiff_t;
-#endif
+// NOT `#define write _write`. That is precisely the mistake this header exists to
+// clean up after: `write` is a short, common identifier, and defining it as a macro
+// rewrote `std::ostream::write(...)` into `std::ostream::_write(...)` in an unrelated
+// file, producing a link error naming a std method that does not exist. The one call
+// site that needs it forks explicitly instead — three lines there, no macro here.
 
 // gettid(). Linux-only; the Windows spelling reports the same thing — an OS-level
 // thread id, used only for log lines that correlate our threads with a profiler's.
