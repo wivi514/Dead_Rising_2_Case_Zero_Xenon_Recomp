@@ -1,4 +1,6 @@
 #include "guest_thread.h"
+#include <cstdio>
+#include <exception>
 
 #include <bit>
 #include <chrono>
@@ -176,8 +178,40 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
 GuestThreadHandle::~GuestThreadHandle()
 {
     // NT semantics: closing a thread handle never stops or waits for the thread.
-    if (thread.joinable())
-        thread.detach();
+    //
+    // AND IT MUST NOT THROW, which `if (joinable()) detach();` alone does not
+    // guarantee. This object lives in GUEST memory, so its std::thread member is
+    // whatever the guest last left in those bytes. joinable() only tests the id field,
+    // so it can read true off a scribbled _Thrd_t whose OS handle is garbage —
+    // std::thread::detach() then throws std::system_error, the exception escapes a
+    // destructor that is implicitly noexcept, and std::terminate() calls __fastfail.
+    //
+    // __fastfail bypasses SEH entirely: no vectored handler, no unhandled filter, no
+    // output. On Windows this presented as the process vanishing at 0xC0000409 with
+    // WER blaming ucrtbase.dll and the crash reporter printing nothing — a fatal error
+    // whose own diagnosis had been destroyed by the mechanism that caused it. Linux
+    // survives the same scribble because libstdc++'s detach() on a stale-but-plausible
+    // id happens not to fail.
+    //
+    // Catching is not papering over it: the thread, if it exists at all, is detached by
+    // NT semantics anyway, and there is nothing to clean up. What we lose is a handle
+    // we were never going to close; what we gain is that a scribbled object cannot kill
+    // the process without saying so.
+    try
+    {
+        if (thread.joinable())
+            thread.detach();
+    }
+    catch (const std::exception& e)
+    {
+        static int failed = 0;
+        if (failed++ < 16)
+            fprintf(stderr,
+                    "[kobj] thread handle %08X: detach failed (%s). Its std::thread "
+                    "state is not ours any more — the guest overwrote the object. "
+                    "Ignored; nothing to clean up under NT handle semantics.\n",
+                    threadId, e.what());
+    }
 }
 
 uint32_t GuestThreadHandle::Wait(uint32_t)
