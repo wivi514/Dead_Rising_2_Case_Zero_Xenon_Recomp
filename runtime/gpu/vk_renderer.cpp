@@ -6400,22 +6400,39 @@ void SavePipelineKeys()
     const std::string path = PrewarmPath();
     if (path.empty() || R->pipelines.empty() || EnvOn("CZ_VK_NO_PREWARM"))
         return;
-    // Write to a temp and rename, so a kill during the write cannot leave a truncated
-    // file that the next run would read as a short key list.
-    const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
+    // Written IN PLACE, deliberately, with no temp-and-rename.
+    //
+    // The rename was the first design and it failed on Windows on every save — the file
+    // is rewritten every 32 pipelines, and a rename onto a destination that another part
+    // of the same process may hold open is not reliable there. The result was
+    // "RENAME FAILED" on every line and no key file at all, which made an entire
+    // three-arm A/B measure three cold runs.
+    //
+    // In-place is safe here because the READER already tolerates a short file: it takes
+    // the count from the header but stops at the first incomplete key
+    // (`if (fread(&key,...) != 1) break;`). A write interrupted halfway therefore costs
+    // some keys, never a corrupt read — and the file is 23 KB, so the window is tiny.
+    // Losing a few keys costs a few lazy compiles; losing the file costs a whole session.
+    FILE* f = fopen(path.c_str(), "wb");
     if (!f)
+    {
+        fprintf(stderr, "[vk] pipeline pre-warm: CANNOT WRITE %s\n", path.c_str());
         return;
+    }
     const uint32_t hdr[3] = { kPrewarmMagic, kPrewarmVersion,
                               uint32_t(R->pipelines.size()) };
     fwrite(hdr, sizeof hdr, 1, f);
     for (const auto& kv : R->pipelines)
         fwrite(&kv.first, sizeof(PipelineKey), 1, f);
     fclose(f);
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    fprintf(stderr, "[vk] pipeline pre-warm: %zu keys written to %s%s\n",
-            R->pipelines.size(), path.c_str(), ec ? "  — RENAME FAILED" : "");
+    static size_t lastAnnounced = 0;
+    // Announce the first save and then only every 128, or a periodic save spams the log.
+    if (R->pipelines.size() >= lastAnnounced + 128 || lastAnnounced == 0)
+    {
+        lastAnnounced = R->pipelines.size();
+        fprintf(stderr, "[vk] pipeline pre-warm: %zu keys -> %s\n",
+                R->pipelines.size(), path.c_str());
+    }
 }
 
 // SAVE AS WE GO, not only at exit.
