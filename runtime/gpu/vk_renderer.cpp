@@ -6332,6 +6332,136 @@ void SavePipelineCache()
             R->pipeCachePath.c_str(), ec ? "  — RENAME FAILED" : "");
 }
 
+// ===================================================================================
+// PIPELINE PRE-WARM — record the KEYS, replay them at load
+// ===================================================================================
+//
+// THE PROBLEM, measured in an operator session on Windows (part 83). A warm
+// VkPipelineCache is not enough. vkCreateGraphicsPipelines still has to be CALLED for
+// every distinct pipeline, and this renderer calls it lazily, on the frame that first
+// needs one, on the frame thread. In three minutes of play that was 534 creations, and
+// one of them cost 200 ms:
+//
+//     frame 6696   396 ms wall = 372 ms in GetPipeline + 24 ms for everything else
+//
+// Every other phase — record, textures, constants, streams, GPU — was normal. The
+// operator's F7 marks land within 45 frames of one of these, and nowhere else.
+//
+// WHY THE EXISTING CACHE DOES NOT SOLVE IT. It removes the COMPILE, not the CALL, and
+// only once the compile has happened once. The Linux box creates 122 pipelines at
+// 0.11 ms each because its cache is 29 MB built over eighty sessions; a new player has
+// nothing, and pays 1-200 ms per pipeline at the moment the game first needs it. This
+// is therefore not a platform defect — it is what EVERY new player gets, and the Linux
+// machine only looks smooth because of a file no player will have.
+//
+// WHAT THIS DOES. PipelineKey is a 56-byte padding-free POD that already carries vsHash
+// and psHash, so the key alone identifies a pipeline completely. Dump every key seen, in
+// one flat file beside the VkPipelineCache blob; on the next start, after the shaders
+// are loaded and before the guest draws anything, create them all. The work does not go
+// away — it moves from "during play, unpredictably" to "at load, once, where a player
+// expects to wait", which is what docs/release-plan.md §2.3 step 4 asks for.
+//
+// The two files must travel together and are keyed to the same directory name, but they
+// are independent: a missing or stale key file costs a slower first session and nothing
+// else, and a key whose shader is no longer in the cache is skipped by name.
+// Defined further down, in this same namespace.
+VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const ShaderMeta& ps);
+
+constexpr uint32_t kPrewarmMagic = 0x5750435A;   // 'ZCPW'
+constexpr uint32_t kPrewarmVersion = 1;
+
+std::string PrewarmPath()
+{
+    if (R->pipeCachePath.empty())
+        return {};
+    return R->pipeCachePath + ".keys";
+}
+
+void SavePipelineKeys()
+{
+    const std::string path = PrewarmPath();
+    if (path.empty() || R->pipelines.empty() || EnvOn("CZ_VK_NO_PREWARM"))
+        return;
+    // Write to a temp and rename, so a kill during the write cannot leave a truncated
+    // file that the next run would read as a short key list.
+    const std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f)
+        return;
+    const uint32_t hdr[3] = { kPrewarmMagic, kPrewarmVersion,
+                              uint32_t(R->pipelines.size()) };
+    fwrite(hdr, sizeof hdr, 1, f);
+    for (const auto& kv : R->pipelines)
+        fwrite(&kv.first, sizeof(PipelineKey), 1, f);
+    fclose(f);
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    fprintf(stderr, "[vk] pipeline pre-warm: %zu keys written to %s%s\n",
+            R->pipelines.size(), path.c_str(), ec ? "  — RENAME FAILED" : "");
+}
+
+void PrewarmPipelines()
+{
+    if (EnvOn("CZ_VK_NO_PREWARM"))
+    {
+        fprintf(stderr, "[vk] CZ_VK_NO_PREWARM=1 — pipelines are created lazily, on the "
+                        "frame that first needs each one (the pre-part-83 behaviour, and "
+                        "the control arm for the pre-warm)\n");
+        return;
+    }
+    const std::string path = PrewarmPath();
+    if (path.empty())
+        return;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
+    {
+        fprintf(stderr, "[vk] pipeline pre-warm: no key file yet (%s) — this session "
+                        "builds one, and the NEXT start will be smooth\n", path.c_str());
+        return;
+    }
+    uint32_t hdr[3] = {};
+    if (fread(hdr, sizeof hdr, 1, f) != 1 || hdr[0] != kPrewarmMagic ||
+        hdr[1] != kPrewarmVersion)
+    {
+        fprintf(stderr, "[vk] pipeline pre-warm: %s is not a v%u key file — ignoring\n",
+                path.c_str(), kPrewarmVersion);
+        fclose(f);
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    uint32_t made = 0, missingShader = 0, failed = 0;
+    for (uint32_t i = 0; i < hdr[2]; ++i)
+    {
+        PipelineKey key{};
+        if (fread(&key, sizeof key, 1, f) != 1)
+            break;
+        auto vs = R->shadersMap.find(key.vsHash);
+        auto ps = R->shadersMap.find(key.psHash);
+        if (vs == R->shadersMap.end() || ps == R->shadersMap.end())
+        {
+            // Not an error: the shader cache and the key file drift independently, and a
+            // key naming a shader we no longer hold simply is not ours to build.
+            ++missingShader;
+            continue;
+        }
+        if (GetPipeline(key, vs->second, ps->second) == VK_NULL_HANDLE)
+            ++failed;
+        else
+            ++made;
+    }
+    fclose(f);
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    fprintf(stderr,
+            "[vk] pipeline pre-warm: %u of %u created in %.0f ms (%.2f ms each)"
+            "%s%s — this is the stutter that would otherwise have happened DURING play\n",
+            made, hdr[2], ms, made ? ms / made : 0.0,
+            missingShader ? "" : "", failed ? "  (some FAILED — see the lines above)" : "");
+    if (missingShader)
+        fprintf(stderr, "[vk]   %u key(s) skipped: their shader is not in this cache\n",
+                missingShader);
+}
+
 bool LoadShaders()
 {
     // The cache directory is CWD-relative and the launch CWD varies (the documented
@@ -22852,6 +22982,11 @@ bool InitCommon()
     if (!LoadShaders())
         return false;
 
+    // PRE-WARM, here and not later: after the shaders exist (the keys name them by hash)
+    // and before the guest has drawn anything, so every pipeline this session needs is
+    // already built when the first frame asks for one. See PrewarmPipelines.
+    PrewarmPipelines();
+
     R->presentPixels.resize(size_t(RSX(R->targetWidth)) * RS(R->targetHeight) * 4);
     g_texCensus = EnvOn("CZ_VK_TEX_CENSUS");
     g_dimCensus = EnvOn("CZ_VK_DIM_CENSUS");
@@ -25796,6 +25931,7 @@ void VkRenderer_SavePipelineCache()
     if (!g_active)
         return;
     SavePipelineCache();
+    SavePipelineKeys();
 }
 
 void VkRenderer_DumpStats()
