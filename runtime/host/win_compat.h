@@ -42,6 +42,7 @@
 #endif
 #include <windows.h>
 
+#include <cstddef> // ptrdiff_t, for the ssize_t alias
 #include <cstdio>
 #include <ctime>
 
@@ -68,6 +69,30 @@
 // header asks to be told, and is preferable to patching a dependency's source.
 #ifndef __PRFCHWINTRIN_H
 #define __PRFCHWINTRIN_H
+#endif
+
+// Signal numbers Windows does not define. The VALUES are Linux's on purpose: the crash
+// report prints the number, and a Windows report and a Linux report should be readable
+// by the same eyes without a translation table. Nothing dispatches on them — the
+// Windows handler switches on the EXCEPTION_* code and only labels the result.
+#ifndef SIGBUS
+#define SIGBUS 7
+#endif
+#ifndef SIGTRAP
+#define SIGTRAP 5
+#endif
+
+// POSIX's raw stderr descriptor. The crash reporter writes through the fd rather than
+// stdio because a fault inside a handler must not depend on a FILE* lock that the
+// faulting thread may already hold — the same reason it does on POSIX.
+#ifndef STDERR_FILENO
+#define STDERR_FILENO 2
+#endif
+#define write _write
+
+#if !defined(_SSIZE_T_DEFINED)
+#define _SSIZE_T_DEFINED
+using ssize_t = ptrdiff_t;
 #endif
 
 // gettid(). Linux-only; the Windows spelling reports the same thing — an OS-level
