@@ -6486,13 +6486,35 @@ void PrewarmPipelines()
         fclose(f);
         return;
     }
-    const auto t0 = std::chrono::steady_clock::now();
-    uint32_t made = 0, missingShader = 0, failed = 0;
+    // READ THE WHOLE FILE FIRST, then close it, THEN create anything.
+    //
+    // Creating a pipeline inserts into R->pipelines, which calls SavePipelineKeysIfDue,
+    // which REWRITES this very file — truncating it to the keys currently in memory
+    // while this loop is still reading it. The read position was then past the new EOF,
+    // fread failed, and the loop broke early. It stopped at exactly 72 keys every time,
+    // whether the file held 352, 416 or 522, because 72 creations is where the periodic
+    // save first fires and shortens the file beneath the reader.
+    //
+    // A constant that does not move when its input triples is not a coincidence, and
+    // that is what gave it away. Reading to a vector first removes the interaction
+    // entirely rather than papering over it with a "don't save while pre-warming" flag —
+    // which would have worked and would have left the same trap for the next caller.
+    std::vector<PipelineKey> keys;
+    keys.reserve(hdr[2]);
     for (uint32_t i = 0; i < hdr[2]; ++i)
     {
         PipelineKey key{};
         if (fread(&key, sizeof key, 1, f) != 1)
-            break;
+            break;   // short file: take what is there, it is still valid
+        keys.push_back(key);
+    }
+    fclose(f);
+    f = nullptr;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    uint32_t made = 0, missingShader = 0, failed = 0;
+    for (const PipelineKey& key : keys)
+    {
         auto vs = R->shadersMap.find(key.vsHash);
         auto ps = R->shadersMap.find(key.psHash);
         if (vs == R->shadersMap.end() || ps == R->shadersMap.end())
@@ -6507,13 +6529,12 @@ void PrewarmPipelines()
         else
             ++made;
     }
-    fclose(f);
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t0).count();
     fprintf(stderr,
             "[vk] pipeline pre-warm: %u of %u created in %.0f ms (%.2f ms each)"
             "%s%s — this is the stutter that would otherwise have happened DURING play\n",
-            made, hdr[2], ms, made ? ms / made : 0.0,
+            made, uint32_t(keys.size()), ms, made ? ms / made : 0.0,
             missingShader ? "" : "", failed ? "  (some FAILED — see the lines above)" : "");
     if (missingShader)
         fprintf(stderr, "[vk]   %u key(s) skipped: their shader is not in this cache\n",
