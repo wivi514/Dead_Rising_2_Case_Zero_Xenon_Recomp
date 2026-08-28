@@ -6,7 +6,9 @@
 #include <map>
 #include <mutex>
 
+#if !defined(_WIN32)
 #include <unistd.h>
+#endif
 
 #include "../kernel/guestcall.h"
 #include "../kernel/heap.h"

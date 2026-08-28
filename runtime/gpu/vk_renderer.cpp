@@ -34,7 +34,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include <unistd.h>
+// <unistd.h> was here for one readlink("/proc/self/exe"); host/host_paths.h owns
+// that now (release A.1) and nothing else in this file is POSIX.
 
 // ===================================================================================
 // THE INTERFACE THE TRANSLATED SHADERS PRESENT

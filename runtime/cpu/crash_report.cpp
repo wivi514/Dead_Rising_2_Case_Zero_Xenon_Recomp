@@ -38,9 +38,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#if defined(_WIN32)
+// win_compat.h has already pulled windows.h in; DbgHelp is what replaces dladdr.
+#include <dbghelp.h>
+#include <process.h> // _exit
+#else
 #include <dlfcn.h>
 #include <ucontext.h>
 #include <unistd.h>
+#endif
 
 #include "../kernel/guestcall.h"
 #include "../kernel/memory.h"
@@ -84,7 +90,18 @@ int FormatGuestBacktrace(char* b, int cap, PPCContext* ctx, const char* prefix)
     return n;
 }
 
-void Handler(int sig, siginfo_t* info, void* ucontext)
+// THE PORTABLE CORE. It used to take (int, siginfo_t*, void*) and reach into
+// ucontext_t for RIP, which made the whole report Linux-shaped for the sake of two
+// values. It takes those two values directly now, and each platform's entry point
+// below extracts them the way that platform spells it. The ~200 lines of guest-state
+// reporting in between are identical on both — which is the point: the report is the
+// thing worth having and it was never OS-specific.
+//
+//   sig        a POSIX signal number, synthesised on Windows from the exception code
+//              so the printed report reads the same on both
+//   faultAddr  the address the guest touched (nullptr for a deliberate trap)
+//   hostPc     the host instruction pointer — the one field that is never stale
+void Report(int sig, const void* faultAddr, unsigned long long hostPc)
 {
     // One report only: a fault inside the handler must not loop, and other guest
     // threads will usually fault too once the first one has.
@@ -98,21 +115,16 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
     if (depth != 0)
     {
         char nb[256];
-        unsigned long long npc = 0;
-#if defined(__x86_64__)
-        if (ucontext)
-            npc = (unsigned long long)((const ucontext_t*)ucontext)->uc_mcontext.gregs[REG_RIP];
-#endif
         const int nn = snprintf(nb, sizeof nb,
                                 "\n!!! the crash reporter itself faulted: signal %d at %p, "
                                 "host pc %016llX\n!!! the report above is TRUNCATED\n",
-                                sig, info ? info->si_addr : nullptr, npc);
+                                sig, faultAddr, hostPc);
         Emit(nb, nn);
         _exit(139);
     }
 
     char b[4096];
-    const uint8_t* addr = info ? (const uint8_t*)info->si_addr : nullptr;
+    const uint8_t* addr = (const uint8_t*)faultAddr;
     int n = snprintf(b, sizeof b, "\n=== guest fault: signal %d at host address %p ===\n", sig,
                      (void*)addr);
 
@@ -167,22 +179,51 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
     //     addr2line -f -C -e runtime/build/cz_runtime <host pc>
     // to get the exact ppc_recomp line, which is the authoritative answer to "which
     // guest instruction did this".
-#if defined(__x86_64__)
-    if (ucontext)
+    // ALWAYS print the pc; symbolise only when there is something to symbolise. The
+    // first version of this guarded both on `hostPc` and so printed nothing at all when
+    // RIP was 0 — which is not a missing value but the most informative one available:
+    // it says execution jumped to zero, which is exactly the null-indirect-call case
+    // this reporter exists to diagnose. A refactor that turns the interesting case into
+    // the omitted case is the worst kind.
+    n += snprintf(b + n, sizeof b - n, "host pc %016llX (addr2line this)\n", hostPc);
+    if (hostPc)
     {
-        const auto* uc = (const ucontext_t*)ucontext;
-        const unsigned long long pc = (unsigned long long)uc->uc_mcontext.gregs[REG_RIP];
-        n += snprintf(b + n, sizeof b - n, "host pc %016llX (addr2line this)\n", pc);
+#if defined(_WIN32)
+        // DbgHelp is dladdr's counterpart, called for the same reason and with the same
+        // caveat: neither is async-signal-safe, and we are exiting anyway. This line is
+        // what turns a bare address into something a bug report can be written about.
+        // SymInitialize lazily, so a process that never faults never pays for it.
+        static bool symReady = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+        char symBuf[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
+        auto* si = reinterpret_cast<SYMBOL_INFO*>(symBuf);
+        si->SizeOfStruct = sizeof(SYMBOL_INFO);
+        si->MaxNameLen = MAX_SYM_NAME;
+        DWORD64 disp = 0;
+        char modPath[MAX_PATH] = {};
+        HMODULE mod = nullptr;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)hostPc, &mod);
+        if (mod)
+            GetModuleFileNameA(mod, modPath, sizeof modPath);
+        const bool named =
+            symReady && SymFromAddr(GetCurrentProcess(), hostPc, &disp, si) != FALSE;
+        n += snprintf(b + n, sizeof b - n,
+                      "  = %s + 0x%llX (log-only; addr2line the RAW pc)%s%s\n",
+                      modPath[0] ? modPath : "?",
+                      hostPc - (unsigned long long)(uintptr_t)mod,
+                      named ? " in " : "", named ? si->Name : "");
+#else
         // dladdr is not async-signal-safe, but we are exiting anyway and the register
         // dump is flushed below before anything riskier runs.
         Dl_info di{};
-        if (dladdr((void*)pc, &di) && di.dli_fname)
+        if (dladdr((void*)hostPc, &di) && di.dli_fname)
             n += snprintf(b + n, sizeof b - n, "  = %s + 0x%llX (log-only; addr2line the RAW "
                                                "pc)%s%s\n",
-                          di.dli_fname, pc - (unsigned long long)(uintptr_t)di.dli_fbase,
+                          di.dli_fname, hostPc - (unsigned long long)(uintptr_t)di.dli_fbase,
                           di.dli_sname ? " in " : "", di.dli_sname ? di.dli_sname : "");
-    }
 #endif
+    }
 
     // Flush the host side on its own: everything below reads through pointers that
     // are, by construction, suspect, and a fault inside a signal handler is immediate
@@ -227,7 +268,7 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
                       "guest address just before lr=%08X.\n",
                       uint32_t(ctx->lr));
     }
-    else if (info && info->si_addr == nullptr && ctr >= uint32_t(PPC_IMAGE_BASE) &&
+    else if (faultAddr == nullptr && ctr >= uint32_t(PPC_IMAGE_BASE) &&
              ctr < uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE))
     {
         const bool present = g_memory.FindFunction(ctr) != nullptr;
@@ -237,7 +278,7 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
                               : "is NOT in the dispatch table — unrecompiled, or a bad "
                                 "vtable slot");
     }
-    else if (info && info->si_addr == nullptr)
+    else if (faultAddr == nullptr)
     {
         n += snprintf(b + n, sizeof b - n,
                       "LIKELY indirect call through a CORRUPT pointer: ctr=%08X is "
@@ -307,10 +348,62 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
     _exit(139);
 }
 
+#if defined(_WIN32)
+// The Windows entry point. A VECTORED handler, not SetUnhandledExceptionFilter: the
+// vectored chain runs BEFORE any frame-based __try/__except and before the debugger's
+// second chance, which is what we want — the guest state is only meaningful at the
+// moment of the fault, and anything that unwinds first has already destroyed it.
+//
+// The exception code is mapped onto the POSIX signal numbers the report already
+// prints, so a Windows crash report and a Linux one read identically and the same
+// eyes can diagnose both.
+LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* ep)
+{
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    int sig;
+    switch (code)
+    {
+    case EXCEPTION_ACCESS_VIOLATION:      sig = SIGSEGV; break;
+    case EXCEPTION_DATATYPE_MISALIGNMENT: sig = SIGBUS;  break;
+    case EXCEPTION_ILLEGAL_INSTRUCTION:   sig = SIGILL;  break;  // __builtin_trap
+    case EXCEPTION_BREAKPOINT:            sig = SIGTRAP; break;  // __builtin_debugtrap
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:    sig = SIGFPE;  break;
+    default:
+        // Not ours. Let the next handler have it rather than reporting a fault we do
+        // not understand as though we did.
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    // ExceptionInformation[1] is the address touched, and only for an access
+    // violation; for a trap there is no faulting address and nullptr is the honest
+    // answer — which is also what the report's "deliberate trap" branch keys on.
+    const void* addr = (code == EXCEPTION_ACCESS_VIOLATION &&
+                        ep->ExceptionRecord->NumberParameters >= 2)
+                           ? (const void*)ep->ExceptionRecord->ExceptionInformation[1]
+                           : nullptr;
+    Report(sig, addr, (unsigned long long)ep->ContextRecord->Rip);
+    return EXCEPTION_CONTINUE_SEARCH; // unreachable: Report() exits
+}
+#else
+void Handler(int sig, siginfo_t* info, void* ucontext)
+{
+    unsigned long long pc = 0;
+#if defined(__x86_64__)
+    if (ucontext)
+        pc = (unsigned long long)((const ucontext_t*)ucontext)->uc_mcontext.gregs[REG_RIP];
+#endif
+    Report(sig, info ? info->si_addr : nullptr, pc);
+}
+#endif
+
 } // namespace
 
 extern "C" void CzInstallCrashReporter()
 {
+#if defined(_WIN32)
+    // First in the chain (1 = call me before anyone already registered).
+    AddVectoredExceptionHandler(1, VectoredHandler);
+#else
     struct sigaction sa{};
     sa.sa_sigaction = Handler;
     // SA_NODEFER is load-bearing, not decoration. Without it the kernel blocks SIGSEGV
@@ -319,6 +412,9 @@ extern "C" void CzInstallCrashReporter()
     // killed on the spot with no output at all. The report simply stops mid-line and
     // looks like it finished. With it, the nested fault re-enters, the depth counter
     // above catches it, and it prints the address it died at.
+    //
+    // Windows needs no equivalent: a vectored handler is re-entered by construction,
+    // and the same depth counter catches it.
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, nullptr);
@@ -331,6 +427,7 @@ extern "C" void CzInstallCrashReporter()
     // point of trapping is to be told where.
     sigaction(SIGILL, &sa, nullptr);
     sigaction(SIGTRAP, &sa, nullptr);
+#endif
 }
 
 // The same guest stack walk, on demand and without dying.

@@ -345,11 +345,15 @@ enum : uint32_t
 // separates the save path from the 312 disc reads.
 bool WantsWrite(uint32_t desiredAccess, uint32_t createDisposition)
 {
-    constexpr uint32_t GENERIC_WRITE     = 0x40000000;
-    constexpr uint32_t GENERIC_ALL       = 0x10000000;
-    constexpr uint32_t FILE_WRITE_DATA   = 0x00000002;
-    constexpr uint32_t FILE_APPEND_DATA  = 0x00000004;
-    if (desiredAccess & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA))
+    // The GUEST's NT access bits. kGuest*-named because all four are windows.h macros
+    // too — same values, since the Xbox 360 kernel is NT — and the declarations would
+    // otherwise expand to `constexpr uint32_t 0x40000000 = 0x40000000;`.
+    constexpr uint32_t kGuestGenericWrite   = 0x40000000;
+    constexpr uint32_t kGuestGenericAll     = 0x10000000;
+    constexpr uint32_t kGuestFileWriteData  = 0x00000002;
+    constexpr uint32_t kGuestFileAppendData = 0x00000004;
+    if (desiredAccess & (kGuestGenericWrite | kGuestGenericAll | kGuestFileWriteData |
+                         kGuestFileAppendData))
         return true;
     // A disposition that can create or truncate is a write intent even if the access
     // mask is sloppy about saying so.

@@ -60,6 +60,20 @@
 #undef ERROR_FUNCTION_FAILED
 #undef E_FAIL
 
+// SDL2 carries a workaround for a Clang 11-era conflict between its own
+// `_m_prefetchw` and winnt.h's, and defines `_m_prefetch` itself unless
+// __PRFCHWINTRIN_H says the real intrinsic header has been seen. Clang has provided
+// `_m_prefetch` as a builtin for years, so the workaround now IS the conflict:
+// "definition of builtin function '_m_prefetch'". Claiming the guard is how SDL's own
+// header asks to be told, and is preferable to patching a dependency's source.
+#ifndef __PRFCHWINTRIN_H
+#define __PRFCHWINTRIN_H
+#endif
+
+// gettid(). Linux-only; the Windows spelling reports the same thing — an OS-level
+// thread id, used only for log lines that correlate our threads with a profiler's.
+inline unsigned int gettid() { return GetCurrentThreadId(); }
+
 // 16-bit memory model residue. Nothing has needed these since 1995 and they turn any
 // variable so named into a syntax error.
 #undef far
