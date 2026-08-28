@@ -23088,7 +23088,22 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
     // genuine 3,000-draw window in the other arm. It costs one counter read a frame.
     {
         static const int fpsLogSec = Env("CZ_FPS_LOG") ? atoi(Env("CZ_FPS_LOG")) : 0;
-        if (fpsLogSec > 0)
+
+        // CZ_VK_FRAME_TRACE LIVES INSIDE THIS BLOCK AND MUST NOT DEPEND ON CZ_FPS_LOG.
+        //
+        // It used to. docs/instruments.md documents the trace as a standalone
+        // instrument, and arming it alone produced an empty file, no rows, and not even
+        // its own "CANNOT WRITE" diagnostic — because that message is inside the same
+        // dead block. An operator played for an hour to capture a stutter and the file
+        // was never opened.
+        //
+        // This is gotcha 418's exact shape, which the comment forty lines below names:
+        // "the counter that was gated behind an expensive instrument and therefore never
+        // on when the thing it measures happened". It was written about the pipeline
+        // timer and applied here unnoticed.
+        static const bool traceArmed = Env("CZ_VK_FRAME_TRACE") &&
+                                       *Env("CZ_VK_FRAME_TRACE") != '\0';
+        if (fpsLogSec > 0 || traceArmed)
         {
             using clk = std::chrono::steady_clock;
             static clk::time_point windowStart = clk::now();
@@ -23154,6 +23169,11 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                     if (!f || !*f)
                         return nullptr;
                     FILE* h = fopen(f, "w");
+                    // ANNOUNCE IT. An instrument that can be armed and silently record
+                    // nothing costs whoever armed it the entire session before they find
+                    // out — which is exactly what happened here.
+                    fprintf(stderr, "[vk] CZ_VK_FRAME_TRACE: %s -> %s\n", f,
+                            h ? "open, one row per presented frame" : "FAILED TO OPEN");
                     if (h)
                         fprintf(h, "frame draws wallUs walkUs recordUs fenceUs sleepUs "
                                    "residualUs gpuUs texUploads texKB texUpUs "
@@ -23256,7 +23276,7 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
             }
             const double elapsed =
                 std::chrono::duration<double>(now - windowStart).count();
-            if (elapsed >= double(fpsLogSec) && frames > 1)
+            if (fpsLogSec > 0 && elapsed >= double(fpsLogSec) && frames > 1)
             {
                 // The first sample of a window is the gap ACROSS the window boundary and
                 // belongs to neither; dropping it costs one frame in a few hundred.

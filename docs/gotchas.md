@@ -5652,3 +5652,16 @@ From phase C part 18 (the frame rate — and none of it was work):
      generated code, one flag in the wrong dialect, and an error message that names the
      output file rather than the flag. `/FI` is the clang-cl spelling. **When a build fails
      on every file at once, suspect the command line before the code.**
+
+495. **AN INSTRUMENT THAT CAN BE ARMED AND SILENTLY RECORD NOTHING COSTS A WHOLE SESSION.**
+     `CZ_VK_FRAME_TRACE` is documented as standalone and was not: its write sat inside
+     `if (fpsLogSec > 0)`, so arming it without `CZ_FPS_LOG` opened no file, wrote no rows,
+     and suppressed its own `CANNOT WRITE` diagnostic — which is in the same dead block. An
+     operator played for an hour to capture a felt stutter and the trace never existed.
+     This is **gotcha 418 recurring**, and the comment naming 418 sits forty lines below the
+     defect: *"the counter gated behind an expensive instrument and therefore never on when
+     the thing it measures happened."* Two rules. **An instrument must announce itself when
+     it arms** — one line at startup, so "armed" and "recording" cannot differ. And
+     **verify the artifact exists before spending anyone's time**: a "0 rows so far" check
+     was run at the 40-second mark, printed 0, and was read past. The check was right; the
+     reader was not.

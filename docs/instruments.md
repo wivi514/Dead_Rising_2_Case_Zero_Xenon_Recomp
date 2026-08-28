@@ -3052,7 +3052,17 @@ tools/play_session.sh KEY=VALUE ...   trailing env passes through, same conventi
                    BLOCKED ON THE GPU; sleep is the pump idle; residual is not the renderer
                    at all. GPU comes from two timestamps in the frame's OWN command buffer,
                    read back deferred (after that slot's fence) so it never stalls
-CZ_VK_FRAME_TRACE=<file>   one line per presented frame — frame, draws, wall, walk, record,
+CZ_VK_FRAME_TRACE=<file>   **STANDALONE since part 83 — it used to require CZ_FPS_LOG and
+                   say nothing when armed without it.** The write sits inside the
+                   `if (fpsLogSec > 0)` block, so arming the trace alone opened no file,
+                   wrote no rows, and suppressed its own CANNOT-WRITE diagnostic, which is
+                   in the same dead block. An operator played for an hour to capture a
+                   stutter and the trace was never opened. Gotcha 418's exact shape — the
+                   counter gated behind another instrument, therefore never on when the
+                   thing it measures happened. It now announces itself at startup:
+                   `[vk] CZ_VK_FRAME_TRACE: <file> -> open, one row per presented frame`.
+                   **If you do not see that line, it is not recording.**
+                   one line per presented frame — frame, draws, wall, walk, record,
                    fence, sleep, residual, gpu, texUploads, texKB, texUpUs, texDecUs,
                    pipes. Use this to FIND a stutter offline rather than hoping it lands in
                    the twelve-row table. **With CZ_VK_PROFILE also set it carries all
