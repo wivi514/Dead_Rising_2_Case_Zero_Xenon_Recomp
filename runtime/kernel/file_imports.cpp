@@ -256,7 +256,9 @@ bool NoteMiss(const std::string& guestPath)
     // host directory the file would live in, not about the guest's spelling.
     int cls = 0;
     const std::string host = VfsTranslate(guestPath);
-    const size_t slash = host.find_last_of('/');
+    // Both separators. On Windows the host path is built from a std::filesystem::path
+    // and arrives with backslashes; searching for '/' alone silently finds nothing.
+    const size_t slash = host.find_last_of("/\\");
     if (!host.empty() && slash != std::string::npos)
     {
         std::error_code ec;

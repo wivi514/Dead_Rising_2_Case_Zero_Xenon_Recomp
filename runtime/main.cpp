@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -245,10 +246,13 @@ int main(int argc, char** argv)
     // any guest code runs is required: A1's 22nd distinct kernel call is already an
     // NtCreateFile on `game:\layout.bin`.
     {
-        std::string root = xexPath;
-        const size_t slash = root.find_last_of('/');
-        const std::string gameDir =
-            slash == std::string::npos ? std::string(".") : root.substr(0, slash);
+        // parent_path(), not a hand-rolled split on '/'. The first version of this
+        // searched for a forward slash only, so on Windows — where the path arrives as
+        // C:\cz\...\assets\game\default.xex — it found none, fell back to ".", and
+        // mounted `game:` and `d:` on the CURRENT DIRECTORY. The guest then failed
+        // every file open and faulted through a null pointer several hundred
+        // milliseconds later, with nothing in the crash report pointing back here.
+        const std::string gameDir = std::filesystem::path(xexPath).parent_path().string();
         VfsSetGameRoot(gameDir);
         // Saves go in a SIBLING of the package directory, never inside it — see
         // kernel/content.cpp. Set up here rather than lazily so that a run whose save
