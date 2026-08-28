@@ -43,6 +43,7 @@
 #include <windows.h>
 
 #include <cstddef> // ptrdiff_t, for the ssize_t alias
+#include <io.h>    // _write, which is what `write` becomes below
 #include <cstdio>
 #include <ctime>
 
