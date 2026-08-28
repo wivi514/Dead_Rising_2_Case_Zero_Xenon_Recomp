@@ -67,9 +67,13 @@
 
 // POSIX spellings the MSVC CRT provides under different names. Not emulation — these
 // are the same functions.
+//
+// `off_t` is deliberately NOT aliased here. The UCRT already defines it, as `long`,
+// i.e. 32 BITS — so an alias collides ("type alias redefinition with different types")
+// and accepting theirs would silently truncate any offset past 2 GB. The call sites
+// use int64_t instead, which is what _fseeki64 takes and what the guest means.
 #define fseeko _fseeki64
 #define ftello _ftelli64
-using off_t = long long;
 
 // clock_gettime. The CRT has no such function; QueryPerformanceCounter is the
 // monotonic clock on Windows and GetThreadTimes is the per-thread CPU one. Both are

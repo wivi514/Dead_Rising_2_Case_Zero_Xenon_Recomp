@@ -58,11 +58,16 @@ endif()
 #
 # It compiles to nothing on every other platform, so the flag is Windows-only and the
 # POSIX build is bit-identical with or without the file existing.
+# CXX ONLY. This project enables C for exactly one file (thirdparty/o1heap/o1heap.c),
+# and a bare add_compile_options applies to both languages — which force-fed a C++
+# header to a C compiler and produced 2,086 errors inside win_compat.h itself
+# ("unknown type name 'namespace'", "STL1003: Unexpected compiler"). The generator
+# expression is the whole fix and the reason it is spelled out here.
 if(WIN32)
     if(MSVC)
-        add_compile_options("/FI${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/FI${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h>")
     else()
-        add_compile_options("-include" "${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h>")
     endif()
 endif()
 

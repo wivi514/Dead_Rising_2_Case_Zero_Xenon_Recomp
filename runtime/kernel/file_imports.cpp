@@ -626,7 +626,7 @@ uint32_t NtReadFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     {
         const uint64_t offset = *byteOffset;
         if (offset != 0xFFFFFFFFFFFFFFFEull)
-            fseeko(file->fp, off_t(offset), SEEK_SET);
+            fseeko(file->fp, int64_t(offset), SEEK_SET);
     }
 
     const size_t got = fread(buffer, 1, length, file->fp);
@@ -704,14 +704,14 @@ uint32_t NtWriteFile_x(uint32_t handle, uint32_t event, uint32_t apcRoutine,
     {
         const uint64_t offset = *byteOffset;
         if (offset != 0xFFFFFFFFFFFFFFFEull)
-            fseeko(file->fp, off_t(offset), SEEK_SET);
+            fseeko(file->fp, int64_t(offset), SEEK_SET);
     }
 
     const size_t put = fwrite(buffer, 1, length, file->fp);
     fflush(file->fp);
     file->inFlight.fetch_sub(1, std::memory_order_release);
     const uint32_t status = put == length ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
-    const off_t end = ftello(file->fp);
+    const int64_t end = ftello(file->fp);
     if (end > 0 && uint64_t(end) > file->size)
         file->size = uint64_t(end);
     if (iosb)
@@ -819,7 +819,7 @@ uint32_t NtSetInformationFile_x(uint32_t handle, XIO_STATUS_BLOCK* iosb, be<uint
         std::unique_lock<std::mutex> ioLock(file->io, std::defer_lock);
         if (!FileRacy())
             ioLock.lock();
-        fseeko(file->fp, off_t(pos), SEEK_SET);
+        fseeko(file->fp, int64_t(pos), SEEK_SET);
         if (iosb)
         {
             iosb->Status = STATUS_SUCCESS;
