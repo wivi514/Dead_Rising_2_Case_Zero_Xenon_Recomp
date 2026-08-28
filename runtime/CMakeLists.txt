@@ -263,8 +263,6 @@ target_link_libraries(cz_runtime PRIVATE Vulkan::Vulkan)
 # a silent game that is indistinguishable from the defect this replaced. Refusing at
 # CONFIGURE time is how "no sound" stays a build message instead of a mystery.
 # Headers live under /usr/include/ffmpeg on Fedora; pkg-config supplies the paths.
-find_package(PkgConfig REQUIRED)
-
 # CZ_FFMPEG_PREFIX — build against the LGPL ffmpeg from tools/build_ffmpeg_lgpl.sh
 # rather than the system one (docs/release-plan.md §4, A.4).
 #
@@ -285,12 +283,45 @@ if(CZ_FFMPEG_PREFIX)
             "CZ_FFMPEG_PREFIX=${CZ_FFMPEG_PREFIX} has no lib/pkgconfig/libavcodec.pc.\n"
             "  Build it:  tools/build_ffmpeg_lgpl.sh ${CZ_FFMPEG_PREFIX}")
     endif()
-    set(ENV{PKG_CONFIG_PATH} "${CZ_FFMPEG_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
     message(STATUS "ffmpeg: ${CZ_FFMPEG_PREFIX} (LGPL, xma1+xma2 only)")
 endif()
 
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
-target_link_libraries(cz_runtime PRIVATE PkgConfig::FFMPEG)
+# Two ways to find ffmpeg, and which one runs is decided by whether we were TOLD
+# where it is.
+#
+#   CZ_FFMPEG_PREFIX set  -> look under it directly. No pkg-config.
+#   not set               -> pkg-config, the system copy, the developer default.
+#
+# The direct path exists because Windows has no pkg-config, and adding one as a build
+# dependency to satisfy a lookup we can do ourselves would be paying for a tool to
+# tell us something we already passed in on the command line. It also removes the
+# .pc-file path-translation problem entirely: an MSYS2-built .pc names
+# `/c/cz/...`, which a Windows CMake cannot open.
+if(CZ_FFMPEG_PREFIX)
+    find_path(CZ_AVCODEC_INC libavcodec/avcodec.h
+              PATHS "${CZ_FFMPEG_PREFIX}/include" NO_DEFAULT_PATH REQUIRED)
+    # Both spellings, because the two toolchains name the import library
+    # differently and neither is wrong: libavcodec.so on Linux, avcodec.lib from
+    # ffmpeg's MSVC toolchain.
+    find_library(CZ_AVCODEC_LIB NAMES avcodec libavcodec
+                 PATHS "${CZ_FFMPEG_PREFIX}/lib" "${CZ_FFMPEG_PREFIX}/bin"
+                 NO_DEFAULT_PATH REQUIRED)
+    find_library(CZ_AVUTIL_LIB NAMES avutil libavutil
+                 PATHS "${CZ_FFMPEG_PREFIX}/lib" "${CZ_FFMPEG_PREFIX}/bin"
+                 NO_DEFAULT_PATH REQUIRED)
+    add_library(cz_ffmpeg INTERFACE)
+    target_include_directories(cz_ffmpeg INTERFACE "${CZ_AVCODEC_INC}")
+    target_link_libraries(cz_ffmpeg INTERFACE "${CZ_AVCODEC_LIB}" "${CZ_AVUTIL_LIB}")
+    add_library(CZ::ffmpeg ALIAS cz_ffmpeg)
+    message(STATUS "ffmpeg libs: ${CZ_AVCODEC_LIB}  ${CZ_AVUTIL_LIB}")
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
+    add_library(cz_ffmpeg INTERFACE)
+    target_link_libraries(cz_ffmpeg INTERFACE PkgConfig::FFMPEG)
+    add_library(CZ::ffmpeg ALIAS cz_ffmpeg)
+endif()
+target_link_libraries(cz_runtime PRIVATE CZ::ffmpeg)
 
 target_include_directories(cz_runtime PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap
