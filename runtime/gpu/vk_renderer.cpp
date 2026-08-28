@@ -23233,8 +23233,19 @@ void DoSwapImpl(uint8_t* base, uint32_t frontBuffer, uint32_t width, uint32_t he
                 if (trace)
                 {
                     static ProfilePhases prevPhase{};
+                    // `now - prev` UNSIGNED, with a guard, because the counters it reads
+                    // are ZEROED by CZ_VK_PROFILE's periodic window report. Without the
+                    // guard the frame after each window prints 18446744073709 us — a
+                    // wrapped negative — and a reader scanning for the worst frames finds
+                    // six impossible ones at the top of every sorted list. That happened:
+                    // it cost a pass over this data to notice the top six rows were the
+                    // instrument and not the game.
+                    //
+                    // Zero, not the raw wrap: after a reset the true delta is unknown, and
+                    // 0 is the only answer that cannot be mistaken for a measurement. The
+                    // frame is still emitted, so nothing is silently dropped.
                     auto d = [](uint64_t now, uint64_t& prev) {
-                        const uint64_t v = now - prev;
+                        const uint64_t v = now >= prev ? now - prev : 0;
                         prev = now;
                         return (unsigned long long)(v / 1000);
                     };
