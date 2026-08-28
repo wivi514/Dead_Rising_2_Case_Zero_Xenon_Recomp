@@ -6394,6 +6394,7 @@ std::string PrewarmPath()
     return R->pipeCachePath + ".keys";
 }
 
+// Called at exit AND periodically. See SavePipelineKeysIfDue.
 void SavePipelineKeys()
 {
     const std::string path = PrewarmPath();
@@ -6415,6 +6416,29 @@ void SavePipelineKeys()
     std::filesystem::rename(tmp, path, ec);
     fprintf(stderr, "[vk] pipeline pre-warm: %zu keys written to %s%s\n",
             R->pipelines.size(), path.c_str(), ec ? "  — RENAME FAILED" : "");
+}
+
+// SAVE AS WE GO, not only at exit.
+//
+// A warm-up that persists only on a clean shutdown is lost exactly when it is most
+// valuable: after a crash, or after a kill, or after a player closes the window in a
+// way the handler does not see. It is also how the first attempt at measuring this
+// change measured nothing — the arm that was supposed to WRITE the key file was
+// terminated with TerminateProcess, no handler ran, and the arm that was supposed to
+// READ it reported "no key file yet".
+//
+// Rewriting is cheap and bounded: the file is one 56-byte key per pipeline, ~23 KB for
+// a full session, written to a temp and renamed. Every 32 new pipelines is far below
+// the rate at which they are created (534 in three minutes of play) and costs a
+// fraction of a millisecond against creations that cost between one and two hundred.
+void SavePipelineKeysIfDue()
+{
+    static size_t savedAt = 0;
+    if (R->pipelines.size() >= savedAt + 32)
+    {
+        savedAt = R->pipelines.size();
+        SavePipelineKeys();
+    }
 }
 
 void PrewarmPipelines()
@@ -9790,6 +9814,9 @@ VkPipeline GetPipeline(const PipelineKey& key, const ShaderMeta& vs, const Shade
         Count("pipeline: created");
     }
     R->pipelines.emplace(key, pipeline);
+    // Persist the growing key set as we go, so a kill or a crash cannot throw away the
+    // warm-up. See SavePipelineKeysIfDue.
+    SavePipelineKeysIfDue();
     R->lastPipelineKey = key;
     R->lastPipeline = pipeline;
     R->lastPipelineValid = true;
