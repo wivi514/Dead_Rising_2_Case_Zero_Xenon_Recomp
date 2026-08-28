@@ -36,6 +36,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdint>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #if defined(_WIN32)
@@ -59,6 +60,37 @@ std::atomic<int> g_reported{ 0 };
 constexpr uint32_t kCodeLo = uint32_t(PPC_CODE_BASE);
 constexpr uint32_t kCodeHi = uint32_t(PPC_CODE_BASE + PPC_CODE_SIZE);
 
+// APPEND, CLAMPED — and the reason it exists is a bug that destroyed the process it
+// was reporting on.
+//
+// This file used to build its report with, twenty times over:
+//
+//     n = Append(b, int(sizeof b), n, ...);
+//
+// snprintf returns the length it WOULD have written, not what it did. So a report
+// longer than the buffer pushes `n` past `sizeof b`, and `sizeof b - n` is then size_t
+// arithmetic that underflows to ~2^64 — after which the next call writes off the end of
+// a 4 KB stack buffer. On Windows /GS detects the smashed cookie and __fastfail()s: the
+// process dies instantly at 0xC0000409, WER buckets it BEX64, and NOTHING is printed —
+// no report, and no handler can run because __fastfail bypasses SEH entirely. On Linux
+// it is the identical bug with a luckier layout; the Windows report is longer only
+// because the module path is.
+//
+// A crash reporter that can crash while reporting is worse than none: it replaces a
+// diagnosable fault with an undiagnosable one. Clamping is the whole fix.
+int Append(char* b, int cap, int n, const char* fmt, ...)
+{
+    if (n < 0 || n >= cap - 1)
+        return n;
+    va_list ap;
+    va_start(ap, fmt);
+    const int r = vsnprintf(b + n, size_t(cap - n), fmt, ap);
+    va_end(ap);
+    if (r < 0)
+        return n;
+    return (r >= cap - n) ? cap - 1 : n + r;   // truncated: park at the end
+}
+
 void Emit(const char* buf, size_t n)
 {
     // The raw descriptor, not stdio: a fault inside a handler must not depend on a
@@ -76,7 +108,7 @@ void Emit(const char* buf, size_t n)
 int FormatGuestBacktrace(char* b, int cap, PPCContext* ctx, const char* prefix)
 {
     uint8_t* base = g_memory.base;
-    int n = snprintf(b, cap, "%s  #0 %08X  (lr)\n", prefix, uint32_t(ctx->lr));
+    int n = Append(b, cap, 0, "%s  #0 %08X  (lr)\n", prefix, uint32_t(ctx->lr));
     uint32_t sp = ctx->r1.u32;
     for (int i = 1; i < 24 && sp >= 0x10000 && sp < PPC_MEMORY_SIZE - 8 && n < cap - 128; i++)
     {
@@ -87,7 +119,7 @@ int FormatGuestBacktrace(char* b, int cap, PPCContext* ctx, const char* prefix)
             break;
         const uint32_t savedLr = PPC_LOAD_U32(prev - 8);
         const bool inText = savedLr >= kCodeLo && savedLr < kCodeHi;
-        n += snprintf(b + n, cap - n, "%s  #%-2d %08X  sp=%08X%s\n", prefix, i, savedLr, prev,
+        n = Append(b, cap, n, "%s  #%-2d %08X  sp=%08X%s\n", prefix, i, savedLr, prev,
                       inText ? "" : "  <- NOT .text (walk off)");
         if (!inText)
             break;
@@ -131,7 +163,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
 
     char b[4096];
     const uint8_t* addr = (const uint8_t*)faultAddr;
-    int n = snprintf(b, sizeof b, "\n=== guest fault: signal %d at host address %p ===\n", sig,
+    int n = Append(b, int(sizeof b), 0, "\n=== guest fault: signal %d at host address %p ===\n", sig,
                      (void*)addr);
 
     // THE HEADLINE. A host address means nothing to anyone; the guest address is
@@ -150,7 +182,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
                             : guest < 0xA0000000u     ? "unmapped space below the physical arena"
                             : guest < 0xBFFF0000u     ? "the physical arena (cached view)"
                                                       : "the write-combined/uncached views";
-        n += snprintf(b + n, sizeof b - n, "faulting GUEST address %08X  (%s)\n", guest, where);
+        n = Append(b, int(sizeof b), n, "faulting GUEST address %08X  (%s)\n", guest, where);
     }
     else if (g_ppcContext && g_ppcContext->ctr.u32 == 0)
     {
@@ -161,13 +193,13 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
         // null function pointer, which is the most expensive kind of wrong a first
         // line can be: it sends the reader into the wrong codebase. See the ctr test
         // below for what it actually is.
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "the faulting address is outside the guest space, but ctr is 0 — "
                       "read it as a null indirect call, not as a host bug\n");
     }
     else
     {
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "the faulting address is OUTSIDE the 4 GB guest space — this is a "
                       "host-side bug, not a guest one\n");
     }
@@ -175,7 +207,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     // Which thread. With the pump thread now running guest ISR code and the command
     // processor concurrently with the main thread, "who faulted" is the first thing
     // worth knowing about an intermittent crash.
-    n += snprintf(b + n, sizeof b - n, "guest thread id %08X\n",
+    n = Append(b, int(sizeof b), n, "guest thread id %08X\n",
                   GuestThread::GetCurrentThreadId());
 
     // The register dump below comes from the thread's PPCContext, which the compiler
@@ -191,7 +223,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     // it says execution jumped to zero, which is exactly the null-indirect-call case
     // this reporter exists to diagnose. A refactor that turns the interesting case into
     // the omitted case is the worst kind.
-    n += snprintf(b + n, sizeof b - n, "host pc %016llX (addr2line this)\n", hostPc);
+    n = Append(b, int(sizeof b), n, "host pc %016llX (addr2line this)\n", hostPc);
     if (hostPc)
     {
 #if defined(_WIN32)
@@ -214,7 +246,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
             GetModuleFileNameA(mod, modPath, sizeof modPath);
         const bool named =
             symReady && SymFromAddr(GetCurrentProcess(), hostPc, &disp, si) != FALSE;
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "  = %s + 0x%llX (log-only; addr2line the RAW pc)%s%s\n",
                       modPath[0] ? modPath : "?",
                       hostPc - (unsigned long long)(uintptr_t)mod,
@@ -224,7 +256,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
         // dump is flushed below before anything riskier runs.
         Dl_info di{};
         if (dladdr((void*)hostPc, &di) && di.dli_fname)
-            n += snprintf(b + n, sizeof b - n, "  = %s + 0x%llX (log-only; addr2line the RAW "
+            n = Append(b, int(sizeof b), n, "  = %s + 0x%llX (log-only; addr2line the RAW "
                                                "pc)%s%s\n",
                           di.dli_fname, hostPc - (unsigned long long)(uintptr_t)di.dli_fbase,
                           di.dli_sname ? " in " : "", di.dli_sname ? di.dli_sname : "");
@@ -240,7 +272,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     PPCContext* ctx = g_ppcContext;
     if (!ctx)
     {
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "no guest context on this thread (the fault is in host code)\n"
                       "=== end guest fault ===\n");
         Emit(b, n);
@@ -248,7 +280,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     }
 
     const uint32_t ctr = ctx->ctr.u32;
-    n += snprintf(b + n, sizeof b - n, "lr=%08X ctr=%08X r1(sp)=%08X r13(pcr)=%08X\n",
+    n = Append(b, int(sizeof b), n, "lr=%08X ctr=%08X r1(sp)=%08X r13(pcr)=%08X\n",
                   uint32_t(ctx->lr), ctr, ctx->r1.u32, ctx->r13.u32);
 
     // An indirect call that could not go anywhere. Two distinct shapes, and the
@@ -267,7 +299,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     // too: it means the pointer was overwritten rather than left unset.
     if (ctr == 0)
     {
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "LIKELY null indirect call: ctr is ZERO — the guest called "
                       "through a function pointer that was never written (an object "
                       "whose vtable/callback slot is still 0). The `bctrl` is at the "
@@ -278,7 +310,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
              ctr < uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE))
     {
         const bool present = g_memory.FindFunction(ctr) != nullptr;
-        n += snprintf(b + n, sizeof b - n, "LIKELY null indirect call: bctrl target %08X %s\n",
+        n = Append(b, int(sizeof b), n, "LIKELY null indirect call: bctrl target %08X %s\n",
                       ctr,
                       present ? "IS in the dispatch table (so this is not it)"
                               : "is NOT in the dispatch table — unrecompiled, or a bad "
@@ -286,7 +318,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     }
     else if (faultAddr == nullptr)
     {
-        n += snprintf(b + n, sizeof b - n,
+        n = Append(b, int(sizeof b), n,
                       "LIKELY indirect call through a CORRUPT pointer: ctr=%08X is "
                       "outside the image (%08X..%08X), so it is not an unrecompiled "
                       "function — it is not a code address at all.\n",
@@ -302,7 +334,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     {
         const uint64_t guest = uint64_t(addr - g_memory.base);
         if (guest >= 0xC0000002ull && guest < 0xC0001002ull)
-            n += snprintf(b + n, sizeof b - n,
+            n = Append(b, int(sizeof b), n,
                           "NOTE: this address is at/just past 0xC0000002 = "
                           "STATUS_NOT_IMPLEMENTED. That is what an unimplemented import "
                           "returning a status where the guest wanted a POINTER looks like "
@@ -320,7 +352,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
         ctx->r30.u32, ctx->r31.u32,
     };
     for (int i = 0; i < 32; i += 4)
-        n += snprintf(b + n, sizeof b - n, "r%-2d %08X  r%-2d %08X  r%-2d %08X  r%-2d %08X\n", i,
+        n = Append(b, int(sizeof b), n, "r%-2d %08X  r%-2d %08X  r%-2d %08X  r%-2d %08X\n", i,
                       gpr[i], i + 1, gpr[i + 1], i + 2, gpr[i + 2], i + 3, gpr[i + 3]);
 
     // Emit what we have before touching guest memory: losing the register dump to a
@@ -328,7 +360,7 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
     Emit(b, n);
     n = 0;
 
-    n += snprintf(b + n, sizeof b - n, "guest backtrace (lr first):\n");
+    n = Append(b, int(sizeof b), n, "guest backtrace (lr first):\n");
     n += FormatGuestBacktrace(b + n, int(sizeof b) - n, ctx, "");
     Emit(b, n);
     n = 0;
@@ -340,16 +372,16 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
         if (ea < 0x1000 || ea >= PPC_MEMORY_SIZE - 32)
             return;
         uint8_t* base = g_memory.base;
-        n += snprintf(b + n, sizeof b - n, "%s %08X:", what, ea);
+        n = Append(b, int(sizeof b), n, "%s %08X:", what, ea);
         for (int i = 0; i < 8; i++)
-            n += snprintf(b + n, sizeof b - n, " %08X", PPC_LOAD_U32(ea + 4 * i));
-        n += snprintf(b + n, sizeof b - n, "\n");
+            n = Append(b, int(sizeof b), n, " %08X", PPC_LOAD_U32(ea + 4 * i));
+        n = Append(b, int(sizeof b), n, "\n");
     };
     dumpObject("[r3] ", ctx->r3.u32);
     dumpObject("[r4] ", ctx->r4.u32);
     dumpObject("[r11]", ctx->r11.u32);
 
-    n += snprintf(b + n, sizeof b - n, "=== end guest fault ===\n");
+    n = Append(b, int(sizeof b), n, "=== end guest fault ===\n");
     Emit(b, n);
     _exit(139);
 }
@@ -490,7 +522,7 @@ extern "C" void CzDumpGuestBacktrace(const char* label)
     }
 
     char b[2048];
-    int n = snprintf(b, sizeof b, "[stall] %s: tid=%08X lr=%08X ctr=%08X r1=%08X r3=%08X\n",
+    int n = Append(b, int(sizeof b), 0, "[stall] %s: tid=%08X lr=%08X ctr=%08X r1=%08X r3=%08X\n",
                      label, GuestThread::GetCurrentThreadId(), uint32_t(ctx->lr), ctx->ctr.u32,
                      ctx->r1.u32, ctx->r3.u32);
     n += FormatGuestBacktrace(b + n, int(sizeof b) - n, ctx, "[stall]");
