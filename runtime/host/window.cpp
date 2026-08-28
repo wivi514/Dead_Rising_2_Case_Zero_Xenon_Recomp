@@ -1033,6 +1033,27 @@ bool Host_WindowInit()
     // The signal-handler hint is set at the top of this function, above the headless
     // early return, so that a run with no window still gets it — see the comment there.
 
+#if defined(_WIN32)
+    // DPI AWARENESS, BEFORE SDL_Init, AND IT IS NOT COSMETIC.
+    //
+    // A process that has not declared itself DPI-aware is lied to by Windows: every
+    // display query returns the desktop divided by the scale factor. On a 2560x1440
+    // panel at 160% scaling, SDL_GetDesktopDisplayMode reports 1600x900 — and
+    // PublishDisplaySize below CLAMPS the settings panel's resolution list to that, so
+    // the operator's 1440p screen offered 1600x900 as its maximum and there was no way
+    // to ask for more. The renderer was never the limit; the query was.
+    //
+    // permonitorv2 rather than "system": the size must stay right when the window is
+    // dragged to a differently-scaled monitor, which is the case "system" gets wrong
+    // and is exactly what a laptop with an external display does.
+    //
+    // SDL_HINT_WINDOWS_DPI_SCALING is deliberately NOT set. It would make SDL report
+    // window sizes in DPI-scaled points; this runtime wants physical pixels everywhere,
+    // because the swapchain, the scissor rectangles and every recorded frame time are
+    // in pixels.
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0)
     {
         fprintf(stderr,

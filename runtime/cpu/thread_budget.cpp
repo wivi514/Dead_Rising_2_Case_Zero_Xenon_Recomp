@@ -1,5 +1,9 @@
 #include "thread_budget.h"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +51,39 @@ bool ReadInt(const std::string& path, int* out)
 // given rather than against what the silicon has. And when the topology cannot be read at
 // all it returns 0 so the caller can say which fallback it took, rather than quietly
 // inventing a plausible number.
+#if defined(_WIN32)
+// Windows topology. The POSIX path below reads /sys, which does not exist here, so
+// without this the count falls to the "assume SMT, halve the logical count" fallback —
+// which on the 12700H in the build laptop reported 10 physical cores against a real 14
+// (6 performance + 8 efficiency) and sized the worker budget off the wrong number.
+//
+// GetLogicalProcessorInformationEx(RelationProcessorCore) returns one record PER
+// PHYSICAL CORE, which is the question being asked; counting records is the answer, and
+// it is correct on hybrid P/E parts where halving the thread count is not.
+unsigned CountPhysicalCoresWin()
+{
+    DWORD bytes = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+    if (!bytes)
+        return 0;
+    std::vector<uint8_t> buf(bytes);
+    auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &bytes))
+        return 0;
+    unsigned cores = 0;
+    for (DWORD off = 0; off < bytes;)
+    {
+        auto* rec = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        if (rec->Size == 0)
+            break;
+        if (rec->Relationship == RelationProcessorCore)
+            ++cores;
+        off += rec->Size;
+    }
+    return cores;
+}
+#endif
+
 unsigned CountPhysicalCores()
 {
 #if defined(__linux__)
@@ -129,7 +166,11 @@ BudgetState& State()
         st.logical = std::thread::hardware_concurrency();
         if (!st.logical)
             st.logical = 1;
+#if defined(_WIN32)
+        st.physical = CountPhysicalCoresWin();
+#else
         st.physical = CountPhysicalCores();
+#endif
         if (!st.physical)
         {
             // No topology at all. Assume SMT rather than not: over-counting cores would
