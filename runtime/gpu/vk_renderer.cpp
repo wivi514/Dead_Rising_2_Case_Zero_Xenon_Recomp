@@ -6255,11 +6255,28 @@ void CreatePipelineCache(const std::filesystem::path& dir)
         R->pipeCachePath = e;
     else
     {
+        // WHERE THE CACHE LIVES, and on Windows it must not depend on HOME.
+        //
+        // HOME is not a Windows variable. Git for Windows and MSYS2 set it, so a process
+        // launched from one of their shells saw C:\Users\<u>\.cache while the same build
+        // launched any other way fell through to %TEMP% — two different caches, and
+        // whichever one the player's warm 15 MB happened to be in was invisible to the
+        // other. That was found by a pre-warm A/B silently testing an empty directory,
+        // and it means a player could lose a warm cache by launching differently.
+        //
+        // LOCALAPPDATA is the Windows answer and is always set for an interactive user.
+        // XDG_CACHE_HOME still wins where it is set, because on Linux that is the
+        // standard and someone who sets it means it.
         std::filesystem::path base;
         if (const char* x = Env("XDG_CACHE_HOME"); x && *x)
             base = x;
+#if defined(_WIN32)
+        else if (const char* la = Env("LOCALAPPDATA"); la && *la)
+            base = la;
+#else
         else if (const char* h = Env("HOME"); h && *h)
             base = std::filesystem::path(h) / ".cache";
+#endif
         else
             base = std::filesystem::temp_directory_path(ec);
         base /= "cz-recomp";
