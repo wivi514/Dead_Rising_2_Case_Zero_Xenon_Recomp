@@ -29,6 +29,15 @@ endif()
 # library rather than a disabled language.
 project(CaseZeroRuntime C CXX)
 
+# Windows: the CRT deprecates getenv, strerror, fopen and friends in favour of its own
+# _s variants. This runtime uses the standard ones throughout and deliberately keeps
+# doing so — they are what the POSIX build uses and a divergence here would be a
+# portability difference invented for a warning. Silencing it is not ignoring a defect;
+# it is declining an invitation to use a Microsoft-only API.
+if(WIN32)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+endif()
+
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(WARNING
         "Building the recompiled image with ${CMAKE_CXX_COMPILER_ID}. "
@@ -144,8 +153,19 @@ target_compile_options(ppc_image PRIVATE
 # 49.875 MHz timebase; the header shadows it with a scaled counter. The runtime's
 # own sources must keep the real __rdtsc, which is why this is a source property on
 # ${PPC_SOURCES} and not a target-wide option. Gotcha #1.
-set_source_files_properties(${PPC_SOURCES} PROPERTIES COMPILE_OPTIONS
-    "-include;${CMAKE_CURRENT_SOURCE_DIR}/cpu/timebase.h")
+# The forced include, spelled for the driver in use. `-include <path>` is the GNU
+# driver's flag; clang-cl parses the path as a second INPUT FILE and fails with
+# "cannot specify '/Fo...' when compiling multiple source files" — an error that names
+# the output rather than the flag, and which stopped all 228 recompiled TUs on the
+# first Windows build (gotcha 494). /FI is the clang-cl spelling. MSVC is true for
+# clang-cl in CMake, which is what we want: it selects on the DRIVER, not the vendor.
+if(MSVC)
+    set_source_files_properties(${PPC_SOURCES} PROPERTIES COMPILE_OPTIONS
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/cpu/timebase.h")
+else()
+    set_source_files_properties(${PPC_SOURCES} PROPERTIES COMPILE_OPTIONS
+        "-include;${CMAKE_CURRENT_SOURCE_DIR}/cpu/timebase.h")
+endif()
 
 # CZ_DEBUG_TUS — build named recompiled TUs at -O0 -fno-inline so a fault inside one
 # resolves to an exact line, and every line in those files carries its original PPC
