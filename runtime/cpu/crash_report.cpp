@@ -408,11 +408,27 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
 // to act on can be inspected without acting on it again.
 LONG CALLBACK FirstChanceLogger(EXCEPTION_POINTERS* ep)
 {
-    char b[160];
-    const int n = snprintf(b, sizeof b, "[seh] first-chance %08lX at %p (pc %016llX)\n",
+    // Module + RVA, not just the absolute address. The absolute one is useless without
+    // the load base, and the load base is only printed by a report that — on the very
+    // failures this is for — never completes. Resolving it here makes each line
+    // independently symbolizable with llvm-symbolizer.
+    HMODULE mod = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)ep->ContextRecord->Rip, &mod);
+    char modPath[MAX_PATH] = {};
+    if (mod)
+        GetModuleFileNameA(mod, modPath, sizeof modPath);
+    const char* base = modPath;
+    for (const char* p = modPath; *p; ++p)
+        if (*p == '\\' || *p == '/')
+            base = p + 1;
+    char b[320];
+    const int n = snprintf(b, sizeof b, "[seh] first-chance %08lX pc=%016llX  %s+0x%llX\n",
                            (unsigned long)ep->ExceptionRecord->ExceptionCode,
-                           ep->ExceptionRecord->ExceptionAddress,
-                           (unsigned long long)ep->ContextRecord->Rip);
+                           (unsigned long long)ep->ContextRecord->Rip, base,
+                           (unsigned long long)(ep->ContextRecord->Rip -
+                                                (unsigned long long)(uintptr_t)mod));
     Emit(b, n);
     return EXCEPTION_CONTINUE_SEARCH;
 }
