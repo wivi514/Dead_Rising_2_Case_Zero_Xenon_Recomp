@@ -5603,3 +5603,52 @@ From phase C part 18 (the frame rate — and none of it was work):
      is the title patching vertex FETCH instructions at load out of the vertex declaration.
      **A probe length is a hypothesis about how much of a thing is distinctive**, and the way
      to test it is to ask how many distinct objects the probe matches, not how many it finds.
+
+490. **A LOCKED PRIVATE KEY AND A REJECTED PUBLIC KEY ARE THE SAME ERROR FROM THE CLIENT.**
+     Two rounds of debugging went into the *server's* `authorized_keys` — ownership, ACLs,
+     encoding, group membership, whether a second sshd was listening — because
+     `Permission denied (publickey)` is what the client prints. Setting `LogLevel DEBUG3`
+     on the server said it in one line: `Accepted key ED25519 SHA256:… found at
+     administrators_authorized_keys:1`, then `Connection closed by authenticating user`.
+     The server was happy from the first attempt. The CLIENT could not sign, because the
+     private key was passphrase-protected, the agent held no identities, and `BatchMode=yes`
+     meant it could never prompt — so ssh offers the key, hears yes, and hangs up.
+     **When both ends of a handshake can produce the same symptom, instrument the end you
+     were not suspecting** — and here that cost nothing but reading a log that already
+     existed. Corollary for unattended work: an agent-held key is not durable access. A
+     dedicated passphrase-less key, tested with `env -u SSH_AUTH_SOCK`, is.
+
+491. **`git bundle verify` SAYS "COMPLETE HISTORY" ABOUT A SHALLOW CLONE.** Transferring a
+     repo to a machine that could not clone it, `git bundle create --all` produced a file
+     that `git bundle verify` pronounced *"records a complete history"* and that `git clone`
+     then rejected with `remote did not send all necessary objects`. The source checkout was
+     shallow. Verify checks the prerequisites the bundle RECORDED, which is a different
+     question from whether the history is whole — a gate answering the adjacent question,
+     the shape of gotchas 25 and 264. Check `.git/shallow` before trusting a bundle, and
+     when a repo is shallow, ship the working tree instead: the build box does not need
+     history, it needs source.
+
+492. **A PACKAGE MANAGER CAN INSTALL A TOOL WITHOUT MAKING IT RUNNABLE.** `winget install
+     LLVM.LLVM` puts `clang-cl.exe` on disk and does not add `C:\Program Files\LLVM\bin` to
+     PATH, so every probe reports it missing while the binary sits there. Worse on Windows,
+     where **sshd hands each session an environment block captured when the SERVICE started**
+     — so a PATH fixed after sshd came up is invisible until `Restart-Service sshd`, and the
+     symptom is a tool that is installed, on PATH, and still not found. Probe by absolute
+     path before concluding anything is missing.
+
+493. **"IT COMPILES ON WINDOWS" IS THREE DIFFERENT COMPILERS.** One box, one project, three
+     answers, none interchangeable: XenonRecomp needs **clang-cl** (`cl` rejects its
+     unconditional `__builtin_bswap*`; plain `clang` is the GNU-like driver and CMake then
+     rejects the `MSVC_DEBUG_INFORMATION_FORMAT` the project itself sets). SDL2 needs **cl**
+     (under clang-cl its own libc substitution loses to intrinsic lowering —
+     `lld-link: undefined symbol: strlen`). The runtime needs **clang-cl** because
+     `ppc_context.h` uses `__builtin_assume`. Decide per target, from the error, and write
+     down which and why — an inherited default here costs a session each time.
+
+494. **A FORCED-INCLUDE FLAG BECOMES A SECOND SOURCE FILE UNDER THE WRONG DRIVER.**
+     `-include foo.h` is the GNU driver's spelling; `clang-cl` parses the path as an INPUT
+     and fails with `cannot specify '/Fo…' when compiling multiple source files`. That is
+     what stopped all 228 recompiled TUs on the first Windows build — nothing wrong with the
+     generated code, one flag in the wrong dialect, and an error message that names the
+     output file rather than the flag. `/FI` is the clang-cl spelling. **When a build fails
+     on every file at once, suspect the command line before the code.**

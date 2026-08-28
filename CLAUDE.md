@@ -42,7 +42,7 @@ the part a future Case West port will reuse verbatim:
 
 ## Transferable gotchas
 
-**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 480 entries, and every "gotcha N"
+**THE FULL NUMBERED LEDGER IS `docs/gotchas.md` — 494 entries, and every "gotcha N"
 reference in this repo and in the docs resolves there.** It was split out of this file
 on 2026-08-08, when this file reached 308 KB and was being loaded into every session
 whole. Read it **before making a measurement claim, adding an instrument, believing a
@@ -156,7 +156,7 @@ mask; trust the microcode's own swizzles.
 - `docs/` — the project's memory. **Read in this order for a new session:**
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
-  - **`gotchas.md`** — the 489-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`gotchas.md`** — the 494-entry transferable ledger. Every "gotcha N" resolves here.
   - **`release-plan.md`** — **THE LIVE PROGRAMME as of part 82.** Five milestones (A
     shippable tree, B Windows, C macOS, D first-run shaders, E packaging); **A is complete
     and D.1 is done**, and its **§9 is the execution record with every gate's measurement

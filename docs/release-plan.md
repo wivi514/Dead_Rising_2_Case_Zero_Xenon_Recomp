@@ -603,3 +603,48 @@ the smoke sentence as evidence its body ran, not just an exit code.
 5. **`tools/extract_stfs.py` is shipped but `build_shader_spv.sh` is not**, because it needs
    XenosRecomp and DXC. That is exactly what D.2 moves in-process; until it lands, a shipped
    build needs a shader cache supplied alongside it.
+
+### 9.3 Part 83 — the Windows build box exists, and milestone B is scoped BY MEASUREMENT
+
+**The environment (`docs/windows-build-setup.md` is the verified runbook).** A Windows 11
+laptop reachable as `czwin` over SSH with a dedicated passphrase-less key, tested with
+`env -u SSH_AUTH_SOCK` so it is durable rather than agent-dependent. i7-12700H (20 threads),
+15.7 GB, **RTX 3070 Ti** — the discrete GPU is what makes B.4's renderer gates runnable
+there rather than `--smoke` only.
+
+Everything builds: MSVC 19.44 / clang 22.1.8 / CMake 4.4.3 / Ninja 1.13.2, Vulkan SDK
+1.4.350.0, SDL2 and ffmpeg from the **same source tarballs as Linux** so the two platforms
+differ in toolchain and nothing else. **XenonRecomp compiles**, and **`ppc/` regenerates in
+8 seconds: 228 TUs, 152.7 MB, zero errors.** The recompilation is fully platform-independent
+— which was the single largest unknown in milestone B and is now answered.
+
+**Two CMakeLists changes shipped** (`b885ad8`, `3c387c9`), both gated on Linux with `.text`
+still byte-identical:
+
+* `CZ_FFMPEG_PREFIX` now finds ffmpeg with `find_path`/`find_library` instead of requiring
+  pkg-config, which Windows has not got. It also sidesteps a problem that was next in line:
+  an MSYS2-built `.pc` names `/c/cz/…`, a path a Windows CMake cannot open.
+* XenonRecomp's static libraries are named via `CMAKE_STATIC_LIBRARY_{PREFIX,SUFFIX}`
+  rather than hardcoded `.a`.
+
+**B, MEASURED.** `cmake --build … -- -k 0` — keep-going, so one run enumerates everything —
+gives **4 missing headers and 64 errors, 18 distinct, across 9 files.** Smaller than the plan
+assumed, and differently shaped:
+
+| item | what the compiler actually said |
+|---|---|
+| **B.1** `kernel/memory.cpp` | `sys/mman.h` not found. As planned: the `VirtualAlloc2`/`MapViewOfFile3` triple alias. Still the only fiddly item |
+| **B.2** `cpu/crash_report.cpp` | `dlfcn.h` not found → vectored exception handler + DbgHelp |
+| **B.3** | **bigger than "the other three files + build"**, and this is the new information |
+| | `unistd.h` in `cpu/guest_thread.cpp` and `gpu/vk_renderer.cpp` |
+| | **`<windows.h>` macro pollution — the largest single class.** Our guest `ERROR_ALREADY_EXISTS`, `ERROR_IO_PENDING`, `ERROR_NO_SUCH_USER`, `ERROR_INVALID_PARAMETER` … collide with `winerror.h` macros across `kernel/imports.cpp`, `kernel/content.cpp`, `kernel/file_imports.cpp` and `gpu/vd.cpp`. A macro beats a `constexpr`, and the diagnostics land as `expected unqualified-id` rather than anything naming the cause |
+| | `HRESULT` redefined / ambiguous — we declare our own |
+| | `CLOCK_MONOTONIC`; `fseeko`/`ftello` → `_fseeki64`/`_ftelli64` |
+| | a `_m_prefetch` builtin redefinition **inside SDL2's own `SDL_endian.h`** under clang-cl |
+| | CMake: `-include timebase.h` is the GNU-driver spelling and clang-cl reads the path as a second SOURCE FILE — `cannot specify '/Fo…' when compiling multiple source files`. **This alone stopped all 228 ppc TUs**, and the message names the output rather than the flag (gotcha 494). `/FI` is the fix |
+
+**What is NOT a problem, checked rather than assumed:** the recompiled image itself, the
+switch tables, the Vulkan/SDL/ffmpeg discovery, and `-msse4.1 -mavx`, which clang-cl accepts
+unchanged.
+
+**Lessons:** gotchas **490-494**.
