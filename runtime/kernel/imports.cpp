@@ -942,7 +942,16 @@ void SignalGuestEvent(uint32_t handle)
 {
     if (!handle || !IsKernelObject(handle) || !IsLiveKernelHandle(handle))
         return;
-    if (auto* event = dynamic_cast<Event*>(GetKernelObject(handle)))
+    // The intactness check must come BEFORE the dynamic_cast, not after. MSVC's
+    // __RTDynamicCast walks RTTI reached through the vtable pointer, so a scribbled
+    // object faults INSIDE the C++ runtime and is then rethrown as a C++ exception —
+    // which, from a path with no handler, ends in std::terminate and __fastfail. That
+    // is a process death with no report, from an operation whose whole purpose was to
+    // return null safely.
+    KernelObject* obj = GetKernelObject(handle);
+    if (!KernelObjectIsIntact(obj))
+        return;
+    if (auto* event = dynamic_cast<Event*>(obj))
         event->Set();
 }
 

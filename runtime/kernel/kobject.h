@@ -58,13 +58,37 @@ void RegisterKernelHandle(uint32_t handle);
 bool UnregisterKernelHandle(uint32_t handle);
 bool IsLiveKernelHandle(uint32_t handle);
 
+// KERNEL OBJECTS LIVE WHERE THE GUEST CAN WRITE, and this is how we survive that.
+//
+// A handle IS a guest pointer, so every KernelObject sits in guest memory with a HOST
+// vtable pointer in its first eight bytes. Retail code overwrites those bytes — this
+// file has always said so, and only guarded the free. Everything else about a kernel
+// object is dispatched THROUGH that pointer: the virtual destructor, Wait(), and every
+// dynamic_cast. Each of those is an indirect call or an RTTI walk through whatever the
+// guest last wrote.
+//
+// A range check on the pointer is not enough; the first attempt at one accepted any
+// value outside the guest arena, which includes small integers like 8. The exact test
+// is to remember the vtable pointers we ourselves installed at construction — there are
+// only a handful, one per kernel object type — and require a match. That cannot be
+// fooled by a plausible-looking value, and it costs one hash lookup on paths that are
+// already taking a mutex.
+void NoteKernelVtable(const void* vptr);
+bool KernelObjectIsIntact(const KernelObject* obj);
+
 template<typename T, typename... Args>
 T* CreateKernelObject(Args&&... args)
 {
     static_assert(std::is_base_of_v<KernelObject, T>);
     T* obj = g_heap.AllocObject<T>(std::forward<Args>(args)...);
     if (obj)
+    {
+        // Record the vtable pointer this type was CONSTRUCTED with, so a later
+        // dispatch through it can be checked against the set of pointers we know we
+        // installed. See KernelObjectIsIntact.
+        NoteKernelVtable(*reinterpret_cast<void* const*>(obj));
         RegisterKernelHandle(g_memory.MapVirtual(obj));
+    }
     return obj;
 }
 
@@ -89,6 +113,8 @@ T* GetKernelObject(uint32_t handle)
 // a handle is just a guest pointer and a double-close otherwise becomes heap
 // corruption inside the allocator, thousands of calls from the actual bug.
 void DestroyKernelObject(uint32_t handle);
+
+
 
 // Attach-or-fetch the host object backing a guest dispatcher header.
 template<typename T>

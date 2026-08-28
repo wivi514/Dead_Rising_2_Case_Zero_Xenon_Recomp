@@ -16,6 +16,26 @@ std::recursive_mutex g_kernelLock;
 // logged no-op that names the offending handle.
 static std::unordered_set<uint32_t> g_kernelHandles;
 
+// The vtable pointers we installed, one per kernel object type. See kobject.h.
+static std::unordered_set<const void*> g_kernelVtables;
+
+void NoteKernelVtable(const void* vptr)
+{
+    if (!vptr)
+        return;
+    std::lock_guard guard(g_kernelLock);
+    g_kernelVtables.insert(vptr);
+}
+
+bool KernelObjectIsIntact(const KernelObject* obj)
+{
+    if (!obj)
+        return false;
+    const void* vptr = *reinterpret_cast<void* const*>(obj);
+    std::lock_guard guard(g_kernelLock);
+    return g_kernelVtables.count(vptr) != 0;
+}
+
 void RegisterKernelHandle(uint32_t handle)
 {
     std::lock_guard guard(g_kernelLock);
@@ -46,31 +66,18 @@ void DestroyKernelObject(uint32_t handle)
     }
     KernelObject* obj = GetKernelObject(handle);
 
-    // THE VTABLE POINTER, CHECKED BEFORE IT IS CALLED THROUGH.
-    //
-    // ~KernelObject is VIRTUAL and the object lives in GUEST memory, so this line
-    // dereferences a host pointer that the guest is free to scribble — and the comment
-    // below has always said the guest does exactly that. Guarding the free and not the
-    // destructor call left the more dangerous of the two unguarded: a bad free lands in
-    // the allocator, but a bad vptr is an indirect call to an arbitrary address.
-    //
-    // The check is deliberately crude and one-sided. A vptr must point into a loaded
-    // module, so it must NOT point inside the 4 GB guest arena and must not be null or
-    // misaligned. That cannot prove a vptr good; it reliably catches the scribbled ones,
-    // which is the whole population we are afraid of.
-    const void* vptr = *reinterpret_cast<void* const*>(obj);
-    const bool vptrSane = vptr != nullptr &&
-                          (reinterpret_cast<uintptr_t>(vptr) & 7) == 0 &&
-                          !g_memory.IsInMemoryRange(vptr);
-    if (!vptrSane)
+    // The vtable must be one we installed. ~KernelObject is VIRTUAL, so this call
+    // dispatches through whatever is in the object's first eight bytes — and the guest
+    // writes there. See KernelObjectIsIntact in kobject.h.
+    if (!KernelObjectIsIntact(obj))
     {
         static int scribbled = 0;
         if (scribbled++ < 16)
             fprintf(stderr,
-                    "[kobj] handle %08X has a SCRIBBLED vtable pointer (%p) — the guest "
-                    "overwrote the object. Destructor NOT called; handle retired and the "
+                    "[kobj] handle %08X: vtable pointer %p is not one we installed — the "
+                    "guest overwrote the object. Destructor NOT called; handle retired, "
                     "memory left quarantined.\n",
-                    handle, vptr);
+                    handle, *reinterpret_cast<void* const*>(obj));
         g_kernelHandles.erase(handle);
         return;
     }
