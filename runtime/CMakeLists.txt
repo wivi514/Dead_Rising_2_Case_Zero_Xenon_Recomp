@@ -337,10 +337,19 @@ target_link_libraries(cz_runtime PRIVATE ppc_image)
 # `decrypt_xex.py` cannot read it at all (gotchas 15/16). One loader in the project
 # means one thing to keep patched.
 set(XENON_BUILD "${XENON_ROOT}/build" CACHE PATH "XenonRecomp build tree")
+# The three static libraries, named the way THIS platform names them. Same build
+# tree, same directories, different decoration:
+#   Linux    libXenonUtils.a
+#   Windows  XenonUtils.lib
+# CMAKE_STATIC_LIBRARY_{PREFIX,SUFFIX} are what CMake itself uses to construct those,
+# so this cannot drift from what the sibling build actually emitted. Hardcoding `.a`
+# was the last thing standing between the Windows tree and a successful configure.
+set(P "${CMAKE_STATIC_LIBRARY_PREFIX}")
+set(S "${CMAKE_STATIC_LIBRARY_SUFFIX}")
 foreach(lib
-        "${XENON_BUILD}/XenonUtils/libXenonUtils.a"
-        "${XENON_BUILD}/thirdparty/fmt/libfmt.a"
-        "${XENON_BUILD}/thirdparty/xxHash/cmake_unofficial/libxxhash.a")
+        "${XENON_BUILD}/XenonUtils/${P}XenonUtils${S}"
+        "${XENON_BUILD}/thirdparty/fmt/${P}fmt${S}"
+        "${XENON_BUILD}/thirdparty/xxHash/cmake_unofficial/${P}xxhash${S}")
     if(NOT EXISTS "${lib}")
         message(FATAL_ERROR
             "Missing ${lib}. Build the sibling XenonRecomp checkout first:\n"
