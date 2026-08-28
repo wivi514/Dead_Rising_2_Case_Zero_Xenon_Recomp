@@ -117,7 +117,12 @@ static uint32_t NtAllocateVirtualMemory_x(be<uint32_t>* baseAddress, be<uint32_t
     uint32_t size = (*regionSize + 0xFFF) & ~0xFFFu;
     if (*baseAddress != 0)
     {
-        constexpr uint32_t MEM_RESERVE = 0x2000;
+        // The GUEST's flag, deliberately not named MEM_RESERVE: that is also a
+        // windows.h macro (0x00002000), and on Windows the declaration expands to
+        // `constexpr uint32_t 0x00002000 = 0x2000;`. Same value, but this constant
+        // belongs to the Xbox 360 kernel ABI we are emulating rather than to the host,
+        // and naming it that way is what makes the two impossible to confuse.
+        constexpr uint32_t kGuestMemReserve = 0x2000;
         // Explicit-base RESERVE. A game's VM manager probes 64 KB-aligned bases
         // upward until one succeeds, so returning success unconditionally makes
         // every probe "win" at the first address and all of the title's
@@ -125,7 +130,7 @@ static uint32_t NtAllocateVirtualMemory_x(be<uint32_t>* baseAddress, be<uint32_t
         // gives these real conflict semantics (Xenia returns C0000017 on conflict
         // and the guest's scan advances).
         const uint32_t reqBase = *baseAddress;
-        if ((allocType & MEM_RESERVE) && reqBase >= 0x40000000 && reqBase < 0x7FE00000)
+        if ((allocType & kGuestMemReserve) && reqBase >= 0x40000000 && reqBase < 0x7FE00000)
         {
             const uint32_t got = g_heap.ReserveVirtualAt(reqBase, size);
             if (MemTrace())

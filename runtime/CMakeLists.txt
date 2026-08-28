@@ -36,6 +36,16 @@ project(CaseZeroRuntime C CXX)
 # it is declining an invitation to use a Microsoft-only API.
 if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+
+    # NOMINMAX is not a style preference, it is a correctness requirement. windows.h
+    # defines `min` and `max` as function-like MACROS, so every `std::max(a, b)` in
+    # this runtime expands to `std::((a)>(b)?(a):(b))` and the compiler reports
+    # `expected unqualified-id` — pointing at our line, naming nothing, and saying
+    # nothing about macros. Three of the nine broken files were only this.
+    #
+    # WIN32_LEAN_AND_MEAN drops the RPC, OLE, and socket headers nothing here uses,
+    # which is both faster and a smaller surface for exactly this kind of collision.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
