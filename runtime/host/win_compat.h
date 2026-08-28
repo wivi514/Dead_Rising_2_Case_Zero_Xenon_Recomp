@@ -92,9 +92,16 @@ inline int clock_gettime(int clk, struct timespec* ts)
         // Kernel + user, in 100 ns units, which is what the POSIX call reports for
         // this clock. Summing both matters: our profiler reads this to attribute
         // thread CPU time, and user-only would under-report every syscall-heavy phase.
+        // static_cast, not `unsigned long long(x)`: a functional cast cannot take a
+        // multi-word type name, so that spelling is a syntax error. It was invisible
+        // on Linux because this whole file is behind #if defined(_WIN32) and is never
+        // compiled there — a platform-guarded block gets ZERO validation from the
+        // other platform's build, however green it is.
         const unsigned long long t =
-            ((unsigned long long(kern.dwHighDateTime) << 32) | kern.dwLowDateTime) +
-            ((unsigned long long(user.dwHighDateTime) << 32) | user.dwLowDateTime);
+            ((static_cast<unsigned long long>(kern.dwHighDateTime) << 32) |
+             kern.dwLowDateTime) +
+            ((static_cast<unsigned long long>(user.dwHighDateTime) << 32) |
+             user.dwLowDateTime);
         ts->tv_sec = time_t(t / 10000000ULL);
         ts->tv_nsec = long((t % 10000000ULL) * 100);
         return 0;
