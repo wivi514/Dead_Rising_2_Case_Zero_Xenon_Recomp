@@ -330,6 +330,16 @@ target_include_directories(cz_runtime PRIVATE
 
 target_link_libraries(cz_runtime PRIVATE ppc_image)
 
+# Windows: VirtualAlloc2 / MapViewOfFile3 / UnmapViewOfFileEx are the placeholder
+# mapping API kernel/memory.cpp uses for the guest's three aliased physical views.
+# They live in kernelbase.dll and are NOT exported by kernel32.lib — the import
+# library is onecore.lib. Verified by compiling and RUNNING a probe on the build
+# laptop before any of this was written, because "the API exists" and "the API links"
+# are different claims and only the second one builds.
+if(WIN32)
+    target_link_libraries(cz_runtime PRIVATE onecore)
+endif()
+
 # The XEX loader. Prebuilt XenonUtils plus the two thirdparty libs it links against.
 #
 # This is the same loader `tools/xex_image_dump` uses, and it is deliberate that the
