@@ -194,15 +194,17 @@ static uint32_t NtAllocateVirtualMemory_x(be<uint32_t>* baseAddress, be<uint32_t
     // reservation with type 0x60002000 — MEM_16MB_PAGES | MEM_LARGE_PAGES |
     // MEM_RESERVE — and Xenia answers 0x40000000, which is exactly where our
     // large-page arena begins.
-    constexpr uint32_t MEM_LARGE_PAGES = 0x20000000;
-    void* ptr = g_heap.AllocVirtual(size, (allocType & MEM_LARGE_PAGES) != 0);
+        // The GUEST's flag. Named kGuest* because MEM_LARGE_PAGES is also a windows.h
+    // macro, and the declaration would expand to `constexpr uint32_t 0x20000000 = ...`.
+    constexpr uint32_t kGuestMemLargePages = 0x20000000;
+    void* ptr = g_heap.AllocVirtual(size, (allocType & kGuestMemLargePages) != 0);
     if (size >= 0x400000)
         fprintf(stderr, "[heap] big NtAllocateVirtualMemory: %u MB -> %08X\n", size >> 20,
                 ptr ? g_memory.MapVirtual(ptr) : 0);
     if (MemTrace())
         fprintf(stderr,
                 "[mem] alloc NEW size=%08X type=%08X large=%d -> base=%08X end=%08X\n",
-                reqSizeIn, allocType, (allocType & MEM_LARGE_PAGES) != 0,
+                reqSizeIn, allocType, (allocType & kGuestMemLargePages) != 0,
                 ptr ? g_memory.MapVirtual(ptr) : 0, ptr ? g_memory.MapVirtual(ptr) + size : 0);
     if (!ptr)
         return STATUS_NO_MEMORY;
@@ -214,8 +216,10 @@ static uint32_t NtAllocateVirtualMemory_x(be<uint32_t>* baseAddress, be<uint32_t
 static uint32_t NtFreeVirtualMemory_x(be<uint32_t>* baseAddress, be<uint32_t>* regionSize,
                                       uint32_t freeType)
 {
-    constexpr uint32_t MEM_RELEASE = 0x8000;
-    if (baseAddress && *baseAddress && (freeType & MEM_RELEASE))
+        // Likewise: MEM_RELEASE is a windows.h macro and kernel/memory.cpp uses the real
+    // one, so the guest's gets its own name rather than taking the host's away.
+    constexpr uint32_t kGuestMemRelease = 0x8000;
+    if (baseAddress && *baseAddress && (freeType & kGuestMemRelease))
     {
         // The alloc side logs big blocks; without the matching free log a leak and
         // legitimate churn look identical in the record.

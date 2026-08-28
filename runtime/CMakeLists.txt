@@ -48,6 +48,24 @@ if(WIN32)
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+# host/win_compat.h is FORCE-INCLUDED into every runtime source on Windows rather than
+# added to nine files by hand. Two reasons, and the second is the real one:
+#
+#   * it has to come before anything that pulls windows.h in transitively, and
+#     "transitively" is not a property any single #include line can guarantee;
+#   * a header that must be included first is a rule someone eventually forgets, and
+#     the failure is a compile error in a file nobody touched.
+#
+# It compiles to nothing on every other platform, so the flag is Windows-only and the
+# POSIX build is bit-identical with or without the file existing.
+if(WIN32)
+    if(MSVC)
+        add_compile_options("/FI${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h")
+    else()
+        add_compile_options("-include" "${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h")
+    endif()
+endif()
+
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(WARNING
         "Building the recompiled image with ${CMAKE_CXX_COMPILER_ID}. "
