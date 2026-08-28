@@ -355,15 +355,37 @@ void Report(int sig, const void* faultAddr, unsigned long long hostPc)
 }
 
 #if defined(_WIN32)
-// The Windows entry point. A VECTORED handler, not SetUnhandledExceptionFilter: the
-// vectored chain runs BEFORE any frame-based __try/__except and before the debugger's
-// second chance, which is what we want — the guest state is only meaningful at the
-// moment of the fault, and anything that unwinds first has already destroyed it.
+// THE WINDOWS ENTRY POINT — an UNHANDLED-exception filter, not a vectored handler.
 //
-// The exception code is mapped onto the POSIX signal numbers the report already
-// prints, so a Windows crash report and a Linux one read identically and the same
-// eyes can diagnose both.
-LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* ep)
+// The first version used AddVectoredExceptionHandler(1, …) on the reasoning that the
+// vectored chain runs before any frame-based __try/__except, so the guest state would
+// be seen before anything unwound. That reasoning is right and the choice was still
+// wrong, because vectored handlers see FIRST-CHANCE exceptions: every exception in the
+// process, including the ones Windows raises routinely and expects somebody downstream
+// to handle. The runtime reached the title screen with working sound, then a benign
+// first-chance access violation on some thread reached this handler, which faithfully
+// reported it as a fatal guest fault and killed a healthy process.
+//
+// SetUnhandledExceptionFilter fires only when nothing in the chain handled it, which is
+// the definition of the case worth reporting. It costs nothing that matters: the filter
+// runs BEFORE unwinding, with an EXCEPTION_POINTERS whose ContextRecord is the state at
+// the fault — and the guest registers live in a thread-local PPCContext that SEH never
+// touches anyway. The premise that made vectored look necessary was simply false.
+//
+// CZ_WIN_FIRSTCHANCE=1 adds a vectored handler that only LOGS, so the traffic this used
+// to act on can be inspected without acting on it again.
+LONG CALLBACK FirstChanceLogger(EXCEPTION_POINTERS* ep)
+{
+    char b[160];
+    const int n = snprintf(b, sizeof b, "[seh] first-chance %08lX at %p (pc %016llX)\n",
+                           (unsigned long)ep->ExceptionRecord->ExceptionCode,
+                           ep->ExceptionRecord->ExceptionAddress,
+                           (unsigned long long)ep->ContextRecord->Rip);
+    Emit(b, n);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+LONG CALLBACK UnhandledFilter(EXCEPTION_POINTERS* ep)
 {
     const DWORD code = ep->ExceptionRecord->ExceptionCode;
     int sig;
@@ -376,19 +398,28 @@ LONG CALLBACK VectoredHandler(EXCEPTION_POINTERS* ep)
     case EXCEPTION_INT_DIVIDE_BY_ZERO:
     case EXCEPTION_FLT_DIVIDE_BY_ZERO:    sig = SIGFPE;  break;
     default:
-        // Not ours. Let the next handler have it rather than reporting a fault we do
-        // not understand as though we did.
-        return EXCEPTION_CONTINUE_SEARCH;
+        // Report it anyway rather than dying silently — by the time an unhandled filter
+        // runs, the process is going down regardless, and a report naming an exception
+        // code we do not have a signal for beats no report at all. The code is printed
+        // below so an unfamiliar one is identifiable.
+        sig = 0;
+        break;
     }
-    // ExceptionInformation[1] is the address touched, and only for an access
-    // violation; for a trap there is no faulting address and nullptr is the honest
-    // answer — which is also what the report's "deliberate trap" branch keys on.
+    {
+        char b[128];
+        const int n = snprintf(b, sizeof b, "=== windows exception %08lX ===\n",
+                               (unsigned long)code);
+        Emit(b, n);
+    }
+    // ExceptionInformation[1] is the address touched, and only for an access violation;
+    // for a trap there is no faulting address and nullptr is the honest answer — which
+    // is also what the report's "deliberate trap" branch keys on.
     const void* addr = (code == EXCEPTION_ACCESS_VIOLATION &&
                         ep->ExceptionRecord->NumberParameters >= 2)
                            ? (const void*)ep->ExceptionRecord->ExceptionInformation[1]
                            : nullptr;
     Report(sig, addr, (unsigned long long)ep->ContextRecord->Rip);
-    return EXCEPTION_CONTINUE_SEARCH; // unreachable: Report() exits
+    return EXCEPTION_EXECUTE_HANDLER; // unreachable: Report() exits
 }
 #else
 void Handler(int sig, siginfo_t* info, void* ucontext)
@@ -407,8 +438,15 @@ void Handler(int sig, siginfo_t* info, void* ucontext)
 extern "C" void CzInstallCrashReporter()
 {
 #if defined(_WIN32)
-    // First in the chain (1 = call me before anyone already registered).
-    AddVectoredExceptionHandler(1, VectoredHandler);
+    SetUnhandledExceptionFilter(UnhandledFilter);
+    if (const char* fc = getenv("CZ_WIN_FIRSTCHANCE"); fc && *fc != '0')
+    {
+        fprintf(stderr, "[seh] CZ_WIN_FIRSTCHANCE=%s — logging every first-chance "
+                        "exception. This is a DIAGNOSTIC: the reporter does not act on "
+                        "them, because acting on them is what killed a healthy process "
+                        "the first time.\n", fc);
+        AddVectoredExceptionHandler(1, FirstChanceLogger);
+    }
 #else
     struct sigaction sa{};
     sa.sa_sigaction = Handler;
