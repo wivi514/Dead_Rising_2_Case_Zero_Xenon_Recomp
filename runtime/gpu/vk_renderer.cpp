@@ -6469,10 +6469,34 @@ void PrewarmPipelines()
                         "the control arm for the pre-warm)\n");
         return;
     }
-    const std::string path = PrewarmPath();
+    std::string path = PrewarmPath();
     if (path.empty())
         return;
     FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
+    {
+        // THE SHIPPED SEED (part 85, release §9.8). A fresh install has no per-user
+        // key file, and that very first session is the one place the part-83 stutter
+        // fix cannot reach — it needs a previous session to have recorded the keys.
+        // The bundle carries a key set harvested from an operator playthrough
+        // (tools/release/prewarm.keys, copied beside the executable by the packaging
+        // scripts); it seeds session ONE, and the per-user file takes over from
+        // session two on — the periodic save always writes to PrewarmPath(), never
+        // back into the bundle. Keys are OUR structs (shader hashes + render state),
+        // not game data, which is what §2.1's no-game-content rule permits. On a true
+        // first boot the vertex-shader half of the cache is still being born at first
+        // sight, so keys referencing an untranslated shader are skipped and counted —
+        // the seed's coverage completes by the second launch, and the log's
+        // missing-shader count below says exactly how partial it was.
+        const std::string shipped = (HostPaths::ExeDir() / "prewarm.keys").string();
+        f = fopen(shipped.c_str(), "rb");
+        if (f)
+        {
+            fprintf(stderr, "[vk] pipeline pre-warm: no per-user key file yet — "
+                            "seeding from the shipped %s\n", shipped.c_str());
+            path = shipped;
+        }
+    }
     if (!f)
     {
         fprintf(stderr, "[vk] pipeline pre-warm: no key file yet (%s) — this session "

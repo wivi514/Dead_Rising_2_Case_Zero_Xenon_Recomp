@@ -65,6 +65,20 @@ foreach ($f in "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {
     Write-Host ("    {0,-20}          MSVC runtime redist" -f $f)
 }
 
+# The pre-warm seed (part 85): pipeline keys from an operator playthrough, read only
+# when the player has no per-user key file yet — their first session. Header-checked
+# so a truncated copy cannot ship (magic ZCPW, v1, 12 + n*56 bytes).
+$pk = Join-Path $Root "tools\release\prewarm.keys"
+if (-not (Test-Path $pk)) { Fail "no tools\release\prewarm.keys" }
+$pkb = [IO.File]::ReadAllBytes($pk)
+$pkMagic = [BitConverter]::ToUInt32($pkb, 0); $pkVer = [BitConverter]::ToUInt32($pkb, 4)
+$pkN = [BitConverter]::ToUInt32($pkb, 8)
+if ($pkMagic -ne 0x5750435A -or $pkVer -ne 1 -or $pkN -eq 0 -or $pkb.Length -ne (12 + $pkN * 56)) {
+    Fail "prewarm.keys failed its header check (magic=$pkMagic ver=$pkVer n=$pkN len=$($pkb.Length))"
+}
+Copy-Item $pk $Stage
+Write-Host ("    {0,-20}          pre-warm seed, {1} keys" -f "prewarm.keys", $pkN)
+
 Copy-Item (Join-Path $Root "tools\extract_stfs.py") (Join-Path $Stage "tools")
 Copy-Item (Join-Path $Root "LICENSE") $Stage
 Copy-Item (Join-Path $Root "tools\release\README.md") $Stage

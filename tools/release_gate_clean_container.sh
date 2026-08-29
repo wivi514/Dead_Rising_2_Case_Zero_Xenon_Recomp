@@ -146,7 +146,7 @@ else
 fi
 
 echo "--- the bundle carries the release files:"
-for f in README.md THIRD_PARTY.md LICENSE cz_defaults.env lib/libdxcompiler.so lib/LICENSE.DXC; do
+for f in README.md THIRD_PARTY.md LICENSE cz_defaults.env prewarm.keys lib/libdxcompiler.so lib/LICENSE.DXC; do
     if [ -e "/app/$f" ]; then echo "    $f present"; else echo "    $f MISSING"; fi
 done
 

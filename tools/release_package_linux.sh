@@ -130,6 +130,22 @@ TXT
 cp "$ROOT/LICENSE" "$STAGE/"
 cp "$ROOT/tools/release/README.md" "$STAGE/"
 
+# THE PRE-WARM SEED (part 85): pipeline keys from an operator playthrough, read by
+# the renderer only when the player has no per-user key file yet — i.e. exactly once,
+# on their first session, the one the part-83 stutter fix cannot otherwise reach.
+# Keys are this runtime's own structs (shader hashes + render state), not game data.
+# Harvest a fresh one from %LOCALAPPDATA%/cz-recomp (or ~/.cache/cz-recomp) after a
+# playthrough; the header is checked here so a truncated copy cannot ship.
+[ -f "$ROOT/tools/release/prewarm.keys" ] || fail "no tools/release/prewarm.keys"
+python3 - "$ROOT/tools/release/prewarm.keys" <<'PY' || fail "prewarm.keys failed its header check"
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+m, v, n = struct.unpack_from('<III', d, 0)
+assert m == 0x5750435A and v == 1 and n > 0 and len(d) == 12 + n * 56, (hex(m), v, n, len(d))
+print(f"    prewarm.keys                    {n} keys")
+PY
+cp "$ROOT/tools/release/prewarm.keys" "$STAGE/"
+
 # RELEASE DEFAULTS (part 85). Every dev recipe says CZ_VKDRAW=1 out loud and the
 # binary defaults it off, because the same binary with it unset is the control arm for
 # every renderer claim. A player gets the opposite default from this file, which
