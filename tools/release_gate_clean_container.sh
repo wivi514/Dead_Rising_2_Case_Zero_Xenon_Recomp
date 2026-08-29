@@ -40,6 +40,16 @@ UCODE_DIR=$(mktemp -d)
 mkdir -p "$UCODE_DIR/in"
 cp "$UCODE_ONE" "$UCODE_DIR/in/"
 
+# The real package, so the container can run the WHOLE first-run flow (release-plan
+# §5 item 3): in-process extract -> disc shader build -> a boot that reads the
+# extracted tree. Required for the same reason the ucode is. The one thing a
+# GPU-less container cannot cover is the renderer itself; the gate says so in its
+# output rather than leaving the gap implied.
+PKGFILE=${CZ_GATE_PACKAGE:-$(find "$(cd "$(dirname "$0")/.." && pwd)/assets/package" \
+    -type f -size +100M 2>/dev/null | head -1)}
+[ -n "$PKGFILE" ] && [ -f "$PKGFILE" ] \
+    || { echo "FAIL: no STFS package under assets/package (set CZ_GATE_PACKAGE)" >&2; exit 1; }
+
 # `-i` is load-bearing and its absence is why the first run of this gate printed
 # "GATE PASSED" having executed nothing: without it podman does not attach stdin, the
 # heredoc goes nowhere, `sh -s` reads EOF and exits 0. A gate whose body never ran and
@@ -50,7 +60,8 @@ cp "$UCODE_ONE" "$UCODE_DIR/in/"
 echo "==> $IMAGE, bundle mounted read-only at /app"
 LOG=$(mktemp)
 trap 'rm -f "$LOG"; rm -rf "$UCODE_DIR"' EXIT
-podman run --rm -i -v "$STAGE:/app:ro,Z" -v "$UCODE_DIR:/ucode:Z" "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
+podman run --rm -i -v "$STAGE:/app:ro,Z" -v "$UCODE_DIR:/ucode:Z" \
+    -v "$PKGFILE:/pkg/package:ro,Z" "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
 set -u
 
 # The Vulkan LOADER is installed here on purpose, and it is the one library this gate
@@ -139,6 +150,33 @@ for f in README.md THIRD_PARTY.md LICENSE cz_defaults.env lib/libdxcompiler.so l
     if [ -e "/app/$f" ]; then echo "    $f present"; else echo "    $f MISSING"; fi
 done
 
+# THE FIRST-RUN FLOW, END TO END (release-plan §5 item 3), on a machine that has
+# nothing but the bundle and the package. Run as the three explicit verbs rather
+# than the automatic boot path because this container has NO GPU: the automatic
+# path is renderer-gated, and it is exercised on the host (part 85's fake-root run,
+# with the auto-extract, the prebuild AND the renderer). What this section proves
+# is that the same three steps work against the bundle's own glibc-floor claim.
+echo "--- the first-run flow, end to end (extract -> shader build -> boot):"
+mkdir -p /w/assets/game
+echo "    [1/3] in-process extract of the mounted package:"
+/app/cz_runtime --extract-package /pkg/package /w/assets/game 2>&1 | tail -1 | sed 's/^/    /'
+echo "    [2/3] disc shader build (DXC, all cores):"
+/app/cz_runtime --build-shader-cache /w/assets/game/data/shaders/deadrisingprologue-ps.big \
+    /w/assets/shader_spv 2>&1 | grep -E "translated|refused|FAIL" | tail -2 | sed 's/^/    /'
+echo "    [3/3] boot from the extracted tree (no GPU in this container — the renderer"
+echo "          cannot run here and is covered by the host-side first-run test):"
+mkdir -p /w/assets/save
+CZ_ROOT=/w CZ_VKDRAW=0 CZ_NO_WINDOW=1 CZ_NO_AUDIO_OUT=1 CZ_FILE_TRACE=1 \
+    timeout 45 /app/cz_runtime > /tmp/boot.log 2>&1
+bigs=$(grep -c "\.big" /tmp/boot.log)
+echo "    the guest referenced $bigs .big archives from the extracted tree in 45 s"
+if [ "$bigs" -gt 0 ]; then
+    echo "    first-run-flow OK"
+else
+    echo "    first-run-flow FAILED — first lines of the boot:"
+    sed -n '1,20p' /tmp/boot.log | sed 's/^/      /'
+fi
+
 echo "--- the first-run refusal, from a container with no game:"
 # CZ_ROOT because /app is read-only and the bundle's own assets/package is empty either
 # way; this is the state a player is in before they drop the package in.
@@ -163,6 +201,11 @@ done
 # binary works at all.
 grep -q "OK: every generated symbol resolved" "$LOG" || {
     echo "GATE FAILED: the packaged binary did not pass --smoke" >&2; missing_marker=1; }
+# The first-run flow's own sentence — the extract, the shader build and a boot that
+# read the result, all inside the container.
+grep -q "first-run-flow OK" "$LOG" || {
+    echo "GATE FAILED: the first-run flow did not complete in the container" >&2
+    missing_marker=1; }
 # The dlopen gate's own sentence — a .spv actually produced inside the container.
 grep -q "dxc-translate OK" "$LOG" || {
     echo "GATE FAILED: the bundled libdxcompiler.so did not translate a shader" >&2
