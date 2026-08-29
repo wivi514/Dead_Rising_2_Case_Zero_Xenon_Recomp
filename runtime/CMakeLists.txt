@@ -300,6 +300,7 @@ add_executable(cz_runtime
     gpu/pm4.cpp
     gpu/vk_renderer.cpp              # phase 5; inert unless CZ_VKDRAW=1
     gpu/shader_translator.cpp        # release D.2; --translate-shaders and D.4's seam
+    gpu/shader_prebuild.cpp          # release D.3; the first-run disc shader pass
     "${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp"   # XenosRecomp's own translator
     gpu/d3d_hooks.cpp                # D3D pivot phase A; inert unless CZ_D3D_OBSERVE=1
     gpu/d3d_draw.cpp                 # D3D pivot phase C; inert unless CZ_D3D_DRAW=1

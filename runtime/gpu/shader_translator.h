@@ -18,6 +18,7 @@
 // and .meta.json in assets/shader_spv BYTE-FOR-BYTE. A disagreement names the shader.
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,13 @@ struct Result
 // Thread-safe: each call uses its own recompiler and a per-thread DXC instance.
 bool Translate(const std::string& name, const uint8_t* ucode, size_t size,
                Result& out, std::string& err);
+
+// Persist one translated shader as the .spv + .meta.json pair the cache is made of.
+// Both writes gated on one success path so a partial pair (a .spv the runtime would
+// silently drop for lacking its sidecar) cannot arise; on any failure both files are
+// removed. Shared by TranslateDirectory and the disc prebuild (gpu/shader_prebuild.cpp).
+bool WritePair(const std::filesystem::path& outDir, const std::string& name,
+               const Result& r);
 
 // The whole-directory driver behind `cz_runtime --translate-shaders <in> <out>`:
 // every *.ucode in `ucodeDir` translated in parallel into `outDir` as .spv +

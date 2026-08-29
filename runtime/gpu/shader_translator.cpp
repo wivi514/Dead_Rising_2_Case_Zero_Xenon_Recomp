@@ -57,6 +57,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -970,6 +971,28 @@ bool Translate(const std::string& name, const uint8_t* ucode, size_t size,
     return CompileSpirv(out.hlsl, isVs, tag, out.spirv, err);
 }
 
+bool WritePair(const std::filesystem::path& outDir, const std::string& name,
+               const Result& r)
+{
+    auto writeAll = [](const std::filesystem::path& p, const void* d, size_t len) {
+        FILE* f = fopen(p.string().c_str(), "wb");
+        if (!f)
+            return false;
+        const size_t w = fwrite(d, 1, len, f);
+        fclose(f);
+        return w == len;
+    };
+    const std::filesystem::path spv = outDir / (name + ".spv");
+    const std::filesystem::path meta = outDir / (name + ".meta.json");
+    if (writeAll(spv, r.spirv.data(), r.spirv.size()) &&
+        writeAll(meta, r.metaJson.data(), r.metaJson.size()))
+        return true;
+    std::error_code ec;
+    std::filesystem::remove(spv, ec); // never leave a .spv without its sidecar
+    std::filesystem::remove(meta, ec);
+    return false;
+}
+
 int TranslateDirectory(const char* ucodeDir, const char* outDir)
 {
     namespace fs = std::filesystem;
@@ -1029,30 +1052,17 @@ int TranslateDirectory(const char* ucodeDir, const char* outDir)
                 fails.push_back(name + " (" + err + ")");
                 continue;
             }
-            // Only on full success, and .spv before .meta.json matters less here than
-            // in the runtime path — a partial pair cannot arise because both writes
-            // are gated on the same success.
-            auto writeAll = [](const fs::path& p, const void* d, size_t len2) {
-                FILE* f = fopen(p.string().c_str(), "wb");
-                if (!f)
-                    return false;
-                const size_t w = fwrite(d, 1, len2, f);
-                fclose(f);
-                return w == len2;
-            };
-            const fs::path spv = fs::path(outDir) / (name + ".spv");
-            const fs::path meta = fs::path(outDir) / (name + ".meta.json");
-            if (!writeAll(spv, r.spirv.data(), r.spirv.size()) ||
-                !writeAll(meta, r.metaJson.data(), r.metaJson.size()))
+            if (!WritePair(outDir, name, r))
             {
-                fs::remove(spv, ec); // never leave a .spv without its sidecar
-                fs::remove(meta, ec);
                 std::lock_guard<std::mutex> lk(failMx);
                 fails.push_back(name + " (write failed)");
                 continue;
             }
             if (keepHlsl && *keepHlsl)
-                writeAll(fs::path(keepHlsl) / (name + ".hlsl"), r.hlsl.data(), r.hlsl.size());
+            {
+                std::ofstream hf(fs::path(keepHlsl) / (name + ".hlsl"), std::ios::binary);
+                hf.write(r.hlsl.data(), std::streamsize(r.hlsl.size()));
+            }
             ok.fetch_add(1);
         }
     };

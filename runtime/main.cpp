@@ -36,6 +36,7 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "gpu/shader_prebuild.h"
 #include "gpu/shader_translator.h"
 #include "gpu/vk_renderer.h"
 #include "host/first_run.h"
@@ -179,6 +180,20 @@ int main(int argc, char** argv)
         return ShaderTranslator::TranslateDirectory(argv[2], argv[3]);
     }
 
+    // Release D.3: the disc pass by hand — what the first-run hook below runs
+    // automatically, exposed for gates and for rebuilding a cache deliberately.
+    if (argc > 1 && strcmp(argv[1], "--build-shader-cache") == 0)
+    {
+        HostPaths::Report();
+        const std::filesystem::path bank =
+            argc > 2 ? std::filesystem::path(argv[2])
+                     : HostPaths::Game() / "data" / "shaders" /
+                           "deadrisingprologue-ps.big";
+        const std::filesystem::path out =
+            argc > 3 ? std::filesystem::path(argv[3]) : HostPaths::ShaderCache();
+        return ShaderPrebuild::BuildFromDisc(bank, out);
+    }
+
     // Where everything is, decided once and printed once. It used to be
     // "../../assets/game/default.xex" — CWD-relative, which is why every recipe in
     // CLAUDE.md begins with `cd runtime/build`. See host/host_paths.h.
@@ -201,6 +216,21 @@ int main(int argc, char** argv)
     {
         const char* vk = getenv("CZ_VKDRAW");
         const bool renderer = vk && *vk && strcmp(vk, "0") != 0;
+        // Release D.3: a missing shader cache stops being a refusal the moment the
+        // game is unpacked — the disc's own banks supply the pixel half, and D.4's
+        // first-sight path supplies the vertex half at run time. Placed BEFORE the
+        // first-run gate so that the gate then finds the cache it would have refused
+        // over; if the pass cannot run (game not unpacked, bank unreadable) it falls
+        // through and the gate names what is actually missing. The marker files keep
+        // this away from developer caches built from dumps (shader_prebuild.h).
+        if (renderer && ShaderPrebuild::WantedAtBoot(HostPaths::ShaderCache()))
+        {
+            const std::filesystem::path bank = HostPaths::Game() / "data" / "shaders" /
+                                              "deadrisingprologue-ps.big";
+            std::error_code ec;
+            if (std::filesystem::exists(bank, ec))
+                ShaderPrebuild::BuildFromDisc(bank, HostPaths::ShaderCache());
+        }
         if (!FirstRun::Gate(renderer, xexPath))
             return 1;
     }
