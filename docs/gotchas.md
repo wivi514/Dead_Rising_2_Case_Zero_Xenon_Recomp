@@ -5665,3 +5665,52 @@ From phase C part 18 (the frame rate — and none of it was work):
      **verify the artifact exists before spending anyone's time**: a "0 rows so far" check
      was run at the 40-second mark, printed 0, and was read past. The check was right; the
      reader was not.
+
+496. **A LAPTOP'S POWER PROFILE IS A MEASUREMENT VARIABLE, AND IT IS THE FIRST ONE TO RULE
+     OUT.** Every Windows number in part 83 was taken with the machine in "quiet" mode, and
+     nobody knew until the operator noticed it themselves. Switched to high performance, at
+     matched draw counts: crowd frame **26.2 -> 19.6 ms (+34% frame rate)** and record
+     **2991 -> 2100 ns/draw (-30%)**. That is most of a "Windows records commands 1.8x
+     slower than Linux" gap that had already cost a Vulkan-layer census and a CPU-affinity
+     A/B to not explain. **A uniform slowdown across EVERY sub-phase is the signature of a
+     clock, not of a code path** — state, vertex, index and residual all scaled together,
+     which no single slow call site can do. Ask what the machine's power mode is before
+     theorising about anything else on a laptop.
+
+497. **A NUMBER THAT DOES NOT MOVE WHEN ITS INPUT TRIPLES IS A BUG, NOT A COINCIDENCE.**
+     The pipeline pre-warm reported "72 of 352", then "72 of 416", then "72 of 522"
+     across three sessions. Seventy-two every time. The cause: creating a pipeline inserts
+     into the table, which triggered the periodic save, which REWROTE the key file the
+     pre-warm was still reading — truncating it beneath the reader, so `fread` hit EOF and
+     the loop broke at whatever count the first save happened to fire on. The operator kept
+     reporting stutters after the "fix" because **86% of the keys were never built**. The
+     constant was the whole tell and it was visible in the first log line; it took three
+     play sessions to look at it properly. See also 498.
+
+498. **A WRITER MUST NOT TOUCH THE FILE A READER HOLDS OPEN — INCLUDING WHEN BOTH ARE
+     YOU.** The pre-warm above read a key file while the pipelines it created rewrote that
+     same file from the same thread, through two layers of call. The fix is to read the
+     whole thing into memory and close it BEFORE doing the work, not to add a "do not save
+     while pre-warming" flag: the flag works and leaves exactly the same trap for the next
+     caller who does not know it exists.
+
+499. **AN INSTRUMENT'S BILL SCALES WITH THE THING IT MEASURES, SO A BILL QUOTED AT ONE
+     RESOLUTION IS NOT THE BILL.** `CZ_VK_FRAME_STATS` is documented at "~3 ms a frame,
+     12-20%" — measured at 1280x720. At 2560x1440 it reads back four times the pixels and
+     the runtime's own log said **8.8 to 15.5 ms a frame, up to 59% of the window it was
+     measuring**. A Linux-vs-Windows comparison was run and reported with it armed on both
+     sides before that line was read. The instrument printed its own cost, in the same log,
+     and it was quoted past. **Read what the probe says about itself before quoting what it
+     says about the subject.**
+
+500. **THE OPERATOR'S KEYPRESS IS THE ONLY INSTRUMENT THAT SEPARATES "FELT" FROM "SLOW".**
+     A three-minute session produced three distinct populations of slow frame: sleep-dominated
+     load waits (up to 337 ms), texture bursts at area loads (773 uploads, 54 MB), and
+     pipeline-creation spikes. Only the third was felt. The first two are BIGGER in
+     aggregate and completely innocent, and an aggregate that ranks by wall time puts them
+     on top — so the obvious analysis would have chased the texture path, which part 77 had
+     already optimised and which was doing nothing wrong. **F7 marks were what separated
+     them**: four of five landed within 45 frames of a pipeline spike and none near
+     anything else. And the marked frames were themselves NORMAL (16-28 ms), exactly as
+     a 200-500 ms reaction time predicts, so the marker has to be read as "a stutter
+     happened just BEFORE this", never as "this frame was the stutter".

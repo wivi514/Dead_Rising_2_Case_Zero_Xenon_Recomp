@@ -209,9 +209,9 @@ measured.**
 VM with no dev packages installed. A dependency that silently resolves to a system copy on
 the build machine is the classic packaging defect.
 
-### MILESTONE B — Windows (~5 days)
+### MILESTONE B — Windows — **COMPLETE (part 83); see §9.4**
 
-**B.1 `kernel/memory.cpp`.** *(2 days — the only genuinely fiddly port item)*
+**B.1 `kernel/memory.cpp`. DONE (part 83)** — and it gained an aliasing self-test that runs on BOTH platforms.
 Today: a 4 GB `MAP_NORESERVE` reservation, then a `memfd_create` 512 MB region mapped
 `MAP_FIXED` at **three** addresses (`0xA0000000`, `0xC0000000`, `0xE0000000`) so the guest's
 three views of one physical range alias. Windows: `VirtualAlloc2` with
@@ -221,18 +221,18 @@ Requires Windows 10 1803+. **Xenia does exactly this, so the pattern is proven.*
 **Gate:** write through `0xA0000000`, read back through `0xC0000000` and `0xE0000000` — the
 aliasing is the whole point and it is one unit test. Then `--smoke`, then the crowd route.
 
-**B.2 `cpu/crash_report.cpp`.** *(1.5 days)*
+**B.2 `cpu/crash_report.cpp`. DONE (part 83)** — and three bugs were found in the reporter itself, two latent on Linux.
 `sigaction` → `AddVectoredExceptionHandler`; `dladdr` → DbgHelp `SymFromAddr`. **Keep the
 guest-state report identical** — its host `pc` is the field that is never stale and is what
 makes a fault diagnosable at all. **Gate:** fault on purpose in a known guest function and
 confirm the report names it.
 
-**B.3 The other three files + build.** *(1 day)* `readlink` → A.1's helper; `stat` →
+**B.3 The other three files + build. DONE (part 83)** — larger than three files; see §9.4. `readlink` → A.1's helper; `stat` →
 `std::filesystem`. **clang-cl with the MSVC ABI**, not MinGW, so vcpkg's SDL2/ffmpeg link.
 Clang is not optional: `ppc_context.h` uses `__builtin_assume` and the CMakeLists says every
 one of the 57,822 generated bodies fails under GCC.
 
-**B.4 Gates.** *(0.5 day)* `--smoke`; the headless DebugJump route reaches the crowd;
+**B.4 Gates. DONE (part 83)** — and B.4 is what found every Windows defect worth having. `--smoke`; the headless DebugJump route reaches the crowd;
 `part80_trace_band.py` against the Linux build. **A platform port is a same-binary A/B against
 itself on another OS, and this project already owns the reader for it.**
 
@@ -477,11 +477,11 @@ E  packaging + CI      4 d   ── needs A; final step needs B, C, D
 **A → (B ∥ C ∥ D) → E.** B, C and D touch disjoint files, so if any of them can run in
 parallel the critical path is A + max(B, C, D) + E ≈ 13 days.
 
-~~**Start with A.1 and A.2.**~~ **A IS COMPLETE and D.1 IS DONE (part 82, §9).** The next
+~~**Start with A.1 and A.2.**~~ **A AND B ARE COMPLETE and D.1 IS DONE (parts 82-83, §9).** The next
 item is **D.2 — in-process translation — and D.1 promoted it from a nicety to a hard
 prerequisite**: the disc supplies the pixel half of the cache completely and the vertex half
-not at all, so a shipped build cannot draw a single vertex shader without it. B and C remain
-blocked on hardware this machine does not have (a Windows toolchain, a Mac).
+not at all, so a shipped build cannot draw a single vertex shader without it. **B is done** — there is a Windows build laptop now
+(`docs/windows-build-setup.md`) and the game plays on it. **C remains blocked on a Mac.**
 
 ---
 
@@ -648,3 +648,120 @@ switch tables, the Vulkan/SDL/ffmpeg discovery, and `-msse4.1 -mavx`, which clan
 unchanged.
 
 **Lessons:** gotchas **490-494**.
+
+### 9.4 Part 83 — MILESTONE B IS COMPLETE, THE GAME PLAYS ON WINDOWS, AND THE STUTTER IS FIXED
+
+**The headline: `cz_runtime.exe` builds, links, boots, renders and PLAYS.** The operator
+played Still Creek on the Windows laptop at 2560x1440 with sound. Milestone B's three code
+items are done and every one of them was gated by running the thing rather than by
+compiling it.
+
+**B.1 — `kernel/memory.cpp`.** `VirtualAlloc2` + `MapViewOfFile3` placeholder mapping
+replaces the `memfd_create` triple alias. The three views turn out to be contiguous and to
+end exactly at 4 GB, which is now three `static_assert`s. Windows commits the low 2.5 GB up
+front because it has no `MAP_NORESERVE` for a writable region — stated, not discovered.
+**And the aliasing is now SELF-TESTED on both platforms**: `CheckPhysicalAliasing` writes a
+distinct magic through each view and reads it back through all three at startup, with
+`CZ_MEM_POISON_ALIAS=1` as its positive control. Nothing had ever checked that property,
+and a broken alias fails hours later inside an allocator.
+
+**B.2 — `cpu/crash_report.cpp`.** Report() is platform-neutral now; each OS supplies
+`(sig, faultAddr, hostPc)` and the ~200 lines of guest-state reporting are identical.
+Windows uses `SetUnhandledExceptionFilter` and DbgHelp. **Three bugs were found in the
+reporter itself, two of which are latent on Linux too:**
+
+* it was an `AddVectoredExceptionHandler`, which sees FIRST-CHANCE exceptions — it caught a
+  benign one and killed a healthy process;
+* it could **smash its own stack**: 21 sites of `n += snprintf(b + n, sizeof b - n, ...)`,
+  where a report longer than the buffer underflows `sizeof b - n` to ~2^64. `/GS` catches
+  that and `__fastfail`s, which bypasses SEH entirely — so the process vanished at
+  0xC0000409 with no output at all. **A crash reporter that can crash while reporting
+  replaces a diagnosable fault with an undiagnosable one**, and it did exactly that twice;
+* the `host pc` line was guarded on `hostPc != 0`, so it printed nothing for a null
+  indirect call — the case it exists for.
+
+**B.3 — the build.** `host/win_compat.h`, force-included into the runtime's C++ sources
+only, carries the `windows.h` collisions (`ERROR_*`, `E_FAIL` via `_HRESULT_TYPEDEF_`, and
+`far`, which is still `#define`d from the 16-bit memory model and turned a local variable
+into a syntax error), plus `fseeko`/`ftello` and a `clock_gettime` over
+QueryPerformanceCounter. Guest constants that collide with Win32 macros of the same value
+were RENAMED (`kGuestMemReserve`, `kGuestGenericWrite`) rather than the host's spelling
+undefined, wherever anything on our side wants the Win32 meaning. Links `onecore`
+(VirtualAlloc2), `dbghelp` (SymFromAddr) and **clang-rt builtins** — clang-cl does not link
+its own builtins on Windows, so the recompiled image's `__int128` division came out as an
+undefined `__udivti3`. XenonRecomp was patched to stop forcing `/MT`.
+
+**THE ONE THAT COST ALL 228 TUs:** `-include` is the GNU driver's spelling and clang-cl
+reads the path as a second SOURCE FILE, failing with "cannot specify '/Fo…' when compiling
+multiple source files" — an error naming the output rather than the flag. `/FI` is the fix.
+
+**Windows platform defects the operator found by PLAYING:**
+
+| symptom | cause |
+|---|---|
+| VFS mounted on the CWD; guest faulted ~300 ms later | `find_last_of('/')` — no forward slash exists in a Windows path |
+| resolution list capped at 1600x900 on a 1440p screen | no DPI awareness, so every display query returns the desktop divided by the 160% scale |
+| thread budget sized off a guess | `CountPhysicalCores` reads /sys; 10 assumed against a real 14 on a 6P+8E part |
+| the warm pipeline cache could silently vanish | its directory came from `HOME`, which Git/MSYS2 set and nothing else does |
+
+### 9.5 THE STUTTER — found, fixed, and it was never a Windows bug
+
+**The diagnosis.** `CZ_VK_FRAME_TRACE` plus the operator's F7 marks:
+
+```
+frame 6696   396 ms wall = 372 ms in GetPipeline + 24 ms for everything else
+```
+
+Record, textures, constants, streams and GPU all normal. Four of five F7 marks land within
+45 frames of one of these and nowhere else. **Pipelines were being created lazily, on the
+frame that first needed each one, on the frame thread** — 534 in three minutes, at 1-200 ms
+each.
+
+**Not a platform defect.** Linux creates 122 at 0.11 ms each because its cache is 29 MB
+built over eighty sessions. Windows creates 534 at 1-200 ms because its cache is two
+sessions old. **Every new player gets the Windows experience on every platform**; the Linux
+machine only looked smooth because of a file no player will have.
+
+**The fix: record the keys, replay them at load.** `PipelineKey` is a 56-byte padding-free
+POD already carrying `vsHash`/`psHash`, so the key alone identifies a pipeline. Every key
+seen is written beside the `VkPipelineCache` blob and rebuilt at the next start, before the
+guest draws. `CZ_VK_NO_PREWARM=1` is the control arm.
+
+**Result, across three operator sessions:**
+
+| | worst pipeline spike | spikes > 20 ms |
+|---|---|---|
+| before | **372 ms** | 6 |
+| pre-warm reading only 72 of 527 keys | 249 ms | 7 |
+| **pre-warm building 527 of 527** | **173 ms** | **2** in 10,429 frames |
+
+**Three bugs inside the fix, each found by the operator still stuttering:** keys were saved
+only at exit (a crash threw the session away); the temp-and-rename failed on Windows every
+time; and the pre-warm **truncated the key file it was reading**, stopping at exactly 72
+every time — see gotchas 497 and 498.
+
+**What remains is the tail and it converges.** A first-time compile costs 120-170 ms on
+that driver and the pre-warm can only build what a previous session saw. 550 new pipelines
+were created in the last session by reaching new content. For a release, shipping a key
+file from a full playthrough would give players a warm start on day one.
+
+### 9.6 WHAT PART 83 GOT WRONG, because the corrections are the reusable part
+
+* **A laptop power profile is a measurement variable.** Every Windows number was taken in
+  "quiet" mode. High performance is **+34% frame rate, -30% record cost** at matched draws —
+  most of an unexplained "Windows is 1.8x slower" that had already cost a Vulkan-layer
+  census and a CPU-affinity A/B. Gotcha 496.
+* **`CZ_VK_FRAME_STATS` costs 8.8-15.5 ms a frame at 1440p**, up to 59% of the window. A
+  cross-platform comparison was run and reported with it armed. The runtime printed its own
+  bill in the same log. Gotcha 499.
+* **`CZ_VK_FRAME_TRACE` was gated behind `CZ_FPS_LOG`** and silently recorded nothing —
+  costing an operator play session, with a "0 rows" check run and read past. Gotcha 495.
+* **The trace printed wrapped negatives** after every profiler window, which sorted to the
+  TOP of every worst-frame list.
+* **Four Windows A/Bs were invalidated by the harness**, not the subject: a
+  `Stop-Process -Force` that skipped the save handler, a cache directory that moved, a
+  rename that never worked, and a `Select -First 1` that read the wrong line. Twice a check
+  was reported as failing when the CHECKING SCRIPT was wrong.
+* **Refuted honestly:** seven implicit Vulkan layers (Steam, GOG, Epic, OBS, RivaTuner) are
+  a **null** — 1037 vs 1033 ns/draw. P-core affinity is worth ~7.6% at matched draw counts,
+  not the -27% an unmatched comparison suggested.

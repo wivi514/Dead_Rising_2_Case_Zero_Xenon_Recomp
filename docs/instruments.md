@@ -3239,3 +3239,41 @@ Campaign and gate scripts: `tools/part81_bind_ab.sh` (three arms, three runs eac
 alternated, plus a profiler run an arm for `record` ns/draw) and
 `tools/part81_picture_gate.sh` (null pair, today's code, and the poison arm as the positive
 control, camera held per gotcha 465).
+
+## Part 83's pipeline pre-warm and the Windows arms
+
+```
+CZ_VK_NO_PREWARM=1 pipelines are created LAZILY, on the frame that first needs each one —
+                   the pre-part-83 behaviour and the same-binary control arm for the
+                   pre-warm. With it unset, every key a previous session recorded is built
+                   at load, before the guest draws. **The startup line must read `N of N`.**
+                   An `N of M` with M larger means something truncated the key file while
+                   the pre-warm was reading it, which is exactly the defect gotcha 497
+                   describes and which cost three operator sessions
+CZ_MEM_POISON_ALIAS=1  the positive control for kernel/memory.cpp's physical-aliasing
+                   self-test: re-maps the middle of the three 512 MB views privately, so
+                   the views stop being one piece of memory and the check MUST abort. The
+                   check itself is unconditional and runs on every launch on every
+                   platform — a broken alias otherwise surfaces hours later inside a guest
+                   allocator, megabytes from the cause
+CZ_WIN_FIRSTCHANCE=1  (Windows) log every FIRST-CHANCE SEH exception with module and RVA,
+                   without acting on any of them. The crash reporter deliberately does not
+                   act on first-chance exceptions — doing so killed a healthy process —
+                   so this is how that traffic is inspected. Each line is independently
+                   symbolizable with llvm-symbolizer, because the load base is otherwise
+                   only printed by a report that, on the failures this exists for, never
+                   completes
+CZ_NO_FIRST_RUN_CHECK=1  skip the package/game/shader-cache checks (release A.2). A check
+                   that cannot be turned off gets deleted rather than fixed
+CZ_ROOT=<dir>      override the installation root that every asset path derives from.
+                   Used verbatim; if it is not a directory the runtime SAYS SO and falls
+                   back, because an override silently ignored is worse than one that fails
+```
+
+**AND A WARNING ABOUT `CZ_VK_FRAME_STATS` THAT THE ENTRY ABOVE UNDERSTATES.** Its "~3 ms a
+frame, 12-20%" was measured at 1280x720. The cost scales with PIXELS: at 2560x1440 the
+runtime's own log reports **8.8 to 15.5 ms a frame, up to 59% of the window it is
+measuring**. A cross-platform comparison was run and published with it armed on both sides
+before that line was read (gotcha 499). Never quote a frame time from a run carrying it,
+and never use it at all when hunting something the size of a stutter —
+`CZ_VK_FRAME_TRACE` is the instrument for that and costs a fprintf a frame.
