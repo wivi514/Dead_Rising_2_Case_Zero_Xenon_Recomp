@@ -103,6 +103,11 @@ bool ShaderCachePopulated()
 
 namespace FirstRun
 {
+bool FoundPackage(std::filesystem::path* out)
+{
+    return FindPackage(out, nullptr, /*requireMagic=*/true);
+}
+
 Status Check(const std::string& xexPath)
 {
     std::error_code ec;

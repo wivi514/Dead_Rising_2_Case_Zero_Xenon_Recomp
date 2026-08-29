@@ -41,6 +41,7 @@
 #include "gpu/vk_renderer.h"
 #include "host/first_run.h"
 #include "host/host_paths.h"
+#include "host/stfs_extract.h"
 #include "host/settings.h"
 #include "host/window.h"
 #include "kernel/audio.h"
@@ -194,6 +195,25 @@ int main(int argc, char** argv)
         return ShaderPrebuild::BuildFromDisc(bank, out);
     }
 
+    // Release §2.3 step 2: the extract by hand — what the first-run hook below runs
+    // automatically, exposed for the byte-identity gate against the Python reference
+    // (tools/extract_stfs.py) and for unpacking a package deliberately.
+    if (argc > 1 && strcmp(argv[1], "--extract-package") == 0)
+    {
+        if (argc != 4)
+        {
+            fprintf(stderr, "usage: cz_runtime --extract-package <package> <out_dir>\n");
+            return 2;
+        }
+        std::string err;
+        if (!StfsExtract::Extract(argv[2], argv[3], err))
+        {
+            fprintf(stderr, "[extract] FAILED: %s\n", err.c_str());
+            return 1;
+        }
+        return 0;
+    }
+
     // Where everything is, decided once and printed once. It used to be
     // "../../assets/game/default.xex" — CWD-relative, which is why every recipe in
     // CLAUDE.md begins with `cd runtime/build`. See host/host_paths.h.
@@ -216,6 +236,27 @@ int main(int argc, char** argv)
     {
         const char* vk = getenv("CZ_VKDRAW");
         const bool renderer = vk && *vk && strcmp(vk, "0") != 0;
+        // Release §2.3 step 2: the in-process STFS extract. If the run targets the
+        // DEFAULT xex location and it is missing but a package is present, unpack it
+        // here — before the shader prebuild, which reads the disc banks the extract
+        // produces. A run pointed elsewhere by argv/CZ_XEX said out loud which tree
+        // it wants and is not second-guessed. On failure this falls through and the
+        // gate names what is actually missing. CZ_NO_STFS_EXTRACT=1 restores the
+        // refusal-with-command behaviour (every automatic step has an off switch).
+        {
+            const char* noExtract = getenv("CZ_NO_STFS_EXTRACT");
+            std::error_code ec;
+            std::filesystem::path pkg;
+            if (!(noExtract && *noExtract && *noExtract != '0') &&
+                std::string(xexPath) == xexDefault &&
+                !std::filesystem::is_regular_file(xexDefault, ec) &&
+                FirstRun::FoundPackage(&pkg))
+            {
+                std::string err;
+                if (!StfsExtract::Extract(pkg, HostPaths::Game(), err))
+                    fprintf(stderr, "[extract] FAILED: %s\n", err.c_str());
+            }
+        }
         // Release D.3: a missing shader cache stops being a refusal the moment the
         // game is unpacked — the disc's own banks supply the pixel half, and D.4's
         // first-sight path supplies the vertex half at run time. Placed BEFORE the

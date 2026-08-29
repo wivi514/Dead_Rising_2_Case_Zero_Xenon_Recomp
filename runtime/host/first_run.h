@@ -24,6 +24,7 @@
 // command the player must run. That ordering is deliberate — the diagnosis is worth
 // shipping before the automation is, and it is what makes D's progress bar an
 // improvement on a working thing rather than the first thing that works.
+#include <filesystem>
 #include <string>
 
 namespace FirstRun
@@ -35,6 +36,11 @@ enum class Status
     NoGame,          // package present, assets/game/default.xex absent
     NoShaderCache,   // game present, assets/shader_spv absent or empty
 };
+
+// The package the check would name, if one is present — exposed so the in-process
+// STFS extract (host/stfs_extract.h, release §2.3 step 2) runs on the same file the
+// refusal message would have pointed at, rather than re-deriving the search.
+bool FoundPackage(std::filesystem::path* out);
 
 // Runs the checks in order and returns the FIRST thing missing. Does not print.
 // `xexPath` is the image the run will actually load — an explicit argv[1] or CZ_XEX
