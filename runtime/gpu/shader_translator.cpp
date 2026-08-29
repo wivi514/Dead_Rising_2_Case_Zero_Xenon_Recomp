@@ -32,6 +32,15 @@
 // so IUnknown and IStream have to be pulled in by name or every interface in dxcapi.h
 // fails with "expected class name".
 #include <windows.h>
+// win_compat.h #undefs `far`/`near` to free the identifiers for this runtime's own
+// code — correct everywhere else, but windef.h defines FAR as `far`, so the COM
+// headers below (which still spell `LPMALLOC FAR * ppMalloc`) would expand it to a
+// stray identifier and every parameter list carrying it fails with "expected ')'".
+// Re-point the uppercase macros at nothing for this TU.
+#undef FAR
+#define FAR
+#undef NEAR
+#define NEAR
 #include <unknwn.h>
 #include <objidl.h>
 #else
