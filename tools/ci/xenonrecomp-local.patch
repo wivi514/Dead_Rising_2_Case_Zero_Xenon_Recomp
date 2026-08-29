@@ -1,0 +1,1283 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b89407f..16f8f33 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,7 +11,14 @@ if (POLICY CMP0141)
+   set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
+ endif()
+ 
+-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
++# Respect an explicit choice rather than forcing one. A consumer that links this as a
++# library has to match its CRT, and one that also links DLLs (SDL2, ffmpeg) needs the
++# DLL runtime -- forcing /MT here makes that link fail with
++# "lld-link: error: /failifmismatch: mismatch detected for 'RuntimeLibrary'", which
++# names neither project. The default is unchanged when nobody asks.
++if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
++    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
++endif()
+ 
+ add_subdirectory(${THIRDPARTY_ROOT})
+ set(XENONANALYSE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/XenonAnalyse)
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index fa91527..c57b162 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -2,6 +2,10 @@
+ #include "recompiler.h"
+ #include <xex_patcher.h>
+ 
++// CR bit selected by a branch instruction's BI field, in encoding order.
++// Used by the bdzf/bdzt/bdnzf/bdnzt emitters (BI % 4 picks the bit).
++static constexpr const char* CR_BIT_NAMES[] = { "lt", "gt", "eq", "so" };
++
+ static uint64_t ComputeMask(uint32_t mstart, uint32_t mstop)
+ {
+     mstart &= 0x3F;
+@@ -252,6 +256,7 @@ void Recompiler::Analyse()
+     }
+ 
+     std::sort(functions.begin(), functions.end(), [](auto& lhs, auto& rhs) { return lhs.base < rhs.base; });
++
+ }
+ 
+ bool Recompiler::Recompile(
+@@ -420,6 +425,27 @@ bool Recompiler::Recompile(
+             }
+         };
+ 
++    // Decrement-CTR branches (bdz/bdnz and their CR-conditioned forms). Like
++    // printConditionalBranch, a target outside the function becomes a tail
++    // call + return — AW has bdnzf sites whose targets land in a sibling
++    // function, which otherwise emit a goto to a label that doesn't exist.
++    auto printDecrementCtrBranch = [&](std::string_view ctrCond, const std::string& extraCond, size_t target)
++        {
++            println("\t--{}.u64;", ctr());
++            if (target < fn.base || target >= fn.base + fn.size)
++            {
++                println("\tif ({}.u32 {}{}) {{", ctr(), ctrCond, extraCond);
++                print("\t");
++                printFunctionCall(target);
++                println("\t\treturn;");
++                println("\t}}");
++            }
++            else
++            {
++                println("\tif ({}.u32 {}{}) goto loc_{:X};", ctr(), ctrCond, extraCond, target);
++            }
++        };
++
+     auto printSetFlushMode = [&](bool enable)
+         {
+             auto newState = enable ? CSRState::VMX : CSRState::FPU;
+@@ -519,6 +545,11 @@ bool Recompiler::Recompile(
+ 
+     int id = insn.opcode->id;
+ 
++    // Remembered so the RC-bit sanity check below can scan everything this
++    // instruction emitted, not just the final line (multi-line emissions like
++    // vcmpbfp's braced block end in "}", which the last-line check can't see past).
++    const size_t outSizeBeforeInstruction = out.size();
++
+     // Handling instructions that don't disassemble correctly for some reason here
+     if (id == PPC_INST_VUPKHSB128 && insn.operands[2] == 0x60) id = PPC_INST_VUPKHSH128;
+     else if (id == PPC_INST_VUPKLSB128 && insn.operands[2] == 0x60) id = PPC_INST_VUPKLSH128;
+@@ -531,6 +562,16 @@ bool Recompiler::Recompile(
+             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
+         break;
+ 
++    case PPC_INST_ADDC:
++        // Carry must be computed from the *old* operands before the destination is
++        // written — rD may alias rA or rB.
++        println("\t{}.u8 = ({}.u32 + {}.u32 < {}.u32);", temp(), r(insn.operands[1]), r(insn.operands[2]), r(insn.operands[1]));
++        println("\t{}.u64 = {}.u64 + {}.u64;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.ca = {}.u8;", xer(), temp());
++        if (strchr(insn.opcode->name, '.'))
++            println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
++        break;
++
+     case PPC_INST_ADDE:
+         println("\t{}.u8 = ({}.u32 + {}.u32 < {}.u32) | ({}.u32 + {}.u32 + {}.ca < {}.ca);", temp(), r(insn.operands[1]), r(insn.operands[2]), r(insn.operands[1]), r(insn.operands[1]), r(insn.operands[2]), xer(), xer());
+         println("\t{}.u64 = {}.u64 + {}.u64 + {}.ca;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]), xer());
+@@ -560,6 +601,17 @@ bool Recompiler::Recompile(
+         println("{};", static_cast<int32_t>(insn.operands[2] << 16));
+         break;
+ 
++    case PPC_INST_ADDME:
++        // rD = rA + CA - 1 (i.e. rA + CA + 0xFFFF...FFFF). 32-bit carry out of
++        // rA + 0xFFFFFFFF + CA is 1 unless rA == 0 and CA == 0; compute it before
++        // writing rD (aliasing), matching the u32-carry convention used by ADDE.
++        println("\t{}.u8 = ({}.u32 != 0) | {}.ca;", temp(), r(insn.operands[1]), xer());
++        println("\t{}.s64 = {}.s64 + {}.ca - 1;", r(insn.operands[0]), r(insn.operands[1]), xer());
++        println("\t{}.ca = {}.u8;", xer(), temp());
++        if (strchr(insn.opcode->name, '.'))
++            println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
++        break;
++
+     case PPC_INST_ADDZE:
+         println("\t{}.s64 = {}.s64 + {}.ca;", temp(), r(insn.operands[1]), xer());
+         println("\t{}.ca = {}.u32 < {}.u32;", xer(), temp(), r(insn.operands[1]));
+@@ -609,11 +661,21 @@ bool Recompiler::Recompile(
+     case PPC_INST_BCTR:
+         if (switchTable != config.switchTables.end())
+         {
+-            println("\tswitch ({}.u64) {{", r(switchTable->second.r));
++            // Switch on the low 32 bits: the guest's jump-table indexing (rlwinm) only
++            // uses them, and stale upper bits in the 64-bit register would skip every
++            // case straight into __builtin_unreachable().
++            println("\tswitch ({}.u32) {{", r(switchTable->second.r));
++
++            // The case constant is the value the GUEST dispatches on, which is the
++            // label's index only for the address-table idiom. A computed-offset table
++            // leaves a byte offset in the register, and the generator supplies those in
++            // `values`. Getting this backwards is not a wrong branch — it is a jump into
++            // an unrelated function's body; see the default: below.
++            const auto& values = switchTable->second.values;
+ 
+             for (size_t i = 0; i < switchTable->second.labels.size(); i++)
+             {
+-                println("\tcase {}:", i);
++                println("\tcase {}:", values.empty() ? uint32_t(i) : values[i]);
+                 auto label = switchTable->second.labels[i];
+                 if (label < fn.base || label >= fn.base + fn.size)
+                 {
+@@ -627,8 +689,23 @@ bool Recompiler::Recompile(
+                 }
+             }
+ 
++            // NOT __builtin_unreachable(). A recovered switch table is an ASSUMPTION —
++            // the scanner may have found too few labels, or keyed the table on the wrong
++            // register — and __builtin_unreachable is a promise to the optimiser that the
++            // assumption is a fact. Given that promise, clang drops the bounds check and
++            // emits a bare `jmp *table(,%rax,8)`, so a value the table does not cover
++            // indexes PAST THE END of the table, into whatever .rodata follows: usually a
++            // neighbouring function's jump table. Control then lands mid-body in an
++            // unrelated function, still holding the CURRENT function's frame and
++            // registers. Nothing detects it — no call, no indirect dispatch, no memory
++            // corruption — and it faults later at a site with no causal relation to the
++            // bug. It cost this project three sessions of diagnosis.
++            //
++            // So fail honestly instead, and pay one bounds check per dispatch for it.
++            // PPC_SWITCH_ABORT is defined in ppc_context.h; it names the function, the
++            // dispatch address and the offending value, then traps.
+             println("\tdefault:");
+-            println("\t\t__builtin_unreachable();");
++            println("\t\tPPC_SWITCH_ABORT(0x{:X}, {}.u32);", base, r(switchTable->second.r));
+             println("\t}}");
+ 
+             switchTable = config.switchTables.end();
+@@ -648,8 +725,7 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_BDZ:
+-        println("\t--{}.u64;", ctr());
+-        println("\tif ({}.u32 == 0) goto loc_{:X};", ctr(), insn.operands[0]);
++        printDecrementCtrBranch("== 0", "", insn.operands[0]);
+         break;
+ 
+     case PPC_INST_BDZLR:
+@@ -658,14 +734,27 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_BDNZ:
+-        println("\t--{}.u64;", ctr());
+-        println("\tif ({}.u32 != 0) goto loc_{:X};", ctr(), insn.operands[0]);
++        printDecrementCtrBranch("!= 0", "", insn.operands[0]);
+         break;
+ 
++    // The bdz/bdnz variants conditioned on a CR bit take BI in operands[0]:
++    // BI/4 selects the CR field, BI%4 the bit (lt/gt/eq/so). Asura's Wrath uses
++    // every combination, so these are emitted generically rather than assuming eq
++    // (the shortcut the BDNZF case here historically took).
+     case PPC_INST_BDNZF:
+-        // NOTE: assuming eq here as a shortcut because all the instructions in the game do that
+-        println("\t--{}.u64;", ctr());
+-        println("\tif ({}.u32 != 0 && !{}.eq) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), insn.operands[1]);
++        printDecrementCtrBranch("!= 0", fmt::format(" && !{}.{}", cr(insn.operands[0] / 4), CR_BIT_NAMES[insn.operands[0] % 4]), insn.operands[1]);
++        break;
++
++    case PPC_INST_BDNZT:
++        printDecrementCtrBranch("!= 0", fmt::format(" && {}.{}", cr(insn.operands[0] / 4), CR_BIT_NAMES[insn.operands[0] % 4]), insn.operands[1]);
++        break;
++
++    case PPC_INST_BDZF:
++        printDecrementCtrBranch("== 0", fmt::format(" && !{}.{}", cr(insn.operands[0] / 4), CR_BIT_NAMES[insn.operands[0] % 4]), insn.operands[1]);
++        break;
++
++    case PPC_INST_BDZT:
++        printDecrementCtrBranch("== 0", fmt::format(" && {}.{}", cr(insn.operands[0] / 4), CR_BIT_NAMES[insn.operands[0] % 4]), insn.operands[1]);
+         break;
+ 
+     case PPC_INST_BEQ:
+@@ -804,6 +893,10 @@ bool Recompiler::Recompile(
+         // no op
+         break;
+ 
++    case PPC_INST_DCBST:
++        // no op (cache maintenance)
++        break;
++
+     case PPC_INST_DCBT:
+         // no op
+         break;
+@@ -849,7 +942,17 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_EIEIO:
+-        // no op
++        // Orders stores to device memory. Our MMIO is ordinary host memory polled by
++        // other threads, so a compiler barrier is the honest floor: it stops the host
++        // compiler reordering the stores the guest deliberately separated, and claims
++        // nothing about a memory controller we do not model.
++        println("\tstd::atomic_signal_fence(std::memory_order_seq_cst);");
++        break;
++
++    case PPC_INST_EQV:
++        println("\t{}.u64 = ~({}.u64 ^ {}.u64);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
++        if (strchr(insn.opcode->name, '.'))
++            println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
+         break;
+ 
+     case PPC_INST_EXTSB:
+@@ -1005,6 +1108,13 @@ bool Recompiler::Recompile(
+         println("\t{}.f64 = double(float(sqrt({}.f64)));", f(insn.operands[0]), f(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_FRSQRTE:
++        // Architecturally an estimate; the exact value is a valid estimate
++        // (same approach as VRSQRTEFP below).
++        printSetFlushMode(false);
++        println("\t{}.f64 = 1.0 / sqrt({}.f64);", f(insn.operands[0]), f(insn.operands[1]));
++        break;
++
+     case PPC_INST_FSUB:
+         printSetFlushMode(false);
+         println("\t{}.f64 = {}.f64 - {}.f64;", f(insn.operands[0]), f(insn.operands[1]), f(insn.operands[2]));
+@@ -1028,6 +1138,12 @@ bool Recompiler::Recompile(
+         println("\t{}.u32 = {};", r(insn.operands[2]), ea());
+         break;
+ 
++    case PPC_INST_LBZUX:
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u64 = PPC_LOAD_U8({});", r(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_LBZX:
+         print("\t{}.u64 = PPC_LOAD_U8(", r(insn.operands[0]));
+         if (insn.operands[1] != 0)
+@@ -1071,6 +1187,13 @@ bool Recompiler::Recompile(
+         println("{});", int32_t(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_LFDU:
++        printSetFlushMode(false);
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u64 = PPC_LOAD_U64({});", f(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
+     case PPC_INST_LFDX:
+         printSetFlushMode(false);
+         print("\t{}.u64 = PPC_LOAD_U64(", f(insn.operands[0]));
+@@ -1088,6 +1211,22 @@ bool Recompiler::Recompile(
+         println("\t{}.f64 = double({}.f32);", f(insn.operands[0]), temp());
+         break;
+ 
++    case PPC_INST_LFSU:
++        printSetFlushMode(false);
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u32 = PPC_LOAD_U32({});", temp(), ea());
++        println("\t{}.f64 = double({}.f32);", f(insn.operands[0]), temp());
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
++    case PPC_INST_LFSUX:
++        printSetFlushMode(false);
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u32 = PPC_LOAD_U32({});", temp(), ea());
++        println("\t{}.f64 = double({}.f32);", f(insn.operands[0]), temp());
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_LFSX:
+         printSetFlushMode(false);
+         print("\t{}.u32 = PPC_LOAD_U32(", temp());
+@@ -1104,6 +1243,12 @@ bool Recompiler::Recompile(
+         println("{}));", int32_t(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_LHAU:
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.s64 = int16_t(PPC_LOAD_U16({}));", r(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
+     case PPC_INST_LHAX:
+         print("\t{}.s64 = int16_t(PPC_LOAD_U16(", r(insn.operands[0]));
+         if (insn.operands[1] != 0)
+@@ -1111,6 +1256,17 @@ bool Recompiler::Recompile(
+         println("{}.u32));", r(insn.operands[2]));
+         break;
+ 
++    case PPC_INST_LHBRX:
++        // Byte-reversed halfword load. PPC_LOAD_U16 already swaps guest big-endian
++        // to host, so the reversal the instruction asks for is one more bswap on
++        // top — same shape as LWBRX below, one size down. bswap16 yields uint16_t,
++        // so assigning to .u64 zero-extends, which is what lhbrx specifies.
++        print("\t{}.u64 = __builtin_bswap16(PPC_LOAD_U16(", r(insn.operands[0]));
++        if (insn.operands[1] != 0)
++            print("{}.u32 + ", r(insn.operands[1]));
++        println("{}.u32));", r(insn.operands[2]));
++        break;
++
+     case PPC_INST_LHZ:
+         print("\t{}.u64 = PPC_LOAD_U16(", r(insn.operands[0]));
+         if (insn.operands[2] != 0)
+@@ -1118,6 +1274,18 @@ bool Recompiler::Recompile(
+         println("{});", int32_t(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_LHZU:
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u64 = PPC_LOAD_U16({});", r(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
++    case PPC_INST_LHZUX:
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u64 = PPC_LOAD_U16({});", r(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_LHZX:
+         print("\t{}.u64 = PPC_LOAD_U16(", r(insn.operands[0]));
+         if (insn.operands[1] != 0)
+@@ -1135,6 +1303,11 @@ bool Recompiler::Recompile(
+ 
+     case PPC_INST_LVEWX:
+     case PPC_INST_LVEWX128:
++    case PPC_INST_LVEHX:
++        // lvehx only defines the element addressed by EA; the rest of vD is
++        // architecturally undefined. Loading the whole aligned quadword like lvx
++        // puts the defined halfword in the right (reversed) lane and fills the
++        // undefined ones with real memory, which is a legal implementation.
+     case PPC_INST_LVX:
+     case PPC_INST_LVX128:
+         // NOTE: for endian swapping, we reverse the whole vector instead of individual elements.
+@@ -1209,7 +1382,19 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_LWSYNC:
+-        // no op
++        // A COMPILER barrier, not a hardware one, and the distinction is the whole
++        // point. `lwsync` orders load-load, load-store and store-store; x86-64's TSO
++        // already guarantees all three in hardware, so no fence instruction is needed
++        // — but the C++ we emit is plain loads and stores through `base`, and nothing
++        // stops the host compiler from reordering them across a construct that
++        // generates no code. Emitting nothing at all (the previous behaviour) makes
++        // every release-publish idiom in the guest unsound at -O2: the classic "fill
++        // the buffer, lwsync, publish the index" becomes "publish the index, fill the
++        // buffer", and the consumer thread walks half-written data.
++        //
++        // atomic_signal_fence is exactly the right tool: it constrains the compiler
++        // and emits no instruction.
++        println("\tstd::atomic_signal_fence(std::memory_order_seq_cst);");
+         break;
+ 
+     case PPC_INST_LWZ:
+@@ -1225,6 +1410,12 @@ bool Recompiler::Recompile(
+         println("\t{}.u32 = {};", r(insn.operands[2]), ea());
+         break;
+ 
++    case PPC_INST_LWZUX:
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\t{}.u64 = PPC_LOAD_U32({});", r(insn.operands[0]), ea());
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_LWZX:
+         print("\t{}.u64 = PPC_LOAD_U32(", r(insn.operands[0]));
+         if (insn.operands[1] != 0)
+@@ -1301,6 +1492,14 @@ bool Recompiler::Recompile(
+         println("\t{}.ca = ({}.u64 & 0x20000000) != 0;", xer(), r(insn.operands[0]));
+         break;
+ 
++    case PPC_INST_MULHD:
++        println("\t{}.s64 = int64_t((__int128_t({}.s64) * __int128_t({}.s64)) >> 64);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
++        break;
++
++    case PPC_INST_MULHDU:
++        println("\t{}.u64 = uint64_t((__uint128_t({}.u64) * __uint128_t({}.u64)) >> 64);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
++        break;
++
+     case PPC_INST_MULHW:
+         println("\t{}.s64 = (int64_t({}.s32) * int64_t({}.s32)) >> 32;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+         break;
+@@ -1486,6 +1685,12 @@ bool Recompiler::Recompile(
+         println("\t{}.u32 = {};", r(insn.operands[2]), ea());
+         break;
+ 
++    case PPC_INST_STBUX:
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U8({}, {}.u8);", ea(), r(insn.operands[0]));
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_STBX:
+         print("{}", mmioStore() ? "\tPPC_MM_STORE_U8(" : "\tPPC_STORE_U8(");
+         if (insn.operands[1] != 0)
+@@ -1531,6 +1736,13 @@ bool Recompiler::Recompile(
+         println("{}, {}.u64);", int32_t(insn.operands[1]), f(insn.operands[0]));
+         break;
+ 
++    case PPC_INST_STFDU:
++        printSetFlushMode(false);
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U64({}, {}.u64);", ea(), f(insn.operands[0]));
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
+     case PPC_INST_STFDX:
+         printSetFlushMode(false);
+         print("{}", mmioStore() ? "\tPPC_MM_STORE_U64(" : "\tPPC_STORE_U64(");
+@@ -1556,6 +1768,25 @@ bool Recompiler::Recompile(
+         println("{}, {}.u32);", int32_t(insn.operands[1]), temp());
+         break;
+ 
++    case PPC_INST_STFSU:
++        printSetFlushMode(false);
++        println("\t{}.f32 = float({}.f64);", temp(), f(insn.operands[0]));
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U32({}, {}.u32);", ea(), temp());
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
++    case PPC_INST_STFSUX:
++        // Indexed update form of STFSU: EA = rA + rB, store, then rA = EA.
++        // Operand shape follows LFSUX (frS, rA, rB) rather than STFSU's
++        // (frS, displacement, rA) — the updated register is operands[1] here.
++        printSetFlushMode(false);
++        println("\t{}.f32 = float({}.f64);", temp(), f(insn.operands[0]));
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U32({}, {}.u32);", ea(), temp());
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_STFSX:
+         printSetFlushMode(false);
+         println("\t{}.f32 = float({}.f64);", temp(), f(insn.operands[0]));
+@@ -1572,6 +1803,18 @@ bool Recompiler::Recompile(
+         println("{}, {}.u16);", int32_t(insn.operands[1]), r(insn.operands[0]));
+         break;
+ 
++    case PPC_INST_STHU:
++        println("\t{} = {} + {}.u32;", ea(), int32_t(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U16({}, {}.u16);", ea(), r(insn.operands[0]));
++        println("\t{}.u32 = {};", r(insn.operands[2]), ea());
++        break;
++
++    case PPC_INST_STHUX:
++        println("\t{} = {}.u32 + {}.u32;", ea(), r(insn.operands[1]), r(insn.operands[2]));
++        println("\tPPC_STORE_U16({}, {}.u16);", ea(), r(insn.operands[0]));
++        println("\t{}.u32 = {};", r(insn.operands[1]), ea());
++        break;
++
+     case PPC_INST_STHBRX:
+         print("{}", mmioStore() ? "\tPPC_MM_STORE_U16(" : "\tPPC_STORE_U16(");
+         if (insn.operands[1] != 0)
+@@ -1710,8 +1953,22 @@ bool Recompiler::Recompile(
+         println("\t{}.s64 = {} - {}.s64;", r(insn.operands[0]), int32_t(insn.operands[2]), r(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_SUBFZE:
++        // rD = ~rA + CA. 32-bit carry out happens only when ~rA is 0xFFFFFFFF
++        // (rA == 0) and CA is set; compute it before writing rD (aliasing).
++        println("\t{}.u8 = ({}.u32 == 0) & {}.ca;", temp(), r(insn.operands[1]), xer());
++        println("\t{}.s64 = ~{}.s64 + {}.ca;", r(insn.operands[0]), r(insn.operands[1]), xer());
++        println("\t{}.ca = {}.u8;", xer(), temp());
++        if (strchr(insn.opcode->name, '.'))
++            println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
++        break;
++
+     case PPC_INST_SYNC:
+-        // no op
++        // `sync` (hwsync) is the heavyweight barrier: it additionally orders
++        // store-load, which is the ONE ordering x86-64's TSO does not provide. So
++        // unlike lwsync this needs a real fence instruction, not just a compiler
++        // barrier — atomic_thread_fence(seq_cst) lowers to an mfence or a locked op.
++        println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+         break;
+ 
+     case PPC_INST_TDLGEI:
+@@ -1744,6 +2001,17 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_si128((simde__m128i*){}.s16, simde_mm_adds_epi16(simde_mm_load_si128((simde__m128i*){}.s16), simde_mm_load_si128((simde__m128i*){}.s16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+ 
++    case PPC_INST_VADDSWS:
++        // No SSE saturated 32-bit add; scalar with a 64-bit intermediate,
++        // same shape as VSUBSWS below. Per-element read-before-write keeps
++        // it safe when vD aliases a source.
++        for (size_t i = 0; i < 4; i++)
++        {
++            println("\t{}.s64 = int64_t({}.s32[{}]) + int64_t({}.s32[{}]);", temp(), v(insn.operands[1]), i, v(insn.operands[2]), i);
++            println("\t{}.s32[{}] = {}.s64 > INT_MAX ? INT_MAX : {}.s64 < INT_MIN ? INT_MIN : {}.s64;", v(insn.operands[0]), i, temp(), temp(), temp());
++        }
++        break;
++
+     case PPC_INST_VADDUBM:
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_add_epi8(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+@@ -1756,12 +2024,26 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_add_epi16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_load_si128((simde__m128i*){}.u16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+ 
++    case PPC_INST_VADDUHS:
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_adds_epu16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_load_si128((simde__m128i*){}.u16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
++        break;
++
+     case PPC_INST_VADDUWM:
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_add_epi32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_load_si128((simde__m128i*){}.u32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+ 
+     case PPC_INST_VADDUWS:
+-        println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_adds_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_load_si128((simde__m128i*){}.u32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
++        // There is no simde_mm_adds_epu32 — no SSE level has a 32-bit unsigned
++        // saturating add, and simde does not synthesise one. This case used to
++        // emit that name anyway, so any title using vadduws produced C++ that
++        // failed to *compile*; Case Zero has one such site.
++        //
++        // Saturating identity: a + b overflows exactly when b > ~a, and in that
++        // case the result is 0xFFFFFFFF == a + ~a. So clamping the addend to ~a
++        // gives the saturated answer with no compare or blend:
++        //     a + min_epu32(b, ~a)
++        // min_epu32 is SSE4.1, which VPKUWUS already relies on.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_add_epi32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_xor_si128(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(-1)))));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), v(insn.operands[1]));
+         break;
+ 
+     case PPC_INST_VAND:
+@@ -1795,6 +2077,16 @@ bool Recompiler::Recompile(
+             println("simde_mm_load_ps({}.f32)));", v(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_VCTUXS:
++    case PPC_INST_VCFPUXWS128:
++        printSetFlushMode(true);
++        print("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_vctuxs(", v(insn.operands[0]));
++        if (insn.operands[2] != 0)
++            println("simde_mm_mul_ps(simde_mm_load_ps({}.f32), simde_mm_set1_ps({}))));", v(insn.operands[1]), 1u << insn.operands[2]);
++        else
++            println("simde_mm_load_ps({}.f32)));", v(insn.operands[1]));
++        break;
++
+     case PPC_INST_VCFSX:
+     case PPC_INST_VCSXWFP128:
+     {
+@@ -1831,7 +2123,23 @@ bool Recompiler::Recompile(
+ 
+     case PPC_INST_VCMPBFP:
+     case PPC_INST_VCMPBFP128:
+-        println("\t__builtin_debugtrap();");
++        // Bounds check: per lane, bit31 = (a > b), bit30 = (a < -b); NaN sets
++        // both (cmpnle/cmpnge are true for unordered). vcmpbfp. only defines
++        // CR6's "all in bounds" bit, tested via the none-set (eq) side of
++        // setFromMask on the OR of the two violation masks.
++        printSetFlushMode(true);
++        println("\t{{");
++        println("\t\tsimde__m128 a = simde_mm_load_ps({}.f32);", v(insn.operands[1]));
++        println("\t\tsimde__m128 b = simde_mm_load_ps({}.f32);", v(insn.operands[2]));
++        println("\t\tsimde__m128 gt = simde_mm_cmpnle_ps(a, b);");
++        println("\t\tsimde__m128 lt = simde_mm_cmpnge_ps(a, simde_mm_xor_ps(b, simde_mm_set1_ps(-0.0f)));");
++        println("\t\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_or_si128(simde_mm_and_si128(simde_mm_castps_si128(gt), simde_mm_set1_epi32(0x80000000)), simde_mm_and_si128(simde_mm_castps_si128(lt), simde_mm_set1_epi32(0x40000000))));", v(insn.operands[0]));
++        if (strchr(insn.opcode->name, '.'))
++        {
++            println("\t\t{}.setFromMask(simde_mm_or_ps(gt, lt), 0xF);", cr(6));
++            println("\t\t{}.lt = 0;", cr(6)); // architecturally 0 for vcmpbfp.
++        }
++        println("\t}}");
+         break;
+ 
+     case PPC_INST_VCMPEQFP:
+@@ -1966,6 +2274,19 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_ps({}.f32, simde_mm_xor_ps(simde_mm_sub_ps(simde_mm_mul_ps(simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32)), simde_mm_load_ps({}.f32)), simde_mm_castsi128_ps(simde_mm_set1_epi32(int(0x80000000)))));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), v(insn.operands[3]));
+         break;
+ 
++    case PPC_INST_VNOR:
++    case PPC_INST_VNOR128:
++        // vnor vD,vA,vB : vD = ~(vA | vB). NOT via xor with all-ones.
++        print("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_xor_si128(", v(insn.operands[0]));
++
++        if (insn.operands[1] != insn.operands[2])
++            print("simde_mm_or_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8))", v(insn.operands[1]), v(insn.operands[2]));
++        else
++            print("simde_mm_load_si128((simde__m128i*){}.u8)", v(insn.operands[1]));
++
++        println(", simde_mm_set1_epi32(-1)));");
++        break;
++
+     case PPC_INST_VOR:
+     case PPC_INST_VOR128:
+         print("\tsimde_mm_store_si128((simde__m128i*){}.u8, ", v(insn.operands[0]));
+@@ -1995,9 +2316,39 @@ bool Recompiler::Recompile(
+     }
+ 
+     case PPC_INST_VPKD3D128:
++    {
+         // TODO: vectorize somehow?
+         // NOTE: handling vector reversal here too
++        //
++        // operands[2] = pack type, [3] = number of destination words written,
++        // [4] = the destination word. Under the full vector reversal, storage word
++        // `operands[4]` is guest word `3 - operands[4]`, which is what `vspltw128
++        // vX,vX,0` downstream of a float16_2 pack picks up (it permutes with 3 - n).
+         printSetFlushMode(true);
++
++        // float32 -> float16 for ONE lane: vB's storage lane `srcLane` into vD's
++        // storage halfword `dstHalf`. Shared by the float16_2 and float16_4 packs so
++        // the two cannot drift — it is the same conversion and only the lane mapping
++        // differs. Written out longhand rather than via a host cvtps_ph because the
++        // guest's rounding of denormals and its 0x7FFF saturation are both observable
++        // in vertex data.
++        auto packHalf = [&](size_t srcLane, size_t dstHalf)
++        {
++            // Strip sign from source
++            println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", temp(), v(insn.operands[1]), srcLane);
++            // If |source| is > 65504, clamp output to 0x7FFF, else save 8 exponent bits
++            println("\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : (({2}.u32[{3}]&0x7f800000)>>23);", vTemp(), temp(), v(insn.operands[1]), srcLane);
++            // If 8 exponent bits were saved, it can only be 0x8E at most
++            // If saved, save first 10 bits of mantissa
++            println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", temp(), vTemp(), v(insn.operands[1]), srcLane);
++            // If saved and > 127-15, exponent is converted from 8 to 5-bit by subtracting 0x70
++            // If saved but not > 127-15, clamp exponent at 0, add 0x400 to mantissa and shift right by (0x71-exponent)
++            // If right shift is greater than 31 bits, manually clamp mantissa to 0 or else the output of the shift will be wrong
++            println("\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? ((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : ((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;", v(insn.operands[0]), dstHalf, vTemp(), temp());
++            // Add back original sign
++            println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", v(insn.operands[0]), dstHalf, v(insn.operands[1]), srcLane);
++        };
++
+         switch (insn.operands[2])
+         {
+         case 0: // D3D color
+@@ -2014,26 +2365,34 @@ bool Recompiler::Recompile(
+             println("\t{}.u32[{}] = {}.u32;", v(insn.operands[0]), insn.operands[4], temp());
+             break;
+ 
++        case 3: // float16_2
++            // The inverse of VUPKD3D128's float16_2. That unpack reads the packed word
++            // as (x = high half, y = low half) and yields guest (x, y, 0.0, 1.0); the
++            // halves are that way round because a guest word is big-endian, so the
++            // component at the LOWER address is the high half of the little-endian u32.
++            // Packing therefore puts vB's guest x (storage lane 3) in the high half of
++            // the destination word and guest y (storage lane 2) in the low half.
++            //
++            // Confirmed against the call sites in Asura's Wrath, which follow the pack
++            // with `vspltw128 vX,vX,0; stvewx128` and then rebuild the value as
++            // `(second_halfword << 16) | first_halfword` — i.e. x must land in the
++            // lower-addressed half, which is the high half of the stored word.
++            if (insn.operands[3] != 1)
++                fmt::println("Unexpected float16_2 pack instruction at {:X}", base);
++
++            packHalf(3, 2 * insn.operands[4] + 1); // guest x -> high half
++            packHalf(2, 2 * insn.operands[4] + 0); // guest y -> low half
++            break;
++
+         case 5: // float16_4
++            // Storage lane i -> storage halfword i + 2*shift, the identity mapping the
++            // matching unpack documents. Two destination words, so a shift of 3 would
++            // run off the end of the register.
+             if (insn.operands[3] != 2 || insn.operands[4] > 2)
+                 fmt::println("Unexpected float16_4 pack instruction at {:X}", base);
+ 
+             for (size_t i = 0; i < 4; i++)
+-            {
+-        		// Strip sign from source
+-        		println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", temp(), v(insn.operands[1]), i);
+-        		// If |source| is > 65504, clamp output to 0x7FFF, else save 8 exponent bits 
+-        		println("\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : (({2}.u32[{3}]&0x7f800000)>>23);", vTemp(), temp(), v(insn.operands[1]), i);
+-        		// If 8 exponent bits were saved, it can only be 0x8E at most
+-        		// If saved, save first 10 bits of mantissa
+-        		println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", temp(), vTemp(), v(insn.operands[1]), i);
+-        		// If saved and > 127-15, exponent is converted from 8 to 5-bit by subtracting 0x70
+-        		// If saved but not > 127-15, clamp exponent at 0, add 0x400 to mantissa and shift right by (0x71-exponent)
+-        		// If right shift is greater than 31 bits, manually clamp mantissa to 0 or else the output of the shift will be wrong
+-        		println("\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? ((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : ((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;", v(insn.operands[0]), i+(2*insn.operands[4]), vTemp(), temp());
+-        		// Add back original sign
+-        		println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", v(insn.operands[0]), i+(2*insn.operands[4]), v(insn.operands[1]), i);
+-            }
++                packHalf(i, i + 2 * insn.operands[4]);
+             break;
+ 
+         default:
+@@ -2041,12 +2400,44 @@ bool Recompiler::Recompile(
+             break;
+         }
+         break;
++    }
+ 
+     case PPC_INST_VPKSHUS:
+     case PPC_INST_VPKSHUS128:
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_packus_epi16(simde_mm_load_si128((simde__m128i*){}.s16), simde_mm_load_si128((simde__m128i*){}.s16)));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
+         break;
+ 
++    case PPC_INST_VPKSWSS:
++    case PPC_INST_VPKSWSS128:
++        // Operand order swapped (vB first) for the same whole-vector-reversal
++        // reason as VPKSHUS above.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.s16, simde_mm_packs_epi32(simde_mm_load_si128((simde__m128i*){}.s32), simde_mm_load_si128((simde__m128i*){}.s32)));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
++        break;
++
++    case PPC_INST_VPKUHUS:
++    case PPC_INST_VPKUHUS128:
++        // packus_epi16 saturates a *signed* source, so clamp the unsigned
++        // halfwords to 0xFF first; the clamped values are non-negative and
++        // survive the signed pack exactly.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_packus_epi16(simde_mm_min_epu16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_set1_epi16(0xFF)), simde_mm_min_epu16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_set1_epi16(0xFF))));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
++        break;
++
++    case PPC_INST_VPKUWUM:
++    case PPC_INST_VPKUWUM128:
++        // Modulo pack: keep the low halfword of each word, no saturation.
++        // packus_epi32 saturates, so mask to 0xFFFF first — every masked value is
++        // then non-negative and already in range, so the saturating pack
++        // reproduces plain truncation exactly. Operand order swapped (vB first)
++        // for the same whole-vector-reversal reason as VPKSHUS above.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_packus_epi32(simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF)), simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF))));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
++        break;
++
++    case PPC_INST_VPKUWUS:
++    case PPC_INST_VPKUWUS128:
++        // Same unsigned-clamp-then-signed-pack trick as VPKUHUS, one size up.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_packus_epi32(simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF)), simde_mm_min_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_set1_epi32(0xFFFF))));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
++        break;
++
+     case PPC_INST_VREFP:
+     case PPC_INST_VREFP128:
+         // TODO: see if we can use rcp safely
+@@ -2088,6 +2479,10 @@ bool Recompiler::Recompile(
+         break;
+ 
+     case PPC_INST_VSEL:
++    case PPC_INST_VSEL128:
++        // VMX128 vsel128 encodes the select mask as VS128 (== vD); the
++        // disassembler puts it in operands[3] either way, so both forms share
++        // this emission.
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_or_si128(simde_mm_andnot_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)), simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8))));", v(insn.operands[0]), v(insn.operands[3]), v(insn.operands[1]), v(insn.operands[3]), v(insn.operands[2]));
+         break;
+ 
+@@ -2130,6 +2525,10 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_set1_epi8(char(0x{:X})));", v(insn.operands[0]), insn.operands[1]);
+         break;
+ 
++    case PPC_INST_VSPLTISH:
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u16, simde_mm_set1_epi16(short(0x{:X})));", v(insn.operands[0]), insn.operands[1]);
++        break;
++
+     case PPC_INST_VSPLTISW:
+     case PPC_INST_VSPLTISW128:
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_set1_epi32(int(0x{:X})));", v(insn.operands[0]), insn.operands[1]);
+@@ -2169,6 +2568,10 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_ps({}.f32, simde_mm_sub_ps(simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+ 
++    case PPC_INST_VSUBSHS:
++        println("\tsimde_mm_store_si128((simde__m128i*){}.s16, simde_mm_subs_epi16(simde_mm_load_si128((simde__m128i*){}.s16), simde_mm_load_si128((simde__m128i*){}.s16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
++        break;
++
+     case PPC_INST_VSUBSWS:
+         // TODO: vectorize
+         for (size_t i = 0; i < 4; i++)
+@@ -2186,6 +2589,13 @@ bool Recompiler::Recompile(
+         println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_sub_epi16(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
+         break;
+ 
++    case PPC_INST_VSUBUWS:
++        // No 32-bit unsigned saturating subtract exists in SSE either (see
++        // VADDUWS above for the add side). Clamping at zero is a max away:
++        // max_epu32(a, b) - b is a - b when a >= b, and 0 when a < b.
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_sub_epi32(simde_mm_max_epu32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_load_si128((simde__m128i*){}.u32)), simde_mm_load_si128((simde__m128i*){}.u32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), v(insn.operands[2]));
++        break;
++
+     case PPC_INST_VUPKD3D128:
+         // TODO: vectorize somehow?
+         // NOTE: handling vector reversal here too
+@@ -2212,6 +2622,38 @@ bool Recompiler::Recompile(
+             println("\t{} = {};", v(insn.operands[0]), vTemp());
+             break;
+ 
++        case 3: // float16_2: (x, y, 0, 1), same lane pattern as the 2-shorts case.
++            if ((insn.operands[2] & 0x3) != 0)
++                fmt::println("Unexpected float16_2 unpack shift at {:X}", base);
++
++            for (size_t i = 0; i < 2; i++)
++            {
++                println("\t{}.u32 = {}.u16[{}];", temp(), v(insn.operands[1]), 1 - i);
++                println("\t{0}.u32[{1}] = (({2}.u32 & 0x8000) << 16) | (({2}.u32 & 0x7C00) == 0x7C00 ? (0x7F800000 | (({2}.u32 & 0x3FF) << 13)) : (({2}.u32 & 0x7C00) == 0 ? 0 : ((((({2}.u32 >> 10) & 0x1F) + 112) << 23) | (({2}.u32 & 0x3FF) << 13))));", vTemp(), 3 - i, temp());
++                // Half-precision denormals become small *normal* floats (mant * 2^-24);
++                // the bit path above would flush them, so patch them in exactly.
++                println("\tif (({0}.u32 & 0x7C00) == 0 && ({0}.u32 & 0x3FF) != 0) {1}.f32[{2}] = (({0}.u32 & 0x8000) ? -5.9604644775390625e-8f : 5.9604644775390625e-8f) * float(int32_t({0}.u32 & 0x3FF));", temp(), vTemp(), 3 - i);
++            }
++            println("\t{}.f32[1] = 0.0f;", vTemp());
++            println("\t{}.f32[0] = 1.0f;", vTemp());
++            println("\t{} = {};", v(insn.operands[0]), vTemp());
++            break;
++
++        case 5: // float16_4: the inverse of VPKD3D128 float16_4 with a zero shift —
++                // under the reversed vector storage the lane mapping is the identity:
++                // f32[i] = half(u16[i]).
++            if ((insn.operands[2] & 0x3) != 0)
++                fmt::println("Unexpected float16_4 unpack shift at {:X}", base);
++
++            for (size_t i = 0; i < 4; i++)
++            {
++                println("\t{}.u32 = {}.u16[{}];", temp(), v(insn.operands[1]), i);
++                println("\t{0}.u32[{1}] = (({2}.u32 & 0x8000) << 16) | (({2}.u32 & 0x7C00) == 0x7C00 ? (0x7F800000 | (({2}.u32 & 0x3FF) << 13)) : (({2}.u32 & 0x7C00) == 0 ? 0 : ((((({2}.u32 >> 10) & 0x1F) + 112) << 23) | (({2}.u32 & 0x3FF) << 13))));", vTemp(), i, temp());
++                println("\tif (({0}.u32 & 0x7C00) == 0 && ({0}.u32 & 0x3FF) != 0) {1}.f32[{2}] = (({0}.u32 & 0x8000) ? -5.9604644775390625e-8f : 5.9604644775390625e-8f) * float(int32_t({0}.u32 & 0x3FF));", temp(), vTemp(), i);
++            }
++            println("\t{} = {};", v(insn.operands[0]), vTemp());
++            break;
++
+         default:
+             println("\t__builtin_debugtrap();");
+             break;
+@@ -2270,8 +2712,7 @@ bool Recompiler::Recompile(
+ #if 1
+     if (strchr(insn.opcode->name, '.'))
+     {
+-        int lastLine = out.find_last_of('\n', out.size() - 2);
+-        if (out.find("cr0", lastLine + 1) == std::string::npos && out.find("cr6", lastLine + 1) == std::string::npos)
++        if (out.find("cr0", outSizeBeforeInstruction) == std::string::npos && out.find("cr6", outSizeBeforeInstruction) == std::string::npos)
+             fmt::println("{} at {:X} has RC bit enabled but no comparison was generated", insn.opcode->name, base);
+     }
+ #endif
+@@ -2617,6 +3058,26 @@ void Recompiler::Recompile(const std::filesystem::path& headerFilePath)
+     }
+ 
+     SaveCurrentOutData();
++
++    // A run that emits fewer TUs than the previous one (function count shrank,
++    // e.g. size overrides merged split functions) leaves the previous run's
++    // trailing ppc_recomp.N.cpp files on disk. Build systems glob the output
++    // directory, so those stale files re-define every function they contain —
++    // 44 duplicate-symbol link errors the first time this happened. Delete
++    // anything past the last index we actually wrote.
++    {
++        std::string directoryPath = config.directoryPath;
++        if (!directoryPath.empty())
++            directoryPath += "/";
++
++        for (size_t i = cppFileIndex; ; i++)
++        {
++            auto stalePath = fmt::format("{}{}/ppc_recomp.{}.cpp", directoryPath, config.outDirectoryPath, i);
++            if (!std::filesystem::remove(stalePath))
++                break;
++            fmt::println("Removed stale {}", stalePath);
++        }
++    }
+ }
+ 
+ void Recompiler::SaveCurrentOutData(const std::string_view& name)
+diff --git a/XenonRecomp/recompiler_config.cpp b/XenonRecomp/recompiler_config.cpp
+index 81330a4..f687253 100644
+--- a/XenonRecomp/recompiler_config.cpp
++++ b/XenonRecomp/recompiler_config.cpp
+@@ -87,6 +87,24 @@ void RecompilerConfig::Load(const std::string_view& configFilePath)
+                     {
+                         switchTable.labels.push_back(*label.value<uint32_t>());
+                     }
++                    // Optional; absent means "the dispatch register holds an index"
++                    // (the address-table idiom). See RecompilerSwitchTable::values.
++                    if (auto valueArray = table["values"].as_array())
++                    {
++                        for (auto& value : *valueArray)
++                        {
++                            switchTable.values.push_back(*value.value<uint32_t>());
++                        }
++                    }
++                    if (!switchTable.values.empty() &&
++                        switchTable.values.size() != switchTable.labels.size())
++                    {
++                        fmt::println("ERROR: switch table at {:X} has {} values for {} labels; "
++                                     "they must correspond one-to-one",
++                                     *table["base"].value<uint32_t>(),
++                                     switchTable.values.size(), switchTable.labels.size());
++                        std::exit(1);
++                    }
+                     switchTables.emplace(*table["base"].value<uint32_t>(), std::move(switchTable));
+                 }
+             }
+diff --git a/XenonRecomp/recompiler_config.h b/XenonRecomp/recompiler_config.h
+index 534e503..22a761f 100644
+--- a/XenonRecomp/recompiler_config.h
++++ b/XenonRecomp/recompiler_config.h
+@@ -4,6 +4,24 @@ struct RecompilerSwitchTable
+ {
+     uint32_t r;
+     std::vector<uint32_t> labels;
++
++    // Optional case constants, one per label.
++    //
++    // A jump table is dispatched on whatever the guest leaves in `r`, and that is NOT
++    // always the label's position in `labels`. Two idioms are in the wild:
++    //
++    //   * the ADDRESS table  — `lwzx rX,rTable,rIdx; mtctr; bctr` — where `r` holds an
++    //     INDEX, so `case i:` is correct and `values` should be left empty;
++    //   * the COMPUTED-OFFSET table — `lhzx/lbzx rX,rTable,rIdx; add rCtr,rBase,rX;
++    //     mtctr; bctr` — where `r` holds the BYTE OFFSET just loaded from the table.
++    //     There `case i:` is wrong for every entry except the one whose offset happens
++    //     to be its index, i.e. only entry 0.
++    //
++    // A generator that recovers the second idiom must fill this in with the offsets it
++    // read out of the guest's table, so the emitted `switch` is keyed on the same
++    // quantity the guest dispatches on. See the safety note in recompiler.cpp for what
++    // getting this wrong used to cost.
++    std::vector<uint32_t> values;
+ };
+ 
+ struct RecompilerMidAsmHook
+diff --git a/XenonUtils/ppc_context.h b/XenonUtils/ppc_context.h
+index 31a86cd..75a73d1 100644
+--- a/XenonUtils/ppc_context.h
++++ b/XenonUtils/ppc_context.h
+@@ -5,10 +5,12 @@
+ #error "ppc_config.h must be included before ppc_context.h"
+ #endif
+ 
++#include <atomic> // sync/lwsync/eieio lower to std::atomic_*_fence
+ #include <climits>
+ #include <cmath>
+ #include <csetjmp>
+ #include <cstdint>
++#include <cstdio> // PPC_SWITCH_ABORT's honest-failure message
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -29,7 +31,15 @@
+ #define PPC_EXTERN_FUNC(x) extern PPC_FUNC(x)
+ #define PPC_WEAK_FUNC(x) __attribute__((weak,noinline)) PPC_FUNC(x)
+ 
++// Guarded like PPC_LOAD_*/PPC_CALL_INDIRECT_FUNC below, so a port can force-include a
++// header that defines its own prologue and still get this one's __builtin_assume by
++// pasting it in. Every emitted function body opens with this macro, which makes it the
++// only place a port can attach whole-image, per-function instrumentation that cannot be
++// bypassed: the weak-alias seam covers only functions you thought to hook, and an
++// indirect-call hook cannot see a direct or tail call.
++#ifndef PPC_FUNC_PROLOGUE
+ #define PPC_FUNC_PROLOGUE() __builtin_assume(((size_t)base & 0x1F) == 0)
++#endif
+ 
+ #ifndef PPC_LOAD_U8
+ #define PPC_LOAD_U8(x) *(volatile uint8_t*)(base + (x))
+@@ -113,6 +123,32 @@
+ #define PPC_CALL_INDIRECT_FUNC(x) (PPC_LOOKUP_FUNC(base, x))(ctx, base)
+ #endif
+ 
++// The default arm of a recovered jump table: a dispatch value the table does not cover.
++//
++// This used to be `__builtin_unreachable()`, which is a promise to the optimiser that
++// the statically recovered table is complete and correctly keyed. Given that promise
++// the compiler removes the bounds check, so an uncovered value indexes past the end of
++// the jump table into the next one and transfers control into an unrelated function's
++// body — keeping the current frame, bypassing every prologue, hook and coverage mark.
++// The resulting fault has no causal relation to the bug.
++//
++// A table is a static-analysis RESULT, not a fact, so the default arm must fail
++// honestly. `dispatchPc` is the guest address of the `bctr`; `value` is what the guest
++// actually had. Ports may override this (a port with a crash reporter will want to
++// route it there); the fallback writes to stderr and traps.
++#ifndef PPC_SWITCH_ABORT
++#define PPC_SWITCH_ABORT(dispatchPc, value)                                             \
++    do                                                                                  \
++    {                                                                                   \
++        fprintf(stderr,                                                                 \
++                "\n[ppc] jump table at %08X: dispatch value %08X is not in the "        \
++                "recovered table.\n[ppc] The table is incomplete or keyed on the "      \
++                "wrong quantity -- re-run the table scanner.\n",                        \
++                (unsigned)(dispatchPc), (unsigned)(value));                             \
++        __builtin_trap();                                                               \
++    } while (0)
++#endif
++
+ typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
+ 
+ struct PPCFuncMapping
+@@ -682,6 +718,22 @@ inline simde__m128i simde_mm_vctsxs(simde__m128 src1)
+     return simde_mm_andnot_si128(simde_mm_castps_si128(xmm2), simde_mm_castps_si128(dest));
+ }
+ 
++// vctuxs: float -> u32 with saturation (NaN and negatives -> 0, >= 2^32 -> 0xFFFFFFFF).
++// cvttps_epi32 only reaches INT_MAX, so lanes >= 2^31 are converted with the high
++// bit split off (subtract 2^31, convert, add it back as an integer).
++inline simde__m128i simde_mm_vctuxs(simde__m128 src1)
++{
++    simde__m128 zero = simde_mm_setzero_ps();
++    // max_ps returns the second operand when either input is NaN, so this also maps NaN to 0
++    simde__m128 clamped = simde_mm_max_ps(src1, zero);
++    simde__m128 two31 = simde_mm_set1_ps(2147483648.0f);
++    simde__m128i lo = simde_mm_cvttps_epi32(clamped);
++    simde__m128i hi = simde_mm_add_epi32(simde_mm_cvttps_epi32(simde_mm_sub_ps(clamped, two31)), simde_mm_set1_epi32(INT_MIN));
++    simde__m128i result = simde_mm_blendv_epi8(lo, hi, simde_mm_castps_si128(simde_mm_cmpge_ps(clamped, two31)));
++    // saturate lanes at or above 2^32 (cmpge produces all-ones = 0xFFFFFFFF)
++    return simde_mm_or_si128(result, simde_mm_castps_si128(simde_mm_cmpge_ps(clamped, simde_mm_set1_ps(4294967296.0f))));
++}
++
+ inline simde__m128i simde_mm_vsr(simde__m128i a, simde__m128i b)
+ {
+     b = simde_mm_srli_epi64(simde_mm_slli_epi64(b, 61), 61);
+diff --git a/XenonUtils/xex.cpp b/XenonUtils/xex.cpp
+index 4e79042..0ec7116 100644
+--- a/XenonUtils/xex.cpp
++++ b/XenonUtils/xex.cpp
+@@ -139,122 +139,152 @@ Image Xex2LoadImage(const uint8_t* data, size_t dataSize)
+     {
+         assert(fileFormatInfo->compressionType <= XEX_COMPRESSION_NORMAL);
+ 
+-        std::unique_ptr<uint8_t[]> decryptedData;
+-        const uint8_t* srcData = nullptr;
+-
+-        if (fileFormatInfo->encryptionType == XEX_ENCRYPTION_NORMAL)
++        // Decrypt (if encrypted) and decompress with one candidate AES key, returning
++        // null if that key is not the right one. `encryptionType == XEX_ENCRYPTION_NORMAL`
++        // does NOT say *which* key: retail titles use Xex2RetailKey, XBLA/arcade titles
++        // are routinely built with the all-zero devkit key, and the header carries no
++        // discriminator. So the caller below tries both, exactly as Xenia does. Without
++        // this, a devkit-key title fails the first block's SHA-1 and Xex2LoadImage
++        // returns an empty Image with no diagnostic (found on Dead Rising 2: Case Zero,
++        // title 58410A8D).
++        auto tryKey = [&](const uint8_t* aesKey) -> std::unique_ptr<uint8_t[]>
+         {
+-            constexpr uint32_t KeySize = 16;
+-            AES_ctx aesContext;
++            std::unique_ptr<uint8_t[]> decryptedData;
++            std::unique_ptr<uint8_t[]> out;
++            const uint8_t* srcData = nullptr;
++            size_t outSize = security->imageSize;
+ 
+-            uint8_t decryptedKey[KeySize];
+-            memcpy(decryptedKey, security->aesKey, KeySize);
+-            AES_init_ctx_iv(&aesContext, Xex2RetailKey, AESBlankIV);
+-            AES_CBC_decrypt_buffer(&aesContext, decryptedKey, KeySize);
++            if (fileFormatInfo->encryptionType == XEX_ENCRYPTION_NORMAL)
++            {
++                constexpr uint32_t KeySize = 16;
++                AES_ctx aesContext;
+ 
+-            decryptedData = std::make_unique<uint8_t[]>(dataSize - header->headerSize);
+-            memcpy(decryptedData.get(), data + header->headerSize, dataSize - header->headerSize);
+-            AES_init_ctx_iv(&aesContext, decryptedKey, AESBlankIV);
+-            AES_CBC_decrypt_buffer(&aesContext, decryptedData.get(), dataSize - header->headerSize);
++                uint8_t decryptedKey[KeySize];
++                memcpy(decryptedKey, security->aesKey, KeySize);
++                AES_init_ctx_iv(&aesContext, aesKey, AESBlankIV);
++                AES_CBC_decrypt_buffer(&aesContext, decryptedKey, KeySize);
+ 
+-            srcData = decryptedData.get();
+-        }
+-        else
+-        {
+-            srcData = data + header->headerSize;
+-        }
++                decryptedData = std::make_unique<uint8_t[]>(dataSize - header->headerSize);
++                memcpy(decryptedData.get(), data + header->headerSize, dataSize - header->headerSize);
++                AES_init_ctx_iv(&aesContext, decryptedKey, AESBlankIV);
++                AES_CBC_decrypt_buffer(&aesContext, decryptedData.get(), dataSize - header->headerSize);
+ 
+-        if (fileFormatInfo->compressionType == XEX_COMPRESSION_NONE)
+-        {
+-            result = std::make_unique<uint8_t[]>(imageSize);
+-            memcpy(result.get(), srcData, imageSize);
+-        }
+-        else if (fileFormatInfo->compressionType == XEX_COMPRESSION_BASIC)
+-        {
+-            auto* blocks = reinterpret_cast<const Xex2FileBasicCompressionBlock*>(fileFormatInfo + 1);
+-            const size_t numBlocks = (fileFormatInfo->infoSize / sizeof(Xex2FileBasicCompressionInfo)) - 1;
++                srcData = decryptedData.get();
++            }
++            else
++            {
++                srcData = data + header->headerSize;
++            }
+ 
+-            imageSize = 0;
+-            for (size_t i = 0; i < numBlocks; i++)
++            if (fileFormatInfo->compressionType == XEX_COMPRESSION_NONE)
+             {
+-                imageSize += blocks[i].dataSize + blocks[i].zeroSize;
++                out = std::make_unique<uint8_t[]>(outSize);
++                memcpy(out.get(), srcData, outSize);
+             }
++            else if (fileFormatInfo->compressionType == XEX_COMPRESSION_BASIC)
++            {
++                auto* blocks = reinterpret_cast<const Xex2FileBasicCompressionBlock*>(fileFormatInfo + 1);
++                const size_t numBlocks = (fileFormatInfo->infoSize / sizeof(Xex2FileBasicCompressionInfo)) - 1;
+ 
+-            result = std::make_unique<uint8_t[]>(imageSize);
+-            auto* destData = result.get();
++                outSize = 0;
++                for (size_t i = 0; i < numBlocks; i++)
++                {
++                    outSize += blocks[i].dataSize + blocks[i].zeroSize;
++                }
+ 
+-            for (size_t i = 0; i < numBlocks; i++)
+-            {
+-                memcpy(destData, srcData, blocks[i].dataSize);
++                out = std::make_unique<uint8_t[]>(outSize);
++                auto* destData = out.get();
+ 
+-                srcData += blocks[i].dataSize;
+-                destData += blocks[i].dataSize;
++                for (size_t i = 0; i < numBlocks; i++)
++                {
++                    memcpy(destData, srcData, blocks[i].dataSize);
+ 
+-                memset(destData, 0, blocks[i].zeroSize);
+-                destData += blocks[i].zeroSize;
++                    srcData += blocks[i].dataSize;
++                    destData += blocks[i].dataSize;
++
++                    memset(destData, 0, blocks[i].zeroSize);
++                    destData += blocks[i].zeroSize;
++                }
+             }
+-        }
+-        else if (fileFormatInfo->compressionType == XEX_COMPRESSION_NORMAL)
+-        {
+-            result = std::make_unique<uint8_t[]>(imageSize);
+-            auto* destData = result.get();
++            else if (fileFormatInfo->compressionType == XEX_COMPRESSION_NORMAL)
++            {
++                out = std::make_unique<uint8_t[]>(outSize);
++                auto* destData = out.get();
+ 
+-            const Xex2CompressedBlockInfo* blocks = &((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->firstBlock;
+-            const uint32_t headerSize = header->headerSize.get();
++                const Xex2CompressedBlockInfo* blocks = &((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->firstBlock;
++                const uint32_t headerSize = header->headerSize.get();
+ 
+-            const uint32_t exeLength = dataSize - headerSize;
+-            const uint8_t* exeBuffer = srcData;
++                const uint32_t exeLength = dataSize - headerSize;
++                const uint8_t* exeBuffer = srcData;
+ 
+-            auto compressBuffer = std::make_unique<uint8_t[]>(exeLength);
+-            const uint8_t* p = NULL;
+-            uint8_t* d = NULL;
+-            sha1::SHA1 s;
++                auto compressBuffer = std::make_unique<uint8_t[]>(exeLength);
++                const uint8_t* p = NULL;
++                uint8_t* d = NULL;
++                sha1::SHA1 s;
+ 
+-            p = exeBuffer;
+-            d = compressBuffer.get();
++                p = exeBuffer;
++                d = compressBuffer.get();
+ 
+-            uint8_t blockCalcedDigest[0x14];
+-            while (blocks->blockSize) 
+-            {
+-                const uint8_t* pNext = p + blocks->blockSize;
+-                const auto* nextBlock = (const Xex2CompressedBlockInfo*)p;
++                uint8_t blockCalcedDigest[0x14];
++                while (blocks->blockSize)
++                {
++                    const uint8_t* pNext = p + blocks->blockSize;
++                    const auto* nextBlock = (const Xex2CompressedBlockInfo*)p;
+ 
+-                s.reset();
+-                s.processBytes(p, blocks->blockSize);
+-                s.finalize(blockCalcedDigest);
++                    s.reset();
++                    s.processBytes(p, blocks->blockSize);
++                    s.finalize(blockCalcedDigest);
+ 
+-                if (memcmp(blockCalcedDigest, blocks->blockHash, 0x14) != 0)
+-                    return {};
++                    // Wrong key => the "block" is noise and this is where it shows up.
++                    if (memcmp(blockCalcedDigest, blocks->blockHash, 0x14) != 0)
++                        return nullptr;
+ 
+-                p += 4;
+-                p += 20;
++                    p += 4;
++                    p += 20;
+ 
+-                while (true) 
+-                {
+-                    const size_t chunkSize = (p[0] << 8) | p[1];
+-                    p += 2;
++                    while (true)
++                    {
++                        const size_t chunkSize = (p[0] << 8) | p[1];
++                        p += 2;
++
++                        if (!chunkSize)
++                            break;
+ 
+-                    if (!chunkSize)
+-                        break;
++                        memcpy(d, p, chunkSize);
++                        p += chunkSize;
++                        d += chunkSize;
++                    }
+ 
+-                    memcpy(d, p, chunkSize);
+-                    p += chunkSize;
+-                    d += chunkSize;
++                    p = pNext;
++                    blocks = nextBlock;
+                 }
+ 
+-                p = pNext;
+-                blocks = nextBlock;
++                int resultCode = 0;
++                uint32_t uncompressedSize = security->imageSize;
++                uint8_t* buffer = destData;
++
++                resultCode = lzxDecompress(compressBuffer.get(), d - compressBuffer.get(), buffer, uncompressedSize, ((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->windowSize, nullptr, 0);
++
++                if (resultCode)
++                    return nullptr;
+             }
+ 
+-            int resultCode = 0;
+-            uint32_t uncompressedSize = security->imageSize;
+-            uint8_t* buffer = destData;
++            // The uncompressed image is a PE; if it does not start with "MZ" the key was
++            // wrong. NONE/BASIC compression has no checksum of its own, so this is the
++            // only validation those paths get — and it is the same check Xenia uses.
++            if (!out || outSize < 2 || out[0] != 'M' || out[1] != 'Z')
++                return nullptr;
+ 
+-            resultCode = lzxDecompress(compressBuffer.get(), d - compressBuffer.get(), buffer, uncompressedSize, ((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->windowSize, nullptr, 0);
++            imageSize = outSize;
++            return out;
++        };
+ 
+-            if (resultCode)
+-                return {};
+-        }
++        result = tryKey(Xex2RetailKey);
++        if (result == nullptr)
++            result = tryKey(Xex2DevkitKey);
++
++        if (result == nullptr)
++            return {};
+     }
+ 
+     image.data = std::move(result);
+diff --git a/XenonUtils/xex.h b/XenonUtils/xex.h
+index 363efff..71cd011 100644
+--- a/XenonUtils/xex.h
++++ b/XenonUtils/xex.h
+@@ -3,6 +3,11 @@
+ #include "xbox.h"
+ 
+ inline constexpr uint8_t Xex2RetailKey[16] = { 0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91 };
++// The "devkit" key is all zeroes. XBLA / arcade packages are commonly encrypted with it
++// even though their encryptionType field reads XEX_ENCRYPTION_NORMAL exactly like a
++// retail-key title's does; nothing in the header distinguishes them, so the loader has
++// to try both (see Xex2LoadImage).
++inline constexpr uint8_t Xex2DevkitKey[16] = {};
+ inline constexpr uint8_t AESBlankIV[16] = {};
+ 
+ enum Xex2ModuleFlags

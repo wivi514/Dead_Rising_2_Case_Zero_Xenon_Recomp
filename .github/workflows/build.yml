@@ -1,0 +1,149 @@
+# CI (release-plan E.1), honestly scoped:
+#
+#   A GREEN TICK HERE DOES NOT MEAN "THE RELEASE BUILDS".
+#
+# No runner has an XEX — no runner may — so the real recompiled image (57,822
+# functions, 156 MB of generated C++) can never exist here. What this workflow
+# proves is exactly and only:
+#
+#   * the ~30 HOST sources under runtime/ compile and link on Linux and Windows,
+#     against upstream XenonRecomp/XenosRecomp plus this repo's vendored local
+#     patches (tools/ci/*.patch — regenerate with tools/ci/regen_patches.sh);
+#   * `cz_runtime --smoke` passes against a STUB image (tools/gen_stub_ppc.py):
+#     every symbol the runtime references resolves, every mapping entry is sane.
+#
+# That catches the overwhelming majority of what a port breaks — includes,
+# platform ifdefs, link lines — and nothing else. The release artifacts are built
+# and gated on the dev machines (tools/release_package_linux.sh + the clean-
+# container gate; tools/release_package_windows.ps1), where the game exists.
+#
+# macOS is ABSENT on purpose: milestone C (the macOS port) has not started, the
+# tree is not expected to compile there, and a permanently red job teaches people
+# to ignore the whole workflow. Add a macos-14 job when C lands.
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  # The upstream commits the vendored patches apply onto (their merge-bases with
+  # our local checkouts). tools/ci/regen_patches.sh prints fresh values; a stale
+  # pin fails loudly at the `git apply` step, which names that script.
+  XENON_BASE: ddd128bcca99fe8bfbb99bea583c972351fa6ace
+  XENOS_BASE: 990d03b28a27b50277ee5d8d942e1c5f873869d1
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang libsdl2-dev libvulkan-dev \
+            libavcodec-dev libavutil-dev
+
+      - name: clone recompilers at pinned bases and apply local patches
+        run: |
+          git clone --recursive https://github.com/hedge-dev/XenonRecomp ../XenonRecomp
+          git -C ../XenonRecomp checkout $XENON_BASE
+          git -C ../XenonRecomp submodule update --init --recursive
+          git -C ../XenonRecomp apply "$PWD/tools/ci/xenonrecomp-local.patch"
+          git clone https://github.com/hedge-dev/XenosRecomp ../XenosRecomp
+          git -C ../XenosRecomp checkout $XENOS_BASE
+          git -C ../XenosRecomp submodule update --init thirdparty/dxc-bin
+          git -C ../XenosRecomp apply "$PWD/tools/ci/xenosrecomp-local.patch"
+
+      - name: build XenonUtils (the XEX loader the runtime links)
+        run: |
+          cmake -S ../XenonRecomp -B ../XenonRecomp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build ../XenonRecomp/build --target XenonUtils fmt xxhash
+
+      - name: generate the stub image
+        run: python3 tools/gen_stub_ppc.py --out ../stub-ppc --xenon ../XenonRecomp
+
+      - name: configure and build the runtime
+        run: |
+          cmake -S runtime -B runtime/build -G Ninja \
+            -DCZ_PPC_DIR="$PWD/../stub-ppc" \
+            -DXENON_ROOT="$PWD/../XenonRecomp" \
+            -DXENON_BUILD="$PWD/../XenonRecomp/build" \
+            -DXENOS_ROOT="$PWD/../XenosRecomp"
+          cmake --build runtime/build -j"$(nproc)"
+
+      - name: smoke against the stub image
+        run: runtime/build/cz_runtime --smoke
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: install ninja
+        run: choco install -y ninja
+
+      # vcpkg with the GitHub Actions binary cache: the first run builds ffmpeg
+      # and SDL2 from source (slow); every later run restores binaries. The
+      # export step must run FIRST — vcpkg reads the cache credentials from the
+      # environment at install time.
+      - name: expose the GHA cache to vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: install SDL2, ffmpeg, Vulkan via vcpkg
+        env:
+          VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg" install `
+            sdl2 ffmpeg[avcodec]:x64-windows vulkan-headers vulkan-loader --triplet x64-windows
+
+      - name: clone recompilers at pinned bases and apply local patches
+        shell: bash
+        run: |
+          git clone --recursive https://github.com/hedge-dev/XenonRecomp ../XenonRecomp
+          git -C ../XenonRecomp checkout $XENON_BASE
+          git -C ../XenonRecomp submodule update --init --recursive
+          git -C ../XenonRecomp apply "$PWD/tools/ci/xenonrecomp-local.patch"
+          git clone https://github.com/hedge-dev/XenosRecomp ../XenosRecomp
+          git -C ../XenosRecomp checkout $XENOS_BASE
+          git -C ../XenosRecomp submodule update --init thirdparty/dxc-bin
+          git -C ../XenosRecomp apply "$PWD/tools/ci/xenosrecomp-local.patch"
+
+      - name: build XenonUtils
+        run: |
+          cmake -S ../XenonRecomp -B ../XenonRecomp/build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+          cmake --build ../XenonRecomp/build --target XenonUtils fmt xxhash
+
+      - name: generate the stub image
+        run: python tools/gen_stub_ppc.py --out ../stub-ppc --xenon ../XenonRecomp
+
+      - name: configure and build the runtime
+        run: |
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
+          cmake -S runtime -B runtime/build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DCZ_PPC_DIR="$PWD/../stub-ppc" `
+            -DXENON_ROOT="$PWD/../XenonRecomp" `
+            -DXENON_BUILD="$PWD/../XenonRecomp/build" `
+            -DXENOS_ROOT="$PWD/../XenosRecomp" `
+            -DCMAKE_PREFIX_PATH="$vcpkg" `
+            -DCZ_SDL2_PREFIX="$vcpkg" `
+            -DCZ_FFMPEG_PREFIX="$vcpkg" `
+            -DCZ_SPLIT_DEBUG=OFF -DCZ_BUNDLE_RPATH=OFF
+          cmake --build runtime/build
+
+      - name: smoke against the stub image
+        run: runtime/build/cz_runtime.exe --smoke

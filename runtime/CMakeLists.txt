@@ -68,7 +68,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Sibling XenonRecomp checkout: supplies simde (which ppc_context.h includes) and,
 # from phase 1, the XEX loader in XenonUtils.
 set(XENON_ROOT "$ENV{HOME}/GithubRepo/XenonRecomp" CACHE PATH "XenonRecomp source root")
-set(PPC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ppc")
+# CZ_PPC_DIR overrides where the generated code comes from — CI points it at a
+# STUB tree from tools/gen_stub_ppc.py, because no runner may hold the game
+# (release-plan E.1). Unset, the sibling ppc/ is used as always.
+set(CZ_PPC_DIR "" CACHE PATH "Generated ppc tree (default: sibling ppc/)")
+if(CZ_PPC_DIR)
+    set(PPC_DIR "${CZ_PPC_DIR}")
+else()
+    set(PPC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ppc")
+endif()
 
 if(NOT EXISTS "${PPC_DIR}/ppc_func_mapping.cpp")
     message(FATAL_ERROR

@@ -1,0 +1,1609 @@
+diff --git a/XenosRecomp/pch.h b/XenosRecomp/pch.h
+index e59682c..c9592ad 100644
+--- a/XenosRecomp/pch.h
++++ b/XenosRecomp/pch.h
+@@ -12,6 +12,7 @@
+ #include <execution>
+ #include <filesystem>
+ #include <map>
++#include <set>
+ #include <smolv.h>
+ #include <fmt/core.h>
+ #include <string>
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 1c74034..f9cb1d4 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -12,6 +12,16 @@
+ 
+ #if !defined(__cplusplus) || defined(__INTELLISENSE__)
+ 
++// Implicit-LOD Sample() is illegal outside fragment/compute stages, and Fable2
++// vertex shaders fetch textures (vertex texture fetch). The recompiler defines
++// XENOS_VERTEX_SHADER before including this header for a VS; hardware VTF has
++// no derivatives either, so LOD 0 matches Xenos behaviour.
++#ifdef XENOS_VERTEX_SHADER
++    #define XENOS_SAMPLE(TEXTURE, SAMPLER, COORD) (TEXTURE).SampleLevel(SAMPLER, COORD, 0.0)
++#else
++    #define XENOS_SAMPLE(TEXTURE, SAMPLER, COORD) (TEXTURE).Sample(SAMPLER, COORD)
++#endif
++
+ #define FLT_MIN asfloat(0xff7fffff)
+ #define FLT_MAX asfloat(0x7f7fffff)
+ 
+@@ -30,6 +40,165 @@ struct PushConstants
+ #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
+ #define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
+ #define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
++// Fable2 param-gen (Xenos SC-generated pixel position). Bit r set => GPR r is
++// filled with the param-gen value (pixel window position) instead of the vertex
++// interpolator, because the bound vertex shader does not export interpolator r.
++// The runtime computes this per draw (PS reads r, VS doesn't export r). Offset 276
++// is the free c17.y slot after g_AlphaThreshold, before the 1D-alias table at 288.
++#define g_ParamGenMask             vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 276)
++// Fable2 tessellation (P1 Stage B): the side of the quad grid the runtime has
++// expanded each patch into, or 0 for an ordinary draw. 280 is the last free
++// slot before the 1D-alias table at 288. See XeVertexSeed below.
++#define g_TessGrid                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 280)
++// ALPHA-TO-MASK (Xenos RB_COLORCONTROL bit 4). Non-zero when the draw enables it AND
++// the guest surface is 4x MSAA. 284 is the last free dword before the 1D-alias table
++// at 288. See XeAlphaTestThreshold below for why a host renderer that rasterises one
++// sample per guest SAMPLE can emulate this exactly rather than approximately.
++#define g_AlphaToMask              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 284)
++// Fable2: window->NDC position transform (identity when the guest viewport
++// transform is enabled); 1D descriptor indices occupy 288..351.
++#define g_PosScale                 vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 352)
++#define g_PosOffset                vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 360)
++// USER CLIP PLANES (Case Zero part 57). Six float4 plane equations at +2080, after the
++// dependent-vfetch table (544 + 96*16 = 2080). The runtime writes only the planes
++// PA_CL_CLIP_CNTL enables for the draw; the block is zeroed per draw and a zero plane
++// dots to 0, which Vulkan keeps — so an unwritten plane can never clip. Read only by
++// the XE_USER_CLIP_PLANES epilogue (a second-cache arm until proven).
++#define g_ClipPlane(n)             vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 2080 + 16 * (n))
++
++// Fable2 DEPENDENT VERTEX FETCH (docs/world-era-fatal-and-selector.md §3z).
++//
++// A Xenos vfetch addresses its stream with a REGISTER; only while that register
++// still holds the auto-loaded vertex index is the fetch expressible as a Vulkan
++// vertex attribute. Fable2 chains fetches (bone palettes, per-vertex record
++// indices, particle state), so a dependent fetch is emitted as a raw load from
++// the stream itself, at the index the shader actually computed — dest-swizzle
++// lane composition, chained indirection and address arithmetic all included by
++// construction, which is exactly what the runtime-side CPU gather could not do.
++//
++// The runtime publishes a per-draw slot table at SharedConstants+544: 16 bytes
++// per fetch slot {deviceAddress.lo, deviceAddress.hi, sizeDwords, 0} for every
++// slot a dependent fetch reads (whole stream, dword-swapped like every vertex
++// copy). A zero entry (old runtime, or the runtime chose to skip) reads as
++// (0,0,0,0), the pre-§3z fallback. Reads past the declared size return zero,
++// which is the Xenos fetch-constant contract.
++float4 XeVfetchDep(uint slot, float addrVal, uint rounded, uint stride,
++                   int offsetDw, uint fmt, uint sgn, uint numInt)
++{
++    uint2 tbl = vk::RawBufferLoad<uint2>(g_PushConstants.SharedConstants + 544 + slot * 16);
++    uint sizeDw = vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 544 + slot * 16 + 8);
++    uint elemDw = (fmt == 26 || fmt == 32 || fmt == 37) ? 2u
++                : (fmt == 57) ? 3u
++                : (fmt == 38) ? 4u
++                : 1u;
++    int idx = int(floor(addrVal + (rounded != 0 ? 0.5 : 0.0)));
++    int startDw = idx * int(stride) + offsetDw;
++    if ((tbl.x | tbl.y) == 0 || startDw < 0 || uint(startDw) + elemDw > sizeDw)
++        return float4(0.0, 0.0, 0.0, 0.0);
++    uint64_t a = (uint64_t(tbl.y) << 32) | uint64_t(tbl.x);
++    a += uint64_t(uint(startDw)) * 4;
++    uint4 raw = uint4(0, 0, 0, 0);
++    raw.x = vk::RawBufferLoad<uint>(a);
++    if (elemDw > 1) raw.y = vk::RawBufferLoad<uint>(a + 4);
++    if (elemDw > 2) raw.z = vk::RawBufferLoad<uint>(a + 8);
++    if (elemDw > 3) raw.w = vk::RawBufferLoad<uint>(a + 12);
++    // Decode over the dword-swapped copy, matching the semantics the direct
++    // path gets from XenosVtxFormat's Vulkan formats (byte 0 of the LE dword is
++    // component x, low half is component x).
++    float4 v = float4(0.0, 0.0, 0.0, 0.0);
++    switch (fmt)
++    {
++    case 6: // 8_8_8_8
++    {
++        uint4 b = uint4(raw.x & 0xFF, (raw.x >> 8) & 0xFF, (raw.x >> 16) & 0xFF, raw.x >> 24);
++        if (sgn != 0)
++        {
++            int4 s = int4(b) - int4(b.x > 127 ? 256 : 0, b.y > 127 ? 256 : 0,
++                                    b.z > 127 ? 256 : 0, b.w > 127 ? 256 : 0);
++            v = (numInt != 0) ? float4(s) : max(float4(s) / 127.0, -1.0);
++        }
++        else
++            v = (numInt != 0) ? float4(b) : float4(b) / 255.0;
++        break;
++    }
++    case 25: // 16_16
++    case 26: // 16_16_16_16
++    {
++        uint4 h = uint4(raw.x & 0xFFFF, raw.x >> 16, raw.y & 0xFFFF, raw.y >> 16);
++        if (sgn != 0)
++        {
++            int4 s = int4(h) - int4(h.x > 32767 ? 65536 : 0, h.y > 32767 ? 65536 : 0,
++                                    h.z > 32767 ? 65536 : 0, h.w > 32767 ? 65536 : 0);
++            v = (numInt != 0) ? float4(s) : max(float4(s) / 32767.0, -1.0);
++        }
++        else
++            v = (numInt != 0) ? float4(h) : float4(h) / 65535.0;
++        break;
++    }
++    case 31: // 16_16_FLOAT
++        v = float4(f16tof32(raw.x & 0xFFFF), f16tof32(raw.x >> 16), 0.0, 0.0);
++        break;
++    case 32: // 16_16_16_16_FLOAT
++        v = float4(f16tof32(raw.x & 0xFFFF), f16tof32(raw.x >> 16),
++                   f16tof32(raw.y & 0xFFFF), f16tof32(raw.y >> 16));
++        break;
++    case 16: // 10_11_11 packed normal (tfetchR11G11B10's packed branch)
++        v = float4((raw.x & 0x00000400 ? -1.0 : 0.0) + ((raw.x & 0x3FF) / 1024.0),
++                   (raw.x & 0x00200000 ? -1.0 : 0.0) + (((raw.x >> 11) & 0x3FF) / 1024.0),
++                   (raw.x & 0x80000000 ? -1.0 : 0.0) + (((raw.x >> 22) & 0x1FF) / 512.0),
++                   0.0);
++        break;
++    case 7: // 2_10_10_10
++    {
++        uint3 c = uint3(raw.x & 0x3FF, (raw.x >> 10) & 0x3FF, (raw.x >> 20) & 0x3FF);
++        uint w2 = raw.x >> 30;
++        if (sgn != 0)
++        {
++            int3 s = int3(c) - int3(c.x > 511 ? 1024 : 0, c.y > 511 ? 1024 : 0,
++                                    c.z > 511 ? 1024 : 0);
++            int sw = int(w2) - (w2 > 1 ? 4 : 0);
++            v = (numInt != 0) ? float4(float3(s), float(sw))
++                              : float4(max(float3(s) / 511.0, -1.0), max(float(sw), -1.0));
++        }
++        else
++            v = (numInt != 0) ? float4(float3(c), float(w2))
++                              : float4(float3(c) / 1023.0, float(w2) / 3.0);
++        break;
++    }
++    case 33: // 32 (integer kept as float value; no 32-bit-normalized on Vulkan either)
++        v = float4(sgn != 0 ? float(asint(raw.x)) : float(raw.x), 0.0, 0.0, 0.0);
++        break;
++    case 36: // 32_FLOAT
++        v = float4(asfloat(raw.x), 0.0, 0.0, 0.0);
++        break;
++    case 37: // 32_32_FLOAT
++        v = float4(asfloat(raw.x), asfloat(raw.y), 0.0, 0.0);
++        break;
++    case 57: // 32_32_32_FLOAT
++        v = float4(asfloat(raw.x), asfloat(raw.y), asfloat(raw.z), 0.0);
++        break;
++    case 38: // 32_32_32_32_FLOAT
++        v = asfloat(raw);
++        break;
++    default: // unhandled format: zero, and the translator warned at build time
++        break;
++    }
++    return v;
++}
++// Fable2: the guest's 32 Xenos loop constants (registers 0x4908 + n) at 384..511.
++// Each is packed count/start/step in its low three bytes; a shader that loops a
++// run-time number of times (g_SamplesCount in the gauss-blur post pass) reads its
++// trip count from here rather than from the container's definition table.
++#define g_LoopConstantRaw(n)       vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384 + 4 * (n))
++#define LoopConstant(n)            int4(int(g_LoopConstantRaw(n) & 0xFF), \
++                                        int((g_LoopConstantRaw(n) >> 8) & 0xFF), \
++                                        int((g_LoopConstantRaw(n) >> 16) & 0xFF), 0)
++
++// Fable2: the full Xenos bool-constant file (256 bits, guest registers
++// 0x4900..0x4907) at 512..543. The single g_Booleans uint above only models the
++// 16+16 named-constant scheme; Fable2's shaders read raw global bool addresses
++// (e.g. b129 = dword 4 bit 1) that need the whole file.
++#define g_BoolConstant(n)          ((vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512 + 4 * ((n) >> 5)) >> ((n) & 31)) & 1)
+ 
+ [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+ 
+@@ -41,15 +210,71 @@ struct PushConstants
+     uint g_Booleans : packoffset(c16.x); \
+     uint g_SwappedTexcoords : packoffset(c16.y); \
+     float2 g_HalfPixelOffset : packoffset(c16.z); \
+-    float g_AlphaThreshold : packoffset(c17.x);
++    float g_AlphaThreshold : packoffset(c17.x); \
++    float2 g_PosScale : packoffset(c22.x); \
++    float2 g_PosOffset : packoffset(c22.z); \
++    uint4 g_LoopConstants[8] : packoffset(c24);
++
++// Same 384..511 window as the SPIR-V path, addressed as 8 uint4s.
++#define LoopConstant(n) int4(int((g_LoopConstants[(n) / 4][(n) % 4]) & 0xFF), \
++                             int((g_LoopConstants[(n) / 4][(n) % 4] >> 8) & 0xFF), \
++                             int((g_LoopConstants[(n) / 4][(n) % 4] >> 16) & 0xFF), 0)
+ 
+ uint g_SpecConstants();
+ 
++// D3D path carries only the named 16+16 bool scheme; raw-address reads see 0.
++#define g_BoolConstant(n) 0
++
++// The D3D path has no tessellation support; 0 makes XeVertexSeed below collapse
++// to the plain vertex index, i.e. exactly the pre-Stage-B behaviour.
++#define g_TessGrid 0
++
+ #endif
+ 
++// The seed for r0 of every Xenos vertex shader.
++//
++// ORDINARY DRAWS (g_TessGrid == 0): r0.x is the auto-loaded vertex index and
++// r0.yzw are zero — bit-identical to what this used to be inline.
++//
++// PATCH DRAWS (Xenos prim 0x11 triangle patch / 0x12 quad patch): Xenos does not
++// feed a vertex index at all. It feeds a point in the patch DOMAIN, and the
++// shader is a domain shader in all but name. Fable2's four landscape patch
++// vertex shaders read r0.x as a patch index (biased by c113), r0.yz as that
++// domain point, and r1.x as a 4-way patch orientation code — read off their own
++// disassembly, and consistent across both shader families.
++//
++// With no domain point every terrain vertex gets u = v = 0, collapses onto one
++// patch corner, and the draw writes nothing: measured at 0 % depth coverage
++// against 27 % once a domain is supplied, same draw stream and same render state
++// (docs/world-era-fatal-and-selector.md §3d-viii, §3e, §3f).
++//
++// There is no tessellator here and deliberately none added: the runtime expands
++// each patch host-side into a g_TessGrid x g_TessGrid grid of quads (6 vertices
++// per cell) and publishes the grid size. Everything below is then arithmetic on
++// the vertex index — no vertex buffer and no index buffer, which is what these
++// shaders already expect, since they declare no vertex inputs at all and the
++// guest's "index" buffer for such a draw holds tessellation FACTORS.
++float4 XeVertexSeed(uint vertexId)
++{
++    uint grid = g_TessGrid;
++    if (grid == 0)
++        return float4(vertexId, 0.0, 0.0, 0.0);
++
++    uint vpp    = 6u * grid * grid;   // vertices per patch
++    uint patch  = vertexId / vpp;
++    uint cell   = (vertexId % vpp) / 6u;
++    uint corner = vertexId % 6u;
++    // Two triangles per cell: (0,0) (1,0) (0,1) and (1,0) (1,1) (0,1).
++    float2 c = float2((corner == 1u || corner == 3u || corner == 4u) ? 1.0 : 0.0,
++                      (corner == 2u || corner == 4u || corner == 5u) ? 1.0 : 0.0);
++    float2 uv = (float2(float(cell % grid), float(cell / grid)) + c) / float(grid);
++    return float4(float(patch), uv.x, uv.y, 0.0);
++}
++
+ Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
+ Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
+ TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
++Texture1D<float4> g_Texture1DDescriptorHeap[] : register(t0, space4); // Fable2: menu LUTs (own space: s0/space3 is the sampler heap)
+ SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
+ 
+ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -59,10 +284,16 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+     return dimensions;
+ }
+ 
++float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
++{
++    Texture1D<float4> texture = g_Texture1DDescriptorHeap[resourceDescriptorIndex];
++    return XENOS_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
++}
++
+ float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+-    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
++    return XENOS_SAMPLE(texture, g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
+ }
+ 
+ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+@@ -135,17 +366,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+     float h1y = h1(fy);
+ 
+     float4 r =
+-        g0(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h0y) / float2(dimensions)) +
+-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h0y) / float2(dimensions))) +
+-        g1(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
+-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
++        g0(fy) * (g0x * XENOS_SAMPLE(texture, samplerState, float2(px + h0x, py + h0y) / float2(dimensions)) +
++            g1x * XENOS_SAMPLE(texture, samplerState, float2(px + h1x, py + h0y) / float2(dimensions))) +
++        g1(fy) * (g0x * XENOS_SAMPLE(texture, samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
++            g1x * XENOS_SAMPLE(texture, samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
+ 
+     return r;
+ }
+ 
+ float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
+ {
+-    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
++    return XENOS_SAMPLE(g_Texture3DDescriptorHeap[resourceDescriptorIndex], g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
+ }
+ 
+ struct CubeMapData
+@@ -156,7 +387,85 @@ struct CubeMapData
+ 
+ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
+ {
+-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
++    return XENOS_SAMPLE(g_TextureCubeDescriptorHeap[resourceDescriptorIndex], g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
++}
++
++// The 10_11_11 unpack for a DECLARED vertex input that rides a float-typed usage.
++// Dead Rising 2 wraps its packed normals as TEXCOORD (Fable 2 wraps them as NORMAL,
++// which the uint4 path + tfetchR11G11B10 below already covers), so the input variable is
++// float4 and the pipeline must bind the attribute R32_SFLOAT for the types to match —
++// binding R32_UINT against a float input is VUID-VkGraphicsPipelineCreateInfo-Input-08733,
++// and what the driver actually delivered was the packed dword's BITS as a float: any
++// normal whose dword has bits 30..23 all ones read as NaN, which Case Zero's shared tone
++// epilogue launders into exactly rgb(180,180,180) — the white-surface plateau. The float
++// carries raw bits only across the fetch (a plain 32-bit load; no arithmetic touches it
++// before the asuint), decoded here exactly as XeVfetchDep's case 16 does: x = bits 0..10,
++// y = 11..21, z = 22..31, sign bit at the top of each field. No spec constant: the fetch
++// instruction's own format field says the data is packed, statically, per shader.
++// The threshold the emitted alpha test clips against.
++//
++// Ordinarily this is just RB_ALPHA_REF, as published by the runtime at +272. The
++// interesting case is ALPHA-TO-MASK, which Xenos applies IN ADDITION to the alpha
++// test: fractional alpha becomes a per-SAMPLE coverage pattern inside the 4x MSAA
++// surface, and the resolve averages it. A host that rasterises a single sample per
++// guest PIXEL can only approximate that. A host that rasterises a single sample per
++// guest SAMPLE — which is what Case Zero's renderer does, because it scales window
++// coordinates 2x in both axes for a 4x surface and lets the EDRAM image hold the
++// sample grid — can reproduce it exactly: one of its pixels IS one of hardware's
++// samples, so "is this sample covered" and "keep this pixel" are the same question,
++// and the answer is a per-sample threshold.
++//
++// WHY IT MATTERS, in one sentence, because the omission looked harmless for six
++// parts: this title's foliage draws GREATER at RB_ALPHA_REF = 0.0, at which the
++// alpha test keeps everything and A2M is doing all of the cutout work alone, over a
++// DXT4/5 albedo whose per-leaf alpha is a RAMP — so a binary clip writes the leaf
++// card's soft fringe at full opacity and a feathery canopy comes out as hard-edged
++// plates. Case Zero docs: phase5-notes §6ca, gotcha 317.
++//
++// The pattern is the standard 2x2 ordered dither, thresholds (i + 0.5) / 4 over the
++// four samples, so alpha 0.5 covers two of them. `pos` is SV_Position, whose integer
++// part indexes the sample grid directly.
++float XeAlphaTestThreshold(float2 pos)
++{
++// g_AlphaToMask only exists on the SPIR-V path (the DX path's shared constants are a
++// packoffset cbuffer with no free slot declared for it), so the arm is guarded on both.
++#if defined(XE_ALPHA_TO_MASK) && defined(__spirv__)
++    // The host publishes a MODE, not a flag, because the right emulation depends on
++    // whether the host's render target actually has a sample grid under it.
++    //
++    //   1 = FLAT. One threshold at 0.5 for every pixel. No sample grid needed. It gives
++    //       up the soft edge but lands the SILHOUETTE where hardware's resolve puts it,
++    //       because a coverage mask averaged over the resolve crosses 50% at alpha 0.5.
++    //   2 = DITHER. The true per-sample coverage, as a 2x2 ordered pattern. Correct
++    //       ONLY where one host pixel is one guest SAMPLE; anywhere else it lands at
++    //       pixel granularity and reads as a screen door.
++    //
++    // Case Zero measured both on its foliage: mode 2 removes the hard black plates but
++    // takes isolated-pixel share from 0.14% to 5.59% (hardware: ~0%), which the operator
++    // saw immediately as "a different kind of issue". Mode 1 exists because that trade
++    // is not obviously worth making on a host without sample-resolution resolves.
++    if (g_AlphaToMask == 1u)
++        return max(g_AlphaThreshold, 0.5);
++    if (g_AlphaToMask >= 2u)
++    {
++        uint2 s = uint2(pos) & 1u;
++        // Bayer order over the 2x2 quad: 0 2 / 3 1.
++        const uint order[4] = { 0u, 2u, 3u, 1u };
++        const float coverage = (float(order[s.y * 2u + s.x]) + 0.5) / 4.0;
++        // Still subject to the alpha test itself — hardware applies both.
++        return max(g_AlphaThreshold, coverage);
++    }
++#endif
++    return g_AlphaThreshold;
++}
++
++float4 XeUnpack_10_11_11(float rawBitsAsFloat)
++{
++    uint raw = asuint(rawBitsAsFloat);
++    return float4((raw & 0x00000400 ? -1.0 : 0.0) + ((raw & 0x3FF) / 1024.0),
++                  (raw & 0x00200000 ? -1.0 : 0.0) + (((raw >> 11) & 0x3FF) / 1024.0),
++                  (raw & 0x80000000 ? -1.0 : 0.0) + (((raw >> 22) & 0x1FF) / 512.0),
++                  0.0);
+ }
+ 
+ float4 tfetchR11G11B10(uint4 value)
+@@ -220,3 +529,37 @@ float computeMipLevel(float2 pixelCoord)
+ #endif
+ 
+ #endif
++
++// XE_FLOOR_PAINT — see the note at AluVectorOpcode::Max in shader_recompiler.cpp. The
++// flag update has to be an EXPRESSION, not a statement: a `max` is not always emitted at
++// statement position (one Case Zero shader has one inside `saturate(...)`), and injecting
++// a line there produced `saturate(\n xe_floor = ...; \n max(...))`. An overload set is the
++// portable way to have a side effect inside an expression in HLSL.
++#ifdef XE_FLOOR_PAINT
++#ifdef XE_FLOOR_IS_NAN
++// XE_FLOOR_IS_NAN — the same hook asking a DIFFERENT question: did a NaN ARRIVE at any
++// differing-operand max? This is upstream of the laundering that makes NaN invisible to
++// every downstream detector: on the host GPU `max(NaN, K1)` returns K1 and
++// `saturate(K1 - NaN)` returns 0, so Case Zero's shared tone epilogue converts a NaN
++// colour into exactly `sqrt(K1*K2)` = 0.70711 = rgb(180) — a finite value `isnan(oC0)`
++// at the end of the shader can never see, and one that is invariant under scaling ANY
++// upstream constant, which is precisely the part-31 plateau signature (four whole-frame
++// arms "unmoved"). Xenos hardware would not produce the NaN in the first place: its ALU
++// defines 0*anything = 0 where IEEE gives 0*inf = NaN.
++// XE_FLOOR_IS_NAN_FORCE=1 is the positive control and it is not optional (gotcha 30):
++// it sets the flag unconditionally, so every value-band pixel must paint magenta or the
++// instrument was never in the frame.
++#ifndef XE_FLOOR_IS_NAN_FORCE
++#define XE_FLOOR_IS_NAN_FORCE 0
++#endif
++float  xe_max(float  a, float  b, inout bool f) { f = f || XE_FLOOR_IS_NAN_FORCE || isnan(a) || isnan(b);           return max(a, b); }
++float2 xe_max(float2 a, float2 b, inout bool f) { f = f || XE_FLOOR_IS_NAN_FORCE || any(isnan(a)) || any(isnan(b)); return max(a, b); }
++float3 xe_max(float3 a, float3 b, inout bool f) { f = f || XE_FLOOR_IS_NAN_FORCE || any(isnan(a)) || any(isnan(b)); return max(a, b); }
++float4 xe_max(float4 a, float4 b, inout bool f) { f = f || XE_FLOOR_IS_NAN_FORCE || any(isnan(a)) || any(isnan(b)); return max(a, b); }
++#else
++float  xe_max(float  a, float  b, inout bool f) { f = f || (b > a);      return max(a, b); }
++float2 xe_max(float2 a, float2 b, inout bool f) { f = f || any(b > a);   return max(a, b); }
++float3 xe_max(float3 a, float3 b, inout bool f) { f = f || any(b > a);   return max(a, b); }
++float4 xe_max(float4 a, float4 b, inout bool f) { f = f || any(b > a);   return max(a, b); }
++#endif
++#endif
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index 698a418..cb072f4 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -94,6 +94,32 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
+     { DeclUsage::TexCoord, 6, 14 },
+     { DeclUsage::TexCoord, 7, 15 },
+     { DeclUsage::Position, 1, 15 },
++    // Fable2 world vertex shaders take up to 12 vertex streams; 16..31 stay
++    // within the 32 vertex-input locations desktop Vulkan guarantees. Keep
++    // tools/synth_shader_container.py's USAGE_LOCATION table in sync.
++    //
++    // Extended to TexCoord23 (location 31, the last one Vulkan guarantees) on
++    // 2026-08-02: a deferred-IB world run turned up vs_39a8c75fd1bfcf85 with
++    // NINETEEN vertex-fetch streams, i.e. TexCoord0..17, which ran off the end
++    // of a table that stopped at 15. The cost of the missing two entries was
++    // 25,364 draws per run silently skipped as "unknown vs" — see
++    // Fable2XenonRecomp docs/world-era-fatal-and-selector.md §2o.
++    { DeclUsage::TexCoord, 8, 16 },
++    { DeclUsage::TexCoord, 9, 17 },
++    { DeclUsage::TexCoord, 10, 18 },
++    { DeclUsage::TexCoord, 11, 19 },
++    { DeclUsage::TexCoord, 12, 20 },
++    { DeclUsage::TexCoord, 13, 21 },
++    { DeclUsage::TexCoord, 14, 22 },
++    { DeclUsage::TexCoord, 15, 23 },
++    { DeclUsage::TexCoord, 16, 24 },
++    { DeclUsage::TexCoord, 17, 25 },
++    { DeclUsage::TexCoord, 18, 26 },
++    { DeclUsage::TexCoord, 19, 27 },
++    { DeclUsage::TexCoord, 20, 28 },
++    { DeclUsage::TexCoord, 21, 29 },
++    { DeclUsage::TexCoord, 22, 30 },
++    { DeclUsage::TexCoord, 23, 31 },
+ };
+ 
+ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
+@@ -122,7 +148,8 @@ static constexpr std::string_view TEXTURE_DIMENSIONS[] =
+ {
+     "2D",
+     "3D", 
+-    "Cube" 
++    "Cube",
++    "1D" // Fable2: menu LUT lookups tfetch1D; absent in Sonic Unleashed
+ };
+ 
+ static FetchDestinationSwizzle getDestSwizzle(uint32_t dstSwizzle, uint32_t index)
+@@ -158,8 +185,181 @@ void ShaderRecompiler::printDstSwizzle01(uint32_t dstRegister, uint32_t dstSwizz
+     }
+ }
+ 
++// Find the texture fetch slots the microcode uses but the constant table never
++// names.
++//
++// The constant table is the compiler's SYMBOL table, not a hardware binding
++// table: a sampler symbol that survived only in a getWeights (filter-weight)
++// fetch can be absent from it entirely, while the fetch instruction still names
++// its fetch-constant slot. recompile(TextureFetchInstruction) already falls back
++// to a synthesized "s<slot>" name in that case, but nothing declared
++// s<slot>_Texture2DDescriptorIndex / s<slot>_SamplerDescriptorIndex, so DXC
++// rejected the shader outright (Fable2 bank: ps_2dc3ed68cc2fe93e, the one
++// remaining bank translation failure).
++//
++// Naming is the only thing missing. Both descriptor-index declarations are pure
++// functions of the fetch-constant register index — SharedConstants+{0,64,128,288}
++// for the four texture dimensions and +192 for the sampler, all indexed by slot
++// — so a synthesized name at the same index reads exactly the slot the runtime
++// published for that fetch constant.
++//
++// Runs before any output is emitted, because the declarations must precede use.
++void ShaderRecompiler::collectUndeclaredSamplers(const uint8_t* shaderData)
++{
++    const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
++    const auto shader = reinterpret_cast<const Shader*>(shaderData + shaderContainer->shaderOffset);
++    const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
++
++    ControlFlowInstruction controlFlow[2];
++    uint32_t codes[4];
++    uint32_t& code0 = codes[0];
++    uint32_t& code1 = codes[1];
++    uint32_t& code2 = codes[2];
++    uint32_t& code3 = codes[3];
++
++    // Pass 1: the CF blocks live in front of the ALU/fetch stream, so the first
++    // exec target bounds the CF stream. Same derivation as the main walk.
++    auto controlFlowCode = code;
++    uint32_t instrAddress = 0;
++    uint32_t instrSize = shader->size;
++
++    while (instrAddress < instrSize)
++    {
++        code0 = controlFlowCode[0];
++        code1 = controlFlowCode[1] & 0xFFFF;
++        code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
++        code3 = controlFlowCode[2] >> 16;
++        memcpy(controlFlow, codes, sizeof(controlFlow));
++
++        for (auto& cfInstr : controlFlow)
++        {
++            uint32_t address = 0;
++
++            switch (cfInstr.opcode)
++            {
++            case ControlFlowOpcode::Exec:
++            case ControlFlowOpcode::ExecEnd:
++                address = cfInstr.exec.address;
++                break;
++
++            case ControlFlowOpcode::CondExec:
++            case ControlFlowOpcode::CondExecEnd:
++            case ControlFlowOpcode::CondExecPredClean:
++            case ControlFlowOpcode::CondExecPredCleanEnd:
++                address = cfInstr.condExec.address;
++                break;
++
++            case ControlFlowOpcode::CondExecPred:
++            case ControlFlowOpcode::CondExecPredEnd:
++                address = cfInstr.condExecPred.address;
++                break;
++            }
++
++            if (address != 0)
++                instrSize = std::min<uint32_t>(instrSize, address * 12);
++        }
++
++        controlFlowCode += 3;
++        instrAddress += 12;
++    }
++
++    // Pass 2: every exec block's fetch instructions. A serialized instruction is
++    // a fetch when its sequence bit is set, and a texture fetch when its opcode
++    // is not VertexFetch.
++    controlFlowCode = code;
++    instrAddress = 0;
++
++    while (instrAddress < instrSize)
++    {
++        code0 = controlFlowCode[0];
++        code1 = controlFlowCode[1] & 0xFFFF;
++        code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
++        code3 = controlFlowCode[2] >> 16;
++        memcpy(controlFlow, codes, sizeof(controlFlow));
++
++        for (auto& cfInstr : controlFlow)
++        {
++            uint32_t address = 0;
++            uint32_t count = 0;
++            uint32_t sequence = 0;
++
++            switch (cfInstr.opcode)
++            {
++            case ControlFlowOpcode::Exec:
++            case ControlFlowOpcode::ExecEnd:
++                address = cfInstr.exec.address;
++                count = cfInstr.exec.count;
++                sequence = cfInstr.exec.sequence;
++                break;
++
++            case ControlFlowOpcode::CondExec:
++            case ControlFlowOpcode::CondExecEnd:
++            case ControlFlowOpcode::CondExecPredClean:
++            case ControlFlowOpcode::CondExecPredCleanEnd:
++                address = cfInstr.condExec.address;
++                count = cfInstr.condExec.count;
++                sequence = cfInstr.condExec.sequence;
++                break;
++
++            case ControlFlowOpcode::CondExecPred:
++            case ControlFlowOpcode::CondExecPredEnd:
++                address = cfInstr.condExecPred.address;
++                count = cfInstr.condExecPred.count;
++                sequence = cfInstr.condExecPred.sequence;
++                break;
++
++            default:
++                continue;
++            }
++
++            auto instructionCode = code + address * 3;
++
++            for (uint32_t i = 0; i < count; i++, instructionCode += 3)
++            {
++                if ((sequence & (1u << (i * 2))) == 0)
++                    continue;
++
++                union InstrUnion
++                {
++                    VertexFetchInstruction vertexFetch;
++                    TextureFetchInstruction textureFetch;
++                    uint32_t codes[3];
++                } u;
++
++                u.codes[0] = instructionCode[0];
++                u.codes[1] = instructionCode[1];
++                u.codes[2] = instructionCode[2];
++
++                if (u.vertexFetch.opcode != FetchOpcode::VertexFetch)
++                    undeclaredSamplers.emplace(uint32_t(u.textureFetch.constIndex));
++            }
++        }
++
++        controlFlowCode += 3;
++        instrAddress += 12;
++    }
++}
++
+ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t address)
+ {
++    // Effective fetch slot and stride: a mini-fetch inherits both from the
++    // previous full vfetch (Fable2 §3z; matches synth_shader_container.py's
++    // parse_ucode, which is what declares — or now deliberately does NOT
++    // declare — the vertex elements this function looks up below).
++    uint32_t fetchSlot, strideDwords;
++    if (instr.isMiniFetch)
++    {
++        fetchSlot = lastVfetchSlot;
++        strideDwords = lastVfetchStride;
++    }
++    else
++    {
++        fetchSlot = instr.constIndex * 3 + instr.constIndexSelect;
++        strideDwords = instr.stride;
++        lastVfetchSlot = fetchSlot;
++        lastVfetchStride = strideDwords;
++    }
++
+     if (instr.isPredicated)
+     {
+         indent();
+@@ -170,6 +370,31 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+         ++indentation;
+     }
+ 
++    // A vfetch whose destination mask names no register component (every lane
++    // Keep/0/1) writes no fetched data back: it is the "full" half of a
++    // full+mini pair, present only for the slot and stride the mini-fetches
++    // inherit above. Emitting the assignment anyway produced `r0. = expr.;`,
++    // which DXC rejects — Case Zero's vs_c8e86dffb37149dd is eight of them in a
++    // row. The 0/1 lanes still land via printDstSwizzle01.
++    bool writesAnyComponent = false;
++    for (size_t i = 0; i < 4; i++)
++    {
++        const auto s = getDestSwizzle(instr.dstSwizzle, i);
++        if (s >= FetchDestinationSwizzle::X && s <= FetchDestinationSwizzle::W)
++            writesAnyComponent = true;
++    }
++    if (!writesAnyComponent)
++    {
++        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
++        if (instr.isPredicated)
++        {
++            --indentation;
++            indent();
++            out += "}\n";
++        }
++        return;
++    }
++
+     indent();
+     print("r{}.", instr.dstRegister);
+     printDstSwizzle(instr.dstSwizzle, false);
+@@ -177,7 +402,56 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+     out += " = ";
+ 
+     auto findResult = vertexElements.find(address);
+-    assert(findResult != vertexElements.end());
++    if (findResult == vertexElements.end())
++    {
++        // No declared vertex element for this vfetch. Since §3z the container
++        // synthesizer deliberately omits DEPENDENT fetches (address register is
++        // not the auto vertex index) from the declaration list, and they are
++        // emitted here as a raw load from the stream itself at the index the
++        // shader computed — see XeVfetchDep in shader_common.h and
++        // docs/world-era-fatal-and-selector.md §3z. The runtime publishes the
++        // stream's device address per draw; a missing entry reads as zero,
++        // which is also the old fallback behaviour for the genuinely
++        // undeclared direct fetch (vs_f50f743ba7865294).
++        static const std::set<uint32_t> knownFormats = {6, 7, 16, 25, 26, 31,
++                                                        32, 33, 36, 37, 38, 57};
++        if (knownFormats.find(instr.format) == knownFormats.end())
++            fprintf(stderr,
++                    "[XenosRecomp] dependent vfetch with UNHANDLED format %u "
++                    "(addr %u slot %u) — reads as zero, extend XeVfetchDep\n",
++                    uint32_t(instr.format), address, fetchSlot);
++        print("XeVfetchDep({}u, r{}.{}, {}u, {}u, {}, {}u, {}u, {}u)",
++              fetchSlot, uint32_t(instr.srcRegister),
++              "xyzw"[instr.srcSwizzle & 0x3], instr.isIndexRounded ? 1u : 0u,
++              strideDwords, int32_t(instr.offset), uint32_t(instr.format),
++              instr.formatCompAll ? 1u : 0u, instr.numFormatAll ? 1u : 0u);
++        out += '.';
++        printDstSwizzle(instr.dstSwizzle, true);
++        out += ";\n";
++        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
++        if (instr.isPredicated)
++        {
++            --indentation;
++            indent();
++            out += "}\n";
++        }
++        return;
++    }
++
++    // A 10_11_11 (format 16) fetch through a float-typed usage carries the packed dword
++    // as raw bits in the input's .x — the runtime binds it R32_SFLOAT so the pipeline
++    // types match — and is unpacked here, by the fetch instruction's own format field.
++    // Dead Rising 2: Case Zero wraps every packed normal as TEXCOORD; the uint4 usages
++    // (Normal/Tangent/Binormal) keep their existing spec-constant path below. Reading it
++    // as a texcoord instead delivered bits-as-float: NaN for any dword with bits 30..23
++    // set, which is what painted the title's white-surface plateau (see XeUnpack_10_11_11
++    // in shader_common.h).
++    const bool packed10_11_11 =
++        instr.format == 16 && findResult->second.usage != DeclUsage::Normal &&
++        findResult->second.usage != DeclUsage::Tangent &&
++        findResult->second.usage != DeclUsage::Binormal;
++    if (packed10_11_11)
++        print("XeUnpack_10_11_11(");
+ 
+     switch (findResult->second.usage)
+     {
+@@ -189,7 +463,8 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+         break;
+ 
+     case DeclUsage::TexCoord:
+-        print("tfetchTexcoord(g_SwappedTexcoords, ");
++        if (!packed10_11_11)
++            print("tfetchTexcoord(g_SwappedTexcoords, ");
+         break;
+     }
+ 
+@@ -204,10 +479,14 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+         break;
+ 
+     case DeclUsage::TexCoord:
+-        print(", {})", uint32_t(findResult->second.usageIndex));
++        if (!packed10_11_11)
++            print(", {})", uint32_t(findResult->second.usageIndex));
+         break;
+     }
+ 
++    if (packed10_11_11)
++        out += ".x)";
++
+     out += '.';
+     printDstSwizzle(instr.dstSwizzle, true);
+ 
+@@ -599,12 +878,66 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             case ExportRegister::PSDepth:
+                 exportRegister = "oDepth";
+                 break;
++
++            // MemExport (Fable2 uses it from pixel shaders too): route the
++            // writes into dead locals — see the VS case below for rationale.
++            case ExportRegister::ExportAddress:
++                exportRegister = "eA";
++                break;
++            case ExportRegister::ExportData0:
++                exportRegister = "eM0";
++                break;
++            case ExportRegister::ExportData1:
++                exportRegister = "eM1";
++                break;
++            case ExportRegister::ExportData2:
++                exportRegister = "eM2";
++                break;
++            case ExportRegister::ExportData3:
++                exportRegister = "eM3";
++                break;
++            case ExportRegister::ExportData4:
++                exportRegister = "eM4";
++                break;
+             }
+         }
+         else
+         {
+             switch (ExportRegister(instr.vectorDest))
+             {
++            // MemExport: eA holds a packed memory address + format, eM0-4 the
++            // data the GPU streams out. Fable2's world pipeline uses this for
++            // GPU-side measurement passes (screen extents / visibility, read
++            // back through D3D async queries). No SPIR-V equivalent is
++            // attempted here — the writes land in dead locals so the shader
++            // still compiles and its oPos/interpolator side (if any) renders.
++            // Dedicated sinks rather than the r{dest} fallback: aliasing high
++            // GPRs would clobber live temps in register-heavy shaders.
++            case ExportRegister::ExportAddress:
++                exportRegister = "eA";
++                break;
++            case ExportRegister::ExportData0:
++                exportRegister = "eM0";
++                break;
++            case ExportRegister::ExportData1:
++                exportRegister = "eM1";
++                break;
++            case ExportRegister::ExportData2:
++                exportRegister = "eM2";
++                break;
++            case ExportRegister::ExportData3:
++                exportRegister = "eM3";
++                break;
++            case ExportRegister::ExportData4:
++                exportRegister = "eM4";
++                break;
++
++            // x = point size, y = edge flag, z = kill-vertex. Only the kill
++            // bit would change rendering; a sink keeps the shader compiling.
++            case ExportRegister::VSPointSizeEdgeFlagKillVertex:
++                exportRegister = "oPtSizeEdgeKill";
++                break;
++
+             case ExportRegister::VSPosition:
+                 exportRegister = "oPos";
+ 
+@@ -657,8 +990,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         out += " 0.0;\n";
+     }
+-    else if (instr.vectorOpcode >= AluVectorOpcode::MaxA)
++    else if (instr.vectorOpcode == AluVectorOpcode::MaxA)
+     {
++        // Exactly MaxA (29): reserved opcodes 30/31 land here under the old
++        // ">=" and emitted a bogus a0 line (retail Fable2 shaders carry them).
+         indent();
+         println("a0 = (int)clamp(floor(({}).w + 0.5), -256.0, 255.0);", op(VECTOR_0));
+     }
+@@ -703,8 +1038,39 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         case AluVectorOpcode::Max:
+         case AluVectorOpcode::MaxA:
+-            print("max({}, {})", op(VECTOR_0), op(VECTOR_1));
++        {
++            // XE_FLOOR_PAINT — did a REAL max take its second operand?
++            //
++            // Case Zero's white plateau is the value its shared tone epilogue emits when
++            // `max(colour, K1)` returns K1 and the `-r1*r1` term is zero:
++            // `sqrt(K1*K2) = sqrt(0.5) = 180/255`, for any exposure. Two readings fit
++            // that and they differ only in whether the max is a TIE (the colour sitting
++            // exactly on the operator's knee) or a genuine FLOOR (the colour below it and
++            // r1 stale). Nothing downstream can tell them apart, because both produce the
++            // same output — so the discriminator has to be recorded where the max happens.
++            //
++            // `max(a, a)` is this compiler's `mov` and is everywhere, so only maxes whose
++            // operands DIFFER textually are instrumented; the mov idiom would otherwise
++            // set the flag on every shader and the instrument would saturate under its
++            // own noise.
++            const std::string a = op(VECTOR_0), b = op(VECTOR_1);
++            if (a != b)
++            {
++                // An EXPRESSION, not an injected statement: a max is not always emitted at
++                // statement position, and a line inserted inside `saturate(...)` does not
++                // compile. `xe_max` is defined in shader_common.h under the same define.
++                out += "\n#ifdef XE_FLOOR_PAINT\n\t\t\txe_max(";
++                out += a + ", " + b + ", xe_floor)";
++                out += "\n#else\n\t\t\t";
++                print("max({}, {})", a, b);
++                out += "\n#endif\n\t\t\t";
++            }
++            else
++            {
++                print("max({}, {})", a, b);
++            }
+             break;
++        }
+ 
+         case AluVectorOpcode::Min:
+             print("min({}, {})", op(VECTOR_0), op(VECTOR_1));
+@@ -797,6 +1163,30 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+         case AluVectorOpcode::Dst:
+             print("dst({}, {})", op(VECTOR_0), op(VECTOR_1));
+             break;
++
++        default:
++            // Reserved/undecoded vector opcode (30/31 seen in retail Fable2
++            // shaders): write the destination's own value (identity — the
++            // safest NOP) instead of an empty expression that fails the
++            // whole shader. Export registers are write-only, so those get
++            // 0.0. Logged so real semantics can be added if it matters.
++            if (!exportRegister.empty())
++            {
++                out += "0.0";
++            }
++            else
++            {
++                print("r{}.", instr.vectorDest);
++                for (size_t i = 0; i < 4; i++)
++                {
++                    if ((vectorWriteMask >> i) & 0x1)
++                        out += SWIZZLES[i];
++                }
++            }
++            print(" /* unhandled vector opcode {} */", uint32_t(instr.vectorOpcode));
++            fprintf(stderr, "[XenosRecomp] unhandled vector opcode %u\n",
++                    unsigned(instr.vectorOpcode));
++            break;
+         }
+ 
+         if (instr.vectorSaturate)
+@@ -1010,6 +1400,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+         case AluScalarOpcode::Cos:
+             print("cos({})", op(SCALAR_0));
+             break;
++
++        case AluScalarOpcode::RetainPrev:
++            out += "ps";
++            break;
++
++        default:
++            // Unknown/undecoded scalar opcode: keep the previous ps (retain
++            // semantics) instead of emitting an empty argument list that
++            // fails the whole shader at the HLSL stage. Logged so the gap
++            // can be identified and given real semantics.
++            print("ps /* unhandled scalar opcode {} */", uint32_t(instr.scalarOpcode));
++            fprintf(stderr, "[XenosRecomp] unhandled scalar opcode %u\n",
++                    unsigned(instr.scalarOpcode));
++            break;
+         }
+ 
+         if (instr.scalarSaturate)
+@@ -1105,14 +1509,23 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
+     assert(shaderContainer->constantTableOffset != NULL);
+ 
++    isPixelShader = (shaderContainer->flags & 0x1) == 0;
++
++    // Selects SampleLevel(…, 0) in shader_common.h's tfetch helpers: implicit-LOD
++    // Sample() is illegal in a vertex shader, and Fable2 uses vertex texture fetch.
++    if (!isPixelShader)
++        out += "#define XENOS_VERTEX_SHADER\n";
++
+     out += include;
+     out += '\n';
+ 
+-    isPixelShader = (shaderContainer->flags & 0x1) == 0;
+-
+     const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
+     constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
+ 
++    // Must run before anything is emitted: the constant-table loops below strike
++    // the slots the table DOES name off this set, then declare what is left.
++    collectUndeclaredSamplers(shaderData);
++
+     out += "#ifdef __spirv__\n\n";
+ 
+ #ifdef UNLEASHED_RECOMP
+@@ -1152,7 +1565,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             if (constantInfo->registerCount > 1)
+             {
+-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
++                uint32_t tailCount = 256 - constantInfo->registerIndex; // Xenos has 256 PS float constants too (Fable2 YUV matrix lives at 253-255)
+ 
+                 println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+@@ -1174,19 +1587,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+             {
+                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
++                    constantName, TEXTURE_DIMENSIONS[j], (j == 3 ? 288 : j * 64) + constantInfo->registerIndex * 4);
+             }
+ 
+             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
++                constantName, 192 + constantInfo->registerIndex * 4);
+ 
+             samplers.emplace(constantInfo->registerIndex, constantName);
++            undeclaredSamplers.erase(constantInfo->registerIndex);
+             break;
+         }
+ 
+         }
+     }
+ 
++    for (uint32_t slot : undeclaredSamplers)
++    {
++        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
++        {
++            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
++                slot, TEXTURE_DIMENSIONS[j], (j == 3 ? 288 : j * 64) + slot * 4);
++        }
++
++        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
++            slot, 192 + slot * 4);
++    }
++
+     out += "\n#else\n\n";
+ 
+     println("cbuffer {}ShaderConstants : register(b{}, space4)", isPixelShader ? "Pixel" : "Vertex", isPixelShader ? 1 : 0);
+@@ -1210,7 +1636,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             if (constantInfo->registerCount > 1)
+             {
+-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
++                uint32_t tailCount = 256 - constantInfo->registerIndex; // Xenos has 256 PS float constants too (Fable2 YUV matrix lives at 253-255)
+                 println("#define {0}(INDEX) select((INDEX) < {1}, {0}[min(INDEX, {2})], 0.0)", constantName, tailCount, tailCount - 1);
+             }
+         }
+@@ -1233,12 +1659,24 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+             {
+                 println("\tuint {}_Texture{}DescriptorIndex : packoffset(c{}.{});",
+-                    constantName, TEXTURE_DIMENSIONS[j], j * 4 + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
++                    constantName, TEXTURE_DIMENSIONS[j], (j == 3 ? 18 : j * 4) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
+             }
+ 
+             println("\tuint {}_SamplerDescriptorIndex : packoffset(c{}.{});",
+-                constantName, 4 * std::size(TEXTURE_DIMENSIONS) + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
++                constantName, 12 + constantInfo->registerIndex / 4, SWIZZLES[constantInfo->registerIndex % 4]);
++        }
++    }
++
++    for (uint32_t slot : undeclaredSamplers)
++    {
++        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
++        {
++            println("\tuint s{}_Texture{}DescriptorIndex : packoffset(c{}.{});",
++                slot, TEXTURE_DIMENSIONS[j], (j == 3 ? 18 : j * 4) + slot / 4, SWIZZLES[slot % 4]);
+         }
++
++        println("\tuint s{}_SamplerDescriptorIndex : packoffset(c{}.{});",
++            slot, 12 + slot / 4, SWIZZLES[slot % 4]);
+     }
+ 
+     out += "\tDEFINE_SHARED_CONSTANTS();\n";
+@@ -1302,6 +1740,22 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     else
+     {
+         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
++        // A vertex declaration may name the same semantic more than once: the
++        // element list is keyed by FETCH ADDRESS, and two fetch instructions
++        // reading the same attribute from different constant slots each get their
++        // own element with the same (usage, usageIndex). Emitting a parameter per
++        // element then declares one HLSL input twice and the whole shader fails to
++        // compile ("redefinition of parameter 'iTexCoord0'"). Measured in retail
++        // Fable2: vs_39a8c75fd1bfcf85 declares iTexCoord0/iTexCoord1 twice, and
++        // the SKINNING/fur shaders declare iPosition1 six times.
++        //
++        // Declare each semantic once. The reads still resolve, because a vfetch
++        // looks its element up by ADDRESS and then names the input from that
++        // element's usage/usageIndex — so every duplicate address maps onto the one
++        // declared parameter, which is the same attribute it was always meant to
++        // read. Only the declaration is deduplicated; vertexElements still records
++        // every address.
++        std::set<uint32_t> declaredUsages;
+         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+         {
+             union
+@@ -1322,19 +1776,31 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             }
+         #endif
+ 
+-            out += '\t';
+-
+-            for (auto& usageLocation : USAGE_LOCATIONS)
++            const uint32_t usageKey =
++                (uint32_t(vertexElement.usage) << 16) | uint32_t(vertexElement.usageIndex);
++            if (declaredUsages.emplace(usageKey).second)
+             {
+-                if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
++                out += '\t';
++
++                for (auto& usageLocation : USAGE_LOCATIONS)
+                 {
+-                    print("[[vk::location({})]] ", usageLocation.location);
+-                    break;
++                    if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
++                    {
++                        print("[[vk::location({})]] ", usageLocation.location);
++                        break;
++                    }
+                 }
+-            }
+ 
+-            println("in {0} i{1}{2} : {3}{2},", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
+-                uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
++                println("in {0} i{1}{2} : {3}{2},", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
++                    uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
++
++                // uint4-typed usages (BLENDINDICES, NORMAL, ...) carry raw bits and
++                // cannot hold a float NaN; isnan() on them would not compile anyway.
++                if (strncmp(usageType, "float", 5) == 0)
++                    vsFloatInputNames.push_back(fmt::format("i{}{}",
++                        USAGE_VARIABLES[uint32_t(vertexElement.usage)],
++                        uint32_t(vertexElement.usageIndex)));
++            }
+ 
+             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+         }
+@@ -1346,11 +1812,35 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             out += "\tin uint iInstanceId : SV_InstanceID,\n";
+         }
+     #endif
++        // Xenos seeds r0.x with the auto-loaded vertex index at thread start for
++        // EVERY vertex shader — not only the ones that fetch nothing. Fable2's
++        // whole post/composite chain draws fullscreen quads with no vertex
++        // elements and needs it for geometry at all; but shaders that DO fetch
++        // read r0.x too, to derive per-vertex values the fetch cannot give them.
++        // The logo-halo sparkle VS (25ca98899c8ff1f8) is the measured case: it
++        // fetches three per-particle attributes AND expands each particle to a
++        // quad with `MUL r0.xxxx, c255.xxyy` (index * 0.25/0.5 -> corner select),
++        // then derives its texcoords from the same register. Gating the input on
++        // vertexElementCount == 0 left r0.x at 0.0 there, so every sparkle
++        // sampled one texel of its glow sprite and the particles came out black
++        // — the missing FABLE II logo halo.
++        out += "\tin uint iVertexId : SV_VertexID,\n";
+ 
+         out += "\tout float4 oPos : SV_Position";
+ 
+         for (auto& [usage, usageIndex] : INTERPOLATORS)
+             print(",\n\tout float4 o{0}{1} : {2}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
++
++        // USER CLIP PLANES (Case Zero part 57, and a shared gap: no ClipDistance
++        // appeared anywhere in either port's renderer). Xenos clips against up to six
++        // PA_CL_UCP planes right after the VS; Vulkan clips only against ClipDistance
++        // the shader exports, so the translated VS must compute the six dots itself.
++        // Guarded in the EMITTED TEXT so a cache built without the define is
++        // byte-identical — the same null-control property XE_ALPHA_TO_MASK has.
++        out += "\n#ifdef XE_USER_CLIP_PLANES\n"
++               "\t, out float4 oClipA : SV_ClipDistance0\n"
++               "\t, out float2 oClipB : SV_ClipDistance1\n"
++               "#endif\n";
+     }
+ 
+     out += ")\n";
+@@ -1371,6 +1861,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     }
+ #endif
+ 
++    // Loop/integer registers (i0..i31) that the container's definition table
++    // declares are compile-time constants; any OTHER loop register a shader
++    // references is set at run time through the Xenos loop-constant registers
++    // (0x4908 + n), and must be read from the shared constant block instead.
++    // Fable2's PSHADER_POSTPROCESSING_GAUSSBLUR is exactly that case: its sample
++    // count is the game-set g_SamplesCount, so its definition table declares no
++    // int4 at all and every reference to i16 came out undeclared.
++    bool definedInt4[32]{};
++
+     if (shaderContainer->definitionTableOffset != NULL)
+     {
+         auto definitionTable = reinterpret_cast<const DefinitionTable*>(shaderData + shaderContainer->definitionTableOffset);
+@@ -1394,22 +1893,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             auto definition = reinterpret_cast<const Int4Definition*>(definitions);
+             for (uint16_t i = 0; i < definition->count; i++)
+             {
+-                union
+-                {
+-                    uint32_t value;
+-                    struct
+-                    {
+-                        int8_t x;
+-                        int8_t y;
+-                        int8_t z;
+-                        int8_t w;
+-                    };
+-                };
+-
+-                value = definition->values[i].get();
+-
+-                println("\tint4 i{} = int4({}, {}, {}, {});",
+-                    (definition->registerIndex - 8992) / 4 + i, x, y, z, w);
++                // (was an MSVC anonymous union/struct; GCC rejects it)
++                const uint32_t value = definition->values[i].get();
++                const int8_t x = int8_t(value & 0xFF);
++                const int8_t y = int8_t((value >> 8) & 0xFF);
++                const int8_t z = int8_t((value >> 16) & 0xFF);
++                const int8_t w = int8_t((value >> 24) & 0xFF);
++
++                const uint32_t reg = (definition->registerIndex - 8992) / 4 + i;
++                if (reg < 32)
++                    definedInt4[reg] = true;
++                println("\tint4 i{} = int4({}, {}, {}, {});", reg, x, y, z, w);
+             }
+             definitions += 2;
+             definitions += definition->count;
+@@ -1418,10 +1912,31 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    bool printedRegisters[32]{};
++    // The rest come from the guest's loop-constant registers. Declaring all 32
++    // unconditionally keeps this independent of a control-flow pre-scan; the
++    // unused ones are dead code that the compiler drops. The guest packs each
++    // loop constant as count/start/step in the low three bytes, which is the
++    // same byte layout the definition-table path above unpacks.
++    for (uint32_t reg = 0; reg < 32; reg++)
++    {
++        if (!definedInt4[reg])
++            println("\tint4 i{0} = LoopConstant({0});", reg);
++    }
++    out += "\n";
++
++    // Xenos supports up to 64 GPRs per thread; Fable2's memexport-era shaders
++    // read past r31 (r63 showed up as a source), so declare the full set.
++    bool printedRegisters[64]{};
+ 
+     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
+ 
++    // XE_NAN_IN_PAINT — the regs the scan converter fills from interpolants, collected so
++    // the instrument below can ask "did a NaN ARRIVE at this pixel shader" as distinct
++    // from "did this pixel shader manufacture one". The two have different owners: an
++    // arriving NaN is the vertex shader's (or the vertex data's), a manufactured one is
++    // this shader's own arithmetic.
++    std::vector<uint32_t> interpolatorRegs;
++
+     for (uint32_t i = 0; i < interpolatorCount; i++)
+     {
+         union
+@@ -1433,8 +1948,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         if (isPixelShader)
+         {
+             value = reinterpret_cast<const PixelShader*>(shader)->interpolators[i];
+-            println("\tfloat4 r{} = i{}{};", uint32_t(interpolator.reg), USAGE_VARIABLES[uint32_t(interpolator.usage)], uint32_t(interpolator.usageIndex));
++            // Xenos param-gen: when the bound vertex shader does not export this
++            // interpolator, the scan converter injects the pixel window position
++            // into the GPR instead. The runtime sets g_ParamGenMask bit reg for
++            // exactly those draws (mask 0 => normal interpolator, unchanged). See
++            // the svPos-register emission below for the same position expression.
++            println("\tfloat4 r{} = (g_ParamGenMask & (1u << {}u)) ? float4((iPos.xy - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0) : i{}{};",
++                    uint32_t(interpolator.reg), uint32_t(interpolator.reg),
++                    USAGE_VARIABLES[uint32_t(interpolator.usage)], uint32_t(interpolator.usageIndex));
+             printedRegisters[interpolator.reg] = true;
++            interpolatorRegs.push_back(uint32_t(interpolator.reg));
+         }
+         else
+         {
+@@ -1454,10 +1977,41 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         for (auto& [usage, usageIndex] : INTERPOLATORS)
+             println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+ 
++        // Zero, i.e. KEPT: Vulkan discards only where a clip distance is NEGATIVE, so a
++        // path that never reaches the position-export epilogue (and therefore never
++        // computes the dots) must not leave the outputs undefined — undefined here is
++        // random clipping of whole triangles.
++        out += "#ifdef XE_USER_CLIP_PLANES\n"
++               "\toClipA = 0.0;\n"
++               "\toClipB = 0.0;\n"
++               "#endif\n";
++
+         out += "\n";
+     }
+ 
+-    for (size_t i = 0; i < 32; i++)
++    // The XE_FLOOR_PAINT flag, declared once per shader alongside the temporaries. See
++    // the note at AluVectorOpcode::Max. Declared in VERTEX shaders too even though only a
++    // pixel shader reads it: the max instrumentation is emitted from the shared ALU path
++    // and cannot see which stage it is in, so declaring it only for pixel shaders failed
++    // 25 vertex shaders on an undeclared identifier.
++    out += "#ifdef XE_FLOOR_PAINT\n\tbool xe_floor = false;\n#endif\n";
++
++    // XE_NAN_IN_PAINT — did a NaN arrive IN AN INTERPOLANT? Sampled once, at entry,
++    // before any of this shader's own arithmetic can either create or launder one.
++    // Its own flag rather than xe_floor: with only this define set, xe_max keeps its
++    // (b > a) predicate, which fires constantly and would drown the answer.
++    // XE_NAN_IN_PAINT_FORCE=1 is the positive control (gotcha 30).
++    if (isPixelShader)
++    {
++        out += "#ifdef XE_NAN_IN_PAINT\n";
++        out += "#ifndef XE_NAN_IN_PAINT_FORCE\n#define XE_NAN_IN_PAINT_FORCE 0\n#endif\n";
++        out += "\tbool xe_nanin = XE_NAN_IN_PAINT_FORCE";
++        for (uint32_t reg : interpolatorRegs)
++            print(" || any(isnan(r{}))", reg);
++        out += ";\n#endif\n";
++    }
++
++    for (size_t i = 0; i < 64; i++)
+     {
+         if (!printedRegisters[i])
+         {
+@@ -1472,6 +2026,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 out += "float4(iVertexId + g_IndexCount.x * iInstanceId, 0.0, 0.0, 0.0);\n";
+             }
+         #endif
++            else if (!isPixelShader && i == 0)
++            {
++                // Every VS: r0.x = the auto-loaded vertex index (see the
++                // SV_VertexID input above). Unconditional, as on hardware —
++                // shaders that fetch vertex elements read it as well.
++                //
++                // XeVertexSeed (shader_common.h) returns exactly that when the
++                // draw is an ordinary one. For a PATCH primitive it returns the
++                // patch index and domain point instead, because Xenos feeds a
++                // tessellated draw a domain location rather than an index and a
++                // vertex shader reading r0.yz is a domain shader in all but name.
++                out += "XeVertexSeed(iVertexId);\n";
++            }
+             else
+             {
+                 out += "0.0;\n";
+@@ -1483,6 +2050,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     out += "\tint aL = 0;\n";
+     out += "\tbool p0 = false;\n";
+     out += "\tfloat ps = 0.0;\n";
++    // MemExport + point-size sinks (see the export-register switch).
++    out += "\tfloat4 eA = 0.0;\n";
++    out += "\tfloat4 eM0 = 0.0, eM1 = 0.0, eM2 = 0.0, eM3 = 0.0, eM4 = 0.0;\n";
++    out += "\tfloat4 oPtSizeEdgeKill = 0.0;\n";
+     if (isPixelShader)
+     {
+ #ifdef UNLEASHED_RECOMP
+@@ -1493,17 +2064,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+     const be<uint32_t>* code = reinterpret_cast<const be<uint32_t>*>(shaderData + shaderContainer->virtualSize + shader->physicalOffset);
+ 
+-    union
+-    {
+-        ControlFlowInstruction controlFlow[2];
+-        struct
+-        {
+-            uint32_t code0;
+-            uint32_t code1;
+-            uint32_t code2;
+-            uint32_t code3;
+-        };
+-    };
++    // (was an MSVC anonymous union/struct; GCC rejects it)
++    ControlFlowInstruction controlFlow[2];
++    uint32_t codes[4];
++    uint32_t& code0 = codes[0];
++    uint32_t& code1 = codes[1];
++    uint32_t& code2 = codes[2];
++    uint32_t& code3 = codes[3];
+ 
+     auto controlFlowCode = code;
+     uint32_t instrAddress = 0;
+@@ -1516,6 +2083,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         code1 = controlFlowCode[1] & 0xFFFF;
+         code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
+         code3 = controlFlowCode[2] >> 16;
++        memcpy(controlFlow, codes, sizeof(controlFlow));
+ 
+         for (auto& cfInstr : controlFlow)
+         {
+@@ -1583,6 +2151,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         code1 = controlFlowCode[1] & 0xFFFF;
+         code2 = (controlFlowCode[1] >> 16) | (controlFlowCode[2] << 16);
+         code3 = controlFlowCode[2] >> 16;
++        memcpy(controlFlow, codes, sizeof(controlFlow));
+ 
+         for (auto& cfInstr : controlFlow)
+         {
+@@ -1698,7 +2267,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                         if (findResult != boolConstants.end())
+                             println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+                         else
+-                            println("if (b{} {}= 0)", uint32_t(cfInstr.condJmp.boolAddress), cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
++                            println("if (g_BoolConstant({}) {}= 0)", uint32_t(cfInstr.condJmp.boolAddress), cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+                     }
+ 
+                     if (simpleControlFlow)
+@@ -1723,22 +2292,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             
+             for (uint32_t i = 0; i < count; i++)
+             {
+-                union
++                // (was an MSVC anonymous union/struct; GCC rejects it)
++                union InstrUnion
+                 {
+                     VertexFetchInstruction vertexFetch;
+                     TextureFetchInstruction textureFetch;
+                     AluInstruction alu;
+-                    struct
+-                    {
+-                        uint32_t code0;
+-                        uint32_t code1;
+-                        uint32_t code2;
+-                    };
+-                };
+-            
+-                code0 = instructionCode[0];
+-                code1 = instructionCode[1];
+-                code2 = instructionCode[2];
++                    uint32_t codes[3];
++                } u;
++                auto& vertexFetch = u.vertexFetch;
++                auto& textureFetch = u.textureFetch;
++                auto& alu = u.alu;
++
++                u.codes[0] = instructionCode[0];
++                u.codes[1] = instructionCode[1];
++                u.codes[2] = instructionCode[2];
+             
+                 if ((sequence & 0x1) != 0)
+                 {
+@@ -1796,6 +2364,91 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             {
+                 if (isPixelShader)
+                 {
++                    // XE_NAN_PAINT — a POSITIVE CONTROL for "did this pixel's colour go
++                    // NaN". Emitted always and compiled only when the define is passed,
++                    // so one emitter produces both arms and the default cache is byte
++                    // for byte what it was.
++                    //
++                    // Dead Rising 2: Case Zero renders large flat patches of exactly
++                    // rgb(180,180,180) — ground, slot machines, newspaper boxes — that do
++                    // not vary with the scene lighting at all. Its shaders end with
++                    // `sqrt((max(c, 1.0) - r1*r1) * 0.5)`, and a NaN reaching that tail is
++                    // laundered into a constant: `saturate(NaN)` is 0 and `max(NaN, 1.0)`
++                    // returns 1.0, giving exactly `sqrt(0.5)` = 0.70711 = 180/255. Every
++                    // property of the plateau follows from that, which is a hypothesis and
++                    // not a finding until something can see the NaN itself.
++                    //
++                    // Magenta rather than a counter because the question is WHICH PIXELS,
++                    // and because it is refutable: if the plateau stays 180 with this on,
++                    // the value never was a NaN and the theory dies in one run.
++                    // XE_NAN_PAINT_FORCE=1 paints unconditionally: the POSITIVE CONTROL,
++                    // and it is not optional. "No magenta" from the detector is only a
++                    // result once the detector has been shown capable of producing
++                    // magenta — otherwise it is equally consistent with the define never
++                    // compiling in, `isnan` being folded away by the optimiser, or the
++                    // painted shaders never being bound in the frame that was measured.
++                    // XE_VALUE_PAINT=<v> [XE_VALUE_PAINT_EPS=<e>] — paint GREEN where the
++                    // shader's own grey output is within e of v.
++                    //
++                    // The question it answers is prior to every question about WHY: did a
++                    // material shader produce this value at all? Case Zero's white patches
++                    // are exactly rgb(180,180,180) in the scene buffer, across surfaces
++                    // with different materials, different shaders and different constants
++                    // — and one value out of many shaders cannot come from any one
++                    // shader's constants. Either something they share emits it, or the
++                    // material shaders never wrote it and it arrives from the resolve or
++                    // the EDRAM path, which is a different subsystem entirely.
++                    //
++                    // Green rather than magenta so it can be read in the same run as
++                    // XE_NAN_PAINT. Its own positive control needs no extra define: a
++                    // large XE_VALUE_PAINT_EPS paints every pixel.
++                    out += "#ifdef XE_VALUE_PAINT\n";
++                    out += "#ifndef XE_VALUE_PAINT_EPS\n";
++                    out += "#define XE_VALUE_PAINT_EPS 0.004\n";
++                    out += "#endif\n";
++                    out += "\tif (all(abs(oC0.rgb - (XE_VALUE_PAINT)) < "
++                           "(XE_VALUE_PAINT_EPS)))\n";
++                    // WITH A TAG, THE PICTURE NAMES THE SHADER. `XE_SHADER_TAG` is the
++                    // low 16 bits of the shader's own hash, passed per module by
++                    // build_shader_spv.sh, written as (hi, 255, lo). Green stays pinned at
++                    // 255 as the marker so the decoder has something to select on, and the
++                    // two payload bytes go in R and B. Without it the paint is plain green
++                    // and says only THAT a shader emitted the value, which is the question
++                    // one round earlier.
++                    // With XE_FLOOR_PAINT the two readings get two colours, which is the
++                    // whole point: MAGENTA where a real max took its floor (the colour is
++                    // BELOW the knee and the `-r1*r1` term is dead), GREEN where none did
++                    // (the colour is sitting exactly ON the knee). One run separates them.
++                    out += "#ifdef XE_FLOOR_PAINT\n";
++                    out += "\t\toC0 = xe_floor ? float4(1.0, 0.0, 1.0, 1.0)\n";
++                    out += "\t\t              : float4(0.0, 1.0, 0.0, 1.0);\n";
++                    out += "#else\n";
++                    out += "#ifdef XE_SHADER_TAG\n";
++                    out += "\t\toC0 = float4(float(((XE_SHADER_TAG) >> 8) & 255) / 255.0,"
++                           " 1.0, float((XE_SHADER_TAG) & 255) / 255.0, 1.0);\n";
++                    out += "#else\n";
++                    out += "\t\toC0 = float4(0.0, 1.0, 0.0, 1.0);\n";
++                    out += "#endif\n";
++                    out += "#endif\n";
++                    out += "#endif\n";
++
++                    out += "#ifdef XE_NAN_PAINT\n";
++                    out += "#ifndef XE_NAN_PAINT_FORCE\n";
++                    out += "#define XE_NAN_PAINT_FORCE 0\n";
++                    out += "#endif\n";
++                    out += "\tif (any(isnan(oC0)) || XE_NAN_PAINT_FORCE)\n";
++                    out += "\t\toC0 = float4(1.0, 0.0, 1.0, 1.0);\n";
++                    out += "#endif\n";
++
++                    // XE_NAN_IN_PAINT — see the declaration beside the interpolator
++                    // init. Painted unconditionally (no value-band gate): the point is
++                    // the FOOTPRINT of arriving NaNs, including any pixel where one
++                    // arrives and does not end at the plateau value.
++                    out += "#ifdef XE_NAN_IN_PAINT\n";
++                    out += "\tif (xe_nanin)\n";
++                    out += "\t\toC0 = float4(1.0, 0.0, 1.0, 1.0);\n";
++                    out += "#endif\n";
++
+                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TEST;
+ 
+                     indent();
+@@ -1804,7 +2457,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     out += '{';
+ 
+                     indent();
+-                    out += "\tclip(oC0.w - g_AlphaThreshold);\n";
++                    // Not `g_AlphaThreshold` directly: ALPHA-TO-MASK needs the
++                    // threshold to vary PER SAMPLE, and a host that rasterises one
++                    // sample per guest sample can spell that exactly. The helper is
++                    // the identity (it returns g_AlphaThreshold) unless the shader is
++                    // built with XE_ALPHA_TO_MASK, so this line changes nothing for
++                    // any existing caller. shader_common.h has the derivation.
++                    out += "\tclip(oC0.w - XeAlphaTestThreshold(iPos.xy));\n";
+ 
+                     indent();
+                     out += "}";
+@@ -1832,8 +2491,33 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     if (!hasMtxProjection)
+                 #endif
+                     {
++                        // The dots use the RAW exported clip position — hardware clips
++                        // against exactly what the VS exported, BEFORE any window->NDC
++                        // fold — so they are emitted above the g_PosScale lines, whose
++                        // adjustment of oPos.xy would otherwise leak into planes with
++                        // x/y components.
++                        out += "#ifdef XE_USER_CLIP_PLANES\n"
++                               "\toClipA = float4(dot(oPos, g_ClipPlane(0)), dot(oPos, g_ClipPlane(1)), dot(oPos, g_ClipPlane(2)), dot(oPos, g_ClipPlane(3)));\n"
++                               "\toClipB = float2(dot(oPos, g_ClipPlane(4)), dot(oPos, g_ClipPlane(5)));\n"
++                               "#endif\n";
++                        out += "\toPos.xy = oPos.xy * g_PosScale + g_PosOffset * oPos.w;\n";
+                         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+                     }
++
++                    // XE_NAN_VS_KILL_IN — cull any triangle touching a vertex whose
++                    // DECLARED float inputs arrived NaN, by handing the rasterizer a NaN
++                    // position. Run beside XE_NAN_IN_PAINT: magenta that VANISHES under
++                    // this arm entered in the vertex data; magenta that survives was
++                    // manufactured by VS arithmetic (or a dependent fetch, which this
++                    // does not see). XE_NAN_VS_KILL_IN_FORCE=1 kills every vertex — the
++                    // positive control, an almost-empty world or the arm never compiled.
++                    out += "#ifdef XE_NAN_VS_KILL_IN\n";
++                    out += "#ifndef XE_NAN_VS_KILL_IN_FORCE\n#define XE_NAN_VS_KILL_IN_FORCE 0\n#endif\n";
++                    out += "\tif (XE_NAN_VS_KILL_IN_FORCE";
++                    for (const std::string& name : vsFloatInputNames)
++                        print(" || any(isnan({}))", name);
++                    out += ")\n\t\toPos = asfloat(0x7FC00000u).xxxx;\n";
++                    out += "#endif\n";
+                 }
+ 
+                 if (simpleControlFlow)
+@@ -1881,6 +2565,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\t}\n";
+ 
+     if (!isPixelShader && hasMtxProjection)
++        out += "\toPos.xy = oPos.xy * g_PosScale + g_PosOffset * oPos.w;\n";
+         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+ #endif
+ 
+diff --git a/XenosRecomp/shader_recompiler.h b/XenosRecomp/shader_recompiler.h
+index b2e317d..55caad0 100644
+--- a/XenosRecomp/shader_recompiler.h
++++ b/XenosRecomp/shader_recompiler.h
+@@ -28,11 +28,26 @@ struct ShaderRecompiler : StringBuffer
+     const uint8_t* constantTableData = nullptr;
+     std::unordered_map<uint32_t, VertexElement> vertexElements;
+     std::unordered_map<uint32_t, std::string> interpolators;
++    // XE_NAN_VS_KILL_IN: the float-typed declared vertex inputs, so the vertex-shader
++    // epilogue can ask "did this vertex's DATA arrive NaN" — the discriminator between
++    // a NaN minted by our vertex decode and one manufactured by VS arithmetic.
++    std::vector<std::string> vsFloatInputNames;
+     std::unordered_map<uint32_t, const ConstantInfo*> float4Constants;
+     std::unordered_map<uint32_t, const char*> boolConstants;
+     std::unordered_map<uint32_t, const char*> samplers;
++    // Texture fetch slots the microcode actually uses that the constant table
++    // does NOT name (see collectUndeclaredSamplers). recompile() falls back to
++    // the synthesized name "s<slot>" for those, so their descriptor-index
++    // declarations have to be emitted alongside the named ones.
++    std::set<uint32_t> undeclaredSamplers;
+     std::unordered_map<uint32_t, uint32_t> ifEndLabels;
+     uint32_t specConstantsMask = 0;
++    // Mini-fetch inheritance (Fable2 §3z dependent vertex fetch): a vfetch with
++    // isMiniFetch shares the previous full vfetch's fetch constant and stride.
++    // Tracked here because the dependent-fetch emit path needs the EFFECTIVE
++    // slot/stride, and recompile() sees instructions in program order.
++    uint32_t lastVfetchSlot = 0;
++    uint32_t lastVfetchStride = 0;
+ 
+ #ifdef UNLEASHED_RECOMP
+     bool hasMtxProjection = false;
+@@ -48,6 +63,8 @@ struct ShaderRecompiler : StringBuffer
+     void printDstSwizzle(uint32_t dstSwizzle, bool operand);
+     void printDstSwizzle01(uint32_t dstRegister, uint32_t dstSwizzle);
+ 
++    void collectUndeclaredSamplers(const uint8_t* shaderData);
++
+     void recompile(const VertexFetchInstruction& instr, uint32_t address);
+     void recompile(const TextureFetchInstruction& instr, bool bicubic);
+     void recompile(const AluInstruction& instr);
