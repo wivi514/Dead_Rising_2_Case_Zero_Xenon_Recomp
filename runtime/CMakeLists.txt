@@ -237,6 +237,43 @@ if(CZ_WINDOW)
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# Release D.2 — in-process shader translation (gpu/shader_translator.cpp).
+#
+# XenosRecomp's translator (MIT, the sibling checkout this project already patches) is
+# compiled INTO the runtime — source, not a library, because upstream builds it as an
+# executable and the 2,573-line recompiler TU is the whole dependency. Its build
+# normally supplies a precompiled pch; gpu/xenos_pch.h is that pch minus smol-v, zstd,
+# xxhash and dxcapi (see its header comment), force-included the same way.
+set(XENOS_ROOT "$ENV{HOME}/GithubRepo/XenosRecomp" CACHE PATH "XenosRecomp source root")
+if(NOT EXISTS "${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp")
+    message(FATAL_ERROR
+        "No XenosRecomp checkout at ${XENOS_ROOT} (need XenosRecomp/shader_recompiler.cpp "
+        "for in-process shader translation, release D.2).\n"
+        "  git clone https://github.com/hedge-dev/XenosRecomp ${XENOS_ROOT}\n"
+        "or point at it:  cmake -DXENOS_ROOT=/path/to/XenosRecomp ...")
+endif()
+
+# shader_common.h is EMBEDDED, not read at run time. The HLSL the translator emits
+# begins with this file's bytes, and the runtime's cache key contract is byte identity
+# with the caches tools/build_shader_spv.sh built from the very same file — an
+# external copy that drifted or went missing would silently produce different SPIR-V.
+# Regenerated at configure time; copy_if_different so an unchanged file does not
+# recompile the translator on every configure.
+file(READ "${XENOS_ROOT}/XenosRecomp/shader_common.h" CZ_SHADER_COMMON_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," CZ_SHADER_COMMON_BYTES "${CZ_SHADER_COMMON_HEX}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/cz_shader_common_embedded.h.in"
+    "// Generated at configure time from ${XENOS_ROOT}/XenosRecomp/shader_common.h.\n"
+    "// DO NOT EDIT — edit the source file and re-run cmake.\n"
+    "#pragma once\n"
+    "inline constexpr unsigned char g_czShaderCommonH[] = {${CZ_SHADER_COMMON_BYTES}};\n"
+    "inline constexpr unsigned long g_czShaderCommonHSize = sizeof(g_czShaderCommonH);\n")
+execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/cz_shader_common_embedded.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/cz_shader_common_embedded.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${XENOS_ROOT}/XenosRecomp/shader_common.h")
+
 add_executable(cz_runtime
     main.cpp
     cpu/timebase.cpp
@@ -262,6 +299,8 @@ add_executable(cz_runtime
     gpu/vd.cpp
     gpu/pm4.cpp
     gpu/vk_renderer.cpp              # phase 5; inert unless CZ_VKDRAW=1
+    gpu/shader_translator.cpp        # release D.2; --translate-shaders and D.4's seam
+    "${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp"   # XenosRecomp's own translator
     gpu/d3d_hooks.cpp                # D3D pivot phase A; inert unless CZ_D3D_OBSERVE=1
     gpu/d3d_draw.cpp                 # D3D pivot phase C; inert unless CZ_D3D_DRAW=1
     host/host_paths.cpp              # release A.1: every path anchored to the exe
@@ -291,6 +330,37 @@ if(WIN32)
             "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/host/win_compat.h>")
     endif()
 endif()
+
+# D.2's two translation units get their include paths as SOURCE properties, not
+# target-wide: the XenosRecomp directory carries generically-named headers (shader.h,
+# constant_table.h) that nothing else in this runtime should ever resolve by accident.
+# INCLUDE_DIRECTORIES on a source file APPENDS to the target's.
+set(CZ_XLATE_INCLUDES
+    "${XENOS_ROOT}/XenosRecomp"
+    "${XENOS_ROOT}/thirdparty/dxc-bin/inc"
+    "${XENON_ROOT}/thirdparty/fmt/include"   # the fmt whose static lib is linked below
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set_source_files_properties("${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp"
+    PROPERTIES INCLUDE_DIRECTORIES "${CZ_XLATE_INCLUDES}")
+set_source_files_properties(gpu/shader_translator.cpp
+    PROPERTIES INCLUDE_DIRECTORIES "${CZ_XLATE_INCLUDES}")
+# Upstream's TU compiles against its pch and with its warning set; the force-include
+# is the pch substitution (same /FI vs -include split as cpu/timebase.h above).
+# shader_translator.cpp needs -fms-extensions on the GNU driver for dxcapi's
+# WinAdapter (__declspec(uuid)); clang-cl has MS extensions on by default.
+if(MSVC)
+    set_source_files_properties("${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp"
+        PROPERTIES COMPILE_OPTIONS
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/gpu/xenos_pch.h;-Wno-switch;-Wno-unused-variable;-Wno-null-arithmetic")
+else()
+    set_source_files_properties("${XENOS_ROOT}/XenosRecomp/shader_recompiler.cpp"
+        PROPERTIES COMPILE_OPTIONS
+        "-include;${CMAKE_CURRENT_SOURCE_DIR}/gpu/xenos_pch.h;-Wno-switch;-Wno-unused-variable;-Wno-null-arithmetic")
+    set_source_files_properties(gpu/shader_translator.cpp
+        PROPERTIES COMPILE_OPTIONS "-fms-extensions")
+endif()
+# dlopen for the DXC library (a no-op string on Windows, where LoadLibrary is used).
+target_link_libraries(cz_runtime PRIVATE ${CMAKE_DL_LIBS})
 
 if(CZ_WINDOW)
     target_compile_definitions(cz_runtime PRIVATE CZ_HAVE_SDL=1)

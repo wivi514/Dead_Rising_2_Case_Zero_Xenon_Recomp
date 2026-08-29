@@ -36,6 +36,7 @@
 #include "cpu/crash_report.h"
 #include "cpu/guest_thread.h"
 #include "cpu/timebase.h"
+#include "gpu/shader_translator.h"
 #include "gpu/vk_renderer.h"
 #include "host/first_run.h"
 #include "host/host_paths.h"
@@ -162,6 +163,21 @@ int main(int argc, char** argv)
 {
     if (argc > 1 && strcmp(argv[1], "--smoke") == 0)
         return RunSmoke();
+
+    // Release D.2: the in-process cache builder. This is the same translation D.4's
+    // first-sight path uses at [imload] time, run over a directory of microcode dumps —
+    // and it is the standing gate for the two deliberate duplicates in
+    // gpu/shader_translator.cpp: run it over ~/DR2CZ-troubleshooting/ucode-dumps and
+    // diff against assets/shader_spv; every byte must match.
+    if (argc > 1 && strcmp(argv[1], "--translate-shaders") == 0)
+    {
+        if (argc != 4)
+        {
+            fprintf(stderr, "usage: cz_runtime --translate-shaders <ucode_dir> <out_dir>\n");
+            return 2;
+        }
+        return ShaderTranslator::TranslateDirectory(argv[2], argv[3]);
+    }
 
     // Where everything is, decided once and printed once. It used to be
     // "../../assets/game/default.xex" — CWD-relative, which is why every recipe in
