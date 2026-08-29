@@ -219,6 +219,43 @@ int main(int argc, char** argv)
     // CLAUDE.md begins with `cd runtime/build`. See host/host_paths.h.
     HostPaths::Report();
 
+    // RELEASE DEFAULTS (part 85). Every dev recipe in this repo says CZ_VKDRAW=1 out
+    // loud, and the same binary with it unset is the control arm — but a player
+    // double-clicking a shipped bundle would get the deliberately blank window. The
+    // packaging script writes cz_defaults.env BESIDE THE EXECUTABLE (KEY=VALUE
+    // lines, # comments) — the exe dir and not the data root, because the defaults
+    // are a property of the shipped bundle and must survive a player pointing
+    // CZ_ROOT at a data tree somewhere else —
+    // and this applies each line AS A DEFAULT ONLY: setenv without overwrite, so the
+    // environment always wins and CZ_VKDRAW=0 still means off. A dev tree has no such
+    // file and nothing changes; it is data, not code, so the release binary stays
+    // byte-identical to the dev one (tools/release_text_identity.sh). Each applied
+    // default is printed, because an env var the player cannot see being set is a
+    // bisection that starts from a lie.
+    {
+        std::ifstream envf(HostPaths::ExeDir() / "cz_defaults.env");
+        std::string line;
+        while (envf && std::getline(envf, line))
+        {
+            if (line.empty() || line[0] == '#')
+                continue;
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos || eq == 0)
+                continue;
+            const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
+            if (getenv(key.c_str()))
+                continue; // the player's environment wins, always
+#ifdef _WIN32
+            _putenv_s(key.c_str(), val.c_str());
+#else
+            setenv(key.c_str(), val.c_str(), /*overwrite=*/0);
+#endif
+            fprintf(stderr, "[defaults] %s=%s (from cz_defaults.env; set %s in the "
+                            "environment to override)\n",
+                    key.c_str(), val.c_str(), key.c_str());
+        }
+    }
+
     const std::string xexDefault = HostPaths::GameXex().string();
     const char* xexPath = argc > 1           ? argv[1]
                           : getenv("CZ_XEX") ? getenv("CZ_XEX")

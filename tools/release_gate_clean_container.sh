@@ -29,6 +29,17 @@ IMAGE=${2:-registry.fedoraproject.org/fedora-minimal:latest}
 [ -x "$STAGE/cz_runtime" ] || { echo "FAIL: no $STAGE/cz_runtime" >&2; exit 1; }
 command -v podman >/dev/null || { echo "FAIL: podman not installed" >&2; exit 1; }
 
+# One real microcode blob, so the container run can prove the DXC dlopen works — the
+# library ldd cannot vouch for (it is how the first bundle died, and a shipped build
+# that cannot dlopen it cannot build its shader cache). Deliberately REQUIRED, not
+# skipped-if-absent: a gate with a weak mode gets run in its weak mode forever.
+UCODE_SRC=${CZ_GATE_UCODE:-$HOME/DR2CZ-troubleshooting/ucode-dumps}
+UCODE_ONE=$(ls "$UCODE_SRC"/ps_*.ucode 2>/dev/null | head -1)
+[ -n "$UCODE_ONE" ] || { echo "FAIL: no ps_*.ucode under $UCODE_SRC (set CZ_GATE_UCODE)" >&2; exit 1; }
+UCODE_DIR=$(mktemp -d)
+mkdir -p "$UCODE_DIR/in"
+cp "$UCODE_ONE" "$UCODE_DIR/in/"
+
 # `-i` is load-bearing and its absence is why the first run of this gate printed
 # "GATE PASSED" having executed nothing: without it podman does not attach stdin, the
 # heredoc goes nowhere, `sh -s` reads EOF and exits 0. A gate whose body never ran and
@@ -38,8 +49,8 @@ command -v podman >/dev/null || { echo "FAIL: podman not installed" >&2; exit 1;
 # brace: the gate now requires evidence that its body executed, not just an exit code.
 echo "==> $IMAGE, bundle mounted read-only at /app"
 LOG=$(mktemp)
-trap 'rm -f "$LOG"' EXIT
-podman run --rm -i -v "$STAGE:/app:ro,Z" "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
+trap 'rm -f "$LOG"; rm -rf "$UCODE_DIR"' EXIT
+podman run --rm -i -v "$STAGE:/app:ro,Z" -v "$UCODE_DIR:/ucode:Z" "$IMAGE" /bin/sh -s > "$LOG" 2>&1 <<'IN'
 set -u
 
 # The Vulkan LOADER is installed here on purpose, and it is the one library this gate
@@ -109,6 +120,25 @@ fi
 echo "--- cz_runtime --smoke (the phase 0.2 link gate, in the PACKAGED binary):"
 /app/cz_runtime --smoke 2>&1 | tail -3 | sed 's/^/    /'
 
+# THE DLOPEN GATE (part 85). The shader translator dlopens lib/libdxcompiler.so —
+# invisible to every ldd check above, and a bundle missing it boots into the black
+# screen the first-run check exists to prevent. So RUN a translation, on a real
+# microcode blob, in this container where no other dxcompiler exists. HOME is unset
+# so the dev-checkout fallback path cannot rescue a broken bundle.
+echo "--- the DXC dlopen: translate one real shader inside the container:"
+mkdir -p /tmp/spv
+if HOME= /app/cz_runtime --translate-shaders /ucode/in /tmp/spv 2>&1 | sed 's/^/    /' \
+   && ls /tmp/spv/*.spv >/dev/null 2>&1; then
+    echo "    dxc-translate OK: $(ls /tmp/spv/*.spv | head -1 | xargs -n1 basename)"
+else
+    echo "    dxc-translate FAILED"
+fi
+
+echo "--- the bundle carries the release files:"
+for f in README.md THIRD_PARTY.md LICENSE cz_defaults.env lib/libdxcompiler.so lib/LICENSE.DXC; do
+    if [ -e "/app/$f" ]; then echo "    $f present"; else echo "    $f MISSING"; fi
+done
+
 echo "--- the first-run refusal, from a container with no game:"
 # CZ_ROOT because /app is read-only and the bundle's own assets/package is empty either
 # way; this is the state a player is in before they drop the package in.
@@ -133,6 +163,14 @@ done
 # binary works at all.
 grep -q "OK: every generated symbol resolved" "$LOG" || {
     echo "GATE FAILED: the packaged binary did not pass --smoke" >&2; missing_marker=1; }
+# The dlopen gate's own sentence — a .spv actually produced inside the container.
+grep -q "dxc-translate OK" "$LOG" || {
+    echo "GATE FAILED: the bundled libdxcompiler.so did not translate a shader" >&2
+    missing_marker=1; }
+# And nothing the bundle must carry may be missing.
+grep -q " MISSING" "$LOG" && {
+    echo "GATE FAILED: release files missing from the bundle (see above)" >&2
+    missing_marker=1; }
 
 if [ $rc -eq 0 ] && [ $missing_marker -eq 0 ]; then
     echo "GATE PASSED"

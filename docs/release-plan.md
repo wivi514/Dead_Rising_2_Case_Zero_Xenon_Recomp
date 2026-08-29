@@ -405,7 +405,7 @@ had to answer the second.
 | **ffmpeg (libavcodec/libavutil)** | LGPL, **or GPL if `--enable-gpl`** | **SETTLED (part 82).** `tools/build_ffmpeg_lgpl.sh` builds LGPL, xma1+xma2 only, checked against configure's own `config.h` rather than the flags passed. Dynamically linked, notice and recipe in the generated `THIRD_PARTY.md` |
 | MoltenVK | Apache 2.0 | attribution (macOS) |
 | o1heap, simde | MIT | attribution |
-| DXC (embedded in D.2) | Apache 2.0 with LLVM Exceptions | attribution |
+| DXC (dlopen'd by D.2's translator) | ~~Apache 2.0 with LLVM Exceptions~~ **University of Illinois/NCSA** (corrected in part 85 — DXC forked LLVM 3.7, before the Apache relicense; upstream LICENSE.TXT verified) | ship the license text beside the library — `tools/licenses/LICENSE.DXC.txt`, copied into `lib/` by the packaging script |
 | UnleashedRecomp | **GPLv3 — structural reference only, no code** | nothing to ship; keep it that way |
 
 ---

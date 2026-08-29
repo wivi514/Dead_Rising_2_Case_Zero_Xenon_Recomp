@@ -92,10 +92,25 @@ if [ -f "$STAGE/lib/libSDL2-2.0.so.0" ] \
     cmake -S runtime -B $BUILD -DCZ_SDL2_PREFIX=$ROOT/thirdparty/sdl2 ..."
 fi
 
-# The drop-in step's own tool. build_shader_spv.sh is NOT shipped: it needs XenosRecomp
-# and DXC, which is exactly what milestone D moves in-process. Until D lands, a shipped
-# build needs a shader cache supplied alongside it, and README.md says so rather than
-# leaving the player to find out from a refusal message.
+# THE DXC LIBRARY, and it is NOT optional (release-plan E, part 85). Milestone D made
+# the shipped build translate its own shaders — the disc pass at first run and the
+# first-sight JIT both go through gpu/shader_translator.cpp, which dlopens
+# libdxcompiler.so from <exe>/lib. A bundle without it boots, REFUSES every
+# translation with one log line, and presents the black screen the first-run check
+# exists to prevent — and ldd cannot report it missing, because a dlopen is invisible
+# to ldd (the sdl2-compat lesson, one shelf over). So: fail here, loudly.
+DXC_SRC=${CZ_DXC_LIB:-$HOME/GithubRepo/XenosRecomp/thirdparty/dxc-bin/lib/x64/libdxcompiler.so}
+[ -f "$DXC_SRC" ] || fail "no libdxcompiler.so at $DXC_SRC — the shipped shader
+  translator dlopens it and a bundle without it cannot build its cache.
+  Point CZ_DXC_LIB at a libdxcompiler.so (XenosRecomp's thirdparty/dxc-bin has one)."
+cp "$DXC_SRC" "$STAGE/lib/libdxcompiler.so"
+cp "$ROOT/tools/licenses/LICENSE.DXC.txt" "$STAGE/lib/LICENSE.DXC"
+printf '    %-30s %8s KB\n' "libdxcompiler.so" "$(( $(stat -c%s "$DXC_SRC") / 1024 ))"
+
+# The drop-in step's dev-side tool, kept as the REFERENCE implementation: the runtime
+# unpacks the package itself as of part 85 (host/stfs_extract.cpp), and this copy is
+# what a player uses if they want to unpack by hand or the in-process path refuses
+# their container (SVOD, for instance, which only the Python handles).
 cp "$ROOT/tools/extract_stfs.py" "$STAGE/tools/"
 
 cat > "$STAGE/assets/package/PUT_YOUR_GAME_HERE.txt" <<'TXT'
@@ -113,6 +128,18 @@ directory; the unpacked files are written to ../game/ on first run.
 TXT
 
 cp "$ROOT/LICENSE" "$STAGE/"
+cp "$ROOT/tools/release/README.md" "$STAGE/"
+
+# RELEASE DEFAULTS (part 85). Every dev recipe says CZ_VKDRAW=1 out loud and the
+# binary defaults it off, because the same binary with it unset is the control arm for
+# every renderer claim. A player gets the opposite default from this file, which
+# main.cpp applies only for variables the environment leaves unset — so the shipped
+# binary stays byte-identical to the dev one and CZ_VKDRAW=0 still works.
+cat > "$STAGE/cz_defaults.env" <<'ENV'
+# Defaults for a shipped build. KEY=VALUE, one per line, # comments.
+# Anything set in your environment overrides these.
+CZ_VKDRAW=1
+ENV
 
 # THIRD_PARTY.md, GENERATED (release-plan E.3). Written from what the binary actually
 # links so it cannot drift away from the artifact it describes — an attribution file
@@ -129,6 +156,7 @@ echo "==> generating THIRD_PARTY.md"
     echo '| XenonRecomp / XenosRecomp (hedge-dev) | MIT | the recompiled image and the translated shaders are their output |'
     echo '| SDL2 | zlib | bundled in `lib/` |'
     echo '| ffmpeg — libavcodec, libavutil | LGPL 2.1 or later | bundled in `lib/`; see below |'
+    echo '| DirectX Shader Compiler (DXC) | University of Illinois/NCSA | `lib/libdxcompiler.so`, loaded at run time to translate shaders; license in `lib/LICENSE.DXC` |'
     echo '| o1heap | MIT | compiled in (the guest heaps) |'
     echo '| SIMDe | MIT | compiled in (the guest VMX unit) |'
     echo '| Vulkan loader | Apache 2.0 | NOT bundled — the host system supplies it |'
