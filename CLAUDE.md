@@ -1035,9 +1035,17 @@ COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
 * **A stray `cz_runtime` from a dead session had filled /tmp (22 GB draw-trace log) and
   killed this session's shell mid-part** — bare `echo` exit 1 is the tmpfs-quota symptom;
   `du -sh /tmp/*`, `fuser` the big file, kill by pid.
-* **OWED (release-plan §9.8):** the Windows CI leg's outcome; the pre-warm key file (one
-  operator playthrough); the glibc floor / AppImage; an operator sitting on the shipped
-  bundle; milestone C.
+* **THREE OF THE FIVE OWED ITEMS CLOSED THE SAME NIGHT** (release-plan §9.8, updated in
+  place): the Windows CI leg went GREEN (RuntimeLibrary `/MD` override + vcpkg DLLs
+  deployed beside the exe, both diagnosed via the new `windows-logs` artifact); the
+  OPERATOR PLAYED THE SHIPPED BUNDLE from a drop-in first run ("pretty close to the
+  Linux build" — extract, prebuild, 64 first-sight shaders, a save, all in the wild);
+  and that sitting doubled as the PRE-WARM HARVEST — 583 keys now ship as
+  `<exe>/prewarm.keys`, read only when no per-user key file exists, proven
+  cross-platform by use (Windows-written keys pre-warmed 421 pipelines on Linux,
+  19.2 s moved out of gameplay). **STILL OWED:** the glibc floor / AppImage; the ~19 s
+  cold-boot pre-warm running silently after the progress window closes (§2.3 item 4
+  polish); milestone C.
 
 Where the port is, as of 2026-08-28 (**PART 84 CLOSED — THE RELEASE. MILESTONE D IS
 COMPLETE: A SHIPPED BUILD TRANSLATES ITS OWN SHADERS.** D.2, D.4 and D.3 all landed in one

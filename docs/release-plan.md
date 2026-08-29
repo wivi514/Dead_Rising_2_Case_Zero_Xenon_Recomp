@@ -933,8 +933,22 @@ map would rot).
 **Still owed after E** (the §9.2-style honest list):
 * the **glibc floor** on the Linux artifact (build on an old base or AppImage) — the
   packaging script still prints it as a known limitation;
-* the **pre-warm key file** — unchanged, waits on an operator playthrough with the key
-  recorder armed; there is now an artifact to ship it in;
+* ~~the **pre-warm key file**~~ — **SHIPPED, same part.** The operator's sitting on the
+  shipped Windows bundle (which itself verified the first-run flow in the wild:
+  in-process extract, disc prebuild, 64 vertex shaders born at first sight, a save
+  written — and their verdict, "felt good, pretty close to the Linux build") doubled as
+  the harvest: the part-83 recorder saves keys periodically, so 583 keys (32,660 bytes)
+  came out of `%LOCALAPPDATA%\cz-recomp` when they quit. The renderer now seeds from
+  `<exe>/prewarm.keys` ONLY when no per-user key file exists — session one, exactly the
+  session part 83 could not reach — and the per-user file takes over from session two.
+  Verified both ways and cross-platform BY USE: a cold-cache Linux boot created 421 of
+  583 pipelines up front (19.2 s at 45.71 ms each moved out of gameplay) from keys the
+  WINDOWS build wrote; a warm cache reads it zero times. Both packaging scripts
+  header-check the seed and the container gate requires it. The 162 skips are keys
+  whose vertex shader had not yet been born at first sight — coverage completes by
+  launch two, and the log counts it. **New owed polish, stated rather than smoothed:
+  that one-time ~19 s runs silently after the progress window closes on a true cold
+  first boot; §2.3 item 4 wanted it under a visible screen;**
 * ~~the **Windows CI leg's first live run**~~ — **RESOLVED in the same part, three
   iterations after close, and BOTH LEGS ARE GREEN** (`--smoke`: 208 stub entries, every
   symbol resolved). The predicted "failure will be in the dependency step" was wrong both

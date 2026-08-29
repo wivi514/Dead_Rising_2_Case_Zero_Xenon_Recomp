@@ -53,16 +53,23 @@ first run.
    workflow now always uploads — the public API serves verdicts, not logs — fetched
    tokenlessly via nightly.link. Full trail: `release-plan.md` §9.8's owed list, updated
    in place.
-2. **The pre-warm pipeline-key file** — the one §9.2 debt with no code left to write:
-   needs an operator playthrough with the key recorder armed, then ship the file in the
-   bundles and teach the packaging scripts to include it.
-3. **The glibc floor on the Linux artifact** — build on an old base image or produce the
-   AppImage §2.1 names. The packaging script prints the limitation honestly meanwhile.
-4. **An operator sitting on the SHIPPED bundle** — unpack `dist/CaseZeroRecomp` somewhere
-   clean (or another machine), drop the package in, and watch the first-run flow with
-   their own eyes: the progress window's look, the first minutes' warm-up, sound. Every
-   mechanism is machine-gated; the look of it is not.
-5. **C — macOS**, still blocked on hardware; §1.2 already retired the ARM64 risk.
+2. ~~**The pre-warm pipeline-key file**~~ — **SHIPPED, still inside part 85.** The
+   operator's bundle sitting doubled as the harvest (583 keys); the renderer seeds from
+   `<exe>/prewarm.keys` only when no per-user file exists; both packaging scripts
+   header-check it and the container gate requires it. Cross-platform proven by use
+   (Windows-written keys pre-warmed 421 pipelines on Linux, 19.2 s moved out of play).
+   §9.8's updated entry is the record.
+3. ~~**An operator sitting on the SHIPPED bundle**~~ — **DONE, same sitting**: they
+   played the Windows bundle end to end from a drop-in first run (extract, prebuild, 64
+   first-sight vertex shaders, a save written) and called it "pretty close to the Linux
+   build". Performance beyond that is the PARKED subject, not a release defect.
+4. **The glibc floor on the Linux artifact** — now the only self-servable item: build on
+   an old base image or produce the AppImage §2.1 names. The packaging script prints
+   the limitation honestly meanwhile.
+5. **Owed polish, small**: a true cold first boot runs the ~19 s pipeline pre-warm
+   SILENTLY after the progress window closes (§2.3 item 4 wanted it under a visible
+   screen). One-time, and only when no per-user key file exists.
+6. **C — macOS**, still blocked on hardware; §1.2 already retired the ARM64 risk.
 
 ## 2. WHAT IS OWED TO THE OPERATOR
 
