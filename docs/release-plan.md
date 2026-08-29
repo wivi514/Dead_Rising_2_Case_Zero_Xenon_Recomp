@@ -946,8 +946,10 @@ map would rot).
   WINDOWS build wrote; a warm cache reads it zero times. Both packaging scripts
   header-check the seed and the container gate requires it. The 162 skips are keys
   whose vertex shader had not yet been born at first sight — coverage completes by
-  launch two, and the log counts it. **New owed polish, stated rather than smoothed:
-  that one-time ~19 s runs silently after the progress window closes on a true cold
+  launch two, and the log counts it. **Refreshed the same night from a second operator
+  sitting: 860 keys (48,172 bytes), cold-boot seed 550 of 860 in 24.1 s, both artifacts
+  repackaged and re-gated.** **New owed polish, stated rather than smoothed:
+  that one-time ~20 s runs silently after the progress window closes on a true cold
   first boot; §2.3 item 4 wanted it under a visible screen;**
 * ~~the **Windows CI leg's first live run**~~ — **RESOLVED in the same part, three
   iterations after close, and BOTH LEGS ARE GREEN** (`--smoke`: 208 stub entries, every
