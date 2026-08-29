@@ -2,6 +2,7 @@
 
 #include "pm4.h"
 #include "pump_stats.h"
+#include "shader_translator.h"
 #include "drawid_ps_spv.h"
 #include "rt_factor_spv.h"
 #include "rt_shadow_spv.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdarg>
@@ -6541,6 +6543,229 @@ void PrewarmPipelines()
                 missingShader);
 }
 
+// --- D.4: translate on first sight (docs/release-plan.md §3.D) ----------------------
+//
+// WHY. D.1 established the disc holds no usable VERTEX shader (the title patches fetch
+// instructions at load), so a shipped build's cache starts with a vertex half built
+// from nothing — every vertex shader has to come from the running title itself. This is
+// that path: when an IM_LOAD binds microcode whose hash the cache does not hold, the
+// bytes are handed to a worker thread, translated in-process (gpu/shader_translator.cpp,
+// whose output is byte-identical to the offline pipeline by the D.2 gate), persisted
+// into the cache directory so the NEXT run starts warm, and registered in the live
+// tables. Draws that need the shader are skipped while it translates — a fraction of a
+// second, once ever per shader — and the skip is its own counter rather than the
+// "no translated shader" report, so the standing `grep -c "no translated shader"` gate
+// keeps meaning what it always meant: a shader that ENDED UP missing (translation
+// failed, or the JIT is off), not one that was momentarily in flight.
+//
+// THREADING. BindShader (the enqueue site) and DoDraw (the drain site) both run on the
+// pump thread, so the shader tables are only ever touched from the thread that reads
+// them; the worker touches only its own queue entries and the filesystem. The worker is
+// ONE thread on purpose (the operator's rule: leave the cores to the game) and is never
+// joined — this runtime shuts down with _Exit everywhere, so a blocked join would be a
+// hang and an abandoned worker is the documented shape.
+//
+// CZ_VK_NO_SHADER_JIT=1 is the same-binary control arm.
+namespace shaderjit
+{
+struct Job
+{
+    uint32_t type = 0; // 0 = VS, 1 = PS
+    uint64_t hash = 0;
+    std::vector<uint8_t> ucode;
+};
+std::mutex mx;
+std::condition_variable cv;
+std::deque<Job> queue;
+struct Done
+{
+    uint64_t hash = 0;
+    std::string name;
+    std::filesystem::path dir; // where the worker persisted the pair
+};
+std::vector<Done> finished;          // guarded by mx; drained on the pump thread
+std::vector<uint64_t> failedHashes;  // guarded by mx; makes the miss report fire
+std::vector<uint64_t> requested;     // pump thread only: never enqueue a hash twice
+std::atomic<uint32_t> inFlight{ 0 }; // queued + translating, for the miss-site test
+std::filesystem::path cacheDir;      // set by LoadShaders; empty = no persistence yet
+bool workerUp = false;               // pump thread only
+// Armed at the END of LoadShaders. Before the tables are populated every hash would
+// look missing, and the JIT would busily re-translate the whole on-disk cache.
+bool tablesReady = false;
+
+void Worker()
+{
+    for (;;)
+    {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lk(mx);
+            cv.wait(lk, [] { return !queue.empty(); });
+            job = std::move(queue.front());
+            queue.pop_front();
+        }
+        const char* stage = job.type == 0 ? "vs" : "ps";
+        char name[32];
+        snprintf(name, sizeof name, "%s_%016llx", stage,
+                 static_cast<unsigned long long>(job.hash));
+
+        const auto t0 = std::chrono::steady_clock::now();
+        ShaderTranslator::Result r;
+        std::string err;
+        bool ok = ShaderTranslator::Translate(name, job.ucode.data(), job.ucode.size(),
+                                              r, err);
+        std::filesystem::path dir = cacheDir;
+        if (ok)
+        {
+            // Persist so the next run starts warm — and so the drain can reuse the
+            // very same LoadShaderMeta path the startup loop uses. A cache directory
+            // that cannot be written is worth one loud line, then a scratch fallback
+            // keeps THIS run working.
+            auto persist = [&](const std::filesystem::path& d) {
+                std::error_code ec;
+                std::filesystem::create_directories(d, ec);
+                std::ofstream fs(d / (std::string(name) + ".spv"), std::ios::binary);
+                fs.write(reinterpret_cast<const char*>(r.spirv.data()),
+                         std::streamsize(r.spirv.size()));
+                if (!fs)
+                    return false;
+                std::ofstream fm(d / (std::string(name) + ".meta.json"),
+                                 std::ios::binary);
+                fm.write(r.metaJson.data(), std::streamsize(r.metaJson.size()));
+                return bool(fm);
+            };
+            if (!persist(dir))
+            {
+                const auto scratch =
+                    std::filesystem::temp_directory_path() / "cz_shader_jit";
+                fprintf(stderr,
+                        "[vk] shader cache %s is not writable — %s persisted to %s "
+                        "for this run only\n",
+                        dir.string().c_str(), name, scratch.string().c_str());
+                dir = scratch;
+                ok = persist(dir);
+                if (!ok)
+                    err = "cache dir and scratch dir both unwritable";
+            }
+        }
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        if (ok)
+        {
+            fprintf(stderr, "[vk] first-sight translation: %s (%zu dwords -> %zu B "
+                            "SPIR-V, %lld ms)\n",
+                    name, job.ucode.size() / 4, r.spirv.size(),
+                    static_cast<long long>(ms));
+            std::lock_guard<std::mutex> lk(mx);
+            finished.push_back({ job.hash, name, dir });
+        }
+        else
+        {
+            fprintf(stderr, "[vk] first-sight translation FAILED for %s: %s\n",
+                    name, err.c_str());
+            std::lock_guard<std::mutex> lk(mx);
+            failedHashes.push_back(job.hash);
+        }
+        // Decremented only after the result is visible, so the miss site can never
+        // read "nothing in flight" while the answer is still in neither list.
+        inFlight.fetch_sub(1);
+    }
+}
+
+// Pump thread, from BindShader's first-announce of a hash: enqueue if the cache
+// cannot answer it. Cheap on the path that matters — one map lookup per DISTINCT
+// shader per run, not per bind.
+void OnFirstBind(uint32_t type, uint64_t hash, const uint8_t* code, uint32_t sizeDwords)
+{
+    static const bool off = [] {
+        const char* e = getenv("CZ_VK_NO_SHADER_JIT");
+        return e && *e && strcmp(e, "0") != 0;
+    }();
+    if (off || !R || !tablesReady)
+        return;
+    if (R->shadersMap.count(hash))
+        return;
+    if (std::find(requested.begin(), requested.end(), hash) != requested.end())
+        return;
+    requested.push_back(hash);
+    if (!workerUp)
+    {
+        workerUp = true;
+        std::thread(Worker).detach();
+    }
+    inFlight.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        queue.push_back({ type, hash, std::vector<uint8_t>(code, code + size_t(sizeDwords) * 4) });
+    }
+    cv.notify_one();
+}
+
+bool InFlightOrFailed(uint64_t hash, bool& failed)
+{
+    failed = false;
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        if (std::find(failedHashes.begin(), failedHashes.end(), hash) !=
+            failedHashes.end())
+        {
+            failed = true;
+            return false;
+        }
+    }
+    // In flight iff requested, not failed, and not yet in the tables — the caller only
+    // asks after a table miss, so "requested and not failed" is exactly "still coming
+    // or just landed"; either way the draw skips this frame and finds it drained next.
+    return std::find(requested.begin(), requested.end(), hash) != requested.end();
+}
+
+// Pump thread, at the draw-path miss site: register every finished translation.
+// Returns true if anything was inserted, so the caller re-runs its lookup.
+bool Drain()
+{
+    std::vector<Done> batch;
+    {
+        std::lock_guard<std::mutex> lk(mx);
+        batch.swap(finished);
+    }
+    if (batch.empty())
+        return false;
+    bool any = false;
+    for (const auto& d : batch)
+    {
+        ShaderMeta meta;
+        if (!LoadShaderMeta(d.dir / (d.name + ".meta.json"), meta))
+        {
+            fprintf(stderr, "[vk] first-sight %s: persisted sidecar unreadable\n",
+                    d.name.c_str());
+            std::lock_guard<std::mutex> lk(mx);
+            failedHashes.push_back(d.hash);
+            continue;
+        }
+        std::ifstream f(d.dir / (d.name + ".spv"), std::ios::binary);
+        std::vector<char> spv((std::istreambuf_iterator<char>(f)), {});
+        VkShaderModuleCreateInfo ci{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        ci.codeSize = spv.size();
+        ci.pCode = reinterpret_cast<const uint32_t*>(spv.data());
+        if (spv.empty() || (spv.size() % 4) ||
+            vkCreateShaderModule(R->device, &ci, nullptr, &meta.module) != VK_SUCCESS)
+        {
+            fprintf(stderr, "[vk] first-sight %s: vkCreateShaderModule failed\n",
+                    d.name.c_str());
+            std::lock_guard<std::mutex> lk(mx);
+            failedHashes.push_back(d.hash);
+            continue;
+        }
+        ApplyWorldXform(d.name, meta);
+        R->shaders.Insert(d.hash, meta);
+        R->shadersMap.emplace(d.hash, std::move(meta));
+        any = true;
+    }
+    return any;
+}
+} // namespace shaderjit
+
 bool LoadShaders()
 {
     // The cache directory is CWD-relative and the launch CWD varies (the documented
@@ -6583,6 +6808,7 @@ bool LoadShaders()
     }
 
     fprintf(stderr, "[vk] shader cache: %s\n", dir.string().c_str());
+    shaderjit::cacheDir = dir; // D.4: where first-sight translations persist
     CreatePipelineCache(dir);
     LoadWorldXformTable(dir);
     uint32_t dropped = 0;
@@ -6632,6 +6858,7 @@ bool LoadShaders()
     }
     fprintf(stderr, "[vk] %zu shader modules loaded%s\n", R->shadersMap.size(),
             dropped ? " (see the DROPPED lines above)" : "");
+    shaderjit::tablesReady = true; // D.4 may now trust a miss to mean "not in the cache"
 
     // ROUTE (B)'s VARIANT CACHE (part 65). A sibling directory built by
     //   CZ_HLSL_PATCH="python3 tools/patch_rt_shadow_hlsl.py" \
@@ -18337,11 +18564,40 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     if (!vsMeta || !psMeta)
     {
+        // D.4: a miss is now the drain point for finished first-sight translations —
+        // rare by construction (it recurs every draw only while a shader is missing),
+        // so the queue check costs nothing on the standing path. Insertion happens on
+        // THIS thread, so the re-lookup below cannot race anything.
+        if (shaderjit::Drain())
+        {
+            vsMeta = g_flatCacheOff ? nullptr : R->shaders.Find(vsBind.hash);
+            psMeta = g_flatCacheOff ? nullptr : R->shaders.Find(psBind.hash);
+            if (g_flatCacheOff)
+            {
+                auto vsIt = R->shadersMap.find(vsBind.hash);
+                auto psIt = R->shadersMap.find(psBind.hash);
+                vsMeta = vsIt != R->shadersMap.end() ? &vsIt->second : nullptr;
+                psMeta = psIt != R->shadersMap.end() ? &psIt->second : nullptr;
+            }
+        }
+    }
+    if (!vsMeta || !psMeta)
+    {
+        const uint64_t missing = !vsMeta ? vsBind.hash : psBind.hash;
+        // While the translation is in flight the skip is ITS OWN counter, not the miss
+        // report — so `grep -c "no translated shader"` keeps meaning "a shader ended up
+        // missing" (translation failed, or the JIT is off), never "one was momentarily
+        // being built".
+        bool jitFailed = false;
+        if (shaderjit::InFlightOrFailed(missing, jitFailed) && !jitFailed)
+        {
+            Count("draw: shader translating");
+            return;
+        }
         // Naming the missing hash is what makes this actionable: the [imload] line
         // for that hash says which stage and how big, and the two together are enough
         // to add it to the cache without another run.
         static std::vector<uint64_t> reported;
-        const uint64_t missing = !vsMeta ? vsBind.hash : psBind.hash;
         if (std::find(reported.begin(), reported.end(), missing) == reported.end())
         {
             reported.push_back(missing);
@@ -22573,6 +22829,16 @@ int VkRenderer_RtUnavailableReason()
 }
 
 bool VkRenderer_Active() { return g_active; }
+
+// D.4's enqueue seam, called by pm4.cpp's BindShader once per distinct hash per run
+// (inside its announce-once block, so this is never on the per-bind path). Pump thread.
+void VkRenderer_OnShaderBind(uint32_t type, uint64_t hash, const uint8_t* code,
+                             uint32_t sizeDwords)
+{
+    if (!g_active)
+        return;
+    shaderjit::OnFirstBind(type, hash, code, sizeDwords);
+}
 
 namespace {
 

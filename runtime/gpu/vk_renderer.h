@@ -45,6 +45,13 @@ bool VkRenderer_Init();
 // True once Init has succeeded. Cheap; makes no Vulkan calls.
 bool VkRenderer_Active();
 
+// D.4 (release plan §3.D): first sight of a microcode hash this run. Called by pm4's
+// BindShader once per distinct hash; if the shader cache cannot answer it, the bytes
+// are translated in-process on a worker and the cache gains the entry — which is where
+// every VERTEX shader in a shipped build comes from, the disc holding none.
+void VkRenderer_OnShaderBind(uint32_t type, uint64_t hash, const uint8_t* code,
+                             uint32_t sizeDwords);
+
 // One draw, from inside the PM4 walk, with the register file and the bound shaders
 // current. Resolves arrive here too — they are draws with RB_MODECONTROL's edram_mode
 // set to kCopy, not a packet of their own — and are routed internally.

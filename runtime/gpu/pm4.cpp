@@ -826,6 +826,10 @@ void BindShader(uint32_t type, uint32_t ucodeVa, const uint8_t* code, uint32_t s
         fprintf(stderr, "[imload] %s va=%08X hash=%016llx size=%u\n",
                 type == 0 ? "VS" : "PS", ucodeVa, static_cast<unsigned long long>(hash),
                 sizeDwords);
+        // D.4: first sight of this hash — if the renderer's cache cannot answer it,
+        // this is where the in-process translation starts. Inside the announce-once
+        // block on purpose: one call per distinct shader per run, not per bind.
+        VkRenderer_OnShaderBind(type, hash, code, sizeDwords);
     }
 
     DumpShader(type, hash, code, sizeDwords);
