@@ -862,3 +862,80 @@ pulled HEAD, not the absence of error text.
 * the JIT persists into the STOCK cache only; the six variant arm caches do not gain
   first-sight entries and will read `no translated shader` for a shader born at run time —
   acceptable for dev arms, worth one line here so it is never diagnosed as a defect.
+
+### 9.8 Part 85 — MILESTONE E: the release is packaged, gated, and CI exists
+
+**E is the milestone where every earlier "owed" line either shipped or is named below.**
+Both §2.1 primary artifacts now exist and are gated: `CaseZeroRecomp-linux-x86_64.tar.zst`
+(26 MB) and `CaseZeroRecomp-windows-x86_64.zip` (21 MB). The §5 checklist ran end to end
+for this state: clean-container gate PASSED (items 1–3), `.text` identity between matched
+RelWithDebInfo/Release configures (item 4's cheap form, 35,915,250 bytes, same sha256),
+validation exactly the standing **6 `topology-08773` and nothing else** at 7,676 draws
+(item 5), bind-batch verify **0 of 87,357,139 triples** (item 6), both shader censuses and
+the disc gate 343-of-345 (item 7), and the bisection knobs are in the shipped README
+(item 8).
+
+**The in-process STFS extract (§2.3 step 2) — SHIPPED.** `host/stfs_extract.{h,cpp}`,
+byte-identical to the Python reference over the real package (256 of 256 files,
+859,007,897 bytes), bounds-checked and traversal-checked because the package is
+player-supplied input, `default.xex` written LAST so an interrupted extraction cannot
+counterfeit a complete tree. Negative controls: a truncated package fails naming the
+entry and offset; the presence-check file is never written. `--extract-package` is the
+gate verb; `CZ_NO_STFS_EXTRACT=1` restores the refusal.
+
+**The whole §2.3 first-run flow now actually happens, and was run three ways.** A fake
+root holding ONLY the package, booted with the renderer: auto-extract → disc prebuild
+(1265 translated, 0 failed, marker written) → live gameplay with 32 first-sight vertex
+JITs and `no translated shader` = 0. The same flow inside the clean container (no dev
+packages, no GPU — the renderer leg is the host run's) via the gate's new fourth section.
+And windowed, where the new **first-run progress window** (Host_Progress*, plain SDL,
+the shared glyphs, one bar) was screenshotted mid-flow showing `PREPARING SHADERS - 996
+OF 1265`. The §9.2/§9.7 "graphical progress screen" debt is paid.
+
+**Two packaging holes only RUNNING things could catch, both closed before any player:**
+
+* `libdxcompiler.so` was **not in the bundle** — every static check passed while a
+  shipped build could not have translated a single shader (the sdl2-compat shape again:
+  a dlopen is invisible to ldd). The bundle carries it now, and the container gate RUNS
+  a translation inside the container with `HOME` unset so the dev-checkout fallback
+  cannot rescue a broken bundle. Windows: the staged exe built all 1,265 disc shaders
+  and its `[shxlate]` line names the STAGED dll, not the dev tree's.
+* A player double-clicking `cz_runtime` got the **deliberately blank window** — CZ_VKDRAW
+  is opt-in everywhere in this repo. `cz_defaults.env` beside the executable now carries
+  release defaults, applied only for variables the environment leaves unset (data, not
+  code — `.text` identity re-verified; the environment always wins; dev trees have no
+  such file). Verified in both directions.
+
+**The DXC licence row in §4 was WRONG and is corrected in place**: DXC is University of
+Illinois/NCSA (an LLVM 3.7 fork, pre-relicense), not Apache-2.0-with-LLVM-exceptions;
+upstream LICENSE.TXT verified, vendored, and shipped beside the library on both
+platforms.
+
+**E.1 CI exists and its green tick says exactly what it means** (the workflow's own
+comment): host sources compile and `--smoke` passes against a STUB image
+(`tools/gen_stub_ppc.py`) on ubuntu and windows — never "the release builds". CI clones
+upstream hedge-dev recompilers at pinned merge-bases and applies `tools/ci/*.patch`
+(13 + 23 local commits change the interfaces the runtime compiles against; an unpatched
+clone does not build it — `tools/ci/regen_patches.sh` is the maintenance verb). The
+Linux leg was verified end to end LOCALLY before the YAML existed and its first real run
+is green; the stub generator paid for two scanner lessons (no word boundary inside
+`__imp__sub_`; X-macro lists carry addresses as bare hex). macOS is absent on purpose
+until milestone C.
+
+**E.2's Windows script** (`tools/release_package_windows.ps1`): DLLs beside the exe
+because that is the search path Windows has, MSVC runtime from the toolchain's redist
+(never System32), the gate RUNS the staged exe. **E.3** THIRD_PARTY.md generated on both
+platforms, now with DXC and the MSVC runtime. **E.4** `tools/release/README.md` ships in
+both bundles — drop-in steps, first-run, §5-item-8 bisection knobs; the keyboard map is
+deliberately NOT enumerated (the runtime prints its own; window.cpp predicted a README
+map would rot).
+
+**Still owed after E** (the §9.2-style honest list):
+* the **glibc floor** on the Linux artifact (build on an old base or AppImage) — the
+  packaging script still prints it as a known limitation;
+* the **pre-warm key file** — unchanged, waits on an operator playthrough with the key
+  recorder armed; there is now an artifact to ship it in;
+* the **Windows CI leg's first live run** (vcpkg dependency build) was still in progress
+  at part-85 close — the Linux leg is green; if windows is red the failure will be in the
+  dependency step, not the verified build recipe;
+* **macOS entirely** (milestone C, blocked on hardware).

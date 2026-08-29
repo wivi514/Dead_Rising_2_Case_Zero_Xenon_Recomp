@@ -6200,3 +6200,79 @@ SHADERS NOT AT ALL.** ~~**`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**~~ — 
   `vk_renderer.cpp`**, so part 74's A5 and `alu_const_gate` sweeps, part 75's cache gates,
   part 78's barrier gates, part 80's PM4 boundary oracles and part 81's bind verifier all
   stand.
+
+Where the port is, as of 2026-08-28 (**PART 83 CLOSED — THE RELEASE. MILESTONE B IS COMPLETE
+AND THE GAME PLAYS ON WINDOWS: the operator played Still Creek at 2560x1440 with sound. THE
+STUTTER IS FIXED AND IT WAS NEVER A WINDOWS BUG — every new player would have had it on every
+platform.** ~~**`docs/part84-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for one part;
+it is `part85-kickoff.md`. Records: `release-plan.md`
+**§9.4-9.6** (and **§9.6 is what part 83 got WRONG**, which on this session is the more
+reusable half); lessons: gotchas **495-500**):
+
+* **THERE IS A WINDOWS BUILD LAPTOP AND IT IS REACHED WITH `ssh czwin`.**
+  `docs/windows-build-setup.md` is the verified runbook and carries the parts that cost a
+  round trip each: **three compilers on one box, none interchangeable** (XenonRecomp needs
+  clang-cl, SDL2 needs cl, the runtime needs clang-cl), the
+  `administrators_authorized_keys` OWNERSHIP rule, `-EncodedCommand` to escape three quoting
+  layers, and `cmd /c` so PowerShell stops turning stderr into CLIXML. **git is the only way
+  source moves between the machines.**
+* **MILESTONE B, ALL FOUR ITEMS, each gated by RUNNING rather than compiling.** `ppc/`
+  regenerates on Windows in 8 s (228 TUs, zero errors) — the recompilation is fully portable
+  and that was B's largest unknown. B.1's memory map is `VirtualAlloc2` + `MapViewOfFile3`
+  placeholders **and it gained an aliasing self-test that guards the POSIX path too**
+  (`CZ_MEM_POISON_ALIAS=1` is its positive control). B.2's crash reporter is platform-neutral
+  with DbgHelp symbolisation.
+* **THREE BUGS WERE FOUND IN THE CRASH REPORTER ITSELF, TWO LATENT ON LINUX.** It was a
+  VECTORED handler, so it caught a benign first-chance exception and killed a healthy
+  process. It could **smash its own stack** — 21 sites of `n += snprintf(b + n, sizeof b - n,
+  …)`, which underflows to ~2^64 once the report exceeds the buffer; `/GS` then `__fastfail`s,
+  bypassing SEH entirely, so the process vanished at 0xC0000409 with NO OUTPUT. **A crash
+  reporter that can crash while reporting replaces a diagnosable fault with an undiagnosable
+  one**, and it did that twice before it was found.
+* **THE ACTUAL WINDOWS CRASH: a VIRTUAL destructor dispatched through a vtable pointer the
+  GUEST had overwritten.** A handle IS a guest pointer, so every KernelObject sits in guest
+  memory with a host vptr in its first eight bytes — and `~KernelObject`, `Wait()` and every
+  `dynamic_cast` go through it. The file had guarded the FREE and nothing else. The fix
+  records the vtable pointers we install and requires a match; a range check was too weak
+  and did not move the crash.
+* **FOUR PLATFORM DEFECTS THE OPERATOR FOUND BY PLAYING, none reachable by any gate here:**
+  the VFS mounted on the CWD (`find_last_of('/')` finds nothing in a Windows path); the
+  resolution list capped at 1600x900 on a 1440p screen (no DPI awareness, so every display
+  query is divided by the 160% scale); the thread budget sized off a guess (10 cores against
+  a real 14); and a pipeline cache that could **silently move** because its directory came
+  from `HOME`, which Git and MSYS2 set and nothing else does.
+* **THE STUTTER: `frame 6696 = 396 ms wall, 372 ms of it in GetPipeline`**, with record,
+  textures, constants, streams and GPU all normal. Pipelines were created LAZILY, on the
+  frame that first needed each one, on the frame thread — 534 in three minutes at 1-200 ms
+  each. **Four of five F7 marks land within 45 frames of one and nowhere else.**
+* **AND IT WAS NEVER A WINDOWS BUG.** Linux creates 122 at 0.11 ms because its cache is
+  29 MB over eighty sessions; Windows creates 534 at 1-200 ms because its cache is two
+  sessions old. **Every new player gets the Windows experience on every platform.** The fix
+  records the pipeline KEYS and replays them at load (`CZ_VK_NO_PREWARM=1` is the arm):
+  worst spike **372 -> 173 ms**, spikes >20 ms **6 -> 2 in 10,429 frames**.
+* **THREE BUGS INSIDE THAT FIX, each found by the operator still stuttering**: keys saved
+  only at exit (a crash threw the session away); a temp-and-rename that failed on Windows
+  every time; and the pre-warm **truncating the key file it was reading**, stopping at
+  exactly 72 whether the file held 352, 416 or 522. **A constant that does not move when its
+  input triples is a bug** (gotchas 497, 498).
+* **A LAPTOP POWER PROFILE IS A MEASUREMENT VARIABLE AND IT IS THE FIRST THING TO RULE OUT.**
+  Every Windows number was taken in "quiet" mode. High performance, at matched draw counts:
+  crowd **26.2 -> 19.6 ms (+34% frame rate)**, record **2991 -> 2100 ns/draw**. That is most
+  of an unexplained "Windows records 1.8x slower than Linux" which had already cost a
+  Vulkan-layer census and a CPU-affinity A/B (gotcha 496).
+* **REFUTED HONESTLY:** seven implicit Vulkan layers (Steam, GOG, Epic, OBS, RivaTuner) are a
+  **null**, 1037 vs 1033 ns/draw. P-core affinity is ~7.6% at matched draw counts, not the
+  -27% an unmatched comparison suggested.
+* **THREE INSTRUMENT DEFECTS, and they cost more than the code ones.** `CZ_VK_FRAME_TRACE`
+  was gated behind `CZ_FPS_LOG` and silently recorded nothing, costing an operator session —
+  with a "0 rows" check run and READ PAST. The trace printed wrapped negatives after every
+  profiler window, which sorted to the TOP of every worst-frame list. And
+  `CZ_VK_FRAME_STATS` costs **8.8-15.5 ms a frame at 1440p**, up to 59% of the window it
+  measures; a cross-platform comparison was published with it armed on both sides before the
+  runtime's own line saying so was read (gotchas 495, 499).
+* **Gates:** `--smoke` on both platforms; the aliasing self-test with its poison; the
+  four-working-directory path check; the six-tree first-run check; `.text` identity; the
+  clean-container bundle gate; `vo_extract_microcode.py --gate` at 343 of 345;
+  `CZ_VK_VALIDATION=1` at the standing 6 `topology-08773`. **Two new standing checks:** the
+  pre-warm must print `N of N`, and `CZ_VK_FRAME_TRACE` must print its `-> open` line or it
+  is not recording.

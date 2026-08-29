@@ -192,10 +192,11 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part85-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
-    programme and its **§9 is the execution record**: milestones A, B and D complete and
-    gated (§9.7 is part 84 — the runtime translates its own shaders), and the next
-    milestone is E, packaging. ~~It is currently
+    `part86-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
+    programme and its **§9 is the execution record**: milestones A, B, D and E complete
+    and gated (§9.8 is part 85 — both release artifacts exist, the whole §5 checklist ran,
+    and CI exists), and what remains is the §9.8 owed list (Windows CI's first live run,
+    the pre-warm key file, the glibc floor, macOS). ~~It is currently
     `part82-kickoff.md`~~, and **PERFORMANCE IS PARKED AS OF PART 81** — the operator's
     instruction closing it was *"we'll switch to something else then performance"*. THE
     SUBJECT IS OPEN; part 82's kickoff §0 is the one thing to read before anything else,
@@ -417,7 +418,11 @@ mask; trust the microcode's own swizzles.
 
 ## Commands
 
-Unpack the game (once):
+Unpack the game (once). **As of part 85 the runtime does step 1 itself** — a boot whose
+default xex is missing but whose `assets/package` holds the container extracts in-process
+(`cz_runtime --extract-package <pkg> <dir>` runs it by hand; byte-identical to the Python,
+which remains the reference and the SVOD fallback; `CZ_NO_STFS_EXTRACT=1` is the off
+switch):
 ```
 python3 tools/extract_stfs.py "assets/package/58410A8D/000D0000/<hash>" -o assets/game
 ./tools/build_xex_image_dump.sh
@@ -700,9 +705,19 @@ tools/build_sdl2.sh                    # once. REAL SDL2 — Fedora's is a shim 
 cmake -S runtime -B runtime/build-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCZ_FFMPEG_PREFIX=$PWD/thirdparty/ffmpeg-lgpl -DCZ_SDL2_PREFIX=$PWD/thirdparty/sdl2
 cmake --build runtime/build-release -j$(nproc)
-tools/release_text_identity.sh         # .text identical to the dev build = the build type is a null
+tools/release_text_identity.sh         # .text identical = the build type is a null. NEEDS MATCHED
+                                       # CONFIGURES (same prefixes + CZ_BUNDLE_RPATH, build type the
+                                       # only delta) — against the everyday dev tree it fails for
+                                       # config reasons and says so (part 85)
 tools/release_package_linux.sh         # -> dist/CaseZeroRecomp + .tar.zst + generated THIRD_PARTY.md
-tools/release_gate_clean_container.sh  # podman, no dev packages. Must print GATE PASSED
+                                       # + libdxcompiler.so + README.md + cz_defaults.env (part 85)
+tools/release_gate_clean_container.sh  # podman, no dev packages. Must print GATE PASSED. As of part
+                                       # 85 it REQUIRES the package + one ucode blob and runs the
+                                       # whole first-run flow AND a DXC translation in-container
+```
+The Windows artifact (on czwin, through vc.bat; the gate RUNS the staged exe):
+```
+ssh czwin 'cmd /c "C:\cz\vc.bat powershell -ExecutionPolicy Bypass -File C:\cz\Dead_Rising_2_Case_Zero_Xenon_Recomp\tools\release_package_windows.ps1"'
 ```
 
 Read the disc's own shader banks — **1,265 distinct PIXEL shaders, against the 345 we
@@ -942,12 +957,14 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
-plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part85-kickoff.md` IS THE LIVE
-HAND-OFF.** **MILESTONES A, B AND D ARE COMPLETE — the game builds, runs and plays on
-Windows, and as of part 84 A SHIPPED BUILD TRANSLATES ITS OWN SHADERS** (the disc's 1,265
-pixel shaders in 9 s at first run, every vertex shader at first sight in 18-70 ms;
-`release-plan.md` §9.7 has every gate). The next milestone is **E, packaging** — and the
-bundle must now carry the DXC library, which the translator dlopens.
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part86-kickoff.md` IS THE LIVE
+HAND-OFF.** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
+gated** (`dist/CaseZeroRecomp-linux-x86_64.tar.zst` 26 MB, `CaseZeroRecomp-windows-x86_64.zip`
+21 MB; `release-plan.md` §9.8 has every gate). A player's first run is real end to end:
+in-process STFS extract, disc shader build, a progress window over both, and
+`cz_defaults.env` turning the renderer on without touching any dev arm. What remains is
+§9.8's owed list — the Windows CI leg's first live run, the pre-warm key file (needs one
+operator playthrough), the glibc floor / AppImage, and macOS (milestone C, hardware).
 
 **SUBJECT CHANGE, 2026-08-27, operator instruction closing part 81:** *"Update your memory
 and all we'll switch to something else then performance."* **PERFORMANCE IS PARKED**, having
@@ -973,10 +990,55 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
+Where the port is, as of 2026-08-28 (**PART 85 CLOSED — THE RELEASE. MILESTONE E IS
+COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
+**`docs/part86-kickoff.md` IS THE LIVE HAND-OFF**; records: `release-plan.md` **§9.8**):
+
+* **THE §2.3 FIRST-RUN FLOW IS REAL, END TO END, THREE WAYS.** `host/stfs_extract.{h,cpp}`
+  unpacks the player's package in-process — byte-identical to `tools/extract_stfs.py` over
+  the real package (256 of 256 files), bounds- and traversal-checked because the package is
+  player-supplied input, `default.xex` written LAST so an interrupted extract cannot
+  counterfeit a complete tree. A fake root holding ONLY the package boots to live gameplay
+  (extract → 1265-shader disc prebuild → 32 first-sight JITs, `no translated shader` = 0);
+  the same flow runs inside the clean container; and a windowed run was screenshotted
+  mid-flow showing the new **first-run progress window** (plain SDL, before
+  Host_WindowInit, calling-thread-only callbacks). `--extract-package` is the gate verb,
+  `CZ_NO_STFS_EXTRACT=1` the off switch.
+* **TWO PACKAGING HOLES ONLY RUNNING THINGS COULD CATCH.** `libdxcompiler.so` was NOT in
+  the bundle — every static check passed while a shipped build could not have translated a
+  shader (a dlopen is invisible to ldd, the sdl2-compat shape again); the container gate
+  now RUNS a translation inside the container with HOME unset. And a player
+  double-clicking got the deliberately blank window (CZ_VKDRAW is opt-in everywhere) —
+  `cz_defaults.env` beside the executable now applies release defaults ONLY where the
+  environment is unset, printed per line, data-not-code (`.text` identity re-verified).
+* **THE WINDOWS ARTIFACT EXISTS** (`tools/release_package_windows.ps1`): DLLs beside the
+  exe (the search path Windows actually has), MSVC runtime from the toolchain's redist,
+  gate = RUN the staged exe (`--smoke`, then all 1,265 disc shaders with the `[shxlate]`
+  line naming the STAGED dll). **DXC's licence corrected in place: NCSA, not Apache**
+  (§4); text vendored and shipped on both platforms.
+* **E.1 CI EXISTS AND SAYS WHAT ITS TICK MEANS**: host sources + `--smoke` on a STUB image
+  (`tools/gen_stub_ppc.py` — two scanner traps: no word boundary inside `__imp__sub_`,
+  X-macro addresses as bare hex), upstream recompiler clones at pinned bases +
+  `tools/ci/*.patch` (37 local commits; `regen_patches.sh`). Linux leg verified locally
+  end to end BEFORE the YAML, green on its first real run; the Windows leg's first vcpkg
+  run was still in progress at close. macOS absent on purpose until C.
+* **§5 CHECKLIST, THIS ARTIFACT STATE**: container gate PASSED (now including the
+  in-container first-run flow); `.text` identity on MATCHED configures (dev-vs-release
+  compares different headers and a relocated image — the script says so); validation
+  exactly the standing 6 `topology-08773` at 7,676 draws; bind-batch verify 0 of 87.4 M;
+  both censuses clean; disc gate 343 of 345.
+* **A stray `cz_runtime` from a dead session had filled /tmp (22 GB draw-trace log) and
+  killed this session's shell mid-part** — bare `echo` exit 1 is the tmpfs-quota symptom;
+  `du -sh /tmp/*`, `fuser` the big file, kill by pid.
+* **OWED (release-plan §9.8):** the Windows CI leg's outcome; the pre-warm key file (one
+  operator playthrough); the glibc floor / AppImage; an operator sitting on the shipped
+  bundle; milestone C.
+
 Where the port is, as of 2026-08-28 (**PART 84 CLOSED — THE RELEASE. MILESTONE D IS
 COMPLETE: A SHIPPED BUILD TRANSLATES ITS OWN SHADERS.** D.2, D.4 and D.3 all landed in one
-part, in that order, each gated before its commit. **`docs/part85-kickoff.md` IS THE LIVE
-HAND-OFF**; records: `release-plan.md` **§9.7**; lessons: gotchas **501-503**):
+part, in that order, each gated before its commit. ~~**`docs/part85-kickoff.md` IS THE LIVE
+HAND-OFF**~~ — it was, for one part; it is `part86-kickoff.md`. Records: `release-plan.md`
+**§9.7**; lessons: gotchas **501-503**):
 
 * **D.2 — IN-PROCESS TRANSLATION.** XenosRecomp's own recompiler (MIT, sibling checkout)
   compiled into `cz_runtime`, C++ ports of the synth/census Python, a JSON writer matching
@@ -1019,84 +1081,8 @@ HAND-OFF**; records: `release-plan.md` **§9.7**; lessons: gotchas **501-503**):
   343-overlap identity, the empty-vertex crown gate, and the prebuild's
   `N translated, 0 failed` + done-marker discipline.
 
-Where the port is, as of 2026-08-28 (**PART 83 CLOSED — THE RELEASE. MILESTONE B IS COMPLETE
-AND THE GAME PLAYS ON WINDOWS: the operator played Still Creek at 2560x1440 with sound. THE
-STUTTER IS FIXED AND IT WAS NEVER A WINDOWS BUG — every new player would have had it on every
-platform.** ~~**`docs/part84-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for one part;
-it is `part85-kickoff.md`. Records: `release-plan.md`
-**§9.4-9.6** (and **§9.6 is what part 83 got WRONG**, which on this session is the more
-reusable half); lessons: gotchas **495-500**):
-
-* **THERE IS A WINDOWS BUILD LAPTOP AND IT IS REACHED WITH `ssh czwin`.**
-  `docs/windows-build-setup.md` is the verified runbook and carries the parts that cost a
-  round trip each: **three compilers on one box, none interchangeable** (XenonRecomp needs
-  clang-cl, SDL2 needs cl, the runtime needs clang-cl), the
-  `administrators_authorized_keys` OWNERSHIP rule, `-EncodedCommand` to escape three quoting
-  layers, and `cmd /c` so PowerShell stops turning stderr into CLIXML. **git is the only way
-  source moves between the machines.**
-* **MILESTONE B, ALL FOUR ITEMS, each gated by RUNNING rather than compiling.** `ppc/`
-  regenerates on Windows in 8 s (228 TUs, zero errors) — the recompilation is fully portable
-  and that was B's largest unknown. B.1's memory map is `VirtualAlloc2` + `MapViewOfFile3`
-  placeholders **and it gained an aliasing self-test that guards the POSIX path too**
-  (`CZ_MEM_POISON_ALIAS=1` is its positive control). B.2's crash reporter is platform-neutral
-  with DbgHelp symbolisation.
-* **THREE BUGS WERE FOUND IN THE CRASH REPORTER ITSELF, TWO LATENT ON LINUX.** It was a
-  VECTORED handler, so it caught a benign first-chance exception and killed a healthy
-  process. It could **smash its own stack** — 21 sites of `n += snprintf(b + n, sizeof b - n,
-  …)`, which underflows to ~2^64 once the report exceeds the buffer; `/GS` then `__fastfail`s,
-  bypassing SEH entirely, so the process vanished at 0xC0000409 with NO OUTPUT. **A crash
-  reporter that can crash while reporting replaces a diagnosable fault with an undiagnosable
-  one**, and it did that twice before it was found.
-* **THE ACTUAL WINDOWS CRASH: a VIRTUAL destructor dispatched through a vtable pointer the
-  GUEST had overwritten.** A handle IS a guest pointer, so every KernelObject sits in guest
-  memory with a host vptr in its first eight bytes — and `~KernelObject`, `Wait()` and every
-  `dynamic_cast` go through it. The file had guarded the FREE and nothing else. The fix
-  records the vtable pointers we install and requires a match; a range check was too weak
-  and did not move the crash.
-* **FOUR PLATFORM DEFECTS THE OPERATOR FOUND BY PLAYING, none reachable by any gate here:**
-  the VFS mounted on the CWD (`find_last_of('/')` finds nothing in a Windows path); the
-  resolution list capped at 1600x900 on a 1440p screen (no DPI awareness, so every display
-  query is divided by the 160% scale); the thread budget sized off a guess (10 cores against
-  a real 14); and a pipeline cache that could **silently move** because its directory came
-  from `HOME`, which Git and MSYS2 set and nothing else does.
-* **THE STUTTER: `frame 6696 = 396 ms wall, 372 ms of it in GetPipeline`**, with record,
-  textures, constants, streams and GPU all normal. Pipelines were created LAZILY, on the
-  frame that first needed each one, on the frame thread — 534 in three minutes at 1-200 ms
-  each. **Four of five F7 marks land within 45 frames of one and nowhere else.**
-* **AND IT WAS NEVER A WINDOWS BUG.** Linux creates 122 at 0.11 ms because its cache is
-  29 MB over eighty sessions; Windows creates 534 at 1-200 ms because its cache is two
-  sessions old. **Every new player gets the Windows experience on every platform.** The fix
-  records the pipeline KEYS and replays them at load (`CZ_VK_NO_PREWARM=1` is the arm):
-  worst spike **372 -> 173 ms**, spikes >20 ms **6 -> 2 in 10,429 frames**.
-* **THREE BUGS INSIDE THAT FIX, each found by the operator still stuttering**: keys saved
-  only at exit (a crash threw the session away); a temp-and-rename that failed on Windows
-  every time; and the pre-warm **truncating the key file it was reading**, stopping at
-  exactly 72 whether the file held 352, 416 or 522. **A constant that does not move when its
-  input triples is a bug** (gotchas 497, 498).
-* **A LAPTOP POWER PROFILE IS A MEASUREMENT VARIABLE AND IT IS THE FIRST THING TO RULE OUT.**
-  Every Windows number was taken in "quiet" mode. High performance, at matched draw counts:
-  crowd **26.2 -> 19.6 ms (+34% frame rate)**, record **2991 -> 2100 ns/draw**. That is most
-  of an unexplained "Windows records 1.8x slower than Linux" which had already cost a
-  Vulkan-layer census and a CPU-affinity A/B (gotcha 496).
-* **REFUTED HONESTLY:** seven implicit Vulkan layers (Steam, GOG, Epic, OBS, RivaTuner) are a
-  **null**, 1037 vs 1033 ns/draw. P-core affinity is ~7.6% at matched draw counts, not the
-  -27% an unmatched comparison suggested.
-* **THREE INSTRUMENT DEFECTS, and they cost more than the code ones.** `CZ_VK_FRAME_TRACE`
-  was gated behind `CZ_FPS_LOG` and silently recorded nothing, costing an operator session —
-  with a "0 rows" check run and READ PAST. The trace printed wrapped negatives after every
-  profiler window, which sorted to the TOP of every worst-frame list. And
-  `CZ_VK_FRAME_STATS` costs **8.8-15.5 ms a frame at 1440p**, up to 59% of the window it
-  measures; a cross-platform comparison was published with it armed on both sides before the
-  runtime's own line saying so was read (gotchas 495, 499).
-* **Gates:** `--smoke` on both platforms; the aliasing self-test with its poison; the
-  four-working-directory path check; the six-tree first-run check; `.text` identity; the
-  clean-container bundle gate; `vo_extract_microcode.py --gate` at 343 of 345;
-  `CZ_VK_VALIDATION=1` at the standing 6 `topology-08773`. **Two new standing checks:** the
-  pre-warm must print `N of N`, and `CZ_VK_FRAME_TRACE` must print its `-> open` line or it
-  is not recording.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-82's** — part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-83's** — part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

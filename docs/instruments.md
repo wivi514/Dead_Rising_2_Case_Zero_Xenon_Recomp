@@ -3311,3 +3311,29 @@ cz_runtime --build-shader-cache [bank [out]]       the D.3 disc pass by hand. De
                   a populated cache with neither marker is a developer cache and is never
                   touched.
 ```
+
+## Part 85 — packaging (release milestone E)
+
+```
+CZ_NO_STFS_EXTRACT=1  **the off switch for the in-process package extract.** By default a
+                  boot whose DEFAULT xex is missing but whose assets/package holds an
+                  XContent container unpacks it in-process (host/stfs_extract.cpp, byte-
+                  identical to tools/extract_stfs.py over the real package) before the
+                  shader prebuild. With this set, the boot refuses with the python3
+                  command instead — the pre-part-85 behaviour. A run pointed at another
+                  xex by argv/CZ_XEX never extracts, with or without this.
+```
+
+**And a file, not a variable: `cz_defaults.env` beside the executable.** The packaging
+scripts write it (`CZ_VKDRAW=1` today); main.cpp applies each `KEY=VALUE` line at boot
+ONLY for variables the environment leaves unset, printing one `[defaults]` line per
+application. The environment always wins — `CZ_VKDRAW=0` still means off — and a dev tree
+has no such file, so every recipe and control arm in this document reads exactly as
+before. If a shipped build seems to have an instrument mysteriously "on by default",
+read that file first; it is plain text and deleting a line is the off switch.
+
+The gate-script fixtures (not runtime variables): `CZ_GATE_UCODE` and `CZ_GATE_PACKAGE`
+point `tools/release_gate_clean_container.sh` at a microcode blob directory and an STFS
+package; both are REQUIRED by the gate rather than skipped-if-absent, because a gate
+with a weak mode gets run in its weak mode forever. `CZ_DXC_LIB` (already read by the
+translator) doubles as the packaging scripts' override for which libdxcompiler ships.
