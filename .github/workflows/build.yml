@@ -165,8 +165,16 @@ jobs:
           cmake --build runtime/build 2>&1 | Tee-Object build.log
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # The exe links vcpkg's import libraries but nothing deploys their DLLs (the
+      # vcpkg CMake toolchain would; this build uses plain prefixes on purpose), so
+      # without this copy the process dies at load with STATUS_DLL_NOT_FOUND and no
+      # output — a one-second "failure" that says nothing. Same rule as the release
+      # bundle: on Windows the DLLs live beside the exe.
       - name: smoke against the stub image
-        run: runtime/build/cz_runtime.exe --smoke
+        run: |
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" runtime/build/
+          runtime/build/cz_runtime.exe --smoke 2>&1 | Tee-Object smoke.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: publish the logs the API cannot serve
         if: always()
@@ -177,5 +185,6 @@ jobs:
           path: |
             configure.log
             build.log
+            smoke.log
             runtime/build/CMakeFiles/CMakeError.log
             runtime/build/CMakeFiles/CMakeConfigureLog.yaml
