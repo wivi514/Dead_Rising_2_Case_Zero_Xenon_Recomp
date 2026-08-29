@@ -878,7 +878,7 @@ static bool CompileSpirv(const std::string& hlsl, bool isVs, uint32_t tag,
         err = "dxc Compile() call failed";
         return false;
     }
-    HRESULT status = E_FAIL;
+    HRESULT status = HRESULT(0x80004005); // E_FAIL by value: win_compat.h #undefs the macro
     result->GetStatus(&status);
     if (FAILED(status))
     {
