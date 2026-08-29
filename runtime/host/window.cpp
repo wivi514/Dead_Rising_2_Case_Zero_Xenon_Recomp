@@ -113,6 +113,9 @@ bool Host_WindowInit()
     return false;
 }
 bool Host_WindowActive() { return false; }
+bool Host_ProgressBegin(const char*) { return false; }
+void Host_ProgressUpdate(const char*, float) {}
+void Host_ProgressEnd() {}
 void Host_Present(uint32_t, uint32_t, uint32_t) {}
 void Host_PresentPixels(const uint8_t*, uint32_t, uint32_t) {}
 void Host_WindowRun() {}
@@ -997,6 +1000,111 @@ void Shutdown(const char* why)
 }
 
 } // namespace
+
+// ---- THE FIRST-RUN PROGRESS WINDOW (release §2.3, part 85) ----------------------
+// See window.h. A separate, deliberately plain window rather than the game window
+// early: Host_WindowInit's window carries the whole present-seam decision (Vulkan
+// flag, renderer, settings) and none of that exists yet when the extract runs.
+// This one is an SDL_Renderer, a background, the shared 5x7 glyphs and one bar —
+// created for the first-run work, destroyed before the real window is born.
+namespace
+{
+SDL_Window* g_progWindow = nullptr;
+SDL_Renderer* g_progRenderer = nullptr;
+std::string g_progTitle;
+uint32_t g_progLastDraw = 0;
+} // namespace
+
+bool Host_ProgressBegin(const char* title)
+{
+    if (getenv("CZ_NO_WINDOW"))
+        return false;
+    if (g_progWindow)
+        return true;
+    if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+    {
+        fprintf(stderr, "[host] progress window: SDL video init failed (%s) — "
+                        "console lines only.\n", SDL_GetError());
+        return false;
+    }
+    g_progWindow = SDL_CreateWindow("Dead Rising 2: Case Zero",
+                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                    640, 200, SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!g_progWindow)
+        return false;
+    g_progRenderer = SDL_CreateRenderer(g_progWindow, -1, 0);
+    if (!g_progRenderer)
+    {
+        SDL_DestroyWindow(g_progWindow);
+        g_progWindow = nullptr;
+        return false;
+    }
+    g_progTitle = title ? title : "";
+    g_progLastDraw = 0;
+    Host_ProgressUpdate("", 0.0f);
+    return true;
+}
+
+void Host_ProgressUpdate(const char* line, float fraction)
+{
+    if (!g_progRenderer)
+        return;
+    // Pump so the compositor never marks the window unresponsive; drop every event —
+    // there is nothing to interact with, and a close request during a 30 s one-time
+    // step is better honoured by letting the step finish.
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+    // Rate-limit the drawing, not the callers: the extract reports per file and the
+    // shader build per shader, and neither should pay for a present each time.
+    const uint32_t now = SDL_GetTicks();
+    if (g_progLastDraw && now - g_progLastDraw < 33 && fraction < 1.0f)
+        return;
+    g_progLastDraw = now;
+
+    SDL_SetRenderDrawColor(g_progRenderer, 20, 22, 26, 255);
+    SDL_RenderClear(g_progRenderer);
+    auto text = [&](int tx, int ty, const char* str, int scale,
+                    uint8_t r, uint8_t g, uint8_t b) {
+        SDL_SetRenderDrawColor(g_progRenderer, r, g, b, 255);
+        for (const char* p = str; *p; ++p)
+        {
+            if (const char* bits = Glyph(*p))
+                for (int row = 0; row < 7; ++row)
+                    for (int col = 0; col < 5; ++col)
+                        if (bits[row * 5 + col] == '1')
+                        {
+                            SDL_Rect px{tx + col * scale, ty + row * scale, scale, scale};
+                            SDL_RenderFillRect(g_progRenderer, &px);
+                        }
+            tx += 6 * scale;
+        }
+    };
+    text(24, 24, g_progTitle.c_str(), 3, 245, 235, 200);
+    if (line && *line)
+        text(24, 70, line, 2, 160, 160, 170);
+    const int barX = 24, barY = 120, barW = 640 - 48, barH = 22;
+    SDL_SetRenderDrawColor(g_progRenderer, 70, 70, 80, 255);
+    SDL_Rect frame{barX, barY, barW, barH};
+    SDL_RenderFillRect(g_progRenderer, &frame);
+    const float f = fraction < 0.f ? 0.f : fraction > 1.f ? 1.f : fraction;
+    SDL_SetRenderDrawColor(g_progRenderer, 200, 170, 60, 255);
+    SDL_Rect fill{barX + 2, barY + 2, int((barW - 4) * f), barH - 4};
+    if (fill.w > 0)
+        SDL_RenderFillRect(g_progRenderer, &fill);
+    SDL_RenderPresent(g_progRenderer);
+}
+
+void Host_ProgressEnd()
+{
+    if (g_progRenderer)
+        SDL_DestroyRenderer(g_progRenderer);
+    if (g_progWindow)
+        SDL_DestroyWindow(g_progWindow);
+    g_progRenderer = nullptr;
+    g_progWindow = nullptr;
+    // The video subsystem stays up: the real window is usually created next, and
+    // tearing SDL down between the two would only add a flash and a race.
+}
 
 bool Host_WindowInit()
 {

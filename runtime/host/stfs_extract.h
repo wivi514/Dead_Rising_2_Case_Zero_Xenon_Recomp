@@ -26,6 +26,7 @@
 // would boot into hundreds of file-not-found lines that no longer name the cause.
 // Re-running the extraction is idempotent (it overwrites).
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace StfsExtract
@@ -34,6 +35,9 @@ namespace StfsExtract
 // identity (title id, display name, content type) and progress to stderr — the
 // identity print is the cheapest check on a file whose NAME carries no information.
 // Returns true on success; on failure `err` says what was wrong with which entry.
+// `progress(bytesDone, bytesTotal)` fires on the CALLING thread after every file —
+// main.cpp feeds it to the first-run progress window; the CLI passes nothing.
 bool Extract(const std::filesystem::path& package, const std::filesystem::path& outDir,
-             std::string& err);
+             std::string& err,
+             const std::function<void(uint64_t, uint64_t)>& progress = {});
 } // namespace StfsExtract

@@ -280,6 +280,10 @@ int main(int argc, char** argv)
         // it wants and is not second-guessed. On failure this falls through and the
         // gate names what is actually missing. CZ_NO_STFS_EXTRACT=1 restores the
         // refusal-with-command behaviour (every automatic step has an off switch).
+        // Both one-time steps below feed the first-run PROGRESS WINDOW (window.h,
+        // part 85): §2.3 asks for a moving bar, because the player this runs for
+        // may have no console at all. Begin refuses harmlessly when headless.
+        bool progressWindow = false;
         {
             const char* noExtract = getenv("CZ_NO_STFS_EXTRACT");
             std::error_code ec;
@@ -289,8 +293,15 @@ int main(int argc, char** argv)
                 !std::filesystem::is_regular_file(xexDefault, ec) &&
                 FirstRun::FoundPackage(&pkg))
             {
+                progressWindow = Host_ProgressBegin("PREPARING FIRST RUN");
                 std::string err;
-                if (!StfsExtract::Extract(pkg, HostPaths::Game(), err))
+                if (!StfsExtract::Extract(pkg, HostPaths::Game(), err,
+                        [](uint64_t doneB, uint64_t totalB) {
+                            char l[64];
+                            snprintf(l, sizeof l, "UNPACKING GAME DATA - %u OF %u MB",
+                                     unsigned(doneB >> 20), unsigned(totalB >> 20));
+                            Host_ProgressUpdate(l, totalB ? float(double(doneB) / double(totalB)) : 1.f);
+                        }))
                     fprintf(stderr, "[extract] FAILED: %s\n", err.c_str());
             }
         }
@@ -307,8 +318,20 @@ int main(int argc, char** argv)
                                               "deadrisingprologue-ps.big";
             std::error_code ec;
             if (std::filesystem::exists(bank, ec))
-                ShaderPrebuild::BuildFromDisc(bank, HostPaths::ShaderCache());
+            {
+                if (!progressWindow)
+                    progressWindow = Host_ProgressBegin("PREPARING FIRST RUN");
+                ShaderPrebuild::BuildFromDisc(bank, HostPaths::ShaderCache(),
+                    [](unsigned done, size_t total) {
+                        char l[64];
+                        snprintf(l, sizeof l, "PREPARING SHADERS - %u OF %zu",
+                                 done, total);
+                        Host_ProgressUpdate(l, total ? float(done) / float(total) : 1.f);
+                    });
+            }
         }
+        if (progressWindow)
+            Host_ProgressEnd();
         if (!FirstRun::Gate(renderer, xexPath))
             return 1;
     }

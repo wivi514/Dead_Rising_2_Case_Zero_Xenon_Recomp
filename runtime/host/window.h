@@ -42,6 +42,20 @@
 // stopped working.
 bool Host_WindowInit();
 
+// THE FIRST-RUN PROGRESS WINDOW (release §2.3, part 85): a small plain-SDL window
+// that exists only while the one-time first-run work runs — the STFS extract and
+// the disc shader build, both of which happen in main() BEFORE Host_WindowInit —
+// so a player who double-clicked the executable sees a moving bar instead of a
+// console they may not even have. Begin returns false (and the others no-op)
+// headless, under CZ_NO_WINDOW, or when SDL cannot make a window; the console
+// lines keep printing either way, so nothing is lost when it refuses.
+// Update pumps events (the WM must not mark us unresponsive), rate-limits its own
+// drawing, and MUST be called from the same thread as Begin — the SDL rule the
+// whole window module is built around.
+bool Host_ProgressBegin(const char* title);
+void Host_ProgressUpdate(const char* line, float fraction);
+void Host_ProgressEnd();
+
 // True once Host_WindowInit has succeeded. The input path asks this rather than
 // assuming, because "no window" and "window with nothing pressed" are different
 // claims to make to the guest.

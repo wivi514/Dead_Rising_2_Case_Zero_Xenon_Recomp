@@ -172,7 +172,8 @@ bool WantedAtBoot(const std::filesystem::path& cacheDir)
 }
 
 int BuildFromDisc(const std::filesystem::path& psBank,
-                  const std::filesystem::path& cacheDir)
+                  const std::filesystem::path& cacheDir,
+                  const std::function<void(unsigned, size_t)>& progress)
 {
     std::vector<uint8_t> bank;
     std::vector<DiscShader> shaders;
@@ -208,9 +209,14 @@ int BuildFromDisc(const std::filesystem::path& psBank,
     std::atomic<uint32_t> done{ 0 };
     std::mutex failMx;
     std::vector<std::string> fails;
-    auto worker = [&] {
+    // `isCaller` marks the one worker running on the CALLING thread: only it may
+    // fire `progress`, because the consumer is the SDL progress window and SDL
+    // draws only from the thread that created it (window.h's standing rule).
+    auto worker = [&](bool isCaller) {
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
         {
+            if (isCaller && progress)
+                progress(done.load(), todo.size());
             const DiscShader& s = todo[i];
             char name[32];
             snprintf(name, sizeof name, "ps_%016llx", (unsigned long long)s.hash);
@@ -239,10 +245,12 @@ int BuildFromDisc(const std::filesystem::path& psBank,
     const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
     std::vector<std::thread> pool;
     for (unsigned t = 1; t < std::min<size_t>(hw, todo.size() ? todo.size() : 1); t++)
-        pool.emplace_back(worker);
-    worker();
+        pool.emplace_back(worker, /*isCaller=*/false);
+    worker(/*isCaller=*/true);
     for (auto& t : pool)
         t.join();
+    if (progress)
+        progress(done.load(), todo.size());
 
     for (auto& f : fails)
         fprintf(stderr, "[prebuild] FAILED: %s\n", f.c_str());

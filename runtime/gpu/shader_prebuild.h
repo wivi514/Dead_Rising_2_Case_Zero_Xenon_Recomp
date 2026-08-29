@@ -19,14 +19,19 @@
 // tell "interrupted first run, finish it" from "a developer cache that was never built
 // from the disc and must not be grown under the gates that count its 449 entries".
 #include <filesystem>
+#include <functional>
 
 namespace ShaderPrebuild
 {
 // Translate every pixel shader in the disc bank that `cacheDir` does not already hold.
 // Prints progress; returns 0 if every decodable object translated (failures are named
 // and counted, never silently skipped). Creates `cacheDir` if needed.
+// `progress(done, total)` fires only on the CALLING thread (between its own
+// translations) — main.cpp feeds it to the first-run progress window, which is SDL
+// and single-threaded by rule; the CLI passes nothing.
 int BuildFromDisc(const std::filesystem::path& psBank,
-                  const std::filesystem::path& cacheDir);
+                  const std::filesystem::path& cacheDir,
+                  const std::function<void(unsigned, size_t)>& progress = {});
 
 // Whether a first-run pass should run at boot: the cache directory is missing or holds
 // no modules (a player's first launch), or a `started` marker has no `done` beside it

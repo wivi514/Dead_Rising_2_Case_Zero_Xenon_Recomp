@@ -141,7 +141,8 @@ private:
 
 namespace StfsExtract
 {
-bool Extract(const fs::path& package, const fs::path& outDir, std::string& err)
+bool Extract(const fs::path& package, const fs::path& outDir, std::string& err,
+             const std::function<void(uint64_t, uint64_t)>& progress)
 {
     Reader r;
     if (!r.Open(package, err))
@@ -327,6 +328,8 @@ bool Extract(const fs::path& package, const fs::path& outDir, std::string& err)
         }
 
         written += fe.length;
+        if (progress)
+            progress(written, totalBytes);
         const int percent = totalBytes ? int(written * 100 / totalBytes) : 100;
         if (percent / 10 != lastPercent / 10)
         {
