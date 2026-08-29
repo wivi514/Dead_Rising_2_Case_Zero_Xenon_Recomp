@@ -1,6 +1,9 @@
 # Part 83 kickoff — the release programme is running; A is complete, D.1 is done and it moved D
 
-> **THIS IS THE LIVE HAND-OFF**, superseding `part82-kickoff.md`.
+> **SUPERSEDED BY `docs/part84-kickoff.md` (part 83 closed 2026-08-28).** Kept because it
+> records the board part 83 worked from.
+>
+> ~~**THIS IS THE LIVE HAND-OFF**~~, superseding `part82-kickoff.md`.
 >
 > **The subject is THE RELEASE.** The operator's instruction opening part 82: *"Do the
 > release plan."* `docs/release-plan.md` is the programme and it now carries its own

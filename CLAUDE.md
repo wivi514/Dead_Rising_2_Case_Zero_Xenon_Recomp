@@ -1044,7 +1044,8 @@ reusable half); lessons: gotchas **495-500**):
 Where the port is, as of 2026-08-27 (**PART 82 CLOSED — THE RELEASE. MILESTONE A IS COMPLETE
 AND GATED AND THERE IS A LINUX ARTIFACT THAT RUNS IN A CLEAN CONTAINER. D.1 IS DONE AND IT
 RETRACTED THE PLAN'S OWN §1.4: THE DISC HOLDS THE PIXEL SHADERS COMPLETELY AND THE VERTEX
-SHADERS NOT AT ALL.** **`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**; records:
+SHADERS NOT AT ALL.** ~~**`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**~~ — it WAS, for one part; it is
+`part84-kickoff.md`. Records:
 `docs/release-plan.md` **§9** (all of it, and **§9.2 is what is OWED**); lessons: gotchas
 **484-489**):
 
