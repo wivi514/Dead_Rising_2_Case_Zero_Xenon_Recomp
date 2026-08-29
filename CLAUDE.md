@@ -157,6 +157,9 @@ mask; trust the microcode's own swizzles.
   - **`xenia-capture-analysis.md`** — the numbered findings ledger, and the authority on
     any measured number: where another doc disagrees with it, it wins.
   - **`gotchas.md`** — the 500-entry transferable ledger. Every "gotcha N" resolves here.
+  - **`windows-build-setup.md`** — **the verified Windows runbook.** `ssh czwin` is the
+    build laptop; read this before touching it. Three compilers, one per target, and none
+    interchangeable.
   - **`release-plan.md`** — **THE LIVE PROGRAMME as of part 82.** Five milestones (A
     shippable tree, B Windows, C macOS, D first-run shaders, E packaging); **A is complete
     and D.1 is done**, and its **§9 is the execution record with every gate's measurement
@@ -189,7 +192,7 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part83-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
+    `part84-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
     programme and its **§9 is the execution record**: milestone A complete and gated,
     D.1 done, and §9.2 is what is owed. ~~It is currently
     `part82-kickoff.md`~~, and **PERFORMANCE IS PARKED AS OF PART 81** — the operator's
@@ -672,6 +675,17 @@ past the operator's 6,592. Same warning as above and more so: it is 57 fixed 8 s
 against a drifting boot, so **check the draw count before trusting anything measured off
 it** rather than assuming the run went where the last one did.
 
+Build and run on WINDOWS (`docs/windows-build-setup.md` is the full runbook; `ssh czwin`).
+**git is the only way source moves between the machines** — commit here, push, pull there:
+```
+ssh czwin 'cd C:\cz\Dead_Rising_2_Case_Zero_Xenon_Recomp; git pull --ff-only'
+C:\cz\vc.bat cmake --build C:\cz\Dead_Rising_2_Case_Zero_Xenon_Recomp\runtime\build
+```
+Everything there runs through `C:\cz\vc.bat` (the vcvars wrapper), and **which compiler is
+per-target, not a preference**: XenonRecomp and the runtime need `clang-cl`, SDL2 needs
+`cl`. A run launched over SSH lands in session 0 where its window is invisible — use the
+`cz_play` scheduled task (`schtasks /run /tn cz_play`) to put it on the operator's desktop.
+
 Build a RELEASE artifact (docs/release-plan.md; the gates are not optional — the first
 bundle passed every static check and died on its first instruction, gotcha 485):
 ```
@@ -923,9 +937,10 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
 plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part83-kickoff.md` IS THE LIVE
-HAND-OFF.** Milestone A (a shippable tree) is COMPLETE and gated; D.1 (the disc shader
-container) is DONE and RETRACTED the plan's §1.4; the next item is **D.2, in-process shader
-translation, which D.1 promoted from a nicety to a hard prerequisite**.
+HAND-OFF.** **MILESTONES A AND B ARE COMPLETE — THE GAME BUILDS, RUNS AND PLAYS ON
+WINDOWS** (`docs/windows-build-setup.md` is the runbook, `ssh czwin` the box); D.1 is done
+and RETRACTED the plan's §1.4; the next item is **D.2, in-process shader translation, which
+D.1 promoted from a nicety to a hard prerequisite**.
 
 **SUBJECT CHANGE, 2026-08-27, operator instruction closing part 81:** *"Update your memory
 and all we'll switch to something else then performance."* **PERFORMANCE IS PARKED**, having
@@ -950,6 +965,81 @@ is the hand-off~~ ~~**`part76-kickoff.md` is**~~ ~~**`part77-kickoff.md` is**~~ 
 ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
+
+Where the port is, as of 2026-08-28 (**PART 83 CLOSED — THE RELEASE. MILESTONE B IS COMPLETE
+AND THE GAME PLAYS ON WINDOWS: the operator played Still Creek at 2560x1440 with sound. THE
+STUTTER IS FIXED AND IT WAS NEVER A WINDOWS BUG — every new player would have had it on every
+platform.** **`docs/part84-kickoff.md` IS THE LIVE HAND-OFF**; records: `release-plan.md`
+**§9.4-9.6** (and **§9.6 is what part 83 got WRONG**, which on this session is the more
+reusable half); lessons: gotchas **495-500**):
+
+* **THERE IS A WINDOWS BUILD LAPTOP AND IT IS REACHED WITH `ssh czwin`.**
+  `docs/windows-build-setup.md` is the verified runbook and carries the parts that cost a
+  round trip each: **three compilers on one box, none interchangeable** (XenonRecomp needs
+  clang-cl, SDL2 needs cl, the runtime needs clang-cl), the
+  `administrators_authorized_keys` OWNERSHIP rule, `-EncodedCommand` to escape three quoting
+  layers, and `cmd /c` so PowerShell stops turning stderr into CLIXML. **git is the only way
+  source moves between the machines.**
+* **MILESTONE B, ALL FOUR ITEMS, each gated by RUNNING rather than compiling.** `ppc/`
+  regenerates on Windows in 8 s (228 TUs, zero errors) — the recompilation is fully portable
+  and that was B's largest unknown. B.1's memory map is `VirtualAlloc2` + `MapViewOfFile3`
+  placeholders **and it gained an aliasing self-test that guards the POSIX path too**
+  (`CZ_MEM_POISON_ALIAS=1` is its positive control). B.2's crash reporter is platform-neutral
+  with DbgHelp symbolisation.
+* **THREE BUGS WERE FOUND IN THE CRASH REPORTER ITSELF, TWO LATENT ON LINUX.** It was a
+  VECTORED handler, so it caught a benign first-chance exception and killed a healthy
+  process. It could **smash its own stack** — 21 sites of `n += snprintf(b + n, sizeof b - n,
+  …)`, which underflows to ~2^64 once the report exceeds the buffer; `/GS` then `__fastfail`s,
+  bypassing SEH entirely, so the process vanished at 0xC0000409 with NO OUTPUT. **A crash
+  reporter that can crash while reporting replaces a diagnosable fault with an undiagnosable
+  one**, and it did that twice before it was found.
+* **THE ACTUAL WINDOWS CRASH: a VIRTUAL destructor dispatched through a vtable pointer the
+  GUEST had overwritten.** A handle IS a guest pointer, so every KernelObject sits in guest
+  memory with a host vptr in its first eight bytes — and `~KernelObject`, `Wait()` and every
+  `dynamic_cast` go through it. The file had guarded the FREE and nothing else. The fix
+  records the vtable pointers we install and requires a match; a range check was too weak
+  and did not move the crash.
+* **FOUR PLATFORM DEFECTS THE OPERATOR FOUND BY PLAYING, none reachable by any gate here:**
+  the VFS mounted on the CWD (`find_last_of('/')` finds nothing in a Windows path); the
+  resolution list capped at 1600x900 on a 1440p screen (no DPI awareness, so every display
+  query is divided by the 160% scale); the thread budget sized off a guess (10 cores against
+  a real 14); and a pipeline cache that could **silently move** because its directory came
+  from `HOME`, which Git and MSYS2 set and nothing else does.
+* **THE STUTTER: `frame 6696 = 396 ms wall, 372 ms of it in GetPipeline`**, with record,
+  textures, constants, streams and GPU all normal. Pipelines were created LAZILY, on the
+  frame that first needed each one, on the frame thread — 534 in three minutes at 1-200 ms
+  each. **Four of five F7 marks land within 45 frames of one and nowhere else.**
+* **AND IT WAS NEVER A WINDOWS BUG.** Linux creates 122 at 0.11 ms because its cache is
+  29 MB over eighty sessions; Windows creates 534 at 1-200 ms because its cache is two
+  sessions old. **Every new player gets the Windows experience on every platform.** The fix
+  records the pipeline KEYS and replays them at load (`CZ_VK_NO_PREWARM=1` is the arm):
+  worst spike **372 -> 173 ms**, spikes >20 ms **6 -> 2 in 10,429 frames**.
+* **THREE BUGS INSIDE THAT FIX, each found by the operator still stuttering**: keys saved
+  only at exit (a crash threw the session away); a temp-and-rename that failed on Windows
+  every time; and the pre-warm **truncating the key file it was reading**, stopping at
+  exactly 72 whether the file held 352, 416 or 522. **A constant that does not move when its
+  input triples is a bug** (gotchas 497, 498).
+* **A LAPTOP POWER PROFILE IS A MEASUREMENT VARIABLE AND IT IS THE FIRST THING TO RULE OUT.**
+  Every Windows number was taken in "quiet" mode. High performance, at matched draw counts:
+  crowd **26.2 -> 19.6 ms (+34% frame rate)**, record **2991 -> 2100 ns/draw**. That is most
+  of an unexplained "Windows records 1.8x slower than Linux" which had already cost a
+  Vulkan-layer census and a CPU-affinity A/B (gotcha 496).
+* **REFUTED HONESTLY:** seven implicit Vulkan layers (Steam, GOG, Epic, OBS, RivaTuner) are a
+  **null**, 1037 vs 1033 ns/draw. P-core affinity is ~7.6% at matched draw counts, not the
+  -27% an unmatched comparison suggested.
+* **THREE INSTRUMENT DEFECTS, and they cost more than the code ones.** `CZ_VK_FRAME_TRACE`
+  was gated behind `CZ_FPS_LOG` and silently recorded nothing, costing an operator session —
+  with a "0 rows" check run and READ PAST. The trace printed wrapped negatives after every
+  profiler window, which sorted to the TOP of every worst-frame list. And
+  `CZ_VK_FRAME_STATS` costs **8.8-15.5 ms a frame at 1440p**, up to 59% of the window it
+  measures; a cross-platform comparison was published with it armed on both sides before the
+  runtime's own line saying so was read (gotchas 495, 499).
+* **Gates:** `--smoke` on both platforms; the aliasing self-test with its poison; the
+  four-working-directory path check; the six-tree first-run check; `.text` identity; the
+  clean-container bundle gate; `vo_extract_microcode.py --gate` at 343 of 345;
+  `CZ_VK_VALIDATION=1` at the standing 6 `topology-08773`. **Two new standing checks:** the
+  pre-warm must print `N of N`, and `CZ_VK_FRAME_TRACE` must print its `-> open` line or it
+  is not recording.
 
 Where the port is, as of 2026-08-27 (**PART 82 CLOSED — THE RELEASE. MILESTONE A IS COMPLETE
 AND GATED AND THERE IS A LINUX ARTIFACT THAT RUNS IN A CLEAN CONTAINER. D.1 IS DONE AND IT
@@ -1023,76 +1113,8 @@ SHADERS NOT AT ALL.** **`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**; records
   part 78's barrier gates, part 80's PM4 boundary oracles and part 81's bind verifier all
   stand.
 
-Where the port is, as of 2026-08-27 (**PART 81 CLOSED — PERFORMANCE, AND IT IS NOW PARKED ON
-THE OPERATOR'S INSTRUCTION. TWO CHANGES ARE LIVE AND ON BY DEFAULT WHOSE CORRECTNESS IS
-VERIFIED AND WHOSE MILLISECONDS WERE NEVER MEASURED — THE SESSION ENDED BEFORE THE CAMPAIGN
-RAN. THE BOARD'S ITEM 1 IS CLOSED BY A CENSUS: THE GUARD'S 86.2 MB IS NOT ON THE PUMP AND
-NEVER WAS.** ~~**`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS, for one part; it is
-`part83-kickoff.md`. Records: `phase5-notes.md`
-**§6ee** (all of it, and its §7 is what was NOT measured); lessons: gotchas **481-483**):
-
-* **THE OPERATOR'S INSTRUCTION CLOSING THE PART**, after telling me to stop launching the
-  game: *"Update your memory and all we'll switch to something else then performance."*
-  **PERFORMANCE IS PARKED.** `docs/perf-plan-part81.md` is the reference that resumes it —
-  it is NOT exhausted, its §1.3 campaign and its §3 were never run, and its §5 records what
-  was done in place.
-* **TWO CHANGES ARE SHIPPING AND THEIR PRICE IS UNMEASURED. This is the one thing to know.**
-  The **vertex bind batch** (`CZ_VK_NO_BIND_BATCH=1` is the control arm) and the **device
-  command table** (`CZ_VK_NO_DEVICE_PFN=1`). If the operator reports anything wrong with the
-  picture, **bisect with those two variables first** — two runs, and they are the newest
-  thing in the renderer. The arithmetic says the batch is worth **~0.62 ms a frame** at their
-  load; **that is a calculation, not a measurement, and must not be quoted as a saving.**
-* **THE CENSUS CAME FIRST AND IT IS WHY THE BATCH EXISTS.** `CZ_VK_BIND_RUN_CENSUS=1` over
-  **118,515,047 draws**: 3.292 bindings offered a draw, 1.742 CHANGED, but only **0.468
-  contiguous RUNS of changed**, mean run **3.72 bindings**, mode 6 at 28.0%, and **zero
-  untracked binds** — the one exception that could never be batched turned out to be empty.
-  Against a pre-registered kill of 1.30. It also reproduces part 80's independently-derived
-  3.310/1.725 **to within 1%** by a different route.
-* **THE MECHANISM IS MEASURED EVEN THOUGH THE FRAME TIME IS NOT.** The batch reads **0.464 /
-  0.474 / 0.467 calls a draw** in three runs against 1.742 before — the census's prediction
-  of 0.468, confirmed from the other side. And the device table's engagement has an external
-  check that costs nothing: **`nm -u` shows all thirteen record-path `vkCmd*` gone from the
-  undefined-symbol list**, so it is not possible for one call site to still be on the loader
-  path. Macros rather than forty hand edits, for exactly that reason.
-* **THE VERIFIER IS THE TRANSFERABLE PART, because no existing gate covered this.**
-  `CZ_VK_ORDER_GATE` hashes the pipeline and the vertex RANGE, not which buffer landed in
-  which binding, so a wrong `firstBinding` would put a REAL stream in a wrong-looking-right
-  slot and that gate would pass. `CZ_VK_VERIFY_BIND_BATCH=1` compares the triples the draw
-  ASKED for against an expansion of what the calls HANDED the driver: **0 disagreements over
-  335 M triples** in two full crowd runs, and its poison at **100.0000%**. The poison had to
-  be designed to fire on EVERY check — 22% of runs are one binding long, so swapping entries
-  inside a run could never have read 100% (gotcha 482).
-* **THE PLAN'S §2 IS CLOSED AND IT RETIRED A BOARD ITEM.** `guard read 86.21 MB/frame` minus
-  `27.2 MB/frame served` said 59 MB a frame was still read on the pump, which would be
-  milliseconds, and no profiler phase showed it. Measured: **PUMP 1.11 MB/frame over 67
-  hashes (2.9% of bytes), POOL 36.85 MB/frame (97.1%)**, the pump's half costing **0.077
-  ms/frame** at 15.08 GB/s — five times below the route's floor. **The two counters were read
-  over different windows and were never a pair** (gotcha 481). It is also the first
-  measurement that prices what part 53's guard pool bought.
-* **AND GOTCHA 480's CLOSING QUESTION IS ANSWERED IN THE NEGATIVE**, so nobody re-asks it:
-  every other singleton-array call in this renderer was censused and **none is an item** —
-  viewport and scissor are already elided 99.4%/99.3%, the barriers are 7 us a frame. The
-  shape defect was one call, not a class (`phase5-notes.md` §6ee §5).
-* **WHAT WENT WRONG WITH THE TOOLING, recorded as unknown rather than guessed at.** Two arms
-  of the picture gate and the campaign's first run **exited ~3 s after start** — clean
-  shutdown, no error, **no `[fps]` line at all**, 863 log lines against a healthy run's
-  31,470 — and each still reported a number through the normal gate path. The route gate
-  caught them. Disk was fine. **A run that dies still prints a number** (gotcha 483). One
-  strong candidate was found and FIXED: the "is a run already going" guard in both route
-  scripts was `pgrep -x cz_runtime_crowd`, and **Linux truncates a process name to 15
-  characters while `pgrep -x` compares against the truncation** — so a 16-character name
-  matched nothing and the guard never guarded, in either script, since the day each was
-  written. Proven with a stand-in process rather than by launching the game.
-* **Gates:** `--smoke` OK on every build; `CZ_VK_VALIDATION=1` **6 `topology-08773` and
-  nothing else**, exactly the documented pre-existing point-size trio; the bind verifier at
-  0 of 335 M with its poison at 100%; every reportable route run passed its own 8,000-draw
-  gate with failures renamed `.rejected`. **Nothing outside `gpu/vk_renderer.cpp` was
-  touched** — no config, kernel, PM4, shader or texture path — so part 74's A5 and
-  `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates, part 78's barrier gates and part
-  80's PM4 boundary oracles all stand.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-80's** — part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-81's** — part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

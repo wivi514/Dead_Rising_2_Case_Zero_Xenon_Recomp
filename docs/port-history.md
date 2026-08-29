@@ -6058,3 +6058,73 @@ lessons: gotchas **473-480**):
   change is an instrument, a census or a route, all off by default. So part 74's A5 and
   `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates and part 78's barrier gates all
   stand untouched.
+
+---
+
+Where the port is, as of 2026-08-27 (**PART 81 CLOSED — PERFORMANCE, AND IT IS NOW PARKED ON
+THE OPERATOR'S INSTRUCTION. TWO CHANGES ARE LIVE AND ON BY DEFAULT WHOSE CORRECTNESS IS
+VERIFIED AND WHOSE MILLISECONDS WERE NEVER MEASURED — THE SESSION ENDED BEFORE THE CAMPAIGN
+RAN. THE BOARD'S ITEM 1 IS CLOSED BY A CENSUS: THE GUARD'S 86.2 MB IS NOT ON THE PUMP AND
+NEVER WAS.** ~~**`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS; it is now
+`part84-kickoff.md`. Records: `phase5-notes.md`
+**§6ee** (all of it, and its §7 is what was NOT measured); lessons: gotchas **481-483**):
+
+* **THE OPERATOR'S INSTRUCTION CLOSING THE PART**, after telling me to stop launching the
+  game: *"Update your memory and all we'll switch to something else then performance."*
+  **PERFORMANCE IS PARKED.** `docs/perf-plan-part81.md` is the reference that resumes it —
+  it is NOT exhausted, its §1.3 campaign and its §3 were never run, and its §5 records what
+  was done in place.
+* **TWO CHANGES ARE SHIPPING AND THEIR PRICE IS UNMEASURED. This is the one thing to know.**
+  The **vertex bind batch** (`CZ_VK_NO_BIND_BATCH=1` is the control arm) and the **device
+  command table** (`CZ_VK_NO_DEVICE_PFN=1`). If the operator reports anything wrong with the
+  picture, **bisect with those two variables first** — two runs, and they are the newest
+  thing in the renderer. The arithmetic says the batch is worth **~0.62 ms a frame** at their
+  load; **that is a calculation, not a measurement, and must not be quoted as a saving.**
+* **THE CENSUS CAME FIRST AND IT IS WHY THE BATCH EXISTS.** `CZ_VK_BIND_RUN_CENSUS=1` over
+  **118,515,047 draws**: 3.292 bindings offered a draw, 1.742 CHANGED, but only **0.468
+  contiguous RUNS of changed**, mean run **3.72 bindings**, mode 6 at 28.0%, and **zero
+  untracked binds** — the one exception that could never be batched turned out to be empty.
+  Against a pre-registered kill of 1.30. It also reproduces part 80's independently-derived
+  3.310/1.725 **to within 1%** by a different route.
+* **THE MECHANISM IS MEASURED EVEN THOUGH THE FRAME TIME IS NOT.** The batch reads **0.464 /
+  0.474 / 0.467 calls a draw** in three runs against 1.742 before — the census's prediction
+  of 0.468, confirmed from the other side. And the device table's engagement has an external
+  check that costs nothing: **`nm -u` shows all thirteen record-path `vkCmd*` gone from the
+  undefined-symbol list**, so it is not possible for one call site to still be on the loader
+  path. Macros rather than forty hand edits, for exactly that reason.
+* **THE VERIFIER IS THE TRANSFERABLE PART, because no existing gate covered this.**
+  `CZ_VK_ORDER_GATE` hashes the pipeline and the vertex RANGE, not which buffer landed in
+  which binding, so a wrong `firstBinding` would put a REAL stream in a wrong-looking-right
+  slot and that gate would pass. `CZ_VK_VERIFY_BIND_BATCH=1` compares the triples the draw
+  ASKED for against an expansion of what the calls HANDED the driver: **0 disagreements over
+  335 M triples** in two full crowd runs, and its poison at **100.0000%**. The poison had to
+  be designed to fire on EVERY check — 22% of runs are one binding long, so swapping entries
+  inside a run could never have read 100% (gotcha 482).
+* **THE PLAN'S §2 IS CLOSED AND IT RETIRED A BOARD ITEM.** `guard read 86.21 MB/frame` minus
+  `27.2 MB/frame served` said 59 MB a frame was still read on the pump, which would be
+  milliseconds, and no profiler phase showed it. Measured: **PUMP 1.11 MB/frame over 67
+  hashes (2.9% of bytes), POOL 36.85 MB/frame (97.1%)**, the pump's half costing **0.077
+  ms/frame** at 15.08 GB/s — five times below the route's floor. **The two counters were read
+  over different windows and were never a pair** (gotcha 481). It is also the first
+  measurement that prices what part 53's guard pool bought.
+* **AND GOTCHA 480's CLOSING QUESTION IS ANSWERED IN THE NEGATIVE**, so nobody re-asks it:
+  every other singleton-array call in this renderer was censused and **none is an item** —
+  viewport and scissor are already elided 99.4%/99.3%, the barriers are 7 us a frame. The
+  shape defect was one call, not a class (`phase5-notes.md` §6ee §5).
+* **WHAT WENT WRONG WITH THE TOOLING, recorded as unknown rather than guessed at.** Two arms
+  of the picture gate and the campaign's first run **exited ~3 s after start** — clean
+  shutdown, no error, **no `[fps]` line at all**, 863 log lines against a healthy run's
+  31,470 — and each still reported a number through the normal gate path. The route gate
+  caught them. Disk was fine. **A run that dies still prints a number** (gotcha 483). One
+  strong candidate was found and FIXED: the "is a run already going" guard in both route
+  scripts was `pgrep -x cz_runtime_crowd`, and **Linux truncates a process name to 15
+  characters while `pgrep -x` compares against the truncation** — so a 16-character name
+  matched nothing and the guard never guarded, in either script, since the day each was
+  written. Proven with a stand-in process rather than by launching the game.
+* **Gates:** `--smoke` OK on every build; `CZ_VK_VALIDATION=1` **6 `topology-08773` and
+  nothing else**, exactly the documented pre-existing point-size trio; the bind verifier at
+  0 of 335 M with its poison at 100%; every reportable route run passed its own 8,000-draw
+  gate with failures renamed `.rejected`. **Nothing outside `gpu/vk_renderer.cpp` was
+  touched** — no config, kernel, PM4, shader or texture path — so part 74's A5 and
+  `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates, part 78's barrier gates and part
+  80's PM4 boundary oracles all stand.
