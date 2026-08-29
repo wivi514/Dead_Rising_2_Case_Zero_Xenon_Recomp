@@ -1020,8 +1020,13 @@ COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
   (`tools/gen_stub_ppc.py` — two scanner traps: no word boundary inside `__imp__sub_`,
   X-macro addresses as bare hex), upstream recompiler clones at pinned bases +
   `tools/ci/*.patch` (37 local commits; `regen_patches.sh`). Linux leg verified locally
-  end to end BEFORE the YAML, green on its first real run; the Windows leg's first vcpkg
-  run was still in progress at close. macOS absent on purpose until C.
+  end to end BEFORE the YAML, green on its first real run; **the Windows leg went green
+  three iterations later, still inside the part** — a RuntimeLibrary `/MT`-vs-`/MD`
+  mismatch (CI now passes `MultiThreadedDLL`, as czwin does) and undeployed vcpkg DLLs
+  killing `--smoke` at process load with zero output, both diagnosed via the
+  `windows-logs` artifact the workflow now always uploads (the public API serves step
+  verdicts, not logs; nightly.link fetches artifacts tokenlessly). macOS absent on
+  purpose until C.
 * **§5 CHECKLIST, THIS ARTIFACT STATE**: container gate PASSED (now including the
   in-container first-run flow); `.text` identity on MATCHED configures (dev-vs-release
   compares different headers and a relocated image — the script says so); validation

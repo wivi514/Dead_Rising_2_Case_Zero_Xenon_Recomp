@@ -45,10 +45,14 @@ first run.
 
 ## 1. WHAT TO DO NEXT, IN ORDER
 
-1. **Check the Windows CI leg's first run** — it was still in the vcpkg ffmpeg build at
-   part-85 close (~30+ min first time; cached after). If red, the failure is in the
-   dependency step, not the build recipe (that recipe is czwin's, verified by running).
-   `https://github.com/wivi514/Dead_Rising_2_Case_Zero_Xenon_Recomp/actions`
+1. ~~**Check the Windows CI leg's first run**~~ — **DONE, still inside part 85: BOTH CI
+   LEGS ARE GREEN.** Two real failures, neither in the dependency step: the MSVC
+   RuntimeLibrary mismatch (CI now passes `MultiThreadedDLL` to XenonRecomp, as czwin
+   does) and undeployed vcpkg DLLs killing `--smoke` at process load with no output
+   (now copied beside the exe). Diagnosis ran through the `windows-logs` artifact the
+   workflow now always uploads — the public API serves verdicts, not logs — fetched
+   tokenlessly via nightly.link. Full trail: `release-plan.md` §9.8's owed list, updated
+   in place.
 2. **The pre-warm pipeline-key file** — the one §9.2 debt with no code left to write:
    needs an operator playthrough with the key recorder armed, then ship the file in the
    bundles and teach the packaging scripts to include it.

@@ -935,7 +935,17 @@ map would rot).
   packaging script still prints it as a known limitation;
 * the **pre-warm key file** — unchanged, waits on an operator playthrough with the key
   recorder armed; there is now an artifact to ship it in;
-* the **Windows CI leg's first live run** (vcpkg dependency build) was still in progress
-  at part-85 close — the Linux leg is green; if windows is red the failure will be in the
-  dependency step, not the verified build recipe;
+* ~~the **Windows CI leg's first live run**~~ — **RESOLVED in the same part, three
+  iterations after close, and BOTH LEGS ARE GREEN** (`--smoke`: 208 stub entries, every
+  symbol resolved). The predicted "failure will be in the dependency step" was wrong both
+  times, honestly: vcpkg worked, and the two real failures were (1) an lld-link
+  `/failifmismatch` on RuntimeLibrary — CI's XenonUtils defaulted to the upstream `/MT`
+  while the runtime is `/MD`; the vendored patch exists to make it overridable and CI now
+  passes `MultiThreadedDLL` like czwin does — and (2) a one-second, zero-output smoke
+  death: the exe links vcpkg import libraries but nothing deploys the DLLs without the
+  vcpkg toolchain file, so the process never loaded; they are now copied beside the exe,
+  the release-bundle rule. Diagnosed through a new `windows-logs` artifact (tee'd
+  configure/build/smoke), because the public API serves step verdicts but not step logs —
+  that artifact is now standing equipment. `ACTIONS_RESULTS_URL` is exported too (cache
+  service v2), which took vcpkg from ~80 to 28 minutes;
 * **macOS entirely** (milestone C, blocked on hardware).
