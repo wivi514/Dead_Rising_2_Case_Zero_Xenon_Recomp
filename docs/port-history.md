@@ -6128,3 +6128,75 @@ NEVER WAS.** ~~**`docs/part82-kickoff.md` IS THE LIVE HAND-OFF.**~~ — it WAS; 
   touched** — no config, kernel, PM4, shader or texture path — so part 74's A5 and
   `alu_const_gate --hlsl-dir` sweeps, part 75's cache gates, part 78's barrier gates and part
   80's PM4 boundary oracles all stand.
+
+Where the port is, as of 2026-08-27 (**PART 82 CLOSED — THE RELEASE. MILESTONE A IS COMPLETE
+AND GATED AND THERE IS A LINUX ARTIFACT THAT RUNS IN A CLEAN CONTAINER. D.1 IS DONE AND IT
+RETRACTED THE PLAN'S OWN §1.4: THE DISC HOLDS THE PIXEL SHADERS COMPLETELY AND THE VERTEX
+SHADERS NOT AT ALL.** ~~**`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**~~ — superseded. Records:
+`docs/release-plan.md` **§9** (all of it, and **§9.2 is what is OWED**); lessons: gotchas
+**484-489**):
+
+* **THE OPERATOR'S INSTRUCTION OPENING THE PART:** *"Do the release plan."* The subject is no
+  longer performance, which stays parked.
+* **THERE IS A LINUX ARTIFACT AND IT WORKS.** `dist/CaseZeroRecomp`, **16 MB compressed**,
+  proven in a podman `fedora-minimal` container with none of this machine's dev packages:
+  every bundled dependency resolves inside the bundle, `--smoke` passes in the PACKAGED and
+  STRIPPED binary, and the first-run refusal prints correctly from a container with no game.
+  The recipe is `part83-kickoff.md` §0, five commands.
+* **EVERY PATH IS ANCHORED TO THE EXECUTABLE NOW** (`runtime/host/host_paths.h`), printed once
+  as `[paths] root … (assets-walk), exe …` on the first line of every log. One rule covers the
+  dev tree and the shipped tree, and **nothing falls back to the CWD** — that fallback is what
+  keeps a dev tree working while the shipped one silently does not (gotcha 484). Gate: the
+  headless recipes from four different working directories, same root, same 449 modules.
+* **AND THERE IS AN HONEST REFUSAL** (`runtime/host/first_run.h`): package -> unpacked game ->
+  shader cache, and the first one missing says what it is, where it goes and the command that
+  produces it. Its six-tree gate found two defects in its own first version, both by running
+  the branches on purpose — a 2 MB `.wav` was ACCEPTED as the game, and the printed extract
+  command had the wrong `-o`.
+* **THE `Release` BUILD TYPE'S REGIME QUESTION IS ANSWERED FOR ONE SECOND, NOT ONE HOUR.**
+  `-O2 -g -DNDEBUG` then the debug info split off — **-O2 and not -O3 because the whole
+  measurement corpus behind parts 47-81 is -O2**. `-g` does not affect codegen and
+  `--strip-debug` does not touch `.text`, so the claim to test is byte identity:
+  **`.text` 35,651,455 bytes, sha256 IDENTICAL** between RelWithDebInfo and Release
+  (`tools/release_text_identity.sh`, positive control exits 1). The build type CANNOT have
+  changed the frame (gotcha 488). It also found that **`CZ_BUNDLE_RPATH` moves `.text`** — a
+  RUNPATH lengthens `.dynstr`, which sits before `.text`, relocating the image.
+* **THE BUNDLE'S FIRST VERSION PASSED EVERY STATIC CHECK AND DIED ON ITS FIRST INSTRUCTION.**
+  `Failed loading SDL3 library.` Fedora's `libSDL2-2.0.so.0` is `sdl2-compat`, a shim that
+  **`dlopen()`s libSDL3** — invisible to `ldd`, which is the exact tool the release plan
+  specified for this job, and it worked on the build machine because SDL3 was installed there
+  (gotcha 485). `tools/build_sdl2.sh` builds real SDL2. **A packaging gate must RUN the
+  artifact, not inspect it.**
+* **AND THE GPL PROBLEM IS SETTLED.** Fedora's ffmpeg is `--enable-gpl` and drags **120 shared
+  objects** — x264, x265, librsvg, cairo, pango, OpenCL, VA-API — against the **fourteen**
+  ffmpeg functions this runtime calls. `tools/build_ffmpeg_lgpl.sh` builds LGPL, xma1+xma2
+  only: **120 -> 3**, 1.4 MB, and it decodes (143,616 float samples, 48 kHz, rms 0.0218).
+* **D.1: THE `.vo`/`.po` CONTAINER IS DECODED.**
+  `microcodeStart = u32@0x04 + u32@(u32@0x18)`, length = objectLength - start, and the
+  microcode is always the object's TAIL. **423 of 423.** The offset is not in the fixed header
+  and no scan for a value could find it — a scan reported a *spurious* perfect discriminator
+  (the blob length; small blobs happen to have no constant block) where DUMPING the structure
+  found the real field one indirection away (gotcha 486).
+* **AND ITS GATE RETRACTED THE PLAN'S §1.4.** By FULL containment rather than a 48-byte head
+  probe: **pixel 343 of 345 byte-for-byte from the disc, vertex 0 of 104.** The old 98.6% was
+  the probe matching a shared vertex-shader prologue (gotcha 489). Aligned by tail, disc and
+  runtime vertex shaders differ in 3-35 scattered bytes in groups of three dwords with whole
+  fields zeroed on disc — **the title patching vertex FETCH instructions at load**, which are
+  exactly what decides the vertex format XenosRecomp emits. **The disc holds 1,265 distinct
+  pixel shaders** against the 345 accumulated over 25 parts and eleven operator sessions.
+* **SO MILESTONE D IS RE-PLANNED**: pixel and vertex are two different problems, **D.2
+  (in-process translation) is a hard prerequisite rather than a nicety**, and D.4 is the
+  PRIMARY path for every vertex shader rather than a safety net for six.
+* **WHAT IS OWED, stated rather than smoothed over (`release-plan.md` §9.2):** the ffmpeg and
+  SDL2 swaps ARE real `.text` changes and their cost is unmeasured; the shipped ffmpeg has no
+  hand-written x86 assembly because this machine has no `nasm` and no sudo; the artifact
+  inherits this machine's glibc floor (2.43); there is no AppImage yet; and
+  `build_shader_spv.sh` is not shippable, which is what D.2 fixes.
+* **Gates:** `--smoke` OK on every build including the packaged and stripped one (and
+  `addr2line` on the STRIPPED binary resolves `main` through the debuglink); four
+  working-directory path runs; six first-run trees; `.text` identity; the clean-container
+  bundle gate; `vo_extract_microcode.py --gate` at 343 of 345. **Nothing in `gpu/`, `kernel/`,
+  `cpu/` or the PM4 path changed except one include and two path-candidate lists in
+  `vk_renderer.cpp`**, so part 74's A5 and `alu_const_gate` sweeps, part 75's cache gates,
+  part 78's barrier gates, part 80's PM4 boundary oracles and part 81's bind verifier all
+  stand.

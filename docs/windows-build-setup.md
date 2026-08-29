@@ -153,6 +153,13 @@ C:\cz\
                                            way source moves between the two machines
   XenonRecomp\                             copied as a tarball: our Linux checkout is a
                                            SHALLOW clone and cannot produce a usable bundle
+  XenosRecomp\                             part 84 (release D.2): a 19 MB tarball SUBSET —
+                                           XenosRecomp/ sources, thirdparty/dxc-bin/inc,
+                                           and the two dxcompiler libraries. Nothing is
+                                           BUILT from it: the runtime compiles
+                                           shader_recompiler.cpp from source and dlopens
+                                           dxcompiler.dll. Ours carries local patches, so
+                                           a fresh GitHub clone is NOT a substitute
   thirdparty\sdl2\  thirdparty\ffmpeg-lgpl\
   seed\                                    the source tarballs, byte-identical to Linux
 ```
@@ -175,11 +182,22 @@ C:\cz\vc.bat C:\cz\XenonRecomp\build\XenonRecomp\XenonRecomp.exe CaseZero.toml `
 C:\cz\vc.bat cmake -S ...\runtime -B ...\runtime\build -G Ninja -DCMAKE_BUILD_TYPE=Release `
   -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
   -DXENON_ROOT=C:/cz/XenonRecomp -DXENON_BUILD=C:/cz/XenonRecomp/build `
+  -DXENOS_ROOT=C:/cz/XenosRecomp `
   -DCMAKE_PREFIX_PATH=C:/cz/thirdparty/sdl2 -DCZ_SDL2_PREFIX=C:/cz/thirdparty/sdl2 `
   -DCZ_FFMPEG_PREFIX=C:/cz/thirdparty/ffmpeg-lgpl -DCZ_SPLIT_DEBUG=OFF -DCZ_BUNDLE_RPATH=OFF
 C:\cz\vc.bat cmake --build ...\runtime\build -- -k 0     # -k 0 goes to NINJA: keep going,
                                                          # so ONE run enumerates every failure
+
+# dxcompiler.dll must sit beside cz_runtime.exe (or in lib\, or be named by CZ_DXC_LIB) —
+# the in-process shader translator dlopens it and prints one [shxlate] line saying which
+copy /y C:\cz\XenosRecomp\thirdparty\dxc-bin\bin\x64\dxcompiler.dll ...\runtime\build\
 ```
+
+**After any pull-and-build, verify the pulled HEAD (`git log --oneline -1`), not the absence
+of error text.** Part 84 chained `git pull >nul 2>&1 && cmake --build`; the pull failed
+silently, the build had nothing to do, and `--smoke` passed by exercising the PREVIOUS
+binary — two claims were made against a two-commit-stale tree before a new CLI flag falling
+through to old code gave it away (gotcha 502).
 
 ## 7. The dependencies, built from the SAME sources as Linux
 

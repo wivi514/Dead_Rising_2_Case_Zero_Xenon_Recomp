@@ -5714,3 +5714,34 @@ From phase C part 18 (the frame rate — and none of it was work):
      anything else. And the marked frames were themselves NORMAL (16-28 ms), exactly as
      a 200-500 ms reaction time predicts, so the marker has to be read as "a stutter
      happened just BEFORE this", never as "this frame was the stutter".
+
+501. **A BLIND INPUT POISON CAN BE SEMANTICALLY DEAD — POISON THE IMPLEMENTATION, NOT THE
+     INPUT.** D.2's byte-identity gate needed its "break it on purpose" run (gotcha 30). A
+     bit flipped at the midpoint of a real shader's microcode changed NEITHER the SPIR-V nor
+     the sidecar — the bit fell somewhere both decoders ignore — and a gate "validated" by
+     that run would have been validated by a no-op. The control that counts is a deliberate
+     one-line defect in the thing the gate guards (a census made to drop one register), which
+     fired the gate immediately. An input poison proves the pipeline is sensitive to that
+     input byte; an implementation poison proves the gate catches the failure class it exists
+     for, and only the second is the claim the gate makes.
+
+502. **A CHAINED, SILENCED `git pull` REPORTS SUCCESS BY BUILDING THE OLD TREE.**
+     `git pull >nul 2>&1 && cmake --build ...` on the Windows box: the pull failed silently,
+     the `&&` skipped nothing downstream that could say so, the build had nothing to compile,
+     an errors-only grep read the empty output as clean, and `--smoke` passed — by exercising
+     the PREVIOUS binary. Two "Windows builds D.4" claims were made against a tree two
+     commits stale; the tell was a new CLI flag falling through to the old code path. After
+     any pull-and-build, verify the pulled HEAD (`git log --oneline -1`) or a marker only the
+     new binary can produce — the absence of error text verifies nothing (gotcha 25's shape,
+     one level up).
+
+503. **A GLOBAL HEADER FIX IS ITSELF A COLLISION FOR HEADERS INCLUDED LATER.**
+     `win_compat.h` (correctly) sets `WIN32_LEAN_AND_MEAN` and `#undef`s `far`/`near` to
+     free the identifiers for this runtime's code. The first TU to include COM headers after
+     it got both bills at once: lean mode had excluded the `IUnknown`/`IStream` definitions
+     dxcapi.h assumes ("expected class name"), and `FAR` — still defined, as `far`, which no
+     longer expands to nothing — became a stray identifier in every COM prototype
+     ("expected ')'" across combaseapi.h, no mention of a macro in either message). The fix
+     is scoped to the one TU: include `<unknwn.h>`/`<objidl.h>` by name and re-point
+     `FAR`/`NEAR` at nothing. Transferable to Case West with the same file: any TU that
+     talks COM after win_compat.h will need the same three lines.

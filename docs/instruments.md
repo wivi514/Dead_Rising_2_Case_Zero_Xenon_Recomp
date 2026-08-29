@@ -3277,3 +3277,37 @@ measuring**. A cross-platform comparison was run and published with it armed on 
 before that line was read (gotcha 499). Never quote a frame time from a run carrying it,
 and never use it at all when hunting something the size of a stutter —
 `CZ_VK_FRAME_TRACE` is the instrument for that and costs a fprintf a frame.
+
+## Part 84 — in-process shader translation (release milestone D)
+
+```
+CZ_VK_NO_SHADER_JIT=1   **the control arm for D.4's first-sight translation.** With it set,
+                  a shader the cache lacks is skipped forever and reported by the standing
+                  "no translated shader" line — the pre-part-84 behaviour, same binary.
+                  Measured: empty-vertex cache + JIT off = 29 missing-shader reports and 0
+                  translations; JIT on = 0 and 45. When the JIT is ON, an in-flight shader's
+                  skipped draws land in their own counter (`draw: shader translating`) so
+                  `grep -c "no translated shader"` keeps meaning "ended up missing".
+CZ_DXC_LIB=path   where libdxcompiler.so / dxcompiler.dll is, overriding the search
+                  (<exe>/lib, <exe>, then the sibling XenosRecomp checkout). The loader
+                  prints one `[shxlate] dxcompiler:` line naming what it loaded.
+CZ_TRANSLATE_KEEP_HLSL=dir   `--translate-shaders` keeps the intermediate HLSL per shader —
+                  the debuggable substrate, and what alu_const_gate.py wants to cross-check.
+CZ_DXC_DEFINES    honoured by the in-process path exactly as by tools/build_shader_spv.sh,
+                  so an arm cache can still be built from the same emitter. Leave unset for
+                  anything that feeds the stock cache: the byte-identity gates assume it.
+```
+
+The two CLI modes (not env vars, but they live with these):
+
+```
+cz_runtime --translate-shaders <ucode_dir> <out>   the D.2 byte-identity gate's engine:
+                  every *.ucode translated in parallel. Exit 1 on ANY failure — stricter
+                  than build_shader_spv.sh, which exits 0 with a failure list.
+cz_runtime --build-shader-cache [bank [out]]       the D.3 disc pass by hand. Defaults to
+                  the game's deadrisingprologue-ps.big and HostPaths::ShaderCache().
+                  Resumable: each shader is its own .spv+.meta.json pair, and the
+                  disc_prebuild.{started,done} markers decide whether a BOOT owes a pass —
+                  a populated cache with neither marker is a developer cache and is never
+                  touched.
+```

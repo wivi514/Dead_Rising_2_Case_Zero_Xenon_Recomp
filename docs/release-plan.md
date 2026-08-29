@@ -308,7 +308,7 @@ script plus the certificate.
 
 **C.5 Gates.** *(0.5 day)* The same three as B.4.
 
-### MILESTONE D — the first-run shader build (~5 days, and RE-PLANNED by D.1)
+### MILESTONE D — the first-run shader build — **COMPLETE (parts 82 + 84); see §9.1 and §9.7**
 
 **D.1 IS DONE (part 82), and it changed the shape of the rest of this milestone.**
 `tools/vo_extract_microcode.py` decodes the container:
@@ -342,19 +342,19 @@ the disc also holds 922 pixel shaders NO RUN HAS EVER BOUND
   path for every vertex shader**, and D.2 is a hard prerequisite for a shipped build rather
   than a nicety.
 
-**D.2 In-process translation.** *(2 days — and it is now REQUIRED, not an optimisation)*
+**~~D.2 In-process translation.~~ DONE (part 84, §9.7).** *(was: 2 days, REQUIRED)*
 Link XenosRecomp (MIT, sibling checkout, already patched) and embed DXC. **Gate:** build the
 cache the new way and diff the SPIR-V against the 449 modules already on disk — byte-identical
 is a stronger check than any picture test, and a disagreement names the shader.
 **Do this before D.3.** Without it there is no vertex shader at all, and the pixel prebuild is
 a nice-to-have on top of a runtime that cannot draw.
 
-**D.3 The first-run pass and its progress UI.** *(1 day)* Both stages of §2.3, parallel across
+**~~D.3 The first-run pass~~ DONE (part 84, §9.7) — except the graphical progress UI, which is console lines until milestone E gives it a window.** *(was: 1 day)* Both stages of §2.3, parallel across
 cores, resumable, keyed so a partial run is detected and finished rather than restarted. It
 now has an honest job description: **translate the 1,265 disc pixel shaders**, and pre-warm
 the pipeline cache. Vertex shaders are not part of it.
 
-**D.4 The runtime first-sight path.** *(1 day)* On `[imload]` of a hash the cache does not
+**~~D.4 The runtime first-sight path.~~ DONE (part 84, §9.7).** *(was: 1 day)* On `[imload]` of a hash the cache does not
 hold, translate in-process and add it. **This is where every vertex shader comes from**, plus
 the two pixel shaders absent from the disc and anything the container scan mis-parses.
 **Gate:** delete a shader from the cache, confirm it is rebuilt and the picture is unchanged.
@@ -765,3 +765,100 @@ file from a full playthrough would give players a warm start on day one.
 * **Refuted honestly:** seven implicit Vulkan layers (Steam, GOG, Epic, OBS, RivaTuner) are
   a **null** — 1037 vs 1033 ns/draw. P-core affinity is worth ~7.6% at matched draw counts,
   not the -27% an unmatched comparison suggested.
+
+### 9.7 Part 84 — MILESTONE D COMPLETE: the runtime translates its own shaders
+
+**The whole of milestone D landed in one part** — D.2, then D.4, then D.3, in the order the
+part-84 kickoff prescribed — and every gate below was run before its commit. A shipped build
+no longer needs Python, a shell, the XenosRecomp executable or the dxc CLI to draw: it builds
+the pixel half of its cache from the player's own disc in nine seconds, and every vertex
+shader (plus the two pixel shaders the disc lacks) arrives through first-sight translation at
+run time.
+
+**D.2 — in-process translation (`gpu/shader_translator.{h,cpp}`).** XenosRecomp's own
+`shader_recompiler.cpp` (MIT, the sibling checkout, compiled into `cz_runtime` against
+`gpu/xenos_pch.h` — upstream's pch minus smol-v/zstd/xxhash/dxcapi), C++ ports of
+`synth_shader_container.py`'s ucode analysis + container synthesis and
+`alu_const_census.py`'s HLSL census, a JSON writer replicating Python `json.dump(indent=1)`
+byte for byte, and DXC through its C API (dlopen'd: `CZ_DXC_LIB`, then `<exe>/lib`, then the
+sibling checkout). `shader_common.h` is EMBEDDED at configure time so the HLSL prologue
+cannot drift from what built the existing caches.
+
+* **The design was probed before it was built**: `IDxcCompiler3` with the CLI's argument
+  list produces SPIR-V **byte-identical** to the `dxc` executable, source name or not.
+* **The gate, as the plan wrote it**: `cz_runtime --translate-shaders` over the 449 dumps —
+  **449 of 449, all 898 files byte-identical** to the Python/shell pipeline's output, in
+  **2.6 s wall against the shell's 51 s**. Positive control: a deliberate census defect
+  (drop one aluConst) fires the gate in the sidecar diff. A single blind-flipped ucode bit
+  was **semantically dead** and moved nothing — the implementation poison is the control
+  that counts (gotcha 501).
+* **Cross-platform**: the same translation on the Windows laptop (dxcompiler.dll) is
+  byte-identical to Linux (libdxcompiler.so) — 348 of 348 dump-built modules, then
+  **1,265 of 1,265 disc-built modules**. **A shader cache is fully portable between
+  platforms**, so D.3's first-run output is one artifact, not one per OS.
+
+**D.4 — translate on first sight.** `BindShader` calls `VkRenderer_OnShaderBind` once per
+distinct hash (inside its announce-once block); a miss enqueues the bytes to ONE worker;
+the draw-path miss branch drains finished modules — enqueue and drain are both on the pump
+thread, so the shader tables are never touched off-thread. Translations persist into the
+cache directory, so the next run starts warm. The in-flight skip is its own counter
+(`draw: shader translating`); **`no translated shader` keeps meaning "ended up missing"**.
+`CZ_VK_NO_SHADER_JIT=1` is the same-binary arm.
+
+* **The plan's stronger standing gate, run first try**: EMPTY vertex half, DebugJump crowd
+  route — crowd at **8,110 draws**, `no translated shader` **= 0**, **45** vertex shaders
+  translated at first sight (**18-70 ms each, median 23**), 0 failures, 18,125 draws
+  transiently skipped and honestly counted. Every persisted module and sidecar is
+  byte-identical to the canonical cache entry for the same hash.
+* **Controls**: off-arm (same cache, JIT off) restores the old behaviour — 29
+  `no translated shader`, 0 first-sight — so the arm engages and the gate can fail. Null
+  (full cache, JIT on): 0 first-sight, 0 skips — the standard path never sees the feature.
+  `CZ_VK_VALIDATION` over the JIT path: only the standing topology-08773 class.
+
+**D.3 — the first-run disc pass (`gpu/shader_prebuild.{h,cpp}`).** The `.big` index (LE,
+stride from `names_offset`) and D.1's `.po` container rule, ported with every bound checked
+so a malformed player-supplied object is skipped BY NAME. Dedupe by FNV-1a, skip what the
+cache holds (which IS the resume mechanism), translate the rest on a whole-machine pool.
+`cz_runtime --build-shader-cache` by hand; a renderer boot runs it automatically when the
+cache is missing, empty, or carries a `disc_prebuild.started` marker without its `.done` —
+and NEVER against a populated developer cache, which has neither marker.
+
+* **1,265 of 1,265 distinct pixel shaders, 0 refused, 0 failed, 9.0 s wall** (§2.3 guessed
+  ~30 s). All 343 canonical overlaps byte-identical, sidecars included.
+* **Resume**: killed at 433 → re-run translates the remaining 832 and only then writes the
+  done marker; a third run is a no-op.
+* **The crown gate — the shipped first-run story end to end**: disc-built cache only, no
+  vertex half → 1,265 modules loaded, crowd at **8,154 draws**, `no translated shader` = 0,
+  47 first-sight translations — **and the pixel first-sight list is EXACTLY the two hashes
+  D.1 enumerated as absent from the disc** (`ps_438c2af84c78a133`, `ps_a15c6c9c2d249375`).
+* **The simulated player tree** (CZ_ROOT at a root with the game and no cache): the boot
+  hook fired, built all 1,265 before the guest started, and the renderer loaded them. A
+  dev-tree boot shows 0 prebuild lines and the canonical cache stays at 898 files.
+
+**Windows.** All of it builds with clang-cl and runs: `--smoke` OK, the disc prebuild
+produces the byte-identical 1,265. Three portability defects found and fixed on the way:
+`WIN32_LEAN_AND_MEAN` excludes the COM types dxcapi.h needs (`IUnknown`/`IStream` pulled in
+by name); `win_compat.h`'s `#undef far` leaves `FAR` expanding to a stray identifier in
+every COM prototype (`expected ')'` across combaseapi.h — re-pointed at nothing for the one
+TU); and `E_FAIL` is `#undef`'d for guest code, so it is spelled by value. The runbook
+gained the XenosRecomp tree: `C:\cz\XenosRecomp` (a 19 MB tarball subset — sources,
+dxc headers, the two dxcompiler libraries), `-DXENOS_ROOT=C:/cz/XenosRecomp` at configure,
+`dxcompiler.dll` beside the exe.
+
+**A false claim, corrected in-session (gotcha 502):** the first two "Windows builds D.4"
+statements were made against a STALE tree — a chained `git pull >nul 2>&1 &&` had failed
+silently, the build had nothing to do, and the empty error grep read as success while
+`--smoke` exercised the previous binary. The tell was `--build-shader-cache` falling
+through to the first-run refusal: the flag did not exist in the binary that ran. Verify the
+pulled HEAD, not the absence of error text.
+
+**What part 84 leaves owed:**
+* the graphical "Preparing shaders" progress screen (§2.3 step 3-4) — progress is console
+  lines until milestone E gives the first run a window;
+* the in-process STFS extract (§2.3 step 2) — `extract_stfs.py` is still the documented
+  step, and `first_run` still refuses with the command rather than running it;
+* the shipped pre-warm pipeline-key file (part 84 kickoff item 3) — waits on a full
+  playthrough's key set and on E having an artifact to ship it in;
+* the JIT persists into the STOCK cache only; the six variant arm caches do not gain
+  first-sight entries and will read `no translated shader` for a shader born at run time —
+  acceptable for dev arms, worth one line here so it is never diagnosed as a defect.

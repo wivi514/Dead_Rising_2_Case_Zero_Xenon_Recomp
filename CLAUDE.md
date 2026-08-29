@@ -192,9 +192,10 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part84-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
-    programme and its **§9 is the execution record**: milestone A complete and gated,
-    D.1 done, and §9.2 is what is owed. ~~It is currently
+    `part85-kickoff.md`, AND THE SUBJECT IS THE RELEASE** — `docs/release-plan.md` is the
+    programme and its **§9 is the execution record**: milestones A, B and D complete and
+    gated (§9.7 is part 84 — the runtime translates its own shaders), and the next
+    milestone is E, packaging. ~~It is currently
     `part82-kickoff.md`~~, and **PERFORMANCE IS PARKED AS OF PART 81** — the operator's
     instruction closing it was *"we'll switch to something else then performance"*. THE
     SUBJECT IS OPEN; part 82's kickoff §0 is the one thing to read before anything else,
@@ -460,7 +461,12 @@ python3 tools/find_unlowered_switches.py --all    # also list the benign tail-ca
 ```
 
 Build the SPIR-V shader cache. **`assets/shader_spv/` is gitignored, so a fresh clone
-needs this before `CZ_VKDRAW=1` does anything.** Two sources, and they merge: the
+needs this before `CZ_VKDRAW=1` does anything — and AS OF PART 84 THE RUNTIME CAN DO IT
+ITSELF**: a renderer boot with no cache builds the pixel half from the disc banks in 9 s
+(`cz_runtime --build-shader-cache` runs it by hand) and first-sight translation supplies
+the vertex half at run time, byte-identical to the pipeline below (which remains the dev
+tool, and the authority for arm caches). `cz_runtime --translate-shaders <dumps> <out>`
++ `diff -r` against the cache is the standing identity gate between the two. Two sources, and they merge: the
 captures' shaders (which reach gameplay, where our runtime cannot yet go) and our own
 dump (which is the authority on the byte range, because the cache key is a hash of
 it — gotcha 115). **Our dump run must go as DEEP as the runtime can go, not just to the
@@ -936,11 +942,12 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
-plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part83-kickoff.md` IS THE LIVE
-HAND-OFF.** **MILESTONES A AND B ARE COMPLETE — THE GAME BUILDS, RUNS AND PLAYS ON
-WINDOWS** (`docs/windows-build-setup.md` is the runbook, `ssh czwin` the box); D.1 is done
-and RETRACTED the plan's §1.4; the next item is **D.2, in-process shader translation, which
-D.1 promoted from a nicety to a hard prerequisite**.
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part85-kickoff.md` IS THE LIVE
+HAND-OFF.** **MILESTONES A, B AND D ARE COMPLETE — the game builds, runs and plays on
+Windows, and as of part 84 A SHIPPED BUILD TRANSLATES ITS OWN SHADERS** (the disc's 1,265
+pixel shaders in 9 s at first run, every vertex shader at first sight in 18-70 ms;
+`release-plan.md` §9.7 has every gate). The next milestone is **E, packaging** — and the
+bundle must now carry the DXC library, which the translator dlopens.
 
 **SUBJECT CHANGE, 2026-08-27, operator instruction closing part 81:** *"Update your memory
 and all we'll switch to something else then performance."* **PERFORMANCE IS PARKED**, having
@@ -966,10 +973,57 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
+Where the port is, as of 2026-08-28 (**PART 84 CLOSED — THE RELEASE. MILESTONE D IS
+COMPLETE: A SHIPPED BUILD TRANSLATES ITS OWN SHADERS.** D.2, D.4 and D.3 all landed in one
+part, in that order, each gated before its commit. **`docs/part85-kickoff.md` IS THE LIVE
+HAND-OFF**; records: `release-plan.md` **§9.7**; lessons: gotchas **501-503**):
+
+* **D.2 — IN-PROCESS TRANSLATION.** XenosRecomp's own recompiler (MIT, sibling checkout)
+  compiled into `cz_runtime`, C++ ports of the synth/census Python, a JSON writer matching
+  `json.dump(indent=1)` byte for byte, DXC through its dlopen'd C API. **The gate: 449 of
+  449 dumps, all 898 files BYTE-IDENTICAL to the shell pipeline's output, 2.6 s vs 51 s.**
+  The design was probed first: DXC's API and CLI produce identical SPIR-V. Positive
+  control: an implementation poison (census drops one register) fires the gate; a blind
+  input-bit poison was semantically DEAD and proved nothing (gotcha 501).
+* **D.4 — TRANSLATE ON FIRST SIGHT.** A missing hash is translated on one worker,
+  persisted, registered live — enqueue and drain both on the pump thread, so the tables
+  are never touched off-thread. **Empty-vertex-half gate: crowd at 8,110 draws,
+  `no translated shader` = 0, 45 shaders at 18-70 ms (median 23), every persisted module
+  byte-identical to the canonical entry.** The in-flight skip is its own counter so the
+  standing grep keeps meaning "ended up missing". Off-arm restores the old behaviour
+  (29 missing, 0 translated); the null (full cache) is 0/0 — the standard path never sees
+  the feature. `CZ_VK_NO_SHADER_JIT=1`.
+* **D.3 — THE FIRST-RUN DISC PASS.** The `.big` index (LE) + D.1's container rule, every
+  bound checked so a malformed player-supplied object is skipped BY NAME. **1,265 of 1,265
+  distinct pixel shaders, 0 refused, 0 failed, 9.0 s** — resumable (killed at 433, resumed
+  832, no-op third run), automatic on a renderer boot via marker files that keep it away
+  from populated dev caches (898 files before and after a dev boot). **Crown gate: disc
+  cache only → crowd, 0 missing — and the pixel first-sight list is EXACTLY the two hashes
+  D.1 enumerated as absent from the disc.**
+* **A SHADER CACHE IS ONE ARTIFACT, NOT ONE PER OS.** Windows (dxcompiler.dll, clang-cl)
+  produces byte-identical output to Linux for all 348 dump-built and all 1,265 disc-built
+  modules.
+* **THREE WINDOWS PORTABILITY DEFECTS**, all in one TU's include preamble: lean windows.h
+  excludes the COM types dxcapi needs; `win_compat.h`'s `#undef far` leaves `FAR` a stray
+  identifier in every COM prototype; `E_FAIL` is #undef'd for guest code. Gotcha 503 — the
+  fix for one collision class is itself a collision for later includes, and Case West will
+  reuse the same file.
+* **A FALSE CLAIM, CORRECTED IN-SESSION (gotcha 502):** two "Windows builds D.4"
+  statements were made against a STALE tree — a silenced chained `git pull` had failed,
+  the empty error grep read as success, and `--smoke` passed by exercising the previous
+  binary. Verify the pulled HEAD, not the absence of error text.
+* **OWED (release-plan §9.7):** the graphical progress screen (console lines until E gives
+  the first run a window); the in-process STFS extract; the shipped pre-warm key file; and
+  the variant arm caches do not gain first-sight entries (dev-only, known).
+* **Gates:** everything part 83 inherited, plus the D.2 byte-identity diff, the disc-pass
+  343-overlap identity, the empty-vertex crown gate, and the prebuild's
+  `N translated, 0 failed` + done-marker discipline.
+
 Where the port is, as of 2026-08-28 (**PART 83 CLOSED — THE RELEASE. MILESTONE B IS COMPLETE
 AND THE GAME PLAYS ON WINDOWS: the operator played Still Creek at 2560x1440 with sound. THE
 STUTTER IS FIXED AND IT WAS NEVER A WINDOWS BUG — every new player would have had it on every
-platform.** **`docs/part84-kickoff.md` IS THE LIVE HAND-OFF**; records: `release-plan.md`
+platform.** ~~**`docs/part84-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for one part;
+it is `part85-kickoff.md`. Records: `release-plan.md`
 **§9.4-9.6** (and **§9.6 is what part 83 got WRONG**, which on this session is the more
 reusable half); lessons: gotchas **495-500**):
 
@@ -1041,81 +1095,8 @@ reusable half); lessons: gotchas **495-500**):
   pre-warm must print `N of N`, and `CZ_VK_FRAME_TRACE` must print its `-> open` line or it
   is not recording.
 
-Where the port is, as of 2026-08-27 (**PART 82 CLOSED — THE RELEASE. MILESTONE A IS COMPLETE
-AND GATED AND THERE IS A LINUX ARTIFACT THAT RUNS IN A CLEAN CONTAINER. D.1 IS DONE AND IT
-RETRACTED THE PLAN'S OWN §1.4: THE DISC HOLDS THE PIXEL SHADERS COMPLETELY AND THE VERTEX
-SHADERS NOT AT ALL.** ~~**`docs/part83-kickoff.md` IS THE LIVE HAND-OFF**~~ — it WAS, for one part; it is
-`part84-kickoff.md`. Records:
-`docs/release-plan.md` **§9** (all of it, and **§9.2 is what is OWED**); lessons: gotchas
-**484-489**):
-
-* **THE OPERATOR'S INSTRUCTION OPENING THE PART:** *"Do the release plan."* The subject is no
-  longer performance, which stays parked.
-* **THERE IS A LINUX ARTIFACT AND IT WORKS.** `dist/CaseZeroRecomp`, **16 MB compressed**,
-  proven in a podman `fedora-minimal` container with none of this machine's dev packages:
-  every bundled dependency resolves inside the bundle, `--smoke` passes in the PACKAGED and
-  STRIPPED binary, and the first-run refusal prints correctly from a container with no game.
-  The recipe is `part83-kickoff.md` §0, five commands.
-* **EVERY PATH IS ANCHORED TO THE EXECUTABLE NOW** (`runtime/host/host_paths.h`), printed once
-  as `[paths] root … (assets-walk), exe …` on the first line of every log. One rule covers the
-  dev tree and the shipped tree, and **nothing falls back to the CWD** — that fallback is what
-  keeps a dev tree working while the shipped one silently does not (gotcha 484). Gate: the
-  headless recipes from four different working directories, same root, same 449 modules.
-* **AND THERE IS AN HONEST REFUSAL** (`runtime/host/first_run.h`): package -> unpacked game ->
-  shader cache, and the first one missing says what it is, where it goes and the command that
-  produces it. Its six-tree gate found two defects in its own first version, both by running
-  the branches on purpose — a 2 MB `.wav` was ACCEPTED as the game, and the printed extract
-  command had the wrong `-o`.
-* **THE `Release` BUILD TYPE'S REGIME QUESTION IS ANSWERED FOR ONE SECOND, NOT ONE HOUR.**
-  `-O2 -g -DNDEBUG` then the debug info split off — **-O2 and not -O3 because the whole
-  measurement corpus behind parts 47-81 is -O2**. `-g` does not affect codegen and
-  `--strip-debug` does not touch `.text`, so the claim to test is byte identity:
-  **`.text` 35,651,455 bytes, sha256 IDENTICAL** between RelWithDebInfo and Release
-  (`tools/release_text_identity.sh`, positive control exits 1). The build type CANNOT have
-  changed the frame (gotcha 488). It also found that **`CZ_BUNDLE_RPATH` moves `.text`** — a
-  RUNPATH lengthens `.dynstr`, which sits before `.text`, relocating the image.
-* **THE BUNDLE'S FIRST VERSION PASSED EVERY STATIC CHECK AND DIED ON ITS FIRST INSTRUCTION.**
-  `Failed loading SDL3 library.` Fedora's `libSDL2-2.0.so.0` is `sdl2-compat`, a shim that
-  **`dlopen()`s libSDL3** — invisible to `ldd`, which is the exact tool the release plan
-  specified for this job, and it worked on the build machine because SDL3 was installed there
-  (gotcha 485). `tools/build_sdl2.sh` builds real SDL2. **A packaging gate must RUN the
-  artifact, not inspect it.**
-* **AND THE GPL PROBLEM IS SETTLED.** Fedora's ffmpeg is `--enable-gpl` and drags **120 shared
-  objects** — x264, x265, librsvg, cairo, pango, OpenCL, VA-API — against the **fourteen**
-  ffmpeg functions this runtime calls. `tools/build_ffmpeg_lgpl.sh` builds LGPL, xma1+xma2
-  only: **120 -> 3**, 1.4 MB, and it decodes (143,616 float samples, 48 kHz, rms 0.0218).
-* **D.1: THE `.vo`/`.po` CONTAINER IS DECODED.**
-  `microcodeStart = u32@0x04 + u32@(u32@0x18)`, length = objectLength - start, and the
-  microcode is always the object's TAIL. **423 of 423.** The offset is not in the fixed header
-  and no scan for a value could find it — a scan reported a *spurious* perfect discriminator
-  (the blob length; small blobs happen to have no constant block) where DUMPING the structure
-  found the real field one indirection away (gotcha 486).
-* **AND ITS GATE RETRACTED THE PLAN'S §1.4.** By FULL containment rather than a 48-byte head
-  probe: **pixel 343 of 345 byte-for-byte from the disc, vertex 0 of 104.** The old 98.6% was
-  the probe matching a shared vertex-shader prologue (gotcha 489). Aligned by tail, disc and
-  runtime vertex shaders differ in 3-35 scattered bytes in groups of three dwords with whole
-  fields zeroed on disc — **the title patching vertex FETCH instructions at load**, which are
-  exactly what decides the vertex format XenosRecomp emits. **The disc holds 1,265 distinct
-  pixel shaders** against the 345 accumulated over 25 parts and eleven operator sessions.
-* **SO MILESTONE D IS RE-PLANNED**: pixel and vertex are two different problems, **D.2
-  (in-process translation) is a hard prerequisite rather than a nicety**, and D.4 is the
-  PRIMARY path for every vertex shader rather than a safety net for six.
-* **WHAT IS OWED, stated rather than smoothed over (`release-plan.md` §9.2):** the ffmpeg and
-  SDL2 swaps ARE real `.text` changes and their cost is unmeasured; the shipped ffmpeg has no
-  hand-written x86 assembly because this machine has no `nasm` and no sudo; the artifact
-  inherits this machine's glibc floor (2.43); there is no AppImage yet; and
-  `build_shader_spv.sh` is not shippable, which is what D.2 fixes.
-* **Gates:** `--smoke` OK on every build including the packaged and stripped one (and
-  `addr2line` on the STRIPPED binary resolves `main` through the debuglink); four
-  working-directory path runs; six first-run trees; `.text` identity; the clean-container
-  bundle gate; `vo_extract_microcode.py --gate` at 343 of 345. **Nothing in `gpu/`, `kernel/`,
-  `cpu/` or the PM4 path changed except one include and two path-candidate lists in
-  `vk_renderer.cpp`**, so part 74's A5 and `alu_const_gate` sweeps, part 75's cache gates,
-  part 78's barrier gates, part 80's PM4 boundary oracles and part 81's bind verifier all
-  stand.
-
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-81's** — part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-82's** — part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.
