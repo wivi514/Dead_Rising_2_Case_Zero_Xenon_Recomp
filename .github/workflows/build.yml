@@ -129,7 +129,12 @@ jobs:
       - name: generate the stub image
         run: python tools/gen_stub_ppc.py --out ../stub-ppc --xenon ../XenonRecomp
 
-      - name: configure and build the runtime
+      # Configure and build are separate steps and both tee into log files that the
+      # always() artifact below publishes — this repo's sessions read CI through the
+      # public API, which serves step VERDICTS but not step logs, and a red step
+      # whose error text is unreachable cannot be iterated on (part 85 hit exactly
+      # that on this job's first run).
+      - name: configure the runtime
         run: |
           $vcpkg = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
           cmake -S runtime -B runtime/build -G Ninja `
@@ -142,8 +147,25 @@ jobs:
             -DCMAKE_PREFIX_PATH="$vcpkg" `
             -DCZ_SDL2_PREFIX="$vcpkg" `
             -DCZ_FFMPEG_PREFIX="$vcpkg" `
-            -DCZ_SPLIT_DEBUG=OFF -DCZ_BUNDLE_RPATH=OFF
-          cmake --build runtime/build
+            -DCZ_SPLIT_DEBUG=OFF -DCZ_BUNDLE_RPATH=OFF 2>&1 | Tee-Object configure.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: build the runtime
+        run: |
+          cmake --build runtime/build 2>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: smoke against the stub image
         run: runtime/build/cz_runtime.exe --smoke
+
+      - name: publish the logs the API cannot serve
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          if-no-files-found: ignore
+          path: |
+            configure.log
+            build.log
+            runtime/build/CMakeFiles/CMakeError.log
+            runtime/build/CMakeFiles/CMakeConfigureLog.yaml
