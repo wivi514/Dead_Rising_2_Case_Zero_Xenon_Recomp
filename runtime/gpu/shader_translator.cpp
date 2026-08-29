@@ -27,7 +27,13 @@
 #include "xenos_pch.h"
 
 #ifdef _WIN32
-#include <windows.h> // dxcapi.h needs the COM types; win_compat.h already pulled this
+// dxcapi.h needs the COM base types, and win_compat.h's WIN32_LEAN_AND_MEAN (correct
+// for everything else in this runtime) is exactly what excludes them from windows.h —
+// so IUnknown and IStream have to be pulled in by name or every interface in dxcapi.h
+// fails with "expected class name".
+#include <windows.h>
+#include <unknwn.h>
+#include <objidl.h>
 #else
 #include <dlfcn.h>
 #endif
