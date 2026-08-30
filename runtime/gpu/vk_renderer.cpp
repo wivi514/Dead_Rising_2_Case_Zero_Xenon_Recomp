@@ -13866,6 +13866,67 @@ bool NoBoundedDynamic()
     return o;
 }
 
+// THE PROJECTION-PATCH MEMO (part 88 item 2; `part88-kickoff.md` §2, §6eg §3).
+//
+// `constVsPatch` read 2.8% ≈ 0.51 ms at the crowd: `SceneXformForm`'s sixteen-float
+// inspection runs TWICE per VS copy (once under each patch) on ~97% of draws, because
+// the WORLD registers churn per object while c0..c3 — the projection the patches
+// actually read — repeats across whole passes. So memoise on the input: key = the 16
+// pre-patch dwords + the two per-frame parameters (the fov half-rad and the wide flag);
+// on a hit serve the previously patched 64-byte block AND the two recognition results,
+// so the per-form draw counters keep counting what they counted before.
+//
+// A 4-way MRU rather than 1-entry because a frame interleaves projections (shadow
+// cascade, scene, UI ortho); the hit-rate counters below are what say whether 4 was
+// enough. Cached-path only: the in-place arms (GatherNoC0Always / PatchInArena) keep
+// the old path untouched, exactly as they do for the patch-source shortcut.
+//
+// CZ_VK_NO_PATCH_MEMO=1        the same-binary control arm (off-arm from day one).
+// CZ_VK_VERIFY_PATCH_MEMO=1    run both patches anyway on every hit and compare all 16
+//                              dwords against the served block; must read 0.
+// CZ_VK_VERIFY_PATCH_MEMO_POISON=1  perturb one served float so the verifier MUST fire
+//                              (gotcha 30; implies the verify arm).
+struct PatchMemoEntry
+{
+    uint32_t key[16];
+    float fov = 0.0f;
+    uint8_t wide = 0, valid = 0;
+    uint32_t out[16];
+    int8_t fovForm = 0, wideForm = 0;
+};
+PatchMemoEntry g_patchMemoWays[4];
+uint64_t g_patchMemoHits = 0, g_patchMemoMisses = 0, g_patchMemoChecked = 0,
+         g_patchMemoBad = 0;
+bool NoPatchMemo()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_NO_PATCH_MEMO");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_NO_PATCH_MEMO=1 — the projection patch runs "
+                            "recognition on every VS copy again. This is the control "
+                            "arm.\n");
+        return v;
+    }();
+    return o;
+}
+bool PatchMemoVerifyPoison()
+{
+    static const bool o = [] {
+        const bool v = EnvOn("CZ_VK_VERIFY_PATCH_MEMO_POISON");
+        if (v)
+            fprintf(stderr, "[vk] CZ_VK_VERIFY_PATCH_MEMO_POISON=1 — one served float "
+                            "is perturbed; the verifier MUST report, or it is blind.\n");
+        return v;
+    }();
+    return o;
+}
+bool PatchMemoVerify()
+{
+    static const bool o =
+        EnvOn("CZ_VK_VERIFY_PATCH_MEMO") || PatchMemoVerifyPoison();
+    return o;
+}
+
 namespace palcensus
 {
 struct Tot
@@ -19716,7 +19777,82 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                         ++have;
                 c0Known = have == 4;
             }
-            const int fovForm = PatchFovProjection(patchAt, FovHalfRadThisFrame());
+            // Part 88 item 2: the patch memo (state and rationale at PatchMemoEntry).
+            // Cached-path only — the in-place arms keep the old path bit for bit, for
+            // the same reason they do at the patch-source shortcut above.
+            int fovForm = 0, wideForm = 0;
+            bool memoServed = false;
+            const float fovNow = FovHalfRadThisFrame();
+            const uint8_t wideNow = WideMode() ? 1 : 0;
+            if (!patchInPlace && !NoPatchMemo())
+            {
+                for (int way = 0; way < 4; ++way)
+                {
+                    PatchMemoEntry& e = g_patchMemoWays[way];
+                    if (!e.valid || e.fov != fovNow || e.wide != wideNow ||
+                        memcmp(e.key, patchAt, sizeof e.key) != 0)
+                        continue;
+                    if (PatchMemoVerify())
+                    {
+                        // Run both patches anyway and compare all sixteen dwords. Under
+                        // poison the compare side is perturbed (the served data is not)
+                        // — the mirror of CZ_VK_VERIFY_PATCH_SRC_POISON below.
+                        uint32_t chk[16], want[16];
+                        memcpy(chk, patchAt, sizeof chk);
+                        PatchFovProjection(chk, fovNow);
+                        if (wideNow)
+                            PatchWideProjection(chk);
+                        memcpy(want, e.out, sizeof want);
+                        if (PatchMemoVerifyPoison())
+                            want[0] ^= 0x40000000u;
+                        ++g_patchMemoChecked;
+                        if (memcmp(chk, want, sizeof want) != 0 &&
+                            ++g_patchMemoBad <= 8)
+                            fprintf(stderr,
+                                    "[vk] ** PATCH MEMO MISMATCH #%llu — the served "
+                                    "block is not what the patches produce for this "
+                                    "key; this draw's projection is WRONG\n",
+                                    (unsigned long long)g_patchMemoBad);
+                    }
+                    memcpy(patchAt, e.out, sizeof e.out);
+                    fovForm = e.fovForm;
+                    wideForm = e.wideForm;
+                    memoServed = true;
+                    ++g_patchMemoHits;
+                    if (way)
+                    {
+                        const PatchMemoEntry tmp = e;
+                        for (int j = way; j > 0; --j)
+                            g_patchMemoWays[j] = g_patchMemoWays[j - 1];
+                        g_patchMemoWays[0] = tmp;
+                    }
+                    break;
+                }
+            }
+            if (!memoServed)
+            {
+                uint32_t preKey[16];
+                const bool store = !patchInPlace && !NoPatchMemo();
+                if (store)
+                    memcpy(preKey, patchAt, sizeof preKey);
+                fovForm = PatchFovProjection(patchAt, fovNow);
+                if (wideNow)
+                    wideForm = PatchWideProjection(patchAt);
+                if (store)
+                {
+                    for (int j = 3; j > 0; --j)
+                        g_patchMemoWays[j] = g_patchMemoWays[j - 1];
+                    PatchMemoEntry& e = g_patchMemoWays[0];
+                    memcpy(e.key, preKey, sizeof e.key);
+                    memcpy(e.out, patchAt, sizeof e.out);
+                    e.fov = fovNow;
+                    e.wide = wideNow;
+                    e.valid = 1;
+                    e.fovForm = int8_t(fovForm);
+                    e.wideForm = int8_t(wideForm);
+                    ++g_patchMemoMisses;
+                }
+            }
             if (c0Known)
                 ++g_patchGathered;
             else
@@ -19731,12 +19867,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 case 1: COUNT("draw: raw projection fov-adjusted (slider)"); break;
                 case 2: COUNT("draw: COMPOSITE viewproj fov-adjusted (slider)"); break;
             }
-            if (WideMode())
-                switch (PatchWideProjection(patchAt))
-                {
-                    case 1: COUNT("draw: raw projection widened to 21:9"); break;
-                    case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
-                }
+            switch (wideForm)
+            {
+                case 1: COUNT("draw: raw projection widened to 21:9"); break;
+                case 2: COUNT("draw: COMPOSITE viewproj widened to 21:9"); break;
+            }
             if (!patchInPlace)
             {
                 // CZ_VK_VERIFY_PATCH_SRC=1 — the arm that makes the shortcut believable.
@@ -27452,6 +27587,26 @@ void VkRenderer_DumpStats()
                         100.0 * (1.0 - double(g_gatherDwordsDynBounded) /
                                            (double(g_gatherDynBounded) * 256.0 * 4.0)),
                         (unsigned long long)g_gatherDynamic);
+            // Part 88 item 2's mechanism number: the recognition work the memo removed
+            // is its hit share; the verify line beside it is what makes the share safe
+            // to believe.
+            if (g_patchMemoHits + g_patchMemoMisses)
+                fprintf(stderr,
+                        "[vk]     patch memo: %.1f%% of %llu VS patches served from the "
+                        "4-way MRU (%llu misses)\n",
+                        100.0 * double(g_patchMemoHits) /
+                            double(g_patchMemoHits + g_patchMemoMisses),
+                        (unsigned long long)(g_patchMemoHits + g_patchMemoMisses),
+                        (unsigned long long)g_patchMemoMisses);
+            if (g_patchMemoChecked)
+                fprintf(stderr,
+                        "[vk]     patch memo verified: %llu hits re-patched and "
+                        "compared, **%llu disagreed**%s\n",
+                        (unsigned long long)g_patchMemoChecked,
+                        (unsigned long long)g_patchMemoBad,
+                        PatchMemoVerifyPoison()
+                            ? "  (POISONED — a zero here means the verifier is BLIND)"
+                            : "");
             if (g_gatherChecked)
                 fprintf(stderr,
                         "[vk]     verified: %llu gathers checked against the full copy, "

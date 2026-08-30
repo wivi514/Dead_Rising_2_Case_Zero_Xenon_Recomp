@@ -3446,4 +3446,20 @@ CZ_VK_NO_BOUNDED_DYNAMIC=1  **the same-binary control arm for the bounded dynami
                   read-above-bound discriminator no value compare can see (zombies are
                   the subject, so its reader is a crowd frame dump or the operator's
                   eye, not the safehouse).
+
+CZ_VK_NO_PATCH_MEMO=1  **the same-binary control arm for the projection-patch memo**
+                  (part 88 item 2): every VS copy runs `SceneXformForm` recognition and
+                  both patches again — the pre-memo path. The memo is a 4-way MRU keyed
+                  on the 16 pre-patch c0..c3 dwords + the fov half-rad + the wide flag,
+                  serving the patched 64-byte block AND both recognition results (so
+                  the per-form draw counters keep counting). Cached-path only; the
+                  in-place arms (CZ_VK_GATHER_NO_C0_ALWAYS / CZ_VK_PATCH_IN_ARENA) keep
+                  the old path bit for bit. Measured hit rate at the crowd: 99.9%
+                  (115.7M of 115.9M patches).
+CZ_VK_VERIFY_PATCH_MEMO=1  run both patches anyway on every memo hit and compare all
+                  sixteen dwords against the served block. Standing gate: 0
+                  disagreements (115.7M checks on the first crowd run).
+CZ_VK_VERIFY_PATCH_MEMO_POISON=1  perturb the compare side of one served float (the
+                  served data is untouched) so the verifier MUST report; implies the
+                  verify arm. Measured: fires on 100% of hits.
 ```
