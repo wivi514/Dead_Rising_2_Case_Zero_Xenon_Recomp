@@ -2229,24 +2229,49 @@ PPC_FUNC(sub_8253E060)
 }
 
 // Reward types 7 and 8 in the shared level table grant a combo card or skill
-// card. Their objects/frontend data are not complete in Case Zero above level 5.
+// card. Part 60 measured "receiving one crashes" and filtered BOTH plus both
+// frontend events wholesale — but the operator's gameplay knowledge (part 86) says a
+// SKILL unlock is only a notification, like a stat increase, which the part-60
+// blanket cannot distinguish from the combo-card screen that actually needs data.
+// CZ_SKILL_GRANTS is the bisection arm: a bitmask letting each suppressed path run
+// during extended levels — bit 1 = sub_82539890, bit 2 = sub_82539908,
+// bit 4 = event C4A, bit 8 = event C4B (so 15 = suppress nothing). Default 0 keeps
+// part 60's behaviour exactly. A crash under an arm is a RESULT: it names which
+// path needs the missing data.
+static uint32_t SkillGrantMask()
+{
+    static const uint32_t m = [] {
+        const char* e = getenv("CZ_SKILL_GRANTS");
+        const uint32_t v = e ? uint32_t(strtoul(e, nullptr, 0)) : 0u;
+        if (v)
+            fprintf(stderr, "[debug] CZ_SKILL_GRANTS=%u: extended-level grant paths "
+                            "enabled (1=grantA 2=grantB 4=C4A 8=C4B)\n", v);
+        return v;
+    }();
+    return m;
+}
+
 PPC_FUNC(sub_82539890)
 {
-    if (g_extendedLevelProcessing)
+    if (g_extendedLevelProcessing && !(SkillGrantMask() & 1))
     {
         ctx.r3.u64 = 0;
         return;
     }
+    if (g_extendedLevelProcessing)
+        fprintf(stderr, "[debug] extended-level grant A (sub_82539890) RUNNING\n");
     __imp__sub_82539890(ctx, base);
 }
 
 PPC_FUNC(sub_82539908)
 {
-    if (g_extendedLevelProcessing)
+    if (g_extendedLevelProcessing && !(SkillGrantMask() & 2))
     {
         ctx.r3.u64 = 0;
         return;
     }
+    if (g_extendedLevelProcessing)
+        fprintf(stderr, "[debug] extended-level grant B (sub_82539908) RUNNING\n");
     __imp__sub_82539908(ctx, base);
 }
 
@@ -2257,12 +2282,16 @@ PPC_FUNC(sub_82157178)
 {
     const uint32_t event = ctx.r4.u32;
     const uint32_t id = event >= 0x10000 ? PPC_LOAD_U32(event + 8) : 0;
-    if (g_extendedLevelProcessing && (id == 0xC4A || id == 0xC4B))
+    if (g_extendedLevelProcessing &&
+        ((id == 0xC4A && !(SkillGrantMask() & 4)) ||
+         (id == 0xC4B && !(SkillGrantMask() & 8))))
     {
         fprintf(stderr, "[debug] filtered unavailable extended-level event %03X\n", id);
         ctx.r3.u64 = 0;
         return;
     }
+    if (g_extendedLevelProcessing && (id == 0xC4A || id == 0xC4B))
+        fprintf(stderr, "[debug] extended-level event %03X PASSING\n", id);
     __imp__sub_82157178(ctx, base);
 }
 
