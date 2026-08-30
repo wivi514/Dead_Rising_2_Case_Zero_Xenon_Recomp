@@ -957,10 +957,12 @@ map would rot).
   each), bore first-sight vertex shaders up to **102 of the ~104 this port has ever
   seen**, and produced **ZERO new pixel shaders** beyond the disc's 1,265 + the two
   known absentees — §9.7's completeness claim, demonstrated by a full playthrough in
-  the wild. **One open question from that run: the bundle's `DR2P000.DSF` stayed 1 byte
-  through the whole completion** — either the operator never saved in-game (plausible
-  in a single sitting) or bundle saving is broken; their answer decides whether part 86
-  owes an investigation. **And one tooling defect the sitting exposed: a repackage
+  the wild. ~~One open question: either the operator never saved or bundle saving is
+  broken~~ — **ANSWERED BY THE OPERATOR, and it is the worse one: they made THREE saves
+  and none exists anywhere on the disk. BUNDLE SAVING IS BROKEN ON WINDOWS and it is
+  part 86's TOP ITEM as a release blocker**, together with a second report from the
+  same run (level-up 1→5 granted no health increase). Forensic shape, repro recipe and
+  the coupling hypothesis: `part86-kickoff.md` §0b. **And one tooling defect the sitting exposed: a repackage
   wiped the played stage** — an out-of-band move failed silently in ssh quoting and the
   script's unconditional wipe did the rest; both packaging scripts now preserve player
   assets THEMSELVES and were gated on it (a probe file survived a repackage and the

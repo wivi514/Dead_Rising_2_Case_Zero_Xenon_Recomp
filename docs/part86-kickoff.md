@@ -43,6 +43,37 @@ upstream clones at pinned bases plus `tools/ci/*.patch` (37 local recompiler com
 `tools/ci/regen_patches.sh` after ANY commit to either checkout). Linux leg green on its
 first run.
 
+## 0b. TWO GAMEPLAY DEFECTS FROM THE COMPLETION RUN — now the top of the list
+
+The operator completed the whole game on the shipped Windows bundle and reported two
+defects. **These outrank everything below: a broken save in the shipped artifact is a
+release blocker.**
+
+**(a) BUNDLE SAVING IS BROKEN ON WINDOWS.** They made THREE saves in different slots;
+none exists anywhere on the disk (searched `C:\cz` and `C:\Users` for `*.DSF`). The
+evidence that survives: the dev tree (where saving works — their 2026-08-21 completion)
+holds the healthy shape, a container DIRECTORY `assets\save\DR2P000.DSF\` with the real
+303 KB file inside; the bundle instead held a **1-byte FILE named `DR2P000.DSF` at the
+top of save/**, created ~2 minutes into the first bundle sitting and never modified
+through three sittings — a file squatting on the container directory's name would make
+every subsequent `XamContentCreate`/`NtCreateFile(save:\DR2P000.DSF)` fail, silently if
+the title ignores the error. What created a 1-byte FILE there is the question; the
+Linux bundle-rooted boots derive the same save root correctly (`content: saves live in
+<root>/assets/save`), so suspect the Windows path/create flow, not the root derivation.
+**Repro without a playthrough**: bundle-rooted run on czwin, reach gameplay (DebugJump),
+save once, with `CZ_FILE_TRACE=1` — the trace prints every create/write WITH ITS
+DESTINATION (gotcha 267's rule) and will name the failing operation in one run.
+**Part 85's repackage wipe destroyed the bundle's save dir before this was understood**,
+so the 1-byte file itself is gone; the repro recreates the evidence.
+
+**(b) LEVEL-UP REWARDS DID NOT APPLY.** Leveled 1 → 5 during the completion run and
+never received the health increase. Unknown whether this is bundle-specific or
+long-standing (ASK: did the 2026-08-21 dev-tree completion grant health on level-up?
+— an unreported absence is not evidence of absence). Plausible coupling to (a): if the
+title routes stat persistence through the profile/save subsystem, a failing save path
+could swallow rewards — establish (a) first, then re-test (b) on the fixed build before
+treating it as its own defect.
+
 ## 1. WHAT TO DO NEXT, IN ORDER
 
 1. ~~**Check the Windows CI leg's first run**~~ — **DONE, still inside part 85: BOTH CI
