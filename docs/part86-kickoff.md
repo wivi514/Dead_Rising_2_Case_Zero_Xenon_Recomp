@@ -178,3 +178,24 @@ Everything part 85 inherited (part85-kickoff §4), plus:
   and its `[shxlate]` line must name the STAGED dxcompiler.dll.
 * CI stays honest: if the workflow grows a claim beyond "compiles + stub smoke", its
   comment must grow with it.
+
+## 0d. THE CASE WEST STACK IMPORT (part 86, operator request) — +2.3% weighted, +0.5-0.9 ms at the crowd
+
+Case West's perf campaign (their parts 6-7) banked a "+0.35 ms at the crowd" stack; the
+operator asked for it back. The pump-side trio — mid-walk rptr publication, the eager
+tick, the fast-retry backoff — ported as their two commits applied VERBATIM with only
+the CW_→CZ_ rename (the pump files never diverged). Engagement matches CW's own rates
+(eager 59% of ticks, ~30 rptr stores/frame, 2.1 fast naps/frame); ring gate clean;
+container gate PASSED. The A/B (2v2 at the operator's time budget, ~39k frames/arm,
+banded medians on their own route): **frame-weighted +2.3%; +0.88 ms at 9,000-9,500
+draws, +0.49 ms at the decisive 9,500-10,000 band; every band ≥3,500 draws positive;
+GPU column and texture-hitch percentiles unchanged** — a latency stack's exact profile.
+Arms: CZ_PM4_NO_{EAGER_TICK,MIDWALK_RPTR,FAST_HELD}. NOT imported: CW's worker flip
+(they proved it correct-and-null — the same parallel-record refutation part 80 reached
+here) and their 2a/2b record restructure (secondaries/tickets — the renderers have
+diverged ~10k lines; a wave-2 candidate only if someone re-prices it).
+
+Also from this work: the launcher gained its third no-hostage guard (SDL's dummy
+driver passes init in a container; a modal loop under it is a hang — it took the
+container gate hostage for 38 minutes before the guard), and czwin's `>nul`-in-ssh
+trap is written into the runbook after its third silent failure.
