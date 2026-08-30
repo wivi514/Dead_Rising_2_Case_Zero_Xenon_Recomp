@@ -19634,3 +19634,97 @@ the CPU frame are both inside it — the palette-bounded copy (~0.4 ms ceiling) 
 patch memo (~0.3 ms) — ahead of CW's serial-restructure import (+0.35 ms at THEIR crowd,
 ~10k diverged lines to port). All census runs here are diagnostic-armed; no frame time
 in this section is a performance claim.
+
+## §6eh — Part 88: the bone-palette bounded gather, built, verified and MEASURED (2026-08-30)
+
+The item §6eg specified, taken start to finish in one part: step 0's ask-first census,
+the fix, its two-sided verification, and the 3v3 milliseconds. `part88-kickoff.md` §1
+was the step list; every pre-registered threshold in it was evaluated before any code
+that could benefit from fudging it existed.
+
+### 1. Step 0 — the census said YES: 82% of the full-copy bytes are addressable
+
+`CZ_VK_PALETTE_EXTENT_CENSUS=1` (one crowd run, peak 9,280 draws, 21 windows at
+>=8,000): per dynamic VS copy, the PM4 walk's new write-extent tracker
+(`Pm4_TakeVsPaletteWrites`, always on, two comparisons per ALU-overlapping register
+run, inside the overlap test the bulk path already does) is consumed and the exact fix
+modelled without changing a copy. Crowd-era windows, all rates per window (gotcha 428):
+
+* **clean-cover 98.3-98.6%** — a c8-covering burst since the last dynamic copy, with no
+  partial write past it. The whole-span-burst signature part 87's histogram suggested
+  is the mechanism, now counted per copy rather than inferred per register.
+* **dirty-fallback 1.4-2.2%**, and the fallback is honest but worthless: the running
+  high-water is c255 on every run (something at boot writes the whole window once), so
+  a dirty copy is effectively a full copy. **reuse 0.0%** — corroborated by §6ef's
+  four-cell diagnosis (constants churn on ~98% of draws), so the zero agrees with an
+  independent instrument rather than being a channel never shown to fire (gotcha 151).
+* **Bytes: full 16.5 MB/frame -> bounded 3.0 MB/frame, SAVES 82%** against the
+  pre-registered kill of <30%. Mean bound ~41 registers (the max of the ~2-4 covering
+  bursts between two dynamic copies, against the write census's ~18 mean per burst).
+  never-bound 0, window-moved 0.
+
+### 2. Step 1 — the fix, and where its eligibility comes from
+
+`CopyConstWindow`'s dynamic path copies `c0..c3 ∪ list ∪ [8, bound]` for a shader whose
+sidecar `aluDynamicExprs` are ALL `N + a0` with N in [8,10] — parsed at meta load,
+failing closed: an absent or unparseable expression keeps the full copy, and the one
+outlier (`vs_cb7c5eb41489a916`, `vc(209+a0)`) keeps it too. The bound is the shared
+`TakeVsPaletteBound()` seam (clean-cover extent / high-water on dirty / sticky on
+reuse), taken once per dynamic VS copy ON BOTH ARMS so `CZ_VK_NO_BOUNDED_DYNAMIC=1`
+(the control, the part-87 renderer) differs by exactly the copy.
+
+### 3. Step 2 — verification, both sides, and a counter split the first poison run forced
+
+* **Value identity**: `CZ_VK_VERIFY_CONST_GATHER` extended to the bounded population —
+  both copies, compare everything the bounded copy claims (c0..c3, the palette span,
+  the list). **65.4M checks over a full crowd run, 0 disagreements.**
+* **The verifier shown able to fire** (gotcha 30): `CZ_VK_GATHER_POISON` shrinks the
+  bound by one register — the gather's list-drop poison is BLIND on this path, because
+  the 21 shaders' lists sit inside the force-copied c0..c3. The first poison run
+  produced 5.6M disagreements that could not be attributed, because the counter was
+  shared with the gathered path's own poison (gotcha 151's shape, met in this exact
+  spot). Counter split, re-run: **5.51M of 5.72M disagreements were bounded copies**.
+* **Read-above-extent**, which no value compare can see (gotcha 432): `CZ_VK_GATHER_FILL`
+  now fills above the bound too. Fill+control vs fill+fix on the crowd route, frame
+  dumps read side by side (5 frames sampled across each 60 s soak,
+  `~/DR2CZ-troubleshooting/part88-filldump/`): **both arms render an intact, correctly
+  articulated crowd** — no flung vertices, no collapsed skinned meshes. The era medians
+  differ ~5% but carry no null pair on this landing-spot-varying soak, so the frames,
+  not the aggregate, are the evidence.
+* The audit a fast path owes its neighbours (gotcha: a fast path invalidates old
+  checks): the memo verifier now compares only what a bounded copy claims (the bound is
+  stored with the memo state and describes the served block on a hit); the const-race
+  check needed NO change — both its sides read the same arena block, so residue
+  cancels; the reuse census's whole-window hash is noted in place as conservative.
+
+### 4. Step 3 — the milliseconds (3v3, part80_crowdroute, trace-banded)
+
+Six runs alternated, all passing the route gate (peaks 9,154-9,692), arms differing by
+exactly `CZ_VK_NO_BOUNDED_DYNAMIC`, `CZ_VK_FRAME_TRACE` + `CZ_VK_STATS=2000` identical
+in both. `part80_trace_band.py`, medians per 500-draw band, texture frames excluded:
+
+* **The dominant crowd band (9,000-9,500 draws, 22,376 vs 24,382 frames pooled):
+  13.06 -> 12.67 ms, −3.0%, −0.39 ms.** Neighbouring high bands: 7,500-8,000 −3.2%
+  (−0.35 ms), 8,000-9,000 −0.7 to −1.2%. Frame-weighted mean across all bands −1.3%,
+  not monotone — the sub-5,000 bands are GPU-bound (GPU column ≈ wall there) and
+  correctly read ~0, and the 9,500-10,000 +2.5% row is n=225 vs 2,873, composition.
+  GPU medians unchanged in the crowd bands (10.38 vs 10.40 ms) — the saving is
+  CPU-side, as the item predicted.
+* **The mechanism number, which cannot be argued with** (the kickoff's reading rule at
+  the route's ±2.9% floor): fix arm **52-54M bounded copies moved 33.3-35.0 GB where
+  full copies were 213.7-221.7 GB (−84.2 to −84.4%)**, control arm the same population
+  as 52-54M FULL copies with 0 bounded — both arms engaged, three replicates each
+  agreeing to 0.2%. Whole-run constant-copy traffic: 247 GB copied on the control arm
+  vs 60 GB on the fix arm.
+
+**Verdict: item 1 SHIPPED, ON BY DEFAULT, with its measured milliseconds** — ~0.4 ms at
+the operator-shaped crowd, exactly the §6eg ceiling, delivered by removing ~85% of the
+bytes rather than by anything cleverer. Texture-hitch population unchanged (median
+11.25 vs 11.48 ms, worst 237 vs 242 ms).
+
+### 5. Where this leaves the board
+
+`constVsCopy` was 2.6% ≈ 0.48 ms at the crowd; the copy that remains is ~16% of its
+former bytes. The next item is the kickoff's item 2 — the projection-patch memo
+(`constVsPatch` 0.51 ms, 64-byte input) — which its §2 gates on item 1 landing cleanly,
+and it has.
