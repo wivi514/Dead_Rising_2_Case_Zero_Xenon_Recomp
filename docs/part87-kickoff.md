@@ -92,3 +92,15 @@ re-pricing against §6ec (record 524 ns/draw, ours 273) before any of its ~10k d
 lines are ported. **For CW (send back):** run lead 1's census at your crowd and lead 2's
 four-cell census before building either — this engine leaves no off-frustum pool and
 churns constants on ~98% of draws.
+
+## 0c. THE NEW LEAD, mined from the same runs (`phase5-notes.md` §6eg)
+
+**The bone-palette full copies.** 22 vertex shaders (`vc({8,9,10}+a0)`) force a full
+4 KB constant copy per draw — 87.3% of all constant-copy bytes, ~11-12 MB/frame at the
+crowd, `constVsCopy` = 0.48 ms — while the write census says the mean palette upload is
+~18 float4 registers. A PM4 write-extent bound on the dynamic gather is a **~0.4 ms
+ceiling**, the largest addressable CPU item now known, ahead of the CW serial-restructure
+import. The correctness question (shorter-palette draws after a longer one) and the fix
+shape are in §6eg §2; `CZ_VK_VERIFY_CONST_GATHER` is the standing gate. The adjacent
+patch memo (`constVsPatch` 0.51 ms, 64-byte input) is the ~0.3 ms second item. The
+texture-guard thread is CLOSED — the prehash pool already serves 97-98%.

@@ -27257,6 +27257,9 @@ void VkRenderer_DumpStats()
     // and the state cache means it is nowhere near the ten calls the source suggests.
     if (g_reuseCensus)
         reusecensus::Print(" since the last line — FINAL");
+    // The constant-write histogram, printed here so it lands beside the gather stats
+    // whose full-copy population it exists to explain (part 87, phase5-notes §6eg).
+    Pm4_DumpAluWriteCensus();
     if (g_fetchMemoCensus)
     {
         const uint64_t n = g_fetchMemoHits + g_fetchMemoMisses;

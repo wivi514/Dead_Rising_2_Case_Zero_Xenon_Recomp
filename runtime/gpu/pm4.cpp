@@ -1287,6 +1287,19 @@ uint64_t g_aluConstVersion[2] = { 1, 1 };
 // for its own census, not something to assume by analogy — `CZ_VK_FETCH_MEMO_CENSUS=1`
 // asks it before any memo is built.
 uint64_t g_fetchConstVersion = 1;
+// CZ_PM4_ALU_WRITE_CENSUS=1 — WHERE DO THE GUEST'S CONSTANT WRITES LAND? (part 87)
+//
+// The constants full-copy lead (phase5-notes §6eg) turns on one distribution: the 22
+// bone-palette vertex shaders read `vc({8,9,10}+a0)` and force a full 256-register copy
+// per draw because a0 is statically unbounded — but it is DYNAMICALLY bounded by the
+// registers the guest actually writes, and this is the only place that sees every write.
+// One counter per float4 register, both halves, bumped on both write paths (the bulk-run
+// path loops only its ALU-overlapped span, so the census costs nothing on non-ALU runs).
+// If VS-half write activity above some register X is boot-only noise, a bounded gather
+// `list ∪ [8, X]` replaces the 4 KB copy; if the writes span the window, the lead dies
+// here for the cost of one run. A DIAGNOSTIC ARM, free when off (one global bool test).
+const bool g_aluWriteCensus = getenv("CZ_PM4_ALU_WRITE_CENSUS") != nullptr;
+uint64_t g_aluWriteCount[512] = {};
 constexpr uint32_t kFetchLo = xenos::kFetchConstantBase;
 constexpr uint32_t kFetchHi = xenos::kFetchConstantBase + 32 * 6;   // 32 groups of 6 dwords
 constexpr uint32_t kAluLo = xenos::kAluConstantBase;
@@ -1300,7 +1313,11 @@ void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
     if (index >= g_constWatchLo && index <= g_constWatchHi)
         ConstWatchRecord(index, value);
     if (index >= kAluLo && index < kAluHi)
+    {
         ++g_aluConstVersion[index >= kAluMid];
+        if (g_aluWriteCensus)
+            ++g_aluWriteCount[(index - kAluLo) >> 2];
+    }
     if (index >= kFetchLo && index < kFetchHi)
         ++g_fetchConstVersion;
     g_regs[index] = value;
@@ -1397,6 +1414,15 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
             ++g_aluConstVersion[0];
         if (index < kAluHi && index + count > kAluMid)
             ++g_aluConstVersion[1];
+        // The census loops only the ALU-overlapped span of this run, so a run that
+        // never touches the constant file costs it nothing beyond the test above.
+        if (g_aluWriteCensus)
+        {
+            const uint32_t lo = index > kAluLo ? index : kAluLo;
+            const uint32_t hi = index + count < kAluHi ? index + count : kAluHi;
+            for (uint32_t i = lo; i < hi; ++i)
+                ++g_aluWriteCount[(i - kAluLo) >> 2];
+        }
     }
     // The same overlap test for the fetch file, and on the same principle: ONE per run, not
     // one per dword. This path exists because the per-dword path was too slow.
@@ -2747,6 +2773,54 @@ uint64_t Pm4_CensusMismatches(uint64_t* threads)
         cmp(g_opcodes[op].load(),
             CensusSum([op](Census& c) -> std::atomic<uint64_t>& { return c.opcodes[op]; }));
     return bad;
+}
+
+// The per-register constant-write histogram (CZ_PM4_ALU_WRITE_CENSUS=1; part 87).
+// Printed from the renderer's DumpStats so it lands beside the gather stats it exists
+// to explain. Raw counts, every nonzero register — the reader's question is "where does
+// write activity STOP in the VS half", and a summary that answered it would be a summary
+// that could hide a second cluster (gotcha 25's shape).
+void Pm4_DumpAluWriteCensus()
+{
+    if (!g_aluWriteCensus)
+        return;
+    for (int half = 0; half < 2; ++half)
+    {
+        uint64_t total = 0, top = 0;
+        int hw = -1;
+        for (int r = 0; r < 256; ++r)
+        {
+            const uint64_t c = g_aluWriteCount[half * 256 + r];
+            total += c;
+            if (c)
+                hw = r;
+            if (c > top)
+                top = c;
+        }
+        fprintf(stderr,
+                "[pm4] ALU write census, %s half: %llu float4 writes, high-water c%d, "
+                "peak %llu on one register\n",
+                half ? "PS" : "VS", (unsigned long long)total, hw,
+                (unsigned long long)top);
+        char line[256];
+        int n = 0;
+        for (int r = 0; r < 256; ++r)
+        {
+            const uint64_t c = g_aluWriteCount[half * 256 + r];
+            if (!c)
+                continue;
+            n += snprintf(line + n, sizeof(line) - n, " c%d:%llu", r,
+                          (unsigned long long)c);
+            if (n > 200)
+            {
+                fprintf(stderr, "[pm4]  %s\n", line);
+                n = 0;
+                line[0] = 0;
+            }
+        }
+        if (n)
+            fprintf(stderr, "[pm4]  %s\n", line);
+    }
 }
 
 // The (mask, select) pair table, in the same shape `tools/xtr_bin_predication.py`

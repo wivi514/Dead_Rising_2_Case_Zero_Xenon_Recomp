@@ -95,6 +95,9 @@ uint64_t Pm4_DrawsPredicatedOut();
 // a Xenia capture, so the two can be compared directly. Off unless enabled.
 void Pm4_BinCensusEnable();
 void Pm4_BinCensusReport();
+// The per-register ALU constant write histogram (CZ_PM4_ALU_WRITE_CENSUS=1, part 87)
+// — prints from the renderer's DumpStats beside the gather stats it explains.
+void Pm4_DumpAluWriteCensus();
 uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();

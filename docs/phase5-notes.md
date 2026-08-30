@@ -19567,3 +19567,70 @@ conjunction still 0.0 (every stream-dirty draw is constant-dirty too — a true 
 a blind one), and the four cells read ordinal full 1.21% | set full 1.41% | ordinal
 noALU 56.2% | set noALU **94.0%**, ceiling 0.058 ms. Two runs' headline (1.2-2.1% full
 identity, 93-94% noALU) brackets the spawn variance and the conclusion does not move.
+
+## §6eg — Part 87: the run data mined for the next lead, and it is the BONE-PALETTE FULL COPIES (2026-08-30)
+
+§6ef's censuses answered the CW leads; this section is what fell out of the same logs
+when they were read past the question they were run for. Two threads closed, one opened.
+
+### 1. CLOSED WITHOUT A RUN: the texture guard is already pooled
+
+The exit dump's `texture guard: guard read 135,137.8 MB` (~8.6 MB/frame) looked like a
+pump-side hashing pool the prehash workers never got — it is not. The pricing run's
+`[vkprof]` line shows the guard prehash pool serving **97.2-98.3%** with **83-88
+MB/frame moved off the pump** (streams and textures both take from it; the texture path's
+`GuardPoolTake` is at its `cached->preSlot`). Nothing to chase.
+
+### 2. THE LEAD: 22 bone-palette vertex shaders force a full 4 KB constant copy per draw, and the copy is sized for a palette ~13x smaller than the window
+
+Three independent measurements, one mechanism:
+
+* **The bank**: exactly 22 of 449 shaders are `aluDynamic`, ALL vertex shaders, their
+  static lists 5-8 registers — and the sidecar's `aluDynamicExprs` (recorded at
+  cache-build time for exactly this future decision) says 21 of 22 read
+  `vc({8,9,10}+a0)`: the bone palette at base 8, stride 3. One outlier reads
+  `vc(209+a0)`.
+* **The bytes** (pricing run's gather stats): 35.46M full copies over the run, 32.8% of
+  window copies but **87.3% of all constant-copy BYTES** (141.8 of 162.3 GB actually
+  copied — the gathered majority averages ~290 B). At the crowd that is ~11-12 MB/frame
+  of 4 KB copies into the write-combined arena, and the VS memo serves **1.7-2.5%**
+  there (per-object palette churn — §6ef's diagnosis, seen from the copy side).
+* **The price** (pricing run, sub-scopes, 8,893-9,033 draws, instrumented): `constVsCopy`
+  **2.6% ≈ 0.48 ms**, and the arithmetic closes — ~13 MB/frame at the measured rate is
+  ~28 GB/s, i.e. the scope is bandwidth-bound on the full copies.
+
+**And the copy is over-sized by an order of magnitude.** `CZ_PM4_ALU_WRITE_CENSUS=1`
+(built this session — a per-float4-register write histogram on both PM4 write paths)
+says the VS half took 8.87B float4 writes shaped as a decaying curve from c8: 456M
+uploads reach c8-c11, 197M reach c12, 70M reach c40, 34M reach c64, 8M reach c88, <1M
+past c140 — **the mean palette upload is ~18 float4 registers**, and the exact-equal
+count runs (c168-c191 all 215,612; the c216-c239 plateau) say uploads are WHOLE-SPAN
+bursts, not partial patches. The longest observed palette reaches ~c191.
+
+**The fix shape** (next part's item, not built here): track the palette-region write
+extent in the PM4 write path (the census's own hook points, two comparisons per burst),
+and let `CopyConstWindow`'s dynamic fallback copy `list ∪ [8, extent]` instead of the
+whole window. Mean ~30 registers against 256 = **~85-90% of the full-copy bytes gone,
+ceiling ~0.4 ms** at the crowd. The correctness question to settle first: a draw whose
+palette was uploaded SHORTER than an earlier object's (extent must bound what THIS
+draw's a0 reaches, and a partial-update engine would break the per-burst extent —
+the whole-span burst signature above is evidence against, not proof).
+`CZ_VK_VERIFY_CONST_GATHER=1` remains the standing verify arm and the fix ships behind
+its own off-arm like every gather change.
+
+### 3. THE ADJACENT ITEM, same neighbourhood: the projection patch costs as much as the copy it patches
+
+`constVsPatch` reads **2.8% ≈ 0.51 ms** at the crowd — `SceneXformForm`'s 16-float
+inspection plus the fov/wide rewrites, per VS copy, ~58 ns each. Its input is 64 bytes
+(c0..c3) plus two per-frame parameters; a memo keyed on those bytes serving the patched
+64-byte block would cut most of the recognition cost. ~0.3 ms class, unpriced further.
+
+### 4. Where this leaves the board
+
+The constants block at the crowd is **17.3% instrumented ≈ 3.2 ms** (copy 0.48 + patch
+0.51 + vs residual 0.61 + shared 0.65 + ps 0.22 + residual 0.73), and §6ec's "no single
+large item" now has its addendum: the two largest ADDRESSABLE items known anywhere on
+the CPU frame are both inside it — the palette-bounded copy (~0.4 ms ceiling) and the
+patch memo (~0.3 ms) — ahead of CW's serial-restructure import (+0.35 ms at THEIR crowd,
+~10k diverged lines to port). All census runs here are diagnostic-armed; no frame time
+in this section is a performance claim.

@@ -3401,3 +3401,15 @@ CZ_VK_STREAM_DEDUP_CENSUS=1  does one draw look the same stream key up twice? AN
                   §6ec §4: 4.96 lookups/draw, 47.9% repeats, ~0.27 ms — below the crowd
                   route's 2.9% floor. A per-draw dedup cache would be pure loss.
 ```
+
+```
+CZ_PM4_ALU_WRITE_CENSUS=1  **where do the guest's constant writes land?** (part 87). A
+                  per-float4-register write histogram over both ALU halves, bumped on
+                  both PM4 write paths (the bulk path loops only its ALU-overlapped
+                  span), printed from the renderer's DumpStats beside the gather stats
+                  it explains. Built to size the bone-palette full-copy lead
+                  (phase5-notes §6eg): the VS half reads as a decaying curve from c8 —
+                  mean palette upload ~18 float4 regs against the 256-register full
+                  copy, whole-span bursts. A DIAGNOSTIC ARM; free when off (one global
+                  bool test on the per-dword path, one per bulk run).
+```
