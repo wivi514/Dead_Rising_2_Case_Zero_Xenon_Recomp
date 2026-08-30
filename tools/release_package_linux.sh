@@ -53,6 +53,20 @@ if ldd "$BUILD/cz_runtime" | grep -q 'libavcodec.*=> */\(usr/\)\?lib'; then
 fi
 
 echo "==> staging $STAGE"
+# PRESERVE PLAYER DATA ACROSS A REPACKAGE (part 85, and the Windows script carries the
+# same guard with the story of why): a staged folder that has been PLAYED holds the
+# player's package, extracted game, save and grown shader cache under assets/, and an
+# unconditional rm -rf took exactly that on the Windows box. Preservation is the
+# script's own job — never an out-of-band shell command.
+KEEP=""
+if [ -d "$STAGE/assets" ] && { [ -d "$STAGE/assets/game" ] || [ -d "$STAGE/assets/save" ] \
+    || [ -d "$STAGE/assets/shader_spv" ] \
+    || [ -n "$(find "$STAGE/assets/package" -type f -size +1M 2>/dev/null | head -1)" ]; }; then
+    KEEP=$OUT/$NAME.assets.keep
+    [ -e "$KEEP" ] && fail "leftover $KEEP exists — a previous repackage did not restore it; resolve by hand"
+    mv "$STAGE/assets" "$KEEP"
+    echo "    preserving play-copy assets ($(ls "$KEEP" | tr '\n' ' '))"
+fi
 rm -rf "$STAGE"
 mkdir -p "$STAGE"/{lib,tools,assets/package}
 
@@ -219,6 +233,14 @@ sha256sum "$TAR" > "$TAR.sha256"
 
 printf '    %s  %s MB\n' "$(basename "$TAR")" "$(( $(stat -c%s "$TAR") / 1024 / 1024 ))"
 cat "$TAR.sha256" | sed 's/^/    /'
+
+# Restore the preserved play-copy assets AFTER the archive, so the artifact ships the
+# clean skeleton while the staged folder goes back to being the play copy.
+if [ -n "$KEEP" ]; then
+    rm -rf "$STAGE/assets"
+    mv "$KEEP" "$STAGE/assets"
+    echo "    play-copy assets restored into the stage (the archive carries the clean skeleton)"
+fi
 
 cat <<MSG
 

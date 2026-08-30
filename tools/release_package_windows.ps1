@@ -32,6 +32,26 @@ $exe = Join-Path $BuildDir "cz_runtime.exe"
 if (-not (Test-Path $exe)) { Fail "no executable at $exe - build the runtime first (windows-build-setup.md section 6)" }
 
 Write-Host "==> staging $Stage"
+# PRESERVE PLAYER DATA ACROSS A REPACKAGE. The staged folder doubles as a play copy
+# on this machine (the operator's sessions run from it), so assets\ can hold their
+# package, extracted game, save and grown shader cache. Part 85 lost exactly that:
+# an out-of-band "move assets aside" command failed silently inside an
+# ssh->PowerShell->cmd quoting sandwich and the wipe below took the play copy with
+# it. Preservation is THIS SCRIPT'S job now — a shell quirk cannot reach it here.
+$keep = $null
+$stageAssets = Join-Path $Stage "assets"
+if (Test-Path $stageAssets) {
+    $player = Get-ChildItem $stageAssets -Directory |
+        Where-Object { $_.Name -in "game", "save", "shader_spv" }
+    $pkgFiles = @(Get-ChildItem (Join-Path $stageAssets "package") -Recurse -File `
+        -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 1MB })
+    if ($player -or $pkgFiles) {
+        $keep = Join-Path $OutDir "CaseZeroRecomp.assets.keep"
+        if (Test-Path $keep) { Fail "leftover $keep exists - a previous repackage did not restore it; resolve by hand" }
+        Move-Item $stageAssets $keep
+        Write-Host "    preserving play-copy assets ($((Get-ChildItem $keep -Directory | ForEach-Object Name) -join ', '))"
+    }
+}
 if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "tools"), (Join-Path $Stage "assets\package") | Out-Null
 
@@ -144,6 +164,14 @@ $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
 $mb = [math]::Round((Get-Item $zip).Length / 1MB)
 Write-Host ("    {0}  {1} MB" -f (Split-Path -Leaf $zip), $mb)
 Write-Host ("    sha256 {0}" -f $hash)
+
+# Restore the preserved play-copy assets AFTER the zip, so the artifact ships the
+# clean skeleton while the staged folder goes back to being the play copy.
+if ($keep) {
+    Remove-Item -Recurse -Force $stageAssets
+    Move-Item $keep $stageAssets
+    Write-Host "    play-copy assets restored into the stage (the zip carries the clean skeleton)"
+}
 Write-Host ""
 Write-Host "==> NEXT: the one check this script cannot make - run the staged exe on a"
 Write-Host "    machine (or account) without the dev tree and watch the first-run flow."
