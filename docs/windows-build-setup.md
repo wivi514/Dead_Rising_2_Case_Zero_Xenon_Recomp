@@ -209,3 +209,14 @@ Deliberate: the two platforms then differ in their toolchain and in nothing else
   vanishes, and configure reports "C compiler test failed" as though the compiler were
   broken. **This build HAS its x86 assembly** (MSYS2 supplies `nasm`) where the Linux one
   does not — the Linux artifact should be rebuilt once `nasm` is installed there.
+
+## The `>nul` trap in ssh-chained commands (part 86, three occurrences)
+
+Inside `ssh czwin 'cmd /c "... >nul 2>&1 && ..."'` the `>nul` redirect breaks the
+command it is attached to — three separate incidents: a `git pull` that silently left
+the tree stale (twice, both caught only by the verify-the-HEAD rule), and a
+`move` that silently did nothing, after which an unconditional wipe destroyed the
+play copy's assets. The pattern that works: run each remote command UNCHAINED and
+LOUD, and verify effects (the pulled HEAD, the moved directory) with a separate
+command — never infer them from the absence of error text, which these failures do
+not produce.
