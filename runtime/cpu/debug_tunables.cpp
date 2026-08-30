@@ -2235,17 +2235,26 @@ PPC_FUNC(sub_8253E060)
 // blanket cannot distinguish from the combo-card screen that actually needs data.
 // CZ_SKILL_GRANTS is the bisection arm: a bitmask letting each suppressed path run
 // during extended levels — bit 1 = sub_82539890, bit 2 = sub_82539908,
-// bit 4 = event C4A, bit 8 = event C4B (so 15 = suppress nothing). Default 0 keeps
-// part 60's behaviour exactly. A crash under an arm is a RESULT: it names which
-// path needs the missing data.
+// bit 4 = event C4A, bit 8 = event C4B (so 15 = suppress nothing, 0 = part 60's
+// blanket filter).
+//
+// THE DEFAULT IS 9 (grant A + event C4B) — the SKILL path — since the operator's
+// bisection sitting of part 86: with all four enabled, levels 6 and 7 granted two
+// real skills with their notifications from Case Zero's OWN data (grant A firing,
+// C4B passing), and the crash came from the OTHER pair — grants B at levels 8-9
+// planted combo cards whose objects don't exist, and the card UI later
+// null-dereferenced at guest 0x10C right after opening combocards.tex. Part 60's
+// blanket filter was suppressing a working path along with the poison one, and the
+// operator's gameplay knowledge ("a skill unlock is just a notification") is what
+// prompted re-testing it.
 static uint32_t SkillGrantMask()
 {
     static const uint32_t m = [] {
         const char* e = getenv("CZ_SKILL_GRANTS");
-        const uint32_t v = e ? uint32_t(strtoul(e, nullptr, 0)) : 0u;
-        if (v)
-            fprintf(stderr, "[debug] CZ_SKILL_GRANTS=%u: extended-level grant paths "
-                            "enabled (1=grantA 2=grantB 4=C4A 8=C4B)\n", v);
+        const uint32_t v = e ? uint32_t(strtoul(e, nullptr, 0)) : 9u;
+        fprintf(stderr, "[debug] extended-level grant mask %u%s "
+                        "(1=grantA/skills 2=grantB/cards 4=C4A 8=C4B)\n", v,
+                e ? " (CZ_SKILL_GRANTS)" : " (default: skills on, combo cards off)");
         return v;
     }();
     return m;
