@@ -19728,3 +19728,31 @@ bytes rather than by anything cleverer. Texture-hitch population unchanged (medi
 former bytes. The next item is the kickoff's item 2 — the projection-patch memo
 (`constVsPatch` 0.51 ms, 64-byte input) — which its §2 gates on item 1 landing cleanly,
 and it has.
+
+### 6. Item 2 — the patch memo, built, verified and measured in the same sitting
+
+The kickoff's §2 gated item 2 on item 1 landing cleanly; it did, so the memo went in
+the same session. Key = the 16 pre-patch c0..c3 dwords + the fov half-rad + the wide
+flag, a 4-way MRU (a frame interleaves shadow, scene and UI projections) serving the
+patched 64-byte block AND both recognition results, so the per-form draw counters keep
+counting what they counted. Cached-path only — the in-place arms keep the old path bit
+for bit. `CZ_VK_NO_PATCH_MEMO=1` is the control.
+
+* **The mechanism is almost total: 99.9% of 115.9-122.4M VS patches served per crowd
+  run, 130-136k misses.** The projection really is pass-constant while the world
+  registers churn — §6eg §3's diagnosis, now a counter.
+* **Verified**: 115.7M hits re-patched and compared on a full crowd run, **0
+  disagreements**; the poison arm (compare-side perturbation, served data untouched —
+  the CZ_VK_VERIFY_PATCH_SRC_POISON pattern) fires on **100%** of hits.
+* **Measured, 3v3** (six runs, peaks 9,117-9,724, all holding the crowd): every band
+  from 4,500 draws up reads negative — **8,500-9,000 −4.2% (−0.53 ms), 9,000-9,500
+  −1.5% (−0.19 ms), 9,500-10,000 −3.3% (−0.45 ms)** — GPU medians unchanged,
+  frame-weighted −1.2%, sub-5,000 bands GPU-bound and flat as they must be. Per-band
+  deltas sit at the route's ±2.9% floor, which is why the hit-rate and the control
+  arm's zero memo lines are quoted beside them (the kickoff's reading rule).
+
+**Both §6eg items are now SHIPPED ON BY DEFAULT with measured milliseconds**: the
+bounded gather ~0.4 ms and the patch memo ~0.2-0.5 ms at the crowd, each with its
+off-arm, verify arm and proven poison. The constants block's two largest addressable
+items are closed; what remains inside it is the vs residual (0.61 ms), shared (0.65)
+and the block residual (0.73) — none of which currently has a mechanism-level lead.
