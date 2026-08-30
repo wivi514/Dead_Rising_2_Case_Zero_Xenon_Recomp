@@ -98,13 +98,14 @@ sittings established, in order:
   Backdrop (leanbackslam), Jump Kick, DDT, Curb Stomp, Front Kick, Dodge Roll, Double
   Leg Drop Kick, Foot Sweep, Elbow Drop, Haymaker, Field Goal. The animations were
   NEVER trimmed; only the grant path was suppressed, for 26 parts.
-* Four remain `????`: bellyflop, facebreaker, handsoff, upandover. Mask **11** (add
-  grant B, keep the C4A card screen filtered) is the running experiment: if they ride
-  grant B they'll fill in; the residual crash surface on that arm is the pause menu's
-  combo-cards page (phantom card grants). If they are not level rewards in CZ's table
-  at all, the remaining route is force-setting the unlock state (the progression
-  object's grant arrays: 34 3-byte entries at prog+0x280, a second array stride 0x1C
-  at +0xD4 — which is which is undetermined).
+* Mask 11's sitting ANSWERED it: **the four ride grant B and all work in-game — ALL
+  FIFTEEN skills now grant and play from Case Zero's own data.** Mask **11 is the
+  shipped default**, made safe by the card-slot widget guard (sub_824F5158: the
+  widget's own table-pointer chain is replicated and a null table SKIPS the slot —
+  the mask-15 crash was that widget walking a card table this package does not ship,
+  null+0x10C through the title's own unchecked indexer). Residual, stated: other
+  consumers of phantom card state (the combo bench) are unexercised; a new crash
+  there gets the same guard treatment. The C4A card screen stays filtered.
 
 ## 1. WHAT TO DO NEXT, IN ORDER
 
