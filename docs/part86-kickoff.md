@@ -80,6 +80,32 @@ applies there too, close (b) as not-reproducible; if not, the delta is the natur
 PP-award path (`sub_8253FB10`) vs the injected one. The level table, for whoever digs:
 0x829DD940, 51 rows, stride 0x2C, field 0 = level, field 1 = PP requirement.
 
+## 0c. THE SKILL SAGA (part 86, operator-driven) — 11 working skills from CZ's own data
+
+The operator asked for a Case West skill import; the census killed the import (CW
+carries ZERO skill/card grant assets — Frank starts pre-skilled) but their gameplay
+knowledge ("a skill unlock is just a notification, like a stat increase") refuted the
+census's card-texture theory and reopened part 60's blanket filter. The bisection arm
+`CZ_SKILL_GRANTS` (docs/instruments.md) split the four suppressed paths; the operator's
+sittings established, in order:
+
+* mask 15: levels 6-7 granted TWO skills cleanly (grant A + event C4B); the crash came
+  from the OTHER pair — grant B planted combo cards with no objects and the card UI
+  null-dereferenced (guest 0x10C) after opening combocards.tex. Part 60's crash,
+  localized to its actual path.
+* mask 9 (grant A + C4B — NOW THE DEFAULT): 1→50 granted **ELEVEN skills, every one
+  tried in-game with working animation and effects**, all from Case Zero's own data:
+  Backdrop (leanbackslam), Jump Kick, DDT, Curb Stomp, Front Kick, Dodge Roll, Double
+  Leg Drop Kick, Foot Sweep, Elbow Drop, Haymaker, Field Goal. The animations were
+  NEVER trimmed; only the grant path was suppressed, for 26 parts.
+* Four remain `????`: bellyflop, facebreaker, handsoff, upandover. Mask **11** (add
+  grant B, keep the C4A card screen filtered) is the running experiment: if they ride
+  grant B they'll fill in; the residual crash surface on that arm is the pause menu's
+  combo-cards page (phantom card grants). If they are not level rewards in CZ's table
+  at all, the remaining route is force-setting the unlock state (the progression
+  object's grant arrays: 34 3-byte entries at prog+0x280, a second array stride 0x1C
+  at +0xD4 — which is which is undetermined).
+
 ## 1. WHAT TO DO NEXT, IN ORDER
 
 1. ~~**Check the Windows CI leg's first run**~~ — **DONE, still inside part 85: BOTH CI
