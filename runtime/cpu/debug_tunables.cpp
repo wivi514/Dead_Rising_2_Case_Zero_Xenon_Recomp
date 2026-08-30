@@ -128,6 +128,7 @@ extern "C" PPC_FUNC(__imp__sub_8253FB10);
 extern "C" PPC_FUNC(__imp__sub_8253F740);
 extern "C" PPC_FUNC(__imp__sub_8253E060);
 extern "C" PPC_FUNC(__imp__sub_82539890);
+extern "C" PPC_FUNC(__imp__sub_824F5158);
 extern "C" PPC_FUNC(__imp__sub_82539908);
 extern "C" PPC_FUNC(__imp__sub_82157178);
 
@@ -2251,13 +2252,50 @@ static uint32_t SkillGrantMask()
 {
     static const uint32_t m = [] {
         const char* e = getenv("CZ_SKILL_GRANTS");
-        const uint32_t v = e ? uint32_t(strtoul(e, nullptr, 0)) : 9u;
+        // 11 since the second bisection sitting: grant B carries FOUR of the
+        // fifteen skills (bellyflop, facebreaker, handsoff, upandover — all
+        // verified working in-game) alongside the phantom combo cards, whose one
+        // known crash surface is now guarded at the card-slot widget below. The
+        // C4A card screen stays filtered — it is pure card UI.
+        const uint32_t v = e ? uint32_t(strtoul(e, nullptr, 0)) : 11u;
         fprintf(stderr, "[debug] extended-level grant mask %u%s "
-                        "(1=grantA/skills 2=grantB/cards 4=C4A 8=C4B)\n", v,
-                e ? " (CZ_SKILL_GRANTS)" : " (default: skills on, combo cards off)");
+                        "(1=grantA/skills 2=grantB/skills+cards 4=C4A 8=C4B)\n", v,
+                e ? " (CZ_SKILL_GRANTS)" : " (default: all skills on, card screen off)");
         return v;
     }();
     return m;
+}
+
+// THE CARD-SLOT WIDGET GUARD (part 86). sub_824F5158 is a frontend widget update
+// (reached virtually — no static callers) that reads a card index from its object
+// (+0x138), walks the global card database ([0x82A4626C] -> +0x7EA0 -> +0x18) and
+// indexes the resulting 50-entry table. When grant B plants a card whose table this
+// package does not ship, that table pointer is NULL, the title's own indexer happily
+// computes null + idx*16 + 8, and the widget faults reading it (guest 0x10C — the
+// mask-15 sitting's crash, backtraced to exactly this call). The guard replicates the
+// chain and SKIPS the slot when the table is missing: real cards render exactly as
+// before, a phantom renders as nothing instead of a crash. This is what makes
+// mask 11 (all four skill grants) shippable.
+PPC_FUNC(sub_824F5158)
+{
+    const uint32_t obj = ctx.r3.u32;
+    const uint32_t idx =
+        obj >= 0x10000 ? PPC_LOAD_U32(obj + 0x138) : 0xFFFFFFFFu;
+    if (int32_t(idx) >= 0 && idx < 0x32)
+    {
+        const uint32_t g = PPC_LOAD_U32(0x82A4626C);
+        const uint32_t db = g >= 0x10000 ? PPC_LOAD_U32(g + 0x7EA0) : 0;
+        const uint32_t table = db >= 0x10000 ? PPC_LOAD_U32(db + 0x18) : 0;
+        if (table < 0x10000)
+        {
+            static uint32_t reported = 0;
+            if (reported++ < 8)
+                fprintf(stderr, "[debug] card widget idx %u: table not in this "
+                                "package — slot skipped instead of faulting\n", idx);
+            return;
+        }
+    }
+    __imp__sub_824F5158(ctx, base);
 }
 
 PPC_FUNC(sub_82539890)
