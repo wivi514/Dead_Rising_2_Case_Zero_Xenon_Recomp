@@ -6276,3 +6276,50 @@ reusable half); lessons: gotchas **495-500**):
   `CZ_VK_VALIDATION=1` at the standing 6 `topology-08773`. **Two new standing checks:** the
   pre-warm must print `N of N`, and `CZ_VK_FRAME_TRACE` must print its `-> open` line or it
   is not recording.
+
+Where the port is, as of 2026-08-28 (**PART 84 CLOSED — THE RELEASE. MILESTONE D IS
+COMPLETE: A SHIPPED BUILD TRANSLATES ITS OWN SHADERS.** D.2, D.4 and D.3 all landed in one
+part, in that order, each gated before its commit. ~~**`docs/part85-kickoff.md` IS THE LIVE
+HAND-OFF**~~ — it was, for one part; it is `part86-kickoff.md`. Records: `release-plan.md`
+**§9.7**; lessons: gotchas **501-503**):
+
+* **D.2 — IN-PROCESS TRANSLATION.** XenosRecomp's own recompiler (MIT, sibling checkout)
+  compiled into `cz_runtime`, C++ ports of the synth/census Python, a JSON writer matching
+  `json.dump(indent=1)` byte for byte, DXC through its dlopen'd C API. **The gate: 449 of
+  449 dumps, all 898 files BYTE-IDENTICAL to the shell pipeline's output, 2.6 s vs 51 s.**
+  The design was probed first: DXC's API and CLI produce identical SPIR-V. Positive
+  control: an implementation poison (census drops one register) fires the gate; a blind
+  input-bit poison was semantically DEAD and proved nothing (gotcha 501).
+* **D.4 — TRANSLATE ON FIRST SIGHT.** A missing hash is translated on one worker,
+  persisted, registered live — enqueue and drain both on the pump thread, so the tables
+  are never touched off-thread. **Empty-vertex-half gate: crowd at 8,110 draws,
+  `no translated shader` = 0, 45 shaders at 18-70 ms (median 23), every persisted module
+  byte-identical to the canonical entry.** The in-flight skip is its own counter so the
+  standing grep keeps meaning "ended up missing". Off-arm restores the old behaviour
+  (29 missing, 0 translated); the null (full cache) is 0/0 — the standard path never sees
+  the feature. `CZ_VK_NO_SHADER_JIT=1`.
+* **D.3 — THE FIRST-RUN DISC PASS.** The `.big` index (LE) + D.1's container rule, every
+  bound checked so a malformed player-supplied object is skipped BY NAME. **1,265 of 1,265
+  distinct pixel shaders, 0 refused, 0 failed, 9.0 s** — resumable (killed at 433, resumed
+  832, no-op third run), automatic on a renderer boot via marker files that keep it away
+  from populated dev caches (898 files before and after a dev boot). **Crown gate: disc
+  cache only → crowd, 0 missing — and the pixel first-sight list is EXACTLY the two hashes
+  D.1 enumerated as absent from the disc.**
+* **A SHADER CACHE IS ONE ARTIFACT, NOT ONE PER OS.** Windows (dxcompiler.dll, clang-cl)
+  produces byte-identical output to Linux for all 348 dump-built and all 1,265 disc-built
+  modules.
+* **THREE WINDOWS PORTABILITY DEFECTS**, all in one TU's include preamble: lean windows.h
+  excludes the COM types dxcapi needs; `win_compat.h`'s `#undef far` leaves `FAR` a stray
+  identifier in every COM prototype; `E_FAIL` is #undef'd for guest code. Gotcha 503 — the
+  fix for one collision class is itself a collision for later includes, and Case West will
+  reuse the same file.
+* **A FALSE CLAIM, CORRECTED IN-SESSION (gotcha 502):** two "Windows builds D.4"
+  statements were made against a STALE tree — a silenced chained `git pull` had failed,
+  the empty error grep read as success, and `--smoke` passed by exercising the previous
+  binary. Verify the pulled HEAD, not the absence of error text.
+* **OWED (release-plan §9.7):** the graphical progress screen (console lines until E gives
+  the first run a window); the in-process STFS extract; the shipped pre-warm key file; and
+  the variant arm caches do not gain first-sight entries (dev-only, known).
+* **Gates:** everything part 83 inherited, plus the D.2 byte-identity diff, the disc-pass
+  343-overlap identity, the empty-vertex crown gate, and the prebuild's
+  `N translated, 0 failed` + done-marker discipline.
