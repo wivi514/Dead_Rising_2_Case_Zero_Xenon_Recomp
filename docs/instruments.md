@@ -3412,4 +3412,21 @@ CZ_PM4_ALU_WRITE_CENSUS=1  **where do the guest's constant writes land?** (part 
                   mean palette upload ~18 float4 regs against the 256-register full
                   copy, whole-span bursts. A DIAGNOSTIC ARM; free when off (one global
                   bool test on the per-dword path, one per bulk run).
+
+CZ_VK_PALETTE_EXTENT_CENSUS=1  **would a write-extent-bounded gather be sound, and what
+                  would it save?** (part 88 step 0; `part88-kickoff.md` §1.) The
+                  ask-first census for the bone-palette item: per dynamic VS copy it
+                  consumes the PM4 walk's palette write-extent tracker
+                  (`Pm4_TakeVsPaletteWrites`, always on — two comparisons per
+                  ALU-overlapping register run, inside the overlap test the bulk path
+                  already does) and models the exact fix without changing any copy:
+                  clean-cover (a c8-covering burst since the last copy, nothing past
+                  it — bound = that burst's extent), dirty-fallback (partial writes
+                  or none covering — bound = running high-water), reuse (no palette
+                  writes — previous bound stands). Prints WINDOW rates from DumpStats
+                  beside the gather stats: the three frequencies, partial-burst counts,
+                  full vs bounded vs high-water-only bytes, and the bound histogram.
+                  **The pre-registered kill lives here: a sound bound saving < 30% of
+                  full-copy bytes kills the item.** A DIAGNOSTIC ARM; never quote a
+                  frame time from a run carrying it.
 ```

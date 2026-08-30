@@ -1306,6 +1306,46 @@ constexpr uint32_t kAluLo = xenos::kAluConstantBase;
 constexpr uint32_t kAluMid = xenos::kAluConstantBase + 256 * 4;  // PS window starts here
 constexpr uint32_t kAluHi = xenos::kAluConstantBase + 512 * 4;   // one past the end
 
+// --- the bone-palette write-extent tracker (part 88; declared in pm4.h) --------------
+//
+// Plain uint32_t, no atomics, ON PURPOSE: every writer is the PM4 walk and the consumer
+// is the renderer's draw-record path, which runs INSIDE that same walk (recording is
+// serial on the pump — part 80 refuted the parallel recorder). The take at a draw packet
+// therefore captures exactly the writes since the previous consuming draw, in stream
+// order, which is the property the bound needs.
+uint32_t g_vsPalCoverExtent = 0;
+uint32_t g_vsPalPartialExtent = 0;
+uint32_t g_vsPalCoverBursts = 0;
+uint32_t g_vsPalPartialBursts = 0;
+uint32_t g_vsPalHighWater = 0;
+
+inline void NoteVsPaletteSpan(uint32_t index, uint32_t count)
+{
+    constexpr uint32_t kPalLo = kAluLo + 8 * 4;   // c8 of the VS half
+    if (index >= kAluMid || index + count <= kPalLo)
+        return;
+    const uint32_t hi = index + count < kAluMid ? index + count : kAluMid;
+    const uint32_t endReg = (hi - 1 - kAluLo) >> 2;   // last float4 register written
+    if (index <= kPalLo)
+    {
+        // Started at or below c8, so [8, endReg] is written contiguously by this burst.
+        if (endReg > g_vsPalCoverExtent)
+            g_vsPalCoverExtent = endReg;
+        ++g_vsPalCoverBursts;
+    }
+    else
+    {
+        if (endReg > g_vsPalPartialExtent)
+            g_vsPalPartialExtent = endReg;
+        ++g_vsPalPartialBursts;
+    }
+    if (endReg > g_vsPalHighWater)
+        g_vsPalHighWater = endReg;
+}
+
+// (Pm4_TakeVsPaletteWrites / Pm4_VsPaletteHighWater are defined after the anonymous
+// namespace closes — they are the public seam over this state.)
+
 void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
 {
     if (index >= kRegCount)
@@ -1400,6 +1440,11 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
     if (g_noBulkRegs || RegRunHasSideEffects(index, count))
     {
         g_regRunSlow.fetch_add(count, std::memory_order_relaxed);
+        // The palette tracker still sees the whole run as ONE burst here — the per-dword
+        // loop below must not turn a covering upload into 1 cover + N-1 partials, which
+        // is why WriteRegister itself never notes spans.
+        if (index < kAluMid && index + count > kAluLo)
+            NoteVsPaletteSpan(index, count);
         for (uint32_t i = 0; i < count; i++)
             WriteRegister(base, index + i, fetch(srcPos + i));
         return;
@@ -1411,7 +1456,10 @@ void WriteRegisterRun(uint8_t* base, const Source& fetch, uint32_t srcPos,
     {
         // A run can straddle the two windows; bump whichever halves it overlaps.
         if (index < kAluMid && index + count > kAluLo)
+        {
             ++g_aluConstVersion[0];
+            NoteVsPaletteSpan(index, count);
+        }
         if (index < kAluHi && index + count > kAluMid)
             ++g_aluConstVersion[1];
         // The census loops only the ALU-overlapped span of this run, so a run that
@@ -1640,8 +1688,14 @@ uint32_t ExecutePacket(uint8_t* base, const Source& fetch, uint32_t pos, uint32_
         // ONE-REG is not a run — every dword lands on the same index, and its scratch
         // mirror must fire once per write, not once. It stays on the per-dword path.
         if (oneReg)
+        {
+            // A one-reg write into the palette region is a span of length 1 — noted here
+            // because WriteRegister deliberately never notes spans (see the slow path).
+            if (reg >= kAluLo && reg < kAluMid)
+                NoteVsPaletteSpan(reg, 1);
             for (uint32_t i = 0; i < bodyCount; i++)
                 WriteRegister(base, reg, fetch(pos + 1 + i));
+        }
         else
             WriteRegisterRun(base, fetch, pos + 1, reg, bodyCount);
         return bodyCount + 1;
@@ -2465,6 +2519,19 @@ void ExecuteLinearVerified(uint8_t* base, uint32_t va, uint32_t sizeDwords, int 
 } // namespace
 
 // --- public interface ---------------------------------------------------------------
+
+// The bone-palette write-extent seam (part 88; state and rationale at the tracker's
+// definition inside the walk, next to the ALU write census).
+Pm4VsPaletteWrites Pm4_TakeVsPaletteWrites()
+{
+    const Pm4VsPaletteWrites w{ g_vsPalCoverExtent, g_vsPalPartialExtent,
+                                g_vsPalCoverBursts, g_vsPalPartialBursts };
+    g_vsPalCoverExtent = g_vsPalPartialExtent = 0;
+    g_vsPalCoverBursts = g_vsPalPartialBursts = 0;
+    return w;
+}
+
+uint32_t Pm4_VsPaletteHighWater() { return g_vsPalHighWater; }
 
 void Pm4_SetRingBuffer(uint32_t base, uint32_t sizeBytes)
 {

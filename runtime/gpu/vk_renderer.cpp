@@ -13729,6 +13729,82 @@ uint64_t g_gatherFull = 0, g_gatherGathered = 0, g_gatherDwordsCopied = 0,
          g_gatherDwordsFull = 0, g_gatherChecked = 0, g_gatherBad = 0,
          g_gatherNoList = 0, g_gatherDynamic = 0, g_gatherEmpty = 0;
 
+// CZ_VK_PALETTE_EXTENT_CENSUS=1 — WOULD A WRITE-EXTENT-BOUNDED GATHER BE SOUND, AND
+// WHAT WOULD IT SAVE? (part 88 step 0; phase5-notes §6eg, `part88-kickoff.md` §1.)
+//
+// The ask-first step for the bone-palette item: before `CopyConstWindow`'s dynamic path
+// copies anything differently, COUNT what the bounded copy would have moved, per dynamic
+// VS copy, using the PM4 walk's own write-extent tracker (pm4.h). Models the exact fix:
+//
+//   clean cover  — a c8-covering burst arrived since the last dynamic copy and no
+//                  partial write reached past it: bound = that burst's extent. The
+//                  cheap case, and the one part 87's whole-span histogram predicts.
+//   dirty        — palette-region writes arrived but the per-burst bound is unsound
+//                  (a non-covering write reached past the covering extent, or there
+//                  was no covering burst at all): bound = the running high-water.
+//   reuse        — NO palette-region write since the last dynamic copy: the file
+//                  content is unchanged, the previous bound still describes it.
+//
+// PRE-REGISTERED KILL (kickoff §1): if the sound bound saves < 30% of full-copy bytes,
+// the item dies. The high-water-only model is printed beside it as the conservative
+// floor. A DIAGNOSTIC ARM: one Take() and a few adds per dynamic VS copy, off by
+// default, and no frame time from a run carrying it is ever quoted.
+bool g_paletteCensus = false;
+namespace palcensus
+{
+struct Tot
+{
+    uint64_t copies = 0, cleanCover = 0, dirtyFallback = 0, reuse = 0, neverBound = 0,
+             windowMoved = 0, coverBursts = 0, partialBursts = 0, extentSum = 0,
+             bytesFull = 0, bytesBounded = 0, bytesHighWater = 0;
+    uint64_t hist[32] = {};   // per-copy bound, buckets of 8 float4 registers
+} t, last;
+uint32_t sticky = 0;          // the bound the previous dynamic copy established
+
+inline void Record(size_t listN, uint32_t memoVsBase)
+{
+    const Pm4VsPaletteWrites w = Pm4_TakeVsPaletteWrites();
+    ++t.copies;
+    t.coverBursts += w.coverBursts;
+    t.partialBursts += w.partialBursts;
+    if (w.coverBursts && w.partialExtent <= w.coverExtent)
+    {
+        sticky = w.coverExtent;
+        ++t.cleanCover;
+    }
+    else if (w.coverBursts || w.partialBursts)
+    {
+        sticky = Pm4_VsPaletteHighWater();
+        ++t.dirtyFallback;
+    }
+    else
+        ++t.reuse;
+    uint64_t boundedRegs;
+    if (memoVsBase != 0)
+    {
+        // The guest moved the constant window: c8-in-window is no longer file c8 and
+        // the tracker's coordinates do not apply. Full copy; counted so a nonzero here
+        // says the fix needs the base folded in before it can ship.
+        ++t.windowMoved;
+        boundedRegs = 256;
+    }
+    else if (!sticky)
+    {
+        ++t.neverBound;
+        boundedRegs = 256;
+    }
+    else
+        boundedRegs = std::min<uint64_t>(256, 4 + listN + (sticky >= 8 ? sticky - 7 : 0));
+    t.bytesFull += 256 * 16;
+    t.bytesBounded += boundedRegs * 16;
+    const uint32_t hw = Pm4_VsPaletteHighWater();
+    t.bytesHighWater +=
+        16 * std::min<uint64_t>(256, 4 + listN + (hw >= 8 ? hw - 7 : 0));
+    t.extentSum += sticky;
+    ++t.hist[std::min<uint32_t>(sticky, 255) >> 3];
+}
+} // namespace palcensus
+
 // **THE GATHER IS ON BY DEFAULT AGAIN AS OF PART 74's SECOND HALF.** It shipped enabled in
 // part 72, was turned OFF the same day on the operator's report of a half-screen sky
 // flicker, and is back on because the flicker was found, fixed and confirmed.
@@ -19359,6 +19435,12 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
                 CopyConstWindow(dst, regs + xenos::kAluConstantBase + memoVsBase * 4, vs,
                                 true);
             }
+            // Part 88 step 0: the bounded-gather census consumes the palette write
+            // extent at exactly the point the fix would — the dynamic full copy.
+            // Outside the constVsCopy sub-scope so its own cost never lands in the
+            // number the item is priced on.
+            if (g_paletteCensus && vs.aluDynamic)
+                palcensus::Record(vs.aluConsts.size(), memoVsBase);
             ProfScope _pcpatch(&g_prof.constVsPatch);
             // 21:9 (part 60) and the FOV slider (part 61): patch a recognized scene
             // projection in the copy the shaders will read. Patching HERE means memo
@@ -23715,6 +23797,12 @@ bool InitCommon()
                 "of registers per draw on the pump thread. NEVER quote a frame time from "
                 "this run.\n");
     }
+    g_paletteCensus = EnvOn("CZ_VK_PALETTE_EXTENT_CENSUS");
+    if (g_paletteCensus)
+        fprintf(stderr,
+                "[palcensus] CZ_VK_PALETTE_EXTENT_CENSUS=1 — the bone-palette bounded-"
+                "gather census is ON (part 88 step 0). A DIAGNOSTIC ARM; it changes no "
+                "copy and no frame time from this run is quotable.\n");
     g_constMemoVerify = EnvOn("CZ_VK_VERIFY_CONST_MEMO");
     g_constMemoVerifyPoison = EnvOn("CZ_VK_VERIFY_CONST_MEMO_POISON");
     if (g_constMemoVerifyPoison)
@@ -27125,6 +27213,55 @@ void VkRenderer_DumpStats()
                         ConstGatherPoison()
                             ? "  (POISONED — a zero here means the verifier is BLIND)"
                             : "");
+        }
+    }
+    // Part 88 step 0's verdict, WINDOW rates only (gotcha 428: a cumulative mean is a
+    // transient). Each print covers the copies since the previous one.
+    if (g_paletteCensus)
+    {
+        const palcensus::Tot& t = palcensus::t;
+        palcensus::Tot& l = palcensus::last;
+        const uint64_t n = t.copies - l.copies;
+        if (n)
+        {
+            const uint64_t full = t.bytesFull - l.bytesFull;
+            const uint64_t bnd = t.bytesBounded - l.bytesBounded;
+            const uint64_t hwB = t.bytesHighWater - l.bytesHighWater;
+            fprintf(stderr,
+                    "[palcensus] %llu dynamic VS copies since last line: clean-cover "
+                    "%.1f%%, dirty-fallback %.1f%%, reuse %.1f%%; never-bound %llu, "
+                    "window-moved %llu; bursts/copy cover %.2f partial %.2f\n",
+                    (unsigned long long)n,
+                    100.0 * double(t.cleanCover - l.cleanCover) / double(n),
+                    100.0 * double(t.dirtyFallback - l.dirtyFallback) / double(n),
+                    100.0 * double(t.reuse - l.reuse) / double(n),
+                    (unsigned long long)(t.neverBound - l.neverBound),
+                    (unsigned long long)(t.windowMoved - l.windowMoved),
+                    double(t.coverBursts - l.coverBursts) / double(n),
+                    double(t.partialBursts - l.partialBursts) / double(n));
+            fprintf(stderr,
+                    "[palcensus]   bytes: full %.1f MB -> bounded %.1f MB (SAVES %.1f%%; "
+                    "kill < 30%%) | high-water-only model %.1f MB (saves %.1f%%), "
+                    "high-water c%u, mean bound %.1f regs\n",
+                    double(full) / 1e6, double(bnd) / 1e6,
+                    full ? 100.0 * double(full - bnd) / double(full) : 0.0,
+                    double(hwB) / 1e6,
+                    full ? 100.0 * double(full - hwB) / double(full) : 0.0,
+                    Pm4_VsPaletteHighWater(),
+                    double(t.extentSum - l.extentSum) / double(n));
+            std::string hg = "[palcensus]   bound histogram (regs):";
+            for (int b = 0; b < 32; ++b)
+            {
+                const uint64_t c = t.hist[b] - l.hist[b];
+                if (!c)
+                    continue;
+                char buf[64];
+                snprintf(buf, sizeof buf, " %d-%d:%llu", b * 8, b * 8 + 7,
+                         (unsigned long long)c);
+                hg += buf;
+            }
+            fprintf(stderr, "%s\n", hg.c_str());
+            l = t;
         }
     }
     // THE ORDER GATE's verdict, on every stats dump. A gate whose result is not printed is

@@ -98,6 +98,31 @@ void Pm4_BinCensusReport();
 // The per-register ALU constant write histogram (CZ_PM4_ALU_WRITE_CENSUS=1, part 87)
 // — prints from the renderer's DumpStats beside the gather stats it explains.
 void Pm4_DumpAluWriteCensus();
+
+// Part 88 step 0 (phase5-notes §6eg): the WRITE side of the bone-palette bounded
+// gather. The 22 `aluDynamic` vertex shaders read `vc({8,9,10}+a0)` and today force a
+// full 4 KB constant copy per draw; the bound that would replace it is the extent of
+// what the guest actually WROTE into [c8, c256) of the VS half — and this walk is the
+// only place that sees every write. Tracked ALWAYS (two comparisons per ALU-overlapping
+// register run — the run loop already tests ALU overlap once per run, so non-constant
+// traffic pays nothing), consumed by the renderer's dynamic VS copy path.
+//
+// Burst classification is the correctness question itself: a burst starting AT OR BELOW
+// c8 writes [8, end] contiguously, so its end is a sound bound for a palette replaced
+// whole; a burst starting ABOVE c8 is a partial update, and a partial reaching past the
+// covering extent means the per-burst bound is UNSOUND and the fallback (the running
+// high-water) must serve instead. Part 87's histogram said uploads are whole-span
+// bursts — evidence, not proof; these counters are the proof or the refutation.
+struct Pm4VsPaletteWrites
+{
+    uint32_t coverExtent;    // highest float4 reg reached by a c8-covering burst since
+                             // the last take; 0 = none
+    uint32_t partialExtent;  // highest reg reached by a non-covering [c8,c256) burst
+    uint32_t coverBursts;    // counts since the last take, for the census's frequencies
+    uint32_t partialBursts;
+};
+Pm4VsPaletteWrites Pm4_TakeVsPaletteWrites();  // returns and RESETS (the consume)
+uint32_t Pm4_VsPaletteHighWater();             // highest reg ever written; never reset
 uint32_t Pm4_Cursor();
 uint32_t Pm4_ScratchAddr();
 uint32_t Pm4_ScratchUmsk();
