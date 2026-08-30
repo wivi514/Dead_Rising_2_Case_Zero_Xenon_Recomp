@@ -192,13 +192,15 @@ mask; trust the microcode's own swizzles.
     read `phase5-notes.md` §6ba before following anything in it.
   - **THE LIVE HAND-OFF IS ALWAYS THE HIGHEST-NUMBERED `partNN-kickoff.md`**, and it
     supersedes every earlier kickoff on "where the port is". **IT IS
-    `part87-kickoff.md`, AND THE SUBJECT IS PERFORMANCE, seeded by Case West's leads**
+    `part88-kickoff.md`, AND THE SUBJECT IS PERFORMANCE — THE BONE-PALETTE BOUNDED
+    GATHER** (part 87 refuted all three CW leads by census and found the new lead in the
+    same runs' data; `phase5-notes.md` §6ef-§6eg)
     — the release programme (milestones A, B, D, E) is complete and gated
     (`release-plan.md` §9 is the record), part 86 shipped the launcher, level cap 50,
     all fifteen skills, the save relocation and Case West's pump stack
     (`part86-kickoff.md` §0b-§0d are those records), and part 87 starts from the CW
     leads catalogued in its §0. ~~It is currently
-    `part82-kickoff.md`~~, and ~~**PERFORMANCE IS PARKED AS OF PART 81**~~ — **LIVE AGAIN AS OF PART 87** (part 86 imported Case West's pump stack, +2.3% weighted; `part87-kickoff.md` §0 has the remaining CW leads) — the operator's
+    `part82-kickoff.md`~~, and ~~**PERFORMANCE IS PARKED AS OF PART 81**~~ — **LIVE AGAIN AS OF PART 87** (part 86 imported Case West's pump stack, +2.3% weighted; part 87 then refuted all three remaining CW leads by census — `part87-kickoff.md` §0b) — the operator's
     instruction closing it was *"we'll switch to something else then performance"*. THE
     SUBJECT IS OPEN; part 82's kickoff §0 is the one thing to read before anything else,
     because **two changes are shipping ON BY DEFAULT whose milliseconds were never
@@ -958,8 +960,9 @@ findings ledger — it wins on any measured number), `docs/phase1-notes.md`,
 `docs/phase3-notes.md`, `docs/phase5-notes.md` and `docs/d3d-translation-plan.md`.
 
 **SUBJECT: THE RELEASE, 2026-08-27, operator instruction opening part 82:** *"Do the release
-plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part87-kickoff.md` IS THE LIVE
-HAND-OFF (subject: performance, via Case West's leads).** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
+plan."* **`docs/release-plan.md` IS THE PROGRAMME AND `docs/part88-kickoff.md` IS THE LIVE
+HAND-OFF (subject: performance — the bone-palette bounded gather; part 87's CW-lead
+verdicts are `part87-kickoff.md` §0b-§0c).** **MILESTONES A, B, D AND E ARE COMPLETE — both release artifacts exist and are
 gated** (`dist/CaseZeroRecomp-linux-x86_64.tar.zst` 26 MB, `CaseZeroRecomp-windows-x86_64.zip`
 21 MB; `release-plan.md` §9.8 has every gate). A player's first run is real end to end:
 in-process STFS extract, disc shader build, a progress window over both, and
@@ -991,68 +994,9 @@ ground is and that PERFORMANCE IS PARKED. (This
 line has now named the wrong plan TWICE — the two-live-pointers defect the block-rotation note at the bottom of this file
 describes, and the reason that note asks for the rule and not just the name; gotcha 13.)
 
-Where the port is, as of 2026-08-28 (**PART 85 CLOSED — THE RELEASE. MILESTONE E IS
-COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
-~~**`docs/part86-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for one part; it is
-`part87-kickoff.md`. Records: `release-plan.md` **§9.8**):
-
-* **THE §2.3 FIRST-RUN FLOW IS REAL, END TO END, THREE WAYS.** `host/stfs_extract.{h,cpp}`
-  unpacks the player's package in-process — byte-identical to `tools/extract_stfs.py` over
-  the real package (256 of 256 files), bounds- and traversal-checked because the package is
-  player-supplied input, `default.xex` written LAST so an interrupted extract cannot
-  counterfeit a complete tree. A fake root holding ONLY the package boots to live gameplay
-  (extract → 1265-shader disc prebuild → 32 first-sight JITs, `no translated shader` = 0);
-  the same flow runs inside the clean container; and a windowed run was screenshotted
-  mid-flow showing the new **first-run progress window** (plain SDL, before
-  Host_WindowInit, calling-thread-only callbacks). `--extract-package` is the gate verb,
-  `CZ_NO_STFS_EXTRACT=1` the off switch.
-* **TWO PACKAGING HOLES ONLY RUNNING THINGS COULD CATCH.** `libdxcompiler.so` was NOT in
-  the bundle — every static check passed while a shipped build could not have translated a
-  shader (a dlopen is invisible to ldd, the sdl2-compat shape again); the container gate
-  now RUNS a translation inside the container with HOME unset. And a player
-  double-clicking got the deliberately blank window (CZ_VKDRAW is opt-in everywhere) —
-  `cz_defaults.env` beside the executable now applies release defaults ONLY where the
-  environment is unset, printed per line, data-not-code (`.text` identity re-verified).
-* **THE WINDOWS ARTIFACT EXISTS** (`tools/release_package_windows.ps1`): DLLs beside the
-  exe (the search path Windows actually has), MSVC runtime from the toolchain's redist,
-  gate = RUN the staged exe (`--smoke`, then all 1,265 disc shaders with the `[shxlate]`
-  line naming the STAGED dll). **DXC's licence corrected in place: NCSA, not Apache**
-  (§4); text vendored and shipped on both platforms.
-* **E.1 CI EXISTS AND SAYS WHAT ITS TICK MEANS**: host sources + `--smoke` on a STUB image
-  (`tools/gen_stub_ppc.py` — two scanner traps: no word boundary inside `__imp__sub_`,
-  X-macro addresses as bare hex), upstream recompiler clones at pinned bases +
-  `tools/ci/*.patch` (37 local commits; `regen_patches.sh`). Linux leg verified locally
-  end to end BEFORE the YAML, green on its first real run; **the Windows leg went green
-  three iterations later, still inside the part** — a RuntimeLibrary `/MT`-vs-`/MD`
-  mismatch (CI now passes `MultiThreadedDLL`, as czwin does) and undeployed vcpkg DLLs
-  killing `--smoke` at process load with zero output, both diagnosed via the
-  `windows-logs` artifact the workflow now always uploads (the public API serves step
-  verdicts, not logs; nightly.link fetches artifacts tokenlessly). macOS absent on
-  purpose until C.
-* **§5 CHECKLIST, THIS ARTIFACT STATE**: container gate PASSED (now including the
-  in-container first-run flow); `.text` identity on MATCHED configures (dev-vs-release
-  compares different headers and a relocated image — the script says so); validation
-  exactly the standing 6 `topology-08773` at 7,676 draws; bind-batch verify 0 of 87.4 M;
-  both censuses clean; disc gate 343 of 345.
-* **A stray `cz_runtime` from a dead session had filled /tmp (22 GB draw-trace log) and
-  killed this session's shell mid-part** — bare `echo` exit 1 is the tmpfs-quota symptom;
-  `du -sh /tmp/*`, `fuser` the big file, kill by pid.
-* **THREE OF THE FIVE OWED ITEMS CLOSED THE SAME NIGHT** (release-plan §9.8, updated in
-  place): the Windows CI leg went GREEN (RuntimeLibrary `/MD` override + vcpkg DLLs
-  deployed beside the exe, both diagnosed via the new `windows-logs` artifact); the
-  OPERATOR PLAYED THE SHIPPED BUNDLE from a drop-in first run ("pretty close to the
-  Linux build" — extract, prebuild, 64 first-sight shaders, a save, all in the wild);
-  and that sitting doubled as the PRE-WARM HARVEST — 583 keys now ship as
-  `<exe>/prewarm.keys`, read only when no per-user key file exists, proven
-  cross-platform by use (Windows-written keys pre-warmed 421 pipelines on Linux,
-  19.2 s moved out of gameplay). **STILL OWED:** the glibc floor / AppImage; the ~19 s
-  cold-boot pre-warm running silently after the progress window closes (§2.3 item 4
-  polish); milestone C.
-
 Where the port is, as of 2026-08-30 (**PART 86 CLOSED — FIVE OPERATOR-DRIVEN SUBJECTS
-IN ONE SESSION.** **`docs/part87-kickoff.md` IS THE LIVE HAND-OFF and the next subject
-is PERFORMANCE, seeded by Case West's leads**; `part86-kickoff.md` §0b-§0d are the
-records):
+IN ONE SESSION.** ~~**`docs/part87-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for
+one part; it is `part88-kickoff.md`; `part86-kickoff.md` §0b-§0d are the records):
 
 * **THE LAUNCHER** — settings + drag-to-install before boot, a mode of cz_runtime
   (`CZ_LAUNCHER=1`, shipped default via cz_defaults.env). Three no-hostage guards; the
@@ -1079,8 +1023,40 @@ records):
   `>/dev/null`; czwin's `>nul`-inside-ssh silently breaks the attached command (three
   incidents — runbook has the rule).
 
+Where the port is, as of 2026-08-30 (**PART 87 CLOSED — PERFORMANCE. ALL THREE CASE WEST
+LEADS REFUTED BY CENSUS, AND THE NEXT LEAD FOUND IN THE SAME RUNS' DATA.**
+**`docs/part88-kickoff.md` IS THE LIVE HAND-OFF and the subject is the BONE-PALETTE
+BOUNDED GATHER**; the records are `phase5-notes.md` §6ef-§6eg and `part87-kickoff.md`
+§0b-§0c):
+
+* **CW's three leads all died on measurement, none on argument** (§6ef). Lead 1
+  (frustum cull, "20-30% off-frustum"): first crowd run of `CZ_VK_VCULL_CENSUS` reads
+  **~0.1% off-frustum, 99.9% on screen** — the engine culls its own submissions. Lead 2
+  (cross-frame range reuse, "1-2 ms"): the new ask-first census `CZ_VK_REUSE_CENSUS`
+  reads **1.2-2.1% full-input identity at the crowd = ~0.09 ms ceiling**, and its
+  four-cell diagnosis names the mechanism — **93-94% of draws are identical EXCEPT
+  their ALU constants**; the guest churns the constant file on ~98% of draws. Lead 3
+  (stream-lookup memo): already dead on §6ec §4's record. The prepass arithmetic
+  transfers (61% depth-only here too); the pools do not exist.
+* **THE NEW LEAD** (§6eg, mined from the same logs): 22 bone-palette vertex shaders
+  (`vc({8,9,10}+a0)`) force a full 4 KB constant copy per draw — **87.3% of all
+  constant-copy bytes**, `constVsCopy` 0.48 ms at the crowd — while the new
+  `CZ_PM4_ALU_WRITE_CENSUS` histogram shows the **mean palette upload is ~18 float4
+  registers** in whole-span bursts. A write-extent-bounded gather is a **~0.4 ms
+  ceiling, the largest addressable CPU item known**; the projection-patch memo
+  (`constVsPatch` 0.51 ms, 64-byte input) is the ~0.3 ms second. `part88-kickoff.md`
+  §1 is the step list and its step 0 is a correctness census with a pre-registered
+  <30% kill.
+* **Closed without a run**: the texture guard's 8.6 MB/frame of hashing is already
+  97-98% served by the prehash pool. Do not chase.
+* **Instrument discipline paid forward**: every census printed WINDOW rates (never a
+  cumulative mean, gotcha 428); the one channel that read 0.0 everywhere got a
+  liveness counter before its zero was believed (43.9 dirty draws/frame, conjunction a
+  true 0.0 — gotcha 151); all census runs are diagnostic arms and no frame time from
+  them was quoted.
+
 **Older per-part status blocks (parts 28-54, the superseded mid-part-44 closure and the
-superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-84's** — part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
+superseded MID-PART-46 block) moved to `docs/port-history.md`, NOW INCLUDING PARTS 60-85's** — part 87 moved part 85's out in the same commit that added its own block, part 86 moved part 84's out in the same commit that added its own block, part 85 moved part 83's out in the same commit that added its own block, part 84 moved part 82's out in the same commit that added its own block, part 83 moved part 81's out in the same commit that added its own block, part 82 moved part 80's out in the same commit that added its own block, part 78 moved part 76's out in the same commit that added its own block, part 76 moved part 74's out in the same commit that added its own block, part 74 moved part 72's out in the same commit that added its own block, part 73 moved part 71's out in the same commit that added its own block, part 72 moved part 70's out in the same commit that added its own block, part 71 moved part 69's out in the same commit that added its own block, part 70 moved part 68's out in the same commit that added its own block, part 69 moved part 67's out in the same commit that added its own block, part 68 moved part 66's out in the same commit that added its own block, part 67 moved part 65's out the same way, part 65 moved part 63's out the same way, part 64 moved parts 61/62's out the same way, part 63 moved part 60's out the same way, part 61 moved part 59's out the same way, part 59 moved part 57's out the same way, part 57 moved part 55's out the same way, part 55 moved part 53's
 out in the same commit that added its own, which is what the rule below asks for. — CLAUDE.md keeps only the
 live part and one part back, per the 2026-08-08 split's rule, and **part 53 moved part
 51's out in the same commit that added its own**, which is what the rule below asks for.

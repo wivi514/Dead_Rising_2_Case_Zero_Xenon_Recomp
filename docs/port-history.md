@@ -6323,3 +6323,61 @@ HAND-OFF**~~ — it was, for one part; it is `part86-kickoff.md`. Records: `rele
 * **Gates:** everything part 83 inherited, plus the D.2 byte-identity diff, the disc-pass
   343-overlap identity, the empty-vertex crown gate, and the prebuild's
   `N translated, 0 failed` + done-marker discipline.
+
+Where the port is, as of 2026-08-28 (**PART 85 CLOSED — THE RELEASE. MILESTONE E IS
+COMPLETE: BOTH RELEASE ARTIFACTS EXIST AND EVERY §5 GATE RAN AGAINST THEM.**
+~~**`docs/part86-kickoff.md` IS THE LIVE HAND-OFF**~~ — it was, for one part; it is
+`part87-kickoff.md`. Records: `release-plan.md` **§9.8**):
+
+* **THE §2.3 FIRST-RUN FLOW IS REAL, END TO END, THREE WAYS.** `host/stfs_extract.{h,cpp}`
+  unpacks the player's package in-process — byte-identical to `tools/extract_stfs.py` over
+  the real package (256 of 256 files), bounds- and traversal-checked because the package is
+  player-supplied input, `default.xex` written LAST so an interrupted extract cannot
+  counterfeit a complete tree. A fake root holding ONLY the package boots to live gameplay
+  (extract → 1265-shader disc prebuild → 32 first-sight JITs, `no translated shader` = 0);
+  the same flow runs inside the clean container; and a windowed run was screenshotted
+  mid-flow showing the new **first-run progress window** (plain SDL, before
+  Host_WindowInit, calling-thread-only callbacks). `--extract-package` is the gate verb,
+  `CZ_NO_STFS_EXTRACT=1` the off switch.
+* **TWO PACKAGING HOLES ONLY RUNNING THINGS COULD CATCH.** `libdxcompiler.so` was NOT in
+  the bundle — every static check passed while a shipped build could not have translated a
+  shader (a dlopen is invisible to ldd, the sdl2-compat shape again); the container gate
+  now RUNS a translation inside the container with HOME unset. And a player
+  double-clicking got the deliberately blank window (CZ_VKDRAW is opt-in everywhere) —
+  `cz_defaults.env` beside the executable now applies release defaults ONLY where the
+  environment is unset, printed per line, data-not-code (`.text` identity re-verified).
+* **THE WINDOWS ARTIFACT EXISTS** (`tools/release_package_windows.ps1`): DLLs beside the
+  exe (the search path Windows actually has), MSVC runtime from the toolchain's redist,
+  gate = RUN the staged exe (`--smoke`, then all 1,265 disc shaders with the `[shxlate]`
+  line naming the STAGED dll). **DXC's licence corrected in place: NCSA, not Apache**
+  (§4); text vendored and shipped on both platforms.
+* **E.1 CI EXISTS AND SAYS WHAT ITS TICK MEANS**: host sources + `--smoke` on a STUB image
+  (`tools/gen_stub_ppc.py` — two scanner traps: no word boundary inside `__imp__sub_`,
+  X-macro addresses as bare hex), upstream recompiler clones at pinned bases +
+  `tools/ci/*.patch` (37 local commits; `regen_patches.sh`). Linux leg verified locally
+  end to end BEFORE the YAML, green on its first real run; **the Windows leg went green
+  three iterations later, still inside the part** — a RuntimeLibrary `/MT`-vs-`/MD`
+  mismatch (CI now passes `MultiThreadedDLL`, as czwin does) and undeployed vcpkg DLLs
+  killing `--smoke` at process load with zero output, both diagnosed via the
+  `windows-logs` artifact the workflow now always uploads (the public API serves step
+  verdicts, not logs; nightly.link fetches artifacts tokenlessly). macOS absent on
+  purpose until C.
+* **§5 CHECKLIST, THIS ARTIFACT STATE**: container gate PASSED (now including the
+  in-container first-run flow); `.text` identity on MATCHED configures (dev-vs-release
+  compares different headers and a relocated image — the script says so); validation
+  exactly the standing 6 `topology-08773` at 7,676 draws; bind-batch verify 0 of 87.4 M;
+  both censuses clean; disc gate 343 of 345.
+* **A stray `cz_runtime` from a dead session had filled /tmp (22 GB draw-trace log) and
+  killed this session's shell mid-part** — bare `echo` exit 1 is the tmpfs-quota symptom;
+  `du -sh /tmp/*`, `fuser` the big file, kill by pid.
+* **THREE OF THE FIVE OWED ITEMS CLOSED THE SAME NIGHT** (release-plan §9.8, updated in
+  place): the Windows CI leg went GREEN (RuntimeLibrary `/MD` override + vcpkg DLLs
+  deployed beside the exe, both diagnosed via the new `windows-logs` artifact); the
+  OPERATOR PLAYED THE SHIPPED BUNDLE from a drop-in first run ("pretty close to the
+  Linux build" — extract, prebuild, 64 first-sight shaders, a save, all in the wild);
+  and that sitting doubled as the PRE-WARM HARVEST — 583 keys now ship as
+  `<exe>/prewarm.keys`, read only when no per-user key file exists, proven
+  cross-platform by use (Windows-written keys pre-warmed 421 pipelines on Linux,
+  19.2 s moved out of gameplay). **STILL OWED:** the glibc floor / AppImage; the ~19 s
+  cold-boot pre-warm running silently after the progress window closes (§2.3 item 4
+  polish); milestone C.
