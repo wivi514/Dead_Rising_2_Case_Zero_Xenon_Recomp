@@ -2827,6 +2827,196 @@ uint64_t g_fetchMemoExactHits = 0, g_fetchMemoExactMisses = 0;
 bool g_streamDedupCensus = false;
 uint64_t g_dedupLookups = 0, g_dedupRepeats = 0, g_dedupOverflow = 0;
 
+// ---- CZ_VK_REUSE_CENSUS=1 — WOULD CROSS-FRAME COMMAND REUSE BE SERVED? (part 87) ----
+//
+// Case West's lead 2: their part-7 campaign left the frame partitioned into ranges with
+// per-range secondaries and guard hashes over every input, and a range whose inputs hash
+// identical to last frame's could REPLAY last frame's recorded commands and skip record
+// entirely. This renderer has none of that structure (the 2a/2b port is the wave-2
+// candidate and ~10k diverged lines), so per the rule that a hit rate is measured before
+// the thing that depends on it is written (gotchas 428, 434, 470), this census asks the
+// question the port would turn on: HOW MANY DRAWS ARE INPUT-IDENTICAL TO THE SAME-ORDINAL
+// DRAW OF THE PREVIOUS FRAME, AND IN HOW LONG A RUN?
+//
+// A draw's fingerprint folds everything the recorded commands depend on, mirrored from
+// what the renderer itself reads rather than from a model of it:
+//   * the full PipelineKey (56 B, padding-free — PipelineKeyHash already depends on that);
+//   * the draw arguments and the index buffer's address/endian;
+//   * the dynamic state the pipeline does not bake (scissors, window offset, viewport,
+//     blend constants, alpha/stencil ref, VTE, cull mode, clip control, VGT_INDX_OFFSET)
+//     and the render-target block (surface/color/depth info) — a draw into a different
+//     target is never the same draw;
+//   * the vertex-fetch constants of every declared attribute and the texture-fetch
+//     constants of every declared tfetch slot, both stages;
+//   * the ALU constants THE SHADERS ACTUALLY SEE, with the gather's own semantics
+//     (c0..c3 always + the sidecar list; the whole window when the gather is off or the
+//     shader is dynamic) — mirroring CopyConstWindow is what stops this census answering
+//     a different question than the upload path asks.
+//
+// Stream CONTENT is the part a register fingerprint cannot see, and it is folded via the
+// renderer's own verdict: a draw is dirty if any stream it touched was COPIED this frame
+// (fresh, guard-caught stale, or arena-pathed). A persist hit with a passing guard counts
+// as unchanged — including a SAMPLED guard, deliberately, because that is the semantics
+// the shipping renderer already lives by (it serves the stored bytes on a sampled pass).
+//
+// TWO STATED CEILINGS, both biased the safe way. Texture CONTENT changes are NOT folded
+// (the fetch constants are; a texture rewritten in place under an unchanged fetch
+// constant counts identical), so the number is a ceiling. And the comparison is by
+// ORDINAL: a frame whose draw list shifts by one misaligns every draw after the shift,
+// which under-reports reuse — the census fails toward the null (gotcha 30's neighbour).
+//
+// A DIAGNOSTIC ARM (gotcha 7): it hashes ~0.5-1 KB of registers per draw on the pump
+// thread. Never quote a frame time from a run carrying it. Free when off — one plain
+// global compare per draw, not a static-init guard (gotcha 453).
+bool g_reuseCensus = false;
+bool g_reuseDrawDirty = false;
+uint64_t g_reuseFpDraw = 0;
+std::unordered_set<uint64_t> g_reuseCopiedKeys;   // stream keys copied THIS frame
+namespace reusecensus
+{
+struct Fp
+{
+    uint64_t fp;       // the full fingerprint
+    uint64_t fpNoAlu;  // the same, EXCLUDING the ALU constant windows
+    uint8_t dirty;
+};
+std::vector<Fp> prev, cur;
+// THE DIAGNOSIS CHANNELS (added after the first crowd run). The ordinal channel read
+// 1.7-1.9% at the crowd with ZERO draws failing on stream bytes alone, which leaves two
+// mechanisms that want opposite responses: ORDINAL MISALIGNMENT (one inserted zombie
+// draw shifts every later ordinal — a range-partitioned scheme could resync, so the lead
+// survives) versus PER-FRAME CONSTANTS (an engine time/wind register in every shader's
+// window — reuse is dead at its mechanism). A set-membership channel is alignment-
+// insensitive, and a no-ALU fingerprint isolates the constants; the four cells of
+// (ordinal|set) x (full|noAlu) name the killer.
+std::unordered_set<uint64_t> prevFull, prevNoAlu;
+uint32_t run = 0;            // current run of identical draws
+// Totals since the run started, plus a snapshot at the last periodic print so every
+// line reports WINDOW rates — part 72's census printed a cumulative mean and the mean
+// was a transient (gotcha 428); this one never prints C/n as a rate.
+struct Tot
+{
+    uint64_t frames = 0, draws = 0, identical = 0, fpOnlyDirty = 0, misaligned = 0;
+    uint64_t runs = 0, runDraws8 = 0, runDraws32 = 0;
+    uint64_t setFull = 0, ordNoAlu = 0, setNoAlu = 0;
+    // Every draw that touched a stream copied this frame, unconditionally — the proof
+    // the dirty plumbing is alive at all. The `fpOnlyDirty` conjunction read 0.0 in all
+    // 28 windows of the first diagnosis run, and a channel that has never been seen to
+    // fire cannot have its zeros believed (gotcha 151).
+    uint64_t dirtyDraws = 0;
+} t, last;
+
+inline void FlushRun()
+{
+    if (!run)
+        return;
+    ++t.runs;
+    if (run >= 8)
+        t.runDraws8 += run;
+    if (run >= 32)
+        t.runDraws32 += run;
+    run = 0;
+}
+
+inline void EndDraw(uint64_t fp, uint64_t fpNoAlu, bool dirty)
+{
+    const size_t idx = cur.size();
+    const bool fpMatch = idx < prev.size() && prev[idx].fp == fp;
+    ++t.draws;
+    if (dirty)
+        ++t.dirtyDraws;
+    if (fpMatch && !dirty)
+    {
+        ++t.identical;
+        ++run;
+    }
+    else
+    {
+        if (fpMatch)
+            ++t.fpOnlyDirty;
+        if (idx >= prev.size())
+            ++t.misaligned;
+        FlushRun();
+    }
+    if (!dirty)
+    {
+        if (prevFull.count(fp))
+            ++t.setFull;
+        if (prevNoAlu.count(fpNoAlu))
+            ++t.setNoAlu;
+    }
+    if (idx < prev.size() && prev[idx].fpNoAlu == fpNoAlu && !dirty)
+        ++t.ordNoAlu;
+    cur.push_back(Fp{ fp, fpNoAlu, uint8_t(dirty) });
+}
+
+void Print(const char* tag)
+{
+    const Tot d{ t.frames - last.frames, t.draws - last.draws,
+                 t.identical - last.identical, t.fpOnlyDirty - last.fpOnlyDirty,
+                 t.misaligned - last.misaligned, t.runs - last.runs,
+                 t.runDraws8 - last.runDraws8, t.runDraws32 - last.runDraws32,
+                 t.setFull - last.setFull, t.ordNoAlu - last.ordNoAlu,
+                 t.setNoAlu - last.setNoAlu, t.dirtyDraws - last.dirtyDraws };
+    last = t;
+    if (!d.frames || !d.draws)
+        return;
+    const double f = double(d.frames);
+    const double dpf = double(d.draws) / f;
+    const double idf = double(d.identical) / f;
+    const double r8f = double(d.runDraws8) / f;
+    fprintf(stderr,
+            "[reuse] %llu frames (+%llu%s) — ALL FIGURES ARE PER-FRAME RATES OVER THAT "
+            "WINDOW\n"
+            "[reuse]   draws %.0f   IDENTICAL to the same-ordinal draw of the previous "
+            "frame: %.1f (%.2f%%)\n"
+            "[reuse]     in runs >=8: %.1f/frame (%.2f%%)   >=32: %.1f/frame   runs "
+            "%.1f/frame (mean identical-run length %.1f)\n"
+            "[reuse]   register-identical but stream bytes copied this frame: %.1f/frame "
+            "(dirty draws at all: %.1f/frame — the channel's liveness proof)   past "
+            "previous frame's end (misaligned): %.1f/frame\n"
+            "[reuse]   ceiling at 524 ns/draw of record (§6ec §1): identical %.3f ms, "
+            "runs>=8 %.3f ms — texture CONTENT is not folded and ordinal misalignment "
+            "under-reports, so read as a CEILING on a run-shaped saving\n",
+            (unsigned long long)t.frames, (unsigned long long)d.frames, tag,
+            dpf, idf, dpf > 0 ? 100.0 * idf / dpf : 0.0,
+            r8f, dpf > 0 ? 100.0 * r8f / dpf : 0.0,
+            double(d.runDraws32) / f, double(d.runs) / f,
+            d.runs ? double(d.identical) / double(d.runs) : 0.0,
+            double(d.fpOnlyDirty) / f, double(d.dirtyDraws) / f, double(d.misaligned) / f,
+            idf * 524e-6, r8f * 524e-6);
+    // The four-cell diagnosis: (ordinal|set) x (full|noAlu). Set >> ordinal at the same
+    // fingerprint means the draws exist but MOVE (alignment is the killer, a resyncing
+    // range scheme survives); noAlu >> full at the same matcher means the ALU constants
+    // are the killer (a per-frame engine register, and reuse dies at its mechanism).
+    fprintf(stderr,
+            "[reuse]   diagnosis/frame: ordinal full %.1f (%.2f%%) | set full %.1f "
+            "(%.2f%%) | ordinal noALU %.1f (%.2f%%) | set noALU %.1f (%.2f%%)\n",
+            idf, dpf > 0 ? 100.0 * idf / dpf : 0.0,
+            double(d.setFull) / f, dpf > 0 ? 100.0 * double(d.setFull) / f / dpf : 0.0,
+            double(d.ordNoAlu) / f, dpf > 0 ? 100.0 * double(d.ordNoAlu) / f / dpf : 0.0,
+            double(d.setNoAlu) / f, dpf > 0 ? 100.0 * double(d.setNoAlu) / f / dpf : 0.0);
+}
+
+inline void FrameBoundary()
+{
+    FlushRun();
+    prev.swap(cur);
+    cur.clear();
+    prevFull.clear();
+    prevNoAlu.clear();
+    for (const Fp& e : prev)
+    {
+        prevFull.insert(e.fp);
+        prevNoAlu.insert(e.fpNoAlu);
+    }
+    g_reuseCopiedKeys.clear();
+    ++t.frames;
+    if (t.frames == 30 || t.frames % 600 == 0)
+        Print(" since the last line");
+}
+} // namespace reusecensus
+
 // ---- PART 81 §2: WHERE IS THE GUARD'S 86.2 MB A FRAME CHARGED? ----------------------
 //
 // `[vkprof]` reports **guard read 86.21 MB/frame** while the prehash pool reports **96.2%
@@ -10456,6 +10646,10 @@ void BeginFrame()
     // the frame budget can absorb rather than a function of how much geometry streamed
     // in this second (which is what made the unbounded version cost 66.8 MB/frame).
     R->probeBudgetLeft = Renderer::kGuardProbeBudget;
+    // The reuse census turns over at the SAME boundary the per-frame stream cache does,
+    // because its copied-keys set answers a question about exactly that cache's frame.
+    if (g_reuseCensus)
+        reusecensus::FrameBoundary();
     // THE ORDER GATE, checked at the frame boundary and BEFORE the log is cleared. It runs
     // on the finished frame's draws, which is the only point where "submission order" is a
     // complete statement.
@@ -11763,6 +11957,11 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             ++g_streamCensus_c.hits;
             g_streamCensus_c.bytesHit += bytes;
         }
+        // A frame-cache hit inherits the FIRST touch's verdict: if that touch copied
+        // (the bytes changed this frame), every later draw reading this key is reading
+        // this frame's bytes too and is not identical to last frame's draw.
+        if (g_reuseCensus && g_reuseCopiedKeys.count(key))
+            g_reuseDrawDirty = true;
         return *hit;
     }
 
@@ -12064,6 +12263,14 @@ StreamLoc UploadStream(uint8_t* base, uint32_t va, uint64_t bytes, uint32_t endi
             CopySwapped(R->arena.mapped + at, src, size_t(bytes), endian);
         }
         loc = StreamLoc{ &R->arena, at };
+    }
+    // The reuse census's stream verdict, on the once-per-(key, frame) path only. `copied`
+    // is false on exactly one path — a persist hit whose guard passed — which is the
+    // renderer's own definition of "these bytes are last frame's".
+    if (g_reuseCensus && copied)
+    {
+        g_reuseCopiedKeys.insert(key);
+        g_reuseDrawDirty = true;
     }
     if (!g_flatCacheOff)
         R->streamCache.Insert(key, loc);
@@ -18633,6 +18840,11 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
     }
     const ShaderMeta& vs = *vsMeta;
     const ShaderMeta& ps = *psMeta;
+    // The reuse census's per-draw dirty flag, reset BEFORE the first thing that can call
+    // UploadStream for this draw (the texture walk and the attribute loop both can). The
+    // fingerprint itself is computed at the tail, where the draw has proven it records.
+    if (g_reuseCensus)
+        g_reuseDrawDirty = false;
 
     // A per-primitive-type census, always on. Which topologies a title actually issues
     // is a fact about the title, and it is the difference between "quad lists are
@@ -21993,6 +22205,89 @@ void DoDraw(uint8_t* base, const Pm4Draw& draw, const uint32_t* regs,
         R->orderLog.push_back(id);
         ++R->orderDrawsLogged;
     }
+    // THE REUSE CENSUS'S FINGERPRINT, at the tail so only draws that actually recorded
+    // are censused (every early return above is a draw a reuse scheme could not have
+    // replayed either). Everything folded here is a register or sidecar value that is
+    // constant for the duration of this DoDraw call — see the census's own comment at
+    // its globals for what each term is and why.
+    if (g_reuseCensus)
+    {
+        uint64_t h = 0xCBF29CE484222325ull;
+        auto mix = [&h](uint64_t v) {
+            h ^= v;
+            h *= 0x100000001B3ull;
+        };
+        static_assert(sizeof(PipelineKey) % 8 == 0, "key folded as u64 words");
+        const uint64_t* kq = reinterpret_cast<const uint64_t*>(&key);
+        for (size_t i = 0; i < sizeof(PipelineKey) / 8; ++i)
+            mix(kq[i]);
+        mix((uint64_t(draw.primType) << 48) | (uint64_t(draw.indexCount) << 8) |
+            (draw.indexed ? 1 : 0) | (draw.index32 ? 2 : 0));
+        mix((uint64_t(draw.indexVa) << 32) | draw.indexEndian);
+        mix(uint64_t(uint32_t(indxOffset)));
+        static const uint32_t kStateRegs[] = {
+            xenos::kPaScWindowOffset,     xenos::kPaScWindowScissorTl,
+            xenos::kPaScWindowScissorBr,  xenos::kPaScScreenScissorTl,
+            xenos::kPaScScreenScissorBr,  xenos::kPaClVportXScale,
+            xenos::kPaClVportXOffset,     xenos::kPaClVportYScale,
+            xenos::kPaClVportYOffset,     xenos::kPaClVportZScale,
+            xenos::kPaClVportZOffset,     xenos::kRbBlendRed,
+            xenos::kRbBlendRed + 1,       xenos::kRbBlendRed + 2,
+            xenos::kRbBlendRed + 3,       xenos::kRbAlphaRef,
+            xenos::kRbStencilRefMask,     xenos::kPaClVteCntl,
+            xenos::kPaClClipCntl,         xenos::kPaSuScModeCntl,
+            xenos::kRbSurfaceInfo,        xenos::kRbColorInfo,
+            xenos::kRbDepthInfo,
+        };
+        for (uint32_t r : kStateRegs)
+            mix(regs[r]);
+        for (const VertexAttribute& a : vs.attributes)
+        {
+            if (a.fetchSlot >= 96)
+                continue;
+            const uint32_t sl = FetchSlot(a.fetchSlot);
+            mix((uint64_t(regs[xenos::kFetchConstantBase + sl * 2]) << 32) |
+                regs[xenos::kFetchConstantBase + sl * 2 + 1]);
+        }
+        for (const ShaderMeta* m : { &vs, &ps })
+            for (uint32_t c : m->tfetchConsts)
+            {
+                if (c >= 32)
+                    continue;
+                const uint32_t* tf = &regs[xenos::kFetchConstantBase + c * 6];
+                for (int i = 0; i < 6; ++i)
+                    mix(tf[i]);
+            }
+        // Everything above is the draw WITHOUT its ALU constants — the diagnosis
+        // channel that says whether the constants are what breaks identity.
+        const uint64_t hNoAlu = h;
+        // The ALU constants as CopyConstWindow serves them: the whole window when the
+        // gather is off or the shader is dynamic, else c0..c3 (the renderer itself reads
+        // them) plus the sidecar's list. Mirroring the upload path's own semantics is
+        // what keeps this census from answering a different question than it asks.
+        auto mixAlu = [&](const ShaderMeta& m, uint32_t winBase) {
+            const uint32_t* w = &regs[xenos::kAluConstantBase + winBase * 4];
+            if (ConstGatherOff() || m.aluDynamic)
+            {
+                for (uint32_t i = 0; i < 256 * 4; ++i)
+                    mix(w[i]);
+                return;
+            }
+            for (uint32_t i = 0; i < 16; ++i)
+                mix(w[i]);
+            for (uint32_t r2 : m.aluConsts)
+            {
+                if (r2 >= 256)
+                    continue;
+                const uint32_t* p = &w[r2 * 4];
+                mix((uint64_t(p[0]) << 32) | p[1]);
+                mix((uint64_t(p[2]) << 32) | p[3]);
+            }
+        };
+        mixAlu(vs, memoVsBase);
+        mixAlu(ps, memoPsBase);
+        reusecensus::EndDraw(h, hNoAlu, g_reuseDrawDirty);
+    }
     ++R->drawsThisFrame;
     ++R->drawsThisPass;
     // Unconditional, and it costs exactly what the line above it costs. Gating it on the
@@ -23408,6 +23703,18 @@ bool InitCommon()
     if (g_verifyBindPoison)
         g_verifyBindBatch = true;
     g_streamDedupCensus = EnvOn("CZ_VK_STREAM_DEDUP_CENSUS");
+    g_reuseCensus = EnvOn("CZ_VK_REUSE_CENSUS");
+    if (g_reuseCensus)
+    {
+        reusecensus::prev.reserve(16384);
+        reusecensus::cur.reserve(16384);
+        g_reuseCopiedKeys.reserve(8192);
+        fprintf(stderr,
+                "[reuse] CZ_VK_REUSE_CENSUS=1 — the cross-frame draw-identity census is "
+                "ON (CW lead 2's ask-first step). A DIAGNOSTIC ARM: it hashes ~0.5-1 KB "
+                "of registers per draw on the pump thread. NEVER quote a frame time from "
+                "this run.\n");
+    }
     g_constMemoVerify = EnvOn("CZ_VK_VERIFY_CONST_MEMO");
     g_constMemoVerifyPoison = EnvOn("CZ_VK_VERIFY_CONST_MEMO_POISON");
     if (g_constMemoVerifyPoison)
@@ -26948,6 +27255,8 @@ void VkRenderer_DumpStats()
     // per-draw rate rather than the raw total, because the number the item's arithmetic
     // needs is "driver calls per draw" — that is what a secondary command buffer carries,
     // and the state cache means it is nowhere near the ten calls the source suggests.
+    if (g_reuseCensus)
+        reusecensus::Print(" since the last line — FINAL");
     if (g_fetchMemoCensus)
     {
         const uint64_t n = g_fetchMemoHits + g_fetchMemoMisses;

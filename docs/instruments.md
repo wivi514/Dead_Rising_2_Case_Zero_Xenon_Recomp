@@ -3352,3 +3352,52 @@ CZ_SKILL_GRANTS=N  **the extended-level grant mask** (part 86). Bit 1 = grant ha
                   remain '????' (bellyflop, facebreaker, handsoff, upandover); mask 11
                   is the arm that tests whether they ride grant B.
 ```
+
+## Part 87 — Case West's leads, asked before anything was built
+
+```
+CZ_VK_REUSE_CENSUS=1  **the cross-frame draw-identity census — would CW's range-reuse
+                  lead be served here?** (Case West's lead 2: reuse last frame's
+                  recorded commands for a range whose inputs are all unchanged. This
+                  renderer has none of their range/ticket/secondary structure, so the
+                  hit rate is measured before the port that depends on it is priced —
+                  gotchas 428, 434, 470.) Per recorded draw it folds everything the
+                  recorded commands depend on: the full PipelineKey, the draw args and
+                  index identity, the un-baked dynamic state + render-target block, the
+                  vertex- and texture-fetch constants both stages declare, and the ALU
+                  constants with CopyConstWindow's OWN semantics (c0..c3 + the sidecar
+                  list, whole window for dynamic shaders) — plus the renderer's own
+                  stream verdict (a draw is dirty if any stream it touched was COPIED
+                  this frame; a passing sampled guard counts as unchanged, exactly as
+                  the shipping renderer treats it). Prints per-frame WINDOW rates every
+                  600 frames (never a cumulative mean — gotcha 428): identical-to-same-
+                  ordinal draws, run-length structure (>=8, >=32), and the ceiling in ms
+                  at §6ec's 524 ns/draw of record. Two stated biases, both toward the
+                  null: texture CONTENT changes are not folded (over-reports), ordinal
+                  misalignment after an inserted draw (under-reports) — and a
+                  four-cell diagnosis line (ordinal|set x full|noALU) that separates
+                  "the draws moved" from "the constants changed", which want opposite
+                  responses. A DIAGNOSTIC ARM (gotcha 7): ~0.5-1 KB of register hashing
+                  per draw on the pump; never quote a frame time from a run carrying
+                  it. Free when off — one plain global compare per draw (gotcha 453).
+                  MEASURED at the crowd (part 87, 9,000-9,400 draws): 1.7-1.9% of draws
+                  identical, 0.08-0.09 ms ceiling; menus read 69-77% and early world
+                  24-48%, so the pool collapses exactly where the frame is expensive.
+```
+
+Belated listings — two part-80 ask-first censuses that lived only in `phase5-notes.md`
+§6ec until now (both DIAGNOSTIC ARMS, both free when off, both already answered — the
+entries exist so the next reader greps this file and finds the verdict instead of
+re-building the instrument):
+
+```
+CZ_VK_FETCH_MEMO_CENSUS=1  would a vertex-fetch decode memo be served? Two keys in one
+                  run: (shader, whole fetch-file version) and (shader, hash of exactly
+                  the dwords its attributes read). ANSWERED §6ec §2-3: 41.2% / 53.8%,
+                  0.475 / 0.621 ms ceilings — and the design then failed on correctness
+                  (a memo keyed on fetch constants cannot see in-place vertex edits;
+                  part 24's HUD defect from the other direction). Do not re-buy.
+CZ_VK_STREAM_DEDUP_CENSUS=1  does one draw look the same stream key up twice? ANSWERED
+                  §6ec §4: 4.96 lookups/draw, 47.9% repeats, ~0.27 ms — below the crowd
+                  route's 2.9% floor. A per-draw dedup cache would be pure loss.
+```
