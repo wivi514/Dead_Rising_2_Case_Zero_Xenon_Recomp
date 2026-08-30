@@ -14,6 +14,14 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+// win_compat.h (force-included) #undefs `far`/`near` for the runtime's own code, but
+// windef.h defines FAR as `far`, so the COM headers shlobj.h pulls in (combaseapi.h,
+// spelling `LPVOID FAR*`) would expand it to a stray identifier and fail with
+// "expected ')'" — gotcha 503, same fix as gpu/shader_translator.cpp's preamble.
+#undef FAR
+#define FAR
+#undef NEAR
+#define NEAR
 #include <shlobj.h> // SHGetKnownFolderPath (SavedGames); shell32 is already linked
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
