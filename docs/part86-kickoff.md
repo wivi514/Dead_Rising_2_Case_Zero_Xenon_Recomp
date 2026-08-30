@@ -66,13 +66,19 @@ DESTINATION (gotcha 267's rule) and will name the failing operation in one run.
 **Part 85's repackage wipe destroyed the bundle's save dir before this was understood**,
 so the 1-byte file itself is gone; the repro recreates the evidence.
 
-**(b) LEVEL-UP REWARDS DID NOT APPLY.** Leveled 1 → 5 during the completion run and
-never received the health increase. Unknown whether this is bundle-specific or
-long-standing (ASK: did the 2026-08-21 dev-tree completion grant health on level-up?
-— an unreported absence is not evidence of absence). Plausible coupling to (a): if the
-title routes stat persistence through the profile/save subsystem, a failing save path
-could swallow rewards — establish (a) first, then re-test (b) on the fixed build before
-treating it as its own defect.
+**(b) LEVEL-UP REWARDS DID NOT APPLY — downgraded to needs-a-natural-levelup-recheck.**
+Reported from the bundle completion (1 → 5, no health increase; the dev-tree
+playthrough DID grant it — operator confirmed). Then part 86 shipped **LEVEL CAP 50 AS
+THE MAIN-GAME DEFAULT** (the part-60 debug work promoted; `LevelCap50()` lazily
+initialized, `CZ_LEVEL_CAP=5` the stock arm, F4 toggle kept) and the operator's F4
+verification sitting leveled 1 → 50: **ALL stat attributes including health applied
+correctly**, card/skill rewards filtered as designed (their data is DR2-only; granting
+one crashes — part 60's measurement; Backdrop + Jump Kick are everything CZ carries).
+So the original report did not reproduce under F4 awards on the current build. What
+remains: one natural level-up (kill zombies, not F4) on the current build — if health
+applies there too, close (b) as not-reproducible; if not, the delta is the natural
+PP-award path (`sub_8253FB10`) vs the injected one. The level table, for whoever digs:
+0x829DD940, 51 rows, stride 0x2C, field 0 = level, field 1 = PP requirement.
 
 ## 1. WHAT TO DO NEXT, IN ORDER
 
