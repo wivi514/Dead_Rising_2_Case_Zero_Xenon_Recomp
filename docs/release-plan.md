@@ -950,7 +950,21 @@ map would rot).
   sitting: 860 keys (48,172 bytes), cold-boot seed 550 of 860 in 24.1 s, both artifacts
   repackaged and re-gated.** **New owed polish, stated rather than smoothed:
   that one-time ~20 s runs silently after the progress window closes on a true cold
-  first boot; §2.3 item 4 wanted it under a visible screen;**
+  first boot; §2.3 item 4 wanted it under a visible screen.**
+  **And then the operator COMPLETED THE WHOLE GAME ON THE SHIPPED BUNDLE** — the
+  strongest verdict a release artifact can receive. The completion sitting grew the
+  seed to its final form, **1,365 keys** (cold boot: 757 up front, 24.0 s at 31.8 ms
+  each), bore first-sight vertex shaders up to **102 of the ~104 this port has ever
+  seen**, and produced **ZERO new pixel shaders** beyond the disc's 1,265 + the two
+  known absentees — §9.7's completeness claim, demonstrated by a full playthrough in
+  the wild. **One open question from that run: the bundle's `DR2P000.DSF` stayed 1 byte
+  through the whole completion** — either the operator never saved in-game (plausible
+  in a single sitting) or bundle saving is broken; their answer decides whether part 86
+  owes an investigation. **And one tooling defect the sitting exposed: a repackage
+  wiped the played stage** — an out-of-band move failed silently in ssh quoting and the
+  script's unconditional wipe did the rest; both packaging scripts now preserve player
+  assets THEMSELVES and were gated on it (a probe file survived a repackage and the
+  shipped archive carries zero player files);
 * ~~the **Windows CI leg's first live run**~~ — **RESOLVED in the same part, three
   iterations after close, and BOTH LEGS ARE GREEN** (`--smoke`: 208 stub entries, every
   symbol resolved). The predicted "failure will be in the dependency step" was wrong both
