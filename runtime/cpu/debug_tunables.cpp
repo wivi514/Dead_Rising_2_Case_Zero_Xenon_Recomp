@@ -156,6 +156,26 @@ static uint32_t g_ppAwardArg5 = 0;
 static uint32_t g_ppAwardArg6 = 0;
 static uint32_t g_ppAwardArg7 = 0;
 static bool g_debugLevelCap50 = false;
+// LEVEL CAP 50 IS THE MAIN-GAME DEFAULT as of part 86 (operator decision: "apply it
+// to the main game"). The debug-menu toggle remains the in-game switch, and
+// CZ_LEVEL_CAP=5 is the control arm restoring Case Zero's stock cap — read LAZILY on
+// first use rather than at static init, so a value from cz_defaults.env (applied
+// early in main) is honoured. Everything below reads LevelCap50() so the one-time
+// init cannot be bypassed by hook ordering; the toggle still writes the bool.
+static bool g_levelCapInitDone = false;
+static bool LevelCap50()
+{
+    if (!g_levelCapInitDone)
+    {
+        g_levelCapInitDone = true;
+        const char* e = getenv("CZ_LEVEL_CAP");
+        g_debugLevelCap50 = !(e && atoi(e) == 5);
+        fprintf(stderr, "[debug] progression level cap: %s\n",
+                g_debugLevelCap50 ? "50 (the default; CZ_LEVEL_CAP=5 restores stock)"
+                                  : "5 (stock, CZ_LEVEL_CAP=5)");
+    }
+    return g_debugLevelCap50;
+}
 static thread_local bool g_extendedLevelProcessing = false;
 
 constexpr uint32_t kAutoChuckBase = 0xFFFFF100;
@@ -420,8 +440,8 @@ static void ShowProgressionMenu(uint8_t* base)
     g_debugMenuVisibleNodes.clear();
     g_debugMenuBaseLabels.clear();
     g_debugMenuVisibleNodes.push_back(kToggleLevelCap);
-    g_debugMenuBaseLabels.push_back(g_debugLevelCap50
-        ? "LEVEL CAP: 50 (DEBUG)" : "LEVEL CAP: 5 (CASE ZERO DEFAULT)");
+    g_debugMenuBaseLabels.push_back(LevelCap50()
+        ? "LEVEL CAP: 50 (THE DEFAULT)" : "LEVEL CAP: 5 (CASE ZERO STOCK)");
     for (uint32_t i = 0; i < std::size(kPPAwardAmounts); ++i)
     {
         g_debugMenuVisibleNodes.push_back(kPPAwardBase + i);
@@ -1592,7 +1612,8 @@ void DebugTunables_PumpDebugMenu(PPCContext& ctx, uint8_t* base)
     {
         if (action != 1 && action != 2)
             return;
-        g_debugLevelCap50 = !g_debugLevelCap50;
+        g_debugLevelCap50 = !LevelCap50(); // init first, so the first toggle flips
+                                           // the real default rather than the raw bool
         fprintf(stderr, "[debug] progression level cap -> %u\n",
                 g_debugLevelCap50 ? 50u : 5u);
         ShowProgressionMenu(base);
@@ -2177,7 +2198,7 @@ PPC_FUNC(sub_8253FB10)
 // game mode for unrelated systems that may consume the same byte.
 PPC_FUNC(sub_8253F740)
 {
-    if (!g_debugLevelCap50)
+    if (!LevelCap50())
     {
         __imp__sub_8253F740(ctx, base);
         return;
@@ -2196,7 +2217,7 @@ PPC_FUNC(sub_8253E060)
     const uint32_t progression = ctx.r3.u32;
     const uint32_t oldLevel = progression >= 0x10000
         ? PPC_LOAD_U32(progression + 0x20) : 0;
-    const bool extended = g_debugLevelCap50 && oldLevel >= 5;
+    const bool extended = LevelCap50() && oldLevel >= 5;
     const bool prior = g_extendedLevelProcessing;
     g_extendedLevelProcessing = extended;
     if (extended)
