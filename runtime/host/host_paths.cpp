@@ -14,6 +14,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <shlobj.h> // SHGetKnownFolderPath (SavedGames); shell32 is already linked
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #include <vector>
@@ -148,6 +149,39 @@ std::filesystem::path SaveDir()     { return Assets() / "save"; }
 std::filesystem::path ShaderCache() { return Assets() / "shader_spv"; }
 std::filesystem::path Config()      { return Root() / "config"; }
 std::filesystem::path Tools()       { return Root() / "tools"; }
+
+std::filesystem::path SavedGames()
+{
+    // See the header for the doctrine. The game-folder NAME is the human one on
+    // purpose — this directory is meant to be found by a player.
+    static const char* kGameFolder = "Dead Rising 2 Case Zero";
+#ifdef _WIN32
+    // The real Saved Games known folder, not Documents: FOLDERID_SavedGames has been
+    // the OS's answer to exactly this question since Vista, and it follows the user's
+    // language and folder redirection where a hardcoded path would not.
+    PWSTR w = nullptr;
+    std::filesystem::path base;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_SavedGames, 0, nullptr, &w)) && w)
+    {
+        base = w;
+        CoTaskMemFree(w);
+    }
+    else if (const char* up = std::getenv("USERPROFILE"); up && *up)
+        base = std::filesystem::path(up) / "Saved Games";
+    else
+        base = ExeDir(); // no user profile at all: stay beside the exe, loudly odd
+    return base / kGameFolder;
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    return std::filesystem::path(home ? home : ".") / "Library" /
+           "Application Support" / kGameFolder;
+#else
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        return std::filesystem::path(xdg) / kGameFolder;
+    const char* home = std::getenv("HOME");
+    return std::filesystem::path(home ? home : ".") / ".local" / "share" / kGameFolder;
+#endif
+}
 
 void Report()
 {

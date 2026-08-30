@@ -62,6 +62,18 @@ std::filesystem::path Game();         // <root>/assets/game      the unpacked pa
 std::filesystem::path GameXex();      // <root>/assets/game/default.xex
 std::filesystem::path SaveDir();      // <root>/assets/save
 std::filesystem::path ShaderCache();  // <root>/assets/shader_spv
+
+// THE PER-USER SAVED-GAMES FOLDER (part 86, operator decision after a repackage wiped
+// the play copy: player data must live where no tool that touches the install tree
+// can reach it). This is the GAME folder; the per-profile subdirectory under it is
+// content.cpp's business ("default" until the cross-recomp profile project exists).
+//   Windows  <FOLDERID_SavedGames>\Dead Rising 2 Case Zero   (the real Saved Games
+//            known folder — localized, redirection-aware; falls back to
+//            %USERPROFILE%\Saved Games if the shell cannot answer)
+//   Linux    $XDG_DATA_HOME (default ~/.local/share)/Dead Rising 2 Case Zero
+//   macOS    ~/Library/Application Support/Dead Rising 2 Case Zero
+// CZ_SAVE_DIR (read in content.cpp) still overrides the whole save root for tests.
+std::filesystem::path SavedGames();
 std::filesystem::path Config();       // <root>/config
 std::filesystem::path Tools();        // <root>/tools
 

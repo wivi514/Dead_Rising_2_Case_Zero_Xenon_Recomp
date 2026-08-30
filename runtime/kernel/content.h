@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 #include "memory.h" // PPCFunc
@@ -19,6 +20,11 @@ void ContentSetRootFromGameDir(const std::string& gameDir);
 // The resolved save root, for anything else that persists player-owned state next
 // to the saves (part 60's settings file). Empty until ContentSetRootFromGameDir.
 std::string ContentSaveRoot();
+
+// Where cz_settings.txt lives: the game folder above the per-profile save dir (a
+// second profile must not reset display settings), or the CZ_SAVE_DIR override
+// itself when one is active. Created on first ask.
+std::filesystem::path ContentSettingsDir();
 
 // Complete an XOVERLAPPED in place (kernel/imports.cpp owns the struct layout, which
 // is transcribed there from the title's OWN XGetOverlappedResult). A XAM export that

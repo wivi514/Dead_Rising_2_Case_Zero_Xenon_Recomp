@@ -127,7 +127,7 @@ echo "  cap:  CZ_FPS_CAP=$FPS   (vblank period $((1000/(2*FPS))) ms, ceiling $((
 if [ -n "${RES:-}" ]; then
     echo "  res:  $RES (pinned by RES=)"
 else
-    echo "  res:  from assets/save/cz_settings.txt — $(awk -F= '/^res_w/{w=$2} /^res_h/{h=$2} END{print w"x"h}' "$ROOT/assets/save/cz_settings.txt" 2>/dev/null) (not pinned)"
+    echo "  res:  from the saved-games settings — $(awk -F= '/^res_w/{w=$2} /^res_h/{h=$2} END{print w"x"h}' "${XDG_DATA_HOME:-$HOME/.local/share}/Dead Rising 2 Case Zero/cz_settings.txt" 2>/dev/null) (not pinned)"
 fi
 if [ -n "${NOSWAP:-}" ]; then
     echo "  swap: CZ_VK_NO_SWAPCHAIN=1 -- the readback present path (the pre-part-54 arm)"

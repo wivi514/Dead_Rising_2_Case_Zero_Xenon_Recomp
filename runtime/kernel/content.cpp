@@ -81,6 +81,7 @@
 #include <vector>
 
 #include "../cpu/guest_thread.h"
+#include "../host/host_paths.h"
 #include "guestcall.h"
 #include "heap.h"
 #include "klog.h"
@@ -423,19 +424,77 @@ std::map<std::string, std::string>  g_mounts; // root name -> host directory
 
 void ContentSetRootFromGameDir(const std::string& gameDir)
 {
-    // Deliberately NOT inside the package directory. assets/game/ is what
-    // tools/extract_stfs.py produced out of a copyrighted container and is treated as
-    // read-only throughout this project; writing saves into it would mean a save could
-    // be lost by re-running the extractor, and would put player data inside a tree the
-    // gitignore describes as "the package as delivered".
+    // PER-USER SAVES (part 86, operator decision). Saves used to live in
+    // <root>/assets/save — inside the install tree, where part 85's repackage wipe
+    // demonstrated that a tool touching the install can reach them. They now live
+    // under the OS's own saved-games location (host_paths.h SavedGames() has the
+    // per-platform doctrine), in a per-profile subdirectory: "default" until the
+    // cross-recomp profile project exists, structured so real profiles slot in
+    // without moving files again. CZ_SAVE_DIR still overrides the whole root.
+    const std::filesystem::path oldRoot =
+        std::filesystem::path(gameDir).parent_path() / "save";
     if (const char* env = getenv("CZ_SAVE_DIR"))
         g_saveRoot = env;
     else
-        g_saveRoot = std::filesystem::path(gameDir).parent_path() / "save";
+        g_saveRoot = HostPaths::SavedGames() / "default";
     std::error_code ec;
     std::filesystem::create_directories(g_saveRoot, ec);
+
+    // MIGRATION, once: an existing install has its saves at the old location and
+    // must not appear to have lost them. Copy (never move — the old tree stays as a
+    // backup) every save CONTAINER — a container is a DIRECTORY holding the actual
+    // .DSF; a plain top-level FILE named like a save is the part-86 squatter
+    // artifact and is deliberately left behind — plus the settings file. Only when
+    // the new root has no containers yet, so a migrated install never overwrites
+    // newer saves with older ones.
+    if (g_saveRoot != oldRoot && std::filesystem::is_directory(oldRoot, ec))
+    {
+        bool newHasContainers = false;
+        for (const auto& e : std::filesystem::directory_iterator(g_saveRoot, ec))
+            if (e.is_directory())
+                newHasContainers = true;
+        if (!newHasContainers)
+        {
+            unsigned migrated = 0;
+            for (const auto& e : std::filesystem::directory_iterator(oldRoot, ec))
+            {
+                if (!e.is_directory())
+                    continue;
+                std::error_code cec;
+                std::filesystem::copy(e.path(), g_saveRoot / e.path().filename(),
+                                      std::filesystem::copy_options::recursive, cec);
+                if (!cec)
+                    ++migrated;
+                else
+                    KLOG("content: could NOT migrate save %s: %s\n",
+                         e.path().string().c_str(), cec.message().c_str());
+            }
+            std::error_code sec;
+            if (std::filesystem::is_regular_file(oldRoot / "cz_settings.txt", sec))
+                std::filesystem::copy_file(oldRoot / "cz_settings.txt",
+                                           ContentSettingsDir() / "cz_settings.txt",
+                                           std::filesystem::copy_options::skip_existing,
+                                           sec);
+            if (migrated)
+                KLOG("content: migrated %u save container(s) from %s (old copies kept "
+                     "there as a backup)\n", migrated, oldRoot.string().c_str());
+        }
+    }
+
     KLOG("content: saves live in %s%s\n", g_saveRoot.string().c_str(),
          ec ? " (COULD NOT BE CREATED — saving will fail)" : "");
+}
+
+std::filesystem::path ContentSettingsDir()
+{
+    // Settings sit at the GAME folder level, not per-profile — they are per-user
+    // display/input state, and a future second profile should not reset them.
+    // Under a CZ_SAVE_DIR override everything stays in the one overridden dir.
+    if (getenv("CZ_SAVE_DIR"))
+        return g_saveRoot;
+    std::error_code ec;
+    std::filesystem::create_directories(HostPaths::SavedGames(), ec);
+    return HostPaths::SavedGames();
 }
 
 std::string ContentSaveRoot()

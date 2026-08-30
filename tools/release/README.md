@@ -30,8 +30,15 @@ run turns it into everything else it needs.
      `first-sight translation` when it happens).
 4. Subsequent launches skip all of that and start straight into the game.
 
-Settings (resolution, display mode, shadows) are in the in-game settings menu and are
-saved to `assets/save/cz_settings.txt`. Your save games live in `assets/save/`.
+Settings (resolution, display mode, shadows) are in the in-game settings menu. Your
+save games and settings live **outside this folder**, so reinstalling or deleting the
+game can never touch them:
+
+* Windows: `Saved Games\Dead Rising 2 Case Zero\` (next to your Documents folder)
+* Linux: `~/.local/share/Dead Rising 2 Case Zero/`
+
+A build that finds saves in the old in-folder location (`assets/save/`) copies them
+over automatically on its first launch and leaves the originals as a backup.
 
 ## If something is missing
 
@@ -67,8 +74,9 @@ disables the decoder — useful to tell a sound problem from a game problem when
 reporting an issue.
 
 **Starting over**: delete `assets/game/` and/or `assets/shader_spv/` and the first-run
-steps run again. Deleting `assets/save/` removes your saves and settings — the game
-never does this itself.
+steps run again — your saves are unaffected, they live in the saved-games location
+above. Deleting THAT folder removes your saves and settings; the game never does this
+itself.
 
 **A log of everything** is printed to the terminal; when reporting a problem, run from
 a terminal and include the output.

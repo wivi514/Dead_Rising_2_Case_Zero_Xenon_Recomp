@@ -410,7 +410,7 @@ int main(int argc, char** argv)
         // Loaded here — after the save root exists, BEFORE Host_WindowInit — because
         // the display mode is a window-creation decision. Env vars win over the file
         // at each consumer.
-        Settings_Load(ContentSaveRoot() + "/cz_settings.txt");
+        Settings_Load((ContentSettingsDir() / "cz_settings.txt").string());
     }
 
     // Load the XEX image into guest memory at its link base.
